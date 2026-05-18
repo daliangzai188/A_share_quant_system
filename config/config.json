@@ -1,0 +1,53 @@
+{
+  "project_name": "A股量化交易系统",
+  "trade_mode": "paper",
+  "data_source": {
+    "primary": "tushare",
+    "token_env": "TUSHARE_TOKEN",
+    "request_retry_times": 3,
+    "request_retry_wait_seconds": 3
+  },
+  "data": {
+    "start_date": "20190101",
+    "end_date": "20261231",
+    "raw_dir": "data/raw",
+    "processed_dir": "data/processed",
+    "database_path": "data/database/stock_data.db",
+    "daily_dir": "data/raw/daily",
+    "daily_basic_dir": "data/raw/daily_basic",
+    "limit_list_dir": "data/raw/limit_list",
+    "trade_calendar_path": "data/raw/trade_calendar.csv",
+    "save_format": "csv",
+    "include_delisted": true,
+    "adj": "qfq"
+  },
+  "collection": {
+    "daily_fields": "ts_code,trade_date,open,high,low,close,pre_close,change,pct_chg,vol,amount",
+    "daily_basic_fields": "ts_code,trade_date,turnover_rate,turnover_rate_f,volume_ratio,pe,pe_ttm,pb,ps,ps_ttm,dv_ratio,dv_ttm,total_share,float_share,free_share,total_mv,circ_mv",
+    "limit_list_fields": "trade_date,ts_code,name,close,pct_chg,amp,fc_ratio,fl_ratio,fd_amount,first_time,last_time,open_times,strth,limit,limit_order,limit_amount,turnover_rate,free_float,lu_desc,limit_times",
+    "overwrite": false
+  },
+  "logging": {
+    "level": "INFO",
+    "log_dir": "logs",
+    "log_file": "a_share_quant.log"
+  },
+  "risk": {
+    "initial_cash": 1000000,
+    "max_position_pct_per_stock": 0.1,
+    "max_total_position_pct": 0.8,
+    "max_daily_loss_pct": 0.03,
+    "max_drawdown_pct": 0.15,
+    "commission_rate": 0.0003,
+    "stamp_tax_rate": 0.001,
+    "transfer_fee_rate": 0.00001,
+    "slippage_rate": 0.001,
+    "use_fill_probability_model": true,
+    "min_fill_probability": 0.6,
+    "default_fill_quantile": 0.25,
+    "exclude_st": true,
+    "exclude_suspended": true,
+    "exclude_limit_up_unfillable": true,
+    "exclude_limit_down_unsellable": true
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "strategy_name": "leading_stock_limit_up_research",
+  "enabled": false,
+  "description": "第一阶段仅保留策略研究参数，不执行实盘交易。",
+  "universe": {
+    "exclude_st": true,
+    "exclude_suspended": true,
+    "exclude_new_stock_days": 60,
+    "min_amount": 100000000,
+    "min_circ_mv": 2000000000
+  },
+  "market_filter": {
+    "min_limit_up_count": 50,
+    "weak_market_skip": true
+  },
+  "limit_up_filter": {
+    "min_limit_times": 1,
+    "max_open_times": 5,
+    "exclude_one_word_board_without_turnover": true,
+    "late_board_time": "143000"
+  },
+  "execution_assumption": {
+    "selection_time": "T日收盘后",
+    "buy_time": "T+1开盘价",
+    "sell_time": "T+2收盘价",
+    "price_adjustment": "前复权",
+    "allow_same_day_sell": false,
+    "trade_mode": "research_only"
+  },
+  "position": {
+    "max_holding_count": 5,
+    "max_position_pct_per_stock": 0.1,
+    "max_total_position_pct": 0.8
+  }
+}

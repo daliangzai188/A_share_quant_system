@@ -1,0 +1,130 @@
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Iterable
+
+import pandas as pd
+
+from src.data_source import TushareDataSource
+from src.trading_calendar import TradingCalendar
+from src.utils.config import get_project_root, load_json_config
+from src.utils.logger import get_logger
+
+
+class DataCollector:
+    """本地数据采集模块，负责从 Tushare 拉取原始数据并保存 CSV。"""
+
+    def __init__(
+        self,
+        data_source: TushareDataSource,
+        config_path: str | Path = "config/config.json",
+    ) -> None:
+        self.data_source = data_source
+        self.project_root = get_project_root()
+        self.config = load_json_config(config_path)
+        self.logger = get_logger("data_collector")
+        self.calendar = TradingCalendar(data_source=data_source, config_path=config_path)
+
+        data_config = self.config["data"]
+        self.daily_dir = self.project_root / data_config.get("daily_dir", "data/raw/daily")
+        self.daily_basic_dir = self.project_root / data_config.get("daily_basic_dir", "data/raw/daily_basic")
+        self.limit_list_dir = self.project_root / data_config.get("limit_list_dir", "data/raw/limit_list")
+        self.daily_dir.mkdir(parents=True, exist_ok=True)
+        self.daily_basic_dir.mkdir(parents=True, exist_ok=True)
+        self.limit_list_dir.mkdir(parents=True, exist_ok=True)
+
+    def collect_daily_data(
+        self,
+        start_date: str,
+        end_date: str,
+        overwrite: bool | None = None,
+        include_daily_basic: bool = True,
+    ) -> dict[str, int]:
+        overwrite = self._resolve_overwrite(overwrite)
+        trade_dates = self.calendar.get_open_dates(start_date=start_date, end_date=end_date)
+        self.logger.info("开始采集日线数据，交易日数量: %s", len(trade_dates))
+
+        stats = {"daily_saved": 0, "daily_skipped": 0, "daily_basic_saved": 0, "daily_basic_skipped": 0}
+        for trade_date in trade_dates:
+            daily_saved = self.collect_daily_by_date(trade_date=trade_date, overwrite=overwrite)
+            stats["daily_saved" if daily_saved else "daily_skipped"] += 1
+
+            if include_daily_basic:
+                basic_saved = self.collect_daily_basic_by_date(trade_date=trade_date, overwrite=overwrite)
+                stats["daily_basic_saved" if basic_saved else "daily_basic_skipped"] += 1
+
+        self.logger.info("日线采集完成: %s", stats)
+        return stats
+
+    def collect_limit_data(
+        self,
+        start_date: str,
+        end_date: str,
+        overwrite: bool | None = None,
+    ) -> dict[str, int]:
+        overwrite = self._resolve_overwrite(overwrite)
+        trade_dates = self.calendar.get_open_dates(start_date=start_date, end_date=end_date)
+        self.logger.info("开始采集涨停池数据，交易日数量: %s", len(trade_dates))
+
+        stats = {"limit_saved": 0, "limit_skipped": 0}
+        for trade_date in trade_dates:
+            saved = self.collect_limit_by_date(trade_date=trade_date, overwrite=overwrite)
+            stats["limit_saved" if saved else "limit_skipped"] += 1
+
+        self.logger.info("涨停池采集完成: %s", stats)
+        return stats
+
+    def collect_daily_by_date(self, trade_date: str, overwrite: bool = False) -> bool:
+        output_path = self.daily_dir / f"{trade_date}.csv"
+        if self._should_skip(output_path, overwrite):
+            return False
+
+        fields = self.config["collection"].get("daily_fields")
+        daily = self.data_source.get_daily(trade_date=trade_date, fields=fields)
+        self._save_dataframe(daily, output_path)
+        self.logger.info("保存日线行情: %s, 行数: %s", output_path, len(daily))
+        return True
+
+    def collect_daily_basic_by_date(self, trade_date: str, overwrite: bool = False) -> bool:
+        output_path = self.daily_basic_dir / f"{trade_date}.csv"
+        if self._should_skip(output_path, overwrite):
+            return False
+
+        fields = self.config["collection"].get("daily_basic_fields")
+        daily_basic = self.data_source.get_daily_basic(trade_date=trade_date, fields=fields)
+        self._save_dataframe(daily_basic, output_path)
+        self.logger.info("保存每日基本面: %s, 行数: %s", output_path, len(daily_basic))
+        return True
+
+    def collect_limit_by_date(self, trade_date: str, overwrite: bool = False) -> bool:
+        output_path = self.limit_list_dir / f"{trade_date}.csv"
+        if self._should_skip(output_path, overwrite):
+            return False
+
+        fields = self.config["collection"].get("limit_list_fields")
+        limit_list = self.data_source.get_limit_list(trade_date=trade_date, fields=fields)
+        self._save_dataframe(limit_list, output_path)
+        self.logger.info("保存涨停池: %s, 行数: %s", output_path, len(limit_list))
+        return True
+
+    def existing_dates(self, directory: Path) -> list[str]:
+        return sorted(path.stem for path in directory.glob("*.csv"))
+
+    @staticmethod
+    def missing_dates(trade_dates: Iterable[str], existing_dates: Iterable[str]) -> list[str]:
+        existing = set(existing_dates)
+        return [trade_date for trade_date in trade_dates if trade_date not in existing]
+
+    def _resolve_overwrite(self, overwrite: bool | None) -> bool:
+        if overwrite is not None:
+            return overwrite
+        return bool(self.config.get("collection", {}).get("overwrite", False))
+
+    @staticmethod
+    def _should_skip(output_path: Path, overwrite: bool) -> bool:
+        return output_path.exists() and not overwrite
+
+    @staticmethod
+    def _save_dataframe(data: pd.DataFrame, output_path: Path) -> None:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        data.to_csv(output_path, index=False, encoding="utf-8-sig")
