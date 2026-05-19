@@ -54,6 +54,75 @@
     "fd_amount_abnormal_ratio_threshold": 1.0,
     "ignore_abnormal_fd_amount": true
   },
+  "analysis": {
+    "input_daily_merged_path": "data/processed/daily_merged.csv",
+    "input_limit_up_fill_scored_path": "data/processed/limit_up_fill_scored.csv",
+    "output_next_day_trades_path": "data/processed/next_day_premium_trades.csv",
+    "output_next_day_summary_path": "reports/next_day_premium_summary.csv",
+    "output_next_day_group_path": "reports/next_day_premium_by_group.csv",
+    "output_factor_report_path": "reports/factor_analysis_report.csv",
+    "output_factor_combo_report_path": "reports/factor_combo_report.csv",
+    "commission_rate": 0.0003,
+    "stamp_tax_rate": 0.001,
+    "transfer_fee_rate": 0.00001,
+    "slippage_rate": 0.001
+  },
+  "candidate_pool": {
+    "input_trades_path": "data/processed/next_day_premium_trades.csv",
+    "output_candidate_pool_path": "data/processed/candidate_pool.csv",
+    "min_fill_probability": 0.6,
+    "rules": [
+      {
+        "rule_name": "stable_strong_low_fd",
+        "description": "强市场情绪 + 封单金额/流通市值低于0.5%",
+        "conditions": {
+          "market_sentiment_level": ["strong"],
+          "fd_ratio_bucket": ["lt_0_5pct"]
+        }
+      },
+      {
+        "rule_name": "strong_multi_midday_low_fd",
+        "description": "强市场情绪 + 多次开板 + 盘中涨停 + 封单金额/流通市值低于0.5%",
+        "conditions": {
+          "market_sentiment_level": ["strong"],
+          "board_type": ["multi_open"],
+          "first_time_bucket": ["midday"],
+          "fd_ratio_bucket": ["lt_0_5pct"]
+        }
+      }
+    ]
+  },
+  "backtest": {
+    "input_candidate_pool_path": "data/processed/candidate_pool.csv",
+    "output_trades_path": "reports/backtest_trades.csv",
+    "output_equity_curve_path": "reports/backtest_equity_curve.csv",
+    "output_summary_path": "reports/backtest_summary.csv",
+    "output_yearly_path": "reports/backtest_yearly.csv",
+    "initial_cash": 1000000,
+    "max_holding_count": 5,
+    "max_position_pct_per_stock": 0.1
+  },
+  "optimization": {
+    "input_trades_path": "data/processed/next_day_premium_trades.csv",
+    "output_report_path": "reports/strategy_optimization_report.csv",
+    "output_yearly_path": "reports/strategy_optimization_yearly.csv",
+    "factor_columns": [
+      "market_sentiment_level",
+      "board_type",
+      "first_time_bucket",
+      "limit_times_bucket",
+      "amount_bucket",
+      "turnover_rate_bucket",
+      "fd_ratio_bucket"
+    ],
+    "min_factor_count": 1,
+    "max_factor_count": 4,
+    "min_sample_count": 80,
+    "max_holding_count": 5,
+    "max_total_position_pct": 0.7,
+    "evaluation_years": ["2020", "2021", "2022", "2023", "2024", "2025", "2026"],
+    "target_annual_return": 2.0
+  },
   "risk": {
     "initial_cash": 1000000,
     "max_position_pct_per_stock": 0.1,
