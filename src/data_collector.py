@@ -50,8 +50,19 @@ class DataCollector:
             stats["daily_saved" if daily_saved else "daily_skipped"] += 1
 
             if include_daily_basic:
-                basic_saved = self.collect_daily_basic_by_date(trade_date=trade_date, overwrite=overwrite)
-                stats["daily_basic_saved" if basic_saved else "daily_basic_skipped"] += 1
+                try:
+                    basic_saved = self.collect_daily_basic_by_date(trade_date=trade_date, overwrite=overwrite)
+                    stats["daily_basic_saved" if basic_saved else "daily_basic_skipped"] += 1
+                except Exception as exc:
+                    if self._is_permission_error(exc):
+                        self.logger.warning(
+                            "当前 Tushare 账号没有 daily_basic 权限，本次日线采集将跳过每日基本面。"
+                            "后续可以使用 --no-daily-basic 显式跳过。原始错误: %s",
+                            exc,
+                        )
+                        include_daily_basic = False
+                    else:
+                        raise
 
         self.logger.info("日线采集完成: %s", stats)
         return stats
@@ -102,7 +113,8 @@ class DataCollector:
             return False
 
         fields = self.config["collection"].get("limit_list_fields")
-        limit_list = self.data_source.get_limit_list(trade_date=trade_date, fields=fields)
+        limit_type = self.config["collection"].get("limit_type", "U")
+        limit_list = self.data_source.get_limit_list(trade_date=trade_date, limit_type=limit_type, fields=fields)
         self._save_dataframe(limit_list, output_path)
         self.logger.info("保存涨停池: %s, 行数: %s", output_path, len(limit_list))
         return True
@@ -128,3 +140,8 @@ class DataCollector:
     def _save_dataframe(data: pd.DataFrame, output_path: Path) -> None:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         data.to_csv(output_path, index=False, encoding="utf-8-sig")
+
+    @staticmethod
+    def _is_permission_error(exc: Exception) -> bool:
+        message = str(exc)
+        return "没有接口" in message or "访问权限" in message

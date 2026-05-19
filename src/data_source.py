@@ -45,11 +45,11 @@ class TushareDataSource:
         token = os.getenv(self.tushare_config.token_env)
         if not token:
             raise RuntimeError(
-                f"未找到环境变量 {self.tushare_config.token_env}。请复制 .env.example 为 .env 后填写 Tushare Token。"
+                f"未找到环境变量 {self.tushare_config.token_env}。"
+                "请运行采集脚本并按提示输入 Token，或临时 export 该环境变量。"
             )
 
-        ts.set_token(token)
-        self.pro = ts.pro_api(token)
+        self.pro = ts.pro_api(token.strip())
 
     def _retry_decorator(self):
         return retry(
@@ -113,6 +113,7 @@ class TushareDataSource:
     def get_limit_list(
         self,
         trade_date: str,
+        limit_type: str = "U",
         fields: Optional[str] = None,
     ) -> pd.DataFrame:
-        return self._call("limit_list_d", trade_date=trade_date, fields=fields)
+        return self._call("limit_list_d", trade_date=trade_date, limit_type=limit_type, fields=fields)

@@ -25,12 +25,34 @@
     "daily_fields": "ts_code,trade_date,open,high,low,close,pre_close,change,pct_chg,vol,amount",
     "daily_basic_fields": "ts_code,trade_date,turnover_rate,turnover_rate_f,volume_ratio,pe,pe_ttm,pb,ps,ps_ttm,dv_ratio,dv_ttm,total_share,float_share,free_share,total_mv,circ_mv",
     "limit_list_fields": "trade_date,ts_code,name,close,pct_chg,amp,fc_ratio,fl_ratio,fd_amount,first_time,last_time,open_times,strth,limit,limit_order,limit_amount,turnover_rate,free_float,lu_desc,limit_times",
+    "limit_type": "U",
     "overwrite": false
   },
   "logging": {
     "level": "INFO",
     "log_dir": "logs",
     "log_file": "a_share_quant.log"
+  },
+  "cleaning": {
+    "exclude_bj": true,
+    "drop_missing_daily_basic": true,
+    "limit_list_start_date": "20191128",
+    "low_amount_threshold": 10000,
+    "daily_merged_path": "data/processed/daily_merged.csv",
+    "limit_up_merged_path": "data/processed/limit_up_merged.csv",
+    "market_sentiment_path": "data/processed/market_sentiment.csv"
+  },
+  "fill_model": {
+    "input_limit_up_path": "data/processed/limit_up_merged.csv",
+    "input_market_sentiment_path": "data/processed/market_sentiment.csv",
+    "output_fill_rate_table_path": "data/processed/fill_rate_table.csv",
+    "output_fill_rate_fallback_path": "data/processed/fill_rate_fallback.csv",
+    "output_limit_up_fill_scored_path": "data/processed/limit_up_fill_scored.csv",
+    "min_group_samples": 30,
+    "default_fill_quantile": 0.25,
+    "default_planned_buy_amount": 100000,
+    "fd_amount_abnormal_ratio_threshold": 1.0,
+    "ignore_abnormal_fd_amount": true
   },
   "risk": {
     "initial_cash": 1000000,
