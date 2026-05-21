@@ -172,6 +172,7 @@ class DataCleaner:
         )
         enriched["first_time_bucket"] = enriched["first_time"].apply(self.classify_limit_time_bucket)
         enriched["board_type"] = enriched.apply(self.classify_board_type, axis=1)
+        enriched["is_st"] = enriched["name"].apply(self.is_st_or_delisting_name) if "name" in enriched.columns else False
         if "market_segment" not in enriched.columns:
             enriched["market_segment"] = enriched["ts_code"].apply(self.classify_market_segment)
         enriched["limit_pct"] = enriched.apply(
@@ -321,7 +322,7 @@ class DataCleaner:
     @classmethod
     def classify_limit_pct(cls, ts_code: object, name: object | None = None) -> float:
         stock_name = "" if name is None or pd.isna(name) else str(name).upper()
-        if "ST" in stock_name or "退" in stock_name:
+        if cls.is_st_or_delisting_name(stock_name):
             return 0.05
         segment = cls.classify_market_segment(ts_code)
         if segment == "bj":
@@ -344,6 +345,13 @@ class DataCleaner:
         if value <= 0.301:
             return "30cm"
         return "other"
+
+    @staticmethod
+    def is_st_or_delisting_name(name: object) -> bool:
+        if name is None or pd.isna(name):
+            return False
+        text = str(name).upper()
+        return "ST" in text or "退" in text
 
     @staticmethod
     def classify_limit_time_bucket(value: object) -> str:

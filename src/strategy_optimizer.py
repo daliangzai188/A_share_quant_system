@@ -49,6 +49,15 @@ class StrategyConditionOptimizer:
         self.optional_top_list_features_path = self.project_root / optimization_config.get(
             "optional_top_list_features_path", "data/processed/top_list_features.csv"
         )
+        dynamic_config = self.config.get("dynamic_features", {})
+        self.optional_market_emotion_features_path = self.project_root / optimization_config.get(
+            "optional_market_emotion_features_path",
+            dynamic_config.get("market_emotion_features_path", "data/processed/market_emotion_features.csv"),
+        )
+        self.optional_theme_heat_features_path = self.project_root / optimization_config.get(
+            "optional_theme_heat_features_path",
+            dynamic_config.get("theme_heat_features_path", "data/processed/theme_heat_features.csv"),
+        )
         self.factor_columns = optimization_config.get(
             "factor_columns",
             [
@@ -76,6 +85,7 @@ class StrategyConditionOptimizer:
             float(value)
             for value in optimization_config.get("rank_position_weights", [])
         ]
+        self.universe_filters = optimization_config.get("universe_filters", {})
         self.evaluation_years = [str(year) for year in optimization_config.get("evaluation_years", [])]
         self.target_annual_return = float(optimization_config.get("target_annual_return", 2.0))
 
@@ -140,6 +150,7 @@ class StrategyConditionOptimizer:
         trades = self.add_leader_and_theme_features(trades)
         trades = self.add_optional_external_features(trades)
         trades = FactorAnalyzer(config_path="config/config.json").add_factor_buckets(trades)
+        trades = self.apply_universe_filters(trades)
         trades = trades[
             (trades["allow_buy_reliable"] == True)  # noqa: E712
             & (trades["is_fill_score_reliable"] == True)  # noqa: E712
@@ -152,6 +163,40 @@ class StrategyConditionOptimizer:
         for column in self.factor_columns:
             trades[column] = trades[column].astype(str)
         return trades
+
+    def apply_universe_filters(self, trades: pd.DataFrame) -> pd.DataFrame:
+        result = trades.copy()
+        before_count = len(result)
+
+        allowed_segments = self.universe_filters.get("allowed_market_segments", [])
+        if allowed_segments:
+            if "market_segment" not in result.columns:
+                raise RuntimeError("配置了 allowed_market_segments，但交易样本缺少 market_segment 字段，请先重跑清洗和打标。")
+            allowed_segments = {str(value) for value in allowed_segments}
+            result = result[result["market_segment"].astype(str).isin(allowed_segments)].copy()
+
+        if bool(self.universe_filters.get("exclude_st", False)):
+            result = self.exclude_st_or_delisting(result)
+
+        if bool(self.universe_filters.get("exclude_star", False)) and "market_segment" in result.columns:
+            result = result[result["market_segment"].astype(str) != "star"].copy()
+        if bool(self.universe_filters.get("exclude_bj", False)) and "market_segment" in result.columns:
+            result = result[result["market_segment"].astype(str) != "bj"].copy()
+
+        if before_count != len(result):
+            self.logger.info("股票池过滤完成: %s -> %s", before_count, len(result))
+        return result
+
+    @staticmethod
+    def exclude_st_or_delisting(trades: pd.DataFrame) -> pd.DataFrame:
+        if "is_st" in trades.columns:
+            is_st = trades["is_st"].fillna(False).astype(bool)
+        elif "name" in trades.columns:
+            name = trades["name"].fillna("").astype(str).str.upper()
+            is_st = name.str.contains("ST", regex=False) | name.str.contains("退", regex=False)
+        else:
+            is_st = pd.Series(False, index=trades.index)
+        return trades[~is_st].copy()
 
     def add_historical_features(self, trades: pd.DataFrame) -> pd.DataFrame:
         daily = pd.read_csv(
@@ -317,6 +362,31 @@ class StrategyConditionOptimizer:
         return "neutral"
 
     def add_optional_external_features(self, trades: pd.DataFrame) -> pd.DataFrame:
+        trades = self.merge_market_emotion_features(trades)
+        if self.should_merge_theme_heat_features():
+            trades = self.merge_optional_feature_file(
+                trades,
+                path=self.optional_theme_heat_features_path,
+                expected_columns=[
+                    "trade_date",
+                    "ts_code",
+                    "theme_data_available",
+                    "theme_source_column",
+                    "theme_name",
+                    "theme_limit_count",
+                    "theme_limit_height",
+                    "theme_chain_count",
+                    "theme_heat_score",
+                    "theme_heat_rank",
+                    "theme_leader_rank",
+                    "theme_height_rank",
+                    "theme_is_mainline",
+                    "same_theme_limit_count",
+                ],
+                feature_name="动态题材热度",
+            )
+        else:
+            self.logger.info("当前优化因子未启用题材热度，跳过动态题材热度合并。")
         trades = self.merge_optional_feature_file(
             trades,
             path=self.optional_auction_features_path,
@@ -343,6 +413,40 @@ class StrategyConditionOptimizer:
         )
         return trades
 
+    def should_merge_theme_heat_features(self) -> bool:
+        theme_prefixes = ("theme_", "same_theme_")
+        return any(str(column).startswith(theme_prefixes) for column in self.factor_columns)
+
+    def merge_market_emotion_features(self, trades: pd.DataFrame) -> pd.DataFrame:
+        path = self.optional_market_emotion_features_path
+        if not path.exists():
+            self.logger.info("动态市场情绪 特征文件不存在，跳过: %s", path)
+            return trades
+        expected_columns = [
+            "trade_date",
+            "market_segment",
+            "market_emotion_state",
+            "market_emotion_score",
+            "market_limit_down_count",
+            "market_limit_down_ratio",
+            "market_chain_count",
+            "market_limit_max_height",
+            "segment_emotion_state",
+            "segment_emotion_score",
+            "segment_limit_down_count",
+            "segment_limit_down_ratio",
+            "segment_chain_count",
+            "segment_limit_max_height",
+            "segment_open_rate",
+        ]
+        feature = pd.read_csv(path, dtype={"trade_date": str, "market_segment": str}, low_memory=False)
+        missing_columns = [column for column in expected_columns if column not in feature.columns]
+        if missing_columns:
+            raise ValueError(f"动态市场情绪 特征文件缺少字段: {missing_columns}, 文件: {path}")
+        feature = feature[expected_columns].drop_duplicates(["trade_date", "market_segment"])
+        self.logger.info("动态市场情绪 特征已加载: %s, 行数: %s", path, len(feature))
+        return trades.merge(feature, on=["trade_date", "market_segment"], how="left", validate="many_to_one")
+
     def merge_optional_feature_file(
         self,
         trades: pd.DataFrame,
@@ -358,6 +462,14 @@ class StrategyConditionOptimizer:
         if missing_columns:
             raise ValueError(f"{feature_name} 特征文件缺少字段: {missing_columns}, 文件: {path}")
         feature = feature[expected_columns].drop_duplicates(["trade_date", "ts_code"])
+        merge_keys = {"trade_date", "ts_code"}
+        overlapping_feature_columns = [
+            column
+            for column in expected_columns
+            if column not in merge_keys and column in trades.columns
+        ]
+        if overlapping_feature_columns:
+            trades = trades.drop(columns=overlapping_feature_columns)
         self.logger.info("%s 特征已加载: %s, 行数: %s", feature_name, path, len(feature))
         return trades.merge(feature, on=["trade_date", "ts_code"], how="left", validate="one_to_one")
 

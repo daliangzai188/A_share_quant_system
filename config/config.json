@@ -34,7 +34,7 @@
     "log_file": "a_share_quant.log"
   },
   "cleaning": {
-    "exclude_bj": true,
+    "exclude_bj": false,
     "drop_missing_daily_basic": true,
     "limit_list_start_date": "20191128",
     "low_amount_threshold": 10000,
@@ -68,6 +68,10 @@
     "stamp_tax_rate": 0.001,
     "transfer_fee_rate": 0.00001,
     "slippage_rate": 0.001
+  },
+  "dynamic_features": {
+    "market_emotion_features_path": "data/processed/market_emotion_features.csv",
+    "theme_heat_features_path": "data/processed/theme_heat_features.csv"
   },
   "candidate_pool": {
     "input_trades_path": "data/processed/next_day_premium_trades.csv",
@@ -112,7 +116,16 @@
     "optional_open_5m_features_path": "data/processed/open_5m_features.csv",
     "optional_sector_moneyflow_features_path": "data/processed/sector_moneyflow_features.csv",
     "optional_top_list_features_path": "data/processed/top_list_features.csv",
+    "optional_market_emotion_features_path": "data/processed/market_emotion_features.csv",
+    "optional_theme_heat_features_path": "data/processed/theme_heat_features.csv",
     "factor_columns": [
+      "market_emotion_state_bucket",
+      "segment_emotion_state_bucket",
+      "market_chain_count_bucket",
+      "segment_chain_count_bucket",
+      "market_limit_down_count_bucket",
+      "segment_limit_down_count_bucket",
+      "segment_limit_max_height_bucket",
       "market_segment",
       "limit_pct_bucket",
       "market_leader_rank_bucket",
@@ -200,12 +213,17 @@
     },
     "base_exclusions": {
       "limit_up_count_bucket": ["gte_180"],
+      "market_chain_count_bucket": ["gte_30"],
+      "segment_limit_down_ratio_bucket": ["gte_1_5pct"],
+      "market_leader_rank_bucket": ["rank_1"],
       "first_time_detail_bucket": ["1000_1100"],
       "turnover_rate_bucket": ["6_10"]
     },
     "post_selection_exclusions": {
-      "market_leader_rank_bucket": ["rank_1"],
-      "fd_ratio_bucket": ["2pct_5pct"]
+      "fd_ratio_bucket": ["2pct_5pct"],
+      "segment_retreat_state_bucket": ["weak_below_3"],
+      "segment_chain_count_bucket": ["3_5"],
+      "market_segment": ["bj"]
     },
     "initial_cash": 1000000,
     "position_pct": 0.8,
@@ -410,11 +428,27 @@
     "min_group_samples": 5,
     "worst_trade_count": 50,
     "factor_columns": [
+      "market_emotion_state_bucket",
+      "segment_emotion_state_bucket",
+      "market_chain_count_bucket",
+      "segment_chain_count_bucket",
+      "market_limit_down_count_bucket",
+      "segment_limit_down_count_bucket",
+      "segment_limit_down_ratio_bucket",
+      "segment_limit_max_height_bucket",
+      "market_segment",
+      "limit_pct_bucket",
       "market_sentiment_level",
+      "segment_market_sentiment_level",
       "retreat_state",
+      "segment_retreat_state",
       "limit_up_count_bucket",
+      "segment_limit_up_count_bucket",
+      "segment_limit_up_ratio_bucket",
       "limit_height_rank_bucket",
+      "segment_limit_height_rank_bucket",
       "market_leader_rank_bucket",
+      "segment_market_leader_rank_bucket",
       "limit_times_detail_bucket",
       "first_time_detail_bucket",
       "open_times_bucket",
@@ -439,17 +473,89 @@
     "target_min_rolling_3y_return": 9.0,
     "evaluation_years": ["2020", "2021", "2022", "2023", "2024", "2025", "2026"],
     "factor_columns": [
+      "market_segment",
+      "limit_pct_bucket",
       "market_sentiment_level",
+      "segment_market_sentiment_level",
       "retreat_state",
+      "segment_retreat_state",
       "limit_up_count_bucket",
+      "segment_limit_up_count_bucket",
+      "segment_limit_up_ratio_bucket",
       "limit_height_rank_bucket",
+      "segment_limit_height_rank_bucket",
       "market_leader_rank_bucket",
+      "segment_market_leader_rank_bucket",
       "limit_times_detail_bucket",
       "first_time_detail_bucket",
       "turnover_rate_bucket",
       "fd_ratio_bucket",
       "pct_chg_bucket"
     ]
+  },
+  "market_heat_optimization": {
+    "output_report_path": "reports/market_heat_factor_optimization_report.csv",
+    "output_yearly_path": "reports/market_heat_factor_optimization_yearly.csv",
+    "output_diagnostics_path": "reports/market_heat_factor_diagnostics.csv",
+    "replay_rule": "fixed_t2_close",
+    "initial_cash": 1000000,
+    "position_pct": 0.8,
+    "min_remaining_samples": 250,
+    "min_condition_samples": 12,
+    "max_condition_count": 2,
+    "max_candidates_per_mode": 40,
+    "max_scenarios": 5000,
+    "evaluation_years": ["2020", "2021", "2022", "2023", "2024", "2025", "2026"],
+    "factor_columns": [
+      "market_emotion_state_bucket",
+      "segment_emotion_state_bucket",
+      "market_chain_count_bucket",
+      "segment_chain_count_bucket",
+      "market_limit_down_count_bucket",
+      "segment_limit_down_count_bucket",
+      "segment_limit_down_ratio_bucket",
+      "segment_limit_max_height_bucket",
+      "market_sentiment_level",
+      "segment_market_sentiment_level",
+      "retreat_state_bucket",
+      "segment_retreat_state_bucket",
+      "limit_up_count_bucket",
+      "segment_limit_up_count_bucket",
+      "segment_limit_up_ratio_bucket",
+      "limit_height_rank_bucket",
+      "segment_limit_height_rank_bucket",
+      "market_leader_rank_bucket",
+      "segment_market_leader_rank_bucket"
+    ]
+  },
+  "strategy_split_validation": {
+    "input_trade_replay_path": "reports/trade_replay_report.csv",
+    "output_summary_path": "reports/strategy_split_validation_summary.csv",
+    "output_yearly_path": "reports/strategy_split_validation_yearly.csv",
+    "output_rolling_path": "reports/strategy_split_validation_rolling.csv",
+    "replay_rule": "fixed_t2_close",
+    "initial_cash": 1000000,
+    "splits": [
+      {
+        "split_name": "train_2020_2022",
+        "start_year": "2020",
+        "end_year": "2022",
+        "description": "训练期复核"
+      },
+      {
+        "split_name": "test_2023_2024",
+        "start_year": "2023",
+        "end_year": "2024",
+        "description": "测试期复核"
+      },
+      {
+        "split_name": "out_of_sample_2025_2026",
+        "start_year": "2025",
+        "end_year": "2026",
+        "description": "样本外复核"
+      }
+    ],
+    "rolling_windows": [2, 3]
   },
   "ranking_optimization": {
     "input_trade_replay_path": "reports/trade_replay_report.csv",
@@ -509,8 +615,6 @@
       "turnover_rate_bucket": ["6_10"]
     },
     "factor_columns": [
-      "theme_heat_bucket",
-      "same_theme_limit_count_bucket",
       "market_leader_rank_bucket",
       "limit_height_rank_bucket",
       "market_sentiment_level",

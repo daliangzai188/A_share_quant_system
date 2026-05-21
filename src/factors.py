@@ -168,6 +168,20 @@ class FactorAnalyzer:
     FACTOR_COLUMNS = [
         "theme_heat_bucket",
         "same_theme_limit_count_bucket",
+        "theme_limit_count_bucket",
+        "theme_limit_height_bucket",
+        "theme_heat_rank_bucket",
+        "theme_leader_rank_bucket",
+        "theme_height_rank_bucket",
+        "theme_is_mainline_bucket",
+        "market_emotion_state_bucket",
+        "segment_emotion_state_bucket",
+        "market_chain_count_bucket",
+        "segment_chain_count_bucket",
+        "market_limit_down_count_bucket",
+        "segment_limit_down_count_bucket",
+        "segment_limit_down_ratio_bucket",
+        "segment_limit_max_height_bucket",
         "market_segment",
         "limit_pct_bucket",
         "market_leader_rank_bucket",
@@ -256,6 +270,84 @@ class FactorAnalyzer:
             source_column="same_theme_limit_count",
             bins=[-float("inf"), 1, 3, 5, 10, float("inf")],
             labels=["unknown_or_1", "2_3", "4_5", "6_10", "gte_11"],
+        )
+        trades["theme_limit_count_bucket"] = self.cut_or_unknown(
+            trades,
+            source_column="theme_limit_count",
+            bins=[-float("inf"), 1, 3, 5, 10, float("inf")],
+            labels=["unknown_or_1", "2_3", "4_5", "6_10", "gte_11"],
+        )
+        trades["theme_limit_height_bucket"] = self.cut_or_unknown(
+            trades,
+            source_column="theme_limit_height",
+            bins=[-float("inf"), 1, 2, 3, 4, float("inf")],
+            labels=["1", "2", "3", "4", "5_plus"],
+        )
+        trades["theme_heat_rank_bucket"] = self.cut_or_unknown(
+            trades,
+            source_column="theme_heat_rank",
+            bins=[-float("inf"), 1, 3, 5, 10, float("inf")],
+            labels=["rank_1", "rank_2_3", "rank_4_5", "rank_6_10", "rank_gt_10"],
+        )
+        trades["theme_leader_rank_bucket"] = self.cut_or_unknown(
+            trades,
+            source_column="theme_leader_rank",
+            bins=[-float("inf"), 1, 3, 10, 30, float("inf")],
+            labels=["rank_1", "rank_2_3", "rank_4_10", "rank_11_30", "rank_gt_30"],
+        )
+        trades["theme_height_rank_bucket"] = self.cut_or_unknown(
+            trades,
+            source_column="theme_height_rank",
+            bins=[-float("inf"), 1, 3, 10, 30, float("inf")],
+            labels=["rank_1", "rank_2_3", "rank_4_10", "rank_11_30", "rank_gt_30"],
+        )
+        if "theme_is_mainline" in trades.columns:
+            trades["theme_is_mainline_bucket"] = trades["theme_is_mainline"].fillna(False).astype(bool).astype(str)
+        else:
+            trades["theme_is_mainline_bucket"] = "unknown"
+        trades["market_emotion_state_bucket"] = trades.get(
+            "market_emotion_state",
+            pd.Series("unknown", index=trades.index, dtype="object"),
+        ).fillna("unknown").astype(str)
+        trades["segment_emotion_state_bucket"] = trades.get(
+            "segment_emotion_state",
+            pd.Series("unknown", index=trades.index, dtype="object"),
+        ).fillna("unknown").astype(str)
+        trades["market_chain_count_bucket"] = self.cut_or_unknown(
+            trades,
+            source_column="market_chain_count",
+            bins=[-float("inf"), 3, 8, 15, 30, float("inf")],
+            labels=["lt_3", "3_8", "8_15", "15_30", "gte_30"],
+        )
+        trades["segment_chain_count_bucket"] = self.cut_or_unknown(
+            trades,
+            source_column="segment_chain_count",
+            bins=[-float("inf"), 1, 3, 5, 10, float("inf")],
+            labels=["lt_1", "1_3", "3_5", "5_10", "gte_10"],
+        )
+        trades["market_limit_down_count_bucket"] = self.cut_or_unknown(
+            trades,
+            source_column="market_limit_down_count",
+            bins=[-float("inf"), 5, 15, 30, 60, float("inf")],
+            labels=["lt_5", "5_15", "15_30", "30_60", "gte_60"],
+        )
+        trades["segment_limit_down_count_bucket"] = self.cut_or_unknown(
+            trades,
+            source_column="segment_limit_down_count",
+            bins=[-float("inf"), 1, 3, 8, 15, float("inf")],
+            labels=["lt_1", "1_3", "3_8", "8_15", "gte_15"],
+        )
+        trades["segment_limit_down_ratio_bucket"] = self.cut_or_unknown(
+            trades,
+            source_column="segment_limit_down_ratio",
+            bins=[-float("inf"), 0.001, 0.003, 0.008, 0.015, float("inf")],
+            labels=["lt_0_1pct", "0_1pct_0_3pct", "0_3pct_0_8pct", "0_8pct_1_5pct", "gte_1_5pct"],
+        )
+        trades["segment_limit_max_height_bucket"] = self.cut_or_unknown(
+            trades,
+            source_column="segment_limit_max_height",
+            bins=[-float("inf"), 1, 2, 3, 5, float("inf")],
+            labels=["1", "2", "3", "4_5", "gte_6"],
         )
         trades["market_leader_rank_bucket"] = self.cut_or_unknown(
             trades,
