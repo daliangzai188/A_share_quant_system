@@ -12,8 +12,14 @@ from src.utils.logger import get_logger
 class FillRateTableBuilder:
     """构建涨停板成交概率模型所需的历史换手率查询表。"""
 
-    GROUP_COLUMNS = ["limit_times_bucket", "board_type", "first_time_bucket", "market_sentiment_level"]
-    FALLBACK_COLUMNS = ["limit_times_bucket", "board_type", "first_time_bucket"]
+    GROUP_COLUMNS = [
+        "market_segment",
+        "limit_times_bucket",
+        "board_type",
+        "first_time_bucket",
+        "segment_market_sentiment_level",
+    ]
+    FALLBACK_COLUMNS = ["market_segment", "limit_times_bucket", "board_type", "first_time_bucket"]
 
     def __init__(self, config_path: str | Path = "config/config.json") -> None:
         self.project_root = get_project_root()
@@ -75,12 +81,14 @@ class FillRateTableBuilder:
             low_memory=False,
         )
         market = pd.read_csv(self.input_market_sentiment_path, dtype={"trade_date": str})
+        market_columns = [column for column in market.columns if column != "trade_date"]
         data = limit_up.merge(
-            market[["trade_date", "market_sentiment_level", "limit_up_count"]],
+            market[["trade_date", *market_columns]],
             on="trade_date",
             how="left",
             validate="many_to_one",
         )
+        data = self.add_segment_market_fields(data)
         data = data[data["turnover_rate"].notna()].copy()
         data = data[data["turnover_rate"] >= 0].copy()
         data["limit_times_bucket"] = data["limit_times"].apply(self.classify_limit_times_bucket)
@@ -109,12 +117,51 @@ class FillRateTableBuilder:
                     "fd_amount_median": float(group["fd_amount"].fillna(0).median()),
                     "fd_amount_to_circ_mv_median": float(fd_ratio.median()) if not fd_ratio.empty else 0.0,
                     "limit_up_count_mean": float(group["limit_up_count"].fillna(0).mean()),
+                    "segment_limit_up_count_mean": float(group["segment_limit_up_count"].fillna(0).mean()),
+                    "segment_limit_up_ratio_mean": float(group["segment_limit_up_ratio"].fillna(0).mean()),
                 }
             )
             rows.append(row)
 
         result = pd.DataFrame(rows)
         return result.sort_values(group_columns).reset_index(drop=True)
+
+    @staticmethod
+    def add_segment_market_fields(data: pd.DataFrame) -> pd.DataFrame:
+        data = data.copy()
+        if "market_segment" not in data.columns:
+            data["market_segment"] = "unknown"
+        if "limit_up_count" not in data.columns:
+            data["limit_up_count"] = 0
+        if "market_sentiment_level" not in data.columns:
+            data["market_sentiment_level"] = "unknown"
+
+        def get_segment_value(row: pd.Series, suffix: str, default_column: str, default_value: object) -> object:
+            segment = str(row.get("market_segment", "unknown"))
+            column = f"{segment}_{suffix}"
+            if column in row.index and not pd.isna(row.get(column)):
+                return row.get(column)
+            if default_column in row.index and not pd.isna(row.get(default_column)):
+                return row.get(default_column)
+            return default_value
+
+        data["segment_limit_up_count"] = data.apply(
+            lambda row: get_segment_value(row, "limit_up_count", "limit_up_count", 0),
+            axis=1,
+        )
+        data["segment_stock_count"] = data.apply(
+            lambda row: get_segment_value(row, "stock_count", "stock_count", 0),
+            axis=1,
+        )
+        data["segment_limit_up_ratio"] = data.apply(
+            lambda row: get_segment_value(row, "limit_up_ratio", "limit_up_ratio", 0.0),
+            axis=1,
+        )
+        data["segment_market_sentiment_level"] = data.apply(
+            lambda row: get_segment_value(row, "market_sentiment_level", "market_sentiment_level", "unknown"),
+            axis=1,
+        )
+        return data
 
     @staticmethod
     def classify_limit_times_bucket(value: object) -> str:
@@ -170,19 +217,22 @@ class FillProbabilityEstimator:
         limit_up = pd.read_csv(input_path, dtype={"trade_date": str, "ts_code": str}, low_memory=False)
         if limit_up.empty:
             raise RuntimeError(f"涨停合并表为空: {input_path}")
-        if "market_sentiment_level" not in limit_up.columns:
+        required_market_columns = {"market_sentiment_level", "limit_up_count", "segment_market_sentiment_level"}
+        if not required_market_columns.issubset(set(limit_up.columns)):
             market = pd.read_csv(
                 self.project_root / self.config.get("fill_model", {}).get(
                     "input_market_sentiment_path", "data/processed/market_sentiment.csv"
                 ),
                 dtype={"trade_date": str},
             )
+            market_columns = [column for column in market.columns if column != "trade_date" and column not in limit_up.columns]
             limit_up = limit_up.merge(
-                market[["trade_date", "market_sentiment_level", "limit_up_count"]],
+                market[["trade_date", *market_columns]],
                 on="trade_date",
                 how="left",
                 validate="many_to_one",
             )
+        limit_up = FillRateTableBuilder.add_segment_market_fields(limit_up)
 
         scored = []
         for _, row in limit_up.iterrows():
@@ -199,6 +249,8 @@ class FillProbabilityEstimator:
                     board_type=str(row["board_type"]),
                     first_time_bucket=str(row["first_time_bucket"]),
                     market_sentiment_level=str(row["market_sentiment_level"]),
+                    market_segment=str(row.get("market_segment", "unknown")),
+                    segment_market_sentiment_level=str(row.get("segment_market_sentiment_level", "unknown")),
                     circ_mv=float(circ_mv),
                     current_queue_amount=float(fd_amount),
                     planned_buy_amount=planned_buy_amount,
@@ -231,6 +283,8 @@ class FillProbabilityEstimator:
         board_type: str,
         first_time_bucket: str,
         market_sentiment_level: str,
+        market_segment: str,
+        segment_market_sentiment_level: str,
         circ_mv: float,
         current_queue_amount: float,
         planned_buy_amount: float,
@@ -246,6 +300,8 @@ class FillProbabilityEstimator:
             board_type=board_type,
             first_time_bucket=first_time_bucket,
             market_sentiment_level=market_sentiment_level,
+            market_segment=market_segment,
+            segment_market_sentiment_level=segment_market_sentiment_level,
         )
 
         if matched_row is None:
@@ -274,6 +330,8 @@ class FillProbabilityEstimator:
             "board_type": board_type,
             "first_time_bucket": first_time_bucket,
             "market_sentiment_level": market_sentiment_level,
+            "market_segment": market_segment,
+            "segment_market_sentiment_level": segment_market_sentiment_level,
             "matched_source": source,
             "sample_count": sample_count,
             "is_sample_enough": is_sample_enough,
@@ -295,23 +353,44 @@ class FillProbabilityEstimator:
         board_type: str,
         first_time_bucket: str,
         market_sentiment_level: str,
+        market_segment: str,
+        segment_market_sentiment_level: str,
     ) -> tuple[pd.Series | None, str]:
-        exact = self.fill_rate_table[
-            (self.fill_rate_table["limit_times_bucket"].astype(str) == str(limit_times_bucket))
-            & (self.fill_rate_table["board_type"] == board_type)
-            & (self.fill_rate_table["first_time_bucket"] == first_time_bucket)
-            & (self.fill_rate_table["market_sentiment_level"] == market_sentiment_level)
-        ]
+        exact = pd.DataFrame()
+        if {"market_segment", "segment_market_sentiment_level"}.issubset(self.fill_rate_table.columns):
+            exact = self.fill_rate_table[
+                (self.fill_rate_table["market_segment"] == market_segment)
+                & (self.fill_rate_table["limit_times_bucket"].astype(str) == str(limit_times_bucket))
+                & (self.fill_rate_table["board_type"] == board_type)
+                & (self.fill_rate_table["first_time_bucket"] == first_time_bucket)
+                & (self.fill_rate_table["segment_market_sentiment_level"] == segment_market_sentiment_level)
+            ]
+        elif "market_sentiment_level" in self.fill_rate_table.columns:
+            exact = self.fill_rate_table[
+                (self.fill_rate_table["limit_times_bucket"].astype(str) == str(limit_times_bucket))
+                & (self.fill_rate_table["board_type"] == board_type)
+                & (self.fill_rate_table["first_time_bucket"] == first_time_bucket)
+                & (self.fill_rate_table["market_sentiment_level"] == market_sentiment_level)
+            ]
         if not exact.empty:
             row = exact.iloc[0]
             if bool(row["is_sample_enough"]):
                 return row, "exact"
 
-        fallback = self.fill_rate_fallback[
-            (self.fill_rate_fallback["limit_times_bucket"].astype(str) == str(limit_times_bucket))
-            & (self.fill_rate_fallback["board_type"] == board_type)
-            & (self.fill_rate_fallback["first_time_bucket"] == first_time_bucket)
-        ]
+        fallback = pd.DataFrame()
+        if "market_segment" in self.fill_rate_fallback.columns:
+            fallback = self.fill_rate_fallback[
+                (self.fill_rate_fallback["market_segment"] == market_segment)
+                & (self.fill_rate_fallback["limit_times_bucket"].astype(str) == str(limit_times_bucket))
+                & (self.fill_rate_fallback["board_type"] == board_type)
+                & (self.fill_rate_fallback["first_time_bucket"] == first_time_bucket)
+            ]
+        else:
+            fallback = self.fill_rate_fallback[
+                (self.fill_rate_fallback["limit_times_bucket"].astype(str) == str(limit_times_bucket))
+                & (self.fill_rate_fallback["board_type"] == board_type)
+                & (self.fill_rate_fallback["first_time_bucket"] == first_time_bucket)
+            ]
         if not fallback.empty:
             row = fallback.iloc[0]
             source = "fallback" if exact.empty else "fallback_due_to_low_sample"
@@ -372,6 +451,8 @@ class FillProbabilityEstimator:
             "board_type": row.get("board_type"),
             "first_time_bucket": row.get("first_time_bucket"),
             "market_sentiment_level": row.get("market_sentiment_level"),
+            "market_segment": row.get("market_segment", "unknown"),
+            "segment_market_sentiment_level": row.get("segment_market_sentiment_level", "unknown"),
             "matched_source": "none",
             "sample_count": 0,
             "is_sample_enough": False,

@@ -166,13 +166,38 @@ class FactorAnalyzer:
     """对可靠可买样本做基础因子分组统计。"""
 
     FACTOR_COLUMNS = [
+        "theme_heat_bucket",
+        "same_theme_limit_count_bucket",
+        "market_segment",
+        "limit_pct_bucket",
+        "market_leader_rank_bucket",
+        "segment_market_leader_rank_bucket",
+        "limit_height_rank_bucket",
+        "segment_limit_height_rank_bucket",
         "market_sentiment_level",
+        "segment_market_sentiment_level",
         "board_type",
         "first_time_bucket",
+        "first_time_detail_bucket",
         "limit_times_bucket",
+        "limit_times_detail_bucket",
+        "open_times_bucket",
         "amount_bucket",
         "turnover_rate_bucket",
+        "volume_ratio_bucket",
         "fd_ratio_bucket",
+        "pct_chg_bucket",
+        "prev_pct_chg_bucket",
+        "amount_ratio_bucket",
+        "limit_up_count_bucket",
+        "segment_limit_up_count_bucket",
+        "segment_limit_up_ratio_bucket",
+        "auction_strength_bucket",
+        "open_5m_strength_bucket",
+        "sector_moneyflow_bucket",
+        "top_list_net_buy_bucket",
+        "retreat_state_bucket",
+        "segment_retreat_state_bucket",
     ]
 
     def __init__(self, config_path: str | Path = "config/config.json") -> None:
@@ -207,22 +232,194 @@ class FactorAnalyzer:
 
     def add_factor_buckets(self, trades: pd.DataFrame) -> pd.DataFrame:
         trades = trades.copy()
+        trades["first_time_minutes"] = trades["first_time"].apply(self.parse_time_to_minutes)
+        if "market_segment" not in trades.columns:
+            trades["market_segment"] = "unknown"
+        trades["market_segment"] = trades["market_segment"].fillna("unknown").astype(str)
+        if "limit_pct_bucket" not in trades.columns:
+            trades["limit_pct_bucket"] = self.build_limit_pct_bucket(trades)
+        trades["limit_pct_bucket"] = trades["limit_pct_bucket"].fillna("unknown").astype(str)
+        if "segment_market_sentiment_level" not in trades.columns:
+            trades["segment_market_sentiment_level"] = trades.get(
+                "market_sentiment_level",
+                pd.Series("unknown", index=trades.index, dtype="object"),
+            )
+        trades["segment_market_sentiment_level"] = trades["segment_market_sentiment_level"].fillna("unknown").astype(str)
+        trades["theme_heat_bucket"] = self.cut_or_unknown(
+            trades,
+            source_column="theme_heat_score",
+            bins=[-float("inf"), 1, 3, 5, 10, float("inf")],
+            labels=["unknown_or_1", "2_3", "4_5", "6_10", "gte_11"],
+        )
+        trades["same_theme_limit_count_bucket"] = self.cut_or_unknown(
+            trades,
+            source_column="same_theme_limit_count",
+            bins=[-float("inf"), 1, 3, 5, 10, float("inf")],
+            labels=["unknown_or_1", "2_3", "4_5", "6_10", "gte_11"],
+        )
+        trades["market_leader_rank_bucket"] = self.cut_or_unknown(
+            trades,
+            source_column="market_leader_rank",
+            bins=[-float("inf"), 1, 3, 10, 30, float("inf")],
+            labels=["rank_1", "rank_2_3", "rank_4_10", "rank_11_30", "rank_gt_30"],
+        )
+        trades["segment_market_leader_rank_bucket"] = self.cut_or_unknown(
+            trades,
+            source_column="segment_market_leader_rank",
+            bins=[-float("inf"), 1, 3, 10, 30, float("inf")],
+            labels=["rank_1", "rank_2_3", "rank_4_10", "rank_11_30", "rank_gt_30"],
+        )
+        trades["limit_height_rank_bucket"] = self.cut_or_unknown(
+            trades,
+            source_column="limit_height_rank",
+            bins=[-float("inf"), 1, 3, 10, 30, float("inf")],
+            labels=["rank_1", "rank_2_3", "rank_4_10", "rank_11_30", "rank_gt_30"],
+        )
+        trades["segment_limit_height_rank_bucket"] = self.cut_or_unknown(
+            trades,
+            source_column="segment_limit_height_rank",
+            bins=[-float("inf"), 1, 3, 10, 30, float("inf")],
+            labels=["rank_1", "rank_2_3", "rank_4_10", "rank_11_30", "rank_gt_30"],
+        )
+        trades["first_time_detail_bucket"] = pd.cut(
+            trades["first_time_minutes"],
+            bins=[-float("inf"), 570, 600, 660, 810, 870, float("inf")],
+            labels=["open_auction", "before_1000", "1000_1100", "1100_1330", "1330_1430", "after_1430"],
+        ).astype(str)
+        trades["limit_times_detail_bucket"] = trades["limit_times"].fillna(0).astype(int).clip(upper=6).astype(str)
+        trades.loc[trades["limit_times_detail_bucket"] == "6", "limit_times_detail_bucket"] = "6_plus"
+        trades["open_times_bucket"] = pd.cut(
+            trades["open_times"].fillna(0),
+            bins=[-float("inf"), 0, 1, 3, float("inf")],
+            labels=["0", "1", "2_3", "gte_4"],
+        ).astype(str)
         trades["amount_bucket"] = pd.cut(
             trades["amount"],
-            bins=[-float("inf"), 100000, 300000, 800000, float("inf")],
-            labels=["lt_1e8", "1e8_3e8", "3e8_8e8", "gte_8e8"],
+            bins=[-float("inf"), 100000, 300000, 800000, 1500000, float("inf")],
+            labels=["lt_1e8", "1e8_3e8", "3e8_8e8", "8e8_15e8", "gte_15e8"],
         ).astype(str)
         trades["turnover_rate_bucket"] = pd.cut(
             trades["turnover_rate"],
-            bins=[-float("inf"), 3, 8, 15, float("inf")],
-            labels=["lt_3", "3_8", "8_15", "gte_15"],
+            bins=[-float("inf"), 3, 6, 10, 15, 25, float("inf")],
+            labels=["lt_3", "3_6", "6_10", "10_15", "15_25", "gte_25"],
+        ).astype(str)
+        trades["volume_ratio_bucket"] = pd.cut(
+            trades["volume_ratio"],
+            bins=[-float("inf"), 1, 2, 4, 8, float("inf")],
+            labels=["lt_1", "1_2", "2_4", "4_8", "gte_8"],
         ).astype(str)
         trades["fd_ratio_bucket"] = pd.cut(
             trades["fd_amount_to_circ_mv"],
-            bins=[-float("inf"), 0.005, 0.02, 0.05, float("inf")],
-            labels=["lt_0_5pct", "0_5pct_2pct", "2pct_5pct", "gte_5pct"],
+            bins=[-float("inf"), 0.001, 0.003, 0.005, 0.01, 0.02, 0.05, float("inf")],
+            labels=["lt_0_1pct", "0_1pct_0_3pct", "0_3pct_0_5pct", "0_5pct_1pct", "1pct_2pct", "2pct_5pct", "gte_5pct"],
         ).astype(str)
+        trades["pct_chg_bucket"] = pd.cut(
+            trades["pct_chg"],
+            bins=[-float("inf"), 9.5, 10.5, 19.5, 20.5, float("inf")],
+            labels=["lt_9_5", "9_5_10_5", "10_5_19_5", "19_5_20_5", "gt_20_5"],
+        ).astype(str)
+        trades["prev_pct_chg_bucket"] = pd.cut(
+            trades.get("prev_pct_chg", pd.Series(index=trades.index, dtype="float64")),
+            bins=[-float("inf"), -3, 0, 3, 7, 10, float("inf")],
+            labels=["lt_neg3", "neg3_0", "0_3", "3_7", "7_10", "gte_10"],
+        ).astype(str)
+        trades["amount_ratio_bucket"] = pd.cut(
+            trades.get("amount_ratio_1d", pd.Series(index=trades.index, dtype="float64")),
+            bins=[-float("inf"), 0.8, 1.2, 2, 3, 5, float("inf")],
+            labels=["lt_0_8", "0_8_1_2", "1_2_2", "2_3", "3_5", "gte_5"],
+        ).astype(str)
+        trades["limit_up_count_bucket"] = pd.cut(
+            trades["limit_up_count"],
+            bins=[-float("inf"), 30, 50, 80, 120, 180, float("inf")],
+            labels=["lt_30", "30_50", "50_80", "80_120", "120_180", "gte_180"],
+        ).astype(str)
+        trades["segment_limit_up_count_bucket"] = self.cut_or_unknown(
+            trades,
+            source_column="segment_limit_up_count",
+            bins=[-float("inf"), 5, 10, 20, 40, 80, float("inf")],
+            labels=["lt_5", "5_10", "10_20", "20_40", "40_80", "gte_80"],
+        )
+        trades["segment_limit_up_ratio_bucket"] = self.cut_or_unknown(
+            trades,
+            source_column="segment_limit_up_ratio",
+            bins=[-float("inf"), 0.005, 0.01, 0.02, 0.03, 0.05, float("inf")],
+            labels=["lt_0_5pct", "0_5pct_1pct", "1pct_2pct", "2pct_3pct", "3pct_5pct", "gte_5pct"],
+        )
+        trades["auction_strength_bucket"] = self.cut_or_unknown(
+            trades,
+            source_column="auction_strength_score",
+            bins=[-float("inf"), -3, 0, 3, 7, float("inf")],
+            labels=["weak_lt_neg3", "neg3_0", "0_3", "3_7", "gte_7"],
+        )
+        trades["open_5m_strength_bucket"] = self.cut_or_unknown(
+            trades,
+            source_column="open_5m_strength_score",
+            bins=[-float("inf"), -3, 0, 3, 7, float("inf")],
+            labels=["weak_lt_neg3", "neg3_0", "0_3", "3_7", "gte_7"],
+        )
+        trades["sector_moneyflow_bucket"] = self.cut_or_unknown(
+            trades,
+            source_column="sector_moneyflow_score",
+            bins=[-float("inf"), -1, 0, 1, 3, float("inf")],
+            labels=["net_out_big", "net_out_small", "net_in_small", "net_in_mid", "net_in_big"],
+        )
+        trades["top_list_net_buy_bucket"] = self.cut_or_unknown(
+            trades,
+            source_column="top_list_net_buy_score",
+            bins=[-float("inf"), -1, 0, 1, 3, float("inf")],
+            labels=["net_sell_big", "net_sell_small", "net_buy_small", "net_buy_mid", "net_buy_big"],
+        )
+        if "retreat_state" in trades.columns:
+            trades["retreat_state_bucket"] = trades["retreat_state"].fillna("unknown").astype(str)
+        else:
+            trades["retreat_state_bucket"] = "unknown"
+        if "segment_retreat_state" in trades.columns:
+            trades["segment_retreat_state_bucket"] = trades["segment_retreat_state"].fillna("unknown").astype(str)
+        else:
+            trades["segment_retreat_state_bucket"] = "unknown"
         return trades
+
+    @staticmethod
+    def build_limit_pct_bucket(trades: pd.DataFrame) -> pd.Series:
+        if "limit_pct" not in trades.columns:
+            return pd.Series("unknown", index=trades.index, dtype="object")
+        values = pd.to_numeric(trades["limit_pct"], errors="coerce")
+        result = pd.Series("unknown", index=trades.index, dtype="object")
+        result.loc[values <= 0.051] = "5cm"
+        result.loc[(values > 0.051) & (values <= 0.101)] = "10cm"
+        result.loc[(values > 0.101) & (values <= 0.201)] = "20cm"
+        result.loc[(values > 0.201) & (values <= 0.301)] = "30cm"
+        result.loc[values > 0.301] = "other"
+        return result
+
+    @staticmethod
+    def parse_time_to_minutes(value: object) -> float:
+        if pd.isna(value):
+            return float("nan")
+        text = str(value).strip()
+        if not text:
+            return float("nan")
+        if ":" in text:
+            parts = text.split(":")
+            return int(parts[0]) * 60 + int(parts[1])
+        digits = "".join(char for char in text if char.isdigit())
+        if len(digits) < 4:
+            return float("nan")
+        digits = digits.zfill(6)
+        return int(digits[:2]) * 60 + int(digits[2:4])
+
+    @staticmethod
+    def cut_or_unknown(
+        data: pd.DataFrame,
+        source_column: str,
+        bins: list[float],
+        labels: list[str],
+    ) -> pd.Series:
+        if source_column not in data.columns:
+            return pd.Series("unknown", index=data.index, dtype="object")
+        values = pd.to_numeric(data[source_column], errors="coerce")
+        result = pd.cut(values, bins=bins, labels=labels).astype(str)
+        return result.where(values.notna(), "unknown")
 
     @staticmethod
     def summarize_factor_group(factor: str, value: object, group: pd.DataFrame) -> dict[str, object]:

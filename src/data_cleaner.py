@@ -116,6 +116,8 @@ class DataCleaner:
         merged["is_low_amount"] = merged["amount"].fillna(0) < self.low_amount_threshold
         merged["amount_unit"] = "thousand_yuan"
         merged["is_bj"] = merged["ts_code"].str.endswith(".BJ")
+        merged["market_segment"] = merged["ts_code"].apply(self.classify_market_segment)
+        merged["limit_pct"] = merged["ts_code"].apply(self.classify_limit_pct)
         return merged.sort_values(["trade_date", "ts_code"]).reset_index(drop=True)
 
     def clean_limit_up_by_date(self, trade_date: str, daily_merged: pd.DataFrame) -> pd.DataFrame:
@@ -158,6 +160,8 @@ class DataCleaner:
             "total_mv",
             "circ_mv",
             "is_low_amount",
+            "market_segment",
+            "limit_pct",
         ]
         existing_columns = [column for column in enrich_columns if column in daily_merged.columns]
         enriched = limit_up.merge(
@@ -168,6 +172,13 @@ class DataCleaner:
         )
         enriched["first_time_bucket"] = enriched["first_time"].apply(self.classify_limit_time_bucket)
         enriched["board_type"] = enriched.apply(self.classify_board_type, axis=1)
+        if "market_segment" not in enriched.columns:
+            enriched["market_segment"] = enriched["ts_code"].apply(self.classify_market_segment)
+        enriched["limit_pct"] = enriched.apply(
+            lambda row: self.classify_limit_pct(row.get("ts_code"), row.get("name")),
+            axis=1,
+        )
+        enriched["limit_pct_bucket"] = enriched["limit_pct"].apply(self.classify_limit_pct_bucket)
         enriched["fd_amount_to_circ_mv"] = self._safe_ratio(
             enriched.get("fd_amount"),
             enriched.get("circ_mv"),
@@ -185,7 +196,7 @@ class DataCleaner:
         limit_up_merged: pd.DataFrame,
     ) -> dict[str, object]:
         if daily_merged.empty:
-            return {
+            row = {
                 "trade_date": trade_date,
                 "stock_count": 0,
                 "up_count": 0,
@@ -199,6 +210,8 @@ class DataCleaner:
                 "limit_up_fd_amount_sum": float(limit_up_merged.get("fd_amount", pd.Series(dtype=float)).sum()),
                 "market_sentiment_level": "unknown",
             }
+            row.update(self.build_segment_sentiment_fields(daily_merged, limit_up_merged))
+            return row
 
         pct_chg = daily_merged["pct_chg"].fillna(0)
         limit_times = limit_up_merged.get("limit_times", pd.Series(dtype=float))
@@ -221,6 +234,7 @@ class DataCleaner:
             "limit_up_fd_amount_sum": float(limit_up_merged.get("fd_amount", pd.Series(dtype=float)).fillna(0).sum()),
             "market_sentiment_level": self.classify_market_sentiment(limit_up_count),
         }
+        row.update(self.build_segment_sentiment_fields(daily_merged, limit_up_merged))
         return row
 
     def discover_trade_dates(self, start_date: str | None = None, end_date: str | None = None) -> list[str]:
@@ -240,6 +254,96 @@ class DataCleaner:
         if limit_up_count >= 50:
             return "neutral"
         return "weak"
+
+    @classmethod
+    def build_segment_sentiment_fields(
+        cls,
+        daily_merged: pd.DataFrame,
+        limit_up_merged: pd.DataFrame,
+    ) -> dict[str, object]:
+        fields: dict[str, object] = {}
+        segments = ["sh_main", "sz_main", "chi_next", "star", "bj", "other"]
+        if "market_segment" not in daily_merged.columns and not daily_merged.empty:
+            daily_merged = daily_merged.copy()
+            daily_merged["market_segment"] = daily_merged["ts_code"].apply(cls.classify_market_segment)
+        if "market_segment" not in limit_up_merged.columns and not limit_up_merged.empty:
+            limit_up_merged = limit_up_merged.copy()
+            limit_up_merged["market_segment"] = limit_up_merged["ts_code"].apply(cls.classify_market_segment)
+
+        for segment in segments:
+            stock_count = int((daily_merged.get("market_segment", pd.Series(dtype=object)) == segment).sum())
+            limit_count = int((limit_up_merged.get("market_segment", pd.Series(dtype=object)) == segment).sum())
+            ratio = float(limit_count / stock_count) if stock_count else 0.0
+            fields[f"{segment}_stock_count"] = stock_count
+            fields[f"{segment}_limit_up_count"] = limit_count
+            fields[f"{segment}_limit_up_ratio"] = ratio
+            fields[f"{segment}_market_sentiment_level"] = cls.classify_segment_sentiment(limit_count, stock_count)
+
+        fields["main_board_limit_up_count"] = fields["sh_main_limit_up_count"] + fields["sz_main_limit_up_count"]
+        fields["growth_board_limit_up_count"] = fields["chi_next_limit_up_count"] + fields["star_limit_up_count"]
+        fields["limit_5cm_count"] = int((limit_up_merged.get("limit_pct", pd.Series(dtype=float)) == 0.05).sum())
+        fields["limit_10cm_count"] = int((limit_up_merged.get("limit_pct", pd.Series(dtype=float)) == 0.10).sum())
+        fields["limit_20cm_count"] = int((limit_up_merged.get("limit_pct", pd.Series(dtype=float)) == 0.20).sum())
+        fields["limit_30cm_count"] = int((limit_up_merged.get("limit_pct", pd.Series(dtype=float)) == 0.30).sum())
+        return fields
+
+    @staticmethod
+    def classify_segment_sentiment(limit_up_count: int, stock_count: int) -> str:
+        if stock_count <= 0:
+            return "unknown"
+        ratio = limit_up_count / stock_count
+        if ratio >= 0.03:
+            return "very_strong"
+        if ratio >= 0.02:
+            return "strong"
+        if ratio >= 0.01:
+            return "neutral"
+        return "weak"
+
+    @staticmethod
+    def classify_market_segment(ts_code: object) -> str:
+        if pd.isna(ts_code):
+            return "unknown"
+        code = str(ts_code).upper()
+        prefix = code.split(".")[0]
+        if code.endswith(".BJ") or prefix.startswith(("4", "8", "9")):
+            return "bj"
+        if prefix.startswith(("688", "689")):
+            return "star"
+        if prefix.startswith(("300", "301")):
+            return "chi_next"
+        if code.endswith(".SH") and prefix.startswith("6"):
+            return "sh_main"
+        if code.endswith(".SZ") and prefix.startswith(("000", "001", "002", "003")):
+            return "sz_main"
+        return "other"
+
+    @classmethod
+    def classify_limit_pct(cls, ts_code: object, name: object | None = None) -> float:
+        stock_name = "" if name is None or pd.isna(name) else str(name).upper()
+        if "ST" in stock_name or "退" in stock_name:
+            return 0.05
+        segment = cls.classify_market_segment(ts_code)
+        if segment == "bj":
+            return 0.30
+        if segment in {"chi_next", "star"}:
+            return 0.20
+        return 0.10
+
+    @staticmethod
+    def classify_limit_pct_bucket(value: object) -> str:
+        if pd.isna(value):
+            return "unknown"
+        value = float(value)
+        if value <= 0.051:
+            return "5cm"
+        if value <= 0.101:
+            return "10cm"
+        if value <= 0.201:
+            return "20cm"
+        if value <= 0.301:
+            return "30cm"
+        return "other"
 
     @staticmethod
     def classify_limit_time_bucket(value: object) -> str:

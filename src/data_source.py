@@ -49,7 +49,9 @@ class TushareDataSource:
                 "请运行采集脚本并按提示输入 Token，或临时 export 该环境变量。"
             )
 
-        self.pro = ts.pro_api(token.strip())
+        self.token = token.strip()
+        ts.set_token(self.token)
+        self.pro = ts.pro_api(self.token)
 
     def _retry_decorator(self):
         return retry(
@@ -117,3 +119,33 @@ class TushareDataSource:
         fields: Optional[str] = None,
     ) -> pd.DataFrame:
         return self._call("limit_list_d", trade_date=trade_date, limit_type=limit_type, fields=fields)
+
+    def get_minute_bars(
+        self,
+        ts_code: str,
+        start_datetime: str,
+        end_datetime: str,
+        freq: str = "1min",
+        asset: str = "E",
+        adj: Optional[str] = None,
+    ) -> pd.DataFrame:
+        """拉取分钟 K 线。该接口可能需要额外 Tushare 权限。"""
+
+        self.logger.debug(
+            "请求 Tushare pro_bar 分钟 K: %s, %s-%s, freq=%s",
+            ts_code,
+            start_datetime,
+            end_datetime,
+            freq,
+        )
+        result = ts.pro_bar(
+            ts_code=ts_code,
+            start_date=start_datetime,
+            end_date=end_datetime,
+            freq=freq,
+            asset=asset,
+            adj=adj,
+        )
+        if result is None:
+            return pd.DataFrame()
+        return result
