@@ -417,6 +417,8 @@
     "input_trade_replay_path": "reports/trade_replay_report.csv",
     "output_group_report_path": "reports/failure_attribution_group.csv",
     "output_monthly_report_path": "reports/failure_attribution_monthly.csv",
+    "output_period_report_path": "reports/failure_attribution_periods.csv",
+    "output_focus_group_report_path": "reports/failure_attribution_focus_group.csv",
     "output_worst_trades_path": "reports/failure_attribution_worst_trades.csv",
     "output_filter_candidates_path": "reports/failure_filter_candidates.csv",
     "output_filter_backtest_path": "reports/failure_filter_backtest.csv",
@@ -557,6 +559,566 @@
     ],
     "rolling_windows": [2, 3]
   },
+  "walk_forward_market_heat_validation": {
+    "output_summary_path": "reports/walk_forward_market_heat_summary.csv",
+    "output_yearly_path": "reports/walk_forward_market_heat_yearly.csv",
+    "output_train_candidates_path": "reports/walk_forward_market_heat_train_candidates.csv",
+    "output_oos_candidates_path": "reports/walk_forward_market_heat_oos_candidates.csv",
+    "output_condition_stability_path": "reports/walk_forward_market_heat_condition_stability.csv",
+    "replay_rule": "fixed_t2_close",
+    "initial_cash": 1000000,
+    "min_train_samples": 120,
+    "min_test_samples": 15,
+    "min_condition_samples": 8,
+    "max_condition_count": 2,
+    "max_candidates_per_mode": 25,
+    "train_top_n": 10,
+    "stable_condition_min_windows": 2,
+    "stable_condition_min_positive_oos_ratio": 0.5,
+    "selection_metric": "robust_score",
+    "robust_score_weights": {
+      "log_return": 1.0,
+      "min_year_return": 1.2,
+      "positive_year_ratio": 1.0,
+      "sample_count": 0.15,
+      "win_rate": 0.5,
+      "max_drawdown": 1.2,
+      "max_consecutive_losses": 0.05
+    },
+    "base_conditions": {
+      "open_times_bucket": "gte_4",
+      "volume_ratio_bucket": "2_4",
+      "amount_ratio_bucket": "2_3"
+    },
+    "seed_base_exclusions": {
+      "limit_up_count_bucket": ["gte_180"],
+      "first_time_detail_bucket": ["1000_1100"],
+      "turnover_rate_bucket": ["6_10"]
+    },
+    "seed_post_exclusions": {
+      "fd_ratio_bucket": ["2pct_5pct"],
+      "segment_retreat_state_bucket": ["weak_below_3"],
+      "market_segment": ["bj"]
+    },
+    "windows": [
+      {
+        "window_name": "train_2020_2022_test_2023",
+        "train_start_year": "2020",
+        "train_end_year": "2022",
+        "test_start_year": "2023",
+        "test_end_year": "2023"
+      },
+      {
+        "window_name": "train_2020_2023_test_2024",
+        "train_start_year": "2020",
+        "train_end_year": "2023",
+        "test_start_year": "2024",
+        "test_end_year": "2024"
+      },
+      {
+        "window_name": "train_2020_2024_test_2025",
+        "train_start_year": "2020",
+        "train_end_year": "2024",
+        "test_start_year": "2025",
+        "test_end_year": "2025"
+      },
+      {
+        "window_name": "train_2021_2025_test_2026",
+        "train_start_year": "2021",
+        "train_end_year": "2025",
+        "test_start_year": "2026",
+        "test_end_year": "2026"
+      }
+    ],
+    "factor_columns": [
+      "market_emotion_state_bucket",
+      "segment_emotion_state_bucket",
+      "market_chain_count_bucket",
+      "segment_chain_count_bucket",
+      "market_limit_down_count_bucket",
+      "segment_limit_down_count_bucket",
+      "segment_limit_down_ratio_bucket",
+      "segment_limit_max_height_bucket",
+      "market_sentiment_level",
+      "segment_market_sentiment_level",
+      "retreat_state_bucket",
+      "segment_retreat_state_bucket",
+      "limit_up_count_bucket",
+      "segment_limit_up_count_bucket",
+      "segment_limit_up_ratio_bucket",
+      "limit_height_rank_bucket",
+      "segment_limit_height_rank_bucket",
+      "market_leader_rank_bucket",
+      "segment_market_leader_rank_bucket"
+    ]
+  },
+  "stable_market_heat_profile_evaluation": {
+    "output_trade_report_path": "reports/stable_market_heat_profile_trades.csv",
+    "output_summary_path": "reports/stable_market_heat_profile_summary.csv",
+    "output_yearly_path": "reports/stable_market_heat_profile_yearly.csv",
+    "replay_rule": "fixed_t2_close"
+  },
+  "dynamic_risk_overlay_evaluation": {
+    "input_trade_replay_path": "reports/trade_replay_report.csv",
+    "output_trade_report_path": "reports/dynamic_risk_overlay_trades.csv",
+    "output_summary_path": "reports/dynamic_risk_overlay_summary.csv",
+    "output_yearly_path": "reports/dynamic_risk_overlay_yearly.csv",
+    "replay_rule": "fixed_t2_close",
+    "initial_cash": 1000000,
+    "base_position_pct": 0.8,
+    "reduced_position_pct": 0.4
+  },
+  "dynamic_risk_overlay_split_validation": {
+    "input_overlay_trade_path": "reports/dynamic_risk_overlay_trades.csv",
+    "output_summary_path": "reports/dynamic_risk_overlay_split_summary.csv",
+    "output_yearly_path": "reports/dynamic_risk_overlay_split_yearly.csv",
+    "output_rolling_path": "reports/dynamic_risk_overlay_split_rolling.csv",
+    "initial_cash": 1000000,
+    "target_policies": ["base_no_overlay", "weak_and_segment_neutral_skip"],
+    "splits": [
+      {
+        "split_name": "train_2020_2022",
+        "start_year": "2020",
+        "end_year": "2022",
+        "description": "训练期复核"
+      },
+      {
+        "split_name": "test_2023_2024",
+        "start_year": "2023",
+        "end_year": "2024",
+        "description": "测试期复核"
+      },
+      {
+        "split_name": "out_of_sample_2025_2026",
+        "start_year": "2025",
+        "end_year": "2026",
+        "description": "样本外复核"
+      }
+    ],
+    "rolling_windows": [2, 3]
+  },
+  "a5_r1_skipped_trade_review": {
+    "input_overlay_trade_path": "reports/dynamic_risk_overlay_trades.csv",
+    "output_summary_path": "reports/a5_r1_skipped_trade_summary.csv",
+    "output_yearly_path": "reports/a5_r1_skipped_trade_yearly.csv",
+    "output_detail_path": "reports/a5_r1_skipped_trade_detail.csv",
+    "target_policy": "weak_and_segment_neutral_skip",
+    "base_policy": "base_no_overlay",
+    "base_position_pct": 0.8
+  },
+  "a5_r1_walk_forward_validation": {
+    "input_overlay_trade_path": "reports/dynamic_risk_overlay_trades.csv",
+    "output_summary_path": "reports/a5_r1_walk_forward_summary.csv",
+    "output_comparison_path": "reports/a5_r1_walk_forward_comparison.csv",
+    "output_yearly_path": "reports/a5_r1_walk_forward_yearly.csv",
+    "initial_cash": 1000000,
+    "base_policy": "base_no_overlay",
+    "target_policy": "weak_and_segment_neutral_skip",
+    "windows": [
+      {
+        "window_name": "train_2020_2022_test_2023",
+        "train_start_year": "2020",
+        "train_end_year": "2022",
+        "test_start_year": "2023",
+        "test_end_year": "2023"
+      },
+      {
+        "window_name": "train_2020_2023_test_2024",
+        "train_start_year": "2020",
+        "train_end_year": "2023",
+        "test_start_year": "2024",
+        "test_end_year": "2024"
+      },
+      {
+        "window_name": "train_2020_2024_test_2025",
+        "train_start_year": "2020",
+        "train_end_year": "2024",
+        "test_start_year": "2025",
+        "test_end_year": "2025"
+      },
+      {
+        "window_name": "train_2021_2025_test_2026",
+        "train_start_year": "2021",
+        "train_end_year": "2025",
+        "test_start_year": "2026",
+        "test_end_year": "2026"
+      }
+    ]
+  },
+  "a5_r1_failure_attribution": {
+    "input_overlay_trade_path": "reports/dynamic_risk_overlay_trades.csv",
+    "output_period_report_path": "reports/a5_r1_failure_periods.csv",
+    "output_monthly_report_path": "reports/a5_r1_failure_monthly.csv",
+    "output_focus_group_report_path": "reports/a5_r1_failure_focus_group.csv",
+    "output_worst_trades_path": "reports/a5_r1_failure_worst_trades.csv",
+    "target_policy": "weak_and_segment_neutral_skip",
+    "min_group_samples": 3,
+    "worst_trade_count": 50
+  },
+  "a5_r1_filter_candidate_backtest": {
+    "input_overlay_trade_path": "reports/dynamic_risk_overlay_trades.csv",
+    "input_focus_group_report_path": "reports/a5_r1_failure_focus_group.csv",
+    "output_candidate_path": "reports/a5_r1_filter_candidates.csv",
+    "output_summary_path": "reports/a5_r1_filter_backtest_summary.csv",
+    "output_yearly_path": "reports/a5_r1_filter_backtest_yearly.csv",
+    "output_split_path": "reports/a5_r1_filter_backtest_split.csv",
+    "target_policy": "weak_and_segment_neutral_skip",
+    "min_candidate_samples": 3,
+    "top_single_candidates": 18,
+    "max_combo_candidates": 10,
+    "focus_names": ["max_drawdown_period", "longest_loss_streak"],
+    "excluded_candidate_factors": ["open_times_bucket", "volume_ratio_bucket", "amount_ratio_bucket", "board_type"],
+    "splits": [
+      {
+        "split_name": "train_2020_2022",
+        "start_year": "2020",
+        "end_year": "2022"
+      },
+      {
+        "split_name": "test_2023_2024",
+        "start_year": "2023",
+        "end_year": "2024"
+      },
+      {
+        "split_name": "out_of_sample_2025_2026",
+        "start_year": "2025",
+        "end_year": "2026"
+      }
+    ]
+  },
+  "a5_r1_market_structure_review": {
+    "input_overlay_trade_path": "reports/dynamic_risk_overlay_trades.csv",
+    "output_group_path": "reports/a5_r1_market_structure_group.csv",
+    "output_yearly_path": "reports/a5_r1_market_structure_yearly.csv",
+    "output_split_path": "reports/a5_r1_market_structure_split.csv",
+    "target_policy": "weak_and_segment_neutral_skip",
+    "min_group_samples": 5,
+    "group_definitions": [
+      ["market_segment"],
+      ["limit_pct_bucket"],
+      ["market_segment", "limit_pct_bucket"],
+      ["market_segment", "market_sentiment_level"],
+      ["market_segment", "segment_market_sentiment_level"],
+      ["limit_pct_bucket", "market_sentiment_level"],
+      ["limit_pct_bucket", "limit_times_detail_bucket"]
+    ],
+    "splits": [
+      {
+        "split_name": "train_2020_2022",
+        "start_year": "2020",
+        "end_year": "2022"
+      },
+      {
+        "split_name": "test_2023_2024",
+        "start_year": "2023",
+        "end_year": "2024"
+      },
+      {
+        "split_name": "out_of_sample_2025_2026",
+        "start_year": "2025",
+        "end_year": "2026"
+      }
+    ]
+  },
+  "a5_r1_sh_main_failure_review": {
+    "input_overlay_trade_path": "reports/dynamic_risk_overlay_trades.csv",
+    "output_period_path": "reports/a5_r1_sh_main_failure_periods.csv",
+    "output_monthly_path": "reports/a5_r1_sh_main_failure_monthly.csv",
+    "output_focus_group_path": "reports/a5_r1_sh_main_failure_focus_group.csv",
+    "output_worst_trades_path": "reports/a5_r1_sh_main_failure_worst_trades.csv",
+    "target_policy": "weak_and_segment_neutral_skip",
+    "target_market_segment": "sh_main",
+    "min_group_samples": 3,
+    "worst_trade_count": 40
+  },
+  "a5_r1_daily_execution_reality": {
+    "input_trade_replay_path": "reports/trade_replay_report.csv",
+    "output_summary_path": "reports/a5_r1_daily_execution_summary.csv",
+    "output_yearly_path": "reports/a5_r1_daily_execution_yearly.csv",
+    "output_unbuyable_path": "reports/a5_r1_daily_execution_unbuyable.csv",
+    "output_limit_down_blocked_path": "reports/a5_r1_daily_execution_limit_down_blocked.csv",
+    "replay_rule": "fixed_t2_close",
+    "position_pct": 0.8,
+    "skip_market_sentiment": "weak",
+    "skip_segment_market_sentiment": "neutral"
+  },
+  "a5_r1_limit_down_delay_review": {
+    "input_trade_replay_path": "reports/trade_replay_report.csv",
+    "output_summary_path": "reports/a5_r1_limit_down_delay_summary.csv",
+    "output_yearly_path": "reports/a5_r1_limit_down_delay_yearly.csv",
+    "output_detail_path": "reports/a5_r1_limit_down_delay_detail.csv",
+    "replay_rule": "fixed_t2_close",
+    "position_pct": 0.8,
+    "skip_market_sentiment": "weak",
+    "skip_segment_market_sentiment": "neutral"
+  },
+  "a5_r1_buy_liquidity_audit": {
+    "input_trade_replay_path": "reports/trade_replay_report.csv",
+    "input_daily_merged_path": "data/processed/daily_merged.csv",
+    "output_summary_path": "reports/a5_r1_buy_liquidity_summary.csv",
+    "output_yearly_path": "reports/a5_r1_buy_liquidity_yearly.csv",
+    "output_detail_path": "reports/a5_r1_buy_liquidity_detail.csv",
+    "replay_rule": "fixed_t2_close",
+    "planned_buy_amount": 10000000,
+    "position_pct": 0.8,
+    "current_buy_slippage_rate": 0.001,
+    "skip_market_sentiment": "weak",
+    "skip_segment_market_sentiment": "neutral"
+  },
+  "a5_r1_liquidity_filter_backtest": {
+    "input_liquidity_detail_path": "reports/a5_r1_buy_liquidity_detail.csv",
+    "output_summary_path": "reports/a5_r1_liquidity_filter_summary.csv",
+    "output_yearly_path": "reports/a5_r1_liquidity_filter_yearly.csv",
+    "output_filtered_detail_path": "reports/a5_r1_liquidity_filter_filtered_detail.csv",
+    "scenarios": [
+      {
+        "scenario": "base_10m_slippage_no_filter",
+        "allowed_buckets": ["very_liquid", "liquid", "tradable", "high_pressure", "not_recommended"]
+      },
+      {
+        "scenario": "exclude_not_recommended",
+        "allowed_buckets": ["very_liquid", "liquid", "tradable", "high_pressure"]
+      },
+      {
+        "scenario": "exclude_high_pressure_and_not_recommended",
+        "allowed_buckets": ["very_liquid", "liquid", "tradable"]
+      },
+      {
+        "scenario": "only_liquid_or_better",
+        "allowed_buckets": ["very_liquid", "liquid"]
+      },
+      {
+        "scenario": "only_very_liquid",
+        "allowed_buckets": ["very_liquid"]
+      }
+    ]
+  },
+  "a5_r1_liquidity_sizing_backtest": {
+    "input_trade_replay_path": "reports/trade_replay_report.csv",
+    "input_daily_merged_path": "data/processed/daily_merged.csv",
+    "output_summary_path": "reports/a5_r1_liquidity_sizing_summary.csv",
+    "output_yearly_path": "reports/a5_r1_liquidity_sizing_yearly.csv",
+    "output_detail_path": "reports/a5_r1_liquidity_sizing_detail.csv",
+    "replay_rule": "fixed_t2_close",
+    "base_buy_amount": 10000000,
+    "base_position_pct": 0.8,
+    "skip_market_sentiment": "weak",
+    "skip_segment_market_sentiment": "neutral",
+    "scenarios": [
+      {
+        "scenario": "base_all_10m",
+        "bucket_amounts": {
+          "very_liquid": 10000000,
+          "liquid": 10000000,
+          "tradable": 10000000,
+          "high_pressure": 10000000,
+          "not_recommended": 10000000
+        }
+      },
+      {
+        "scenario": "tiered_10m_10m_10m_5m_2m",
+        "bucket_amounts": {
+          "very_liquid": 10000000,
+          "liquid": 10000000,
+          "tradable": 10000000,
+          "high_pressure": 5000000,
+          "not_recommended": 2000000
+        }
+      },
+      {
+        "scenario": "tiered_10m_10m_8m_5m_2m",
+        "bucket_amounts": {
+          "very_liquid": 10000000,
+          "liquid": 10000000,
+          "tradable": 8000000,
+          "high_pressure": 5000000,
+          "not_recommended": 2000000
+        }
+      },
+      {
+        "scenario": "tiered_10m_8m_5m_3m_0m",
+        "bucket_amounts": {
+          "very_liquid": 10000000,
+          "liquid": 8000000,
+          "tradable": 5000000,
+          "high_pressure": 3000000,
+          "not_recommended": 0
+        }
+      },
+      {
+        "scenario": "conservative_10m_5m_3m_2m_0m",
+        "bucket_amounts": {
+          "very_liquid": 10000000,
+          "liquid": 5000000,
+          "tradable": 3000000,
+          "high_pressure": 2000000,
+          "not_recommended": 0
+        }
+      }
+    ]
+  },
+  "a5_r1_dynamic_capital_slippage_backtest": {
+    "input_trade_replay_path": "reports/trade_replay_report.csv",
+    "input_daily_merged_path": "data/processed/daily_merged.csv",
+    "output_summary_path": "reports/a5_r1_dynamic_capital_slippage_summary.csv",
+    "output_yearly_path": "reports/a5_r1_dynamic_capital_slippage_yearly.csv",
+    "output_detail_path": "reports/a5_r1_dynamic_capital_slippage_detail.csv",
+    "replay_rule": "fixed_t2_close",
+    "initial_cash": 500000,
+    "position_pct": 0.8,
+    "skip_market_sentiment": "weak",
+    "skip_segment_market_sentiment": "neutral",
+    "scenarios": [
+      {
+        "scenario": "compound_sequence_moderate_slippage_no_cap",
+        "description": "保持 A5-R1 原 323 笔交易序列，50万起步，每笔按当时权益80%买入，滑点按旧日成交额分档估算，不限制买入额。",
+        "execution_mode": "compound_sequence",
+        "max_buy_amount_ratio": null,
+        "slippage_tiers": [
+          {"max_amount_ratio": 0.005, "slippage_rate": 0.001},
+          {"max_amount_ratio": 0.01, "slippage_rate": 0.002},
+          {"max_amount_ratio": 0.02, "slippage_rate": 0.005},
+          {"max_amount_ratio": 0.05, "slippage_rate": 0.01},
+          {"max_amount_ratio": null, "slippage_rate": 0.02}
+        ]
+      },
+      {
+        "scenario": "compound_sequence_conservative_slippage_no_cap",
+        "description": "保持 A5-R1 原 323 笔交易序列，50万起步，每笔按当时权益80%买入，滑点对大额成交冲击更悲观，不限制买入额。",
+        "execution_mode": "compound_sequence",
+        "max_buy_amount_ratio": null,
+        "slippage_tiers": [
+          {"max_amount_ratio": 0.005, "slippage_rate": 0.001},
+          {"max_amount_ratio": 0.01, "slippage_rate": 0.002},
+          {"max_amount_ratio": 0.02, "slippage_rate": 0.005},
+          {"max_amount_ratio": 0.05, "slippage_rate": 0.01},
+          {"max_amount_ratio": 0.1, "slippage_rate": 0.03},
+          {"max_amount_ratio": 0.2, "slippage_rate": 0.05},
+          {"max_amount_ratio": null, "slippage_rate": 0.08}
+        ]
+      },
+      {
+        "scenario": "compound_sequence_conservative_slippage_cap_5pct",
+        "description": "保持 A5-R1 原 323 笔交易序列，50万起步，目标80%仓位，但单笔买入额最多占买入日成交额5%。",
+        "execution_mode": "compound_sequence",
+        "max_buy_amount_ratio": 0.05,
+        "slippage_tiers": [
+          {"max_amount_ratio": 0.005, "slippage_rate": 0.001},
+          {"max_amount_ratio": 0.01, "slippage_rate": 0.002},
+          {"max_amount_ratio": 0.02, "slippage_rate": 0.005},
+          {"max_amount_ratio": 0.05, "slippage_rate": 0.01},
+          {"max_amount_ratio": 0.1, "slippage_rate": 0.03},
+          {"max_amount_ratio": 0.2, "slippage_rate": 0.05},
+          {"max_amount_ratio": null, "slippage_rate": 0.08}
+        ]
+      },
+      {
+        "scenario": "single_position_conservative_slippage_cap_5pct",
+        "description": "严格单持仓现金占用版：持仓未卖出时跳过新信号，50万起步，目标80%仓位，单笔买入额最多占买入日成交额5%。",
+        "execution_mode": "single_position",
+        "max_buy_amount_ratio": 0.05,
+        "slippage_tiers": [
+          {"max_amount_ratio": 0.005, "slippage_rate": 0.001},
+          {"max_amount_ratio": 0.01, "slippage_rate": 0.002},
+          {"max_amount_ratio": 0.02, "slippage_rate": 0.005},
+          {"max_amount_ratio": 0.05, "slippage_rate": 0.01},
+          {"max_amount_ratio": 0.1, "slippage_rate": 0.03},
+          {"max_amount_ratio": 0.2, "slippage_rate": 0.05},
+          {"max_amount_ratio": null, "slippage_rate": 0.08}
+        ]
+      }
+    ]
+  },
+  "a5_r1_exit_path_audit": {
+    "input_dynamic_detail_path": "reports/a5_r1_dynamic_capital_slippage_detail.csv",
+    "input_daily_merged_path": "data/processed/daily_merged.csv",
+    "output_summary_path": "reports/a5_r1_exit_path_audit_summary.csv",
+    "output_yearly_path": "reports/a5_r1_exit_path_audit_yearly.csv",
+    "output_detail_path": "reports/a5_r1_exit_path_audit_detail.csv",
+    "target_scenario": "single_position_conservative_slippage_cap_5pct",
+    "initial_cash": 500000,
+    "stop_loss": -0.03,
+    "take_profit": 0.15,
+    "max_hold_days": 3,
+    "fallback_max_hold_days": 5,
+    "conservative_same_day_stop_first": true,
+    "assume_limit_down_unsellable": true,
+    "limit_price_tolerance": 0.002,
+    "slippage_tiers": [
+      {"max_amount_ratio": 0.005, "slippage_rate": 0.001},
+      {"max_amount_ratio": 0.01, "slippage_rate": 0.002},
+      {"max_amount_ratio": 0.02, "slippage_rate": 0.005},
+      {"max_amount_ratio": 0.05, "slippage_rate": 0.01},
+      {"max_amount_ratio": 0.1, "slippage_rate": 0.03},
+      {"max_amount_ratio": 0.2, "slippage_rate": 0.05},
+      {"max_amount_ratio": null, "slippage_rate": 0.08}
+    ]
+  },
+  "realistic_execution_strategy_optimization": {
+    "input_trade_replay_path": "reports/trade_replay_report.csv",
+    "input_daily_merged_path": "data/processed/daily_merged.csv",
+    "output_summary_path": "reports/realistic_execution_strategy_optimization_summary.csv",
+    "output_yearly_path": "reports/realistic_execution_strategy_optimization_yearly.csv",
+    "output_detail_path": "reports/realistic_execution_strategy_optimization_detail.csv",
+    "replay_rule": "fixed_t2_close",
+    "initial_cash": 500000,
+    "position_pct": 0.8,
+    "max_buy_amount_ratio": 0.05,
+    "min_executed_trades": 180,
+    "top_single_conditions": 40,
+    "top_pair_conditions": 18,
+    "top_triple_conditions": 10,
+    "max_report_scenarios": 120,
+    "base_a5_r1_skip": {
+      "market_sentiment_level": "weak",
+      "segment_market_sentiment_level": "neutral"
+    },
+    "split_years": {
+      "train_2020_2022": ["2020", "2021", "2022"],
+      "test_2023_2024": ["2023", "2024"],
+      "sample_2025_2026": ["2025", "2026"]
+    },
+    "candidate_factor_columns": [
+      "market_segment",
+      "limit_pct_bucket",
+      "market_sentiment_level",
+      "segment_market_sentiment_level",
+      "first_time_bucket",
+      "first_time_detail_bucket",
+      "limit_times_bucket",
+      "limit_times_detail_bucket",
+      "amount_bucket",
+      "turnover_rate_bucket",
+      "fd_ratio_bucket",
+      "prev_pct_chg_bucket",
+      "limit_up_count_bucket",
+      "segment_limit_up_count_bucket",
+      "segment_limit_up_ratio_bucket",
+      "market_emotion_state_bucket",
+      "segment_emotion_state_bucket",
+      "market_chain_count_bucket",
+      "segment_chain_count_bucket",
+      "market_limit_down_count_bucket",
+      "segment_limit_down_count_bucket",
+      "segment_limit_down_ratio_bucket",
+      "segment_limit_max_height_bucket",
+      "market_leader_rank_bucket",
+      "segment_market_leader_rank_bucket",
+      "limit_height_rank_bucket",
+      "segment_limit_height_rank_bucket",
+      "retreat_state_bucket",
+      "segment_retreat_state_bucket"
+    ],
+    "slippage_tiers": [
+      {"max_amount_ratio": 0.005, "slippage_rate": 0.001},
+      {"max_amount_ratio": 0.01, "slippage_rate": 0.002},
+      {"max_amount_ratio": 0.02, "slippage_rate": 0.005},
+      {"max_amount_ratio": 0.05, "slippage_rate": 0.01},
+      {"max_amount_ratio": 0.1, "slippage_rate": 0.03},
+      {"max_amount_ratio": 0.2, "slippage_rate": 0.05},
+      {"max_amount_ratio": null, "slippage_rate": 0.08}
+    ]
+  },
   "ranking_optimization": {
     "input_trade_replay_path": "reports/trade_replay_report.csv",
     "output_report_path": "reports/ranking_optimization_report.csv",
@@ -651,6 +1213,235 @@
       "amount_ratio_1d",
       "prev_pct_chg",
       "two_day_pct_chg"
+    ]
+  },
+  "large_universe_realistic_optimization": {
+    "input_trades_path": "data/processed/next_day_premium_trades.csv",
+    "input_daily_merged_path": "data/processed/daily_merged.csv",
+    "output_summary_path": "reports/large_universe_realistic_optimization_summary.csv",
+    "output_yearly_path": "reports/large_universe_realistic_optimization_yearly.csv",
+    "output_detail_path": "reports/large_universe_realistic_optimization_detail.csv",
+    "optional_auction_features_path": "data/processed/auction_features.csv",
+    "optional_open_5m_features_path": "data/processed/open_5m_features.csv",
+    "optional_sector_moneyflow_features_path": "data/processed/sector_moneyflow_features.csv",
+    "optional_top_list_features_path": "data/processed/top_list_features.csv",
+    "replay_rule": "fixed_t2_close",
+    "replay_max_hold_days": 2,
+    "replay_exit_price_field": "close",
+    "start_date": "20200101",
+    "end_date": "20260518",
+    "initial_cash": 500000,
+    "position_pct": 0.8,
+    "max_buy_amount_ratio": 0.05,
+    "min_executed_trades": 350,
+    "target_equity_multiple": 300.0,
+    "max_sort_factor_count": 2,
+    "max_detail_scenarios": 20,
+    "evaluation_years": ["2020", "2021", "2022", "2023", "2024", "2025", "2026"],
+    "base_inclusions": {},
+    "base_exclusions": {},
+    "universe_filters": {
+      "exclude_st": false,
+      "exclude_bj": false,
+      "exclude_star": false
+    },
+    "factor_columns": [
+      "market_leader_rank_bucket",
+      "segment_market_leader_rank_bucket",
+      "limit_height_rank_bucket",
+      "segment_limit_height_rank_bucket",
+      "market_sentiment_level",
+      "segment_market_sentiment_level",
+      "board_type",
+      "first_time_bucket",
+      "first_time_detail_bucket",
+      "limit_times_bucket",
+      "limit_times_detail_bucket",
+      "open_times_bucket",
+      "amount_bucket",
+      "turnover_rate_bucket",
+      "volume_ratio_bucket",
+      "fd_ratio_bucket",
+      "pct_chg_bucket",
+      "prev_pct_chg_bucket",
+      "amount_ratio_bucket",
+      "limit_up_count_bucket",
+      "segment_limit_up_count_bucket",
+      "segment_limit_up_ratio_bucket",
+      "retreat_state_bucket",
+      "segment_retreat_state_bucket",
+      "market_chain_count_bucket",
+      "segment_chain_count_bucket",
+      "market_limit_down_count_bucket",
+      "segment_limit_down_count_bucket",
+      "segment_limit_down_ratio_bucket",
+      "segment_limit_max_height_bucket",
+      "market_segment"
+    ],
+    "candidate_sort_columns": [
+      "fill_probability",
+      "market_leader_rank",
+      "segment_market_leader_rank",
+      "limit_height_rank",
+      "segment_limit_height_rank",
+      "same_theme_limit_count",
+      "theme_heat_score",
+      "limit_times",
+      "first_time_minutes",
+      "open_times",
+      "amount",
+      "turnover_rate",
+      "volume_ratio",
+      "fd_amount_to_circ_mv",
+      "limit_up_count",
+      "segment_limit_up_count",
+      "amount_ratio_1d",
+      "prev_pct_chg",
+      "two_day_pct_chg"
+    ],
+    "slippage_tiers": [
+      {"max_amount_ratio": 0.005, "slippage_rate": 0.001},
+      {"max_amount_ratio": 0.01, "slippage_rate": 0.002},
+      {"max_amount_ratio": 0.02, "slippage_rate": 0.005},
+      {"max_amount_ratio": 0.05, "slippage_rate": 0.01},
+      {"max_amount_ratio": 0.1, "slippage_rate": 0.03},
+      {"max_amount_ratio": 0.2, "slippage_rate": 0.05},
+      {"max_amount_ratio": null, "slippage_rate": 0.08}
+    ]
+  },
+  "realistic_condition_strategy_search": {
+    "input_trades_path": "data/processed/next_day_premium_trades.csv",
+    "input_daily_merged_path": "data/processed/daily_merged.csv",
+    "output_summary_path": "reports/realistic_condition_strategy_search_summary.csv",
+    "output_yearly_path": "reports/realistic_condition_strategy_search_yearly.csv",
+    "output_detail_path": "reports/realistic_condition_strategy_search_detail.csv",
+    "optional_auction_features_path": "data/processed/auction_features.csv",
+    "optional_open_5m_features_path": "data/processed/open_5m_features.csv",
+    "optional_sector_moneyflow_features_path": "data/processed/sector_moneyflow_features.csv",
+    "optional_top_list_features_path": "data/processed/top_list_features.csv",
+    "replay_rule": "fixed_t2_close",
+    "replay_max_hold_days": 2,
+    "replay_exit_price_field": "close",
+    "start_date": "20200101",
+    "end_date": "20260518",
+    "initial_cash": 500000,
+    "position_pct": 0.8,
+    "max_buy_amount_ratio": 0.05,
+    "min_executed_trades": 1,
+    "target_equity_multiple": 300.0,
+    "min_condition_raw_count": 50,
+    "max_condition_raw_ratio": 0.85,
+    "top_single_conditions": 90,
+    "top_pair_conditions": 120,
+    "top_triple_conditions": 160,
+    "max_pair_sets": 12000,
+    "max_triple_sets": 15000,
+    "max_detail_scenarios": 30,
+    "evaluation_years": ["2020", "2021", "2022", "2023", "2024", "2025", "2026"],
+    "universe_filters": {
+      "exclude_st": false,
+      "exclude_bj": false,
+      "exclude_star": false
+    },
+    "factor_columns": [
+      "market_segment",
+      "limit_pct_bucket",
+      "market_sentiment_level",
+      "segment_market_sentiment_level",
+      "market_emotion_state_bucket",
+      "segment_emotion_state_bucket",
+      "market_chain_count_bucket",
+      "segment_chain_count_bucket",
+      "market_limit_down_count_bucket",
+      "segment_limit_down_count_bucket",
+      "segment_limit_down_ratio_bucket",
+      "segment_limit_max_height_bucket",
+      "market_leader_rank_bucket",
+      "segment_market_leader_rank_bucket",
+      "limit_height_rank_bucket",
+      "segment_limit_height_rank_bucket",
+      "first_time_bucket",
+      "first_time_detail_bucket",
+      "limit_times_bucket",
+      "limit_times_detail_bucket",
+      "open_times_bucket",
+      "amount_bucket",
+      "turnover_rate_bucket",
+      "volume_ratio_bucket",
+      "fd_ratio_bucket",
+      "pct_chg_bucket",
+      "prev_pct_chg_bucket",
+      "amount_ratio_bucket",
+      "limit_up_count_bucket",
+      "segment_limit_up_count_bucket",
+      "segment_limit_up_ratio_bucket",
+      "retreat_state_bucket",
+      "segment_retreat_state_bucket",
+      "board_type"
+    ],
+    "sort_columns": ["fill_probability", "sample_count", "amount", "turnover_rate"],
+    "sort_ascending": [false, false, false, false],
+    "slippage_tiers": [
+      {"max_amount_ratio": 0.005, "slippage_rate": 0.001},
+      {"max_amount_ratio": 0.01, "slippage_rate": 0.002},
+      {"max_amount_ratio": 0.02, "slippage_rate": 0.005},
+      {"max_amount_ratio": 0.05, "slippage_rate": 0.01},
+      {"max_amount_ratio": 0.1, "slippage_rate": 0.03},
+      {"max_amount_ratio": 0.2, "slippage_rate": 0.05},
+      {"max_amount_ratio": null, "slippage_rate": 0.08}
+    ]
+  },
+  "recent_2y_realistic_condition_search": {
+    "base_config_key": "realistic_condition_strategy_search",
+    "start_date": "20240520",
+    "end_date": "20260518",
+    "target_equity_multiple": 50.0,
+    "min_executed_trades": 1,
+    "min_condition_raw_count": 10,
+    "top_single_conditions": 120,
+    "top_pair_conditions": 180,
+    "top_triple_conditions": 240,
+    "max_pair_sets": 15000,
+    "max_triple_sets": 25000,
+    "max_detail_scenarios": 40,
+    "output_summary_path": "reports/recent_2y_realistic_condition_search_summary.csv",
+    "output_yearly_path": "reports/recent_2y_realistic_condition_search_yearly.csv",
+    "output_detail_path": "reports/recent_2y_realistic_condition_search_detail.csv",
+    "output_four_factor_probe_path": "reports/recent_2y_realistic_condition_search_four_factor_probe.csv"
+  },
+  "recent_2y_full_strategy_optimization": {
+    "input_condition_summary_paths": [
+      "reports/recent_2y_realistic_condition_search_summary.csv",
+      "reports/recent_2y_realistic_condition_search_four_factor_probe.csv"
+    ],
+    "output_summary_path": "reports/recent_2y_full_strategy_optimization_summary.csv",
+    "output_yearly_path": "reports/recent_2y_full_strategy_optimization_yearly.csv",
+    "output_detail_path": "reports/recent_2y_full_strategy_optimization_detail.csv",
+    "target_equity_multiple": 50.0,
+    "top_condition_sets": 300,
+    "max_detail_scenarios": 40,
+    "sort_rules": [
+      {"name": "default", "columns": ["fill_probability", "sample_count", "amount", "turnover_rate"], "ascending": [false, false, false, false]},
+      {"name": "amount_desc", "columns": ["amount"], "ascending": [false]},
+      {"name": "turnover_desc", "columns": ["turnover_rate"], "ascending": [false]},
+      {"name": "turnover_asc", "columns": ["turnover_rate"], "ascending": [true]},
+      {"name": "volume_ratio_asc", "columns": ["volume_ratio"], "ascending": [true]},
+      {"name": "volume_ratio_desc", "columns": ["volume_ratio"], "ascending": [false]},
+      {"name": "open_times_desc", "columns": ["open_times"], "ascending": [false]},
+      {"name": "leader_rank_desc", "columns": ["market_leader_rank"], "ascending": [false]},
+      {"name": "height_rank_desc", "columns": ["limit_height_rank"], "ascending": [false]},
+      {"name": "fd_ratio_asc", "columns": ["fd_amount_to_circ_mv"], "ascending": [true]}
+    ],
+    "exit_rules": [
+      {"rule_name": "fixed_t2_close", "max_hold_days": 2, "exit_price_field": "close"},
+      {"rule_name": "fixed_hold3_close", "max_hold_days": 3, "exit_price_field": "close"},
+      {"rule_name": "fixed_hold5_close", "max_hold_days": 5, "exit_price_field": "close"},
+      {"rule_name": "stop_3_tp_10_hold3", "max_hold_days": 3, "stop_loss": -0.03, "take_profit": 0.10},
+      {"rule_name": "stop_3_tp_15_hold3", "max_hold_days": 3, "stop_loss": -0.03, "take_profit": 0.15},
+      {"rule_name": "stop_5_tp_10_hold3", "max_hold_days": 3, "stop_loss": -0.05, "take_profit": 0.10},
+      {"rule_name": "stop_5_tp_15_hold3", "max_hold_days": 3, "stop_loss": -0.05, "take_profit": 0.15},
+      {"rule_name": "stop_7_tp_20_hold5", "max_hold_days": 5, "stop_loss": -0.07, "take_profit": 0.20},
+      {"rule_name": "stop_10_tp_30_hold5", "max_hold_days": 5, "stop_loss": -0.10, "take_profit": 0.30}
     ]
   },
   "risk": {
