@@ -1,0 +1,3 @@
+﻿paper_order_id,signal_date,planned_order_date,side,ts_code,name,planned_action,order_status,planned_position_pct,planned_equity,planned_amount_by_equity,reference_price,estimated_shares,round_lot_shares,risk_flags,live_order_enabled
+PLAN-20240520-300162.SZ-B,20240520,20240521,BUY,300162.SZ,雷曼光电,PLAN_BUY_T1_OPEN,PLAN_ONLY,0.8,500000.0,400000.0,7.14,56022.40896358544,56000,无,False
+PLAN-20240620-300469.SZ-B,20240620,20240621,BUY,300469.SZ,信息发展,PLAN_BUY_T1_OPEN,PLAN_ONLY,0.8,701507.8273659114,561206.2618927292,14.8,37919.342019779,37900,无,False

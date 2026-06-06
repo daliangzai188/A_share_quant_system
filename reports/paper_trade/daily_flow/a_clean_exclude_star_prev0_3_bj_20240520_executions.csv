@@ -1,0 +1,3 @@
+﻿paper_execution_id,signal_date,event_date,side,ts_code,name,execution_status,price,amount,account_return,equity_before,equity_after,message
+EXEC-20240520-300162.SZ-BUY,20240520,20240521,BUY,300162.SZ,雷曼光电,HISTORICAL_SIM_FILLED,7.1471399999999985,400000.0,0.0,500000.0,500000.0,使用本地审计记录生成历史模拟买入成交。
+EXEC-20240520-300162.SZ-SELL,20240520,20240522,SELL,300162.SZ,雷曼光电,HISTORICAL_SIM_FILLED,10.75923,602758.5859518633,0.403015654731823,500000.0,701507.8273659114,使用本地审计记录生成历史模拟卖出和资金更新。

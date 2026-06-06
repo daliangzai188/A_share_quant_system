@@ -1,0 +1,12 @@
+﻿issue,trade_count,trade_pct
+loss_overlay_watch,5,0.0847457627118644
+high_sell_slippage,3,0.05084745762711865
+high_sell_amount_ratio,1,0.01694915254237288
+high_buy_slippage,1,0.01694915254237288
+buy_not_executed,0,0.0
+sell_not_executed,0,0.0
+high_buy_amount_ratio,0,0.0
+limit_down_blocked,0,0.0
+path_conflict,0,0.0
+low_fill_probability,0,0.0
+fill_score_unreliable,0,0.0

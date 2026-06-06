@@ -1,0 +1,2 @@
+﻿strategy_name,trade_mode,signal_date,filtered_candidate_count_all_dates,matched_candidate_count_on_signal_date,output_candidate_count,selected_count,watch_count,top_ts_code,top_name,top_profit_source_score,risk_warn_candidate_count,future_columns_used_for_ranking,live_order_enabled
+a_clean_plus_exclude_star_prev0_3_bj_risk_filter,paper,20241227,189,1,1,1,0,300599.SZ,雄塑科技,3.5,1,False,False

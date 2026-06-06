@@ -1,0 +1,6 @@
+﻿first_zero_stage,day_count
+after_include_2_market_chain_count_bucket=8_15,50
+after_include_1_segment_limit_up_count_bucket=lt_5,27
+not_zero,20
+after_include_3_fd_ratio_bucket=0_5pct_1pct,19
+after_exclude_condition_1_amount_ratio_bucket=0_8_1_2,4

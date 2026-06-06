@@ -1,0 +1,2 @@
+﻿event_date,signal_date,ts_code,risk_level,risk_type,metric_value,threshold,message
+20241230,20241230,300933.SZ,WARN,PENDING_NO_HISTORICAL_MATCH,1,0,有计划候选但没有本地历史成交匹配，只能保留计划。

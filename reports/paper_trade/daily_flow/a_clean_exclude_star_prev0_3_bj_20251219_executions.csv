@@ -1,0 +1,2 @@
+﻿paper_execution_id,signal_date,event_date,side,ts_code,name,execution_status,price,amount,account_return,equity_before,equity_after,message
+EXEC-20251219-300557.SZ-REVIEW-BLOCKED,20251219,,BUY,300557.SZ,理工光科,MANUAL_REVIEW_REQUIRED_BLOCKED,,,0.0,,,命中 LOSS_OVERLAY_WATCH，未人工确认前只保留计划和复核清单，不自动记为模拟成交。

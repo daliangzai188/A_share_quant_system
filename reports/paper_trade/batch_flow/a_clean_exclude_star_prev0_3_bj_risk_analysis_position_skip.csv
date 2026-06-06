@@ -1,0 +1,13 @@
+﻿signal_date,ts_code,name,candidate_count,position_occupied_by,position_occupied_exit_dates,equity_end_of_day,historical_reference_net_return,historical_reference_is_win,market_segment,profit_source_score,first_time_detail_bucket,amount_ratio_bucket,prev_pct_chg_bucket,market_limit_down_count_bucket,retreat_state_bucket
+20240805,300329.SZ,海伦钢琴,1,300149.SZ 睿智医药,20240806,930395.7102730904,0.0052491796008868,True,chi_next,-1.5,before_1000,gte_5,neg3_0,30_60,retreat_2day
+20241230,300933.SZ,中辰股份,1,300599.SZ 雄塑科技,20241231,1518355.5260614548,-0.1109646327683614,False,chi_next,0.0,before_1000,gte_5,3_7,5_15,retreat_2day
+20250103,301568.SZ,思泰克,1,300947.SZ 德必集团,20250106,1472789.7866808458,0.0538399260172628,True,chi_next,-1.5,before_1000,gte_5,neg3_0,gte_60,retreat_weak
+20250311,300819.SZ,聚杰微纤,1,301225.SZ 恒勃股份,20250312,1803313.7406239675,-0.028056090225564,False,chi_next,3.0,1330_1430,1_2_2,3_7,lt_5,neutral
+20250730,300877.SZ,金春股份,2,300528.SZ 幸福蓝海,20250731,5837235.321948162,-0.0365522355921468,False,chi_next,4.3,1100_1330,1_2_2,0_3,5_15,neutral
+20250903,300092.SZ,科新机电,2,920274.BJ 宏裕包材,20250904,8744493.521606732,0.0468266631634259,True,chi_next,0.8,1100_1330,1_2_2,gte_10,15_30,retreat_2day
+20251103,300455.SZ,航天智装,1,300204.SZ 舒泰神,20251104,10405408.168287223,0.0321960358160357,True,chi_next,3.3,1100_1330,1_2_2,lt_neg3,5_15,warming_2day
+20251107,300102.SZ,乾照光电,2,300437.SZ 清水源,20251110,14077480.864248857,-0.0885256603773584,False,chi_next,-0.5,1330_1430,gte_5,0_3,lt_5,retreat_2day
+20251121,301171.SZ,易点天下,1,301092.SZ 争光股份,20251124,15047440.836661972,0.0892371428571427,True,chi_next,0.8,1100_1330,3_5,0_3,gte_60,weak_below_30
+20251215,920665.BJ,科强股份,2,920576.BJ 天力复合,20251216,17209219.52917081,-0.1773042105263158,False,bj,4.5,1000_1100,2_3,lt_neg3,5_15,neutral
+20260227,301226.SZ,祥明智能,1,300499.SZ 高澜股份,20260302,21078061.595341414,-0.0107992496526169,False,chi_next,3.0,after_1430,3_5,3_7,lt_5,neutral
+20260415,301189.SZ,奥尼电子,1,301189.SZ 奥尼电子,20260416,21736463.179192256,-0.0534461877172653,False,chi_next,4.5,before_1000,1_2_2,gte_10,5_15,neutral

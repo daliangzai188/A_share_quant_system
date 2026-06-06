@@ -1,0 +1,2 @@
+﻿risk_event_count,pending_no_historical_match_count,single_trade_loss_warn_count,position_occupied_skip_count,pending_likely_position_occupied_count,pending_avg_historical_reference_return,pending_win_reference_count,loss_avg_account_return,loss_max_account_loss,position_skip_avg_reference_return,position_skip_win_reference_count
+2,0,2,12,0,0.0,0,-0.09490159532495279,-0.1072601608998818,-0.023191609950406224,5

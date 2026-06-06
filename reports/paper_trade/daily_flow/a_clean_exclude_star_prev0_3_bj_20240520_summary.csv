@@ -1,0 +1,2 @@
+﻿strategy_name,trade_mode,signal_date,candidate_count,selected_count,planned_order_count,execution_event_count,closed_position_count,pending_position_count,top_ts_code,top_name,historical_execution_found,equity_before,equity_after,account_return,live_order_enabled
+a_clean_plus_exclude_star_prev0_3_bj_risk_filter,paper,20240520,1,1,1,2,1,0,300162.SZ,雷曼光电,True,500000.0,701507.8273659114,0.403015654731823,False

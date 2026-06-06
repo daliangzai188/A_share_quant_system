@@ -1,0 +1,3 @@
+﻿signal_date,equity_event,event_date,equity_before,equity_after,account_return,message
+20240520,HISTORICAL_SIM_FILLED,20240522,500000.0,701507.8273659114,0.403015654731823,使用本地审计记录生成历史模拟卖出和资金更新。
+20240620,HISTORICAL_SIM_FILLED,20240624,701507.8273659114,741862.1905795921,0.0575251788211788,使用本地审计记录生成历史模拟卖出和资金更新。

@@ -1,0 +1,5 @@
+﻿check_item,result,evidence
+full_period_effect,PASS,全区间跳过 LOSS_OVERLAY_WATCH 后倍数改善 1.4060，命中 5 笔。
+test_2025_2026_effect,PASS,2025-2026 测试区间跳过后倍数改善 1.2900，命中 4 笔。
+test_2026_sample_size,WARN,2026 测试区间 LOSS_OVERLAY_WATCH 仅命中 1 笔。
+final_decision,WATCH_ONLY,当前证据支持继续保留为强复核/降仓候选规则；由于命中样本少，暂不建议直接升级为正式硬过滤。

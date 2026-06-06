@@ -1,0 +1,2 @@
+﻿signal_date,strategy_leg,operation_status,next_action,a_candidate_count,b_candidate_count,b_rejected_by_filter_count,selected_count,planned_order_count,manual_review_required,manual_review_count,top_ts_code,top_name,account_return,return_source,live_order_enabled,selection_status
+20260413,NONE,NO_SELECTED,A无候选且B无可用候选，今日不生成模拟买入计划。,0,10,1,0,0,False,0,,,0.0,,False,A_NO_SELECTED_B_RISK_FILTERED

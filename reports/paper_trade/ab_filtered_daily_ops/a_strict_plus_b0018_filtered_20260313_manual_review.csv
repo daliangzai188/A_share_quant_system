@@ -1,0 +1,2 @@
+﻿signal_date,strategy_leg,ts_code,name,risk_flags,operation_status,review_decision,reviewer,review_time,review_note,decision_instruction,paper_observation_allowed,live_order_enabled
+20260313,B,603248.SH,锡华科技,无,REVIEW_REQUIRED_PLAN_ONLY,PENDING,,,,review_decision 只能填写 APPROVED / REJECTED / PENDING。,False,False

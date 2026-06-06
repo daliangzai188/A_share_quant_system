@@ -1,0 +1,2 @@
+﻿event_date,signal_date,ts_code,risk_level,risk_type,metric_value,threshold,message
+20251223,20251219,300557.SZ,WARN,SINGLE_TRADE_LOSS_WARN,-0.1072601608998818,-0.08,单笔账户亏损达到预警阈值。

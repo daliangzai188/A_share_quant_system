@@ -1,0 +1,2 @@
+﻿signal_date,planned_order_date,ts_code,name,manual_review_status,manual_review_reason,risk_flags,planned_position_pct,planned_amount_by_equity,reference_price,amount_ratio_bucket,open_times,first_time_detail_bucket,turnover_rate_bucket,historical_reference_net_return,review_instruction,live_order_enabled
+20251219,20251222,300557.SZ,理工光科,PENDING_MANUAL_REVIEW,命中 LOSS_OVERLAY_WATCH，模拟买入前需要人工复核。,LOSS_OVERLAY_WATCH,0.8,13767375.62333665,41.54,2_3,2.0,1100_1330,15_25,-0.1273561579200771,人工确认后才允许进入模拟买入观察；未确认时不得进入实盘或半自动流程。,False

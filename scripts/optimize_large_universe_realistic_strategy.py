@@ -231,14 +231,28 @@ class LargeUniverseRealisticStrategyOptimizer:
         return replayed
 
     def attach_daily_liquidity(self, trades: pd.DataFrame) -> pd.DataFrame:
-        daily = pd.read_csv(
-            self.input_daily_merged_path,
-            dtype={"trade_date": str, "ts_code": str},
-            usecols=["trade_date", "ts_code", "amount"],
-            low_memory=False,
+        daily_amount_lookup_path = self.project_root / self.opt_config.get(
+            "daily_amount_lookup_path",
+            "data/processed/daily_amount_lookup.csv",
         )
+        if daily_amount_lookup_path.exists():
+            self.logger.info("使用日成交额轻量查询表: %s", daily_amount_lookup_path)
+            daily = pd.read_csv(
+                daily_amount_lookup_path,
+                dtype={"trade_date": str, "ts_code": str},
+                usecols=["trade_date", "ts_code", "amount_yuan"],
+                low_memory=False,
+            )
+        else:
+            self.logger.info("日成交额轻量查询表不存在，回退读取日线合并表: %s", self.input_daily_merged_path)
+            daily = pd.read_csv(
+                self.input_daily_merged_path,
+                dtype={"trade_date": str, "ts_code": str},
+                usecols=["trade_date", "ts_code", "amount"],
+                low_memory=False,
+            )
+            daily["amount_yuan"] = pd.to_numeric(daily["amount"], errors="coerce") * 1000
         daily["trade_date"] = daily["trade_date"].map(self.normalize_date)
-        daily["amount_yuan"] = pd.to_numeric(daily["amount"], errors="coerce") * 1000
         buy_daily = daily.rename(
             columns={"trade_date": "buy_trade_date", "amount_yuan": "buy_day_amount_yuan"}
         )[["buy_trade_date", "ts_code", "buy_day_amount_yuan"]]

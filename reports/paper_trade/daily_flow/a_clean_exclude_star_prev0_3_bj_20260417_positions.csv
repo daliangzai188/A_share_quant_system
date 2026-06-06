@@ -1,0 +1,2 @@
+﻿signal_date,ts_code,name,position_status,open_date,close_date,account_return,equity_after,message
+20260417,301319.SZ,唯特偶,CLOSED_BY_HISTORICAL_SIM,20260420,20260421,0.0352808081329955,22503343.166107263,已按本地审计记录完成模拟买卖闭环。

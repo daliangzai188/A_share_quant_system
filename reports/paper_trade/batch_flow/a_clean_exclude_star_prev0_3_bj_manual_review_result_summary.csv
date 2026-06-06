@@ -1,0 +1,2 @@
+﻿manual_review_count,approved_count,rejected_count,pending_count,suggested_approved_count,suggested_rejected_count,suggested_pending_count,paper_observation_allowed_count,template_created,decisions_path,live_order_enabled
+5,0,2,3,0,2,3,0,False,/Users/user/Desktop/A_System/reports/paper_trade/batch_flow/a_clean_exclude_star_prev0_3_bj_20240520_20260417_manual_review_decisions.csv,False

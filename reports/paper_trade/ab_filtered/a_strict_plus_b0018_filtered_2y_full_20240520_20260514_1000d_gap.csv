@@ -1,0 +1,10 @@
+﻿check_item,value,note
+b_selected_signal_count,102,B 条件选出的信号数
+b_buy_rejected_count,3,日线保守口径下 T+1 涨停开盘等买入失败
+b_sell_unresolved_count,0,日线保守口径下卖出未解决
+b_path_conflict_count,0,止盈止损同日路径冲突
+b_limit_down_blocked_count,8,跌停阻塞卖出
+minute_k_required,102,仍需分钟 K / 集合竞价 / 五档盘口验证
+b_risk_filtered_rejected_count,76,B交易中被事前风险过滤跳过的数量。
+b_replayed_after_filter_count,26,B风险过滤后仍进入日线保守回放的数量。
+live_order_enabled,0,本脚本只做paper/simulation，不允许实盘下单。

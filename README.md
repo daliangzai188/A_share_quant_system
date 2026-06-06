@@ -283,6 +283,25 @@ python scripts/run_backtest.py
 python scripts/run_paper_trade.py
 ```
 
+当前策略发布验证和后续操作流程见：
+
+```text
+docs/strategy_release_playbook.md
+```
+
+常用命令：
+
+```bash
+# 策略发布前稳定性验证：季度或半年执行一次，不用于每日改策略
+.venv/bin/python -B scripts/run_strategy_release_validation.py
+
+# A+B filtered 单日模拟盘操作台：只生成模拟观察和人工复核清单，不接实盘
+.venv/bin/python -B scripts/run_paper_ab_filtered_daily_ops.py --top-n 10
+
+# A+B filtered 历史窗口回放：用于复查 60/90/120 日窗口表现
+.venv/bin/python -B scripts/run_paper_ab_filtered_observation_window.py --recent-days 120 --end-date 20260518
+```
+
 ---
 
 ## 九、配置说明
@@ -339,3 +358,23 @@ AGENTS.md
 6. 小资金验证
 
 实盘交易存在亏损风险，请谨慎使用。
+
+---
+
+## 十二、当前策略发布流程
+
+当前固定策略版本为：
+
+```text
+a_strict_plus_b0018_filtered
+```
+
+原则：
+
+1. 不每天改策略。
+2. 每天最多只执行当前固定策略版本的候选检查。
+3. 每 3 个月或 6 个月重新执行一次发布验证。
+4. 只有发布验证通过，才考虑进入下一阶段模拟或小资金人工确认。
+5. 实盘前仍必须补齐分钟 K、集合竞价、盘口五档和成交可行性验证。
+
+详细流程以 `docs/strategy_release_playbook.md` 为准。

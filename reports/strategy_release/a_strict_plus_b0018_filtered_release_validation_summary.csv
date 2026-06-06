@@ -1,0 +1,2 @@
+﻿strategy_label,strategy_name,validation_time,release_status,all_gates_passed,oos_start_date,oos_end_date,validated_window_count,rebalance_cycle,trade_mode,live_order_enabled,minute_k_required_before_live,decision_note
+a_strict_plus_b0018_filtered,a_clean_plus_exclude_star_prev0_3_bj_risk_filter,2026-06-06 10:05:54,PASS_PAPER_READY_REVIEW_ONLY_MINUTE_K_REQUIRED,True,20260101,20260518,4,quarterly_or_half_year,paper,False,True,可进入下一阶段模拟/小资金人工确认前复核；仍不允许自动实盘。

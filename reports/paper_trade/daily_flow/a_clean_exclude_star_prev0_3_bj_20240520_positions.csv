@@ -1,0 +1,2 @@
+﻿signal_date,ts_code,name,position_status,open_date,close_date,account_return,equity_after,message
+20240520,300162.SZ,雷曼光电,CLOSED_BY_HISTORICAL_SIM,20240521,20240522,0.403015654731823,701507.8273659114,已按本地审计记录完成模拟买卖闭环。

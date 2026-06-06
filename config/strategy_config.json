@@ -1,35 +1,372 @@
 {
-  "strategy_name": "leading_stock_limit_up_research",
+  "file_role": "策略研究配置文件。用于固化当前最佳候选策略参数，只用于本地回测、审计和模拟盘前复盘，不接实盘。",
+  "strategy_name": "a_clean_plus_exclude_star_prev0_3_bj_risk_filter",
   "enabled": false,
-  "description": "第一阶段仅保留策略研究参数，不执行实盘交易。",
+  "description": "A-clean+ 风险过滤版。基于模拟盘前 WARN 来源分析，在去科创板基础上，额外排除北交所且前一日涨幅0-3%的候选组合。最近2年日线保守成交口径下，较上一版复利、胜率、回撤和最大单笔亏损均改善。",
+  "version": "2026-06-04",
+  "trade_mode": "paper",
+  "live_trading_enabled": false,
+  "broker_adapter_enabled": false,
+  "qmt_enabled": false,
+  "data_scope": {
+    "source": "local_csv_reports",
+    "price_adjustment": "forward_adjusted",
+    "signal_window": {
+      "start_date": "20240520",
+      "end_date": "20260518"
+    },
+    "audit_report_prefix": "reports/a_clean_exclude_star_prev0_3_bj_best_audit",
+    "optimization_summary": "reports/a_clean_exclude_star_warn_filter_prev0_3_bj_quick_t2_summary.csv",
+    "optimization_detail": "reports/a_clean_exclude_star_warn_filter_prev0_3_bj_quick_t2_detail.csv"
+  },
+  "selection_timing": {
+    "signal_time": "T日收盘后",
+    "buy_time": "T+1开盘",
+    "sell_time": "T+2收盘",
+    "allow_same_day_sell": false,
+    "t_plus_one_required": true
+  },
   "universe": {
     "exclude_st": true,
+    "exclude_delisting_risk": true,
     "exclude_suspended": true,
-    "exclude_new_stock_days": 60,
-    "min_amount": 100000000,
-    "min_circ_mv": 2000000000
+    "exclude_market_segments": [
+      "star"
+    ],
+    "exclude_market_segments_note": "风险过滤版排除科创板。当前验证显示科创板拖累稳定性，暂不进入模拟盘候选。",
+    "exclude_bj": false,
+    "exclude_chi_next": false,
+    "exclude_sh_main": false,
+    "exclude_sz_main": false
   },
-  "market_filter": {
-    "min_limit_up_count": 50,
-    "weak_market_skip": true
+  "candidate_filters": {
+    "conditions": [
+      {
+        "column": "segment_limit_up_count_bucket",
+        "operator": "==",
+        "value": "lt_5",
+        "description": "所属市场分段涨停数量小于5，偏冰点/低热度环境。"
+      },
+      {
+        "column": "market_chain_count_bucket",
+        "operator": "==",
+        "value": "8_15",
+        "description": "全市场连板数量在8到15之间，保留有一定连板情绪但不过热的环境。"
+      },
+      {
+        "column": "fd_ratio_bucket",
+        "operator": "==",
+        "value": "0_5pct_1pct",
+        "description": "封单金额/流通市值在0.5%-1%，避免过弱和过强的一字不可成交状态。"
+      }
+    ],
+    "exclude_conditions": [
+      {
+        "column": "amount_ratio_bucket",
+        "operator": "==",
+        "value": "0_8_1_2",
+        "description": "排除当前回测中表现较差的成交额倍率区间。"
+      },
+      {
+        "column": "market_segment",
+        "operator": "==",
+        "value": "star",
+        "description": "排除科创板。"
+      }
+    ],
+    "exclude_rules": [
+      {
+        "name": "exclude_bj_prev_pct_0_3",
+        "description": "排除北交所且前一日涨幅0-3%的候选。该组合来自模拟盘前 WARN 来源分析，重新优化后复利从36.94倍提升到45.01倍，最大回撤从13.96%降到11.01%。",
+        "conditions": [
+          {
+            "column": "prev_pct_chg_bucket",
+            "operator": "==",
+            "value": "0_3"
+          },
+          {
+            "column": "market_segment",
+            "operator": "==",
+            "value": "bj"
+          }
+        ]
+      }
+    ]
   },
-  "limit_up_filter": {
-    "min_limit_times": 1,
-    "max_open_times": 5,
-    "exclude_one_word_board_without_turnover": true,
-    "late_board_time": "143000"
+  "ranking": {
+    "sort_rule": "profit_source_oos_resilient",
+    "columns": [
+      "profit_source_score",
+      "turnover_rate"
+    ],
+    "ascending": [
+      false,
+      false
+    ],
+    "score_rules": [
+      {
+        "column": "retreat_state_bucket",
+        "values": [
+          "neutral"
+        ],
+        "weight": 2.0,
+        "description": "市场非退潮状态加分。"
+      },
+      {
+        "column": "market_limit_down_count_bucket",
+        "values": [
+          "5_15"
+        ],
+        "weight": 1.5,
+        "description": "跌停数量5-15加分，避开过冷和过热失真。"
+      },
+      {
+        "column": "limit_up_count_bucket",
+        "values": [
+          "50_80"
+        ],
+        "weight": 1.0,
+        "description": "全市场涨停数50-80加分。"
+      },
+      {
+        "column": "first_time_detail_bucket",
+        "values": [
+          "1100_1330"
+        ],
+        "weight": 0.8,
+        "description": "首次涨停时间在11:00-13:30加分。"
+      },
+      {
+        "column": "amount_ratio_bucket",
+        "values": [
+          "gte_5"
+        ],
+        "weight": -1.5,
+        "description": "成交额倍率过高降分。"
+      },
+      {
+        "column": "market_segment",
+        "values": [
+          "star"
+        ],
+        "weight": -1.5,
+        "description": "收益优先版使用的科创板降权项；风险优先版已在候选池排除科创板。"
+      },
+      {
+        "column": "turnover_rate_bucket",
+        "values": [
+          "6_10"
+        ],
+        "weight": -1.0,
+        "description": "换手率6-10区间降分。"
+      }
+    ]
   },
-  "execution_assumption": {
-    "selection_time": "T日收盘后",
-    "buy_time": "T+1开盘价",
-    "sell_time": "T+2收盘价",
-    "price_adjustment": "前复权",
-    "allow_same_day_sell": false,
-    "trade_mode": "research_only"
+  "exit_rule": {
+    "rule_name": "fixed_t2_close",
+    "max_hold_days": 2,
+    "exit_price_field": "close",
+    "description": "T+2收盘卖出。不使用止盈止损矩阵，避免日线口径下路径假设失真。"
   },
   "position": {
-    "max_holding_count": 5,
-    "max_position_pct_per_stock": 0.1,
-    "max_total_position_pct": 0.8
-  }
+    "initial_cash": 500000,
+    "target_position_pct": 0.8,
+    "max_holding_count": 1,
+    "max_total_position_pct": 0.8,
+    "cash_buffer_pct": 0.2
+  },
+  "execution_assumption": {
+    "buy_price_model": "T+1 open with dynamic slippage",
+    "sell_price_model": "T+2 close with dynamic slippage",
+    "open_limit_up_unbuyable": true,
+    "limit_down_unsellable": true,
+    "limit_down_block_stock_return": -0.2,
+    "fee_included": true,
+    "dynamic_slippage_included": true,
+    "minute_data_verified": false,
+    "order_book_verified": false,
+    "auction_verified": false,
+    "paper_trade_verified": false
+  },
+  "risk_metrics_from_latest_audit": {
+    "audit_date": "2026-06-04",
+    "equity_multiple": 45.006686,
+    "final_equity": 22503343.166107,
+    "executed_trade_count": 59,
+    "win_rate": 0.728814,
+    "avg_account_return": 0.073452,
+    "median_account_return": 0.045451,
+    "max_drawdown": -0.110076,
+    "max_profit": 0.501944,
+    "max_loss": -0.10726,
+    "max_consecutive_losses": 2,
+    "negative_month_count": 0,
+    "st_trade_count": 0,
+    "limit_down_blocked_trade_count": 0,
+    "avg_buy_slippage": 0.002153,
+    "avg_sell_slippage": 0.002525
+  },
+  "pre_paper_trade_requirements": {
+    "must_review_each_trade": true,
+    "must_generate_review_checklist": true,
+    "must_validate_minute_data_before_live": true,
+    "must_run_paper_trade_before_live": true,
+    "minimum_paper_trade_days": 20,
+    "manual_confirm_required": true
+  },
+  "paper_trade": {
+    "file_role": "模拟盘配置。只读取本地审计逐笔交易文件，生成本地模拟账本，不接券商接口，不真实下单。",
+    "input_trades_path": "reports/a_clean_exclude_star_prev0_3_bj_best_audit_trades.csv",
+    "output_prefix": "reports/paper_trade/a_clean_exclude_star_prev0_3_bj",
+    "mode": "historical_replay",
+    "allow_live_order": false,
+    "round_lot_size": 100,
+    "risk_thresholds": {
+      "max_single_trade_account_loss": -0.08,
+      "max_drawdown_warn": -0.12,
+      "max_buy_amount_ratio_warn": 0.03,
+      "max_sell_amount_ratio_warn": 0.03,
+      "max_buy_slippage_warn": 0.005,
+      "max_sell_slippage_warn": 0.005
+    }
+  },
+  "paper_candidate": {
+    "file_role": "每日模拟盘候选生成配置。只基于本地 T 日已知因子生成 T+1 计划候选，不接券商接口。",
+    "runtime_config": "config/config.json",
+    "optimization_config_key": "realistic_condition_strategy_search",
+    "output_prefix": "reports/paper_trade/a_clean_exclude_star_prev0_3_bj_candidates",
+    "default_top_n": 10,
+    "selected_count": 1,
+    "planned_action_for_selected": "PLAN_BUY_T1_OPEN",
+    "planned_action_for_watchlist": "WATCH_ONLY",
+    "include_historical_reference_columns": true,
+    "risk_thresholds": {
+      "max_buy_amount_ratio_warn": 0.03,
+      "min_fill_probability_warn": 0.6,
+      "max_fd_ratio_warn": 0.01
+    },
+    "risk_watch_rules": [
+      {
+        "name": "LOSS_OVERLAY_WATCH",
+        "description": "大亏压力测试观察规则，只打标签不硬过滤。Walk-Forward 未证明稳定样本外优势，暂不写入正式排除条件。",
+        "action": "watch_only",
+        "rules": [
+          {
+            "name": "amount_ratio_2_3_and_open_times_2_3",
+            "conditions": [
+              {
+                "column": "amount_ratio_bucket",
+                "value": "2_3"
+              },
+              {
+                "column": "open_times_bucket",
+                "value": "2_3"
+              }
+            ]
+          },
+          {
+            "name": "before_1000_and_turnover_6_10",
+            "conditions": [
+              {
+                "column": "first_time_detail_bucket",
+                "value": "before_1000"
+              },
+              {
+                "column": "turnover_rate_bucket",
+                "value": "6_10"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "paper_daily_flow": {
+    "file_role": "单日模拟盘流程配置。串联候选生成、模拟买入计划、历史模拟成交更新和资金更新。",
+    "output_prefix": "reports/paper_trade/daily_flow/a_clean_exclude_star_prev0_3_bj",
+    "input_audit_trades_path": "reports/a_clean_exclude_star_prev0_3_bj_best_audit_trades.csv",
+    "allow_live_order": false,
+    "manual_review_blocks_execution": true,
+    "mark_unmatched_as_pending": true
+  },
+  "paper_batch_flow": {
+    "file_role": "多日模拟盘批量流程配置。按日期区间批量运行候选、计划委托、成交更新、持仓更新、资金曲线和风险事件。",
+    "output_prefix": "reports/paper_trade/batch_flow/a_clean_exclude_star_prev0_3_bj",
+    "default_start_date": "20240520",
+    "default_end_date": "20260417",
+    "include_no_candidate_days": true,
+    "allow_live_order": false
+  },
+  "paper_ab_filtered_strategy": {
+    "file_role": "A严格主策略 + B0018备用策略风险过滤版的模拟盘观察配置。只用于本地paper/simulation，不接实盘。",
+    "strategy_label": "a_strict_plus_b0018_filtered",
+    "a_strategy": {
+      "description": "A策略直接使用当前candidate_filters、ranking、position和paper_candidate配置。"
+    },
+    "b_strategy": {
+      "enabled": true,
+      "only_when_a_no_candidate": true,
+      "conditions": [
+        {
+          "column": "segment_emotion_state_bucket",
+          "operator": "==",
+          "value": "warming",
+          "description": "B0018备用策略条件，只在A策略无候选日启用。"
+        }
+      ],
+      "risk_reject_rules": [
+        {
+          "name": "reject_fd_warn_or_loss_overlay",
+          "description": "过滤risk_flags包含封单/流通市值偏高或LOSS_OVERLAY_WATCH的B交易。",
+          "risk_flags_contains_any": [
+            "封单/流通市值偏高",
+            "LOSS_OVERLAY_WATCH"
+          ]
+        },
+        {
+          "name": "reject_open_times_gte_4",
+          "description": "过滤B交易中炸板次数大于等于4的候选。该规则来自60/90/120日B剩余风险压力测试，用于降低B补充策略回撤。",
+          "numeric_conditions": [
+            {
+              "column": "open_times",
+              "operator": ">=",
+              "value": 4
+            }
+          ]
+        }
+      ],
+      "execution_model": "conservative_daily_replay_fixed_t2_close"
+    },
+    "output_prefix": "reports/paper_trade/ab_filtered/a_strict_plus_b0018_filtered",
+    "allow_live_order": false,
+    "live_order_enabled": false,
+    "requires_minute_k_validation": true
+  },
+  "strategy_release_validation": {
+    "file_role": "策略发布前稳定性验证配置。用于固定策略版本、检查样本外和近端窗口稳定性，不用于每日改策略。",
+    "strategy_label": "a_strict_plus_b0018_filtered",
+    "release_mode": "paper_ready_review_only",
+    "rebalance_cycle": "quarterly_or_half_year",
+    "oos_start_date": "20260101",
+    "oos_end_date": "20260518",
+    "recent_windows": [
+      60,
+      90,
+      120
+    ],
+    "gates": {
+      "min_equity_multiple": 1.05,
+      "min_win_rate": 0.6,
+      "max_drawdown_abs": 0.12,
+      "max_single_loss_abs": 0.08,
+      "min_executed_trade_count": 5,
+      "max_b_trade_share": 0.55,
+      "max_limit_down_blocked_trade_count": 0,
+      "require_live_order_disabled": true,
+      "require_minute_k_validation_before_live": true
+    },
+    "output_prefix": "reports/strategy_release/a_strict_plus_b0018_filtered_release_validation",
+    "live_order_enabled": false
+  },
+  "risk_notice": "该配置只表示当前本地回测和审计口径下的候选策略，不代表可直接实盘。实盘前必须完成分钟K、盘口档位、集合竞价、滑点、跌停卖出和模拟盘验证。"
 }

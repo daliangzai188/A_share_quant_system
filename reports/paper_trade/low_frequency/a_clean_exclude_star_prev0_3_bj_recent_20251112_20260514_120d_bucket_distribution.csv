@@ -1,0 +1,17 @@
+﻿condition_column,required_value,observed_value,raw_candidate_count,is_required_value
+segment_limit_up_count_bucket,lt_5,20_40,4163,False
+segment_limit_up_count_bucket,lt_5,40_80,1477,False
+segment_limit_up_count_bucket,lt_5,10_20,639,False
+segment_limit_up_count_bucket,lt_5,lt_5,476,True
+segment_limit_up_count_bucket,lt_5,5_10,298,False
+market_chain_count_bucket,8_15,8_15,2815,True
+market_chain_count_bucket,8_15,15_30,2436,False
+market_chain_count_bucket,8_15,3_8,1464,False
+market_chain_count_bucket,8_15,gte_30,338,False
+fd_ratio_bucket,0_5pct_1pct,0_5pct_1pct,1980,True
+fd_ratio_bucket,0_5pct_1pct,1pct_2pct,1896,False
+fd_ratio_bucket,0_5pct_1pct,0_1pct_0_3pct,977,False
+fd_ratio_bucket,0_5pct_1pct,0_3pct_0_5pct,907,False
+fd_ratio_bucket,0_5pct_1pct,2pct_5pct,813,False
+fd_ratio_bucket,0_5pct_1pct,lt_0_1pct,444,False
+fd_ratio_bucket,0_5pct_1pct,gte_5pct,36,False

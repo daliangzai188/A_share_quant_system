@@ -1,0 +1,2 @@
+﻿signal_date,operation_status,next_action,candidate_count,selected_count,planned_order_count,manual_review_required,manual_review_count,historical_execution_found,top_ts_code,top_name,risk_flags,planned_order_date,planned_position_pct,planned_amount_by_equity,reference_price,round_lot_shares,execution_event_count,position_update_count,equity_update_count,live_order_enabled,safety_note
+20260417,HISTORICAL_SIM_FILLED,复盘历史模拟成交闭环，检查买入、卖出、收益、回撤是否合理。,4,1,1,False,0,True,301319.SZ,唯特偶,无,20260420,0.8,17389170.543353807,68.87,252400,2,1,1,False,只允许模拟观察；未完成人工复核、分钟K和盘口验证前，不允许实盘。

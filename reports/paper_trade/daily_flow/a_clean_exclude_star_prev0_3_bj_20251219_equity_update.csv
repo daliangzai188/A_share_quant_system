@@ -1,0 +1,2 @@
+﻿signal_date,equity_event,event_date,equity_before,equity_after,account_return,message
+20251219,NO_CLOSED_TRADE,,,,0.0,没有完整卖出成交，资金不更新。

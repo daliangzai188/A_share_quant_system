@@ -1,0 +1,2 @@
+﻿paper_order_id,signal_date,planned_order_date,side,ts_code,name,planned_action,order_status,planned_position_pct,planned_equity,planned_amount_by_equity,reference_price,estimated_shares,round_lot_shares,risk_flags,manual_review_required,manual_review_status,manual_review_reason,live_order_enabled
+PLAN-20260417-301319.SZ-B,20260417,20260420,BUY,301319.SZ,唯特偶,PLAN_BUY_T1_OPEN,PLAN_ONLY,0.8,21736463.179192256,17389170.543353807,68.87,252492.67523382904,252400,无,False,NOT_REQUIRED,,False

@@ -1,0 +1,10 @@
+﻿stage,days_with_candidate,zero_candidate_days,avg_count,median_count,max_count
+raw_count,120,0,58.775,54.5,161
+after_universe_count,120,0,56.78333333333333,53.0,144
+after_include_1_segment_limit_up_count_bucket=lt_5,93,27,2.5166666666666666,3.0,7
+after_include_2_market_chain_count_bucket=8_15,43,77,1.225,0.0,7
+after_include_3_fd_ratio_bucket=0_5pct_1pct,24,96,0.31666666666666665,0.0,4
+after_exclude_condition_1_amount_ratio_bucket=0_8_1_2,20,100,0.25833333333333336,0.0,4
+after_exclude_condition_2_market_segment=star,20,100,0.25833333333333336,0.0,4
+after_exclude_rule_1_exclude_bj_prev_pct_0_3,20,100,0.25833333333333336,0.0,4
+final_count,20,100,0.25833333333333336,0.0,4
