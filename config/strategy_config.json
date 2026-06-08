@@ -34,7 +34,7 @@
       "star"
     ],
     "exclude_market_segments_note": "风险过滤版排除科创板。当前验证显示科创板拖累稳定性，暂不进入模拟盘候选。",
-    "exclude_bj": false,
+    "exclude_bj": true,
     "exclude_chi_next": false,
     "exclude_sh_main": false,
     "exclude_sz_main": false
