@@ -5,3 +5,6 @@ python-dotenv>=1.0.0
 requests>=2.31.0
 tenacity>=8.2.0
 openpyxl>=3.1.0
+
+# xtquant 由 QMT / miniQMT 客户端或券商安装包提供，通常不通过 PyPI 安装。
+# 实盘接入脚本会在运行时懒加载 xtquant；未安装时只影响 QMT 相关脚本。

@@ -5,6 +5,8 @@
 > 当前阶段：本地数据研究 + 回测系统 + 模拟交易  
 > 默认不接实盘，不进行真实下单。
 
+> 实盘接入进度：已新增 QMT / miniQMT 接入骨架。当前默认只支持账户只读检查和计划单实盘预览，真实下单仍由配置和命令行双重确认关闭。
+
 ---
 
 ## 一、项目目标
@@ -133,6 +135,17 @@ A股龙头战法最核心的问题不是股票涨不涨，而是能不能买到�
 - 券商官方量化接口
 
 默认不启用实盘交易。
+
+当前已加入第一版 QMT 接入骨架：
+
+- `src/broker_adapter.py`：统一券商适配器抽象层。
+- `src/qmt_adapter.py`：QMT / miniQMT 适配器，运行时懒加载 `xtquant`。
+- `src/live_order_gateway.py`：A+B+C 计划单转实盘预览和真实下单安全闸门。
+- `scripts/qmt_account_check.py`：QMT 只读账户检查。
+- `scripts/preview_live_orders.py`：读取每日计划单并做实盘执行前校验，不下单。
+- `scripts/submit_live_orders.py`：真实下单入口，默认配置会拒绝执行。
+
+详细流程见 `docs/qmt_live_integration.md`。
 
 ---
 

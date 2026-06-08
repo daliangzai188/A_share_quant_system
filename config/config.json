@@ -1,6 +1,37 @@
 {
   "project_name": "A股量化交易系统",
   "trade_mode": "paper",
+  "broker_adapter_enabled": false,
+  "qmt_enabled": false,
+  "broker": {
+    "file_role": "券商连接配置。默认关闭，只用于 QMT / miniQMT 只读检查、实盘预览和后续真实下单。",
+    "enabled": false,
+    "adapter": "qmt",
+    "broker_name": "xiangcai_or_qmt_broker",
+    "account_id_env": "QMT_ACCOUNT_ID",
+    "account_type_env": "QMT_ACCOUNT_TYPE",
+    "qmt_path_env": "QMT_PATH",
+    "session_id_env": "QMT_SESSION_ID",
+    "session_id": 1001
+  },
+  "live_trade": {
+    "file_role": "实盘交易安全闸门。默认关闭真实下单；即使 QMT 可连接，也只允许账户检查和订单预览。",
+    "enabled": false,
+    "real_order_enabled": false,
+    "real_order_confirm_text": "A_SYSTEM_REAL_ORDER_CONFIRMED",
+    "strategy_name": "A_SYSTEM_ABC",
+    "default_price_type": "LATEST_PRICE",
+    "allow_buy": true,
+    "allow_sell": true,
+    "round_lot_size": 100,
+    "max_position_pct": 0.8,
+    "max_single_order_amount": 50000,
+    "limit_price_tolerance": 0.001,
+    "reject_limit_up_buy": true,
+    "reject_limit_down_sell": true,
+    "duplicate_order_check": true,
+    "output_prefix": "reports/live_trade/qmt_live_order"
+  },
   "data_source": {
     "primary": "tushare",
     "token_env": "TUSHARE_TOKEN",
