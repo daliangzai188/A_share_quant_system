@@ -1,0 +1,2 @@
+﻿paper_order_id,signal_date,strategy_leg,planned_order_date,side,ts_code,name,planned_action,order_status,planned_position_pct,planned_equity,planned_amount_by_equity,reference_price,estimated_shares,round_lot_shares,risk_flags,live_order_enabled
+AB-20240926-C-002036.SZ,20240926,C,20240927,BUY,002036.SZ,联创电子,PLAN_BUY_T1_OPEN,PLAN_ONLY,0.8,500000.0,400000.0,7.8,51282,51200,无,False

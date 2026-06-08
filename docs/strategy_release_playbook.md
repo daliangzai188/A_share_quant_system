@@ -25,7 +25,7 @@ docs/strategy_release_playbook.md
 当前固定观察策略：
 
 ```text
-a_strict_plus_b0018_filtered
+a_strict_plus_b0018_filtered_plus_c_hold3
 ```
 
 策略组成：
@@ -37,10 +37,29 @@ a_strict_plus_b0018_filtered
    - `risk_flags` 包含 `封单/流通市值偏高`
    - `risk_flags` 包含 `LOSS_OVERLAY_WATCH`
    - `open_times >= 4`
-5. 仓位口径：单笔 80%。
-6. 卖出口径：T+2 收盘。
-7. 当前仍是 paper / simulation 阶段。
-8. 默认不接实盘，不调用 QMT，不下真实订单。
+5. C 备用龙头战法只在 A/B 没有历史模拟成交时启用，不能抢 A/B 已成交交易。
+6. C 条件：`market_chain_count_bucket=15_30` 且 `segment_limit_up_count_bucket=40_80`。
+7. C 继承 B 的风险过滤：`封单/流通市值偏高`、`LOSS_OVERLAY_WATCH`、`open_times >= 4`。
+8. 仓位口径：单笔 80%。
+9. A/B 卖出口径：T+2 收盘；C 卖出口径：T+3 收盘。
+10. 当前仍是 paper / simulation 阶段。
+11. 默认不接实盘，不调用 QMT，不下真实订单。
+
+当前最近 2 年日线保守成交口径结果：
+
+| 版本 | 资金倍数 | 成交笔数 | C补位笔数 | 胜率 | 最大回撤 | 最大单笔亏损 | 跌停阻塞 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| A+B 基础 | 58.49 倍 | 77 | 0 | 74.03% | -13.64% | -11.80% | 0 |
+| A+B+C 当前落地观察版 | 110.22 倍 | 90 | 18 | 72.22% | -16.48% | -12.03% | 0 |
+
+说明：
+
+```text
+A+B 是基础，不允许因为 C 的存在改变 A/B 已成交日期。
+C 只在 A/B 没有历史模拟成交时补位。
+当前 C 不强制分钟 K 验收，但必须按日线保守口径处理涨停排队买不到、跌停排队卖不出。
+当前 C 已写入每日模拟盘操作台，但仍不是自动实盘策略。
+```
 
 当前发布验证结论：
 
@@ -54,7 +73,9 @@ PASS_PAPER_READY_REVIEW_ONLY_MINUTE_K_REQUIRED
 通过当前发布前稳定性阈值；
 可以进入下一阶段模拟 / 小资金人工确认前复核；
 仍不允许自动实盘；
-分钟K、集合竞价、盘口五档验证仍是硬缺口。
+对 C 来说，分钟 K 不是当前硬验收项；
+C 当前硬验收项是涨停排队买不到、跌停排队卖不出的保守成交处理；
+自动实盘前仍需要券商接口、风控、人工确认和成交可行性检查。
 ```
 
 ---
@@ -64,8 +85,8 @@ PASS_PAPER_READY_REVIEW_ONLY_MINUTE_K_REQUIRED
 每天观察的作用不是改策略，而是检查执行链路：
 
 1. 今天有没有候选。
-2. 候选来自 A 还是 B。
-3. B 是否被风险过滤拦截。
+2. 候选来自 A、B 还是 C。
+3. B/C 是否被风险过滤拦截。
 4. 是否生成计划委托。
 5. 是否需要人工复核。
 6. 是否存在无法成交、无法卖出、滑点异常等执行问题。
@@ -92,7 +113,7 @@ PASS_PAPER_READY_REVIEW_ONLY_MINUTE_K_REQUIRED
 2. 如果开始了，已经运行了多少个交易日？
 3. 最近一次策略发布验证是什么日期？
 4. 当前是否要继续执行当前版本，还是准备季度 / 半年重新训练？
-5. 是否已经补齐分钟 K、集合竞价、盘口五档验证？
+5. C 的涨停排队买不到、跌停排队卖不出是否仍然按保守口径生效？
 6. 最近是否出现连续亏损、无法成交、跌停无法卖出、滑点异常？
 7. 当前目标是：
    - 继续执行固定策略
@@ -141,8 +162,8 @@ REVIEW_REQUIRED_PLAN_ONLY
     有候选，但必须人工复核。
     只能进入模拟观察，不允许实盘。
 
-B_SELECTED_HIT_RISK_REJECT_RULES
-    B 有候选但被风险过滤拦截。
+B_SELECTED_HIT_RISK_REJECT_RULES / C_SELECTED_HIT_RISK_REJECT_RULES
+    B 或 C 有候选但被风险过滤拦截。
     不找替代标的。
 
 HISTORICAL_SIM_FILLED
@@ -263,11 +284,11 @@ PASS_PAPER_READY_REVIEW_ONLY_MINUTE_K_REQUIRED
 
 当前还缺：
 
-1. 分钟 K 路径验证。
-2. 集合竞价成交验证。
-3. 盘口五档买入卖出滑点验证。
-4. 涨停排队能否买入验证。
-5. 跌停排队能否卖出验证。
+1. 涨停排队能否买入验证：当前 C 使用日线保守口径，T+1 开盘涨停直接视为买不到。
+2. 跌停排队能否卖出验证：当前 C 使用日线保守口径，卖出日跌停视为排队卖不出并顺延。
+3. 集合竞价成交验证。
+4. 盘口五档买入卖出滑点验证。
+5. 分钟 K 路径验证：C 当前不强制，但有数据后可作为更高精度复核。
 6. 小资金人工确认交易验证。
 7. 连续运行日志复盘。
 
@@ -296,7 +317,7 @@ qmt_enabled = false
 1. 先读取 `docs/strategy_release_playbook.md`。
 2. 问你当前已经模拟 / 小资金运行多久。
 3. 如果没有运行，先执行发布验证。
-4. 如果发布验证 PASS，下一步是补分钟 K / 盘口成交真实性验证。
+4. 如果发布验证 PASS，下一步是确认涨停/跌停排队保守成交规则仍然生效；盘口和分钟数据作为更高精度复核。
 5. 如果发布验证 FAIL，下一步是重新优化策略。
 6. 如果已经运行到季度 / 半年，下一步是重新训练和重新发布。
 7. 如果只是单日观察异常，不直接改策略，先归类是数据问题、成交问题、风控问题还是策略衰减。
@@ -312,7 +333,7 @@ cd /Users/user/Desktop/A_System
 .venv/bin/python -B scripts/run_strategy_release_validation.py
 ```
 
-单日 A+B filtered 操作台：
+单日 A+B+C filtered 操作台：
 
 ```bash
 cd /Users/user/Desktop/A_System
@@ -341,12 +362,14 @@ cd /Users/user/Desktop/A_System
 |---|---|
 | `config/strategy_config.json` | 当前策略参数、发布验证阈值、实盘禁用开关 |
 | `scripts/run_strategy_release_validation.py` | 策略发布前稳定性验证 |
-| `scripts/run_paper_ab_filtered_daily_ops.py` | A+B filtered 每日模拟盘操作台 |
-| `scripts/run_paper_ab_filtered_observation_window.py` | A+B filtered 历史窗口回放 |
+| `scripts/run_paper_ab_filtered_daily_ops.py` | A+B+C filtered 每日模拟盘操作台 |
+| `scripts/run_paper_ab_filtered_observation_window.py` | A+B filtered 历史窗口回放；C 补位另见 backup_strategy_c 报告 |
 | `scripts/stress_test_ab_filtered_b_residual_filters.py` | B 备用策略剩余风险过滤压力测试 |
+| `scripts/refine_backup_strategy_c_sort_exit.py` | C 备用策略排序和卖出规则精修 |
 | `reports/strategy_release/` | 发布验证报告 |
 | `reports/paper_trade/ab_filtered_daily_ops/` | 每日模拟盘操作台输出 |
 | `reports/paper_trade/ab_filtered/` | A+B filtered 窗口回放和压力测试报告 |
+| `reports/paper_trade/backup_strategy_c/` | C 备用策略搜索、精修和 A+B+C 对比报告 |
 
 ---
 

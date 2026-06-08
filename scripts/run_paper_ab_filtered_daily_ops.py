@@ -38,6 +38,7 @@ from scripts.search_paper_backup_strategy_b import (
 )
 from src.paper_candidate_generator import PaperCandidateGenerator
 from src.paper_daily_flow import PaperDailyFlowRunner
+from src.trade_replay import ConservativeTradeReplay, ReplayRule
 from src.utils.config import load_json_config
 from src.utils.logger import setup_logger
 
@@ -50,7 +51,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--top-n", type=int, default=None, help="候选输出数量，不传则读取配置。")
     parser.add_argument(
         "--output-prefix",
-        default="reports/paper_trade/ab_filtered_daily_ops/a_strict_plus_b0018_filtered",
+        default="reports/paper_trade/ab_filtered_daily_ops/a_strict_plus_b0018_filtered_plus_c_hold3",
         help="输出文件前缀。",
     )
     return parser.parse_args()
@@ -178,6 +179,74 @@ def resolve_b_execution(
     return replayed, "HISTORICAL_SIM_FILLED", account_return, "b_conservative_daily_replay", "B 日线保守成交回放完成。"
 
 
+def configured_c_conditions(config: dict[str, Any]) -> list[dict[str, str]]:
+    ab_config = config.get("paper_ab_filtered_strategy", {})
+    c_config = ab_config.get("c_strategy", {})
+    if not bool(c_config.get("enabled", False)):
+        return []
+    conditions = []
+    for condition in c_config.get("conditions", []):
+        conditions.append(
+            {
+                "column": str(condition["column"]),
+                "value": str(condition["value"]),
+            }
+        )
+    return conditions
+
+
+def configured_c_exit_rule(config: dict[str, Any]) -> ReplayRule:
+    c_config = config.get("paper_ab_filtered_strategy", {}).get("c_strategy", {})
+    rule = c_config.get("exit_rule", {})
+    if not rule:
+        rule = {"rule_name": "fixed_t2_close", "max_hold_days": 2, "exit_price_field": "close"}
+    return ReplayRule(
+        rule_name=str(rule["rule_name"]),
+        max_hold_days=int(rule["max_hold_days"]),
+        exit_price_field=str(rule.get("exit_price_field", "close")),
+        stop_loss=float(rule["stop_loss"]) if "stop_loss" in rule else None,
+        take_profit=float(rule["take_profit"]) if "take_profit" in rule else None,
+    )
+
+
+def replay_selected_with_rule(
+    selected: pd.DataFrame,
+    runtime_config_path: str | Path,
+    rule: ReplayRule,
+) -> pd.DataFrame:
+    selected = selected.copy()
+    if selected.empty:
+        return pd.DataFrame()
+    if "trade_date" not in selected.columns and "signal_date" in selected.columns:
+        selected["trade_date"] = selected["signal_date"].map(normalize_date)
+    replay_engine = ConservativeTradeReplay(config_path=runtime_config_path)
+    forward = replay_engine.load_forward_prices()
+    samples = selected.merge(forward, on=["trade_date", "ts_code"], how="left", validate="one_to_one")
+    replayed = replay_engine.replay_rule(samples, rule)
+    replayed["strict_account_return"] = pd.to_numeric(replayed["daily_return"], errors="coerce").fillna(0.0)
+    replayed["strict_return_source"] = f"c_conservative_daily_replay_{rule.rule_name}"
+    return replayed.sort_values(["trade_date", "ts_code"]).reset_index(drop=True)
+
+
+def resolve_c_execution(
+    selected_c: pd.DataFrame,
+    runtime_config_path: str | Path,
+    config: dict[str, Any],
+) -> tuple[pd.DataFrame, str, float, str, str]:
+    replay_rule = configured_c_exit_rule(config)
+    replayed = replay_selected_with_rule(selected_c, runtime_config_path, replay_rule)
+    if replayed.empty:
+        return replayed, "PLAN_ONLY_PENDING", 0.0, "", "C 未生成历史回放结果，只保留模拟计划。"
+    row = replayed.iloc[0]
+    if not to_bool(row.get("buy_executed", False)):
+        return replayed, "BUY_REJECTED", 0.0, row.get("strict_return_source", "c_conservative_daily_replay"), str(row.get("buy_reject_reason", ""))
+    if not to_bool(row.get("sell_executed", False)):
+        return replayed, "SELL_UNRESOLVED", 0.0, row.get("strict_return_source", "c_conservative_daily_replay"), str(row.get("sell_reject_reason", ""))
+    account_return = to_float(row.get("strict_account_return", 0.0))
+    note = f"C 日线保守成交回放完成，卖出规则={replay_rule.rule_name}。"
+    return replayed, "HISTORICAL_SIM_FILLED", account_return, row.get("strict_return_source", "c_conservative_daily_replay"), note
+
+
 def estimate_planned_order(config: dict[str, Any], selected: pd.Series, signal_date: str) -> pd.DataFrame:
     position = config.get("position", {})
     paper_trade = config.get("paper_trade", {})
@@ -248,6 +317,8 @@ def build_checklist(
     a_candidates: pd.DataFrame,
     b_candidates: pd.DataFrame,
     b_rejected: pd.DataFrame,
+    c_candidates: pd.DataFrame,
+    c_rejected: pd.DataFrame,
 ) -> pd.DataFrame:
     if selected.empty:
         return pd.DataFrame(
@@ -256,10 +327,12 @@ def build_checklist(
                     "signal_date": signal_date,
                     "strategy_leg": "NONE",
                     "operation_status": "NO_SELECTED",
-                    "next_action": "A无候选且B无可用候选，今日不生成模拟买入计划。",
+                    "next_action": "A/B/C均无可用候选，今日不生成模拟买入计划。",
                     "a_candidate_count": int(len(a_candidates)),
                     "b_candidate_count": int(len(b_candidates)),
                     "b_rejected_by_filter_count": int(len(b_rejected)),
+                    "c_candidate_count": int(len(c_candidates)),
+                    "c_rejected_by_filter_count": int(len(c_rejected)),
                     "selected_count": 0,
                     "planned_order_count": 0,
                     "manual_review_required": False,
@@ -289,6 +362,8 @@ def build_checklist(
                 "a_candidate_count": int(len(a_candidates)),
                 "b_candidate_count": int(len(b_candidates)),
                 "b_rejected_by_filter_count": int(len(b_rejected)),
+                "c_candidate_count": int(len(c_candidates)),
+                "c_rejected_by_filter_count": int(len(c_rejected)),
                 "selected_count": 1,
                 "planned_order_count": int(len(planned_orders)),
                 "manual_review_required": needs_review,
@@ -303,7 +378,7 @@ def build_checklist(
                 "execution_note": row.get("execution_note", ""),
                 "paper_observation_allowed": False,
                 "live_order_enabled": False,
-                "safety_note": "A+B filtered 只允许模拟观察；未完成分钟K、盘口和连续模拟验证前，不允许实盘。",
+                "safety_note": "A+B+C filtered 只允许模拟观察；未完成分钟K、盘口和连续模拟验证前，不允许实盘。",
             }
         ]
     )
@@ -314,6 +389,8 @@ def output_paths(output_prefix: Path, signal_date: str) -> dict[str, Path]:
         "a_candidates": output_prefix.with_name(output_prefix.name + f"_{signal_date}_a_candidates.csv"),
         "b_candidates": output_prefix.with_name(output_prefix.name + f"_{signal_date}_b_candidates.csv"),
         "b_rejected": output_prefix.with_name(output_prefix.name + f"_{signal_date}_b_rejected_by_filter.csv"),
+        "c_candidates": output_prefix.with_name(output_prefix.name + f"_{signal_date}_c_candidates.csv"),
+        "c_rejected": output_prefix.with_name(output_prefix.name + f"_{signal_date}_c_rejected_by_filter.csv"),
         "selected": output_prefix.with_name(output_prefix.name + f"_{signal_date}_selected.csv"),
         "planned_orders": output_prefix.with_name(output_prefix.name + f"_{signal_date}_planned_orders.csv"),
         "manual_review": output_prefix.with_name(output_prefix.name + f"_{signal_date}_manual_review.csv"),
@@ -326,7 +403,7 @@ def output_paths(output_prefix: Path, signal_date: str) -> dict[str, Path]:
 def write_markdown(path: Path, checklist: pd.DataFrame, selected: pd.DataFrame, paths: dict[str, Path]) -> None:
     output_rows = [{"name": name, "path": str(file_path)} for name, file_path in paths.items()]
     outputs = pd.DataFrame(output_rows)
-    content = f"""# A+B filtered 每日模拟盘操作台
+    content = f"""# A+B+C filtered 每日模拟盘操作台
 
 本报告只用于本地模拟盘流程，不接实盘，不调用 QMT，不下真实订单。
 
@@ -345,7 +422,8 @@ def write_markdown(path: Path, checklist: pd.DataFrame, selected: pd.DataFrame, 
 ## 执行限制
 
 - A 优先；只有 A 无选中标的时才启用 B。
-- B 命中 `risk_reject_rules` 时直接跳过，不寻找下一只替代。
+- C 只在 A/B 没有生成历史模拟成交时启用。
+- B/C 命中 `risk_reject_rules` 时直接跳过，不寻找下一只替代。
 - `live_order_enabled` 必须为 `False`。
 - 当前仍未完成分钟 K、盘口五档、集合竞价和连续模拟盘验证，不允许实盘。
 """
@@ -377,6 +455,8 @@ def main() -> None:
 
     b_candidates = pd.DataFrame()
     b_rejected = pd.DataFrame()
+    c_candidates = pd.DataFrame()
+    c_rejected = pd.DataFrame()
     execution_reference = pd.DataFrame()
     selected = pd.DataFrame()
     selection_status = ""
@@ -414,10 +494,61 @@ def main() -> None:
                     return_source,
                     note,
                 )
+                if operation_status != "HISTORICAL_SIM_FILLED":
+                    selection_status = f"A_NO_SELECTED_B_NOT_FILLED:{operation_status}"
+
+        if selected.empty or (
+            not selected.empty
+            and str(selected.iloc[0].get("strategy_leg", "")) == "B"
+            and str(selected.iloc[0].get("operation_status", "")) != "HISTORICAL_SIM_FILLED"
+        ):
+            c_conditions = configured_c_conditions(config)
+            if c_conditions:
+                c_config = backup_config(config, c_conditions)
+                c_generator = build_generator(args.strategy_config, c_config)
+                c_filtered = c_generator.apply_strategy_filters(all_candidates)
+                c_candidates = apply_and_rank(c_generator, c_filtered, signal_date, top_n=args.top_n)
+                c_selected = selected_candidate(c_candidates, selected_action)
+                if c_selected is not None:
+                    c_selected_frame = pd.DataFrame([c_selected])
+                    c_rejected_mask = reject_b_risk_mask(c_selected_frame, config)
+                    if bool(c_rejected_mask.iloc[0]):
+                        c_rejected = c_selected_frame.copy()
+                        c_rejected["reject_reason"] = "C_SELECTED_HIT_RISK_REJECT_RULES"
+                        if selected.empty:
+                            selection_status = "A_B_NO_FILLED_C_RISK_FILTERED"
+                    else:
+                        c_reference, c_status, c_return, c_source, c_note = resolve_c_execution(
+                            c_selected_frame,
+                            args.runtime_config,
+                            config,
+                        )
+                        execution_reference = c_reference
+                        selected = build_selected_row(
+                            "C",
+                            c_selected,
+                            c_status,
+                            f"A_B_NO_FILLED_C_SELECTED:{condition_text(c_conditions)}",
+                            c_return,
+                            c_source,
+                            c_note,
+                        )
+                elif selected.empty:
+                    selection_status = "A_B_NO_FILLED_C_NO_SELECTED"
 
     planned_orders = estimate_planned_order(config, selected.iloc[0], signal_date) if not selected.empty else pd.DataFrame()
     manual_review = build_manual_review(config, selected, signal_date)
-    checklist = build_checklist(signal_date, selected, planned_orders, manual_review, a_candidates, b_candidates, b_rejected)
+    checklist = build_checklist(
+        signal_date,
+        selected,
+        planned_orders,
+        manual_review,
+        a_candidates,
+        b_candidates,
+        b_rejected,
+        c_candidates,
+        c_rejected,
+    )
     if selection_status and selected.empty:
         checklist["selection_status"] = selection_status
 
@@ -425,6 +556,8 @@ def main() -> None:
     a_candidates.to_csv(paths["a_candidates"], index=False, encoding="utf-8-sig")
     b_candidates.to_csv(paths["b_candidates"], index=False, encoding="utf-8-sig")
     b_rejected.to_csv(paths["b_rejected"], index=False, encoding="utf-8-sig")
+    c_candidates.to_csv(paths["c_candidates"], index=False, encoding="utf-8-sig")
+    c_rejected.to_csv(paths["c_rejected"], index=False, encoding="utf-8-sig")
     selected.to_csv(paths["selected"], index=False, encoding="utf-8-sig")
     planned_orders.to_csv(paths["planned_orders"], index=False, encoding="utf-8-sig")
     manual_review.to_csv(paths["manual_review"], index=False, encoding="utf-8-sig")
@@ -432,7 +565,7 @@ def main() -> None:
     checklist.to_csv(paths["checklist"], index=False, encoding="utf-8-sig")
     write_markdown(paths["markdown"], checklist, selected, paths)
 
-    print("A+B filtered 每日模拟盘操作台完成：")
+    print("A+B+C filtered 每日模拟盘操作台完成：")
     for name, path in paths.items():
         print(f"- {name}: {path}")
     print(checklist.to_string(index=False))

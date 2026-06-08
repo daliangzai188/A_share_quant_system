@@ -298,8 +298,8 @@
     "allow_live_order": false
   },
   "paper_ab_filtered_strategy": {
-    "file_role": "A严格主策略 + B0018备用策略风险过滤版的模拟盘观察配置。只用于本地paper/simulation，不接实盘。",
-    "strategy_label": "a_strict_plus_b0018_filtered",
+    "file_role": "A严格主策略 + B0018备用策略风险过滤版 + C龙头补位策略的模拟盘观察配置。只用于本地paper/simulation，不接实盘。",
+    "strategy_label": "a_strict_plus_b0018_filtered_plus_c_hold3",
     "a_strategy": {
       "description": "A策略直接使用当前candidate_filters、ranking、position和paper_candidate配置。"
     },
@@ -336,6 +336,62 @@
         }
       ],
       "execution_model": "conservative_daily_replay_fixed_t2_close"
+    },
+    "c_strategy": {
+      "enabled": true,
+      "only_when_a_and_b_no_candidate": true,
+      "description": "C备用龙头战法条件，只在A严格策略和B0018过滤版都无候选且没有持仓占用时启用。当前只用于本地研究和模拟盘观察，不接实盘。",
+      "conditions": [
+        {
+          "column": "market_chain_count_bucket",
+          "operator": "==",
+          "value": "15_30",
+          "description": "全市场连板数量在15到30之间，代表龙头情绪较强但未进入极端过热。"
+        },
+        {
+          "column": "segment_limit_up_count_bucket",
+          "operator": "==",
+          "value": "40_80",
+          "description": "所属市场分段涨停数量在40到80之间，代表局部分段有较强涨停热度。"
+        }
+      ],
+      "risk_reject_rules_source": "inherit_b_strategy_risk_reject_rules",
+      "execution_model": "conservative_daily_replay_fixed_hold3_close",
+      "minute_data_required_for_acceptance": false,
+      "queue_execution_assumption": {
+        "limit_up_open_buy_rejected": true,
+        "limit_down_sell_delayed": true,
+        "description": "C补位策略当前不强制分钟K验证；最低验收口径是日线保守涨跌停排队验证：T+1开盘涨停视为排队买不到，卖出日跌停视为排队卖不出并顺延到可卖日。"
+      },
+      "exit_rule": {
+        "rule_name": "fixed_hold3_close",
+        "max_hold_days": 3,
+        "exit_price_field": "close",
+        "description": "C补位策略使用T+3收盘卖出。最近2年精修结果显示该规则相对C的T+2口径提升组合收益且未扩大组合最大回撤。"
+      },
+      "latest_2y_audit": {
+        "audit_date": "2026-06-06",
+        "window": "20240520-20260514",
+        "a_plus_b_equity_multiple": 58.490196,
+        "a_plus_b_trade_count": 77,
+        "a_plus_b_max_drawdown": -0.136368,
+        "a_plus_b_plus_c_equity_multiple": 110.221672,
+        "a_plus_b_plus_c_trade_count": 90,
+        "c_trade_count": 18,
+        "a_plus_b_plus_c_win_rate": 0.722222,
+        "a_plus_b_plus_c_max_drawdown": -0.164756,
+        "c_buy_rejected_count": 2,
+        "c_sell_unresolved_count": 0,
+        "c_limit_down_blocked_trade_count": 0,
+        "c_limit_up_queue_buy_rejected_count": 2,
+        "c_limit_down_queue_blocked_count": 0,
+        "c_sort_rule": "profit_source_oos_resilient",
+        "c_exit_rule": "fixed_hold3_close",
+        "source_report": "reports/paper_trade/backup_strategy_c/current_config_c_exit_refine_exit5_20240520_20260514_481d_summary.csv",
+        "minute_data_verified": false,
+        "minute_data_required_for_c_acceptance": false,
+        "order_book_verified": false
+      }
     },
     "output_prefix": "reports/paper_trade/ab_filtered/a_strict_plus_b0018_filtered",
     "allow_live_order": false,

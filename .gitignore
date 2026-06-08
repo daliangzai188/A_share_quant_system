@@ -46,3 +46,4 @@ data/database/*
 .DS_Store
 .idea/
 .vscode/
+reports/paper_trade/batch_flow/*.csv
