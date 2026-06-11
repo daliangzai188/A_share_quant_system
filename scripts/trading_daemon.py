@@ -40,7 +40,7 @@ from src.utils.time_utils import BEIJING_TZ, now_beijing, today_beijing
 SCHEDULE = [
     datetime.time(9, 20),   # 盘前
     datetime.time(14, 50),  # 盘中
-    datetime.time(15, 35),  # 收盘
+    datetime.time(15, 10),  # 收盘
 ]
 PYTHON = str(PROJECT_ROOT / ".venv" / "bin" / "python")
 POSITIONS_FILE = PROJECT_ROOT / "data" / "processed" / "positions.json"
@@ -106,10 +106,15 @@ def is_trade_day(date: datetime.date) -> bool:
 
 def next_n_trade_days(date: datetime.date, n: int) -> datetime.date:
     cal = _load_calendar()
+    max_cal_date = max(cal) if cal else ""
     count, d = 0, date
     while count < n:
         d += datetime.timedelta(days=1)
-        is_open = (d.strftime("%Y%m%d") in cal) if cal else (d.weekday() < 5)
+        d_str = d.strftime("%Y%m%d")
+        if cal and d_str <= max_cal_date:
+            is_open = d_str in cal
+        else:
+            is_open = d.weekday() < 5  # 超出日历范围，降级用周历
         if is_open:
             count += 1
     return d
@@ -368,7 +373,10 @@ def job_post_market() -> None:
         ("run_paper_ab_filtered_daily_ops.py", "⑥ A+B+C 信号生成",      TIMEOUT_SIGNAL_STEP),
     ]
 
+    today_str = today_beijing().strftime("%Y%m%d")
     extra_args: dict[str, list[str]] = {
+        # 收盘后采集到今天（15:35 后数据已落地），确保今日涨停数据纳入明日信号
+        "collect_all_data.py": ["--end-date", today_str],
         "run_paper_ab_filtered_daily_ops.py": ["--top-n", "10"],
     }
 
@@ -383,6 +391,35 @@ def job_post_market() -> None:
             logger().error("%s 异常：%s，继续后续步骤", desc, e)
 
     logger().info("===== 收盘流水线完成 =====")
+    report_next_day_candidates()
+
+
+def report_next_day_candidates() -> None:
+    """读取最新 planned_orders，播报下一交易日开仓候选。"""
+    try:
+        import pandas as pd
+        next_date = next_n_trade_days(today_beijing(), 1)
+        next_date_str = next_date.strftime("%Y-%m-%d")
+        pattern = str(PROJECT_ROOT / "reports/paper_trade/ab_filtered_daily_ops/*_planned_orders.csv")
+        files = sorted(glob.glob(pattern))
+        if not files:
+            logger().warning("【明日候选】未找到 planned_orders 文件，信号生成可能失败")
+            return
+        try:
+            orders = pd.read_csv(files[-1])
+        except Exception:
+            logger().info("【明日候选】%s 无开仓计划，A/B/C 均无符合条件标的", next_date_str)
+            return
+        buy_orders = orders[orders["side"].astype(str).str.upper() == "BUY"] if "side" in orders.columns else pd.DataFrame()
+        if buy_orders.empty:
+            logger().info("【明日候选】%s 无开仓计划，A/B/C 均无符合条件标的", next_date_str)
+        else:
+            names = buy_orders.apply(
+                lambda r: f"{r.get('ts_code', '')} {r.get('name', '')}", axis=1
+            ).tolist()
+            logger().info("【明日候选】%s 共 %d 只：%s", next_date_str, len(names), " | ".join(names))
+    except Exception as e:
+        logger().error("播报明日候选异常：%s", e)
 
 
 # ── 调度主循环 ─────────────────────────────────────────────────────────────────
@@ -427,6 +464,26 @@ def main() -> None:
         check_and_close_positions()
     except Exception as e:
         log.error("启动平仓检查异常：%s —— 请立即手动检查持仓！", e)
+
+    # ── 启动时检查今日收盘流水线是否已跑，未跑则补跑 ────────────────────────
+    try:
+        import os as _os
+        now_bj = now_beijing()
+        if is_trade_day(now_bj.date()) and now_bj.time() >= datetime.time(15, 10):
+            pattern = str(PROJECT_ROOT / "reports/paper_trade/ab_filtered_daily_ops/*_planned_orders.csv")
+            files = glob.glob(pattern)
+            ran_today = any(
+                datetime.date.fromtimestamp(_os.path.getmtime(f)) == now_bj.date()
+                for f in files
+            )
+            if not ran_today:
+                log.info("检测到今日收盘流水线未运行，立即补跑...")
+                job_post_market()  # 内部已调用 report_next_day_candidates
+            else:
+                log.info("今日收盘流水线已完成，无需补跑")
+                report_next_day_candidates()
+    except Exception as e:
+        log.error("启动补跑检查异常：%s", e)
 
     # ── 主循环 ────────────────────────────────────────────────────────────────
     while True:

@@ -1,6 +1,6 @@
 #!/bin/bash
 # A_System 每日自动化流水线
-# 每个交易日收盘后（15:30）运行，自动更新数据并生成模拟盘信号
+# 每个交易日收盘后（15:10）运行，自动更新数据并生成模拟盘信号
 # 日志输出到 logs/daily_run_YYYYMMDD.log
 
 set -e
@@ -10,10 +10,11 @@ cd "$PROJECT_ROOT"
 
 LOG_DIR="$PROJECT_ROOT/logs"
 mkdir -p "$LOG_DIR"
-LOG_FILE="$LOG_DIR/daily_run_$(date +%Y%m%d).log"
+TODAY=$(TZ=Asia/Shanghai date +%Y%m%d)
+LOG_FILE="$LOG_DIR/daily_run_$TODAY.log"
 
 log() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_FILE"
+    echo "[$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_FILE"
 }
 
 log "===== 每日流水线开始 ====="
@@ -26,7 +27,7 @@ set +a
 PYTHON="$PROJECT_ROOT/.venv/bin/python"
 
 log "① 采集日线 + 漲停池数据..."
-$PYTHON -B scripts/collect_all_data.py >> "$LOG_FILE" 2>&1
+$PYTHON -B scripts/collect_all_data.py --end-date "$TODAY" >> "$LOG_FILE" 2>&1
 log "① 完成"
 
 log "② 清洗合并数据..."
