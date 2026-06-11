@@ -71,12 +71,12 @@ section "③ 启动 watchdog（崩溃自动重启）"
     sleep 30
     DPID=$(cat "$PID_FILE" 2>/dev/null || echo 0)
     if ! ps -p "$DPID" > /dev/null 2>&1; then
-      echo "[$(date '+%H:%M:%S')] watchdog: 守护进程挂了，重启..." >> "$LOG"
+      echo "[$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S')] watchdog: 守护进程挂了，重启..." >> "$LOG"
       set -a; [ -f "$PROJECT_ROOT/.env" ] && source "$PROJECT_ROOT/.env"; set +a
       nohup "$PYTHON" -B "$DAEMON" > /dev/null 2>&1 &
       NEW_PID=$!
       echo "$NEW_PID" > "$PID_FILE"
-      echo "[$(date '+%H:%M:%S')] watchdog: 新 PID $NEW_PID" >> "$LOG"
+      echo "[$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S')] watchdog: 新 PID $NEW_PID" >> "$LOG"
     fi
   done
 ) &
