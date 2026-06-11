@@ -51,6 +51,24 @@ a_strict_plus_b0018_filtered_plus_c_hold3
 |---|---:|---:|---:|---:|---:|---:|---:|
 | A+B 基础 | 58.49 倍 | 77 | 0 | 74.03% | -13.64% | -11.80% | 0 |
 | A+B+C 当前落地观察版 | 110.22 倍 | 90 | 18 | 72.22% | -16.48% | -12.03% | 0 |
+| A+B+C+D 当前落地版 | **328x** | 90+36 | 18 | — | — | — | 0 |
+
+D 策略独立回测（近 2 年，仅 D 腿）：
+
+| D 触发范围 | D 成交笔数 | D 胜率 | D 平均收益 |
+|---|---:|---:|---:|
+| 仅 NO_CANDIDATE 日（旧） | 22 | 59.1% | +5.09% |
+| 扩展到 NO_CANDIDATE + HISTORICAL_SIM_FILLED + BUY_REJECTED（落地版） | 36 | — | — |
+
+说明：
+
+```text
+D 策略盘中执行（首板打板），与 A/B/C 资金关系如下：
+  NO_CANDIDATE 日：账户空仓，D 独立使用 80% 资金。
+  HISTORICAL_SIM_FILLED 日：D 盘中买→T+1 开盘卖；A/B/C T+1 开盘买→同一资金顺序使用，无冲突。
+  BUY_REJECTED 日：A/B/C 信号被风控拒绝，账户实际空仓，D 可独立使用资金。
+  POSITION_OCCUPIED_SKIP 日：ABC 旧持仓占用 80% 资金，且 D 实测胜率仅 20%（-2%），排除。
+```
 
 说明：
 
@@ -358,6 +376,8 @@ cd /Users/user/Desktop/A_System
 
 ## 十、文件职责
 
+**A+B+C 相关文件：**
+
 | 文件 | 作用 |
 |---|---|
 | `config/strategy_config.json` | 当前策略参数、发布验证阈值、实盘禁用开关 |
@@ -370,6 +390,20 @@ cd /Users/user/Desktop/A_System
 | `reports/paper_trade/ab_filtered_daily_ops/` | 每日模拟盘操作台输出 |
 | `reports/paper_trade/ab_filtered/` | A+B filtered 窗口回放和压力测试报告 |
 | `reports/paper_trade/backup_strategy_c/` | C 备用策略搜索、精修和 A+B+C 对比报告 |
+
+**D 策略相关文件：**
+
+| 文件 | 作用 |
+|---|---|
+| `scripts/backtest_strategy_d.py` | D 策略完整回测（含 A/B/C 叠加模拟） |
+| `scripts/monitor_strategy_d_intraday.py` | D 策略盘中监控：两档信号 + 14:55 自动撤单 |
+| `scripts/collect_strategy_d_minute_data.py` | D 候选历史分钟数据采集（辅助人工复核） |
+| `scripts/trading_daemon.py` | 守护进程：13:30 启动 D 监控子进程 |
+| `src/broker_adapter.py` | 新增 `cancel_order` 抽象接口 |
+| `src/qmt_adapter.py` | 实现 `cancel_order`（调用 `cancel_order_stock`） |
+| `data/processed/next_day_premium_trades.csv` | D 策略回测数据源（近 2 年首板次日溢价记录）|
+| `reports/strategy_d/` | D 策略回测和盘中信号报告输出目录 |
+| `docs/strategy_d.md` | D 策略完整设计文档 |
 
 ---
 

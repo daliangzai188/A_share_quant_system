@@ -134,3 +134,7 @@ class BrokerAdapter(ABC):
     def place_order(self, request: OrderRequest) -> OrderResult:
         """提交真实委托。调用前必须经过实盘风控闸门。"""
 
+    @abstractmethod
+    def cancel_order(self, order_id: str) -> bool:
+        """撤销委托。返回 True 表示撤单请求已提交（不代表最终成功）。"""
+

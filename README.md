@@ -2,7 +2,8 @@
 
 本项目用于构建一套完整的 A股量化交易系统，目标是先完成数据采集、数据清洗、因子统计、策略回测和模拟交易，后续再接入 QMT / miniQMT 等券商接口进行半自动或实盘交易。
 
-> 当前阶段：A+B+C 策略已定型，本地模拟盘守护进程已上线，持续自动运行。  
+> 当前阶段：A+B+C+D 策略已定型，本地模拟盘守护进程已上线，持续自动运行。  
+> D 策略（首板打板）已完成回测（328x vs 纯 A+B+C 的 110x）并接入守护进程，每日 13:30 自动启动盘中监控。  
 > 实盘接入：QMT 骨架已就绪，待开通量化权限后切换。所有时间以北京时间（Asia/Shanghai）为准。
 
 ---
@@ -136,8 +137,8 @@ A股龙头战法最核心的问题不是股票涨不涨，而是能不能买到�
 
 当前已加入第一版 QMT 接入骨架：
 
-- `src/broker_adapter.py`：统一券商适配器抽象层。
-- `src/qmt_adapter.py`：QMT / miniQMT 适配器，运行时懒加载 `xtquant`。
+- `src/broker_adapter.py`：统一券商适配器抽象层（含 `place_order` 和 `cancel_order` 接口）。
+- `src/qmt_adapter.py`：QMT / miniQMT 适配器，运行时懒加载 `xtquant`；实现了 `cancel_order_stock` 撤单。
 - `src/live_order_gateway.py`：A+B+C 计划单转实盘预览和真实下单安全闸门。
 - `scripts/qmt_account_check.py`：QMT 只读账户检查。
 - `scripts/preview_live_orders.py`：读取每日计划单并做实盘执行前校验，不下单。
@@ -406,13 +407,14 @@ a_strict_plus_b0018_filtered_plus_c_hold3
 
 核心文件：`scripts/trading_daemon.py`
 
-每个交易日自动执行三个时间窗口的任务：
+每个交易日自动执行四个时间窗口的任务：
 
 | 时间  | 任务 |
 |-------|------|
 | 09:20 | 集合竞价截止前：平仓检查（最高优先级）+ 读取买入计划单 |
+| 13:30 | 策略 D 盘中监控启动（独立子进程，非阻塞） |
 | 14:50 | 盘中：平仓检查 |
-| 15:35 | 收盘后：完整数据流水线 + A+B+C 信号生成 |
+| 15:10 | 收盘后：完整数据流水线 + A+B+C 信号生成 |
 
 收盘流水线六步（每步独立 try/except，一步失败不影响后续）：
 
@@ -470,6 +472,27 @@ from src.utils.time_utils import now_beijing, today_beijing, yesterday_beijing
 - `False`：模拟盘选股模式，当日涨停记录无需等待 T+2 即可参与选股
 
 `paper_candidate_generator.py` 使用 `require_complete_exit=False`，确保今日涨停池当天就能生成明日候选信号。
+
+### 策略 D（首板打板）集成
+
+D 策略在每个交易日 13:30 由守护进程以**非阻塞子进程**启动，独立运行到 14:55 自动撤单结束。
+
+核心逻辑：
+- 扫描全市场约 5512 只股票，30 秒一轮，检测首板 multi_open 回封信号
+- 10:00 回封 → 发出 **[WATCH]** 观察提醒；14:00+ 回封（或 WATCH 标的仍在封板）→ 发出 **[BUY]** 信号
+- 情绪要求：全市场当日累计涨停数 ≥ 100（强势市场）
+- 14:55 自动撤销所有未成交的 D 委托（`cancel_order_stock`）
+- 检测到 ABC 有持仓时跳过 D（资金冲突防护）
+
+回测结果（近 2 年）：
+
+| 策略组合 | 资金倍数 | D 成交笔数 |
+|---|---:|---:|
+| 纯 A+B+C | 110x | — |
+| A+B+C+D（仅 NO_CANDIDATE 日）| 235x | 22 笔 |
+| A+B+C+D（扩展，当前落地版） | **328x** | **36 笔** |
+
+详细设计见 `docs/strategy_d.md`。
 
 ### 备用 cron 脚本
 

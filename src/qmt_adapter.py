@@ -291,3 +291,14 @@ class QMTBrokerAdapter(BrokerAdapter):
             raw={"order_id": raw_order_id},
         )
 
+    def cancel_order(self, order_id: str) -> bool:
+        if self.trader is None or self.account is None:
+            raise RuntimeError("QMT 尚未连接。")
+        try:
+            result = self.trader.cancel_order_stock(self.account, int(order_id))
+            self.logger.info("撤单请求: order_id=%s result=%s", order_id, result)
+            return result not in {None, -1}
+        except Exception as e:
+            self.logger.error("撤单失败: order_id=%s error=%s", order_id, e)
+            return False
+

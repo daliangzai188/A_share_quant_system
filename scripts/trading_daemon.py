@@ -39,8 +39,9 @@ from src.utils.time_utils import BEIJING_TZ, now_beijing, today_beijing
 # ── 常量 ───────────────────────────────────────────────────────────────────────
 SCHEDULE = [
     datetime.time(9, 20),   # 盘前
-    datetime.time(14, 50),  # 盘中
-    datetime.time(15, 10),  # 收盘
+    datetime.time(13, 30),  # 策略D盘中监控启动
+    datetime.time(14, 50),  # 盘中平仓检查
+    datetime.time(15, 10),  # 收盘流水线
 ]
 PYTHON = str(PROJECT_ROOT / ".venv" / "bin" / "python")
 POSITIONS_FILE = PROJECT_ROOT / "data" / "processed" / "positions.json"
@@ -351,6 +352,23 @@ def job_morning() -> None:
     logger().info("===== 盘前任务完成 =====")
 
 
+def job_strategy_d() -> None:
+    """13:30 启动策略D盘中监控（后台子进程，不阻塞 daemon）。"""
+    logger().info("===== 策略D监控启动（13:30）=====")
+    try:
+        config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+        live_order = bool(config.get("broker_adapter_enabled")) and bool(config.get("qmt_enabled"))
+        cmd = [PYTHON, "-B", str(PROJECT_ROOT / "scripts" / "monitor_strategy_d_intraday.py")]
+        if live_order:
+            cmd.append("--live-order")
+        # Popen 非阻塞：D 监控脚本自管循环 + 14:55 自动撤单，daemon 继续正常运行
+        proc = subprocess.Popen(cmd, cwd=PROJECT_ROOT)
+        logger().info("策略D监控已启动（PID %d，live_order=%s）", proc.pid, live_order)
+    except Exception as e:
+        logger().error("策略D监控启动失败：%s", e)
+    logger().info("===== 策略D监控已移至后台 =====")
+
+
 def job_afternoon() -> None:
     logger().info("===== 盘中任务（14:50）=====")
     try:
@@ -437,11 +455,13 @@ def next_event(now: datetime.datetime) -> tuple[datetime.datetime, datetime.time
 def run_job(scheduled_time: datetime.time) -> None:
     today = today_beijing()
     trade_day = is_trade_day(today)
-    if scheduled_time == SCHEDULE[0]:
+    if scheduled_time == SCHEDULE[0]:     # 09:20
         job_morning() if trade_day else logger().info("非交易日，跳过盘前任务")
-    elif scheduled_time == SCHEDULE[1]:
+    elif scheduled_time == SCHEDULE[1]:   # 13:30
+        job_strategy_d() if trade_day else logger().info("非交易日，跳过策略D监控")
+    elif scheduled_time == SCHEDULE[2]:   # 14:50
         job_afternoon() if trade_day else logger().info("非交易日，跳过盘中任务")
-    elif scheduled_time == SCHEDULE[2]:
+    elif scheduled_time == SCHEDULE[3]:   # 15:10
         job_post_market() if trade_day else logger().info("非交易日，跳过收盘流水线")
 
 
