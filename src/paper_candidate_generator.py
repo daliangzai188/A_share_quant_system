@@ -106,7 +106,7 @@ class PaperCandidateGenerator:
             config_path=self.runtime_config_path,
             optimization_config_key=self.optimization_config_key,
         )
-        candidates = optimizer.load_trades()
+        candidates = optimizer.load_trades(require_complete_exit=False)
         if candidates.empty:
             raise RuntimeError("本地候选数据为空，请先完成数据清洗、成交概率和因子计算。")
         return candidates

@@ -49,8 +49,10 @@ class NextDayPremiumAnalyzer:
         if trades.empty:
             raise RuntimeError("没有可分析的可靠可买样本，请先运行成交概率打标。")
 
-        summary = self.summarize(trades, group_name="overall")
-        groups = self.build_group_report(trades)
+        # 汇总报告只用 T+2 数据完整的历史记录，保证统计准确
+        confirmed = trades[trades["exit_close"].notna()].copy()
+        summary = self.summarize(confirmed, group_name="overall")
+        groups = self.build_group_report(confirmed)
 
         self.output_trades_path.parent.mkdir(parents=True, exist_ok=True)
         self.output_summary_path.parent.mkdir(parents=True, exist_ok=True)
@@ -94,11 +96,12 @@ class NextDayPremiumAnalyzer:
             ["trade_date", "ts_code", "next_trade_date", "next_open", "exit_trade_date", "exit_close"]
         ].copy()
         trades = limit_up.merge(future_prices, on=["trade_date", "ts_code"], how="left", validate="one_to_one")
-        trades = trades[trades["next_open"].notna() & trades["exit_close"].notna()].copy()
-        trades["gross_return"] = trades["exit_close"] / trades["next_open"] - 1
-        trades["fee_rate"] = self.buy_fee_rate + self.sell_fee_rate + self.slippage_rate * 2
-        trades["net_return"] = trades["gross_return"] - trades["fee_rate"]
-        trades["is_win"] = trades["net_return"] > 0
+        # 只对已有完整 T+2 数据的记录计算收益；近期记录 T+2 尚未产生时保留为 NaN，不影响 T日选股条件。
+        complete = trades["next_open"].notna() & trades["exit_close"].notna()
+        trades.loc[complete, "gross_return"] = trades.loc[complete, "exit_close"] / trades.loc[complete, "next_open"] - 1
+        trades.loc[complete, "fee_rate"] = self.buy_fee_rate + self.sell_fee_rate + self.slippage_rate * 2
+        trades.loc[complete, "net_return"] = trades.loc[complete, "gross_return"] - trades.loc[complete, "fee_rate"]
+        trades.loc[complete, "is_win"] = trades.loc[complete, "net_return"] > 0
         trades["holding_days_rule"] = "T+1_open_buy_T+2_close_sell"
         return trades
 

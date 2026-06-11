@@ -1,10 +1,22 @@
 from __future__ import annotations
 
+import datetime
 import logging
 import os
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional
+from zoneinfo import ZoneInfo
+
+_BEIJING_TZ = ZoneInfo("Asia/Shanghai")
+
+
+class _BeijingFormatter(logging.Formatter):
+    """所有日志时间戳强制使用北京时间（UTC+8）。"""
+
+    def formatTime(self, record: logging.LogRecord, datefmt: str | None = None) -> str:
+        dt = datetime.datetime.fromtimestamp(record.created, tz=_BEIJING_TZ)
+        return dt.strftime(datefmt or "%Y-%m-%d %H:%M:%S")
 
 
 def setup_logger(
@@ -31,7 +43,7 @@ def setup_logger(
     log_path = Path(log_dir)
     log_path.mkdir(parents=True, exist_ok=True)
 
-    formatter = logging.Formatter(
+    formatter = _BeijingFormatter(
         fmt="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )

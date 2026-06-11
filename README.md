@@ -2,10 +2,8 @@
 
 本项目用于构建一套完整的 A股量化交易系统，目标是先完成数据采集、数据清洗、因子统计、策略回测和模拟交易，后续再接入 QMT / miniQMT 等券商接口进行半自动或实盘交易。
 
-> 当前阶段：本地数据研究 + 回测系统 + 模拟交易  
-> 默认不接实盘，不进行真实下单。
-
-> 实盘接入进度：已新增 QMT / miniQMT 接入骨架。当前默认只支持账户只读检查和计划单实盘预览，真实下单仍由配置和命令行双重确认关闭。
+> 当前阶段：A+B+C 策略已定型，本地模拟盘守护进程已上线，持续自动运行。  
+> 实盘接入：QMT 骨架已就绪，待开通量化权限后切换。所有时间以北京时间（Asia/Shanghai）为准。
 
 ---
 
@@ -392,3 +390,87 @@ a_strict_plus_b0018_filtered_plus_c_hold3
 6. 自动实盘前仍必须完成券商接口、风控、人工确认和成交可行性验证。
 
 详细流程以 `docs/strategy_release_playbook.md` 为准。
+
+---
+
+## 十三、自动化守护进程（模拟盘）
+
+### 启动 / 停止
+
+```bash
+./start.sh   # 启动守护进程 + watchdog，实时显示日志（Ctrl+C 断开日志，程序继续后台运行）
+./stop.sh    # 停止所有进程
+```
+
+### 守护进程设计
+
+核心文件：`scripts/trading_daemon.py`
+
+每个交易日自动执行三个时间窗口的任务：
+
+| 时间  | 任务 |
+|-------|------|
+| 09:20 | 集合竞价截止前：平仓检查（最高优先级）+ 读取买入计划单 |
+| 14:50 | 盘中：平仓检查 |
+| 15:35 | 收盘后：完整数据流水线 + A+B+C 信号生成 |
+
+收盘流水线六步（每步独立 try/except，一步失败不影响后续）：
+
+```
+① collect_all_data.py         采集日线 + 涨停池
+② clean_collected_data.py     清洗合并
+③ build_dynamic_features.py   市场情绪 / 题材热度
+④ score_limit_up_fill_probability.py  涨停成交概率打分
+⑤ analyze_next_day_premium.py 次日溢价因子
+⑥ run_paper_ab_filtered_daily_ops.py  A+B+C 信号生成
+```
+
+### 安全设计原则
+
+1. **平仓优先**：平仓逻辑完全独立于数据流水线，数据步骤报错不影响平仓。
+2. **错误隔离**：每个持仓单独 try/except，一只股票出错不影响其他持仓处理。
+3. **超时保护**：每个 subprocess 步骤设超时（数据步骤 10 分钟，下单步骤 1 分钟）。
+4. **自动重启**：start.sh 启动外部 watchdog，每 30 秒检测进程存活，崩溃自动重启。
+5. **启动即检查**：每次启动立刻扫描逾期持仓，无论因何原因重启都不会漏掉平仓。
+
+### 持仓状态
+
+持仓记录持久化到 `data/processed/positions.json`，包含：
+
+- `planned_exit_date`：T+2 计划平仓日（买入日起算两个交易日）
+- `status`：`open` / `sell_pending` / `closed`
+- 程序重启后自动读取，不依赖内存状态
+
+### 交易日历
+
+读取 `data/raw/trade_calendar.csv`。若日历数据未覆盖当日，自动降级为周一至周五判断，并记录警告日志。
+
+### 北京时间
+
+所有时间计算统一使用 `src/utils/time_utils.py`：
+
+```python
+from src.utils.time_utils import now_beijing, today_beijing, yesterday_beijing
+```
+
+日志时间戳通过 `src/utils/logger.py` 的 `_BeijingFormatter` 强制转换为北京时间，与 Mac 系统时区无关。
+
+### 市场开放权限
+
+`config/strategy_config.json` 已开启：
+
+- 北交所：`exclude_bj: false`
+- 科创板：`exclude_market_segments: []`
+
+### 前向信号生成（T日选股不依赖 T+2 数据）
+
+`strategy_optimizer.load_trades()` 新增 `require_complete_exit` 参数：
+
+- `True`（默认）：回测 / 优化模式，只用有完整 T+2 收益数据的历史记录
+- `False`：模拟盘选股模式，当日涨停记录无需等待 T+2 即可参与选股
+
+`paper_candidate_generator.py` 使用 `require_complete_exit=False`，确保今日涨停池当天就能生成明日候选信号。
+
+### 备用 cron 脚本
+
+`run_daily.sh`：手动触发或 cron 备用，执行同样的六步流水线。若守护进程正常运行，此脚本不需要单独配置 cron。

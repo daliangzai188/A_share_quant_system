@@ -47,3 +47,8 @@ data/database/*
 .idea/
 .vscode/
 reports/paper_trade/batch_flow/*.csv
+reports/paper_trade/ab_filtered_daily_ops/*.csv
+
+# 守护进程运行时 PID 文件
+.daemon_pid
+.watchdog_pid

@@ -16,6 +16,7 @@ import copy
 import json
 import sys
 from datetime import datetime
+from src.utils.time_utils import now_beijing
 from pathlib import Path
 from typing import Any
 
@@ -244,7 +245,7 @@ def build_release_summary(
             {
                 "strategy_label": release_config.get("strategy_label", config.get("strategy_name", "")),
                 "strategy_name": config.get("strategy_name", ""),
-                "validation_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "validation_time": now_beijing().strftime("%Y-%m-%d %H:%M:%S"),
                 "release_status": release_status,
                 "all_gates_passed": gates_passed,
                 "oos_start_date": oos_start_date,

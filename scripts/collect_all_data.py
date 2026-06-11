@@ -12,6 +12,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.utils.config import load_json_config
+from src.utils.time_utils import yesterday_beijing
 
 
 def parse_args() -> argparse.Namespace:
@@ -37,7 +38,7 @@ def ensure_tushare_token(config: dict) -> None:
 
 
 def yesterday_yyyymmdd() -> str:
-    return (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
+    return yesterday_beijing().strftime("%Y%m%d")
 
 
 def main() -> None:

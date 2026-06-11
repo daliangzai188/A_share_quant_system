@@ -144,21 +144,23 @@ class StrategyConditionOptimizer:
         self.logger.info("策略组合年度报告已生成: %s, 行数: %s", self.output_yearly_path, len(yearly_report))
         return {"report": self.output_report_path, "yearly": self.output_yearly_path}
 
-    def load_trades(self) -> pd.DataFrame:
+    def load_trades(self, require_complete_exit: bool = True) -> pd.DataFrame:
         trades = pd.read_csv(self.input_trades_path, dtype={"trade_date": str, "ts_code": str}, low_memory=False)
         trades = self.add_historical_features(trades)
         trades = self.add_leader_and_theme_features(trades)
         trades = self.add_optional_external_features(trades)
         trades = FactorAnalyzer(config_path="config/config.json").add_factor_buckets(trades)
         trades = self.apply_universe_filters(trades)
-        trades = trades[
+        base_mask = (
             (trades["allow_buy_reliable"] == True)  # noqa: E712
             & (trades["is_fill_score_reliable"] == True)  # noqa: E712
             & (trades["is_fd_amount_abnormal"] == False)  # noqa: E712
-            & trades["net_return"].notna()
-            & trades["exit_trade_date"].notna()
-        ].copy()
-        if "is_executable_exit" in trades.columns:
+        )
+        if require_complete_exit:
+            # 回测/优化：只用 T+2 数据完整的历史记录
+            base_mask = base_mask & trades["net_return"].notna() & trades["exit_trade_date"].notna()
+        trades = trades[base_mask].copy()
+        if "is_executable_exit" in trades.columns and require_complete_exit:
             trades = trades[trades["is_executable_exit"] == True].copy()  # noqa: E712
         for column in self.factor_columns:
             trades[column] = trades[column].astype(str)
