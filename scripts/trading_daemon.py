@@ -45,6 +45,7 @@ SCHEDULE = [
 PYTHON = str(PROJECT_ROOT / ".venv" / "bin" / "python")
 POSITIONS_FILE = PROJECT_ROOT / "data" / "processed" / "positions.json"
 HEARTBEAT_FILE = PROJECT_ROOT / "logs" / "daemon_heartbeat.txt"
+CALENDAR_STALE_WARNED: set[str] = set()
 
 # subprocess 超时（秒）：防止某步骤挂死
 TIMEOUT_DATA_STEP = 600      # 数据采集/清洗步骤：10 分钟
@@ -79,34 +80,37 @@ def write_heartbeat(status: str = "running") -> None:
 
 # ── 交易日历 ───────────────────────────────────────────────────────────────────
 
-def _load_calendar() -> set[str]:
+def _load_calendar() -> tuple[set[str], str]:
     try:
         import pandas as pd
         cal_path = PROJECT_ROOT / "data" / "raw" / "trade_calendar.csv"
         if not cal_path.exists():
-            return set()
+            return set(), ""
         cal = pd.read_csv(cal_path, dtype={"cal_date": str})
-        return set(cal[cal["is_open"].astype(str) == "1"]["cal_date"].tolist())
+        open_days = cal[cal["is_open"].astype(str).isin({"1", "1.0", "True", "true"})].copy()
+        open_dates = set(open_days["cal_date"].astype(str).tolist())
+        max_date = str(cal["cal_date"].astype(str).max()) if "cal_date" in cal.columns and not cal.empty else ""
+        return open_dates, max_date
     except Exception:
-        return set()
+        return set(), ""
 
 
 def is_trade_day(date: datetime.date) -> bool:
-    cal = _load_calendar()
+    cal, max_date = _load_calendar()
     if cal:
         date_str = date.strftime("%Y%m%d")
-        max_date = max(cal)
         if date_str <= max_date:
             return date_str in cal
-        # 日历数据不足，降级用周一到周五判断
-        logger().warning("交易日历数据只到 %s，%s 超出范围，用周历代替", max_date, date_str)
+        warn_key = f"{max_date}->{date_str}"
+        if warn_key not in CALENDAR_STALE_WARNED:
+            CALENDAR_STALE_WARNED.add(warn_key)
+            logger().warning("交易日历数据只到 %s，%s 超出范围，用周历代替", max_date, date_str)
         return date.weekday() < 5
     return date.weekday() < 5
 
 
 def next_n_trade_days(date: datetime.date, n: int) -> datetime.date:
-    cal = _load_calendar()
-    max_cal_date = max(cal) if cal else ""
+    cal, max_cal_date = _load_calendar()
     count, d = 0, date
     while count < n:
         d += datetime.timedelta(days=1)
@@ -345,7 +349,11 @@ def load_combined_decisions():
         if not path.exists():
             logger().error("组合状态机决策文件不存在：%s", path)
             return None
-        return pd.read_csv(path), orders_path
+        decisions = pd.read_csv(path)
+        if not decisions.empty and "action" in decisions.columns:
+            action_summary = decisions["action"].astype(str).value_counts().to_dict()
+            logger().info("组合状态机决策：%s", action_summary)
+        return decisions, orders_path
     except Exception as e:
         logger().error("读取组合状态机决策失败：%s", e)
         return None
@@ -419,7 +427,17 @@ def job_strategy_d() -> None:
     logger().info("===== 策略D监控启动（盘中后台）=====")
     try:
         config = load_json_config(PROJECT_ROOT / "config" / "config.json")
-        live_order = bool(config.get("broker_adapter_enabled")) and bool(config.get("qmt_enabled"))
+        broker_config = config.get("broker", {})
+        qmt_ready = (
+            bool(config.get("broker_adapter_enabled"))
+            and bool(config.get("qmt_enabled"))
+            and bool(broker_config.get("enabled", False))
+            and str(broker_config.get("adapter", "")).lower() == "qmt"
+        )
+        if not qmt_ready:
+            logger().warning("QMT行情未启用，跳过D盘中监控；D策略需要实时行情。")
+            return
+        live_order = bool(config.get("trade_mode", "").lower() == "live" and config.get("live_trade", {}).get("enabled"))
         cmd = [PYTHON, "-B", str(PROJECT_ROOT / "scripts" / "monitor_strategy_d_intraday.py")]
         if live_order:
             cmd.append("--live-order")
@@ -547,15 +565,12 @@ def main() -> None:
 
     # ── 启动时检查今日收盘流水线是否已跑，未跑则补跑 ────────────────────────
     try:
-        import os as _os
         now_bj = now_beijing()
         if is_trade_day(now_bj.date()) and now_bj.time() >= datetime.time(15, 10):
-            pattern = str(PROJECT_ROOT / "reports/paper_trade/ab_filtered_daily_ops/*_planned_orders.csv")
+            today_str = now_bj.strftime("%Y%m%d")
+            pattern = str(PROJECT_ROOT / f"reports/paper_trade/ab_filtered_daily_ops/*_{today_str}_planned_orders.csv")
             files = glob.glob(pattern)
-            ran_today = any(
-                datetime.date.fromtimestamp(_os.path.getmtime(f)) == now_bj.date()
-                for f in files
-            )
+            ran_today = bool(files)
             if not ran_today:
                 log.info("检测到今日收盘流水线未运行，立即补跑...")
                 job_post_market()  # 内部已调用 report_next_day_candidates
