@@ -38,8 +38,7 @@ from src.utils.time_utils import BEIJING_TZ, now_beijing, today_beijing
 
 # ── 常量 ───────────────────────────────────────────────────────────────────────
 SCHEDULE = [
-    datetime.time(9, 20),   # 盘前
-    datetime.time(13, 30),  # 策略D盘中监控启动
+    datetime.time(9, 20),   # 盘前：平仓检查 + 买入 + 策略D启动
     datetime.time(14, 50),  # 盘中平仓检查
     datetime.time(15, 10),  # 收盘流水线
 ]
@@ -299,7 +298,10 @@ def job_morning() -> None:
     except Exception as e:
         logger().error("平仓检查异常：%s —— 请立即手动检查持仓！", e)
 
-    # ② 买入信号 —— 次优先级，出错只记录
+    # ② 策略D监控 —— 平仓后立即启动，监控脚本内部等到09:30再开始扫描
+    job_strategy_d()
+
+    # ③ 买入信号 —— 次优先级，出错只记录
     try:
         import pandas as pd
         pattern = str(PROJECT_ROOT / "reports/paper_trade/ab_filtered_daily_ops/*_planned_orders.csv")
@@ -357,8 +359,10 @@ def job_morning() -> None:
 
 
 def job_strategy_d() -> None:
-    """13:30 启动策略D盘中监控（后台子进程，不阻塞 daemon）。"""
-    logger().info("===== 策略D监控启动（13:30）=====")
+    """09:20 盘前任务后立即启动策略D监控（后台子进程，不阻塞 daemon）。
+    监控脚本内部等到09:30开始扫描，10:00起发WATCH提醒，14:00起发BUY信号，14:55自动撤单。
+    """
+    logger().info("===== 策略D监控启动（盘中后台）=====")
     try:
         config = load_json_config(PROJECT_ROOT / "config" / "config.json")
         live_order = bool(config.get("broker_adapter_enabled")) and bool(config.get("qmt_enabled"))
@@ -461,11 +465,9 @@ def run_job(scheduled_time: datetime.time) -> None:
     trade_day = is_trade_day(today)
     if scheduled_time == SCHEDULE[0]:     # 09:20
         job_morning() if trade_day else logger().info("非交易日，跳过盘前任务")
-    elif scheduled_time == SCHEDULE[1]:   # 13:30
-        job_strategy_d() if trade_day else logger().info("非交易日，跳过策略D监控")
-    elif scheduled_time == SCHEDULE[2]:   # 14:50
+    elif scheduled_time == SCHEDULE[1]:   # 14:50
         job_afternoon() if trade_day else logger().info("非交易日，跳过盘中任务")
-    elif scheduled_time == SCHEDULE[3]:   # 15:10
+    elif scheduled_time == SCHEDULE[2]:   # 15:10
         job_post_market() if trade_day else logger().info("非交易日，跳过收盘流水线")
 
 
