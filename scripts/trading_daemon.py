@@ -9,9 +9,9 @@ A_System 量化策略常驻守护进程。
 5. 心跳文件每分钟更新，外部可监控守护进程存活状态。
 
 调度时间表（A 股交易日）：
-    09:20  盘前  —— 平仓检查（优先） + 买入信号
+    09:20  盘前  —— 平仓检查（优先） + 组合状态机 + 买入预览 / D监控
     14:50  盘中  —— 平仓检查（优先）
-    15:35  收盘  —— 数据流水线 + 信号生成
+    15:10  收盘  —— 数据流水线 + 信号生成
 
 持仓状态：data/processed/positions.json
 心跳文件：logs/daemon_heartbeat.txt
@@ -38,7 +38,7 @@ from src.utils.time_utils import BEIJING_TZ, now_beijing, today_beijing
 
 # ── 常量 ───────────────────────────────────────────────────────────────────────
 SCHEDULE = [
-    datetime.time(9, 20),   # 盘前：平仓检查 + 买入 + 策略D启动
+    datetime.time(9, 20),   # 盘前：平仓检查 + 组合状态机
     datetime.time(14, 50),  # 盘中平仓检查
     datetime.time(15, 10),  # 收盘流水线
 ]
@@ -118,6 +118,13 @@ def next_n_trade_days(date: datetime.date, n: int) -> datetime.date:
         if is_open:
             count += 1
     return d
+
+
+def next_trade_date_on_or_after(date: datetime.date) -> datetime.date:
+    current = date
+    while not is_trade_day(current):
+        current += datetime.timedelta(days=1)
+    return current
 
 
 def market_is_open() -> bool:
@@ -434,7 +441,7 @@ def job_afternoon() -> None:
 
 
 def job_post_market() -> None:
-    logger().info("===== 收盘流水线（15:35）=====")
+    logger().info("===== 收盘流水线（15:10）=====")
 
     # 每步独立 try，出错不影响后续步骤
     steps = [
@@ -498,13 +505,13 @@ def report_next_day_candidates() -> None:
 # ── 调度主循环 ─────────────────────────────────────────────────────────────────
 
 def next_event(now: datetime.datetime) -> tuple[datetime.datetime, datetime.time]:
-    today = now.date()
-    for t in SCHEDULE:
-        dt = datetime.datetime.combine(today, t, tzinfo=BEIJING_TZ)
-        if dt > now + datetime.timedelta(seconds=30):
-            return dt, t
-    tomorrow = today + datetime.timedelta(days=1)
-    return datetime.datetime.combine(tomorrow, SCHEDULE[0], tzinfo=BEIJING_TZ), SCHEDULE[0]
+    day = next_trade_date_on_or_after(now.date())
+    while True:
+        for t in SCHEDULE:
+            dt = datetime.datetime.combine(day, t, tzinfo=BEIJING_TZ)
+            if dt > now + datetime.timedelta(seconds=30):
+                return dt, t
+        day = next_trade_date_on_or_after(day + datetime.timedelta(days=1))
 
 
 def run_job(scheduled_time: datetime.time) -> None:
