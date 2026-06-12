@@ -2,7 +2,7 @@
 策略D盘中监控：首板打板信号检测 + 14:55自动撤单
 
 【两档信号设计】
-  观察档（10:00-14:00 回封）:
+  观察档（09:35-14:00 回封）:
     首板 + multi_open + open_times<=3 + strong情绪 + 当前处于涨停 → 发出 [WATCH] 提醒
     → 继续跟踪，若14:00时仍封板 → 自动升级为买入信号
 
@@ -46,7 +46,7 @@ load_dotenv(PROJECT_ROOT / ".env")
 # ── 策略参数 ──────────────────────────────────────────────────────────────────
 SENTIMENT_STRONG_MIN = 100   # 全市场今日涨停累计数 >= 此值 → strong情绪
 D_MAX_OPEN_TIMES = 3         # 最大炸板次数
-WATCH_START_HHMM = 1000      # 10:00 开始发出观察提醒
+WATCH_START_HHMM = 935       # 09:35 开始发出观察提醒
 SIGNAL_START_HHMM = 1400     # 14:00 开始发出买入信号 / 观察升级
 CANCEL_HHMM = 1455           # 14:55 撤销所有未成交D委托
 POLL_BATCH_SIZE = 500        # 每次 get_full_tick 的股票数量
@@ -490,7 +490,7 @@ class StrategyDMonitor:
             f"\n开始扫描 — {len(self.universe)}只股票，"
             f"{len(batches)}批x{POLL_BATCH_SIZE}，"
             f"间隔{POLL_INTERVAL_SEC}s，约{len(batches)*POLL_INTERVAL_SEC//60}分/轮\n"
-            f"  10:00 → 观察提醒  |  14:00 → 买入信号  |  14:55 → 自动撤单\n"
+            f"  09:35 → 观察提醒  |  14:00 → 买入信号  |  14:55 → 自动撤单\n"
         )
 
         try:

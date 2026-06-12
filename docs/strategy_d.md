@@ -38,8 +38,8 @@
 ```
 09:30  开盘
   │
-10:00  WATCH 窗口开启
-  │    → 检测到符合条件的首板 multi_open 重封
+09:35  WATCH 窗口开启
+  │    → 检测到符合条件的首板 multi_open 回封
   │    → 发出 [WATCH] 提醒，记录关注名单
   │    → 继续追踪该股票（可能后续炸板）
   │
@@ -142,7 +142,7 @@ scripts/monitor_strategy_d_intraday.py
 |---|---|---|
 | `SENTIMENT_STRONG_MIN` | 100 | 全市场今日累计涨停数阈值 |
 | `D_MAX_OPEN_TIMES` | 3 | 最大允许炸板次数 |
-| `WATCH_START_HHMM` | 1000 | WATCH 信号开始时间 |
+| `WATCH_START_HHMM` | 935 | WATCH 信号开始时间 |
 | `SIGNAL_START_HHMM` | 1400 | BUY 信号开始时间 |
 | `CANCEL_HHMM` | 1455 | 自动撤单时间 |
 | `POLL_BATCH_SIZE` | 500 | 每批 get_full_tick 数量 |
