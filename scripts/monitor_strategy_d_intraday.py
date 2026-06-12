@@ -56,6 +56,7 @@ POLL_INTERVAL_SEC = 30       # 每批轮询间隔（秒）
 MONITOR_START_HHMM = 930     # 脚本等待开始扫描的时间（集合竞价结束后）
 D_POSITION_PCT = 0.80        # 仓位比例
 STRATEGY_REMARK = "D_FIRST_BOARD"
+DEFAULT_ALLOWED_SEGMENTS = {"sh_main", "sz_main", "chi_next", "star", "bj", "other"}
 
 
 # ── 数据结构 ──────────────────────────────────────────────────────────────────
@@ -64,6 +65,7 @@ STRATEGY_REMARK = "D_FIRST_BOARD"
 class StockState:
     ts_code: str
     name: str = ""
+    market_segment: str = ""
     upper_limit: float = 0.0
     was_sealed: bool = False       # 上次轮询时是否涨停
     ever_sealed: bool = False      # 今日曾涨停过
@@ -155,6 +157,40 @@ def load_stock_universe() -> list[str]:
     except Exception as e:
         print(f"[警告] 加载股票宇宙失败: {e}")
         return []
+
+
+def classify_market_segment(ts_code: object) -> str:
+    code = str(ts_code).strip().upper()
+    prefix = code.split(".")[0]
+    if code.endswith(".BJ") or prefix.startswith(("4", "8", "9")):
+        return "bj"
+    if prefix.startswith(("688", "689")):
+        return "star"
+    if prefix.startswith(("300", "301")):
+        return "chi_next"
+    if code.endswith(".SH") and prefix.startswith("6"):
+        return "sh_main"
+    if code.endswith(".SZ") and prefix.startswith(("000", "001", "002", "003")):
+        return "sz_main"
+    return "other"
+
+
+def load_strategy_d_config(config: dict[str, Any]) -> dict[str, Any]:
+    strategy_config = config.get("strategy_d", {})
+    return strategy_config if isinstance(strategy_config, dict) else {}
+
+
+def configured_allowed_segments(config: dict[str, Any]) -> set[str]:
+    strategy_config = load_strategy_d_config(config)
+    values = strategy_config.get("allowed_market_segments", sorted(DEFAULT_ALLOWED_SEGMENTS))
+    if not isinstance(values, list):
+        return set(DEFAULT_ALLOWED_SEGMENTS)
+    result = {str(item).strip() for item in values if str(item).strip()}
+    return result or set(DEFAULT_ALLOWED_SEGMENTS)
+
+
+def filter_universe_by_segments(universe: list[str], allowed_segments: set[str]) -> list[str]:
+    return [code for code in universe if classify_market_segment(code) in allowed_segments]
 
 
 def check_abc_position_occupied() -> tuple[bool, str]:
@@ -249,12 +285,14 @@ def save_position_records(records: list[dict[str, Any]]) -> None:
 class StrategyDMonitor:
 
     def __init__(self, broker, live_order: bool, logger, signal_csv: Path,
-                 monitor_start_hhmm: int = MONITOR_START_HHMM) -> None:
+                 monitor_start_hhmm: int = MONITOR_START_HHMM,
+                 allowed_segments: set[str] | None = None) -> None:
         self.broker = broker
         self.live_order = live_order
         self.logger = logger
         self.signal_csv = signal_csv
         self.monitor_start_hhmm = monitor_start_hhmm
+        self.allowed_segments = allowed_segments or set(DEFAULT_ALLOWED_SEGMENTS)
 
         self.yesterday_limit_codes: set[str] = set()
         self.universe: list[str] = []
@@ -277,11 +315,17 @@ class StrategyDMonitor:
     def setup(self) -> None:
         self.logger.info("=== 策略D盘中监控启动 ===")
         self.yesterday_limit_codes = load_yesterday_limit_codes()
-        self.universe = load_stock_universe()
+        full_universe = load_stock_universe()
+        self.universe = filter_universe_by_segments(full_universe, self.allowed_segments)
         self.name_map = load_stock_names()
+        segment_counts: dict[str, int] = {}
+        for code in self.universe:
+            segment = classify_market_segment(code)
+            segment_counts[segment] = segment_counts.get(segment, 0) + 1
         self.logger.info(
-            "宇宙: %d只 | 昨日涨停(排除首板): %d只 | 全市场扫描: %d批x%d只/轮，轮间隔%d秒",
-            len(self.universe), len(self.yesterday_limit_codes),
+            "宇宙: %d只(原始%d只) | 允许分段=%s | 分段数量=%s | 昨日涨停(排除首板): %d只 | 全市场扫描: %d批x%d只/轮，轮间隔%d秒",
+            len(self.universe), len(full_universe), ",".join(sorted(self.allowed_segments)),
+            segment_counts, len(self.yesterday_limit_codes),
             len(self._batches()), POLL_BATCH_SIZE, POLL_INTERVAL_SEC,
         )
 
@@ -302,6 +346,7 @@ class StrategyDMonitor:
                 self.states[ts_code] = StockState(
                     ts_code=ts_code,
                     name=self.name_map.get(ts_code, ""),
+                    market_segment=classify_market_segment(ts_code),
                     upper_limit=snap.upper_limit,
                 )
             st = self.states[ts_code]
@@ -345,15 +390,16 @@ class StrategyDMonitor:
     def _score(self, st: StockState) -> float:
         """打分逻辑（满分100）：基于历史数据统计，分越高次日溢价期望越高。
 
-        历史规律（首板multi_open近2年均值）：
-          炸板次数：1次→1.92%  2次→1.41%  3次→1.14%
-          重封时间：<10:00→2.99%  10-12→2.17%  12-13→1.51%  14-14:30→0.81%  14:30+→0.28%
-        结论：炸板越少、重封越早、封单越大 → 溢价越高。
+        当前策略D回测口径：
+          - 硬过滤仍保持首板 + multi_open + open_times <= 3 + 情绪达标。
+          - 近两年首板研究显示，“炸板2次”不能硬过滤，但多候选时优先它
+            可以改善当前D组合的胜率和回撤。
+        结论：炸板2次优先、重封越早越好、封单越大越稳。
         """
         score = 0.0
 
-        # 炸板次数（40分）：越少越好
-        score += {1: 40, 2: 25, 3: 10}.get(st.open_times_today, 10)
+        # 炸板次数（40分）：多候选时优先炸板2次；1次次之；3次保留但降权。
+        score += {2: 40, 1: 30, 3: 10}.get(st.open_times_today, 10)
 
         # 重封时间（40分）：越早越好（早封说明买气更强，历史溢价更高）
         t = st.last_seal_hhmm
@@ -765,11 +811,14 @@ def main() -> None:
         log_file=f"strategy_d_monitor_{today_str}.log",
         level="INFO",
     )
+    config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+    allowed_segments = configured_allowed_segments(config)
 
     if args.dry_run:
         print("=== 策略D监控配置 ===")
         print(f"  情绪阈值: 全市场涨停累计数 >= {SENTIMENT_STRONG_MIN}")
         print(f"  炸板次数上限: {D_MAX_OPEN_TIMES}")
+        print(f"  允许市场分段: {','.join(sorted(allowed_segments))}")
         print(f"  扫描开始: {hhmm_to_str(args.start_hhmm)}")
         print(f"  观察提醒: {hhmm_to_str(WATCH_START_HHMM)} 起（10:00后回封发WATCH）")
         print(f"  买入信号: {hhmm_to_str(SIGNAL_START_HHMM)} 起（14:00后回封或WATCH升级→BUY）")
@@ -778,7 +827,6 @@ def main() -> None:
         print(f"  信号输出: {signal_csv}")
         return
 
-    config = load_json_config(PROJECT_ROOT / "config" / "config.json")
     broker = build_broker(config, args.live_order)
     if broker is None:
         print("[错误] 策略D盘中监控必须连接 QMT 实时行情；当前无法获取行情，退出。")
@@ -790,6 +838,7 @@ def main() -> None:
         logger=logger,
         signal_csv=signal_csv,
         monitor_start_hhmm=args.start_hhmm,
+        allowed_segments=allowed_segments,
     )
     try:
         monitor.run()

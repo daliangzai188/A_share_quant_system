@@ -64,6 +64,28 @@ D_BOARD_TYPE = "multi_open"               # 炸板后重封，才有机会打板
 D_TIME_BUCKETS = {"midday", "afternoon", "late"}  # 非开盘即封死的时段
 D_TAIL_SEALED_HOUR = 14                   # 最终封板时间 >= 14:00（last_time >= 140000）
 D_MAX_OPEN_TIMES = 3                      # 炸板次数 <= 3（过多炸板说明封板不稳）
+D_PREFERRED_OPEN_TIMES = 2                # 近两年首板研究显示：多候选时优先炸板2次
+DEFAULT_ALLOWED_SEGMENTS = {"sh_main", "sz_main", "chi_next", "star", "bj", "other"}
+
+
+def load_strategy_d_config() -> dict:
+    path = PROJECT_ROOT / "config" / "config.json"
+    try:
+        import json
+        with path.open("r", encoding="utf-8") as file:
+            config = json.load(file)
+        return config.get("strategy_d", {})
+    except Exception:
+        return {}
+
+
+def configured_allowed_segments() -> set[str]:
+    config = load_strategy_d_config()
+    values = config.get("allowed_market_segments", sorted(DEFAULT_ALLOWED_SEGMENTS))
+    if not isinstance(values, list):
+        return set(DEFAULT_ALLOWED_SEGMENTS)
+    result = {str(item).strip() for item in values if str(item).strip()}
+    return result or set(DEFAULT_ALLOWED_SEGMENTS)
 
 
 def load_abc_detail() -> pd.DataFrame:
@@ -125,10 +147,20 @@ def load_d_candidates(
 
 
 def pick_d_candidate(day_candidates: pd.DataFrame) -> pd.Series | None:
-    """每天最多选1只：封单/流通市值比最高（封板强度高 → 次日溢价更稳）"""
+    """每天最多选1只：优先炸板2次，再按封单/流通市值比排序。
+
+    近两年首板风格研究中，硬过滤“炸板2次+中等封单比”会明显降低
+    A+B+C+D 复利；但在当前D候选池内，多候选日优先炸板2次可以提高胜率
+    并降低回撤。因此这里采用软排序，不做硬过滤。
+    """
     if day_candidates.empty:
         return None
-    return day_candidates.sort_values("fd_amount_to_circ_mv", ascending=False).iloc[0]
+    ranked = day_candidates.copy()
+    ranked["open_times_preferred"] = (ranked["open_times"] == D_PREFERRED_OPEN_TIMES).astype(int)
+    return ranked.sort_values(
+        ["open_times_preferred", "fd_amount_to_circ_mv"],
+        ascending=[False, False],
+    ).iloc[0]
 
 
 def run_simulation(
@@ -266,7 +298,7 @@ def build_validation_gates(d_log: list[dict], d_candidates: pd.DataFrame) -> pd.
             "value": segment_count,
             "threshold": 2,
             "status": "PASS" if segment_count >= 2 else "FAIL",
-            "note": "默认排除北交所和科创板后，仍需看主板/创业板稳定性。",
+            "note": "当前主实盘口径包含科创和北交，仍需看各分段稳定性。",
         },
         {
             "gate": "全部成交概率不低于阈值",
@@ -340,8 +372,8 @@ def main() -> None:
                         help="最低成交概率，默认0.8")
     parser.add_argument(
         "--allowed-segments",
-        default="sh_main,sz_main,chi_next",
-        help="允许市场分段，逗号分隔。默认排除 star 和 bj，避免权限/容量样本混入。",
+        default=None,
+        help="允许市场分段，逗号分隔。不填则读取 config.strategy_d.allowed_market_segments。",
     )
     args = parser.parse_args()
 
@@ -349,7 +381,7 @@ def main() -> None:
         raise ValueError("--fill-rate 必须在 0~1 之间。")
     if not 0 <= args.min_fill_probability <= 1:
         raise ValueError("--min-fill-probability 必须在 0~1 之间。")
-    allowed_segments = parse_segments(args.allowed_segments)
+    allowed_segments = parse_segments(args.allowed_segments) if args.allowed_segments else configured_allowed_segments()
 
     print("加载 A+B+C 历史回测明细...")
     abc_detail = load_abc_detail()
