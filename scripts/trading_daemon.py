@@ -78,6 +78,31 @@ def write_heartbeat(status: str = "running") -> None:
         pass
 
 
+def post_market_marker_path(date: datetime.date) -> Path:
+    return PROJECT_ROOT / "logs" / f"post_market_done_{date.strftime('%Y%m%d')}.marker"
+
+
+def mark_post_market_done(date: datetime.date) -> None:
+    path = post_market_marker_path(date)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(now_beijing().isoformat(), encoding="utf-8")
+
+
+def has_post_market_run_today(date: datetime.date) -> bool:
+    if post_market_marker_path(date).exists():
+        return True
+
+    cutoff = datetime.datetime.combine(date, SCHEDULE[2], tzinfo=BEIJING_TZ).timestamp()
+    pattern = str(PROJECT_ROOT / "reports" / "paper_trade" / "ab_filtered_daily_ops" / "*")
+    for file_path in glob.glob(pattern):
+        try:
+            if Path(file_path).is_file() and Path(file_path).stat().st_mtime >= cutoff:
+                return True
+        except OSError:
+            continue
+    return False
+
+
 # ── 交易日历 ───────────────────────────────────────────────────────────────────
 
 def _load_calendar() -> tuple[set[str], str]:
@@ -490,6 +515,7 @@ def job_post_market() -> None:
 
     logger().info("===== 收盘流水线完成 =====")
     report_next_day_candidates()
+    mark_post_market_done(today_beijing())
 
 
 def report_next_day_candidates() -> None:
@@ -567,11 +593,7 @@ def main() -> None:
     try:
         now_bj = now_beijing()
         if is_trade_day(now_bj.date()) and now_bj.time() >= datetime.time(15, 10):
-            today_str = now_bj.strftime("%Y%m%d")
-            pattern = str(PROJECT_ROOT / f"reports/paper_trade/ab_filtered_daily_ops/*_{today_str}_planned_orders.csv")
-            files = glob.glob(pattern)
-            ran_today = bool(files)
-            if not ran_today:
+            if not has_post_market_run_today(now_bj.date()):
                 log.info("检测到今日收盘流水线未运行，立即补跑...")
                 job_post_market()  # 内部已调用 report_next_day_candidates
             else:
