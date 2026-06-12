@@ -68,6 +68,7 @@ class StockState:
     open_times_today: int = 0      # 今日炸板次数
     first_seal_hhmm: int = 0       # 首次封板时间
     last_seal_hhmm: int = 0        # 最后一次封板时间（每次重封更新）
+    bid_vol: int = 0               # 当前涨停封单量（股）
     # 两档信号状态
     watch_alerted: bool = False    # 观察提醒已发出
     buy_signaled: bool = False     # 买入信号已发出
@@ -183,6 +184,7 @@ class StrategyDMonitor:
         # 本次会话下单记录 {order_id: ts_code}
         self.session_orders: dict[str, str] = {}
         self.signal_records: list[dict] = []
+        self.order_placed: bool = False   # 本会话已触发BUY，不再对其他股票下单
 
     # ── 初始化 ────────────────────────────────────────────────────────────────
 
@@ -229,11 +231,15 @@ class StrategyDMonitor:
                     # 非涨停 → 涨停：记录重封时间
                     st.last_seal_hhmm = hhmm
                 st.was_sealed = True
+                # 更新封单量（涨停买一量，单位：股）
+                if snap.bid_volumes:
+                    st.bid_vol = snap.bid_volumes[0]
             else:
                 if st.was_sealed:
                     # 涨停 → 非涨停：炸板
                     st.open_times_today += 1
                 st.was_sealed = False
+                st.bid_vol = 0
 
     # ── 信号检测与分级触发 ────────────────────────────────────────────────────
 
@@ -251,8 +257,53 @@ class StrategyDMonitor:
             return False
         return True
 
+    def _score(self, st: StockState) -> float:
+        """打分逻辑（满分100）：基于历史数据统计，分越高次日溢价期望越高。
+
+        历史规律（首板multi_open近2年均值）：
+          炸板次数：1次→1.92%  2次→1.41%  3次→1.14%
+          重封时间：<10:00→2.99%  10-12→2.17%  12-13→1.51%  14-14:30→0.81%  14:30+→0.28%
+        结论：炸板越少、重封越早、封单越大 → 溢价越高。
+        """
+        score = 0.0
+
+        # 炸板次数（40分）：越少越好
+        score += {1: 40, 2: 25, 3: 10}.get(st.open_times_today, 10)
+
+        # 重封时间（40分）：越早越好（早封说明买气更强，历史溢价更高）
+        t = st.last_seal_hhmm
+        if t < 1000:
+            score += 40
+        elif t < 1200:
+            score += 30
+        elif t < 1300:
+            score += 20
+        elif t < 1400:
+            score += 15
+        elif t < 1430:
+            score += 10
+        else:
+            score += 5
+
+        # 封单量（20分）：涨停买一量，越大封板越稳
+        vol = st.bid_vol  # 单位：股
+        if vol >= 500_000:
+            score += 20
+        elif vol >= 200_000:
+            score += 15
+        elif vol >= 50_000:
+            score += 10
+        else:
+            score += 5
+
+        return score
+
     def _check_and_fire(self) -> None:
+        if self.order_placed:
+            return
+
         hhmm = now_hhmm()
+        buy_candidates: list[StockState] = []
 
         for ts_code, st in self.states.items():
             if st.buy_signaled:
@@ -260,16 +311,39 @@ class StrategyDMonitor:
             if not self._passes_base_filters(ts_code, st):
                 continue
 
-            # ── 场景一：买入信号 ──────────────────────────────────────────────
-            # 条件：14:00后 且（重封时间>=14:00 或 已在观察名单中）
+            # ── 场景一：14:00后 → 收集BUY候选，稍后打分排序 ─────────────────
             if hhmm >= SIGNAL_START_HHMM:
                 if st.last_seal_hhmm >= SIGNAL_START_HHMM or st.watch_alerted:
-                    self._fire_buy_signal(st)
+                    buy_candidates.append(st)
                 continue
 
-            # ── 场景二：观察提醒（10:00-14:00 回封，首次提醒）────────────────
+            # ── 场景二：WATCH窗口 → 逐个发提醒 ──────────────────────────────
             if hhmm >= WATCH_START_HHMM and not st.watch_alerted:
                 self._fire_watch_alert(st)
+
+        # 有BUY候选：打分排序，只对最高分那只下单，其余跳过
+        if not buy_candidates:
+            return
+
+        scored = sorted(buy_candidates, key=self._score, reverse=True)
+        best = scored[0]
+        best_score = self._score(best)
+
+        if len(scored) > 1:
+            skip_info = "  ".join(
+                f"{s.ts_code}({self._score(s):.0f}分)" for s in scored[1:]
+            )
+            self.logger.info(
+                "[BUY SKIP] 本轮%d只候选，跳过低分: %s", len(scored) - 1, skip_info,
+            )
+            print(f"  [多候选] 共{len(scored)}只，跳过: {skip_info}")
+
+        self.logger.info(
+            "[BUY BEST] 最高分 %.0f分: %s %s  炸板%d次 重封%s 封单%.1f万股",
+            best_score, best.ts_code, best.name, best.open_times_today,
+            hhmm_to_str(best.last_seal_hhmm), best.bid_vol / 10000,
+        )
+        self._fire_buy_signal(best)
 
     # ── 观察提醒 ──────────────────────────────────────────────────────────────
 
@@ -308,6 +382,7 @@ class StrategyDMonitor:
     def _fire_buy_signal(self, st: StockState) -> None:
         hhmm = now_hhmm()
         st.buy_signaled = True
+        self.order_placed = True   # 本会话不再对其他股票触发BUY
         upgraded = st.watch_alerted and st.last_seal_hhmm < SIGNAL_START_HHMM
         source = "观察升级→买入" if upgraded else "直接买入"
 
