@@ -308,7 +308,11 @@ def job_morning() -> None:
             logger().info("无 planned_orders，跳过买入")
             return
 
-        orders = pd.read_csv(files[-1])
+        try:
+            orders = pd.read_csv(files[-1])
+        except pd.errors.EmptyDataError:
+            logger().info("planned_orders 文件为空，跳过买入")
+            return
         if "side" not in orders.columns:
             logger().info("planned_orders 无 side 列，跳过买入")
             return
