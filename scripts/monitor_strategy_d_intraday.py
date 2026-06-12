@@ -24,9 +24,11 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import time
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -86,18 +88,58 @@ def hhmm_to_str(hhmm: int) -> str:
     return f"{hhmm // 100:02d}:{hhmm % 100:02d}"
 
 
+def _read_open_dates_before_today() -> list[str]:
+    calendar_path = PROJECT_ROOT / "data" / "raw" / "trade_calendar.csv"
+    today_str = today_beijing().strftime("%Y%m%d")
+    if not calendar_path.exists():
+        return []
+    try:
+        calendar = pd.read_csv(calendar_path, dtype={"cal_date": str})
+    except Exception:
+        return []
+    if "cal_date" not in calendar.columns:
+        return []
+    if "is_open" in calendar.columns:
+        calendar = calendar[calendar["is_open"].astype(str).isin({"1", "1.0", "True", "true"})]
+    dates = calendar["cal_date"].astype(str)
+    return sorted(date for date in dates if date < today_str)
+
+
+def _resolve_previous_limit_file(limit_dir: Path) -> Path | None:
+    """按交易日解析昨日涨停文件，禁止直接取目录最新文件。"""
+    today_str = today_beijing().strftime("%Y%m%d")
+    open_dates = _read_open_dates_before_today()
+    if open_dates:
+        for trade_date in reversed(open_dates):
+            candidate = limit_dir / f"{trade_date}.csv"
+            if candidate.exists():
+                return candidate
+
+    dated_files = []
+    for path in limit_dir.glob("*.csv"):
+        if path.stem.isdigit() and len(path.stem) == 8 and path.stem < today_str:
+            dated_files.append(path)
+    return max(dated_files, key=lambda path: path.stem) if dated_files else None
+
+
 def load_yesterday_limit_codes() -> set[str]:
     """加载昨日涨停股票代码集合，用于排除2板+。"""
     limit_dir = PROJECT_ROOT / "data" / "raw" / "limit_list"
-    files = sorted(limit_dir.glob("*.csv"))
-    if not files:
+    path = _resolve_previous_limit_file(limit_dir)
+    if path is None:
+        print("[警告] 未找到昨日涨停文件，首板过滤将不可用。")
         return set()
     try:
-        df = pd.read_csv(files[-1], dtype={"ts_code": str})
+        df = pd.read_csv(path, dtype={"ts_code": str})
+        if df.empty:
+            print(f"[警告] 昨日涨停文件为空: {path}")
+            return set()
         df = df[df["limit"].astype(str).str.upper() == "U"]
-        return set(df["ts_code"].tolist())
+        codes = set(df["ts_code"].tolist())
+        print(f"[昨日涨停] 使用文件: {path.name}，涨停数={len(codes)}")
+        return codes
     except Exception as e:
-        print(f"[警告] 加载昨日涨停数据失败: {e}")
+        print(f"[警告] 加载昨日涨停数据失败: {path}, error={e}")
         return set()
 
 
@@ -160,6 +202,48 @@ def calc_shares(cash: float, price: float) -> int:
     return max(int(cash * D_POSITION_PCT / price / 100) * 100, 0)
 
 
+def next_trade_day(date_str: str, n: int = 1) -> str:
+    calendar_path = PROJECT_ROOT / "data" / "raw" / "trade_calendar.csv"
+    if calendar_path.exists():
+        try:
+            calendar = pd.read_csv(calendar_path, dtype={"cal_date": str})
+            if "is_open" in calendar.columns:
+                calendar = calendar[calendar["is_open"].astype(str).isin({"1", "1.0", "True", "true"})]
+            dates = sorted(calendar["cal_date"].astype(str).tolist())
+            future = [date for date in dates if date > date_str]
+            if len(future) >= n:
+                return future[n - 1]
+        except Exception:
+            pass
+
+    current = datetime.strptime(date_str, "%Y%m%d").date()
+    count = 0
+    while count < n:
+        current += timedelta(days=1)
+        if current.weekday() < 5:
+            count += 1
+    return current.strftime("%Y%m%d")
+
+
+def load_position_records() -> list[dict[str, Any]]:
+    path = PROJECT_ROOT / "data" / "processed" / "positions.json"
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    return data if isinstance(data, list) else []
+
+
+def save_position_records(records: list[dict[str, Any]]) -> None:
+    path = PROJECT_ROOT / "data" / "processed" / "positions.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
 # ── 核心监控逻辑 ─────────────────────────────────────────────────────────────
 
 class StrategyDMonitor:
@@ -176,15 +260,17 @@ class StrategyDMonitor:
         self.universe: list[str] = []
         self.name_map: dict[str, str] = {}
         self.states: dict[str, StockState] = {}
-        self.batch_idx = 0
+        self.scan_round = 0
 
         # 情绪估算：今日累计曾涨停的股票数
         self.sealed_ever_count: int = 0
 
         # 本次会话下单记录 {order_id: ts_code}
         self.session_orders: dict[str, str] = {}
+        self.session_order_details: dict[str, dict[str, Any]] = {}
         self.signal_records: list[dict] = []
         self.order_placed: bool = False   # 本会话已触发BUY，不再对其他股票下单
+        self.order_locked_ts_code: str = ""
 
     # ── 初始化 ────────────────────────────────────────────────────────────────
 
@@ -194,10 +280,9 @@ class StrategyDMonitor:
         self.universe = load_stock_universe()
         self.name_map = load_stock_names()
         self.logger.info(
-            "宇宙: %d只 | 昨日涨停(排除首板): %d只 | 批次: %d批x%d只 ≈ %.0f分/轮",
+            "宇宙: %d只 | 昨日涨停(排除首板): %d只 | 全市场扫描: %d批x%d只/轮，轮间隔%d秒",
             len(self.universe), len(self.yesterday_limit_codes),
-            len(self._batches()), POLL_BATCH_SIZE,
-            len(self._batches()) * POLL_INTERVAL_SEC / 60,
+            len(self._batches()), POLL_BATCH_SIZE, POLL_INTERVAL_SEC,
         )
 
     def _batches(self) -> list[list[str]]:
@@ -380,9 +465,13 @@ class StrategyDMonitor:
     # ── 买入信号 ──────────────────────────────────────────────────────────────
 
     def _fire_buy_signal(self, st: StockState) -> None:
+        if self.order_placed:
+            self.logger.info("[BUY SKIP] 已锁定本轮D委托: %s，跳过 %s", self.order_locked_ts_code, st.ts_code)
+            return
         hhmm = now_hhmm()
         st.buy_signaled = True
-        self.order_placed = True   # 本会话不再对其他股票触发BUY
+        self.order_placed = True   # 先加锁再下单，防止QMT资金冻结延迟导致重复委托
+        self.order_locked_ts_code = st.ts_code
         upgraded = st.watch_alerted and st.last_seal_hhmm < SIGNAL_START_HHMM
         source = "观察升级→买入" if upgraded else "直接买入"
 
@@ -425,6 +514,9 @@ class StrategyDMonitor:
         from src.broker_adapter import OrderRequest
         from src.qmt_adapter import tushare_to_qmt_code
         try:
+            if self.session_orders:
+                self.logger.warning("本会话已有D委托，拒绝再次下单: %s", st.ts_code)
+                return
             cash = get_account_cash(self.broker)
             shares = calc_shares(cash, st.upper_limit)
             if shares <= 0:
@@ -443,6 +535,15 @@ class StrategyDMonitor:
             result = self.broker.place_order(req)
             if result.accepted:
                 self.session_orders[result.order_id] = st.ts_code
+                self.session_order_details[result.order_id] = {
+                    "order_id": result.order_id,
+                    "ts_code": st.ts_code,
+                    "name": st.name,
+                    "shares": shares,
+                    "buy_price": st.upper_limit,
+                    "buy_date": today_beijing().strftime("%Y%m%d"),
+                    "strategy_leg": "D",
+                }
                 st.order_id = result.order_id
                 record["order_id"] = result.order_id
                 self.logger.info(
@@ -490,6 +591,7 @@ class StrategyDMonitor:
         for order_id, ts_code in self.session_orders.items():
             if order_id in filled_ids:
                 print(f"  {ts_code}  order_id={order_id} → 已成交，跳过")
+                self._record_filled_d_position(order_id)
                 continue
             ok = self.broker.cancel_order(order_id)
             if ok:
@@ -503,26 +605,55 @@ class StrategyDMonitor:
         print(f"  结果: 撤单={cancelled}笔  失败={failed}笔")
         print(f"{'='*55}\n")
 
+    def _record_filled_d_position(self, order_id: str) -> None:
+        detail = self.session_order_details.get(order_id)
+        if not detail:
+            self.logger.warning("找不到D成交委托明细，无法写入持仓: order_id=%s", order_id)
+            return
+        positions = load_position_records()
+        if any(str(pos.get("order_id", "")) == str(order_id) for pos in positions):
+            return
+        buy_date = str(detail.get("buy_date", today_beijing().strftime("%Y%m%d")))
+        positions.append(
+            {
+                "order_id": str(order_id),
+                "ts_code": str(detail.get("ts_code", "")),
+                "name": str(detail.get("name", "")),
+                "signal_date": buy_date,
+                "buy_date": buy_date,
+                "planned_exit_date": next_trade_day(buy_date, 1),
+                "shares": int(detail.get("shares", 0)),
+                "buy_price": float(detail.get("buy_price", 0.0)),
+                "strategy_leg": "D",
+                "status": "open",
+                "sell_date": None,
+                "sell_price": None,
+            }
+        )
+        save_position_records(positions)
+        self.logger.warning("D成交已写入持仓账本: order_id=%s ts_code=%s", order_id, detail.get("ts_code", ""))
+
     # ── 轮询 ─────────────────────────────────────────────────────────────────
 
     def poll_once(self) -> None:
         batches = self._batches()
         if not batches:
             return
-        batch = batches[self.batch_idx % len(batches)]
-        self.batch_idx += 1
-        try:
-            quotes = self.broker.get_full_tick(batch)
-        except Exception as e:
-            self.logger.warning("get_full_tick 异常: %s", e)
-            return
-        self._update_states(quotes)
+        updated_count = 0
+        for batch in batches:
+            try:
+                quotes = self.broker.get_full_tick(batch)
+            except Exception as e:
+                self.logger.warning("get_full_tick 异常: %s", e)
+                continue
+            updated_count += len(quotes)
+            self._update_states(quotes)
+        self.scan_round += 1
+        self.logger.info("完成全市场扫描: round=%d updated=%d states=%d", self.scan_round, updated_count, len(self.states))
         self._check_and_fire()
 
     def status_line(self) -> str:
         hhmm = now_hhmm()
-        batches = self._batches()
-        progress = (self.batch_idx % max(len(batches), 1)) / max(len(batches), 1) * 100
         watching = sum(1 for st in self.states.values()
                        if st.watch_alerted and not st.buy_signaled)
         bought = sum(1 for st in self.states.values() if st.buy_signaled)
@@ -533,7 +664,7 @@ class StrategyDMonitor:
         return (
             f"[{hhmm_to_str(hhmm)}] "
             f"扫过{len(self.states)}只 | {sentiment} | "
-            f"观察={watching} 买入={bought} | 批次{progress:.0f}%"
+            f"观察={watching} 买入={bought} | 全市场扫描轮次={self.scan_round}"
         )
 
     # ── 主循环 ────────────────────────────────────────────────────────────────
@@ -564,7 +695,7 @@ class StrategyDMonitor:
         print(
             f"\n开始扫描 — {len(self.universe)}只股票，"
             f"{len(batches)}批x{POLL_BATCH_SIZE}，"
-            f"间隔{POLL_INTERVAL_SEC}s，约{len(batches)*POLL_INTERVAL_SEC//60}分/轮\n"
+            f"每轮扫完整市场后等待{POLL_INTERVAL_SEC}s\n"
             f"  09:35 → 观察提醒  |  14:00 → 买入信号  |  14:55 → 自动撤单\n"
         )
 
@@ -649,8 +780,8 @@ def main() -> None:
 
     config = load_json_config(PROJECT_ROOT / "config" / "config.json")
     broker = build_broker(config, args.live_order)
-    if args.live_order and broker is None:
-        print("[错误] --live-order 模式下QMT必须连接成功，退出。")
+    if broker is None:
+        print("[错误] 策略D盘中监控必须连接 QMT 实时行情；当前无法获取行情，退出。")
         import sys; sys.exit(1)
 
     monitor = StrategyDMonitor(

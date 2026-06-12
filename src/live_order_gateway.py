@@ -8,10 +8,11 @@ from typing import Any
 import pandas as pd
 from pandas.errors import EmptyDataError
 
-from src.broker_adapter import OrderRequest
+from src.broker_adapter import OrderRequest, PositionSnapshot
 from src.qmt_adapter import QMTBrokerAdapter, tushare_to_qmt_code
 from src.utils.config import get_project_root, load_json_config
 from src.utils.logger import get_logger, setup_logger
+from src.utils.time_utils import now_beijing
 
 
 class LiveOrderGateway:
@@ -55,6 +56,15 @@ class LiveOrderGateway:
             raise RuntimeError("live_trade.real_order_enabled=false，拒绝真实下单。")
         if confirm != expected:
             raise RuntimeError(f"确认文本不匹配，拒绝真实下单。需要: {expected}")
+
+    def assert_small_cash_test_allowed(self) -> None:
+        self.assert_qmt_enabled()
+        if str(self.config.get("trade_mode", "")).lower() != "live":
+            raise RuntimeError("trade_mode 不是 live，拒绝小资金测试下单。")
+        if not bool(self.live_config.get("enabled", False)):
+            raise RuntimeError("live_trade.enabled=false，拒绝小资金测试下单。")
+        if not bool(self.live_config.get("small_cash_test_enabled", False)):
+            raise RuntimeError("live_trade.small_cash_test_enabled=false，拒绝小资金测试下单。")
 
     def create_adapter(self) -> QMTBrokerAdapter:
         self.assert_qmt_enabled()
@@ -126,6 +136,8 @@ class LiveOrderGateway:
             "planned_amount_by_equity",
             "estimated_live_amount",
             "available_cash",
+            "total_asset",
+            "current_market_value",
             "strategy_name",
             "remark",
             "validation_status",
@@ -139,14 +151,25 @@ class LiveOrderGateway:
         account_cash: float,
         open_orders: list[dict[str, Any]],
         quote_map: dict[str, Any],
+        positions: list[PositionSnapshot] | None = None,
+        account_total_asset: float | None = None,
+        current_market_value: float | None = None,
     ) -> pd.DataFrame:
         rows: list[dict[str, Any]] = []
         max_order_amount = float(self.live_config.get("max_single_order_amount", 50000))
         max_position_pct = float(self.live_config.get("max_position_pct", 0.8))
+        max_total_position_pct = float(self.live_config.get("max_total_position_pct", 0.8))
         round_lot_size = int(self.live_config.get("round_lot_size", 100))
         limit_tolerance = float(self.live_config.get("limit_price_tolerance", 0.001))
         default_price_type = str(self.live_config.get("default_price_type", "LATEST_PRICE"))
         strategy_name = str(self.live_config.get("strategy_name", "A_SYSTEM_ABC"))
+        reject_limit_up_buy = bool(self.live_config.get("reject_limit_up_buy", True))
+        reject_limit_down_sell = bool(self.live_config.get("reject_limit_down_sell", True))
+        duplicate_order_check = bool(self.live_config.get("duplicate_order_check", True))
+        enforce_trading_time = bool(self.live_config.get("enforce_trading_time", True))
+        total_asset = float(account_total_asset or account_cash)
+        market_value = float(current_market_value or 0.0)
+        position_map = self.build_position_map(positions or [])
 
         for _, order in planned_orders.iterrows():
             ts_code = str(order.get("ts_code", "")).strip().upper()
@@ -161,6 +184,8 @@ class LiveOrderGateway:
             lower_limit = float(getattr(quote, "lower_limit", 0.0) or 0.0)
             suspended = bool(getattr(quote, "suspended", False)) if quote is not None else False
             estimated_amount = quantity * (last_price if last_price > 0 else reference_price)
+            current_position = position_map.get(ts_code, {"can_use_volume": 0, "market_value": 0.0})
+            current_stock_market_value = float(current_position.get("market_value", 0.0))
 
             reject_reasons = []
             if not ts_code:
@@ -179,17 +204,23 @@ class LiveOrderGateway:
                 reject_reasons.append("BUY_DISABLED")
             if side == "SELL" and not bool(self.live_config.get("allow_sell", False)):
                 reject_reasons.append("SELL_DISABLED")
-            if side == "BUY" and upper_limit > 0 and last_price >= upper_limit * (1 - limit_tolerance):
+            if enforce_trading_time and not self.is_trading_time(side):
+                reject_reasons.append("OUTSIDE_TRADING_TIME")
+            if side == "BUY" and reject_limit_up_buy and upper_limit > 0 and last_price >= upper_limit * (1 - limit_tolerance):
                 reject_reasons.append("LIMIT_UP_BUY_REJECTED")
-            if side == "SELL" and lower_limit > 0 and last_price <= lower_limit * (1 + limit_tolerance):
+            if side == "SELL" and reject_limit_down_sell and lower_limit > 0 and last_price <= lower_limit * (1 + limit_tolerance):
                 reject_reasons.append("LIMIT_DOWN_SELL_REJECTED")
-            if side == "BUY" and estimated_amount > account_cash * max_position_pct:
+            if side == "SELL" and quantity > int(current_position.get("can_use_volume", 0)):
+                reject_reasons.append("SELL_VOLUME_NOT_AVAILABLE")
+            if side == "BUY" and total_asset > 0 and current_stock_market_value + estimated_amount > total_asset * max_position_pct:
                 reject_reasons.append("EXCEED_POSITION_PCT")
+            if side == "BUY" and total_asset > 0 and market_value + estimated_amount > total_asset * max_total_position_pct:
+                reject_reasons.append("EXCEED_TOTAL_POSITION_PCT")
             if side == "BUY" and estimated_amount > account_cash:
                 reject_reasons.append("INSUFFICIENT_CASH")
             if estimated_amount > max_order_amount:
                 reject_reasons.append("EXCEED_SINGLE_ORDER_AMOUNT")
-            if any(self.active_order_match(open_order, ts_code, side) for open_order in open_orders):
+            if duplicate_order_check and any(self.active_order_match(open_order, ts_code, side) for open_order in open_orders):
                 reject_reasons.append("DUPLICATE_ACTIVE_ORDER")
 
             rows.append(
@@ -209,11 +240,13 @@ class LiveOrderGateway:
                     "planned_amount_by_equity": planned_amount,
                     "estimated_live_amount": estimated_amount,
                     "available_cash": account_cash,
+                    "total_asset": total_asset,
+                    "current_market_value": market_value,
                     "strategy_name": strategy_name,
                     "remark": f"{strategy_name}-{order.get('signal_date', '')}-{order.get('strategy_leg', '')}",
                     "validation_status": "PASS" if not reject_reasons else "REJECTED",
                     "reject_reasons": "|".join(reject_reasons),
-                    "real_order_enabled": False,
+                    "real_order_enabled": bool(self.live_config.get("real_order_enabled", False)),
                 }
             )
         return pd.DataFrame(rows, columns=self.live_preview_columns())
@@ -258,9 +291,18 @@ class LiveOrderGateway:
             adapter.connect()
             account = adapter.query_account()
             open_orders = adapter.query_orders()
+            positions = adapter.query_positions()
             ts_codes = sorted(planned_orders.get("ts_code", pd.Series(dtype=str)).dropna().astype(str).unique().tolist())
             quote_map = adapter.get_full_tick(ts_codes) if ts_codes else {}
-            preview = self.validate_planned_orders(planned_orders, account.available_cash, open_orders, quote_map)
+            preview = self.validate_planned_orders(
+                planned_orders,
+                account.available_cash,
+                open_orders,
+                quote_map,
+                positions=positions,
+                account_total_asset=account.total_asset,
+                current_market_value=account.market_value,
+            )
         finally:
             adapter.disconnect()
 
@@ -277,17 +319,35 @@ class LiveOrderGateway:
         if not preview_path.is_absolute():
             preview_path = self.project_root / preview_path
         preview = pd.read_csv(preview_path, low_memory=False)
-        executable = preview[preview["validation_status"].astype(str) == "PASS"].copy()
+        executable = preview[
+            (preview["validation_status"].astype(str) == "PASS")
+            & (preview["real_order_enabled"].astype(str).str.lower().isin({"true", "1"}))
+        ].copy()
 
         adapter = self.create_adapter()
         results = []
         try:
             adapter.connect()
             for _, row in executable.iterrows():
+                side = str(row["side"]).upper()
+                if bool(self.live_config.get("enforce_trading_time", True)) and not self.is_trading_time(side):
+                    results.append(
+                        {
+                            "ts_code": str(row["ts_code"]),
+                            "broker_code": str(row["broker_code"]),
+                            "side": side,
+                            "quantity": int(row["quantity"]),
+                            "accepted": False,
+                            "order_id": "",
+                            "message": "OUTSIDE_TRADING_TIME_AT_SUBMIT",
+                            "raw": {"source": str(preview_path)},
+                        }
+                    )
+                    continue
                 request = OrderRequest(
                     ts_code=str(row["ts_code"]),
                     broker_code=str(row["broker_code"]),
-                    side=str(row["side"]),
+                    side=side,
                     quantity=int(row["quantity"]),
                     price_type=str(row["price_type"]),
                     price=float(row.get("price", 0.0)),
@@ -306,3 +366,95 @@ class LiveOrderGateway:
         paths = {"orders": output_prefix.with_name(output_prefix.name + "_submitted_orders.csv")}
         pd.DataFrame(results).to_csv(paths["orders"], index=False, encoding="utf-8-sig")
         return paths
+
+    def submit_small_cash_test(self, preview_path: str | Path, output_prefix: str | Path) -> dict[str, Path]:
+        """提交 100 股小资金测试单。
+
+        不要求命令行确认文本，但必须满足专用配置开关，并且只提交预览 PASS、
+        数量不超过 small_cash_test_max_shares、金额不超过 small_cash_test_max_order_amount 的订单。
+        """
+        self.assert_small_cash_test_allowed()
+        preview_path = Path(preview_path)
+        if not preview_path.is_absolute():
+            preview_path = self.project_root / preview_path
+        preview = pd.read_csv(preview_path, low_memory=False)
+        max_shares = int(self.live_config.get("small_cash_test_max_shares", 100))
+        max_amount = float(self.live_config.get("small_cash_test_max_order_amount", 20000))
+        executable = preview[preview["validation_status"].astype(str) == "PASS"].copy()
+
+        adapter = self.create_adapter()
+        results = []
+        try:
+            adapter.connect()
+            for _, row in executable.iterrows():
+                side = str(row["side"]).upper()
+                quantity = int(row["quantity"])
+                amount = float(row.get("estimated_live_amount", 0.0))
+                reject_message = ""
+                if quantity <= 0:
+                    reject_message = "EMPTY_OR_ZERO_QUANTITY_AT_SUBMIT"
+                elif quantity > max_shares:
+                    reject_message = "EXCEED_SMALL_TEST_MAX_SHARES"
+                elif amount > max_amount:
+                    reject_message = "EXCEED_SMALL_TEST_MAX_AMOUNT"
+                elif bool(self.live_config.get("enforce_trading_time", True)) and not self.is_trading_time(side):
+                    reject_message = "OUTSIDE_TRADING_TIME_AT_SUBMIT"
+
+                if reject_message:
+                    results.append(
+                        {
+                            "ts_code": str(row["ts_code"]),
+                            "broker_code": str(row["broker_code"]),
+                            "side": side,
+                            "quantity": quantity,
+                            "accepted": False,
+                            "order_id": "",
+                            "message": reject_message,
+                            "raw": {"source": str(preview_path), "mode": "small_cash_test"},
+                        }
+                    )
+                    continue
+
+                request = OrderRequest(
+                    ts_code=str(row["ts_code"]),
+                    broker_code=str(row["broker_code"]),
+                    side=side,
+                    quantity=quantity,
+                    price_type=str(row["price_type"]),
+                    price=float(row.get("price", 0.0)),
+                    strategy_name=str(row.get("strategy_name", "A_SYSTEM_SMALL_TEST")),
+                    remark=f"SMALL_TEST-{row.get('remark', '')}",
+                )
+                result = adapter.place_order(request)
+                results.append(asdict(result))
+        finally:
+            adapter.disconnect()
+
+        output_prefix = Path(output_prefix)
+        if not output_prefix.is_absolute():
+            output_prefix = self.project_root / output_prefix
+        output_prefix.parent.mkdir(parents=True, exist_ok=True)
+        paths = {"orders": output_prefix.with_name(output_prefix.name + "_small_test_submitted_orders.csv")}
+        pd.DataFrame(results).to_csv(paths["orders"], index=False, encoding="utf-8-sig")
+        return paths
+
+    @staticmethod
+    def build_position_map(positions: list[PositionSnapshot]) -> dict[str, dict[str, float | int]]:
+        result: dict[str, dict[str, float | int]] = {}
+        for position in positions:
+            result[str(position.ts_code).upper()] = {
+                "volume": int(position.volume),
+                "can_use_volume": int(position.can_use_volume),
+                "market_value": float(position.market_value),
+            }
+        return result
+
+    @staticmethod
+    def is_trading_time(side: str) -> bool:
+        now = now_beijing()
+        hhmm = now.hour * 100 + now.minute
+        if side.upper() == "BUY":
+            return 930 <= hhmm <= 1130 or 1300 <= hhmm <= 1455
+        if side.upper() == "SELL":
+            return 930 <= hhmm <= 1130 or 1300 <= hhmm <= 1500
+        return False

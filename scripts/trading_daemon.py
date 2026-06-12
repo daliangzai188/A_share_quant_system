@@ -298,44 +298,93 @@ def job_morning() -> None:
     except Exception as e:
         logger().error("平仓检查异常：%s —— 请立即手动检查持仓！", e)
 
-    # ② 策略D监控 —— 平仓后立即启动，监控脚本内部等到09:30再开始扫描
-    job_strategy_d()
+    combined = load_combined_decisions()
+    decisions = combined[0] if combined is not None else None
+    combined_orders_path = combined[1] if combined is not None else None
+    if decisions is None:
+        logger().error("组合状态机决策生成失败，早盘不启动D，也不执行A/B/C买入预览。")
+        return
 
-    # ③ 买入信号 —— 次优先级，出错只记录
+    # ② D 待卖持仓最高优先级。未确认D卖出前，不执行A/B/C买入，不启动D新监控。
+    if has_combined_action(decisions, "PLAN_SELL_D_FIRST"):
+        handle_combined_order_preview(combined_orders_path, reason="D持仓优先卖出")
+        logger().info("组合状态机要求先卖D，早盘流程到此结束。")
+        return
+
+    # ③ A/B/C 买入信号 —— 只有组合状态机允许时才处理
+    if has_combined_action(decisions, "ALLOW_ABC_BUY_PREVIEW"):
+        handle_combined_order_preview(combined_orders_path, reason="A/B/C买入预览")
+    else:
+        logger().info("组合状态机未允许A/B/C买入，跳过。")
+
+    # ④ 策略D监控 —— 只有无持仓且无A/B/C买入计划时才启动
+    if has_combined_action(decisions, "ALLOW_D_INTRADAY_MONITOR"):
+        job_strategy_d()
+    else:
+        logger().info("组合状态机未允许D盘中监控，跳过。")
+
+    logger().info("===== 盘前任务完成 =====")
+
+
+def load_combined_decisions():
     try:
         import pandas as pd
-        pattern = str(PROJECT_ROOT / "reports/paper_trade/ab_filtered_daily_ops/*_planned_orders.csv")
-        files = sorted(glob.glob(pattern))
-        if not files:
-            logger().info("无 planned_orders，跳过买入")
+        ok = run_script("run_combined_live_plan.py", timeout=TIMEOUT_ORDER_STEP)
+        if not ok:
+            return None
+        today_str = today_beijing().strftime("%Y%m%d")
+        path = PROJECT_ROOT / "reports" / "live_trade" / "combined" / f"combined_decisions_{today_str}.csv"
+        orders_path = PROJECT_ROOT / "reports" / "live_trade" / "combined" / f"combined_planned_orders_{today_str}.csv"
+        if not path.exists():
+            logger().error("组合状态机决策文件不存在：%s", path)
+            return None
+        return pd.read_csv(path), orders_path
+    except Exception as e:
+        logger().error("读取组合状态机决策失败：%s", e)
+        return None
+
+
+def has_combined_action(decisions, action: str) -> bool:
+    if decisions is None or decisions.empty or "action" not in decisions.columns:
+        return False
+    return decisions["action"].astype(str).eq(action).any()
+
+
+def handle_combined_order_preview(planned_orders_path: Path | None, reason: str) -> None:
+    # 组合计划单预览 —— 次优先级，出错只记录
+    try:
+        import pandas as pd
+        if planned_orders_path is None or not planned_orders_path.exists():
+            logger().info("无组合 planned_orders，跳过：%s", reason)
             return
 
         try:
-            orders = pd.read_csv(files[-1])
+            orders = pd.read_csv(planned_orders_path)
         except pd.errors.EmptyDataError:
-            logger().info("planned_orders 文件为空，跳过买入")
+            logger().info("组合 planned_orders 文件为空，跳过：%s", reason)
             return
         if "side" not in orders.columns:
-            logger().info("planned_orders 无 side 列，跳过买入")
+            logger().info("组合 planned_orders 无 side 列，跳过：%s", reason)
             return
 
-        buy_orders = orders[orders["side"].astype(str).str.upper() == "BUY"]
-        if buy_orders.empty:
-            logger().info("无买入计划，今日不下单")
+        executable_orders = orders[orders["side"].astype(str).str.upper().isin({"BUY", "SELL"})]
+        if executable_orders.empty:
+            logger().info("组合计划单无买卖计划，跳过：%s", reason)
             return
 
         config = load_json_config(PROJECT_ROOT / "config" / "config.json")
         qmt_enabled = bool(config.get("broker_adapter_enabled")) and bool(config.get("qmt_enabled"))
         today_str = today_beijing().strftime("%Y%m%d")
 
-        logger().info("发现买入计划 %d 条", len(buy_orders))
+        logger().info("发现组合计划 %d 条：%s", len(executable_orders), reason)
 
         if qmt_enabled:
-            ok = run_script("preview_live_orders.py", "--planned-orders", "latest",
+            ok = run_script("preview_live_orders.py", "--planned-orders", str(planned_orders_path),
                             timeout=TIMEOUT_ORDER_STEP)
             if ok:
-                logger().warning("买入预览完成，真实下单请手动执行 submit_live_orders.py")
+                logger().warning("组合预览完成，真实下单请手动执行 submit_live_orders.py")
         else:
+            buy_orders = executable_orders[executable_orders["side"].astype(str).str.upper() == "BUY"]
             for _, row in buy_orders.iterrows():
                 try:
                     record_buy(
@@ -354,8 +403,6 @@ def job_morning() -> None:
 
     except Exception as e:
         logger().error("买入信号处理异常：%s", e)
-
-    logger().info("===== 盘前任务完成 =====")
 
 
 def job_strategy_d() -> None:

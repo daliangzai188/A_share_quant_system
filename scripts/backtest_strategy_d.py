@@ -43,8 +43,6 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 import pandas as pd
-import numpy as np
-
 OUTPUT_DIR = PROJECT_ROOT / "reports" / "strategy_d"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -79,7 +77,15 @@ def load_abc_detail() -> pd.DataFrame:
     return df
 
 
-def load_d_candidates(use_minute_features: bool) -> pd.DataFrame:
+def parse_segments(value: str) -> set[str]:
+    return {item.strip() for item in value.split(",") if item.strip()}
+
+
+def load_d_candidates(
+    use_minute_features: bool,
+    min_fill_probability: float,
+    allowed_segments: set[str],
+) -> pd.DataFrame:
     """加载D策略候选池，含收益数据"""
     df = pd.read_csv(PROJECT_ROOT / "data" / "processed" / "next_day_premium_trades.csv")
     df["trade_date"] = df["trade_date"].astype(str)
@@ -93,8 +99,13 @@ def load_d_candidates(use_minute_features: bool) -> pd.DataFrame:
         (df["board_type"] == D_BOARD_TYPE) &
         (df["first_time_bucket"].isin(D_TIME_BUCKETS)) &
         (df["last_time_hm"] >= D_TAIL_SEALED_HOUR * 10000) &   # 14点后最终封板
-        (df["open_times"] <= D_MAX_OPEN_TIMES)                  # 炸板次数不超过3次
+        (df["open_times"] <= D_MAX_OPEN_TIMES) &                # 炸板次数不超过3次
+        (df["fill_probability"] >= min_fill_probability) &
+        (df["is_fill_score_reliable"].astype(bool))
     ].copy()
+
+    if allowed_segments:
+        df = df[df["market_segment"].isin(allowed_segments)].copy()
 
     # 若有分钟特征则叠加：只选尾盘封板（tail_sealed=True）的，打板时机更稳
     minute_path = PROJECT_ROOT / "data" / "processed" / "strategy_d_minute_features.csv"
@@ -170,25 +181,28 @@ def run_simulation(
             day_d = d_by_date.get(dt)
             candidate = pick_d_candidate(day_d) if day_d is not None else None
             if candidate is not None:
-                if fill_rate >= 1.0 or np.random.random() < fill_rate:
-                    net_ret = float(candidate["net_return"])
-                    d_ret = net_ret * POSITION_PCT
-                    abcd_leg = "D" if op_status == "NO_CANDIDATE" else f"D+{leg}"
-                    d_trade_log.append({
-                        "signal_date": dt,
-                        "ts_code": candidate["ts_code"],
-                        "name": candidate.get("name", ""),
-                        "market_segment": candidate.get("market_segment", ""),
-                        "first_time_bucket": candidate.get("first_time_bucket", ""),
-                        "open_times": candidate.get("open_times", 0),
-                        "fd_amount": candidate.get("fd_amount", 0),
-                        "net_return": net_ret,
-                        "account_return": d_ret,
-                        "is_win": bool(candidate["is_win"]),
-                        "next_open": candidate.get("next_open", 0),
-                        "limit_close": candidate.get("limit_close", 0),
-                        "abc_status": op_status,
-                    })
+                net_ret = float(candidate["net_return"])
+                d_ret = net_ret * POSITION_PCT * fill_rate
+                abcd_leg = "D" if op_status == "NO_CANDIDATE" else f"D+{leg}"
+                d_trade_log.append({
+                    "signal_date": dt,
+                    "ts_code": candidate["ts_code"],
+                    "name": candidate.get("name", ""),
+                    "market_segment": candidate.get("market_segment", ""),
+                    "first_time_bucket": candidate.get("first_time_bucket", ""),
+                    "open_times": candidate.get("open_times", 0),
+                    "fd_amount": candidate.get("fd_amount", 0),
+                    "fd_amount_to_circ_mv": candidate.get("fd_amount_to_circ_mv", 0),
+                    "fill_probability": candidate.get("fill_probability", 0),
+                    "sample_count": candidate.get("sample_count", 0),
+                    "net_return": net_ret,
+                    "account_return": d_ret,
+                    "fill_rate_stress": fill_rate,
+                    "is_win": bool(candidate["is_win"]),
+                    "next_open": candidate.get("next_open", 0),
+                    "limit_close": candidate.get("limit_close", 0),
+                    "abc_status": op_status,
+                })
 
         # 总收益 = A/B/C收益 + D收益
         # HISTORICAL_SIM_FILLED天：D盘中买T→T+1卖，ABC T+1买→T+2/T+3卖，同笔资金顺序使用
@@ -210,6 +224,14 @@ def calc_metrics(df: pd.DataFrame, initial: float = INITIAL_EQUITY) -> dict:
     dd = (df["equity"] - peak) / peak
     wins = (executed["ret"] > 0).sum()
     total = len(executed)
+    gross_profit = executed.loc[executed["ret"] > 0, "ret"].sum() if total else 0.0
+    gross_loss = abs(executed.loc[executed["ret"] < 0, "ret"].sum()) if total else 0.0
+    loss_flags = (executed["ret"] < 0).astype(int).tolist()
+    max_consecutive_losses = 0
+    current_losses = 0
+    for flag in loss_flags:
+        current_losses = current_losses + 1 if flag else 0
+        max_consecutive_losses = max(max_consecutive_losses, current_losses)
     return {
         "trade_count": total,
         "final_equity": round(final, 2),
@@ -220,7 +242,55 @@ def calc_metrics(df: pd.DataFrame, initial: float = INITIAL_EQUITY) -> dict:
         "max_drawdown": round(dd.min(), 6),
         "max_profit": round(executed["ret"].max(), 6) if total else 0,
         "max_loss": round(executed["ret"].min(), 6) if total else 0,
+        "profit_loss_ratio": round(gross_profit / gross_loss, 6) if gross_loss else 0,
+        "max_consecutive_losses": max_consecutive_losses,
     }
+
+
+def build_validation_gates(d_log: list[dict], d_candidates: pd.DataFrame) -> pd.DataFrame:
+    d_df = pd.DataFrame(d_log)
+    sample_count = len(d_df)
+    segment_count = int(d_df["market_segment"].nunique()) if sample_count and "market_segment" in d_df else 0
+    min_fill_probability = float(d_df["fill_probability"].min()) if sample_count and "fill_probability" in d_df else 0.0
+    max_single_trade_share = float(d_df["account_return"].abs().max()) if sample_count else 0.0
+    rows = [
+        {
+            "gate": "样本数不少于50笔",
+            "value": sample_count,
+            "threshold": 50,
+            "status": "PASS" if sample_count >= 50 else "FAIL",
+            "note": "首板打板样本少时，单笔极端收益会严重影响结论。",
+        },
+        {
+            "gate": "至少覆盖2个以上主要市场分段",
+            "value": segment_count,
+            "threshold": 2,
+            "status": "PASS" if segment_count >= 2 else "FAIL",
+            "note": "默认排除北交所和科创板后，仍需看主板/创业板稳定性。",
+        },
+        {
+            "gate": "全部成交概率不低于阈值",
+            "value": round(min_fill_probability, 4),
+            "threshold": "由 --min-fill-probability 设置",
+            "status": "PASS" if sample_count and min_fill_probability > 0 else "FAIL",
+            "note": "策略D不能用买不到的涨停板收益证明有效。",
+        },
+        {
+            "gate": "单笔账户收益绝对值不超过25%",
+            "value": round(max_single_trade_share, 4),
+            "threshold": 0.25,
+            "status": "PASS" if max_single_trade_share <= 0.25 else "WARN",
+            "note": "超过阈值说明结果可能被极端样本主导，需要单独复核容量和盘口。",
+        },
+        {
+            "gate": "候选池存在可交易样本",
+            "value": len(d_candidates),
+            "threshold": ">0",
+            "status": "PASS" if len(d_candidates) > 0 else "FAIL",
+            "note": "没有候选时不能生成策略结论。",
+        },
+    ]
+    return pd.DataFrame(rows)
 
 
 def print_comparison(m_abc: dict, m_abcd: dict, d_log: list[dict]) -> None:
@@ -265,19 +335,30 @@ def main() -> None:
     parser.add_argument("--use-minute-features", action="store_true",
                         help="使用分钟特征（需先运行 collect_strategy_d_minute_data.py）")
     parser.add_argument("--fill-rate", type=float, default=1.0,
-                        help="打板成功率（0~1），默认1.0=假设100%能买到")
-    parser.add_argument("--seed", type=int, default=42, help="随机种子（fill-rate<1时）")
+                        help="成交压力系数（0~1），只做确定性收益折减；成交过滤优先使用 fill_probability")
+    parser.add_argument("--min-fill-probability", type=float, default=0.8,
+                        help="最低成交概率，默认0.8")
+    parser.add_argument(
+        "--allowed-segments",
+        default="sh_main,sz_main,chi_next",
+        help="允许市场分段，逗号分隔。默认排除 star 和 bj，避免权限/容量样本混入。",
+    )
     args = parser.parse_args()
 
-    np.random.seed(args.seed)
+    if not 0 <= args.fill_rate <= 1:
+        raise ValueError("--fill-rate 必须在 0~1 之间。")
+    if not 0 <= args.min_fill_probability <= 1:
+        raise ValueError("--min-fill-probability 必须在 0~1 之间。")
+    allowed_segments = parse_segments(args.allowed_segments)
 
     print("加载 A+B+C 历史回测明细...")
     abc_detail = load_abc_detail()
     print(f"  共 {len(abc_detail)} 个交易日，{abc_detail['signal_date'].min()} ~ {abc_detail['signal_date'].max()}")
 
     print(f"\n加载 D策略候选池（情绪={D_SENTIMENT}，板型={D_BOARD_TYPE}）...")
-    d_candidates = load_d_candidates(args.use_minute_features)
+    d_candidates = load_d_candidates(args.use_minute_features, args.min_fill_probability, allowed_segments)
     print(f"  共 {len(d_candidates)} 条，覆盖 {d_candidates['trade_date'].nunique()} 个交易日")
+    print(f"  成交概率阈值 >= {args.min_fill_probability:.0%} | 允许分段: {','.join(sorted(allowed_segments)) or '全部'}")
 
     # 只保留和ABC回测窗口重叠的日期
     abc_dates = set(abc_detail["signal_date"])
@@ -289,6 +370,7 @@ def main() -> None:
 
     m_abc = calc_metrics(df_abc)
     m_abcd = calc_metrics(df_abcd)
+    validation_gates = build_validation_gates(d_log, d_in_window)
 
     print_comparison(m_abc, m_abcd, d_log)
 
@@ -339,8 +421,11 @@ def main() -> None:
         OUTPUT_DIR / "equity_curve.csv", index=False)
 
     pd.DataFrame(yearly_rows).to_csv(OUTPUT_DIR / "yearly_comparison.csv", index=False)
+    validation_gates.to_csv(OUTPUT_DIR / "validation_gates.csv", index=False, encoding="utf-8-sig")
 
     print(f"\n结果已保存至 reports/strategy_d/")
+    print("\n策略D验证闸门:")
+    print(validation_gates.to_string(index=False))
 
 
 if __name__ == "__main__":
