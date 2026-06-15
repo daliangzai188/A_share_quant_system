@@ -162,6 +162,42 @@ def next_trade_date_on_or_after(date: datetime.date) -> datetime.date:
     return current
 
 
+def prev_n_trade_days(date: datetime.date, n: int) -> datetime.date:
+    """返回 date 之前第 n 个交易日（不含 date 本身）。"""
+    cal, max_cal_date = _load_calendar()
+    count, d = 0, date
+    while count < n:
+        d -= datetime.timedelta(days=1)
+        d_str = d.strftime("%Y%m%d")
+        is_open = (d_str in cal) if (cal and d_str <= max_cal_date) else (d.weekday() < 5)
+        if is_open:
+            count += 1
+    return d
+
+
+def _expected_signal_date() -> datetime.date:
+    """当前时刻应当持有的最新信号日期。
+    收盘后（>=15:10 且交易日）→ 今天；其余时间 → 上一个交易日。
+    """
+    now_bj = now_beijing()
+    today = today_beijing()
+    if is_trade_day(today) and now_bj.time() >= datetime.time(15, 10):
+        return today
+    return prev_n_trade_days(today, 1)
+
+
+def _has_signal_for_date(date: datetime.date) -> bool:
+    """指定日期的 planned_orders 文件是否存在（文件名含该日期的8位数字）。"""
+    import re as _re
+    date_str = date.strftime("%Y%m%d")
+    pattern = str(PROJECT_ROOT / "reports" / "paper_trade" / "ab_filtered_daily_ops" / "*_planned_orders.csv")
+    for f in glob.glob(pattern):
+        m = _re.search(r"\d{8}", Path(f).stem)
+        if m and m.group() == date_str:
+            return True
+    return False
+
+
 def market_is_open() -> bool:
     now = now_beijing()
     if not is_trade_day(now.date()):
@@ -563,10 +599,9 @@ def job_afternoon() -> None:
     logger().info("===== 盘中任务完成 =====")
 
 
-def job_post_market() -> None:
-    logger().info("===== 收盘流水线（15:10）=====")
-
-    today_str = today_beijing().strftime("%Y%m%d")
+def job_post_market(end_date: str | None = None) -> None:
+    target_str = end_date or today_beijing().strftime("%Y%m%d")
+    logger().info("===== 收盘流水线（目标日期 %s）=====", target_str)
 
     steps = [
         ("collect_all_data.py",               "① 采集日线 + 涨停池",   TIMEOUT_DATA_STEP,  "约3~8分钟"),
@@ -577,7 +612,7 @@ def job_post_market() -> None:
         ("run_paper_ab_filtered_daily_ops.py", "⑥ A+B+C 信号生成",      TIMEOUT_SIGNAL_STEP,"约1分钟"),
     ]
     extra_args: dict[str, list[str]] = {
-        "collect_all_data.py": ["--end-date", today_str],
+        "collect_all_data.py": ["--end-date", target_str],
         "run_paper_ab_filtered_daily_ops.py": ["--top-n", "10"],
     }
 
@@ -914,19 +949,19 @@ def main() -> None:
     except Exception as e:
         log.error("启动平仓检查异常：%s —— 请立即手动检查持仓！", e)
 
-    # ── 启动时检查今日收盘流水线是否已跑，未跑则补跑 ────────────────────────
+    # ── 启动时检查是否已有最新信号，没有则自动采集对应日期数据 ─────────────────
     _pipeline_just_ran = False
     try:
-        now_bj = now_beijing()
-        if is_trade_day(now_bj.date()) and now_bj.time() >= datetime.time(15, 10):
-            if not has_post_market_run_today(now_bj.date()):
-                log.info("检测到今日收盘流水线未运行，立即补跑...")
-                job_post_market()  # 内部已调用 report_next_day_candidates
-                _pipeline_just_ran = True
-            else:
-                log.info("今日收盘流水线已完成，无需补跑")
+        expected = _expected_signal_date()
+        expected_str = expected.strftime("%Y%m%d")
+        if _has_signal_for_date(expected):
+            log.info("数据已就绪（信号日期 %s），无需重新采集", expected_str)
+        else:
+            log.info("检测到 %s 信号未就绪，立即采集数据...", expected_str)
+            job_post_market(end_date=expected_str)
+            _pipeline_just_ran = True
     except Exception as e:
-        log.error("启动补跑检查异常：%s", e)
+        log.error("启动数据检查异常：%s", e)
 
     # ── 启动时播报最新候选（流水线刚跑完已播报过则跳过，避免重复） ──────────
     if not _pipeline_just_ran:
