@@ -98,8 +98,12 @@ class DataCleaner:
             self.logger.warning("跳过 %s：daily 或 daily_basic 文件不存在", trade_date)
             return pd.DataFrame()
 
-        daily = self._read_csv(daily_path)
-        daily_basic = self._read_csv(daily_basic_path)
+        try:
+            daily = self._read_csv(daily_path)
+            daily_basic = self._read_csv(daily_basic_path)
+        except OSError as e:
+            self.logger.warning("跳过 %s：读取 daily 文件失败 (%s)", trade_date, e)
+            return pd.DataFrame()
         if daily.empty or daily_basic.empty:
             self.logger.warning("跳过 %s：daily 或 daily_basic 为空", trade_date)
             return pd.DataFrame()
@@ -128,7 +132,11 @@ class DataCleaner:
         if not limit_path.exists():
             return pd.DataFrame()
 
-        limit_up = self._read_csv(limit_path)
+        try:
+            limit_up = self._read_csv(limit_path)
+        except OSError as e:
+            self.logger.warning("跳过 %s：读取涨停文件失败 (%s)", trade_date, e)
+            return pd.DataFrame()
         if limit_up.empty:
             return pd.DataFrame()
 
