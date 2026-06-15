@@ -14,7 +14,7 @@ import sys, pandas as pd, numpy as np
 from pathlib import Path
 from itertools import combinations
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).absolute().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.optimize_recent_2y_fresh import Recent2YFreshOptimizer

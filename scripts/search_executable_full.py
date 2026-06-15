@@ -9,7 +9,7 @@ import sys, pandas as pd
 from pathlib import Path
 from itertools import combinations
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).absolute().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 INITIAL    = 500_000

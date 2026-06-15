@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pandas as pd
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).absolute().parents[1]
 TARGET_RULE = "bj_cap_2pct"
 
 

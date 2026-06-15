@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pandas as pd
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).absolute().parents[1]
 BASE_RULE = "bj_cap_2pct_full_replay"
 BEST_RULE = "filter_fd_1pct_2pct_market_down_lt5"
 
