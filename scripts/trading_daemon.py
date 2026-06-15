@@ -598,14 +598,22 @@ def report_next_day_candidates() -> None:
             logger().warning("【明日候选】未找到 planned_orders 文件，信号生成可能失败")
             return
         latest_file = Path(files[-1])
-        # 从文件名提取信号日期，格式：YYYYMMDD_planned_orders.csv
-        file_stem = latest_file.stem  # e.g. "20260615_planned_orders"
-        signal_date_str = file_stem.split("_")[0] if "_" in file_stem else "未知"
         try:
             orders = pd.read_csv(latest_file)
-        except Exception:
-            logger().info("【明日候选】%s 无开仓计划（信号日期 %s）", next_date_str, signal_date_str)
+        except pd.errors.EmptyDataError:
+            logger().warning("【明日候选】最新 planned_orders 文件为空：%s", latest_file.name)
             return
+        except Exception as e:
+            logger().error("【明日候选】读取 planned_orders 失败（%s）：%s", latest_file.name, e)
+            return
+        # 从数据列读信号日期，比解析文件名更可靠
+        if "signal_date" in orders.columns and not orders["signal_date"].dropna().empty:
+            signal_date_str = str(orders["signal_date"].dropna().iloc[0])
+        else:
+            import datetime as _dt2
+            signal_date_str = _dt2.datetime.fromtimestamp(
+                latest_file.stat().st_mtime
+            ).strftime("%Y%m%d")
         buy_orders = (
             orders[orders["side"].astype(str).str.upper() == "BUY"].copy()
             if "side" in orders.columns else pd.DataFrame()

@@ -13,7 +13,8 @@ if pid_file.exists():
     old_pid = pid_file.read_text().strip()
     subprocess.run(["taskkill", "/PID", old_pid, "/F"], capture_output=True)
     pid_file.unlink(missing_ok=True)
-    print(f"Old process stopped (PID {old_pid})")
+    print(f"Old process stopped (PID {old_pid}), waiting for QMT session to release...")
+    time.sleep(5)  # 等 QMT session 完全释放，避免新进程启动时全部连接 -1
 
 # 让 daemon 自己的 RotatingFileHandler 写日志，stdout/stderr 丢弃
 proc = subprocess.Popen(
