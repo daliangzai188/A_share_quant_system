@@ -96,17 +96,16 @@ def mark_post_market_done(date: datetime.date) -> None:
 
 
 def has_post_market_run_today(date: datetime.date) -> bool:
-    if post_market_marker_path(date).exists():
-        return True
-
-    cutoff = datetime.datetime.combine(date, SCHEDULE[2], tzinfo=BEIJING_TZ).timestamp()
-    pattern = str(PROJECT_ROOT / "reports" / "paper_trade" / "ab_filtered_daily_ops" / "*")
-    for file_path in glob.glob(pattern):
-        try:
-            if Path(file_path).is_file() and Path(file_path).stat().st_mtime >= cutoff:
-                return True
-        except OSError:
-            continue
+    """判断今日收盘流水线是否成功产出信号文件。
+    以 planned_orders 文件名中的日期为唯一判据——marker 文件在流水线失败时也会写入，不可信。
+    """
+    import re as _re
+    today_str = date.strftime("%Y%m%d")
+    pattern = str(PROJECT_ROOT / "reports" / "paper_trade" / "ab_filtered_daily_ops" / "*_planned_orders.csv")
+    for f in glob.glob(pattern):
+        m = _re.search(r"\d{8}", Path(f).stem)
+        if m and m.group() == today_str:
+            return True
     return False
 
 
