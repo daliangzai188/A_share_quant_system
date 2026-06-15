@@ -403,21 +403,30 @@ def output_paths(output_prefix: Path, signal_date: str) -> dict[str, Path]:
 def write_markdown(path: Path, checklist: pd.DataFrame, selected: pd.DataFrame, paths: dict[str, Path]) -> None:
     output_rows = [{"name": name, "path": str(file_path)} for name, file_path in paths.items()]
     outputs = pd.DataFrame(output_rows)
+
+    def table_text(frame: pd.DataFrame) -> str:
+        if frame.empty:
+            return "无。"
+        try:
+            return frame.to_markdown(index=False)
+        except ImportError:
+            return frame.to_string(index=False)
+
     content = f"""# A+B+C filtered 每日模拟盘操作台
 
 本报告只用于本地模拟盘流程，不接实盘，不调用 QMT，不下真实订单。
 
 ## 今日操作清单
 
-{checklist.to_markdown(index=False)}
+{table_text(checklist)}
 
 ## 选中标的
 
-{selected.to_markdown(index=False) if not selected.empty else "今日无选中标的。"}
+{table_text(selected) if not selected.empty else "今日无选中标的。"}
 
 ## 输出文件
 
-{outputs.to_markdown(index=False)}
+{table_text(outputs)}
 
 ## 执行限制
 

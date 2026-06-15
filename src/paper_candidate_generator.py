@@ -186,7 +186,11 @@ class PaperCandidateGenerator:
         result = candidates.copy()
         result["profit_source_score"] = self.calculate_profit_source_score(result)
         ranking = self.config.get("ranking", {})
-        columns = [column for column in ranking.get("columns", []) if column in result.columns]
+        configured_columns = [str(column) for column in ranking.get("columns", [])]
+        missing_columns = [column for column in configured_columns if column not in result.columns]
+        if missing_columns:
+            raise RuntimeError(f"排序字段不存在，拒绝生成候选: {missing_columns}")
+        columns = configured_columns
         if not columns:
             columns = ["fill_probability"]
         disallowed = [column for column in columns if column in self.FUTURE_REFERENCE_COLUMNS]
@@ -204,7 +208,7 @@ class PaperCandidateGenerator:
         for rule in self.config.get("ranking", {}).get("score_rules", []):
             column = str(rule.get("column", ""))
             if column not in candidates.columns:
-                continue
+                raise RuntimeError(f"打分规则字段不存在，拒绝生成候选: {column}")
             values = {str(value) for value in rule.get("values", [])}
             weight = float(rule.get("weight", 0.0))
             if not values or weight == 0:
@@ -257,6 +261,18 @@ class PaperCandidateGenerator:
             "turnover_rate_bucket": getattr(row, "turnover_rate_bucket", ""),
             "amount_ratio_bucket": getattr(row, "amount_ratio_bucket", ""),
             "prev_pct_chg_bucket": getattr(row, "prev_pct_chg_bucket", ""),
+            "theme_data_available": getattr(row, "theme_data_available", ""),
+            "theme_name": getattr(row, "theme_name", ""),
+            "theme_heat_score": self.normalize_number(getattr(row, "theme_heat_score", 0.0)),
+            "theme_heat_rank": self.normalize_number(getattr(row, "theme_heat_rank", 0.0)),
+            "theme_limit_count": self.normalize_number(getattr(row, "theme_limit_count", 0.0)),
+            "theme_chain_count": self.normalize_number(getattr(row, "theme_chain_count", 0.0)),
+            "theme_is_mainline": self.normalize_bool(getattr(row, "theme_is_mainline", False)),
+            "same_theme_limit_count": self.normalize_number(getattr(row, "same_theme_limit_count", 0.0)),
+            "auction_strength_score": self.normalize_number(getattr(row, "auction_strength_score", 0.0)),
+            "open_5m_strength_score": self.normalize_number(getattr(row, "open_5m_strength_score", 0.0)),
+            "sector_moneyflow_score": self.normalize_number(getattr(row, "sector_moneyflow_score", 0.0)),
+            "top_list_net_buy_score": self.normalize_number(getattr(row, "top_list_net_buy_score", 0.0)),
             "amount": self.normalize_number(getattr(row, "amount", 0.0)),
             "turnover_rate": self.normalize_number(getattr(row, "turnover_rate", 0.0)),
             "volume_ratio": self.normalize_number(getattr(row, "volume_ratio", 0.0)),

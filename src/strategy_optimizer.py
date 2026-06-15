@@ -71,6 +71,7 @@ class StrategyConditionOptimizer:
             ],
         )
         self.required_factor_columns = optimization_config.get("required_factor_columns", [])
+        self.candidate_sort_columns = optimization_config.get("candidate_sort_columns", [])
         self.min_factor_count = int(optimization_config.get("min_factor_count", 1))
         self.max_factor_count = int(optimization_config.get("max_factor_count", 4))
         self.min_sample_count = int(optimization_config.get("min_sample_count", 80))
@@ -365,59 +366,67 @@ class StrategyConditionOptimizer:
 
     def add_optional_external_features(self, trades: pd.DataFrame) -> pd.DataFrame:
         trades = self.merge_market_emotion_features(trades)
-        if self.should_merge_theme_heat_features():
-            trades = self.merge_optional_feature_file(
-                trades,
-                path=self.optional_theme_heat_features_path,
-                expected_columns=[
-                    "trade_date",
-                    "ts_code",
-                    "theme_data_available",
-                    "theme_source_column",
-                    "theme_name",
-                    "theme_limit_count",
-                    "theme_limit_height",
-                    "theme_chain_count",
-                    "theme_heat_score",
-                    "theme_heat_rank",
-                    "theme_leader_rank",
-                    "theme_height_rank",
-                    "theme_is_mainline",
-                    "same_theme_limit_count",
-                ],
-                feature_name="动态题材热度",
-            )
-        else:
-            self.logger.info("当前优化因子未启用题材热度，跳过动态题材热度合并。")
+        theme_columns = [
+            "trade_date",
+            "ts_code",
+            "theme_data_available",
+            "theme_source_column",
+            "theme_name",
+            "theme_limit_count",
+            "theme_limit_height",
+            "theme_chain_count",
+            "theme_heat_score",
+            "theme_heat_rank",
+            "theme_leader_rank",
+            "theme_height_rank",
+            "theme_is_mainline",
+            "same_theme_limit_count",
+        ]
+        trades = self.merge_optional_feature_file(
+            trades,
+            path=self.optional_theme_heat_features_path,
+            expected_columns=theme_columns,
+            feature_name="动态题材热度",
+            required=self.feature_is_required(theme_columns),
+        )
         trades = self.merge_optional_feature_file(
             trades,
             path=self.optional_auction_features_path,
             expected_columns=["trade_date", "ts_code", "auction_strength_score"],
             feature_name="竞价强度",
+            required=self.feature_is_required(["auction_strength_score"]),
         )
         trades = self.merge_optional_feature_file(
             trades,
             path=self.optional_open_5m_features_path,
             expected_columns=["trade_date", "ts_code", "open_5m_strength_score"],
             feature_name="开盘5分钟强度",
+            required=self.feature_is_required(["open_5m_strength_score"]),
         )
         trades = self.merge_optional_feature_file(
             trades,
             path=self.optional_sector_moneyflow_features_path,
             expected_columns=["trade_date", "ts_code", "sector_moneyflow_score"],
             feature_name="板块资金流",
+            required=self.feature_is_required(["sector_moneyflow_score"]),
         )
         trades = self.merge_optional_feature_file(
             trades,
             path=self.optional_top_list_features_path,
             expected_columns=["trade_date", "ts_code", "top_list_net_buy_score"],
             feature_name="龙虎榜资金",
+            required=self.feature_is_required(["top_list_net_buy_score"]),
         )
         return trades
 
-    def should_merge_theme_heat_features(self) -> bool:
-        theme_prefixes = ("theme_", "same_theme_")
-        return any(str(column).startswith(theme_prefixes) for column in self.factor_columns)
+    def feature_is_required(self, feature_columns: list[str]) -> bool:
+        feature_set = set(feature_columns) - {"trade_date", "ts_code"}
+        configured_columns = (
+            list(self.factor_columns)
+            + list(self.required_factor_columns)
+            + list(self.candidate_sort_columns)
+        )
+        return any(str(column) in feature_set for column in configured_columns)
 
     def merge_market_emotion_features(self, trades: pd.DataFrame) -> pd.DataFrame:
         path = self.optional_market_emotion_features_path
@@ -455,8 +464,11 @@ class StrategyConditionOptimizer:
         path: Path,
         expected_columns: list[str],
         feature_name: str,
+        required: bool = False,
     ) -> pd.DataFrame:
         if not path.exists():
+            if required:
+                raise FileNotFoundError(f"{feature_name} 已被配置为正式依赖，但特征文件不存在: {path}")
             self.logger.info("%s 特征文件不存在，跳过: %s", feature_name, path)
             return trades
         feature = pd.read_csv(path, dtype={"trade_date": str, "ts_code": str}, low_memory=False)
