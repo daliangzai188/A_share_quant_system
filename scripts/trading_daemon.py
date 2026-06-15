@@ -226,27 +226,74 @@ def mark_position_closed(order_id: str, sell_date: str, sell_price: float = 0.0)
 
 # ── 平仓检查（最高优先级，独立运行，绝不因其他错误跳过）────────────────────
 
+def _submit_orders_and_log(preview_csv: Path, confirm_text: str, tag: str) -> None:
+    """提交预览通过的订单，逐笔打印结果。"""
+    import pandas as pd
+    try:
+        result_prefix = PROJECT_ROOT / "reports" / "live_trade" / "qmt_live_order"
+        ok = run_script(
+            "submit_live_orders.py",
+            "--preview", str(preview_csv),
+            "--confirm", confirm_text,
+            "--output-prefix", str(result_prefix),
+            timeout=TIMEOUT_ORDER_STEP,
+        )
+        submitted_csv = result_prefix.with_name(result_prefix.name + "_submitted_orders.csv")
+        if ok and submitted_csv.exists():
+            rows = pd.read_csv(submitted_csv, low_memory=False)
+            now_str = now_beijing().strftime("%H:%M:%S")
+            for _, r in rows.iterrows():
+                side = str(r.get("side", "")).upper()
+                code = str(r.get("ts_code", ""))
+                qty  = int(r.get("quantity", 0))
+                price = float(r.get("price", 0.0))
+                amount = qty * price
+                accepted = str(r.get("accepted", "")).lower() in {"true", "1"}
+                msg = str(r.get("message", ""))
+                if accepted:
+                    logger().info(
+                        "✅ [%s] %s %s %s %d股 单价%.2f元 金额%.0f元",
+                        tag, now_str, side, code, qty, price, amount,
+                    )
+                else:
+                    logger().error(
+                        "❌ [%s] %s %s %s %d股 失败原因：%s",
+                        tag, now_str, side, code, qty, msg,
+                    )
+        elif not ok:
+            logger().error("❌ [%s] submit_live_orders.py 执行失败", tag)
+    except Exception as e:
+        logger().error("❌ [%s] 提交异常：%s", tag, e)
+
+
 def _do_sell(pos: dict[str, Any], qmt_enabled: bool) -> None:
     """对单个持仓执行卖出动作，完全独立、单独 try/except。"""
     ts_code = pos["ts_code"]
     name = pos["name"]
     order_id = pos["order_id"]
+    shares = int(pos.get("shares", 0))
     today_str = today_beijing().strftime("%Y%m%d")
 
     try:
         if qmt_enabled:
-            logger().warning("[平仓] QMT 模式：触发实盘预览 %s %s", ts_code, name)
+            logger().warning("⏳ [准备平仓] %s %s  %d股  计划平仓日 %s",
+                             ts_code, name, shares, pos.get("planned_exit_date", ""))
+            config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+            confirm = config.get("live_trade", {}).get(
+                "real_order_confirm_text", "A_SYSTEM_REAL_ORDER_CONFIRMED")
+            preview_csv = PROJECT_ROOT / "reports" / "live_trade" / "qmt_live_order_preview.csv"
             ok = run_script("preview_live_orders.py", "--planned-orders", "latest",
                             timeout=TIMEOUT_ORDER_STEP)
-            if ok:
-                logger().warning("[平仓] 预览完成，请手动执行 submit_live_orders.py 确认下单")
+            if ok and preview_csv.exists():
+                _submit_orders_and_log(preview_csv, confirm, "平仓")
+                mark_position_closed(order_id, today_str)
             else:
-                logger().error("[平仓] 预览失败，请立即手动检查 %s %s 持仓！", ts_code, name)
+                logger().error("❌ [平仓] 预览失败，请立即手动检查 %s %s 持仓！", ts_code, name)
         else:
             logger().info("[平仓] 模拟盘：%s %s 标记已平仓", ts_code, name)
             mark_position_closed(order_id, today_str)
     except Exception as e:
-        logger().error("[平仓] 执行异常（%s %s）：%s —— 请立即手动检查！", ts_code, name, e)
+        logger().error("❌ [平仓] 执行异常（%s %s）：%s —— 请立即手动检查！", ts_code, name, e)
 
 
 def check_and_close_positions() -> None:
@@ -421,10 +468,24 @@ def handle_combined_order_preview(planned_orders_path: Path | None, reason: str)
         logger().info("发现组合计划 %d 条：%s", len(executable_orders), reason)
 
         if qmt_enabled:
+            confirm = config.get("live_trade", {}).get(
+                "real_order_confirm_text", "A_SYSTEM_REAL_ORDER_CONFIRMED")
+            preview_csv = PROJECT_ROOT / "reports" / "live_trade" / "qmt_live_order_preview.csv"
+            buy_rows = executable_orders[executable_orders["side"].astype(str).str.upper() == "BUY"]
+            for _, row in buy_rows.iterrows():
+                code = str(row.get("ts_code", ""))
+                name_s = str(row.get("name", ""))
+                qty = int(row.get("round_lot_shares", 0))
+                ref_price = float(row.get("reference_price", 0.0))
+                amount = qty * ref_price
+                logger().warning("⏳ [准备开仓] %s %s  %d股  参考价%.2f元  预估金额%.0f元",
+                                 code, name_s, qty, ref_price, amount)
             ok = run_script("preview_live_orders.py", "--planned-orders", str(planned_orders_path),
                             timeout=TIMEOUT_ORDER_STEP)
-            if ok:
-                logger().warning("组合预览完成，真实下单请手动执行 submit_live_orders.py")
+            if ok and preview_csv.exists():
+                _submit_orders_and_log(preview_csv, confirm, "开仓")
+            elif not ok:
+                logger().error("❌ [开仓] 预览失败，请手动检查")
         else:
             buy_orders = executable_orders[executable_orders["side"].astype(str).str.upper() == "BUY"]
             for _, row in buy_orders.iterrows():
@@ -582,15 +643,35 @@ def _print_status(log: Any) -> None:
             adapter = QMTBrokerAdapter.from_config(config.get("broker", {}))
             adapter.connect()
             account = adapter.query_account()
-            positions = adapter.query_positions()
+            qmt_positions = adapter.query_positions()
             adapter.disconnect()
-            if positions:
-                pos_lines = "  ".join(
-                    f"{p.ts_code}×{p.volume}股 市值{p.market_value:.0f}元"
-                    for p in positions
-                )
+            if qmt_positions:
+                local_pos_map = {
+                    lp["ts_code"]: lp
+                    for lp in load_positions()
+                    if lp.get("status") == "open"
+                }
+                pos_parts = []
+                for p in qmt_positions:
+                    current_price = p.market_value / p.volume if p.volume > 0 else 0.0
+                    lp = local_pos_map.get(p.ts_code, {})
+                    buy_price = float(lp.get("buy_price", 0))
+                    if buy_price > 0:
+                        pnl_pct = (current_price - buy_price) / buy_price * 100
+                        pnl_sign = "+" if pnl_pct >= 0 else ""
+                        pos_parts.append(
+                            f"{p.ts_code}×{p.volume}股 "
+                            f"现价{current_price:.2f} "
+                            f"今日{pnl_sign}{pnl_pct:.2f}% "
+                            f"市值{p.market_value:.0f}元"
+                        )
+                    else:
+                        pos_parts.append(
+                            f"{p.ts_code}×{p.volume}股 市值{p.market_value:.0f}元"
+                        )
                 log.info("✅ [状态] %s | 程序正常 | 账户%s 可用%.0f元 | 持仓：%s",
-                         now_str, account.account_id, account.available_cash, pos_lines)
+                         now_str, account.account_id, account.available_cash,
+                         "  ".join(pos_parts))
             else:
                 log.info("✅ [状态] %s | 程序正常 | 账户%s 可用%.0f元 | 无持仓",
                          now_str, account.account_id, account.available_cash)
@@ -662,15 +743,17 @@ def main() -> None:
         sleep_secs = (wake_dt - now).total_seconds()
         log.info("下次任务：%s（%.0f 秒后）", wake_dt.strftime("%Y-%m-%d %H:%M"), sleep_secs)
 
-        # 分段睡眠，每5分钟打印一次状态
-        slept = 0
+        # 有持仓时每30秒打印状态+涨跌幅，无持仓时每5分钟打印一次
+        slept = 0.0
         last_status = 0.0
         while slept < sleep_secs:
-            chunk = min(60, sleep_secs - slept)
+            has_open = any(p.get("status") == "open" for p in load_positions())
+            status_interval = 30 if has_open else 300
+            chunk = min(status_interval, sleep_secs - slept)
             time.sleep(chunk)
             slept += chunk
             write_heartbeat("sleeping")
-            if slept - last_status >= 300:
+            if slept - last_status >= status_interval:
                 last_status = slept
                 _print_status(log)
 
