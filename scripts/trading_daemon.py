@@ -607,6 +607,42 @@ def _segment_label(ts_code: str, market_segment: str = "") -> str:
     return "未知"
 
 
+def _load_limit_for_codes(ts_codes: list[str]) -> tuple[str, dict[str, dict]]:
+    """从 limit_up_merged.csv 读最新交易日的涨停状态和封单金额。
+    返回 (最新交易日, {ts_code: {limit, open_times, fd_amount_wan, last_time}})。"""
+    try:
+        import pandas as pd
+        path = PROJECT_ROOT / "data" / "processed" / "limit_up_merged.csv"
+        if not path.exists():
+            return "", {}
+        need = ["ts_code", "trade_date", "limit", "open_times", "fd_amount", "last_time"]
+        avail = list(pd.read_csv(path, nrows=0).columns)
+        use_cols = [c for c in need if c in avail]
+        if "ts_code" not in use_cols or "trade_date" not in use_cols:
+            return "", {}
+        df = pd.read_csv(path, usecols=use_cols, dtype={"trade_date": str}, low_memory=False)
+        latest = str(df["trade_date"].max())
+        sub = df[(df["trade_date"] == latest) & (df["ts_code"].isin(ts_codes))]
+        result: dict[str, dict] = {}
+        for _, r in sub.iterrows():
+            t = r.get("last_time", 0)
+            try:
+                t_int = int(float(t))
+                time_str = f"{t_int // 10000:02d}:{(t_int % 10000) // 100:02d}"
+            except Exception:
+                time_str = str(t)
+            result[str(r["ts_code"])] = {
+                "limit":          str(r.get("limit", "")),
+                "open_times":     int(r.get("open_times", 0) or 0),
+                "fd_amount_wan":  float(r.get("fd_amount", 0) or 0) / 10000,  # 元→万元
+                "last_time":      time_str,
+            }
+        return latest, result
+    except Exception as e:
+        logger().debug("读取涨停数据失败：%s", e)
+        return "", {}
+
+
 def _load_daily_for_codes(ts_codes: list[str]) -> tuple[str, dict[str, dict]]:
     """从 daily_merged.csv 读最新交易日的 close/pct_chg/circ_mv。
     返回 (最新交易日字符串, {ts_code: {...}})。"""
@@ -694,6 +730,7 @@ def report_next_day_candidates() -> None:
         else:
             ts_codes = buy_orders["ts_code"].astype(str).tolist()
             daily_date, daily_map = _load_daily_for_codes(ts_codes)
+            _, limit_map = _load_limit_for_codes(ts_codes)
             if daily_date:
                 logger().info("  行情基准日：%s", daily_date)
             logger().info("  共 %d 只候选：", len(buy_orders))
@@ -710,9 +747,13 @@ def report_next_day_candidates() -> None:
                 pct      = d.get("pct_chg", 0.0)
                 circ_yi  = d.get("circ_mv", 0.0) / 10000  # 万元→亿元
                 pct_sign = "+" if pct >= 0 else ""
-                logger().info(
-                    "  %d. [%s] %s %s", i, seg, code, name,
-                )
+                lm       = limit_map.get(code, {})
+                is_limit = lm.get("limit", "") == "U"
+                open_t   = lm.get("open_times", 0)
+                fd_wan   = lm.get("fd_amount_wan", 0.0)
+                last_t   = lm.get("last_time", "")
+
+                logger().info("  %d. [%s] %s %s", i, seg, code, name)
                 if close > 0:
                     logger().info(
                         "     行情：收盘 %.2f元  涨跌 %s%.2f%%  流通市值 %.1f亿",
@@ -720,6 +761,16 @@ def report_next_day_candidates() -> None:
                     )
                 else:
                     logger().info("     行情：暂无（日线数据未采集到该日）")
+                if is_limit:
+                    open_desc = "一字板" if open_t == 0 else f"炸板{open_t}次"
+                    logger().info(
+                        "     涨停：✅ 封板中  %s  封单 %.0f万元  最后封板 %s",
+                        open_desc, fd_wan, last_t,
+                    )
+                elif lm:
+                    logger().info("     涨停：❌ 当日涨停已炸板（炸板 %d 次），收盘未封住", open_t)
+                else:
+                    logger().info("     涨停：— 当日未涨停")
                 logger().info(
                     "     计划：策略 %s  参考价 %.2f元  %d股  预估 %.0f元",
                     leg, ref_px, shares, amount,
