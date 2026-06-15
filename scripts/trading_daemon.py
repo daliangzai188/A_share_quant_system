@@ -43,8 +43,13 @@ SCHEDULE = [
     datetime.time(15, 10),  # 收盘流水线
 ]
 import sys as _sys
-_venv_python = PROJECT_ROOT / ".venv" / "bin" / "python"
-PYTHON = str(_venv_python) if _venv_python.exists() else _sys.executable
+import platform as _platform
+if _platform.system() == "Windows":
+    # Z: 盘上的 .venv/bin/python 是 Mac ARM64 二进制，Windows 无法执行
+    PYTHON = _sys.executable
+else:
+    _venv_python = PROJECT_ROOT / ".venv" / "bin" / "python"
+    PYTHON = str(_venv_python) if _venv_python.exists() else _sys.executable
 POSITIONS_FILE = PROJECT_ROOT / "data" / "processed" / "positions.json"
 HEARTBEAT_FILE = PROJECT_ROOT / "logs" / "daemon_heartbeat.txt"
 CALENDAR_STALE_WARNED: set[str] = set()
@@ -645,6 +650,7 @@ def _print_status(log: Any) -> None:
             account = adapter.query_account()
             qmt_positions = adapter.query_positions()
             adapter.disconnect()
+            time.sleep(2)  # 等 QMT session 完全释放再返回
             if qmt_positions:
                 local_pos_map = {
                     lp["ts_code"]: lp
@@ -694,6 +700,7 @@ def check_qmt_connection() -> None:
         adapter.connect()
         account = adapter.query_account()
         adapter.disconnect()
+        time.sleep(2)
         log.info("✅ QMT连接成功：账户 %s，可用资金 %.0f 元",
                  account.account_id, account.available_cash)
     except Exception as e:
