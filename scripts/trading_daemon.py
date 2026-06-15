@@ -598,22 +598,30 @@ def report_next_day_candidates() -> None:
             logger().warning("【明日候选】未找到 planned_orders 文件，信号生成可能失败")
             return
         latest_file = Path(files[-1])
+        # 从文件名里找 8 位日期（如 20260611），比拆分更可靠
+        import re as _re
+        _m = _re.search(r"\d{8}", latest_file.stem)
+        signal_date_str = _m.group() if _m else "未知"
+        today_str = today_beijing().strftime("%Y%m%d")
+        data_fresh = signal_date_str == today_str
+
         try:
             orders = pd.read_csv(latest_file)
         except pd.errors.EmptyDataError:
-            logger().warning("【明日候选】最新 planned_orders 文件为空：%s", latest_file.name)
+            if data_fresh:
+                logger().info("【明日候选】%s 信号已生成，A/B/C 均无符合条件标的，明日暂不开仓", signal_date_str)
+            else:
+                logger().warning(
+                    "【明日候选】⚠️  数据未更新！最新信号来自 %s，今日（%s）收盘流水线可能未成功运行",
+                    signal_date_str, today_str,
+                )
             return
         except Exception as e:
             logger().error("【明日候选】读取 planned_orders 失败（%s）：%s", latest_file.name, e)
             return
-        # 从数据列读信号日期，比解析文件名更可靠
+        # 优先从数据列读信号日期（更精确）
         if "signal_date" in orders.columns and not orders["signal_date"].dropna().empty:
             signal_date_str = str(orders["signal_date"].dropna().iloc[0])
-        else:
-            import datetime as _dt2
-            signal_date_str = _dt2.datetime.fromtimestamp(
-                latest_file.stat().st_mtime
-            ).strftime("%Y%m%d")
         buy_orders = (
             orders[orders["side"].astype(str).str.upper() == "BUY"].copy()
             if "side" in orders.columns else pd.DataFrame()
