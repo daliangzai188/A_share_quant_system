@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import argparse
 import glob
-import importlib.util
 import os
+import platform
 import sys
 from pathlib import Path
 from typing import Any
@@ -67,6 +67,21 @@ def check_env_value(env_name: str) -> tuple[str, str, bool]:
     if value in PLACEHOLDER_MARKERS:
         return "FAIL", f"{env_name} 未配置或仍是占位值。", True
     return "PASS", f"{env_name} 已配置，未打印真实值。", False
+
+
+def check_xtquant_import() -> tuple[str, str]:
+    try:
+        from xtquant import xtconstant, xtdata, xttrader, xttype  # type: ignore  # noqa: F401
+    except Exception as exc:
+        return (
+            "FAIL",
+            (
+                "xtquant 包存在但核心模块不能完整导入；"
+                f"python={sys.version.split()[0]}, arch={platform.machine()}, "
+                f"error={exc.__class__.__name__}: {exc}"
+            ),
+        )
+    return "PASS", f"xtquant 核心模块可完整导入；python={sys.version.split()[0]}, arch={platform.machine()}。"
 
 
 def build_report(config: dict[str, Any]) -> pd.DataFrame:
@@ -140,12 +155,12 @@ def build_report(config: dict[str, Any]) -> pd.DataFrame:
         )
     )
 
-    xtquant_spec = importlib.util.find_spec("xtquant")
+    xtquant_status, xtquant_detail = check_xtquant_import()
     rows.append(
         status_row(
             "xtquant_import",
-            "PASS" if xtquant_spec is not None else "FAIL",
-            "当前 Python 环境可以导入 xtquant。" if xtquant_spec is not None else "当前 Python 环境不能导入 xtquant。",
+            xtquant_status,
+            xtquant_detail,
             True,
         )
     )
@@ -203,7 +218,7 @@ def write_markdown(path: Path, report: pd.DataFrame) -> None:
 
 def main() -> None:
     args = parse_args()
-    load_dotenv(PROJECT_ROOT / ".env")
+    load_dotenv(PROJECT_ROOT / ".env", override=True)
     config = load_json_config(args.config)
     report = build_report(config)
     output_prefix = resolve_path(args.output_prefix)
@@ -221,4 +236,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

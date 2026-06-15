@@ -1,11 +1,11 @@
 {
   "project_name": "A股量化交易系统",
-  "trade_mode": "paper",
-  "broker_adapter_enabled": false,
-  "qmt_enabled": false,
+  "trade_mode": "live",
+  "broker_adapter_enabled": true,
+  "qmt_enabled": true,
   "broker": {
     "file_role": "券商连接配置。默认关闭，只用于 QMT / miniQMT 只读检查、实盘预览和后续真实下单。",
-    "enabled": false,
+    "enabled": true,
     "adapter": "qmt",
     "broker_name": "xiangcai_or_qmt_broker",
     "account_id_env": "QMT_ACCOUNT_ID",
@@ -16,8 +16,8 @@
   },
   "live_trade": {
     "file_role": "实盘交易安全闸门。默认关闭真实下单；即使 QMT 可连接，也只允许账户检查和订单预览。",
-    "enabled": false,
-    "real_order_enabled": false,
+    "enabled": true,
+    "real_order_enabled": true,
     "small_cash_test_enabled": false,
     "small_cash_test_max_shares": 100,
     "small_cash_test_max_order_amount": 20000,

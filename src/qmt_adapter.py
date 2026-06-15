@@ -84,6 +84,18 @@ def to_int(value: Any, default: int = 0) -> int:
         return default
 
 
+def unique_values(values: list[Any]) -> list[Any]:
+    result: list[Any] = []
+    seen: set[str] = set()
+    for value in values:
+        key = str(value).lower()
+        if key in seen:
+            continue
+        result.append(value)
+        seen.add(key)
+    return result
+
+
 class QMTBrokerAdapter(BrokerAdapter):
     """QMT / miniQMT 券商适配器。
 
@@ -99,13 +111,15 @@ class QMTBrokerAdapter(BrokerAdapter):
         self.xtdata_module: Any = None
         self.trader: Any = None
         self.account: Any = None
+        self._active_session_id: int = config.session_id
+        self._active_qmt_path: str = config.qmt_path
 
     @classmethod
     def from_config(cls, broker_config: dict[str, Any]) -> "QMTBrokerAdapter":
         """从 config/config.json 的 broker 配置创建 QMT 适配器。"""
 
         project_root = get_project_root()
-        load_dotenv(project_root / ".env")
+        load_dotenv(project_root / ".env", override=True)
 
         account_id = os.getenv(str(broker_config.get("account_id_env", "QMT_ACCOUNT_ID")), "").strip()
         qmt_path = os.getenv(str(broker_config.get("qmt_path_env", "QMT_PATH")), "").strip()
@@ -154,17 +168,56 @@ class QMTBrokerAdapter(BrokerAdapter):
         if not self.config.qmt_path:
             raise RuntimeError("未配置 QMT_PATH，不能连接 QMT 客户端。")
 
-        qmt_path = Path(self.config.qmt_path).expanduser()
-        self.trader = self.xttrader_module.XtQuantTrader(str(qmt_path), self.config.session_id)
-        self.account = self.xttype_module.StockAccount(self.config.account_id, self.config.account_type)
-        self.trader.start()
-        connect_result = self.trader.connect()
-        if connect_result not in {0, True, None}:
-            raise RuntimeError(f"QMT connect 返回异常: {connect_result}")
-        if hasattr(self.trader, "subscribe"):
-            subscribe_result = self.trader.subscribe(self.account)
-            self.logger.info("QMT 账户订阅结果: %s", subscribe_result)
-        self.logger.info("QMT 已连接: account_id=%s session_id=%s", self.config.account_id, self.config.session_id)
+        configured_path = Path(self.config.qmt_path).expanduser()
+        candidate_paths = unique_values(
+            [
+                configured_path,
+                configured_path / "userdata_mini",
+                configured_path / "userdata",
+                configured_path.parent / "userdata_mini",
+                configured_path.parent / "userdata",
+            ]
+        )
+        candidate_paths = [path for path in candidate_paths if path.exists()]
+        session_ids = unique_values([self.config.session_id, 1001, 1002, 10001, 20001, 31001])
+        errors: list[str] = []
+
+        for qmt_path in candidate_paths:
+            for session_id in session_ids:
+                trader = None
+                try:
+                    trader = self.xttrader_module.XtQuantTrader(str(qmt_path), int(session_id))
+                    account = self.xttype_module.StockAccount(self.config.account_id, self.config.account_type)
+                    trader.start()
+                    connect_result = trader.connect()
+                    if connect_result not in {0, True, None}:
+                        errors.append(f"path={qmt_path}; session_id={session_id}; connect={connect_result}")
+                        if hasattr(trader, "stop"):
+                            trader.stop()
+                        continue
+                    self.trader = trader
+                    self.account = account
+                    self._active_session_id = int(session_id)
+                    self._active_qmt_path = str(qmt_path)
+                    if hasattr(self.trader, "subscribe"):
+                        subscribe_result = self.trader.subscribe(self.account)
+                        self.logger.info("QMT 账户订阅结果: %s", subscribe_result)
+                    self.logger.info(
+                        "QMT 已连接: account_id=%s qmt_path=%s session_id=%s",
+                        self.config.account_id,
+                        qmt_path,
+                        session_id,
+                    )
+                    return
+                except Exception as exc:
+                    errors.append(f"path={qmt_path}; session_id={session_id}; error={exc.__class__.__name__}: {exc}")
+                    if trader is not None and hasattr(trader, "stop"):
+                        try:
+                            trader.stop()
+                        except Exception:
+                            pass
+
+        raise RuntimeError("QMT connect 全部失败: " + " | ".join(errors))
 
     def disconnect(self) -> None:
         if self.trader is not None and hasattr(self.trader, "stop"):
@@ -301,4 +354,3 @@ class QMTBrokerAdapter(BrokerAdapter):
         except Exception as e:
             self.logger.error("撤单失败: order_id=%s error=%s", order_id, e)
             return False
-

@@ -42,7 +42,9 @@ SCHEDULE = [
     datetime.time(14, 50),  # 盘中平仓检查
     datetime.time(15, 10),  # 收盘流水线
 ]
-PYTHON = str(PROJECT_ROOT / ".venv" / "bin" / "python")
+import sys as _sys
+_venv_python = PROJECT_ROOT / ".venv" / "bin" / "python"
+PYTHON = str(_venv_python) if _venv_python.exists() else _sys.executable
 POSITIONS_FILE = PROJECT_ROOT / "data" / "processed" / "positions.json"
 HEARTBEAT_FILE = PROJECT_ROOT / "logs" / "daemon_heartbeat.txt"
 CALENDAR_STALE_WARNED: set[str] = set()
@@ -569,6 +571,54 @@ def run_job(scheduled_time: datetime.time) -> None:
         job_post_market() if trade_day else logger().info("非交易日，跳过收盘流水线")
 
 
+def _print_status(log: Any) -> None:
+    now_str = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+        qmt_on = (config.get("broker_adapter_enabled") and config.get("qmt_enabled")
+                  and config.get("broker", {}).get("enabled"))
+        if qmt_on:
+            from src.qmt_adapter import QMTBrokerAdapter
+            adapter = QMTBrokerAdapter.from_config(config.get("broker", {}))
+            adapter.connect()
+            account = adapter.query_account()
+            positions = adapter.query_positions()
+            adapter.disconnect()
+            if positions:
+                pos_lines = "  ".join(
+                    f"{p.ts_code}×{p.volume}股 市值{p.market_value:.0f}元"
+                    for p in positions
+                )
+                log.info("✅ [状态] %s | 程序正常 | 账户%s 可用%.0f元 | 持仓：%s",
+                         now_str, account.account_id, account.available_cash, pos_lines)
+            else:
+                log.info("✅ [状态] %s | 程序正常 | 账户%s 可用%.0f元 | 无持仓",
+                         now_str, account.account_id, account.available_cash)
+        else:
+            log.info("✅ [状态] %s | 程序正常 | QMT未启用", now_str)
+    except Exception as e:
+        log.error("❌ [状态] %s | QMT连接异常：%s", now_str, e)
+
+
+def check_qmt_connection() -> None:
+    log = logger()
+    try:
+        config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+        if not (config.get("broker_adapter_enabled") and config.get("qmt_enabled") and
+                config.get("broker", {}).get("enabled")):
+            log.info("QMT 未启用，跳过连接检查")
+            return
+        from src.qmt_adapter import QMTBrokerAdapter
+        adapter = QMTBrokerAdapter.from_config(config.get("broker", {}))
+        adapter.connect()
+        account = adapter.query_account()
+        adapter.disconnect()
+        log.info("✅ QMT连接成功：账户 %s，可用资金 %.0f 元",
+                 account.account_id, account.available_cash)
+    except Exception as e:
+        log.error("❌ QMT连接失败：%s", e)
+
+
 def main() -> None:
     setup()
     log = logger()
@@ -581,6 +631,8 @@ def main() -> None:
 
     signal.signal(signal.SIGTERM, _exit)
     signal.signal(signal.SIGINT, _exit)
+
+    check_qmt_connection()
 
     # ── 启动时立刻执行平仓检查 ────────────────────────────────────────────────
     log.info("启动检查：扫描逾期/待平仓持仓...")
@@ -610,13 +662,17 @@ def main() -> None:
         sleep_secs = (wake_dt - now).total_seconds()
         log.info("下次任务：%s（%.0f 秒后）", wake_dt.strftime("%Y-%m-%d %H:%M"), sleep_secs)
 
-        # 分段睡眠，每分钟更新心跳，防止长时间无响应
+        # 分段睡眠，每5分钟打印一次状态
         slept = 0
+        last_status = 0.0
         while slept < sleep_secs:
             chunk = min(60, sleep_secs - slept)
             time.sleep(chunk)
             slept += chunk
             write_heartbeat("sleeping")
+            if slept - last_status >= 300:
+                last_status = slept
+                _print_status(log)
 
         try:
             run_job(sched_time)

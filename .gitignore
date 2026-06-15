@@ -56,3 +56,7 @@ reports/paper_trade/ab_filtered_daily_ops/*.csv
 # 守护进程运行时 PID 文件
 .daemon_pid
 .watchdog_pid
+
+# 临时安装包
+*.exe
+*.msi
