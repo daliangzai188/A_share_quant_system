@@ -569,21 +569,21 @@ def job_post_market() -> None:
     today_str = today_beijing().strftime("%Y%m%d")
 
     steps = [
-        ("collect_all_data.py",               "① 采集日线 + 涨停池",   TIMEOUT_DATA_STEP),
-        ("clean_collected_data.py",            "② 清洗合并数据",         TIMEOUT_DATA_STEP),
-        ("build_dynamic_features.py",          "③ 市场情绪 / 题材热度",  TIMEOUT_DATA_STEP),
-        ("score_limit_up_fill_probability.py", "④ 涨停成交概率打分",     TIMEOUT_DATA_STEP),
-        ("analyze_next_day_premium.py",        "⑤ 次日溢价因子",         TIMEOUT_DATA_STEP),
-        ("run_paper_ab_filtered_daily_ops.py", "⑥ A+B+C 信号生成",      TIMEOUT_SIGNAL_STEP),
+        ("collect_all_data.py",               "① 采集日线 + 涨停池",   TIMEOUT_DATA_STEP,  "约3~8分钟"),
+        ("clean_collected_data.py",            "② 清洗合并数据",         TIMEOUT_DATA_STEP,  "约1分钟"),
+        ("build_dynamic_features.py",          "③ 市场情绪 / 题材热度",  TIMEOUT_DATA_STEP,  "约1分钟"),
+        ("score_limit_up_fill_probability.py", "④ 涨停成交概率打分",     TIMEOUT_DATA_STEP,  "约3~5分钟"),
+        ("analyze_next_day_premium.py",        "⑤ 次日溢价因子",         TIMEOUT_DATA_STEP,  "约1分钟"),
+        ("run_paper_ab_filtered_daily_ops.py", "⑥ A+B+C 信号生成",      TIMEOUT_SIGNAL_STEP,"约1分钟"),
     ]
     extra_args: dict[str, list[str]] = {
         "collect_all_data.py": ["--end-date", today_str],
         "run_paper_ab_filtered_daily_ops.py": ["--top-n", "10"],
     }
 
-    for script, desc, timeout in steps:
+    for script, desc, timeout, eta in steps:
         try:
-            logger().info(desc)
+            logger().info("%s（%s）", desc, eta)
             args = extra_args.get(script, [])
             ok = run_script(script, *args, timeout=timeout)
             if not ok:
