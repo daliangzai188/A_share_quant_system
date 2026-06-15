@@ -597,19 +597,36 @@ def report_next_day_candidates() -> None:
         if not files:
             logger().warning("【明日候选】未找到 planned_orders 文件，信号生成可能失败")
             return
+        latest_file = Path(files[-1])
+        # 从文件名提取信号日期，格式：YYYYMMDD_planned_orders.csv
+        file_stem = latest_file.stem  # e.g. "20260615_planned_orders"
+        signal_date_str = file_stem.split("_")[0] if "_" in file_stem else "未知"
         try:
-            orders = pd.read_csv(files[-1])
+            orders = pd.read_csv(latest_file)
         except Exception:
-            logger().info("【明日候选】%s 无开仓计划，A/B/C 均无符合条件标的", next_date_str)
+            logger().info("【明日候选】%s 无开仓计划（信号日期 %s）", next_date_str, signal_date_str)
             return
-        buy_orders = orders[orders["side"].astype(str).str.upper() == "BUY"] if "side" in orders.columns else pd.DataFrame()
+        buy_orders = (
+            orders[orders["side"].astype(str).str.upper() == "BUY"].copy()
+            if "side" in orders.columns else pd.DataFrame()
+        )
+        logger().info("=" * 60)
+        logger().info("【明日候选】预计开仓日：%s  信号来源：%s", next_date_str, signal_date_str)
         if buy_orders.empty:
-            logger().info("【明日候选】%s 无开仓计划，A/B/C 均无符合条件标的", next_date_str)
+            logger().info("  无开仓计划，A/B/C 均无符合条件标的")
         else:
-            names = buy_orders.apply(
-                lambda r: f"{r.get('ts_code', '')} {r.get('name', '')}", axis=1
-            ).tolist()
-            logger().info("【明日候选】%s 共 %d 只：%s", next_date_str, len(names), " | ".join(names))
+            for i, (_, r) in enumerate(buy_orders.iterrows(), 1):
+                code = str(r.get("ts_code", ""))
+                name = str(r.get("name", ""))
+                leg = str(r.get("strategy_leg", ""))
+                price = float(r.get("reference_price", 0.0))
+                shares = int(r.get("round_lot_shares", r.get("estimated_shares", 0)))
+                amount = price * shares
+                logger().info(
+                    "  %d. %s %s [%s]  参考价%.2f元  %d股  预估%.0f元",
+                    i, code, name, leg, price, shares, amount,
+                )
+        logger().info("=" * 60)
     except Exception as e:
         logger().error("播报明日候选异常：%s", e)
 
@@ -738,9 +755,14 @@ def main() -> None:
                 job_post_market()  # 内部已调用 report_next_day_candidates
             else:
                 log.info("今日收盘流水线已完成，无需补跑")
-                report_next_day_candidates()
     except Exception as e:
         log.error("启动补跑检查异常：%s", e)
+
+    # ── 启动时无条件播报最新候选（让操盘手一眼看到明天计划） ────────────────
+    try:
+        report_next_day_candidates()
+    except Exception as e:
+        log.error("启动候选播报异常：%s", e)
 
     # ── 主循环 ────────────────────────────────────────────────────────────────
     while True:
