@@ -609,9 +609,9 @@ def job_post_market(end_date: str | None = None) -> None:
     target_str = end_date or today_beijing().strftime("%Y%m%d")
     logger().info("===== 收盘流水线（目标日期 %s）=====", target_str)
 
-    # 只采集最近 30 天，历史数据已在本地，避免扫描 2019 至今 5000+ 次文件存在检查
-    import datetime as _dt2
-    recent_start = (today_beijing() - _dt2.timedelta(days=30)).strftime("%Y%m%d")
+    # 策略最大回溯 shift(2)=2个交易日，加3天节假日缓冲=5个交易日
+    # 历史数据已在 daily_merged.csv，只需追加新日期，避免扫描 2019 至今全量文件
+    recent_start = prev_n_trade_days(today_beijing(), 5).strftime("%Y%m%d")
 
     steps = [
         ("collect_all_data.py",               "① 采集日线 + 涨停池",   TIMEOUT_DATA_STEP,  "约1分钟"),
@@ -623,6 +623,7 @@ def job_post_market(end_date: str | None = None) -> None:
     ]
     extra_args: dict[str, list[str]] = {
         "collect_all_data.py": ["--start-date", recent_start, "--end-date", target_str],
+        "clean_collected_data.py": ["--start-date", recent_start, "--end-date", target_str],
         "run_paper_ab_filtered_daily_ops.py": ["--top-n", "10"],
     }
 
