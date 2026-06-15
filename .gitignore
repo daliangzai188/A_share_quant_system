@@ -63,3 +63,5 @@ reports/paper_trade/ab_filtered_daily_ops/*.csv
 
 # QMT 运行时生成文件
 reports/live_trade/qmt_path_candidates.txt
+reports/live_trade/qmt_live_readiness.csv
+reports/live_trade/qmt_live_readiness.md
