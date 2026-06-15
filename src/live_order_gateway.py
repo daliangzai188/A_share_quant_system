@@ -188,8 +188,12 @@ class LiveOrderGateway:
             current_stock_market_value = float(current_position.get("market_value", 0.0))
 
             reject_reasons = []
+            allowed_exchanges = [e.upper() for e in self.live_config.get("allowed_exchanges", [])]
+            ts_exchange = ts_code.split(".")[-1] if "." in ts_code else ""
             if not ts_code:
                 reject_reasons.append("EMPTY_TS_CODE")
+            if allowed_exchanges and ts_exchange not in allowed_exchanges:
+                reject_reasons.append(f"EXCHANGE_NOT_PERMITTED({ts_exchange})")
             if side not in {"BUY", "SELL"}:
                 reject_reasons.append("UNSUPPORTED_SIDE")
             if quantity <= 0:

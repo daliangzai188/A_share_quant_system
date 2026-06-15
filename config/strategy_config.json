@@ -30,11 +30,11 @@
     "exclude_st": true,
     "exclude_delisting_risk": true,
     "exclude_suspended": true,
-    "exclude_market_segments": [],
-    "exclude_market_segments_note": "模拟盘完整宇宙：科创板已开启（账户获得权限后恢复）。科创板历史验证显示拖累稳定性，实盘时再评估是否重新排除。",
-    "exclude_bj": false,
+    "exclude_market_segments": ["star"],
+    "exclude_market_segments_note": "实盘仅开通深A权限：排除科创板（star/.SH）、沪市主板（sh_main/.SH）、北交所（bj/.BJ）；保留深市主板和创业板。待账户开通对应权限后将对应项改回 false / 清空。",
+    "exclude_bj": true,
     "exclude_chi_next": false,
-    "exclude_sh_main": false,
+    "exclude_sh_main": true,
     "exclude_sz_main": false
   },
   "candidate_filters": {
