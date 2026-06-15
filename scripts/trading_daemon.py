@@ -609,16 +609,20 @@ def job_post_market(end_date: str | None = None) -> None:
     target_str = end_date or today_beijing().strftime("%Y%m%d")
     logger().info("===== 收盘流水线（目标日期 %s）=====", target_str)
 
+    # 只采集最近 30 天，历史数据已在本地，避免扫描 2019 至今 5000+ 次文件存在检查
+    import datetime as _dt2
+    recent_start = (today_beijing() - _dt2.timedelta(days=30)).strftime("%Y%m%d")
+
     steps = [
-        ("collect_all_data.py",               "① 采集日线 + 涨停池",   TIMEOUT_DATA_STEP,  "约3~8分钟"),
+        ("collect_all_data.py",               "① 采集日线 + 涨停池",   TIMEOUT_DATA_STEP,  "约1分钟"),
         ("clean_collected_data.py",            "② 清洗合并数据",         TIMEOUT_DATA_STEP,  "约1分钟"),
         ("build_dynamic_features.py",          "③ 市场情绪 / 题材热度",  TIMEOUT_DATA_STEP,  "约1分钟"),
-        ("score_limit_up_fill_probability.py", "④ 涨停成交概率打分",     TIMEOUT_DATA_STEP,  "约3~5分钟"),
+        ("score_limit_up_fill_probability.py", "④ 涨停成交概率打分",     TIMEOUT_DATA_STEP,  "约1分钟"),
         ("analyze_next_day_premium.py",        "⑤ 次日溢价因子",         TIMEOUT_DATA_STEP,  "约1分钟"),
         ("run_paper_ab_filtered_daily_ops.py", "⑥ A+B+C 信号生成",      TIMEOUT_SIGNAL_STEP,"约1分钟"),
     ]
     extra_args: dict[str, list[str]] = {
-        "collect_all_data.py": ["--end-date", target_str],
+        "collect_all_data.py": ["--start-date", recent_start, "--end-date", target_str],
         "run_paper_ab_filtered_daily_ops.py": ["--top-n", "10"],
     }
 
