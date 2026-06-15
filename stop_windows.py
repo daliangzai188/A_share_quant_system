@@ -1,7 +1,7 @@
 import subprocess
 from pathlib import Path
 
-pid_file = Path(__file__).parent / ".daemon_pid"
+pid_file = Path(__file__).absolute().parent / ".daemon_pid"
 
 if pid_file.exists():
     pid = pid_file.read_text().strip()

@@ -28,7 +28,13 @@ import time
 from pathlib import Path
 from typing import Any
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+import platform as _platform_init
+# Windows 下 resolve() 把 Z:\ 展开为 \\localhost@9843\DavWWWRoot（UNC），
+# 导致 pandas 无法读写文件；用 absolute() 保留盘符路径。
+if _platform_init.system() == "Windows":
+    PROJECT_ROOT = Path(__file__).absolute().parents[1]
+else:
+    PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 

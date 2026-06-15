@@ -3,7 +3,7 @@ from pathlib import Path
 
 sys.stdout.reconfigure(encoding="utf-8")
 
-root = Path(__file__).parent
+root = Path(__file__).absolute().parent
 log = root / "logs" / "trading_daemon.log"
 pid_file = root / ".daemon_pid"
 daemon = root / "scripts" / "trading_daemon.py"
