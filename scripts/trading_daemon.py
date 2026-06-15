@@ -400,7 +400,7 @@ def check_and_close_positions() -> None:
 def run_script(name: str, *args: str, timeout: int = TIMEOUT_DATA_STEP) -> bool:
     import platform as _plat
     cmd = [PYTHON, "-B", str(PROJECT_ROOT / "scripts" / name)] + list(args)
-    logger().info("执行: %s  (超时 %ds)", " ".join(cmd), timeout)
+    logger().info("执行: %s", " ".join(cmd))
     kwargs: dict = {
         "cwd": PROJECT_ROOT,
         "timeout": timeout,
