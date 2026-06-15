@@ -89,11 +89,76 @@ py -3.11 stop_windows.py
 
 启动后日志实时显示在终端，颜色说明：
 - 绿色 `✅` — QMT 连接成功、程序状态正常
+- 黄色 `⚠️` — 警告、暂不开仓、需要关注但不一定阻塞
 - 红色 `❌` — QMT 连接失败或程序错误
 
 每 5 分钟自动打印一次状态，包含：程序状态、账户可用资金、当前持仓。
 
 Ctrl+C 断开日志显示，守护进程继续在后台运行。
+
+`start_windows.py` 会在发现旧守护进程时先强制停止旧 PID，并等待 15 秒释放 QMT session，再启动新进程。不要连续快速重复启动；如需重启，优先按下面顺序：
+
+```powershell
+cd Z:\
+py -3.11 stop_windows.py
+py -3.11 start_windows.py
+```
+
+## 收盘数据缓存与自动流水线
+
+守护进程启动后会检查当天收盘流水线是否已经完成：
+
+- 已完成：直接使用缓存，不重复拉取数据。
+- 未完成：后台自动执行收盘流水线，不影响 QMT 状态刷新。
+
+正常缓存命中日志：
+
+```text
+已有 20260615 收盘数据缓存，直接使用
+```
+
+无缓存时会自动执行：
+
+```text
+① 采集日线 + 涨停池
+② 清洗合并数据
+③ 市场情绪 / 题材热度
+④ 涨停成交概率打分
+⑤ 次日溢价因子
+⑥ A+B+C 信号生成
+```
+
+清洗阶段会显示百分比进度：
+
+```text
+清洗进度: 54.5% (6/11)，当前日期: 20260608，daily累计: 33066，limit累计: 463
+```
+
+`collect_all_data.py`、`clean_collected_data.py`、`score_limit_up_fill_probability.py` 属于关键步骤。关键步骤第一次失败会等待 10 秒自动重试一次；仍失败则停止本次流水线，不生成计划单，避免使用旧信号。
+
+Windows 子进程日志已强制 UTF-8 输出并实时转发到主日志，PowerShell 中不应再出现中文乱码。
+
+## 当日涨停池兜底模拟观察
+
+如果 A+B+C 历史回放因为缺少未来 T+2 收益数据，暂时不能生成目标交易日计划，守护进程会自动调用：
+
+```powershell
+py -3.11 scripts\generate_live_limit_pool_daily_ops.py --signal-date YYYYMMDD --top-n 10
+```
+
+该脚本只基于当日 `data/processed/limit_up_fill_scored.csv` 生成模拟观察清单，输出到：
+
+```text
+reports/paper_trade/ab_filtered_daily_ops/
+```
+
+安全限制：
+
+- 不连接 QMT。
+- 不调用真实下单接口。
+- 输出文件中 `live_order_enabled=False`。
+- 当前版本只生成 `WATCH_ONLY` 观察清单，不生成 BUY 委托。
+- 实盘前仍必须经过 QMT 预览、人工复核和小资金验证。
 
 ## 守护进程任务时间表
 
@@ -140,3 +205,12 @@ miniQMT 是 x64 程序，必须用 x64 Python 才能加载 xtquant 的 DLL。ARM
 
 ### trading_daemon.py PYTHON 路径（已修复）
 原代码硬编码 `.venv/bin/python`（Mac 路径），在 Windows 不存在。修复：优先用 `.venv/bin/python`，不存在时回退到 `sys.executable`。
+
+### QMT session 短暂释放失败（已缓解）
+快速停止后立刻启动时，QMT 可能短时间返回 `connect=-1`。修复：Windows 启动脚本等待 15 秒释放旧 session，守护进程启动检查最多重试 5 次，每次间隔 15 秒。
+
+### Windows 共享盘 WinError 58（已缓解）
+UTM WebDAV 共享盘偶发返回 `WinError 58`，导致目录检查、CSV 写入或清洗读取失败。修复：数据采集和清洗模块对目录创建、文件存在检查、CSV 读写增加重试。
+
+### PowerShell 中文乱码（已修复）
+守护进程调用子进程时使用 `python -u` 实时输出，并设置 `PYTHONIOENCODING=utf-8`、`PYTHONUTF8=1`。主进程读取输出时优先 UTF-8，失败再 GBK 兜底。

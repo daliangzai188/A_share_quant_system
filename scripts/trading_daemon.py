@@ -399,29 +399,76 @@ def check_and_close_positions() -> None:
 
 def run_script(name: str, *args: str, timeout: int = TIMEOUT_DATA_STEP) -> bool:
     import platform as _plat
-    cmd = [PYTHON, "-B", str(PROJECT_ROOT / "scripts" / name)] + list(args)
+    import queue as _queue
+    import threading as _threading
+    cmd = [PYTHON, "-u", "-B", str(PROJECT_ROOT / "scripts" / name)] + list(args)
     logger().info("执行: %s", " ".join(cmd))
     kwargs: dict = {
         "cwd": PROJECT_ROOT,
-        "timeout": timeout,
         "stdout": subprocess.PIPE,
         "stderr": subprocess.STDOUT,
+        "bufsize": 1,
     }
+    env = dict(__import__("os").environ)
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
+    kwargs["env"] = env
     if _plat.system() == "Windows":
         kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW，禁止弹出新控制台
     try:
-        result = subprocess.run(cmd, **kwargs)
-        output = (result.stdout or b"").decode("utf-8", errors="replace").strip()
-        if result.returncode != 0:
-            if output:
-                for line in output.splitlines()[-20:]:
+        proc = subprocess.Popen(cmd, **kwargs)
+        output_lines: list[str] = []
+        line_queue: _queue.Queue[str] = _queue.Queue()
+
+        def _reader() -> None:
+            if proc.stdout is None:
+                return
+            for raw_line in proc.stdout:
+                if isinstance(raw_line, bytes):
+                    try:
+                        text = raw_line.decode("utf-8")
+                    except UnicodeDecodeError:
+                        text = raw_line.decode("gbk", errors="replace")
+                else:
+                    text = str(raw_line)
+                line_queue.put(text.rstrip())
+
+        reader = _threading.Thread(target=_reader, daemon=True)
+        reader.start()
+        started_at = time.time()
+
+        while proc.poll() is None:
+            try:
+                line = line_queue.get(timeout=0.5)
+            except _queue.Empty:
+                line = ""
+            if line:
+                output_lines.append(line)
+                if "| ERROR |" in line or "Traceback" in line or line.startswith("ERROR:"):
                     logger().error("  [%s] %s", name, line)
-            logger().error("%s 退出码 %d", name, result.returncode)
+                else:
+                    logger().info("  [%s] %s", name, line)
+            if time.time() - started_at > timeout:
+                proc.kill()
+                logger().error("%s 超时（%ds），已强制终止", name, timeout)
+                return False
+
+        while True:
+            try:
+                line = line_queue.get_nowait()
+            except _queue.Empty:
+                break
+            if line:
+                output_lines.append(line)
+                if "| ERROR |" in line or "Traceback" in line or line.startswith("ERROR:"):
+                    logger().error("  [%s] %s", name, line)
+                else:
+                    logger().info("  [%s] %s", name, line)
+
+        if proc.returncode != 0:
+            logger().error("%s 退出码 %d", name, proc.returncode)
             return False
         return True
-    except subprocess.TimeoutExpired:
-        logger().error("%s 超时（%ds），已强制终止", name, timeout)
-        return False
     except Exception as e:
         logger().error("%s 执行异常：%s", name, e)
         return False
@@ -603,6 +650,7 @@ def job_afternoon() -> None:
 
 def job_post_market(end_date: str | None = None) -> None:
     target_str = end_date or today_beijing().strftime("%Y%m%d")
+    target_date = datetime.datetime.strptime(target_str, "%Y%m%d").date()
     logger().info("===== 收盘流水线（目标日期 %s）=====", target_str)
 
     # shift(2)=2天 + 最长连假/断档缓冲=8天 = 10个交易日
@@ -622,6 +670,11 @@ def job_post_market(end_date: str | None = None) -> None:
         "clean_collected_data.py": ["--start-date", recent_start, "--end-date", target_str],
         "run_paper_ab_filtered_daily_ops.py": ["--top-n", "10"],
     }
+    critical_scripts = {
+        "collect_all_data.py",
+        "clean_collected_data.py",
+        "score_limit_up_fill_probability.py",
+    }
 
     for script, desc, timeout, eta in steps:
         try:
@@ -629,13 +682,42 @@ def job_post_market(end_date: str | None = None) -> None:
             args = extra_args.get(script, [])
             ok = run_script(script, *args, timeout=timeout)
             if not ok:
-                logger().error("%s 失败，继续后续步骤", desc)
+                if script in critical_scripts:
+                    logger().warning("%s 第一次失败，等待10秒后自动重试一次", desc)
+                    time.sleep(10)
+                    ok = run_script(script, *args, timeout=timeout)
+                if not ok and script in critical_scripts:
+                    logger().error("❌ %s 仍然失败，本次收盘流水线停止；不生成计划单，避免使用旧信号", desc)
+                    return
+                if not ok:
+                    logger().error("%s 失败，继续后续步骤", desc)
         except Exception as e:
+            if script in critical_scripts:
+                logger().error("❌ %s 异常：%s，本次收盘流水线停止；不生成计划单，避免使用旧信号", desc, e)
+                return
             logger().error("%s 异常：%s，继续后续步骤", desc, e)
+
+    if not _has_signal_for_date(target_date):
+        logger().warning(
+            "A/B/C 未生成 %s 计划单，自动使用当日涨停池生成安全模拟观察计划...",
+            target_str,
+        )
+        fallback_ok = run_script(
+            "generate_live_limit_pool_daily_ops.py",
+            "--signal-date",
+            target_str,
+            "--top-n",
+            "10",
+            timeout=TIMEOUT_SIGNAL_STEP,
+        )
+        if fallback_ok and _has_signal_for_date(target_date):
+            logger().info("✅ 当日涨停池模拟观察计划已生成：signal_date=%s，live_order_enabled=False", target_str)
+        else:
+            logger().error("❌ 当日涨停池模拟观察计划生成失败：signal_date=%s", target_str)
 
     logger().info("===== 收盘流水线完成 =====")
     report_next_day_candidates()
-    mark_post_market_done(today_beijing())
+    mark_post_market_done(target_date)
 
 
 def _segment_label(ts_code: str, market_segment: str = "") -> str:
@@ -923,13 +1005,33 @@ def check_qmt_connection() -> None:
             log.info("QMT 未启用，跳过连接检查")
             return
         from src.qmt_adapter import QMTBrokerAdapter
-        adapter = QMTBrokerAdapter.from_config(config.get("broker", {}))
-        adapter.connect()
-        account = adapter.query_account()
-        adapter.disconnect()
-        time.sleep(2)
-        log.info("✅ QMT连接成功：账户 %s，可用资金 %.0f 元",
-                 account.account_id, account.available_cash)
+
+        last_error = ""
+        for attempt in range(1, 6):
+            adapter = QMTBrokerAdapter.from_config(config.get("broker", {}))
+            try:
+                adapter.connect()
+                account = adapter.query_account()
+                adapter.disconnect()
+                time.sleep(2)
+                log.info(
+                    "✅ QMT连接成功：账户 %s，可用资金 %.0f 元（第 %d 次尝试）",
+                    account.account_id,
+                    account.available_cash,
+                    attempt,
+                )
+                return
+            except Exception as e:
+                last_error = str(e)
+                try:
+                    adapter.disconnect()
+                except Exception:
+                    pass
+                if attempt < 5:
+                    log.warning("⚠️ QMT暂时未就绪，第 %d/5 次连接失败，15秒后自动重试：%s", attempt, last_error)
+                    time.sleep(15)
+
+        log.error("❌ QMT连接失败：连续 5 次失败。最后错误：%s", last_error)
     except Exception as e:
         log.error("❌ QMT连接失败：%s", e)
 

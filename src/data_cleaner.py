@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import time
 from typing import Iterable
 
 import pandas as pd
@@ -49,7 +50,7 @@ class DataCleaner:
         if not trade_dates:
             raise RuntimeError("没有发现可清洗的日线 CSV 文件，请先采集数据。")
 
-        self.processed_dir.mkdir(parents=True, exist_ok=True)
+        self._mkdir_with_retry(self.processed_dir)
         self._prepare_output_files(overwrite=overwrite)
 
         market_rows: list[dict[str, object]] = []
@@ -69,18 +70,19 @@ class DataCleaner:
 
             market_rows.append(self.build_market_sentiment_row(trade_date, daily_merged, limit_up_merged))
 
-            if index % 50 == 0 or index == len(trade_dates):
-                self.logger.info(
-                    "清洗进度: %s/%s, 当前日期: %s, daily累计: %s, limit累计: %s",
-                    index,
-                    len(trade_dates),
-                    trade_date,
-                    daily_total_rows,
-                    limit_total_rows,
-                )
+            progress_pct = index / len(trade_dates) * 100
+            self.logger.info(
+                "清洗进度: %.1f%% (%s/%s)，当前日期: %s，daily累计: %s，limit累计: %s",
+                progress_pct,
+                index,
+                len(trade_dates),
+                trade_date,
+                daily_total_rows,
+                limit_total_rows,
+            )
 
         market_sentiment = pd.DataFrame(market_rows)
-        market_sentiment.to_csv(self.market_sentiment_path, index=False, encoding="utf-8-sig")
+        self._write_csv_with_retry(market_sentiment, self.market_sentiment_path)
         self.logger.info("日线合并表已生成: %s, 行数: %s", self.daily_merged_path, daily_total_rows)
         self.logger.info("涨停合并表已生成: %s, 行数: %s", self.limit_up_merged_path, limit_total_rows)
         self.logger.info("市场情绪表已生成: %s, 行数: %s", self.market_sentiment_path, len(market_sentiment))
@@ -407,7 +409,16 @@ class DataCleaner:
 
     @staticmethod
     def _read_csv(path: Path) -> pd.DataFrame:
-        return pd.read_csv(path, dtype={"trade_date": str, "ts_code": str})
+        last_error: OSError | None = None
+        for _ in range(3):
+            try:
+                return pd.read_csv(path, dtype={"trade_date": str, "ts_code": str})
+            except OSError as exc:
+                last_error = exc
+                time.sleep(1)
+        if last_error is not None:
+            raise last_error
+        return pd.DataFrame()
 
     @staticmethod
     def _normalize_trade_date(data: pd.DataFrame) -> pd.DataFrame:
@@ -423,14 +434,53 @@ class DataCleaner:
 
     @staticmethod
     def _append_csv(data: pd.DataFrame, output_path: Path) -> None:
-        write_header = not output_path.exists()
-        data.to_csv(output_path, mode="a", header=write_header, index=False, encoding="utf-8-sig")
+        DataCleaner._mkdir_with_retry(output_path.parent)
+        last_error: OSError | None = None
+        for _ in range(3):
+            try:
+                write_header = not output_path.exists()
+                data.to_csv(output_path, mode="a", header=write_header, index=False, encoding="utf-8-sig")
+                return
+            except OSError as exc:
+                last_error = exc
+                time.sleep(1)
+        if last_error is not None:
+            raise last_error
 
     def _prepare_output_files(self, overwrite: bool) -> None:
         for path in [self.daily_merged_path, self.limit_up_merged_path, self.market_sentiment_path]:
-            path.parent.mkdir(parents=True, exist_ok=True)
+            self._mkdir_with_retry(path.parent)
             if path.exists():
                 if overwrite:
                     path.unlink()
                 else:
                     raise FileExistsError(f"输出文件已存在，如需重建请使用 overwrite=True: {path}")
+
+    @staticmethod
+    def _mkdir_with_retry(path: Path) -> None:
+        last_error: OSError | None = None
+        for _ in range(3):
+            try:
+                path.mkdir(parents=True, exist_ok=True)
+                if path.is_dir():
+                    return
+            except OSError as exc:
+                last_error = exc
+                time.sleep(1)
+        if last_error is not None:
+            raise last_error
+        raise OSError(f"目录创建失败: {path}")
+
+    @staticmethod
+    def _write_csv_with_retry(data: pd.DataFrame, output_path: Path) -> None:
+        DataCleaner._mkdir_with_retry(output_path.parent)
+        last_error: OSError | None = None
+        for _ in range(3):
+            try:
+                data.to_csv(output_path, index=False, encoding="utf-8-sig")
+                return
+            except OSError as exc:
+                last_error = exc
+                time.sleep(1)
+        if last_error is not None:
+            raise last_error

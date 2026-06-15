@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import time
 from typing import Iterable
 
 import pandas as pd
@@ -29,9 +30,9 @@ class DataCollector:
         self.daily_dir = self.project_root / data_config.get("daily_dir", "data/raw/daily")
         self.daily_basic_dir = self.project_root / data_config.get("daily_basic_dir", "data/raw/daily_basic")
         self.limit_list_dir = self.project_root / data_config.get("limit_list_dir", "data/raw/limit_list")
-        self.daily_dir.mkdir(parents=True, exist_ok=True)
-        self.daily_basic_dir.mkdir(parents=True, exist_ok=True)
-        self.limit_list_dir.mkdir(parents=True, exist_ok=True)
+        self._mkdir_with_retry(self.daily_dir)
+        self._mkdir_with_retry(self.daily_basic_dir)
+        self._mkdir_with_retry(self.limit_list_dir)
 
     def collect_daily_data(
         self,
@@ -132,14 +133,69 @@ class DataCollector:
             return overwrite
         return bool(self.config.get("collection", {}).get("overwrite", False))
 
-    @staticmethod
-    def _should_skip(output_path: Path, overwrite: bool) -> bool:
-        return output_path.exists() and not overwrite
+    def _should_skip(self, output_path: Path, overwrite: bool) -> bool:
+        return self._exists_with_retry(output_path) and not overwrite
 
-    @staticmethod
-    def _save_dataframe(data: pd.DataFrame, output_path: Path) -> None:
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        data.to_csv(output_path, index=False, encoding="utf-8-sig")
+    def _save_dataframe(self, data: pd.DataFrame, output_path: Path) -> None:
+        self._mkdir_with_retry(output_path.parent)
+        self._write_csv_with_retry(data, output_path)
+
+    def _mkdir_with_retry(self, path: Path, retries: int = 3, delay: float = 2.0) -> None:
+        last_error: Exception | None = None
+        for attempt in range(1, retries + 1):
+            try:
+                path.mkdir(parents=True, exist_ok=True)
+                return
+            except OSError as exc:
+                last_error = exc
+                self.logger.warning(
+                    "共享盘目录创建/检查失败，第 %d/%d 次重试: %s; error=%s",
+                    attempt,
+                    retries,
+                    path,
+                    exc,
+                )
+                time.sleep(delay * attempt)
+        if last_error is not None:
+            raise last_error
+
+    def _exists_with_retry(self, path: Path, retries: int = 3, delay: float = 1.0) -> bool:
+        last_error: Exception | None = None
+        for attempt in range(1, retries + 1):
+            try:
+                return path.exists()
+            except OSError as exc:
+                last_error = exc
+                self.logger.warning(
+                    "共享盘文件检查失败，第 %d/%d 次重试: %s; error=%s",
+                    attempt,
+                    retries,
+                    path,
+                    exc,
+                )
+                time.sleep(delay * attempt)
+        if last_error is not None:
+            raise last_error
+        return False
+
+    def _write_csv_with_retry(self, data: pd.DataFrame, output_path: Path, retries: int = 3, delay: float = 2.0) -> None:
+        last_error: Exception | None = None
+        for attempt in range(1, retries + 1):
+            try:
+                data.to_csv(output_path, index=False, encoding="utf-8-sig")
+                return
+            except OSError as exc:
+                last_error = exc
+                self.logger.warning(
+                    "共享盘CSV写入失败，第 %d/%d 次重试: %s; error=%s",
+                    attempt,
+                    retries,
+                    output_path,
+                    exc,
+                )
+                time.sleep(delay * attempt)
+        if last_error is not None:
+            raise last_error
 
     @staticmethod
     def _is_permission_error(exc: Exception) -> bool:
