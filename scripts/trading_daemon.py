@@ -363,12 +363,21 @@ def run_script(name: str, *args: str, timeout: int = TIMEOUT_DATA_STEP) -> bool:
     import platform as _plat
     cmd = [PYTHON, "-B", str(PROJECT_ROOT / "scripts" / name)] + list(args)
     logger().info("执行: %s  (超时 %ds)", " ".join(cmd), timeout)
-    kwargs: dict = {"cwd": PROJECT_ROOT, "timeout": timeout}
+    kwargs: dict = {
+        "cwd": PROJECT_ROOT,
+        "timeout": timeout,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.STDOUT,
+    }
     if _plat.system() == "Windows":
         kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW，禁止弹出新控制台
     try:
         result = subprocess.run(cmd, **kwargs)
+        output = (result.stdout or b"").decode("utf-8", errors="replace").strip()
         if result.returncode != 0:
+            if output:
+                for line in output.splitlines()[-20:]:
+                    logger().error("  [%s] %s", name, line)
             logger().error("%s 退出码 %d", name, result.returncode)
             return False
         return True
