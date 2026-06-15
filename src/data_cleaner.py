@@ -458,15 +458,22 @@ class DataCleaner:
 
     @staticmethod
     def _mkdir_with_retry(path: Path) -> None:
+        # WebDAV(Z:盘)的 is_dir()/stat() 可能返回 WinError 58，
+        # 即使目录实际存在也会抛出。以「能列目录」为成功判断。
         last_error: OSError | None = None
-        for _ in range(3):
+        for attempt in range(5):
             try:
                 path.mkdir(parents=True, exist_ok=True)
-                if path.is_dir():
-                    return
+                return
             except OSError as exc:
                 last_error = exc
-                time.sleep(1)
+            try:
+                next(iter(path.iterdir()), None)
+                return  # 能列出目录内容说明目录已存在且可用
+            except OSError:
+                pass
+            if attempt < 4:
+                time.sleep(2)
         if last_error is not None:
             raise last_error
         raise OSError(f"目录创建失败: {path}")

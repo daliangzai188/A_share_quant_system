@@ -946,52 +946,82 @@ def run_job(scheduled_time: datetime.time) -> None:
         job_post_market() if trade_day else logger().info("非交易日，跳过收盘流水线")
 
 
+def _qmt_query_once(broker_config: dict) -> tuple:
+    """连接 QMT，查账户 + 持仓，断开，返回 (account, positions)。"""
+    from src.qmt_adapter import QMTBrokerAdapter
+    adapter = QMTBrokerAdapter.from_config(broker_config)
+    adapter.connect()
+    account = adapter.query_account()
+    positions = adapter.query_positions()
+    adapter.disconnect()
+    time.sleep(3)  # 等 QMT session 完全释放再返回
+    return account, positions
+
+
 def _print_status(log: Any) -> None:
     now_str = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
     try:
         config = load_json_config(PROJECT_ROOT / "config" / "config.json")
         qmt_on = (config.get("broker_adapter_enabled") and config.get("qmt_enabled")
                   and config.get("broker", {}).get("enabled"))
-        if qmt_on:
-            from src.qmt_adapter import QMTBrokerAdapter
-            adapter = QMTBrokerAdapter.from_config(config.get("broker", {}))
-            adapter.connect()
-            account = adapter.query_account()
-            qmt_positions = adapter.query_positions()
-            adapter.disconnect()
-            time.sleep(2)  # 等 QMT session 完全释放再返回
-            if qmt_positions:
-                local_pos_map = {
-                    lp["ts_code"]: lp
-                    for lp in load_positions()
-                    if lp.get("status") == "open"
-                }
-                pos_parts = []
-                for p in qmt_positions:
-                    current_price = p.market_value / p.volume if p.volume > 0 else 0.0
-                    lp = local_pos_map.get(p.ts_code, {})
-                    buy_price = float(lp.get("buy_price", 0))
-                    if buy_price > 0:
-                        pnl_pct = (current_price - buy_price) / buy_price * 100
-                        pnl_sign = "+" if pnl_pct >= 0 else ""
-                        pos_parts.append(
-                            f"{p.ts_code}×{p.volume}股 "
-                            f"现价{current_price:.2f} "
-                            f"今日{pnl_sign}{pnl_pct:.2f}% "
-                            f"市值{p.market_value:.0f}元"
-                        )
-                    else:
-                        pos_parts.append(
-                            f"{p.ts_code}×{p.volume}股 市值{p.market_value:.0f}元"
-                        )
-                log.info("✅ [状态] %s | 程序正常 | 账户%s 可用%.0f元 | 持仓：%s",
-                         now_str, account.account_id, account.available_cash,
-                         "  ".join(pos_parts))
-            else:
-                log.info("✅ [状态] %s | 程序正常 | 账户%s 可用%.0f元 | 无持仓",
-                         now_str, account.account_id, account.available_cash)
-        else:
+        if not qmt_on:
             log.info("✅ [状态] %s | 程序正常 | QMT未启用", now_str)
+            return
+
+        broker_cfg = config.get("broker", {})
+        last_err: Exception | None = None
+        account = positions = None
+        max_attempts = 10  # 每15秒重试一次，最多尝试10次（2.5分钟）
+        for attempt in range(1, max_attempts + 1):
+            try:
+                account, positions = _qmt_query_once(broker_cfg)
+                if attempt > 1:
+                    log.info("✅ [状态] QMT重连成功（第%d次尝试）", attempt)
+                last_err = None
+                break
+            except Exception as e:
+                last_err = e
+                if attempt < max_attempts:
+                    log.warning("⚠️ [状态] QMT掉线，15秒后自动重连（第%d/%d次）：%s",
+                                attempt, max_attempts, e)
+                    time.sleep(15)
+
+        if last_err is not None:
+            log.error("❌ [状态] %s | QMT连接异常（已重试%d次仍失败）：%s",
+                      now_str, max_attempts, last_err)
+            return
+
+        now_str = now_beijing().strftime("%Y-%m-%d %H:%M:%S")  # 重连后更新时间戳
+        if positions:
+            local_pos_map = {
+                lp["ts_code"]: lp
+                for lp in load_positions()
+                if lp.get("status") == "open"
+            }
+            pos_parts = []
+            for p in positions:
+                current_price = p.market_value / p.volume if p.volume > 0 else 0.0
+                lp = local_pos_map.get(p.ts_code, {})
+                buy_price = float(lp.get("buy_price", 0))
+                if buy_price > 0:
+                    pnl_pct = (current_price - buy_price) / buy_price * 100
+                    pnl_sign = "+" if pnl_pct >= 0 else ""
+                    pos_parts.append(
+                        f"{p.ts_code}×{p.volume}股 "
+                        f"现价{current_price:.2f} "
+                        f"今日{pnl_sign}{pnl_pct:.2f}% "
+                        f"市值{p.market_value:.0f}元"
+                    )
+                else:
+                    pos_parts.append(
+                        f"{p.ts_code}×{p.volume}股 市值{p.market_value:.0f}元"
+                    )
+            log.info("✅ [状态] %s | 程序正常 | 账户%s 可用%.0f元 | 持仓：%s",
+                     now_str, account.account_id, account.available_cash,
+                     "  ".join(pos_parts))
+        else:
+            log.info("✅ [状态] %s | 程序正常 | 账户%s 可用%.0f元 | 无持仓",
+                     now_str, account.account_id, account.available_cash)
     except Exception as e:
         log.error("❌ [状态] %s | QMT连接异常：%s", now_str, e)
 
