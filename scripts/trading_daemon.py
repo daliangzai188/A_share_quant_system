@@ -586,62 +586,145 @@ def job_post_market() -> None:
     mark_post_market_done(today_beijing())
 
 
-def report_next_day_candidates() -> None:
-    """读取最新 planned_orders，播报下一交易日开仓候选。"""
+def _segment_label(ts_code: str, market_segment: str = "") -> str:
+    seg_map = {
+        "sh_main": "沪市主板",
+        "sz_main": "深市主板",
+        "chi_next": "创业板",
+        "star": "科创板",
+        "bj": "北交所",
+    }
+    if market_segment in seg_map:
+        return seg_map[market_segment]
+    code = ts_code.split(".")[0] if "." in ts_code else ts_code
+    suffix = ts_code.split(".")[-1].upper() if "." in ts_code else ""
+    if suffix == "BJ":
+        return "北交所"
+    if suffix == "SH":
+        return "科创板" if code.startswith("688") else "沪市主板"
+    if suffix == "SZ":
+        return "创业板" if code.startswith("3") else "深市主板"
+    return "未知"
+
+
+def _load_daily_for_codes(ts_codes: list[str]) -> tuple[str, dict[str, dict]]:
+    """从 daily_merged.csv 读最新交易日的 close/pct_chg/circ_mv。
+    返回 (最新交易日字符串, {ts_code: {...}})。"""
     try:
         import pandas as pd
+        path = PROJECT_ROOT / "data" / "processed" / "daily_merged.csv"
+        if not path.exists():
+            return "", {}
+        need = ["ts_code", "trade_date", "close", "pct_chg", "circ_mv"]
+        avail = list(pd.read_csv(path, nrows=0).columns)
+        use_cols = [c for c in need if c in avail]
+        if "ts_code" not in use_cols or "trade_date" not in use_cols:
+            return "", {}
+        daily = pd.read_csv(path, usecols=use_cols, dtype={"trade_date": str}, low_memory=False)
+        latest = str(daily["trade_date"].max())
+        sub = daily[(daily["trade_date"] == latest) & (daily["ts_code"].isin(ts_codes))]
+        result: dict[str, dict] = {}
+        for _, r in sub.iterrows():
+            result[str(r["ts_code"])] = {
+                "close":   float(r.get("close",   0) or 0),
+                "pct_chg": float(r.get("pct_chg", 0) or 0),
+                "circ_mv": float(r.get("circ_mv", 0) or 0),  # 万元
+            }
+        return latest, result
+    except Exception as e:
+        logger().debug("读取日线数据失败：%s", e)
+        return "", {}
+
+
+def report_next_day_candidates() -> None:
+    """读取最新 planned_orders，播报下一交易日开仓候选，附当日行情。"""
+    try:
+        import pandas as pd
+        import re as _re
+
         next_date = next_n_trade_days(today_beijing(), 1)
         next_date_str = next_date.strftime("%Y-%m-%d")
+        today_str = today_beijing().strftime("%Y%m%d")
+
         pattern = str(PROJECT_ROOT / "reports/paper_trade/ab_filtered_daily_ops/*_planned_orders.csv")
         files = sorted(glob.glob(pattern))
+
+        logger().info("=" * 60)
+
         if not files:
-            logger().warning("【明日候选】未找到 planned_orders 文件，信号生成可能失败")
+            logger().warning("【明日候选】下个交易日：%s", next_date_str)
+            logger().warning("  ⚠️  未找到 planned_orders 文件，收盘流水线可能从未成功运行")
+            logger().info("=" * 60)
             return
+
         latest_file = Path(files[-1])
-        # 从文件名里找 8 位日期（如 20260611），比拆分更可靠
-        import re as _re
         _m = _re.search(r"\d{8}", latest_file.stem)
         signal_date_str = _m.group() if _m else "未知"
-        today_str = today_beijing().strftime("%Y%m%d")
         data_fresh = signal_date_str == today_str
 
         try:
             orders = pd.read_csv(latest_file)
         except pd.errors.EmptyDataError:
+            logger().info("【明日候选】下个交易日：%s  信号日期：%s", next_date_str, signal_date_str)
             if data_fresh:
-                logger().info("【明日候选】%s 信号已生成，A/B/C 均无符合条件标的，明日暂不开仓", signal_date_str)
+                logger().info("  A/B/C 均无符合条件标的，明日暂不开仓")
             else:
-                logger().warning(
-                    "【明日候选】⚠️  数据未更新！最新信号来自 %s，今日（%s）收盘流水线可能未成功运行",
-                    signal_date_str, today_str,
-                )
+                logger().warning("  ⚠️  数据未更新！信号来自 %s，今日（%s）收盘流水线未成功运行", signal_date_str, today_str)
+            logger().info("=" * 60)
             return
         except Exception as e:
-            logger().error("【明日候选】读取 planned_orders 失败（%s）：%s", latest_file.name, e)
+            logger().error("  读取 planned_orders 失败（%s）：%s", latest_file.name, e)
+            logger().info("=" * 60)
             return
-        # 优先从数据列读信号日期（更精确）
+
         if "signal_date" in orders.columns and not orders["signal_date"].dropna().empty:
             signal_date_str = str(orders["signal_date"].dropna().iloc[0])
+
         buy_orders = (
             orders[orders["side"].astype(str).str.upper() == "BUY"].copy()
             if "side" in orders.columns else pd.DataFrame()
         )
-        logger().info("=" * 60)
-        logger().info("【明日候选】预计开仓日：%s  信号来源：%s", next_date_str, signal_date_str)
+
+        logger().info("【明日候选】下个交易日：%s  信号日期：%s", next_date_str, signal_date_str)
+        if not data_fresh:
+            logger().warning("  ⚠️  数据未更新！今日（%s）收盘流水线未成功运行，以下为旧信号仅供参考", today_str)
+
         if buy_orders.empty:
-            logger().info("  无开仓计划，A/B/C 均无符合条件标的")
+            logger().info("  A/B/C 均无符合条件标的，明日暂不开仓")
         else:
+            ts_codes = buy_orders["ts_code"].astype(str).tolist()
+            daily_date, daily_map = _load_daily_for_codes(ts_codes)
+            if daily_date:
+                logger().info("  行情基准日：%s", daily_date)
+            logger().info("  共 %d 只候选：", len(buy_orders))
             for i, (_, r) in enumerate(buy_orders.iterrows(), 1):
-                code = str(r.get("ts_code", ""))
-                name = str(r.get("name", ""))
-                leg = str(r.get("strategy_leg", ""))
-                price = float(r.get("reference_price", 0.0))
-                shares = int(r.get("round_lot_shares", r.get("estimated_shares", 0)))
-                amount = price * shares
+                code     = str(r.get("ts_code", ""))
+                name     = str(r.get("name", ""))
+                leg      = str(r.get("strategy_leg", ""))
+                ref_px   = float(r.get("reference_price", 0.0))
+                shares   = int(r.get("round_lot_shares", r.get("estimated_shares", 0)))
+                amount   = ref_px * shares
+                seg      = _segment_label(code, str(r.get("market_segment", "")))
+                d        = daily_map.get(code, {})
+                close    = d.get("close", 0.0)
+                pct      = d.get("pct_chg", 0.0)
+                circ_yi  = d.get("circ_mv", 0.0) / 10000  # 万元→亿元
+                pct_sign = "+" if pct >= 0 else ""
                 logger().info(
-                    "  %d. %s %s [%s]  参考价%.2f元  %d股  预估%.0f元",
-                    i, code, name, leg, price, shares, amount,
+                    "  %d. [%s] %s %s", i, seg, code, name,
                 )
+                if close > 0:
+                    logger().info(
+                        "     行情：收盘 %.2f元  涨跌 %s%.2f%%  流通市值 %.1f亿",
+                        close, pct_sign, pct, circ_yi,
+                    )
+                else:
+                    logger().info("     行情：暂无（日线数据未采集到该日）")
+                logger().info(
+                    "     计划：策略 %s  参考价 %.2f元  %d股  预估 %.0f元",
+                    leg, ref_px, shares, amount,
+                )
+
         logger().info("=" * 60)
     except Exception as e:
         logger().error("播报明日候选异常：%s", e)
