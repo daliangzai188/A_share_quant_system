@@ -688,9 +688,16 @@ def report_next_day_candidates() -> None:
         import pandas as pd
         import re as _re
 
+        now_bj = now_beijing()
+        today_str = today_beijing().strftime("%Y%m%d")
         next_date = next_n_trade_days(today_beijing(), 1)
         next_date_str = next_date.strftime("%Y-%m-%d")
-        today_str = today_beijing().strftime("%Y%m%d")
+
+        # 收盘后（>=15:10 且是交易日）才要求信号必须是今天的；收盘前用最新缓存即可
+        require_today = (
+            is_trade_day(now_bj.date())
+            and now_bj.time() >= datetime.time(15, 10)
+        )
 
         pattern = str(PROJECT_ROOT / "reports/paper_trade/ab_filtered_daily_ops/*_planned_orders.csv")
         files = sorted(glob.glob(pattern))
@@ -706,7 +713,8 @@ def report_next_day_candidates() -> None:
         latest_file = Path(files[-1])
         _m = _re.search(r"\d{8}", latest_file.stem)
         signal_date_str = _m.group() if _m else "未知"
-        data_fresh = signal_date_str == today_str
+        # 收盘后必须是今天的信号；收盘前最新缓存就算新鲜
+        data_fresh = (signal_date_str == today_str) or (not require_today)
 
         try:
             orders = pd.read_csv(latest_file)
@@ -733,7 +741,7 @@ def report_next_day_candidates() -> None:
 
         logger().info("【明日候选】下个交易日：%s  信号日期：%s", next_date_str, signal_date_str)
         if not data_fresh:
-            logger().warning("  ⚠️  数据未更新！今日（%s）收盘流水线未成功运行，以下为旧信号仅供参考", today_str)
+            logger().warning("  ⚠️  数据未更新！信号来自 %s，今日（%s）收盘流水线未成功运行，以下仅供参考", signal_date_str, today_str)
 
         if buy_orders.empty:
             logger().info("  A/B/C 均无符合条件标的，明日暂不开仓")
