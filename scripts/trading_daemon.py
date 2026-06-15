@@ -555,33 +555,10 @@ def job_afternoon() -> None:
 
 
 def job_post_market() -> None:
-    import platform as _plat
     logger().info("===== 收盘流水线（15:10）=====")
 
     today_str = today_beijing().strftime("%Y%m%d")
 
-    if _plat.system() == "Windows":
-        # Windows VM 只负责 QMT 下单，不负责数据采集/清洗（需在 Mac 端运行）
-        logger().warning(
-            "Windows 端跳过①-⑤数据采集步骤，请在 Mac 端运行收盘流水线：\n"
-            "  python scripts/collect_all_data.py --end-date %s\n"
-            "  python scripts/clean_collected_data.py\n"
-            "  python scripts/build_dynamic_features.py\n"
-            "  python scripts/score_limit_up_fill_probability.py\n"
-            "  python scripts/analyze_next_day_premium.py",
-            today_str,
-        )
-        logger().info("⑥ A+B+C 信号生成（使用 Mac 已同步的数据）")
-        ok = run_script("run_paper_ab_filtered_daily_ops.py", "--top-n", "10",
-                        timeout=TIMEOUT_SIGNAL_STEP)
-        if not ok:
-            logger().error("⑥ 信号生成失败，请确认 Mac 端数据已同步至 Z: 盘后重试")
-        logger().info("===== 收盘流水线完成（Windows端）=====")
-        report_next_day_candidates()
-        mark_post_market_done(today_beijing())
-        return
-
-    # Mac 端：完整流水线
     steps = [
         ("collect_all_data.py",               "① 采集日线 + 涨停池",   TIMEOUT_DATA_STEP),
         ("clean_collected_data.py",            "② 清洗合并数据",         TIMEOUT_DATA_STEP),
@@ -921,22 +898,25 @@ def main() -> None:
         log.error("启动平仓检查异常：%s —— 请立即手动检查持仓！", e)
 
     # ── 启动时检查今日收盘流水线是否已跑，未跑则补跑 ────────────────────────
+    _pipeline_just_ran = False
     try:
         now_bj = now_beijing()
         if is_trade_day(now_bj.date()) and now_bj.time() >= datetime.time(15, 10):
             if not has_post_market_run_today(now_bj.date()):
                 log.info("检测到今日收盘流水线未运行，立即补跑...")
                 job_post_market()  # 内部已调用 report_next_day_candidates
+                _pipeline_just_ran = True
             else:
                 log.info("今日收盘流水线已完成，无需补跑")
     except Exception as e:
         log.error("启动补跑检查异常：%s", e)
 
-    # ── 启动时无条件播报最新候选（让操盘手一眼看到明天计划） ────────────────
-    try:
-        report_next_day_candidates()
-    except Exception as e:
-        log.error("启动候选播报异常：%s", e)
+    # ── 启动时播报最新候选（流水线刚跑完已播报过则跳过，避免重复） ──────────
+    if not _pipeline_just_ran:
+        try:
+            report_next_day_candidates()
+        except Exception as e:
+            log.error("启动候选播报异常：%s", e)
 
     # ── 主循环 ────────────────────────────────────────────────────────────────
     while True:

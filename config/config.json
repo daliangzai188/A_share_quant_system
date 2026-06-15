@@ -46,6 +46,8 @@
   "data_source": {
     "primary": "tushare",
     "token_env": "TUSHARE_TOKEN",
+    "token": "",
+    "token_note": "填入 Tushare Pro Token 后 daemon 可自动采集数据，无需交互输入。优先级：环境变量 > 此字段。",
     "request_retry_times": 3,
     "request_retry_wait_seconds": 3
   },
