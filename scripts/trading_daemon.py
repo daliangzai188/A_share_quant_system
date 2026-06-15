@@ -609,9 +609,9 @@ def job_post_market(end_date: str | None = None) -> None:
     target_str = end_date or today_beijing().strftime("%Y%m%d")
     logger().info("===== 收盘流水线（目标日期 %s）=====", target_str)
 
-    # 策略最大回溯 shift(2)=2个交易日，加3天节假日缓冲=5个交易日
-    # 历史数据已在 daily_merged.csv，只需追加新日期，避免扫描 2019 至今全量文件
-    recent_start = prev_n_trade_days(today_beijing(), 5).strftime("%Y%m%d")
+    # shift(2)=2天 + 最长连假/断档缓冲=8天 = 10个交易日
+    # 历史数据已在 daily_merged.csv，只需追加缺失日期，避免扫描 2019 至今全量文件
+    recent_start = prev_n_trade_days(today_beijing(), 10).strftime("%Y%m%d")
 
     steps = [
         ("collect_all_data.py",               "① 采集日线 + 涨停池",   TIMEOUT_DATA_STEP,  "约1分钟"),
