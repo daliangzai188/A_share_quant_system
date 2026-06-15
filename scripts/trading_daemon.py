@@ -360,10 +360,14 @@ def check_and_close_positions() -> None:
 # ── subprocess 执行（带超时）──────────────────────────────────────────────────
 
 def run_script(name: str, *args: str, timeout: int = TIMEOUT_DATA_STEP) -> bool:
+    import platform as _plat
     cmd = [PYTHON, "-B", str(PROJECT_ROOT / "scripts" / name)] + list(args)
     logger().info("执行: %s  (超时 %ds)", " ".join(cmd), timeout)
+    kwargs: dict = {"cwd": PROJECT_ROOT, "timeout": timeout}
+    if _plat.system() == "Windows":
+        kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW，禁止弹出新控制台
     try:
-        result = subprocess.run(cmd, cwd=PROJECT_ROOT, timeout=timeout)
+        result = subprocess.run(cmd, **kwargs)
         if result.returncode != 0:
             logger().error("%s 退出码 %d", name, result.returncode)
             return False
@@ -551,9 +555,33 @@ def job_afternoon() -> None:
 
 
 def job_post_market() -> None:
+    import platform as _plat
     logger().info("===== 收盘流水线（15:10）=====")
 
-    # 每步独立 try，出错不影响后续步骤
+    today_str = today_beijing().strftime("%Y%m%d")
+
+    if _plat.system() == "Windows":
+        # Windows VM 只负责 QMT 下单，不负责数据采集/清洗（需在 Mac 端运行）
+        logger().warning(
+            "Windows 端跳过①-⑤数据采集步骤，请在 Mac 端运行收盘流水线：\n"
+            "  python scripts/collect_all_data.py --end-date %s\n"
+            "  python scripts/clean_collected_data.py\n"
+            "  python scripts/build_dynamic_features.py\n"
+            "  python scripts/score_limit_up_fill_probability.py\n"
+            "  python scripts/analyze_next_day_premium.py",
+            today_str,
+        )
+        logger().info("⑥ A+B+C 信号生成（使用 Mac 已同步的数据）")
+        ok = run_script("run_paper_ab_filtered_daily_ops.py", "--top-n", "10",
+                        timeout=TIMEOUT_SIGNAL_STEP)
+        if not ok:
+            logger().error("⑥ 信号生成失败，请确认 Mac 端数据已同步至 Z: 盘后重试")
+        logger().info("===== 收盘流水线完成（Windows端）=====")
+        report_next_day_candidates()
+        mark_post_market_done(today_beijing())
+        return
+
+    # Mac 端：完整流水线
     steps = [
         ("collect_all_data.py",               "① 采集日线 + 涨停池",   TIMEOUT_DATA_STEP),
         ("clean_collected_data.py",            "② 清洗合并数据",         TIMEOUT_DATA_STEP),
@@ -562,10 +590,7 @@ def job_post_market() -> None:
         ("analyze_next_day_premium.py",        "⑤ 次日溢价因子",         TIMEOUT_DATA_STEP),
         ("run_paper_ab_filtered_daily_ops.py", "⑥ A+B+C 信号生成",      TIMEOUT_SIGNAL_STEP),
     ]
-
-    today_str = today_beijing().strftime("%Y%m%d")
     extra_args: dict[str, list[str]] = {
-        # 收盘后采集到今天（15:35 后数据已落地），确保今日涨停数据纳入明日信号
         "collect_all_data.py": ["--end-date", today_str],
         "run_paper_ab_filtered_daily_ops.py": ["--top-n", "10"],
     }
