@@ -955,26 +955,38 @@ def main() -> None:
     except Exception as e:
         log.error("启动平仓检查异常：%s —— 请立即手动检查持仓！", e)
 
-    # ── 启动时检查是否已有最新信号，没有则自动采集对应日期数据 ─────────────────
-    _pipeline_just_ran = False
+    # ── 启动时先播报当前缓存候选，再按需后台补采 ─────────────────────────────
     try:
         expected = _expected_signal_date()
         expected_str = expected.strftime("%Y%m%d")
-        if _has_signal_for_date(expected):
-            log.info("数据已就绪（信号日期 %s），无需重新采集", expected_str)
-        else:
-            log.info("检测到 %s 信号未就绪，立即采集数据...", expected_str)
-            job_post_market(end_date=expected_str)
-            _pipeline_just_ran = True
     except Exception as e:
         log.error("启动数据检查异常：%s", e)
+        expected = today_beijing()
+        expected_str = expected.strftime("%Y%m%d")
 
-    # ── 启动时播报最新候选（流水线刚跑完已播报过则跳过，避免重复） ──────────
-    if not _pipeline_just_ran:
-        try:
-            report_next_day_candidates()
-        except Exception as e:
-            log.error("启动候选播报异常：%s", e)
+    # 无论如何先打印当前缓存（可能是旧数据，流水线跑完后会再次播报）
+    try:
+        report_next_day_candidates()
+    except Exception as e:
+        log.error("启动候选播报异常：%s", e)
+
+    # 若缓存不是最新交易日数据，后台线程补采，不阻塞主循环 QMT 状态刷新
+    if not _has_signal_for_date(expected):
+        log.warning(
+            "未找到 %s 收盘数据缓存，后台自动采集中（不影响主循环和 QMT 状态刷新）...",
+            expected_str,
+        )
+        import threading as _threading
+
+        def _bg_pipeline(_date_str: str = expected_str) -> None:
+            try:
+                job_post_market(end_date=_date_str)
+            except Exception as _e:
+                log.error("后台流水线异常：%s", _e)
+
+        _threading.Thread(target=_bg_pipeline, daemon=True, name="pipeline").start()
+    else:
+        log.info("已有 %s 收盘数据缓存，直接使用", expected_str)
 
     # ── 主循环 ────────────────────────────────────────────────────────────────
     while True:
