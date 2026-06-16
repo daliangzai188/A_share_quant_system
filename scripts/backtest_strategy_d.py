@@ -63,8 +63,8 @@ D_SENTIMENT = "strong"
 D_BOARD_TYPE = "multi_open"               # 炸板后重封，才有机会打板
 D_TIME_BUCKETS = {"midday", "afternoon", "late"}  # 非开盘即封死的时段
 D_TAIL_SEALED_HOUR = 14                   # 最终封板时间 >= 14:00（last_time >= 140000）
-D_MAX_OPEN_TIMES = 3                      # 炸板次数 <= 3（过多炸板说明封板不稳）
-D_PREFERRED_OPEN_TIMES = 2                # 近两年首板研究显示：多候选时优先炸板2次
+# 炸板次数不设上限：近2年strong情绪下45天回测，去掉限制样本数不变，但每天候选池更大
+# 多候选时按fd_amount_to_circ_mv降序收益最优（均+1.72% vs 原策略+1.07%）
 DEFAULT_ALLOWED_SEGMENTS = {"sh_main", "sz_main", "chi_next", "star", "bj", "other"}
 
 
@@ -121,7 +121,6 @@ def load_d_candidates(
         (df["board_type"] == D_BOARD_TYPE) &
         (df["first_time_bucket"].isin(D_TIME_BUCKETS)) &
         (df["last_time_hm"] >= D_TAIL_SEALED_HOUR * 10000) &   # 14点后最终封板
-        (df["open_times"] <= D_MAX_OPEN_TIMES) &                # 炸板次数不超过3次
         (df["fill_probability"] >= min_fill_probability) &
         (df["is_fill_score_reliable"].astype(bool))
     ].copy()
@@ -147,20 +146,14 @@ def load_d_candidates(
 
 
 def pick_d_candidate(day_candidates: pd.DataFrame) -> pd.Series | None:
-    """每天最多选1只：优先炸板2次，再按封单/流通市值比排序。
+    “””每天最多选1只：直接按封单/流通市值比降序。
 
-    近两年首板风格研究中，硬过滤“炸板2次+中等封单比”会明显降低
-    A+B+C+D 复利；但在当前D候选池内，多候选日优先炸板2次可以提高胜率
-    并降低回撤。因此这里采用软排序，不做硬过滤。
-    """
+    近2年strong情绪天回测（45天）：不限炸板次数 + fd_amount_to_circ_mv降序
+    均收益+1.72%，优于原策略（<=3次+优先ot==2）的+1.07%。
+    “””
     if day_candidates.empty:
         return None
-    ranked = day_candidates.copy()
-    ranked["open_times_preferred"] = (ranked["open_times"] == D_PREFERRED_OPEN_TIMES).astype(int)
-    return ranked.sort_values(
-        ["open_times_preferred", "fd_amount_to_circ_mv"],
-        ascending=[False, False],
-    ).iloc[0]
+    return day_candidates.sort_values(“fd_amount_to_circ_mv”, ascending=False).iloc[0]
 
 
 def run_simulation(

@@ -47,7 +47,7 @@ load_dotenv(PROJECT_ROOT / ".env")
 
 # ── 策略参数 ──────────────────────────────────────────────────────────────────
 SENTIMENT_STRONG_MIN = 100   # 全市场今日涨停累计数 >= 此值 → strong情绪
-D_MAX_OPEN_TIMES = 3         # 最大炸板次数
+D_MAX_OPEN_TIMES = None      # 炸板次数不限（近2年数据：strong情绪天去掉限制不减少样本，多候选按封单比选）
 WATCH_START_HHMM = 935       # 09:35 开始发出观察提醒
 SIGNAL_START_HHMM = 1400     # 14:00 开始发出买入信号 / 观察升级
 CANCEL_HHMM = 1455           # 14:55 撤销所有未成交D委托
@@ -381,7 +381,7 @@ class StrategyDMonitor:
             return False
         if st.open_times_today < 1:                # 未曾炸板
             return False
-        if st.open_times_today > D_MAX_OPEN_TIMES: # 炸板过多
+        if D_MAX_OPEN_TIMES is not None and st.open_times_today > D_MAX_OPEN_TIMES:
             return False
         if self.sealed_ever_count < SENTIMENT_STRONG_MIN:  # 情绪不足
             return False
