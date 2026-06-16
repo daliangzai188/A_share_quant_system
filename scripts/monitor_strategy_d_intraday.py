@@ -3,7 +3,7 @@
 
 【两档信号设计】
   观察档（09:35-14:00 回封）:
-    首板 + multi_open + open_times<=3 + strong情绪 + 当前处于涨停 → 发出 [WATCH] 提醒
+    首板 + multi_open + strong情绪 + 当前处于涨停 → 发出 [WATCH] 提醒
     → 继续跟踪，若14:00时仍封板 → 自动升级为买入信号
 
   买入档（14:00+ 回封，或观察中升级）:
@@ -667,7 +667,8 @@ class StrategyDMonitor:
                 "name": str(detail.get("name", "")),
                 "signal_date": buy_date,
                 "buy_date": buy_date,
-                "planned_exit_date": next_trade_day(buy_date, 1),
+                # 默认持到T+2收盘。若当晚A/B/C生成信号（HISTORICAL_SIM_FILLED），次日开盘手动平仓后再执行ABC。
+                "planned_exit_date": next_trade_day(buy_date, 2),
                 "shares": int(detail.get("shares", 0)),
                 "buy_price": float(detail.get("buy_price", 0.0)),
                 "strategy_leg": "D",

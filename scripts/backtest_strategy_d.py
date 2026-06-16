@@ -2,22 +2,23 @@
 策略D（首板打板）完整回测脚本
 
 正确的执行逻辑：
-  - D策略在盘中执行：发现首板涨停 → 在涨停价排队买入 → 次日开盘溢价卖出
+  - D策略在盘中执行：发现首板涨停 → 在涨停价排队买入
+  - 退出规则（按ABC当日状态分档）：
+      HISTORICAL_SIM_FILLED天：D于T+1开盘卖出 → 同一笔资金顺序交给A/B/C在T+1开盘买入
+      NO_CANDIDATE / BUY_REJECTED天：D持到T+2收盘卖出（无A/B/C信号，不存在资金冲突）
   - D只在账户当天空仓时触发（没有A/B/C持仓，也没有待执行的A/B/C买入计划）
-  - D触发后，占用仓位直到T+1开盘卖出
 
 模拟流程（按日推进）：
   每天开始：
-    1. 若持有D仓位 → 以next_open卖出，仓位清空
+    1. 若持有D仓位（HISTORICAL_SIM_FILLED天）→ 以next_open卖出，仓位清空
     2. 若持有A/B/C仓位 → 检查是否到期，到期则平仓
     3. 若账户空仓：
-       a. 检查今天有无D候选（盘中机会）→ 有则打板（D占仓到明天开盘）
+       a. 检查今天有无D候选（盘中机会）→ 有则打板
        b. 若D没打板 → 今晚A/B/C流水线生成信号，明天开盘执行A/B/C
 
 与A/B/C冲突处理：
-  - D在盘中先触发（早于A/B/C 15:10流水线）
-  - 若D今天打板 → 占仓到T+1开盘 → 今晚A/B/C生成的信号（明天执行）被阻断
-  - 若D今天没打板 → A/B/C正常执行
+  - HISTORICAL_SIM_FILLED天：D T+1开盘卖 → A/B/C T+1开盘买，顺序使用同一笔资金，无冲突
+  - NO_CANDIDATE天：A/B/C无信号，D T+2收盘卖，无冲突
 
 输出：
   reports/strategy_d/
@@ -206,7 +207,18 @@ def run_simulation(
             day_d = d_by_date.get(dt)
             candidate = pick_d_candidate(day_d) if day_d is not None else None
             if candidate is not None:
-                net_ret = float(candidate["net_return"])
+                limit_close = float(candidate.get("limit_close") or 0)
+                fee = float(candidate.get("fee_rate") or 0.0015)
+                if op_status == "HISTORICAL_SIM_FILLED":
+                    # D T+1开盘卖，同一笔资金顺序交给A/B/C
+                    next_open = float(candidate.get("next_open") or 0)
+                    net_ret = (next_open / limit_close - 1 - fee) if (limit_close > 0 and next_open > 0) else 0.0
+                    exit_rule = "T+1_open"
+                else:
+                    # NO_CANDIDATE / BUY_REJECTED：D持到T+2收盘，无资金冲突
+                    exit_close_val = float(candidate.get("exit_close") or 0)
+                    net_ret = (exit_close_val / limit_close - 1 - fee) if (limit_close > 0 and exit_close_val > 0) else 0.0
+                    exit_rule = "T+2_close"
                 d_ret = net_ret * POSITION_PCT * fill_rate
                 abcd_leg = "D" if op_status == "NO_CANDIDATE" else f"D+{leg}"
                 d_trade_log.append({
@@ -223,9 +235,11 @@ def run_simulation(
                     "net_return": net_ret,
                     "account_return": d_ret,
                     "fill_rate_stress": fill_rate,
-                    "is_win": bool(candidate["is_win"]),
+                    "is_win": bool(net_ret > 0),
                     "next_open": candidate.get("next_open", 0),
-                    "limit_close": candidate.get("limit_close", 0),
+                    "limit_close": limit_close,
+                    "exit_close": candidate.get("exit_close", 0),
+                    "exit_rule": exit_rule,
                     "abc_status": op_status,
                 })
 
