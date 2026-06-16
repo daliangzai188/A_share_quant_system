@@ -947,15 +947,23 @@ def run_job(scheduled_time: datetime.time) -> None:
 
 
 def _qmt_query_once(broker_config: dict) -> tuple:
-    """连接 QMT，查账户 + 持仓，断开，返回 (account, positions)。"""
+    """连接 QMT，查账户 + 持仓，断开，返回 (account, positions)。
+    失败时保证 disconnect() 清理 WaitingFreeWriter，避免重试时资源耗尽。"""
     from src.qmt_adapter import QMTBrokerAdapter
     adapter = QMTBrokerAdapter.from_config(broker_config)
-    adapter.connect()
-    account = adapter.query_account()
-    positions = adapter.query_positions()
-    adapter.disconnect()
-    time.sleep(3)  # 等 QMT session 完全释放再返回
-    return account, positions
+    try:
+        adapter.connect()
+        account = adapter.query_account()
+        positions = adapter.query_positions()
+        adapter.disconnect()
+        time.sleep(3)  # 等 QMT session 完全释放再返回
+        return account, positions
+    except Exception:
+        try:
+            adapter.disconnect()
+        except Exception:
+            pass
+        raise
 
 
 def _print_status(log: Any) -> None:
