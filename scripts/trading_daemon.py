@@ -993,7 +993,7 @@ def _print_status(log: Any) -> None:
         last_err: Exception | None = None
         account = positions = None
         global _qmt_reconnect_count
-        for _ in range(10):
+        for i in range(10):
             try:
                 account, positions = _qmt_query_once(broker_cfg)
                 if _qmt_reconnect_count > 0:
@@ -1004,9 +1004,15 @@ def _print_status(log: Any) -> None:
             except Exception as e:
                 last_err = e
                 _qmt_reconnect_count += 1
-                log.warning("⚠️ [状态] QMT掉线，10秒后自动重连（第%d次）：%s",
-                            _qmt_reconnect_count, e)
-                time.sleep(10)
+                if i == 0:
+                    # 第一次失败：立刻重连，不等待
+                    log.warning("⚠️ [状态] QMT掉线，立刻重连（第%d次）：%s",
+                                _qmt_reconnect_count, e)
+                else:
+                    # 后续失败：等10秒再重连
+                    log.warning("⚠️ [状态] QMT掉线，10秒后重连（第%d次）：%s",
+                                _qmt_reconnect_count, e)
+                    time.sleep(10)
 
         if last_err is not None:
             log.error("❌ [状态] %s | QMT连接异常：%s", now_str, last_err)
