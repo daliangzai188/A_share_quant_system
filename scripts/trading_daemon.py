@@ -730,16 +730,6 @@ def job_post_market(end_date: str | None = None) -> None:
     target_date = datetime.datetime.strptime(target_str, "%Y%m%d").date()
     logger().info("===== 收盘流水线（目标日期 %s）=====", target_str)
 
-    # 每次运行前删除今日原始文件，保证从 Tushare 重新采集最新数据
-    for raw_dir in ("daily", "daily_basic", "limit_list"):
-        raw_file = PROJECT_ROOT / "data" / "raw" / raw_dir / f"{target_str}.csv"
-        try:
-            if raw_file.exists():
-                raw_file.unlink()
-                logger().info("已清除旧原始文件：%s", raw_file.name)
-        except Exception as _e:
-            logger().warning("清除原始文件失败（不影响采集）：%s %s", raw_file.name, _e)
-
     # shift(2)=2天 + 最长连假/断档缓冲=8天 = 10个交易日
     # 历史数据已在 daily_merged.csv，只需追加缺失日期，避免扫描 2019 至今全量文件
     recent_start = prev_n_trade_days(today_beijing(), 10).strftime("%Y%m%d")
