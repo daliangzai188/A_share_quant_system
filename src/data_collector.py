@@ -143,7 +143,17 @@ class DataCollector:
         return bool(self.config.get("collection", {}).get("overwrite", False))
 
     def _should_skip(self, output_path: Path, overwrite: bool) -> bool:
-        return self._exists_with_retry(output_path) and not overwrite
+        if overwrite:
+            return False
+        if not self._exists_with_retry(output_path):
+            return False
+        # 文件存在但无数据行（上次采集 Tushare 返回空）→ 允许重新采集
+        try:
+            with output_path.open(encoding="utf-8-sig") as f:
+                f.readline()  # 跳过表头
+                return bool(f.readline().strip())  # 有数据行才跳过
+        except OSError:
+            return True
 
     def _save_dataframe(self, data: pd.DataFrame, output_path: Path) -> None:
         self._mkdir_with_retry(output_path.parent)
