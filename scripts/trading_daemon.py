@@ -24,6 +24,7 @@ import json
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -268,44 +269,109 @@ def mark_position_closed(order_id: str, sell_date: str, sell_price: float = 0.0)
 
 # ── 平仓检查（最高优先级，独立运行，绝不因其他错误跳过）────────────────────
 
-def _submit_orders_and_log(preview_csv: Path, confirm_text: str, tag: str) -> None:
-    """提交预览通过的订单，逐笔打印结果。"""
+def _execute_orders_inprocess(
+    planned_orders_path: Path | str,
+    confirm: str,
+    tag: str,
+) -> None:
+    """进程内单次 QMT 连接完成验证+下单，消除子进程启动和双次连接延迟。"""
     import pandas as pd
+    from dataclasses import asdict
+    from src.live_order_gateway import LiveOrderGateway
+    from src.broker_adapter import OrderRequest
+
+    log = logger()
+    config_path = PROJECT_ROOT / "config" / "config.json"
+    gateway = LiveOrderGateway(config_path)
+
     try:
-        result_prefix = PROJECT_ROOT / "reports" / "live_trade" / "qmt_live_order"
-        ok = run_script(
-            "submit_live_orders.py",
-            "--preview", str(preview_csv),
-            "--confirm", confirm_text,
-            "--output-prefix", str(result_prefix),
-            timeout=TIMEOUT_ORDER_STEP,
-        )
-        submitted_csv = result_prefix.with_name(result_prefix.name + "_submitted_orders.csv")
-        if ok and submitted_csv.exists():
-            rows = pd.read_csv(submitted_csv, low_memory=False)
-            now_str = now_beijing().strftime("%H:%M:%S")
-            for _, r in rows.iterrows():
-                side = str(r.get("side", "")).upper()
-                code = str(r.get("ts_code", ""))
-                qty  = int(r.get("quantity", 0))
-                price = float(r.get("price", 0.0))
-                amount = qty * price
-                accepted = str(r.get("accepted", "")).lower() in {"true", "1"}
-                msg = str(r.get("message", ""))
-                if accepted:
-                    logger().info(
-                        "✅ [%s] %s %s %s %d股 单价%.2f元 金额%.0f元",
-                        tag, now_str, side, code, qty, price, amount,
-                    )
-                else:
-                    logger().error(
-                        "❌ [%s] %s %s %s %d股 失败原因：%s",
-                        tag, now_str, side, code, qty, msg,
-                    )
-        elif not ok:
-            logger().error("❌ [%s] submit_live_orders.py 执行失败", tag)
+        gateway.assert_real_order_allowed(confirm)
+    except RuntimeError as e:
+        log.error("❌ [%s] 下单条件不满足：%s", tag, e)
+        return
+
+    try:
+        _, planned_orders = gateway.load_planned_orders(planned_orders_path)
     except Exception as e:
-        logger().error("❌ [%s] 提交异常：%s", tag, e)
+        log.error("❌ [%s] 读取计划单失败：%s", tag, e)
+        return
+
+    if planned_orders.empty:
+        log.info("[%s] 计划单为空，跳过", tag)
+        return
+
+    broker_cfg = config_path and load_json_config(config_path).get("broker", {})
+    with _qmt_lock:
+      try:
+        adapter = _qmt_get(broker_cfg)
+        account = adapter.query_account()
+        positions = adapter.query_positions()
+        open_orders = adapter.query_orders()
+        ts_codes = sorted(
+            planned_orders.get("ts_code", pd.Series(dtype=str))
+            .dropna().astype(str).unique().tolist()
+        )
+        quote_map = adapter.get_full_tick(ts_codes) if ts_codes else {}
+
+        preview = gateway.validate_planned_orders(
+            planned_orders,
+            account.available_cash,
+            open_orders,
+            quote_map,
+            positions=positions,
+            account_total_asset=account.total_asset,
+            current_market_value=account.market_value,
+        )
+
+        # 保存 preview CSV 供审计
+        preview_csv = PROJECT_ROOT / "reports" / "live_trade" / "qmt_live_order_preview.csv"
+        preview_csv.parent.mkdir(parents=True, exist_ok=True)
+        preview.to_csv(preview_csv, index=False, encoding="utf-8-sig")
+
+        executable = preview[
+            (preview["validation_status"].astype(str) == "PASS")
+            & (preview["real_order_enabled"].astype(str).str.lower().isin({"true", "1"}))
+        ]
+
+        if executable.empty:
+            rejected = preview[preview["validation_status"].astype(str) != "PASS"]
+            for _, r in rejected.iterrows():
+                log.warning("⚠️ [%s] %s %s 被拒绝：%s",
+                            tag, r.get("side", ""), r.get("ts_code", ""), r.get("reject_reasons", ""))
+            return
+
+        now_str = now_beijing().strftime("%H:%M:%S")
+        results = []
+        for _, row in executable.iterrows():
+            side = str(row["side"]).upper()
+            qty = int(row["quantity"])
+            ref_price = float(row.get("last_price", 0.0) or row.get("reference_price", 0.0))
+            request = OrderRequest(
+                ts_code=str(row["ts_code"]),
+                broker_code=str(row["broker_code"]),
+                side=side,
+                quantity=qty,
+                price_type=str(row["price_type"]),
+                price=float(row.get("price", 0.0)),
+                strategy_name=str(row.get("strategy_name", "A_SYSTEM_ABC")),
+                remark=str(row.get("remark", "")),
+            )
+            result = adapter.place_order(request)
+            results.append(asdict(result))
+            if result.accepted:
+                log.info("✅ [%s] %s %s %s %d股 参考价%.2f元 金额%.0f元",
+                         tag, now_str, side, row["ts_code"], qty, ref_price, qty * ref_price)
+            else:
+                log.error("❌ [%s] %s %s %s %d股 失败：%s",
+                          tag, now_str, side, row["ts_code"], qty, result.message)
+
+        # 保存提交结果 CSV
+        result_csv = PROJECT_ROOT / "reports" / "live_trade" / "qmt_live_order_submitted_orders.csv"
+        pd.DataFrame(results).to_csv(result_csv, index=False, encoding="utf-8-sig")
+
+      except Exception as e:
+        _qmt_reset()
+        log.error("❌ [%s] 下单异常（已重置连接）：%s", tag, e)
 
 
 def _do_sell(pos: dict[str, Any], qmt_enabled: bool) -> None:
@@ -323,14 +389,8 @@ def _do_sell(pos: dict[str, Any], qmt_enabled: bool) -> None:
             config = load_json_config(PROJECT_ROOT / "config" / "config.json")
             confirm = config.get("live_trade", {}).get(
                 "real_order_confirm_text", "A_SYSTEM_REAL_ORDER_CONFIRMED")
-            preview_csv = PROJECT_ROOT / "reports" / "live_trade" / "qmt_live_order_preview.csv"
-            ok = run_script("preview_live_orders.py", "--planned-orders", "latest",
-                            timeout=TIMEOUT_ORDER_STEP)
-            if ok and preview_csv.exists():
-                _submit_orders_and_log(preview_csv, confirm, "平仓")
-                mark_position_closed(order_id, today_str)
-            else:
-                logger().error("❌ [平仓] 预览失败，请立即手动检查 %s %s 持仓！", ts_code, name)
+            _execute_orders_inprocess("latest", confirm, "平仓")
+            mark_position_closed(order_id, today_str)
         else:
             logger().info("[平仓] 模拟盘：%s %s 标记已平仓", ts_code, name)
             mark_position_closed(order_id, today_str)
@@ -572,7 +632,6 @@ def handle_combined_order_preview(planned_orders_path: Path | None, reason: str)
         if qmt_enabled:
             confirm = config.get("live_trade", {}).get(
                 "real_order_confirm_text", "A_SYSTEM_REAL_ORDER_CONFIRMED")
-            preview_csv = PROJECT_ROOT / "reports" / "live_trade" / "qmt_live_order_preview.csv"
             buy_rows = executable_orders[executable_orders["side"].astype(str).str.upper() == "BUY"]
             for _, row in buy_rows.iterrows():
                 code = str(row.get("ts_code", ""))
@@ -582,12 +641,7 @@ def handle_combined_order_preview(planned_orders_path: Path | None, reason: str)
                 amount = qty * ref_price
                 logger().warning("⏳ [准备开仓] %s %s  %d股  参考价%.2f元  预估金额%.0f元",
                                  code, name_s, qty, ref_price, amount)
-            ok = run_script("preview_live_orders.py", "--planned-orders", str(planned_orders_path),
-                            timeout=TIMEOUT_ORDER_STEP)
-            if ok and preview_csv.exists():
-                _submit_orders_and_log(preview_csv, confirm, "开仓")
-            elif not ok:
-                logger().error("❌ [开仓] 预览失败，请手动检查")
+            _execute_orders_inprocess(planned_orders_path, confirm, "开仓")
         else:
             buy_orders = executable_orders[executable_orders["side"].astype(str).str.upper() == "BUY"]
             for _, row in buy_orders.iterrows():
@@ -956,101 +1010,125 @@ def run_job(scheduled_time: datetime.time) -> None:
         job_post_market() if trade_day else logger().info("非交易日，跳过收盘流水线")
 
 
-_qmt_reconnect_count: int = 0  # 累计重连次数，成功后归零，跨多轮不重置
+_qmt_reconnect_count: int = 0       # 累计重连次数，成功后归零
+_qmt_adapter: Any = None             # 持久连接，程序生命周期内保持
+_qmt_lock = threading.Lock()         # 保护 _qmt_adapter 并发访问
 
 
-def _qmt_query_once(broker_config: dict) -> tuple:
-    """连接 QMT，查账户 + 持仓，断开，返回 (account, positions)。
-    失败时保证 disconnect() 清理 WaitingFreeWriter，避免重试时资源耗尽。"""
+def _qmt_connect(broker_config: dict) -> Any:
+    """建立新 QMT 连接（带20秒超时）。不持有 _qmt_lock，调用方按需加锁。"""
     from src.qmt_adapter import QMTBrokerAdapter
     adapter = QMTBrokerAdapter.from_config(broker_config)
-    try:
-        adapter.connect()
-        account = adapter.query_account()
-        positions = adapter.query_positions()
-        adapter.disconnect()
-        time.sleep(3)  # 等 QMT session 完全释放再返回
-        return account, positions
-    except Exception:
+    done = threading.Event()
+    err: list = []
+
+    def _do() -> None:
         try:
-            adapter.disconnect()
+            adapter.connect()
+        except Exception as e:
+            err.append(e)
+        finally:
+            done.set()
+
+    threading.Thread(target=_do, daemon=True).start()
+    if not done.wait(20.0):
+        raise TimeoutError("QMT 连接超时（20秒无响应）")
+    if err:
+        raise err[0]
+    return adapter
+
+
+def _qmt_get(broker_config: dict) -> Any:
+    """返回持久连接，未连接时建立。调用方须持有 _qmt_lock。"""
+    global _qmt_adapter
+    if _qmt_adapter is None:
+        _qmt_adapter = _qmt_connect(broker_config)
+    return _qmt_adapter
+
+
+def _qmt_reset() -> None:
+    """断开并清除持久连接。调用方须持有 _qmt_lock。"""
+    global _qmt_adapter
+    if _qmt_adapter is not None:
+        try:
+            _qmt_adapter.disconnect()
         except Exception:
             pass
-        raise
+        _qmt_adapter = None
 
 
-def _print_status(log: Any) -> None:
+def _print_account_status(log: Any) -> None:
+    """账户信息轮询（后台线程）：复用持久连接，查询无需重新握手。
+    真正断线时立刻重连一次，失败则等下次轮询。"""
+    global _qmt_reconnect_count
     now_str = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
     try:
         config = load_json_config(PROJECT_ROOT / "config" / "config.json")
         qmt_on = (config.get("broker_adapter_enabled") and config.get("qmt_enabled")
                   and config.get("broker", {}).get("enabled"))
         if not qmt_on:
-            log.info("✅ [状态] %s | 程序正常 | QMT未启用", now_str)
+            log.info("✅ [账户] %s | 程序正常 | QMT未启用", now_str)
             return
-
         broker_cfg = config.get("broker", {})
-        last_err: Exception | None = None
-        account = positions = None
-        global _qmt_reconnect_count
-        for i in range(10):
-            try:
-                account, positions = _qmt_query_once(broker_cfg)
-                if _qmt_reconnect_count > 0:
-                    log.info("✅ [状态] QMT重连成功（历经第%d次后恢复）", _qmt_reconnect_count)
-                    _qmt_reconnect_count = 0
-                last_err = None
-                break
-            except Exception as e:
-                last_err = e
-                _qmt_reconnect_count += 1
-                if i == 0:
-                    # 第一次失败：立刻重连，不等待
-                    log.warning("⚠️ [状态] QMT掉线，立刻重连（第%d次）：%s",
-                                _qmt_reconnect_count, e)
-                else:
-                    # 后续失败：等10秒再重连
-                    log.warning("⚠️ [状态] QMT掉线，10秒后重连（第%d次）：%s",
-                                _qmt_reconnect_count, e)
-                    time.sleep(10)
-
-        if last_err is not None:
-            log.error("❌ [状态] %s | QMT连接异常：%s", now_str, last_err)
-            return
-
-        now_str = now_beijing().strftime("%Y-%m-%d %H:%M:%S")  # 重连后更新时间戳
-        if positions:
-            local_pos_map = {
-                lp["ts_code"]: lp
-                for lp in load_positions()
-                if lp.get("status") == "open"
-            }
-            pos_parts = []
-            for p in positions:
-                current_price = p.market_value / p.volume if p.volume > 0 else 0.0
-                lp = local_pos_map.get(p.ts_code, {})
-                buy_price = float(lp.get("buy_price", 0))
-                if buy_price > 0:
-                    pnl_pct = (current_price - buy_price) / buy_price * 100
-                    pnl_sign = "+" if pnl_pct >= 0 else ""
-                    pos_parts.append(
-                        f"{p.ts_code}×{p.volume}股 "
-                        f"现价{current_price:.2f} "
-                        f"今日{pnl_sign}{pnl_pct:.2f}% "
-                        f"市值{p.market_value:.0f}元"
-                    )
-                else:
-                    pos_parts.append(
-                        f"{p.ts_code}×{p.volume}股 市值{p.market_value:.0f}元"
-                    )
-            log.info("✅ [状态] %s | 程序正常 | 账户%s 可用%.0f元 | 持仓：%s",
-                     now_str, account.account_id, account.available_cash,
-                     "  ".join(pos_parts))
-        else:
-            log.info("✅ [状态] %s | 程序正常 | 账户%s 可用%.0f元 | 无持仓",
-                     now_str, account.account_id, account.available_cash)
     except Exception as e:
-        log.error("❌ [状态] %s | QMT连接异常：%s", now_str, e)
+        log.error("❌ 读取配置失败：%s", e)
+        return
+
+    account = positions = None
+    with _qmt_lock:
+        try:
+            adapter = _qmt_get(broker_cfg)
+            account = adapter.query_account()
+            positions = adapter.query_positions()
+            if _qmt_reconnect_count > 0:
+                log.info("✅ QMT连接已恢复（第%d次重连后恢复）", _qmt_reconnect_count)
+                _qmt_reconnect_count = 0
+        except Exception as first_err:
+            _qmt_reset()
+            _qmt_reconnect_count += 1
+            log.warning("⚠️ QMT掉线（第%d次），立刻重连：%s", _qmt_reconnect_count, first_err)
+            try:
+                adapter = _qmt_get(broker_cfg)
+                account = adapter.query_account()
+                positions = adapter.query_positions()
+                log.info("✅ QMT重连成功（第%d次恢复）", _qmt_reconnect_count)
+                _qmt_reconnect_count = 0
+            except Exception as retry_err:
+                log.warning("⚠️ QMT重连失败（第%d次），等待下次重试：%s",
+                            _qmt_reconnect_count, retry_err)
+                return
+
+    now_str = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
+    if positions:
+        local_pos_map = {
+            lp["ts_code"]: lp
+            for lp in load_positions()
+            if lp.get("status") == "open"
+        }
+        pos_parts = []
+        for p in positions:
+            current_price = p.market_value / p.volume if p.volume > 0 else 0.0
+            lp = local_pos_map.get(p.ts_code, {})
+            buy_price = float(lp.get("buy_price", 0))
+            if buy_price > 0:
+                pnl_pct = (current_price - buy_price) / buy_price * 100
+                pnl_sign = "+" if pnl_pct >= 0 else ""
+                pos_parts.append(
+                    f"{p.ts_code}×{p.volume}股 "
+                    f"现价{current_price:.2f} "
+                    f"今日{pnl_sign}{pnl_pct:.2f}% "
+                    f"市值{p.market_value:.0f}元"
+                )
+            else:
+                pos_parts.append(
+                    f"{p.ts_code}×{p.volume}股 市值{p.market_value:.0f}元"
+                )
+        log.info("✅ [账户] %s | 账户%s 可用%.0f元 | 持仓：%s",
+                 now_str, account.account_id, account.available_cash,
+                 "  ".join(pos_parts))
+    else:
+        log.info("✅ [账户] %s | 账户%s 可用%.0f元 | 无持仓",
+                 now_str, account.account_id, account.available_cash)
 
 
 def check_qmt_connection() -> None:
@@ -1156,19 +1234,31 @@ def main() -> None:
         sleep_secs = (wake_dt - now).total_seconds()
         log.info("下次任务：%s（%.0f 秒后）", wake_dt.strftime("%Y-%m-%d %H:%M"), sleep_secs)
 
-        # 有持仓时每30秒打印状态+涨跌幅，无持仓时每5分钟打印一次
-        slept = 0.0
-        last_status = 0.0
-        while slept < sleep_secs:
-            has_open = any(p.get("status") == "open" for p in load_positions())
-            status_interval = 30 if has_open else 300
-            chunk = min(status_interval, sleep_secs - slept)
-            time.sleep(chunk)
-            slept += chunk
+        # 账户信息后台轮询：正常60秒/次；掉线时第1次立刻重连，后续15秒间隔
+        _ACCT_INTERVAL = 60    # 正常间隔
+        _RETRY_INTERVAL = 15   # 掉线重连间隔
+        deadline = time.monotonic() + sleep_secs
+        last_acct_ts = time.monotonic()
+        _acct_thread: threading.Thread | None = None
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(10, remaining))
             write_heartbeat("sleeping")
-            if slept - last_status >= status_interval:
-                last_status = slept
-                _print_status(log)
+            if _qmt_reconnect_count == 0:
+                interval = _ACCT_INTERVAL    # 正常：60秒
+            elif _qmt_reconnect_count == 1:
+                interval = 0                 # 第1次掉线：立刻重连（下一个10秒tick即触发）
+            else:
+                interval = _RETRY_INTERVAL   # 持续掉线：15秒间隔
+            if time.monotonic() - last_acct_ts >= interval:
+                if _acct_thread is None or not _acct_thread.is_alive():
+                    last_acct_ts = time.monotonic()
+                    _acct_thread = threading.Thread(
+                        target=_print_account_status, args=(log,), daemon=True
+                    )
+                    _acct_thread.start()
 
         try:
             run_job(sched_time)

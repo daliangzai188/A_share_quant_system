@@ -201,7 +201,7 @@ class QMTBrokerAdapter(BrokerAdapter):
                     self._active_qmt_path = str(qmt_path)
                     if hasattr(self.trader, "subscribe"):
                         subscribe_result = self.trader.subscribe(self.account)
-                        self.logger.info("QMT 账户订阅结果: %s", subscribe_result)
+                        self.logger.debug("QMT 账户订阅结果: %s", subscribe_result)
                     self.logger.info(
                         "QMT 已连接: account_id=%s qmt_path=%s session_id=%s",
                         self.config.account_id,
@@ -222,7 +222,7 @@ class QMTBrokerAdapter(BrokerAdapter):
     def disconnect(self) -> None:
         if self.trader is not None and hasattr(self.trader, "stop"):
             self.trader.stop()
-        self.logger.info("QMT 连接已关闭。")
+        self.logger.debug("QMT 连接已关闭。")
 
     def query_account(self) -> AccountSnapshot:
         if self.trader is None or self.account is None:
