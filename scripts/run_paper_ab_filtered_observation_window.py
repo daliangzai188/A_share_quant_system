@@ -103,6 +103,20 @@ def condition_text(conditions: list[dict[str, str]]) -> str:
     return ";".join(f"{condition['column']}={condition['value']}" for condition in conditions)
 
 
+def _apply_numeric_condition(values: pd.Series, operator: str, threshold: float) -> pd.Series:
+    if operator == ">=":
+        return values >= threshold
+    if operator == ">":
+        return values > threshold
+    if operator == "<=":
+        return values <= threshold
+    if operator == "<":
+        return values < threshold
+    if operator == "==":
+        return values == threshold
+    return pd.Series(False, index=values.index)
+
+
 def reject_b_risk_mask(replayed_b: pd.DataFrame, config: dict[str, Any]) -> pd.Series:
     if replayed_b.empty:
         return pd.Series(False, index=replayed_b.index)
@@ -121,16 +135,20 @@ def reject_b_risk_mask(replayed_b: pd.DataFrame, config: dict[str, Any]) -> pd.S
             if not column or pd.isna(threshold):
                 continue
             values = pd.to_numeric(replayed_b.get(column, pd.Series(0.0, index=replayed_b.index)), errors="coerce")
-            if operator == ">=":
-                mask = mask | (values >= float(threshold))
-            elif operator == ">":
-                mask = mask | (values > float(threshold))
-            elif operator == "<=":
-                mask = mask | (values <= float(threshold))
-            elif operator == "<":
-                mask = mask | (values < float(threshold))
-            elif operator == "==":
-                mask = mask | (values == float(threshold))
+            mask = mask | _apply_numeric_condition(values, operator, float(threshold))
+        # compound_conditions: list of AND-groups, OR'd together
+        for group in rule.get("compound_conditions", []):
+            sub = pd.Series(True, index=replayed_b.index)
+            for condition in group:
+                column = str(condition.get("column", ""))
+                operator = str(condition.get("operator", "==")).strip()
+                threshold = pd.to_numeric(condition.get("value", 0), errors="coerce")
+                if not column or pd.isna(threshold):
+                    sub = pd.Series(False, index=replayed_b.index)
+                    break
+                values = pd.to_numeric(replayed_b.get(column, pd.Series(0.0, index=replayed_b.index)), errors="coerce")
+                sub = sub & _apply_numeric_condition(values, operator, float(threshold))
+            mask = mask | sub.fillna(False)
     return mask.fillna(False).astype(bool)
 
 

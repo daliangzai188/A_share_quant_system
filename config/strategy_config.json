@@ -337,14 +337,25 @@
           ]
         },
         {
-          "name": "reject_open_times_gte_4",
-          "description": "过滤B交易中炸板次数大于等于4的候选。该规则来自60/90/120日B剩余风险压力测试，用于降低B补充策略回撤。",
-          "numeric_conditions": [
-            {
-              "column": "open_times",
-              "operator": ">=",
-              "value": 4
-            }
+          "name": "reject_open_times_by_board_height",
+          "description": "按板高分档过滤炸板次数：首板不限；二板<4次；三板/四板<11次；五板及以上<4次。基于近2年34511条涨停次日开盘收益统计。",
+          "compound_conditions": [
+            [
+              {"column": "limit_times", "operator": "==", "value": 2},
+              {"column": "open_times", "operator": ">=", "value": 4}
+            ],
+            [
+              {"column": "limit_times", "operator": "==", "value": 3},
+              {"column": "open_times", "operator": ">=", "value": 11}
+            ],
+            [
+              {"column": "limit_times", "operator": "==", "value": 4},
+              {"column": "open_times", "operator": ">=", "value": 11}
+            ],
+            [
+              {"column": "limit_times", "operator": ">=", "value": 5},
+              {"column": "open_times", "operator": ">=", "value": 4}
+            ]
           ]
         }
       ],

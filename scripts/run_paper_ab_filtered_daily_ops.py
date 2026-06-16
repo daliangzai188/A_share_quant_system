@@ -353,6 +353,30 @@ def risk_reject_detail(frame: pd.DataFrame, config: dict[str, Any]) -> pd.Series
                     hits.append(
                         f"{rule_name}: {rule_desc}；{column}={float(value):g} {operator} {float(threshold):g}"
                     )
+            for group in rule.get("compound_conditions", []):
+                group_parts: list[str] = []
+                group_matched = True
+                for condition in group:
+                    column = str(condition.get("column", ""))
+                    operator = str(condition.get("operator", "==")).strip()
+                    threshold = pd.to_numeric(condition.get("value", 0), errors="coerce")
+                    value = pd.to_numeric(row.get(column, pd.NA), errors="coerce")
+                    if not column or pd.isna(threshold) or pd.isna(value):
+                        group_matched = False
+                        break
+                    cond_ok = (
+                        (operator == ">=" and float(value) >= float(threshold))
+                        or (operator == ">" and float(value) > float(threshold))
+                        or (operator == "<=" and float(value) <= float(threshold))
+                        or (operator == "<" and float(value) < float(threshold))
+                        or (operator == "==" and float(value) == float(threshold))
+                    )
+                    if not cond_ok:
+                        group_matched = False
+                        break
+                    group_parts.append(f"{column}={float(value):g} {operator} {float(threshold):g}")
+                if group_matched and group_parts:
+                    hits.append(f"{rule_name}: {rule_desc}；" + "，".join(group_parts))
         details.append("；".join(hits) if hits else "未命中可解释风险规则，请检查 reject_b_risk_mask 配置。")
     return pd.Series(details, index=frame.index)
 
