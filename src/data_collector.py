@@ -30,6 +30,7 @@ class DataCollector:
         self.daily_dir = self.project_root / data_config.get("daily_dir", "data/raw/daily")
         self.daily_basic_dir = self.project_root / data_config.get("daily_basic_dir", "data/raw/daily_basic")
         self.limit_list_dir = self.project_root / data_config.get("limit_list_dir", "data/raw/limit_list")
+        self._stock_names_cache: dict[str, str] | None = None
         self._mkdir_with_retry(self.daily_dir)
         self._mkdir_with_retry(self.daily_basic_dir)
         self._mkdir_with_retry(self.limit_list_dir)
@@ -116,18 +117,246 @@ class DataCollector:
 
     def collect_limit_by_date(self, trade_date: str, overwrite: bool = False) -> bool:
         output_path = self.limit_list_dir / f"{trade_date}.csv"
-        if self._should_skip(output_path, overwrite):
+        if self._should_skip_limit_file(output_path, overwrite):
             return False
 
         fields = self.config["collection"].get("limit_list_fields")
         limit_type = self.config["collection"].get("limit_type", "U")
-        limit_list = self.data_source.get_limit_list(trade_date=trade_date, limit_type=limit_type, fields=fields)
+        limit_list, fetch_method = self.fetch_limit_list_d_full(
+            trade_date=trade_date,
+            limit_type=limit_type,
+            fields=fields,
+        )
         if limit_list.empty:
+            if bool(self.config["collection"].get("enable_stk_limit_fallback", True)):
+                fallback = self.build_limit_list_from_stk_limit(trade_date=trade_date)
+                if not fallback.empty:
+                    self._save_dataframe(fallback, output_path)
+                    self.logger.warning(
+                        "Tushare limit_list_d 未返回 %s 涨停池数据，已改用 stk_limit + daily.close 生成备用涨停池: %s, 行数: %s。"
+                        "备用口径只确认收盘封住涨停，不包含首次封板时间、炸板次数、封单金额。",
+                        trade_date,
+                        output_path,
+                        len(fallback),
+                    )
+                    return True
             self.logger.warning("Tushare 未返回 %s 涨停池数据，不保存（下次重试可重新采集）", trade_date)
             return False
+        limit_list["limit_data_source"] = "limit_list_d"
+        limit_list["limit_data_quality"] = "full"
+        limit_list["strategy_compatible"] = True
         self._save_dataframe(limit_list, output_path)
-        self.logger.info("保存涨停池: %s, 行数: %s", output_path, len(limit_list))
+        self.logger.info("保存涨停池: %s, 行数: %s, fetch_method=%s", output_path, len(limit_list), fetch_method)
         return True
+
+    def fetch_limit_list_d_full(
+        self,
+        trade_date: str,
+        limit_type: str,
+        fields: str | None,
+    ) -> tuple[pd.DataFrame, str]:
+        probes = [
+            (
+                "limit_list_d_trade_date",
+                lambda: self.data_source.get_limit_list(
+                    trade_date=trade_date,
+                    limit_type=limit_type,
+                    fields=fields,
+                ),
+            ),
+            (
+                "limit_list_d_range_same_day",
+                lambda: self.data_source.get_limit_list_range(
+                    start_date=trade_date,
+                    end_date=trade_date,
+                    limit_type=limit_type,
+                    fields=fields,
+                ),
+            ),
+            (
+                "query_limit_list_d_trade_date",
+                lambda: self.data_source.query_limit_list(
+                    trade_date=trade_date,
+                    limit_type=limit_type,
+                    fields=fields,
+                ),
+            ),
+            (
+                "query_limit_list_d_range_same_day",
+                lambda: self.data_source.query_limit_list_range(
+                    start_date=trade_date,
+                    end_date=trade_date,
+                    limit_type=limit_type,
+                    fields=fields,
+                ),
+            ),
+        ]
+        for method, loader in probes:
+            try:
+                data = loader()
+            except Exception as exc:
+                self.logger.warning("Tushare %s 获取 %s 涨停池失败: %s", method, trade_date, exc)
+                continue
+            data = self._filter_trade_date(data, trade_date)
+            if not data.empty:
+                return data, method
+            self.logger.info("Tushare %s 未返回 %s 涨停池数据", method, trade_date)
+        return pd.DataFrame(), "none"
+
+    @staticmethod
+    def _filter_trade_date(data: pd.DataFrame, trade_date: str) -> pd.DataFrame:
+        if data.empty:
+            return data
+        if "trade_date" not in data.columns:
+            return data
+        return data[data["trade_date"].astype(str) == str(trade_date)].copy()
+
+    def _should_skip_limit_file(self, output_path: Path, overwrite: bool) -> bool:
+        if overwrite:
+            return False
+        if not self._exists_with_retry(output_path):
+            return False
+        if not self._csv_has_data_row(output_path):
+            return False
+        try:
+            header = pd.read_csv(output_path, nrows=0).columns.tolist()
+            if "limit_data_quality" not in header:
+                return True
+            sample = pd.read_csv(output_path, usecols=["limit_data_quality"], nrows=20)
+            quality = sample["limit_data_quality"].fillna("full").astype(str)
+            return bool(quality.eq("full").all())
+        except (OSError, pd.errors.EmptyDataError, ValueError):
+            return False
+
+    def build_limit_list_from_stk_limit(self, trade_date: str) -> pd.DataFrame:
+        stk_limit = self.data_source.get_stk_limit(
+            trade_date=trade_date,
+            fields="trade_date,ts_code,up_limit,down_limit",
+        )
+        if stk_limit.empty:
+            self.logger.warning("Tushare stk_limit 也未返回 %s 涨跌停价，无法生成备用涨停池", trade_date)
+            return pd.DataFrame()
+
+        daily = self.load_daily_for_limit_fallback(trade_date)
+        if daily.empty:
+            self.logger.warning("无法生成 %s 备用涨停池：日线文件和 Tushare daily 都不可用", trade_date)
+            return pd.DataFrame()
+
+        data = daily.merge(
+            stk_limit,
+            on=["trade_date", "ts_code"],
+            how="inner",
+            validate="one_to_one",
+        )
+        if data.empty:
+            return pd.DataFrame()
+
+        close = pd.to_numeric(data["close"], errors="coerce")
+        up_limit = pd.to_numeric(data["up_limit"], errors="coerce")
+        tolerance = float(self.config["collection"].get("stk_limit_close_tolerance", 0.001))
+        limit_up = data[close >= up_limit * (1 - tolerance)].copy()
+        if limit_up.empty:
+            return pd.DataFrame()
+
+        daily_basic = self.load_daily_basic_for_limit_fallback(trade_date)
+        if not daily_basic.empty:
+            basic_columns = [
+                column
+                for column in ["trade_date", "ts_code", "turnover_rate", "free_share"]
+                if column in daily_basic.columns
+            ]
+            if {"trade_date", "ts_code"}.issubset(basic_columns):
+                limit_up = limit_up.merge(
+                    daily_basic[basic_columns],
+                    on=["trade_date", "ts_code"],
+                    how="left",
+                    validate="one_to_one",
+                )
+
+        stock_names = self.load_stock_names()
+        limit_up["name"] = limit_up["ts_code"].map(stock_names).fillna(limit_up["ts_code"])
+        limit_up["pct_chg"] = pd.to_numeric(limit_up.get("pct_chg"), errors="coerce")
+        limit_up["amp"] = self.calculate_amp(limit_up)
+        limit_up["limit"] = "U"
+        limit_up["lu_desc"] = "stk_limit_daily_close_fallback"
+        limit_up["limit_times"] = pd.NA
+        limit_up["limit_data_source"] = "stk_limit"
+        limit_up["limit_data_quality"] = "basic_limit_only"
+        limit_up["strategy_compatible"] = False
+
+        columns = self.limit_list_output_columns() + [
+            "limit_data_source",
+            "limit_data_quality",
+            "strategy_compatible",
+        ]
+        for column in columns:
+            if column not in limit_up.columns:
+                limit_up[column] = pd.NA
+        return limit_up[columns].sort_values(["trade_date", "ts_code"]).reset_index(drop=True)
+
+    def load_daily_for_limit_fallback(self, trade_date: str) -> pd.DataFrame:
+        daily_path = self.daily_dir / f"{trade_date}.csv"
+        daily = self._read_csv_safely(daily_path) if daily_path.exists() else pd.DataFrame()
+        if not daily.empty:
+            return daily
+        fields = self.config["collection"].get("daily_fields")
+        return self.data_source.get_daily(trade_date=trade_date, fields=fields)
+
+    def load_daily_basic_for_limit_fallback(self, trade_date: str) -> pd.DataFrame:
+        daily_basic_path = self.daily_basic_dir / f"{trade_date}.csv"
+        daily_basic = self._read_csv_safely(daily_basic_path) if daily_basic_path.exists() else pd.DataFrame()
+        if not daily_basic.empty:
+            return daily_basic
+        fields = self.config["collection"].get("daily_basic_fields")
+        try:
+            return self.data_source.get_daily_basic(trade_date=trade_date, fields=fields)
+        except Exception as exc:
+            self.logger.warning("备用涨停池读取 daily_basic 失败，换手率字段将为空: %s", exc)
+            return pd.DataFrame()
+
+    def load_stock_names(self) -> dict[str, str]:
+        if self._stock_names_cache is not None:
+            return self._stock_names_cache
+
+        names: dict[str, str] = {}
+        for status in ["L", "D", "P"]:
+            try:
+                basic = self.data_source.get_stock_basic(list_status=status, fields="ts_code,name")
+            except Exception as exc:
+                self.logger.warning("读取 stock_basic(%s) 失败，备用涨停池将用 ts_code 作为名称: %s", status, exc)
+                continue
+            if basic.empty or not {"ts_code", "name"}.issubset(basic.columns):
+                continue
+            names.update(dict(zip(basic["ts_code"].astype(str), basic["name"].astype(str))))
+        self._stock_names_cache = names
+        return names
+
+    def limit_list_output_columns(self) -> list[str]:
+        fields = self.config["collection"].get("limit_list_fields", "")
+        return [column.strip() for column in str(fields).split(",") if column.strip()]
+
+    @staticmethod
+    def calculate_amp(data: pd.DataFrame) -> pd.Series:
+        high = pd.to_numeric(data.get("high"), errors="coerce")
+        low = pd.to_numeric(data.get("low"), errors="coerce")
+        pre_close = pd.to_numeric(data.get("pre_close"), errors="coerce").replace(0, pd.NA)
+        return ((high - low) / pre_close * 100).round(4)
+
+    @staticmethod
+    def _read_csv_safely(path: Path) -> pd.DataFrame:
+        try:
+            return pd.read_csv(path, dtype={"trade_date": str, "ts_code": str})
+        except (OSError, pd.errors.EmptyDataError):
+            return pd.DataFrame()
+
+    @staticmethod
+    def _csv_has_data_row(path: Path) -> bool:
+        try:
+            with path.open(encoding="utf-8-sig") as f:
+                f.readline()
+                return bool(f.readline().strip())
+        except OSError:
+            return False
 
     def existing_dates(self, directory: Path) -> list[str]:
         return sorted(path.stem for path in directory.glob("*.csv"))

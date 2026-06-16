@@ -149,6 +149,12 @@ class DataCleaner:
             limit_up = limit_up[limit_up["limit"] == "U"].copy()
         if limit_up.empty:
             return pd.DataFrame()
+        if "limit_data_source" not in limit_up.columns:
+            limit_up["limit_data_source"] = "limit_list_d"
+        if "limit_data_quality" not in limit_up.columns:
+            limit_up["limit_data_quality"] = "full"
+        if "strategy_compatible" not in limit_up.columns:
+            limit_up["strategy_compatible"] = True
 
         limit_up = limit_up.rename(columns={"close": "limit_close", "pct_chg": "limit_pct_chg"})
         enrich_columns = [
@@ -207,6 +213,7 @@ class DataCleaner:
         limit_up_merged: pd.DataFrame,
     ) -> dict[str, object]:
         if daily_merged.empty:
+            quality = self.resolve_limit_data_quality(limit_up_merged)
             row = {
                 "trade_date": trade_date,
                 "stock_count": 0,
@@ -220,6 +227,7 @@ class DataCleaner:
                 "total_amount": 0.0,
                 "limit_up_fd_amount_sum": float(limit_up_merged.get("fd_amount", pd.Series(dtype=float)).sum()),
                 "market_sentiment_level": "unknown",
+                **quality,
             }
             row.update(self.build_segment_sentiment_fields(daily_merged, limit_up_merged))
             return row
@@ -227,6 +235,8 @@ class DataCleaner:
         pct_chg = daily_merged["pct_chg"].fillna(0)
         limit_times = limit_up_merged.get("limit_times", pd.Series(dtype=float))
         limit_up_count = len(limit_up_merged)
+        quality = self.resolve_limit_data_quality(limit_up_merged)
+        has_full_limit_data = quality["limit_data_quality"] == "full"
         row = {
             "trade_date": trade_date,
             "stock_count": len(daily_merged),
@@ -234,19 +244,53 @@ class DataCleaner:
             "down_count": int((pct_chg < 0).sum()),
             "flat_count": int((pct_chg == 0).sum()),
             "limit_up_count": limit_up_count,
-            "limit_up_max_height": int(limit_times.fillna(0).max()) if not limit_times.empty else 0,
+            "limit_up_max_height": int(limit_times.fillna(0).max()) if has_full_limit_data and not limit_times.empty else 0,
             "one_word_limit_count": int((limit_up_merged.get("open_times", pd.Series(dtype=float)).fillna(0) == 0).sum())
-            if not limit_up_merged.empty
+            if has_full_limit_data and not limit_up_merged.empty
             else 0,
             "opened_limit_count": int((limit_up_merged.get("open_times", pd.Series(dtype=float)).fillna(0) > 0).sum())
-            if not limit_up_merged.empty
+            if has_full_limit_data and not limit_up_merged.empty
             else 0,
             "total_amount": float(daily_merged["amount"].fillna(0).sum()),
-            "limit_up_fd_amount_sum": float(limit_up_merged.get("fd_amount", pd.Series(dtype=float)).fillna(0).sum()),
+            "limit_up_fd_amount_sum": float(limit_up_merged.get("fd_amount", pd.Series(dtype=float)).fillna(0).sum())
+            if has_full_limit_data
+            else 0.0,
             "market_sentiment_level": self.classify_market_sentiment(limit_up_count),
+            **quality,
         }
         row.update(self.build_segment_sentiment_fields(daily_merged, limit_up_merged))
         return row
+
+    @staticmethod
+    def resolve_limit_data_quality(limit_up_merged: pd.DataFrame) -> dict[str, object]:
+        if limit_up_merged.empty:
+            return {
+                "limit_data_source": "missing",
+                "limit_data_quality": "unavailable",
+                "strategy_compatible": False,
+            }
+        quality = (
+            limit_up_merged.get("limit_data_quality", pd.Series("full", index=limit_up_merged.index))
+            .fillna("full")
+            .astype(str)
+        )
+        source = (
+            limit_up_merged.get("limit_data_source", pd.Series("limit_list_d", index=limit_up_merged.index))
+            .fillna("limit_list_d")
+            .astype(str)
+        )
+        compatible = (
+            limit_up_merged.get("strategy_compatible", pd.Series(True, index=limit_up_merged.index))
+            .fillna(True)
+            .astype(str)
+            .str.lower()
+            .isin({"true", "1"})
+        )
+        return {
+            "limit_data_source": ",".join(sorted(source.unique().tolist())),
+            "limit_data_quality": "full" if quality.eq("full").all() else "basic_limit_only",
+            "strategy_compatible": bool(compatible.all() and quality.eq("full").all()),
+        }
 
     def discover_trade_dates(self, start_date: str | None = None, end_date: str | None = None) -> list[str]:
         dates = sorted(path.stem for path in self.daily_dir.glob("*.csv"))
@@ -439,7 +483,11 @@ class DataCleaner:
         for _ in range(3):
             try:
                 write_header = not output_path.exists()
-                data.to_csv(output_path, mode="a", header=write_header, index=False, encoding="utf-8-sig")
+                output = data.copy()
+                if not write_header:
+                    existing_header = pd.read_csv(output_path, nrows=0).columns.tolist()
+                    output = output.reindex(columns=existing_header)
+                output.to_csv(output_path, mode="a", header=write_header, index=False, encoding="utf-8-sig")
                 return
             except OSError as exc:
                 last_error = exc

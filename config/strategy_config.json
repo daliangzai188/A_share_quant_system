@@ -298,6 +298,21 @@
   "paper_ab_filtered_strategy": {
     "file_role": "A严格主策略 + B0018备用策略风险过滤版 + C龙头补位策略的模拟盘观察配置。只用于本地paper/simulation，不接实盘。",
     "strategy_label": "a_strict_plus_b0018_filtered_plus_c_hold3",
+    "data_quality_requirements": {
+      "required_limit_data_quality": "full",
+      "required_columns": [
+        "first_time",
+        "last_time",
+        "open_times",
+        "fd_amount",
+        "limit_times",
+        "fill_probability",
+        "allow_buy_reliable",
+        "is_fill_score_reliable"
+      ],
+      "block_when_not_compatible": true,
+      "description": "A/B/C 最佳策略来自完整 limit_list_d 历史口径。若当天仅有 stk_limit 基础涨停名单，不允许生成开仓计划。"
+    },
     "a_strategy": {
       "description": "A策略直接使用当前candidate_filters、ranking、position和paper_candidate配置。"
     },

@@ -224,6 +224,39 @@ def _date_in_scored(target_date: datetime.date) -> bool:
     return False
 
 
+def _checklist_data_quality_blocked(target_date: datetime.date) -> bool:
+    """检查目标日期 A/B/C checklist 是否因数据质量不足被阻断。"""
+    import re as _re
+    path_pattern = str(
+        PROJECT_ROOT
+        / "reports"
+        / "paper_trade"
+        / "ab_filtered_daily_ops"
+        / "*_checklist.csv"
+    )
+    target_str = target_date.strftime("%Y%m%d")
+    for f in glob.glob(path_pattern):
+        m = _re.search(r"\d{8}", Path(f).stem)
+        if not m or m.group() != target_str:
+            continue
+        try:
+            import pandas as pd
+
+            checklist = pd.read_csv(f, dtype={"signal_date": str}, low_memory=False)
+        except Exception:
+            continue
+        if checklist.empty or "operation_status" not in checklist.columns:
+            continue
+        operation_status = checklist["operation_status"].fillna("").astype(str)
+        selection_status = checklist.get("selection_status", pd.Series("", index=checklist.index)).fillna("").astype(str)
+        if (
+            operation_status.eq("DATA_QUALITY_BLOCKED").any()
+            or selection_status.eq("LIMIT_DATA_QUALITY_NOT_COMPATIBLE").any()
+        ):
+            return True
+    return False
+
+
 def market_is_open() -> bool:
     now = now_beijing()
     if not is_trade_day(now.date()):
@@ -612,6 +645,15 @@ def load_combined_decisions():
         if not decisions.empty and "action" in decisions.columns:
             action_summary = decisions["action"].astype(str).value_counts().to_dict()
             logger().info("组合状态机决策：%s", action_summary)
+            for _, row in decisions.iterrows():
+                logger().info(
+                    "  组合决策明细：%s/%s %s %s  原因：%s",
+                    row.get("strategy_leg", ""),
+                    row.get("action", ""),
+                    row.get("ts_code", ""),
+                    row.get("name", ""),
+                    row.get("reason", ""),
+                )
         return decisions, orders_path
     except Exception as e:
         logger().error("读取组合状态机决策失败：%s", e)
@@ -743,9 +785,9 @@ def job_post_market(end_date: str | None = None) -> None:
         ("run_paper_ab_filtered_daily_ops.py", "⑥ A+B+C 信号生成",      TIMEOUT_SIGNAL_STEP,"约1分钟"),
     ]
     extra_args: dict[str, list[str]] = {
-        "collect_all_data.py": ["--start-date", recent_start, "--end-date", target_str],
+        "collect_all_data.py": ["--start-date", recent_start, "--end-date", target_str, "--require-end-date-limit"],
         "clean_collected_data.py": ["--start-date", recent_start, "--end-date", target_str],
-        "run_paper_ab_filtered_daily_ops.py": ["--top-n", "10"],
+        "run_paper_ab_filtered_daily_ops.py": ["--signal-date", target_str, "--top-n", "10"],
     }
     critical_scripts = {
         "collect_all_data.py",
@@ -801,15 +843,26 @@ def job_post_market(end_date: str | None = None) -> None:
         else:
             logger().error("❌ 当日涨停池模拟观察计划生成失败：signal_date=%s", target_str)
 
+    if _checklist_data_quality_blocked(target_date):
+        logger().warning(
+            "⚠️ %s 只有基础涨停口径，A/B/C 已阻断开仓；继续等待完整 limit_list_d，稍后自动重试",
+            target_str,
+        )
+        report_next_day_candidates()
+        report_signal_readiness_summary(target_str)
+        return False
+
     logger().info("===== 收盘流水线完成 =====")
     report_next_day_candidates()
+    report_signal_readiness_summary(target_str)
     mark_post_market_done(target_date)
     return True
 
 
 def _run_post_market_with_retry(end_date: str | None = None) -> None:
-    """运行收盘流水线，若当日 Tushare 数据未就绪则每小时重试，直到 20:00。"""
-    cutoff_hour = 20
+    """运行收盘流水线，若完整涨停池未就绪则短间隔重试，直到 23:00。"""
+    cutoff_hour = 23
+    retry_seconds = 300
     date_str = end_date or today_beijing().strftime("%Y%m%d")
     while True:
         try:
@@ -823,13 +876,14 @@ def _run_post_market_with_retry(end_date: str | None = None) -> None:
         if now.hour >= cutoff_hour:
             logger().warning("已过 %d:00，停止等待 Tushare %s 数据，今日收盘流水线结束", cutoff_hour, date_str)
             break
-        next_retry = now + datetime.timedelta(hours=1)
+        next_retry = now + datetime.timedelta(seconds=retry_seconds)
         logger().warning(
-            "⚠️ Tushare %s 数据尚未就绪，1小时后（%s）自动重试",
+            "⚠️ Tushare %s 完整涨停池尚未就绪，%d分钟后（%s）自动重试",
             date_str,
+            retry_seconds // 60,
             next_retry.strftime("%H:%M"),
         )
-        time.sleep(3600)
+        time.sleep(retry_seconds)
 
 
 def _segment_label(ts_code: str, market_segment: str = "") -> str:
@@ -990,7 +1044,34 @@ def report_next_day_candidates() -> None:
             logger().warning("  ⚠️  数据未更新！信号来自 %s，今日（%s）收盘流水线未成功运行，以下仅供参考", signal_date_str, today_str)
 
         if buy_orders.empty:
-            logger().info("  A/B/C 均无符合条件标的，%s", no_candidate_msg)
+            checklist = _load_ab_checklist(signal_date_str)
+            if not checklist.empty:
+                row = checklist.iloc[0]
+                logger().info("  A/B/C 未生成计划单，%s", no_candidate_msg)
+                logger().info(
+                    "  状态：%s（%s）",
+                    row.get("operation_status", ""),
+                    row.get("operation_status_desc", "无中文解释，请重跑 run_paper_ab_filtered_daily_ops.py"),
+                )
+                logger().info(
+                    "  筛选：%s（%s）",
+                    row.get("selection_status", ""),
+                    row.get("selection_status_desc", "无中文解释，请查看 checklist"),
+                )
+                logger().info(
+                    "  漏斗：A候选%s只，B候选%s只，B过滤%s只，C候选%s只，C过滤%s只，最终选中%s只，计划单%s条",
+                    row.get("a_candidate_count", 0),
+                    row.get("b_candidate_count", 0),
+                    row.get("b_rejected_by_filter_count", 0),
+                    row.get("c_candidate_count", 0),
+                    row.get("c_rejected_by_filter_count", 0),
+                    row.get("selected_count", 0),
+                    row.get("planned_order_count", 0),
+                )
+                if str(row.get("next_action", "")):
+                    logger().info("  下一步：%s", row.get("next_action", ""))
+            else:
+                logger().info("  A/B/C 均无符合条件标的，%s", no_candidate_msg)
         else:
             ts_codes = buy_orders["ts_code"].astype(str).tolist()
             daily_date, daily_map = _load_daily_for_codes(ts_codes)
@@ -1043,6 +1124,282 @@ def report_next_day_candidates() -> None:
         logger().info("=" * 60)
     except Exception as e:
         logger().error("播报候选异常：%s", e)
+
+
+def _load_ab_checklist(signal_date: str):
+    try:
+        import pandas as pd
+
+        pattern = str(PROJECT_ROOT / f"reports/paper_trade/ab_filtered_daily_ops/*_{signal_date}_checklist.csv")
+        files = sorted(glob.glob(pattern))
+        if not files:
+            return pd.DataFrame()
+        return pd.read_csv(files[-1], low_memory=False)
+    except Exception:
+        return pd.DataFrame()
+
+
+def report_signal_readiness_summary(signal_date: str) -> None:
+    """启动/收盘后播报数据口径、字段完整性和 A/B/C 筛选结果。"""
+    try:
+        import pandas as pd
+
+        cfg = load_json_config(PROJECT_ROOT / "config" / "config.json")
+        strategy_cfg = load_json_config(PROJECT_ROOT / "config" / "strategy_config.json")
+        fill_path = PROJECT_ROOT / cfg.get("fill_model", {}).get(
+            "output_limit_up_fill_scored_path",
+            "data/processed/limit_up_fill_scored.csv",
+        )
+        requirements = (
+            strategy_cfg.get("paper_ab_filtered_strategy", {})
+            .get("data_quality_requirements", {})
+        )
+        required_columns = [str(column) for column in requirements.get("required_columns", [])]
+
+        logger().info("----- 信号就绪审计：%s -----", signal_date)
+        _log_market_environment(signal_date)
+        if not fill_path.exists():
+            logger().warning("  数据口径：❌ 成交概率打标文件不存在：%s", fill_path)
+            return
+
+        scored = pd.read_csv(fill_path, dtype={"trade_date": str, "ts_code": str}, low_memory=False)
+        daily = scored[scored["trade_date"].astype(str) == str(signal_date)].copy()
+        if daily.empty:
+            logger().warning("  数据口径：❌ limit_up_fill_scored.csv 没有 %s 记录", signal_date)
+            return
+
+        source_counts = _value_counts_text(daily, "limit_data_source")
+        quality_counts = _value_counts_text(daily, "limit_data_quality")
+        compatible_counts = _value_counts_text(daily, "strategy_compatible")
+        missing_columns = [column for column in required_columns if column not in daily.columns]
+        empty_columns = [
+            column
+            for column in required_columns
+            if column in daily.columns and daily[column].isna().all()
+        ]
+        is_full = (
+            "limit_data_quality" in daily.columns
+            and daily["limit_data_quality"].fillna("").astype(str).eq("full").all()
+        )
+        is_limit_list_d = (
+            "limit_data_source" in daily.columns
+            and daily["limit_data_source"].fillna("").astype(str).eq("limit_list_d").all()
+        )
+        is_compatible = (
+            "strategy_compatible" in daily.columns
+            and daily["strategy_compatible"].fillna("").astype(str).str.lower().isin({"true", "1"}).all()
+        )
+        fields_ok = not missing_columns and not empty_columns
+
+        logger().info(
+            "  数据口径：%s  rows=%d  source={%s} quality={%s} compatible={%s}",
+            "✅ 通过，和历史回测 limit_list_d/full 口径一致" if (is_full and is_limit_list_d and is_compatible and fields_ok) else "❌ 不通过",
+            len(daily),
+            source_counts,
+            quality_counts,
+            compatible_counts,
+        )
+        logger().info(
+            "  必需字段：%s  缺失=%s  全空=%s",
+            "✅ 齐全" if fields_ok else "❌ 不齐",
+            missing_columns or "无",
+            empty_columns or "无",
+        )
+        logger().info(
+            "  成交概率：allow_buy_reliable={%s}  is_fill_score_reliable={%s}",
+            _value_counts_text(daily, "allow_buy_reliable"),
+            _value_counts_text(daily, "is_fill_score_reliable"),
+        )
+        _log_abc_filter_funnel(signal_date)
+
+        checklist = _load_ab_checklist(signal_date)
+        if checklist.empty:
+            logger().warning("  A/B/C：⚠️ 未找到 %s checklist，可能尚未生成每日操作台", signal_date)
+            return
+        row = checklist.iloc[0]
+        logger().info(
+            "  A/B/C状态：%s（%s）",
+            row.get("operation_status", ""),
+            row.get("operation_status_desc", "无中文解释，请重跑每日操作台"),
+        )
+        logger().info(
+            "  筛选状态：%s（%s）",
+            row.get("selection_status", ""),
+            row.get("selection_status_desc", "无中文解释，请重跑每日操作台"),
+        )
+        logger().info(
+            "  漏斗统计：A候选%s B候选%s B过滤%s C候选%s C过滤%s 最终选中%s 计划单%s",
+            row.get("a_candidate_count", 0),
+            row.get("b_candidate_count", 0),
+            row.get("b_rejected_by_filter_count", 0),
+            row.get("c_candidate_count", 0),
+            row.get("c_rejected_by_filter_count", 0),
+            row.get("selected_count", 0),
+            row.get("planned_order_count", 0),
+        )
+        for label, suffix in [("B风险过滤", "b_rejected_by_filter"), ("C风险过滤", "c_rejected_by_filter")]:
+            detail = _load_reject_detail(signal_date, suffix)
+            if detail:
+                logger().info("  %s：%s", label, detail)
+        _log_d_status_for_signal(signal_date)
+        logger().info("----- 信号就绪审计结束 -----")
+    except Exception as exc:
+        logger().warning("信号就绪审计失败：%s", exc)
+
+
+def _log_market_environment(signal_date: str) -> None:
+    try:
+        import pandas as pd
+
+        sentiment_path = PROJECT_ROOT / "data" / "processed" / "market_sentiment.csv"
+        emotion_path = PROJECT_ROOT / "data" / "processed" / "market_emotion_features.csv"
+        if not sentiment_path.exists():
+            logger().info("  市场环境：未找到 market_sentiment.csv")
+            return
+        sentiment = pd.read_csv(sentiment_path, dtype={"trade_date": str}, low_memory=False)
+        row_df = sentiment[sentiment["trade_date"].astype(str) == str(signal_date)]
+        if row_df.empty:
+            logger().info("  市场环境：market_sentiment.csv 无 %s 记录", signal_date)
+            return
+        row = row_df.iloc[0]
+        emotion = pd.DataFrame()
+        if emotion_path.exists():
+            raw_emotion = pd.read_csv(emotion_path, dtype={"trade_date": str}, low_memory=False)
+            emotion = raw_emotion[raw_emotion["trade_date"].astype(str) == str(signal_date)]
+        market_row = emotion.iloc[0] if not emotion.empty else pd.Series(dtype=object)
+        logger().info(
+            "  市场环境：market_sentiment=%s  全市场涨停=%s  跌停=%s  连板数=%s  最高板=%s  一字板=%s  炸板/开板=%s",
+            row.get("market_sentiment_level", "unknown"),
+            row.get("limit_up_count", "NA"),
+            market_row.get("market_limit_down_count", "NA"),
+            market_row.get("market_chain_count", row.get("limit_up_max_height", "NA")),
+            row.get("limit_up_max_height", "NA"),
+            row.get("one_word_limit_count", "NA"),
+            row.get("opened_limit_count", "NA"),
+        )
+        logger().info(
+            "  分段热度：沪主板%s只/%s，深主板%s只/%s，创业板%s只/%s，科创板%s只/%s，北交所%s只/%s",
+            row.get("sh_main_limit_up_count", "NA"),
+            row.get("sh_main_market_sentiment_level", "NA"),
+            row.get("sz_main_limit_up_count", "NA"),
+            row.get("sz_main_market_sentiment_level", "NA"),
+            row.get("chi_next_limit_up_count", "NA"),
+            row.get("chi_next_market_sentiment_level", "NA"),
+            row.get("star_limit_up_count", "NA"),
+            row.get("star_market_sentiment_level", "NA"),
+            row.get("bj_limit_up_count", "NA"),
+            row.get("bj_market_sentiment_level", "NA"),
+        )
+        logger().info(
+            "  环境结论：市场不是数据阻断项；是否开仓由 A/B/C 条件和风险过滤继续决定。D 盘中策略还会在交易时段单独看实时首板/炸板/情绪。"
+        )
+    except Exception as exc:
+        logger().info("  市场环境读取失败：%s", exc)
+
+
+def _log_abc_filter_funnel(signal_date: str) -> None:
+    try:
+        import pandas as pd
+
+        from scripts.audit_signal_readiness import filter_trace, stop_point_text
+        from scripts.run_paper_ab_filtered_daily_ops import configured_c_conditions
+        from scripts.run_paper_ab_filtered_observation_window import configured_b_conditions, condition_text
+        from scripts.search_paper_backup_strategy_b import backup_config
+        from src.paper_candidate_generator import PaperCandidateGenerator
+
+        strategy_path = PROJECT_ROOT / "config" / "strategy_config.json"
+        strategy_cfg = load_json_config(strategy_path)
+        base_generator = PaperCandidateGenerator(strategy_path)
+        all_candidates = base_generator.load_all_candidates()
+
+        traces = [filter_trace("A主策略", base_generator, all_candidates, signal_date)]
+
+        b_conditions = configured_b_conditions(strategy_cfg)
+        b_config = backup_config(strategy_cfg, b_conditions)
+        b_generator = PaperCandidateGenerator(strategy_path)
+        b_generator.config = b_config
+        b_generator.paper_config = b_config.get("paper_candidate", {})
+        traces.append(filter_trace(f"B备用策略（{condition_text(b_conditions)}）", b_generator, all_candidates, signal_date))
+
+        c_conditions = configured_c_conditions(strategy_cfg)
+        if c_conditions:
+            c_config = backup_config(strategy_cfg, c_conditions)
+            c_generator = PaperCandidateGenerator(strategy_path)
+            c_generator.config = c_config
+            c_generator.paper_config = c_config.get("paper_candidate", {})
+            traces.append(filter_trace(f"C补位策略（{condition_text(c_conditions)}）", c_generator, all_candidates, signal_date))
+
+        trace = pd.concat(traces, ignore_index=True)
+        logger().info("  A/B/C逐层筛选漏斗：")
+        for _, row in trace.iterrows():
+            logger().info(
+                "    %s | %s | 当日 %s -> %s，剔除 %s | %s",
+                row.get("strategy_layer", ""),
+                row.get("step", ""),
+                row.get("signal_date_before", 0),
+                row.get("signal_date_after", 0),
+                row.get("removed_on_signal_date", 0),
+                row.get("description", ""),
+            )
+            if str(row.get("reason_detail", "")):
+                logger().info("      未进入/停留原因：%s", row.get("reason_detail", ""))
+        logger().info("  A/B/C停止点：")
+        for layer in trace["strategy_layer"].dropna().astype(str).drop_duplicates().tolist():
+            logger().info("    %s", stop_point_text(trace, layer))
+    except Exception as exc:
+        logger().info("  A/B/C逐层筛选漏斗生成失败：%s", exc)
+
+
+def _log_d_status_for_signal(signal_date: str) -> None:
+    try:
+        now = now_beijing()
+        checklist = _load_ab_checklist(signal_date)
+        planned_count = 0
+        if not checklist.empty and "planned_order_count" in checklist.columns:
+            planned_count = int(float(checklist["planned_order_count"].iloc[0] or 0))
+        in_d_start_window = datetime.time(9, 20) <= now.time() <= datetime.time(14, 55)
+        if planned_count > 0:
+            logger().info("  D策略停止点：组合状态机。原因：今日已有 A/B/C 买入计划，阻断 D 盘中监控，避免同一资金重复占用。")
+        elif not in_d_start_window:
+            logger().info(
+                "  D策略停止点：交易时段。原因：当前不是 D 盘中监控时段。D 只在交易日 09:20 组合状态机允许后启动，09:30后扫描，10:00起WATCH，14:00起BUY，14:55停止/撤单。"
+            )
+            logger().info(
+                "  D策略后续过滤链：组合状态机允许 -> 实时行情扫描 -> 首板且昨日未涨停 -> 当前封涨停 -> 曾炸板至少1次 -> 炸板次数<=3 -> 今日曾涨停数量达到强情绪阈值 -> 14:00后打分选最高分 -> LiveOrderGateway二次风控。"
+            )
+            logger().info("  D策略明日判断：若 09:20 无持仓且仍无 A/B/C 买入计划，则允许启动 D 盘中监控；能否下单取决于盘中实时过滤。")
+        else:
+            logger().info("  D策略停止点：组合状态机或实时扫描。当前处于 D 可启动/监控时段，实际是否启动以组合状态机决策明细为准；若已启动，还要看盘中实时基础过滤。")
+    except Exception as exc:
+        logger().info("  D策略状态读取失败：%s", exc)
+
+
+def _value_counts_text(data, column: str) -> str:
+    if data.empty or column not in data.columns:
+        return "无"
+    counts = data[column].fillna("").astype(str).value_counts().head(8).to_dict()
+    return ", ".join(f"{key or '空'}={value}" for key, value in counts.items())
+
+
+def _load_reject_detail(signal_date: str, suffix: str) -> str:
+    try:
+        import pandas as pd
+
+        pattern = str(PROJECT_ROOT / f"reports/paper_trade/ab_filtered_daily_ops/*_{signal_date}_{suffix}.csv")
+        files = sorted(glob.glob(pattern))
+        if not files:
+            return ""
+        data = pd.read_csv(files[-1], dtype=str, low_memory=False)
+        if data.empty:
+            return ""
+        row = data.iloc[0]
+        code = str(row.get("ts_code", ""))
+        name = str(row.get("name", ""))
+        reason = str(row.get("reject_reason_desc", row.get("reject_reason", "")))
+        detail = str(row.get("risk_reject_detail", ""))
+        return f"{code} {name}；{reason}；{detail}"
+    except Exception:
+        return ""
 
 
 # ── 调度主循环 ─────────────────────────────────────────────────────────────────
@@ -1270,6 +1627,7 @@ def main() -> None:
     # 无论如何先打印当前缓存（可能是旧数据，流水线跑完后会再次播报）
     try:
         report_next_day_candidates()
+        report_signal_readiness_summary(expected_str)
     except Exception as e:
         log.error("启动候选播报异常：%s", e)
 

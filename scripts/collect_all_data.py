@@ -24,6 +24,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-daily-basic", action="store_true", help="只采集日线和涨停池，不采集 daily_basic。")
     parser.add_argument("--skip-daily", action="store_true", help="跳过日线和 daily_basic，只采集涨停池。")
     parser.add_argument("--skip-limit", action="store_true", help="跳过涨停池，只采集日线和 daily_basic。")
+    parser.add_argument(
+        "--require-end-date-limit",
+        action="store_true",
+        help="要求 end-date 的涨停池 CSV 必须存在且有数据行；守护进程收盘流水线使用。",
+    )
     return parser.parse_args()
 
 
@@ -51,6 +56,32 @@ def yesterday_yyyymmdd() -> str:
     return yesterday_beijing().strftime("%Y%m%d")
 
 
+def csv_has_data_row(path: Path) -> bool:
+    if not path.exists():
+        return False
+    try:
+        with path.open(encoding="utf-8-sig") as f:
+            f.readline()
+            return bool(f.readline().strip())
+    except OSError:
+        return False
+
+
+def csv_has_full_limit_data(path: Path) -> bool:
+    if not csv_has_data_row(path):
+        return False
+    try:
+        import pandas as pd
+
+        header = pd.read_csv(path, nrows=0).columns.tolist()
+        if "limit_data_quality" not in header:
+            return True
+        sample = pd.read_csv(path, usecols=["limit_data_quality"], nrows=20)
+        return bool(sample["limit_data_quality"].fillna("full").astype(str).eq("full").all())
+    except Exception:
+        return False
+
+
 def main() -> None:
     args = parse_args()
     config = load_json_config(args.config)
@@ -74,6 +105,13 @@ def main() -> None:
 
     if not args.skip_limit:
         collector.collect_limit_data(start_date=start_date, end_date=end_date, overwrite=args.overwrite)
+        if args.require_end_date_limit:
+            limit_path = collector.limit_list_dir / f"{end_date}.csv"
+            if not csv_has_full_limit_data(limit_path):
+                raise RuntimeError(
+                    f"{end_date} 未采集到 limit_list_d 完整涨停池数据: {limit_path}。"
+                    "收盘流水线停止，不使用 stk_limit 基础口径，也不使用旧信号。"
+                )
 
 
 if __name__ == "__main__":

@@ -67,6 +67,7 @@ class MarketEmotionBuilder:
 
     def build_global_features(self, daily: pd.DataFrame, limit_up: pd.DataFrame) -> dict[str, object]:
         limit_down = self.count_limit_down(daily)
+        full_quality = self.has_full_limit_data(limit_up)
         limit_times = pd.to_numeric(limit_up.get("limit_times", pd.Series(dtype=float)), errors="coerce")
         open_times = pd.to_numeric(limit_up.get("open_times", pd.Series(dtype=float)), errors="coerce").fillna(0)
         return {
@@ -75,13 +76,15 @@ class MarketEmotionBuilder:
             "market_limit_up_ratio": float(len(limit_up) / len(daily)) if len(daily) else 0.0,
             "market_limit_down_count": int(limit_down),
             "market_limit_down_ratio": float(limit_down / len(daily)) if len(daily) else 0.0,
-            "market_limit_max_height": int(limit_times.fillna(0).max()) if not limit_times.empty else 0,
-            "market_chain_count": int((limit_times.fillna(0) >= 2).sum()),
-            "market_height_2_count": int((limit_times.fillna(0) == 2).sum()),
-            "market_height_3_count": int((limit_times.fillna(0) == 3).sum()),
-            "market_height_gte4_count": int((limit_times.fillna(0) >= 4).sum()),
-            "market_one_word_limit_count": int((open_times == 0).sum()) if not limit_up.empty else 0,
-            "market_opened_limit_count": int((open_times > 0).sum()) if not limit_up.empty else 0,
+            "market_limit_max_height": int(limit_times.fillna(0).max()) if full_quality and not limit_times.empty else 0,
+            "market_chain_count": int((limit_times.fillna(0) >= 2).sum()) if full_quality else 0,
+            "market_height_2_count": int((limit_times.fillna(0) == 2).sum()) if full_quality else 0,
+            "market_height_3_count": int((limit_times.fillna(0) == 3).sum()) if full_quality else 0,
+            "market_height_gte4_count": int((limit_times.fillna(0) >= 4).sum()) if full_quality else 0,
+            "market_one_word_limit_count": int((open_times == 0).sum()) if full_quality and not limit_up.empty else 0,
+            "market_opened_limit_count": int((open_times > 0).sum()) if full_quality and not limit_up.empty else 0,
+            "limit_data_quality": "full" if full_quality else "basic_limit_only",
+            "strategy_compatible": bool(full_quality),
         }
 
     def build_segment_features(
@@ -94,25 +97,44 @@ class MarketEmotionBuilder:
         limit_segment = limit_up[limit_up["market_segment"].astype(str) == segment].copy()
         stock_count = len(daily_segment)
         limit_down = self.count_limit_down(daily_segment)
+        full_quality = self.has_full_limit_data(limit_segment)
         limit_times = pd.to_numeric(limit_segment.get("limit_times", pd.Series(dtype=float)), errors="coerce")
         open_times = pd.to_numeric(limit_segment.get("open_times", pd.Series(dtype=float)), errors="coerce").fillna(0)
         limit_count = len(limit_segment)
-        opened_count = int((open_times > 0).sum()) if not limit_segment.empty else 0
+        opened_count = int((open_times > 0).sum()) if full_quality and not limit_segment.empty else 0
         return {
             "segment_stock_count_emotion": int(stock_count),
             "segment_limit_up_count_emotion": int(limit_count),
             "segment_limit_up_ratio_emotion": float(limit_count / stock_count) if stock_count else 0.0,
             "segment_limit_down_count": int(limit_down),
             "segment_limit_down_ratio": float(limit_down / stock_count) if stock_count else 0.0,
-            "segment_limit_max_height": int(limit_times.fillna(0).max()) if not limit_times.empty else 0,
-            "segment_chain_count": int((limit_times.fillna(0) >= 2).sum()),
-            "segment_height_2_count": int((limit_times.fillna(0) == 2).sum()),
-            "segment_height_3_count": int((limit_times.fillna(0) == 3).sum()),
-            "segment_height_gte4_count": int((limit_times.fillna(0) >= 4).sum()),
-            "segment_one_word_limit_count": int((open_times == 0).sum()) if not limit_segment.empty else 0,
+            "segment_limit_max_height": int(limit_times.fillna(0).max()) if full_quality and not limit_times.empty else 0,
+            "segment_chain_count": int((limit_times.fillna(0) >= 2).sum()) if full_quality else 0,
+            "segment_height_2_count": int((limit_times.fillna(0) == 2).sum()) if full_quality else 0,
+            "segment_height_3_count": int((limit_times.fillna(0) == 3).sum()) if full_quality else 0,
+            "segment_height_gte4_count": int((limit_times.fillna(0) >= 4).sum()) if full_quality else 0,
+            "segment_one_word_limit_count": int((open_times == 0).sum()) if full_quality and not limit_segment.empty else 0,
             "segment_opened_limit_count": opened_count,
             "segment_open_rate": float(opened_count / limit_count) if limit_count else 0.0,
         }
+
+    @staticmethod
+    def has_full_limit_data(limit_up: pd.DataFrame) -> bool:
+        if limit_up.empty:
+            return False
+        quality = (
+            limit_up.get("limit_data_quality", pd.Series("full", index=limit_up.index))
+            .fillna("full")
+            .astype(str)
+        )
+        compatible = (
+            limit_up.get("strategy_compatible", pd.Series(True, index=limit_up.index))
+            .fillna(True)
+            .astype(str)
+            .str.lower()
+            .isin({"true", "1"})
+        )
+        return bool(quality.eq("full").all() and compatible.all())
 
     @staticmethod
     def count_limit_down(daily: pd.DataFrame) -> int:

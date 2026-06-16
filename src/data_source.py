@@ -72,6 +72,17 @@ class TushareDataSource:
 
         return _request()
 
+    def _query(self, api_name: str, **kwargs: Any) -> pd.DataFrame:
+        @self._retry_decorator()
+        def _request() -> pd.DataFrame:
+            self.logger.debug("请求 Tushare query 接口: %s, 参数: %s", api_name, kwargs)
+            result = self.pro.query(api_name, **kwargs)
+            if result is None:
+                return pd.DataFrame()
+            return result
+
+        return _request()
+
     def get_trade_calendar(
         self,
         start_date: str,
@@ -119,6 +130,51 @@ class TushareDataSource:
         fields: Optional[str] = None,
     ) -> pd.DataFrame:
         return self._call("limit_list_d", trade_date=trade_date, limit_type=limit_type, fields=fields)
+
+    def get_limit_list_range(
+        self,
+        start_date: str,
+        end_date: str,
+        limit_type: str = "U",
+        fields: Optional[str] = None,
+    ) -> pd.DataFrame:
+        return self._call(
+            "limit_list_d",
+            start_date=start_date,
+            end_date=end_date,
+            limit_type=limit_type,
+            fields=fields,
+        )
+
+    def query_limit_list(
+        self,
+        trade_date: str,
+        limit_type: str = "U",
+        fields: Optional[str] = None,
+    ) -> pd.DataFrame:
+        return self._query("limit_list_d", trade_date=trade_date, limit_type=limit_type, fields=fields)
+
+    def query_limit_list_range(
+        self,
+        start_date: str,
+        end_date: str,
+        limit_type: str = "U",
+        fields: Optional[str] = None,
+    ) -> pd.DataFrame:
+        return self._query(
+            "limit_list_d",
+            start_date=start_date,
+            end_date=end_date,
+            limit_type=limit_type,
+            fields=fields,
+        )
+
+    def get_stk_limit(
+        self,
+        trade_date: str,
+        fields: Optional[str] = None,
+    ) -> pd.DataFrame:
+        return self._call("stk_limit", trade_date=trade_date, fields=fields)
 
     def get_minute_bars(
         self,

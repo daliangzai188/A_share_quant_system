@@ -79,6 +79,48 @@ def to_float(value: object, default: float = 0.0) -> float:
     return float(result)
 
 
+def operation_status_desc(status: object) -> str:
+    text = str(status)
+    mapping = {
+        "DATA_QUALITY_BLOCKED": "数据口径不满足历史策略要求，禁止生成开仓计划。",
+        "NO_SELECTED": "A/B/C 策略均未选出可执行标的。",
+        "HISTORICAL_SIM_FILLED": "历史保守成交模型判定可成交，仅作为模拟参考。",
+        "PLAN_ONLY_PENDING": "只生成模拟观察计划，未确认历史成交。",
+        "REVIEW_REQUIRED_PLAN_ONLY": "需要人工复核，只能进入模拟观察。",
+        "BUY_REJECTED": "保守成交模型判定买入不可成交。",
+        "SELL_UNRESOLVED": "保守成交模型判定卖出未解决或需顺延。",
+    }
+    return mapping.get(text, text)
+
+
+def selection_status_desc(status: object) -> str:
+    text = str(status)
+    mapping = {
+        "OK": "数据检查通过。",
+        "LIMIT_UP_FILL_SCORED_MISSING": "成交概率打标文件不存在。",
+        "SIGNAL_DATE_LIMIT_ROWS_MISSING": "成交概率打标文件中没有该信号日记录。",
+        "LIMIT_DATA_QUALITY_NOT_COMPATIBLE": "涨停池不是完整 limit_list_d 历史口径。",
+        "REQUIRED_COLUMNS_MISSING": "缺少策略必需字段。",
+        "REQUIRED_COLUMNS_EMPTY": "策略必需字段全为空。",
+        "A_SELECTED_HAS_PRIORITY": "A 主策略已选中，优先使用 A。",
+        "A_NO_SELECTED_B_NO_SELECTED": "A 无候选，B 备用策略也无候选。",
+        "A_NO_SELECTED_B_RISK_FILTERED": "A 无候选，B 首选标的命中风险过滤。",
+        "A_B_NO_FILLED_C_RISK_FILTERED": "A/B 未形成可成交标的，C 首选标的命中风险过滤。",
+        "A_B_NO_FILLED_C_NO_SELECTED": "A/B 未形成可成交标的，C 也无候选。",
+    }
+    if text.startswith("A_NO_SELECTED_B_SELECTED:"):
+        return "A 无候选，B 备用策略选中；冒号后为命中条件。"
+    if text.startswith("A_NO_SELECTED_B_NOT_FILLED:"):
+        return "A 无候选，B 选中但保守成交模型未判定成交。"
+    if text.startswith("A_B_NO_FILLED_C_SELECTED:"):
+        return "A/B 未形成可成交标的，C 补位策略选中；冒号后为命中条件。"
+    return mapping.get(text, text)
+
+
+def bool_desc(value: object, true_text: str, false_text: str) -> str:
+    return true_text if to_bool(value) else false_text
+
+
 def setup_runtime_logger(runtime_config_path: str | Path) -> None:
     runtime_config = load_json_config(runtime_config_path)
     logging_config = runtime_config.get("logging", {})
@@ -119,6 +161,136 @@ def selected_rows(output: pd.DataFrame, selected_action: str) -> pd.DataFrame:
     return output[output["planned_action"].astype(str) == selected_action].copy()
 
 
+def validate_signal_data_quality(
+    runtime_config_path: str | Path,
+    strategy_config: dict[str, Any],
+    signal_date: str,
+) -> tuple[bool, dict[str, Any]]:
+    runtime_config = load_json_config(runtime_config_path)
+    fill_path = PROJECT_ROOT / runtime_config.get("fill_model", {}).get(
+        "output_limit_up_fill_scored_path",
+        "data/processed/limit_up_fill_scored.csv",
+    )
+    requirements = strategy_config.get("paper_ab_filtered_strategy", {}).get("data_quality_requirements", {})
+    required_quality = str(requirements.get("required_limit_data_quality", "full"))
+    required_columns = [str(column) for column in requirements.get("required_columns", [])]
+
+    if not fill_path.exists():
+        return False, {
+            "reason": "LIMIT_UP_FILL_SCORED_MISSING",
+            "detail": f"成交概率打标文件不存在: {fill_path}",
+            "limit_data_quality": "missing",
+            "limit_data_source": "missing",
+            "row_count": 0,
+        }
+
+    data = pd.read_csv(fill_path, dtype={"trade_date": str, "ts_code": str}, low_memory=False)
+    daily = data[data["trade_date"].map(normalize_date) == signal_date].copy()
+    if daily.empty:
+        return False, {
+            "reason": "SIGNAL_DATE_LIMIT_ROWS_MISSING",
+            "detail": f"limit_up_fill_scored.csv 没有 {signal_date} 记录。",
+            "limit_data_quality": "missing",
+            "limit_data_source": "missing",
+            "row_count": 0,
+        }
+
+    quality = (
+        daily.get("limit_data_quality", pd.Series("full", index=daily.index))
+        .fillna("full")
+        .astype(str)
+    )
+    source = (
+        daily.get("limit_data_source", pd.Series("limit_list_d", index=daily.index))
+        .fillna("limit_list_d")
+        .astype(str)
+    )
+    compatible = (
+        daily.get("strategy_compatible", pd.Series(True, index=daily.index))
+        .fillna(True)
+        .astype(str)
+        .str.lower()
+        .isin({"true", "1"})
+    )
+    quality_ok = quality.eq(required_quality).all() and compatible.all()
+    missing_columns = [column for column in required_columns if column not in daily.columns]
+    incomplete_columns = [
+        column
+        for column in required_columns
+        if column in daily.columns and daily[column].isna().all()
+    ]
+    ok = bool(quality_ok and not missing_columns and not incomplete_columns)
+    reason = "OK"
+    detail = "数据口径满足策略要求。"
+    if not quality_ok:
+        reason = "LIMIT_DATA_QUALITY_NOT_COMPATIBLE"
+        detail = f"{signal_date} 数据口径为 {','.join(sorted(quality.unique()))}，来源 {','.join(sorted(source.unique()))}，不满足 {required_quality}。"
+    elif missing_columns:
+        reason = "REQUIRED_COLUMNS_MISSING"
+        detail = f"缺少策略必需字段: {missing_columns}"
+    elif incomplete_columns:
+        reason = "REQUIRED_COLUMNS_EMPTY"
+        detail = f"策略必需字段全为空: {incomplete_columns}"
+
+    return ok, {
+        "reason": reason,
+        "detail": detail,
+        "limit_data_quality": ",".join(sorted(quality.unique())),
+        "limit_data_source": ",".join(sorted(source.unique())),
+        "row_count": int(len(daily)),
+        "strategy_compatible": bool(compatible.all()),
+        "missing_columns": ",".join(missing_columns),
+        "incomplete_columns": ",".join(incomplete_columns),
+    }
+
+
+def write_data_quality_block_outputs(
+    output_prefix: Path,
+    signal_date: str,
+    quality: dict[str, Any],
+) -> dict[str, Path]:
+    paths = output_paths(output_prefix, signal_date)
+    empty = pd.DataFrame()
+    checklist = pd.DataFrame(
+        [
+            {
+                "signal_date": signal_date,
+                "strategy_leg": "NONE",
+                "operation_status": "DATA_QUALITY_BLOCKED",
+                "selection_status": quality.get("reason", ""),
+                "next_action": "当天涨停池口径不满足历史最佳策略字段要求，不生成开仓计划；等待完整 limit_list_d 或人工确认新口径。",
+                "a_candidate_count": 0,
+                "b_candidate_count": 0,
+                "b_rejected_by_filter_count": 0,
+                "c_candidate_count": 0,
+                "c_rejected_by_filter_count": 0,
+                "selected_count": 0,
+                "planned_order_count": 0,
+                "manual_review_required": False,
+                "manual_review_count": 0,
+                "top_ts_code": "",
+                "top_name": "",
+                "account_return": 0.0,
+                "return_source": "",
+                "live_order_enabled": False,
+                "limit_data_quality": quality.get("limit_data_quality", ""),
+                "limit_data_source": quality.get("limit_data_source", ""),
+                "limit_row_count": quality.get("row_count", 0),
+                "data_quality_detail": quality.get("detail", ""),
+            }
+        ]
+    )
+    checklist = enrich_checklist(checklist)
+    for name, path in paths.items():
+        if name == "checklist":
+            checklist.to_csv(path, index=False, encoding="utf-8-sig")
+        elif name == "markdown":
+            write_markdown(path, checklist, empty, paths)
+        else:
+            empty.to_csv(path, index=False, encoding="utf-8-sig")
+    return paths
+
+
 def build_selected_row(
     strategy_leg: str,
     selected: pd.Series,
@@ -145,6 +317,44 @@ def manual_review_required(config: dict[str, Any], selected: pd.Series) -> bool:
         return True
     risk_flags = str(selected.get("risk_flags", ""))
     return risk_flags not in {"", "无"}
+
+
+def risk_reject_detail(frame: pd.DataFrame, config: dict[str, Any]) -> pd.Series:
+    if frame.empty:
+        return pd.Series(dtype=str)
+    ab_config = config.get("paper_ab_filtered_strategy", {})
+    rules = ab_config.get("b_strategy", {}).get("risk_reject_rules", [])
+    details: list[str] = []
+    for _, row in frame.iterrows():
+        hits: list[str] = []
+        risk_flags = str(row.get("risk_flags", ""))
+        for rule in rules:
+            rule_name = str(rule.get("name", "unnamed_rule"))
+            rule_desc = str(rule.get("description", rule_name))
+            for keyword in rule.get("risk_flags_contains_any", []):
+                keyword_text = str(keyword)
+                if keyword_text and keyword_text in risk_flags:
+                    hits.append(f"{rule_name}: {rule_desc}；risk_flags包含“{keyword_text}”")
+            for condition in rule.get("numeric_conditions", []):
+                column = str(condition.get("column", ""))
+                operator = str(condition.get("operator", "==")).strip()
+                threshold = pd.to_numeric(condition.get("value", 0), errors="coerce")
+                value = pd.to_numeric(row.get(column, pd.NA), errors="coerce")
+                if not column or pd.isna(threshold) or pd.isna(value):
+                    continue
+                matched = (
+                    (operator == ">=" and float(value) >= float(threshold))
+                    or (operator == ">" and float(value) > float(threshold))
+                    or (operator == "<=" and float(value) <= float(threshold))
+                    or (operator == "<" and float(value) < float(threshold))
+                    or (operator == "==" and float(value) == float(threshold))
+                )
+                if matched:
+                    hits.append(
+                        f"{rule_name}: {rule_desc}；{column}={float(value):g} {operator} {float(threshold):g}"
+                    )
+        details.append("；".join(hits) if hits else "未命中可解释风险规则，请检查 reject_b_risk_mask 配置。")
+    return pd.Series(details, index=frame.index)
 
 
 def resolve_a_execution(
@@ -321,7 +531,7 @@ def build_checklist(
     c_rejected: pd.DataFrame,
 ) -> pd.DataFrame:
     if selected.empty:
-        return pd.DataFrame(
+        return enrich_checklist(pd.DataFrame(
             [
                 {
                     "signal_date": signal_date,
@@ -344,14 +554,14 @@ def build_checklist(
                     "live_order_enabled": False,
                 }
             ]
-        )
+        ))
     row = selected.iloc[0]
     needs_review = not manual_review.empty
     operation_status = str(row.get("operation_status", ""))
     if needs_review and operation_status == "HISTORICAL_SIM_FILLED":
         operation_status = "REVIEW_REQUIRED_PLAN_ONLY"
     next_action = "先人工复核；通过后只进入模拟观察，不进入实盘。" if needs_review else "只生成模拟计划，等待后续数据验证。"
-    return pd.DataFrame(
+    return enrich_checklist(pd.DataFrame(
         [
             {
                 "signal_date": signal_date,
@@ -381,7 +591,28 @@ def build_checklist(
                 "safety_note": "A+B+C filtered 只允许模拟观察；未完成分钟K、盘口和连续模拟验证前，不允许实盘。",
             }
         ]
-    )
+    ))
+
+
+def enrich_checklist(checklist: pd.DataFrame) -> pd.DataFrame:
+    result = checklist.copy()
+    if "operation_status" in result.columns:
+        result["operation_status_desc"] = result["operation_status"].map(operation_status_desc)
+    if "selection_status" in result.columns:
+        result["selection_status_desc"] = result["selection_status"].map(selection_status_desc)
+    if "manual_review_required" in result.columns:
+        result["manual_review_required_desc"] = result["manual_review_required"].map(
+            lambda value: bool_desc(value, "需要人工复核", "不需要人工复核")
+        )
+    if "live_order_enabled" in result.columns:
+        result["live_order_enabled_desc"] = result["live_order_enabled"].map(
+            lambda value: bool_desc(value, "允许实盘下单", "禁止实盘下单，仅模拟/观察")
+        )
+    if "limit_data_quality" in result.columns:
+        result["limit_data_quality_desc"] = result["limit_data_quality"].map(
+            lambda value: "完整 limit_list_d 历史口径" if str(value) == "full" else f"非完整历史口径：{value}"
+        )
+    return result
 
 
 def output_paths(output_prefix: Path, signal_date: str) -> dict[str, Path]:
@@ -449,8 +680,34 @@ def main() -> None:
     mkdir_p(output_prefix.parent)
 
     base_generator = PaperCandidateGenerator(args.strategy_config)
+    if args.signal_date:
+        signal_date = normalize_date(args.signal_date)
+        data_ok, quality = validate_signal_data_quality(args.runtime_config, config, signal_date)
+        if not data_ok and bool(
+            config.get("paper_ab_filtered_strategy", {})
+            .get("data_quality_requirements", {})
+            .get("block_when_not_compatible", True)
+        ):
+            paths = write_data_quality_block_outputs(output_prefix, signal_date, quality)
+            print("A+B+C filtered 每日模拟盘操作台完成：")
+            for name, path in paths.items():
+                print(f"- {name}: {path}")
+            print(pd.read_csv(paths["checklist"]).to_string(index=False))
+            return
     all_candidates = base_generator.load_all_candidates()
     signal_date = normalize_date(args.signal_date) if args.signal_date else latest_signal_date(all_candidates)
+    data_ok, quality = validate_signal_data_quality(args.runtime_config, config, signal_date)
+    if not data_ok and bool(
+        config.get("paper_ab_filtered_strategy", {})
+        .get("data_quality_requirements", {})
+        .get("block_when_not_compatible", True)
+    ):
+        paths = write_data_quality_block_outputs(output_prefix, signal_date, quality)
+        print("A+B+C filtered 每日模拟盘操作台完成：")
+        for name, path in paths.items():
+            print(f"- {name}: {path}")
+        print(pd.read_csv(paths["checklist"]).to_string(index=False))
+        return
     selected_action = config.get("paper_candidate", {}).get("planned_action_for_selected", "PLAN_BUY_T1_OPEN")
     audit = PaperDailyFlowRunner(args.strategy_config).load_audit_trades(
         PROJECT_ROOT / config.get("paper_daily_flow", {}).get("input_audit_trades_path", "")
@@ -488,6 +745,8 @@ def main() -> None:
             if bool(rejected_mask.iloc[0]):
                 b_rejected = b_selected_frame.copy()
                 b_rejected["reject_reason"] = "B_SELECTED_HIT_RISK_REJECT_RULES"
+                b_rejected["reject_reason_desc"] = "B 首选标的命中风险过滤规则。"
+                b_rejected["risk_reject_detail"] = risk_reject_detail(b_rejected, config)
                 selection_status = "A_NO_SELECTED_B_RISK_FILTERED"
             else:
                 execution_reference, operation_status, account_return, return_source, note = resolve_b_execution(
@@ -524,6 +783,8 @@ def main() -> None:
                     if bool(c_rejected_mask.iloc[0]):
                         c_rejected = c_selected_frame.copy()
                         c_rejected["reject_reason"] = "C_SELECTED_HIT_RISK_REJECT_RULES"
+                        c_rejected["reject_reason_desc"] = "C 首选标的命中风险过滤规则。"
+                        c_rejected["risk_reject_detail"] = risk_reject_detail(c_rejected, config)
                         if selected.empty:
                             selection_status = "A_B_NO_FILLED_C_RISK_FILTERED"
                     else:
@@ -560,6 +821,7 @@ def main() -> None:
     )
     if selection_status and selected.empty:
         checklist["selection_status"] = selection_status
+        checklist = enrich_checklist(checklist)
 
     paths = output_paths(output_prefix, signal_date)
     a_candidates.to_csv(paths["a_candidates"], index=False, encoding="utf-8-sig")
