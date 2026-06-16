@@ -1234,27 +1234,37 @@ def main() -> None:
         sleep_secs = (wake_dt - now).total_seconds()
         log.info("下次任务：%s（%.0f 秒后）", wake_dt.strftime("%Y-%m-%d %H:%M"), sleep_secs)
 
-        # 账户信息后台轮询：正常60秒/次；掉线时第1次立刻重连，后续15秒间隔
-        _ACCT_INTERVAL = 60    # 正常间隔
-        _RETRY_INTERVAL = 15   # 掉线重连间隔
+        # 账户轮询：有持仓2秒/次，无持仓60秒/次；掉线时立刻重连，后续15秒间隔
+        _ACCT_INTERVAL = 60       # 无持仓正常间隔
+        _ACCT_WITH_POS = 2        # 有持仓高频间隔
+        _RETRY_INTERVAL = 15      # 掉线重连间隔
         deadline = time.monotonic() + sleep_secs
         last_acct_ts = time.monotonic()
+        last_pos_check_ts = 0.0   # 持仓状态每10秒刷新一次，避免频繁读文件
+        has_open = False
+        last_heartbeat_ts = time.monotonic()
         _acct_thread: threading.Thread | None = None
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
-            time.sleep(min(10, remaining))
-            write_heartbeat("sleeping")
+            time.sleep(min(2, remaining))
+            now_ts = time.monotonic()
+            if now_ts - last_heartbeat_ts >= 10:
+                write_heartbeat("sleeping")
+                last_heartbeat_ts = now_ts
+            if now_ts - last_pos_check_ts >= 10:
+                has_open = any(p.get("status") == "open" for p in load_positions())
+                last_pos_check_ts = now_ts
             if _qmt_reconnect_count == 0:
-                interval = _ACCT_INTERVAL    # 正常：60秒
+                interval = _ACCT_WITH_POS if has_open else _ACCT_INTERVAL
             elif _qmt_reconnect_count == 1:
-                interval = 0                 # 第1次掉线：立刻重连（下一个10秒tick即触发）
+                interval = 0
             else:
-                interval = _RETRY_INTERVAL   # 持续掉线：15秒间隔
-            if time.monotonic() - last_acct_ts >= interval:
+                interval = _RETRY_INTERVAL
+            if now_ts - last_acct_ts >= interval:
                 if _acct_thread is None or not _acct_thread.is_alive():
-                    last_acct_ts = time.monotonic()
+                    last_acct_ts = now_ts
                     _acct_thread = threading.Thread(
                         target=_print_account_status, args=(log,), daemon=True
                     )
