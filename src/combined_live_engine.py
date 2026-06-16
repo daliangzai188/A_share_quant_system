@@ -9,7 +9,7 @@ import pandas as pd
 from pandas.errors import EmptyDataError
 
 from src.live_order_gateway import LiveOrderGateway
-from src.utils.config import get_project_root, load_json_config
+from src.utils.config import get_project_root, load_json_config, mkdir_p
 from src.utils.time_utils import today_beijing
 
 
@@ -38,7 +38,7 @@ class CombinedLiveEngine:
         self.gateway = LiveOrderGateway(config_path)
         self.positions_path = self.project_root / "data" / "processed" / "positions.json"
         self.output_dir = self.project_root / "reports" / "live_trade" / "combined"
-        self.output_dir.mkdir(parents=True, exist_ok=True)
+        mkdir_p(self.output_dir)
 
     def load_positions(self) -> list[dict[str, Any]]:
         if not self.positions_path.exists():

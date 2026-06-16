@@ -6,7 +6,7 @@ from pathlib import Path
 import pandas as pd
 
 from src.factors import NextDayPremiumAnalyzer
-from src.utils.config import get_project_root, load_json_config
+from src.utils.config import get_project_root, load_json_config, mkdir_p
 from src.utils.logger import get_logger
 
 
@@ -68,7 +68,7 @@ class DynamicRiskOverlayEvaluator:
         )
         yearly = pd.DataFrame(yearly_rows)
 
-        self.output_trade_report_path.parent.mkdir(parents=True, exist_ok=True)
+        mkdir_p(self.output_trade_report_path.parent)
         trade_report.to_csv(self.output_trade_report_path, index=False, encoding="utf-8-sig")
         summary.to_csv(self.output_summary_path, index=False, encoding="utf-8-sig")
         yearly.to_csv(self.output_yearly_path, index=False, encoding="utf-8-sig")

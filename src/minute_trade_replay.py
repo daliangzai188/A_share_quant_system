@@ -7,7 +7,7 @@ import pandas as pd
 
 from src.factors import NextDayPremiumAnalyzer
 from src.trade_replay import ConservativeTradeReplay, ReplayRule
-from src.utils.config import get_project_root, load_json_config
+from src.utils.config import get_project_root, load_json_config, mkdir_p
 from src.utils.logger import get_logger
 
 
@@ -71,7 +71,7 @@ class MinuteTradeReplay:
         summary = self.build_summary(trades, data_status)
         yearly = self.build_yearly_report(trades)
 
-        self.output_trade_report_path.parent.mkdir(parents=True, exist_ok=True)
+        mkdir_p(self.output_trade_report_path.parent)
         trades.to_csv(self.output_trade_report_path, index=False, encoding="utf-8-sig")
         summary.to_csv(self.output_summary_path, index=False, encoding="utf-8-sig")
         yearly.to_csv(self.output_yearly_path, index=False, encoding="utf-8-sig")
@@ -155,7 +155,7 @@ class MinuteTradeReplay:
                 "median_return_per_trade",
             ]
         )
-        self.output_trade_report_path.parent.mkdir(parents=True, exist_ok=True)
+        mkdir_p(self.output_trade_report_path.parent)
         report.to_csv(self.output_trade_report_path, index=False, encoding="utf-8-sig")
         summary.to_csv(self.output_summary_path, index=False, encoding="utf-8-sig")
         yearly.to_csv(self.output_yearly_path, index=False, encoding="utf-8-sig")

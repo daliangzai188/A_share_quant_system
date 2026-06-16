@@ -6,7 +6,7 @@ from typing import Iterable
 
 import pandas as pd
 
-from src.utils.config import get_project_root, load_json_config
+from src.utils.config import get_project_root, load_json_config, mkdir_p
 from src.utils.logger import get_logger
 
 
@@ -128,7 +128,7 @@ class DataValidator:
             alignment_rows.append(self.validate_daily_alignment(trade_date))
 
         output_path = self.project_root / output_dir
-        output_path.mkdir(parents=True, exist_ok=True)
+        mkdir_p(output_path)
 
         file_report = pd.DataFrame([result.__dict__ for result in file_results])
         alignment_report = pd.DataFrame(alignment_rows)

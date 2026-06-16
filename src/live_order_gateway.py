@@ -10,7 +10,7 @@ from pandas.errors import EmptyDataError
 
 from src.broker_adapter import OrderRequest, PositionSnapshot
 from src.qmt_adapter import QMTBrokerAdapter, tushare_to_qmt_code
-from src.utils.config import get_project_root, load_json_config
+from src.utils.config import get_project_root, load_json_config, mkdir_p
 from src.utils.logger import get_logger, setup_logger
 from src.utils.time_utils import now_beijing
 
@@ -260,7 +260,7 @@ class LiveOrderGateway:
         output_prefix = Path(output_prefix)
         if not output_prefix.is_absolute():
             output_prefix = self.project_root / output_prefix
-        output_prefix.parent.mkdir(parents=True, exist_ok=True)
+        mkdir_p(output_prefix.parent)
 
         try:
             adapter.connect()
@@ -289,7 +289,7 @@ class LiveOrderGateway:
         output_prefix = Path(output_prefix)
         if not output_prefix.is_absolute():
             output_prefix = self.project_root / output_prefix
-        output_prefix.parent.mkdir(parents=True, exist_ok=True)
+        mkdir_p(output_prefix.parent)
 
         try:
             adapter.connect()
@@ -366,7 +366,7 @@ class LiveOrderGateway:
         output_prefix = Path(output_prefix)
         if not output_prefix.is_absolute():
             output_prefix = self.project_root / output_prefix
-        output_prefix.parent.mkdir(parents=True, exist_ok=True)
+        mkdir_p(output_prefix.parent)
         paths = {"orders": output_prefix.with_name(output_prefix.name + "_submitted_orders.csv")}
         pd.DataFrame(results).to_csv(paths["orders"], index=False, encoding="utf-8-sig")
         return paths
@@ -437,7 +437,7 @@ class LiveOrderGateway:
         output_prefix = Path(output_prefix)
         if not output_prefix.is_absolute():
             output_prefix = self.project_root / output_prefix
-        output_prefix.parent.mkdir(parents=True, exist_ok=True)
+        mkdir_p(output_prefix.parent)
         paths = {"orders": output_prefix.with_name(output_prefix.name + "_small_test_submitted_orders.csv")}
         pd.DataFrame(results).to_csv(paths["orders"], index=False, encoding="utf-8-sig")
         return paths

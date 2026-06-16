@@ -6,7 +6,7 @@ from typing import Any
 import pandas as pd
 
 from src.paper_candidate_generator import PaperCandidateGenerator
-from src.utils.config import get_project_root, load_json_config
+from src.utils.config import get_project_root, load_json_config, mkdir_p
 from src.utils.logger import get_logger
 
 
@@ -73,7 +73,7 @@ class PaperDailyFlowRunner:
             equity_update=equity_update,
         )
 
-        self.output_prefix.parent.mkdir(parents=True, exist_ok=True)
+        mkdir_p(self.output_prefix.parent)
         paths = {
             "candidates": candidate_outputs["candidates"],
             "candidate_summary": candidate_outputs["summary"],

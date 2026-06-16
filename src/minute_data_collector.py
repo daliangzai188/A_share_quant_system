@@ -9,7 +9,7 @@ import pandas as pd
 from src.data_source import TushareDataSource
 from src.minute_data_importer import MinuteBarImporter
 from src.trade_replay import ConservativeTradeReplay
-from src.utils.config import get_project_root, load_json_config
+from src.utils.config import get_project_root, load_json_config, mkdir_p
 from src.utils.logger import get_logger
 
 
@@ -61,7 +61,7 @@ class StrategyMinuteDataCollector:
         if targets.empty:
             raise ValueError("没有找到需要采集的策略分钟 K 目标。请先生成策略信号。")
 
-        self.raw_minute_dir.mkdir(parents=True, exist_ok=True)
+        mkdir_p(self.raw_minute_dir)
         report_rows = []
         raw_paths = []
         for target in targets.itertuples(index=False):
@@ -73,7 +73,7 @@ class StrategyMinuteDataCollector:
             try:
                 bars = self.fetch_one_target(target.ts_code, target.trade_date)
                 bars = self.normalize_tushare_minute_bars(bars, target.ts_code)
-                output_path.parent.mkdir(parents=True, exist_ok=True)
+                mkdir_p(output_path.parent)
                 bars.to_csv(output_path, index=False, encoding="utf-8-sig")
                 report_rows.append(self.report_row(target, output_path, "SAVED", len(bars), ""))
                 self.logger.info("保存分钟 K: %s, 行数: %s", output_path, len(bars))
@@ -91,7 +91,7 @@ class StrategyMinuteDataCollector:
                 time.sleep(self.request_sleep_seconds)
 
         report = pd.DataFrame(report_rows)
-        self.output_collect_report_path.parent.mkdir(parents=True, exist_ok=True)
+        mkdir_p(self.output_collect_report_path.parent)
         report.to_csv(self.output_collect_report_path, index=False, encoding="utf-8-sig")
         self.logger.info("分钟 K 采集报告已生成: %s", self.output_collect_report_path)
 
@@ -115,7 +115,7 @@ class StrategyMinuteDataCollector:
         targets = self.build_strategy_targets(start_date=start_date, end_date=end_date)
         if limit is not None:
             targets = targets.head(limit).copy()
-        self.output_target_preview_path.parent.mkdir(parents=True, exist_ok=True)
+        mkdir_p(self.output_target_preview_path.parent)
         targets.to_csv(self.output_target_preview_path, index=False, encoding="utf-8-sig")
         self.logger.info("分钟 K 采集目标预览已生成: %s, 行数: %s", self.output_target_preview_path, len(targets))
         return self.output_target_preview_path

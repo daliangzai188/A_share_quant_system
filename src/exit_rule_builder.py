@@ -6,7 +6,7 @@ from pathlib import Path
 import pandas as pd
 
 from src.factors import NextDayPremiumAnalyzer
-from src.utils.config import get_project_root, load_json_config
+from src.utils.config import get_project_root, load_json_config, mkdir_p
 from src.utils.logger import get_logger
 
 
@@ -59,7 +59,7 @@ class ExitRuleTradeBuilder:
         rules = self.build_exit_rules()
         frames = [self.apply_exit_rule(samples, rule) for rule in rules]
         result = pd.concat(frames, ignore_index=True)
-        self.output_trades_path.parent.mkdir(parents=True, exist_ok=True)
+        mkdir_p(self.output_trades_path.parent)
         result.to_csv(self.output_trades_path, index=False, encoding="utf-8-sig")
         self.logger.info("卖出规则交易样本已生成: %s, 行数: %s", self.output_trades_path, len(result))
         return self.output_trades_path

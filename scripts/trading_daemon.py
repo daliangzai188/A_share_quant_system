@@ -36,7 +36,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.utils.logger import get_logger, setup_logger
-from src.utils.config import load_json_config
+from src.utils.config import load_json_config, mkdir_p
 from src.utils.time_utils import BEIJING_TZ, now_beijing, today_beijing
 
 # ── 常量 ───────────────────────────────────────────────────────────────────────
@@ -66,7 +66,7 @@ TIMEOUT_ORDER_STEP = 60      # 下单预览步骤：1 分钟
 def setup() -> None:
     config = load_json_config(PROJECT_ROOT / "config" / "config.json")
     logging_cfg = config.get("logging", {})
-    HEARTBEAT_FILE.parent.mkdir(parents=True, exist_ok=True)
+    mkdir_p(HEARTBEAT_FILE.parent)
     setup_logger(
         log_dir=PROJECT_ROOT / logging_cfg.get("log_dir", "logs"),
         log_file="trading_daemon.log",
@@ -94,7 +94,7 @@ def post_market_marker_path(date: datetime.date) -> Path:
 
 def mark_post_market_done(date: datetime.date) -> None:
     path = post_market_marker_path(date)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    mkdir_p(path.parent)
     path.write_text(now_beijing().isoformat(), encoding="utf-8")
 
 
@@ -245,7 +245,7 @@ def load_positions() -> list[dict[str, Any]]:
 
 def save_positions(positions: list[dict[str, Any]]) -> None:
     try:
-        POSITIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        mkdir_p(POSITIONS_FILE.parent)
         tmp = POSITIONS_FILE.with_suffix(".tmp")
         tmp.write_text(json.dumps(positions, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(POSITIONS_FILE)  # 原子替换，防止写一半损坏
@@ -348,7 +348,7 @@ def _execute_orders_inprocess(
 
         # 保存 preview CSV 供审计
         preview_csv = PROJECT_ROOT / "reports" / "live_trade" / "qmt_live_order_preview.csv"
-        preview_csv.parent.mkdir(parents=True, exist_ok=True)
+        mkdir_p(preview_csv.parent)
         preview.to_csv(preview_csv, index=False, encoding="utf-8-sig")
 
         executable = preview[

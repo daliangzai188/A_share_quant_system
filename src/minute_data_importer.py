@@ -5,7 +5,7 @@ from typing import Any, Iterable
 
 import pandas as pd
 
-from src.utils.config import get_project_root, load_json_config
+from src.utils.config import get_project_root, load_json_config, mkdir_p
 from src.utils.logger import get_logger
 
 
@@ -57,7 +57,7 @@ class MinuteBarImporter:
             ],
             columns=self.standard_columns,
         )
-        path.parent.mkdir(parents=True, exist_ok=True)
+        mkdir_p(path.parent)
         template.to_csv(path, index=False, encoding="utf-8-sig")
         self.logger.info("分钟 K 导入模板已生成: %s", path)
         return path
@@ -91,13 +91,13 @@ class MinuteBarImporter:
         combined = self.finalize_frame(combined)
         duplicate_dropped = before_dedup - len(combined)
 
-        output.parent.mkdir(parents=True, exist_ok=True)
+        mkdir_p(output.parent)
         combined.to_csv(output, index=False, encoding="utf-8-sig")
 
         report = pd.DataFrame(report_rows)
         summary = self.build_summary_report(output, imported, combined, duplicate_dropped)
         report = pd.concat([report, summary], ignore_index=True)
-        self.output_import_report_path.parent.mkdir(parents=True, exist_ok=True)
+        mkdir_p(self.output_import_report_path.parent)
         report.to_csv(self.output_import_report_path, index=False, encoding="utf-8-sig")
 
         self.logger.info("分钟 K 标准文件已生成: %s, 行数: %s", output, len(combined))

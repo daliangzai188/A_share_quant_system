@@ -5,7 +5,7 @@ from pathlib import Path
 import pandas as pd
 
 from src.factors import FactorAnalyzer
-from src.utils.config import get_project_root, load_json_config
+from src.utils.config import get_project_root, load_json_config, mkdir_p
 from src.utils.logger import get_logger
 
 
@@ -82,7 +82,7 @@ class CandidatePoolGenerator:
         candidates = candidates.sort_values(["trade_date", "rule_count", "fill_probability"], ascending=[True, False, False])
 
         output_columns = [column for column in self.OUTPUT_COLUMNS if column in candidates.columns]
-        self.output_candidate_pool_path.parent.mkdir(parents=True, exist_ok=True)
+        mkdir_p(self.output_candidate_pool_path.parent)
         candidates[output_columns].to_csv(self.output_candidate_pool_path, index=False, encoding="utf-8-sig")
         self.logger.info("候选股票池已生成: %s, 行数: %s", self.output_candidate_pool_path, len(candidates))
         return self.output_candidate_pool_path

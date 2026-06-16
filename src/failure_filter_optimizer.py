@@ -6,7 +6,7 @@ from pathlib import Path
 import pandas as pd
 
 from src.factors import NextDayPremiumAnalyzer
-from src.utils.config import get_project_root, load_json_config
+from src.utils.config import get_project_root, load_json_config, mkdir_p
 from src.utils.logger import get_logger
 
 
@@ -69,7 +69,7 @@ class FailureFilterOptimizer:
             ascending=[False, False, False, False, True],
         )
 
-        self.output_report_path.parent.mkdir(parents=True, exist_ok=True)
+        mkdir_p(self.output_report_path.parent)
         report.to_csv(self.output_report_path, index=False, encoding="utf-8-sig")
         yearly.to_csv(self.output_yearly_path, index=False, encoding="utf-8-sig")
         self.logger.info("危险条件过滤优化报告已生成: %s, 行数: %s", self.output_report_path, len(report))

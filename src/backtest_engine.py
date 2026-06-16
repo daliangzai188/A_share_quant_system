@@ -5,7 +5,7 @@ from pathlib import Path
 import pandas as pd
 
 from src.factors import NextDayPremiumAnalyzer
-from src.utils.config import get_project_root, load_json_config
+from src.utils.config import get_project_root, load_json_config, mkdir_p
 from src.utils.logger import get_logger
 
 
@@ -54,7 +54,7 @@ class SimpleCandidateBacktester:
             self.output_summary_path,
             self.output_yearly_path,
         ]:
-            path.parent.mkdir(parents=True, exist_ok=True)
+            mkdir_p(path.parent)
 
         trades.to_csv(self.output_trades_path, index=False, encoding="utf-8-sig")
         equity_curve.to_csv(self.output_equity_curve_path, index=False, encoding="utf-8-sig")

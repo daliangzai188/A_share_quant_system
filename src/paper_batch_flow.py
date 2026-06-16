@@ -7,7 +7,7 @@ import pandas as pd
 
 from src.paper_candidate_generator import PaperCandidateGenerator
 from src.paper_daily_flow import PaperDailyFlowRunner
-from src.utils.config import get_project_root, load_json_config
+from src.utils.config import get_project_root, load_json_config, mkdir_p
 from src.utils.logger import get_logger
 
 
@@ -174,7 +174,7 @@ class PaperBatchFlowRunner:
         risk_events = self.build_risk_events(daily_report, executions_report, equity_curve)
         summary = self.build_summary(daily_report, equity_curve, risk_events, start_date=dates[0], end_date=dates[-1])
 
-        self.output_prefix.parent.mkdir(parents=True, exist_ok=True)
+        mkdir_p(self.output_prefix.parent)
         path_suffix = f"_{dates[0]}_{dates[-1]}" if dates else ""
         paths = {
             "summary": self.output_path(path_suffix, "_summary.csv"),

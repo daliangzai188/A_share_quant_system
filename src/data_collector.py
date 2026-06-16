@@ -8,7 +8,7 @@ import pandas as pd
 
 from src.data_source import TushareDataSource
 from src.trading_calendar import TradingCalendar
-from src.utils.config import get_project_root, load_json_config
+from src.utils.config import get_project_root, load_json_config, mkdir_p
 from src.utils.logger import get_logger
 
 
@@ -141,23 +141,7 @@ class DataCollector:
         self._write_csv_with_retry(data, output_path)
 
     def _mkdir_with_retry(self, path: Path, retries: int = 3, delay: float = 2.0) -> None:
-        last_error: Exception | None = None
-        for attempt in range(1, retries + 1):
-            try:
-                path.mkdir(parents=True, exist_ok=True)
-                return
-            except OSError as exc:
-                last_error = exc
-                self.logger.warning(
-                    "共享盘目录创建/检查失败，第 %d/%d 次重试: %s; error=%s",
-                    attempt,
-                    retries,
-                    path,
-                    exc,
-                )
-                time.sleep(delay * attempt)
-        if last_error is not None:
-            raise last_error
+        mkdir_p(path)
 
     def _exists_with_retry(self, path: Path, retries: int = 3, delay: float = 1.0) -> bool:
         last_error: Exception | None = None

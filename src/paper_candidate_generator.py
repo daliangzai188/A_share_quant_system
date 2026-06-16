@@ -6,7 +6,7 @@ from typing import Any
 import pandas as pd
 
 from src.strategy_optimizer import StrategyConditionOptimizer
-from src.utils.config import get_project_root, load_json_config
+from src.utils.config import get_project_root, load_json_config, mkdir_p
 from src.utils.logger import get_logger
 
 
@@ -74,7 +74,7 @@ class PaperCandidateGenerator:
         output = self.build_output(ranked, resolved_signal_date, top_n or self.default_top_n)
         summary = self.build_summary(output, resolved_signal_date, len(daily_candidates), len(filtered))
 
-        self.output_prefix.parent.mkdir(parents=True, exist_ok=True)
+        mkdir_p(self.output_prefix.parent)
         candidates_path = self.output_prefix.with_name(self.output_prefix.name + f"_{resolved_signal_date}.csv")
         summary_path = self.output_prefix.with_name(self.output_prefix.name + f"_{resolved_signal_date}_summary.csv")
         markdown_path = self.output_prefix.with_name(self.output_prefix.name + f"_{resolved_signal_date}.md")

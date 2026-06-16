@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.utils.config import get_project_root, load_json_config
+from src.utils.config import get_project_root, load_json_config, mkdir_p
 from src.utils.logger import get_logger
 
 
@@ -54,9 +54,9 @@ class NextDayPremiumAnalyzer:
         summary = self.summarize(confirmed, group_name="overall")
         groups = self.build_group_report(confirmed)
 
-        self.output_trades_path.parent.mkdir(parents=True, exist_ok=True)
-        self.output_summary_path.parent.mkdir(parents=True, exist_ok=True)
-        self.output_group_path.parent.mkdir(parents=True, exist_ok=True)
+        mkdir_p(self.output_trades_path.parent)
+        mkdir_p(self.output_summary_path.parent)
+        mkdir_p(self.output_group_path.parent)
 
         trades.to_csv(self.output_trades_path, index=False, encoding="utf-8-sig")
         summary.to_csv(self.output_summary_path, index=False, encoding="utf-8-sig")
@@ -242,7 +242,7 @@ class FactorAnalyzer:
 
         report = pd.DataFrame(reports)
         report = report.sort_values(["factor", "sample_count", "avg_return"], ascending=[True, False, False])
-        self.output_factor_report_path.parent.mkdir(parents=True, exist_ok=True)
+        mkdir_p(self.output_factor_report_path.parent)
         report.to_csv(self.output_factor_report_path, index=False, encoding="utf-8-sig")
         self.logger.info("因子统计报告已生成: %s, 行数: %s", self.output_factor_report_path, len(report))
         return self.output_factor_report_path
@@ -633,7 +633,7 @@ class FactorComboAnalyzer:
         report = pd.DataFrame(rows)
         report = self.add_stability_flags(report)
         report = report.sort_values(["combo_name_sort", "period"]).drop(columns=["combo_name_sort"])
-        self.output_combo_report_path.parent.mkdir(parents=True, exist_ok=True)
+        mkdir_p(self.output_combo_report_path.parent)
         report.to_csv(self.output_combo_report_path, index=False, encoding="utf-8-sig")
         self.logger.info("组合因子报告已生成: %s, 行数: %s", self.output_combo_report_path, len(report))
         return self.output_combo_report_path

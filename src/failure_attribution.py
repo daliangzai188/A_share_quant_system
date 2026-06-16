@@ -5,7 +5,7 @@ from pathlib import Path
 import pandas as pd
 
 from src.factors import NextDayPremiumAnalyzer
-from src.utils.config import get_project_root, load_json_config
+from src.utils.config import get_project_root, load_json_config, mkdir_p
 from src.utils.logger import get_logger
 
 
@@ -62,7 +62,7 @@ class StrategyFailureAttributor:
         filter_candidates = self.build_filter_candidates(focus_group_report)
         filter_backtest, filter_yearly = self.build_filter_backtest(trades, filter_candidates)
 
-        self.output_group_report_path.parent.mkdir(parents=True, exist_ok=True)
+        mkdir_p(self.output_group_report_path.parent)
         group_report.to_csv(self.output_group_report_path, index=False, encoding="utf-8-sig")
         monthly_report.to_csv(self.output_monthly_report_path, index=False, encoding="utf-8-sig")
         period_report.to_csv(self.output_period_report_path, index=False, encoding="utf-8-sig")

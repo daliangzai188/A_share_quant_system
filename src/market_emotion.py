@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.utils.config import get_project_root, load_json_config
+from src.utils.config import get_project_root, load_json_config, mkdir_p
 from src.utils.logger import get_logger
 
 
@@ -60,7 +60,7 @@ class MarketEmotionBuilder:
 
         features = pd.DataFrame(rows)
         features = self.add_state_features(features)
-        self.output_path.parent.mkdir(parents=True, exist_ok=True)
+        mkdir_p(self.output_path.parent)
         features.to_csv(self.output_path, index=False, encoding="utf-8-sig")
         self.logger.info("市场情绪特征已生成: %s, 行数: %s", self.output_path, len(features))
         return self.output_path

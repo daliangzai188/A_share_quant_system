@@ -41,7 +41,14 @@ def setup_logger(
     logger.propagate = False
 
     log_path = Path(log_dir)
-    log_path.mkdir(parents=True, exist_ok=True)
+    try:
+        log_path.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        # WebDAV WinError 58 workaround: directory may already exist
+        try:
+            next(iter(log_path.iterdir()), None)
+        except OSError:
+            log_path.mkdir(parents=True, exist_ok=True)
 
     formatter = _BeijingFormatter(
         fmt="%(asctime)s | %(levelname)s | %(name)s | %(message)s",

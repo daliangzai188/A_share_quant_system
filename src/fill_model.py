@@ -5,7 +5,7 @@ from typing import Any
 
 import pandas as pd
 
-from src.utils.config import get_project_root, load_json_config
+from src.utils.config import get_project_root, load_json_config, mkdir_p
 from src.utils.logger import get_logger
 
 
@@ -58,7 +58,7 @@ class FillRateTableBuilder:
         fallback_table["suggested_turnover_rate"] = fallback_table["turnover_rate_q25"]
         fallback_table["suggested_quantile"] = self.default_fill_quantile
 
-        self.output_fill_rate_table_path.parent.mkdir(parents=True, exist_ok=True)
+        mkdir_p(self.output_fill_rate_table_path.parent)
         fill_rate_table.to_csv(self.output_fill_rate_table_path, index=False, encoding="utf-8-sig")
         fallback_table.to_csv(self.output_fill_rate_fallback_path, index=False, encoding="utf-8-sig")
 
@@ -270,7 +270,7 @@ class FillProbabilityEstimator:
         )
         output["is_fill_score_reliable"] = self.build_reliability_flag(output)
         output["allow_buy_reliable"] = output["allow_buy"].fillna(False) & output["is_fill_score_reliable"]
-        output_path.parent.mkdir(parents=True, exist_ok=True)
+        mkdir_p(output_path.parent)
         output.to_csv(output_path, index=False, encoding="utf-8-sig")
         self.logger.info("涨停池成交概率打标表已生成: %s, 行数: %s", output_path, len(output))
         return output_path

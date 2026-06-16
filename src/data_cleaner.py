@@ -6,7 +6,7 @@ from typing import Iterable
 
 import pandas as pd
 
-from src.utils.config import get_project_root, load_json_config
+from src.utils.config import get_project_root, load_json_config, mkdir_p
 from src.utils.logger import get_logger
 
 
@@ -463,7 +463,7 @@ class DataCleaner:
         last_error: OSError | None = None
         for attempt in range(5):
             try:
-                path.mkdir(parents=True, exist_ok=True)
+                mkdir_p(path)
                 return
             except OSError as exc:
                 last_error = exc

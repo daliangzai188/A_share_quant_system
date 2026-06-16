@@ -5,7 +5,7 @@ from typing import Any
 
 import pandas as pd
 
-from src.utils.config import get_project_root, load_json_config
+from src.utils.config import get_project_root, load_json_config, mkdir_p
 from src.utils.logger import get_logger
 
 
@@ -29,7 +29,7 @@ class ExecutionDataAuditor:
         report = self.audit_validation_items(data_status)
         summary = self.build_summary(data_status, report)
 
-        self.output_report_path.parent.mkdir(parents=True, exist_ok=True)
+        mkdir_p(self.output_report_path.parent)
         report.to_csv(self.output_report_path, index=False, encoding="utf-8-sig")
         summary.to_csv(self.output_summary_path, index=False, encoding="utf-8-sig")
 
