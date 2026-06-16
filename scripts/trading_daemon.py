@@ -813,9 +813,8 @@ def report_next_day_candidates() -> None:
         import re as _re
 
         now_bj = now_beijing()
-        today_str = today_beijing().strftime("%Y%m%d")
-        next_date = next_n_trade_days(today_beijing(), 1)
-        next_date_str = next_date.strftime("%Y-%m-%d")
+        today = today_beijing()
+        today_str = today.strftime("%Y%m%d")
 
         # 收盘后（>=15:10 且是交易日）才要求信号必须是今天的；收盘前用最新缓存即可
         require_today = (
@@ -823,14 +822,25 @@ def report_next_day_candidates() -> None:
             and now_bj.time() >= datetime.time(15, 10)
         )
 
+        # 交易日且未收盘：信号来自昨天，操作日=今天 → "今日候选"
+        # 已收盘或非交易日：操作日=下一交易日 → "明日候选"
+        if is_trade_day(now_bj.date()) and not require_today:
+            header_label = "今日候选"
+            action_date_str = today.strftime("%Y-%m-%d")
+            no_candidate_msg = "今日暂不开仓"
+        else:
+            header_label = "明日候选"
+            action_date_str = next_n_trade_days(today, 1).strftime("%Y-%m-%d")
+            no_candidate_msg = "明日暂不开仓"
+
         pattern = str(PROJECT_ROOT / "reports/paper_trade/ab_filtered_daily_ops/*_planned_orders.csv")
         files = sorted(glob.glob(pattern))
 
         logger().info("=" * 60)
 
         if not files:
-            logger().warning("【明日候选】下个交易日：%s", next_date_str)
-            logger().warning("  ⚠️  未找到 planned_orders 文件，收盘流水线可能从未成功运行")
+            logger().warning("【%s】%s  ⚠️  未找到 planned_orders 文件，收盘流水线可能从未成功运行",
+                             header_label, action_date_str)
             logger().info("=" * 60)
             return
 
@@ -843,9 +853,9 @@ def report_next_day_candidates() -> None:
         try:
             orders = pd.read_csv(latest_file)
         except pd.errors.EmptyDataError:
-            logger().info("【明日候选】下个交易日：%s  信号日期：%s", next_date_str, signal_date_str)
+            logger().info("【%s】%s  信号日期：%s", header_label, action_date_str, signal_date_str)
             if data_fresh:
-                logger().info("  A/B/C 均无符合条件标的，明日暂不开仓")
+                logger().info("  A/B/C 均无符合条件标的，%s", no_candidate_msg)
             else:
                 logger().warning("  ⚠️  数据未更新！信号来自 %s，今日（%s）收盘流水线未成功运行", signal_date_str, today_str)
             logger().info("=" * 60)
@@ -863,12 +873,12 @@ def report_next_day_candidates() -> None:
             if "side" in orders.columns else pd.DataFrame()
         )
 
-        logger().info("【明日候选】下个交易日：%s  信号日期：%s", next_date_str, signal_date_str)
+        logger().info("【%s】%s  信号日期：%s", header_label, action_date_str, signal_date_str)
         if not data_fresh:
             logger().warning("  ⚠️  数据未更新！信号来自 %s，今日（%s）收盘流水线未成功运行，以下仅供参考", signal_date_str, today_str)
 
         if buy_orders.empty:
-            logger().info("  A/B/C 均无符合条件标的，明日暂不开仓")
+            logger().info("  A/B/C 均无符合条件标的，%s", no_candidate_msg)
         else:
             ts_codes = buy_orders["ts_code"].astype(str).tolist()
             daily_date, daily_map = _load_daily_for_codes(ts_codes)
@@ -920,7 +930,7 @@ def report_next_day_candidates() -> None:
 
         logger().info("=" * 60)
     except Exception as e:
-        logger().error("播报明日候选异常：%s", e)
+        logger().error("播报候选异常：%s", e)
 
 
 # ── 调度主循环 ─────────────────────────────────────────────────────────────────
