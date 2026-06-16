@@ -19,7 +19,7 @@ PROJECT_ROOT = Path(__file__).absolute().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.utils.config import load_json_config
+from src.utils.config import load_json_config, mkdir_p
 
 
 OUTPUT_PREFIX = "reports/paper_trade/ab_filtered_daily_ops/a_strict_plus_b0018_filtered_plus_c_hold3"
@@ -437,7 +437,7 @@ def main() -> None:
     output_prefix = Path(args.output_prefix)
     if not output_prefix.is_absolute():
         output_prefix = PROJECT_ROOT / output_prefix
-    output_prefix.parent.mkdir(parents=True, exist_ok=True)
+    mkdir_p(output_prefix.parent)
     paths = output_paths(output_prefix, signal_date)
 
     empty = pd.DataFrame()

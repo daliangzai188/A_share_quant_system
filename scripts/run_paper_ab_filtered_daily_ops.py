@@ -39,7 +39,7 @@ from scripts.search_paper_backup_strategy_b import (
 from src.paper_candidate_generator import PaperCandidateGenerator
 from src.paper_daily_flow import PaperDailyFlowRunner
 from src.trade_replay import ConservativeTradeReplay, ReplayRule
-from src.utils.config import load_json_config
+from src.utils.config import load_json_config, mkdir_p
 from src.utils.logger import setup_logger
 
 
@@ -446,7 +446,7 @@ def main() -> None:
     assert_safe_config(config)
 
     output_prefix = resolve_path(args.output_prefix)
-    output_prefix.parent.mkdir(parents=True, exist_ok=True)
+    mkdir_p(output_prefix.parent)
 
     base_generator = PaperCandidateGenerator(args.strategy_config)
     all_candidates = base_generator.load_all_candidates()
