@@ -956,6 +956,9 @@ def run_job(scheduled_time: datetime.time) -> None:
         job_post_market() if trade_day else logger().info("非交易日，跳过收盘流水线")
 
 
+_qmt_reconnect_count: int = 0  # 累计重连次数，成功后归零，跨多轮不重置
+
+
 def _qmt_query_once(broker_config: dict) -> tuple:
     """连接 QMT，查账户 + 持仓，断开，返回 (account, positions)。
     失败时保证 disconnect() 清理 WaitingFreeWriter，避免重试时资源耗尽。"""
@@ -989,24 +992,24 @@ def _print_status(log: Any) -> None:
         broker_cfg = config.get("broker", {})
         last_err: Exception | None = None
         account = positions = None
-        max_attempts = 10  # 每15秒重试一次，最多尝试10次（2.5分钟）
-        for attempt in range(1, max_attempts + 1):
+        global _qmt_reconnect_count
+        for _ in range(10):
             try:
                 account, positions = _qmt_query_once(broker_cfg)
-                if attempt > 1:
-                    log.info("✅ [状态] QMT重连成功（第%d次尝试）", attempt)
+                if _qmt_reconnect_count > 0:
+                    log.info("✅ [状态] QMT重连成功（历经第%d次后恢复）", _qmt_reconnect_count)
+                    _qmt_reconnect_count = 0
                 last_err = None
                 break
             except Exception as e:
                 last_err = e
-                if attempt < max_attempts:
-                    log.warning("⚠️ [状态] QMT掉线，15秒后自动重连（第%d/%d次）：%s",
-                                attempt, max_attempts, e)
-                    time.sleep(15)
+                _qmt_reconnect_count += 1
+                log.warning("⚠️ [状态] QMT掉线，10秒后自动重连（第%d次）：%s",
+                            _qmt_reconnect_count, e)
+                time.sleep(10)
 
         if last_err is not None:
-            log.error("❌ [状态] %s | QMT连接异常（已重试%d次仍失败）：%s",
-                      now_str, max_attempts, last_err)
+            log.error("❌ [状态] %s | QMT连接异常：%s", now_str, last_err)
             return
 
         now_str = now_beijing().strftime("%Y-%m-%d %H:%M:%S")  # 重连后更新时间戳
