@@ -201,6 +201,29 @@ def _has_signal_for_date(date: datetime.date) -> bool:
     return False
 
 
+def _date_in_scored(target_date: datetime.date) -> bool:
+    """检查 limit_up_fill_scored.csv 是否包含 target_date 的记录（不导入 pandas）。"""
+    path = PROJECT_ROOT / "data" / "processed" / "limit_up_fill_scored.csv"
+    if not path.exists():
+        return False
+    target_str = target_date.strftime("%Y%m%d")
+    try:
+        with path.open(encoding="utf-8") as f:
+            header = f.readline().strip().split(",")
+            if "trade_date" not in header:
+                return False
+            idx = header.index("trade_date")
+            for line in f:
+                parts = line.split(",")
+                if len(parts) > idx:
+                    td = parts[idx].strip().strip('"').replace("-", "")[:8]
+                    if td == target_str:
+                        return True
+    except Exception:
+        pass
+    return False
+
+
 def market_is_open() -> bool:
     now = now_beijing()
     if not is_trade_day(now.date()):
@@ -742,14 +765,23 @@ def job_post_market(end_date: str | None = None) -> None:
                     ok = run_script(script, *args, timeout=timeout)
                 if not ok and script in critical_scripts:
                     logger().error("❌ %s 仍然失败，本次收盘流水线停止；不生成计划单，避免使用旧信号", desc)
-                    return
+                    return False
                 if not ok:
                     logger().error("%s 失败，继续后续步骤", desc)
         except Exception as e:
             if script in critical_scripts:
                 logger().error("❌ %s 异常：%s，本次收盘流水线停止；不生成计划单，避免使用旧信号", desc, e)
-                return
+                return False
             logger().error("%s 异常：%s，继续后续步骤", desc, e)
+
+    # 关键检查：今日数据是否真的从 Tushare 入库了
+    if not _date_in_scored(target_date):
+        logger().warning(
+            "⚠️ Tushare %s 数据尚未就绪（limit_up_fill_scored.csv 无该日记录），流水线步骤已完成但需等数据",
+            target_str,
+        )
+        report_next_day_candidates()
+        return False  # 通知调用方稍后重试
 
     if not _has_signal_for_date(target_date):
         logger().warning(
@@ -772,6 +804,32 @@ def job_post_market(end_date: str | None = None) -> None:
     logger().info("===== 收盘流水线完成 =====")
     report_next_day_candidates()
     mark_post_market_done(target_date)
+    return True
+
+
+def _run_post_market_with_retry(end_date: str | None = None) -> None:
+    """运行收盘流水线，若当日 Tushare 数据未就绪则每小时重试，直到 20:00。"""
+    cutoff_hour = 20
+    date_str = end_date or today_beijing().strftime("%Y%m%d")
+    while True:
+        try:
+            data_ready = job_post_market(end_date=end_date)
+        except Exception as _e:
+            logger().error("收盘流水线异常：%s", _e)
+            data_ready = False
+        if data_ready:
+            break
+        now = now_beijing()
+        if now.hour >= cutoff_hour:
+            logger().warning("已过 %d:00，停止等待 Tushare %s 数据，今日收盘流水线结束", cutoff_hour, date_str)
+            break
+        next_retry = now + datetime.timedelta(hours=1)
+        logger().warning(
+            "⚠️ Tushare %s 数据尚未就绪，1小时后（%s）自动重试",
+            date_str,
+            next_retry.strftime("%H:%M"),
+        )
+        time.sleep(3600)
 
 
 def _segment_label(ts_code: str, market_segment: str = "") -> str:
@@ -1007,7 +1065,14 @@ def run_job(scheduled_time: datetime.time) -> None:
     elif scheduled_time == SCHEDULE[1]:   # 14:50
         job_afternoon() if trade_day else logger().info("非交易日，跳过盘中任务")
     elif scheduled_time == SCHEDULE[2]:   # 15:10
-        job_post_market() if trade_day else logger().info("非交易日，跳过收盘流水线")
+        if trade_day:
+            threading.Thread(
+                target=_run_post_market_with_retry,
+                daemon=True,
+                name="pipeline",
+            ).start()
+        else:
+            logger().info("非交易日，跳过收盘流水线")
 
 
 _qmt_reconnect_count: int = 0       # 累计重连次数，成功后归零
@@ -1214,15 +1279,12 @@ def main() -> None:
             "未找到 %s 收盘数据缓存，后台自动采集中（不影响主循环和 QMT 状态刷新）...",
             expected_str,
         )
-        import threading as _threading
-
-        def _bg_pipeline(_date_str: str = expected_str) -> None:
-            try:
-                job_post_market(end_date=_date_str)
-            except Exception as _e:
-                log.error("后台流水线异常：%s", _e)
-
-        _threading.Thread(target=_bg_pipeline, daemon=True, name="pipeline").start()
+        threading.Thread(
+            target=_run_post_market_with_retry,
+            args=(expected_str,),
+            daemon=True,
+            name="pipeline",
+        ).start()
     else:
         log.info("已有 %s 收盘数据缓存，直接使用", expected_str)
 
