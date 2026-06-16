@@ -423,12 +423,17 @@ def main() -> None:
     if data.empty:
         raise RuntimeError("limit_up_fill_scored.csv 为空。")
     data["trade_date"] = data["trade_date"].map(normalize_date)
-    signal_date = normalize_date(args.signal_date) if args.signal_date else str(data["trade_date"].max())
+    latest_date = str(data["trade_date"].max())
+    if args.signal_date:
+        requested = normalize_date(args.signal_date)
+        if data["trade_date"].astype(str).eq(requested).any():
+            signal_date = requested
+        else:
+            print(f"WARNING: limit_up_fill_scored.csv 无日期 {requested} 的记录，自动使用最新日期 {latest_date}")
+            signal_date = latest_date
+    else:
+        signal_date = latest_date
     daily = data[data["trade_date"].astype(str) == signal_date].copy()
-    if daily.empty:
-        available = ",".join(sorted(data["trade_date"].dropna().astype(str).unique().tolist())[-5:])
-        print(f"ERROR: limit_up_fill_scored.csv 没有日期 {signal_date} 的记录；最近可用日期={available}")
-        sys.exit(2)
 
     daily = add_runtime_buckets(daily)
     strategy_leg, candidates = select_candidates(daily, strategy_config, args.top_n)
