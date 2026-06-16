@@ -93,6 +93,9 @@ class DataCollector:
 
         fields = self.config["collection"].get("daily_fields")
         daily = self.data_source.get_daily(trade_date=trade_date, fields=fields)
+        if daily.empty:
+            self.logger.warning("Tushare 未返回 %s 日线数据，不保存（下次重试可重新采集）", trade_date)
+            return False
         self._save_dataframe(daily, output_path)
         self.logger.info("保存日线行情: %s, 行数: %s", output_path, len(daily))
         return True
@@ -104,6 +107,9 @@ class DataCollector:
 
         fields = self.config["collection"].get("daily_basic_fields")
         daily_basic = self.data_source.get_daily_basic(trade_date=trade_date, fields=fields)
+        if daily_basic.empty:
+            self.logger.warning("Tushare 未返回 %s 基本面数据，不保存（下次重试可重新采集）", trade_date)
+            return False
         self._save_dataframe(daily_basic, output_path)
         self.logger.info("保存每日基本面: %s, 行数: %s", output_path, len(daily_basic))
         return True
@@ -116,6 +122,9 @@ class DataCollector:
         fields = self.config["collection"].get("limit_list_fields")
         limit_type = self.config["collection"].get("limit_type", "U")
         limit_list = self.data_source.get_limit_list(trade_date=trade_date, limit_type=limit_type, fields=fields)
+        if limit_list.empty:
+            self.logger.warning("Tushare 未返回 %s 涨停池数据，不保存（下次重试可重新采集）", trade_date)
+            return False
         self._save_dataframe(limit_list, output_path)
         self.logger.info("保存涨停池: %s, 行数: %s", output_path, len(limit_list))
         return True
