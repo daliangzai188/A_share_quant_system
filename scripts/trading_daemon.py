@@ -289,12 +289,13 @@ def save_positions(positions: list[dict[str, Any]]) -> None:
 
 
 def record_buy(order_id: str, ts_code: str, name: str, signal_date: str,
-               buy_date: str, shares: int, buy_price: float, strategy_leg: str) -> None:
+               buy_date: str, shares: int, buy_price: float, strategy_leg: str,
+               exit_n_days: int = 2) -> None:
     positions = load_positions()
     if any(p["order_id"] == order_id for p in positions):
         return
     exit_date = next_n_trade_days(
-        datetime.datetime.strptime(buy_date, "%Y%m%d").date(), n=2
+        datetime.datetime.strptime(buy_date, "%Y%m%d").date(), n=exit_n_days
     )
     positions.append({
         "order_id": order_id,
@@ -447,7 +448,16 @@ def _do_sell(pos: dict[str, Any], qmt_enabled: bool) -> None:
             config = load_json_config(PROJECT_ROOT / "config" / "config.json")
             confirm = config.get("live_trade", {}).get(
                 "real_order_confirm_text", "A_SYSTEM_REAL_ORDER_CONFIRMED")
-            _execute_orders_inprocess("latest", confirm, "平仓")
+            strategy_leg = str(pos.get("strategy_leg", "")).upper()
+            if strategy_leg == "E2":
+                # E2 卖出计划单由 combined_planned_orders 生成（包含 PLAN_SELL_T2_CLOSE 行）
+                combined_path = (
+                    PROJECT_ROOT / "reports" / "live_trade" / "combined"
+                    / f"combined_planned_orders_{today_str}.csv"
+                )
+                _execute_orders_inprocess(combined_path, confirm, "E2平仓")
+            else:
+                _execute_orders_inprocess("latest", confirm, "平仓")
             mark_position_closed(order_id, today_str)
         else:
             logger().info("[平仓] 模拟盘：%s %s 标记已平仓", ts_code, name)
@@ -622,7 +632,13 @@ def job_morning() -> None:
     else:
         logger().info("组合状态机未允许A/B/C买入，跳过。")
 
-    # ④ 策略D监控 —— 只有无持仓且无A/B/C买入计划时才启动
+    # ④ E2 T+1 开仓 —— 昨日信号今日开盘买入
+    if has_combined_action(decisions, "ALLOW_E2_BUY"):
+        handle_combined_order_preview(combined_orders_path, reason="E2 T+1开仓")
+    else:
+        logger().info("组合状态机未允许E2开仓，跳过。")
+
+    # ⑤ 策略D监控 —— 只有无持仓且无A/B/C/E2买入计划时才启动
     if has_combined_action(decisions, "ALLOW_D_INTRADAY_MONITOR"):
         job_strategy_d()
     else:
@@ -713,6 +729,8 @@ def handle_combined_order_preview(planned_orders_path: Path | None, reason: str)
             buy_orders = executable_orders[executable_orders["side"].astype(str).str.upper() == "BUY"]
             for _, row in buy_orders.iterrows():
                 try:
+                    raw_exit_n = row.get("exit_n_days", None)
+                    exit_n = int(float(raw_exit_n)) if raw_exit_n is not None and str(raw_exit_n) not in {"", "nan"} else 2
                     record_buy(
                         order_id=str(row.get("paper_order_id",
                                              f"paper-{today_str}-{row.get('ts_code', '')}")),
@@ -723,6 +741,7 @@ def handle_combined_order_preview(planned_orders_path: Path | None, reason: str)
                         shares=int(row.get("round_lot_shares", 0)),
                         buy_price=float(row.get("reference_price", 0.0)),
                         strategy_leg=str(row.get("strategy_leg", "")),
+                        exit_n_days=exit_n,
                     )
                 except Exception as e:
                     logger().error("记录持仓异常：%s", e)
@@ -923,10 +942,19 @@ def startup_catchup_strategy_d() -> None:
 
 def job_afternoon() -> None:
     logger().info("===== 盘中任务（14:50）=====")
+
+    # ① 刷新组合状态机 + combined_planned_orders（含 E2 SELL 行）
+    try:
+        run_script("run_combined_live_plan.py", timeout=TIMEOUT_ORDER_STEP)
+    except Exception as e:
+        logger().error("刷新组合状态机失败：%s —— E2平仓可能依赖旧计划单", e)
+
+    # ② 平仓检查（依赖 combined_planned_orders 已更新，E2 SELL 才能正确执行）
     try:
         check_and_close_positions()
     except Exception as e:
         logger().error("平仓检查异常：%s —— 请立即手动检查持仓！", e)
+
     logger().info("===== 盘中任务完成 =====")
 
 

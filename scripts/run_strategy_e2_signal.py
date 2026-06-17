@@ -248,6 +248,7 @@ def build_signal(signal_date: str, candidate: pd.Series, segment_states: dict[st
         "market_segment": seg,
         "segment_retreat_state_bucket": segment_states.get(seg, "neutral"),
         "circ_mv": float(candidate.get("circ_mv", 0)),
+        "limit_close": float(candidate.get("limit_close", 0)),
         "fill_probability": float(candidate.get("fill_probability", 0)),
         "allow_buy_reliable": bool(str(candidate.get("allow_buy_reliable", "")).lower() in ("true", "1")),
         "is_fill_score_reliable": bool(str(candidate.get("is_fill_score_reliable", "")).lower() in ("true", "1")),

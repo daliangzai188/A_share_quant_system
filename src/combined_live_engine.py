@@ -12,6 +12,9 @@ from src.live_order_gateway import LiveOrderGateway
 from src.utils.config import get_project_root, load_json_config, mkdir_p
 from src.utils.time_utils import today_beijing
 
+_E2_POSITION_PCT = 0.8
+_E2_LOT_SIZE = 100
+
 
 @dataclass(frozen=True)
 class CombinedLiveDecision:
@@ -67,6 +70,10 @@ class CombinedLiveEngine:
         return str(position.get("strategy_leg", "")).upper() == "D"
 
     @staticmethod
+    def is_e2_position(position: dict[str, Any]) -> bool:
+        return str(position.get("strategy_leg", "")).upper() == "E2"
+
+    @staticmethod
     def as_int(value: Any, default: int = 0) -> int:
         try:
             if value in {None, ""}:
@@ -74,6 +81,73 @@ class CombinedLiveEngine:
             return int(float(value))
         except (TypeError, ValueError):
             return default
+
+    def load_yesterday_e2_signal(self, today: str) -> dict[str, Any] | None:
+        """找 today 之前最近的 E2 信号，且其 planned_buy_date == today。"""
+        signal_dir = self.project_root / "reports" / "strategy_e2"
+        if not signal_dir.exists():
+            return None
+        files = sorted(signal_dir.glob("e2_signal_????????.json"))
+        for f in reversed(files):
+            date_part = f.stem.replace("e2_signal_", "")
+            if date_part >= today:
+                continue
+            try:
+                data = json.loads(f.read_text(encoding="utf-8"))
+                if str(data.get("planned_buy_date", "")) == today:
+                    return data
+            except Exception:
+                continue
+        return None
+
+    def build_e2_buy_order(self, signal: dict[str, Any], today: str) -> dict[str, Any]:
+        limit_close = float(signal.get("limit_close", 0.0))
+        initial_equity = float(self.config.get("position", {}).get("initial_cash", 500_000.0))
+        planned_amount = initial_equity * _E2_POSITION_PCT
+        estimated_shares = int(planned_amount / limit_close) if limit_close > 0 else 0
+        round_lot = estimated_shares - (estimated_shares % _E2_LOT_SIZE) if _E2_LOT_SIZE > 0 else estimated_shares
+        return {
+            "paper_order_id": f"E2-BUY-{today}-{signal.get('ts_code','')}",
+            "signal_date": signal.get("signal_date", ""),
+            "strategy_leg": "E2",
+            "planned_order_date": today,
+            "side": "BUY",
+            "ts_code": str(signal.get("ts_code", "")),
+            "name": str(signal.get("name", "")),
+            "planned_action": "PLAN_BUY_T1_OPEN",
+            "order_status": "PLAN_ONLY",
+            "planned_position_pct": _E2_POSITION_PCT,
+            "planned_equity": initial_equity,
+            "planned_amount_by_equity": planned_amount,
+            "reference_price": limit_close,
+            "estimated_shares": estimated_shares,
+            "round_lot_shares": round_lot,
+            "risk_flags": "",
+            "live_order_enabled": True,
+            "exit_n_days": 1,  # buy T+1, sell T+2 = 1 day later
+        }
+
+    def build_e2_sell_order(self, position: dict[str, Any], today: str) -> dict[str, Any]:
+        shares = self.as_int(position.get("shares", 0))
+        return {
+            "paper_order_id": f"E2-SELL-{today}-{position.get('ts_code','')}",
+            "signal_date": str(position.get("signal_date", "")),
+            "strategy_leg": "E2",
+            "planned_order_date": today,
+            "side": "SELL",
+            "ts_code": str(position.get("ts_code", "")),
+            "name": str(position.get("name", "")),
+            "planned_action": "PLAN_SELL_T2_CLOSE",
+            "order_status": "PLAN_ONLY",
+            "planned_position_pct": 0.0,
+            "planned_equity": 0.0,
+            "planned_amount_by_equity": 0.0,
+            "reference_price": float(position.get("buy_price", 0.0)),
+            "estimated_shares": shares,
+            "round_lot_shares": shares,
+            "risk_flags": "E2_SELL_T2_CLOSE",
+            "live_order_enabled": True,
+        }
 
     def build_d_sell_decision(self, position: dict[str, Any], today: str) -> CombinedLiveDecision:
         return CombinedLiveDecision(
@@ -134,6 +208,12 @@ class CombinedLiveEngine:
         open_positions = [p for p in positions if self.is_open_position(p)]
         open_d_positions = [p for p in open_positions if self.is_d_position(p)]
         open_non_d_positions = [p for p in open_positions if not self.is_d_position(p)]
+        open_e2_positions = [p for p in open_non_d_positions if self.is_e2_position(p)]
+        due_e2_positions = [
+            p for p in open_e2_positions
+            if str(p.get("planned_exit_date", "99991231")) <= today
+            or str(p.get("status", "")).lower() == "sell_pending"
+        ]
         abc_path, abc_orders = self.load_latest_abc_orders()
 
         decisions: list[CombinedLiveDecision] = []
@@ -144,124 +224,162 @@ class CombinedLiveEngine:
                 "open_position_count": len(open_positions),
                 "open_d_position_count": len(open_d_positions),
                 "open_non_d_position_count": len(open_non_d_positions),
+                "open_e2_position_count": len(open_e2_positions),
+                "due_e2_count": len(due_e2_positions),
                 "abc_planned_orders_path": str(abc_path or ""),
                 "abc_planned_order_count": int(len(abc_orders)) if not abc_orders.empty else 0,
             }
         ]
 
+        # ── E2 到期卖出（T+2 收盘，最优先加入计划单，不阻断其他流程） ──────────
+        for pos in due_e2_positions:
+            decisions.append(
+                CombinedLiveDecision(
+                    action="PLAN_SELL_E2",
+                    strategy_leg="E2",
+                    ts_code=str(pos.get("ts_code", "")),
+                    name=str(pos.get("name", "")),
+                    side="SELL",
+                    quantity=self.as_int(pos.get("shares", 0)),
+                    reason=(
+                        f"E2持仓到期平仓，planned_exit_date={pos.get('planned_exit_date','')}，"
+                        f"今日={today}，T+2收盘卖出。"
+                    ),
+                    source="positions.json",
+                )
+            )
+            planned_orders.append(self.build_e2_sell_order(pos, today))
+
+        # ── D / ABC / 空仓 主流程 ──────────────────────────────────────────────
         if open_d_positions:
-            due_positions = [
+            due_d = [
                 p for p in open_d_positions
                 if str(p.get("planned_exit_date", "99991231")) <= today
                 or str(p.get("status", "")).lower() == "sell_pending"
             ]
-            if due_positions:
-                for position in due_positions:
+            if due_d:
+                for position in due_d:
                     decisions.append(self.build_d_sell_decision(position, today))
                     planned_orders.append(self.build_d_sell_order(position, today))
-                decisions.append(
-                    CombinedLiveDecision(
-                        action="BLOCK_ABC_BUY",
-                        strategy_leg="A+B+C",
-                        reason="D持仓尚未确认卖出，阻断A/B/C买入，避免同一资金重复占用。",
-                        source="combined_state_machine",
-                    )
-                )
-                decisions.append(
-                    CombinedLiveDecision(
-                        action="BLOCK_D_INTRADAY_MONITOR",
-                        strategy_leg="D",
-                        reason="已有D持仓处于待卖状态，今日不启动新的D盘中买入监控。",
-                        source="combined_state_machine",
-                    )
-                )
+                decisions.append(CombinedLiveDecision(
+                    action="BLOCK_ABC_BUY", strategy_leg="A+B+C",
+                    reason="D持仓尚未确认卖出，阻断A/B/C买入，避免同一资金重复占用。",
+                    source="combined_state_machine",
+                ))
+                decisions.append(CombinedLiveDecision(
+                    action="BLOCK_D_INTRADAY_MONITOR", strategy_leg="D",
+                    reason="已有D持仓处于待卖状态，今日不启动新的D盘中买入监控。",
+                    source="combined_state_machine",
+                ))
             else:
-                decisions.append(
-                    CombinedLiveDecision(
-                        action="BLOCK_ABC_BUY",
-                        strategy_leg="A+B+C",
-                        reason="D持仓未到平仓日，阻断A/B/C买入。",
-                        source="combined_state_machine",
-                    )
-                )
-                decisions.append(
-                    CombinedLiveDecision(
-                        action="BLOCK_D_INTRADAY_MONITOR",
-                        strategy_leg="D",
-                        reason="已有D持仓占用资金，今日不启动新的D盘中买入监控。",
-                        source="combined_state_machine",
-                    )
-                )
+                decisions.append(CombinedLiveDecision(
+                    action="BLOCK_ABC_BUY", strategy_leg="A+B+C",
+                    reason="D持仓未到平仓日，阻断A/B/C买入。",
+                    source="combined_state_machine",
+                ))
+                decisions.append(CombinedLiveDecision(
+                    action="BLOCK_D_INTRADAY_MONITOR", strategy_leg="D",
+                    reason="已有D持仓占用资金，今日不启动新的D盘中买入监控。",
+                    source="combined_state_machine",
+                ))
+
         elif open_non_d_positions:
-            decisions.append(
-                CombinedLiveDecision(
-                    action="BLOCK_ABC_BUY",
-                    strategy_leg="A+B+C",
-                    reason="存在A/B/C旧持仓，组合状态机不允许重复开仓。",
-                    source="positions.json",
-                )
-            )
-            decisions.append(
-                CombinedLiveDecision(
-                    action="BLOCK_D_INTRADAY_MONITOR",
-                    strategy_leg="D",
-                    reason="存在A/B/C旧持仓占用资金，D盘中策略跳过。",
-                    source="positions.json",
-                )
-            )
+            decisions.append(CombinedLiveDecision(
+                action="BLOCK_ABC_BUY", strategy_leg="A+B+C",
+                reason="存在旧持仓（A/B/C或E2），组合状态机不允许重复开仓。",
+                source="positions.json",
+            ))
+            decisions.append(CombinedLiveDecision(
+                action="BLOCK_D_INTRADAY_MONITOR", strategy_leg="D",
+                reason="存在旧持仓占用资金，D盘中策略跳过。",
+                source="positions.json",
+            ))
+
         else:
+            # 账户完全空仓：按优先级 ABC > E2 > D 决定今日行动
             abc_decisions = self.build_abc_buy_decisions(abc_orders, str(abc_path or ""))
             if abc_decisions:
                 decisions.extend(abc_decisions)
                 planned_orders.extend(abc_orders.to_dict("records"))
-                decisions.append(
-                    CombinedLiveDecision(
-                        action="BLOCK_D_INTRADAY_MONITOR",
-                        strategy_leg="D",
-                        reason="今日存在A/B/C买入计划，D盘中策略不再使用同一资金。",
-                        source="combined_state_machine",
-                    )
-                )
+                decisions.append(CombinedLiveDecision(
+                    action="BLOCK_D_INTRADAY_MONITOR", strategy_leg="D",
+                    reason="今日存在A/B/C买入计划，D盘中策略不再使用同一资金。",
+                    source="combined_state_machine",
+                ))
             else:
-                decisions.append(
-                    CombinedLiveDecision(
-                        action="NO_ABC_BUY",
-                        strategy_leg="A+B+C",
+                # 无 ABC，检查 E2 昨日信号
+                yesterday_signal = self.load_yesterday_e2_signal(today)
+                e2_order: dict[str, Any] | None = None
+                if yesterday_signal:
+                    e2_order = self.build_e2_buy_order(yesterday_signal, today)
+
+                if e2_order and e2_order.get("round_lot_shares", 0) > 0:
+                    planned_orders.append(e2_order)
+                    decisions.append(CombinedLiveDecision(
+                        action="ALLOW_E2_BUY",
+                        strategy_leg="E2",
+                        ts_code=str(yesterday_signal.get("ts_code", "")),  # type: ignore[union-attr]
+                        name=str(yesterday_signal.get("name", "")),  # type: ignore[union-attr]
+                        side="BUY",
+                        quantity=e2_order.get("round_lot_shares", 0),
+                        reason=(
+                            f"E2昨日信号今日开仓：{yesterday_signal.get('ts_code')} "  # type: ignore[union-attr]
+                            f"{yesterday_signal.get('name')}，"  # type: ignore[union-attr]
+                            f"T+1开盘买入{_E2_POSITION_PCT:.0%}仓位，T+2收盘卖出。"
+                        ),
+                        source=str(self.project_root / "reports" / "strategy_e2"),
+                    ))
+                    decisions.append(CombinedLiveDecision(
+                        action="NO_ABC_BUY", strategy_leg="A+B+C",
+                        reason="今日无A/B/C买入计划，E2代替开仓。",
+                        source=str(abc_path or ""),
+                    ))
+                    decisions.append(CombinedLiveDecision(
+                        action="BLOCK_D_INTRADAY_MONITOR", strategy_leg="D",
+                        reason="E2今日开仓使用同一资金，D盘中监控跳过。",
+                        source="combined_state_machine",
+                    ))
+                else:
+                    decisions.append(CombinedLiveDecision(
+                        action="NO_ABC_BUY", strategy_leg="A+B+C",
                         reason="今日没有A/B/C买入计划。",
                         source=str(abc_path or ""),
-                    )
-                )
-                decisions.append(
-                    CombinedLiveDecision(
-                        action="ALLOW_D_INTRADAY_MONITOR",
-                        strategy_leg="D",
+                    ))
+                    decisions.append(CombinedLiveDecision(
+                        action="ALLOW_D_INTRADAY_MONITOR", strategy_leg="D",
                         reason="无持仓且无A/B/C买入计划，允许启动D盘中监控；D本身仍需实时行情、成交概率和风控校验。",
                         source="combined_state_machine",
-                    )
-                )
+                    ))
 
-        # E2 状态决策
+        # ── E2 盘中状态显示（摘要用） ─────────────────────────────────────────
+        has_e2_buy = any(d.action == "ALLOW_E2_BUY" for d in decisions)
+        has_e2_sell = any(d.action == "PLAN_SELL_E2" for d in decisions)
         has_abc_buy = any(d.action == "ALLOW_ABC_BUY_PREVIEW" for d in decisions)
-        if open_positions:
-            e2_action = "BLOCK_E2"
-            e2_reason = f"账户有 {len(open_positions)} 个未平仓头寸，E2 不触发。"
+
+        if has_e2_sell:
+            e2_status_action = "PLAN_SELL_E2_TODAY"
+            e2_status_reason = f"E2持仓今日到期，收盘前平仓（14:50 job_afternoon 执行）。"
+        elif has_e2_buy:
+            e2_status_action = "ALLOW_E2_BUY_TODAY"
+            e2_status_reason = "E2今日T+1开仓，已加入组合计划单。"
+        elif open_positions:
+            e2_status_action = "BLOCK_E2"
+            e2_status_reason = f"账户有 {len(open_positions)} 个未平仓头寸，E2 不触发。"
         elif has_abc_buy:
-            e2_action = "BLOCK_E2"
-            e2_reason = "今日 A/B/C 已生成买入计划，E2 不触发（资金冲突）。"
+            e2_status_action = "BLOCK_E2"
+            e2_status_reason = "今日 A/B/C 已生成买入计划，E2 不触发（资金冲突）。"
         else:
-            e2_action = "ALLOW_E2_SIGNAL"
-            e2_reason = (
+            e2_status_action = "ALLOW_E2_SIGNAL"
+            e2_status_reason = (
                 "无持仓且无 A/B/C 买入计划，E2 前提条件满足。"
                 "收盘流水线⑦步自动生成 E2 信号（segment_retreat_state_bucket=neutral + 流通市值最小）。"
             )
-        decisions.append(
-            CombinedLiveDecision(
-                action=e2_action,
-                strategy_leg="E2",
-                reason=e2_reason,
-                source="combined_state_machine",
-            )
-        )
+        decisions.append(CombinedLiveDecision(
+            action=e2_status_action,
+            strategy_leg="E2_STATUS",
+            reason=e2_status_reason,
+            source="combined_state_machine",
+        ))
 
         decision_df = pd.DataFrame([decision.__dict__ for decision in decisions])
         state_df = pd.DataFrame(state_rows)
