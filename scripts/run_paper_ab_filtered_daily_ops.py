@@ -865,6 +865,47 @@ def main() -> None:
         print(f"- {name}: {path}")
     print(checklist.to_string(index=False))
 
+    _print_e2_status(signal_date, planned_orders)
+
+
+def _print_e2_status(signal_date: str, planned_orders: pd.DataFrame) -> None:
+    """在每日操作台末尾打印 E2 策略状态预览。"""
+    print()
+    print("─" * 50)
+    print("  策略 E2 状态预览（板块中性小市值）")
+    print("─" * 50)
+
+    # 检查 A/B/C 是否生成了计划委托
+    if not planned_orders.empty:
+        print("  A/B/C 今日已生成计划委托 → E2 不触发（资金被 A/B/C 占用）")
+        print("─" * 50)
+        return
+
+    # 检查 positions.json 是否有 open 持仓
+    positions_path = PROJECT_ROOT / "data" / "processed" / "positions.json"
+    open_positions: list[dict[str, object]] = []
+    if positions_path.exists():
+        try:
+            import json as _json
+            raw = _json.loads(positions_path.read_text(encoding="utf-8"))
+            open_positions = [p for p in (raw if isinstance(raw, list) else []) if str(p.get("status", "")) == "open"]
+        except Exception:
+            pass
+
+    if open_positions:
+        occupied = [(p.get("strategy_leg", "?"), p.get("ts_code", "?"), p.get("planned_exit_date", "?"))
+                    for p in open_positions]
+        print(f"  账户有未平仓头寸 → E2 不触发。持仓: {occupied}")
+        print("─" * 50)
+        return
+
+    print("  A/B/C 今日无委托，账户无持仓 → E2 可能触发")
+    print(f"  请收盘后运行（15:30+）：")
+    print(f"    python scripts/run_strategy_e2_signal.py --signal-date {signal_date}")
+    print("  E2 条件：segment_retreat_state_bucket=neutral + 非ST + 成交可靠 → 选流通市值最小1只")
+    print("  E2 执行：T+1开盘买入 80%仓位，T+2收盘卖出")
+    print("─" * 50)
+
 
 if __name__ == "__main__":
     main()

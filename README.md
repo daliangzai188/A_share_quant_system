@@ -2,8 +2,9 @@
 
 本项目用于构建一套完整的 A股量化交易系统，目标是先完成数据采集、数据清洗、因子统计、策略回测和模拟交易，后续再接入 QMT / miniQMT 等券商接口进行半自动或实盘交易。
 
-> 当前阶段：A+B+C+D 策略已定型，本地模拟盘守护进程已上线，持续自动运行。  
-> D 策略（首板打板）已完成回测（328x vs 纯 A+B+C 的 110x）并接入守护进程，每日 13:30 自动启动盘中监控。  
+> 当前阶段：A+B+C+D+E2 策略已定型，本地模拟盘守护进程已上线，持续自动运行。  
+> D 策略（首板打板）已完成回测（303x vs 纯 A+B+C 的 110x）并接入守护进程，每日 13:30 自动启动盘中监控。  
+> E2 策略（板块中性小市值）已完成回测（ABCD+E2 = 3640x）并实现收盘信号脚本 `run_strategy_e2_signal.py`。  
 > 实盘接入：QMT / miniQMT 已完成只读连接与守护进程联调，真实下单仍必须先走小资金验证。所有时间以北京时间（Asia/Shanghai）为准。
 
 ---
@@ -529,9 +530,33 @@ D 策略在每个交易日 13:30 由守护进程以**非阻塞子进程**启动�
 |---|---:|---:|
 | 纯 A+B+C | 110x | — |
 | A+B+C+D（仅 NO_CANDIDATE 日）| 235x | 22 笔 |
-| A+B+C+D（扩展，当前落地版） | **328x** | **36 笔** |
+| A+B+C+D（扩展，当前落地版） | **303x** | **36 笔** |
+| A+B+C+D+E2（板块中性小市值） | **3640x** | **62 笔** |
 
 详细设计见 `docs/strategy_d.md`。
+
+### 策略 E2（板块中性小市值）集成
+
+E2 策略在 A+B+C+D 均未占用资金时触发，每日收盘后（建议 15:30+）运行信号脚本。
+
+**触发条件：**
+- 板块今日处于中性回撤状态（`segment_retreat_state_bucket = neutral`）
+- 候选股：非 ST、成交概率可靠（`allow_buy_reliable=True`、`is_fill_score_reliable=True`）
+- 选取流通市值最小（`circ_mv` 升序取第一）
+
+**买卖时机：**
+- T+1 开盘买入（80% 仓位），T+2 收盘卖出
+
+**每日运行：**
+```bash
+python scripts/run_strategy_e2_signal.py
+```
+
+输出：
+- `reports/strategy_e2/e2_signal_YYYYMMDD.json` — 今日信号
+- `reports/strategy_e2/e2_signal_YYYYMMDD_candidates.csv` — 所有候选
+
+详细设计见 `docs/strategy_e2.md`。
 
 ### 备用 cron 脚本
 
