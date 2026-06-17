@@ -110,6 +110,71 @@ class CombinedLiveEngine:
         except Exception:
             return None
 
+    def compute_e2_preview(self, today: str) -> dict[str, Any]:
+        """盘中实时预判 E2 信号，用当前可用数据尽量多给信息。
+
+        返回 dict 含 keys:
+          data_date, segment_states, neutral_segs,
+          has_scored_data, has_candidate,
+          ts_code, name, circ_mv, fill_probability, limit_close (有候选时)
+          reason (无候选时说明原因)
+        """
+        result: dict[str, Any] = {"data_date": today}
+        try:
+            from scripts.run_strategy_e2_signal import (
+                compute_segment_retreat_states,
+                load_e2_candidates,
+                SCORED_PATH,
+            )
+            # ── 1. 板块状态（只需 raw/limit_list/*.csv，盘中即可用）─────────────
+            segment_states = compute_segment_retreat_states(today)
+            neutral_segs = [s for s, st in segment_states.items() if st == "neutral"]
+            result["segment_states"] = segment_states
+            result["neutral_segs"] = neutral_segs
+
+            if not segment_states:
+                result["reason"] = f"raw/limit_list/{today}.csv 尚未采集，板块状态未知"
+                return result
+            if not neutral_segs:
+                result["has_candidate"] = False
+                result["reason"] = f"今日无neutral板块，E2不触发。各板块：{segment_states}"
+                return result
+
+            # ── 2. 候选（需要 limit_up_fill_scored.csv 含今日记录）────────────
+            has_scored = False
+            if SCORED_PATH.exists():
+                try:
+                    tmp = pd.read_csv(SCORED_PATH, usecols=["trade_date"], nrows=500)
+                    has_scored = tmp["trade_date"].astype(str).str.replace(r"\.0$", "", regex=True).eq(today).any()
+                except Exception:
+                    pass
+            result["has_scored_data"] = has_scored
+
+            if not has_scored:
+                result["reason"] = (
+                    f"板块状态已判定：neutral板块={neutral_segs}，E2前提满足。"
+                    f"候选股待15:10收盘流水线⑦步采集scored数据后确定。"
+                )
+                return result
+
+            candidates = load_e2_candidates(today, segment_states)
+            if candidates.empty:
+                result["has_candidate"] = False
+                result["reason"] = f"neutral板块={neutral_segs}，但今日涨停池无符合条件候选（非ST+成交可靠）。"
+                return result
+
+            top = candidates.iloc[0]
+            result["has_candidate"] = True
+            result["candidate_count"] = len(candidates)
+            result["ts_code"] = str(top.get("ts_code", ""))
+            result["name"] = str(top.get("name", ""))
+            result["circ_mv"] = float(top.get("circ_mv", 0) or 0)
+            result["fill_probability"] = float(top.get("fill_probability", 0) or 0)
+            result["limit_close"] = float(top.get("limit_close", 0) or 0)
+        except Exception as exc:
+            result["reason"] = f"预判异常：{exc}"
+        return result
+
     def build_e2_buy_order(self, signal: dict[str, Any], today: str) -> dict[str, Any]:
         limit_close = float(signal.get("limit_close", 0.0))
         initial_equity = float(self.config.get("position", {}).get("initial_cash", 500_000.0))
@@ -397,11 +462,32 @@ class CombinedLiveEngine:
                     f"（明日09:20组合状态机将生成ALLOW_E2_BUY开仓计划）"
                 )
             else:
-                e2_status_reason = (
-                    "无持仓且无A/B/C买入计划，E2前提条件满足。"
-                    "今日信号尚未生成，等待15:10收盘流水线⑦步自动扫描"
-                    "（条件：segment_retreat_state_bucket=neutral + 非ST + 成交可靠 → 流通市值最小1只）。"
-                )
+                preview = self.compute_e2_preview(today)
+                neutral_segs = preview.get("neutral_segs", [])
+                if preview.get("has_candidate"):
+                    ts = preview["ts_code"]
+                    nm = preview["name"]
+                    circ = preview["circ_mv"]
+                    fp = preview["fill_probability"]
+                    lc = preview["limit_close"]
+                    e2_status_reason = (
+                        f"E2预判可触发：候选 {ts} {nm}，"
+                        f"流通市值={circ/10000:.1f}亿，成交概率={fp:.1%}，参考价={lc:.2f}元，"
+                        f"neutral板块={neutral_segs}。"
+                        f"（15:10流水线⑦步生成正式信号文件和明日买入计划）"
+                    )
+                elif neutral_segs and not preview.get("has_scored_data", True):
+                    e2_status_reason = (
+                        f"板块状态已判定：neutral板块={neutral_segs}，E2前提满足。"
+                        f"候选股待15:10流水线⑦步采集scored数据后确定。"
+                    )
+                elif preview.get("has_candidate") is False:
+                    e2_status_reason = preview.get("reason", "E2今日不触发。")
+                else:
+                    e2_status_reason = preview.get(
+                        "reason",
+                        "今日raw数据尚未采集，等待15:10收盘流水线⑦步自动扫描。"
+                    )
         decisions.append(CombinedLiveDecision(
             action=e2_status_action,
             strategy_leg="E2_STATUS",
@@ -471,8 +557,20 @@ class CombinedLiveEngine:
                         print(f"     流通市值：{circ/10000:.1f}亿  成交概率：{fp:.1%}")
                         print(f"     → 明日09:20组合状态机自动生成开仓计划")
                     else:
-                        print("  ✔ E2前提满足，今日信号尚未生成")
-                        print("     → 等待15:10收盘流水线⑦步自动扫描候选")
+                        preview = self.compute_e2_preview(today)
+                        neutral_segs = preview.get("neutral_segs", [])
+                        if preview.get("has_candidate"):
+                            print(f"  ✔ E2预判可触发：{preview['ts_code']} {preview['name']}")
+                            print(f"     neutral板块={neutral_segs}")
+                            print(f"     流通市值={preview['circ_mv']/10000:.1f}亿  成交概率={preview['fill_probability']:.1%}  参考价={preview['limit_close']:.2f}元")
+                            print(f"     → 15:10流水线⑦步生成正式信号文件和明日买入计划")
+                        elif neutral_segs and not preview.get("has_scored_data", True):
+                            print(f"  ✔ 板块状态已判定：neutral板块={neutral_segs}，E2前提满足")
+                            print(f"     → 候选股待15:10流水线⑦步采集scored数据后确定")
+                        elif preview.get("has_candidate") is False:
+                            print(f"  ✘ E2今日不触发：{preview.get('reason', '')}")
+                        else:
+                            print(f"  ？ {preview.get('reason', 'raw数据尚未采集，等待15:10流水线')}")
                 elif action in {"ALLOW_E2_BUY_TODAY", "PLAN_SELL_E2_TODAY"}:
                     print(f"  ✔ {reason}")
                 elif action == "BLOCK_E2":
