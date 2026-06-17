@@ -57,8 +57,14 @@ def first_present(data: dict[str, Any], names: list[str], default: Any = None) -
     """从多个可能字段名中取第一个有效值。"""
 
     for name in names:
-        if name in data and data[name] not in {None, ""}:
-            return data[name]
+        if name not in data:
+            continue
+        value = data[name]
+        if value is None:
+            continue
+        if isinstance(value, str) and value == "":
+            continue
+        return value
     return default
 
 

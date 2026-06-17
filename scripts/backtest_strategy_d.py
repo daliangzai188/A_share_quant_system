@@ -147,14 +147,14 @@ def load_d_candidates(
 
 
 def pick_d_candidate(day_candidates: pd.DataFrame) -> pd.Series | None:
-    “””每天最多选1只：直接按封单/流通市值比降序。
+    """每天最多选1只：直接按封单/流通市值比降序。
 
     近2年strong情绪天回测（45天）：不限炸板次数 + fd_amount_to_circ_mv降序
     均收益+1.72%，优于原策略（<=3次+优先ot==2）的+1.07%。
-    “””
+    """
     if day_candidates.empty:
         return None
-    return day_candidates.sort_values(“fd_amount_to_circ_mv”, ascending=False).iloc[0]
+    return day_candidates.sort_values("fd_amount_to_circ_mv", ascending=False).iloc[0]
 
 
 def run_simulation(

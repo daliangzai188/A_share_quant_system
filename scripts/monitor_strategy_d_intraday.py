@@ -29,6 +29,7 @@ import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any
 
@@ -54,7 +55,7 @@ CANCEL_HHMM = 1455           # 14:55 撤销所有未成交D委托
 POLL_BATCH_SIZE = 500        # 每次 get_full_tick 的股票数量
 POLL_INTERVAL_SEC = 30       # 每批轮询间隔（秒）
 MONITOR_START_HHMM = 930     # 脚本等待开始扫描的时间（集合竞价结束后）
-D_POSITION_PCT = 0.80        # 仓位比例
+D_POSITION_PCT = 0.80        # 默认仓位比例，优先使用 config.json/strategy_d/position_pct
 STRATEGY_REMARK = "D_FIRST_BOARD"
 DEFAULT_ALLOWED_SEGMENTS = {"sh_main", "sz_main", "chi_next", "star", "bj", "other"}
 
@@ -146,17 +147,39 @@ def load_yesterday_limit_codes() -> set[str]:
 
 
 def load_stock_universe() -> list[str]:
-    """加载全市场股票代码列表（从最新日线数据）。"""
+    """加载全市场股票代码列表。
+
+    D 是盘中实时扫描，开盘时今日/未来日线文件可能只有表头。
+    股票池只需要代码清单，应该使用今天及以前最近一个非空日线文件。
+    """
     daily_dir = PROJECT_ROOT / "data" / "raw" / "daily"
-    files = sorted(daily_dir.glob("*.csv"))
+    today_str = today_beijing().strftime("%Y%m%d")
+    files = sorted(
+        path
+        for path in daily_dir.glob("*.csv")
+        if path.stem.isdigit() and len(path.stem) == 8 and path.stem <= today_str
+    )
     if not files:
+        print("[警告] 未找到今天及以前的日线文件，D股票池为空。")
         return []
-    try:
-        df = pd.read_csv(files[-1], dtype={"ts_code": str})
-        return df["ts_code"].tolist()
-    except Exception as e:
-        print(f"[警告] 加载股票宇宙失败: {e}")
-        return []
+    last_error = ""
+    for path in reversed(files):
+        try:
+            df = pd.read_csv(path, dtype={"ts_code": str})
+        except Exception as e:
+            last_error = f"{path.name}: {e}"
+            continue
+        if "ts_code" not in df.columns:
+            last_error = f"{path.name}: 缺少 ts_code 字段"
+            continue
+        codes = df["ts_code"].dropna().astype(str).str.strip()
+        codes = [code for code in codes.tolist() if code]
+        if codes:
+            print(f"[股票池] 使用日线文件: {path.name}，股票数={len(codes)}")
+            return codes
+        last_error = f"{path.name}: 空文件或无有效 ts_code"
+    print(f"[警告] 今天及以前没有可用的非空日线股票池，最后错误: {last_error}")
+    return []
 
 
 def classify_market_segment(ts_code: object) -> str:
@@ -189,8 +212,42 @@ def configured_allowed_segments(config: dict[str, Any]) -> set[str]:
     return result or set(DEFAULT_ALLOWED_SEGMENTS)
 
 
+def configured_position_pct(config: dict[str, Any]) -> float:
+    strategy_config = load_strategy_d_config(config)
+    try:
+        value = float(strategy_config.get("position_pct", D_POSITION_PCT))
+    except (TypeError, ValueError):
+        return D_POSITION_PCT
+    if value <= 0:
+        return D_POSITION_PCT
+    return min(value, 1.0)
+
+
 def filter_universe_by_segments(universe: list[str], allowed_segments: set[str]) -> list[str]:
     return [code for code in universe if classify_market_segment(code) in allowed_segments]
+
+
+def limit_up_pct(ts_code: str, name: object | None = None) -> float:
+    stock_name = "" if name is None or pd.isna(name) else str(name).upper()
+    code = str(ts_code).strip().upper()
+    prefix = code.split(".")[0]
+    if "ST" in stock_name or "退" in stock_name:
+        return 0.05
+    if code.endswith(".BJ") or prefix.startswith(("4", "8", "9")):
+        return 0.30
+    if prefix.startswith(("300", "301", "688", "689")):
+        return 0.20
+    return 0.10
+
+
+def round_price(value: float) -> float:
+    return float(Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+
+def estimate_upper_limit(ts_code: str, pre_close: float, name: object | None = None) -> float:
+    if pre_close <= 0:
+        return 0.0
+    return round_price(pre_close * (1 + limit_up_pct(ts_code, name)))
 
 
 def check_abc_position_occupied() -> tuple[bool, str]:
@@ -232,10 +289,10 @@ def get_account_cash(broker) -> float:
         return 0.0
 
 
-def calc_shares(cash: float, price: float) -> int:
+def calc_shares(cash: float, price: float, position_pct: float) -> int:
     if price <= 0:
         return 0
-    return max(int(cash * D_POSITION_PCT / price / 100) * 100, 0)
+    return max(int(cash * position_pct / price / 100) * 100, 0)
 
 
 def next_trade_day(date_str: str, n: int = 1) -> str:
@@ -286,13 +343,15 @@ class StrategyDMonitor:
 
     def __init__(self, broker, live_order: bool, logger, signal_csv: Path,
                  monitor_start_hhmm: int = MONITOR_START_HHMM,
-                 allowed_segments: set[str] | None = None) -> None:
+                 allowed_segments: set[str] | None = None,
+                 position_pct: float = D_POSITION_PCT) -> None:
         self.broker = broker
         self.live_order = live_order
         self.logger = logger
         self.signal_csv = signal_csv
         self.monitor_start_hhmm = monitor_start_hhmm
         self.allowed_segments = allowed_segments or set(DEFAULT_ALLOWED_SEGMENTS)
+        self.position_pct = position_pct
 
         self.yesterday_limit_codes: set[str] = set()
         self.universe: list[str] = []
@@ -309,6 +368,7 @@ class StrategyDMonitor:
         self.signal_records: list[dict] = []
         self.order_placed: bool = False   # 本会话已触发BUY，不再对其他股票下单
         self.order_locked_ts_code: str = ""
+        self.limit_price_fallback_logged: bool = False
 
     # ── 初始化 ────────────────────────────────────────────────────────────────
 
@@ -328,6 +388,7 @@ class StrategyDMonitor:
             segment_counts, len(self.yesterday_limit_codes),
             len(self._batches()), POLL_BATCH_SIZE, POLL_INTERVAL_SEC,
         )
+        self.logger.info("D开仓仓位: %.0f%%", self.position_pct * 100)
 
     def _batches(self) -> list[list[str]]:
         return [self.universe[i: i + POLL_BATCH_SIZE]
@@ -337,20 +398,32 @@ class StrategyDMonitor:
 
     def _update_states(self, quotes: dict) -> None:
         hhmm = now_hhmm()
+        fallback_count = 0
+        qmt_limit_count = 0
+        skipped_no_price = 0
         for ts_code, snap in quotes.items():
-            if snap.upper_limit <= 0:
+            name = self.name_map.get(ts_code, "")
+            upper_limit = float(snap.upper_limit or 0.0)
+            if upper_limit > 0:
+                qmt_limit_count += 1
+            else:
+                upper_limit = estimate_upper_limit(ts_code, float(snap.pre_close or 0.0), name)
+                if upper_limit > 0:
+                    fallback_count += 1
+            if upper_limit <= 0 or snap.last_price <= 0:
+                skipped_no_price += 1
                 continue
-            at_limit = abs(snap.last_price - snap.upper_limit) < 0.015
+            at_limit = abs(snap.last_price - upper_limit) < 0.015
 
             if ts_code not in self.states:
                 self.states[ts_code] = StockState(
                     ts_code=ts_code,
-                    name=self.name_map.get(ts_code, ""),
+                    name=name,
                     market_segment=classify_market_segment(ts_code),
-                    upper_limit=snap.upper_limit,
+                    upper_limit=upper_limit,
                 )
             st = self.states[ts_code]
-            st.upper_limit = snap.upper_limit
+            st.upper_limit = upper_limit
 
             if at_limit:
                 if not st.ever_sealed:
@@ -370,6 +443,15 @@ class StrategyDMonitor:
                     st.open_times_today += 1
                 st.was_sealed = False
                 st.bid_vol = 0
+
+        if not self.limit_price_fallback_logged and quotes:
+            self.limit_price_fallback_logged = True
+            self.logger.info(
+                "涨停价口径: QMT直接给出=%d，按昨收价估算=%d，缺价格跳过=%d",
+                qmt_limit_count,
+                fallback_count,
+                skipped_no_price,
+            )
 
     # ── 信号检测与分级触发 ────────────────────────────────────────────────────
 
@@ -564,10 +646,13 @@ class StrategyDMonitor:
                 self.logger.warning("本会话已有D委托，拒绝再次下单: %s", st.ts_code)
                 return
             cash = get_account_cash(self.broker)
-            shares = calc_shares(cash, st.upper_limit)
+            shares = calc_shares(cash, st.upper_limit, self.position_pct)
             if shares <= 0:
                 self.logger.warning("可用资金不足，跳过下单: %s", st.ts_code)
                 return
+            target_amount = cash * self.position_pct
+            actual_amount = shares * st.upper_limit
+            actual_position_pct = actual_amount / cash if cash > 0 else 0.0
             req = OrderRequest(
                 ts_code=st.ts_code,
                 broker_code=tushare_to_qmt_code(st.ts_code),
@@ -587,16 +672,31 @@ class StrategyDMonitor:
                     "name": st.name,
                     "shares": shares,
                     "buy_price": st.upper_limit,
+                    "target_amount": target_amount,
+                    "actual_amount": actual_amount,
+                    "target_position_pct": self.position_pct,
+                    "actual_position_pct": actual_position_pct,
                     "buy_date": today_beijing().strftime("%Y%m%d"),
                     "strategy_leg": "D",
                 }
                 st.order_id = result.order_id
                 record["order_id"] = result.order_id
                 self.logger.info(
-                    "D委托: %s %d股 %.2f order_id=%s",
-                    st.ts_code, shares, st.upper_limit, result.order_id,
+                    "D委托: %s %d股 %.2f 目标仓位=%.0f%% 实际仓位=%.2f%% 目标金额=%.2f 实际金额=%.2f order_id=%s",
+                    st.ts_code,
+                    shares,
+                    st.upper_limit,
+                    self.position_pct * 100,
+                    actual_position_pct * 100,
+                    target_amount,
+                    actual_amount,
+                    result.order_id,
                 )
-                print(f"  → 委托已提交: {shares}股 order_id={result.order_id}")
+                print(
+                    f"  → 委托已提交: {shares}股 "
+                    f"目标仓位{self.position_pct:.0%} 实际仓位{actual_position_pct:.2%} "
+                    f"order_id={result.order_id}"
+                )
             else:
                 self.logger.error("D委托被拒: %s %s", st.ts_code, result.message)
                 print(f"  → 委托被拒: {result.message}")
@@ -814,12 +914,14 @@ def main() -> None:
     )
     config = load_json_config(PROJECT_ROOT / "config" / "config.json")
     allowed_segments = configured_allowed_segments(config)
+    position_pct = configured_position_pct(config)
 
     if args.dry_run:
         print("=== 策略D监控配置 ===")
         print(f"  情绪阈值: 全市场涨停累计数 >= {SENTIMENT_STRONG_MIN}")
         print(f"  炸板次数上限: {D_MAX_OPEN_TIMES}")
         print(f"  允许市场分段: {','.join(sorted(allowed_segments))}")
+        print(f"  开仓仓位: {position_pct:.0%}")
         print(f"  扫描开始: {hhmm_to_str(args.start_hhmm)}")
         print(f"  观察提醒: {hhmm_to_str(WATCH_START_HHMM)} 起（10:00后回封发WATCH）")
         print(f"  买入信号: {hhmm_to_str(SIGNAL_START_HHMM)} 起（14:00后回封或WATCH升级→BUY）")
@@ -840,6 +942,7 @@ def main() -> None:
         signal_csv=signal_csv,
         monitor_start_hhmm=args.start_hhmm,
         allowed_segments=allowed_segments,
+        position_pct=position_pct,
     )
     try:
         monitor.run()

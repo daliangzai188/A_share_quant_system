@@ -6,14 +6,53 @@ sys.stdout.reconfigure(encoding="utf-8")
 root = Path(__file__).absolute().parent
 log = root / "logs" / "trading_daemon.log"
 pid_file = root / ".daemon_pid"
+d_monitor_pid_file = root / "logs" / "strategy_d_monitor.pid"
 daemon = root / "scripts" / "trading_daemon.py"
 log.parent.mkdir(exist_ok=True)
 
-if pid_file.exists():
-    old_pid = pid_file.read_text().strip()
+def stop_pid_file(path: Path, label: str) -> bool:
+    if not path.exists():
+        return False
+    old_pid = path.read_text().strip()
+    if not old_pid:
+        path.unlink(missing_ok=True)
+        return False
     subprocess.run(["taskkill", "/PID", old_pid, "/F"], capture_output=True)
-    pid_file.unlink(missing_ok=True)
-    print(f"Old process stopped (PID {old_pid}), waiting for QMT session to release...")
+    path.unlink(missing_ok=True)
+    print(f"Old {label} stopped (PID {old_pid})")
+    return True
+
+def stop_orphan_d_monitors() -> bool:
+    killed = False
+    try:
+        ps = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                (
+                    "Get-CimInstance Win32_Process | "
+                    "Where-Object { $_.CommandLine -match 'python.*monitor_strategy_d_intraday\\.py' } | "
+                    "ForEach-Object { Stop-Process -Id $_.ProcessId -Force; Write-Output $_.ProcessId }"
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        pids = [line.strip() for line in ps.stdout.splitlines() if line.strip()]
+        if pids:
+            print(f"Old orphan D monitor stopped (PID {', '.join(pids)})")
+            killed = True
+    except Exception as exc:
+        print(f"Warning: orphan D monitor cleanup failed: {exc}")
+    return killed
+
+stopped_d = stop_pid_file(d_monitor_pid_file, "D monitor")
+stopped_orphan_d = stop_orphan_d_monitors()
+stopped_daemon = stop_pid_file(pid_file, "daemon process")
+if stopped_d or stopped_orphan_d or stopped_daemon:
+    print("Waiting for QMT session to release...")
     time.sleep(15)  # 等 QMT session 完全释放，避免新进程启动时全部连接 -1
 
 # 让 daemon 自己的 RotatingFileHandler 写日志，stdout/stderr 丢弃

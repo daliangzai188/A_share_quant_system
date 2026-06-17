@@ -21,6 +21,7 @@ from __future__ import annotations
 import datetime
 import glob
 import json
+import os
 import signal
 import subprocess
 import sys
@@ -55,6 +56,7 @@ else:
     PYTHON = str(_venv_python) if _venv_python.exists() else _sys.executable
 POSITIONS_FILE = PROJECT_ROOT / "data" / "processed" / "positions.json"
 HEARTBEAT_FILE = PROJECT_ROOT / "logs" / "daemon_heartbeat.txt"
+D_MONITOR_PID_FILE = PROJECT_ROOT / "logs" / "strategy_d_monitor.pid"
 CALENDAR_STALE_WARNED: set[str] = set()
 
 # subprocess 超时（秒）：防止某步骤挂死
@@ -735,6 +737,9 @@ def job_strategy_d() -> None:
     """
     logger().info("===== 策略D监控启动（盘中后台）=====")
     try:
+        if _strategy_d_monitor_running():
+            logger().info("策略D监控已在运行，跳过重复启动。")
+            return
         config = load_json_config(PROJECT_ROOT / "config" / "config.json")
         broker_config = config.get("broker", {})
         qmt_ready = (
@@ -747,15 +752,173 @@ def job_strategy_d() -> None:
             logger().warning("QMT行情未启用，跳过D盘中监控；D策略需要实时行情。")
             return
         live_order = bool(config.get("trade_mode", "").lower() == "live" and config.get("live_trade", {}).get("enabled"))
-        cmd = [PYTHON, "-B", str(PROJECT_ROOT / "scripts" / "monitor_strategy_d_intraday.py")]
+        cmd = [PYTHON, "-u", "-B", str(PROJECT_ROOT / "scripts" / "monitor_strategy_d_intraday.py")]
         if live_order:
             cmd.append("--live-order")
+        child_env = os.environ.copy()
+        child_env["PYTHONIOENCODING"] = "utf-8"
+        child_env["PYTHONUTF8"] = "1"
         # Popen 非阻塞：D 监控脚本自管循环 + 14:55 自动撤单，daemon 继续正常运行
-        proc = subprocess.Popen(cmd, cwd=PROJECT_ROOT)
-        logger().info("策略D监控已启动（PID %d，live_order=%s）", proc.pid, live_order)
+        popen_kwargs: dict[str, Any] = {
+            "cwd": PROJECT_ROOT,
+            "env": child_env,
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.STDOUT,
+            "text": True,
+            "encoding": "utf-8",
+            "errors": "replace",
+            "bufsize": 1,
+        }
+        if sys.platform.startswith("win"):
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            popen_kwargs["startupinfo"] = startupinfo
+            popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+        proc = subprocess.Popen(cmd, **popen_kwargs)
+        _start_d_monitor_log_forwarder(proc)
+        _start_d_monitor_health_probe(proc)
+        mkdir_p(D_MONITOR_PID_FILE.parent)
+        D_MONITOR_PID_FILE.write_text(str(proc.pid), encoding="utf-8")
+        logger().info(
+            "策略D监控已启动（PID %d，live_order=%s，输出已接入主终端日志）",
+            proc.pid,
+            live_order,
+        )
     except Exception as e:
         logger().error("策略D监控启动失败：%s", e)
-    logger().info("===== 策略D监控已移至后台 =====")
+    logger().info("===== 策略D监控已独立运行，不阻塞主程序 =====")
+
+
+def stop_strategy_d_monitor(reason: str = "") -> None:
+    """停止 D 盘中监控进程，保证它跟随主守护进程生命周期。"""
+    try:
+        if not D_MONITOR_PID_FILE.exists():
+            return
+        pid_text = D_MONITOR_PID_FILE.read_text(encoding="utf-8").strip()
+        D_MONITOR_PID_FILE.unlink(missing_ok=True)
+        if not pid_text:
+            return
+        pid = int(pid_text)
+        if not _pid_is_running(pid):
+            logger().info("D策略监控已不在运行，清理PID记录。")
+            return
+        if sys.platform.startswith("win"):
+            subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        else:
+            os.kill(pid, signal.SIGTERM)
+        logger().info("D策略监控已关闭（PID %s）%s", pid, f"原因：{reason}" if reason else "")
+    except Exception as exc:
+        logger().warning("关闭D策略监控失败：%s", exc)
+
+
+def _start_d_monitor_log_forwarder(proc: subprocess.Popen) -> None:
+    """异步转发 D 扫描进程输出到主日志，避免子进程输出阻塞。"""
+    def _forward() -> None:
+        try:
+            if proc.stdout is None:
+                return
+            for line in proc.stdout:
+                text = line.rstrip()
+                if text:
+                    logger().info("[D扫描] %s", text)
+            code = proc.wait(timeout=5)
+            logger().info("[D扫描] 进程退出，PID=%s exit_code=%s", proc.pid, code)
+        except Exception as exc:
+            logger().warning("[D扫描] 输出转发异常：%s", exc)
+
+    threading.Thread(
+        target=_forward,
+        daemon=True,
+        name=f"d-monitor-log-forwarder-{proc.pid}",
+    ).start()
+
+
+def _start_d_monitor_health_probe(proc: subprocess.Popen) -> None:
+    """启动后短延迟检查，确认 D 子进程没有静默退出。"""
+    def _probe() -> None:
+        time.sleep(5)
+        code = proc.poll()
+        if code is None:
+            logger().info("[D扫描] 启动健康检查：进程仍在运行，PID=%s", proc.pid)
+        else:
+            logger().warning("[D扫描] 启动健康检查：进程已退出，PID=%s exit_code=%s", proc.pid, code)
+
+    threading.Thread(
+        target=_probe,
+        daemon=True,
+        name=f"d-monitor-health-probe-{proc.pid}",
+    ).start()
+
+
+def _pid_is_running(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if sys.platform.startswith("win"):
+        try:
+            result = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            output = (result.stdout or "") + (result.stderr or "")
+            return str(pid) in output and "INFO:" not in output.upper()
+        except Exception:
+            return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def _strategy_d_monitor_running() -> bool:
+    try:
+        if not D_MONITOR_PID_FILE.exists():
+            return False
+        pid_text = D_MONITOR_PID_FILE.read_text(encoding="utf-8").strip()
+        pid = int(pid_text)
+        if _pid_is_running(pid):
+            return True
+        D_MONITOR_PID_FILE.unlink(missing_ok=True)
+    except Exception:
+        return False
+    return False
+
+
+def startup_catchup_strategy_d() -> None:
+    """盘中重启守护进程时，补启动错过 09:20 的 D 监控。
+
+    不在这里执行 A/B/C 买入预览，避免盘中重启重复触发开仓动作；
+    只读取组合状态机，如果它明确允许 D 才补启动监控。
+    """
+    now = now_beijing()
+    if not is_trade_day(now.date()):
+        return
+    if not (datetime.time(9, 20) <= now.time() < datetime.time(14, 55)):
+        return
+    if _strategy_d_monitor_running():
+        logger().info("启动补检：D策略监控已在运行。")
+        return
+    logger().info("启动补检：当前处于D盘中监控时段，检查是否需要补启动D。")
+    combined = load_combined_decisions()
+    decisions = combined[0] if combined is not None else None
+    if decisions is None:
+        logger().warning("启动补检：组合状态机决策生成失败，不补启动D。")
+        return
+    if has_combined_action(decisions, "PLAN_SELL_D_FIRST"):
+        logger().info("启动补检：存在D待卖优先动作，不补启动新的D监控。")
+        return
+    if has_combined_action(decisions, "ALLOW_D_INTRADAY_MONITOR"):
+        logger().info("启动补检：组合状态机允许D盘中监控，补启动D。")
+        job_strategy_d()
+    else:
+        logger().info("启动补检：组合状态机未允许D盘中监控，跳过补启动。")
 
 
 def job_afternoon() -> None:
@@ -1600,6 +1763,7 @@ def main() -> None:
 
     def _exit(signum, _frame):
         log.info("收到信号 %d，退出", signum)
+        stop_strategy_d_monitor("主守护进程退出")
         write_heartbeat("stopped")
         sys.exit(0)
 
@@ -1645,6 +1809,11 @@ def main() -> None:
         ).start()
     else:
         log.info("已有 %s 收盘数据缓存，直接使用", expected_str)
+
+    try:
+        startup_catchup_strategy_d()
+    except Exception as e:
+        log.error("启动补检D策略异常：%s", e)
 
     # ── 主循环 ────────────────────────────────────────────────────────────────
     while True:
