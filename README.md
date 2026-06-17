@@ -417,15 +417,16 @@ a_strict_plus_b0018_filtered_plus_c_hold3
 | 14:50 | 盘中：平仓检查 |
 | 15:10 | 收盘后：完整数据流水线 + A+B+C 信号生成 |
 
-收盘流水线六步：
+收盘流水线七步：
 
 ```
-① collect_all_data.py         采集日线 + 涨停池
-② clean_collected_data.py     清洗合并
-③ build_dynamic_features.py   市场情绪 / 题材热度
-④ score_limit_up_fill_probability.py  涨停成交概率打分
-⑤ analyze_next_day_premium.py 次日溢价因子
-⑥ run_paper_ab_filtered_daily_ops.py  A+B+C 信号生成
+① collect_all_data.py                   采集日线 + 涨停池
+② clean_collected_data.py               清洗合并
+③ build_dynamic_features.py             市场情绪 / 题材热度
+④ score_limit_up_fill_probability.py    涨停成交概率打分
+⑤ analyze_next_day_premium.py           次日溢价因子
+⑥ run_paper_ab_filtered_daily_ops.py    A+B+C 信号生成
+⑦ run_strategy_e2_signal.py             E2 信号生成（板块中性小市值，ABCD空闲时才触发）
 ```
 
 其中 ①、②、④ 是关键步骤。关键步骤第一次失败会自动等待 10 秒重试一次；仍失败则停止本次收盘流水线，不生成计划单，避免继续使用旧信号。

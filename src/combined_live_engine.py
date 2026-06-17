@@ -251,8 +251,8 @@ class CombinedLiveEngine:
         else:
             e2_action = "ALLOW_E2_SIGNAL"
             e2_reason = (
-                "无持仓且无 A/B/C 买入计划，E2 可能触发。"
-                "收盘后(15:30+)运行: python scripts/run_strategy_e2_signal.py"
+                "无持仓且无 A/B/C 买入计划，E2 前提条件满足。"
+                "收盘流水线⑦步自动生成 E2 信号（segment_retreat_state_bucket=neutral + 流通市值最小）。"
             )
         decisions.append(
             CombinedLiveDecision(
@@ -293,10 +293,8 @@ class CombinedLiveEngine:
             print("  策略 E2 状态（板块中性小市值）")
             print("─" * 52)
             if str(e2["action"]) == "ALLOW_E2_SIGNAL":
-                print("  ✔ ABCD 均空闲 → E2 可能触发")
-                print("  条件: segment_retreat_state_bucket=neutral + 非ST + 成交可靠 → 取流通市值最小1只")
-                print("  执行: T+1开盘买80%仓位，T+2收盘卖出")
-                print("  收盘后(15:30+)运行: python scripts/run_strategy_e2_signal.py")
+                print("  ✔ ABCD 均空闲 → E2 前提条件满足")
+                print("  收盘流水线⑦步将自动运行 E2 信号扫描，结果见日志")
             else:
                 print(f"  ✘ E2 不触发: {e2['reason']}")
             print("─" * 52)
