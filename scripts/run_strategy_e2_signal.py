@@ -6,6 +6,7 @@
   - 从符合条件的今日涨停股中选 circ_mv（流通市值）最小的1只
   - T+1开盘买入，T+2收盘卖出（与A/B/C持仓规则相同）
   - 仅在 A/B/C/D 均未占用资金时触发
+  - 必须使用 limit_list_d/full 完整口径，且 strategy_compatible=True
 
 触发时机：
   每日 15:30 后运行（A/B/C daily ops 和 D 盘中监控均已完成后）
@@ -52,6 +53,20 @@ OUTPUT_DIR = PROJECT_ROOT / "reports" / "strategy_e2"
 POSITION_PCT = 0.8
 E2_MIN_CIRC_MV = 0       # 不设下限
 E2_MAX_CIRC_MV = float("inf")
+E2_VERSION = "E2_segment_neutral_circ_mv_asc_v1"
+E2_RESEARCH_AUDIT = {
+    "window": "recent_2y",
+    "added_trade_count": 62,
+    "added_avg_account_return": 0.044086,
+    "added_median_account_return": 0.017896,
+    "added_win_rate": 0.645161,
+    "added_max_profit": 0.341127,
+    "added_max_loss": -0.067907,
+    "combo_equity_multiple": 3952.8312,
+    "combo_max_drawdown": -0.197489,
+    "position_pct": POSITION_PCT,
+    "source_report": "reports/strategy_expansion/abcd_expansion_search_summary.csv",
+}
 
 
 # ── 交易日工具 ────────────────────────────────────────────────────────────────
@@ -220,6 +235,20 @@ def load_e2_candidates(signal_date: str, segment_states: dict[str, str]) -> pd.D
     if df.empty:
         return pd.DataFrame()
 
+    required_columns = [
+        "market_segment",
+        "is_st",
+        "allow_buy_reliable",
+        "is_fill_score_reliable",
+        "circ_mv",
+        "limit_data_quality",
+        "strategy_compatible",
+    ]
+    missing = [column for column in required_columns if column not in df.columns]
+    if missing:
+        print(f"[E2信号] 缺少必需字段 {missing}，E2 不触发。")
+        return pd.DataFrame()
+
     # 附加 segment_retreat_state_bucket
     df["segment_retreat_state_bucket"] = df["market_segment"].astype(str).map(
         lambda seg: segment_states.get(seg, "unknown")
@@ -227,6 +256,8 @@ def load_e2_candidates(signal_date: str, segment_states: dict[str, str]) -> pd.D
 
     # 基础过滤
     df = df[df["segment_retreat_state_bucket"] == "neutral"].copy()
+    df = df[df["limit_data_quality"].fillna("").astype(str).eq("full")].copy()
+    df = df[df["strategy_compatible"].fillna("").astype(str).str.lower().isin(["true", "1"])].copy()
     df = df[~df["is_st"].astype(str).str.lower().isin(["true", "1"])].copy()
     df = df[df["allow_buy_reliable"].astype(str).str.lower().isin(["true", "1"])].copy()
     df = df[df["is_fill_score_reliable"].astype(str).str.lower().isin(["true", "1"])].copy()
@@ -242,11 +273,15 @@ def build_signal(signal_date: str, candidate: pd.Series, segment_states: dict[st
     seg = str(candidate.get("market_segment", ""))
     return {
         "strategy_leg": "E2",
+        "strategy_version": E2_VERSION,
         "signal_date": signal_date,
         "ts_code": str(candidate.get("ts_code", "")),
         "name": str(candidate.get("name", candidate.get("ts_code", ""))),
         "market_segment": seg,
         "segment_retreat_state_bucket": segment_states.get(seg, "neutral"),
+        "limit_data_quality": str(candidate.get("limit_data_quality", "")),
+        "limit_data_source": str(candidate.get("limit_data_source", "")),
+        "strategy_compatible": bool(str(candidate.get("strategy_compatible", "")).lower() in ("true", "1")),
         "circ_mv": float(candidate.get("circ_mv", 0)),
         "limit_close": float(candidate.get("limit_close", 0)),
         "fill_probability": float(candidate.get("fill_probability", 0)),
@@ -257,6 +292,7 @@ def build_signal(signal_date: str, candidate: pd.Series, segment_states: dict[st
         "planned_exit_date": next_trade_day(signal_date, 2),
         "planned_exit_rule": "T+2_close",
         "position_pct": POSITION_PCT,
+        "research_audit": E2_RESEARCH_AUDIT,
         "status": "pending",
         "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
@@ -274,6 +310,7 @@ def save_candidates(signal_date: str, candidates: pd.DataFrame, dry_run: bool) -
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     path = OUTPUT_DIR / f"e2_signal_{signal_date}_candidates.csv"
     cols = [c for c in ["ts_code", "name", "market_segment", "segment_retreat_state_bucket",
+                         "limit_data_quality", "limit_data_source", "strategy_compatible",
                          "circ_mv", "fill_probability", "allow_buy_reliable", "is_fill_score_reliable",
                          "limit_close", "fd_amount_to_circ_mv"] if c in candidates.columns]
     if not dry_run and not candidates.empty:
