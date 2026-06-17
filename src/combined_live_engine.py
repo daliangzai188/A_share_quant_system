@@ -240,6 +240,29 @@ class CombinedLiveEngine:
                     )
                 )
 
+        # E2 状态决策
+        has_abc_buy = any(d.action == "ALLOW_ABC_BUY_PREVIEW" for d in decisions)
+        if open_positions:
+            e2_action = "BLOCK_E2"
+            e2_reason = f"账户有 {len(open_positions)} 个未平仓头寸，E2 不触发。"
+        elif has_abc_buy:
+            e2_action = "BLOCK_E2"
+            e2_reason = "今日 A/B/C 已生成买入计划，E2 不触发（资金冲突）。"
+        else:
+            e2_action = "ALLOW_E2_SIGNAL"
+            e2_reason = (
+                "无持仓且无 A/B/C 买入计划，E2 可能触发。"
+                "收盘后(15:30+)运行: python scripts/run_strategy_e2_signal.py"
+            )
+        decisions.append(
+            CombinedLiveDecision(
+                action=e2_action,
+                strategy_leg="E2",
+                reason=e2_reason,
+                source="combined_state_machine",
+            )
+        )
+
         decision_df = pd.DataFrame([decision.__dict__ for decision in decisions])
         state_df = pd.DataFrame(state_rows)
         planned_orders_df = pd.DataFrame(planned_orders)
@@ -256,11 +279,43 @@ class CombinedLiveEngine:
         decisions.to_csv(decisions_path, index=False, encoding="utf-8-sig")
         planned_orders.to_csv(orders_path, index=False, encoding="utf-8-sig")
         self.write_markdown(md_path, state, decisions, planned_orders)
+
+        # 打印 E2 状态
+        e2_rows = (
+            decisions[decisions["strategy_leg"] == "E2"]
+            if not decisions.empty and "strategy_leg" in decisions.columns
+            else pd.DataFrame()
+        )
+        if not e2_rows.empty:
+            e2 = e2_rows.iloc[0]
+            print()
+            print("─" * 52)
+            print("  策略 E2 状态（板块中性小市值）")
+            print("─" * 52)
+            if str(e2["action"]) == "ALLOW_E2_SIGNAL":
+                print("  ✔ ABCD 均空闲 → E2 可能触发")
+                print("  条件: segment_retreat_state_bucket=neutral + 非ST + 成交可靠 → 取流通市值最小1只")
+                print("  执行: T+1开盘买80%仓位，T+2收盘卖出")
+                print("  收盘后(15:30+)运行: python scripts/run_strategy_e2_signal.py")
+            else:
+                print(f"  ✘ E2 不触发: {e2['reason']}")
+            print("─" * 52)
+
         return {"state": state_path, "decisions": decisions_path, "planned_orders": orders_path, "markdown": md_path}
 
     @staticmethod
     def write_markdown(path: Path, state: pd.DataFrame, decisions: pd.DataFrame, planned_orders: pd.DataFrame) -> None:
-        content = f"""# A+B+C+D 组合实盘计划
+        e2_rows = (
+            decisions[decisions["strategy_leg"] == "E2"]
+            if not decisions.empty and "strategy_leg" in decisions.columns
+            else pd.DataFrame()
+        )
+        e2_status = ""
+        if not e2_rows.empty:
+            e2 = e2_rows.iloc[0]
+            e2_status = f"\n## 策略 E2 状态\n\n{e2['reason']}\n"
+
+        content = f"""# A+B+C+D+E2 组合实盘计划
 
 本报告只做组合状态机判断，不提交真实委托。
 
@@ -275,13 +330,14 @@ class CombinedLiveEngine:
 ## 组合计划单
 
 {planned_orders.to_markdown(index=False) if not planned_orders.empty else "无组合计划单。"}
-
+{e2_status}
 ## 执行原则
 
 - 若存在 D 待卖持仓，先卖 D，未确认卖出前阻断 A/B/C 买入。
 - 若存在 A/B/C 旧持仓，阻断 D 盘中买入，避免资金冲突。
 - 若今日已有 A/B/C 买入计划，默认不启动 D 盘中买入监控。
-- 若无持仓且无 A/B/C 买入计划，才允许 D 盘中监控。
+- 若无持仓且无 A/B/C 买入计划，才允许 D 盘中监控；ABCD 均空闲时，E2 可能触发。
+- E2 条件：segment_retreat_state_bucket=neutral + 非ST + 成交可靠 → 流通市值最小1只；T+1开盘买80%仓，T+2收盘卖。
 - 真实下单仍必须经过 LiveOrderGateway 的交易时间、涨跌停、持仓、资金和重复委托校验。
 """
         path.write_text(content, encoding="utf-8")
