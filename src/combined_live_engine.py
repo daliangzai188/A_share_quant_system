@@ -100,6 +100,16 @@ class CombinedLiveEngine:
                 continue
         return None
 
+    def load_today_e2_signal(self, today: str) -> dict[str, Any] | None:
+        """加载今日收盘流水线已生成的 E2 信号（signal_date == today），用于盘中状态展示。"""
+        signal_path = self.project_root / "reports" / "strategy_e2" / f"e2_signal_{today}.json"
+        if not signal_path.exists():
+            return None
+        try:
+            return json.loads(signal_path.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+
     def build_e2_buy_order(self, signal: dict[str, Any], today: str) -> dict[str, Any]:
         limit_close = float(signal.get("limit_close", 0.0))
         initial_equity = float(self.config.get("position", {}).get("initial_cash", 500_000.0))
@@ -370,10 +380,28 @@ class CombinedLiveEngine:
             e2_status_reason = "今日 A/B/C 已生成买入计划，E2 不触发（资金冲突）。"
         else:
             e2_status_action = "ALLOW_E2_SIGNAL"
-            e2_status_reason = (
-                "无持仓且无 A/B/C 买入计划，E2 前提条件满足。"
-                "收盘流水线⑦步自动生成 E2 信号（segment_retreat_state_bucket=neutral + 流通市值最小）。"
-            )
+            today_signal = self.load_today_e2_signal(today)
+            if today_signal:
+                ts = today_signal.get("ts_code", "")
+                nm = today_signal.get("name", "")
+                buy_dt = today_signal.get("planned_buy_date", "")
+                lc = float(today_signal.get("limit_close", 0) or 0)
+                fp = float(today_signal.get("fill_probability", 0) or 0)
+                circ = float(today_signal.get("circ_mv", 0) or 0)
+                e2_status_reason = (
+                    f"今日已扫描到E2候选：{ts} {nm}，"
+                    f"计划买入日={buy_dt}，"
+                    f"涨停参考价={lc:.2f}元，"
+                    f"流通市值={circ/10000:.1f}亿，"
+                    f"成交概率={fp:.1%}。"
+                    f"（明日09:20组合状态机将生成ALLOW_E2_BUY开仓计划）"
+                )
+            else:
+                e2_status_reason = (
+                    "无持仓且无A/B/C买入计划，E2前提条件满足。"
+                    "今日信号尚未生成，等待15:10收盘流水线⑦步自动扫描"
+                    "（条件：segment_retreat_state_bucket=neutral + 非ST + 成交可靠 → 流通市值最小1只）。"
+                )
         decisions.append(CombinedLiveDecision(
             action=e2_status_action,
             strategy_leg="E2_STATUS",
@@ -399,23 +427,61 @@ class CombinedLiveEngine:
         self.write_markdown(md_path, state, decisions, planned_orders)
 
         # 打印 E2 状态
-        e2_rows = (
-            decisions[decisions["strategy_leg"] == "E2"]
-            if not decisions.empty and "strategy_leg" in decisions.columns
-            else pd.DataFrame()
-        )
-        if not e2_rows.empty:
-            e2 = e2_rows.iloc[0]
-            print()
-            print("─" * 52)
-            print("  策略 E2 状态（板块中性小市值）")
-            print("─" * 52)
-            if str(e2["action"]) == "ALLOW_E2_SIGNAL":
-                print("  ✔ ABCD 均空闲 → E2 前提条件满足")
-                print("  收盘流水线⑦步将自动运行 E2 信号扫描，结果见日志")
-            else:
-                print(f"  ✘ E2 不触发: {e2['reason']}")
-            print("─" * 52)
+        print()
+        print("─" * 60)
+        print("  策略 E2 状态（板块中性小市值 T+1买T+2卖）")
+        print("─" * 60)
+        if not decisions.empty and "strategy_leg" in decisions.columns:
+            # 当日买卖动作行（PLAN_SELL_E2 / ALLOW_E2_BUY）
+            e2_act_rows = decisions[
+                decisions["strategy_leg"].astype(str).eq("E2")
+                & decisions["action"].astype(str).isin({"PLAN_SELL_E2", "ALLOW_E2_BUY"})
+            ]
+            for _, row in e2_act_rows.iterrows():
+                action = str(row.get("action", ""))
+                code = str(row.get("ts_code", ""))
+                nm = str(row.get("name", ""))
+                qty = row.get("quantity", 0)
+                try:
+                    qty_str = f"{int(float(qty))}股" if qty and str(qty) not in {"", "nan", "0"} else ""
+                except Exception:
+                    qty_str = ""
+                if action == "PLAN_SELL_E2":
+                    print(f"  ⏳ 今日 T+2 平仓 → {code} {nm}  {qty_str}  14:50收盘前卖出")
+                elif action == "ALLOW_E2_BUY":
+                    print(f"  ✅ 今日 T+1 开仓 → {code} {nm}  {qty_str}  开盘买入80%仓")
+
+            # 汇总状态行
+            e2_status_rows = decisions[decisions["strategy_leg"].astype(str).eq("E2_STATUS")]
+            if not e2_status_rows.empty:
+                e2 = e2_status_rows.iloc[0]
+                action = str(e2.get("action", ""))
+                reason = str(e2.get("reason", ""))
+                if action == "ALLOW_E2_SIGNAL":
+                    today_sig = self.load_today_e2_signal(today)
+                    if today_sig:
+                        code = today_sig.get("ts_code", "")
+                        nm = today_sig.get("name", "")
+                        buy_dt = today_sig.get("planned_buy_date", "")
+                        lc = float(today_sig.get("limit_close", 0) or 0)
+                        fp = float(today_sig.get("fill_probability", 0) or 0)
+                        circ = float(today_sig.get("circ_mv", 0) or 0)
+                        print(f"  ✔ 今日已扫描到E2候选：{code} {nm}")
+                        print(f"     计划买入日：{buy_dt}  涨停参考价：{lc:.2f}元")
+                        print(f"     流通市值：{circ/10000:.1f}亿  成交概率：{fp:.1%}")
+                        print(f"     → 明日09:20组合状态机自动生成开仓计划")
+                    else:
+                        print("  ✔ E2前提满足，今日信号尚未生成")
+                        print("     → 等待15:10收盘流水线⑦步自动扫描候选")
+                elif action in {"ALLOW_E2_BUY_TODAY", "PLAN_SELL_E2_TODAY"}:
+                    print(f"  ✔ {reason}")
+                elif action == "BLOCK_E2":
+                    print(f"  ✘ E2不触发：{reason}")
+                else:
+                    print(f"  {action}：{reason}")
+            elif e2_act_rows.empty:
+                print("  — E2 无决策")
+        print("─" * 60)
 
         return {"state": state_path, "decisions": decisions_path, "planned_orders": orders_path, "markdown": md_path}
 
