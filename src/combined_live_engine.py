@@ -179,8 +179,14 @@ class CombinedLiveEngine:
         limit_close = float(signal.get("limit_close", 0.0))
         initial_equity = float(self.config.get("position", {}).get("initial_cash", 500_000.0))
         planned_amount = initial_equity * _E2_POSITION_PCT
+        if str(self.config.get("trade_mode", "")).lower() == "live":
+            max_single_order_amount = float(
+                self.config.get("live_trade", {}).get("max_single_order_amount", planned_amount)
+            )
+            planned_amount = min(planned_amount, max_single_order_amount)
         estimated_shares = int(planned_amount / limit_close) if limit_close > 0 else 0
         round_lot = estimated_shares - (estimated_shares % _E2_LOT_SIZE) if _E2_LOT_SIZE > 0 else estimated_shares
+        planned_position_pct = planned_amount / initial_equity if initial_equity > 0 else _E2_POSITION_PCT
         return {
             "paper_order_id": f"E2-BUY-{today}-{signal.get('ts_code','')}",
             "signal_date": signal.get("signal_date", ""),
@@ -191,7 +197,7 @@ class CombinedLiveEngine:
             "name": str(signal.get("name", "")),
             "planned_action": "PLAN_BUY_T1_OPEN",
             "order_status": "PLAN_ONLY",
-            "planned_position_pct": _E2_POSITION_PCT,
+            "planned_position_pct": planned_position_pct,
             "planned_equity": initial_equity,
             "planned_amount_by_equity": planned_amount,
             "reference_price": limit_close,

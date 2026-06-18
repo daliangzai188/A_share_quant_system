@@ -491,6 +491,10 @@ def estimate_planned_order(config: dict[str, Any], selected: pd.Series, signal_d
     round_lot = int(paper_trade.get("round_lot_size", 100))
     estimated_shares = int(planned_amount // reference_price) if reference_price > 0 else 0
     round_lot_shares = estimated_shares - estimated_shares % round_lot if round_lot > 0 else estimated_shares
+    strategy_leg = str(selected.get("strategy_leg", "")).upper()
+    # exit_n_days 按买入日计算：A/B 信号日T、T+1买、T+2卖，所以买入后1个交易日卖；
+    # C 使用 fixed_hold3：信号日T、T+1买、T+3卖，所以买入后2个交易日卖。
+    exit_n_days = 2 if strategy_leg == "C" else 1
     return pd.DataFrame(
         [
             {
@@ -511,6 +515,7 @@ def estimate_planned_order(config: dict[str, Any], selected: pd.Series, signal_d
                 "round_lot_shares": round_lot_shares,
                 "risk_flags": selected.get("risk_flags", ""),
                 "live_order_enabled": False,
+                "exit_n_days": exit_n_days,
             }
         ]
     )

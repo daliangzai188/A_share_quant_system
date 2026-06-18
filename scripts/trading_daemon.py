@@ -9,7 +9,8 @@ A_System 量化策略常驻守护进程。
 5. 心跳文件每分钟更新，外部可监控守护进程存活状态。
 
 调度时间表（A 股交易日）：
-    09:20  盘前  —— 平仓检查（优先） + 组合状态机 + 买入预览 / D监控
+    09:20  盘前  —— 平仓检查（优先） + 组合状态机 + D监控
+    09:30  开盘  —— 刷新组合状态机 + 执行 A/B/C/E2 买入
     14:50  盘中  —— 平仓检查（优先）
     15:10  收盘  —— 数据流水线 + 信号生成
 
@@ -43,6 +44,7 @@ from src.utils.time_utils import BEIJING_TZ, now_beijing, today_beijing
 # ── 常量 ───────────────────────────────────────────────────────────────────────
 SCHEDULE = [
     datetime.time(9, 20),   # 盘前：平仓检查 + 组合状态机
+    datetime.time(9, 30),   # 开盘：执行买入，避免 09:20 触发 OUTSIDE_TRADING_TIME
     datetime.time(14, 50),  # 盘中平仓检查
     datetime.time(15, 10),  # 收盘流水线
 ]
@@ -371,6 +373,12 @@ def _execute_orders_inprocess(
             .dropna().astype(str).unique().tolist()
         )
         quote_map = adapter.get_full_tick(ts_codes) if ts_codes else {}
+        planned_orders = resize_buy_orders_for_live_account(
+            planned_orders=planned_orders,
+            account=account,
+            quote_map=quote_map,
+            current_market_value=account.market_value,
+        )
 
         preview = gateway.validate_planned_orders(
             planned_orders,
@@ -395,8 +403,13 @@ def _execute_orders_inprocess(
         if executable.empty:
             rejected = preview[preview["validation_status"].astype(str) != "PASS"]
             for _, r in rejected.iterrows():
-                log.warning("⚠️ [%s] %s %s 被拒绝：%s",
-                            tag, r.get("side", ""), r.get("ts_code", ""), r.get("reject_reasons", ""))
+                log.warning(
+                    "⚠️ [%s] %s %s 被拒绝：%s",
+                    tag,
+                    r.get("side", ""),
+                    r.get("ts_code", ""),
+                    explain_reject_reasons(r),
+                )
             return
 
         now_str = now_beijing().strftime("%H:%M:%S")
@@ -420,6 +433,20 @@ def _execute_orders_inprocess(
             if result.accepted:
                 log.info("✅ [%s] %s %s %s %d股 参考价%.2f元 金额%.0f元",
                          tag, now_str, side, row["ts_code"], qty, ref_price, qty * ref_price)
+                if side == "BUY":
+                    raw_exit_n = row.get("exit_n_days", None)
+                    exit_n = int(float(raw_exit_n)) if raw_exit_n is not None and str(raw_exit_n) not in {"", "nan"} else 2
+                    record_buy(
+                        order_id=str(result.order_id or row.get("paper_order_id", f"live-{now_str}-{row['ts_code']}")),
+                        ts_code=str(row["ts_code"]),
+                        name=str(row.get("name", "")),
+                        signal_date=str(row.get("signal_date", "")),
+                        buy_date=today_beijing().strftime("%Y%m%d"),
+                        shares=qty,
+                        buy_price=ref_price,
+                        strategy_leg=str(row.get("strategy_leg", "")),
+                        exit_n_days=exit_n,
+                    )
             else:
                 log.error("❌ [%s] %s %s %s %d股 失败：%s",
                           tag, now_str, side, row["ts_code"], qty, result.message)
@@ -431,6 +458,156 @@ def _execute_orders_inprocess(
       except Exception as e:
         _qmt_reset()
         log.error("❌ [%s] 下单异常（已重置连接）：%s", tag, e)
+
+
+def resize_buy_orders_for_live_account(
+    planned_orders: "pd.DataFrame",
+    account: Any,
+    quote_map: dict[str, Any],
+    current_market_value: float,
+) -> "pd.DataFrame":
+    """按实盘账户资金和风控上限缩放买入计划，避免用回测初始资金生成超额订单。"""
+    if planned_orders.empty or "side" not in planned_orders.columns:
+        return planned_orders
+
+    config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+    live_cfg = config.get("live_trade", {})
+    max_single_order_amount = float(live_cfg.get("max_single_order_amount", 100000))
+    max_position_pct = float(live_cfg.get("max_position_pct", 0.8))
+    max_total_position_pct = float(live_cfg.get("max_total_position_pct", 0.8))
+    round_lot_size = int(live_cfg.get("round_lot_size", 100))
+    cash_buffer = float(live_cfg.get("cash_buffer_amount", 1000))
+
+    total_asset = float(getattr(account, "total_asset", 0.0) or getattr(account, "available_cash", 0.0) or 0.0)
+    available_cash = float(getattr(account, "available_cash", 0.0) or 0.0)
+    market_value = float(current_market_value or 0.0)
+    adjusted = planned_orders.copy()
+
+    for idx, row in adjusted.iterrows():
+        side = str(row.get("side", "")).upper()
+        if side != "BUY":
+            continue
+
+        ts_code = str(row.get("ts_code", "")).upper()
+        quote = quote_map.get(ts_code)
+        reference_price = to_float(row.get("reference_price", 0.0))
+        last_price = float(getattr(quote, "last_price", 0.0) or reference_price)
+        price = last_price if last_price > 0 else reference_price
+        if price <= 0:
+            adjusted.at[idx, "round_lot_shares"] = 0
+            adjusted.at[idx, "estimated_shares"] = 0
+            adjusted.at[idx, "planned_amount_by_equity"] = 0.0
+            adjusted.at[idx, "risk_flags"] = append_risk_flag(row.get("risk_flags", ""), "LIVE_SIZE_NO_PRICE")
+            continue
+
+        cash_cap = max(0.0, available_cash - cash_buffer)
+        single_position_cap = max(0.0, total_asset * max_position_pct)
+        total_position_cap = max(0.0, total_asset * max_total_position_pct - market_value)
+        allowed_amount = min(cash_cap, single_position_cap, total_position_cap, max_single_order_amount)
+
+        old_qty = to_int(row.get("round_lot_shares", row.get("estimated_shares", 0)))
+        max_qty = int(allowed_amount / price)
+        if round_lot_size > 0:
+            max_qty -= max_qty % round_lot_size
+        new_qty = min(old_qty, max_qty)
+        if round_lot_size > 0:
+            new_qty -= new_qty % round_lot_size
+        new_qty = max(0, new_qty)
+        new_amount = new_qty * price
+
+        adjusted.at[idx, "estimated_shares"] = new_qty
+        adjusted.at[idx, "round_lot_shares"] = new_qty
+        adjusted.at[idx, "planned_amount_by_equity"] = new_amount
+        adjusted.at[idx, "planned_equity"] = total_asset
+        if total_asset > 0:
+            adjusted.at[idx, "planned_position_pct"] = new_amount / total_asset
+
+        if new_qty < old_qty:
+            adjusted.at[idx, "risk_flags"] = append_risk_flag(
+                row.get("risk_flags", ""),
+                f"LIVE_SIZE_ADJUSTED:{old_qty}->{new_qty}",
+            )
+            logger().warning(
+                "实盘缩单：%s 原计划%d股，按账户资金/仓位/单笔上限调整为%d股；"
+                "可用资金%.0f元，总资产%.0f元，当前市值%.0f元，单笔上限%.0f元，参考成交价%.2f元",
+                ts_code,
+                old_qty,
+                new_qty,
+                available_cash,
+                total_asset,
+                market_value,
+                max_single_order_amount,
+                price,
+            )
+
+    return adjusted
+
+
+def append_risk_flag(current: Any, flag: str) -> str:
+    text = "" if current is None or str(current) == "nan" else str(current)
+    return flag if not text else f"{text}|{flag}"
+
+
+def to_float(value: Any, default: float = 0.0) -> float:
+    try:
+        if value is None or value == "":
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def to_int(value: Any, default: int = 0) -> int:
+    try:
+        if value is None or value == "":
+            return default
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def explain_reject_reasons(row: Any) -> str:
+    raw = str(row.get("reject_reasons", "") or "")
+    if not raw:
+        return "未知原因，请查看 qmt_live_order_preview.csv"
+    side = str(row.get("side", "")).upper()
+    ts_code = str(row.get("ts_code", ""))
+    quantity = to_int(row.get("quantity", 0))
+    estimated_amount = to_float(row.get("estimated_live_amount", 0.0))
+    available_cash = to_float(row.get("available_cash", 0.0))
+    total_asset = to_float(row.get("total_asset", 0.0))
+    current_market_value = to_float(row.get("current_market_value", 0.0))
+    last_price = to_float(row.get("last_price", 0.0))
+    max_cfg = load_json_config(PROJECT_ROOT / "config" / "config.json").get("live_trade", {})
+    max_position_pct = float(max_cfg.get("max_position_pct", 0.8))
+    max_total_position_pct = float(max_cfg.get("max_total_position_pct", 0.8))
+    max_single_order_amount = float(max_cfg.get("max_single_order_amount", 100000))
+
+    parts = []
+    for code in [item for item in raw.split("|") if item]:
+        if code == "OUTSIDE_TRADING_TIME":
+            parts.append(f"不在允许交易时间内；{side} 只允许 09:30-11:30、13:00-14:55/15:00，当前任务若在09:20会被拒")
+        elif code == "EXCEED_POSITION_PCT":
+            cap = total_asset * max_position_pct
+            parts.append(f"超过单票仓位上限：订单约{estimated_amount:.0f}元，上限={total_asset:.0f}×{max_position_pct:.0%}={cap:.0f}元")
+        elif code == "EXCEED_TOTAL_POSITION_PCT":
+            cap = total_asset * max_total_position_pct - current_market_value
+            parts.append(f"超过总仓位上限：订单约{estimated_amount:.0f}元，剩余额度约{cap:.0f}元")
+        elif code == "INSUFFICIENT_CASH":
+            parts.append(f"可用资金不足：订单约{estimated_amount:.0f}元，可用资金{available_cash:.0f}元")
+        elif code == "EXCEED_SINGLE_ORDER_AMOUNT":
+            parts.append(f"超过单笔金额上限：订单约{estimated_amount:.0f}元，上限{max_single_order_amount:.0f}元")
+        elif code == "LIMIT_UP_BUY_REJECTED":
+            parts.append(f"买入价接近涨停，按配置拒绝涨停买入；最新价{last_price:.2f}元")
+        elif code == "LIMIT_DOWN_SELL_REJECTED":
+            parts.append(f"卖出价接近跌停，按配置拒绝跌停卖出；最新价{last_price:.2f}元")
+        elif code == "SELL_VOLUME_NOT_AVAILABLE":
+            parts.append(f"可卖数量不足：计划卖{quantity}股，请核对QMT持仓可用数量")
+        elif code == "EMPTY_OR_ZERO_QUANTITY":
+            parts.append(f"委托数量为0：{ts_code} 经资金/风控缩单后不足一手")
+        else:
+            parts.append(code)
+    return "；".join(parts)
 
 
 def _do_sell(pos: dict[str, Any], qmt_enabled: bool) -> None:
@@ -626,15 +803,15 @@ def job_morning() -> None:
         logger().info("组合状态机要求先卖D，早盘流程到此结束。")
         return
 
-    # ③ A/B/C 买入信号 —— 只有组合状态机允许时才处理
+    # ③ A/B/C 买入信号 —— 09:20 只播报，不提交，避免触发 OUTSIDE_TRADING_TIME
     if has_combined_action(decisions, "ALLOW_ABC_BUY_PREVIEW"):
-        handle_combined_order_preview(combined_orders_path, reason="A/B/C买入预览")
+        logger().info("组合状态机允许A/B/C买入；将于09:30交易时段内执行开仓预览/下单。")
     else:
         logger().info("组合状态机未允许A/B/C买入，跳过。")
 
-    # ④ E2 T+1 开仓 —— 昨日信号今日开盘买入
+    # ④ E2 T+1 开仓 —— 09:20 只播报，不提交，避免触发 OUTSIDE_TRADING_TIME
     if has_combined_action(decisions, "ALLOW_E2_BUY"):
-        handle_combined_order_preview(combined_orders_path, reason="E2 T+1开仓")
+        logger().info("组合状态机允许E2开仓；将于09:30交易时段内执行开仓预览/下单。")
     else:
         logger().info("组合状态机未允许E2开仓，跳过。")
 
@@ -645,6 +822,39 @@ def job_morning() -> None:
         logger().info("组合状态机未允许D盘中监控，跳过。")
 
     logger().info("===== 盘前任务完成 =====")
+
+
+def job_opening_buy() -> None:
+    logger().info("===== 开盘买入任务（09:30）=====")
+
+    combined = load_combined_decisions()
+    decisions = combined[0] if combined is not None else None
+    combined_orders_path = combined[1] if combined is not None else None
+    if decisions is None:
+        logger().error("组合状态机决策生成失败，09:30不执行买入。")
+        return
+
+    if has_combined_action(decisions, "PLAN_SELL_D_FIRST"):
+        logger().info("组合状态机要求先卖D，09:30不执行新的买入。")
+        return
+
+    did_buy = False
+    if has_combined_action(decisions, "ALLOW_ABC_BUY_PREVIEW"):
+        handle_combined_order_preview(combined_orders_path, reason="A/B/C 09:30开仓")
+        did_buy = True
+    else:
+        logger().info("组合状态机未允许A/B/C买入，跳过。")
+
+    if has_combined_action(decisions, "ALLOW_E2_BUY"):
+        handle_combined_order_preview(combined_orders_path, reason="E2 09:30开仓")
+        did_buy = True
+    else:
+        logger().info("组合状态机未允许E2开仓，跳过。")
+
+    if not did_buy:
+        logger().info("09:30无A/B/C/E2买入计划。")
+
+    logger().info("===== 开盘买入任务完成 =====")
 
 
 def load_combined_decisions():
@@ -1612,9 +1822,11 @@ def run_job(scheduled_time: datetime.time) -> None:
     trade_day = is_trade_day(today)
     if scheduled_time == SCHEDULE[0]:     # 09:20
         job_morning() if trade_day else logger().info("非交易日，跳过盘前任务")
-    elif scheduled_time == SCHEDULE[1]:   # 14:50
+    elif scheduled_time == SCHEDULE[1]:   # 09:30
+        job_opening_buy() if trade_day else logger().info("非交易日，跳过开盘买入任务")
+    elif scheduled_time == SCHEDULE[2]:   # 14:50
         job_afternoon() if trade_day else logger().info("非交易日，跳过盘中任务")
-    elif scheduled_time == SCHEDULE[2]:   # 15:10
+    elif scheduled_time == SCHEDULE[3]:   # 15:10
         if trade_day:
             threading.Thread(
                 target=_run_post_market_with_retry,
