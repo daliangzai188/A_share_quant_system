@@ -24,6 +24,13 @@ from src.utils.config import get_project_root, load_json_config
 from src.utils.logger import get_logger
 
 _logger = get_logger("notify")
+
+# 确保 .env 的 BARK_URL 可被读到（不依赖其他模块的加载顺序）
+try:
+    from dotenv import load_dotenv
+    load_dotenv(get_project_root() / ".env")
+except Exception:
+    pass
 _lock = threading.Lock()
 _last_sent: dict[str, float] = {}   # key -> 上次推送的单调时钟时间
 
