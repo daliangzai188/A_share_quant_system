@@ -392,6 +392,84 @@ def find_open_position_by_code(ts_code: str, strategy_leg: str | None = None) ->
     return None
 
 
+def reconcile_positions_with_broker() -> None:
+    """收盘全量对账：比对本地 positions.json(open) 与券商实际持仓，差异告警。
+
+    只读不改账（避免误判自动改账带来风险），发现差异打日志 + Bark 告警，由人工核对。
+    覆盖逐单成交确认漏掉的边角：成交确认超时后才成交、手动交易、券商端撤废修正等。
+    """
+    log = logger()
+    try:
+        config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+        qmt_on = bool(config.get("broker_adapter_enabled")) and bool(config.get("qmt_enabled")) \
+            and bool(config.get("broker", {}).get("enabled"))
+    except Exception as e:
+        log.error("[收盘对账] 读取配置失败：%s", e)
+        return
+
+    if not qmt_on:
+        log.info("[收盘对账] QMT 未启用，跳过。")
+        return
+
+    log.info("===== 收盘持仓对账 =====")
+    broker_cfg = config.get("broker", {})
+
+    # 券商实际持仓（volume>0）
+    try:
+        with _qmt_lock:
+            adapter = _qmt_get(broker_cfg)
+            broker_positions = adapter.query_positions()
+    except Exception as e:
+        log.error("[收盘对账] 查询券商持仓失败：%s", e)
+        _notify("reconcile", "⚠️ 收盘对账失败", "查询券商持仓失败，无法核对账实一致，请回终端检查。",
+                level="timeSensitive")
+        return
+
+    broker_map: dict[str, dict[str, Any]] = {}
+    for bp in broker_positions:
+        vol = int(getattr(bp, "volume", 0) or 0)
+        if vol <= 0:
+            continue
+        code = str(getattr(bp, "ts_code", ""))
+        broker_map[code] = {"volume": vol, "name": str(getattr(bp, "name", ""))}
+
+    # 本地 open 持仓按 ts_code 汇总股数
+    local_map: dict[str, dict[str, Any]] = {}
+    for p in load_positions():
+        if p.get("status") != "open":
+            continue
+        code = str(p.get("ts_code", ""))
+        entry = local_map.setdefault(code, {"shares": 0, "name": str(p.get("name", ""))})
+        entry["shares"] += int(p.get("shares", 0) or 0)
+
+    diffs: list[str] = []
+    for code in sorted(set(local_map) | set(broker_map)):
+        local_qty = local_map.get(code, {}).get("shares", 0)
+        broker_qty = broker_map.get(code, {}).get("volume", 0)
+        name = local_map.get(code, {}).get("name") or broker_map.get(code, {}).get("name", "")
+        if local_qty == broker_qty:
+            continue
+        if local_qty > 0 and broker_qty == 0:
+            diffs.append(f"{code} {name} 本地{local_qty}股/券商无（已卖未标记或幽灵持仓）")
+        elif broker_qty > 0 and local_qty == 0:
+            diffs.append(f"{code} {name} 券商{broker_qty}股/本地无（实际持有未记账）")
+        else:
+            diffs.append(f"{code} {name} 数量不符 本地{local_qty}/券商{broker_qty}")
+
+    if not diffs:
+        log.info("✅ [收盘对账] 账实一致：本地与券商持仓完全匹配（共%d只）。", len(broker_map))
+        return
+
+    for d in diffs:
+        log.warning("⚠️ [收盘对账] 差异：%s", d)
+    summary = "；".join(diffs[:5])
+    if len(diffs) > 5:
+        summary += f"；…共{len(diffs)}处"
+    _notify("reconcile", "⚠️ 收盘对账发现差异",
+            f"本地与券商持仓不一致：{summary}。请回终端核对并手动修正。",
+            level="timeSensitive")
+
+
 def _confirm_fill(broker_cfg: dict, order_id: str, expected_qty: int, tag: str) -> "OrderFill":
     """轮询确认委托成交情况。受理(accepted)不等于成交(filled)，此处确认真实成交股数与均价。
 
@@ -2856,6 +2934,11 @@ def run_job(scheduled_time: datetime.time) -> None:
         job_afternoon() if trade_day else logger().info("非交易日，跳过盘中任务")
     elif scheduled_time == SCHEDULE[6]:   # 15:10
         if trade_day:
+            # 收盘全量对账（只读+告警，独立于数据流水线，先跑）
+            try:
+                reconcile_positions_with_broker()
+            except Exception as e:
+                logger().error("收盘对账异常：%s", e)
             threading.Thread(
                 target=_run_post_market_with_retry,
                 daemon=True,
