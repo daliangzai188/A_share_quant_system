@@ -458,8 +458,9 @@ class LiveOrderGateway:
         now = now_beijing()
         hhmm = now.hour * 100 + now.minute
         if side.upper() == "BUY":
-            # 925-1130：盘前+上午连续竞价；1130-1300：午间（QMT接受挂单，13:00生效）；1300-1455：下午连续竞价
-            return 925 <= hhmm <= 1455
+            # 928-929：盘前预挂（9:25集合竞价结束后，9:28起QMT接受买单排队等9:30）
+            # 930-1455：连续竞价（含午间11:30-13:00，QMT午间挂单13:00生效）
+            return 928 <= hhmm <= 1455
         if side.upper() == "SELL":
             # 915-925：集合竞价（9:23挂跌停价平仓）；930-1130、1300-1500：连续竞价
             return 915 <= hhmm <= 1130 or 1300 <= hhmm <= 1500
