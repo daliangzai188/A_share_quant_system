@@ -3079,6 +3079,8 @@ def main() -> None:
 
     def _exit(signum, _frame):
         log.info("收到信号 %d，退出", signum)
+        _notify("system_error", "🔌 守护进程已停止",
+                "守护进程被主动停止，实盘自动交易已暂停。如需恢复请重新启动。")
         stop_strategy_d_monitor("主守护进程退出")
         write_heartbeat("stopped")
         sys.exit(0)
@@ -3193,9 +3195,12 @@ if __name__ == "__main__":
     try:
         main()
     except SystemExit:
-        raise  # 信号处理器主动退出（清理后 sys.exit(0)），不告警
+        raise  # 信号处理器(_exit)已发"已停止"通知，这里直接退出
     except KeyboardInterrupt:
-        raise  # 手动中断，不告警
+        # Windows 下 Ctrl+C 常直接抛 KeyboardInterrupt 而绕过信号处理器，这里补发停止通知
+        _notify("system_error", "🔌 守护进程已停止",
+                "守护进程被手动中断(Ctrl+C)，实盘自动交易已暂停。如需恢复请重新启动。")
+        raise
     except Exception as _fatal:
         try:
             get_logger("a_share_quant").exception("守护进程致命错误，即将退出：%s", _fatal)
