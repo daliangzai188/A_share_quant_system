@@ -9,6 +9,7 @@
     "channel": "bark",
     "bark_group": "A股实盘",
     "bark_sound": "alarm",
+    "bark_critical_volume": 8,
     "throttle_sec": 300,
     "events": {
       "sell_fail": true,

@@ -50,10 +50,12 @@ def _should_throttle(key: str, throttle_sec: float) -> bool:
     return False
 
 
-def notify(event: str, title: str, body: str = "", *, level: str = "active") -> bool:
+def notify(event: str, title: str, body: str = "", *, level: str = "active",
+           call: bool = False) -> bool:
     """推送一条告警。event 用于按配置开关过滤与节流。返回是否实际推送成功。
 
     level: Bark 通知级别 active/timeSensitive/critical（critical 可在勿扰模式下响铃）。
+    call: True 时持续响铃约30秒（警报式，用于重大错误），需 App 已开启「重要提醒」权限。
     """
     cfg = _load_notify_config()
     if not cfg.get("enabled", False):
@@ -88,6 +90,12 @@ def notify(event: str, title: str, body: str = "", *, level: str = "active") -> 
     sound = cfg.get("bark_sound")
     if sound:
         params["sound"] = sound
+    if call:
+        # 持续响铃（警报式），并按配置设置重要提醒音量
+        params["call"] = "1"
+        vol = cfg.get("bark_critical_volume")
+        if vol is not None:
+            params["volume"] = str(vol)
     query = urllib.parse.urlencode(params)
     url = f"{base}/{safe_title}/{safe_body}?{query}"
 

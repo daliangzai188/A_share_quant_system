@@ -42,14 +42,16 @@ from src.utils.config import load_json_config, mkdir_p
 from src.utils.time_utils import BEIJING_TZ, now_beijing, today_beijing
 
 
-def _notify(event: str, title: str, body: str = "", *, level: str = "active") -> None:
+def _notify(event: str, title: str, body: str = "", *, level: str = "active",
+            call: bool = False) -> None:
     """告警推送（失败安全，绝不影响交易主流程）。
 
     正文口径：账号仅显示后2位（****03）；金额用「万」单位2位小数；标的可含代码+名称。
+    call=True 为警报式持续响铃，用于重大错误（崩溃/下单失败/平仓失败/账户断连）。
     """
     try:
         from src.notify import notify
-        notify(event, title, body, level=level)
+        notify(event, title, body, level=level, call=call)
     except Exception as exc:  # noqa: BLE001
         try:
             get_logger("a_share_quant").warning("告警推送异常：%s", exc)
@@ -593,7 +595,8 @@ def _execute_orders_inprocess(
                     log.error("❌ [%s] %s 买入未成交（状态=%s），不记录持仓，避免幽灵持仓。",
                               tag, s["ts_code"], fill.status_text)
                     _notify("buy_result", "❌ 开仓未成交",
-                            f"{s['ts_code']} {s['name']} 买入委托未成交，未记账，请回终端确认。")
+                            f"{s['ts_code']} {s['name']} 买入委托未成交，未记账，请回终端确认。",
+                            level="critical", call=True)
             else:  # SELL
                 local_pos = find_open_position_by_code(s["ts_code"], s["strategy_leg"])
                 local_oid = local_pos.get("order_id", "") if local_pos else ""
@@ -617,12 +620,12 @@ def _execute_orders_inprocess(
                               tag, s["ts_code"], fill.status_text)
                     _notify("sell_fail", "❌ 平仓未成交",
                             f"{s['ts_code']} {s['name']} 平仓委托未成交，可能被动过夜，请立即回终端处理。",
-                            level="critical")
+                            level="critical", call=True)
         except Exception as e:
             log.error("❌ [%s] %s 成交确认/回写异常：%s —— 请手动核对！", tag, s["ts_code"], e)
             _notify("sell_fail", "❌ 平仓回写异常",
                     f"{s['ts_code']} {s['name']} 平仓成交确认/回写出现异常，请立即回终端核对持仓。",
-                    level="critical")
+                    level="critical", call=True)
 
     return accepted_any
 
@@ -862,7 +865,8 @@ def _abc_place_sell_order_direct(
         log.error("❌ [ABC平仓] %s %s 未成交（状态=%s），持仓保留，等待下次重试或手动处理。",
                   ts_code, name, fill.status_text)
         _notify("sell_fail", "❌ 平仓未成交",
-                f"{ts_code} {name} 平仓委托未成交，可能被动过夜，请立即回终端处理。", level="critical")
+                f"{ts_code} {name} 平仓委托未成交，可能被动过夜，请立即回终端处理。",
+                level="critical", call=True)
         return False
 
 
@@ -908,7 +912,7 @@ def _do_sell(pos: dict[str, Any], qmt_enabled: bool) -> None:
         logger().error("❌ [平仓] 执行异常（%s %s）：%s —— 请立即手动检查！", ts_code, name, e)
         _notify("sell_fail", "❌ 平仓执行异常",
                 f"{ts_code} {name} 平仓过程出现异常，持仓可能未正确卖出，请立即回终端检查。",
-                level="critical")
+                level="critical", call=True)
 
 
 def check_and_close_positions() -> None:
@@ -1582,7 +1586,7 @@ def confirm_pending_premarket_buys() -> None:
             logger().error("❌ [盘前买入确认] %s 异常：%s —— 请手动核对！", s.get("ts_code"), e)
             _notify("buy_result", "❌ 盘前开仓确认异常",
                     f"{s.get('ts_code','')} 盘前买单成交确认出现异常，请回终端核对持仓。",
-                    level="timeSensitive")
+                    level="critical", call=True)
 
     clear_pending_buys()
     logger().info("===== 盘前买单成交确认完成 =====")
@@ -2938,7 +2942,8 @@ def _print_account_status(log: Any) -> None:
             log.warning("⚠️ QMT掉线（第%d次），立刻重连：%s", _qmt_reconnect_count, first_err)
             # 仅在刚断连那一刻告警（叠加节流），避免每轮轮询刷屏
             if _qmt_reconnect_count == 1:
-                _notify("connection", "🔌 账户断连", "QMT连接断开，正在自动重连...", level="timeSensitive")
+                _notify("connection", "🔌 账户断连", "QMT连接断开，正在自动重连，请关注。",
+                        level="critical", call=True)
             try:
                 adapter = _qmt_get(broker_cfg)
                 account = adapter.query_account()
@@ -2957,7 +2962,7 @@ def _print_account_status(log: Any) -> None:
                 if _qmt_reconnect_count >= 3:
                     _notify("system_error", "❌ QMT持续掉线",
                             "QMT连接已连续多次重连失败，实盘下单/平仓可能受影响，请立即检查。",
-                            level="critical")
+                            level="critical", call=True)
                 return
 
     now_str = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
@@ -3050,11 +3055,13 @@ def check_qmt_connection() -> None:
 
         log.error("❌ QMT连接失败：连续 5 次失败。最后错误：%s", last_error)
         _notify("system_error", "❌ QMT启动连接失败",
-                "守护进程启动时QMT连续5次连接失败，实盘功能不可用，请立即检查。", level="critical")
+                "守护进程启动时QMT连续5次连接失败，实盘功能不可用，请立即检查。",
+                level="critical", call=True)
     except Exception as e:
         log.error("❌ QMT连接失败：%s", e)
         _notify("system_error", "❌ QMT启动连接异常",
-                "守护进程启动连接QMT时发生异常，实盘功能不可用，请立即检查。", level="critical")
+                "守护进程启动连接QMT时发生异常，实盘功能不可用，请立即检查。",
+                level="critical", call=True)
 
 
 def main() -> None:
@@ -3188,5 +3195,5 @@ if __name__ == "__main__":
             pass
         _notify("system_error", "🛑 守护进程异常退出",
                 "守护进程发生致命错误即将退出，实盘自动交易已停止，请立即检查并重启。",
-                level="critical")
+                level="critical", call=True)
         raise
