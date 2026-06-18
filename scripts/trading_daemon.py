@@ -2484,11 +2484,16 @@ def _print_account_status(log: Any) -> None:
         return
 
     account = positions = None
+    quote_map: dict = {}
     with _qmt_lock:
         try:
             adapter = _qmt_get(broker_cfg)
             account = adapter.query_account()
             positions = adapter.query_positions()
+            if positions:
+                codes = [p.ts_code for p in positions if p.volume > 0]
+                if codes:
+                    quote_map = adapter.get_full_tick(codes)
             if _qmt_reconnect_count > 0:
                 log.info("✅ QMT连接已恢复（第%d次重连后恢复）", _qmt_reconnect_count)
                 _qmt_reconnect_count = 0
@@ -2500,6 +2505,10 @@ def _print_account_status(log: Any) -> None:
                 adapter = _qmt_get(broker_cfg)
                 account = adapter.query_account()
                 positions = adapter.query_positions()
+                if positions:
+                    codes = [p.ts_code for p in positions if p.volume > 0]
+                    if codes:
+                        quote_map = adapter.get_full_tick(codes)
                 log.info("✅ QMT重连成功（第%d次恢复）", _qmt_reconnect_count)
                 _qmt_reconnect_count = 0
             except Exception as retry_err:
@@ -2519,18 +2528,33 @@ def _print_account_status(log: Any) -> None:
             current_price = p.market_value / p.volume if p.volume > 0 else 0.0
             lp = local_pos_map.get(p.ts_code, {})
             buy_price = float(lp.get("buy_price", 0))
+
+            # 今日涨跌幅（相对昨收）
+            quote = quote_map.get(p.ts_code)
+            pre_close = float(getattr(quote, "pre_close", 0.0) or 0.0) if quote else 0.0
+            if pre_close > 0:
+                chg_pct = (current_price - pre_close) / pre_close * 100
+                chg_sign = "+" if chg_pct >= 0 else ""
+                chg_str = f"涨跌{chg_sign}{chg_pct:.2f}% "
+            else:
+                chg_str = ""
+
             if buy_price > 0:
                 pnl_pct = (current_price - buy_price) / buy_price * 100
                 pnl_sign = "+" if pnl_pct >= 0 else ""
                 pos_parts.append(
                     f"{p.ts_code}×{p.volume}股 "
                     f"现价{current_price:.2f} "
+                    f"{chg_str}"
                     f"今日{pnl_sign}{pnl_pct:.2f}% "
                     f"市值{p.market_value:.0f}元"
                 )
             else:
                 pos_parts.append(
-                    f"{p.ts_code}×{p.volume}股 市值{p.market_value:.0f}元"
+                    f"{p.ts_code}×{p.volume}股 "
+                    f"现价{current_price:.2f} "
+                    f"{chg_str}"
+                    f"市值{p.market_value:.0f}元"
                 )
         log.info("✅ [账户] %s | 账户%s 可用%.0f元 | 持仓：%s",
                  now_str, account.account_id, account.available_cash,
