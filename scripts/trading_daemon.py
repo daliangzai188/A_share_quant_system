@@ -60,6 +60,7 @@ else:
     _venv_python = PROJECT_ROOT / ".venv" / "bin" / "python"
     PYTHON = str(_venv_python) if _venv_python.exists() else _sys.executable
 POSITIONS_FILE = PROJECT_ROOT / "data" / "processed" / "positions.json"
+PENDING_BUY_FILE = PROJECT_ROOT / "data" / "processed" / "pending_premarket_buy.json"
 HEARTBEAT_FILE = PROJECT_ROOT / "logs" / "daemon_heartbeat.txt"
 D_MONITOR_PID_FILE = PROJECT_ROOT / "logs" / "strategy_d_monitor.pid"
 CALENDAR_STALE_WARNED: set[str] = set()
@@ -331,6 +332,68 @@ def mark_position_closed(order_id: str, sell_date: str, sell_price: float = 0.0)
     save_positions(positions)
 
 
+def reduce_position_shares(order_id: str, remaining_shares: int) -> None:
+    """部分成交后保留持仓，仅把剩余未卖股数写回，status 维持 open 以便下次继续卖出。"""
+    positions = load_positions()
+    for p in positions:
+        if p["order_id"] == order_id and p["status"] == "open":
+            p["shares"] = int(remaining_shares)
+    save_positions(positions)
+
+
+def find_open_position_by_code(ts_code: str, strategy_leg: str | None = None) -> dict[str, Any] | None:
+    """按 ts_code（可选 strategy_leg）查找一条 open 持仓，用于卖出后回写。"""
+    leg = (strategy_leg or "").upper()
+    for p in load_positions():
+        if p.get("status") != "open" or str(p.get("ts_code", "")) != str(ts_code):
+            continue
+        if leg and str(p.get("strategy_leg", "")).upper() != leg:
+            continue
+        return p
+    return None
+
+
+def _confirm_fill(broker_cfg: dict, order_id: str, expected_qty: int, tag: str) -> "OrderFill":
+    """轮询确认委托成交情况。受理(accepted)不等于成交(filled)，此处确认真实成交股数与均价。
+
+    - fill_confirm_enabled=False 时返回"乐观全成"（avg_price=0，调用方回退到参考价）。
+    - 每次轮询单独加锁、轮询间隔释放锁，不会长时间阻塞账户轮询线程。
+    """
+    from src.broker_adapter import OrderFill
+
+    log = logger()
+    config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+    lt = config.get("live_trade", {})
+
+    if not lt.get("fill_confirm_enabled", True):
+        return OrderFill(order_id=str(order_id), filled_qty=int(expected_qty),
+                         is_terminal=True, is_filled=True, status_text="确认已禁用")
+
+    timeout = float(lt.get("fill_confirm_timeout_sec", 60))
+    poll = max(1.0, float(lt.get("fill_confirm_poll_sec", 3)))
+    deadline = time.monotonic() + timeout
+    last_fill = OrderFill(order_id=str(order_id))
+
+    while True:
+        try:
+            with _qmt_lock:
+                adapter = _qmt_get(broker_cfg)
+                last_fill = adapter.get_order_fill(order_id)
+        except Exception as e:
+            log.warning("[%s] 成交确认查询异常 order_id=%s：%s", tag, order_id, e)
+
+        if expected_qty > 0 and last_fill.filled_qty >= expected_qty:
+            return last_fill
+        if last_fill.is_terminal:
+            return last_fill
+        if time.monotonic() >= deadline:
+            log.warning("⚠️ [%s] 成交确认超时（%.0f秒）order_id=%s 已成%d/%d股 状态=%s",
+                        tag, timeout, order_id, last_fill.filled_qty, expected_qty,
+                        last_fill.status_text)
+            return last_fill
+        time.sleep(poll)
+
+
 # ── 平仓检查（最高优先级，独立运行，绝不因其他错误跳过）────────────────────
 
 def _execute_orders_inprocess(
@@ -418,6 +481,7 @@ def _execute_orders_inprocess(
         now_str = now_beijing().strftime("%H:%M:%S")
         results = []
         accepted_any = False
+        submitted: list[dict[str, Any]] = []   # 待成交确认的已受理委托
         for _, row in executable.iterrows():
             side = str(row["side"]).upper()
             qty = int(row["quantity"])
@@ -436,22 +500,21 @@ def _execute_orders_inprocess(
             results.append(asdict(result))
             if result.accepted:
                 accepted_any = True
-                log.info("✅ [%s] %s %s %s %d股 参考价%.2f元 金额%.0f元",
+                log.info("✅ [%s] %s 已受理 %s %s %d股 参考价%.2f元 金额%.0f元（待成交确认）",
                          tag, now_str, side, row["ts_code"], qty, ref_price, qty * ref_price)
-                if side == "BUY":
-                    raw_exit_n = row.get("exit_n_days", None)
-                    exit_n = int(float(raw_exit_n)) if raw_exit_n is not None and str(raw_exit_n) not in {"", "nan"} else 2
-                    record_buy(
-                        order_id=str(result.order_id or row.get("paper_order_id", f"live-{now_str}-{row['ts_code']}")),
-                        ts_code=str(row["ts_code"]),
-                        name=str(row.get("name", "")),
-                        signal_date=str(row.get("signal_date", "")),
-                        buy_date=today_beijing().strftime("%Y%m%d"),
-                        shares=qty,
-                        buy_price=ref_price,
-                        strategy_leg=str(row.get("strategy_leg", "")),
-                        exit_n_days=exit_n,
-                    )
+                raw_exit_n = row.get("exit_n_days", None)
+                exit_n = int(float(raw_exit_n)) if raw_exit_n is not None and str(raw_exit_n) not in {"", "nan"} else 2
+                submitted.append({
+                    "order_id": str(result.order_id or row.get("paper_order_id", f"live-{now_str}-{row['ts_code']}")),
+                    "side": side,
+                    "ts_code": str(row["ts_code"]),
+                    "name": str(row.get("name", "")),
+                    "signal_date": str(row.get("signal_date", "")),
+                    "strategy_leg": str(row.get("strategy_leg", "")),
+                    "qty": qty,
+                    "ref_price": ref_price,
+                    "exit_n": exit_n,
+                })
             else:
                 log.error("❌ [%s] %s %s %s %d股 失败：%s",
                           tag, now_str, side, row["ts_code"], qty, result.message)
@@ -459,12 +522,61 @@ def _execute_orders_inprocess(
         # 保存提交结果 CSV
         result_csv = PROJECT_ROOT / "reports" / "live_trade" / "qmt_live_order_submitted_orders.csv"
         pd.DataFrame(results).to_csv(result_csv, index=False, encoding="utf-8-sig")
-        return accepted_any
 
       except Exception as e:
         _qmt_reset()
         log.error("❌ [%s] 下单异常（已重置连接）：%s", tag, e)
         return False
+
+    # ── 成交确认 + 持仓回写（在 QMT 锁外执行，避免轮询期间长时间占锁）──
+    today_str = today_beijing().strftime("%Y%m%d")
+    for s in submitted:
+        try:
+            fill = _confirm_fill(broker_cfg, s["order_id"], s["qty"], tag)
+            fill_price = fill.avg_price if fill.avg_price > 0 else s["ref_price"]
+            if s["side"] == "BUY":
+                if fill.filled_qty > 0:
+                    record_buy(
+                        order_id=s["order_id"],
+                        ts_code=s["ts_code"],
+                        name=s["name"],
+                        signal_date=s["signal_date"],
+                        buy_date=today_str,
+                        shares=fill.filled_qty,
+                        buy_price=fill_price,
+                        strategy_leg=s["strategy_leg"],
+                        exit_n_days=s["exit_n"],
+                    )
+                    if fill.filled_qty < s["qty"]:
+                        log.warning("⚠️ [%s] %s 买入部分成交 %d/%d股 @%.2f，按实际成交记录持仓。",
+                                    tag, s["ts_code"], fill.filled_qty, s["qty"], fill_price)
+                    else:
+                        log.info("✅ [%s] %s 买入全部成交 %d股 @%.2f，已记录持仓。",
+                                 tag, s["ts_code"], fill.filled_qty, fill_price)
+                else:
+                    log.error("❌ [%s] %s 买入未成交（状态=%s），不记录持仓，避免幽灵持仓。",
+                              tag, s["ts_code"], fill.status_text)
+            else:  # SELL
+                local_pos = find_open_position_by_code(s["ts_code"], s["strategy_leg"])
+                local_oid = local_pos.get("order_id", "") if local_pos else ""
+                held = int(local_pos.get("shares", s["qty"])) if local_pos else s["qty"]
+                if not local_oid:
+                    log.warning("⚠️ [%s] %s 卖出后未找到本地持仓记录，跳过回写。", tag, s["ts_code"])
+                elif fill.filled_qty >= held:
+                    mark_position_closed(local_oid, today_str, fill_price)
+                    log.info("✅ [%s] %s 卖出全部成交 %d股 @%.2f，已平仓。",
+                             tag, s["ts_code"], fill.filled_qty, fill_price)
+                elif fill.filled_qty > 0:
+                    reduce_position_shares(local_oid, held - fill.filled_qty)
+                    log.warning("⚠️ [%s] %s 卖出部分成交 %d/%d股 @%.2f，剩余%d股保留持仓待下次卖出。",
+                                tag, s["ts_code"], fill.filled_qty, held, fill_price, held - fill.filled_qty)
+                else:
+                    log.error("❌ [%s] %s 卖出未成交（状态=%s），持仓保留，等待下次重试或手动处理。",
+                              tag, s["ts_code"], fill.status_text)
+        except Exception as e:
+            log.error("❌ [%s] %s 成交确认/回写异常：%s —— 请手动核对！", tag, s["ts_code"], e)
+
+    return accepted_any
 
 
 def resize_buy_orders_for_live_account(
@@ -618,9 +730,14 @@ def explain_reject_reasons(row: Any) -> str:
 
 
 def _abc_place_sell_order_direct(
-    ts_code: str, name: str, shares: int, confirm: str, config: dict, broker_cfg: dict
+    ts_code: str, name: str, shares: int, order_id: str,
+    confirm: str, config: dict, broker_cfg: dict
 ) -> bool:
-    """A/B/C 持仓直接按 last_price/bid1 挂 FIXED_PRICE 卖单，不走 CSV 流水线。"""
+    """A/B/C 持仓直接按 last_price/bid1 挂 FIXED_PRICE 卖单，不走 CSV 流水线。
+
+    下单受理后确认真实成交：全成→平仓回写；部成→保留剩余股数；未成→保留持仓。
+    返回 True 仅表示全部成交。
+    """
     from src.broker_adapter import OrderRequest
     from src.live_order_gateway import LiveOrderGateway
 
@@ -673,11 +790,26 @@ def _abc_place_sell_order_direct(
         adapter = _qmt_get(broker_cfg)
         result = adapter.place_order(request)
 
-    if result.accepted:
-        log.info("✅ [ABC平仓] %s %s %d股 @%.2f 委托已提交", ts_code, name, shares, price)
-        return True
-    else:
+    if not result.accepted:
         log.error("❌ [ABC平仓] %s %s 提交失败：%s", ts_code, name, result.message)
+        return False
+
+    log.info("✅ [ABC平仓] %s %s %d股 @%.2f 委托已受理（待成交确认）", ts_code, name, shares, price)
+    order_id_broker = str(result.order_id or f"abc-sell-{today_str}-{ts_code}")
+    fill = _confirm_fill(broker_cfg, order_id_broker, shares, "ABC平仓")
+    fill_price = fill.avg_price if fill.avg_price > 0 else price
+    if fill.filled_qty >= shares:
+        mark_position_closed(order_id, today_str, fill_price)
+        log.info("✅ [ABC平仓] %s %s 全部成交 %d股 @%.2f，已平仓。", ts_code, name, fill.filled_qty, fill_price)
+        return True
+    elif fill.filled_qty > 0:
+        reduce_position_shares(order_id, shares - fill.filled_qty)
+        log.warning("⚠️ [ABC平仓] %s %s 部分成交 %d/%d股 @%.2f，剩余%d股保留待下次卖出。",
+                    ts_code, name, fill.filled_qty, shares, fill_price, shares - fill.filled_qty)
+        return False
+    else:
+        log.error("❌ [ABC平仓] %s %s 未成交（状态=%s），持仓保留，等待下次重试或手动处理。",
+                  ts_code, name, fill.status_text)
         return False
 
 
@@ -700,22 +832,16 @@ def _do_sell(pos: dict[str, Any], qmt_enabled: bool) -> None:
             strategy_leg = str(pos.get("strategy_leg", "")).upper()
             if strategy_leg == "E2":
                 # E2 卖出计划单由 combined_planned_orders 生成（包含 PLAN_SELL_T2_CLOSE 行）
+                # 成交确认与持仓回写由 _execute_orders_inprocess 内部完成
                 combined_path = (
                     PROJECT_ROOT / "reports" / "live_trade" / "combined"
                     / f"combined_planned_orders_{today_str}.csv"
                 )
                 _execute_orders_inprocess(combined_path, confirm, "E2平仓")
-                mark_position_closed(order_id, today_str)
             elif strategy_leg in {"A", "B", "C"}:
                 # ABC planned_orders 文件只有BUY行，必须直接下单
-                ok = _abc_place_sell_order_direct(ts_code, name, shares, confirm, config, broker_cfg)
-                if ok:
-                    mark_position_closed(order_id, today_str)
-                else:
-                    logger().error(
-                        "❌ [ABC平仓] %s %s 卖单提交失败，持仓保留，等待下次重试或手动处理。",
-                        ts_code, name,
-                    )
+                # 成交确认与持仓回写由 _abc_place_sell_order_direct 内部完成
+                _abc_place_sell_order_direct(ts_code, name, shares, order_id, confirm, config, broker_cfg)
             else:
                 # D 策略已在 9:23 集合竞价卖出，不应再进入此分支
                 logger().warning(
@@ -942,8 +1068,11 @@ def job_premarket_sell() -> None:
                 result  = adapter.place_order(request)
 
             if result.accepted:
-                logger().info("✅ [集合竞价平仓] %s %s 委托已提交（order_id=%s）", ts_code, name, result.order_id)
-                mark_position_closed(pos.get("order_id", ""), today_str)
+                # 集合竞价9:25才撮合，此处不立即标记平仓，由09:26持仓同步按实盘实际成交确认
+                logger().info(
+                    "✅ [集合竞价平仓] %s %s 委托已受理（order_id=%s），等待09:25撮合，09:26按实盘确认。",
+                    ts_code, name, result.order_id,
+                )
             else:
                 logger().error("❌ [集合竞价平仓] %s %s 提交失败：%s，等待后续平仓任务处理。", ts_code, name, result.message)
 
@@ -1099,6 +1228,7 @@ def job_premarket_buy() -> None:
         current_market_value=account.market_value,
     )
 
+    pending_buys: list[dict[str, Any]] = []
     for _, row in buy_orders.iterrows():
         try:
             ts_code  = str(row["ts_code"])
@@ -1140,27 +1270,30 @@ def job_premarket_buy() -> None:
                 result  = adapter.place_order(request)
 
             if result.accepted:
+                # 盘前挂单09:30开盘才撮合，此处不立即记录持仓，落盘待确认，09:30按实盘成交确认
                 raw_exit_n = row.get("exit_n_days", None)
                 exit_n = int(float(raw_exit_n)) if raw_exit_n is not None and str(raw_exit_n) not in {"", "nan"} else 2
-                record_buy(
-                    order_id=str(result.order_id or f"premarket-{today_str}-{ts_code}"),
-                    ts_code=ts_code,
-                    name=name_s,
-                    signal_date=str(row.get("signal_date", "")),
-                    buy_date=today_str,
-                    shares=qty,
-                    buy_price=price,
-                    strategy_leg=str(row.get("strategy_leg", "")),
-                    exit_n_days=exit_n,
-                )
-                logger().info("✅ [盘前买入] %s %s %d股 @%.2f 委托已提交", ts_code, name_s, qty, price)
+                pending_buys.append({
+                    "order_id": str(result.order_id or f"premarket-{today_str}-{ts_code}"),
+                    "ts_code": ts_code,
+                    "name": name_s,
+                    "signal_date": str(row.get("signal_date", "")),
+                    "strategy_leg": str(row.get("strategy_leg", "")),
+                    "qty": qty,
+                    "ref_price": price,
+                    "exit_n": exit_n,
+                })
+                logger().info("✅ [盘前买入] %s %s %d股 @%.2f 委托已受理（待09:30开盘确认成交）",
+                              ts_code, name_s, qty, price)
             else:
                 logger().error("❌ [盘前买入] %s %s 提交失败：%s", ts_code, name_s, result.message)
 
         except Exception as e:
             logger().error("盘前买入异常（%s）：%s", row.get("ts_code"), e)
 
-    logger().info("===== 盘前买入挂单完成 =====")
+    if pending_buys:
+        save_pending_buys(pending_buys)
+    logger().info("===== 盘前买入挂单完成（受理%d笔，待开盘确认）=====", len(pending_buys))
 
 
 def job_morning() -> None:
@@ -1208,6 +1341,12 @@ def job_morning() -> None:
 
 def job_opening_buy() -> None:
     logger().info("===== 开盘买入任务（09:30）=====")
+
+    # 先确认09:28盘前买单是否在开盘成交，再决定是否需要补单
+    try:
+        confirm_pending_premarket_buys()
+    except Exception as e:
+        logger().error("盘前买单成交确认异常：%s —— 请手动核对！", e)
 
     if has_open_local_position():
         logger().info("09:30 检测到已有本地持仓（09:28盘前买入已成交），跳过重复买入。")
@@ -1295,6 +1434,101 @@ def has_combined_action(decisions, action: str) -> bool:
 
 def has_open_local_position() -> bool:
     return any(p.get("status") == "open" for p in load_positions())
+
+
+# ── 盘前买单待确认（09:28挂单→09:30开盘成交确认）────────────────────────────
+
+def save_pending_buys(orders: list[dict[str, Any]]) -> None:
+    """记录09:28盘前已受理买单，等09:30开盘后确认成交。"""
+    try:
+        mkdir_p(PENDING_BUY_FILE.parent)
+        payload = {"date": today_beijing().strftime("%Y%m%d"), "orders": orders}
+        tmp = PENDING_BUY_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(PENDING_BUY_FILE)
+    except Exception as e:
+        logger().error("保存盘前待确认买单失败：%s", e)
+
+
+def load_pending_buys() -> list[dict[str, Any]]:
+    """读取当日盘前待确认买单（非当日的视为过期，忽略）。"""
+    try:
+        if not PENDING_BUY_FILE.exists():
+            return []
+        payload = json.loads(PENDING_BUY_FILE.read_text(encoding="utf-8"))
+        if payload.get("date") != today_beijing().strftime("%Y%m%d"):
+            return []
+        return payload.get("orders", [])
+    except Exception as e:
+        logger().error("读取盘前待确认买单失败：%s", e)
+        return []
+
+
+def clear_pending_buys() -> None:
+    try:
+        if PENDING_BUY_FILE.exists():
+            PENDING_BUY_FILE.unlink()
+    except Exception as e:
+        logger().error("清除盘前待确认买单失败：%s", e)
+
+
+def confirm_pending_premarket_buys() -> None:
+    """09:30开盘后确认09:28盘前买单成交：全成/部成→按实际记录持仓；未成→撤掉残单，避免与开盘补单重复成交。"""
+    pending = load_pending_buys()
+    if not pending:
+        return
+
+    logger().info("===== 确认盘前买单成交（09:30）共%d笔 =====", len(pending))
+    config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+    broker_cfg = config.get("broker", {})
+    today_str = today_beijing().strftime("%Y%m%d")
+
+    for s in pending:
+        try:
+            order_id = str(s.get("order_id", ""))
+            ts_code = str(s.get("ts_code", ""))
+            qty = int(s.get("qty", 0))
+            ref_price = float(s.get("ref_price", 0.0))
+            fill = _confirm_fill(broker_cfg, order_id, qty, "盘前买入确认")
+            fill_price = fill.avg_price if fill.avg_price > 0 else ref_price
+            if fill.filled_qty > 0:
+                record_buy(
+                    order_id=order_id,
+                    ts_code=ts_code,
+                    name=str(s.get("name", "")),
+                    signal_date=str(s.get("signal_date", "")),
+                    buy_date=today_str,
+                    shares=fill.filled_qty,
+                    buy_price=fill_price,
+                    strategy_leg=str(s.get("strategy_leg", "")),
+                    exit_n_days=int(s.get("exit_n", 2)),
+                )
+                if fill.filled_qty < qty:
+                    logger().warning("⚠️ [盘前买入确认] %s 部分成交 %d/%d股 @%.2f，撤残单。",
+                                     ts_code, fill.filled_qty, qty, fill_price)
+                    _try_cancel_order(broker_cfg, order_id, ts_code)
+                else:
+                    logger().info("✅ [盘前买入确认] %s 全部成交 %d股 @%.2f，已记录持仓。",
+                                  ts_code, fill.filled_qty, fill_price)
+            else:
+                logger().warning("⚠️ [盘前买入确认] %s 开盘未成交（状态=%s），撤单后转09:30开盘补买。",
+                                 ts_code, fill.status_text)
+                _try_cancel_order(broker_cfg, order_id, ts_code)
+        except Exception as e:
+            logger().error("❌ [盘前买入确认] %s 异常：%s —— 请手动核对！", s.get("ts_code"), e)
+
+    clear_pending_buys()
+    logger().info("===== 盘前买单成交确认完成 =====")
+
+
+def _try_cancel_order(broker_cfg: dict, order_id: str, ts_code: str) -> None:
+    try:
+        with _qmt_lock:
+            adapter = _qmt_get(broker_cfg)
+            ok = adapter.cancel_order(order_id)
+        logger().info("撤单 %s（%s）请求%s", ts_code, order_id, "已提交" if ok else "失败")
+    except Exception as e:
+        logger().warning("撤单 %s（%s）异常：%s", ts_code, order_id, e)
 
 
 def blocks_d_for_opening_plan(decisions) -> bool:
@@ -1664,22 +1898,36 @@ def _e2_place_order_direct(ts_code: str, name: str, planned_qty: int, signal_dat
         adapter = _qmt_get(broker_cfg)
         result = adapter.place_order(request)
 
-    if result.accepted:
+    if not result.accepted:
+        log.error("❌ [E2延迟开仓] %s %s 提交失败：%s", ts_code, name, result.message)
+        return False
+
+    log.info("✅ [E2延迟开仓] %s %s %d股 @%.2f 委托已受理（待成交确认）", ts_code, name, qty, price)
+    order_id_broker = str(result.order_id or f"e2retry-{today_str}-{ts_code}")
+    fill = _confirm_fill(broker_cfg, order_id_broker, qty, "E2延迟开仓")
+    fill_price = fill.avg_price if fill.avg_price > 0 else price
+    if fill.filled_qty > 0:
         record_buy(
-            order_id=str(result.order_id or f"e2retry-{today_str}-{ts_code}"),
+            order_id=order_id_broker,
             ts_code=ts_code,
             name=name,
             signal_date=signal_date,
             buy_date=today_str,
-            shares=qty,
-            buy_price=price,
+            shares=fill.filled_qty,
+            buy_price=fill_price,
             strategy_leg=strategy_leg,
             exit_n_days=exit_n_days,
         )
-        log.info("✅ [E2延迟开仓] %s %s %d股 @%.2f 委托已提交", ts_code, name, qty, price)
+        if fill.filled_qty < qty:
+            log.warning("⚠️ [E2延迟开仓] %s 部分成交 %d/%d股 @%.2f，按实际成交记录持仓。",
+                        ts_code, fill.filled_qty, qty, fill_price)
+        else:
+            log.info("✅ [E2延迟开仓] %s %s 全部成交 %d股 @%.2f，已记录持仓。",
+                     ts_code, name, fill.filled_qty, fill_price)
         return True
     else:
-        log.error("❌ [E2延迟开仓] %s %s 提交失败：%s", ts_code, name, result.message)
+        log.error("❌ [E2延迟开仓] %s %s 未成交（状态=%s），不记录持仓，避免幽灵持仓。",
+                  ts_code, name, fill.status_text)
         return False
 
 

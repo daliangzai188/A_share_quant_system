@@ -93,6 +93,21 @@ class OrderResult:
     raw: dict[str, Any] | None = None
 
 
+@dataclass(frozen=True)
+class OrderFill:
+    """委托成交确认结果。accepted（已受理）不等于 filled（已成交），此结构承载真实成交情况。"""
+
+    order_id: str
+    status_code: int = -1          # 券商原始状态码，-1 表示未知/未查到
+    status_text: str = "UNKNOWN"   # 人类可读状态
+    filled_qty: int = 0            # 已成交股数
+    avg_price: float = 0.0         # 成交均价
+    is_terminal: bool = False      # 订单已到终态（全成/废单/已撤/部撤），不会再有新成交
+    is_filled: bool = False        # 全部成交
+    is_partial: bool = False       # 部分成交（仍可能继续成交，除非同时 is_terminal）
+    raw: dict[str, Any] | None = None
+
+
 def dataclass_to_dict(value: Any) -> dict[str, Any]:
     """将项目 dataclass 转成可落地 CSV/JSON 的字典。"""
 
@@ -137,4 +152,8 @@ class BrokerAdapter(ABC):
     @abstractmethod
     def cancel_order(self, order_id: str) -> bool:
         """撤销委托。返回 True 表示撤单请求已提交（不代表最终成功）。"""
+
+    def get_order_fill(self, order_id: str) -> "OrderFill":
+        """查询某笔委托的成交情况。默认返回 UNKNOWN，具体券商适配器应覆盖。"""
+        return OrderFill(order_id=str(order_id))
 

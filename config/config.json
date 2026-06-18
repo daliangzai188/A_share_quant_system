@@ -35,6 +35,9 @@
     "reject_limit_up_buy": true,
     "reject_limit_down_sell": true,
     "duplicate_order_check": true,
+    "fill_confirm_enabled": true,
+    "fill_confirm_timeout_sec": 60,
+    "fill_confirm_poll_sec": 3,
     "output_prefix": "reports/live_trade/qmt_live_order"
   },
   "strategy_d": {

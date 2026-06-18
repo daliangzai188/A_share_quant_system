@@ -730,31 +730,34 @@ class StrategyDMonitor:
         print(f"  14:55 撤单 — 共 {len(self.session_orders)} 笔D委托")
         self.logger.warning("14:55撤单，共 %d 笔", len(self.session_orders))
 
-        # 查询今日委托，找已成交的
-        try:
-            all_orders = self.broker.query_orders()
-        except Exception as e:
-            self.logger.error("查询委托失败: %s", e)
-            all_orders = []
-
-        filled_ids: set[str] = set()
-        for o in all_orders:
-            raw = o if isinstance(o, dict) else {}
-            oid = str(raw.get("order_id", raw.get("m_strOrderID", "")))
-            status = str(raw.get("order_status", raw.get("status", ""))).lower()
-            if any(k in status for k in ["filled", "全部成交", "已成", "5"]):
-                filled_ids.add(oid)
-
+        # 逐笔查询真实成交（get_order_fill 以成交回报为准，避免状态码字符串误判）
         cancelled = failed = 0
         for order_id, ts_code in self.session_orders.items():
-            if order_id in filled_ids:
-                print(f"  {ts_code}  order_id={order_id} → 已成交，跳过")
-                self._record_filled_d_position(order_id)
+            try:
+                fill = self.broker.get_order_fill(order_id)
+            except Exception as e:
+                self.logger.error("查询成交失败: %s order_id=%s: %s", ts_code, order_id, e)
+                fill = None
+
+            filled_qty = int(getattr(fill, "filled_qty", 0)) if fill else 0
+            fill_price = float(getattr(fill, "avg_price", 0.0)) if fill else 0.0
+
+            if filled_qty > 0:
+                status_text = getattr(fill, "status_text", "") if fill else ""
+                print(f"  {ts_code}  order_id={order_id} → 已成交{filled_qty}股，写入持仓")
+                self._record_filled_d_position(order_id, filled_qty, fill_price)
+                # 部分成交：撤掉未成残单
+                if not getattr(fill, "is_filled", False):
+                    ok = self.broker.cancel_order(order_id)
+                    self.logger.warning("D部分成交 %s 已成%d股(%s)，撤残单%s",
+                                        ts_code, filled_qty, status_text,
+                                        "已发" if ok else "失败")
                 continue
+
             ok = self.broker.cancel_order(order_id)
             if ok:
                 cancelled += 1
-                print(f"  {ts_code}  order_id={order_id} → 撤单已发")
+                print(f"  {ts_code}  order_id={order_id} → 未成交，撤单已发")
             else:
                 failed += 1
                 print(f"  {ts_code}  order_id={order_id} → 撤单失败！请手动检查")
@@ -763,7 +766,8 @@ class StrategyDMonitor:
         print(f"  结果: 撤单={cancelled}笔  失败={failed}笔")
         print(f"{'='*55}\n")
 
-    def _record_filled_d_position(self, order_id: str) -> None:
+    def _record_filled_d_position(self, order_id: str, filled_qty: int | None = None,
+                                  fill_price: float | None = None) -> None:
         detail = self.session_order_details.get(order_id)
         if not detail:
             self.logger.warning("找不到D成交委托明细，无法写入持仓: order_id=%s", order_id)
@@ -772,6 +776,8 @@ class StrategyDMonitor:
         if any(str(pos.get("order_id", "")) == str(order_id) for pos in positions):
             return
         buy_date = str(detail.get("buy_date", today_beijing().strftime("%Y%m%d")))
+        shares = int(filled_qty) if filled_qty and filled_qty > 0 else int(detail.get("shares", 0))
+        buy_price = float(fill_price) if fill_price and fill_price > 0 else float(detail.get("buy_price", 0.0))
         positions.append(
             {
                 "order_id": str(order_id),
@@ -781,8 +787,8 @@ class StrategyDMonitor:
                 "buy_date": buy_date,
                 # 默认持到T+2收盘。若当晚A/B/C生成信号（HISTORICAL_SIM_FILLED），次日开盘手动平仓后再执行ABC。
                 "planned_exit_date": next_trade_day(buy_date, 2),
-                "shares": int(detail.get("shares", 0)),
-                "buy_price": float(detail.get("buy_price", 0.0)),
+                "shares": shares,
+                "buy_price": buy_price,
                 "strategy_leg": "D",
                 "status": "open",
                 "sell_date": None,
@@ -790,7 +796,8 @@ class StrategyDMonitor:
             }
         )
         save_position_records(positions)
-        self.logger.warning("D成交已写入持仓账本: order_id=%s ts_code=%s", order_id, detail.get("ts_code", ""))
+        self.logger.warning("D成交已写入持仓账本: order_id=%s ts_code=%s %d股 @%.2f",
+                            order_id, detail.get("ts_code", ""), shares, buy_price)
 
     # ── 轮询 ─────────────────────────────────────────────────────────────────
 

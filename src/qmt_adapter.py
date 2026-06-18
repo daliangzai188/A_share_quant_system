@@ -10,6 +10,7 @@ from src.broker_adapter import (
     AccountSnapshot,
     BrokerAdapter,
     BrokerConnectionConfig,
+    OrderFill,
     OrderRequest,
     OrderResult,
     PositionSnapshot,
@@ -29,6 +30,24 @@ def qmt_to_tushare_code(code: str) -> str:
     """将 QMT 代码转换成项目统一 Tushare 代码。"""
 
     return str(code).strip().upper()
+
+
+# QMT/xtquant 委托状态码（xtconstant.ORDER_*）
+_ORDER_STATUS_TEXT: dict[int, str] = {
+    48: "未报",
+    49: "待报",
+    50: "已报",
+    51: "已报待撤",
+    52: "部成待撤",
+    53: "部撤",
+    54: "已撤",
+    55: "部成",
+    56: "已成",
+    57: "废单",
+    255: "未知",
+}
+# 终态：不会再产生新成交
+_ORDER_TERMINAL_STATUS: set[int] = {53, 54, 56, 57}
 
 
 def object_to_dict(value: Any) -> dict[str, Any]:
@@ -360,3 +379,72 @@ class QMTBrokerAdapter(BrokerAdapter):
         except Exception as e:
             self.logger.error("撤单失败: order_id=%s error=%s", order_id, e)
             return False
+
+    def get_order_fill(self, order_id: str) -> OrderFill:
+        """查询某笔委托的成交情况。
+
+        成交股数/均价优先以成交回报（query_trades）为准，回报缺失时回退到委托对象上的
+        已成字段；订单状态以委托对象（query_orders）为准，用于判断是否已到终态。
+        """
+        oid = str(order_id).strip()
+        _id_names = ["order_id", "m_nOrderID", "order_sysid", "m_strOrderSysID"]
+
+        # 1) 委托状态
+        status_code = -1
+        order_traded_qty = 0
+        order_avg_price = 0.0
+        raw_order: dict[str, Any] = {}
+        try:
+            for o in self.query_orders():
+                if str(first_present(o, _id_names, "")).strip() == oid:
+                    raw_order = o
+                    status_code = to_int(
+                        first_present(o, ["order_status", "m_nOrderStatus", "status"], -1), -1
+                    )
+                    order_traded_qty = to_int(
+                        first_present(o, ["traded_volume", "m_nTradedVolume", "traded_qty", "deal_volume"])
+                    )
+                    order_avg_price = to_float(
+                        first_present(o, ["traded_price", "m_dTradedPrice", "avg_price", "deal_price"])
+                    )
+                    break
+        except Exception as e:
+            self.logger.warning("查询委托状态失败 order_id=%s: %s", oid, e)
+
+        # 2) 成交回报（按 order_id 聚合，VWAP）
+        trade_qty = 0
+        trade_amount = 0.0
+        try:
+            for t in self.query_trades():
+                if str(first_present(t, _id_names, "")).strip() == oid:
+                    q = to_int(first_present(t, ["traded_volume", "m_nVolume", "volume", "traded_qty"]))
+                    p = to_float(first_present(t, ["traded_price", "m_dPrice", "price"]))
+                    if q > 0:
+                        trade_qty += q
+                        trade_amount += q * p
+        except Exception as e:
+            self.logger.warning("查询成交回报失败 order_id=%s: %s", oid, e)
+
+        if trade_qty > 0:
+            filled_qty = trade_qty
+            avg_price = trade_amount / trade_qty
+        else:
+            filled_qty = order_traded_qty
+            avg_price = order_avg_price
+
+        status_text = _ORDER_STATUS_TEXT.get(status_code, "UNKNOWN")
+        is_terminal = status_code in _ORDER_TERMINAL_STATUS
+        is_filled = status_code == 56
+        is_partial = status_code == 55 or (filled_qty > 0 and not is_filled)
+
+        return OrderFill(
+            order_id=oid,
+            status_code=status_code,
+            status_text=status_text,
+            filled_qty=filled_qty,
+            avg_price=avg_price,
+            is_terminal=is_terminal,
+            is_filled=is_filled,
+            is_partial=is_partial,
+            raw=raw_order,
+        )
