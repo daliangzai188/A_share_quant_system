@@ -222,7 +222,7 @@ class LiveOrderGateway:
                 reject_reasons.append("EXCEED_TOTAL_POSITION_PCT")
             if side == "BUY" and estimated_amount > account_cash:
                 reject_reasons.append("INSUFFICIENT_CASH")
-            if estimated_amount > max_order_amount:
+            if estimated_amount >= max_order_amount:
                 reject_reasons.append("EXCEED_SINGLE_ORDER_AMOUNT")
             if duplicate_order_check and any(self.active_order_match(open_order, ts_code, side) for open_order in open_orders):
                 reject_reasons.append("DUPLICATE_ACTIVE_ORDER")

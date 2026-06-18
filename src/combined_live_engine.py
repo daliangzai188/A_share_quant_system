@@ -16,6 +16,15 @@ _E2_POSITION_PCT = 0.8
 _E2_LOT_SIZE = 100
 
 
+def round_lot_shares_below_amount(amount: float, price: float, lot_size: int = _E2_LOT_SIZE) -> int:
+    if amount <= 0 or price <= 0:
+        return 0
+    max_qty = int((amount - 0.01) / price)
+    if lot_size > 0:
+        max_qty -= max_qty % lot_size
+    return max(max_qty, 0)
+
+
 @dataclass(frozen=True)
 class CombinedLiveDecision:
     action: str
@@ -184,8 +193,9 @@ class CombinedLiveEngine:
                 self.config.get("live_trade", {}).get("max_single_order_amount", planned_amount)
             )
             planned_amount = min(planned_amount, max_single_order_amount)
-        estimated_shares = int(planned_amount / limit_close) if limit_close > 0 else 0
-        round_lot = estimated_shares - (estimated_shares % _E2_LOT_SIZE) if _E2_LOT_SIZE > 0 else estimated_shares
+        round_lot = round_lot_shares_below_amount(planned_amount, limit_close)
+        estimated_shares = round_lot
+        planned_amount = round_lot * limit_close
         planned_position_pct = planned_amount / initial_equity if initial_equity > 0 else _E2_POSITION_PCT
         return {
             "paper_order_id": f"E2-BUY-{today}-{signal.get('ts_code','')}",
@@ -406,7 +416,9 @@ class CombinedLiveEngine:
                         reason=(
                             f"E2昨日信号今日开仓：{yesterday_signal.get('ts_code')} "  # type: ignore[union-attr]
                             f"{yesterday_signal.get('name')}，"  # type: ignore[union-attr]
-                            f"T+1开盘买入{_E2_POSITION_PCT:.0%}仓位，T+2收盘卖出。"
+                            f"T+1开盘买入{e2_order.get('round_lot_shares', 0)}股，"
+                            f"计划金额约{float(e2_order.get('planned_amount_by_equity', 0.0)):.0f}元，"
+                            "T+2收盘卖出。"
                         ),
                         source=str(self.project_root / "reports" / "strategy_e2"),
                     ))
@@ -541,7 +553,16 @@ class CombinedLiveEngine:
                 if action == "PLAN_SELL_E2":
                     print(f"  ⏳ 今日 T+2 平仓 → {code} {nm}  {qty_str}  14:50收盘前卖出")
                 elif action == "ALLOW_E2_BUY":
-                    print(f"  ✅ 今日 T+1 开仓 → {code} {nm}  {qty_str}  开盘买入80%仓")
+                    amount_text = ""
+                    if not planned_orders.empty and "ts_code" in planned_orders.columns:
+                        order_rows = planned_orders[
+                            planned_orders["ts_code"].astype(str).eq(code)
+                            & planned_orders["side"].astype(str).str.upper().eq("BUY")
+                        ]
+                        if not order_rows.empty:
+                            amount = float(order_rows.iloc[0].get("planned_amount_by_equity", 0.0) or 0.0)
+                            amount_text = f"  计划金额约{amount:.0f}元"
+                    print(f"  ✅ 今日 T+1 开仓 → {code} {nm}  {qty_str}{amount_text}  开盘买入")
 
             # 汇总状态行
             e2_status_rows = decisions[decisions["strategy_leg"].astype(str).eq("E2_STATUS")]

@@ -510,7 +510,7 @@ def resize_buy_orders_for_live_account(
         allowed_amount = min(cash_cap, single_position_cap, total_position_cap, max_single_order_amount)
 
         old_qty = to_int(row.get("round_lot_shares", row.get("estimated_shares", 0)))
-        max_qty = int(allowed_amount / price)
+        max_qty = int((allowed_amount - 0.01) / price) if allowed_amount > 0 else 0
         if round_lot_size > 0:
             max_qty -= max_qty % round_lot_size
         new_qty = min(old_qty, max_qty)
@@ -533,7 +533,7 @@ def resize_buy_orders_for_live_account(
             )
             logger().warning(
                 "实盘缩单：%s 原计划%d股，按账户资金/仓位/单笔上限调整为%d股；"
-                "可用资金%.0f元，总资产%.0f元，当前市值%.0f元，单笔上限%.0f元，参考成交价%.2f元",
+                "可用资金%.0f元，总资产%.0f元，当前市值%.0f元，单笔上限需小于%.0f元，参考成交价%.2f元",
                 ts_code,
                 old_qty,
                 new_qty,
@@ -600,7 +600,7 @@ def explain_reject_reasons(row: Any) -> str:
         elif code == "INSUFFICIENT_CASH":
             parts.append(f"可用资金不足：订单约{estimated_amount:.0f}元，可用资金{available_cash:.0f}元")
         elif code == "EXCEED_SINGLE_ORDER_AMOUNT":
-            parts.append(f"超过单笔金额上限：订单约{estimated_amount:.0f}元，上限{max_single_order_amount:.0f}元")
+            parts.append(f"超过单笔金额上限：订单约{estimated_amount:.0f}元，要求小于{max_single_order_amount:.0f}元")
         elif code == "LIMIT_UP_BUY_REJECTED":
             parts.append(f"买入价接近涨停，按配置拒绝涨停买入；最新价{last_price:.2f}元")
         elif code == "LIMIT_DOWN_SELL_REJECTED":

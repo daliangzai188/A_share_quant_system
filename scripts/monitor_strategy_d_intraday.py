@@ -295,6 +295,15 @@ def calc_shares(cash: float, price: float, position_pct: float) -> int:
     return max(int(cash * position_pct / price / 100) * 100, 0)
 
 
+def calc_shares_below_amount(cash: float, price: float, position_pct: float, max_order_amount: float) -> int:
+    if price <= 0:
+        return 0
+    target_amount = cash * position_pct
+    if max_order_amount > 0:
+        target_amount = min(target_amount, max_order_amount)
+    return max(int((target_amount - 0.01) / price / 100) * 100, 0)
+
+
 def next_trade_day(date_str: str, n: int = 1) -> str:
     calendar_path = PROJECT_ROOT / "data" / "raw" / "trade_calendar.csv"
     if calendar_path.exists():
@@ -646,7 +655,8 @@ class StrategyDMonitor:
                 self.logger.warning("本会话已有D委托，拒绝再次下单: %s", st.ts_code)
                 return
             cash = get_account_cash(self.broker)
-            shares = calc_shares(cash, st.upper_limit, self.position_pct)
+            max_order_amount = float(self.config.get("live_trade", {}).get("max_single_order_amount", 50000))
+            shares = calc_shares_below_amount(cash, st.upper_limit, self.position_pct, max_order_amount)
             if shares <= 0:
                 self.logger.warning("可用资金不足，跳过下单: %s", st.ts_code)
                 return
@@ -682,7 +692,7 @@ class StrategyDMonitor:
                 st.order_id = result.order_id
                 record["order_id"] = result.order_id
                 self.logger.info(
-                    "D委托: %s %d股 %.2f 目标仓位=%.0f%% 实际仓位=%.2f%% 目标金额=%.2f 实际金额=%.2f order_id=%s",
+                    "D委托: %s %d股 %.2f 目标仓位=%.0f%% 实际仓位=%.2f%% 目标金额=%.2f 实际金额=%.2f 单笔上限需小于%.0f order_id=%s",
                     st.ts_code,
                     shares,
                     st.upper_limit,
@@ -690,11 +700,13 @@ class StrategyDMonitor:
                     actual_position_pct * 100,
                     target_amount,
                     actual_amount,
+                    max_order_amount,
                     result.order_id,
                 )
                 print(
                     f"  → 委托已提交: {shares}股 "
                     f"目标仓位{self.position_pct:.0%} 实际仓位{actual_position_pct:.2%} "
+                    f"实际金额{actual_amount:.0f}元 单笔上限需小于{max_order_amount:.0f}元 "
                     f"order_id={result.order_id}"
                 )
             else:
