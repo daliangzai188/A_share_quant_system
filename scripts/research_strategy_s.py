@@ -945,6 +945,102 @@ def run_risk_overlay() -> None:
     print(summary_df[["overlay_name", "equity_multiple", "trade_count", "skipped_count", "win_rate", "max_drawdown", "max_consecutive_losses"]].to_string(index=False))
 
 
+def predefined_2026_filters() -> list[tuple[str, Any]]:
+    return [
+        ("baseline", lambda data: pd.Series(True, index=data.index)),
+        ("vr_lte_8", lambda data: data["volume_ratio5"] <= 8),
+        ("mv_gte_5_vr_lte_8", lambda data: (data["circ_mv_yi"] >= 5) & (data["volume_ratio5"] <= 8)),
+        ("turnover_gte_12_vr_lte_8", lambda data: (data["turnover_rate"] >= 12) & (data["volume_ratio5"] <= 8)),
+        ("vr_3_5_to_8", lambda data: (data["volume_ratio5"] >= 3.5) & (data["volume_ratio5"] <= 8)),
+    ]
+
+
+def run_2026_filter_probe() -> None:
+    trades_path = OUTPUT_DIR / "s_best_trades.csv"
+    if not trades_path.exists():
+        raise FileNotFoundError(f"缺少 {trades_path}，请先运行 --focused 生成 S 最优交易明细。")
+
+    calendar = load_trade_calendar()
+    trades = pd.read_csv(trades_path, dtype={"signal_date": str, "buy_date": str, "sell_date": str, "ts_code": str})
+    rows = []
+    yearly_frames = []
+    detail_frames = []
+    overlay_variants = [
+        ("no_overlay", {}),
+        ("loss4_pause5", {"loss_streak_pause": 4, "loss_pause_days": 5}),
+        ("loss3_pause5", {"loss_streak_pause": 3, "loss_pause_days": 5}),
+        ("loss3_pause10", {"loss_streak_pause": 3, "loss_pause_days": 10}),
+    ]
+
+    for filter_name, predicate in predefined_2026_filters():
+        filtered = trades[predicate(trades)].copy()
+        for overlay_name, overlay_config in overlay_variants:
+            config = {"overlay_name": f"{filter_name}__{overlay_name}", "base_position_pct": POSITION_PCT, **overlay_config}
+            summary, detail = simulate_risk_overlay(filtered, calendar, config)
+            rows.append(summary)
+            yearly = build_overlay_yearly(detail, str(config["overlay_name"]))
+            if not yearly.empty:
+                yearly_frames.append(yearly)
+            if config["overlay_name"] == "vr_3_5_to_8__loss3_pause5":
+                detail_frames.append(detail.assign(probe_name=config["overlay_name"]))
+
+    summary_df = pd.DataFrame(rows)
+    yearly_df = pd.concat(yearly_frames, ignore_index=True) if yearly_frames else pd.DataFrame()
+    if not yearly_df.empty:
+        year2026 = yearly_df[yearly_df["year"].astype(str) == "2026"][
+            ["overlay_name", "period_return", "trade_count", "win_rate", "max_drawdown"]
+        ].rename(
+            columns={
+                "period_return": "return_2026",
+                "trade_count": "trade_count_2026",
+                "win_rate": "win_rate_2026",
+                "max_drawdown": "max_drawdown_2026",
+            }
+        )
+        summary_df = summary_df.merge(year2026, on="overlay_name", how="left")
+    summary_df = summary_df.sort_values(
+        ["return_2026", "equity_multiple"],
+        ascending=[False, False],
+    )
+
+    summary_path = OUTPUT_DIR / "s_2026_filter_probe_summary.csv"
+    yearly_path = OUTPUT_DIR / "s_2026_filter_probe_yearly.csv"
+    detail_path = OUTPUT_DIR / "s_2026_filter_probe_best_detail.csv"
+    md_path = OUTPUT_DIR / "s_2026_filter_probe_report.md"
+    summary_df.to_csv(summary_path, index=False, encoding="utf-8-sig")
+    yearly_df.to_csv(yearly_path, index=False, encoding="utf-8-sig")
+    if detail_frames:
+        pd.concat(detail_frames, ignore_index=True).to_csv(detail_path, index=False, encoding="utf-8-sig")
+
+    selected = summary_df[summary_df["overlay_name"].eq("vr_3_5_to_8__loss3_pause5")]
+    best = selected.iloc[0] if not selected.empty else summary_df.iloc[0]
+    content = [
+        "# 策略S 2026失效过滤探针",
+        "",
+        "## 推荐观察规则",
+        "",
+        "- 在原始S条件上增加：`3.5 <= volume_ratio5 <= 8`",
+        "- 叠加风控：连续3笔亏损后暂停5个交易日",
+        "",
+        f"- 规则：{best['overlay_name']}",
+        f"- 全区间资金倍数：{best['equity_multiple']:.2f}x",
+        f"- 全区间最大回撤：{best['max_drawdown']:.2%}",
+        f"- 2026收益：{best.get('return_2026', 0):.2%}",
+        f"- 2026交易笔数：{int(best.get('trade_count_2026', 0))}",
+        f"- 2026最大回撤：{best.get('max_drawdown_2026', 0):.2%}",
+        "",
+        "## 对比结果",
+        "",
+        summary_df[["overlay_name", "equity_multiple", "trade_count", "skipped_count", "win_rate", "max_drawdown", "return_2026", "trade_count_2026", "max_drawdown_2026"]].to_markdown(index=False),
+    ]
+    md_path.write_text("\n".join(content), encoding="utf-8")
+
+    print("[2026过滤探针] summary:", summary_path)
+    print("[2026过滤探针] yearly:", yearly_path)
+    print("[2026过滤探针] report:", md_path)
+    print(summary_df[["overlay_name", "equity_multiple", "trade_count", "skipped_count", "max_drawdown", "return_2026", "trade_count_2026", "max_drawdown_2026"]].to_string(index=False))
+
+
 # ── 主程序 ────────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -952,10 +1048,14 @@ def main() -> None:
     parser.add_argument("--quick", action="store_true", help="只跑核心参数组合")
     parser.add_argument("--focused", action="store_true", help="围绕quick最优方向做细化搜索")
     parser.add_argument("--risk-overlay", action="store_true", help="基于S最优交易明细验证风控覆盖")
+    parser.add_argument("--probe-2026-filter", action="store_true", help="验证S策略2026失效过滤条件")
     args = parser.parse_args()
 
     if args.risk_overlay:
         run_risk_overlay()
+        return
+    if args.probe_2026_filter:
+        run_2026_filter_probe()
         return
 
     calendar = load_trade_calendar()
