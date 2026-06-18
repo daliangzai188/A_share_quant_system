@@ -43,7 +43,10 @@ from src.utils.time_utils import BEIJING_TZ, now_beijing, today_beijing
 
 
 def _notify(event: str, title: str, body: str = "", *, level: str = "active") -> None:
-    """告警推送（失败安全，绝不影响交易主流程）。正文脱敏，不含账号/金额/标的。"""
+    """告警推送（失败安全，绝不影响交易主流程）。
+
+    正文口径：账号仅显示后2位（****03）；金额用「万」单位2位小数；标的可含代码+名称。
+    """
     try:
         from src.notify import notify
         notify(event, title, body, level=level)
@@ -52,6 +55,20 @@ def _notify(event: str, title: str, body: str = "", *, level: str = "active") ->
             get_logger("a_share_quant").warning("告警推送异常：%s", exc)
         except Exception:
             pass
+
+
+def _mask_account(account_id: str) -> str:
+    """账号脱敏：前缀4星号 + 后2位。"""
+    acct = str(account_id or "")
+    return f"****{acct[-2:]}" if len(acct) >= 2 else f"****{acct}"
+
+
+def _fmt_wan(amount: float) -> str:
+    """金额格式化为「万」单位、2位小数。"""
+    try:
+        return f"{float(amount) / 10000:.2f}万"
+    except Exception:
+        return "0.00万"
 
 # ── 常量 ───────────────────────────────────────────────────────────────────────
 SCHEDULE = [
@@ -559,18 +576,24 @@ def _execute_orders_inprocess(
                         strategy_leg=s["strategy_leg"],
                         exit_n_days=s["exit_n"],
                     )
+                    amount = fill.filled_qty * fill_price
                     if fill.filled_qty < s["qty"]:
                         log.warning("⚠️ [%s] %s 买入部分成交 %d/%d股 @%.2f，按实际成交记录持仓。",
                                     tag, s["ts_code"], fill.filled_qty, s["qty"], fill_price)
-                        _notify("buy_result", "⚠️ 开仓部分成交", "本次买入只成交了一部分，请回终端查看。")
+                        _notify("buy_result", "⚠️ 开仓部分成交",
+                                f"{s['ts_code']} {s['name']} 成交{fill.filled_qty}/{s['qty']}股 "
+                                f"@{fill_price:.2f} 金额{_fmt_wan(amount)}")
                     else:
                         log.info("✅ [%s] %s 买入全部成交 %d股 @%.2f，已记录持仓。",
                                  tag, s["ts_code"], fill.filled_qty, fill_price)
-                        _notify("buy_result", "✅ 开仓成交", "已有一笔买入成交并记账，详情见终端。")
+                        _notify("buy_result", "✅ 开仓成交",
+                                f"{s['ts_code']} {s['name']} 买入{fill.filled_qty}股 "
+                                f"@{fill_price:.2f} 金额{_fmt_wan(amount)}")
                 else:
                     log.error("❌ [%s] %s 买入未成交（状态=%s），不记录持仓，避免幽灵持仓。",
                               tag, s["ts_code"], fill.status_text)
-                    _notify("buy_result", "❌ 开仓未成交", "本次买入委托未成交，未记账，请回终端确认。")
+                    _notify("buy_result", "❌ 开仓未成交",
+                            f"{s['ts_code']} {s['name']} 买入委托未成交，未记账，请回终端确认。")
             else:  # SELL
                 local_pos = find_open_position_by_code(s["ts_code"], s["strategy_leg"])
                 local_oid = local_pos.get("order_id", "") if local_pos else ""
@@ -586,16 +609,20 @@ def _execute_orders_inprocess(
                     log.warning("⚠️ [%s] %s 卖出部分成交 %d/%d股 @%.2f，剩余%d股保留持仓待下次卖出。",
                                 tag, s["ts_code"], fill.filled_qty, held, fill_price, held - fill.filled_qty)
                     _notify("sell_fail", "⚠️ 平仓部分成交",
-                            "有持仓只卖出了一部分，剩余仍持有，请回终端查看。", level="timeSensitive")
+                            f"{s['ts_code']} {s['name']} 卖出{fill.filled_qty}/{held}股 "
+                            f"@{fill_price:.2f}，剩余{held - fill.filled_qty}股仍持有，请回终端查看。",
+                            level="timeSensitive")
                 else:
                     log.error("❌ [%s] %s 卖出未成交（状态=%s），持仓保留，等待下次重试或手动处理。",
                               tag, s["ts_code"], fill.status_text)
                     _notify("sell_fail", "❌ 平仓未成交",
-                            "有持仓平仓委托未成交，可能被动过夜，请立即回终端处理。", level="critical")
+                            f"{s['ts_code']} {s['name']} 平仓委托未成交，可能被动过夜，请立即回终端处理。",
+                            level="critical")
         except Exception as e:
             log.error("❌ [%s] %s 成交确认/回写异常：%s —— 请手动核对！", tag, s["ts_code"], e)
             _notify("sell_fail", "❌ 平仓回写异常",
-                    "平仓成交确认/回写出现异常，请立即回终端核对持仓。", level="critical")
+                    f"{s['ts_code']} {s['name']} 平仓成交确认/回写出现异常，请立即回终端核对持仓。",
+                    level="critical")
 
     return accepted_any
 
@@ -828,13 +855,14 @@ def _abc_place_sell_order_direct(
         log.warning("⚠️ [ABC平仓] %s %s 部分成交 %d/%d股 @%.2f，剩余%d股保留待下次卖出。",
                     ts_code, name, fill.filled_qty, shares, fill_price, shares - fill.filled_qty)
         _notify("sell_fail", "⚠️ 平仓部分成交",
-                "有持仓只卖出了一部分，剩余仍持有，请回终端查看。", level="timeSensitive")
+                f"{ts_code} {name} 卖出{fill.filled_qty}/{shares}股 @{fill_price:.2f}，"
+                f"剩余{shares - fill.filled_qty}股仍持有，请回终端查看。", level="timeSensitive")
         return False
     else:
         log.error("❌ [ABC平仓] %s %s 未成交（状态=%s），持仓保留，等待下次重试或手动处理。",
                   ts_code, name, fill.status_text)
         _notify("sell_fail", "❌ 平仓未成交",
-                "有持仓平仓委托未成交，可能被动过夜，请立即回终端处理。", level="critical")
+                f"{ts_code} {name} 平仓委托未成交，可能被动过夜，请立即回终端处理。", level="critical")
         return False
 
 
@@ -879,7 +907,8 @@ def _do_sell(pos: dict[str, Any], qmt_enabled: bool) -> None:
     except Exception as e:
         logger().error("❌ [平仓] 执行异常（%s %s）：%s —— 请立即手动检查！", ts_code, name, e)
         _notify("sell_fail", "❌ 平仓执行异常",
-                "平仓过程出现异常，持仓可能未正确卖出，请立即回终端检查。", level="critical")
+                f"{ts_code} {name} 平仓过程出现异常，持仓可能未正确卖出，请立即回终端检查。",
+                level="critical")
 
 
 def check_and_close_positions() -> None:
@@ -1530,22 +1559,29 @@ def confirm_pending_premarket_buys() -> None:
                     strategy_leg=str(s.get("strategy_leg", "")),
                     exit_n_days=int(s.get("exit_n", 2)),
                 )
+                name_s = str(s.get("name", ""))
+                amount = fill.filled_qty * fill_price
                 if fill.filled_qty < qty:
                     logger().warning("⚠️ [盘前买入确认] %s 部分成交 %d/%d股 @%.2f，撤残单。",
                                      ts_code, fill.filled_qty, qty, fill_price)
                     _try_cancel_order(broker_cfg, order_id, ts_code)
-                    _notify("buy_result", "⚠️ 盘前开仓部分成交", "盘前买单只成交了一部分，请回终端查看。")
+                    _notify("buy_result", "⚠️ 盘前开仓部分成交",
+                            f"{ts_code} {name_s} 成交{fill.filled_qty}/{qty}股 "
+                            f"@{fill_price:.2f} 金额{_fmt_wan(amount)}")
                 else:
                     logger().info("✅ [盘前买入确认] %s 全部成交 %d股 @%.2f，已记录持仓。",
                                   ts_code, fill.filled_qty, fill_price)
-                    _notify("buy_result", "✅ 盘前开仓成交", "盘前买单已成交并记账，详情见终端。")
+                    _notify("buy_result", "✅ 盘前开仓成交",
+                            f"{ts_code} {name_s} 买入{fill.filled_qty}股 "
+                            f"@{fill_price:.2f} 金额{_fmt_wan(amount)}")
             else:
                 logger().warning("⚠️ [盘前买入确认] %s 开盘未成交（状态=%s），撤单后转09:30开盘补买。",
                                  ts_code, fill.status_text)
                 _try_cancel_order(broker_cfg, order_id, ts_code)
         except Exception as e:
             logger().error("❌ [盘前买入确认] %s 异常：%s —— 请手动核对！", s.get("ts_code"), e)
-            _notify("buy_result", "❌ 盘前开仓确认异常", "盘前买单成交确认出现异常，请回终端核对持仓。",
+            _notify("buy_result", "❌ 盘前开仓确认异常",
+                    f"{s.get('ts_code','')} 盘前买单成交确认出现异常，请回终端核对持仓。",
                     level="timeSensitive")
 
     clear_pending_buys()
@@ -1949,14 +1985,19 @@ def _e2_place_order_direct(ts_code: str, name: str, planned_qty: int, signal_dat
             strategy_leg=strategy_leg,
             exit_n_days=exit_n_days,
         )
+        amount = fill.filled_qty * fill_price
         if fill.filled_qty < qty:
             log.warning("⚠️ [E2延迟开仓] %s 部分成交 %d/%d股 @%.2f，按实际成交记录持仓。",
                         ts_code, fill.filled_qty, qty, fill_price)
-            _notify("buy_result", "⚠️ E2开仓部分成交", "E2延迟买入只成交了一部分，请回终端查看。")
+            _notify("buy_result", "⚠️ E2开仓部分成交",
+                    f"{ts_code} {name} 成交{fill.filled_qty}/{qty}股 "
+                    f"@{fill_price:.2f} 金额{_fmt_wan(amount)}")
         else:
             log.info("✅ [E2延迟开仓] %s %s 全部成交 %d股 @%.2f，已记录持仓。",
                      ts_code, name, fill.filled_qty, fill_price)
-            _notify("buy_result", "✅ E2开仓成交", "E2延迟买入已成交并记账，详情见终端。")
+            _notify("buy_result", "✅ E2开仓成交",
+                    f"{ts_code} {name} 买入{fill.filled_qty}股 "
+                    f"@{fill_price:.2f} 金额{_fmt_wan(amount)}")
         return True
     else:
         log.error("❌ [E2延迟开仓] %s %s 未成交（状态=%s），不记录持仓，避免幽灵持仓。",
@@ -2213,8 +2254,19 @@ def job_post_market(end_date: str | None = None) -> None:
     mark_post_market_done(target_date)
     try:
         open_cnt = sum(1 for p in load_positions() if p.get("status") == "open")
+        acct_part = ""
+        try:
+            cfg = load_json_config(PROJECT_ROOT / "config" / "config.json")
+            if cfg.get("broker_adapter_enabled") and cfg.get("qmt_enabled"):
+                with _qmt_lock:
+                    adapter = _qmt_get(cfg.get("broker", {}))
+                    account = adapter.query_account()
+                acct_part = (f"账户{_mask_account(account.account_id)} "
+                             f"总资产{_fmt_wan(getattr(account, 'total_asset', 0.0))} ")
+        except Exception as acct_exc:
+            logger().warning("收盘汇总查询账户失败：%s", acct_exc)
         _notify("daily_summary", "📊 今日收盘汇总",
-                f"收盘流水线已完成，当前持仓{open_cnt}笔，明日计划已生成，详情见终端。")
+                f"{acct_part}持仓{open_cnt}笔，收盘流水线已完成，明日计划已生成。")
     except Exception as exc:
         logger().warning("收盘汇总推送异常：%s", exc)
     return True

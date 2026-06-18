@@ -4,7 +4,7 @@
   "broker_adapter_enabled": true,
   "qmt_enabled": true,
   "notify": {
-    "file_role": "实盘告警推送。渠道=bark，推送地址放 .env 的 BARK_URL。正文脱敏，不含账号/金额/标的。",
+    "file_role": "实盘告警推送。渠道=bark，推送地址放 .env 的 BARK_URL。账号仅后2位、金额用万单位、标的含代码名称。",
     "enabled": true,
     "channel": "bark",
     "bark_group": "A股实盘",
