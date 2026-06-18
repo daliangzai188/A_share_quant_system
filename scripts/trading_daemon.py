@@ -2636,12 +2636,15 @@ def main() -> None:
         expected = today_beijing()
         expected_str = expected.strftime("%Y%m%d")
 
-    # 无论如何先打印当前缓存（可能是旧数据，流水线跑完后会再次播报）
-    try:
-        report_next_day_candidates()
-        report_signal_readiness_summary(expected_str)
-    except Exception as e:
-        log.error("启动候选播报异常：%s", e)
+    # 候选播报和信号审计放后台线程：纯展示，不影响开仓关键路径
+    # 后台跑完会自动打印日志，不阻塞 startup_catchup 和 E2/D 补启动
+    def _startup_report() -> None:
+        try:
+            report_next_day_candidates()
+            report_signal_readiness_summary(expected_str)
+        except Exception as exc:
+            log.error("启动候选播报异常：%s", exc)
+    threading.Thread(target=_startup_report, daemon=True, name="startup-report").start()
 
     # 若缓存不是最新交易日数据，后台线程补采，不阻塞主循环 QMT 状态刷新
     if not _has_signal_for_date(expected):
