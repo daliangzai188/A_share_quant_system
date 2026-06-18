@@ -44,6 +44,24 @@
     "position_pct": 0.8,
     "preferred_open_times": 2
   },
+  "strategy_s": {
+    "file_role": "策略S深市/创业板动量补充策略配置。S 独立于 ABCDE2，只能在组合空闲且通过实盘口径认证后接入真实下单。",
+    "enabled": true,
+    "live_order_enabled": false,
+    "require_live_certification": true,
+    "certification_gate_path": "reports/strategy_s/live_certification/s_live_certification_gate.json",
+    "certification_summary_path": "reports/strategy_s/live_certification/s_live_certification_summary.csv",
+    "certification_required_status": "PASS",
+    "initial_cash_for_certification": 100500,
+    "max_single_order_amount": 50000,
+    "cash_buffer": 500,
+    "volume_ratio_min": 3.5,
+    "volume_ratio_max": 8.0,
+    "loss_pause_after_losses": 3,
+    "loss_pause_trade_days": 5,
+    "buy_time": "T+1_OPEN",
+    "sell_time": "T+2_CLOSE"
+  },
   "data_source": {
     "primary": "tushare",
     "token_env": "TUSHARE_TOKEN",
