@@ -603,15 +603,27 @@ def _execute_orders_inprocess(
             side = str(row["side"]).upper()
             qty = int(row["quantity"])
             ref_price = float(row.get("last_price", 0.0) or row.get("reference_price", 0.0))
+            order_price_type = str(row["price_type"])
+            order_price = float(row.get("price", 0.0))
+            order_remark = str(row.get("remark", ""))
+            # 卖出（E2平仓）改用买10/买5挂限价，确保成交、避免被动过夜
+            if side == "SELL":
+                sell_price, sell_label = _pick_sell_limit_price(quote_map.get(str(row["ts_code"])))
+                if sell_price > 0:
+                    order_price_type = "FIXED_PRICE"
+                    order_price = sell_price
+                    ref_price = sell_price
+                    order_remark = f"{order_remark}|平仓{sell_label}".strip("|")
+                    log.info("[%s] %s 平仓挂单取价 %s=%.2f", tag, row["ts_code"], sell_label, sell_price)
             request = OrderRequest(
                 ts_code=str(row["ts_code"]),
                 broker_code=str(row["broker_code"]),
                 side=side,
                 quantity=qty,
-                price_type=str(row["price_type"]),
-                price=float(row.get("price", 0.0)),
+                price_type=order_price_type,
+                price=order_price,
                 strategy_name=str(row.get("strategy_name", "A_SYSTEM_ABC")),
-                remark=str(row.get("remark", "")),
+                remark=order_remark,
             )
             result = adapter.place_order(request)
             results.append(asdict(result))
@@ -866,11 +878,29 @@ def explain_reject_reasons(row: Any) -> str:
     return "；".join(parts)
 
 
+def _pick_sell_limit_price(quote: Any) -> tuple[float, str]:
+    """平仓挂单取价：优先买10（有10档盘口时），否则买5；都没有再退买1/最新价。
+
+    挂得越深越能吃穿买盘、越确保成交（代价是成交价略差）。返回 (价格, 档位标签)。
+    """
+    bid_prices = list(getattr(quote, "bid_prices", None) or []) if quote else []
+    if len(bid_prices) >= 10 and bid_prices[9] > 0:
+        return round(float(bid_prices[9]), 2), "买10"
+    if len(bid_prices) >= 5 and bid_prices[4] > 0:
+        return round(float(bid_prices[4]), 2), "买5"
+    if bid_prices and bid_prices[0] > 0:
+        return round(float(bid_prices[0]), 2), "买1(盘口深度不足)"
+    last = float(getattr(quote, "last_price", 0.0) or 0.0) if quote else 0.0
+    if last > 0:
+        return round(last, 2), "最新价(无盘口)"
+    return 0.0, ""
+
+
 def _abc_place_sell_order_direct(
     ts_code: str, name: str, shares: int, order_id: str,
     confirm: str, config: dict, broker_cfg: dict
 ) -> bool:
-    """A/B/C 持仓直接按 last_price/bid1 挂 FIXED_PRICE 卖单，不走 CSV 流水线。
+    """A/B/C 持仓直接挂 FIXED_PRICE 卖单（优先买10/买5确保成交），不走 CSV 流水线。
 
     下单受理后确认真实成交：全成→平仓回写；部成→保留剩余股数；未成→保留持仓。
     返回 True 仅表示全部成交。
@@ -893,17 +923,8 @@ def _abc_place_sell_order_direct(
         quote_map = adapter.get_full_tick([ts_code])
 
     quote = quote_map.get(ts_code)
-    last_price = float(getattr(quote, "last_price", 0.0) or 0.0) if quote else 0.0
-    bid_prices = getattr(quote, "bid_prices", None) if quote else None
-    bid1 = float(bid_prices[0]) if bid_prices and len(bid_prices) >= 1 and bid_prices[0] > 0 else 0.0
-
-    if last_price > 0:
-        price = round(last_price, 2)
-        price_label = "最新价"
-    elif bid1 > 0:
-        price = round(bid1, 2)
-        price_label = "买1"
-    else:
+    price, price_label = _pick_sell_limit_price(quote)
+    if price <= 0:
         log.warning("ABC平仓：%s 无法获取价格，跳过本次。", ts_code)
         return False
 
