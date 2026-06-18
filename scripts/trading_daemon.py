@@ -617,6 +617,70 @@ def explain_reject_reasons(row: Any) -> str:
     return "；".join(parts)
 
 
+def _abc_place_sell_order_direct(
+    ts_code: str, name: str, shares: int, confirm: str, config: dict, broker_cfg: dict
+) -> bool:
+    """A/B/C 持仓直接按 last_price/bid1 挂 FIXED_PRICE 卖单，不走 CSV 流水线。"""
+    from src.broker_adapter import OrderRequest
+    from src.live_order_gateway import LiveOrderGateway
+
+    today_str = today_beijing().strftime("%Y%m%d")
+    log = logger()
+
+    gateway = LiveOrderGateway(PROJECT_ROOT / "config" / "config.json")
+    try:
+        gateway.assert_real_order_allowed(confirm)
+    except RuntimeError as e:
+        log.error("❌ [ABC平仓] 下单条件不满足：%s", e)
+        return False
+
+    with _qmt_lock:
+        adapter = _qmt_get(broker_cfg)
+        quote_map = adapter.get_full_tick([ts_code])
+
+    quote = quote_map.get(ts_code)
+    last_price = float(getattr(quote, "last_price", 0.0) or 0.0) if quote else 0.0
+    bid_prices = getattr(quote, "bid_prices", None) if quote else None
+    bid1 = float(bid_prices[0]) if bid_prices and len(bid_prices) >= 1 and bid_prices[0] > 0 else 0.0
+
+    if last_price > 0:
+        price = round(last_price, 2)
+        price_label = "最新价"
+    elif bid1 > 0:
+        price = round(bid1, 2)
+        price_label = "买1"
+    else:
+        log.warning("ABC平仓：%s 无法获取价格，跳过本次。", ts_code)
+        return False
+
+    if shares <= 0:
+        log.error("ABC平仓：%s 持仓股数为0，跳过。", ts_code)
+        return False
+
+    log.warning("⏳ [ABC平仓] %s %s  %d股  %s=%.2f元", ts_code, name, shares, price_label, price)
+
+    request = OrderRequest(
+        ts_code=ts_code,
+        broker_code=ts_code,
+        side="SELL",
+        quantity=shares,
+        price_type="FIXED_PRICE",
+        price=price,
+        strategy_name="A_SYSTEM_ABC",
+        remark=f"ABC平仓-{price_label}-{today_str}",
+    )
+    with _qmt_lock:
+        adapter = _qmt_get(broker_cfg)
+        result = adapter.place_order(request)
+
+    if result.accepted:
+        log.info("✅ [ABC平仓] %s %s %d股 @%.2f 委托已提交", ts_code, name, shares, price)
+        return True
+    else:
+        log.error("❌ [ABC平仓] %s %s 提交失败：%s", ts_code, name, result.message)
+        return False
+
+
 def _do_sell(pos: dict[str, Any], qmt_enabled: bool) -> None:
     """对单个持仓执行卖出动作，完全独立、单独 try/except。"""
     ts_code = pos["ts_code"]
@@ -632,6 +696,7 @@ def _do_sell(pos: dict[str, Any], qmt_enabled: bool) -> None:
             config = load_json_config(PROJECT_ROOT / "config" / "config.json")
             confirm = config.get("live_trade", {}).get(
                 "real_order_confirm_text", "A_SYSTEM_REAL_ORDER_CONFIRMED")
+            broker_cfg = config.get("broker", {})
             strategy_leg = str(pos.get("strategy_leg", "")).upper()
             if strategy_leg == "E2":
                 # E2 卖出计划单由 combined_planned_orders 生成（包含 PLAN_SELL_T2_CLOSE 行）
@@ -640,9 +705,23 @@ def _do_sell(pos: dict[str, Any], qmt_enabled: bool) -> None:
                     / f"combined_planned_orders_{today_str}.csv"
                 )
                 _execute_orders_inprocess(combined_path, confirm, "E2平仓")
+                mark_position_closed(order_id, today_str)
+            elif strategy_leg in {"A", "B", "C"}:
+                # ABC planned_orders 文件只有BUY行，必须直接下单
+                ok = _abc_place_sell_order_direct(ts_code, name, shares, confirm, config, broker_cfg)
+                if ok:
+                    mark_position_closed(order_id, today_str)
+                else:
+                    logger().error(
+                        "❌ [ABC平仓] %s %s 卖单提交失败，持仓保留，等待下次重试或手动处理。",
+                        ts_code, name,
+                    )
             else:
-                _execute_orders_inprocess("latest", confirm, "平仓")
-            mark_position_closed(order_id, today_str)
+                # D 策略已在 9:23 集合竞价卖出，不应再进入此分支
+                logger().warning(
+                    "[平仓] 策略=%s 不匹配已知分支（%s %s），跳过，请手动确认。",
+                    strategy_leg, ts_code, name,
+                )
         else:
             logger().info("[平仓] 模拟盘：%s %s 标记已平仓", ts_code, name)
             mark_position_closed(order_id, today_str)
