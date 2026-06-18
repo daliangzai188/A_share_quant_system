@@ -41,6 +41,18 @@ from src.utils.logger import get_logger, setup_logger
 from src.utils.config import load_json_config, mkdir_p
 from src.utils.time_utils import BEIJING_TZ, now_beijing, today_beijing
 
+
+def _notify(event: str, title: str, body: str = "", *, level: str = "active") -> None:
+    """告警推送（失败安全，绝不影响交易主流程）。正文脱敏，不含账号/金额/标的。"""
+    try:
+        from src.notify import notify
+        notify(event, title, body, level=level)
+    except Exception as exc:  # noqa: BLE001
+        try:
+            get_logger("a_share_quant").warning("告警推送异常：%s", exc)
+        except Exception:
+            pass
+
 # ── 常量 ───────────────────────────────────────────────────────────────────────
 SCHEDULE = [
     datetime.time(9, 20),   # 盘前：平仓检查 + 组合状态机
@@ -550,12 +562,15 @@ def _execute_orders_inprocess(
                     if fill.filled_qty < s["qty"]:
                         log.warning("⚠️ [%s] %s 买入部分成交 %d/%d股 @%.2f，按实际成交记录持仓。",
                                     tag, s["ts_code"], fill.filled_qty, s["qty"], fill_price)
+                        _notify("buy_result", "⚠️ 开仓部分成交", "本次买入只成交了一部分，请回终端查看。")
                     else:
                         log.info("✅ [%s] %s 买入全部成交 %d股 @%.2f，已记录持仓。",
                                  tag, s["ts_code"], fill.filled_qty, fill_price)
+                        _notify("buy_result", "✅ 开仓成交", "已有一笔买入成交并记账，详情见终端。")
                 else:
                     log.error("❌ [%s] %s 买入未成交（状态=%s），不记录持仓，避免幽灵持仓。",
                               tag, s["ts_code"], fill.status_text)
+                    _notify("buy_result", "❌ 开仓未成交", "本次买入委托未成交，未记账，请回终端确认。")
             else:  # SELL
                 local_pos = find_open_position_by_code(s["ts_code"], s["strategy_leg"])
                 local_oid = local_pos.get("order_id", "") if local_pos else ""
@@ -570,11 +585,17 @@ def _execute_orders_inprocess(
                     reduce_position_shares(local_oid, held - fill.filled_qty)
                     log.warning("⚠️ [%s] %s 卖出部分成交 %d/%d股 @%.2f，剩余%d股保留持仓待下次卖出。",
                                 tag, s["ts_code"], fill.filled_qty, held, fill_price, held - fill.filled_qty)
+                    _notify("sell_fail", "⚠️ 平仓部分成交",
+                            "有持仓只卖出了一部分，剩余仍持有，请回终端查看。", level="timeSensitive")
                 else:
                     log.error("❌ [%s] %s 卖出未成交（状态=%s），持仓保留，等待下次重试或手动处理。",
                               tag, s["ts_code"], fill.status_text)
+                    _notify("sell_fail", "❌ 平仓未成交",
+                            "有持仓平仓委托未成交，可能被动过夜，请立即回终端处理。", level="critical")
         except Exception as e:
             log.error("❌ [%s] %s 成交确认/回写异常：%s —— 请手动核对！", tag, s["ts_code"], e)
+            _notify("sell_fail", "❌ 平仓回写异常",
+                    "平仓成交确认/回写出现异常，请立即回终端核对持仓。", level="critical")
 
     return accepted_any
 
@@ -806,10 +827,14 @@ def _abc_place_sell_order_direct(
         reduce_position_shares(order_id, shares - fill.filled_qty)
         log.warning("⚠️ [ABC平仓] %s %s 部分成交 %d/%d股 @%.2f，剩余%d股保留待下次卖出。",
                     ts_code, name, fill.filled_qty, shares, fill_price, shares - fill.filled_qty)
+        _notify("sell_fail", "⚠️ 平仓部分成交",
+                "有持仓只卖出了一部分，剩余仍持有，请回终端查看。", level="timeSensitive")
         return False
     else:
         log.error("❌ [ABC平仓] %s %s 未成交（状态=%s），持仓保留，等待下次重试或手动处理。",
                   ts_code, name, fill.status_text)
+        _notify("sell_fail", "❌ 平仓未成交",
+                "有持仓平仓委托未成交，可能被动过夜，请立即回终端处理。", level="critical")
         return False
 
 
@@ -853,6 +878,8 @@ def _do_sell(pos: dict[str, Any], qmt_enabled: bool) -> None:
             mark_position_closed(order_id, today_str)
     except Exception as e:
         logger().error("❌ [平仓] 执行异常（%s %s）：%s —— 请立即手动检查！", ts_code, name, e)
+        _notify("sell_fail", "❌ 平仓执行异常",
+                "平仓过程出现异常，持仓可能未正确卖出，请立即回终端检查。", level="critical")
 
 
 def check_and_close_positions() -> None:
@@ -1507,15 +1534,19 @@ def confirm_pending_premarket_buys() -> None:
                     logger().warning("⚠️ [盘前买入确认] %s 部分成交 %d/%d股 @%.2f，撤残单。",
                                      ts_code, fill.filled_qty, qty, fill_price)
                     _try_cancel_order(broker_cfg, order_id, ts_code)
+                    _notify("buy_result", "⚠️ 盘前开仓部分成交", "盘前买单只成交了一部分，请回终端查看。")
                 else:
                     logger().info("✅ [盘前买入确认] %s 全部成交 %d股 @%.2f，已记录持仓。",
                                   ts_code, fill.filled_qty, fill_price)
+                    _notify("buy_result", "✅ 盘前开仓成交", "盘前买单已成交并记账，详情见终端。")
             else:
                 logger().warning("⚠️ [盘前买入确认] %s 开盘未成交（状态=%s），撤单后转09:30开盘补买。",
                                  ts_code, fill.status_text)
                 _try_cancel_order(broker_cfg, order_id, ts_code)
         except Exception as e:
             logger().error("❌ [盘前买入确认] %s 异常：%s —— 请手动核对！", s.get("ts_code"), e)
+            _notify("buy_result", "❌ 盘前开仓确认异常", "盘前买单成交确认出现异常，请回终端核对持仓。",
+                    level="timeSensitive")
 
     clear_pending_buys()
     logger().info("===== 盘前买单成交确认完成 =====")
@@ -1921,9 +1952,11 @@ def _e2_place_order_direct(ts_code: str, name: str, planned_qty: int, signal_dat
         if fill.filled_qty < qty:
             log.warning("⚠️ [E2延迟开仓] %s 部分成交 %d/%d股 @%.2f，按实际成交记录持仓。",
                         ts_code, fill.filled_qty, qty, fill_price)
+            _notify("buy_result", "⚠️ E2开仓部分成交", "E2延迟买入只成交了一部分，请回终端查看。")
         else:
             log.info("✅ [E2延迟开仓] %s %s 全部成交 %d股 @%.2f，已记录持仓。",
                      ts_code, name, fill.filled_qty, fill_price)
+            _notify("buy_result", "✅ E2开仓成交", "E2延迟买入已成交并记账，详情见终端。")
         return True
     else:
         log.error("❌ [E2延迟开仓] %s %s 未成交（状态=%s），不记录持仓，避免幽灵持仓。",
@@ -2178,6 +2211,12 @@ def job_post_market(end_date: str | None = None) -> None:
     report_next_day_candidates()
     report_signal_readiness_summary(target_str)
     mark_post_market_done(target_date)
+    try:
+        open_cnt = sum(1 for p in load_positions() if p.get("status") == "open")
+        _notify("daily_summary", "📊 今日收盘汇总",
+                f"收盘流水线已完成，当前持仓{open_cnt}笔，明日计划已生成，详情见终端。")
+    except Exception as exc:
+        logger().warning("收盘汇总推送异常：%s", exc)
     return True
 
 
@@ -2857,6 +2896,11 @@ def _print_account_status(log: Any) -> None:
             except Exception as retry_err:
                 log.warning("⚠️ QMT重连失败（第%d次），等待下次重试：%s",
                             _qmt_reconnect_count, retry_err)
+                # 仅在连续多次失败时告警，避免偶发抖动刷屏（叠加节流）
+                if _qmt_reconnect_count >= 3:
+                    _notify("system_error", "❌ QMT持续掉线",
+                            "QMT连接已连续多次重连失败，实盘下单/平仓可能受影响，请立即检查。",
+                            level="critical")
                 return
 
     now_str = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
@@ -3060,6 +3104,9 @@ def main() -> None:
             run_job(sched_time)
         except Exception as e:
             log.exception("任务执行异常（守护进程继续）：%s", e)
+            _notify("system_error", "❌ 定时任务异常",
+                    "守护进程某个定时任务执行异常（进程未退出），请回终端查看日志。",
+                    level="timeSensitive")
 
         time.sleep(60)
 

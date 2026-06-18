@@ -3,6 +3,20 @@
   "trade_mode": "live",
   "broker_adapter_enabled": true,
   "qmt_enabled": true,
+  "notify": {
+    "file_role": "实盘告警推送。渠道=bark，推送地址放 .env 的 BARK_URL。正文脱敏，不含账号/金额/标的。",
+    "enabled": true,
+    "channel": "bark",
+    "bark_group": "A股实盘",
+    "bark_sound": "alarm",
+    "throttle_sec": 300,
+    "events": {
+      "sell_fail": true,
+      "buy_result": true,
+      "system_error": true,
+      "daily_summary": true
+    }
+  },
   "broker": {
     "file_role": "券商连接配置。默认关闭，只用于 QMT / miniQMT 只读检查、实盘预览和后续真实下单。",
     "enabled": true,
