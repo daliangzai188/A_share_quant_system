@@ -2612,6 +2612,9 @@ def _print_account_status(log: Any) -> None:
                 return
 
     now_str = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
+    acct_id = str(account.account_id or "")
+    masked_acct = f"****{acct_id[-2:]}" if len(acct_id) >= 2 else f"****{acct_id}"
+    total_asset = float(getattr(account, "total_asset", 0.0) or 0.0)
     if positions:
         local_pos_map = {
             lp["ts_code"]: lp
@@ -2642,21 +2645,21 @@ def _print_account_status(log: Any) -> None:
                     f"现价{current_price:.2f} "
                     f"{chg_str}"
                     f"收益{pnl_sign}{pnl_pct:.2f}% "
-                    f"市值{p.market_value:.0f}元"
+                    f"市值{p.market_value / 10000:.2f}万"
                 )
             else:
                 pos_parts.append(
                     f"{p.ts_code}×{p.volume}股 "
                     f"现价{current_price:.2f} "
                     f"{chg_str}"
-                    f"市值{p.market_value:.0f}元"
+                    f"市值{p.market_value / 10000:.2f}万"
                 )
-        log.info("✅ [账户] %s | 账户%s 可用%.0f元 | 持仓：%s",
-                 now_str, account.account_id, account.available_cash,
+        log.info("✅ [账户] %s | 账户%s 总资产%.2f万 | 持仓：%s",
+                 now_str, masked_acct, total_asset / 10000,
                  "  ".join(pos_parts))
     else:
-        log.info("✅ [账户] %s | 账户%s 可用%.0f元 | 无持仓",
-                 now_str, account.account_id, account.available_cash)
+        log.info("✅ [账户] %s | 账户%s 总资产%.2f万 | 无持仓",
+                 now_str, masked_acct, total_asset / 10000)
 
 
 def check_qmt_connection() -> None:
@@ -2769,14 +2772,14 @@ def main() -> None:
         sleep_secs = (wake_dt - now).total_seconds()
         log.info("下次任务：%s（%.0f 秒后）", wake_dt.strftime("%Y-%m-%d %H:%M"), sleep_secs)
 
-        # 账户轮询：有持仓2秒/次，无持仓60秒/次；掉线时立刻重连，后续15秒间隔
-        _ACCT_INTERVAL = 60       # 无持仓正常间隔
-        _ACCT_WITH_POS = 2        # 有持仓高频间隔
+        # 账户轮询：交易时段10秒/次，非交易时段60秒/次；掉线时立刻重连，后续15秒间隔
+        _ACCT_INTERVAL = 60       # 非交易时段间隔
+        _ACCT_TRADING = 10        # 交易时段间隔
         _RETRY_INTERVAL = 15      # 掉线重连间隔
         deadline = time.monotonic() + sleep_secs
         last_acct_ts = time.monotonic()
-        last_pos_check_ts = 0.0   # 持仓状态每10秒刷新一次，避免频繁读文件
-        has_open = False
+        last_trade_check_ts = 0.0  # 交易时段状态每5秒刷新一次，避免频繁计算
+        is_trading = False
         last_heartbeat_ts = time.monotonic()
         _acct_thread: threading.Thread | None = None
         while True:
@@ -2788,11 +2791,11 @@ def main() -> None:
             if now_ts - last_heartbeat_ts >= 10:
                 write_heartbeat("sleeping")
                 last_heartbeat_ts = now_ts
-            if now_ts - last_pos_check_ts >= 10:
-                has_open = any(p.get("status") == "open" for p in load_positions())
-                last_pos_check_ts = now_ts
+            if now_ts - last_trade_check_ts >= 5:
+                is_trading = market_is_open()
+                last_trade_check_ts = now_ts
             if _qmt_reconnect_count == 0:
-                interval = _ACCT_WITH_POS if has_open else _ACCT_INTERVAL
+                interval = _ACCT_TRADING if is_trading else _ACCT_INTERVAL
             elif _qmt_reconnect_count == 1:
                 interval = 0
             else:
