@@ -47,11 +47,19 @@ def _notify(event: str, title: str, body: str = "", *, level: str = "active",
     """告警推送（失败安全，绝不影响交易主流程）。
 
     正文口径：账号仅显示后2位（****03）；金额用「万」单位2位小数；标的可含代码+名称。
-    call=True 为警报式持续响铃，用于重大错误（崩溃/下单失败/平仓失败/账户断连）。
+    call=True 为重大错误（崩溃/下单失败/平仓失败/账户断连）：除警报式持续响铃外，
+    额外再发一条普通通知。两条独立——即便用户在系统权限里关闭了「重要提醒」（警报不响），
+    普通通知仍可见，确保不漏掉。
     """
     try:
         from src.notify import notify
-        notify(event, title, body, level=level, call=call)
+        if call:
+            # 普通通知（永远可见，不受警报权限影响）
+            notify(event, title, body, level="active", call=False)
+            # 警报式（持续响铃，静音/勿扰也响，需「重要提醒」权限）
+            notify(event, title, body, level="critical", call=True)
+        else:
+            notify(event, title, body, level=level, call=False)
     except Exception as exc:  # noqa: BLE001
         try:
             get_logger("a_share_quant").warning("告警推送异常：%s", exc)

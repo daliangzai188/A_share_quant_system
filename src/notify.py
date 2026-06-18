@@ -76,7 +76,8 @@ def notify(event: str, title: str, body: str = "", *, level: str = "active",
         return False
 
     throttle_sec = float(cfg.get("throttle_sec", 300))
-    key = f"{event}|{title}|{body}"
+    # 节流键含 level/call：同一事件的"普通通知"和"警报"分别计数，互不挤占
+    key = f"{event}|{title}|{body}|{level}|{int(call)}"
     if _should_throttle(key, throttle_sec):
         _logger.info("notify: 节流跳过（%.0fs 内重复）：%s", throttle_sec, title)
         return False
