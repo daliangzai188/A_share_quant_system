@@ -44,7 +44,9 @@ from src.utils.time_utils import BEIJING_TZ, now_beijing, today_beijing
 # ── 常量 ───────────────────────────────────────────────────────────────────────
 SCHEDULE = [
     datetime.time(9, 20),   # 盘前：平仓检查 + 组合状态机
-    datetime.time(9, 30),   # 开盘：执行买入，避免 09:20 触发 OUTSIDE_TRADING_TIME
+    datetime.time(9, 23),   # 集合竞价：按跌停价挂单平仓
+    datetime.time(9, 28),   # 盘前：按卖5价挂单买入
+    datetime.time(9, 30),   # 开盘：若9:28未成功则补充买入
     datetime.time(14, 50),  # 盘中平仓检查
     datetime.time(15, 10),  # 收盘流水线
 ]
@@ -785,6 +787,222 @@ def run_script(name: str, *args: str, timeout: int = TIMEOUT_DATA_STEP) -> bool:
 
 # ── 定时任务 ───────────────────────────────────────────────────────────────────
 
+def job_premarket_sell() -> None:
+    """09:23 集合竞价：对所有待平仓持仓按跌停价挂单，保证开盘成交。"""
+    logger().info("===== 集合竞价平仓挂单（09:23）=====")
+    positions = load_positions()
+    if not positions:
+        logger().info("09:22 无持仓，跳过集合竞价平仓。")
+        return
+
+    config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+    qmt_enabled = bool(config.get("broker_adapter_enabled")) and bool(config.get("qmt_enabled"))
+    today_str = today_beijing().strftime("%Y%m%d")
+
+    for pos in positions:
+        try:
+            if pos.get("status") == "closed":
+                continue
+            ts_code = pos.get("ts_code", "")
+            name    = pos.get("name", "")
+            shares  = int(pos.get("shares", 0))
+            planned_exit = pos.get("planned_exit_date", "99991231")
+
+            # 只处理今天到期或已标记 sell_pending 的持仓
+            if planned_exit > today_str and pos.get("status") != "sell_pending":
+                logger().info("09:22 持仓 %s %s 计划平仓日 %s，今日无需平仓，跳过。", ts_code, name, planned_exit)
+                continue
+
+            if not qmt_enabled:
+                logger().info("[集合竞价平仓] 模拟盘：%s %s 将在开盘时平仓", ts_code, name)
+                continue
+
+            broker_cfg = config.get("broker", {})
+            confirm    = config.get("live_trade", {}).get("real_order_confirm_text", "A_SYSTEM_REAL_ORDER_CONFIRMED")
+
+            with _qmt_lock:
+                adapter   = _qmt_get(broker_cfg)
+                quote_map = adapter.get_full_tick([ts_code])
+
+            quote       = quote_map.get(ts_code)
+            lower_limit = float(getattr(quote, "lower_limit", 0.0) or 0.0) if quote else 0.0
+
+            if lower_limit <= 0:
+                logger().warning("09:22 %s %s 无法获取跌停价，跳过集合竞价平仓，等待09:30。", ts_code, name)
+                continue
+
+            logger().warning("⏳ [集合竞价平仓] %s %s  %d股  跌停价%.2f元", ts_code, name, shares, lower_limit)
+
+            from src.broker_adapter import OrderRequest
+            request = OrderRequest(
+                ts_code=ts_code,
+                broker_code=ts_code,
+                side="SELL",
+                quantity=shares,
+                price_type="FIXED_PRICE",
+                price=lower_limit,
+                strategy_name="A_SYSTEM_PREMARKET_SELL",
+                remark=f"集合竞价平仓-{today_str}",
+            )
+            with _qmt_lock:
+                adapter = _qmt_get(broker_cfg)
+                result  = adapter.place_order(request)
+
+            if result.accepted:
+                logger().info("✅ [集合竞价平仓] %s %s 委托已提交（order_id=%s）", ts_code, name, result.order_id)
+                mark_position_closed(pos.get("order_id", ""), today_str)
+            else:
+                logger().error("❌ [集合竞价平仓] %s %s 提交失败：%s，等待后续平仓任务处理。", ts_code, name, result.message)
+
+        except Exception as e:
+            logger().error("集合竞价平仓异常（%s）：%s", pos.get("ts_code"), e)
+
+    logger().info("===== 集合竞价平仓挂单完成 =====")
+
+
+def job_premarket_buy() -> None:
+    """09:28 盘前挂单：对计划开仓且当前无持仓的标的，按卖5价挂限价买单。"""
+    logger().info("===== 盘前买入挂单（09:28）=====")
+
+    if has_open_local_position():
+        logger().info("09:28 已有本地持仓，跳过盘前买入。")
+        return
+
+    combined = load_combined_decisions()
+    decisions          = combined[0] if combined is not None else None
+    combined_orders_path = combined[1] if combined is not None else None
+    if decisions is None:
+        logger().error("09:28 组合状态机决策获取失败，跳过盘前买入。")
+        return
+
+    has_buy_plan = (
+        has_combined_action(decisions, "ALLOW_ABC_BUY_PREVIEW") or
+        has_combined_action(decisions, "ALLOW_E2_BUY")
+    )
+    if not has_buy_plan:
+        logger().info("09:28 今日无开仓计划，跳过盘前买入。")
+        return
+
+    if has_combined_action(decisions, "PLAN_SELL_D_FIRST"):
+        logger().info("09:28 组合状态机要求先卖D，跳过盘前买入。")
+        return
+
+    config     = load_json_config(PROJECT_ROOT / "config" / "config.json")
+    qmt_enabled = bool(config.get("broker_adapter_enabled")) and bool(config.get("qmt_enabled"))
+    if not qmt_enabled:
+        logger().info("[盘前买入] 模拟盘，跳过实盘挂单。")
+        return
+
+    import pandas as pd
+    if combined_orders_path is None or not combined_orders_path.exists():
+        logger().error("09:28 找不到计划单文件，跳过盘前买入。")
+        return
+    try:
+        orders = pd.read_csv(combined_orders_path)
+    except Exception as e:
+        logger().error("09:28 读取计划单失败：%s", e)
+        return
+
+    buy_orders = orders[orders.get("side", pd.Series()).astype(str).str.upper() == "BUY"]
+    if buy_orders.empty:
+        logger().info("09:28 计划单中无买入行，跳过。")
+        return
+
+    broker_cfg = config.get("broker", {})
+    confirm    = config.get("live_trade", {}).get("real_order_confirm_text", "A_SYSTEM_REAL_ORDER_CONFIRMED")
+    today_str  = today_beijing().strftime("%Y%m%d")
+
+    from src.broker_adapter import OrderRequest
+    from src.live_order_gateway import LiveOrderGateway
+    gateway = LiveOrderGateway(PROJECT_ROOT / "config" / "config.json")
+    try:
+        gateway.assert_real_order_allowed(confirm)
+    except RuntimeError as e:
+        logger().error("❌ [盘前买入] 下单条件不满足：%s", e)
+        return
+
+    with _qmt_lock:
+        adapter = _qmt_get(broker_cfg)
+        account = adapter.query_account()
+        positions_live = adapter.query_positions()
+
+    ts_codes = buy_orders["ts_code"].dropna().astype(str).tolist()
+    with _qmt_lock:
+        adapter   = _qmt_get(broker_cfg)
+        quote_map = adapter.get_full_tick(ts_codes)
+
+    # 按账户资金缩放订单
+    buy_orders = resize_buy_orders_for_live_account(
+        planned_orders=buy_orders,
+        account=account,
+        quote_map=quote_map,
+        current_market_value=account.market_value,
+    )
+
+    for _, row in buy_orders.iterrows():
+        try:
+            ts_code  = str(row["ts_code"])
+            name_s   = str(row.get("name", ""))
+            qty      = int(row.get("round_lot_shares", 0))
+            if qty <= 0:
+                continue
+
+            quote    = quote_map.get(ts_code)
+            ask_prices = getattr(quote, "ask_prices", None) if quote else None
+
+            if ask_prices and len(ask_prices) >= 5 and ask_prices[4] > 0:
+                price = round(ask_prices[4], 2)
+                price_label = "卖5"
+            elif ask_prices and len(ask_prices) >= 1 and ask_prices[0] > 0:
+                price = round(ask_prices[0], 2)
+                price_label = "卖1（卖5不可用）"
+            elif quote and getattr(quote, "last_price", 0) > 0:
+                price = round(float(quote.last_price), 2)
+                price_label = "最新价（五档不可用）"
+            else:
+                logger().warning("09:28 %s %s 无法获取卖档价格，跳过。", ts_code, name_s)
+                continue
+
+            logger().warning("⏳ [盘前买入] %s %s  %d股  %s=%.2f元", ts_code, name_s, qty, price_label, price)
+
+            request = OrderRequest(
+                ts_code=ts_code,
+                broker_code=str(row.get("broker_code", ts_code)),
+                side="BUY",
+                quantity=qty,
+                price_type="FIXED_PRICE",
+                price=price,
+                strategy_name=str(row.get("strategy_name", "A_SYSTEM_ABC")),
+                remark=f"盘前买入-{price_label}-{today_str}",
+            )
+            with _qmt_lock:
+                adapter = _qmt_get(broker_cfg)
+                result  = adapter.place_order(request)
+
+            if result.accepted:
+                raw_exit_n = row.get("exit_n_days", None)
+                exit_n = int(float(raw_exit_n)) if raw_exit_n is not None and str(raw_exit_n) not in {"", "nan"} else 2
+                record_buy(
+                    order_id=str(result.order_id or f"premarket-{today_str}-{ts_code}"),
+                    ts_code=ts_code,
+                    name=name_s,
+                    signal_date=str(row.get("signal_date", "")),
+                    buy_date=today_str,
+                    shares=qty,
+                    buy_price=price,
+                    strategy_leg=str(row.get("strategy_leg", "")),
+                    exit_n_days=exit_n,
+                )
+                logger().info("✅ [盘前买入] %s %s %d股 @%.2f 委托已提交", ts_code, name_s, qty, price)
+            else:
+                logger().error("❌ [盘前买入] %s %s 提交失败：%s", ts_code, name_s, result.message)
+
+        except Exception as e:
+            logger().error("盘前买入异常（%s）：%s", row.get("ts_code"), e)
+
+    logger().info("===== 盘前买入挂单完成 =====")
+
+
 def job_morning() -> None:
     logger().info("===== 盘前任务（09:20）=====")
 
@@ -831,6 +1049,11 @@ def job_morning() -> None:
 def job_opening_buy() -> None:
     logger().info("===== 开盘买入任务（09:30）=====")
 
+    if has_open_local_position():
+        logger().info("09:30 检测到已有本地持仓（09:28盘前买入已成交），跳过重复买入。")
+        logger().info("===== 开盘买入任务完成 =====")
+        return
+
     combined = load_combined_decisions()
     decisions = combined[0] if combined is not None else None
     combined_orders_path = combined[1] if combined is not None else None
@@ -859,10 +1082,16 @@ def job_opening_buy() -> None:
     if not attempted_buy:
         logger().info("09:30无A/B/C/E2买入计划。")
     elif not accepted_buy and not has_open_local_position():
-        logger().warning(
-            "09:30开仓计划未成交/未提交成功，且账户本地无持仓；释放资金占用，补启动D盘中监控。"
-        )
-        job_strategy_d()
+        if has_combined_action(decisions, "ALLOW_E2_BUY"):
+            logger().warning(
+                "09:30 E2开仓未提交成功，启动延迟重试（9:31-13:30，相对开盘涨幅≤2%%）。"
+            )
+            _start_e2_retry_thread(combined_orders_path, decisions)
+        else:
+            logger().warning(
+                "09:30开仓计划未成交/未提交成功，且账户本地无持仓；释放资金占用，补启动D盘中监控。"
+            )
+            job_strategy_d()
 
     logger().info("===== 开盘买入任务完成 =====")
 
@@ -1157,11 +1386,121 @@ def _strategy_d_monitor_running() -> bool:
     return False
 
 
+_e2_retry_thread: threading.Thread | None = None
+
+
+def _e2_retry_running() -> bool:
+    global _e2_retry_thread
+    return _e2_retry_thread is not None and _e2_retry_thread.is_alive()
+
+
+def _get_e2_buy_ts_codes(decisions) -> list[str]:
+    """从组合决策中提取 ALLOW_E2_BUY 行对应的标的代码。"""
+    if decisions is None or decisions.empty or "action" not in decisions.columns:
+        return []
+    rows = decisions[decisions["action"].astype(str) == "ALLOW_E2_BUY"]
+    codes = rows["ts_code"].dropna().astype(str).str.strip().tolist()
+    return [c for c in codes if c and c.lower() != "nan"]
+
+
+def _e2_open_price_ok(ts_code: str, tolerance: float = 0.02) -> bool:
+    """当前价相比今日开盘价的涨幅是否在 tolerance 以内。"""
+    try:
+        config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+        broker_cfg = config.get("broker", {})
+        with _qmt_lock:
+            adapter = _qmt_get(broker_cfg)
+            quote_map = adapter.get_full_tick([ts_code])
+        quote = quote_map.get(ts_code)
+        if quote is None:
+            logger().warning("E2延迟开仓：无法获取 %s 行情数据，跳过价格检查", ts_code)
+            return False
+        open_price = float(getattr(quote, "open_price", 0.0) or 0.0)
+        last_price = float(getattr(quote, "last_price", 0.0) or 0.0)
+        if open_price <= 0:
+            logger().warning("E2延迟开仓：%s 开盘价异常（%.2f），跳过", ts_code, open_price)
+            return False
+        pct = (last_price - open_price) / open_price
+        ok = pct <= tolerance
+        logger().info(
+            "E2延迟开仓价格检查：%s 开盘%.2f 当前%.2f 涨幅%+.2f%% —— %s",
+            ts_code, open_price, last_price, pct * 100,
+            f"允许（≤{tolerance * 100:.0f}%%）" if ok else f"拒绝（>{tolerance * 100:.0f}%%）",
+        )
+        return ok
+    except Exception as e:
+        logger().error("E2延迟开仓价格检查异常：%s", e)
+        return False
+
+
+def _e2_delayed_buy_loop(combined_orders_path, decisions) -> None:
+    """后台线程：9:31-14:00 内每60秒检查价格条件，满足则重试 E2 开仓。
+
+    价格条件：当前价 ≤ 今日开盘价 × 1.02。
+    超出条件或超过截止时间时放弃并补启动 D 监控。
+    """
+    log = logger()
+    ts_codes = _get_e2_buy_ts_codes(decisions)
+    if not ts_codes:
+        log.warning("E2延迟开仓：无法获取标的代码，直接补启动D监控。")
+        if not has_open_local_position() and not _strategy_d_monitor_running():
+            job_strategy_d()
+        return
+
+    log.info("E2延迟开仓线程启动：标的 %s，每60秒检查一次，截止13:30。", ts_codes)
+    RETRY_INTERVAL_S = 60
+    CUTOFF = datetime.time(13, 30)  # 13:30前放弃，给D策略留足14:00前的准备时间
+    TOLERANCE = 0.02
+
+    while True:
+        time.sleep(RETRY_INTERVAL_S)
+        now = now_beijing()
+
+        if has_open_local_position():
+            log.info("E2延迟开仓：已有本地持仓，退出重试线程。")
+            return
+
+        if now.time() >= CUTOFF:
+            log.warning("E2延迟开仓：已过13:30截止时间，放弃开仓，补启动D监控。")
+            if not _strategy_d_monitor_running():
+                job_strategy_d()
+            return
+
+        if not all(_e2_open_price_ok(code, TOLERANCE) for code in ts_codes):
+            log.warning("E2延迟开仓：%s 涨幅已超开盘价2%%，放弃开仓，补启动D监控。", ts_codes)
+            if not _strategy_d_monitor_running():
+                job_strategy_d()
+            return
+
+        log.info("E2延迟开仓 %s：价格满足条件，尝试提交...", now.strftime("%H:%M:%S"))
+        ok = handle_combined_order_preview(combined_orders_path, reason="E2延迟开仓")
+        if ok:
+            log.info("E2延迟开仓：提交成功，退出重试线程。")
+            return
+        log.warning("E2延迟开仓：本次提交未成功，%d秒后重试。", RETRY_INTERVAL_S)
+
+
+def _start_e2_retry_thread(combined_orders_path, decisions) -> None:
+    global _e2_retry_thread
+    if _e2_retry_running():
+        logger().info("E2延迟开仓线程已在运行，跳过重复启动。")
+        return
+    _e2_retry_thread = threading.Thread(
+        target=_e2_delayed_buy_loop,
+        args=(combined_orders_path, decisions),
+        daemon=True,
+        name="e2-retry",
+    )
+    _e2_retry_thread.start()
+    logger().info("E2延迟开仓线程已启动（后台daemon线程，每60秒检查，最晚13:30放弃）。")
+
+
 def startup_catchup_strategy_d() -> None:
     """盘中重启守护进程时，补启动错过 09:20 的 D 监控。
 
     不在这里执行 A/B/C 买入预览，避免盘中重启重复触发开仓动作；
     只读取组合状态机，如果它明确允许 D 才补启动监控。
+    对于 E2 开仓：若 9:30 后市场仍开盘（14:00 前），允许延迟重试（涨幅≤2%%）。
     """
     now = now_beijing()
     if not is_trade_day(now.date()):
@@ -1174,6 +1513,7 @@ def startup_catchup_strategy_d() -> None:
     logger().info("启动补检：当前处于D盘中监控时段，检查是否需要补启动D。")
     combined = load_combined_decisions()
     decisions = combined[0] if combined is not None else None
+    combined_orders_path = combined[1] if combined is not None else None
     if decisions is None:
         logger().warning("启动补检：组合状态机决策生成失败，不补启动D。")
         return
@@ -1184,10 +1524,16 @@ def startup_catchup_strategy_d() -> None:
         logger().info("启动补检：组合状态机允许D盘中监控，补启动D。")
         job_strategy_d()
     elif now.time() >= datetime.time(9, 30) and blocks_d_for_opening_plan(decisions) and not has_open_local_position():
-        logger().warning(
-            "启动补检：开仓窗口已过，A/B/C/E2计划仍占用D但本地无持仓；释放资金占用，补启动D。"
-        )
-        job_strategy_d()
+        if has_combined_action(decisions, "ALLOW_E2_BUY") and now.time() < datetime.time(13, 30) and not _e2_retry_running():
+            logger().warning(
+                "启动补检：E2未开仓且当前时间在13:30前，启动延迟开仓重试（涨幅≤2%%）。"
+            )
+            _start_e2_retry_thread(combined_orders_path, decisions)
+        else:
+            logger().warning(
+                "启动补检：开仓窗口已过，A/B/C/E2计划仍占用D但本地无持仓；释放资金占用，补启动D。"
+            )
+            job_strategy_d()
     else:
         logger().info("启动补检：组合状态机未允许D盘中监控，跳过补启动。")
 
@@ -1864,11 +2210,15 @@ def run_job(scheduled_time: datetime.time) -> None:
     trade_day = is_trade_day(today)
     if scheduled_time == SCHEDULE[0]:     # 09:20
         job_morning() if trade_day else logger().info("非交易日，跳过盘前任务")
-    elif scheduled_time == SCHEDULE[1]:   # 09:30
+    elif scheduled_time == SCHEDULE[1]:   # 09:23
+        job_premarket_sell() if trade_day else logger().info("非交易日，跳过集合竞价平仓")
+    elif scheduled_time == SCHEDULE[2]:   # 09:28
+        job_premarket_buy() if trade_day else logger().info("非交易日，跳过盘前买入")
+    elif scheduled_time == SCHEDULE[3]:   # 09:30
         job_opening_buy() if trade_day else logger().info("非交易日，跳过开盘买入任务")
-    elif scheduled_time == SCHEDULE[2]:   # 14:50
+    elif scheduled_time == SCHEDULE[4]:   # 14:50
         job_afternoon() if trade_day else logger().info("非交易日，跳过盘中任务")
-    elif scheduled_time == SCHEDULE[3]:   # 15:10
+    elif scheduled_time == SCHEDULE[5]:   # 15:10
         if trade_day:
             threading.Thread(
                 target=_run_post_market_with_retry,
