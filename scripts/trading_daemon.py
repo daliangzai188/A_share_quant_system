@@ -2930,11 +2930,15 @@ def _print_account_status(log: Any) -> None:
                     quote_map = adapter.get_full_tick(codes)
             if _qmt_reconnect_count > 0:
                 log.info("✅ QMT连接已恢复（第%d次重连后恢复）", _qmt_reconnect_count)
+                _notify("connection", "✅ 账户重连成功", "QMT连接已恢复正常。")
                 _qmt_reconnect_count = 0
         except Exception as first_err:
             _qmt_reset()
             _qmt_reconnect_count += 1
             log.warning("⚠️ QMT掉线（第%d次），立刻重连：%s", _qmt_reconnect_count, first_err)
+            # 仅在刚断连那一刻告警（叠加节流），避免每轮轮询刷屏
+            if _qmt_reconnect_count == 1:
+                _notify("connection", "🔌 账户断连", "QMT连接断开，正在自动重连...", level="timeSensitive")
             try:
                 adapter = _qmt_get(broker_cfg)
                 account = adapter.query_account()
@@ -2944,6 +2948,7 @@ def _print_account_status(log: Any) -> None:
                     if codes:
                         quote_map = adapter.get_full_tick(codes)
                 log.info("✅ QMT重连成功（第%d次恢复）", _qmt_reconnect_count)
+                _notify("connection", "✅ 账户重连成功", "QMT连接已恢复正常。")
                 _qmt_reconnect_count = 0
             except Exception as retry_err:
                 log.warning("⚠️ QMT重连失败（第%d次），等待下次重试：%s",
@@ -3030,6 +3035,8 @@ def check_qmt_connection() -> None:
                     account.available_cash,
                     attempt,
                 )
+                _notify("connection", "✅ 账户连接成功",
+                        f"守护进程启动就绪，QMT已连接，账户{_mask_account(account.account_id)}。")
                 return
             except Exception as e:
                 last_error = str(e)
@@ -3042,8 +3049,12 @@ def check_qmt_connection() -> None:
                     time.sleep(15)
 
         log.error("❌ QMT连接失败：连续 5 次失败。最后错误：%s", last_error)
+        _notify("system_error", "❌ QMT启动连接失败",
+                "守护进程启动时QMT连续5次连接失败，实盘功能不可用，请立即检查。", level="critical")
     except Exception as e:
         log.error("❌ QMT连接失败：%s", e)
+        _notify("system_error", "❌ QMT启动连接异常",
+                "守护进程启动连接QMT时发生异常，实盘功能不可用，请立即检查。", level="critical")
 
 
 def main() -> None:
@@ -3164,4 +3175,18 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise  # 信号处理器主动退出（清理后 sys.exit(0)），不告警
+    except KeyboardInterrupt:
+        raise  # 手动中断，不告警
+    except Exception as _fatal:
+        try:
+            get_logger("a_share_quant").exception("守护进程致命错误，即将退出：%s", _fatal)
+        except Exception:
+            pass
+        _notify("system_error", "🛑 守护进程异常退出",
+                "守护进程发生致命错误即将退出，实盘自动交易已停止，请立即检查并重启。",
+                level="critical")
+        raise

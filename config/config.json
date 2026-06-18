@@ -14,6 +14,7 @@
       "sell_fail": true,
       "buy_result": true,
       "system_error": true,
+      "connection": true,
       "daily_summary": true
     }
   },
