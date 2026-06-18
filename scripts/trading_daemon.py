@@ -334,7 +334,7 @@ def _execute_orders_inprocess(
     planned_orders_path: Path | str,
     confirm: str,
     tag: str,
-) -> None:
+) -> bool:
     """进程内单次 QMT 连接完成验证+下单，消除子进程启动和双次连接延迟。"""
     import pandas as pd
     from dataclasses import asdict
@@ -349,17 +349,17 @@ def _execute_orders_inprocess(
         gateway.assert_real_order_allowed(confirm)
     except RuntimeError as e:
         log.error("❌ [%s] 下单条件不满足：%s", tag, e)
-        return
+        return False
 
     try:
         _, planned_orders = gateway.load_planned_orders(planned_orders_path)
     except Exception as e:
         log.error("❌ [%s] 读取计划单失败：%s", tag, e)
-        return
+        return False
 
     if planned_orders.empty:
         log.info("[%s] 计划单为空，跳过", tag)
-        return
+        return False
 
     broker_cfg = config_path and load_json_config(config_path).get("broker", {})
     with _qmt_lock:
@@ -410,10 +410,11 @@ def _execute_orders_inprocess(
                     r.get("ts_code", ""),
                     explain_reject_reasons(r),
                 )
-            return
+            return False
 
         now_str = now_beijing().strftime("%H:%M:%S")
         results = []
+        accepted_any = False
         for _, row in executable.iterrows():
             side = str(row["side"]).upper()
             qty = int(row["quantity"])
@@ -431,6 +432,7 @@ def _execute_orders_inprocess(
             result = adapter.place_order(request)
             results.append(asdict(result))
             if result.accepted:
+                accepted_any = True
                 log.info("✅ [%s] %s %s %s %d股 参考价%.2f元 金额%.0f元",
                          tag, now_str, side, row["ts_code"], qty, ref_price, qty * ref_price)
                 if side == "BUY":
@@ -454,10 +456,12 @@ def _execute_orders_inprocess(
         # 保存提交结果 CSV
         result_csv = PROJECT_ROOT / "reports" / "live_trade" / "qmt_live_order_submitted_orders.csv"
         pd.DataFrame(results).to_csv(result_csv, index=False, encoding="utf-8-sig")
+        return accepted_any
 
       except Exception as e:
         _qmt_reset()
         log.error("❌ [%s] 下单异常（已重置连接）：%s", tag, e)
+        return False
 
 
 def resize_buy_orders_for_live_account(
@@ -838,21 +842,27 @@ def job_opening_buy() -> None:
         logger().info("组合状态机要求先卖D，09:30不执行新的买入。")
         return
 
-    did_buy = False
+    attempted_buy = False
+    accepted_buy = False
     if has_combined_action(decisions, "ALLOW_ABC_BUY_PREVIEW"):
-        handle_combined_order_preview(combined_orders_path, reason="A/B/C 09:30开仓")
-        did_buy = True
+        attempted_buy = True
+        accepted_buy = handle_combined_order_preview(combined_orders_path, reason="A/B/C 09:30开仓") or accepted_buy
     else:
         logger().info("组合状态机未允许A/B/C买入，跳过。")
 
     if has_combined_action(decisions, "ALLOW_E2_BUY"):
-        handle_combined_order_preview(combined_orders_path, reason="E2 09:30开仓")
-        did_buy = True
+        attempted_buy = True
+        accepted_buy = handle_combined_order_preview(combined_orders_path, reason="E2 09:30开仓") or accepted_buy
     else:
         logger().info("组合状态机未允许E2开仓，跳过。")
 
-    if not did_buy:
+    if not attempted_buy:
         logger().info("09:30无A/B/C/E2买入计划。")
+    elif not accepted_buy and not has_open_local_position():
+        logger().warning(
+            "09:30开仓计划未成交/未提交成功，且账户本地无持仓；释放资金占用，补启动D盘中监控。"
+        )
+        job_strategy_d()
 
     logger().info("===== 开盘买入任务完成 =====")
 
@@ -894,27 +904,50 @@ def has_combined_action(decisions, action: str) -> bool:
     return decisions["action"].astype(str).eq(action).any()
 
 
-def handle_combined_order_preview(planned_orders_path: Path | None, reason: str) -> None:
+def has_open_local_position() -> bool:
+    return any(p.get("status") == "open" for p in load_positions())
+
+
+def blocks_d_for_opening_plan(decisions) -> bool:
+    """识别 D 是否只是被当日 A/B/C/E2 开仓计划占用资金挡住。
+
+    盘中补启动只用于开仓窗口已经过去、且本地无持仓的场景；如果 D 是因为待卖、
+    行情时段、风控等原因被挡住，不在这里强行放行。
+    """
+    if decisions is None or decisions.empty or "action" not in decisions.columns:
+        return False
+    actions = decisions["action"].astype(str)
+    if actions.isin({"ALLOW_ABC_BUY_PREVIEW", "ALLOW_E2_BUY"}).any():
+        return True
+    if not actions.eq("BLOCK_D_INTRADAY_MONITOR").any():
+        return False
+    reason_text = ""
+    if "reason" in decisions.columns:
+        reason_text = " ".join(decisions["reason"].fillna("").astype(str).tolist())
+    return any(keyword in reason_text for keyword in ("开仓", "同一资金", "A/B/C", "E2"))
+
+
+def handle_combined_order_preview(planned_orders_path: Path | None, reason: str) -> bool:
     # 组合计划单预览 —— 次优先级，出错只记录
     try:
         import pandas as pd
         if planned_orders_path is None or not planned_orders_path.exists():
             logger().info("无组合 planned_orders，跳过：%s", reason)
-            return
+            return False
 
         try:
             orders = pd.read_csv(planned_orders_path)
         except pd.errors.EmptyDataError:
             logger().info("组合 planned_orders 文件为空，跳过：%s", reason)
-            return
+            return False
         if "side" not in orders.columns:
             logger().info("组合 planned_orders 无 side 列，跳过：%s", reason)
-            return
+            return False
 
         executable_orders = orders[orders["side"].astype(str).str.upper().isin({"BUY", "SELL"})]
         if executable_orders.empty:
             logger().info("组合计划单无买卖计划，跳过：%s", reason)
-            return
+            return False
 
         config = load_json_config(PROJECT_ROOT / "config" / "config.json")
         qmt_enabled = bool(config.get("broker_adapter_enabled")) and bool(config.get("qmt_enabled"))
@@ -934,8 +967,9 @@ def handle_combined_order_preview(planned_orders_path: Path | None, reason: str)
                 amount = qty * ref_price
                 logger().warning("⏳ [准备开仓] %s %s  %d股  参考价%.2f元  预估金额%.0f元",
                                  code, name_s, qty, ref_price, amount)
-            _execute_orders_inprocess(planned_orders_path, confirm, "开仓")
+            return _execute_orders_inprocess(planned_orders_path, confirm, "开仓")
         else:
+            recorded_any = False
             buy_orders = executable_orders[executable_orders["side"].astype(str).str.upper() == "BUY"]
             for _, row in buy_orders.iterrows():
                 try:
@@ -953,11 +987,14 @@ def handle_combined_order_preview(planned_orders_path: Path | None, reason: str)
                         strategy_leg=str(row.get("strategy_leg", "")),
                         exit_n_days=exit_n,
                     )
+                    recorded_any = True
                 except Exception as e:
                     logger().error("记录持仓异常：%s", e)
+            return recorded_any
 
     except Exception as e:
         logger().error("买入信号处理异常：%s", e)
+        return False
 
 
 def job_strategy_d() -> None:
@@ -1145,6 +1182,11 @@ def startup_catchup_strategy_d() -> None:
         return
     if has_combined_action(decisions, "ALLOW_D_INTRADAY_MONITOR"):
         logger().info("启动补检：组合状态机允许D盘中监控，补启动D。")
+        job_strategy_d()
+    elif now.time() >= datetime.time(9, 30) and blocks_d_for_opening_plan(decisions) and not has_open_local_position():
+        logger().warning(
+            "启动补检：开仓窗口已过，A/B/C/E2计划仍占用D但本地无持仓；释放资金占用，补启动D。"
+        )
         job_strategy_d()
     else:
         logger().info("启动补检：组合状态机未允许D盘中监控，跳过补启动。")
