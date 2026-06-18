@@ -2546,7 +2546,7 @@ def _print_account_status(log: Any) -> None:
                     f"{p.ts_code}×{p.volume}股 "
                     f"现价{current_price:.2f} "
                     f"{chg_str}"
-                    f"今日{pnl_sign}{pnl_pct:.2f}% "
+                    f"收益{pnl_sign}{pnl_pct:.2f}% "
                     f"市值{p.market_value:.0f}元"
                 )
             else:
