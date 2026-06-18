@@ -305,6 +305,10 @@ class CombinedLiveEngine:
             if str(p.get("planned_exit_date", "99991231")) <= today
             or str(p.get("status", "")).lower() == "sell_pending"
         ]
+        # 今日集合竞价卖出的标的代码（T+0限制：当日不可再买入同一标的）
+        due_selling_codes: set[str] = {str(p.get("ts_code", "")) for p in due_e2_positions}
+        # 非D持仓中今日不到期的部分——才是真正占用资金、阻断新开仓的持仓
+        holding_non_d_positions = [p for p in open_non_d_positions if p not in due_e2_positions]
         abc_path, abc_orders = self.load_latest_abc_orders()
 
         decisions: list[CombinedLiveDecision] = []
@@ -374,24 +378,34 @@ class CombinedLiveEngine:
                     source="combined_state_machine",
                 ))
 
-        elif open_non_d_positions:
+        elif holding_non_d_positions:
+            # 有尚未到期的非D持仓，资金仍被占用，阻断新开仓
             decisions.append(CombinedLiveDecision(
                 action="BLOCK_ABC_BUY", strategy_leg="A+B+C",
-                reason="存在旧持仓（A/B/C或E2），组合状态机不允许重复开仓。",
+                reason="存在未到期旧持仓（A/B/C或E2），组合状态机不允许重复开仓。",
                 source="positions.json",
             ))
             decisions.append(CombinedLiveDecision(
                 action="BLOCK_D_INTRADAY_MONITOR", strategy_leg="D",
-                reason="存在旧持仓占用资金，D盘中策略跳过。",
+                reason="存在未到期旧持仓占用资金，D盘中策略跳过。",
                 source="positions.json",
             ))
 
         else:
-            # 账户完全空仓：按优先级 ABC > E2 > D 决定今日行动
+            # 账户空仓 OR 所有非D持仓今日均到期（9:23集合竞价平仓，9:25成交后资金释放）：
+            # 按优先级 ABC > E2 > D 决定今日行动
             abc_decisions = self.build_abc_buy_decisions(abc_orders, str(abc_path or ""))
+            # T+0限制：过滤今日集合竞价已卖出的标的（同日不可再买入）
+            if due_selling_codes:
+                abc_decisions = [d for d in abc_decisions if d.ts_code not in due_selling_codes]
+                abc_orders_buy = abc_orders[
+                    ~abc_orders["ts_code"].astype(str).isin(due_selling_codes)
+                ] if not abc_orders.empty else abc_orders
+            else:
+                abc_orders_buy = abc_orders
             if abc_decisions:
                 decisions.extend(abc_decisions)
-                planned_orders.extend(abc_orders.to_dict("records"))
+                planned_orders.extend(abc_orders_buy.to_dict("records"))
                 decisions.append(CombinedLiveDecision(
                     action="BLOCK_D_INTRADAY_MONITOR", strategy_leg="D",
                     reason="今日存在A/B/C买入计划，D盘中策略不再使用同一资金。",
@@ -402,7 +416,15 @@ class CombinedLiveEngine:
                 yesterday_signal = self.load_yesterday_e2_signal(today)
                 e2_order: dict[str, Any] | None = None
                 if yesterday_signal:
-                    e2_order = self.build_e2_buy_order(yesterday_signal, today)
+                    buy_code = str(yesterday_signal.get("ts_code", ""))
+                    if buy_code in due_selling_codes:
+                        # 今日集合竞价已卖出同一标的，T+0限制不可当日回买
+                        import logging as _logging
+                        _logging.getLogger(__name__).warning(
+                            "E2新买入标的 %s 与今日集合竞价卖出标的相同，T+0限制，跳过买入。", buy_code
+                        )
+                    else:
+                        e2_order = self.build_e2_buy_order(yesterday_signal, today)
 
                 if e2_order and e2_order.get("round_lot_shares", 0) > 0:
                     planned_orders.append(e2_order)

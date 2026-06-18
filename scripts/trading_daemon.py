@@ -45,6 +45,7 @@ from src.utils.time_utils import BEIJING_TZ, now_beijing, today_beijing
 SCHEDULE = [
     datetime.time(9, 20),   # 盘前：平仓检查 + 组合状态机
     datetime.time(9, 23),   # 集合竞价：按跌停价挂单平仓
+    datetime.time(9, 26),   # 集合竞价成交后：同步实盘持仓，刷新今日买入决策
     datetime.time(9, 28),   # 盘前：按卖5价挂单买入
     datetime.time(9, 30),   # 开盘：若9:28未成功则补充买入
     datetime.time(14, 50),  # 盘中平仓检查
@@ -858,6 +859,70 @@ def job_premarket_sell() -> None:
             logger().error("集合竞价平仓异常（%s）：%s", pos.get("ts_code"), e)
 
     logger().info("===== 集合竞价平仓挂单完成 =====")
+
+
+def job_premarket_position_sync() -> None:
+    """09:26 集合竞价成交确认：对比实盘持仓与本地持仓，若实盘已无某标的则同步标记平仓，并刷新今日组合决策。
+
+    9:25集合竞价撮合完成后，券商持仓会更新。若9:23挂单的卖出已成交，本地标记为closed，
+    再重新运行组合状态机，让9:28买入任务能看到正确的空仓+有买入计划的决策。
+    """
+    logger().info("===== 盘前持仓同步（09:26）=====")
+
+    config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+    qmt_enabled = bool(config.get("broker_adapter_enabled")) and bool(config.get("qmt_enabled"))
+    today_str = today_beijing().strftime("%Y%m%d")
+
+    if not qmt_enabled:
+        logger().info("[盘前持仓同步] 模拟盘，跳过实盘查询。")
+        logger().info("===== 盘前持仓同步完成 =====")
+        return
+
+    broker_cfg = config.get("broker", {})
+    try:
+        with _qmt_lock:
+            adapter = _qmt_get(broker_cfg)
+            live_positions = adapter.query_positions()
+        live_codes = {
+            str(p.ts_code)
+            for p in live_positions
+            if getattr(p, "volume", 0) and int(getattr(p, "volume", 0)) > 0
+        }
+    except Exception as e:
+        logger().error("[盘前持仓同步] 查询实盘持仓失败：%s", e)
+        logger().info("===== 盘前持仓同步完成 =====")
+        return
+
+    local_positions = load_positions()
+    synced_any = False
+    for pos in local_positions:
+        if pos.get("status") != "open":
+            continue
+        ts_code = str(pos.get("ts_code", ""))
+        if ts_code and ts_code not in live_codes:
+            logger().info(
+                "✅ [盘前持仓同步] %s %s 实盘持仓已消失（集合竞价成交），本地标记已平仓。",
+                ts_code, pos.get("name", ""),
+            )
+            mark_position_closed(pos.get("order_id", ""), today_str)
+            synced_any = True
+
+    if not synced_any:
+        logger().info("[盘前持仓同步] 无需同步（本地与实盘持仓一致）。")
+        logger().info("===== 盘前持仓同步完成 =====")
+        return
+
+    # 持仓已更新，重新运行组合状态机刷新今日决策
+    logger().info("[盘前持仓同步] 持仓已更新，重新生成今日组合决策...")
+    try:
+        from src.combined_live_engine import CombinedLiveEngine
+        engine = CombinedLiveEngine(PROJECT_ROOT)
+        engine.run()
+        logger().info("✅ [盘前持仓同步] 组合决策已刷新，9:28买入任务将使用最新决策。")
+    except Exception as e:
+        logger().error("[盘前持仓同步] 刷新组合决策失败：%s，9:28将沿用旧决策。", e)
+
+    logger().info("===== 盘前持仓同步完成 =====")
 
 
 def job_premarket_buy() -> None:
@@ -2212,13 +2277,15 @@ def run_job(scheduled_time: datetime.time) -> None:
         job_morning() if trade_day else logger().info("非交易日，跳过盘前任务")
     elif scheduled_time == SCHEDULE[1]:   # 09:23
         job_premarket_sell() if trade_day else logger().info("非交易日，跳过集合竞价平仓")
-    elif scheduled_time == SCHEDULE[2]:   # 09:28
+    elif scheduled_time == SCHEDULE[2]:   # 09:26
+        job_premarket_position_sync() if trade_day else logger().info("非交易日，跳过盘前持仓同步")
+    elif scheduled_time == SCHEDULE[3]:   # 09:28
         job_premarket_buy() if trade_day else logger().info("非交易日，跳过盘前买入")
-    elif scheduled_time == SCHEDULE[3]:   # 09:30
+    elif scheduled_time == SCHEDULE[4]:   # 09:30
         job_opening_buy() if trade_day else logger().info("非交易日，跳过开盘买入任务")
-    elif scheduled_time == SCHEDULE[4]:   # 14:50
+    elif scheduled_time == SCHEDULE[5]:   # 14:50
         job_afternoon() if trade_day else logger().info("非交易日，跳过盘中任务")
-    elif scheduled_time == SCHEDULE[5]:   # 15:10
+    elif scheduled_time == SCHEDULE[6]:   # 15:10
         if trade_day:
             threading.Thread(
                 target=_run_post_market_with_retry,
