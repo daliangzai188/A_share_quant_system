@@ -1498,11 +1498,102 @@ def _e2_open_price_ok(ts_code: str, tolerance: float = 0.02) -> bool:
         return False
 
 
-def _e2_delayed_buy_loop(combined_orders_path, decisions) -> None:
-    """后台线程：9:31-14:00 内每60秒检查价格条件，满足则重试 E2 开仓。
+def _e2_place_order_direct(ts_code: str, name: str, planned_qty: int, signal_date: str,
+                            strategy_leg: str, exit_n_days: int,
+                            config: dict, broker_cfg: dict, confirm: str) -> bool:
+    """按ask5/ask1/last_price挂FIXED_PRICE限价买单，不走CSV→validate流水线。"""
+    from src.broker_adapter import OrderRequest
+    from src.live_order_gateway import LiveOrderGateway
 
-    价格条件：当前价 ≤ 今日开盘价 × 1.02。
-    超出条件或超过截止时间时放弃并补启动 D 监控。
+    today_str = today_beijing().strftime("%Y%m%d")
+    log = logger()
+
+    gateway = LiveOrderGateway(PROJECT_ROOT / "config" / "config.json")
+    try:
+        gateway.assert_real_order_allowed(confirm)
+    except RuntimeError as e:
+        log.error("❌ [E2延迟开仓] 下单条件不满足：%s", e)
+        return False
+
+    with _qmt_lock:
+        adapter = _qmt_get(broker_cfg)
+        account = adapter.query_account()
+        quote_map = adapter.get_full_tick([ts_code])
+
+    quote = quote_map.get(ts_code)
+    ask_prices = getattr(quote, "ask_prices", None) if quote else None
+
+    if ask_prices and len(ask_prices) >= 5 and ask_prices[4] > 0:
+        price = round(float(ask_prices[4]), 2)
+        price_label = "卖5"
+    elif ask_prices and len(ask_prices) >= 1 and ask_prices[0] > 0:
+        price = round(float(ask_prices[0]), 2)
+        price_label = "卖1（卖5不可用）"
+    elif quote and getattr(quote, "last_price", 0) > 0:
+        price = round(float(quote.last_price), 2)
+        price_label = "最新价（五档不可用）"
+    else:
+        log.warning("E2延迟开仓：%s 无法获取价格，跳过本次。", ts_code)
+        return False
+
+    # 按账户可用资金计算可买股数，上限为计划股数
+    available_cash = float(getattr(account, "available_cash", 0.0) or 0.0)
+    total_asset = float(getattr(account, "total_asset", 0.0) or available_cash)
+    cash_buffer = float(config.get("live_trade", {}).get("cash_buffer_amount", 1000))
+    max_single = float(config.get("live_trade", {}).get("max_single_order_amount", 50000))
+    max_pct = float(config.get("live_trade", {}).get("max_position_pct", 0.8))
+    usable = min(available_cash - cash_buffer, total_asset * max_pct, max_single)
+    max_qty_by_cash = int(usable / price) if usable > 0 and price > 0 else 0
+    max_qty_by_cash = max_qty_by_cash - (max_qty_by_cash % 100)
+    qty = max(0, min(planned_qty, max_qty_by_cash))
+
+    if qty <= 0:
+        log.warning("E2延迟开仓：%s 可用资金%.0f元不足以购买（价格%.2f），跳过。",
+                    ts_code, available_cash, price)
+        return False
+
+    log.warning("⏳ [E2延迟开仓] %s %s  %d股  %s=%.2f元  可用%.0f元",
+                ts_code, name, qty, price_label, price, available_cash)
+
+    request = OrderRequest(
+        ts_code=ts_code,
+        broker_code=ts_code,
+        side="BUY",
+        quantity=qty,
+        price_type="FIXED_PRICE",
+        price=price,
+        strategy_name="A_SYSTEM_ABC",
+        remark=f"E2延迟开仓-{price_label}-{today_str}",
+    )
+    with _qmt_lock:
+        adapter = _qmt_get(broker_cfg)
+        result = adapter.place_order(request)
+
+    if result.accepted:
+        record_buy(
+            order_id=str(result.order_id or f"e2retry-{today_str}-{ts_code}"),
+            ts_code=ts_code,
+            name=name,
+            signal_date=signal_date,
+            buy_date=today_str,
+            shares=qty,
+            buy_price=price,
+            strategy_leg=strategy_leg,
+            exit_n_days=exit_n_days,
+        )
+        log.info("✅ [E2延迟开仓] %s %s %d股 @%.2f 委托已提交", ts_code, name, qty, price)
+        return True
+    else:
+        log.error("❌ [E2延迟开仓] %s %s 提交失败：%s", ts_code, name, result.message)
+        return False
+
+
+def _e2_delayed_buy_loop(combined_orders_path, decisions) -> None:
+    """后台线程：9:31-13:30 内每60秒检查价格条件，满足则用ask5/last_price挂FIXED_PRICE单。
+
+    价格条件：当前价（或最新价）≤ 今日开盘价 × 1.02。
+    午间11:30-13:00使用最新价（ask5为0），QMT接受挂单并于13:00生效。
+    超出条件或超过截止时间时放弃并补启动D监控。
     """
     log = logger()
     ts_codes = _get_e2_buy_ts_codes(decisions)
@@ -1512,9 +1603,18 @@ def _e2_delayed_buy_loop(combined_orders_path, decisions) -> None:
             job_strategy_d()
         return
 
+    # 从decisions中提取买入元信息（stock details）
+    import pandas as pd
+    rows = decisions[decisions["action"].astype(str) == "ALLOW_E2_BUY"] if not decisions.empty else pd.DataFrame()
+
+    config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+    broker_cfg = config.get("broker", {})
+    confirm = config.get("live_trade", {}).get("real_order_confirm_text", "A_SYSTEM_REAL_ORDER_CONFIRMED")
+    qmt_enabled = bool(config.get("broker_adapter_enabled")) and bool(config.get("qmt_enabled"))
+
     log.info("E2延迟开仓线程启动：标的 %s，每60秒检查一次，截止13:30。", ts_codes)
     RETRY_INTERVAL_S = 60
-    CUTOFF = datetime.time(13, 30)  # 13:30前放弃，给D策略留足14:00前的准备时间
+    CUTOFF = datetime.time(13, 30)
     TOLERANCE = 0.02
 
     while True:
@@ -1538,8 +1638,31 @@ def _e2_delayed_buy_loop(combined_orders_path, decisions) -> None:
             return
 
         log.info("E2延迟开仓 %s：价格满足条件，尝试提交...", now.strftime("%H:%M:%S"))
-        ok = handle_combined_order_preview(combined_orders_path, reason="E2延迟开仓")
-        if ok:
+
+        if not qmt_enabled:
+            log.info("[E2延迟开仓] 模拟盘，跳过实盘下单。")
+            return
+
+        placed_any = False
+        for _, row in rows.iterrows():
+            code = str(row.get("ts_code", ""))
+            if code not in ts_codes:
+                continue
+            ok = _e2_place_order_direct(
+                ts_code=code,
+                name=str(row.get("name", "")),
+                planned_qty=int(row.get("quantity", 0)),
+                signal_date=str(row.get("signal_date", today_beijing().strftime("%Y%m%d"))),
+                strategy_leg=str(row.get("strategy_leg", "E2")),
+                exit_n_days=2,
+                config=config,
+                broker_cfg=broker_cfg,
+                confirm=confirm,
+            )
+            if ok:
+                placed_any = True
+
+        if placed_any:
             log.info("E2延迟开仓：提交成功，退出重试线程。")
             return
         log.warning("E2延迟开仓：本次提交未成功，%d秒后重试。", RETRY_INTERVAL_S)
