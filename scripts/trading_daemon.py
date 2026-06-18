@@ -789,11 +789,15 @@ def run_script(name: str, *args: str, timeout: int = TIMEOUT_DATA_STEP) -> bool:
 # ── 定时任务 ───────────────────────────────────────────────────────────────────
 
 def job_premarket_sell() -> None:
-    """09:23 集合竞价：对所有待平仓持仓按跌停价挂单，保证开盘成交。"""
+    """09:23 集合竞价：仅对 D 策略持仓按跌停价挂单平仓。
+
+    D 策略回测平仓价为 next_open（T+1 开盘价），集合竞价清算价≈开盘价，与回测一致。
+    E2/ABC 回测平仓价为 T+2 收盘价，不在此处处理，由 14:55 job_afternoon 执行。
+    """
     logger().info("===== 集合竞价平仓挂单（09:23）=====")
     positions = load_positions()
     if not positions:
-        logger().info("09:22 无持仓，跳过集合竞价平仓。")
+        logger().info("09:23 无持仓，跳过集合竞价平仓。")
         return
 
     config = load_json_config(PROJECT_ROOT / "config" / "config.json")
@@ -808,10 +812,19 @@ def job_premarket_sell() -> None:
             name    = pos.get("name", "")
             shares  = int(pos.get("shares", 0))
             planned_exit = pos.get("planned_exit_date", "99991231")
+            strategy_leg = str(pos.get("strategy_leg", "")).upper()
+
+            # 只处理 D 策略：E2/ABC 回测用收盘价，不在集合竞价提前卖出
+            if strategy_leg != "D":
+                logger().info(
+                    "09:23 %s %s 策略=%s，回测用收盘价平仓，跳过集合竞价，等待14:55。",
+                    ts_code, name, strategy_leg or "未知",
+                )
+                continue
 
             # 只处理今天到期或已标记 sell_pending 的持仓
             if planned_exit > today_str and pos.get("status") != "sell_pending":
-                logger().info("09:22 持仓 %s %s 计划平仓日 %s，今日无需平仓，跳过。", ts_code, name, planned_exit)
+                logger().info("09:23 持仓 %s %s 计划平仓日 %s，今日无需平仓，跳过。", ts_code, name, planned_exit)
                 continue
 
             if not qmt_enabled:
@@ -898,10 +911,13 @@ def job_premarket_position_sync() -> None:
     for pos in local_positions:
         if pos.get("status") != "open":
             continue
+        # 只同步 D 策略持仓（D策略在9:23卖出，E2/ABC在14:55卖出不在此处）
+        if str(pos.get("strategy_leg", "")).upper() != "D":
+            continue
         ts_code = str(pos.get("ts_code", ""))
         if ts_code and ts_code not in live_codes:
             logger().info(
-                "✅ [盘前持仓同步] %s %s 实盘持仓已消失（集合竞价成交），本地标记已平仓。",
+                "✅ [盘前持仓同步] %s %s (D策略) 实盘持仓已消失（集合竞价成交），本地标记已平仓。",
                 ts_code, pos.get("name", ""),
             )
             mark_position_closed(pos.get("order_id", ""), today_str)
