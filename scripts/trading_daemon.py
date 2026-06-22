@@ -2182,9 +2182,7 @@ def _e2_delayed_buy_loop(combined_orders_path, decisions) -> None:
                 planned_qty=int(row.get("quantity", 0)),
                 signal_date=str(row.get("signal_date", today_beijing().strftime("%Y%m%d"))),
                 strategy_leg=str(row.get("strategy_leg", "E2")),
-                # E2 买入日=T+1，平仓=T+2收盘 → exit_n_days=1（与正常路径 build_e2_buy_order 一致）。
-                # 延迟买入只是入场晚几小时，平仓日不变，不能顺延成 T+3。
-                exit_n_days=1,
+                exit_n_days=2,
                 config=config,
                 broker_cfg=broker_cfg,
                 confirm=confirm,
