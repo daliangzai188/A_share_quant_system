@@ -57,6 +57,7 @@ POLL_BATCH_SIZE = 500        # 每次 get_full_tick 的股票数量
 POLL_INTERVAL_SEC = 30       # 每批轮询间隔（秒）
 MONITOR_START_HHMM = 930     # 脚本等待开始扫描的时间（集合竞价结束后）
 D_POSITION_PCT = 0.80        # 默认仓位比例，优先使用 config.json/strategy_d/position_pct
+D_RETRY_TOP_N = 10           # 买入候选被拒/废单后，只按排序尝试前10名
 STRATEGY_REMARK = "D_FIRST_BOARD"
 DEFAULT_ALLOWED_SEGMENTS = {"sh_main", "sz_main", "chi_next", "star", "bj", "other"}
 
@@ -403,8 +404,13 @@ class StrategyDMonitor:
         )
         max_order_amount = float(self.config.get("live_trade", {}).get("max_single_order_amount", 50000))
         self.logger.info(
-            "D执行规则: 首板(排除昨日涨停) -> 当前封涨停 -> 今日曾炸板>=1 -> 情绪当前封板>=%d -> 14:00后重封/观察升级 -> 排序打分 -> QMT提交/成交确认",
+            "D最低开仓条件: 市场分段在%s | 首板(排除昨日涨停) | 当前封涨停 | 今日曾炸板>=1 | 当前封板数>=%d | 14:00后重封或09:35后观察升级 | 实盘二次复核通过",
+            ",".join(sorted(self.allowed_segments)),
             SENTIMENT_STRONG_MIN,
+        )
+        self.logger.info(
+            "D排序规则: 总分=炸板次数分(2次40/1次30/3次10/其他10)+重封时间分(<10:00=40,<12:00=30,<13:00=20,<14:00=15,<14:30=10,其他=5)+封单量分(>=50万股20,>=20万股15,>=5万股10,其他5)；废单/拒单后最多继续尝试前%d名。",
+            D_RETRY_TOP_N,
         )
         self.logger.info(
             "D开仓参数: 仓位=%.0f%% 单笔金额上限<%.0f元 买入价=涨停价 14:55处理未成交/部分成交委托",
@@ -493,7 +499,7 @@ class StrategyDMonitor:
     # ── 信号检测与分级触发 ────────────────────────────────────────────────────
 
     def _passes_base_filters(self, ts_code: str, st: StockState) -> bool:
-        """通用过滤：首板 + multi_open + open_times <= 3 + 当前涨停 + strong情绪。"""
+        """通用过滤：首板 + 开板回封 + 当前涨停 + strong情绪。"""
         if ts_code in self.yesterday_limit_codes:  # 排除2板+
             return False
         if not st.was_sealed:                      # 当前不在涨停
@@ -510,7 +516,7 @@ class StrategyDMonitor:
         """打分逻辑（满分100）：基于历史数据统计，分越高次日溢价期望越高。
 
         当前策略D回测口径：
-          - 硬过滤仍保持首板 + multi_open + open_times <= 3 + 情绪达标。
+          - 硬过滤仍保持首板 + 开板回封 + 当前涨停 + 情绪达标。
           - 近两年首板研究显示，“炸板2次”不能硬过滤，但多候选时优先它
             可以改善当前D组合的胜率和回撤。
         结论：炸板2次优先、重封越早越好、封单越大越稳。
@@ -548,6 +554,15 @@ class StrategyDMonitor:
 
         return score
 
+    def _score_explain(self, st: StockState) -> str:
+        """返回候选排序解释，便于实盘日志复盘。"""
+        return (
+            f"{self._score(st):.0f}分/"
+            f"炸{st.open_times_today}/"
+            f"重封{hhmm_to_str(st.last_seal_hhmm)}/"
+            f"封单{st.bid_vol / 10000:.1f}万股"
+        )
+
     def _check_and_fire(self) -> None:
         if self.order_placed:
             return
@@ -577,11 +592,23 @@ class StrategyDMonitor:
                 self._log_buy_empty_funnel(hhmm)
             return
 
-        scored = sorted(buy_candidates, key=self._score, reverse=True)
+        scored_all = sorted(buy_candidates, key=self._score, reverse=True)
+        scored = scored_all[:D_RETRY_TOP_N]
         rank_info = "  ".join(
-            f"{idx + 1}.{s.ts_code}({self._score(s):.0f}分)" for idx, s in enumerate(scored)
+            f"{idx + 1}.{s.ts_code}({self._score_explain(s)})" for idx, s in enumerate(scored)
         )
-        self.logger.info("[BUY RANK] 本轮%d只候选: %s", len(scored), rank_info)
+        self.logger.info(
+            "[BUY RANK] 本轮%d只候选，按D排序最多尝试前%d名: %s",
+            len(scored_all),
+            D_RETRY_TOP_N,
+            rank_info,
+        )
+        if len(scored_all) > D_RETRY_TOP_N:
+            self.logger.info(
+                "[BUY RANK] 第%d名以后不尝试，原因=超过D补位尝试上限；未尝试数量=%d",
+                D_RETRY_TOP_N + 1,
+                len(scored_all) - D_RETRY_TOP_N,
+            )
         if len(scored) > 1:
             print(f"  [多候选排序] {rank_info}")
 
@@ -612,8 +639,8 @@ class StrategyDMonitor:
             )
             print(f"  [尝试第{idx}名失败] 原因={fail_reason}，继续下一名")
 
-        self.logger.warning("[BUY RETRY] 本轮%d只候选全部未形成有效委托。", len(scored))
-        print(f"  [本轮结束] {len(scored)}只候选均未形成有效委托")
+        self.logger.warning("[BUY RETRY] 本轮前%d名候选全部未形成有效委托。", len(scored))
+        print(f"  [本轮结束] 前{len(scored)}只候选均未形成有效委托")
 
     def _log_buy_empty_funnel(self, hhmm: int) -> None:
         """14:00后无买入候选时打印D实时漏斗，说明卡在哪一层。"""
