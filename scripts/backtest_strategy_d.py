@@ -164,11 +164,12 @@ def run_simulation(
 ) -> tuple[pd.DataFrame, pd.DataFrame, list[dict]]:
     """
     正确的时序逻辑：
-      - D策略盘中执行（当日买入涨停价，次日开盘卖出）
+      - D策略盘中执行（当日涨停价买入）
       - A/B/C策略收盘后生成信号（次日开盘买入，后天收盘卖出）
-      - D只在NO_CANDIDATE天触发（账户确认空仓），返回数据已验证：NO_CANDIDATE天active_position为空
-      - D退出（次日开盘）vs A/B/C入场（后天开盘）时间不重叠，完全不冲突
-      - 因此D的收益直接叠加在A+B+C基础上，无需阻断A/B/C
+      - HISTORICAL_SIM_FILLED：D T+1开盘卖，同一笔资金顺序交给A/B/C
+      - NO_CANDIDATE / BUY_REJECTED：A/B/C无实际占用资金，D持到T+2收盘卖
+      - POSITION_OCCUPIED_SKIP：旧仓位占用资金，D不触发
+      - 因此D的收益按ABC当日状态分档叠加在A+B+C基础上
 
     Returns:
         df_abc: 逐日ABC资金曲线
