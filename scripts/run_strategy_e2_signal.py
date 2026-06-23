@@ -49,6 +49,7 @@ SCORED_PATH = PROJECT_ROOT / "data" / "processed" / "limit_up_fill_scored.csv"
 POSITIONS_PATH = PROJECT_ROOT / "data" / "processed" / "positions.json"
 DAILY_OPS_DIR = PROJECT_ROOT / "reports" / "paper_trade" / "ab_filtered_daily_ops"
 OUTPUT_DIR = PROJECT_ROOT / "reports" / "strategy_e2"
+STRATEGY_D_SIGNAL_DIR = PROJECT_ROOT / "reports" / "strategy_d"
 
 POSITION_PCT = 0.8
 E2_MIN_CIRC_MV = 0       # 不设下限
@@ -213,6 +214,61 @@ def has_d_position_today(signal_date: str, open_positions: list[dict[str, Any]])
     return False
 
 
+def load_d_intraday_status(signal_date: str) -> dict[str, Any]:
+    """读取D盘中信号结果；D失败不占用资金，允许E2继续判断。"""
+    path = STRATEGY_D_SIGNAL_DIR / f"intraday_signals_{signal_date}.csv"
+    result: dict[str, Any] = {
+        "path": str(path),
+        "exists": path.exists(),
+        "has_buy_signal": False,
+        "has_filled": False,
+        "has_failed": False,
+        "summary": "",
+    }
+    if not path.exists():
+        return result
+    try:
+        df = pd.read_csv(path)
+    except Exception as exc:
+        result["summary"] = f"D盘中信号文件读取失败：{exc}"
+        return result
+    if df.empty or "signal_type" not in df.columns:
+        return result
+
+    buy_df = df[df["signal_type"].astype(str).str.upper().eq("BUY")].copy()
+    if buy_df.empty:
+        return result
+    result["has_buy_signal"] = True
+
+    status = buy_df.get("order_status", pd.Series("", index=buy_df.index)).fillna("").astype(str)
+    filled_qty = pd.to_numeric(
+        buy_df.get("filled_qty", pd.Series(0, index=buy_df.index)),
+        errors="coerce",
+    ).fillna(0)
+    filled_amount = pd.to_numeric(
+        buy_df.get("filled_amount", pd.Series(0.0, index=buy_df.index)),
+        errors="coerce",
+    ).fillna(0.0)
+
+    has_filled = bool(status.isin({"FILLED", "PENDING_OR_PARTIAL"}).any() and (filled_qty > 0).any())
+    has_failed = bool(
+        status.isin({"REJECTED_TERMINAL", "REJECTED_BY_QMT", "ORDER_EXCEPTION"}).any()
+        or ((status.ne("FILLED")) & (filled_qty <= 0)).all()
+    )
+    result["has_filled"] = has_filled
+    result["has_failed"] = has_failed and not has_filled
+
+    latest = buy_df.iloc[-1]
+    result["summary"] = (
+        f"{latest.get('ts_code', '')} {latest.get('name', '')} "
+        f"状态={latest.get('order_status', '') or 'UNKNOWN'} "
+        f"成交股数={int(filled_qty.iloc[-1]) if len(filled_qty) else 0} "
+        f"成交金额={float(filled_amount.iloc[-1]) if len(filled_amount) else 0.0:.2f} "
+        f"失败原因={latest.get('failure_reason', '')}"
+    )
+    return result
+
+
 def has_existing_open_position(open_positions: list[dict[str, Any]]) -> bool:
     """账户是否持有任何未平仓头寸（含前日未卖出的 A/B/C/D）。"""
     return len(open_positions) > 0
@@ -359,6 +415,13 @@ def main() -> None:
     if has_d_position_today(signal_date, open_positions):
         print(f"[E2信号] D策略今日已建仓，E2 不触发。")
         return
+
+    d_status = load_d_intraday_status(signal_date)
+    if d_status["has_filled"]:
+        print(f"[E2信号] D盘中信号已成交或部分成交，E2 不触发。{d_status['summary']}")
+        return
+    if d_status["has_failed"]:
+        print(f"[E2信号] D盘中第1名开仓失败，未占用资金，释放给E2继续判断。{d_status['summary']}")
 
     print("[E2信号] ABCD 今日均空闲，开始筛选 E2 候选。")
 

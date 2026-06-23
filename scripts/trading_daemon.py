@@ -1265,7 +1265,7 @@ def job_premarket_sell() -> None:
     """09:23 集合竞价：仅处理 D 接力让路或历史 sell_pending 的平仓。
 
     D 默认平仓口径是 T+2 收盘卖，不在 09:23 提前卖。
-    只有组合状态机给出 PLAN_SELL_D_FIRST（次日有 A/B/C 接力，需要 D 让路）时，
+    只有组合状态机给出 PLAN_SELL_D_FIRST（次日有 A/B/C/E2 接力，需要 D 让路）时，
     才按 T+1 开盘口径在集合竞价卖 D。
     E2/ABC/D默认T+2收盘卖由 14:50 job_afternoon/check_and_close_positions 执行。
     """
@@ -1308,7 +1308,7 @@ def job_premarket_sell() -> None:
 
             force_relay_sell = ts_code in force_d_sell_codes
 
-            # 只处理历史 sell_pending，或因A/B/C接力需要T+1开盘先卖的D持仓。
+            # 只处理历史 sell_pending，或因A/B/C/E2接力需要T+1开盘先卖的D持仓。
             # D 默认 T+2 到期日也必须等 14:50 收盘平仓，不在09:23提前卖。
             if pos.get("status") != "sell_pending" and not force_relay_sell:
                 if planned_exit <= today_str:
@@ -1321,7 +1321,7 @@ def job_premarket_sell() -> None:
                 continue
             if force_relay_sell and planned_exit > today_str:
                 logger().warning(
-                    "09:23 D接力平仓：%s %s 默认计划平仓日%s，但今日有A/B/C接力买入计划，按回测口径T+1开盘先卖D。",
+                    "09:23 D接力平仓：%s %s 默认计划平仓日%s，但今日有A/B/C/E2接力买入计划，按回测口径T+1开盘先卖D。",
                     ts_code, name, planned_exit,
                 )
 
@@ -3057,7 +3057,7 @@ def _log_d_status_for_signal(signal_date: str) -> None:
                 "  D策略停止点：交易时段。原因：当前不是 D 盘中监控时段。D 只在交易日 09:20 组合状态机允许后启动，09:30后扫描，10:00起WATCH，14:00起BUY，14:55停止/撤单。"
             )
             logger().info(
-                "  D策略后续过滤链：组合状态机允许 -> 实时行情扫描 -> 首板且昨日未涨停 -> 当前封涨停 -> 曾炸板至少1次 -> 炸板次数<=3 -> 今日曾涨停数量达到强情绪阈值 -> 14:00后打分选最高分 -> LiveOrderGateway二次风控。"
+                "  D策略后续过滤链：组合状态机允许 -> 实时行情扫描 -> 首板且昨日未涨停 -> 当前封涨停 -> 曾炸板至少1次 -> 今日曾涨停数量达到强情绪阈值 -> 14:00后按实时封单金额/流通市值(fd_amount_to_circ_mv)排序 -> LiveOrderGateway二次风控。"
             )
             logger().info("  D策略明日判断：若 09:20 无持仓且仍无 A/B/C 买入计划，则允许启动 D 盘中监控；能否下单取决于盘中实时过滤。")
         else:

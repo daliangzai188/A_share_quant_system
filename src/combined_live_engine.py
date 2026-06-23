@@ -254,7 +254,7 @@ class CombinedLiveEngine:
             name=str(position.get("name", "")),
             side="SELL",
             quantity=self.as_int(position.get("shares", 0)),
-            reason=reason or f"D持仓计划平仓日={position.get('planned_exit_date', '')}，今日={today}，必须先卖D再考虑A/B/C。",
+            reason=reason or f"D持仓计划平仓日={position.get('planned_exit_date', '')}，今日={today}，必须先卖D再考虑A/B/C/E2。",
             source="positions.json",
         )
 
@@ -372,8 +372,22 @@ class CombinedLiveEngine:
                 or str(p.get("status", "")).lower() == "sell_pending"
             ]
             abc_decisions_for_d = self.build_abc_buy_decisions(abc_orders, str(abc_path or ""))
+            yesterday_e2_signal_for_d = self.load_yesterday_e2_signal(today)
+            e2_order_for_d: dict[str, Any] | None = None
+            if yesterday_e2_signal_for_d:
+                e2_buy_code = str(yesterday_e2_signal_for_d.get("ts_code", ""))
+                if e2_buy_code not in due_selling_codes:
+                    e2_order_for_d = self.build_e2_buy_order(yesterday_e2_signal_for_d, today)
             relay_d_for_abc = bool(abc_decisions_for_d)
-            if due_d or relay_d_for_abc:
+            relay_d_for_e2 = bool(e2_order_for_d and e2_order_for_d.get("round_lot_shares", 0) > 0)
+            relay_d_for_abce2 = relay_d_for_abc or relay_d_for_e2
+            relay_legs = []
+            if relay_d_for_abc:
+                relay_legs.append("A/B/C")
+            if relay_d_for_e2:
+                relay_legs.append("E2")
+            relay_reason = "/".join(relay_legs)
+            if due_d or relay_d_for_abce2:
                 sell_d_positions = due_d if due_d else open_d_positions
                 for position in due_d:
                     decisions.append(self.build_d_sell_decision(
@@ -397,16 +411,27 @@ class CombinedLiveEngine:
                         position,
                         today,
                         reason=(
-                            "D持仓未到默认T+2平仓日，但今日存在A/B/C接力买入计划；"
-                            "按D回测口径先在T+1开盘卖D，再释放同一资金给A/B/C。"
+                            f"D持仓未到默认T+2平仓日，但今日存在{relay_reason}接力买入计划；"
+                            f"按D回测口径先在T+1 09:23卖D，再释放同一资金给{relay_reason}。"
                         ),
                     ))
                     planned_orders.append(self.build_d_sell_order(position, today))
                 decisions.append(CombinedLiveDecision(
                     action="BLOCK_ABC_BUY", strategy_leg="A+B+C",
-                    reason="D持仓尚未确认卖出，阻断A/B/C买入，避免同一资金重复占用。",
+                    reason="D持仓尚未确认卖出，阻断A/B/C买入；09:23卖D并同步持仓后再重新生成买入计划。",
                     source="combined_state_machine",
                 ))
+                if relay_d_for_e2:
+                    decisions.append(CombinedLiveDecision(
+                        action="BLOCK_E2_BUY_UNTIL_D_SOLD",
+                        strategy_leg="E2",
+                        ts_code=str(yesterday_e2_signal_for_d.get("ts_code", "")) if yesterday_e2_signal_for_d else "",
+                        name=str(yesterday_e2_signal_for_d.get("name", "")) if yesterday_e2_signal_for_d else "",
+                        side="BUY",
+                        quantity=int(e2_order_for_d.get("round_lot_shares", 0)) if e2_order_for_d else 0,
+                        reason="今日存在E2开仓计划，但D持仓尚未确认卖出；先在09:23卖D，持仓同步为空仓后再允许E2开仓。",
+                        source=str(self.project_root / "reports" / "strategy_e2"),
+                    ))
                 decisions.append(CombinedLiveDecision(
                     action="BLOCK_D_INTRADAY_MONITOR", strategy_leg="D",
                     reason="已有D持仓处于待卖状态，今日不启动新的D盘中买入监控。",
@@ -516,6 +541,7 @@ class CombinedLiveEngine:
         has_e2_buy = any(d.action == "ALLOW_E2_BUY" for d in decisions)
         has_e2_sell = any(d.action == "PLAN_SELL_E2" for d in decisions)
         has_abc_buy = any(d.action == "ALLOW_ABC_BUY_PREVIEW" for d in decisions)
+        has_e2_waiting_for_d_sell = any(d.action == "BLOCK_E2_BUY_UNTIL_D_SOLD" for d in decisions)
 
         if has_e2_sell:
             e2_status_action = "PLAN_SELL_E2_TODAY"
@@ -523,6 +549,9 @@ class CombinedLiveEngine:
         elif has_e2_buy:
             e2_status_action = "ALLOW_E2_BUY_TODAY"
             e2_status_reason = "E2今日T+1开仓，已加入组合计划单。"
+        elif has_e2_waiting_for_d_sell:
+            e2_status_action = "WAIT_D_SELL_THEN_ALLOW_E2_BUY"
+            e2_status_reason = "今日存在E2开仓计划；先按D回测口径在09:23卖D，09:24同步为空仓后再生成E2开仓计划。"
         elif open_positions:
             e2_status_action = "BLOCK_E2"
             e2_status_reason = f"账户有 {len(open_positions)} 个未平仓头寸，E2 不触发。"
