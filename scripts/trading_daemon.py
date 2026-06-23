@@ -3257,8 +3257,8 @@ def _print_account_status(log: Any) -> None:
                 for threshold in loss_thresholds:
                     threshold_key = str(int(threshold)) if float(threshold).is_integer() else str(threshold)
                     if pnl_pct <= threshold and threshold_key not in notified_thresholds:
-                        level = "critical" if threshold <= -20 else "timeSensitive"
-                        call = threshold <= -20
+                        level = "critical" if threshold <= -15 else "timeSensitive"
+                        call = threshold <= -15
                         _notify(
                             "position_risk",
                             f"⚠️ 持仓浮亏达到{threshold_key}%",
