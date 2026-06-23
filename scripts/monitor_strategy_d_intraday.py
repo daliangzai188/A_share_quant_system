@@ -562,6 +562,8 @@ class StrategyDMonitor:
 
         # 有BUY候选：打分排序。若最高分废单/拒单，立即尝试下一名。
         if not buy_candidates:
+            if hhmm >= SIGNAL_START_HHMM:
+                self._log_buy_empty_funnel(hhmm)
             return
 
         scored = sorted(buy_candidates, key=self._score, reverse=True)
@@ -601,6 +603,37 @@ class StrategyDMonitor:
 
         self.logger.warning("[BUY RETRY] 本轮%d只候选全部未形成有效委托。", len(scored))
         print(f"  [本轮结束] {len(scored)}只候选均未形成有效委托")
+
+    def _log_buy_empty_funnel(self, hhmm: int) -> None:
+        """14:00后无买入候选时打印D实时漏斗，说明卡在哪一层。"""
+
+        current_sealed = [st for st in self.states.values() if st.was_sealed]
+        first_board = [st for st in current_sealed if st.ts_code not in self.yesterday_limit_codes]
+        opened_once = [st for st in first_board if st.open_times_today >= 1]
+        if D_MAX_OPEN_TIMES is None:
+            open_times_ok = opened_once
+        else:
+            open_times_ok = [st for st in opened_once if st.open_times_today <= D_MAX_OPEN_TIMES]
+        buy_time_ok = [
+            st for st in open_times_ok
+            if st.last_seal_hhmm >= SIGNAL_START_HHMM or st.watch_alerted
+        ]
+        sample = "  ".join(
+            f"{st.ts_code}(炸{st.open_times_today},重封{hhmm_to_str(st.last_seal_hhmm)})"
+            for st in buy_time_ok[:5]
+        ) or "无"
+        self.logger.info(
+            "[BUY FUNNEL] %s 无D买入候选：当前封板=%d 首板封板=%d 曾炸板回封=%d 炸板次数合规=%d 14:00后/观察升级=%d 情绪=%d/%d 样例=%s",
+            hhmm_to_str(hhmm),
+            len(current_sealed),
+            len(first_board),
+            len(opened_once),
+            len(open_times_ok),
+            len(buy_time_ok),
+            self.sealed_ever_count,
+            SENTIMENT_STRONG_MIN,
+            sample,
+        )
 
     def _validate_buy_candidate(self, st: StockState) -> tuple[bool, str]:
         """每次尝试下单前复核，确保重试候选仍符合D策略实时要求。"""

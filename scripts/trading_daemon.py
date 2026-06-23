@@ -3039,7 +3039,7 @@ def _log_d_status_for_signal(signal_date: str) -> None:
                 "A/B/C/E2未实际成交且账户空仓，系统释放资金占用后补启动D。"
             )
             logger().info("  D策略状态：RUNNING（%s）", reason)
-            logger().info("  D实盘扫描范围：%s；日志中的扫描数量是权限/配置过滤后的股票池数量，不是全市场总数。", allowed_text)
+            logger().info("  D实盘扫描范围：%s；日志中的扫描数量为D当前配置股票池数量。", allowed_text)
         elif planned_count > 0:
             logger().info("  D策略停止点：组合状态机。原因：今日已有 A/B/C 买入计划，阻断 D 盘中监控，避免同一资金重复占用。")
         elif not in_d_start_window:
