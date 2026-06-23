@@ -375,16 +375,17 @@ def reduce_position_shares(order_id: str, remaining_shares: int) -> None:
     """部分成交后保留持仓，仅把剩余未卖股数写回，status 维持 open 以便下次继续卖出。"""
     positions = load_positions()
     for p in positions:
-        if p["order_id"] == order_id and p["status"] == "open":
+        if p["order_id"] == order_id and str(p.get("status", "")).lower() in {"open", "sell_pending"}:
             p["shares"] = int(remaining_shares)
+            p["status"] = "open"
     save_positions(positions)
 
 
 def find_open_position_by_code(ts_code: str, strategy_leg: str | None = None) -> dict[str, Any] | None:
-    """按 ts_code（可选 strategy_leg）查找一条 open 持仓，用于卖出后回写。"""
+    """按 ts_code（可选 strategy_leg）查找一条未平持仓，用于卖出后回写。"""
     leg = (strategy_leg or "").upper()
     for p in load_positions():
-        if p.get("status") != "open" or str(p.get("ts_code", "")) != str(ts_code):
+        if str(p.get("status", "")).lower() not in {"open", "sell_pending"} or str(p.get("ts_code", "")) != str(ts_code):
             continue
         if leg and str(p.get("strategy_leg", "")).upper() != leg:
             continue
@@ -436,7 +437,7 @@ def reconcile_positions_with_broker() -> None:
     # 本地 open 持仓按 ts_code 汇总股数
     local_map: dict[str, dict[str, Any]] = {}
     for p in load_positions():
-        if p.get("status") != "open":
+        if str(p.get("status", "")).lower() not in {"open", "sell_pending"}:
             continue
         code = str(p.get("ts_code", ""))
         entry = local_map.setdefault(code, {"shares": 0, "name": str(p.get("name", ""))})
@@ -517,6 +518,9 @@ def _execute_orders_inprocess(
     planned_orders_path: Path | str,
     confirm: str,
     tag: str,
+    *,
+    allowed_sides: set[str] | None = None,
+    allow_t2_close_sell_now: bool = False,
 ) -> bool:
     """进程内单次 QMT 连接完成验证+下单，消除子进程启动和双次连接延迟。"""
     import pandas as pd
@@ -542,6 +546,45 @@ def _execute_orders_inprocess(
 
     if planned_orders.empty:
         log.info("[%s] 计划单为空，跳过", tag)
+        return False
+
+    if allowed_sides is not None and "side" in planned_orders.columns:
+        allowed_upper = {side.upper() for side in allowed_sides}
+        before = len(planned_orders)
+        planned_orders = planned_orders[planned_orders["side"].astype(str).str.upper().isin(allowed_upper)].copy()
+        skipped = before - len(planned_orders)
+        if skipped:
+            log.info("[%s] 跳过非本流程方向订单 %d 条，仅允许 side=%s", tag, skipped, sorted(allowed_upper))
+
+    if not allow_t2_close_sell_now and {"side", "planned_action"}.issubset(planned_orders.columns):
+        side_text = planned_orders["side"].astype(str).str.upper()
+        action_text = planned_orders["planned_action"].astype(str).str.upper()
+        risk_text = (
+            planned_orders["risk_flags"].astype(str).str.upper()
+            if "risk_flags" in planned_orders.columns
+            else pd.Series("", index=planned_orders.index)
+        )
+        t2_close_sell = (
+            side_text.eq("SELL")
+            & (
+                action_text.eq("PLAN_SELL_T2_CLOSE")
+                | risk_text.str.contains("E2_SELL_T2_CLOSE", na=False)
+            )
+        )
+        if t2_close_sell.any():
+            skipped = planned_orders[t2_close_sell]
+            for _, row in skipped.iterrows():
+                log.warning(
+                    "⏸️ [%s] 跳过T2收盘卖计划：%s %s planned_action=%s。该类订单只允许14:50平仓流程执行。",
+                    tag,
+                    row.get("ts_code", ""),
+                    row.get("name", ""),
+                    row.get("planned_action", ""),
+                )
+            planned_orders = planned_orders[~t2_close_sell].copy()
+
+    if planned_orders.empty:
+        log.info("[%s] 过滤后无可执行订单，跳过", tag)
         return False
 
     broker_cfg = config_path and load_json_config(config_path).get("broker", {})
@@ -1001,7 +1044,13 @@ def _do_sell(pos: dict[str, Any], qmt_enabled: bool) -> None:
                     PROJECT_ROOT / "reports" / "live_trade" / "combined"
                     / f"combined_planned_orders_{today_str}.csv"
                 )
-                _execute_orders_inprocess(combined_path, confirm, "E2平仓")
+                _execute_orders_inprocess(
+                    combined_path,
+                    confirm,
+                    "E2平仓",
+                    allowed_sides={"SELL"},
+                    allow_t2_close_sell_now=True,
+                )
             elif strategy_leg in {"A", "B", "C"}:
                 # ABC planned_orders 文件只有BUY行，必须直接下单
                 # 成交确认与持仓回写由 _abc_place_sell_order_direct 内部完成
@@ -1061,8 +1110,21 @@ def check_and_close_positions() -> None:
 
             ts_code = pos.get("ts_code", "")
             name = pos.get("name", "")
+            strategy_leg = str(pos.get("strategy_leg", "")).upper()
             logger().warning("需要平仓：%s %s  计划平仓日 %s  状态 %s  市场开盘 %s",
                              ts_code, name, planned_exit, status, market_is_open())
+
+            t2_close_leg = strategy_leg in {"A", "B", "C", "E2"}
+            due_today = planned_exit == today_str
+            before_close_sell_window = now_beijing().time() < datetime.time(14, 50)
+            if t2_close_leg and due_today and before_close_sell_window:
+                logger().warning(
+                    "T2收盘卖门禁：%s %s 策略=%s 今日到期，但当前未到14:50，保持持仓不提前平仓。",
+                    ts_code,
+                    name,
+                    strategy_leg,
+                )
+                continue
 
             if market_is_open() or pending:
                 _do_sell(pos, qmt_enabled)
@@ -1481,7 +1543,12 @@ def job_morning() -> None:
 
     # ② D 待卖持仓最高优先级。未确认D卖出前，不执行A/B/C买入，不启动D新监控。
     if has_combined_action(decisions, "PLAN_SELL_D_FIRST"):
-        handle_combined_order_preview(combined_orders_path, reason="D持仓优先卖出")
+        handle_combined_order_preview(
+            combined_orders_path,
+            reason="D持仓优先卖出",
+            allowed_sides={"SELL"},
+            allow_t2_close_sell_now=True,
+        )
         logger().info("组合状态机要求先卖D，早盘流程到此结束。")
         return
 
@@ -1535,13 +1602,21 @@ def job_opening_buy() -> None:
     accepted_buy = False
     if has_combined_action(decisions, "ALLOW_ABC_BUY_PREVIEW"):
         attempted_buy = True
-        accepted_buy = handle_combined_order_preview(combined_orders_path, reason="A/B/C 09:30开仓") or accepted_buy
+        accepted_buy = handle_combined_order_preview(
+            combined_orders_path,
+            reason="A/B/C 09:30开仓",
+            allowed_sides={"BUY"},
+        ) or accepted_buy
     else:
         logger().info("组合状态机未允许A/B/C买入，跳过。")
 
     if has_combined_action(decisions, "ALLOW_E2_BUY"):
         attempted_buy = True
-        accepted_buy = handle_combined_order_preview(combined_orders_path, reason="E2 09:30开仓") or accepted_buy
+        accepted_buy = handle_combined_order_preview(
+            combined_orders_path,
+            reason="E2 09:30开仓",
+            allowed_sides={"BUY"},
+        ) or accepted_buy
     else:
         logger().info("组合状态机未允许E2开仓，跳过。")
 
@@ -1600,7 +1675,7 @@ def has_combined_action(decisions, action: str) -> bool:
 
 
 def has_open_local_position() -> bool:
-    return any(p.get("status") == "open" for p in load_positions())
+    return any(str(p.get("status", "")).lower() in {"open", "sell_pending"} for p in load_positions())
 
 
 # ── 盘前买单待确认（09:28挂单→09:30开盘成交确认）────────────────────────────
@@ -1728,7 +1803,13 @@ def blocks_d_for_opening_plan(decisions) -> bool:
     return any(keyword in reason_text for keyword in ("开仓", "同一资金", "A/B/C", "E2"))
 
 
-def handle_combined_order_preview(planned_orders_path: Path | None, reason: str) -> bool:
+def handle_combined_order_preview(
+    planned_orders_path: Path | None,
+    reason: str,
+    *,
+    allowed_sides: set[str] | None = None,
+    allow_t2_close_sell_now: bool = False,
+) -> bool:
     # 组合计划单预览 —— 次优先级，出错只记录
     try:
         import pandas as pd
@@ -1768,7 +1849,14 @@ def handle_combined_order_preview(planned_orders_path: Path | None, reason: str)
                 amount = qty * ref_price
                 logger().warning("⏳ [准备开仓] %s %s  %d股  参考价%.2f元  预估金额%.0f元",
                                  code, name_s, qty, ref_price, amount)
-            return _execute_orders_inprocess(planned_orders_path, confirm, "开仓")
+            execution_tag = "平仓" if allowed_sides == {"SELL"} else "开仓"
+            return _execute_orders_inprocess(
+                planned_orders_path,
+                confirm,
+                execution_tag,
+                allowed_sides=allowed_sides,
+                allow_t2_close_sell_now=allow_t2_close_sell_now,
+            )
         else:
             recorded_any = False
             buy_orders = executable_orders[executable_orders["side"].astype(str).str.upper() == "BUY"]
