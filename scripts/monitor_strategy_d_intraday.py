@@ -559,29 +559,36 @@ class StrategyDMonitor:
             if hhmm >= WATCH_START_HHMM and not st.watch_alerted:
                 self._fire_watch_alert(st)
 
-        # 有BUY候选：打分排序，只对最高分那只下单，其余跳过
+        # 有BUY候选：打分排序。若最高分废单/拒单，立即尝试下一名。
         if not buy_candidates:
             return
 
         scored = sorted(buy_candidates, key=self._score, reverse=True)
-        best = scored[0]
-        best_score = self._score(best)
-
-        if len(scored) > 1:
-            skip_info = "  ".join(
-                f"{s.ts_code}({self._score(s):.0f}分)" for s in scored[1:]
-            )
-            self.logger.info(
-                "[BUY SKIP] 本轮%d只候选，跳过低分: %s", len(scored) - 1, skip_info,
-            )
-            print(f"  [多候选] 共{len(scored)}只，跳过: {skip_info}")
-
-        self.logger.info(
-            "[BUY BEST] 最高分 %.0f分: %s %s  炸板%d次 重封%s 封单%.1f万股",
-            best_score, best.ts_code, best.name, best.open_times_today,
-            hhmm_to_str(best.last_seal_hhmm), best.bid_vol / 10000,
+        rank_info = "  ".join(
+            f"{idx + 1}.{s.ts_code}({self._score(s):.0f}分)" for idx, s in enumerate(scored)
         )
-        self._fire_buy_signal(best)
+        self.logger.info("[BUY RANK] 本轮%d只候选: %s", len(scored), rank_info)
+        if len(scored) > 1:
+            print(f"  [多候选排序] {rank_info}")
+
+        for idx, candidate in enumerate(scored, start=1):
+            score = self._score(candidate)
+            self.logger.info(
+                "[BUY TRY] 第%d名 %.0f分: %s %s  炸板%d次 重封%s 封单%.1f万股",
+                idx, score, candidate.ts_code, candidate.name, candidate.open_times_today,
+                hhmm_to_str(candidate.last_seal_hhmm), candidate.bid_vol / 10000,
+            )
+            print(f"  [尝试第{idx}名] {candidate.ts_code} {candidate.name} {score:.0f}分")
+            locked = self._fire_buy_signal(candidate)
+            if locked:
+                return
+            self.logger.warning(
+                "[BUY RETRY] 第%d名未形成有效委托/持仓，继续尝试下一名。", idx
+            )
+            print(f"  [尝试第{idx}名失败] 未形成有效委托/持仓，继续下一名")
+
+        self.logger.warning("[BUY RETRY] 本轮%d只候选全部未形成有效委托。", len(scored))
+        print(f"  [本轮结束] {len(scored)}只候选均未形成有效委托")
 
     # ── 观察提醒 ──────────────────────────────────────────────────────────────
 
@@ -617,10 +624,10 @@ class StrategyDMonitor:
 
     # ── 买入信号 ──────────────────────────────────────────────────────────────
 
-    def _fire_buy_signal(self, st: StockState) -> None:
+    def _fire_buy_signal(self, st: StockState) -> bool:
         if self.order_placed:
             self.logger.info("[BUY SKIP] 已锁定本轮D委托: %s，跳过 %s", self.order_locked_ts_code, st.ts_code)
-            return
+            return True
         hhmm = now_hhmm()
         st.buy_signaled = True
         self.order_placed = True   # 先加锁再下单，防止QMT资金冻结延迟导致重复委托
@@ -657,25 +664,28 @@ class StrategyDMonitor:
             "order_id": "",
         }
         if self.live_order and self.broker is not None:
-            self._place_d_order(st, record)
+            locked = self._place_d_order(st, record)
+        else:
+            locked = True
         self.signal_records.append(record)
         self._save_signals()
+        return locked
 
     # ── 实盘下单 ──────────────────────────────────────────────────────────────
 
-    def _place_d_order(self, st: StockState, record: dict) -> None:
+    def _place_d_order(self, st: StockState, record: dict) -> bool:
         from src.broker_adapter import OrderRequest
         from src.qmt_adapter import tushare_to_qmt_code
         try:
             if self.session_orders:
                 self.logger.warning("本会话已有D委托，拒绝再次下单: %s", st.ts_code)
-                return
+                return True
             cash = get_account_cash(self.broker)
             max_order_amount = float(self.config.get("live_trade", {}).get("max_single_order_amount", 50000))
             shares = calc_shares_below_amount(cash, st.upper_limit, self.position_pct, max_order_amount)
             if shares <= 0:
                 self.logger.warning("可用资金不足，跳过下单: %s", st.ts_code)
-                return
+                return True
             target_amount = cash * self.position_pct
             actual_amount = shares * st.upper_limit
             actual_position_pct = actual_amount / cash if cash > 0 else 0.0
@@ -758,7 +768,7 @@ class StrategyDMonitor:
                     st.order_id = ""
                     self.order_placed = False
                     self.order_locked_ts_code = ""
-                    return
+                    return False
                 if checked_qty >= shares:
                     record["order_status"] = "FILLED"
                     record["order_status_text"] = fill_check.status_text
@@ -848,8 +858,11 @@ class StrategyDMonitor:
                         )
                     except Exception:
                         pass
+                return True
             else:
                 self.logger.error("D委托被拒: %s %s", st.ts_code, result.message)
+                record["order_status"] = "REJECTED_BY_QMT"
+                record["order_status_text"] = result.message
                 try:
                     notify("buy_result", "❌ D开仓委托被拒",
                            f"{st.ts_code} {st.name} 委托被拒：{result.message}",
@@ -857,8 +870,13 @@ class StrategyDMonitor:
                 except Exception:
                     pass
                 print(f"  → 委托被拒: {result.message}")
+                self.order_placed = False
+                self.order_locked_ts_code = ""
+                return False
         except Exception as e:
             self.logger.error("下单异常: %s: %s", st.ts_code, e)
+            record["order_status"] = "ORDER_EXCEPTION"
+            record["order_status_text"] = str(e)
             try:
                 notify("buy_result", "❌ D开仓下单异常",
                        f"{st.ts_code} {st.name} 下单异常：{e}",
@@ -866,6 +884,7 @@ class StrategyDMonitor:
             except Exception:
                 pass
             print(f"  → 下单异常: {e}")
+            return True
 
     @staticmethod
     def _is_terminal_no_fill(fill: Any) -> bool:
