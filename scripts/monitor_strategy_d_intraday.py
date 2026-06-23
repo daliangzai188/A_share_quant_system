@@ -574,6 +574,16 @@ class StrategyDMonitor:
 
         for idx, candidate in enumerate(scored, start=1):
             score = self._score(candidate)
+            still_valid, invalid_reason = self._validate_buy_candidate(candidate)
+            if not still_valid:
+                self.logger.warning(
+                    "[BUY RETRY SKIP] 第%d名 %s 不再符合D策略要求：%s",
+                    idx,
+                    candidate.ts_code,
+                    invalid_reason,
+                )
+                print(f"  [跳过第{idx}名] {candidate.ts_code} 不再符合D策略要求：{invalid_reason}")
+                continue
             self.logger.info(
                 "[BUY TRY] 第%d名 %.0f分: %s %s  炸板%d次 重封%s 封单%.1f万股",
                 idx, score, candidate.ts_code, candidate.name, candidate.open_times_today,
@@ -591,6 +601,29 @@ class StrategyDMonitor:
 
         self.logger.warning("[BUY RETRY] 本轮%d只候选全部未形成有效委托。", len(scored))
         print(f"  [本轮结束] {len(scored)}只候选均未形成有效委托")
+
+    def _validate_buy_candidate(self, st: StockState) -> tuple[bool, str]:
+        """每次尝试下单前复核，确保重试候选仍符合D策略实时要求。"""
+
+        segment = classify_market_segment(st.ts_code)
+        if segment not in self.allowed_segments:
+            return False, f"市场分段{segment}不在允许范围{','.join(sorted(self.allowed_segments))}"
+        if st.ts_code in self.yesterday_limit_codes:
+            return False, "昨日已涨停，非首板"
+        if not st.was_sealed:
+            return False, "当前不在涨停封板状态"
+        if st.open_times_today < 1:
+            return False, "今日未曾炸板，不符合D开板回封要求"
+        if D_MAX_OPEN_TIMES is not None and st.open_times_today > D_MAX_OPEN_TIMES:
+            return False, f"炸板次数{st.open_times_today}超过上限{D_MAX_OPEN_TIMES}"
+        if self.sealed_ever_count < SENTIMENT_STRONG_MIN:
+            return False, f"情绪不足，当前封板{self.sealed_ever_count}只，要求>={SENTIMENT_STRONG_MIN}"
+        hhmm = now_hhmm()
+        if hhmm < SIGNAL_START_HHMM:
+            return False, f"当前{hhmm_to_str(hhmm)}未到D买入时间{hhmm_to_str(SIGNAL_START_HHMM)}"
+        if not (st.last_seal_hhmm >= SIGNAL_START_HHMM or st.watch_alerted):
+            return False, "重封时间未达到14:00后，且不是观察升级候选"
+        return True, "通过D策略实时复核"
 
     # ── 观察提醒 ──────────────────────────────────────────────────────────────
 
