@@ -378,6 +378,8 @@ class StrategyDMonitor:
         self.signal_records: list[dict] = []
         self.order_placed: bool = False   # 本会话已触发BUY，不再对其他股票下单
         self.order_locked_ts_code: str = ""
+        self.position_opened: bool = False
+        self.waiting_order_only: bool = False
         self.limit_price_fallback_logged: bool = False
         self._strong_notified: bool = False     # 情绪转强(≥阈值)只推送一次
 
@@ -853,6 +855,8 @@ class StrategyDMonitor:
                     self.order_locked_ts_code = ""
                     return False
                 if checked_qty >= shares:
+                    self.position_opened = True
+                    self.waiting_order_only = False
                     record["order_status"] = "FILLED"
                     record["order_status_text"] = fill_check.status_text
                     record["filled_qty"] = checked_qty
@@ -873,6 +877,8 @@ class StrategyDMonitor:
                     )
                     self._record_filled_d_position(result.order_id, checked_qty, checked_price)
                 else:
+                    self.waiting_order_only = True
+                    self.position_opened = checked_qty > 0
                     record["order_status"] = "PENDING_OR_PARTIAL"
                     record["order_status_text"] = fill_check.status_text
                     record["filled_qty"] = checked_qty
@@ -1183,6 +1189,7 @@ class StrategyDMonitor:
             return
         positions = load_position_records()
         if any(str(pos.get("order_id", "")) == str(order_id) for pos in positions):
+            self.position_opened = True
             self.logger.info("D持仓账本已存在，跳过重复写入: order_id=%s", order_id)
             return
         buy_date = str(detail.get("buy_date", today_beijing().strftime("%Y%m%d")))
@@ -1207,6 +1214,7 @@ class StrategyDMonitor:
             }
         )
         save_position_records(positions)
+        self.position_opened = True
         self.logger.warning(
             "D持仓信息已写入持仓账本: 策略=D order_id=%s ts_code=%s %d股 @%.2f 买入日=%s 默认计划平仓日=%s；若次日有A/B/C接力则T+1开盘先卖D",
             order_id,
@@ -1305,6 +1313,26 @@ class StrategyDMonitor:
             f"观察={watching} 买入={bought} | D委托/持仓={order_text} | 全市场扫描轮次={self.scan_round}"
         )
 
+    def _wait_without_open_scan(self) -> None:
+        """已有有效委托/持仓后不再跑开仓扫描，只等待撤单窗口或退出。"""
+
+        if self.position_opened and not self.waiting_order_only:
+            self.logger.warning(
+                "D已形成持仓，停止开仓扫描；后续由主守护进程账户心跳和平仓检查接管。"
+            )
+            print("D已形成持仓，停止开仓扫描；后续由主守护进程账户心跳和平仓检查接管。")
+            return
+
+        if self.waiting_order_only:
+            self.logger.warning(
+                "D已有有效委托/部分成交，停止新的开仓扫描；等待%s确认成交并撤未成残单。",
+                hhmm_to_str(CANCEL_HHMM),
+            )
+            print(f"D已有有效委托/部分成交，停止新的开仓扫描；等待{hhmm_to_str(CANCEL_HHMM)}确认成交并撤未成残单。")
+            while now_hhmm() < CANCEL_HHMM:
+                time.sleep(POLL_INTERVAL_SEC)
+            self.cancel_all_d_orders()
+
     # ── 主循环 ────────────────────────────────────────────────────────────────
 
     def run(self) -> None:
@@ -1341,6 +1369,9 @@ class StrategyDMonitor:
             while now_hhmm() < CANCEL_HHMM:
                 self.poll_once()
                 print(self.status_line())
+                if self.position_opened or self.waiting_order_only:
+                    self._wait_without_open_scan()
+                    return
                 time.sleep(POLL_INTERVAL_SEC)
         except KeyboardInterrupt:
             print("\n用户中断，执行撤单流程...")
