@@ -79,6 +79,7 @@ class StockState:
     watch_alerted: bool = False    # 观察提醒已发出
     buy_signaled: bool = False     # 买入信号已发出
     order_id: str = ""
+    last_order_fail_reason: str = ""
 
 
 # ── 工具函数 ──────────────────────────────────────────────────────────────────
@@ -582,10 +583,11 @@ class StrategyDMonitor:
             locked = self._fire_buy_signal(candidate)
             if locked:
                 return
+            fail_reason = str(getattr(candidate, "last_order_fail_reason", "") or "未形成有效委托")
             self.logger.warning(
-                "[BUY RETRY] 第%d名未形成有效委托/持仓，继续尝试下一名。", idx
+                "[BUY RETRY] 第%d名失败：%s；继续尝试下一名。", idx, fail_reason
             )
-            print(f"  [尝试第{idx}名失败] 未形成有效委托/持仓，继续下一名")
+            print(f"  [尝试第{idx}名失败] 原因={fail_reason}，继续下一名")
 
         self.logger.warning("[BUY RETRY] 本轮%d只候选全部未形成有效委托。", len(scored))
         print(f"  [本轮结束] {len(scored)}只候选均未形成有效委托")
@@ -726,12 +728,15 @@ class StrategyDMonitor:
                 checked_amount = checked_qty * checked_price
                 unchecked_amount = max(actual_amount - checked_amount, 0.0)
                 if self._is_terminal_no_fill(fill_check):
+                    fail_reason = self._describe_order_failure(fill_check, st, result.message)
+                    st.last_order_fail_reason = fail_reason
                     record["order_status"] = "REJECTED_TERMINAL"
                     record["order_status_text"] = fill_check.status_text
+                    record["failure_reason"] = fail_reason
                     record["filled_qty"] = 0
                     record["filled_amount"] = 0.0
                     self.logger.error(
-                        "D下单失败: 策略=D 股票=%s %s 委托%d股 %.2f 总委托金额=%.2f 已成交金额=0.00 未成交金额=%.2f order_id=%s 状态=%s(%s)",
+                        "D下单失败: 策略=D 股票=%s %s 委托%d股 %.2f 总委托金额=%.2f 已成交金额=0.00 未成交金额=%.2f order_id=%s 状态=%s(%s) 失败原因=%s",
                         st.ts_code,
                         st.name,
                         shares,
@@ -741,12 +746,14 @@ class StrategyDMonitor:
                         result.order_id,
                         fill_check.status_text,
                         fill_check.status_code,
+                        fail_reason,
                     )
                     print(
                         f"  → 下单失败: 策略=D {st.ts_code} {st.name} "
                         f"委托{shares}股 总委托金额{actual_amount / 10000:.2f}万 "
                         f"已成交金额0.00万 未成交金额{actual_amount / 10000:.2f}万 "
-                        f"order_id={result.order_id} 状态={fill_check.status_text}({fill_check.status_code})"
+                        f"order_id={result.order_id} 状态={fill_check.status_text}({fill_check.status_code}) "
+                        f"失败原因={fail_reason}"
                     )
                     try:
                         notify(
@@ -757,6 +764,7 @@ class StrategyDMonitor:
                                 f"总委托金额{actual_amount / 10000:.2f}万，已成交金额0.00万，"
                                 f"未成交金额{actual_amount / 10000:.2f}万，"
                                 f"order_id={result.order_id}，状态={fill_check.status_text}({fill_check.status_code})。"
+                                f"失败原因：{fail_reason}"
                             ),
                             level="critical",
                             call=True,
@@ -861,11 +869,14 @@ class StrategyDMonitor:
                 return True
             else:
                 self.logger.error("D委托被拒: %s %s", st.ts_code, result.message)
+                fail_reason = result.message or "QMT返回拒单，未生成有效委托号"
+                st.last_order_fail_reason = fail_reason
                 record["order_status"] = "REJECTED_BY_QMT"
                 record["order_status_text"] = result.message
+                record["failure_reason"] = fail_reason
                 try:
                     notify("buy_result", "❌ D开仓委托被拒",
-                           f"{st.ts_code} {st.name} 委托被拒：{result.message}",
+                           f"{st.ts_code} {st.name} 委托被拒：{fail_reason}",
                            level="critical", call=True)
                 except Exception:
                     pass
@@ -875,8 +886,10 @@ class StrategyDMonitor:
                 return False
         except Exception as e:
             self.logger.error("下单异常: %s: %s", st.ts_code, e)
+            st.last_order_fail_reason = str(e)
             record["order_status"] = "ORDER_EXCEPTION"
             record["order_status_text"] = str(e)
+            record["failure_reason"] = str(e)
             try:
                 notify("buy_result", "❌ D开仓下单异常",
                        f"{st.ts_code} {st.name} 下单异常：{e}",
@@ -891,6 +904,68 @@ class StrategyDMonitor:
         status_code = int(getattr(fill, "status_code", -1) or -1)
         filled_qty = int(getattr(fill, "filled_qty", 0) or 0)
         return filled_qty <= 0 and status_code in {53, 54, 57}
+
+    @staticmethod
+    def _describe_order_failure(fill: Any, st: StockState, fallback: str = "") -> str:
+        status_code = int(getattr(fill, "status_code", -1) or -1)
+        status_text = str(getattr(fill, "status_text", "") or "UNKNOWN")
+        raw = getattr(fill, "raw", None) or {}
+        if not isinstance(raw, dict):
+            raw = {}
+
+        reason_keys = [
+            "status_msg", "error_msg", "error_info", "fail_reason", "cancel_reason",
+            "order_remark", "remark", "m_strErrorMsg", "m_strStatusMsg",
+            "m_strRemark", "m_strOrderRemark", "entrust_status_msg",
+        ]
+        reasons: list[str] = []
+        for key in reason_keys:
+            value = raw.get(key)
+            if value is None or str(value).strip() == "":
+                continue
+            text = str(value).strip()
+            if text not in reasons:
+                reasons.append(f"{key}={text}")
+
+        if fallback:
+            reasons.append(f"返回消息={fallback}")
+
+        inference = ""
+        segment = classify_market_segment(st.ts_code)
+        if status_code == 57:
+            inference = "柜台返回废单，委托已终止且0成交"
+            if segment == "bj":
+                inference += "；该股票属于北交所，若账户未开通北交所权限会直接废单"
+        elif status_code == 54:
+            inference = "委托已撤且0成交"
+        elif status_code == 53:
+            inference = "委托部撤但本次查询0成交"
+        elif status_code < 0:
+            inference = "提交后未在QMT当日委托中确认"
+
+        raw_summary = ""
+        if raw:
+            useful = []
+            for key in sorted(raw.keys()):
+                value = raw.get(key)
+                if value is None or str(value).strip() == "":
+                    continue
+                key_l = key.lower()
+                if any(token in key_l for token in ["status", "error", "remark", "msg", "reason", "order"]):
+                    useful.append(f"{key}={value}")
+                if len(useful) >= 8:
+                    break
+            if useful:
+                raw_summary = "；原始字段：" + "，".join(useful)
+
+        parts = [f"状态={status_text}({status_code})"]
+        if inference:
+            parts.append(inference)
+        if reasons:
+            parts.append("；".join(reasons))
+        if raw_summary:
+            parts.append(raw_summary)
+        return "；".join(parts)
 
     def _confirm_submitted_order(self, order_id: str, ts_code: str):
         """下单后短暂等待，再反查当日委托/成交，避免把返回号误当成真实挂单。"""
