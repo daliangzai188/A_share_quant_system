@@ -48,7 +48,7 @@ from src.notify import notify
 load_dotenv(PROJECT_ROOT / ".env")
 
 # ── 策略参数 ──────────────────────────────────────────────────────────────────
-SENTIMENT_STRONG_MIN = 100   # 全市场今日涨停累计数 >= 此值 → strong情绪
+SENTIMENT_STRONG_MIN = 100   # 全市场当前封板涨停数 >= 此值 → strong情绪
 D_MAX_OPEN_TIMES = None      # 炸板次数不限（近2年数据：strong情绪天去掉限制不减少样本，多候选按封单比选）
 WATCH_START_HHMM = 935       # 09:35 开始发出观察提醒
 SIGNAL_START_HHMM = 1400     # 14:00 开始发出买入信号 / 观察升级
@@ -369,9 +369,6 @@ class StrategyDMonitor:
         self.states: dict[str, StockState] = {}
         self.scan_round = 0
 
-        # 情绪估算：今日累计曾涨停的股票数
-        self.sealed_ever_count: int = 0
-
         # 本次会话下单记录 {order_id: ts_code}
         self.session_orders: dict[str, str] = {}
         self.session_order_details: dict[str, dict[str, Any]] = {}
@@ -406,6 +403,15 @@ class StrategyDMonitor:
 
     # ── 状态更新 ──────────────────────────────────────────────────────────────
 
+    @property
+    def sealed_ever_count(self) -> int:
+        """全市场【当前正封在涨停】的家数（瞬时快照，每轮刷新）。
+
+        与回测口径一致：回测数的是收盘封住的涨停(limit==U)，临近收盘时"当前封板数"≈"收盘涨停数"。
+        只看每只票最近一次轮询的封板状态(was_sealed)，炸板打开的不计、回封的计入。
+        """
+        return sum(1 for st in self.states.values() if st.was_sealed)
+
     def _update_states(self, quotes: dict) -> None:
         hhmm = now_hhmm()
         fallback_count = 0
@@ -435,17 +441,10 @@ class StrategyDMonitor:
             st = self.states[ts_code]
             st.upper_limit = upper_limit
 
-            # 今日是否"曾涨停"：用【当日最高价】判断，而不是轮询那一刻是否还封板。
-            # 否则炸板打开的票、以及监控盘中重启前涨停过的票会被漏数，导致情绪计数偏低。
-            # 同花顺等口径都是"今日最高摸到涨停价即算涨停"。high缺失时退回用现价是否封板。
-            high_price = float(getattr(snap, "high_price", 0.0) or 0.0)
-            touched_limit = high_price > 0 and (upper_limit - high_price) < 0.015
-            if (touched_limit or at_limit) and not st.ever_sealed:
-                st.ever_sealed = True
-                self.sealed_ever_count += 1
-
             if at_limit:
-                if st.first_seal_hhmm == 0:
+                # 当前封在涨停（炸板历史不影响：只看此刻是否封板）
+                if not st.ever_sealed:
+                    st.ever_sealed = True
                     st.first_seal_hhmm = hhmm
                 if not st.was_sealed:
                     # 非涨停 → 涨停：记录重封时间
@@ -626,7 +625,7 @@ class StrategyDMonitor:
             f"  {st.ts_code} {st.name}  涨停价 {st.upper_limit:.2f}\n"
             f"  重封时间 {hhmm_to_str(st.last_seal_hhmm)}  "
             f"炸板 {st.open_times_today} 次\n"
-            f"  情绪估算：今日涨停累计 {self.sealed_ever_count} 只\n"
+            f"  情绪估算：当前封板涨停 {self.sealed_ever_count} 只\n"
             f"  操作：{'实盘挂单' if self.live_order else '仅提醒（--live-order 开启下单）'}\n"
             f"{'='*55}"
         )
@@ -956,7 +955,7 @@ def main() -> None:
 
     if args.dry_run:
         print("=== 策略D监控配置 ===")
-        print(f"  情绪阈值: 全市场涨停累计数 >= {SENTIMENT_STRONG_MIN}")
+        print(f"  情绪阈值: 全市场当前封板涨停数 >= {SENTIMENT_STRONG_MIN}")
         print(f"  炸板次数上限: {D_MAX_OPEN_TIMES}")
         print(f"  允许市场分段: {','.join(sorted(allowed_segments))}")
         print(f"  开仓仓位: {position_pct:.0%}")
