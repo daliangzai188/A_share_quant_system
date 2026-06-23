@@ -419,17 +419,23 @@ class StrategyDMonitor:
         skipped_no_price = 0
         for ts_code, snap in quotes.items():
             name = self.name_map.get(ts_code, "")
-            upper_limit = float(snap.upper_limit or 0.0)
-            if upper_limit > 0:
+            qmt_limit = float(snap.upper_limit or 0.0)
+            est_limit = estimate_upper_limit(ts_code, float(snap.pre_close or 0.0), name)
+            if qmt_limit > 0:
                 qmt_limit_count += 1
-            else:
-                upper_limit = estimate_upper_limit(ts_code, float(snap.pre_close or 0.0), name)
-                if upper_limit > 0:
-                    fallback_count += 1
+            elif est_limit > 0:
+                fallback_count += 1
+            # 存储/下单用涨停价：优先 QMT（交易所口径），缺失时用估算
+            upper_limit = qmt_limit if qmt_limit > 0 else est_limit
             if upper_limit <= 0 or snap.last_price <= 0:
                 skipped_no_price += 1
                 continue
-            at_limit = abs(snap.last_price - upper_limit) < 0.015
+            # 封板判定：现价贴近【QMT涨停价】或【昨收估算涨停价（已验证准确）】任一即算。
+            # 不再单信 QMT——QMT 涨停价偶有缺失/滞后/不准，会漏掉真封板的票。
+            at_limit = (
+                (qmt_limit > 0 and abs(snap.last_price - qmt_limit) < 0.015)
+                or (est_limit > 0 and abs(snap.last_price - est_limit) < 0.015)
+            )
 
             if ts_code not in self.states:
                 self.states[ts_code] = StockState(
