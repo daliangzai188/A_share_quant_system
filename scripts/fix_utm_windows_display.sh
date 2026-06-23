@@ -6,6 +6,7 @@ DISPLAY_MODE="${DISPLAY_MODE:-virtio-ramfb-gl}"
 UTMCTL="${UTMCTL:-/Applications/UTM.app/Contents/MacOS/utmctl}"
 UTM_DOCS="${UTM_DOCS:-$HOME/Library/Containers/com.utmapp.UTM/Data/Documents}"
 STABLE_MODE="${STABLE_MODE:-0}"
+FORCE_ON_STOP_TIMEOUT="${FORCE_ON_STOP_TIMEOUT:-1}"
 
 usage() {
   cat <<'EOF'
@@ -24,6 +25,7 @@ usage() {
 可选环境变量：
   DISPLAY_MODE=virtio-ramfb-gl
   UTMCTL=/Applications/UTM.app/Contents/MacOS/utmctl
+  FORCE_ON_STOP_TIMEOUT=1
 EOF
 }
 
@@ -58,7 +60,9 @@ was_running=0
 if [[ "$vm_status" == "started" || "$vm_status" == "paused" ]]; then
   was_running=1
   echo "正在停止虚拟机：$VM_NAME ($vm_status)"
-  "$UTMCTL" stop "$vm_uuid" >/dev/null
+  if ! "$UTMCTL" stop "$vm_uuid" >/dev/null; then
+    echo "警告：UTM 正常停止失败，准备等待后判断是否需要强制停止。" >&2
+  fi
 
   for _ in {1..30}; do
     current_status="$("$UTMCTL" list | awk -v uuid="$vm_uuid" '$1 == uuid { print $2; exit }')"
@@ -70,8 +74,19 @@ if [[ "$vm_status" == "started" || "$vm_status" == "paused" ]]; then
 
   current_status="$("$UTMCTL" list | awk -v uuid="$vm_uuid" '$1 == uuid { print $2; exit }')"
   if [[ "$current_status" != "stopped" ]]; then
-    echo "错误：虚拟机未能停止，当前状态：$current_status" >&2
-    exit 1
+    if [[ "$FORCE_ON_STOP_TIMEOUT" == "1" ]]; then
+      echo "警告：虚拟机未能正常停止，当前状态：$current_status，开始强制停止。" >&2
+      pkill -f "$vm_uuid" || true
+      sleep 2
+      pkill -x UTM || true
+      sleep 2
+      current_status="$("$UTMCTL" list | awk -v uuid="$vm_uuid" '$1 == uuid { print $2; exit }')"
+    fi
+
+    if [[ "$current_status" != "stopped" ]]; then
+      echo "错误：虚拟机未能停止，当前状态：$current_status" >&2
+      exit 1
+    fi
   fi
 else
   echo "虚拟机当前不是运行状态：$vm_status"
