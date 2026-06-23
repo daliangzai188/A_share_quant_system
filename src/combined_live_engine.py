@@ -245,9 +245,10 @@ class CombinedLiveEngine:
         position: dict[str, Any],
         today: str,
         reason: str | None = None,
+        action: str = "PLAN_SELL_D_FIRST",
     ) -> CombinedLiveDecision:
         return CombinedLiveDecision(
-            action="PLAN_SELL_D_FIRST",
+            action=action,
             strategy_leg="D",
             ts_code=str(position.get("ts_code", "")),
             name=str(position.get("name", "")),
@@ -257,7 +258,12 @@ class CombinedLiveEngine:
             source="positions.json",
         )
 
-    def build_d_sell_order(self, position: dict[str, Any], today: str) -> dict[str, Any]:
+    def build_d_sell_order(
+        self,
+        position: dict[str, Any],
+        today: str,
+        planned_action: str = "PLAN_SELL_D_FIRST",
+    ) -> dict[str, Any]:
         return {
             "paper_order_id": f"D-SELL-{today}-{position.get('ts_code', '')}",
             "signal_date": str(position.get("signal_date", "")),
@@ -266,7 +272,7 @@ class CombinedLiveEngine:
             "side": "SELL",
             "ts_code": str(position.get("ts_code", "")),
             "name": str(position.get("name", "")),
-            "planned_action": "PLAN_SELL_D_FIRST",
+            "planned_action": planned_action,
             "order_status": "PLAN_ONLY",
             "planned_position_pct": 0.0,
             "planned_equity": 0.0,
@@ -370,8 +376,20 @@ class CombinedLiveEngine:
             if due_d or relay_d_for_abc:
                 sell_d_positions = due_d if due_d else open_d_positions
                 for position in due_d:
-                    decisions.append(self.build_d_sell_decision(position, today))
-                    planned_orders.append(self.build_d_sell_order(position, today))
+                    decisions.append(self.build_d_sell_decision(
+                        position,
+                        today,
+                        action="PLAN_SELL_D_T2_CLOSE",
+                        reason=(
+                            f"D持仓到默认T+2平仓日，planned_exit_date={position.get('planned_exit_date', '')}，"
+                            f"今日={today}，按D回测口径等待14:50收盘平仓，不在09:23集合竞价卖出。"
+                        ),
+                    ))
+                    planned_orders.append(self.build_d_sell_order(
+                        position,
+                        today,
+                        planned_action="PLAN_SELL_D_T2_CLOSE",
+                    ))
                 for position in sell_d_positions:
                     if position in due_d:
                         continue

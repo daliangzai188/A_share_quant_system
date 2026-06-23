@@ -568,6 +568,7 @@ def _execute_orders_inprocess(
             side_text.eq("SELL")
             & (
                 action_text.eq("PLAN_SELL_T2_CLOSE")
+                | action_text.eq("PLAN_SELL_D_T2_CLOSE")
                 | risk_text.str.contains("E2_SELL_T2_CLOSE", na=False)
             )
         )
@@ -1152,7 +1153,7 @@ def check_and_close_positions() -> None:
             logger().warning("需要平仓：%s %s  计划平仓日 %s  状态 %s  市场开盘 %s",
                              ts_code, name, planned_exit, status, market_is_open())
 
-            t2_close_leg = strategy_leg in {"A", "B", "C", "E2"}
+            t2_close_leg = strategy_leg in {"A", "B", "C", "D", "E2"}
             due_today = planned_exit == today_str
             before_close_sell_window = now_beijing().time() < datetime.time(14, 50)
             if t2_close_leg and due_today and before_close_sell_window:
@@ -1261,10 +1262,12 @@ def run_script(name: str, *args: str, timeout: int = TIMEOUT_DATA_STEP) -> bool:
 # ── 定时任务 ───────────────────────────────────────────────────────────────────
 
 def job_premarket_sell() -> None:
-    """09:23 集合竞价：仅对 D 策略持仓按跌停价挂单平仓。
+    """09:23 集合竞价：仅处理 D 接力让路或历史 sell_pending 的平仓。
 
-    D 策略回测平仓价为 next_open（T+1 开盘价），集合竞价清算价≈开盘价，与回测一致。
-    E2/ABC 回测平仓价为 T+2 收盘价，不在此处处理，由 14:55 job_afternoon 执行。
+    D 默认平仓口径是 T+2 收盘卖，不在 09:23 提前卖。
+    只有组合状态机给出 PLAN_SELL_D_FIRST（次日有 A/B/C 接力，需要 D 让路）时，
+    才按 T+1 开盘口径在集合竞价卖 D。
+    E2/ABC/D默认T+2收盘卖由 14:50 job_afternoon/check_and_close_positions 执行。
     """
     logger().info("===== 集合竞价平仓挂单（09:23）=====")
     positions = load_positions()
@@ -1305,9 +1308,16 @@ def job_premarket_sell() -> None:
 
             force_relay_sell = ts_code in force_d_sell_codes
 
-            # 只处理今天到期、已标记 sell_pending，或因A/B/C接力需要T+1开盘先卖的D持仓
-            if planned_exit > today_str and pos.get("status") != "sell_pending" and not force_relay_sell:
-                logger().info("09:23 持仓 %s %s 计划平仓日 %s，今日无需平仓，跳过。", ts_code, name, planned_exit)
+            # 只处理历史 sell_pending，或因A/B/C接力需要T+1开盘先卖的D持仓。
+            # D 默认 T+2 到期日也必须等 14:50 收盘平仓，不在09:23提前卖。
+            if pos.get("status") != "sell_pending" and not force_relay_sell:
+                if planned_exit <= today_str:
+                    logger().info(
+                        "09:23 D默认T+2平仓：%s %s 今日到期(%s)，等待14:50收盘平仓，不集合竞价卖出。",
+                        ts_code, name, planned_exit,
+                    )
+                else:
+                    logger().info("09:23 持仓 %s %s 计划平仓日 %s，今日无需平仓，跳过。", ts_code, name, planned_exit)
                 continue
             if force_relay_sell and planned_exit > today_str:
                 logger().warning(
