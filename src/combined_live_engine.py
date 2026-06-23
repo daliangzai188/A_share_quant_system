@@ -240,7 +240,12 @@ class CombinedLiveEngine:
             "live_order_enabled": True,
         }
 
-    def build_d_sell_decision(self, position: dict[str, Any], today: str) -> CombinedLiveDecision:
+    def build_d_sell_decision(
+        self,
+        position: dict[str, Any],
+        today: str,
+        reason: str | None = None,
+    ) -> CombinedLiveDecision:
         return CombinedLiveDecision(
             action="PLAN_SELL_D_FIRST",
             strategy_leg="D",
@@ -248,7 +253,7 @@ class CombinedLiveEngine:
             name=str(position.get("name", "")),
             side="SELL",
             quantity=self.as_int(position.get("shares", 0)),
-            reason=f"D持仓计划平仓日={position.get('planned_exit_date', '')}，今日={today}，必须先卖D再考虑A/B/C。",
+            reason=reason or f"D持仓计划平仓日={position.get('planned_exit_date', '')}，今日={today}，必须先卖D再考虑A/B/C。",
             source="positions.json",
         )
 
@@ -352,9 +357,24 @@ class CombinedLiveEngine:
                 if str(p.get("planned_exit_date", "99991231")) <= today
                 or str(p.get("status", "")).lower() == "sell_pending"
             ]
-            if due_d:
+            abc_decisions_for_d = self.build_abc_buy_decisions(abc_orders, str(abc_path or ""))
+            relay_d_for_abc = bool(abc_decisions_for_d)
+            if due_d or relay_d_for_abc:
+                sell_d_positions = due_d if due_d else open_d_positions
                 for position in due_d:
                     decisions.append(self.build_d_sell_decision(position, today))
+                    planned_orders.append(self.build_d_sell_order(position, today))
+                for position in sell_d_positions:
+                    if position in due_d:
+                        continue
+                    decisions.append(self.build_d_sell_decision(
+                        position,
+                        today,
+                        reason=(
+                            "D持仓未到默认T+2平仓日，但今日存在A/B/C接力买入计划；"
+                            "按D回测口径先在T+1开盘卖D，再释放同一资金给A/B/C。"
+                        ),
+                    ))
                     planned_orders.append(self.build_d_sell_order(position, today))
                 decisions.append(CombinedLiveDecision(
                     action="BLOCK_ABC_BUY", strategy_leg="A+B+C",

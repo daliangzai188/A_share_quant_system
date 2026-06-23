@@ -1237,6 +1237,15 @@ def job_premarket_sell() -> None:
     config = load_json_config(PROJECT_ROOT / "config" / "config.json")
     qmt_enabled = bool(config.get("broker_adapter_enabled")) and bool(config.get("qmt_enabled"))
     today_str = today_beijing().strftime("%Y%m%d")
+    force_d_sell_codes: set[str] = set()
+    combined = load_combined_decisions()
+    decisions = combined[0] if combined is not None else None
+    if decisions is not None and not decisions.empty and {"action", "strategy_leg"}.issubset(decisions.columns):
+        rows = decisions[
+            (decisions["action"].astype(str) == "PLAN_SELL_D_FIRST")
+            & (decisions["strategy_leg"].astype(str).str.upper() == "D")
+        ]
+        force_d_sell_codes = set(rows.get("ts_code", []).dropna().astype(str).tolist())
 
     for pos in positions:
         try:
@@ -1256,10 +1265,17 @@ def job_premarket_sell() -> None:
                 )
                 continue
 
-            # 只处理今天到期或已标记 sell_pending 的持仓
-            if planned_exit > today_str and pos.get("status") != "sell_pending":
+            force_relay_sell = ts_code in force_d_sell_codes
+
+            # 只处理今天到期、已标记 sell_pending，或因A/B/C接力需要T+1开盘先卖的D持仓
+            if planned_exit > today_str and pos.get("status") != "sell_pending" and not force_relay_sell:
                 logger().info("09:23 持仓 %s %s 计划平仓日 %s，今日无需平仓，跳过。", ts_code, name, planned_exit)
                 continue
+            if force_relay_sell and planned_exit > today_str:
+                logger().warning(
+                    "09:23 D接力平仓：%s %s 默认计划平仓日%s，但今日有A/B/C接力买入计划，按回测口径T+1开盘先卖D。",
+                    ts_code, name, planned_exit,
+                )
 
             if not qmt_enabled:
                 logger().info("[集合竞价平仓] 模拟盘：%s %s 将在开盘时平仓", ts_code, name)
@@ -1541,15 +1557,9 @@ def job_morning() -> None:
         logger().error("组合状态机决策生成失败，早盘不启动D，也不执行A/B/C买入预览。")
         return
 
-    # ② D 待卖持仓最高优先级。未确认D卖出前，不执行A/B/C买入，不启动D新监控。
+    # ② D 待卖持仓最高优先级。09:20只播报，等待09:23集合竞价平仓入口执行。
     if has_combined_action(decisions, "PLAN_SELL_D_FIRST"):
-        handle_combined_order_preview(
-            combined_orders_path,
-            reason="D持仓优先卖出",
-            allowed_sides={"SELL"},
-            allow_t2_close_sell_now=True,
-        )
-        logger().info("组合状态机要求先卖D，早盘流程到此结束。")
+        logger().info("组合状态机要求先卖D；等待09:23集合竞价平仓，不在09:20非交易时段提交委托。")
         return
 
     # ③ A/B/C 买入信号 —— 09:20 只播报，不提交，避免触发 OUTSIDE_TRADING_TIME
@@ -2270,7 +2280,7 @@ def _e2_delayed_buy_loop(combined_orders_path, decisions) -> None:
                 planned_qty=int(row.get("quantity", 0)),
                 signal_date=str(row.get("signal_date", today_beijing().strftime("%Y%m%d"))),
                 strategy_leg=str(row.get("strategy_leg", "E2")),
-                exit_n_days=2,
+                exit_n_days=1,
                 config=config,
                 broker_cfg=broker_cfg,
                 confirm=confirm,
