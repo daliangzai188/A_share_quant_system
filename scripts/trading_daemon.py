@@ -3029,7 +3029,18 @@ def _log_d_status_for_signal(signal_date: str) -> None:
         if not checklist.empty and "planned_order_count" in checklist.columns:
             planned_count = int(float(checklist["planned_order_count"].iloc[0] or 0))
         in_d_start_window = datetime.time(9, 20) <= now.time() <= datetime.time(14, 55)
-        if planned_count > 0:
+        d_running = _strategy_d_monitor_running()
+        if d_running:
+            config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+            allowed_segments = config.get("strategy_d", {}).get("allowed_market_segments", [])
+            allowed_text = ",".join(str(x) for x in allowed_segments) if isinstance(allowed_segments, list) else "未配置"
+            reason = (
+                "D盘中监控进程正在运行；若同时存在A/B/C计划，通常表示开仓窗口已过、"
+                "A/B/C/E2未实际成交且账户空仓，系统释放资金占用后补启动D。"
+            )
+            logger().info("  D策略状态：RUNNING（%s）", reason)
+            logger().info("  D实盘扫描范围：%s；日志中的扫描数量是权限/配置过滤后的股票池数量，不是全市场总数。", allowed_text)
+        elif planned_count > 0:
             logger().info("  D策略停止点：组合状态机。原因：今日已有 A/B/C 买入计划，阻断 D 盘中监控，避免同一资金重复占用。")
         elif not in_d_start_window:
             logger().info(
