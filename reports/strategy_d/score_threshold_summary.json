@@ -1,0 +1,12 @@
+{
+  "input_path": "/Users/user/Desktop/A_System/data/processed/next_day_premium_trades.csv",
+  "sample_start": "20260609",
+  "sample_end": "20260616",
+  "sample_count": 37,
+  "gate": {
+    "min_sample_count": 10,
+    "min_t2_avg_net_return": 0.005
+  },
+  "recommended_min_buy_score": 40,
+  "note": "当前报告使用历史收盘封单金额折算封单股数，近似复刻实盘买一封单股数；若样本覆盖日期过短，需要补齐历史 next_day_premium_trades 后再定最终门槛。"
+}
