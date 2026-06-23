@@ -733,11 +733,15 @@ def _execute_orders_inprocess(
                     )
                     amount = fill.filled_qty * fill_price
                     if fill.filled_qty < s["qty"]:
+                        planned_price = float(s.get("ref_price", fill_price) or fill_price)
+                        planned_amount = int(s["qty"]) * planned_price
+                        unfilled_amount = max(planned_amount - amount, 0.0)
                         log.warning("⚠️ [%s] %s 买入部分成交 %d/%d股 @%.2f，按实际成交记录持仓。",
                                     tag, s["ts_code"], fill.filled_qty, s["qty"], fill_price)
                         _notify("buy_result", "⚠️ 开仓部分成交",
                                 f"{s['ts_code']} {s['name']} 成交{fill.filled_qty}/{s['qty']}股 "
-                                f"@{fill_price:.2f} 金额{_fmt_wan(amount)}")
+                                f"@{fill_price:.2f}。总委托金额{_fmt_wan(planned_amount)}，"
+                                f"已成交金额{_fmt_wan(amount)}，未成交金额{_fmt_wan(unfilled_amount)}")
                     else:
                         log.info("✅ [%s] %s 买入全部成交 %d股 @%.2f，已记录持仓。",
                                  tag, s["ts_code"], fill.filled_qty, fill_price)
@@ -1793,12 +1797,16 @@ def confirm_pending_premarket_buys() -> None:
                 name_s = str(s.get("name", ""))
                 amount = fill.filled_qty * fill_price
                 if fill.filled_qty < qty:
+                    planned_price = float(s.get("ref_price", fill_price) or fill_price)
+                    planned_amount = qty * planned_price
+                    unfilled_amount = max(planned_amount - amount, 0.0)
                     logger().warning("⚠️ [盘前买入确认] %s 部分成交 %d/%d股 @%.2f，撤残单。",
                                      ts_code, fill.filled_qty, qty, fill_price)
                     _try_cancel_order(broker_cfg, order_id, ts_code)
                     _notify("buy_result", "⚠️ 盘前开仓部分成交",
                             f"{ts_code} {name_s} 成交{fill.filled_qty}/{qty}股 "
-                            f"@{fill_price:.2f} 金额{_fmt_wan(amount)}")
+                            f"@{fill_price:.2f}。总委托金额{_fmt_wan(planned_amount)}，"
+                            f"已成交金额{_fmt_wan(amount)}，未成交金额{_fmt_wan(unfilled_amount)}")
                 else:
                     logger().info("✅ [盘前买入确认] %s 全部成交 %d股 @%.2f，已记录持仓。",
                                   ts_code, fill.filled_qty, fill_price)
@@ -2231,11 +2239,14 @@ def _e2_place_order_direct(ts_code: str, name: str, planned_qty: int, signal_dat
         )
         amount = fill.filled_qty * fill_price
         if fill.filled_qty < qty:
+            planned_amount = qty * ref_price
+            unfilled_amount = max(planned_amount - amount, 0.0)
             log.warning("⚠️ [E2延迟开仓] %s 部分成交 %d/%d股 @%.2f，按实际成交记录持仓。",
                         ts_code, fill.filled_qty, qty, fill_price)
             _notify("buy_result", "⚠️ E2开仓部分成交",
                     f"{ts_code} {name} 成交{fill.filled_qty}/{qty}股 "
-                    f"@{fill_price:.2f} 金额{_fmt_wan(amount)}")
+                    f"@{fill_price:.2f}。总委托金额{_fmt_wan(planned_amount)}，"
+                    f"已成交金额{_fmt_wan(amount)}，未成交金额{_fmt_wan(unfilled_amount)}")
         else:
             log.info("✅ [E2延迟开仓] %s %s 全部成交 %d股 @%.2f，已记录持仓。",
                      ts_code, name, fill.filled_qty, fill_price)

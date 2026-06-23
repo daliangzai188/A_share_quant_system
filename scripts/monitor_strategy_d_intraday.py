@@ -707,8 +707,11 @@ class StrategyDMonitor:
                 }
                 st.order_id = result.order_id
                 record["order_id"] = result.order_id
+                fill_check = self._confirm_submitted_order(result.order_id, st.ts_code)
+                self.session_order_details[result.order_id]["submit_status_code"] = fill_check.status_code
+                self.session_order_details[result.order_id]["submit_status_text"] = fill_check.status_text
                 self.logger.info(
-                    "D委托: %s %d股 %.2f 目标仓位=%.0f%% 实际仓位=%.2f%% 目标金额=%.2f 实际金额=%.2f 单笔上限需小于%.0f order_id=%s",
+                    "D委托: %s %d股 %.2f 目标仓位=%.0f%% 实际仓位=%.2f%% 目标金额=%.2f 实际金额=%.2f 单笔上限需小于%.0f order_id=%s 提交后状态=%s(%s)",
                     st.ts_code,
                     shares,
                     st.upper_limit,
@@ -718,13 +721,51 @@ class StrategyDMonitor:
                     actual_amount,
                     max_order_amount,
                     result.order_id,
+                    fill_check.status_text,
+                    fill_check.status_code,
                 )
                 print(
                     f"  → 委托已提交: {shares}股 "
                     f"目标仓位{self.position_pct:.0%} 实际仓位{actual_position_pct:.2%} "
                     f"实际金额{actual_amount:.0f}元 单笔上限需小于{max_order_amount:.0f}元 "
-                    f"order_id={result.order_id}"
+                    f"order_id={result.order_id} 提交后状态={fill_check.status_text}({fill_check.status_code})"
                 )
+                try:
+                    notify(
+                        "buy_result",
+                        "⏳ D开仓委托已提交",
+                        (
+                            f"{st.ts_code} {st.name} 委托{shares}股 @{st.upper_limit:.2f}，"
+                            f"总委托金额{actual_amount / 10000:.2f}万，order_id={result.order_id}，"
+                            f"提交后状态={fill_check.status_text}({fill_check.status_code})。"
+                        ),
+                        level="timeSensitive",
+                    )
+                except Exception:
+                    pass
+                if fill_check.status_code < 0 and fill_check.filled_qty <= 0:
+                    self.logger.error(
+                        "D委托提交后未在QMT当日委托中确认: %s order_id=%s %d股 %.2f 金额=%.2f",
+                        st.ts_code,
+                        result.order_id,
+                        shares,
+                        st.upper_limit,
+                        actual_amount,
+                    )
+                    try:
+                        notify(
+                            "buy_result",
+                            "❌ D开仓委托未确认",
+                            (
+                                f"{st.ts_code} {st.name} QMT返回order_id={result.order_id}，"
+                                f"但提交后未在当日委托中查到。程序计划委托{shares}股，"
+                                f"总委托金额{actual_amount / 10000:.2f}万；请立即查看QMT是否实际挂单。"
+                            ),
+                            level="critical",
+                            call=True,
+                        )
+                    except Exception:
+                        pass
             else:
                 self.logger.error("D委托被拒: %s %s", st.ts_code, result.message)
                 try:
@@ -743,6 +784,31 @@ class StrategyDMonitor:
             except Exception:
                 pass
             print(f"  → 下单异常: {e}")
+
+    def _confirm_submitted_order(self, order_id: str, ts_code: str):
+        """下单后短暂等待，再反查当日委托/成交，避免把返回号误当成真实挂单。"""
+
+        from src.broker_adapter import OrderFill
+
+        last_error: Exception | None = None
+        for attempt in range(1, 4):
+            time.sleep(1.0)
+            try:
+                fill = self.broker.get_order_fill(order_id)
+                if fill.status_code >= 0 or fill.filled_qty > 0:
+                    return fill
+                self.logger.warning(
+                    "D委托提交后第%d次反查未确认: %s order_id=%s",
+                    attempt,
+                    ts_code,
+                    order_id,
+                )
+            except Exception as e:
+                last_error = e
+                self.logger.error("D委托提交后第%d次反查异常: %s order_id=%s: %s",
+                                  attempt, ts_code, order_id, e)
+        status_text = f"QUERY_ERROR:{last_error}" if last_error else "NOT_FOUND_IN_QMT_ORDERS"
+        return OrderFill(order_id=str(order_id), status_code=-1, status_text=status_text)
 
     # ── 14:55 撤单 ────────────────────────────────────────────────────────────
 
@@ -772,7 +838,18 @@ class StrategyDMonitor:
 
             if filled_qty > 0:
                 status_text = getattr(fill, "status_text", "") if fill else ""
-                print(f"  {ts_code}  order_id={order_id} → 已成交{filled_qty}股，写入持仓")
+                detail = self.session_order_details.get(order_id, {})
+                planned_qty = int(detail.get("shares", 0) or 0)
+                planned_amount = float(detail.get("actual_amount", 0.0) or 0.0)
+                if planned_amount <= 0 and planned_qty > 0:
+                    planned_amount = planned_qty * float(detail.get("buy_price", 0.0) or 0.0)
+                filled_amount = filled_qty * fill_price
+                unfilled_amount = max(planned_amount - filled_amount, 0.0)
+                print(
+                    f"  {ts_code}  order_id={order_id} → 已成交{filled_qty}/{planned_qty}股，"
+                    f"总委托{planned_amount / 10000:.2f}万 已成交{filled_amount / 10000:.2f}万 "
+                    f"未成交{unfilled_amount / 10000:.2f}万，写入持仓"
+                )
                 self._record_filled_d_position(order_id, filled_qty, fill_price)
                 # 部分成交：撤掉未成残单
                 if not getattr(fill, "is_filled", False):
@@ -786,10 +863,38 @@ class StrategyDMonitor:
             if ok:
                 cancelled += 1
                 print(f"  {ts_code}  order_id={order_id} → 未成交，撤单已发")
+                detail = self.session_order_details.get(order_id, {})
+                planned_qty = int(detail.get("shares", 0) or 0)
+                planned_amount = float(detail.get("actual_amount", 0.0) or 0.0)
+                self.logger.warning("D委托未成交已撤单: %s order_id=%s 委托%d股 金额=%.2f",
+                                    ts_code, order_id, planned_qty, planned_amount)
+                try:
+                    notify(
+                        "buy_result",
+                        "⚠️ D开仓未成交已撤单",
+                        (
+                            f"{ts_code} order_id={order_id} 委托{planned_qty}股，"
+                            f"总委托金额{planned_amount / 10000:.2f}万，已成交0.00万，"
+                            f"14:55已撤单。"
+                        ),
+                        level="timeSensitive",
+                    )
+                except Exception:
+                    pass
             else:
                 failed += 1
                 print(f"  {ts_code}  order_id={order_id} → 撤单失败！请手动检查")
                 self.logger.error("撤单失败: %s order_id=%s", ts_code, order_id)
+                try:
+                    notify(
+                        "buy_result",
+                        "❌ D未成交撤单失败",
+                        f"{ts_code} order_id={order_id} 未成交且撤单失败，请立即检查QMT。",
+                        level="critical",
+                        call=True,
+                    )
+                except Exception:
+                    pass
 
         print(f"  结果: 撤单={cancelled}笔  失败={failed}笔")
         print(f"{'='*55}\n")
@@ -827,13 +932,24 @@ class StrategyDMonitor:
         self.logger.warning("D成交已写入持仓账本: order_id=%s ts_code=%s %d股 @%.2f",
                             order_id, detail.get("ts_code", ""), shares, buy_price)
         try:
+            planned_shares = int(detail.get("shares", 0) or 0)
+            planned_amount = float(detail.get("actual_amount", 0.0) or 0.0)
+            if planned_amount <= 0 and planned_shares > 0:
+                planned_amount = planned_shares * float(detail.get("buy_price", 0.0) or 0.0)
+            filled_amount = shares * buy_price
+            unfilled_amount = max(planned_amount - filled_amount, 0.0)
+            partial = planned_shares > 0 and shares < planned_shares
             notify(
                 "buy_result",
-                "✅ D开仓成交",
+                "⚠️ D开仓部分成交" if partial else "✅ D开仓成交",
                 (
                     f"{detail.get('ts_code', '')} {detail.get('name', '')} "
-                    f"买入{shares}股 @{buy_price:.2f} 金额{shares * buy_price / 10000:.2f}万"
+                    f"买入{shares}/{planned_shares or shares}股 @{buy_price:.2f}。"
+                    f"总委托金额{planned_amount / 10000:.2f}万，"
+                    f"已成交金额{filled_amount / 10000:.2f}万，"
+                    f"未成交金额{unfilled_amount / 10000:.2f}万。"
                 ),
+                level="timeSensitive" if partial else "active",
             )
         except Exception:
             pass
