@@ -58,9 +58,11 @@ POLL_INTERVAL_SEC = 30       # 每批轮询间隔（秒）
 MONITOR_START_HHMM = 930     # 脚本等待开始扫描的时间（集合竞价结束后）
 D_POSITION_PCT = 0.80        # 默认仓位比例，优先使用 config.json/strategy_d/position_pct
 D_RETRY_TOP_N = 10           # 买入候选被拒/废单后，只按排序尝试前10名
-D_MIN_BUY_SCORE = 40.0       # 默认最低综合分；40分约等于通过硬条件后的最低有效分
 STRATEGY_REMARK = "D_FIRST_BOARD"
 DEFAULT_ALLOWED_SEGMENTS = {"sh_main", "sz_main", "chi_next", "star", "bj", "other"}
+DEFAULT_SCORE_GATE_REPORT = "reports/strategy_d/score_threshold_buckets.csv"
+DEFAULT_SCORE_GATE_MIN_SAMPLE = 10
+DEFAULT_SCORE_GATE_MIN_T2_AVG_RETURN = 0.005
 
 
 # ── 数据结构 ──────────────────────────────────────────────────────────────────
@@ -227,13 +229,49 @@ def configured_position_pct(config: dict[str, Any]) -> float:
     return min(value, 1.0)
 
 
-def configured_min_buy_score(config: dict[str, Any]) -> float:
+def configured_score_gate(config: dict[str, Any]) -> dict[str, Any]:
     strategy_config = load_strategy_d_config(config)
     try:
-        value = float(strategy_config.get("min_buy_score", D_MIN_BUY_SCORE))
+        min_sample = int(strategy_config.get("score_gate_min_sample_count", DEFAULT_SCORE_GATE_MIN_SAMPLE))
     except (TypeError, ValueError):
-        return D_MIN_BUY_SCORE
-    return max(value, 0.0)
+        min_sample = DEFAULT_SCORE_GATE_MIN_SAMPLE
+    try:
+        min_return = float(
+            strategy_config.get("score_gate_min_t2_avg_net_return", DEFAULT_SCORE_GATE_MIN_T2_AVG_RETURN)
+        )
+    except (TypeError, ValueError):
+        min_return = DEFAULT_SCORE_GATE_MIN_T2_AVG_RETURN
+    return {
+        "report_path": strategy_config.get("score_gate_report_path", DEFAULT_SCORE_GATE_REPORT),
+        "min_sample_count": max(min_sample, 1),
+        "min_t2_avg_net_return": min_return,
+    }
+
+
+def load_score_gate_stats(score_gate: dict[str, Any]) -> dict[str, dict[str, float]]:
+    path = PROJECT_ROOT / str(score_gate.get("report_path") or DEFAULT_SCORE_GATE_REPORT)
+    if not path.exists():
+        return {}
+    try:
+        data = pd.read_csv(path)
+    except Exception:
+        return {}
+    required = {"score_bucket", "sample_count", "t2_avg_net_return"}
+    if not required.issubset(data.columns):
+        return {}
+    result: dict[str, dict[str, float]] = {}
+    for row in data.itertuples(index=False):
+        bucket = str(getattr(row, "score_bucket"))
+        try:
+            sample_count = float(getattr(row, "sample_count"))
+            avg_return = float(getattr(row, "t2_avg_net_return"))
+        except (TypeError, ValueError):
+            continue
+        result[bucket] = {
+            "sample_count": sample_count,
+            "t2_avg_net_return": avg_return,
+        }
+    return result
 
 
 def filter_universe_by_segments(universe: list[str], allowed_segments: set[str]) -> list[str]:
@@ -367,7 +405,7 @@ class StrategyDMonitor:
                  monitor_start_hhmm: int = MONITOR_START_HHMM,
                  allowed_segments: set[str] | None = None,
                  position_pct: float = D_POSITION_PCT,
-                 min_buy_score: float = D_MIN_BUY_SCORE,
+                 score_gate: dict[str, Any] | None = None,
                  config: dict[str, Any] | None = None) -> None:
         self.broker = broker
         self.live_order = live_order
@@ -376,7 +414,8 @@ class StrategyDMonitor:
         self.monitor_start_hhmm = monitor_start_hhmm
         self.allowed_segments = allowed_segments or set(DEFAULT_ALLOWED_SEGMENTS)
         self.position_pct = position_pct
-        self.min_buy_score = min_buy_score
+        self.score_gate = score_gate or configured_score_gate({})
+        self.score_gate_stats: dict[str, dict[str, float]] = {}
         self.config = config or {}
 
         self.yesterday_limit_codes: set[str] = set()
@@ -415,14 +454,27 @@ class StrategyDMonitor:
             len(self._batches()), POLL_BATCH_SIZE, POLL_INTERVAL_SEC,
         )
         max_order_amount = float(self.config.get("live_trade", {}).get("max_single_order_amount", 50000))
+        self.score_gate_stats = load_score_gate_stats(self.score_gate)
+        if self.score_gate_stats:
+            gate_text = "  ".join(
+                f"{bucket}:样本{stats['sample_count']:.0f},均收益{stats['t2_avg_net_return']:.2%}"
+                for bucket, stats in sorted(self.score_gate_stats.items())
+            )
+        else:
+            gate_text = "未加载分数段收益报告，无法使用分数段收益门槛"
         self.logger.info(
-            "D最低开仓条件: 市场分段在%s | 首板(排除昨日涨停) | 当前封涨停 | 今日曾炸板>=1 | 当前封板数>=%d | 综合分>=%.0f | 14:00后重封或09:35后观察升级 | 实盘二次复核通过",
+            "D最低开仓条件: 市场分段在%s | 首板(排除昨日涨停) | 当前封涨停 | 今日曾炸板>=1 | 当前封板数>=%d | 分数段样本>=%d且T+2扣费均收益>=%.2f%% | 14:00后重封或09:35后观察升级 | 实盘二次复核通过",
             ",".join(sorted(self.allowed_segments)),
             SENTIMENT_STRONG_MIN,
-            self.min_buy_score,
+            int(self.score_gate.get("min_sample_count", DEFAULT_SCORE_GATE_MIN_SAMPLE)),
+            float(self.score_gate.get("min_t2_avg_net_return", DEFAULT_SCORE_GATE_MIN_T2_AVG_RETURN)) * 100,
         )
         self.logger.info(
-            "D排序规则: 总分=炸板次数分(2次40/1次30/3次10/其他10)+重封时间分(<10:00=40,<12:00=30,<13:00=20,<14:00=15,<14:30=10,其他=5)+封单量分(>=50万股20,>=20万股15,>=5万股10,其他5)；废单/拒单后最多继续尝试前%d名。",
+            "D分数段收益报告: %s",
+            gate_text,
+        )
+        self.logger.info(
+            "D排序规则: 先按候选所在分数段的历史T+2扣费均收益降序，再按分数降序；分数=炸板次数分+重封时间分+封单量分；废单/拒单后最多继续尝试前%d名。",
             D_RETRY_TOP_N,
         )
         self.logger.info(
@@ -569,11 +621,65 @@ class StrategyDMonitor:
 
     def _score_explain(self, st: StockState) -> str:
         """返回候选排序解释，便于实盘日志复盘。"""
+        bucket = self._score_bucket(st)
+        expected = self._score_bucket_expected_return(bucket)
         return (
             f"{self._score(st):.0f}分/"
+            f"{bucket}/"
+            f"段均{expected:.2%}/"
             f"炸{st.open_times_today}/"
             f"重封{hhmm_to_str(st.last_seal_hhmm)}/"
             f"封单{st.bid_vol / 10000:.1f}万股"
+        )
+
+    def _score_bucket(self, st: StockState) -> str:
+        score = self._score(st)
+        if score < 40:
+            return "lt_40"
+        if score < 50:
+            return "40_50"
+        if score < 60:
+            return "50_60"
+        if score < 70:
+            return "60_70"
+        if score < 80:
+            return "70_80"
+        return "80_plus"
+
+    def _score_bucket_expected_return(self, bucket: str) -> float:
+        stats = self.score_gate_stats.get(bucket, {})
+        try:
+            return float(stats.get("t2_avg_net_return", 0.0))
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _score_bucket_sample_count(self, bucket: str) -> int:
+        stats = self.score_gate_stats.get(bucket, {})
+        try:
+            return int(float(stats.get("sample_count", 0)))
+        except (TypeError, ValueError):
+            return 0
+
+    def _score_gate_allows(self, st: StockState) -> tuple[bool, str]:
+        if not self.score_gate_stats:
+            return False, "未加载D分数段收益报告，禁止仅凭未验证打分开仓"
+        bucket = self._score_bucket(st)
+        sample_count = self._score_bucket_sample_count(bucket)
+        expected = self._score_bucket_expected_return(bucket)
+        min_sample = int(self.score_gate.get("min_sample_count", DEFAULT_SCORE_GATE_MIN_SAMPLE))
+        min_return = float(self.score_gate.get("min_t2_avg_net_return", DEFAULT_SCORE_GATE_MIN_T2_AVG_RETURN))
+        if sample_count < min_sample:
+            return False, f"分数段{bucket}样本{sample_count}少于最低要求{min_sample}"
+        if expected < min_return:
+            return False, f"分数段{bucket}历史T+2扣费均收益{expected:.2%}低于最低要求{min_return:.2%}"
+        return True, f"分数段{bucket}样本{sample_count}，历史T+2扣费均收益{expected:.2%}"
+
+    def _rank_key(self, st: StockState) -> tuple[float, float, int]:
+        bucket = self._score_bucket(st)
+        return (
+            self._score_bucket_expected_return(bucket),
+            self._score(st),
+            self._score_bucket_sample_count(bucket),
         )
 
     def _check_and_fire(self) -> None:
@@ -605,7 +711,7 @@ class StrategyDMonitor:
                 self._log_buy_empty_funnel(hhmm)
             return
 
-        scored_all = sorted(buy_candidates, key=self._score, reverse=True)
+        scored_all = sorted(buy_candidates, key=self._rank_key, reverse=True)
         scored = scored_all[:D_RETRY_TOP_N]
         rank_info = "  ".join(
             f"{idx + 1}.{s.ts_code}({self._score_explain(s)})" for idx, s in enumerate(scored)
@@ -702,9 +808,9 @@ class StrategyDMonitor:
             return False, f"炸板次数{st.open_times_today}超过上限{D_MAX_OPEN_TIMES}"
         if self.sealed_ever_count < SENTIMENT_STRONG_MIN:
             return False, f"情绪不足，当前封板{self.sealed_ever_count}只，要求>={SENTIMENT_STRONG_MIN}"
-        score = self._score(st)
-        if score < self.min_buy_score:
-            return False, f"综合分{score:.0f}低于最低要求{self.min_buy_score:.0f}"
+        gate_ok, gate_reason = self._score_gate_allows(st)
+        if not gate_ok:
+            return False, gate_reason
         hhmm = now_hhmm()
         if hhmm < SIGNAL_START_HHMM:
             return False, f"当前{hhmm_to_str(hhmm)}未到D买入时间{hhmm_to_str(SIGNAL_START_HHMM)}"
@@ -1480,12 +1586,17 @@ def main() -> None:
     config = load_json_config(PROJECT_ROOT / "config" / "config.json")
     allowed_segments = configured_allowed_segments(config)
     position_pct = configured_position_pct(config)
-    min_buy_score = configured_min_buy_score(config)
+    score_gate = configured_score_gate(config)
 
     if args.dry_run:
         print("=== 策略D监控配置 ===")
         print(f"  情绪阈值: 全市场当前封板涨停数 >= {SENTIMENT_STRONG_MIN}")
-        print(f"  最低综合分: >= {min_buy_score:.0f}")
+        print(
+            "  分数段收益门槛: "
+            f"样本数 >= {score_gate['min_sample_count']}，"
+            f"T+2扣费均收益 >= {score_gate['min_t2_avg_net_return']:.2%}"
+        )
+        print(f"  分数段报告: {score_gate['report_path']}")
         print(f"  炸板次数上限: {D_MAX_OPEN_TIMES}")
         print(f"  允许市场分段: {','.join(sorted(allowed_segments))}")
         print(f"  开仓仓位: {position_pct:.0%}")
@@ -1510,7 +1621,7 @@ def main() -> None:
         monitor_start_hhmm=args.start_hhmm,
         allowed_segments=allowed_segments,
         position_pct=position_pct,
-        min_buy_score=min_buy_score,
+        score_gate=score_gate,
         config=config,
     )
     try:

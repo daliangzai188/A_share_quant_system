@@ -64,7 +64,9 @@
     "file_role": "策略D首板打板配置。当前主实盘口径包含主板、创业板、科创板、北交所和其他分段；如后续实盘复盘发现某分段成交质量差，可从 allowed_market_segments 中移除。",
     "allowed_market_segments": ["sh_main", "sz_main", "chi_next", "star", "bj", "other"],
     "min_fill_probability": 0.8,
-    "min_buy_score": 40,
+    "score_gate_report_path": "reports/strategy_d/score_threshold_buckets.csv",
+    "score_gate_min_sample_count": 10,
+    "score_gate_min_t2_avg_net_return": 0.005,
     "position_pct": 0.8,
     "preferred_open_times": 2
   },
