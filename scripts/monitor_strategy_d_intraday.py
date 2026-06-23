@@ -435,11 +435,18 @@ class StrategyDMonitor:
             st = self.states[ts_code]
             st.upper_limit = upper_limit
 
+            # 今日是否"曾涨停"：用【当日最高价】判断，而不是轮询那一刻是否还封板。
+            # 否则炸板打开的票、以及监控盘中重启前涨停过的票会被漏数，导致情绪计数偏低。
+            # 同花顺等口径都是"今日最高摸到涨停价即算涨停"。high缺失时退回用现价是否封板。
+            high_price = float(getattr(snap, "high_price", 0.0) or 0.0)
+            touched_limit = high_price > 0 and (upper_limit - high_price) < 0.015
+            if (touched_limit or at_limit) and not st.ever_sealed:
+                st.ever_sealed = True
+                self.sealed_ever_count += 1
+
             if at_limit:
-                if not st.ever_sealed:
-                    st.ever_sealed = True
+                if st.first_seal_hhmm == 0:
                     st.first_seal_hhmm = hhmm
-                    self.sealed_ever_count += 1
                 if not st.was_sealed:
                     # 非涨停 → 涨停：记录重封时间
                     st.last_seal_hhmm = hhmm
