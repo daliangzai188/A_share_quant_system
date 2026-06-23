@@ -282,6 +282,14 @@ class CombinedLiveEngine:
         if orders.empty or "side" not in orders.columns:
             return []
         rows = orders[orders["side"].astype(str).str.upper() == "BUY"].copy()
+        if rows.empty:
+            return []
+        qty = rows.apply(
+            lambda row: self.as_int(row.get("round_lot_shares", row.get("estimated_shares", 0))),
+            axis=1,
+        )
+        ref_price = pd.to_numeric(rows.get("reference_price", 0.0), errors="coerce").fillna(0.0)
+        rows = rows[(qty > 0) & (ref_price > 0)].copy()
         decisions = []
         for _, row in rows.iterrows():
             decisions.append(
