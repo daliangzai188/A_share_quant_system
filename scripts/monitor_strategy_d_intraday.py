@@ -376,8 +376,7 @@ class StrategyDMonitor:
         self.order_placed: bool = False   # 本会话已触发BUY，不再对其他股票下单
         self.order_locked_ts_code: str = ""
         self.limit_price_fallback_logged: bool = False
-        self._seal_diag_logged: bool = False    # 封板漏判诊断只打一次
-        self._diag_suspects: list = []           # 涨幅大却没判封板的可疑股
+        self._strong_notified: bool = False     # 情绪转强(≥阈值)只推送一次
 
     # ── 初始化 ────────────────────────────────────────────────────────────────
 
@@ -438,16 +437,6 @@ class StrategyDMonitor:
                 (qmt_limit > 0 and abs(snap.last_price - qmt_limit) < 0.015)
                 or (est_limit > 0 and abs(snap.last_price - est_limit) < 0.015)
             )
-
-            # 诊断：涨幅≥9%却没判封板的可疑股，收集价格快照（只在首轮收集，用完即停）
-            if (not self._seal_diag_logged and not at_limit
-                    and float(snap.pre_close or 0) > 0
-                    and snap.last_price >= snap.pre_close * 1.09):
-                pct = (snap.last_price / snap.pre_close - 1) * 100
-                self._diag_suspects.append(
-                    f"{ts_code}({name}) 现价{snap.last_price:.2f} 昨收{snap.pre_close:.2f} "
-                    f"涨{pct:.1f}% QMT涨停{qmt_limit:.2f} 估算涨停{est_limit:.2f}"
-                )
 
             if ts_code not in self.states:
                 self.states[ts_code] = StockState(
@@ -852,13 +841,21 @@ class StrategyDMonitor:
             self._update_states(quotes)
         self.scan_round += 1
         self.logger.info("完成全市场扫描: round=%d updated=%d states=%d", self.scan_round, updated_count, len(self.states))
-        # 封板漏判诊断：首轮跑完，打出"涨幅≥9%却没判封板"的可疑股价格，定位漏数原因
-        if not self._seal_diag_logged:
-            self._seal_diag_logged = True
-            self.logger.warning("【封板漏判诊断】当前封板=%d，涨幅≥9%%却未判封板的可疑股共%d只：",
-                                self.sealed_ever_count, len(self._diag_suspects))
-            for line in self._diag_suspects[:40]:
-                self.logger.warning("  %s", line)
+        # 情绪转强：当前封板数首次达到阈值，推送告知 D 今日具备开仓资格（只推一次）
+        sealed = self.sealed_ever_count
+        if not self._strong_notified and sealed >= SENTIMENT_STRONG_MIN:
+            self._strong_notified = True
+            self.logger.warning("📈 情绪转强：当前封板%d只(≥%d)，D今日满足开仓情绪条件。",
+                                sealed, SENTIMENT_STRONG_MIN)
+            try:
+                notify(
+                    "buy_result",
+                    "📈 D满足开仓条件",
+                    f"全市场当前封板{sealed}只(≥{SENTIMENT_STRONG_MIN})，今日D情绪条件满足，"
+                    f"14:00后将扫描首板回封发出买入信号。",
+                )
+            except Exception as exc:
+                self.logger.warning("情绪转强推送失败：%s", exc)
         self._check_and_fire()
 
     def status_line(self) -> str:
