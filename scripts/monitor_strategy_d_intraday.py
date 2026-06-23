@@ -354,7 +354,8 @@ class StrategyDMonitor:
     def __init__(self, broker, live_order: bool, logger, signal_csv: Path,
                  monitor_start_hhmm: int = MONITOR_START_HHMM,
                  allowed_segments: set[str] | None = None,
-                 position_pct: float = D_POSITION_PCT) -> None:
+                 position_pct: float = D_POSITION_PCT,
+                 config: dict[str, Any] | None = None) -> None:
         self.broker = broker
         self.live_order = live_order
         self.logger = logger
@@ -362,6 +363,7 @@ class StrategyDMonitor:
         self.monitor_start_hhmm = monitor_start_hhmm
         self.allowed_segments = allowed_segments or set(DEFAULT_ALLOWED_SEGMENTS)
         self.position_pct = position_pct
+        self.config = config or {}
 
         self.yesterday_limit_codes: set[str] = set()
         self.universe: list[str] = []
@@ -725,9 +727,21 @@ class StrategyDMonitor:
                 )
             else:
                 self.logger.error("D委托被拒: %s %s", st.ts_code, result.message)
+                try:
+                    notify("buy_result", "❌ D开仓委托被拒",
+                           f"{st.ts_code} {st.name} 委托被拒：{result.message}",
+                           level="critical", call=True)
+                except Exception:
+                    pass
                 print(f"  → 委托被拒: {result.message}")
         except Exception as e:
             self.logger.error("下单异常: %s: %s", st.ts_code, e)
+            try:
+                notify("buy_result", "❌ D开仓下单异常",
+                       f"{st.ts_code} {st.name} 下单异常：{e}",
+                       level="critical", call=True)
+            except Exception:
+                pass
             print(f"  → 下单异常: {e}")
 
     # ── 14:55 撤单 ────────────────────────────────────────────────────────────
@@ -1002,6 +1016,7 @@ def main() -> None:
         monitor_start_hhmm=args.start_hhmm,
         allowed_segments=allowed_segments,
         position_pct=position_pct,
+        config=config,
     )
     try:
         monitor.run()
