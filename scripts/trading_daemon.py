@@ -3218,11 +3218,19 @@ def _print_account_status(log: Any) -> None:
     total_asset = float(getattr(account, "total_asset", 0.0) or 0.0)
     live_positions = [p for p in (positions or []) if int(getattr(p, "volume", 0) or 0) > 0]
     if live_positions:
+        local_positions = load_positions()
         local_pos_map = {
             lp["ts_code"]: lp
-            for lp in load_positions()
+            for lp in local_positions
             if lp.get("status") == "open"
         }
+        notify_cfg = config.get("notify", {}) if isinstance(config, dict) else {}
+        loss_thresholds = notify_cfg.get("position_loss_alert_thresholds_pct", [-5, -10, -15, -20, -30])
+        try:
+            loss_thresholds = sorted({float(x) for x in loss_thresholds if float(x) < 0}, reverse=True)
+        except Exception:
+            loss_thresholds = [-5.0, -10.0, -15.0, -20.0, -30.0]
+        positions_dirty = False
         pos_parts = []
         for p in live_positions:
             current_price = p.market_value / p.volume
@@ -3242,6 +3250,33 @@ def _print_account_status(log: Any) -> None:
             if buy_price > 0:
                 pnl_pct = (current_price - buy_price) / buy_price * 100
                 pnl_sign = "+" if pnl_pct >= 0 else ""
+                notified_thresholds = {
+                    str(x)
+                    for x in (lp.get("notified_loss_thresholds") or [])
+                }
+                for threshold in loss_thresholds:
+                    threshold_key = str(int(threshold)) if float(threshold).is_integer() else str(threshold)
+                    if pnl_pct <= threshold and threshold_key not in notified_thresholds:
+                        level = "critical" if threshold <= -20 else "timeSensitive"
+                        call = threshold <= -20
+                        _notify(
+                            "position_risk",
+                            f"⚠️ 持仓浮亏达到{threshold_key}%",
+                            (
+                                f"{p.ts_code} {lp.get('name', '')} 当前收益{pnl_pct:.2f}% "
+                                f"买入{buy_price:.2f} 现价{current_price:.2f} "
+                                f"持仓{int(p.volume)}股 市值{p.market_value / 10000:.2f}万"
+                            ),
+                            level=level,
+                            call=call,
+                        )
+                        notified_thresholds.add(threshold_key)
+                        lp["notified_loss_thresholds"] = sorted(
+                            notified_thresholds,
+                            key=lambda x: float(x),
+                            reverse=True,
+                        )
+                        positions_dirty = True
                 pos_parts.append(
                     f"{p.ts_code}×{p.volume}股 "
                     f"现价{current_price:.2f} "
@@ -3256,6 +3291,8 @@ def _print_account_status(log: Any) -> None:
                     f"{chg_str}"
                     f"市值{p.market_value / 10000:.2f}万"
                 )
+        if positions_dirty:
+            save_positions(local_positions)
         log.info("✅ [账户] %s | 账户%s 总资产%.2f万 | 持仓：%s",
                  now_str, masked_acct, total_asset / 10000,
                  "  ".join(pos_parts))

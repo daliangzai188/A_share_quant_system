@@ -43,6 +43,7 @@ from dotenv import load_dotenv
 from src.utils.logger import setup_logger
 from src.utils.config import load_json_config
 from src.utils.time_utils import now_beijing, today_beijing
+from src.notify import notify
 
 load_dotenv(PROJECT_ROOT / ".env")
 
@@ -798,6 +799,17 @@ class StrategyDMonitor:
         save_position_records(positions)
         self.logger.warning("D成交已写入持仓账本: order_id=%s ts_code=%s %d股 @%.2f",
                             order_id, detail.get("ts_code", ""), shares, buy_price)
+        try:
+            notify(
+                "buy_result",
+                "✅ D开仓成交",
+                (
+                    f"{detail.get('ts_code', '')} {detail.get('name', '')} "
+                    f"买入{shares}股 @{buy_price:.2f} 金额{shares * buy_price / 10000:.2f}万"
+                ),
+            )
+        except Exception:
+            pass
 
     # ── 轮询 ─────────────────────────────────────────────────────────────────
 
