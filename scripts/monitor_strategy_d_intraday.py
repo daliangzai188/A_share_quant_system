@@ -58,6 +58,7 @@ POLL_INTERVAL_SEC = 30       # 每批轮询间隔（秒）
 MONITOR_START_HHMM = 930     # 脚本等待开始扫描的时间（集合竞价结束后）
 D_POSITION_PCT = 0.80        # 默认仓位比例，优先使用 config.json/strategy_d/position_pct
 D_RETRY_TOP_N = 10           # 买入候选被拒/废单后，只按排序尝试前10名
+D_MIN_BUY_SCORE = 40.0       # 默认最低综合分；40分约等于通过硬条件后的最低有效分
 STRATEGY_REMARK = "D_FIRST_BOARD"
 DEFAULT_ALLOWED_SEGMENTS = {"sh_main", "sz_main", "chi_next", "star", "bj", "other"}
 
@@ -226,6 +227,15 @@ def configured_position_pct(config: dict[str, Any]) -> float:
     return min(value, 1.0)
 
 
+def configured_min_buy_score(config: dict[str, Any]) -> float:
+    strategy_config = load_strategy_d_config(config)
+    try:
+        value = float(strategy_config.get("min_buy_score", D_MIN_BUY_SCORE))
+    except (TypeError, ValueError):
+        return D_MIN_BUY_SCORE
+    return max(value, 0.0)
+
+
 def filter_universe_by_segments(universe: list[str], allowed_segments: set[str]) -> list[str]:
     return [code for code in universe if classify_market_segment(code) in allowed_segments]
 
@@ -357,6 +367,7 @@ class StrategyDMonitor:
                  monitor_start_hhmm: int = MONITOR_START_HHMM,
                  allowed_segments: set[str] | None = None,
                  position_pct: float = D_POSITION_PCT,
+                 min_buy_score: float = D_MIN_BUY_SCORE,
                  config: dict[str, Any] | None = None) -> None:
         self.broker = broker
         self.live_order = live_order
@@ -365,6 +376,7 @@ class StrategyDMonitor:
         self.monitor_start_hhmm = monitor_start_hhmm
         self.allowed_segments = allowed_segments or set(DEFAULT_ALLOWED_SEGMENTS)
         self.position_pct = position_pct
+        self.min_buy_score = min_buy_score
         self.config = config or {}
 
         self.yesterday_limit_codes: set[str] = set()
@@ -404,9 +416,10 @@ class StrategyDMonitor:
         )
         max_order_amount = float(self.config.get("live_trade", {}).get("max_single_order_amount", 50000))
         self.logger.info(
-            "D最低开仓条件: 市场分段在%s | 首板(排除昨日涨停) | 当前封涨停 | 今日曾炸板>=1 | 当前封板数>=%d | 14:00后重封或09:35后观察升级 | 实盘二次复核通过",
+            "D最低开仓条件: 市场分段在%s | 首板(排除昨日涨停) | 当前封涨停 | 今日曾炸板>=1 | 当前封板数>=%d | 综合分>=%.0f | 14:00后重封或09:35后观察升级 | 实盘二次复核通过",
             ",".join(sorted(self.allowed_segments)),
             SENTIMENT_STRONG_MIN,
+            self.min_buy_score,
         )
         self.logger.info(
             "D排序规则: 总分=炸板次数分(2次40/1次30/3次10/其他10)+重封时间分(<10:00=40,<12:00=30,<13:00=20,<14:00=15,<14:30=10,其他=5)+封单量分(>=50万股20,>=20万股15,>=5万股10,其他5)；废单/拒单后最多继续尝试前%d名。",
@@ -689,6 +702,9 @@ class StrategyDMonitor:
             return False, f"炸板次数{st.open_times_today}超过上限{D_MAX_OPEN_TIMES}"
         if self.sealed_ever_count < SENTIMENT_STRONG_MIN:
             return False, f"情绪不足，当前封板{self.sealed_ever_count}只，要求>={SENTIMENT_STRONG_MIN}"
+        score = self._score(st)
+        if score < self.min_buy_score:
+            return False, f"综合分{score:.0f}低于最低要求{self.min_buy_score:.0f}"
         hhmm = now_hhmm()
         if hhmm < SIGNAL_START_HHMM:
             return False, f"当前{hhmm_to_str(hhmm)}未到D买入时间{hhmm_to_str(SIGNAL_START_HHMM)}"
@@ -1464,10 +1480,12 @@ def main() -> None:
     config = load_json_config(PROJECT_ROOT / "config" / "config.json")
     allowed_segments = configured_allowed_segments(config)
     position_pct = configured_position_pct(config)
+    min_buy_score = configured_min_buy_score(config)
 
     if args.dry_run:
         print("=== 策略D监控配置 ===")
         print(f"  情绪阈值: 全市场当前封板涨停数 >= {SENTIMENT_STRONG_MIN}")
+        print(f"  最低综合分: >= {min_buy_score:.0f}")
         print(f"  炸板次数上限: {D_MAX_OPEN_TIMES}")
         print(f"  允许市场分段: {','.join(sorted(allowed_segments))}")
         print(f"  开仓仓位: {position_pct:.0%}")
@@ -1492,6 +1510,7 @@ def main() -> None:
         monitor_start_hhmm=args.start_hhmm,
         allowed_segments=allowed_segments,
         position_pct=position_pct,
+        min_buy_score=min_buy_score,
         config=config,
     )
     try:
