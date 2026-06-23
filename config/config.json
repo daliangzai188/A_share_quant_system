@@ -61,8 +61,8 @@
     "output_prefix": "reports/live_trade/qmt_live_order"
   },
   "strategy_d": {
-    "file_role": "策略D首板打板配置。当前主实盘口径包含主板、创业板、科创板、北交所和其他分段；如后续实盘复盘发现某分段成交质量差，可从 allowed_market_segments 中移除。",
-    "allowed_market_segments": ["sh_main", "sz_main", "chi_next", "star", "bj", "other"],
+    "file_role": "策略D首板打板配置。当前实盘账户只允许深市主板和创业板，D只扫描 sz_main、chi_next；未开通权限的沪市主板、科创板、北交所和其他分段不进入实盘下单候选。",
+    "allowed_market_segments": ["sz_main", "chi_next"],
     "min_fill_probability": 0.8,
     "position_pct": 0.8,
     "preferred_open_times": 2

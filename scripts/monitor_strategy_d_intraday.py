@@ -715,7 +715,55 @@ class StrategyDMonitor:
                 checked_price = checked_price if checked_price > 0 else st.upper_limit
                 checked_amount = checked_qty * checked_price
                 unchecked_amount = max(actual_amount - checked_amount, 0.0)
+                if self._is_terminal_no_fill(fill_check):
+                    record["order_status"] = "REJECTED_TERMINAL"
+                    record["order_status_text"] = fill_check.status_text
+                    record["filled_qty"] = 0
+                    record["filled_amount"] = 0.0
+                    self.logger.error(
+                        "D下单失败: 策略=D 股票=%s %s 委托%d股 %.2f 总委托金额=%.2f 已成交金额=0.00 未成交金额=%.2f order_id=%s 状态=%s(%s)",
+                        st.ts_code,
+                        st.name,
+                        shares,
+                        st.upper_limit,
+                        actual_amount,
+                        actual_amount,
+                        result.order_id,
+                        fill_check.status_text,
+                        fill_check.status_code,
+                    )
+                    print(
+                        f"  → 下单失败: 策略=D {st.ts_code} {st.name} "
+                        f"委托{shares}股 总委托金额{actual_amount / 10000:.2f}万 "
+                        f"已成交金额0.00万 未成交金额{actual_amount / 10000:.2f}万 "
+                        f"order_id={result.order_id} 状态={fill_check.status_text}({fill_check.status_code})"
+                    )
+                    try:
+                        notify(
+                            "buy_result",
+                            "❌ D开仓下单失败",
+                            (
+                                f"策略=D {st.ts_code} {st.name} 委托{shares}股 @{st.upper_limit:.2f}，"
+                                f"总委托金额{actual_amount / 10000:.2f}万，已成交金额0.00万，"
+                                f"未成交金额{actual_amount / 10000:.2f}万，"
+                                f"order_id={result.order_id}，状态={fill_check.status_text}({fill_check.status_code})。"
+                            ),
+                            level="critical",
+                            call=True,
+                        )
+                    except Exception:
+                        pass
+                    self.session_orders.pop(result.order_id, None)
+                    self.session_order_details.pop(result.order_id, None)
+                    st.order_id = ""
+                    self.order_placed = False
+                    self.order_locked_ts_code = ""
+                    return
                 if checked_qty >= shares:
+                    record["order_status"] = "FILLED"
+                    record["order_status_text"] = fill_check.status_text
+                    record["filled_qty"] = checked_qty
+                    record["filled_amount"] = checked_amount
                     self.logger.info(
                         "D持仓信息: 策略=D 股票=%s %s 持仓%d股 成本%.2f 市值=%.2f order_id=%s",
                         st.ts_code,
@@ -732,6 +780,10 @@ class StrategyDMonitor:
                     )
                     self._record_filled_d_position(result.order_id, checked_qty, checked_price)
                 else:
+                    record["order_status"] = "PENDING_OR_PARTIAL"
+                    record["order_status_text"] = fill_check.status_text
+                    record["filled_qty"] = checked_qty
+                    record["filled_amount"] = checked_amount
                     self.logger.info(
                         "D委托信息: 策略=D 股票=%s %s 委托%d股 %.2f 总委托金额=%.2f 已成交%d股 已成交金额=%.2f 未成交金额=%.2f 目标仓位=%.0f%% 实际仓位=%.2f%% 单笔上限需小于%.0f order_id=%s 提交后状态=%s(%s)",
                         st.ts_code,
@@ -814,6 +866,12 @@ class StrategyDMonitor:
             except Exception:
                 pass
             print(f"  → 下单异常: {e}")
+
+    @staticmethod
+    def _is_terminal_no_fill(fill: Any) -> bool:
+        status_code = int(getattr(fill, "status_code", -1) or -1)
+        filled_qty = int(getattr(fill, "filled_qty", 0) or 0)
+        return filled_qty <= 0 and status_code in {53, 54, 57}
 
     def _confirm_submitted_order(self, order_id: str, ts_code: str):
         """下单后短暂等待，再反查当日委托/成交，避免把返回号误当成真实挂单。"""
