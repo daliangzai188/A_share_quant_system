@@ -13,6 +13,7 @@
     "throttle_sec": 300,
     "events": {
       "sell_fail": true,
+      "sell_success": true,
       "buy_result": true,
       "system_error": true,
       "connection": true,

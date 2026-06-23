@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+PYTHON="${PYTHON:-$PROJECT_ROOT/.venv/bin/python}"
+
 VM_NAME="${1:-Windows}"
 UTMCTL="${UTMCTL:-/Applications/UTM.app/Contents/MacOS/utmctl}"
 CHECK_INTERVAL="${CHECK_INTERVAL:-60}"
 AUTO_START="${AUTO_START:-0}"
-LOG_DIR="${LOG_DIR:-logs/vm_guard}"
+LOG_DIR="${LOG_DIR:-$PROJECT_ROOT/logs/vm_guard}"
 LOG_FILE="$LOG_DIR/utm_windows_guard_$(date +%Y%m%d).log"
 LOCK_DIR="${LOCK_DIR:-/tmp/a_system_utm_guard_${VM_NAME}.lock}"
 
@@ -35,7 +39,11 @@ EOF
 notify() {
   local title="$1"
   local message="$2"
-  /usr/bin/osascript -e "display notification \"$message\" with title \"$title\"" >/dev/null 2>&1 || true
+  if [[ -x "$PYTHON" ]]; then
+    "$PYTHON" "$PROJECT_ROOT/scripts/send_notify.py" "system_error" "$title" "$message" --level "timeSensitive" >/dev/null 2>&1 || true
+  else
+    /usr/bin/osascript -e "display notification \"$message\" with title \"$title\"" >/dev/null 2>&1 || true
+  fi
 }
 
 log() {

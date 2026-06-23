@@ -14,6 +14,17 @@ echo -e "\033[1;37m━━━━━━━━━━━━━━━━━━━━�
 
 PID_FILE="$PROJECT_ROOT/.daemon_pid"
 W_PID_FILE="$PROJECT_ROOT/.watchdog_pid"
+PYTHON="$PROJECT_ROOT/.venv/bin/python"
+
+send_notify() {
+  local event="$1"
+  local title="$2"
+  local body="$3"
+  local level="${4:-active}"
+  if [ -f "$PYTHON" ]; then
+    "$PYTHON" "$PROJECT_ROOT/scripts/send_notify.py" "$event" "$title" "$body" --level "$level" >/dev/null 2>&1 || true
+  fi
+}
 
 # 先停 watchdog，防止它重启 daemon
 if [ -f "$W_PID_FILE" ]; then
@@ -27,7 +38,12 @@ fi
 # 停守护进程
 if [ -f "$PID_FILE" ]; then
   D=$(cat "$PID_FILE")
-  kill "$D" 2>/dev/null && echo "  守护进程已停止（PID $D）" || warn "守护进程未运行"
+  if kill "$D" 2>/dev/null; then
+    echo "  守护进程已停止（PID $D）"
+    send_notify "system_error" "🔌 守护进程已停止" "守护进程已手动停止，实盘自动交易已暂停。如需恢复请重新启动。" "timeSensitive"
+  else
+    warn "守护进程未运行"
+  fi
   sleep 2
   kill -9 "$D" 2>/dev/null || true
   rm -f "$PID_FILE"

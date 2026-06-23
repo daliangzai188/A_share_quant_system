@@ -20,6 +20,19 @@ echo -e "\033[1;37m━━━━━━━━━━━━━━━━━━━━�
 PYTHON="$PROJECT_ROOT/.venv/bin/python"
 [ -f "$PYTHON" ] || error "未找到 .venv/bin/python，请先运行：python3 -m venv .venv && .venv/bin/pip install -r requirements.txt"
 
+send_notify() {
+  local event="$1"
+  local title="$2"
+  local body="$3"
+  local level="${4:-active}"
+  local call_flag="${5:-0}"
+  if [ "$call_flag" = "1" ]; then
+    "$PYTHON" "$PROJECT_ROOT/scripts/send_notify.py" "$event" "$title" "$body" --level "$level" --call >/dev/null 2>&1 || true
+  else
+    "$PYTHON" "$PROJECT_ROOT/scripts/send_notify.py" "$event" "$title" "$body" --level "$level" >/dev/null 2>&1 || true
+  fi
+}
+
 # ── 加载环境变量 ──────────────────────────────────────────────────────────────
 [ -f "$PROJECT_ROOT/.env" ] && { set -a; source "$PROJECT_ROOT/.env"; set +a; }
 
@@ -72,11 +85,13 @@ section "③ 启动 watchdog（崩溃自动重启）"
     DPID=$(cat "$PID_FILE" 2>/dev/null || echo 0)
     if ! ps -p "$DPID" > /dev/null 2>&1; then
       echo "[$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S')] watchdog: 守护进程挂了，重启..." >> "$LOG"
+      send_notify "system_error" "🛑 守护进程异常停止" "watchdog 检测到 trading_daemon 不在运行，正在自动重启。请检查日志确认是否影响实盘。" "critical" "1"
       set -a; [ -f "$PROJECT_ROOT/.env" ] && source "$PROJECT_ROOT/.env"; set +a
       nohup "$PYTHON" -B "$DAEMON" > /dev/null 2>&1 &
       NEW_PID=$!
       echo "$NEW_PID" > "$PID_FILE"
       echo "[$(TZ=Asia/Shanghai date '+%Y-%m-%d %H:%M:%S')] watchdog: 新 PID $NEW_PID" >> "$LOG"
+      send_notify "system_error" "✅ 守护进程已自动重启" "watchdog 已拉起新 trading_daemon，PID=$NEW_PID。"
     fi
   done
 ) &

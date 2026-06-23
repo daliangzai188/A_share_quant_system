@@ -629,13 +629,25 @@ def _execute_orders_inprocess(
         if executable.empty:
             rejected = preview[preview["validation_status"].astype(str) != "PASS"]
             for _, r in rejected.iterrows():
+                reject_reason = explain_reject_reasons(r)
                 log.warning(
                     "⚠️ [%s] %s %s 被拒绝：%s",
                     tag,
                     r.get("side", ""),
                     r.get("ts_code", ""),
-                    explain_reject_reasons(r),
+                    reject_reason,
                 )
+                side_text = str(r.get("side", "")).upper()
+                code_text = str(r.get("ts_code", ""))
+                name_text = str(r.get("name", ""))
+                if side_text == "SELL":
+                    _notify("sell_fail", "❌ 平仓校验被拒",
+                            f"{code_text} {name_text} 平仓未提交：{reject_reason}。请立即回终端核对持仓。",
+                            level="critical", call=True)
+                elif side_text == "BUY":
+                    _notify("buy_result", "⚠️ 开仓校验被拒",
+                            f"{code_text} {name_text} 开仓未提交：{reject_reason}。",
+                            level="timeSensitive")
             return False
 
         now_str = now_beijing().strftime("%H:%M:%S")
@@ -744,10 +756,16 @@ def _execute_orders_inprocess(
                 held = int(local_pos.get("shares", s["qty"])) if local_pos else s["qty"]
                 if not local_oid:
                     log.warning("⚠️ [%s] %s 卖出后未找到本地持仓记录，跳过回写。", tag, s["ts_code"])
+                    _notify("sell_fail", "❌ 平仓回写缺失",
+                            f"{s['ts_code']} {s['name']} 卖出后未找到本地持仓记录，请立即核对QMT和positions.json。",
+                            level="critical", call=True)
                 elif fill.filled_qty >= held:
                     mark_position_closed(local_oid, today_str, fill_price)
                     log.info("✅ [%s] %s 卖出全部成交 %d股 @%.2f，已平仓。",
                              tag, s["ts_code"], fill.filled_qty, fill_price)
+                    _notify("sell_success", "✅ 平仓成交",
+                            f"{s['ts_code']} {s['name']} 卖出{fill.filled_qty}股 "
+                            f"@{fill_price:.2f} 金额{_fmt_wan(fill.filled_qty * fill_price)}")
                 elif fill.filled_qty > 0:
                     reduce_position_shares(local_oid, held - fill.filled_qty)
                     log.warning("⚠️ [%s] %s 卖出部分成交 %d/%d股 @%.2f，剩余%d股保留持仓待下次卖出。",
@@ -959,6 +977,9 @@ def _abc_place_sell_order_direct(
         gateway.assert_real_order_allowed(confirm)
     except RuntimeError as e:
         log.error("❌ [ABC平仓] 下单条件不满足：%s", e)
+        _notify("sell_fail", "❌ ABC平仓条件不满足",
+                f"{ts_code} {name} 平仓未提交：{e}。请立即回终端核对。",
+                level="critical", call=True)
         return False
 
     with _qmt_lock:
@@ -969,10 +990,16 @@ def _abc_place_sell_order_direct(
     price, price_label = _pick_sell_limit_price(quote)
     if price <= 0:
         log.warning("ABC平仓：%s 无法获取价格，跳过本次。", ts_code)
+        _notify("sell_fail", "❌ ABC平仓无报价",
+                f"{ts_code} {name} 无法获取有效卖出价格，平仓未提交，请立即回终端核对。",
+                level="critical", call=True)
         return False
 
     if shares <= 0:
         log.error("ABC平仓：%s 持仓股数为0，跳过。", ts_code)
+        _notify("sell_fail", "❌ ABC平仓股数异常",
+                f"{ts_code} {name} 本地持仓股数为0，平仓未提交，请核对positions.json和QMT持仓。",
+                level="critical", call=True)
         return False
 
     log.warning("⏳ [ABC平仓] %s %s  %d股  %s=%.2f元", ts_code, name, shares, price_label, price)
@@ -993,6 +1020,9 @@ def _abc_place_sell_order_direct(
 
     if not result.accepted:
         log.error("❌ [ABC平仓] %s %s 提交失败：%s", ts_code, name, result.message)
+        _notify("sell_fail", "❌ ABC平仓提交失败",
+                f"{ts_code} {name} 平仓委托提交失败：{result.message}。请立即回终端处理。",
+                level="critical", call=True)
         return False
 
     log.info("✅ [ABC平仓] %s %s %d股 @%.2f 委托已受理（待成交确认）", ts_code, name, shares, price)
@@ -1002,6 +1032,9 @@ def _abc_place_sell_order_direct(
     if fill.filled_qty >= shares:
         mark_position_closed(order_id, today_str, fill_price)
         log.info("✅ [ABC平仓] %s %s 全部成交 %d股 @%.2f，已平仓。", ts_code, name, fill.filled_qty, fill_price)
+        _notify("sell_success", "✅ 平仓成交",
+                f"{ts_code} {name} 卖出{fill.filled_qty}股 "
+                f"@{fill_price:.2f} 金额{_fmt_wan(fill.filled_qty * fill_price)}")
         return True
     elif fill.filled_qty > 0:
         reduce_position_shares(order_id, shares - fill.filled_qty)
@@ -1374,6 +1407,8 @@ def job_premarket_position_sync() -> None:
                 ts_code, pos.get("name", ""),
             )
             mark_position_closed(pos.get("order_id", ""), today_str)
+            _notify("sell_success", "✅ D集合竞价平仓确认",
+                    f"{ts_code} {pos.get('name', '')} 实盘持仓已清空，09:26同步标记已平仓。")
             synced_any = True
 
     if not synced_any:
