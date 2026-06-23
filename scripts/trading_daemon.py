@@ -357,8 +357,8 @@ def record_buy(order_id: str, ts_code: str, name: str, signal_date: str,
         "sell_price": None,
     })
     save_positions(positions)
-    logger().info("持仓记录：%s %s 买入日 %s 计划平仓日 %s",
-                  ts_code, name, buy_date, exit_date.strftime("%Y%m%d"))
+    logger().info("持仓记录：策略=%s %s %s 买入日 %s 计划平仓日 %s",
+                  strategy_leg, ts_code, name, buy_date, exit_date.strftime("%Y%m%d"))
 
 
 def mark_position_closed(order_id: str, sell_date: str, sell_price: float = 0.0) -> None:
@@ -739,15 +739,16 @@ def _execute_orders_inprocess(
                         log.warning("⚠️ [%s] %s 买入部分成交 %d/%d股 @%.2f，按实际成交记录持仓。",
                                     tag, s["ts_code"], fill.filled_qty, s["qty"], fill_price)
                         _notify("buy_result", "⚠️ 开仓部分成交",
-                                f"{s['ts_code']} {s['name']} 成交{fill.filled_qty}/{s['qty']}股 "
+                                f"策略={s['strategy_leg']} {s['ts_code']} {s['name']} 成交{fill.filled_qty}/{s['qty']}股 "
                                 f"@{fill_price:.2f}。总委托金额{_fmt_wan(planned_amount)}，"
                                 f"已成交金额{_fmt_wan(amount)}，未成交金额{_fmt_wan(unfilled_amount)}")
                     else:
-                        log.info("✅ [%s] %s 买入全部成交 %d股 @%.2f，已记录持仓。",
-                                 tag, s["ts_code"], fill.filled_qty, fill_price)
-                        _notify("buy_result", "✅ 开仓成交",
-                                f"{s['ts_code']} {s['name']} 买入{fill.filled_qty}股 "
-                                f"@{fill_price:.2f} 金额{_fmt_wan(amount)}")
+                        log.info("✅ [%s] 持仓信息：策略=%s %s %s 持仓%d股 成本%.2f 市值%s",
+                                 tag, s["strategy_leg"], s["ts_code"], s["name"],
+                                 fill.filled_qty, fill_price, _fmt_wan(amount))
+                        _notify("buy_result", "✅ 持仓信息",
+                                f"策略={s['strategy_leg']} {s['ts_code']} {s['name']} "
+                                f"持仓{fill.filled_qty}股 成本{fill_price:.2f} 市值{_fmt_wan(amount)}")
                 else:
                     log.error("❌ [%s] %s 买入未成交（状态=%s），不记录持仓，避免幽灵持仓。",
                               tag, s["ts_code"], fill.status_text)
@@ -1804,15 +1805,17 @@ def confirm_pending_premarket_buys() -> None:
                                      ts_code, fill.filled_qty, qty, fill_price)
                     _try_cancel_order(broker_cfg, order_id, ts_code)
                     _notify("buy_result", "⚠️ 盘前开仓部分成交",
-                            f"{ts_code} {name_s} 成交{fill.filled_qty}/{qty}股 "
+                            f"策略={s.get('strategy_leg', '')} {ts_code} {name_s} 成交{fill.filled_qty}/{qty}股 "
                             f"@{fill_price:.2f}。总委托金额{_fmt_wan(planned_amount)}，"
                             f"已成交金额{_fmt_wan(amount)}，未成交金额{_fmt_wan(unfilled_amount)}")
                 else:
-                    logger().info("✅ [盘前买入确认] %s 全部成交 %d股 @%.2f，已记录持仓。",
-                                  ts_code, fill.filled_qty, fill_price)
-                    _notify("buy_result", "✅ 盘前开仓成交",
-                            f"{ts_code} {name_s} 买入{fill.filled_qty}股 "
-                            f"@{fill_price:.2f} 金额{_fmt_wan(amount)}")
+                    strategy_leg_s = str(s.get("strategy_leg", ""))
+                    logger().info("✅ [盘前买入确认] 持仓信息：策略=%s %s %s 持仓%d股 成本%.2f 市值%s",
+                                  strategy_leg_s, ts_code, name_s, fill.filled_qty,
+                                  fill_price, _fmt_wan(amount))
+                    _notify("buy_result", "✅ 盘前持仓信息",
+                            f"策略={strategy_leg_s} {ts_code} {name_s} "
+                            f"持仓{fill.filled_qty}股 成本{fill_price:.2f} 市值{_fmt_wan(amount)}")
             else:
                 logger().warning("⚠️ [盘前买入确认] %s 开盘未成交（状态=%s），撤单后转09:30开盘补买。",
                                  ts_code, fill.status_text)
@@ -2244,15 +2247,15 @@ def _e2_place_order_direct(ts_code: str, name: str, planned_qty: int, signal_dat
             log.warning("⚠️ [E2延迟开仓] %s 部分成交 %d/%d股 @%.2f，按实际成交记录持仓。",
                         ts_code, fill.filled_qty, qty, fill_price)
             _notify("buy_result", "⚠️ E2开仓部分成交",
-                    f"{ts_code} {name} 成交{fill.filled_qty}/{qty}股 "
+                    f"策略={strategy_leg} {ts_code} {name} 成交{fill.filled_qty}/{qty}股 "
                     f"@{fill_price:.2f}。总委托金额{_fmt_wan(planned_amount)}，"
                     f"已成交金额{_fmt_wan(amount)}，未成交金额{_fmt_wan(unfilled_amount)}")
         else:
-            log.info("✅ [E2延迟开仓] %s %s 全部成交 %d股 @%.2f，已记录持仓。",
-                     ts_code, name, fill.filled_qty, fill_price)
-            _notify("buy_result", "✅ E2开仓成交",
-                    f"{ts_code} {name} 买入{fill.filled_qty}股 "
-                    f"@{fill_price:.2f} 金额{_fmt_wan(amount)}")
+            log.info("✅ [E2延迟开仓] 持仓信息：策略=%s %s %s 持仓%d股 成本%.2f 市值%s",
+                     strategy_leg, ts_code, name, fill.filled_qty, fill_price, _fmt_wan(amount))
+            _notify("buy_result", "✅ E2持仓信息",
+                    f"策略={strategy_leg} {ts_code} {name} "
+                    f"持仓{fill.filled_qty}股 成本{fill_price:.2f} 市值{_fmt_wan(amount)}")
         return True
     else:
         log.error("❌ [E2延迟开仓] %s %s 未成交（状态=%s），不记录持仓，避免幽灵持仓。",
@@ -3246,6 +3249,7 @@ def _print_account_status(log: Any) -> None:
         for p in live_positions:
             current_price = p.market_value / p.volume
             lp = local_pos_map.get(p.ts_code, {})
+            strategy_leg = str(lp.get("strategy_leg", "未知") or "未知").upper()
             buy_price = float(lp.get("buy_price", 0))
 
             # 今日涨跌幅（相对昨收）
@@ -3274,7 +3278,7 @@ def _print_account_status(log: Any) -> None:
                             "position_risk",
                             f"⚠️ 持仓浮亏达到{threshold_key}%",
                             (
-                                f"{p.ts_code} {lp.get('name', '')} 当前收益{pnl_pct:.2f}% "
+                                f"策略={strategy_leg} {p.ts_code} {lp.get('name', '')} 当前收益{pnl_pct:.2f}% "
                                 f"买入{buy_price:.2f} 现价{current_price:.2f} "
                                 f"持仓{int(p.volume)}股 市值{p.market_value / 10000:.2f}万"
                             ),
@@ -3289,7 +3293,7 @@ def _print_account_status(log: Any) -> None:
                         )
                         positions_dirty = True
                 pos_parts.append(
-                    f"{p.ts_code}×{p.volume}股 "
+                    f"策略={strategy_leg} {p.ts_code}×{p.volume}股 "
                     f"现价{current_price:.2f} "
                     f"{chg_str}"
                     f"收益{pnl_sign}{pnl_pct:.2f}% "
@@ -3297,7 +3301,7 @@ def _print_account_status(log: Any) -> None:
                 )
             else:
                 pos_parts.append(
-                    f"{p.ts_code}×{p.volume}股 "
+                    f"策略={strategy_leg} {p.ts_code}×{p.volume}股 "
                     f"现价{current_price:.2f} "
                     f"{chg_str}"
                     f"市值{p.market_value / 10000:.2f}万"
