@@ -3138,8 +3138,9 @@ def _print_account_status(log: Any) -> None:
             adapter = _qmt_get(broker_cfg)
             account = adapter.query_account()
             positions = adapter.query_positions()
-            if positions:
-                codes = [p.ts_code for p in positions if p.volume > 0]
+            live_positions = [p for p in (positions or []) if int(getattr(p, "volume", 0) or 0) > 0]
+            if live_positions:
+                codes = [p.ts_code for p in live_positions]
                 if codes:
                     quote_map = adapter.get_full_tick(codes)
             if _qmt_reconnect_count > 0:
@@ -3158,8 +3159,9 @@ def _print_account_status(log: Any) -> None:
                 adapter = _qmt_get(broker_cfg)
                 account = adapter.query_account()
                 positions = adapter.query_positions()
-                if positions:
-                    codes = [p.ts_code for p in positions if p.volume > 0]
+                live_positions = [p for p in (positions or []) if int(getattr(p, "volume", 0) or 0) > 0]
+                if live_positions:
+                    codes = [p.ts_code for p in live_positions]
                     if codes:
                         quote_map = adapter.get_full_tick(codes)
                 log.info("✅ QMT重连成功（第%d次恢复）", _qmt_reconnect_count)
@@ -3179,15 +3181,16 @@ def _print_account_status(log: Any) -> None:
     acct_id = str(account.account_id or "")
     masked_acct = f"****{acct_id[-2:]}" if len(acct_id) >= 2 else f"****{acct_id}"
     total_asset = float(getattr(account, "total_asset", 0.0) or 0.0)
-    if positions:
+    live_positions = [p for p in (positions or []) if int(getattr(p, "volume", 0) or 0) > 0]
+    if live_positions:
         local_pos_map = {
             lp["ts_code"]: lp
             for lp in load_positions()
             if lp.get("status") == "open"
         }
         pos_parts = []
-        for p in positions:
-            current_price = p.market_value / p.volume if p.volume > 0 else 0.0
+        for p in live_positions:
+            current_price = p.market_value / p.volume
             lp = local_pos_map.get(p.ts_code, {})
             buy_price = float(lp.get("buy_price", 0))
 
