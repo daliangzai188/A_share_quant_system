@@ -399,7 +399,16 @@ class StrategyDMonitor:
             segment_counts, len(self.yesterday_limit_codes),
             len(self._batches()), POLL_BATCH_SIZE, POLL_INTERVAL_SEC,
         )
-        self.logger.info("D开仓仓位: %.0f%%", self.position_pct * 100)
+        max_order_amount = float(self.config.get("live_trade", {}).get("max_single_order_amount", 50000))
+        self.logger.info(
+            "D执行规则: 首板(排除昨日涨停) -> 当前封涨停 -> 今日曾炸板>=1 -> 情绪当前封板>=%d -> 14:00后重封/观察升级 -> 排序打分 -> QMT提交/成交确认",
+            SENTIMENT_STRONG_MIN,
+        )
+        self.logger.info(
+            "D开仓参数: 仓位=%.0f%% 单笔金额上限<%.0f元 买入价=涨停价 14:55处理未成交/部分成交委托",
+            self.position_pct * 100,
+            max_order_amount,
+        )
 
     def _batches(self) -> list[list[str]]:
         return [self.universe[i: i + POLL_BATCH_SIZE]
@@ -1096,7 +1105,18 @@ class StrategyDMonitor:
                 print(
                     f"  {ts_code}  order_id={order_id} → 已成交{filled_qty}/{planned_qty}股，"
                     f"总委托{planned_amount / 10000:.2f}万 已成交{filled_amount / 10000:.2f}万 "
-                    f"未成交{unfilled_amount / 10000:.2f}万，写入持仓"
+                    f"未成交{unfilled_amount / 10000:.2f}万，状态={status_text}"
+                )
+                self.logger.warning(
+                    "D 14:55成交确认: %s order_id=%s 状态=%s 成交%d/%d股 总委托=%.2f 已成交=%.2f 未成交=%.2f",
+                    ts_code,
+                    order_id,
+                    status_text,
+                    filled_qty,
+                    planned_qty,
+                    planned_amount,
+                    filled_amount,
+                    unfilled_amount,
                 )
                 self._record_filled_d_position(order_id, filled_qty, fill_price)
                 # 部分成交：撤掉未成残单
@@ -1105,6 +1125,14 @@ class StrategyDMonitor:
                     self.logger.warning("D部分成交 %s 已成%d股(%s)，撤残单%s",
                                         ts_code, filled_qty, status_text,
                                         "已发" if ok else "失败")
+                else:
+                    self.logger.info(
+                        "D委托已全部成交，无需撤单: %s order_id=%s 持仓%d股 @%.2f",
+                        ts_code,
+                        order_id,
+                        filled_qty,
+                        fill_price,
+                    )
                 continue
 
             ok = self.broker.cancel_order(order_id)
@@ -1155,10 +1183,12 @@ class StrategyDMonitor:
             return
         positions = load_position_records()
         if any(str(pos.get("order_id", "")) == str(order_id) for pos in positions):
+            self.logger.info("D持仓账本已存在，跳过重复写入: order_id=%s", order_id)
             return
         buy_date = str(detail.get("buy_date", today_beijing().strftime("%Y%m%d")))
         shares = int(filled_qty) if filled_qty and filled_qty > 0 else int(detail.get("shares", 0))
         buy_price = float(fill_price) if fill_price and fill_price > 0 else float(detail.get("buy_price", 0.0))
+        planned_exit_date = next_trade_day(buy_date, 2)
         positions.append(
             {
                 "order_id": str(order_id),
@@ -1167,7 +1197,7 @@ class StrategyDMonitor:
                 "signal_date": buy_date,
                 "buy_date": buy_date,
                 # 默认持到T+2收盘。若当晚A/B/C生成信号（HISTORICAL_SIM_FILLED），次日开盘手动平仓后再执行ABC。
-                "planned_exit_date": next_trade_day(buy_date, 2),
+                "planned_exit_date": planned_exit_date,
                 "shares": shares,
                 "buy_price": buy_price,
                 "strategy_leg": "D",
@@ -1177,8 +1207,15 @@ class StrategyDMonitor:
             }
         )
         save_position_records(positions)
-        self.logger.warning("D持仓信息已写入持仓账本: 策略=D order_id=%s ts_code=%s %d股 @%.2f",
-                            order_id, detail.get("ts_code", ""), shares, buy_price)
+        self.logger.warning(
+            "D持仓信息已写入持仓账本: 策略=D order_id=%s ts_code=%s %d股 @%.2f 买入日=%s 默认计划平仓日=%s；若次日有A/B/C接力则T+1开盘先卖D",
+            order_id,
+            detail.get("ts_code", ""),
+            shares,
+            buy_price,
+            buy_date,
+            planned_exit_date,
+        )
         try:
             planned_shares = int(detail.get("shares", 0) or 0)
             planned_amount = float(detail.get("actual_amount", 0.0) or 0.0)
@@ -1248,6 +1285,16 @@ class StrategyDMonitor:
         watching = sum(1 for st in self.states.values()
                        if st.watch_alerted and not st.buy_signaled)
         bought = sum(1 for st in self.states.values() if st.buy_signaled)
+        order_text = "无"
+        if self.session_order_details:
+            detail_parts = []
+            for order_id, detail in self.session_order_details.items():
+                detail_parts.append(
+                    f"{detail.get('ts_code', '')}({detail.get('shares', 0)}股 order_id={order_id})"
+                )
+            order_text = ";".join(detail_parts)
+        elif self.order_locked_ts_code:
+            order_text = f"{self.order_locked_ts_code}(已锁定)"
         sentiment = (
             f"strong({self.sealed_ever_count}只)" if self.sealed_ever_count >= SENTIMENT_STRONG_MIN
             else f"弱({self.sealed_ever_count}只，需>={SENTIMENT_STRONG_MIN})"
@@ -1255,7 +1302,7 @@ class StrategyDMonitor:
         return (
             f"[{hhmm_to_str(hhmm)}] "
             f"扫过{len(self.states)}只 | {sentiment} | "
-            f"观察={watching} 买入={bought} | 全市场扫描轮次={self.scan_round}"
+            f"观察={watching} 买入={bought} | D委托/持仓={order_text} | 全市场扫描轮次={self.scan_round}"
         )
 
     # ── 主循环 ────────────────────────────────────────────────────────────────
