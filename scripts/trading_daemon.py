@@ -88,6 +88,7 @@ SCHEDULE = [
     datetime.time(9, 28),   # 盘前：按卖5价挂单买入
     datetime.time(9, 30),   # 开盘：若9:28未成功则补充买入
     datetime.time(14, 50),  # 盘中平仓检查
+    datetime.time(14, 55),  # 全策略未成交委托撤单
     datetime.time(15, 10),  # 收盘流水线
 ]
 import sys as _sys
@@ -2429,6 +2430,80 @@ def job_afternoon() -> None:
     logger().info("===== 盘中任务完成 =====")
 
 
+def job_cancel_all_pending_orders() -> None:
+    """14:55 撤销所有策略未成交委托。D策略由独立监控进程并行处理，此处兜底全量撤单。"""
+    log = logger()
+    log.info("===== 14:55 全策略撤单 =====")
+
+    config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+    qmt_enabled = bool(config.get("broker_adapter_enabled")) and bool(config.get("qmt_enabled"))
+    if not qmt_enabled:
+        log.info("非实盘模式，跳过14:55撤单")
+        return
+
+    broker_cfg = config.get("broker", {})
+    # 终态状态码：部撤(53)、已撤(54)、已成(56)、废单(57)——这些无需撤
+    TERMINAL_STATUS = {53, 54, 56, 57}
+    _id_names = ["order_id", "m_nOrderID", "order_sysid", "m_strOrderSysID"]
+    _ts_names = ["stock_code", "m_strInstrumentID", "instrument_id", "ts_code"]
+
+    def _pick(d: dict, keys: list, default: Any = "") -> Any:
+        for k in keys:
+            if k in d and d[k] not in (None, ""):
+                return d[k]
+        return default
+
+    try:
+        with _qmt_lock:
+            adapter = _qmt_get(broker_cfg)
+            orders = adapter.query_orders()
+    except Exception as e:
+        log.error("14:55撤单：查询委托失败：%s", e)
+        return
+
+    if not orders:
+        log.info("14:55撤单：无委托记录")
+        return
+
+    cancelled = failed = skipped = 0
+    for o in orders:
+        order_id = str(_pick(o, _id_names, "")).strip()
+        if not order_id:
+            continue
+        status_code = int(_pick(o, ["order_status", "m_nOrderStatus", "status"], -1) or -1)
+        if status_code in TERMINAL_STATUS:
+            skipped += 1
+            continue
+        ts_code = str(_pick(o, _ts_names, "")).strip()
+        try:
+            with _qmt_lock:
+                adapter = _qmt_get(broker_cfg)
+                ok = adapter.cancel_order(order_id)
+            if ok:
+                cancelled += 1
+                log.warning("14:55撤单已发: %s order_id=%s 状态码=%s", ts_code, order_id, status_code)
+            else:
+                failed += 1
+                log.error("14:55撤单失败: %s order_id=%s 状态码=%s", ts_code, order_id, status_code)
+        except Exception as e:
+            failed += 1
+            log.error("14:55撤单异常: %s order_id=%s: %s", ts_code, order_id, e)
+
+    log.warning("14:55撤单完成：撤单=%d 失败=%d 已终态跳过=%d", cancelled, failed, skipped)
+    if cancelled > 0 or failed > 0:
+        try:
+            _notify(
+                "sell_result",
+                "14:55全策略撤单" if failed == 0 else "⚠️ 14:55撤单部分失败",
+                f"撤单={cancelled}笔 失败={failed}笔 终态跳过={skipped}笔",
+                level="timeSensitive" if failed == 0 else "critical",
+            )
+        except Exception:
+            pass
+
+    log.info("===== 14:55 全策略撤单完成 =====")
+
+
 def job_post_market(end_date: str | None = None) -> None:
     target_str = end_date or today_beijing().strftime("%Y%m%d")
     target_date = datetime.datetime.strptime(target_str, "%Y%m%d").date()
@@ -3121,7 +3196,9 @@ def run_job(scheduled_time: datetime.time) -> None:
         job_opening_buy() if trade_day else logger().info("非交易日，跳过开盘买入任务")
     elif scheduled_time == SCHEDULE[5]:   # 14:50
         job_afternoon() if trade_day else logger().info("非交易日，跳过盘中任务")
-    elif scheduled_time == SCHEDULE[6]:   # 15:10
+    elif scheduled_time == SCHEDULE[6]:   # 14:55
+        job_cancel_all_pending_orders() if trade_day else logger().info("非交易日，跳过14:55撤单")
+    elif scheduled_time == SCHEDULE[7]:   # 15:10
         if trade_day:
             # 收盘全量对账（只读+告警，独立于数据流水线，先跑）
             try:
