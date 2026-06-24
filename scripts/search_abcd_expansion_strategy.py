@@ -108,12 +108,15 @@ def load_current_abcd() -> tuple[pd.DataFrame, set[str]]:
 
     d = pd.read_csv(D_TRADES_PATH, dtype={"signal_date": str}, low_memory=False)
     d_returns = d.set_index("signal_date")["account_return"].to_dict()
+    d_has_applied_fill_rate = "fill_rate_stress" in d.columns
 
     rows: list[dict[str, Any]] = []
     for _, row in abc.sort_values("signal_date").iterrows():
         signal_date = str(row["signal_date"])
         abc_return = to_float(row.get("account_return", 0.0))
-        d_return = to_float(d_returns.get(signal_date, 0.0)) * D_FILL_RATE
+        d_return = to_float(d_returns.get(signal_date, 0.0))
+        if not d_has_applied_fill_rate:
+            d_return *= D_FILL_RATE
         rows.append(
             {
                 "date": signal_date,

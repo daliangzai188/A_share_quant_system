@@ -64,8 +64,8 @@ D_SENTIMENT = "strong"
 D_BOARD_TYPE = "multi_open"               # 炸板后重封，才有机会打板
 D_TIME_BUCKETS = {"midday", "afternoon", "late"}  # 非开盘即封死的时段
 D_TAIL_SEALED_HOUR = 14                   # 最终封板时间 >= 14:00（last_time >= 140000）
-# 炸板次数不设上限：近2年strong情绪下45天回测，去掉限制样本数不变，但每天候选池更大
-# 多候选时按fd_amount_to_circ_mv降序收益最优（均+1.72% vs 原策略+1.07%）
+D_MAX_OPEN_TIMES = 3                      # 旧报告最佳口径：炸板次数<=3
+D_FEE_RATE = 0.0015                       # 旧D回测口径：费用+滑点合计按0.15%扣除
 DEFAULT_ALLOWED_SEGMENTS = {"sh_main", "sz_main", "chi_next", "star", "bj", "other"}
 
 
@@ -120,6 +120,7 @@ def load_d_candidates(
         (~df["is_st"].astype(bool)) &
         (df["market_sentiment_level"] == D_SENTIMENT) &
         (df["board_type"] == D_BOARD_TYPE) &
+        (df["open_times"] <= D_MAX_OPEN_TIMES) &
         (df["first_time_bucket"].isin(D_TIME_BUCKETS)) &
         (df["last_time_hm"] >= D_TAIL_SEALED_HOUR * 10000) &   # 14点后最终封板
         (df["fill_probability"] >= min_fill_probability) &
@@ -147,14 +148,31 @@ def load_d_candidates(
 
 
 def pick_d_candidate(day_candidates: pd.DataFrame) -> pd.Series | None:
-    """每天最多选1只：直接按封单/流通市值比降序。
+    """每天最多选1只：优先炸板2次，再按封单/流通市值比降序。
 
-    近2年strong情绪天回测（45天）：不限炸板次数 + fd_amount_to_circ_mv降序
-    均收益+1.72%，优于原策略（<=3次+优先ot==2）的+1.07%。
+    这是旧报告中A+B+C+D落地版约303倍的D策略口径：
+      1. 候选必须满足open_times<=3；
+      2. 多候选时优先open_times==2；
+      3. 同优先级内按fd_amount_to_circ_mv降序。
     """
     if day_candidates.empty:
         return None
-    return day_candidates.sort_values("fd_amount_to_circ_mv", ascending=False).iloc[0]
+    ranked = day_candidates.copy()
+    ranked["_open_times_priority"] = (ranked["open_times"] == 2).astype(int)
+    return ranked.sort_values(
+        ["_open_times_priority", "fd_amount_to_circ_mv"],
+        ascending=[False, False],
+    ).iloc[0]
+
+
+def safe_float(value: object, default: float = 0.0) -> float:
+    """把缺失/异常数值安全转换为 float，避免 NaN 污染资金曲线。"""
+    try:
+        if pd.isna(value):
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def run_simulation(
@@ -208,16 +226,16 @@ def run_simulation(
             day_d = d_by_date.get(dt)
             candidate = pick_d_candidate(day_d) if day_d is not None else None
             if candidate is not None:
-                limit_close = float(candidate.get("limit_close") or 0)
-                fee = float(candidate.get("fee_rate") or 0.0015)
+                limit_close = safe_float(candidate.get("limit_close"), 0.0)
+                fee = D_FEE_RATE
                 if op_status == "HISTORICAL_SIM_FILLED":
                     # D T+1开盘卖，同一笔资金顺序交给A/B/C
-                    next_open = float(candidate.get("next_open") or 0)
+                    next_open = safe_float(candidate.get("next_open"), 0.0)
                     net_ret = (next_open / limit_close - 1 - fee) if (limit_close > 0 and next_open > 0) else 0.0
                     exit_rule = "T+1_open"
                 else:
                     # NO_CANDIDATE / BUY_REJECTED：D持到T+2收盘，无资金冲突
-                    exit_close_val = float(candidate.get("exit_close") or 0)
+                    exit_close_val = safe_float(candidate.get("exit_close"), 0.0)
                     net_ret = (exit_close_val / limit_close - 1 - fee) if (limit_close > 0 and exit_close_val > 0) else 0.0
                     exit_rule = "T+2_close"
                 d_ret = net_ret * POSITION_PCT * fill_rate
