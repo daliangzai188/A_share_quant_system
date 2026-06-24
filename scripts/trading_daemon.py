@@ -334,6 +334,37 @@ def save_positions(positions: list[dict[str, Any]]) -> None:
         logger().error("保存持仓文件失败：%s", e)
 
 
+def clear_local_positions_when_broker_empty(source: str) -> int:
+    """券商接口已明确返回无持仓时，清理本地 open/sell_pending 幽灵持仓。
+
+    只能在 query_positions() 成功且已确认实盘 volume>0 持仓为空后调用。
+    接口失败、QMT未启用、未拿到明确结果时严禁调用，避免误删真实持仓记录。
+    """
+    positions = load_positions()
+    changed = 0
+    now_str = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
+    for pos in positions:
+        status = str(pos.get("status", "")).lower()
+        if status not in {"open", "sell_pending"}:
+            continue
+        pos["status"] = "closed"
+        pos["sell_date"] = pos.get("sell_date") or today_beijing().strftime("%Y%m%d")
+        pos["sell_price"] = pos.get("sell_price") or 0.0
+        pos["ghost_cleared_at"] = now_str
+        pos["ghost_clear_source"] = source
+        pos["ghost_clear_reason"] = "QMT接口查询成功且返回无实盘持仓"
+        changed += 1
+
+    if changed:
+        save_positions(positions)
+        logger().warning(
+            "🧹 [幽灵持仓清理] QMT接口确认实盘无持仓，已将本地%d条open/sell_pending持仓标记为closed。来源=%s",
+            changed,
+            source,
+        )
+    return changed
+
+
 def record_buy(order_id: str, ts_code: str, name: str, signal_date: str,
                buy_date: str, shares: int, buy_price: float, strategy_leg: str,
                exit_n_days: int = 2) -> None:
@@ -1410,6 +1441,11 @@ def job_premarket_position_sync() -> None:
 
     local_positions = load_positions()
     synced_any = False
+    if not live_codes:
+        cleared = clear_local_positions_when_broker_empty("盘前持仓同步09:26")
+        synced_any = synced_any or cleared > 0
+        local_positions = load_positions()
+
     for pos in local_positions:
         if pos.get("status") != "open":
             continue
@@ -3414,6 +3450,7 @@ def _print_account_status(log: Any) -> None:
                  now_str, masked_acct, total_asset / 10000,
                  "  ".join(pos_parts))
     else:
+        clear_local_positions_when_broker_empty("账户心跳")
         log.info("✅ [账户] %s | 账户%s 总资产%.2f万 | 无持仓",
                  now_str, masked_acct, total_asset / 10000)
 
