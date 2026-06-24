@@ -1533,20 +1533,24 @@ def job_premarket_buy() -> None:
             if qty <= 0:
                 continue
 
-            quote    = quote_map.get(ts_code)
+            quote      = quote_map.get(ts_code)
             ask_prices = getattr(quote, "ask_prices", None) if quote else None
+            upper_limit = float(getattr(quote, "upper_limit", 0.0) or 0.0) if quote else 0.0
 
-            if ask_prices and len(ask_prices) >= 5 and ask_prices[4] > 0:
+            if upper_limit > 0:
+                price = round(upper_limit, 2)
+                price_label = "涨停价"
+            elif ask_prices and len(ask_prices) >= 5 and ask_prices[4] > 0:
                 price = round(ask_prices[4], 2)
-                price_label = "卖5"
+                price_label = "卖5（涨停价不可用）"
             elif ask_prices and len(ask_prices) >= 1 and ask_prices[0] > 0:
                 price = round(ask_prices[0], 2)
-                price_label = "卖1（卖5不可用）"
+                price_label = "卖1（涨停价不可用）"
             elif quote and getattr(quote, "last_price", 0) > 0:
                 price = round(float(quote.last_price), 2)
-                price_label = "最新价（五档不可用）"
+                price_label = "最新价（涨停价/盘口不可用）"
             else:
-                logger().warning("09:28 %s %s 无法获取卖档价格，跳过。", ts_code, name_s)
+                logger().warning("09:28 %s %s 无法获取涨停价/卖档价格，跳过。", ts_code, name_s)
                 continue
 
             logger().warning("⏳ [盘前买入] %s %s  %d股  %s=%.2f元", ts_code, name_s, qty, price_label, price)
