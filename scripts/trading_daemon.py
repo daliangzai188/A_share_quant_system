@@ -82,11 +82,11 @@ def _fmt_wan(amount: float) -> str:
 
 # ── 常量 ───────────────────────────────────────────────────────────────────────
 SCHEDULE = [
+    datetime.time(9, 15),   # 集合竞价开始：按涨停价预挂买入
     datetime.time(9, 20),   # 盘前：平仓检查 + 组合状态机
     datetime.time(9, 23),   # 集合竞价：按跌停价挂单平仓
     datetime.time(9, 26),   # 集合竞价成交后：同步实盘持仓，刷新今日买入决策
-    datetime.time(9, 28),   # 盘前：按卖5价挂单买入
-    datetime.time(9, 30),   # 开盘：若9:28未成功则补充买入
+    datetime.time(9, 30),   # 开盘：若9:15未成功则补充买入
     datetime.time(14, 50),  # 盘中平仓检查
     datetime.time(14, 55),  # 全策略未成交委托撤单
     datetime.time(15, 10),  # 收盘流水线
@@ -1431,7 +1431,7 @@ def job_premarket_position_sync() -> None:
     """09:26 集合竞价成交确认：对比实盘持仓与本地持仓，若实盘已无某标的则同步标记平仓，并刷新今日组合决策。
 
     9:25集合竞价撮合完成后，券商持仓会更新。若9:23挂单的卖出已成交，本地标记为closed，
-    再重新运行组合状态机，让9:28买入任务能看到正确的空仓+有买入计划的决策。
+    再重新运行组合状态机，让后续09:30补充买入任务能看到正确的空仓+有买入计划的决策。
     """
     logger().info("===== 盘前持仓同步（09:26）=====")
 
@@ -1494,15 +1494,15 @@ def job_premarket_position_sync() -> None:
         from src.combined_live_engine import CombinedLiveEngine
         engine = CombinedLiveEngine(PROJECT_ROOT)
         engine.run()
-        logger().info("✅ [盘前持仓同步] 组合决策已刷新，9:28买入任务将使用最新决策。")
+        logger().info("✅ [盘前持仓同步] 组合决策已刷新，后续09:30补充买入任务将使用最新决策。")
     except Exception as e:
-        logger().error("[盘前持仓同步] 刷新组合决策失败：%s，9:28将沿用旧决策。", e)
+        logger().error("[盘前持仓同步] 刷新组合决策失败：%s，09:30补充买入将沿用旧决策。", e)
 
     logger().info("===== 盘前持仓同步完成 =====")
 
 
 def job_premarket_buy() -> None:
-    """09:28 盘前挂单：对计划开仓且当前无持仓的标的，优先按涨停价挂限价买单。
+    """09:15 集合竞价预挂：对计划开仓且当前无持仓的标的，优先按涨停价挂限价买单。
 
     总策略模式说明：
       mode=1：只执行现有 A/B/C/E2 买入计划。
@@ -1510,17 +1510,17 @@ def job_premarket_buy() -> None:
       mode=3：执行 model=3 组合计划，可能是 mode=1 买入，也可能是 L 补位/替换。
     各模式互斥，避免同一资金被两套策略同时占用。
     """
-    logger().info("===== 盘前买入挂单（09:28）=====")
+    logger().info("===== 集合竞价买入预挂（09:15）=====")
 
     if has_open_local_position():
-        logger().info("09:28 已有本地持仓，跳过盘前买入。")
+        logger().info("09:15 已有本地持仓，跳过集合竞价买入预挂。")
         return
 
     combined = load_combined_decisions()
     decisions          = combined[0] if combined is not None else None
     combined_orders_path = combined[1] if combined is not None else None
     if decisions is None:
-        logger().error("09:28 组合状态机决策获取失败，跳过盘前买入。")
+        logger().error("09:15 组合状态机决策获取失败，跳过集合竞价买入预挂。")
         return
 
     if is_strategy_l_mode():
@@ -1539,11 +1539,11 @@ def job_premarket_buy() -> None:
             has_combined_action(decisions, "ALLOW_E2_BUY")
         )
     if not has_buy_plan:
-        logger().info("09:28 今日无开仓计划，跳过盘前买入。")
+        logger().info("09:15 今日无开仓计划，跳过集合竞价买入预挂。")
         return
 
     if has_combined_action(decisions, "PLAN_SELL_D_FIRST"):
-        logger().info("09:28 组合状态机要求先卖D，跳过盘前买入。")
+        logger().info("09:15 组合状态机要求先卖D，跳过集合竞价买入预挂。")
         return
 
     config     = load_json_config(PROJECT_ROOT / "config" / "config.json")
@@ -1554,17 +1554,17 @@ def job_premarket_buy() -> None:
 
     import pandas as pd
     if combined_orders_path is None or not combined_orders_path.exists():
-        logger().error("09:28 找不到计划单文件，跳过盘前买入。")
+        logger().error("09:15 找不到计划单文件，跳过集合竞价买入预挂。")
         return
     try:
         orders = pd.read_csv(combined_orders_path)
     except Exception as e:
-        logger().error("09:28 读取计划单失败：%s", e)
+        logger().error("09:15 读取计划单失败：%s", e)
         return
 
     buy_orders = orders[orders.get("side", pd.Series()).astype(str).str.upper() == "BUY"]
     if buy_orders.empty:
-        logger().info("09:28 计划单中无买入行，跳过。")
+        logger().info("09:15 计划单中无买入行，跳过。")
         return
 
     broker_cfg = config.get("broker", {})
@@ -1624,7 +1624,7 @@ def job_premarket_buy() -> None:
                 price = round(float(quote.last_price), 2)
                 price_label = "最新价（涨停价/盘口不可用）"
             else:
-                logger().warning("09:28 %s %s 无法获取涨停价/卖档价格，跳过。", ts_code, name_s)
+                logger().warning("09:15 %s %s 无法获取涨停价/卖档价格，跳过。", ts_code, name_s)
                 continue
 
             logger().warning("⏳ [盘前买入] %s %s  %d股  %s=%.2f元", ts_code, name_s, qty, price_label, price)
@@ -1644,7 +1644,7 @@ def job_premarket_buy() -> None:
                 result  = adapter.place_order(request)
 
             if result.accepted:
-                # 盘前挂单09:30开盘才撮合，此处不立即记录持仓，落盘待确认，09:30按实盘成交确认
+                # 09:15集合竞价预挂单09:25开始撮合，此处不立即记录持仓，落盘待确认，09:30按实盘成交确认
                 raw_exit_n = row.get("exit_n_days", None)
                 exit_n = int(float(raw_exit_n)) if raw_exit_n is not None and str(raw_exit_n) not in {"", "nan"} else 2
                 pending_buys.append({
@@ -1657,7 +1657,7 @@ def job_premarket_buy() -> None:
                     "ref_price": price,
                     "exit_n": exit_n,
                 })
-                logger().info("✅ [盘前买入] %s %s %d股 @%.2f 委托已受理（待09:30开盘确认成交）",
+                logger().info("✅ [盘前买入] %s %s %d股 @%.2f 委托已受理（09:15预挂，待09:30确认成交）",
                               ts_code, name_s, qty, price)
             else:
                 logger().error("❌ [盘前买入] %s %s 提交失败：%s", ts_code, name_s, result.message)
@@ -1690,7 +1690,7 @@ def job_morning() -> None:
         # L 独立模式下，09:20 只做状态播报，不启动 ABC/E2/D。
         # 如果 L 买入开关关闭，组合状态机会给出 BLOCK_L_LIVE_ORDER；如果打开且有昨日信号，会给出 ALLOW_L_BUY。
         if has_combined_action(decisions, "ALLOW_L_BUY"):
-            logger().info("当前总策略模式=2（独立L龙头策略），组合状态机允许L开仓；将于09:28/09:30按L计划执行。")
+            logger().info("当前总策略模式=2（独立L龙头策略），组合状态机允许L开仓；将于09:15/09:30按L计划执行。")
         elif has_combined_action(decisions, "PLAN_SELL_L"):
             logger().info("当前总策略模式=2（独立L龙头策略），存在L到期平仓计划；等待14:50收盘平仓窗口。")
         else:
@@ -1705,13 +1705,13 @@ def job_morning() -> None:
 
     # ③ A/B/C 买入信号 —— 09:20 只播报，不提交，避免触发 OUTSIDE_TRADING_TIME
     if has_combined_action(decisions, "ALLOW_ABC_BUY_PREVIEW"):
-        logger().info("组合状态机允许A/B/C买入；将于09:30交易时段内执行开仓预览/下单。")
+        logger().info("组合状态机允许A/B/C买入；09:15集合竞价预挂，09:30确认成交/必要时补单。")
     else:
         logger().info("组合状态机未允许A/B/C买入，跳过。")
 
     # ④ E2 T+1 开仓 —— 09:20 只播报，不提交，避免触发 OUTSIDE_TRADING_TIME
     if has_combined_action(decisions, "ALLOW_E2_BUY"):
-        logger().info("组合状态机允许E2开仓；将于09:30交易时段内执行开仓预览/下单。")
+        logger().info("组合状态机允许E2开仓；09:15集合竞价预挂，09:30确认成交/必要时补单。")
     else:
         logger().info("组合状态机未允许E2开仓，跳过。")
 
@@ -1727,14 +1727,14 @@ def job_morning() -> None:
 def job_opening_buy() -> None:
     logger().info("===== 开盘买入任务（09:30）=====")
 
-    # 先确认09:28盘前买单是否在开盘成交，再决定是否需要补单
+    # 先确认09:15盘前买单是否在开盘成交，再决定是否需要补单
     try:
         confirm_pending_premarket_buys()
     except Exception as e:
         logger().error("盘前买单成交确认异常：%s —— 请手动核对！", e)
 
     if has_open_local_position():
-        logger().info("09:30 检测到已有本地持仓（09:28盘前买入已成交），跳过重复买入。")
+        logger().info("09:30 检测到已有本地持仓（09:15盘前买入已成交），跳过重复买入。")
         logger().info("===== 开盘买入任务完成 =====")
         return
 
@@ -1845,10 +1845,10 @@ def has_open_local_position() -> bool:
     return any(str(p.get("status", "")).lower() in {"open", "sell_pending"} for p in load_positions())
 
 
-# ── 盘前买单待确认（09:28挂单→09:30开盘成交确认）────────────────────────────
+# ── 盘前买单待确认（09:15挂单→09:30开盘成交确认）────────────────────────────
 
 def save_pending_buys(orders: list[dict[str, Any]]) -> None:
-    """记录09:28盘前已受理买单，等09:30开盘后确认成交。"""
+    """记录09:15盘前已受理买单，等09:30开盘后确认成交。"""
     try:
         mkdir_p(PENDING_BUY_FILE.parent)
         payload = {"date": today_beijing().strftime("%Y%m%d"), "orders": orders}
@@ -1882,7 +1882,7 @@ def clear_pending_buys() -> None:
 
 
 def confirm_pending_premarket_buys() -> None:
-    """09:30开盘后确认09:28盘前买单成交：全成/部成→按实际记录持仓；未成→撤掉残单，避免与开盘补单重复成交。"""
+    """09:30开盘后确认09:15盘前买单成交：全成/部成→按实际记录持仓；未成→撤掉残单，避免与开盘补单重复成交。"""
     pending = load_pending_buys()
     if not pending:
         return
@@ -3294,14 +3294,14 @@ def next_event(now: datetime.datetime) -> tuple[datetime.datetime, datetime.time
 def run_job(scheduled_time: datetime.time) -> None:
     today = today_beijing()
     trade_day = is_trade_day(today)
-    if scheduled_time == SCHEDULE[0]:     # 09:20
-        job_morning() if trade_day else logger().info("非交易日，跳过盘前任务")
-    elif scheduled_time == SCHEDULE[1]:   # 09:23
-        job_premarket_sell() if trade_day else logger().info("非交易日，跳过集合竞价平仓")
-    elif scheduled_time == SCHEDULE[2]:   # 09:26
-        job_premarket_position_sync() if trade_day else logger().info("非交易日，跳过盘前持仓同步")
-    elif scheduled_time == SCHEDULE[3]:   # 09:28
+    if scheduled_time == SCHEDULE[0]:     # 09:15
         job_premarket_buy() if trade_day else logger().info("非交易日，跳过盘前买入")
+    elif scheduled_time == SCHEDULE[1]:   # 09:20
+        job_morning() if trade_day else logger().info("非交易日，跳过盘前任务")
+    elif scheduled_time == SCHEDULE[2]:   # 09:23
+        job_premarket_sell() if trade_day else logger().info("非交易日，跳过集合竞价平仓")
+    elif scheduled_time == SCHEDULE[3]:   # 09:26
+        job_premarket_position_sync() if trade_day else logger().info("非交易日，跳过盘前持仓同步")
     elif scheduled_time == SCHEDULE[4]:   # 09:30
         job_opening_buy() if trade_day else logger().info("非交易日，跳过开盘买入任务")
     elif scheduled_time == SCHEDULE[5]:   # 14:50
