@@ -3,12 +3,11 @@
 
 重要说明：
   - 本脚本只生成 L 独立策略信号文件，不提交任何实盘委托。
-  - L 是否真正进入实盘计划，由 config/config.json 的两个开关共同控制：
-      active_strategy_profile.mode = 2        才切到 L 独立策略模式
-      strategy_l.enabled = true               才允许 L 从研究状态变为可执行策略
-      strategy_l.live_order_enabled = true    才允许 L 生成实盘计划单
-  - 当前默认 active_strategy_profile.mode=1，且 strategy_l.enabled=false；
-    因此本脚本即使运行，也不会影响现有实盘。
+  - L 是否真正进入实盘计划，由 config/config.json 的总策略模式控制：
+      active_strategy_profile.mode = 2        L 独立策略模式
+      active_strategy_profile.mode = 3        model=3 自动切换模式，L 可按规则补位/替换
+  - mode=2 还需要 strategy_l.enabled=true 且 strategy_l.live_order_enabled=true。
+  - mode=3 还需要 strategy_model3.enabled=true 且 strategy_model3.live_order_enabled=true。
 
 当前接入的 L 版本：
   L2 = L_theme_mainline_leader
@@ -184,6 +183,7 @@ def merge_market_emotion_features(data: pd.DataFrame) -> pd.DataFrame:
         "segment_limit_up_count_emotion_prev1",
         "segment_limit_up_count_emotion_prev2",
         "segment_limit_down_count",
+        "market_chain_count",
         "segment_emotion_state",
         "market_emotion_state",
     ]
@@ -199,6 +199,11 @@ def merge_market_emotion_features(data: pd.DataFrame) -> pd.DataFrame:
         axis=1,
     )
     merged["segment_limit_down_count_bucket"] = merged["segment_limit_down_count"].map(bucket_segment_limit_down_count)
+    merged["market_chain_count_bucket"] = pd.cut(
+        pd.to_numeric(merged.get("market_chain_count"), errors="coerce"),
+        bins=[-float("inf"), 3, 8, 15, 30, float("inf")],
+        labels=["lt_3", "3_8", "8_15", "15_30", "gte_30"],
+    ).astype(str)
     return merged
 
 
@@ -249,6 +254,11 @@ def load_l_candidates(signal_date: str) -> tuple[pd.DataFrame, list[str]]:
     for column in ["theme_leader_rank", "theme_heat_rank", "theme_height_rank", "theme_limit_count", "limit_times", "fd_amount_to_circ_mv", "limit_close"]:
         data[column] = pd.to_numeric(data[column], errors="coerce")
     data["first_time_minutes"] = pd.to_numeric(data["first_time"], errors="coerce").fillna(999999)
+    data["first_time_detail_bucket"] = pd.cut(
+        data["first_time_minutes"],
+        bins=[-float("inf"), 570, 600, 660, 810, 870, float("inf")],
+        labels=["open_auction", "before_1000", "1000_1100", "1100_1330", "1330_1430", "after_1430"],
+    ).astype(str)
 
     # L_theme_mainline_leader 本体条件。
     candidates = data[
@@ -294,6 +304,8 @@ def build_signal(signal_date: str, candidate: pd.Series, config: dict[str, Any])
         "theme_limit_count": float(candidate.get("theme_limit_count", 0) or 0),
         "segment_retreat_state_bucket": str(candidate.get("segment_retreat_state_bucket", "")),
         "segment_limit_down_count_bucket": str(candidate.get("segment_limit_down_count_bucket", "")),
+        "market_chain_count_bucket": str(candidate.get("market_chain_count_bucket", "")),
+        "first_time_detail_bucket": str(candidate.get("first_time_detail_bucket", "")),
         "limit_close": float(candidate.get("limit_close", 0) or 0),
         "fill_probability": float(candidate.get("fill_probability", 0) or 0),
         "planned_buy_date": next_trade_day(signal_date, 1),
@@ -329,6 +341,8 @@ def save_outputs(signal_date: str, candidates: pd.DataFrame, signal: dict[str, A
             "theme_limit_count",
             "segment_retreat_state_bucket",
             "segment_limit_down_count_bucket",
+            "market_chain_count_bucket",
+            "first_time_detail_bucket",
             "limit_close",
             "fill_probability",
         ]

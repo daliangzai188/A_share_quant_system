@@ -4,12 +4,13 @@
   "broker_adapter_enabled": true,
   "qmt_enabled": true,
   "active_strategy_profile": {
-    "file_role": "总策略模式开关。1=独立ABCDE2实盘状态机；2=独立L龙头策略。默认1，切到2时阻断ABCDE2/D计划，避免两套策略混跑。",
-    "mode": 1,
-    "mode_name": "ABCDE2",
+    "file_role": "总策略模式开关。1=独立ABCDE2实盘状态机；2=独立L龙头策略；3=model3自动切换实盘状态机。当前用户已确认切换到mode=3；仍必须经过LiveOrderGateway风控。",
+    "mode": 3,
+    "mode_name": "MODEL3",
     "available_modes": {
       "1": "ABCDE2",
-      "2": "L"
+      "2": "L",
+      "3": "MODEL3"
     }
   },
   "strategy_l": {
@@ -26,6 +27,43 @@
     "buy_time": "T+1_OPEN",
     "sell_time": "按L研究明细退出规则",
     "position_pct": 0.8
+  },
+  "strategy_model3": {
+    "file_role": "model=3 自动切换实盘配置。mode=1默认优先；L仅在满足认证规则时补位/替换；真实下单仍必须经过LiveOrderGateway交易时间、资金、仓位、涨跌停和重复委托风控。",
+    "enabled": true,
+    "mode_value": 3,
+    "run_mode": "live_candidate",
+    "live_order_enabled": true,
+    "require_live_certification": true,
+    "certification_summary_path": "reports/strategy_model3/live_candidate/model3_live_candidate_summary.csv",
+    "certification_report_path": "reports/strategy_model3/live_candidate/model3_live_candidate_report.md",
+    "selected_rule_name": "replace_theme_ge_2_not_after_1430",
+    "selected_rule_description": "mode=1默认优先；L通过稳健基础条件才参与；mode=1空闲时允许L补位；mode=1有交易计划时，L替换必须满足创业板、theme_limit_count>=2、first_time_detail_bucket!=after_1430。",
+    "base_l_rule": {
+      "market_segment": "not_star",
+      "segment_retreat_state_bucket": ["neutral", "warming_2day"],
+      "market_chain_count_bucket": ["8_15", "15_30", "gte_30"]
+    },
+    "replace_guard": {
+      "market_segment": "chi_next",
+      "theme_limit_count_min": 2,
+      "first_time_detail_bucket_exclude": ["after_1430"]
+    },
+    "live_candidate_metrics": {
+      "trade_count": 173,
+      "l_trade_count": 30,
+      "mode1_trade_count": 143,
+      "win_rate": 0.699422,
+      "avg_return": 0.059151,
+      "median_return": 0.02695,
+      "equity_multiple": 8302.389557,
+      "max_drawdown": -0.182761,
+      "max_loss": -0.158734,
+      "max_consecutive_losses": 4,
+      "max_drawdown_peak_date": "20240815",
+      "max_drawdown_trough_date": "20240905",
+      "max_drawdown_recovery_date": "20240920"
+    }
   },
   "notify": {
     "file_role": "实盘告警推送。渠道=bark，推送地址放 .env 的 BARK_URL。账号仅后2位、金额用万单位、标的含代码名称。",

@@ -38,15 +38,17 @@ class CombinedLiveDecision:
 
 
 class CombinedLiveEngine:
-    """A+B+C+D+E2 / L 总策略实盘状态机。
+    """A+B+C+D+E2 / L / model=3 总策略实盘状态机。
 
     这个类只负责组合层面的顺序和阻断，不直接提交真实委托。
     当前总策略开关在 config/config.json 的 active_strategy_profile.mode：
       1 = 现有 ABCDE2/D 组合状态机
       2 = 独立 L 龙头策略状态机
+      3 = model=3 自动切换实盘状态机
 
     注意：L 接入后默认仍然 mode=1，且 strategy_l.enabled=false、live_order_enabled=false。
     也就是说，默认只会生成/展示 L 研究信号，不会生成 L 实盘买入计划单。
+    model=3 由 strategy_model3.enabled/live_order_enabled 控制，且所有计划单仍经过 LiveOrderGateway 风控。
     """
 
     def __init__(self, config_path: str | Path = "config/config.json") -> None:
@@ -334,6 +336,215 @@ class CombinedLiveEngine:
         planned_orders_df = pd.DataFrame(planned_orders)
         return state_df, decision_df, planned_orders_df
 
+    def model3_l_base_rule_pass(self, signal: dict[str, Any]) -> tuple[bool, str]:
+        segment = str(signal.get("market_segment", ""))
+        retreat = str(signal.get("segment_retreat_state_bucket", ""))
+        chain = str(signal.get("market_chain_count_bucket", ""))
+        reasons = []
+        if segment == "star":
+            reasons.append("market_segment=star被排除")
+        if retreat not in {"neutral", "warming_2day"}:
+            reasons.append(f"segment_retreat_state_bucket={retreat}不在neutral/warming_2day")
+        if chain not in {"8_15", "15_30", "gte_30"}:
+            reasons.append(f"market_chain_count_bucket={chain}不在8_15/15_30/gte_30")
+        return not reasons, "；".join(reasons) if reasons else "L通过model=3基础稳健条件"
+
+    def model3_l_replace_guard_pass(self, signal: dict[str, Any]) -> tuple[bool, str]:
+        segment = str(signal.get("market_segment", ""))
+        first_time_bucket = str(signal.get("first_time_detail_bucket", ""))
+        try:
+            theme_limit_count = float(signal.get("theme_limit_count", 0) or 0)
+        except (TypeError, ValueError):
+            theme_limit_count = 0.0
+        reasons = []
+        if segment != "chi_next":
+            reasons.append(f"替换要求创业板，当前market_segment={segment}")
+        if theme_limit_count < 2:
+            reasons.append(f"替换要求theme_limit_count>=2，当前={theme_limit_count:g}")
+        if first_time_bucket == "after_1430":
+            reasons.append("替换排除first_time_detail_bucket=after_1430")
+        return not reasons, "；".join(reasons) if reasons else "L通过model=3替换保护条件"
+
+    def build_model3_plan(self, today: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+        """model=3 自动切换实盘计划。
+
+        实盘口径：
+          1. 先生成当前 mode=1 计划。
+          2. L 通过基础稳健条件时才参与。
+          3. mode=1 无买入计划时，允许 L 补位。
+          4. mode=1 有买入计划时，L 替换必须额外满足创业板、theme_limit_count>=2、非after_1430。
+        """
+        model3_config = self.config.get("strategy_model3", {})
+        positions = self.load_positions()
+        open_l_positions = [p for p in positions if self.is_open_position(p) and self.is_l_position(p)]
+        due_l_positions = [
+            p for p in open_l_positions
+            if str(p.get("planned_exit_date", "99991231")) <= today
+            or str(p.get("status", "")).lower() == "sell_pending"
+        ]
+        holding_l_positions = [p for p in open_l_positions if p not in due_l_positions]
+
+        if due_l_positions or holding_l_positions:
+            state_df = pd.DataFrame([{
+                "today": today,
+                "active_strategy_mode": self.active_strategy_mode(),
+                "active_strategy_name": self.active_strategy_name(),
+                "strategy_model3_enabled": bool(model3_config.get("enabled", False)),
+                "strategy_model3_live_order_enabled": bool(model3_config.get("live_order_enabled", False)),
+                "open_l_position_count": len(open_l_positions),
+                "due_l_count": len(due_l_positions),
+            }])
+            decisions: list[CombinedLiveDecision] = []
+            planned_orders: list[dict[str, Any]] = []
+            for pos in due_l_positions:
+                decisions.append(CombinedLiveDecision(
+                    action="PLAN_SELL_L",
+                    strategy_leg="L",
+                    ts_code=str(pos.get("ts_code", "")),
+                    name=str(pos.get("name", "")),
+                    side="SELL",
+                    quantity=self.as_int(pos.get("shares", 0)),
+                    reason=f"model=3下L持仓到期，planned_exit_date={pos.get('planned_exit_date','')}，今日收盘平仓。",
+                    source="positions.json",
+                ))
+                planned_orders.append(self.build_l_sell_order(pos, today))
+            if holding_l_positions:
+                decisions.append(CombinedLiveDecision(
+                    action="BLOCK_MODEL3_BUY_BY_L_POSITION",
+                    strategy_leg="MODEL3",
+                    reason="已有未到期L持仓，model=3不重复开仓。",
+                    source="positions.json",
+                ))
+            return state_df, pd.DataFrame([d.__dict__ for d in decisions]), pd.DataFrame(planned_orders)
+
+        mode1_state, mode1_decisions, mode1_orders = self.build_mode1_plan(today)
+        if not bool(model3_config.get("enabled", False)) or not bool(model3_config.get("live_order_enabled", False)):
+            extra = CombinedLiveDecision(
+                action="BLOCK_MODEL3_DISABLED",
+                strategy_leg="MODEL3",
+                reason="strategy_model3.enabled/live_order_enabled未同时开启，沿用mode=1计划。",
+                source="config.strategy_model3",
+            )
+            decisions = pd.concat([mode1_decisions, pd.DataFrame([extra.__dict__])], ignore_index=True)
+            return mode1_state, decisions, mode1_orders
+
+        signal = self.load_yesterday_l_signal(today)
+        if not signal:
+            extra = CombinedLiveDecision(
+                action="NO_MODEL3_L_SIGNAL",
+                strategy_leg="MODEL3",
+                reason="未找到planned_buy_date等于今日的昨日L信号，model=3沿用mode=1计划。",
+                source=str(self.project_root / "reports" / "strategy_l"),
+            )
+            decisions = pd.concat([mode1_decisions, pd.DataFrame([extra.__dict__])], ignore_index=True)
+            return mode1_state, decisions, mode1_orders
+
+        base_ok, base_reason = self.model3_l_base_rule_pass(signal)
+        if not base_ok:
+            extra = CombinedLiveDecision(
+                action="BLOCK_MODEL3_L_BASE_RULE",
+                strategy_leg="MODEL3",
+                ts_code=str(signal.get("ts_code", "")),
+                name=str(signal.get("name", "")),
+                reason=f"L信号未通过model=3基础稳健条件：{base_reason}；沿用mode=1计划。",
+                source=str(self.project_root / "reports" / "strategy_l"),
+            )
+            decisions = pd.concat([mode1_decisions, pd.DataFrame([extra.__dict__])], ignore_index=True)
+            return mode1_state, decisions, mode1_orders
+
+        buy_mask = (
+            mode1_orders.get("side", pd.Series(dtype=str)).astype(str).str.upper().eq("BUY")
+            if not mode1_orders.empty and "side" in mode1_orders.columns
+            else pd.Series(False, index=mode1_orders.index)
+        )
+        mode1_buy_orders = mode1_orders[buy_mask].copy() if len(buy_mask) else pd.DataFrame()
+        mode1_sell_orders = mode1_orders[~buy_mask].copy() if len(buy_mask) else mode1_orders.copy()
+        l_order = self.build_l_buy_order(signal, today)
+        if l_order.get("round_lot_shares", 0) <= 0:
+            extra = CombinedLiveDecision(
+                action="BLOCK_MODEL3_L_ZERO_SHARES",
+                strategy_leg="MODEL3",
+                ts_code=str(signal.get("ts_code", "")),
+                name=str(signal.get("name", "")),
+                reason="L信号通过条件，但按资金/价格折算不足一手；沿用mode=1计划。",
+                source=str(self.project_root / "reports" / "strategy_l"),
+            )
+            decisions = pd.concat([mode1_decisions, pd.DataFrame([extra.__dict__])], ignore_index=True)
+            return mode1_state, decisions, mode1_orders
+
+        if mode1_buy_orders.empty:
+            filtered_mode1_decisions = mode1_decisions[
+                ~mode1_decisions["action"].astype(str).isin({"ALLOW_D_INTRADAY_MONITOR"})
+            ].copy()
+            extra_decisions = [
+                CombinedLiveDecision(
+                    action="ALLOW_MODEL3_L_SUPPLEMENT",
+                    strategy_leg="L",
+                    ts_code=str(signal.get("ts_code", "")),
+                    name=str(signal.get("name", "")),
+                    side="BUY",
+                    quantity=int(l_order.get("round_lot_shares", 0)),
+                    reason=f"mode=1今日无买入计划，L通过基础条件补位：{base_reason}。",
+                    source=str(self.project_root / "reports" / "strategy_l"),
+                ),
+                CombinedLiveDecision(
+                    action="BLOCK_D_INTRADAY_MONITOR",
+                    strategy_leg="D",
+                    reason="model=3今日使用L补位开仓，同一资金不启动D盘中监控。",
+                    source="combined_state_machine",
+                ),
+            ]
+            planned = pd.concat([mode1_sell_orders, pd.DataFrame([l_order])], ignore_index=True)
+            decisions = pd.concat([filtered_mode1_decisions, pd.DataFrame([d.__dict__ for d in extra_decisions])], ignore_index=True)
+        else:
+            guard_ok, guard_reason = self.model3_l_replace_guard_pass(signal)
+            if not guard_ok:
+                extra = CombinedLiveDecision(
+                    action="BLOCK_MODEL3_L_REPLACE_GUARD",
+                    strategy_leg="MODEL3",
+                    ts_code=str(signal.get("ts_code", "")),
+                    name=str(signal.get("name", "")),
+                    reason=f"mode=1已有买入计划，L未通过替换保护：{guard_reason}；沿用mode=1计划。",
+                    source=str(self.project_root / "reports" / "strategy_l"),
+                )
+                decisions = pd.concat([mode1_decisions, pd.DataFrame([extra.__dict__])], ignore_index=True)
+                return mode1_state, decisions, mode1_orders
+            filtered_mode1_decisions = mode1_decisions[
+                ~mode1_decisions["action"].astype(str).isin({
+                    "ALLOW_ABC_BUY_PREVIEW",
+                    "ALLOW_E2_BUY",
+                    "ALLOW_D_INTRADAY_MONITOR",
+                    "BLOCK_D_INTRADAY_MONITOR",
+                })
+            ].copy()
+            extra_decisions = [
+                CombinedLiveDecision(
+                    action="ALLOW_MODEL3_L_REPLACE",
+                    strategy_leg="L",
+                    ts_code=str(signal.get("ts_code", "")),
+                    name=str(signal.get("name", "")),
+                    side="BUY",
+                    quantity=int(l_order.get("round_lot_shares", 0)),
+                    reason=f"mode=1有买入计划，但L通过替换保护：{guard_reason}；按model=3使用L替换mode=1买入。",
+                    source=str(self.project_root / "reports" / "strategy_l"),
+                ),
+                CombinedLiveDecision(
+                    action="BLOCK_MODE1_BUY_BY_MODEL3_L",
+                    strategy_leg="A+B+C+D+E2",
+                    reason="model=3选择L替换今日mode=1买入计划，避免同一资金重复占用。",
+                    source="combined_state_machine",
+                ),
+            ]
+            planned = pd.concat([mode1_sell_orders, pd.DataFrame([l_order])], ignore_index=True)
+            decisions = pd.concat([filtered_mode1_decisions, pd.DataFrame([d.__dict__ for d in extra_decisions])], ignore_index=True)
+
+        mode1_state = mode1_state.copy()
+        mode1_state["active_strategy_mode"] = 3
+        mode1_state["active_strategy_name"] = "MODEL3"
+        mode1_state["strategy_model3_enabled"] = True
+        mode1_state["strategy_model3_selected_rule"] = str(model3_config.get("selected_rule_name", ""))
+        return mode1_state, decisions, planned
+
     def load_positions(self) -> list[dict[str, Any]]:
         if not self.positions_path.exists():
             return []
@@ -594,11 +805,7 @@ class CombinedLiveEngine:
             )
         return decisions
 
-    def build_plan(self) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-        today = today_beijing().strftime("%Y%m%d")
-        if self.active_strategy_mode() == 2:
-            return self.build_l_mode_plan(today)
-
+    def build_mode1_plan(self, today: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         positions = self.load_positions()
         open_positions = [p for p in positions if self.is_open_position(p)]
         open_d_positions = [p for p in open_positions if self.is_d_position(p)]
@@ -902,6 +1109,14 @@ class CombinedLiveEngine:
         planned_orders_df = pd.DataFrame(planned_orders)
         return state_df, decision_df, planned_orders_df
 
+    def build_plan(self) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+        today = today_beijing().strftime("%Y%m%d")
+        if self.active_strategy_mode() == 2:
+            return self.build_l_mode_plan(today)
+        if self.active_strategy_mode() == 3:
+            return self.build_model3_plan(today)
+        return self.build_mode1_plan(today)
+
     def write_plan(self) -> dict[str, Path]:
         today = today_beijing().strftime("%Y%m%d")
         state, decisions, planned_orders = self.build_plan()
@@ -935,6 +1150,31 @@ class CombinedLiveEngine:
                         print(f"  ⏳ 今日 L 到期平仓 → {code} {nm}  {row.get('quantity', 0)}股  14:50收盘前卖出")
                     elif action == "BLOCK_L_LIVE_ORDER":
                         print(f"  ✘ L实盘买入未开启：{reason}")
+                    else:
+                        print(f"  {action}：{reason}")
+            print("─" * 60)
+            return {"state": state_path, "decisions": decisions_path, "planned_orders": orders_path, "markdown": md_path}
+
+        if self.active_strategy_mode() == 3:
+            print()
+            print("─" * 60)
+            print("  model=3 状态（mode=1优先，L按规则补位/替换）")
+            print("─" * 60)
+            if not decisions.empty and "strategy_leg" in decisions.columns:
+                model3_rows = decisions[decisions["strategy_leg"].astype(str).isin({"MODEL3", "L"})]
+                if model3_rows.empty:
+                    print("  — model=3 无额外切换决策")
+                for _, row in model3_rows.iterrows():
+                    action = str(row.get("action", ""))
+                    code = str(row.get("ts_code", ""))
+                    nm = str(row.get("name", ""))
+                    reason = str(row.get("reason", ""))
+                    qty = row.get("quantity", 0)
+                    if action in {"ALLOW_MODEL3_L_SUPPLEMENT", "ALLOW_MODEL3_L_REPLACE"}:
+                        print(f"  ✅ {action} → {code} {nm}  {qty}股")
+                        print(f"     {reason}")
+                    elif action == "PLAN_SELL_L":
+                        print(f"  ⏳ L到期平仓 → {code} {nm}  {qty}股")
                     else:
                         print(f"  {action}：{reason}")
             print("─" * 60)
@@ -1027,9 +1267,18 @@ class CombinedLiveEngine:
         if not state.empty:
             active_mode = str(state.iloc[0].get("active_strategy_mode", "1"))
             active_name = str(state.iloc[0].get("active_strategy_name", "ABCDE2"))
-        title = "L 独立龙头策略计划" if active_mode == "2" else "A+B+C+D+E2 组合实盘计划"
-        status_leg = "L" if active_mode == "2" else "E2"
-        status_title = "策略 L 状态" if active_mode == "2" else "策略 E2 状态"
+        if active_mode == "2":
+            title = "L 独立龙头策略计划"
+            status_leg = "L"
+            status_title = "策略 L 状态"
+        elif active_mode == "3":
+            title = "model=3 自动切换实盘计划"
+            status_leg = "MODEL3"
+            status_title = "model=3 状态"
+        else:
+            title = "A+B+C+D+E2 组合实盘计划"
+            status_leg = "E2"
+            status_title = "策略 E2 状态"
         status_rows = (
             decisions[decisions["strategy_leg"] == status_leg]
             if not decisions.empty and "strategy_leg" in decisions.columns
@@ -1066,6 +1315,7 @@ class CombinedLiveEngine:
 - 若无持仓且无 A/B/C 买入计划，才允许 D 盘中监控；ABCD 均空闲时，E2 可能触发。
 - E2 条件：segment_retreat_state_bucket=neutral + 非ST + 成交可靠 → 流通市值最小1只；T+1开盘买80%仓，T+2收盘卖。
 - L 条件：仅在 active_strategy_profile.mode=2 且 strategy_l.live_order_enabled=true 时，才把昨日 L 信号转换成今日买入计划；默认 mode=1 不启用 L。
+- model=3 条件：active_strategy_profile.mode=3 且 strategy_model3.live_order_enabled=true 时，先生成mode=1计划；mode=1空闲则允许L补位，mode=1有买入计划时仅允许满足创业板、theme_limit_count>=2、非after_1430的L替换。
 - 真实下单仍必须经过 LiveOrderGateway 的交易时间、涨跌停、持仓、资金和重复委托校验。
 """
         path.write_text(content, encoding="utf-8")

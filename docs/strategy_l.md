@@ -17,11 +17,18 @@ strategy_l.live_order_enabled = false
 ```text
 mode=1：继续使用当前 ABCDE2/D 组合实盘状态机。
 mode=2：切换到独立 L 龙头策略状态机。
+mode=3：model=3 自动切换实盘状态机，在 mode=1 和 L 之间按认证规则切换。
 strategy_l.enabled=false：L 已接入，但策略本身不允许生成实盘计划。
 strategy_l.live_order_enabled=false：L 即使有信号，也不允许生成真实买入计划单。
 ```
 
-因此，当前实盘仍然使用模式 1，不会执行 L 开仓。
+当前用户已确认切换到 mode=3；L 独立 mode=2 仍然关闭，L 只会在 model=3 规则允许时补位或替换。
+
+model=3 的研究候选说明见：
+
+```text
+docs/strategy_model3.md
+```
 
 ## 已选 L 版本
 

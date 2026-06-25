@@ -138,6 +138,10 @@ def is_strategy_l_mode() -> bool:
     return active_strategy_mode() == 2
 
 
+def is_strategy_model3_mode() -> bool:
+    return active_strategy_mode() == 3
+
+
 def write_heartbeat(status: str = "running") -> None:
     try:
         HEARTBEAT_FILE.write_text(
@@ -1503,7 +1507,8 @@ def job_premarket_buy() -> None:
     总策略模式说明：
       mode=1：只执行现有 A/B/C/E2 买入计划。
       mode=2：只执行 L 独立龙头策略买入计划。
-    两种模式互斥，避免同一资金被两套策略同时占用。
+      mode=3：执行 model=3 组合计划，可能是 mode=1 买入，也可能是 L 补位/替换。
+    各模式互斥，避免同一资金被两套策略同时占用。
     """
     logger().info("===== 盘前买入挂单（09:28）=====")
 
@@ -1521,6 +1526,13 @@ def job_premarket_buy() -> None:
     if is_strategy_l_mode():
         # L 模式只认 ALLOW_L_BUY；即使旧 ABC/E2 文件还在，也不会在模式2里被执行。
         has_buy_plan = has_combined_action(decisions, "ALLOW_L_BUY")
+    elif is_strategy_model3_mode():
+        has_buy_plan = (
+            has_combined_action(decisions, "ALLOW_MODEL3_L_SUPPLEMENT") or
+            has_combined_action(decisions, "ALLOW_MODEL3_L_REPLACE") or
+            has_combined_action(decisions, "ALLOW_ABC_BUY_PREVIEW") or
+            has_combined_action(decisions, "ALLOW_E2_BUY")
+        )
     else:
         has_buy_plan = (
             has_combined_action(decisions, "ALLOW_ABC_BUY_PREVIEW") or

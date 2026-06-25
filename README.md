@@ -6,6 +6,7 @@
 > D 策略（首板打板）已完成回测（303x vs 纯 A+B+C 的 110x）并接入守护进程，每日 13:30 自动启动盘中监控。  
 > E2 策略（板块中性小市值）已完成回测（ABCD+E2 = 3640x）并实现收盘信号脚本 `run_strategy_e2_signal.py`。  
 > L 龙头策略已完成独立研究和实盘约束模拟认证，并已接入总策略模式开关；默认仍为 `mode=1`，`strategy_l.enabled=false`，不会影响当前实盘。详见 `docs/strategy_l.md`。
+> model=3 自动切换已完成离线模拟实盘口径认证，并按用户确认切换为当前实盘状态机；mode=3 会在 mode=1 与 L 之间自动选择，但所有计划单仍必须经过 LiveOrderGateway 风控。详见 `docs/strategy_model3.md`。
 > 实盘接入：QMT / miniQMT 已完成只读连接与守护进程联调，真实下单仍必须先走小资金验证。所有时间以北京时间（Asia/Shanghai）为准。
 
 ---
