@@ -3,6 +3,30 @@
   "trade_mode": "live",
   "broker_adapter_enabled": true,
   "qmt_enabled": true,
+  "active_strategy_profile": {
+    "file_role": "总策略模式开关。1=独立ABCDE2实盘状态机；2=独立L龙头策略。默认1，切到2时阻断ABCDE2/D计划，避免两套策略混跑。",
+    "mode": 1,
+    "mode_name": "ABCDE2",
+    "available_modes": {
+      "1": "ABCDE2",
+      "2": "L"
+    }
+  },
+  "strategy_l": {
+    "file_role": "策略L龙头策略配置。默认只作为独立研究/模拟策略；只有 active_strategy_profile.mode=2、enabled=true 且 live_order_enabled=true 后，后续L专用执行链路才允许接入。",
+    "enabled": false,
+    "mode_value": 2,
+    "variant": "L2",
+    "variant_description": "排除retreat_2day+跌停3_8+theme_limit_count=30",
+    "filter_expr": "segment_retreat_state_bucket!=retreat_2day AND segment_limit_down_count_bucket!=3_8 AND theme_limit_count!=30",
+    "run_mode": "standalone",
+    "live_order_enabled": false,
+    "require_live_certification": true,
+    "certification_summary_path": "reports/strategy_l/live_certification/l_live_cert_summary.csv",
+    "buy_time": "T+1_OPEN",
+    "sell_time": "按L研究明细退出规则",
+    "position_pct": 0.8
+  },
   "notify": {
     "file_role": "实盘告警推送。渠道=bark，推送地址放 .env 的 BARK_URL。账号仅后2位、金额用万单位、标的含代码名称。",
     "enabled": true,

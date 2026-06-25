@@ -126,6 +126,18 @@ def logger():
     return get_logger("trading_daemon")
 
 
+def active_strategy_mode() -> int:
+    try:
+        config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+        return int(config.get("active_strategy_profile", {}).get("mode", 1))
+    except Exception:
+        return 1
+
+
+def is_strategy_l_mode() -> bool:
+    return active_strategy_mode() == 2
+
+
 def write_heartbeat(status: str = "running") -> None:
     try:
         HEARTBEAT_FILE.write_text(
@@ -601,7 +613,9 @@ def _execute_orders_inprocess(
             & (
                 action_text.eq("PLAN_SELL_T2_CLOSE")
                 | action_text.eq("PLAN_SELL_D_T2_CLOSE")
+                | action_text.eq("PLAN_SELL_L_T2_CLOSE")
                 | risk_text.str.contains("E2_SELL_T2_CLOSE", na=False)
+                | risk_text.str.contains("L_SELL_T2_CLOSE", na=False)
             )
         )
         if t2_close_sell.any():
@@ -1122,8 +1136,10 @@ def _do_sell(pos: dict[str, Any], qmt_enabled: bool) -> None:
                     allowed_sides={"SELL"},
                     allow_t2_close_sell_now=True,
                 )
-            elif strategy_leg in {"A", "B", "C"}:
-                # ABC planned_orders 文件只有BUY行，必须直接下单
+            elif strategy_leg in {"A", "B", "C", "L"}:
+                # A/B/C/L 均是 T+N 收盘卖出口径：
+                # planned_orders 文件通常只负责买入计划，平仓时直接按买10/买5挂限价卖出。
+                # L 接入后复用同一套“确保尽量成交、成交后回写持仓”的平仓链路。
                 # 成交确认与持仓回写由 _abc_place_sell_order_direct 内部完成
                 _abc_place_sell_order_direct(ts_code, name, shares, order_id, confirm, config, broker_cfg)
             else:
@@ -1185,7 +1201,7 @@ def check_and_close_positions() -> None:
             logger().warning("需要平仓：%s %s  计划平仓日 %s  状态 %s  市场开盘 %s",
                              ts_code, name, planned_exit, status, market_is_open())
 
-            t2_close_leg = strategy_leg in {"A", "B", "C", "D", "E2"}
+            t2_close_leg = strategy_leg in {"A", "B", "C", "D", "E2", "L"}
             due_today = planned_exit == today_str
             before_close_sell_window = now_beijing().time() < datetime.time(14, 50)
             if t2_close_leg and due_today and before_close_sell_window:
@@ -1482,7 +1498,13 @@ def job_premarket_position_sync() -> None:
 
 
 def job_premarket_buy() -> None:
-    """09:28 盘前挂单：对计划开仓且当前无持仓的标的，按卖5价挂限价买单。"""
+    """09:28 盘前挂单：对计划开仓且当前无持仓的标的，优先按涨停价挂限价买单。
+
+    总策略模式说明：
+      mode=1：只执行现有 A/B/C/E2 买入计划。
+      mode=2：只执行 L 独立龙头策略买入计划。
+    两种模式互斥，避免同一资金被两套策略同时占用。
+    """
     logger().info("===== 盘前买入挂单（09:28）=====")
 
     if has_open_local_position():
@@ -1496,10 +1518,14 @@ def job_premarket_buy() -> None:
         logger().error("09:28 组合状态机决策获取失败，跳过盘前买入。")
         return
 
-    has_buy_plan = (
-        has_combined_action(decisions, "ALLOW_ABC_BUY_PREVIEW") or
-        has_combined_action(decisions, "ALLOW_E2_BUY")
-    )
+    if is_strategy_l_mode():
+        # L 模式只认 ALLOW_L_BUY；即使旧 ABC/E2 文件还在，也不会在模式2里被执行。
+        has_buy_plan = has_combined_action(decisions, "ALLOW_L_BUY")
+    else:
+        has_buy_plan = (
+            has_combined_action(decisions, "ALLOW_ABC_BUY_PREVIEW") or
+            has_combined_action(decisions, "ALLOW_E2_BUY")
+        )
     if not has_buy_plan:
         logger().info("09:28 今日无开仓计划，跳过盘前买入。")
         return
@@ -1648,6 +1674,18 @@ def job_morning() -> None:
         logger().error("组合状态机决策生成失败，早盘不启动D，也不执行A/B/C买入预览。")
         return
 
+    if is_strategy_l_mode():
+        # L 独立模式下，09:20 只做状态播报，不启动 ABC/E2/D。
+        # 如果 L 买入开关关闭，组合状态机会给出 BLOCK_L_LIVE_ORDER；如果打开且有昨日信号，会给出 ALLOW_L_BUY。
+        if has_combined_action(decisions, "ALLOW_L_BUY"):
+            logger().info("当前总策略模式=2（独立L龙头策略），组合状态机允许L开仓；将于09:28/09:30按L计划执行。")
+        elif has_combined_action(decisions, "PLAN_SELL_L"):
+            logger().info("当前总策略模式=2（独立L龙头策略），存在L到期平仓计划；等待14:50收盘平仓窗口。")
+        else:
+            logger().info("当前总策略模式=2（独立L龙头策略），本轮无L实盘开仓计划；ABCDE2/D已阻断。")
+        logger().info("===== 盘前任务完成 =====")
+        return
+
     # ② D 待卖持仓最高优先级。09:20只播报，等待09:23集合竞价平仓入口执行。
     if has_combined_action(decisions, "PLAN_SELL_D_FIRST"):
         logger().info("组合状态机要求先卖D；等待09:23集合竞价平仓，不在09:20非交易时段提交委托。")
@@ -1697,6 +1735,22 @@ def job_opening_buy() -> None:
 
     if has_combined_action(decisions, "PLAN_SELL_D_FIRST"):
         logger().info("组合状态机要求先卖D，09:30不执行新的买入。")
+        return
+
+    if is_strategy_l_mode():
+        # L 模式只执行 ALLOW_L_BUY。默认配置 live_order_enabled=false 时不会出现该动作，
+        # 因此模式1默认运行、模式2未开启实盘时，都不会误触 L 下单。
+        if has_combined_action(decisions, "ALLOW_L_BUY"):
+            accepted = handle_combined_order_preview(
+                combined_orders_path,
+                reason="L 09:30开仓",
+                allowed_sides={"BUY"},
+            )
+            if not accepted and not has_open_local_position():
+                logger().warning("09:30 L开仓未提交成功/未成交，今日不切回ABCDE2/D，避免策略模式混跑。")
+        else:
+            logger().info("09:30 L模式无 ALLOW_L_BUY，跳过开盘买入。")
+        logger().info("===== 开盘买入任务完成 =====")
         return
 
     attempted_buy = False
@@ -2561,12 +2615,16 @@ def job_post_market(end_date: str | None = None) -> None:
         ("analyze_next_day_premium.py",        "⑤ 次日溢价因子",                   TIMEOUT_DATA_STEP,  "约1分钟"),
         ("run_paper_ab_filtered_daily_ops.py", "⑥ A+B+C 信号生成",                TIMEOUT_SIGNAL_STEP,"约1分钟"),
         ("run_strategy_e2_signal.py",          "⑦ E2 信号生成（板块中性小市值）", TIMEOUT_SIGNAL_STEP,"约30秒"),
+        ("run_strategy_l_signal.py",           "⑧ L 龙头信号生成（独立模式备用）", TIMEOUT_SIGNAL_STEP,"约30秒"),
     ]
     extra_args: dict[str, list[str]] = {
         "collect_all_data.py": ["--start-date", recent_start, "--end-date", target_str, "--require-end-date-limit"],
         "clean_collected_data.py": ["--start-date", recent_start, "--end-date", target_str],
         "run_paper_ab_filtered_daily_ops.py": ["--signal-date", target_str, "--top-n", "10"],
         "run_strategy_e2_signal.py": ["--signal-date", target_str],
+        # L 信号默认只落文件，不会接入实盘；必须 mode=2 且 strategy_l.live_order_enabled=true
+        # 时，组合状态机才会把昨日 L 信号转换为次日实盘买入计划。
+        "run_strategy_l_signal.py": ["--signal-date", target_str],
     }
     critical_scripts = {
         "collect_all_data.py",

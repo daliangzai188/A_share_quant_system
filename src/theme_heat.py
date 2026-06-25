@@ -28,6 +28,10 @@ class ThemeHeatBuilder:
             "theme_heat_features_path",
             "data/processed/theme_heat_features.csv",
         )
+        self.theme_reference_path = self.project_root / feature_config.get(
+            "stock_theme_reference_path",
+            "data/processed/stock_theme_reference.csv",
+        )
 
     def build(self) -> Path:
         limit_up = pd.read_csv(
@@ -37,8 +41,10 @@ class ThemeHeatBuilder:
         )
         theme_column = self.resolve_theme_column(limit_up)
         if theme_column is None:
+            limit_up, theme_column = self.attach_theme_reference(limit_up)
+        if theme_column is None:
             features = self.build_unavailable_features(limit_up)
-            self.logger.warning("没有可用题材字段，题材热度输出为 unavailable。")
+            self.logger.warning("没有可用题材字段或行业参考，题材热度输出为 unavailable。")
         else:
             features = self.build_theme_features(limit_up, theme_column)
             self.logger.info("使用题材字段构建热度: %s", theme_column)
@@ -55,6 +61,28 @@ class ThemeHeatBuilder:
                 if (non_empty != "").any():
                     return column
         return None
+
+    def attach_theme_reference(self, limit_up: pd.DataFrame) -> tuple[pd.DataFrame, str | None]:
+        """当涨停池没有 lu_desc/concept 字段时，用 stock_basic.industry 作为行业主线代理。"""
+        if not self.theme_reference_path.exists():
+            self.logger.warning("题材参考表不存在: %s", self.theme_reference_path)
+            return limit_up, None
+        ref = pd.read_csv(self.theme_reference_path, dtype={"ts_code": str}, low_memory=False)
+        if ref.empty or "ts_code" not in ref.columns or "theme_name" not in ref.columns:
+            self.logger.warning("题材参考表为空或缺少必要字段: %s", self.theme_reference_path)
+            return limit_up, None
+        ref = ref[["ts_code", "theme_name"]].copy()
+        ref["theme_name"] = ref["theme_name"].fillna("").astype(str).str.strip()
+        ref = ref[ref["theme_name"].ne("") & ref["theme_name"].str.lower().ne("unknown")]
+        if ref.empty:
+            self.logger.warning("题材参考表没有可用 theme_name: %s", self.theme_reference_path)
+            return limit_up, None
+        merged = limit_up.merge(ref.drop_duplicates("ts_code"), on="ts_code", how="left")
+        if merged["theme_name"].fillna("").astype(str).str.strip().eq("").all():
+            self.logger.warning("题材参考表无法匹配涨停池股票。")
+            return limit_up, None
+        merged["theme_name"] = merged["theme_name"].fillna("unknown")
+        return merged, "theme_name"
 
     @staticmethod
     def build_unavailable_features(limit_up: pd.DataFrame) -> pd.DataFrame:
