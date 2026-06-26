@@ -19,6 +19,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--end-date", help="结束日期，格式 YYYYMMDD。不填则清洗全部已采集日期。")
     parser.add_argument("--config", default="config/config.json", help="配置文件路径。")
     parser.add_argument("--no-overwrite", action="store_true", help="如果输出文件已存在则报错，不覆盖。")
+    parser.add_argument(
+        "--incremental-replace",
+        action="store_true",
+        help="只替换本次日期范围内的 processed 记录，保留其他历史日期。收盘流水线默认使用。",
+    )
     return parser.parse_args()
 
 
@@ -37,6 +42,7 @@ def main() -> None:
         start_date=args.start_date,
         end_date=args.end_date,
         overwrite=not args.no_overwrite,
+        incremental_replace=args.incremental_replace,
     )
 
     print("数据清洗完成，输出文件：")

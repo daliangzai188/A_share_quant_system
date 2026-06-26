@@ -310,15 +310,20 @@ def _has_signal_for_date(date: datetime.date) -> bool:
 def _date_in_scored(target_date: datetime.date) -> bool:
     """检查 limit_up_fill_scored.csv 是否包含 target_date 的记录（不导入 pandas）。"""
     path = PROJECT_ROOT / "data" / "processed" / "limit_up_fill_scored.csv"
+    return _date_in_csv(path, target_date, "trade_date")
+
+
+def _date_in_csv(path: Path, target_date: datetime.date, date_column: str = "trade_date") -> bool:
+    """流式检查 CSV 是否包含目标交易日，避免为了启动审计读取大文件。"""
     if not path.exists():
         return False
     target_str = target_date.strftime("%Y%m%d")
     try:
         with path.open(encoding="utf-8") as f:
             header = f.readline().strip().split(",")
-            if "trade_date" not in header:
+            if date_column not in header:
                 return False
-            idx = header.index("trade_date")
+            idx = header.index(date_column)
             for line in f:
                 parts = line.split(",")
                 if len(parts) > idx:
@@ -2270,6 +2275,16 @@ def _strategy_d_monitor_running() -> bool:
     return False
 
 
+def _processed_data_ready_for_date(target_date: datetime.date) -> bool:
+    """启动自检：实盘审计依赖的 processed 表必须包含目标信号日。"""
+    required_paths = [
+        PROJECT_ROOT / "data" / "processed" / "market_sentiment.csv",
+        PROJECT_ROOT / "data" / "processed" / "market_emotion_features.csv",
+        PROJECT_ROOT / "data" / "processed" / "limit_up_fill_scored.csv",
+    ]
+    return all(_date_in_csv(path, target_date, "trade_date") for path in required_paths)
+
+
 _e2_retry_thread: threading.Thread | None = None
 
 
@@ -2686,7 +2701,7 @@ def job_post_market(end_date: str | None = None) -> None:
     ]
     extra_args: dict[str, list[str]] = {
         "collect_all_data.py": ["--start-date", recent_start, "--end-date", target_str, "--require-end-date-limit"],
-        "clean_collected_data.py": ["--start-date", recent_start, "--end-date", target_str],
+        "clean_collected_data.py": ["--start-date", recent_start, "--end-date", target_str, "--incremental-replace"],
         "run_paper_ab_filtered_daily_ops.py": ["--signal-date", target_str, "--top-n", "10"],
         "run_strategy_e2_signal.py": ["--signal-date", target_str],
         # L 信号默认只落文件，不会接入实盘；必须 mode=2 且 strategy_l.live_order_enabled=true
@@ -3673,7 +3688,8 @@ def main() -> None:
             log.error("启动候选播报异常：%s", exc)
     threading.Thread(target=_startup_report, daemon=True, name="startup-report").start()
 
-    # 若缓存不是最新交易日数据，后台线程补采，不阻塞主循环 QMT 状态刷新
+    # 若缓存或 processed 审计数据不是最新交易日数据，后台线程补采。
+    # raw 缓存存在但 processed 缺日时也必须补跑，否则盘前审计会误报旧口径。
     if not _has_signal_for_date(expected):
         log.warning(
             "未找到 %s 收盘数据缓存，后台自动采集中（不影响主循环和 QMT 状态刷新）...",
@@ -3685,8 +3701,19 @@ def main() -> None:
             daemon=True,
             name="pipeline",
         ).start()
+    elif not _processed_data_ready_for_date(expected):
+        log.warning(
+            "已有 %s 收盘信号缓存，但 processed 审计数据缺失该日期，后台自动补齐（不影响主循环和 QMT 状态刷新）...",
+            expected_str,
+        )
+        threading.Thread(
+            target=_run_post_market_with_retry,
+            args=(expected_str,),
+            daemon=True,
+            name="pipeline-processed-repair",
+        ).start()
     else:
-        log.info("已有 %s 收盘数据缓存，直接使用", expected_str)
+        log.info("已有 %s 收盘数据缓存且 processed 数据齐全，直接使用", expected_str)
 
     try:
         startup_catchup_strategy_d()
