@@ -12,7 +12,7 @@
   每日 15:30 后运行（A/B/C daily ops 和 D 盘中监控均已完成后）
 
 输出：
-  reports/strategy_e2/e2_signal_YYYYMMDD.json   本日E2信号（有候选才生成）
+  reports/strategy_e2/e2_signals_recent.json    最近10个交易日E2信号（滚动覆盖）
   reports/strategy_e2/e2_signal_YYYYMMDD_candidates.csv  所有符合条件的候选
 
 segment_retreat_state_bucket 计算逻辑（来自 src/strategy_optimizer.py）：
@@ -42,6 +42,12 @@ PROJECT_ROOT = Path(__file__).absolute().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.rolling_signal_store import (
+    cleanup_legacy_daily_signal_files,
+    migrate_legacy_daily_signal_files,
+    save_recent_signal,
+)
+
 LIMIT_DIR = PROJECT_ROOT / "data" / "raw" / "limit_list"
 DAILY_DIR = PROJECT_ROOT / "data" / "raw" / "daily"
 CALENDAR_PATH = PROJECT_ROOT / "data" / "raw" / "trade_calendar.csv"
@@ -49,6 +55,7 @@ SCORED_PATH = PROJECT_ROOT / "data" / "processed" / "limit_up_fill_scored.csv"
 POSITIONS_PATH = PROJECT_ROOT / "data" / "processed" / "positions.json"
 DAILY_OPS_DIR = PROJECT_ROOT / "reports" / "paper_trade" / "ab_filtered_daily_ops"
 OUTPUT_DIR = PROJECT_ROOT / "reports" / "strategy_e2"
+ROLLING_SIGNAL_PATH = OUTPUT_DIR / "e2_signals_recent.json"
 STRATEGY_D_SIGNAL_DIR = PROJECT_ROOT / "reports" / "strategy_d"
 
 POSITION_PCT = 0.8
@@ -356,10 +363,23 @@ def build_signal(signal_date: str, candidate: pd.Series, segment_states: dict[st
 
 def save_signal(signal: dict[str, Any], dry_run: bool) -> Path:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    path = OUTPUT_DIR / f"e2_signal_{signal['signal_date']}.json"
     if not dry_run:
-        path.write_text(json.dumps(signal, ensure_ascii=False, indent=2), encoding="utf-8")
-    return path
+        migrate_existing_signals()
+        save_recent_signal(ROLLING_SIGNAL_PATH, signal, strategy_leg="E2", max_trade_days=10)
+    return ROLLING_SIGNAL_PATH
+
+
+def migrate_existing_signals() -> None:
+    """迁移并清理旧的每日E2信号JSON；无新信号的交易日也会执行。"""
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    migrate_legacy_daily_signal_files(
+        OUTPUT_DIR,
+        "e2_signal_????????.json",
+        ROLLING_SIGNAL_PATH,
+        strategy_leg="E2",
+        max_trade_days=10,
+    )
+    cleanup_legacy_daily_signal_files(OUTPUT_DIR, "e2_signal_????????.json")
 
 
 def save_candidates(signal_date: str, candidates: pd.DataFrame, dry_run: bool) -> Path:
@@ -398,6 +418,8 @@ def main() -> None:
 
     signal_date = args.signal_date or resolve_signal_date()
     print(f"[E2信号] 信号日期: {signal_date}")
+    if not args.dry_run:
+        migrate_existing_signals()
 
     # ── 1. 检查 ABCD 是否空闲 ────────────────────────────────────────────────
     open_positions = load_open_positions()

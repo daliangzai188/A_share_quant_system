@@ -9,6 +9,7 @@ import pandas as pd
 from pandas.errors import EmptyDataError
 
 from src.live_order_gateway import LiveOrderGateway
+from src.rolling_signal_store import latest_signal_for_buy_date, signal_by_signal_date
 from src.utils.config import get_project_root, load_json_config, mkdir_p
 from src.utils.time_utils import today_beijing
 
@@ -86,6 +87,9 @@ class CombinedLiveEngine:
         signal_dir = self.project_root / "reports" / "strategy_l"
         if not signal_dir.exists():
             return None
+        rolling = latest_signal_for_buy_date(signal_dir / "l_signals_recent.json", today)
+        if rolling is not None:
+            return rolling
         files = sorted(signal_dir.glob("l_signal_????????.json"))
         for f in reversed(files):
             date_part = f.stem.replace("l_signal_", "")
@@ -104,6 +108,12 @@ class CombinedLiveEngine:
 
         今日信号只代表“明日可能开仓”，不能用于今日直接买入。
         """
+        rolling = signal_by_signal_date(
+            self.project_root / "reports" / "strategy_l" / "l_signals_recent.json",
+            today,
+        )
+        if rolling is not None:
+            return rolling
         signal_path = self.project_root / "reports" / "strategy_l" / f"l_signal_{today}.json"
         if not signal_path.exists():
             return None
@@ -589,6 +599,9 @@ class CombinedLiveEngine:
         signal_dir = self.project_root / "reports" / "strategy_e2"
         if not signal_dir.exists():
             return None
+        rolling = latest_signal_for_buy_date(signal_dir / "e2_signals_recent.json", today)
+        if rolling is not None:
+            return rolling
         files = sorted(signal_dir.glob("e2_signal_????????.json"))
         for f in reversed(files):
             date_part = f.stem.replace("e2_signal_", "")
@@ -604,6 +617,12 @@ class CombinedLiveEngine:
 
     def load_today_e2_signal(self, today: str) -> dict[str, Any] | None:
         """加载今日收盘流水线已生成的 E2 信号（signal_date == today），用于盘中状态展示。"""
+        rolling = signal_by_signal_date(
+            self.project_root / "reports" / "strategy_e2" / "e2_signals_recent.json",
+            today,
+        )
+        if rolling is not None:
+            return rolling
         signal_path = self.project_root / "reports" / "strategy_e2" / f"e2_signal_{today}.json"
         if not signal_path.exists():
             return None

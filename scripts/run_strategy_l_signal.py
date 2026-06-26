@@ -21,7 +21,7 @@ L_theme_mainline_leader 本体条件：
   - theme_leader_rank = 1，也就是该行业/题材内龙头排序第 1
 
 输出：
-  reports/strategy_l/l_signal_YYYYMMDD.json
+  reports/strategy_l/l_signals_recent.json
   reports/strategy_l/l_signal_YYYYMMDD_candidates.csv
 """
 from __future__ import annotations
@@ -41,6 +41,11 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.utils.config import load_json_config
+from src.rolling_signal_store import (
+    cleanup_legacy_daily_signal_files,
+    migrate_legacy_daily_signal_files,
+    save_recent_signal,
+)
 
 
 SCORED_PATH = PROJECT_ROOT / "data" / "processed" / "limit_up_fill_scored.csv"
@@ -48,6 +53,7 @@ THEME_FEATURE_PATH = PROJECT_ROOT / "data" / "processed" / "theme_heat_features.
 MARKET_EMOTION_FEATURE_PATH = PROJECT_ROOT / "data" / "processed" / "market_emotion_features.csv"
 CALENDAR_PATH = PROJECT_ROOT / "data" / "raw" / "trade_calendar.csv"
 OUTPUT_DIR = PROJECT_ROOT / "reports" / "strategy_l"
+ROLLING_SIGNAL_PATH = OUTPUT_DIR / "l_signals_recent.json"
 
 
 def load_open_dates() -> list[str]:
@@ -327,7 +333,6 @@ def build_signal(signal_date: str, candidate: pd.Series, config: dict[str, Any])
 def save_outputs(signal_date: str, candidates: pd.DataFrame, signal: dict[str, Any] | None, dry_run: bool) -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     candidate_path = OUTPUT_DIR / f"l_signal_{signal_date}_candidates.csv"
-    signal_path = OUTPUT_DIR / f"l_signal_{signal_date}.json"
     if not dry_run and not candidates.empty:
         keep_cols = [
             "trade_date",
@@ -348,7 +353,21 @@ def save_outputs(signal_date: str, candidates: pd.DataFrame, signal: dict[str, A
         ]
         candidates[[c for c in keep_cols if c in candidates.columns]].to_csv(candidate_path, index=False, encoding="utf-8-sig")
     if signal and not dry_run:
-        signal_path.write_text(json.dumps(signal, ensure_ascii=False, indent=2), encoding="utf-8")
+        migrate_existing_signals()
+        save_recent_signal(ROLLING_SIGNAL_PATH, signal, strategy_leg="L", max_trade_days=10)
+
+
+def migrate_existing_signals() -> None:
+    """迁移并清理旧的每日L信号JSON；无新信号的交易日也会执行。"""
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    migrate_legacy_daily_signal_files(
+        OUTPUT_DIR,
+        "l_signal_????????.json",
+        ROLLING_SIGNAL_PATH,
+        strategy_leg="L",
+        max_trade_days=10,
+    )
+    cleanup_legacy_daily_signal_files(OUTPUT_DIR, "l_signal_????????.json")
 
 
 def main() -> None:
@@ -361,6 +380,8 @@ def main() -> None:
     config = load_json_config(PROJECT_ROOT / "config" / "config.json")
     print(f"[L信号] 信号日期: {signal_date}")
     print("[L信号] 当前只生成信号文件，不提交实盘委托。")
+    if not args.dry_run:
+        migrate_existing_signals()
 
     candidates, reasons = load_l_candidates(signal_date)
     for reason in reasons:
@@ -385,7 +406,7 @@ def main() -> None:
     print(f"  策略开关: strategy_l.enabled={bool(config.get('strategy_l', {}).get('enabled', False))}")
     print(f"  实盘开关: strategy_l.live_order_enabled={signal['live_order_enabled']}")
     print("=" * 60)
-    print(f"[L信号] 已{'模拟' if args.dry_run else '保存'}信号：reports/strategy_l/l_signal_{signal_date}.json")
+    print(f"[L信号] 已{'模拟' if args.dry_run else '保存'}信号：reports/strategy_l/l_signals_recent.json")
 
 
 if __name__ == "__main__":
