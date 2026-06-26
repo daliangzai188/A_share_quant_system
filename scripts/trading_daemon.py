@@ -109,6 +109,7 @@ CALENDAR_STALE_WARNED: set[str] = set()
 TIMEOUT_DATA_STEP = 600      # 数据采集/清洗步骤：10 分钟
 TIMEOUT_SIGNAL_STEP = 300    # 信号生成步骤：5 分钟
 TIMEOUT_ORDER_STEP = 60      # 下单预览步骤：1 分钟
+TIMEOUT_COMBINED_PLAN_STEP = 180  # 组合状态机生成：Windows/QMT环境下首次加载特征较慢
 
 
 def setup() -> None:
@@ -1813,7 +1814,7 @@ def job_opening_buy() -> None:
 def load_combined_decisions():
     try:
         import pandas as pd
-        ok = run_script("run_combined_live_plan.py", timeout=TIMEOUT_ORDER_STEP)
+        ok = run_script("run_combined_live_plan.py", timeout=TIMEOUT_COMBINED_PLAN_STEP)
         if not ok:
             return None
         today_str = today_beijing().strftime("%Y%m%d")
@@ -2529,7 +2530,7 @@ def job_afternoon() -> None:
 
     # ① 刷新组合状态机 + combined_planned_orders（含 E2 SELL 行）
     try:
-        run_script("run_combined_live_plan.py", timeout=TIMEOUT_ORDER_STEP)
+        run_script("run_combined_live_plan.py", timeout=TIMEOUT_COMBINED_PLAN_STEP)
     except Exception as e:
         logger().error("刷新组合状态机失败：%s —— E2平仓可能依赖旧计划单", e)
 
