@@ -367,7 +367,10 @@ def market_is_open() -> bool:
     now = now_beijing()
     if not is_trade_day(now.date()):
         return False
-    return datetime.time(9, 30) <= now.time() <= datetime.time(15, 0)
+    return (
+        datetime.time(9, 30) <= now.time() <= datetime.time(11, 30)
+        or datetime.time(13, 0) <= now.time() <= datetime.time(15, 0)
+    )
 
 
 # ── 持仓状态文件 ──────────────────────────────────────────────────────────────
@@ -2407,7 +2410,7 @@ def _e2_place_order_direct(ts_code: str, name: str, planned_qty: int, signal_dat
         )
         amount = fill.filled_qty * fill_price
         if fill.filled_qty < qty:
-            planned_amount = qty * ref_price
+            planned_amount = qty * price
             unfilled_amount = max(planned_amount - amount, 0.0)
             log.warning("⚠️ [E2延迟开仓] %s 部分成交 %d/%d股 @%.2f，按实际成交记录持仓。",
                         ts_code, fill.filled_qty, qty, fill_price)
@@ -2432,7 +2435,7 @@ def _e2_delayed_buy_loop(combined_orders_path, decisions) -> None:
     """后台线程：9:31-13:30 内每60秒检查价格条件，满足则用ask5/last_price挂FIXED_PRICE单。
 
     价格条件：当前价（或最新价）≤ 今日开盘价 × 1.02。
-    午间11:30-13:00使用最新价（ask5为0），QMT接受挂单并于13:00生效。
+    午间11:30-13:00不提交委托，避免券商返回废单；13:00后继续检查。
     超出条件或超过截止时间时放弃并补启动D监控。
     """
     log = logger()
@@ -2470,6 +2473,10 @@ def _e2_delayed_buy_loop(combined_orders_path, decisions) -> None:
             if not _strategy_d_monitor_running():
                 job_strategy_d()
             return
+
+        if not market_is_open():
+            log.info("E2延迟开仓：当前不在连续竞价时段，等待下一轮检查，不提交委托。")
+            continue
 
         if not all(_e2_open_price_ok(code, TOLERANCE) for code in ts_codes):
             log.warning("E2延迟开仓：%s 涨幅已超开盘价2%%，放弃开仓，补启动D监控。", ts_codes)
