@@ -867,6 +867,12 @@ def resize_buy_orders_for_live_account(
     available_cash = float(getattr(account, "available_cash", 0.0) or 0.0)
     market_value = float(current_market_value or 0.0)
     adjusted = planned_orders.copy()
+    if "risk_flags" not in adjusted.columns:
+        adjusted["risk_flags"] = ""
+    else:
+        # planned_orders 来自 CSV 时，空 risk_flags 会被 pandas 读成 float64 NaN。
+        # 后续需要追加 LIVE_SIZE_ADJUSTED 等字符串标记，先转 object，避免 09:15 实盘缩单时报 dtype 错误。
+        adjusted["risk_flags"] = adjusted["risk_flags"].astype("object")
 
     for idx, row in adjusted.iterrows():
         side = str(row.get("side", "")).upper()
