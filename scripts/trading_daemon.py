@@ -194,6 +194,47 @@ def _load_calendar() -> tuple[set[str], str]:
         return set(), ""
 
 
+def ensure_trade_calendar_fresh() -> None:
+    """启动时自动刷新交易日历，避免日期判断长期依赖周历兜底。"""
+    try:
+        config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+        data_cfg = config.get("data", {})
+        start_date = str(data_cfg.get("start_date", "20190101"))
+        end_date = str(data_cfg.get("end_date", "20261231"))
+        today_str = today_beijing().strftime("%Y%m%d")
+        target_date = max(today_str, end_date)
+
+        _, max_date = _load_calendar()
+        if max_date and max_date >= target_date:
+            logger().info("交易日历已覆盖到 %s，无需刷新。", max_date)
+            return
+
+        logger().warning(
+            "交易日历未覆盖目标日期（当前最大=%s，目标=%s），启动时自动刷新。",
+            max_date or "无",
+            target_date,
+        )
+        from src.data_source import TushareDataSource
+        from src.trading_calendar import TradingCalendar
+
+        source = TushareDataSource(PROJECT_ROOT / "config" / "config.json")
+        calendar = TradingCalendar(source, PROJECT_ROOT / "config" / "config.json").fetch_and_save(
+            start_date,
+            end_date,
+            overwrite=True,
+        )
+        max_after = str(calendar["cal_date"].astype(str).max()) if "cal_date" in calendar.columns and not calendar.empty else ""
+        logger().info("✅ 交易日历自动刷新完成：%s-%s，行数=%d。", start_date, max_after, len(calendar))
+    except Exception as exc:
+        logger().error("交易日历自动刷新失败：%s；将暂时使用本地缓存/周历兜底。", exc)
+        _notify(
+            "system_error",
+            "⚠️ 交易日历自动刷新失败",
+            "交易日历未能自动更新，程序会暂用本地缓存或周历兜底，请稍后检查数据源。",
+            level="timeSensitive",
+        )
+
+
 def is_trade_day(date: datetime.date) -> bool:
     cal, max_date = _load_calendar()
     if cal:
@@ -3584,6 +3625,7 @@ def main() -> None:
     setup()
     log = logger()
     log.info("A_System 守护进程启动（PID %d）", os.getpid() if (os := __import__("os")) else 0)
+    ensure_trade_calendar_fresh()
 
     def _exit(signum, _frame):
         log.info("收到信号 %d，退出", signum)

@@ -42,11 +42,11 @@ class TushareDataSource:
             retry_times=int(source_config.get("request_retry_times", 3)),
             retry_wait_seconds=int(source_config.get("request_retry_wait_seconds", 3)),
         )
-        token = os.getenv(self.tushare_config.token_env)
+        token = os.getenv(self.tushare_config.token_env) or source_config.get("token")
         if not token:
             raise RuntimeError(
                 f"未找到环境变量 {self.tushare_config.token_env}。"
-                "请运行采集脚本并按提示输入 Token，或临时 export 该环境变量。"
+                "请运行采集脚本并按提示输入 Token，或在 config/config.json 的 data_source.token 中配置。"
             )
 
         self.token = token.strip()
