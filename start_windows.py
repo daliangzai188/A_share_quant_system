@@ -10,6 +10,28 @@ d_monitor_pid_file = root / "logs" / "strategy_d_monitor.pid"
 daemon = root / "scripts" / "trading_daemon.py"
 log.parent.mkdir(exist_ok=True)
 
+def pid_exists(pid: str) -> bool:
+    try:
+        result = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        return pid in result.stdout
+    except Exception:
+        return True
+
+def wait_pid_gone(pid: str) -> bool:
+    """启动前只按进程状态判断旧进程是否释放，不用固定 sleep 猜时间。"""
+    start = time.monotonic()
+    while True:
+        if not pid_exists(pid):
+            return True
+        if time.monotonic() - start >= 60:
+            return False
+        time.sleep(0.5)
+
 def stop_pid_file(path: Path, label: str) -> bool:
     if not path.exists():
         return False
@@ -17,43 +39,29 @@ def stop_pid_file(path: Path, label: str) -> bool:
     if not old_pid:
         path.unlink(missing_ok=True)
         return False
-    subprocess.run(["taskkill", "/PID", old_pid, "/F"], capture_output=True)
+    if not pid_exists(old_pid):
+        path.unlink(missing_ok=True)
+        print(f"Old {label} pid file cleaned (PID {old_pid} not running)")
+        return False
+    subprocess.Popen(
+        ["taskkill", "/PID", old_pid, "/T", "/F"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    if not wait_pid_gone(old_pid):
+        print(f"Old {label} still running (PID {old_pid}); start aborted to avoid duplicate daemon/QMT session.")
+        raise SystemExit(1)
     path.unlink(missing_ok=True)
     print(f"Old {label} stopped (PID {old_pid})")
     return True
 
-def stop_orphan_d_monitors() -> bool:
-    killed = False
-    try:
-        ps = subprocess.run(
-            [
-                "powershell",
-                "-NoProfile",
-                "-Command",
-                (
-                    "Get-CimInstance Win32_Process | "
-                    "Where-Object { $_.CommandLine -match 'python.*monitor_strategy_d_intraday\\.py' } | "
-                    "ForEach-Object { Stop-Process -Id $_.ProcessId -Force; Write-Output $_.ProcessId }"
-                ),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        pids = [line.strip() for line in ps.stdout.splitlines() if line.strip()]
-        if pids:
-            print(f"Old orphan D monitor stopped (PID {', '.join(pids)})")
-            killed = True
-    except Exception as exc:
-        print(f"Warning: orphan D monitor cleanup failed: {exc}")
-    return killed
-
 stopped_d = stop_pid_file(d_monitor_pid_file, "D monitor")
-stopped_orphan_d = stop_orphan_d_monitors()
+# 不再每次启动都用 PowerShell 全进程扫描孤儿 D 监控。那一步很慢，且不是状态确认。
+# D 监控的正常生命周期由 pid 文件和 taskkill /T 进程树停止保证；真出现孤儿进程时再单独排查。
+stopped_orphan_d = False
 stopped_daemon = stop_pid_file(pid_file, "daemon process")
 if stopped_d or stopped_orphan_d or stopped_daemon:
-    print("Waiting for QMT session to release...")
-    time.sleep(15)  # 等 QMT session 完全释放，避免新进程启动时全部连接 -1
+    print("Old process state verified; starting new daemon.")
 
 # 让 daemon 自己的 RotatingFileHandler 写日志，stdout/stderr 丢弃
 proc = subprocess.Popen(

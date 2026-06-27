@@ -1,5 +1,6 @@
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 sys.stdout.reconfigure(encoding="utf-8")
@@ -12,6 +13,7 @@ pid_file = ROOT / ".daemon_pid"
 GREEN = "\033[92m"
 YELLOW = "\033[93m"
 RESET = "\033[0m"
+STOP_VERIFY_TIMEOUT_SEC = 60
 
 
 def _notify_stopped_async() -> None:
@@ -42,74 +44,74 @@ def _notify_stopped_async() -> None:
         print(YELLOW + f"停止通知后台发送启动失败（不影响停止）：{exc}" + RESET, flush=True)
 
 
-def _taskkill(pid: str) -> bool | None:
-    """快速停止进程树。
-
-    以前这里同步等待 taskkill 完整返回；当 QMT/xtquant 子线程卡住时，
-    Windows taskkill 偶尔会拖很久，导致 stop_windows.py 看起来卡死。
-    现在最多等 3 秒：确认成功就返回 True；taskkill 自身卡住则让它后台继续，
-    stop 脚本立即返回，避免手工停止程序时被阻塞。
-    """
+def _pid_exists(pid: str) -> bool:
+    """用系统进程表确认 PID 是否仍存在。停止是否成功只看这个状态。"""
     try:
-        proc = subprocess.Popen(
+        result = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        return pid in result.stdout
+    except Exception as exc:
+        print(YELLOW + f"检查 PID {pid} 状态失败：{exc}" + RESET, flush=True)
+        return True
+
+
+def _taskkill(pid: str) -> bool:
+    """发送强制停止请求；是否停干净由 _pid_exists 再确认。"""
+    try:
+        subprocess.Popen(
             ["taskkill", "/PID", pid, "/T", "/F"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        try:
-            return proc.wait(timeout=3) == 0
-        except subprocess.TimeoutExpired:
+        return True
+    except Exception as exc:
+        print(YELLOW + f"停止 PID {pid} 请求发送失败：{exc}" + RESET, flush=True)
+        return False
+
+
+def _wait_until_pid_gone(pid: str) -> bool:
+    """等待到 PID 真正从进程表消失。
+
+    成功标准不是等待了多少秒，而是 PID 不存在。超时只是防止脚本无限卡死；
+    超时后不会删除 pid 文件，也不会提示可以重启。
+    """
+    start = time.monotonic()
+    while True:
+        if not _pid_exists(pid):
+            return True
+        if time.monotonic() - start >= STOP_VERIFY_TIMEOUT_SEC:
             print(
                 YELLOW
-                + f"停止 PID {pid} 请求已发送，taskkill 仍在后台清理；如稍后仍未退出再检查任务管理器。"
+                + f"PID {pid} 仍存在，尚未停干净；不要马上启动，先确认任务管理器或重新执行 stop。"
                 + RESET,
                 flush=True,
             )
-            return None
-    except Exception as exc:
-        print(YELLOW + f"停止 PID {pid} 启动失败：{exc}" + RESET, flush=True)
-        return None
+            return False
+        time.sleep(0.5)
 
 
-def _cleanup_children_async() -> None:
-    """后台清理本项目残留子进程，不阻塞 stop_windows.py 返回。"""
-    try:
-        creationflags = 0
-        if hasattr(subprocess, "DETACHED_PROCESS"):
-            creationflags |= subprocess.DETACHED_PROCESS
-        if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
-            creationflags |= subprocess.CREATE_NEW_PROCESS_GROUP
-        root_text = str(ROOT).replace("\\", "\\\\")
-        command = (
-            "Get-CimInstance Win32_Process | "
-            f"Where-Object {{ $_.CommandLine -and $_.CommandLine -match '{root_text}' -and "
-            "$_.CommandLine -match 'scripts\\\\(trading_daemon|collect_all_data|clean_collected_data|"
-            "build_dynamic_features|score_limit_up_fill_probability|run_paper_ab_filtered_daily_ops|"
-            "run_strategy_e2_signal|run_strategy_l_signal|monitor_strategy_d_intraday)\\.py' }} | "
-            "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
-        )
-        subprocess.Popen(
-            ["powershell", "-NoProfile", "-Command", command],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            creationflags=creationflags,
-        )
-    except Exception as exc:
-        print(YELLOW + f"后台残留进程清理启动失败（不影响停止）：{exc}" + RESET, flush=True)
+def _stop_and_verify(pid: str) -> bool:
+    if not _pid_exists(pid):
+        return True
+    if not _taskkill(pid):
+        return False
+    return _wait_until_pid_gone(pid)
 
 
 if pid_file.exists():
     pid = pid_file.read_text().strip()
     print(f"Stopping PID {pid} ...", flush=True)
-    stopped = _taskkill(pid)
-    if stopped is True:
+    stopped = _stop_and_verify(pid)
+    if stopped:
         print(GREEN + f"Stopped PID {pid}" + RESET, flush=True)
         _notify_stopped_async()
-    elif stopped is None:
-        print(YELLOW + f"Stop requested for PID {pid}; returning immediately." + RESET, flush=True)
-        _notify_stopped_async()
+        pid_file.unlink(missing_ok=True)
     else:
-        print(YELLOW + f"PID {pid} not found or stop failed (already stopped)" + RESET, flush=True)
-    pid_file.unlink(missing_ok=True)
+        print(YELLOW + f"PID {pid} stop not confirmed; .daemon_pid kept." + RESET, flush=True)
+        raise SystemExit(1)
 else:
     print(YELLOW + "Not running" + RESET, flush=True)
