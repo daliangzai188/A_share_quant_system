@@ -45,15 +45,24 @@ def _notify_stopped_async() -> None:
 
 
 def _pid_exists(pid: str) -> bool:
-    """用系统进程表确认 PID 是否仍存在。停止是否成功只看这个状态。"""
+    """用 Windows API 确认 PID 是否仍存在，避免 tasklist 反复启动导致停止脚本卡顿。"""
     try:
-        result = subprocess.run(
-            ["tasklist", "/FI", f"PID eq {pid}"],
-            capture_output=True,
-            text=True,
-            timeout=3,
-        )
-        return pid in result.stdout
+        import ctypes
+
+        process_id = int(pid)
+        kernel32 = ctypes.windll.kernel32
+        process_query_limited_information = 0x1000
+        handle = kernel32.OpenProcess(process_query_limited_information, False, process_id)
+        if not handle:
+            return False
+        try:
+            exit_code = ctypes.c_ulong()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return True
+            still_active = 259
+            return int(exit_code.value) == still_active
+        finally:
+            kernel32.CloseHandle(handle)
     except Exception as exc:
         print(YELLOW + f"检查 PID {pid} 状态失败：{exc}" + RESET, flush=True)
         return True
@@ -91,7 +100,7 @@ def _wait_until_pid_gone(pid: str) -> bool:
                 flush=True,
             )
             return False
-        time.sleep(0.5)
+        time.sleep(0.1)
 
 
 def _stop_and_verify(pid: str) -> bool:

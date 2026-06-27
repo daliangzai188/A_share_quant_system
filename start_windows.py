@@ -13,13 +13,22 @@ log.parent.mkdir(exist_ok=True)
 
 def pid_exists(pid: str) -> bool:
     try:
-        result = subprocess.run(
-            ["tasklist", "/FI", f"PID eq {pid}"],
-            capture_output=True,
-            text=True,
-            timeout=3,
-        )
-        return pid in result.stdout
+        import ctypes
+
+        process_id = int(pid)
+        kernel32 = ctypes.windll.kernel32
+        process_query_limited_information = 0x1000
+        handle = kernel32.OpenProcess(process_query_limited_information, False, process_id)
+        if not handle:
+            return False
+        try:
+            exit_code = ctypes.c_ulong()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return True
+            still_active = 259
+            return int(exit_code.value) == still_active
+        finally:
+            kernel32.CloseHandle(handle)
     except Exception:
         return True
 
@@ -31,7 +40,7 @@ def wait_pid_gone(pid: str) -> bool:
             return True
         if time.monotonic() - start >= 60:
             return False
-        time.sleep(0.5)
+        time.sleep(0.1)
 
 def stop_pid_file(path: Path, label: str) -> bool:
     if not path.exists():
