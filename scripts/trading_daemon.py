@@ -3636,16 +3636,18 @@ def _qmt_connect_once(broker_config: dict, *, preferred_only: bool, timeout_sec:
     return adapter
 
 
-def _qmt_connect(broker_config: dict) -> Any:
+def _qmt_connect(broker_config: dict, *, allow_full_scan: bool | None = None) -> Any:
     """建立新 QMT 连接。不持有 _qmt_lock，调用方按需加锁。
 
     非关键时段只尝试首选 path/session，避免周末/夜间账户查询卡顿时全量扫描备用
     session，造成“刚打印已连接又被总超时判失败”的误判和刷屏。
-    关键窗口才允许完整备用扫描，保证实盘买卖期间的恢复能力。
+    关键窗口或连续失败后的恢复动作允许完整备用扫描，保证实盘买卖期间的恢复能力。
     """
     errors: list[str] = []
     modes = [(True, 30.0)]
-    if qmt_is_critical_window():
+    if allow_full_scan is None:
+        allow_full_scan = qmt_is_critical_window()
+    if allow_full_scan:
         modes.append((False, 45.0))
     for preferred_only, timeout_sec in modes:
         try:
@@ -3660,12 +3662,38 @@ def _qmt_connect(broker_config: dict) -> Any:
     raise RuntimeError("QMT连接失败: " + " | ".join(errors))
 
 
-def _qmt_get(broker_config: dict) -> Any:
+def _qmt_get(broker_config: dict, *, allow_full_scan: bool | None = None) -> Any:
     """返回持久连接，未连接时建立。调用方须持有 _qmt_lock。"""
     global _qmt_adapter
     if _qmt_adapter is None:
-        _qmt_adapter = _qmt_connect(broker_config)
+        _qmt_adapter = _qmt_connect(broker_config, allow_full_scan=allow_full_scan)
     return _qmt_adapter
+
+
+def _qmt_query_account_positions(adapter: Any, *, timeout_sec: float = 25.0) -> tuple[Any, Any]:
+    """账户连接验证：资产和持仓都能成功返回，才算 QMT 对程序可用。"""
+    done = threading.Event()
+    result: list[tuple[Any, Any]] = []
+    err: list[BaseException] = []
+
+    def _do() -> None:
+        try:
+            account = adapter.query_account()
+            positions = adapter.query_positions()
+            result.append((account, positions))
+        except BaseException as exc:  # noqa: BLE001
+            err.append(exc)
+        finally:
+            done.set()
+
+    threading.Thread(target=_do, daemon=True).start()
+    if not done.wait(timeout_sec):
+        raise TimeoutError(f"QMT账户查询超时（{int(timeout_sec)}秒无响应）")
+    if err:
+        raise err[0]
+    if not result:
+        raise RuntimeError("QMT账户查询未返回结果")
+    return result[0]
 
 
 def _qmt_reset() -> None:
@@ -3702,8 +3730,7 @@ def _print_account_status(log: Any) -> None:
     with _qmt_lock:
         try:
             adapter = _qmt_get(broker_cfg)
-            account = adapter.query_account()
-            positions = adapter.query_positions()
+            account, positions = _qmt_query_account_positions(adapter)
             _qmt_last_verified_at = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
             live_positions = [p for p in (positions or []) if int(getattr(p, "volume", 0) or 0) > 0]
             if live_positions:
@@ -3751,11 +3778,17 @@ def _print_account_status(log: Any) -> None:
             try:
                 if critical_window:
                     log.info("QMT自动重连开始（第%d次）", _qmt_reconnect_count)
+                    allow_full_scan = True
                 else:
-                    log.info("QMT非交易时段后台静默重连开始（第%d次）", _qmt_reconnect_count)
-                adapter = _qmt_get(broker_cfg)
-                account = adapter.query_account()
-                positions = adapter.query_positions()
+                    allow_full_scan = _qmt_reconnect_count >= 3
+                    scan_desc = "完整扫描备用session/path" if allow_full_scan else "首选session"
+                    log.info(
+                        "QMT非交易时段后台静默重连开始（第%d次，%s）",
+                        _qmt_reconnect_count,
+                        scan_desc,
+                    )
+                adapter = _qmt_get(broker_cfg, allow_full_scan=allow_full_scan)
+                account, positions = _qmt_query_account_positions(adapter)
                 _qmt_last_verified_at = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
                 live_positions = [p for p in (positions or []) if int(getattr(p, "volume", 0) or 0) > 0]
                 if live_positions:
