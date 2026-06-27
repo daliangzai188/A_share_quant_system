@@ -89,6 +89,8 @@ stopped_daemon = stop_pid_file(pid_file, "daemon process")
 if stopped_d or stopped_orphan_d or stopped_daemon:
     print("Old process state verified; starting new daemon.")
 
+log_start_pos = log.stat().st_size if log.exists() else 0
+
 # 让 daemon 自己的 RotatingFileHandler 写日志，stdout/stderr 丢弃
 proc = subprocess.Popen(
     [sys.executable, str(daemon)],
@@ -150,6 +152,8 @@ def should_print_line(text: str) -> bool:
         return True
     important_words = [
         "下次任务",
+        "A_System 守护进程启动",
+        "交易日历",
         "启动检查",
         "已有 ",
         "收盘数据缓存",
@@ -193,7 +197,7 @@ def should_print_line(text: str) -> bool:
 
 try:
     with open(log, "r", encoding="utf-8", errors="replace") as f:
-        f.seek(0, 2)
+        f.seek(log_start_pos)
         while True:
             line = f.readline()
             if line:
