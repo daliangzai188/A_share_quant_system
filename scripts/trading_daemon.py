@@ -3290,24 +3290,34 @@ def _log_abc_filter_funnel(signal_date: str) -> None:
 
         strategy_path = PROJECT_ROOT / "config" / "strategy_config.json"
         strategy_cfg = load_json_config(strategy_path)
-        base_generator = PaperCandidateGenerator(strategy_path)
+        live_fill_scored_path = _prefer_live_processed_path("live_limit_up_fill_scored.csv", "limit_up_fill_scored.csv")
+        live_market_emotion_path = _prefer_live_processed_path("live_market_emotion_features.csv", "market_emotion_features.csv")
+        live_theme_heat_path = _prefer_live_processed_path("live_theme_heat_features.csv", "theme_heat_features.csv")
+        generator_kwargs = {
+            "input_trades_path": live_fill_scored_path,
+            "market_emotion_features_path": live_market_emotion_path,
+            "theme_heat_features_path": live_theme_heat_path,
+        }
+        base_generator = PaperCandidateGenerator(strategy_path, **generator_kwargs)
         all_candidates = base_generator.load_all_candidates()
 
         traces = [filter_trace("A主策略", base_generator, all_candidates, signal_date)]
 
         b_conditions = configured_b_conditions(strategy_cfg)
         b_config = backup_config(strategy_cfg, b_conditions)
-        b_generator = PaperCandidateGenerator(strategy_path)
+        b_generator = PaperCandidateGenerator(strategy_path, **generator_kwargs)
         b_generator.config = b_config
         b_generator.paper_config = b_config.get("paper_candidate", {})
+        b_generator.risk_thresholds = b_generator.paper_config.get("risk_thresholds", {})
         traces.append(filter_trace(f"B备用策略（{condition_text(b_conditions)}）", b_generator, all_candidates, signal_date))
 
         c_conditions = configured_c_conditions(strategy_cfg)
         if c_conditions:
             c_config = backup_config(strategy_cfg, c_conditions)
-            c_generator = PaperCandidateGenerator(strategy_path)
+            c_generator = PaperCandidateGenerator(strategy_path, **generator_kwargs)
             c_generator.config = c_config
             c_generator.paper_config = c_config.get("paper_candidate", {})
+            c_generator.risk_thresholds = c_generator.paper_config.get("risk_thresholds", {})
             traces.append(filter_trace(f"C补位策略（{condition_text(c_conditions)}）", c_generator, all_candidates, signal_date))
 
         trace = pd.concat(traces, ignore_index=True)

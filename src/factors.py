@@ -305,7 +305,8 @@ class FactorAnalyzer:
             labels=["rank_1", "rank_2_3", "rank_4_10", "rank_11_30", "rank_gt_30"],
         )
         if "theme_is_mainline" in trades.columns:
-            trades["theme_is_mainline_bucket"] = trades["theme_is_mainline"].fillna(False).astype(bool).astype(str)
+            theme_is_mainline = trades["theme_is_mainline"].astype(str).str.lower().isin({"true", "1", "yes"})
+            trades["theme_is_mainline_bucket"] = theme_is_mainline.astype(str)
         else:
             trades["theme_is_mainline_bucket"] = "unknown"
         trades["market_emotion_state_bucket"] = trades.get(

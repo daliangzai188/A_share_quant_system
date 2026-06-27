@@ -36,6 +36,18 @@ def resolve_path(path: str | Path) -> Path:
     return candidate if candidate.is_absolute() else PROJECT_ROOT / candidate
 
 
+def prefer_live_processed_path(live_name: str, fallback_name: str | Path) -> Path:
+    live_path = PROJECT_ROOT / "data" / "processed" / live_name
+    if live_path.exists():
+        return live_path
+    fallback_path = Path(fallback_name)
+    if fallback_path.is_absolute():
+        return fallback_path
+    if len(fallback_path.parts) > 1:
+        return PROJECT_ROOT / fallback_path
+    return PROJECT_ROOT / "data" / "processed" / fallback_path
+
+
 def read_csv(path: Path) -> pd.DataFrame:
     if not path.exists():
         return pd.DataFrame()
@@ -310,7 +322,7 @@ def filter_trace(label: str, generator: PaperCandidateGenerator, all_candidates:
         {
             "strategy_layer": label,
             "step": "0_load_base_candidates",
-            "description": "加载 next_day_premium_trades，并复用 StrategyConditionOptimizer.load_trades 的基础可交易过滤：成交概率可靠、封单异常过滤、股票池过滤等。",
+            "description": "加载实盘/配置候选输入，并复用 StrategyConditionOptimizer.load_trades 的基础可交易过滤：成交概率可靠、封单异常过滤、股票池过滤等。",
             "reason_detail": "此处已经过滤掉成交概率不可靠、封单异常、不可执行样本；当日剩余样本是后续 A/B/C 的共同基础池。",
             "all_dates_before": len(current),
             "all_dates_after": len(current),
@@ -394,7 +406,12 @@ def main() -> None:
     required_columns = [str(column) for column in requirements.get("required_columns", [])]
 
     raw_limit_path = PROJECT_ROOT / data_config.get("limit_list_dir", "data/raw/limit_list") / f"{signal_date}.csv"
-    fill_path = PROJECT_ROOT / fill_config.get("output_limit_up_fill_scored_path", "data/processed/limit_up_fill_scored.csv")
+    fill_path = prefer_live_processed_path(
+        "live_limit_up_fill_scored.csv",
+        fill_config.get("output_limit_up_fill_scored_path", "data/processed/limit_up_fill_scored.csv"),
+    )
+    market_emotion_path = prefer_live_processed_path("live_market_emotion_features.csv", "market_emotion_features.csv")
+    theme_heat_path = prefer_live_processed_path("live_theme_heat_features.csv", "theme_heat_features.csv")
     output_prefix = resolve_path(args.output_prefix)
     checklist_path = output_prefix.with_name(output_prefix.name + f"_{signal_date}_checklist.csv")
 
@@ -459,23 +476,30 @@ def main() -> None:
 
     print_section("4. 分层筛选漏斗")
     try:
-        base_generator = PaperCandidateGenerator(args.strategy_config)
+        generator_kwargs = {
+            "input_trades_path": fill_path,
+            "market_emotion_features_path": market_emotion_path,
+            "theme_heat_features_path": theme_heat_path,
+        }
+        base_generator = PaperCandidateGenerator(args.strategy_config, **generator_kwargs)
         all_candidates = base_generator.load_all_candidates()
         traces = [filter_trace("A主策略", base_generator, all_candidates, signal_date)]
 
         b_conditions = configured_b_conditions(strategy_config)
         b_config = backup_config(strategy_config, b_conditions)
-        b_generator = PaperCandidateGenerator(args.strategy_config)
+        b_generator = PaperCandidateGenerator(args.strategy_config, **generator_kwargs)
         b_generator.config = b_config
         b_generator.paper_config = b_config.get("paper_candidate", {})
+        b_generator.risk_thresholds = b_generator.paper_config.get("risk_thresholds", {})
         traces.append(filter_trace(f"B备用策略（{condition_text(b_conditions)}）", b_generator, all_candidates, signal_date))
 
         c_conditions = configured_c_conditions(strategy_config)
         if c_conditions:
             c_config = backup_config(strategy_config, c_conditions)
-            c_generator = PaperCandidateGenerator(args.strategy_config)
+            c_generator = PaperCandidateGenerator(args.strategy_config, **generator_kwargs)
             c_generator.config = c_config
             c_generator.paper_config = c_config.get("paper_candidate", {})
+            c_generator.risk_thresholds = c_generator.paper_config.get("risk_thresholds", {})
             traces.append(filter_trace(f"C补位策略（{condition_text(c_conditions)}）", c_generator, all_candidates, signal_date))
 
         trace = pd.concat(traces, ignore_index=True)
