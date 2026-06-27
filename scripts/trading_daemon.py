@@ -3416,6 +3416,10 @@ def _qmt_connect(broker_config: dict) -> Any:
 
     threading.Thread(target=_do, daemon=True).start()
     if not done.wait(20.0):
+        try:
+            adapter.disconnect()
+        except Exception:
+            pass
         raise TimeoutError("QMT 连接超时（20秒无响应）")
     if err:
         raise err[0]
@@ -3481,8 +3485,9 @@ def _print_account_status(log: Any) -> None:
             # 仅在刚断连那一刻告警（叠加节流），避免每轮轮询刷屏
             if _qmt_reconnect_count == 1:
                 _notify("connection", "🔌 账户断连", "QMT连接断开，正在自动重连，请关注。",
-                        level="critical", call=True)
+                        level="critical", call=False)
             try:
+                log.info("QMT自动重连开始（第%d次）", _qmt_reconnect_count)
                 adapter = _qmt_get(broker_cfg)
                 account = adapter.query_account()
                 positions = adapter.query_positions()
@@ -3752,8 +3757,6 @@ def main() -> None:
                 last_trade_check_ts = now_ts
             if _qmt_reconnect_count == 0:
                 interval = _ACCT_TRADING if is_trading else _ACCT_INTERVAL
-            elif _qmt_reconnect_count == 1:
-                interval = 0
             else:
                 interval = _RETRY_INTERVAL
             if now_ts - last_acct_ts >= interval:
