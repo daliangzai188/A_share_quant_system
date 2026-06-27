@@ -3,6 +3,9 @@ from pathlib import Path
 
 sys.stdout.reconfigure(encoding="utf-8")
 full_log = "--full-log" in sys.argv
+PROCESS_TERMINATE = 0x0001
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+STILL_ACTIVE = 259
 
 root = Path(__file__).absolute().parent
 log = root / "logs" / "trading_daemon.log"
@@ -17,20 +20,35 @@ def pid_exists(pid: str) -> bool:
 
         process_id = int(pid)
         kernel32 = ctypes.windll.kernel32
-        process_query_limited_information = 0x1000
-        handle = kernel32.OpenProcess(process_query_limited_information, False, process_id)
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, process_id)
         if not handle:
             return False
         try:
             exit_code = ctypes.c_ulong()
             if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
                 return True
-            still_active = 259
-            return int(exit_code.value) == still_active
+            return int(exit_code.value) == STILL_ACTIVE
         finally:
             kernel32.CloseHandle(handle)
     except Exception:
         return True
+
+def terminate_process(pid: str) -> bool:
+    try:
+        import ctypes
+
+        process_id = int(pid)
+        kernel32 = ctypes.windll.kernel32
+        access = PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION
+        handle = kernel32.OpenProcess(access, False, process_id)
+        if not handle:
+            return not pid_exists(pid)
+        try:
+            return bool(kernel32.TerminateProcess(handle, 1))
+        finally:
+            kernel32.CloseHandle(handle)
+    except Exception:
+        return False
 
 def wait_pid_gone(pid: str) -> bool:
     """启动前只按进程状态判断旧进程是否释放，不用固定 sleep 猜时间。"""
@@ -53,11 +71,9 @@ def stop_pid_file(path: Path, label: str) -> bool:
         path.unlink(missing_ok=True)
         print(f"Old {label} pid file cleaned (PID {old_pid} not running)")
         return False
-    subprocess.Popen(
-        ["taskkill", "/PID", old_pid, "/T", "/F"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    if not terminate_process(old_pid):
+        print(f"Old {label} terminate failed (PID {old_pid}); start aborted.")
+        raise SystemExit(1)
     if not wait_pid_gone(old_pid):
         print(f"Old {label} still running (PID {old_pid}); start aborted to avoid duplicate daemon/QMT session.")
         raise SystemExit(1)

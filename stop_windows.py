@@ -10,10 +10,14 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 pid_file = ROOT / ".daemon_pid"
+d_monitor_pid_file = ROOT / "logs" / "strategy_d_monitor.pid"
 GREEN = "\033[92m"
 YELLOW = "\033[93m"
 RESET = "\033[0m"
 STOP_VERIFY_TIMEOUT_SEC = 60
+PROCESS_TERMINATE = 0x0001
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+STILL_ACTIVE = 259
 
 
 def _notify_stopped_async() -> None:
@@ -51,16 +55,14 @@ def _pid_exists(pid: str) -> bool:
 
         process_id = int(pid)
         kernel32 = ctypes.windll.kernel32
-        process_query_limited_information = 0x1000
-        handle = kernel32.OpenProcess(process_query_limited_information, False, process_id)
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, process_id)
         if not handle:
             return False
         try:
             exit_code = ctypes.c_ulong()
             if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
                 return True
-            still_active = 259
-            return int(exit_code.value) == still_active
+            return int(exit_code.value) == STILL_ACTIVE
         finally:
             kernel32.CloseHandle(handle)
     except Exception as exc:
@@ -68,17 +70,26 @@ def _pid_exists(pid: str) -> bool:
         return True
 
 
-def _taskkill(pid: str) -> bool:
-    """发送强制停止请求；是否停干净由 _pid_exists 再确认。"""
+def _terminate_process(pid: str) -> bool:
+    """直接调用 Windows API 强制终止进程，避免 taskkill.exe 枚举进程树导致卡顿。"""
     try:
-        subprocess.Popen(
-            ["taskkill", "/PID", pid, "/T", "/F"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        return True
+        import ctypes
+
+        process_id = int(pid)
+        kernel32 = ctypes.windll.kernel32
+        access = PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION
+        handle = kernel32.OpenProcess(access, False, process_id)
+        if not handle:
+            return not _pid_exists(pid)
+        try:
+            if not kernel32.TerminateProcess(handle, 1):
+                print(YELLOW + f"TerminateProcess PID {pid} 返回失败。" + RESET, flush=True)
+                return False
+            return True
+        finally:
+            kernel32.CloseHandle(handle)
     except Exception as exc:
-        print(YELLOW + f"停止 PID {pid} 请求发送失败：{exc}" + RESET, flush=True)
+        print(YELLOW + f"强制停止 PID {pid} 失败：{exc}" + RESET, flush=True)
         return False
 
 
@@ -106,21 +117,34 @@ def _wait_until_pid_gone(pid: str) -> bool:
 def _stop_and_verify(pid: str) -> bool:
     if not _pid_exists(pid):
         return True
-    if not _taskkill(pid):
+    if not _terminate_process(pid):
         return False
     return _wait_until_pid_gone(pid)
 
 
-if pid_file.exists():
-    pid = pid_file.read_text().strip()
-    print(f"Stopping PID {pid} ...", flush=True)
+def _stop_pid_file(path: Path, label: str) -> bool:
+    if not path.exists():
+        return True
+    pid = path.read_text().strip()
+    if not pid:
+        path.unlink(missing_ok=True)
+        return True
+    print(f"Stopping {label} PID {pid} ...", flush=True)
     stopped = _stop_and_verify(pid)
     if stopped:
-        print(GREEN + f"Stopped PID {pid}" + RESET, flush=True)
+        print(GREEN + f"Stopped {label} PID {pid}" + RESET, flush=True)
+        path.unlink(missing_ok=True)
+        return True
+    print(YELLOW + f"{label} PID {pid} stop not confirmed; pid file kept." + RESET, flush=True)
+    return False
+
+
+if pid_file.exists():
+    daemon_ok = _stop_pid_file(pid_file, "daemon")
+    d_ok = _stop_pid_file(d_monitor_pid_file, "D monitor")
+    if daemon_ok and d_ok:
         _notify_stopped_async()
-        pid_file.unlink(missing_ok=True)
     else:
-        print(YELLOW + f"PID {pid} stop not confirmed; .daemon_pid kept." + RESET, flush=True)
         raise SystemExit(1)
 else:
     print(YELLOW + "Not running" + RESET, flush=True)
