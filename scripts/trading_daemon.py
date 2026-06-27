@@ -3609,15 +3609,25 @@ _qmt_lock = threading.Lock()         # 保护 _qmt_adapter 并发访问
 
 
 def _qmt_connect_once(broker_config: dict, *, preferred_only: bool, timeout_sec: float) -> Any:
-    """单次建立 QMT 连接，给 preferred/full 两种模式各自独立超时。"""
-    from src.qmt_adapter import QMTBrokerAdapter
-    adapter = QMTBrokerAdapter.from_config(broker_config)
+    """单次建立 QMT 连接，给创建适配器、加载 xtquant 和 connect 全流程独立超时。"""
     done = threading.Event()
+    timed_out = threading.Event()
+    result: list[Any] = []
     err: list = []
 
     def _do() -> None:
         try:
+            from src.qmt_adapter import QMTBrokerAdapter
+
+            adapter = QMTBrokerAdapter.from_config(broker_config)
             adapter.connect(preferred_only=preferred_only)
+            if timed_out.is_set():
+                try:
+                    adapter.disconnect()
+                except Exception:
+                    pass
+                return
+            result.append(adapter)
         except Exception as e:
             err.append(e)
         finally:
@@ -3625,15 +3635,14 @@ def _qmt_connect_once(broker_config: dict, *, preferred_only: bool, timeout_sec:
 
     threading.Thread(target=_do, daemon=True).start()
     if not done.wait(timeout_sec):
-        try:
-            adapter.disconnect()
-        except Exception:
-            pass
+        timed_out.set()
         mode = "首选path/session" if preferred_only else "完整备用path/session"
         raise TimeoutError(f"QMT {mode}连接超时（{int(timeout_sec)}秒无响应）")
     if err:
         raise err[0]
-    return adapter
+    if not result:
+        raise RuntimeError("QMT连接未返回适配器")
+    return result[0]
 
 
 def _qmt_connect(broker_config: dict, *, allow_full_scan: bool | None = None) -> Any:
