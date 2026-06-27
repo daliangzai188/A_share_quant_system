@@ -3718,8 +3718,8 @@ def _print_account_status(log: Any) -> None:
             _qmt_reconnect_count += 1
             critical_window = qmt_is_critical_window()
             if not critical_window and _qmt_reconnect_count < 3:
-                log.warning(
-                    "⚠️ QMT心跳暂时无响应（第%d/3次，非交易关键时段，暂不推送断连，稍后重试）：%s",
+                log.info(
+                    "QMT非交易时段心跳暂时无响应（第%d/3次，暂不推送断连，稍后低频重试）：%s",
                     _qmt_reconnect_count,
                     first_err,
                 )
@@ -3728,8 +3728,8 @@ def _print_account_status(log: Any) -> None:
             if critical_window:
                 log.warning("⚠️ QMT掉线（第%d次），立刻重连：%s", _qmt_reconnect_count, first_err)
             else:
-                log.warning(
-                    "⚠️ QMT非交易时段连续%d次无响应，开始静默重连：%s",
+                log.info(
+                    "QMT非交易时段连续%d次无响应，开始后台静默重连：%s",
                     _qmt_reconnect_count,
                     first_err,
                 )
@@ -3739,7 +3739,10 @@ def _print_account_status(log: Any) -> None:
                 _notify("connection", "🔌 账户断连", "QMT连接断开，正在自动重连，请关注。",
                         level="critical", call=False)
             try:
-                log.info("QMT自动重连开始（第%d次）", _qmt_reconnect_count)
+                if critical_window:
+                    log.info("QMT自动重连开始（第%d次）", _qmt_reconnect_count)
+                else:
+                    log.info("QMT非交易时段后台静默重连开始（第%d次）", _qmt_reconnect_count)
                 adapter = _qmt_get(broker_cfg)
                 account = adapter.query_account()
                 positions = adapter.query_positions()
@@ -3753,8 +3756,12 @@ def _print_account_status(log: Any) -> None:
                     _notify("connection", "✅ 账户重连成功", "QMT连接已恢复正常。")
                 _qmt_reconnect_count = 0
             except Exception as retry_err:
-                log.warning("⚠️ QMT重连失败（第%d次），等待下次重试：%s",
-                            _qmt_reconnect_count, retry_err)
+                if critical_window:
+                    log.warning("⚠️ QMT重连失败（第%d次），等待下次重试：%s",
+                                _qmt_reconnect_count, retry_err)
+                else:
+                    log.info("QMT非交易时段静默重连未恢复（第%d次），下次低频重试：%s",
+                             _qmt_reconnect_count, retry_err)
                 # 仅关键窗口连续多次失败时告警；非交易时段不升级为持续响铃。
                 if critical_window and _qmt_reconnect_count >= 3:
                     _notify("system_error", "❌ QMT持续掉线",
