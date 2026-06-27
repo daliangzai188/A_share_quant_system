@@ -2,6 +2,7 @@ import subprocess, sys, os, time
 from pathlib import Path
 
 sys.stdout.reconfigure(encoding="utf-8")
+full_log = "--full-log" in sys.argv
 
 root = Path(__file__).absolute().parent
 log = root / "logs" / "trading_daemon.log"
@@ -87,8 +88,8 @@ RED   = "\033[91m"
 BOLD  = "\033[1m"
 RESET = "\033[0m"
 
-print(GREEN + BOLD + "A_System 已启动，下面只需要盯住绿色成功行和红色失败行。" + RESET)
-print("Showing live log (Ctrl+C to detach, daemon keeps running)...")
+print(GREEN + BOLD + "A_System 已启动，默认只显示关键日志；完整日志仍写入文件。" + RESET)
+print("Ctrl+C 可立即脱离终端，daemon 会继续运行。需要终端显示全部日志可用：py -3.11 start_windows.py --full-log")
 
 
 def color_for_line(text: str) -> str:
@@ -110,16 +111,76 @@ def color_for_line(text: str) -> str:
         return YELLOW
     return ""
 
-with open(log, "r", encoding="utf-8", errors="replace") as f:
-    f.seek(0, 2)
-    while True:
-        line = f.readline()
-        if line:
-            stripped = line.rstrip()
-            color = color_for_line(stripped)
-            if color:
-                print(color + stripped + RESET, flush=True)
+
+def should_print_line(text: str) -> bool:
+    """默认少刷屏，避免 Windows 终端被详细审计日志拖慢。
+
+    详细 A/B/C 漏斗、逐层停留原因仍完整写入 logs/trading_daemon.log；
+    终端只保留连接、账户、候选、计划、错误、警告和任务节点。
+    """
+    if full_log:
+        return True
+    color = color_for_line(text)
+    if color:
+        return True
+    important_words = [
+        "下次任务",
+        "启动检查",
+        "已有 ",
+        "收盘数据缓存",
+        "【今日候选】",
+        "【明日候选】",
+        "L/model3状态",
+        "L龙头策略",
+        "L龙头条件",
+        "L/model3结论",
+        "组合决策明细",
+        "发现组合计划",
+        "准备开仓",
+        "持仓信息",
+        "平仓",
+        "撤单",
+        "QMT账户连接状态",
+        "QMT非交易时段",
+        "账户",
+        "信号就绪审计",
+        "市场环境",
+        "数据口径",
+        "必需字段",
+        "成交概率",
+    ]
+    suppressed_words = [
+        "A/B/C逐层筛选漏斗",
+        "未进入/停留原因",
+        "0_load_base_candidates",
+        "1_universe_filters",
+        "2_include_conditions",
+        "3_exclude_conditions",
+        "4_compound_exclude_rules",
+        "5_rank_and_select_first",
+        "A/B/C停止点",
+    ]
+    if any(word in text for word in suppressed_words):
+        return False
+    return any(word in text for word in important_words)
+
+
+try:
+    with open(log, "r", encoding="utf-8", errors="replace") as f:
+        f.seek(0, 2)
+        while True:
+            line = f.readline()
+            if line:
+                stripped = line.rstrip()
+                if not should_print_line(stripped):
+                    continue
+                color = color_for_line(stripped)
+                if color:
+                    print(color + stripped + RESET, flush=True)
+                else:
+                    print(stripped, flush=True)
             else:
-                print(stripped, flush=True)
-        else:
-            time.sleep(0.5)
+                time.sleep(0.5)
+except KeyboardInterrupt:
+    print("\n已脱离实时日志，daemon 继续后台运行。查看完整日志：logs/trading_daemon.log", flush=True)
+    os._exit(0)
