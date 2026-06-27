@@ -3604,6 +3604,7 @@ def run_job(scheduled_time: datetime.time) -> None:
 
 _qmt_reconnect_count: int = 0       # 累计重连次数，成功后归零
 _qmt_adapter: Any = None             # 持久连接，程序生命周期内保持
+_qmt_last_verified_at: str = ""      # 最近一次 query_account/query_positions 成功时间
 _qmt_lock = threading.Lock()         # 保护 _qmt_adapter 并发访问
 
 
@@ -3680,9 +3681,9 @@ def _qmt_reset() -> None:
 
 def _print_account_status(log: Any) -> None:
     """账户信息轮询（后台线程）：复用持久连接，查询无需重新握手。
-    关键交易窗口真正断线时立刻重连；非交易时段先降噪，避免 QMT 偶发
-    账户 RPC 卡顿被误判为实盘级断连。"""
-    global _qmt_reconnect_count
+    只有 query_account/query_positions 成功返回，才算账户连接已验证可用。
+    关键交易窗口账户不可用时立刻重连和告警；非交易时段只做低频恢复尝试。"""
+    global _qmt_reconnect_count, _qmt_last_verified_at
     now_str = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
     try:
         config = load_json_config(PROJECT_ROOT / "config" / "config.json")
@@ -3703,6 +3704,7 @@ def _print_account_status(log: Any) -> None:
             adapter = _qmt_get(broker_cfg)
             account = adapter.query_account()
             positions = adapter.query_positions()
+            _qmt_last_verified_at = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
             live_positions = [p for p in (positions or []) if int(getattr(p, "volume", 0) or 0) > 0]
             if live_positions:
                 codes = [p.ts_code for p in live_positions]
@@ -3717,20 +3719,28 @@ def _print_account_status(log: Any) -> None:
             _qmt_reset()
             _qmt_reconnect_count += 1
             critical_window = qmt_is_critical_window()
+            last_ok = _qmt_last_verified_at or "本轮启动后尚未验证成功"
             if not critical_window and _qmt_reconnect_count < 3:
                 log.info(
-                    "QMT非交易时段心跳暂时无响应（第%d/3次，暂不推送断连，稍后低频重试）：%s",
+                    "QMT账户连接状态=未验证/不可用（非交易时段第%d/3次，最后验证成功=%s；暂不推送断连，稍后低频重试）：%s",
                     _qmt_reconnect_count,
+                    last_ok,
                     first_err,
                 )
                 return
 
             if critical_window:
-                log.warning("⚠️ QMT掉线（第%d次），立刻重连：%s", _qmt_reconnect_count, first_err)
+                log.warning(
+                    "⚠️ QMT账户连接状态=不可用（第%d次，最后验证成功=%s），立刻重连：%s",
+                    _qmt_reconnect_count,
+                    last_ok,
+                    first_err,
+                )
             else:
                 log.info(
-                    "QMT非交易时段连续%d次无响应，开始后台静默重连：%s",
+                    "QMT账户连接状态=未验证/不可用（非交易时段连续%d次，最后验证成功=%s），开始后台静默重连：%s",
                     _qmt_reconnect_count,
+                    last_ok,
                     first_err,
                 )
 
@@ -3746,6 +3756,7 @@ def _print_account_status(log: Any) -> None:
                 adapter = _qmt_get(broker_cfg)
                 account = adapter.query_account()
                 positions = adapter.query_positions()
+                _qmt_last_verified_at = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
                 live_positions = [p for p in (positions or []) if int(getattr(p, "volume", 0) or 0) > 0]
                 if live_positions:
                     codes = [p.ts_code for p in live_positions]
