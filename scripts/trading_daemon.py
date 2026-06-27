@@ -319,8 +319,8 @@ def _date_in_csv(path: Path, target_date: datetime.date, date_column: str = "tra
         return False
     target_str = target_date.strftime("%Y%m%d")
     try:
-        with path.open(encoding="utf-8") as f:
-            header = f.readline().strip().split(",")
+        with path.open(encoding="utf-8-sig") as f:
+            header = [column.strip().strip('"') for column in f.readline().strip().split(",")]
             if date_column not in header:
                 return False
             idx = header.index(date_column)
@@ -2685,9 +2685,9 @@ def job_post_market(end_date: str | None = None) -> None:
     target_date = datetime.datetime.strptime(target_str, "%Y%m%d").date()
     logger().info("===== 收盘流水线（目标日期 %s）=====", target_str)
 
-    # shift(2)=2天 + 最长连假/断档缓冲=8天 = 10个交易日
-    # 历史数据已在 daily_merged.csv，只需追加缺失日期，避免扫描 2019 至今全量文件
-    recent_start = prev_n_trade_days(today_beijing(), 10).strftime("%Y%m%d")
+    # 收盘流水线只需要补齐目标信号日当天的 raw/processed 行。
+    # 历史窗口已经保存在 processed 全表里，动态特征和成交概率步骤会基于全表重建。
+    recent_start = target_str
 
     steps = [
         ("collect_all_data.py",               "① 采集日线 + 涨停池",             TIMEOUT_DATA_STEP,  "约1分钟"),
