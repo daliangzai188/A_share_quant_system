@@ -35,6 +35,9 @@ class DataCleaner:
         self.daily_merged_path = self.project_root / cleaning_config.get(
             "daily_merged_path", "data/processed/daily_merged.csv"
         )
+        self.daily_merged_by_date_dir = self.project_root / cleaning_config.get(
+            "daily_merged_by_date_dir", "data/processed/daily_merged_by_date"
+        )
         self.limit_up_merged_path = self.project_root / cleaning_config.get(
             "limit_up_merged_path", "data/processed/limit_up_merged.csv"
         )
@@ -97,17 +100,18 @@ class DataCleaner:
         if incremental_replace:
             daily_output = pd.concat(daily_frames, ignore_index=True) if daily_frames else pd.DataFrame()
             limit_output = pd.concat(limit_frames, ignore_index=True) if limit_frames else pd.DataFrame()
-            self._replace_trade_dates_in_output(self.daily_merged_path, daily_output, trade_dates)
+            self._write_daily_partitions(daily_output, trade_dates)
             self._replace_trade_dates_in_output(self.limit_up_merged_path, limit_output, trade_dates)
             self._replace_trade_dates_in_output(self.market_sentiment_path, market_sentiment, trade_dates)
         else:
             self._write_csv_with_retry(market_sentiment, self.market_sentiment_path)
-        self.logger.info("日线合并表已生成: %s, 行数: %s", self.daily_merged_path, daily_total_rows)
+        daily_output_path = self.daily_merged_by_date_dir if incremental_replace else self.daily_merged_path
+        self.logger.info("日线%s已生成: %s, 行数: %s", "分片" if incremental_replace else "合并表", daily_output_path, daily_total_rows)
         self.logger.info("涨停合并表已生成: %s, 行数: %s", self.limit_up_merged_path, limit_total_rows)
         self.logger.info("市场情绪表已生成: %s, 行数: %s", self.market_sentiment_path, len(market_sentiment))
 
         return {
-            "daily_merged": self.daily_merged_path,
+            "daily_merged": self.daily_merged_by_date_dir if incremental_replace else self.daily_merged_path,
             "limit_up_merged": self.limit_up_merged_path,
             "market_sentiment": self.market_sentiment_path,
         }
@@ -588,6 +592,32 @@ class DataCleaner:
             removed,
             len(new_frame),
             kept_rows + len(new_frame),
+        )
+
+    def _write_daily_partitions(self, daily_data: pd.DataFrame, trade_dates: Iterable[str]) -> None:
+        """实盘增量日线按交易日分片保存，避免维护巨大的 daily_merged.csv。
+
+        daily_merged.csv 只适合离线研究/全量回测。Windows 的 Z: 映射盘打开和替换
+        250万行级别单体 CSV 容易出现 OSError 22 或长时间阻塞。实盘日更只需要
+        目标信号日当天的日线数据，因此写入 daily_merged_by_date/YYYYMMDD.csv，
+        后续动态特征按日期读取分片，不再碰旧大文件。
+        """
+        self._mkdir_with_retry(self.daily_merged_by_date_dir)
+        if daily_data.empty:
+            self.logger.warning("增量清洗：本次没有可写入的日线分片，日期=%s", ",".join(map(str, trade_dates)))
+            return
+        data = daily_data.copy()
+        data["trade_date"] = data["trade_date"].astype(str)
+        written = 0
+        for trade_date, group in data.groupby("trade_date", sort=True):
+            output_path = self.daily_merged_by_date_dir / f"{trade_date}.csv"
+            self._write_csv_with_retry(group.sort_values(["trade_date", "ts_code"]), output_path)
+            written += len(group)
+        self.logger.info(
+            "增量清洗：日线分片已写入 %s，日期=%s，行数=%s",
+            self.daily_merged_by_date_dir,
+            ",".join(sorted(data["trade_date"].unique().tolist())),
+            written,
         )
 
     @staticmethod

@@ -2702,6 +2702,7 @@ def job_post_market(end_date: str | None = None) -> None:
     extra_args: dict[str, list[str]] = {
         "collect_all_data.py": ["--start-date", recent_start, "--end-date", target_str, "--require-end-date-limit"],
         "clean_collected_data.py": ["--start-date", recent_start, "--end-date", target_str, "--incremental-replace"],
+        "build_dynamic_features.py": ["--start-date", recent_start, "--end-date", target_str],
         "run_paper_ab_filtered_daily_ops.py": ["--signal-date", target_str, "--top-n", "10"],
         "run_strategy_e2_signal.py": ["--signal-date", target_str],
         # L 信号默认只落文件，不会接入实盘；必须 mode=2 且 strategy_l.live_order_enabled=true
@@ -2880,13 +2881,19 @@ def _load_limit_for_codes(ts_codes: list[str]) -> tuple[str, dict[str, dict]]:
 
 
 def _load_daily_for_codes(ts_codes: list[str]) -> tuple[str, dict[str, dict]]:
-    """从 daily_merged.csv 读最新交易日的 close/pct_chg/circ_mv。
+    """从日线分片读最新交易日的 close/pct_chg/circ_mv。
+
+    实盘播报只需要最新信号日当天候选股行情，不应读取 250 万行级别
+    daily_merged.csv。优先使用 data/processed/daily_merged_by_date/YYYYMMDD.csv；
+    旧 daily_merged.csv 仅作为离线研究遗留文件，不再进入实盘启动路径。
     返回 (最新交易日字符串, {ts_code: {...}})。"""
     try:
         import pandas as pd
-        path = PROJECT_ROOT / "data" / "processed" / "daily_merged.csv"
-        if not path.exists():
+        part_dir = PROJECT_ROOT / "data" / "processed" / "daily_merged_by_date"
+        part_files = sorted(part_dir.glob("*.csv"))
+        if not part_files:
             return "", {}
+        path = part_files[-1]
         need = ["ts_code", "trade_date", "close", "pct_chg", "circ_mv"]
         avail = list(pd.read_csv(path, nrows=0).columns)
         use_cols = [c for c in need if c in avail]

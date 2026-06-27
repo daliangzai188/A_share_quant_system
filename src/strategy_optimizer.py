@@ -28,9 +28,16 @@ class StrategyConditionOptimizer:
             "input_trades_path", "data/processed/next_day_premium_trades.csv"
         )
         analysis_config = self.config.get("analysis", {})
+        data_config = self.config.get("data", {})
+        cleaning_config = self.config.get("cleaning", {})
         self.input_daily_merged_path = self.project_root / analysis_config.get(
             "input_daily_merged_path", "data/processed/daily_merged.csv"
         )
+        self.daily_merged_by_date_dir = self.project_root / cleaning_config.get(
+            "daily_merged_by_date_dir", "data/processed/daily_merged_by_date"
+        )
+        self.raw_daily_dir = self.project_root / data_config.get("daily_dir", "data/raw/daily")
+        self.raw_daily_basic_dir = self.project_root / data_config.get("daily_basic_dir", "data/raw/daily_basic")
         self.output_report_path = self.project_root / optimization_config.get(
             "output_report_path", "reports/strategy_optimization_report.csv"
         )
@@ -202,12 +209,20 @@ class StrategyConditionOptimizer:
         return trades[~is_st].copy()
 
     def add_historical_features(self, trades: pd.DataFrame) -> pd.DataFrame:
-        daily = pd.read_csv(
-            self.input_daily_merged_path,
-            dtype={"trade_date": str, "ts_code": str},
-            usecols=["trade_date", "ts_code", "pct_chg", "amount", "turnover_rate"],
-            low_memory=False,
-        )
+        daily = self.load_daily_history_for_trades(trades)
+        if daily.empty:
+            self.logger.warning("未找到可用日线历史特征源，prev/amount_ratio 等字段将为空。")
+            for column in [
+                "prev_pct_chg",
+                "prev2_pct_chg",
+                "two_day_pct_chg",
+                "prev_amount",
+                "prev_turnover_rate",
+                "amount_ratio_1d",
+                "turnover_ratio_1d",
+            ]:
+                trades[column] = pd.NA
+            return trades
         daily = daily.sort_values(["ts_code", "trade_date"]).copy()
         daily["prev_pct_chg"] = daily.groupby("ts_code")["pct_chg"].shift(1)
         daily["prev2_pct_chg"] = daily.groupby("ts_code")["pct_chg"].shift(2)
@@ -228,6 +243,78 @@ class StrategyConditionOptimizer:
             "turnover_ratio_1d",
         ]
         return trades.merge(daily[feature_columns], on=["trade_date", "ts_code"], how="left", validate="many_to_one")
+
+    def load_daily_history_for_trades(self, trades: pd.DataFrame) -> pd.DataFrame:
+        """加载计算 prev/amount_ratio 所需的日线历史，不强依赖 daily_merged.csv。
+
+        daily_merged.csv 是全市场多年度大文件，只适合离线研究。实盘每日信号
+        生成优先读取 data/processed/daily_merged_by_date/YYYYMMDD.csv 分片；
+        分片不存在时再从 raw daily + daily_basic 按日期临时合成，避免启动或
+        收盘流水线打开 250万行级别单体 CSV。
+        """
+        columns = ["trade_date", "ts_code", "pct_chg", "amount", "turnover_rate"]
+        if self.input_daily_merged_path.exists():
+            return pd.read_csv(
+                self.input_daily_merged_path,
+                dtype={"trade_date": str, "ts_code": str},
+                usecols=columns,
+                low_memory=False,
+            )
+        trade_dates = sorted(trades["trade_date"].dropna().astype(str).unique().tolist())
+        needed_dates = self.expand_needed_daily_dates(trade_dates)
+        frames = []
+        for trade_date in needed_dates:
+            frame = self.load_daily_one_date(trade_date, columns)
+            if not frame.empty:
+                frames.append(frame)
+        if not frames:
+            return pd.DataFrame(columns=columns)
+        return pd.concat(frames, ignore_index=True, sort=False)
+
+    def expand_needed_daily_dates(self, trade_dates: list[str]) -> list[str]:
+        available_dates = sorted(
+            {
+                path.stem
+                for path in list(self.daily_merged_by_date_dir.glob("*.csv")) + list(self.raw_daily_dir.glob("*.csv"))
+            }
+        )
+        if not available_dates:
+            return trade_dates
+        index_by_date = {date: index for index, date in enumerate(available_dates)}
+        needed: set[str] = set()
+        for trade_date in trade_dates:
+            index = index_by_date.get(trade_date)
+            if index is None:
+                continue
+            for offset in (0, 1, 2):
+                if index - offset >= 0:
+                    needed.add(available_dates[index - offset])
+        return sorted(needed)
+
+    def load_daily_one_date(self, trade_date: str, columns: list[str]) -> pd.DataFrame:
+        partition_path = self.daily_merged_by_date_dir / f"{trade_date}.csv"
+        if partition_path.exists():
+            available = pd.read_csv(partition_path, nrows=0).columns.tolist()
+            usecols = [column for column in columns if column in available]
+            return pd.read_csv(partition_path, dtype={"trade_date": str, "ts_code": str}, usecols=usecols, low_memory=False)
+
+        daily_path = self.raw_daily_dir / f"{trade_date}.csv"
+        basic_path = self.raw_daily_basic_dir / f"{trade_date}.csv"
+        if not daily_path.exists():
+            return pd.DataFrame(columns=columns)
+        daily_available = pd.read_csv(daily_path, nrows=0).columns.tolist()
+        daily_usecols = [column for column in ["trade_date", "ts_code", "pct_chg", "amount"] if column in daily_available]
+        daily = pd.read_csv(daily_path, dtype={"trade_date": str, "ts_code": str}, usecols=daily_usecols, low_memory=False)
+        if basic_path.exists():
+            basic_available = pd.read_csv(basic_path, nrows=0).columns.tolist()
+            basic_usecols = [column for column in ["trade_date", "ts_code", "turnover_rate"] if column in basic_available]
+            if {"trade_date", "ts_code"}.issubset(set(basic_usecols)):
+                basic = pd.read_csv(basic_path, dtype={"trade_date": str, "ts_code": str}, usecols=basic_usecols, low_memory=False)
+                daily = daily.merge(basic, on=["trade_date", "ts_code"], how="left", validate="one_to_one")
+        for column in columns:
+            if column not in daily.columns:
+                daily[column] = pd.NA
+        return daily[columns].copy()
 
     def add_leader_and_theme_features(self, trades: pd.DataFrame) -> pd.DataFrame:
         trades = trades.copy()

@@ -24,6 +24,10 @@ class MarketEmotionBuilder:
             "input_daily_merged_path",
             "data/processed/daily_merged.csv",
         )
+        self.daily_merged_by_date_dir = self.project_root / cleaning_config.get(
+            "daily_merged_by_date_dir",
+            "data/processed/daily_merged_by_date",
+        )
         self.limit_up_merged_path = self.project_root / cleaning_config.get(
             "limit_up_merged_path",
             "data/processed/limit_up_merged.csv",
@@ -33,7 +37,9 @@ class MarketEmotionBuilder:
             "data/processed/market_emotion_features.csv",
         )
 
-    def build(self) -> Path:
+    def build(self, start_date: str | None = None, end_date: str | None = None) -> Path:
+        if start_date or end_date:
+            return self.build_incremental(start_date=start_date, end_date=end_date)
         daily = pd.read_csv(
             self.daily_merged_path,
             dtype={"trade_date": str, "ts_code": str},
@@ -44,6 +50,45 @@ class MarketEmotionBuilder:
             dtype={"trade_date": str, "ts_code": str},
             low_memory=False,
         )
+        features = self.build_base_features(daily=daily, limit_up=limit_up)
+        features = self.add_state_features(features)
+        mkdir_p(self.output_path.parent)
+        features.to_csv(self.output_path, index=False, encoding="utf-8-sig")
+        self.logger.info("市场情绪特征已生成: %s, 行数: %s", self.output_path, len(features))
+        return self.output_path
+
+    def build_incremental(self, start_date: str | None = None, end_date: str | None = None) -> Path:
+        """只更新指定交易日的市场情绪特征，不读取 daily_merged.csv 大文件。
+
+        实盘收盘流水线只补目标信号日。日线数据来自
+        data/processed/daily_merged_by_date/YYYYMMDD.csv 分片，避免每次打开
+        250万行级别 daily_merged.csv。已有历史特征从 output_path 读取，
+        移除目标日期后再合并新日期，并统一重算 prev1/prev2 状态字段。
+        """
+        trade_dates = self.discover_partition_dates(start_date=start_date, end_date=end_date)
+        if not trade_dates:
+            raise RuntimeError(f"没有找到可构建市场情绪的日线分片: {self.daily_merged_by_date_dir}")
+        daily = self.load_daily_partitions(trade_dates)
+        limit_up = self.load_limit_up_for_dates(trade_dates)
+        new_features = self.build_base_features(daily=daily, limit_up=limit_up)
+        existing = pd.DataFrame()
+        if self.output_path.exists():
+            existing = pd.read_csv(self.output_path, dtype={"trade_date": str}, low_memory=False)
+            existing = existing[~existing["trade_date"].astype(str).isin(set(trade_dates))].copy()
+            existing = self.drop_state_columns(existing)
+        combined = pd.concat([existing, new_features], ignore_index=True, sort=False)
+        features = self.add_state_features(combined)
+        mkdir_p(self.output_path.parent)
+        features.to_csv(self.output_path, index=False, encoding="utf-8-sig")
+        self.logger.info(
+            "市场情绪特征已增量更新: %s, 日期=%s, 行数: %s",
+            self.output_path,
+            ",".join(trade_dates),
+            len(features),
+        )
+        return self.output_path
+
+    def build_base_features(self, daily: pd.DataFrame, limit_up: pd.DataFrame) -> pd.DataFrame:
         rows = []
         for trade_date, daily_group in daily.groupby("trade_date", sort=True):
             limit_group = limit_up[limit_up["trade_date"] == trade_date].copy()
@@ -58,12 +103,46 @@ class MarketEmotionBuilder:
                     }
                 )
 
-        features = pd.DataFrame(rows)
-        features = self.add_state_features(features)
-        mkdir_p(self.output_path.parent)
-        features.to_csv(self.output_path, index=False, encoding="utf-8-sig")
-        self.logger.info("市场情绪特征已生成: %s, 行数: %s", self.output_path, len(features))
-        return self.output_path
+        return pd.DataFrame(rows)
+
+    def discover_partition_dates(self, start_date: str | None = None, end_date: str | None = None) -> list[str]:
+        dates = sorted(path.stem for path in self.daily_merged_by_date_dir.glob("*.csv"))
+        return [
+            date
+            for date in dates
+            if (start_date is None or date >= str(start_date)) and (end_date is None or date <= str(end_date))
+        ]
+
+    def load_daily_partitions(self, trade_dates: list[str]) -> pd.DataFrame:
+        frames = []
+        for trade_date in trade_dates:
+            path = self.daily_merged_by_date_dir / f"{trade_date}.csv"
+            if path.exists():
+                frames.append(pd.read_csv(path, dtype={"trade_date": str, "ts_code": str}, low_memory=False))
+        if not frames:
+            return pd.DataFrame()
+        return pd.concat(frames, ignore_index=True, sort=False)
+
+    def load_limit_up_for_dates(self, trade_dates: list[str]) -> pd.DataFrame:
+        if not self.limit_up_merged_path.exists():
+            return pd.DataFrame()
+        limit_up = pd.read_csv(self.limit_up_merged_path, dtype={"trade_date": str, "ts_code": str}, low_memory=False)
+        return limit_up[limit_up["trade_date"].astype(str).isin(set(trade_dates))].copy()
+
+    @staticmethod
+    def drop_state_columns(features: pd.DataFrame) -> pd.DataFrame:
+        state_columns = {
+            "segment_emotion_score",
+            "segment_emotion_state",
+            "market_emotion_score",
+            "market_emotion_state",
+        }
+        drop_columns = [
+            column
+            for column in features.columns
+            if column in state_columns or column.endswith("_prev1") or column.endswith("_prev2")
+        ]
+        return features.drop(columns=drop_columns, errors="ignore")
 
     def build_global_features(self, daily: pd.DataFrame, limit_up: pd.DataFrame) -> dict[str, object]:
         limit_down = self.count_limit_down(daily)

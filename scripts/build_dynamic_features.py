@@ -19,6 +19,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", default="config/config.json", help="配置文件路径。")
     parser.add_argument("--skip-market-emotion", action="store_true", help="跳过市场情绪特征。")
     parser.add_argument("--skip-theme-heat", action="store_true", help="跳过题材热度特征。")
+    parser.add_argument("--start-date", help="开始日期 YYYYMMDD。传入后按日线分片增量更新，避免读取 daily_merged.csv 大文件。")
+    parser.add_argument("--end-date", help="结束日期 YYYYMMDD。传入后按日线分片增量更新，避免读取 daily_merged.csv 大文件。")
     return parser.parse_args()
 
 
@@ -33,7 +35,10 @@ def main() -> None:
     )
     outputs = {}
     if not args.skip_market_emotion:
-        outputs["market_emotion"] = MarketEmotionBuilder(config_path=args.config).build()
+        outputs["market_emotion"] = MarketEmotionBuilder(config_path=args.config).build(
+            start_date=args.start_date,
+            end_date=args.end_date,
+        )
     if not args.skip_theme_heat:
         outputs["theme_heat"] = ThemeHeatBuilder(config_path=args.config).build()
 
