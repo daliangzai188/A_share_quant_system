@@ -542,11 +542,29 @@ class DataCleaner:
         wrote_header = False
 
         if output_path.exists():
-            total_existing, kept_rows, existing_columns = self._copy_existing_without_trade_dates(
-                source_path=output_path,
-                temp_path=temp_path,
-                target_dates=target_dates,
-            )
+            last_copy_error: OSError | None = None
+            for attempt in range(5):
+                try:
+                    total_existing, kept_rows, existing_columns = self._copy_existing_without_trade_dates(
+                        source_path=output_path,
+                        temp_path=temp_path,
+                        target_dates=target_dates,
+                    )
+                    break
+                except OSError as exc:
+                    last_copy_error = exc
+                    temp_path.unlink(missing_ok=True)
+                    if attempt < 4:
+                        self.logger.warning(
+                            "增量清洗：读取旧文件失败，第%d/5次重试：%s，错误=%s",
+                            attempt + 1,
+                            output_path,
+                            exc,
+                        )
+                        time.sleep(3)
+            else:
+                if last_copy_error is not None:
+                    raise last_copy_error
             wrote_header = existing_columns is not None
 
         if existing_columns:
