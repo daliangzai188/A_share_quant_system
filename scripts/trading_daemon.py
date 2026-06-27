@@ -3005,6 +3005,7 @@ def report_next_day_candidates() -> None:
                 logger().info("  A/B/C 均无符合条件标的，%s", no_candidate_msg)
             else:
                 logger().warning("  ⚠️  数据未更新！信号来自 %s，今日（%s）收盘流水线未成功运行", signal_date_str, today_str)
+            _log_l_model3_signal_status(signal_date_str, action_date_str.replace("-", ""))
             logger().info("=" * 60)
             return
         except Exception as e:
@@ -3053,6 +3054,7 @@ def report_next_day_candidates() -> None:
                     logger().info("  下一步：%s", row.get("next_action", ""))
             else:
                 logger().info("  A/B/C 均无符合条件标的，%s", no_candidate_msg)
+            _log_l_model3_signal_status(signal_date_str, action_date_str.replace("-", ""))
         else:
             ts_codes = buy_orders["ts_code"].astype(str).tolist()
             daily_date, daily_map = _load_daily_for_codes(ts_codes)
@@ -3101,10 +3103,145 @@ def report_next_day_candidates() -> None:
                     "     计划：策略 %s  参考价 %.2f元  %d股  预估 %.0f元",
                     leg, ref_px, shares, amount,
                 )
+            _log_l_model3_signal_status(signal_date_str, action_date_str.replace("-", ""))
 
         logger().info("=" * 60)
     except Exception as e:
         logger().error("播报候选异常：%s", e)
+
+
+def _load_l_signal_for_signal_date(signal_date: str) -> dict[str, Any] | None:
+    try:
+        import json
+
+        path = PROJECT_ROOT / "reports" / "strategy_l" / "l_signals_recent.json"
+        if not path.exists():
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+        signals = data.get("signals", [])
+        if not isinstance(signals, list):
+            return None
+        for signal in reversed(signals):
+            if str(signal.get("signal_date", "")) == str(signal_date):
+                return signal
+    except Exception as exc:
+        logger().debug("读取L信号失败：%s", exc)
+    return None
+
+
+def _load_l_candidate_count(signal_date: str) -> int | None:
+    try:
+        import pandas as pd
+
+        path = PROJECT_ROOT / "reports" / "strategy_l" / f"l_signal_{signal_date}_candidates.csv"
+        if not path.exists():
+            return None
+        return int(len(pd.read_csv(path, low_memory=False)))
+    except Exception as exc:
+        logger().debug("读取L候选数失败：%s", exc)
+        return None
+
+
+def _model3_l_base_rule_pass_for_log(signal: dict[str, Any]) -> tuple[bool, str]:
+    segment = str(signal.get("market_segment", ""))
+    retreat = str(signal.get("segment_retreat_state_bucket", ""))
+    chain = str(signal.get("market_chain_count_bucket", ""))
+    reasons = []
+    if segment == "star":
+        reasons.append("market_segment=star被排除")
+    if retreat not in {"neutral", "warming_2day"}:
+        reasons.append(f"segment_retreat_state_bucket={retreat}不在neutral/warming_2day")
+    if chain not in {"8_15", "15_30", "gte_30"}:
+        reasons.append(f"market_chain_count_bucket={chain}不在8_15/15_30/gte_30")
+    return not reasons, "；".join(reasons) if reasons else "L通过model=3基础稳健条件"
+
+
+def _model3_l_replace_guard_pass_for_log(signal: dict[str, Any]) -> tuple[bool, str]:
+    segment = str(signal.get("market_segment", ""))
+    first_time_bucket = str(signal.get("first_time_detail_bucket", ""))
+    try:
+        theme_limit_count = float(signal.get("theme_limit_count", 0) or 0)
+    except (TypeError, ValueError):
+        theme_limit_count = 0.0
+    reasons = []
+    if segment != "chi_next":
+        reasons.append(f"替换要求创业板，当前market_segment={segment}")
+    if theme_limit_count < 2:
+        reasons.append(f"替换要求theme_limit_count>=2，当前={theme_limit_count:g}")
+    if first_time_bucket == "after_1430":
+        reasons.append("替换排除first_time_detail_bucket=after_1430")
+    return not reasons, "；".join(reasons) if reasons else "L通过model=3替换保护条件"
+
+
+def _log_l_model3_signal_status(signal_date: str, action_date: str | None = None) -> None:
+    """播报 L 龙头信号和 mode=3 切换状态。
+
+    周末/非交易日启动时，组合状态机不会用“今天”直接生成周一买单，
+    但这里仍应把最新收盘信号对应的 L 候选、计划买入日和 model=3
+    基础规则打印出来，避免只看到 ABC/E2 而看不到 L。
+    """
+    try:
+        config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+        active_mode = int(config.get("active_strategy_profile", {}).get("mode", 1))
+        model3_config = config.get("strategy_model3", {})
+        candidate_count = _load_l_candidate_count(signal_date)
+        signal = _load_l_signal_for_signal_date(signal_date)
+        count_text = "未知" if candidate_count is None else str(candidate_count)
+
+        logger().info(
+            "  L/model3状态：active_mode=%s strategy_model3.enabled=%s live_order_enabled=%s",
+            active_mode,
+            bool(model3_config.get("enabled", False)),
+            bool(model3_config.get("live_order_enabled", False)),
+        )
+        if signal is None:
+            logger().info(
+                "  L龙头策略：信号日期 %s 无L入选信号，候选数=%s；model=3本轮不会使用L。",
+                signal_date,
+                count_text,
+            )
+            return
+
+        base_ok, base_reason = _model3_l_base_rule_pass_for_log(signal)
+        guard_ok, guard_reason = _model3_l_replace_guard_pass_for_log(signal)
+        planned_buy_date = str(signal.get("planned_buy_date", ""))
+        action_note = ""
+        if action_date:
+            if planned_buy_date == str(action_date):
+                action_note = "；计划买入日与下个交易日一致"
+            else:
+                action_note = f"；计划买入日与当前播报操作日不一致（操作日={action_date}）"
+
+        logger().info(
+            "  L龙头策略：信号日期 %s 候选数=%s，选中 %s %s，题材=%s，计划买入=%s，计划卖出=%s%s",
+            signal_date,
+            count_text,
+            signal.get("ts_code", ""),
+            signal.get("name", ""),
+            signal.get("theme_name", ""),
+            planned_buy_date,
+            signal.get("planned_exit_date", ""),
+            action_note,
+        )
+        logger().info(
+            "  L龙头条件：基础规则=%s（%s）；替换保护=%s（%s）",
+            "通过" if base_ok else "不通过",
+            base_reason,
+            "通过" if guard_ok else "不通过",
+            guard_reason,
+        )
+        if active_mode != 3:
+            logger().info("  L/model3结论：当前不是mode=3，L只展示不参与当前组合切换。")
+        elif not bool(model3_config.get("enabled", False)) or not bool(model3_config.get("live_order_enabled", False)):
+            logger().info("  L/model3结论：model3开关未同时开启，沿用mode=1。")
+        elif not base_ok:
+            logger().info("  L/model3结论：L未通过基础规则，沿用mode=1。")
+        elif guard_ok:
+            logger().info("  L/model3结论：若%s无mode=1买入则L可补位；若有mode=1买入，L也具备替换资格。", planned_buy_date)
+        else:
+            logger().info("  L/model3结论：若%s无mode=1买入则L可补位；若已有mode=1买入则不替换，原因=%s。", planned_buy_date, guard_reason)
+    except Exception as exc:
+        logger().warning("  L/model3状态播报失败：%s", exc)
 
 
 def _load_ab_checklist(signal_date: str):
@@ -3192,6 +3329,7 @@ def report_signal_readiness_summary(signal_date: str) -> None:
             _value_counts_text(daily, "is_fill_score_reliable"),
         )
         _log_abc_filter_funnel(signal_date)
+        _log_l_model3_signal_status(signal_date)
 
         checklist = _load_ab_checklist(signal_date)
         if checklist.empty:
