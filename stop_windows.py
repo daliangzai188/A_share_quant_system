@@ -42,16 +42,32 @@ def _notify_stopped_async() -> None:
         print(YELLOW + f"停止通知后台发送启动失败（不影响停止）：{exc}" + RESET, flush=True)
 
 
-def _taskkill(pid: str) -> subprocess.CompletedProcess[str] | None:
+def _taskkill(pid: str) -> bool | None:
+    """快速停止进程树。
+
+    以前这里同步等待 taskkill 完整返回；当 QMT/xtquant 子线程卡住时，
+    Windows taskkill 偶尔会拖很久，导致 stop_windows.py 看起来卡死。
+    现在最多等 3 秒：确认成功就返回 True；taskkill 自身卡住则让它后台继续，
+    stop 脚本立即返回，避免手工停止程序时被阻塞。
+    """
     try:
-        return subprocess.run(
-            ["taskkill", "/PID", pid, "/F"],
-            capture_output=True,
-            text=True,
-            timeout=5,
+        proc = subprocess.Popen(
+            ["taskkill", "/PID", pid, "/T", "/F"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
-    except subprocess.TimeoutExpired:
-        print(YELLOW + f"停止 PID {pid} 超时，请用任务管理器确认进程是否已退出。" + RESET, flush=True)
+        try:
+            return proc.wait(timeout=3) == 0
+        except subprocess.TimeoutExpired:
+            print(
+                YELLOW
+                + f"停止 PID {pid} 请求已发送，taskkill 仍在后台清理；如稍后仍未退出再检查任务管理器。"
+                + RESET,
+                flush=True,
+            )
+            return None
+    except Exception as exc:
+        print(YELLOW + f"停止 PID {pid} 启动失败：{exc}" + RESET, flush=True)
         return None
 
 
@@ -85,10 +101,12 @@ def _cleanup_children_async() -> None:
 if pid_file.exists():
     pid = pid_file.read_text().strip()
     print(f"Stopping PID {pid} ...", flush=True)
-    result = _taskkill(pid)
-    if result is not None and result.returncode == 0:
+    stopped = _taskkill(pid)
+    if stopped is True:
         print(GREEN + f"Stopped PID {pid}" + RESET, flush=True)
-        _cleanup_children_async()
+        _notify_stopped_async()
+    elif stopped is None:
+        print(YELLOW + f"Stop requested for PID {pid}; returning immediately." + RESET, flush=True)
         _notify_stopped_async()
     else:
         print(YELLOW + f"PID {pid} not found or stop failed (already stopped)" + RESET, flush=True)
