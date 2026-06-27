@@ -186,7 +186,7 @@ class QMTBrokerAdapter(BrokerAdapter):
             return fallback
         return getattr(self.xtconstant_module, name, fallback)
 
-    def connect(self) -> None:
+    def connect(self, preferred_only: bool = False) -> None:
         self._load_xtquant()
         if not self.config.account_id:
             raise RuntimeError("未配置 QMT_ACCOUNT_ID，不能连接 QMT 账户。")
@@ -205,6 +205,9 @@ class QMTBrokerAdapter(BrokerAdapter):
         )
         candidate_paths = [path for path in candidate_paths if path.exists()]
         session_ids = unique_values([self.config.session_id, 1001, 1002, 10001, 20001, 31001])
+        if preferred_only:
+            candidate_paths = candidate_paths[:1]
+            session_ids = session_ids[:1]
         errors: list[str] = []
 
         for qmt_path in candidate_paths:

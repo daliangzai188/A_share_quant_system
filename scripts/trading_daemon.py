@@ -3408,7 +3408,10 @@ def _qmt_connect(broker_config: dict) -> Any:
 
     def _do() -> None:
         try:
-            adapter.connect()
+            try:
+                adapter.connect(preferred_only=True)
+            except Exception:
+                adapter.connect(preferred_only=False)
         except Exception as e:
             err.append(e)
         finally:
@@ -3614,7 +3617,12 @@ def check_qmt_connection() -> None:
         for attempt in range(1, 6):
             adapter = QMTBrokerAdapter.from_config(config.get("broker", {}))
             try:
-                adapter.connect()
+                preferred_only = attempt <= 3
+                if preferred_only:
+                    log.info("QMT快速连接尝试：第 %d/3 次，仅尝试首选 path/session。", attempt)
+                else:
+                    log.info("QMT完整连接尝试：第 %d/5 次，扫描所有备用 path/session。", attempt)
+                adapter.connect(preferred_only=preferred_only)
                 account = adapter.query_account()
                 adapter.disconnect()
                 time.sleep(2)
@@ -3634,8 +3642,14 @@ def check_qmt_connection() -> None:
                 except Exception:
                     pass
                 if attempt < 5:
-                    log.warning("⚠️ QMT暂时未就绪，第 %d/5 次连接失败，15秒后自动重试：%s", attempt, last_error)
-                    time.sleep(15)
+                    retry_seconds = 5 if attempt <= 3 else 15
+                    log.warning(
+                        "⚠️ QMT暂时未就绪，第 %d/5 次连接失败，%d秒后自动重试：%s",
+                        attempt,
+                        retry_seconds,
+                        last_error,
+                    )
+                    time.sleep(retry_seconds)
 
         log.error("❌ QMT连接失败：连续 5 次失败。最后错误：%s", last_error)
         _notify("system_error", "❌ QMT启动连接失败",
