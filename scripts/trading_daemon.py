@@ -3912,23 +3912,38 @@ def check_qmt_connection() -> None:
                 config.get("broker", {}).get("enabled")):
             log.info("QMT 未启用，跳过连接检查")
             return
-        from src.qmt_adapter import QMTBrokerAdapter
 
         last_error = ""
-        for attempt in range(1, 6):
-            adapter = QMTBrokerAdapter.from_config(config.get("broker", {}))
+        broker_cfg = config.get("broker", {})
+        # 启动阶段必须快：连接和账户验证都设硬超时，避免 QMT/xtquant 偶发阻塞拖住整个启动。
+        # 第2次开始允许完整扫描备用 session/path，解决 QMT 活跃 session 偶尔漂移的问题。
+        startup_attempts = [
+            {"preferred_only": True, "connect_timeout": 8.0, "query_timeout": 8.0, "retry_seconds": 2},
+            {"preferred_only": False, "connect_timeout": 18.0, "query_timeout": 10.0, "retry_seconds": 2},
+            {"preferred_only": True, "connect_timeout": 8.0, "query_timeout": 8.0, "retry_seconds": 3},
+            {"preferred_only": False, "connect_timeout": 18.0, "query_timeout": 10.0, "retry_seconds": 5},
+            {"preferred_only": False, "connect_timeout": 18.0, "query_timeout": 10.0, "retry_seconds": 0},
+        ]
+        for attempt, plan in enumerate(startup_attempts, start=1):
+            adapter = None
             try:
-                preferred_only = attempt <= 3
+                preferred_only = bool(plan["preferred_only"])
                 if preferred_only:
-                    log.info("QMT快速连接尝试：第 %d/3 次，仅尝试首选 path/session。", attempt)
+                    log.info("QMT快速连接尝试：第 %d/5 次，仅尝试首选 path/session。", attempt)
                 else:
                     log.info("QMT完整连接尝试：第 %d/5 次，扫描所有备用 path/session。", attempt)
-                adapter.connect(preferred_only=preferred_only)
-                account = adapter.query_account()
+                adapter = _qmt_connect_once(
+                    broker_cfg,
+                    preferred_only=preferred_only,
+                    timeout_sec=float(plan["connect_timeout"]),
+                )
+                account, _positions = _qmt_query_account_positions(
+                    adapter,
+                    timeout_sec=float(plan["query_timeout"]),
+                )
                 adapter.disconnect()
-                time.sleep(2)
                 log.info(
-                    "✅ QMT连接成功：账户 %s，可用资金 %.0f 元（第 %d 次尝试）",
+                    "✅ QMT连接成功且账户已验证：账户 %s，可用资金 %.0f 元（第 %d 次尝试）",
                     account.account_id,
                     account.available_cash,
                     attempt,
@@ -3938,12 +3953,13 @@ def check_qmt_connection() -> None:
                 return
             except Exception as e:
                 last_error = str(e)
-                try:
-                    adapter.disconnect()
-                except Exception:
-                    pass
+                if adapter is not None:
+                    try:
+                        adapter.disconnect()
+                    except Exception:
+                        pass
                 if attempt < 5:
-                    retry_seconds = 5 if attempt <= 3 else 15
+                    retry_seconds = int(plan["retry_seconds"])
                     log.warning(
                         "⚠️ QMT暂时未就绪，第 %d/5 次连接失败，%d秒后自动重试：%s",
                         attempt,
