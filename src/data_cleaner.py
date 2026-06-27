@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import time
 from typing import Iterable
@@ -527,31 +528,75 @@ class DataCleaner:
             return
         self._mkdir_with_retry(output_path.parent)
         new_frame = new_data.copy()
-        existing = pd.DataFrame()
-        if output_path.exists():
-            existing = pd.read_csv(output_path, dtype={"trade_date": str}, low_memory=False)
-        if not existing.empty and "trade_date" in existing.columns:
-            kept = existing[~existing["trade_date"].astype(str).isin(target_dates)].copy()
-        else:
-            kept = existing
         if not new_frame.empty:
             new_frame["trade_date"] = new_frame["trade_date"].astype(str)
-        combined = pd.concat([kept, new_frame], ignore_index=True, sort=False)
-        if not combined.empty and "trade_date" in combined.columns:
-            sort_columns = ["trade_date"]
-            if "ts_code" in combined.columns:
-                sort_columns.append("ts_code")
-            combined = combined.sort_values(sort_columns).reset_index(drop=True)
-        self._write_csv_with_retry(combined, output_path)
-        removed = len(existing) - len(kept) if not existing.empty else 0
+
+        temp_path = output_path.with_name(f"{output_path.name}.tmp.{os.getpid()}")
+        if temp_path.exists():
+            temp_path.unlink()
+
+        existing_columns: list[str] | None = None
+        total_existing = 0
+        kept_rows = 0
+        wrote_header = False
+
+        if output_path.exists():
+            existing_columns = pd.read_csv(output_path, nrows=0).columns.tolist()
+            for chunk in pd.read_csv(
+                output_path,
+                dtype={"trade_date": str},
+                chunksize=100_000,
+                low_memory=False,
+            ):
+                total_existing += len(chunk)
+                if "trade_date" in chunk.columns:
+                    chunk = chunk[~chunk["trade_date"].astype(str).isin(target_dates)].copy()
+                kept_rows += len(chunk)
+                chunk.to_csv(
+                    temp_path,
+                    mode="a",
+                    header=not wrote_header,
+                    index=False,
+                    encoding="utf-8-sig",
+                )
+                wrote_header = True
+
+        if existing_columns:
+            new_frame = new_frame.reindex(columns=existing_columns)
+        if not new_frame.empty or not wrote_header:
+            new_frame.to_csv(
+                temp_path,
+                mode="a",
+                header=not wrote_header,
+                index=False,
+                encoding="utf-8-sig",
+            )
+            wrote_header = True
+
+        self._replace_file_with_retry(temp_path, output_path)
+        removed = total_existing - kept_rows
         self.logger.info(
             "增量清洗：%s 已安全替换日期=%s，移除旧行=%s，写入新行=%s，总行数=%s",
             output_path,
             ",".join(sorted(target_dates)),
             removed,
             len(new_frame),
-            len(combined),
+            kept_rows + len(new_frame),
         )
+
+    @staticmethod
+    def _replace_file_with_retry(source: Path, target: Path) -> None:
+        last_error: OSError | None = None
+        for attempt in range(5):
+            try:
+                source.replace(target)
+                return
+            except OSError as exc:
+                last_error = exc
+                if attempt < 4:
+                    time.sleep(2)
+        if last_error is not None:
+            raise last_error
 
     @staticmethod
     def _mkdir_with_retry(path: Path) -> None:
