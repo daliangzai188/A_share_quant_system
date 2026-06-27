@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import os
 from pathlib import Path
 import time
@@ -541,25 +542,12 @@ class DataCleaner:
         wrote_header = False
 
         if output_path.exists():
-            existing_columns = pd.read_csv(output_path, nrows=0).columns.tolist()
-            for chunk in pd.read_csv(
-                output_path,
-                dtype={"trade_date": str},
-                chunksize=100_000,
-                low_memory=False,
-            ):
-                total_existing += len(chunk)
-                if "trade_date" in chunk.columns:
-                    chunk = chunk[~chunk["trade_date"].astype(str).isin(target_dates)].copy()
-                kept_rows += len(chunk)
-                chunk.to_csv(
-                    temp_path,
-                    mode="a",
-                    header=not wrote_header,
-                    index=False,
-                    encoding="utf-8-sig",
-                )
-                wrote_header = True
+            total_existing, kept_rows, existing_columns = self._copy_existing_without_trade_dates(
+                source_path=output_path,
+                temp_path=temp_path,
+                target_dates=target_dates,
+            )
+            wrote_header = existing_columns is not None
 
         if existing_columns:
             new_frame = new_frame.reindex(columns=existing_columns)
@@ -583,6 +571,44 @@ class DataCleaner:
             len(new_frame),
             kept_rows + len(new_frame),
         )
+
+    @staticmethod
+    def _copy_existing_without_trade_dates(
+        source_path: Path,
+        temp_path: Path,
+        target_dates: set[str],
+    ) -> tuple[int, int, list[str] | None]:
+        """不用 pandas 读取旧大文件，避免 Windows/Z盘上 TextFileReader 打开大 CSV 失败。"""
+        total_rows = 0
+        kept_rows = 0
+        with source_path.open("r", encoding="utf-8-sig", newline="") as source, temp_path.open(
+            "w",
+            encoding="utf-8-sig",
+            newline="",
+        ) as target:
+            reader = csv.reader(source)
+            writer = csv.writer(target)
+            try:
+                header = next(reader)
+            except StopIteration:
+                return 0, 0, None
+            writer.writerow(header)
+            if "trade_date" not in header:
+                for row in reader:
+                    total_rows += 1
+                    kept_rows += 1
+                    writer.writerow(row)
+                return total_rows, kept_rows, header
+
+            date_index = header.index("trade_date")
+            for row in reader:
+                total_rows += 1
+                trade_date = row[date_index].strip().strip('"').replace("-", "")[:8] if len(row) > date_index else ""
+                if trade_date in target_dates:
+                    continue
+                kept_rows += 1
+                writer.writerow(row)
+        return total_rows, kept_rows, header
 
     @staticmethod
     def _replace_file_with_retry(source: Path, target: Path) -> None:
