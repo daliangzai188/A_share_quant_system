@@ -52,24 +52,30 @@ class DataCleaner:
             raise RuntimeError("没有发现可清洗的日线 CSV 文件，请先采集数据。")
 
         self._mkdir_with_retry(self.processed_dir)
-        if incremental_replace:
-            self._remove_trade_dates_from_outputs(trade_dates)
-        else:
+        if not incremental_replace:
             self._prepare_output_files(overwrite=overwrite)
 
         market_rows: list[dict[str, object]] = []
+        daily_frames: list[pd.DataFrame] = []
+        limit_frames: list[pd.DataFrame] = []
         daily_total_rows = 0
         limit_total_rows = 0
 
         for index, trade_date in enumerate(trade_dates, start=1):
             daily_merged = self.clean_daily_by_date(trade_date)
             if not daily_merged.empty:
-                self._append_csv(daily_merged, self.daily_merged_path)
+                if incremental_replace:
+                    daily_frames.append(daily_merged)
+                else:
+                    self._append_csv(daily_merged, self.daily_merged_path)
                 daily_total_rows += len(daily_merged)
 
             limit_up_merged = self.clean_limit_up_by_date(trade_date, daily_merged)
             if not limit_up_merged.empty:
-                self._append_csv(limit_up_merged, self.limit_up_merged_path)
+                if incremental_replace:
+                    limit_frames.append(limit_up_merged)
+                else:
+                    self._append_csv(limit_up_merged, self.limit_up_merged_path)
                 limit_total_rows += len(limit_up_merged)
 
             market_rows.append(self.build_market_sentiment_row(trade_date, daily_merged, limit_up_merged))
@@ -87,7 +93,11 @@ class DataCleaner:
 
         market_sentiment = pd.DataFrame(market_rows)
         if incremental_replace:
-            self._append_csv(market_sentiment, self.market_sentiment_path)
+            daily_output = pd.concat(daily_frames, ignore_index=True) if daily_frames else pd.DataFrame()
+            limit_output = pd.concat(limit_frames, ignore_index=True) if limit_frames else pd.DataFrame()
+            self._replace_trade_dates_in_output(self.daily_merged_path, daily_output, trade_dates)
+            self._replace_trade_dates_in_output(self.limit_up_merged_path, limit_output, trade_dates)
+            self._replace_trade_dates_in_output(self.market_sentiment_path, market_sentiment, trade_dates)
         else:
             self._write_csv_with_retry(market_sentiment, self.market_sentiment_path)
         self.logger.info("日线合并表已生成: %s, 行数: %s", self.daily_merged_path, daily_total_rows)
@@ -511,23 +521,37 @@ class DataCleaner:
                 else:
                     raise FileExistsError(f"输出文件已存在，如需重建请使用 overwrite=True: {path}")
 
-    def _remove_trade_dates_from_outputs(self, trade_dates: Iterable[str]) -> None:
+    def _replace_trade_dates_in_output(self, output_path: Path, new_data: pd.DataFrame, trade_dates: Iterable[str]) -> None:
         target_dates = {str(date) for date in trade_dates}
         if not target_dates:
             return
-        for path in [self.daily_merged_path, self.limit_up_merged_path, self.market_sentiment_path]:
-            self._mkdir_with_retry(path.parent)
-            if not path.exists():
-                continue
-            existing = pd.read_csv(path, dtype={"trade_date": str}, low_memory=False)
-            if existing.empty or "trade_date" not in existing.columns:
-                continue
+        self._mkdir_with_retry(output_path.parent)
+        new_frame = new_data.copy()
+        existing = pd.DataFrame()
+        if output_path.exists():
+            existing = pd.read_csv(output_path, dtype={"trade_date": str}, low_memory=False)
+        if not existing.empty and "trade_date" in existing.columns:
             kept = existing[~existing["trade_date"].astype(str).isin(target_dates)].copy()
-            removed = len(existing) - len(kept)
-            if removed <= 0:
-                continue
-            self._write_csv_with_retry(kept, path)
-            self.logger.info("增量清洗：%s 已移除 %s 行旧日期数据，日期=%s", path, removed, ",".join(sorted(target_dates)))
+        else:
+            kept = existing
+        if not new_frame.empty:
+            new_frame["trade_date"] = new_frame["trade_date"].astype(str)
+        combined = pd.concat([kept, new_frame], ignore_index=True, sort=False)
+        if not combined.empty and "trade_date" in combined.columns:
+            sort_columns = ["trade_date"]
+            if "ts_code" in combined.columns:
+                sort_columns.append("ts_code")
+            combined = combined.sort_values(sort_columns).reset_index(drop=True)
+        self._write_csv_with_retry(combined, output_path)
+        removed = len(existing) - len(kept) if not existing.empty else 0
+        self.logger.info(
+            "增量清洗：%s 已安全替换日期=%s，移除旧行=%s，写入新行=%s，总行数=%s",
+            output_path,
+            ",".join(sorted(target_dates)),
+            removed,
+            len(new_frame),
+            len(combined),
+        )
 
     @staticmethod
     def _mkdir_with_retry(path: Path) -> None:

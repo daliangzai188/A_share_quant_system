@@ -3678,15 +3678,14 @@ def main() -> None:
         expected = today_beijing()
         expected_str = expected.strftime("%Y%m%d")
 
-    # 候选播报和信号审计放后台线程：纯展示，不影响开仓关键路径
-    # 后台跑完会自动打印日志，不阻塞 startup_catchup 和 E2/D 补启动
+    # 候选播报和信号审计放后台线程：纯展示，不影响开仓关键路径。
+    # 如果收盘数据缺失，先让收盘流水线补齐，流水线完成后会自行播报，避免启动时先打印旧审计。
     def _startup_report() -> None:
         try:
             report_next_day_candidates()
             report_signal_readiness_summary(expected_str)
         except Exception as exc:
             log.error("启动候选播报异常：%s", exc)
-    threading.Thread(target=_startup_report, daemon=True, name="startup-report").start()
 
     # 若缓存或 processed 审计数据不是最新交易日数据，后台线程补采。
     # raw 缓存存在但 processed 缺日时也必须补跑，否则盘前审计会误报旧口径。
@@ -3714,6 +3713,7 @@ def main() -> None:
         ).start()
     else:
         log.info("已有 %s 收盘数据缓存且 processed 数据齐全，直接使用", expected_str)
+        threading.Thread(target=_startup_report, daemon=True, name="startup-report").start()
 
     try:
         startup_catchup_strategy_d()
