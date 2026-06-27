@@ -3979,6 +3979,25 @@ def check_qmt_connection() -> None:
                 level="critical", call=True)
 
 
+def start_qmt_connection_check() -> None:
+    """启动时的 QMT 检查调度。
+
+    交易关键窗口、有持仓、有待确认买单时必须同步验证，避免实盘风险。
+    非交易关键时段不能让 QMT/xtquant 偶发慢连接拖住整个守护进程启动，
+    因此放到后台恢复；账户状态会在后续心跳里继续验证。
+    """
+    if qmt_is_critical_window():
+        logger().info("QMT启动连接检查：关键窗口，同步验证账户连接。")
+        check_qmt_connection()
+        return
+    logger().info("QMT启动连接检查：非交易关键时段，后台验证，不阻塞主流程。")
+    threading.Thread(
+        target=check_qmt_connection,
+        daemon=True,
+        name="qmt-startup-check",
+    ).start()
+
+
 def main() -> None:
     setup()
     log = logger()
@@ -3996,7 +4015,7 @@ def main() -> None:
     signal.signal(signal.SIGTERM, _exit)
     signal.signal(signal.SIGINT, _exit)
 
-    check_qmt_connection()
+    start_qmt_connection_check()
 
     # ── 启动时立刻执行平仓检查 ────────────────────────────────────────────────
     log.info("启动检查：扫描逾期/待平仓持仓...")

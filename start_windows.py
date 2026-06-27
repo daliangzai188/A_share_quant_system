@@ -150,6 +150,7 @@ def should_print_line(text: str) -> bool:
         "平仓",
         "撤单",
         "QMT账户连接状态",
+        "QMT启动连接检查",
         "QMT非交易时段",
         "账户",
         "信号就绪审计",
