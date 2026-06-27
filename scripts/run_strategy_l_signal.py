@@ -48,9 +48,16 @@ from src.rolling_signal_store import (
 )
 
 
-SCORED_PATH = PROJECT_ROOT / "data" / "processed" / "limit_up_fill_scored.csv"
-THEME_FEATURE_PATH = PROJECT_ROOT / "data" / "processed" / "theme_heat_features.csv"
-MARKET_EMOTION_FEATURE_PATH = PROJECT_ROOT / "data" / "processed" / "market_emotion_features.csv"
+LIVE_SCORED_PATH = PROJECT_ROOT / "data" / "processed" / "live_limit_up_fill_scored.csv"
+LIVE_THEME_FEATURE_PATH = PROJECT_ROOT / "data" / "processed" / "live_theme_heat_features.csv"
+LIVE_MARKET_EMOTION_FEATURE_PATH = PROJECT_ROOT / "data" / "processed" / "live_market_emotion_features.csv"
+SCORED_PATH = LIVE_SCORED_PATH if LIVE_SCORED_PATH.exists() else PROJECT_ROOT / "data" / "processed" / "limit_up_fill_scored.csv"
+THEME_FEATURE_PATH = LIVE_THEME_FEATURE_PATH if LIVE_THEME_FEATURE_PATH.exists() else PROJECT_ROOT / "data" / "processed" / "theme_heat_features.csv"
+MARKET_EMOTION_FEATURE_PATH = (
+    LIVE_MARKET_EMOTION_FEATURE_PATH
+    if LIVE_MARKET_EMOTION_FEATURE_PATH.exists()
+    else PROJECT_ROOT / "data" / "processed" / "market_emotion_features.csv"
+)
 CALENDAR_PATH = PROJECT_ROOT / "data" / "raw" / "trade_calendar.csv"
 OUTPUT_DIR = PROJECT_ROOT / "reports" / "strategy_l"
 ROLLING_SIGNAL_PATH = OUTPUT_DIR / "l_signals_recent.json"

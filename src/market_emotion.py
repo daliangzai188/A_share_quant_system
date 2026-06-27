@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from src.data_cleaner import DataCleaner
 from src.utils.config import get_project_root, load_json_config, mkdir_p
 from src.utils.logger import get_logger
 
@@ -18,8 +19,10 @@ class MarketEmotionBuilder:
         self.config = load_json_config(config_path)
         self.logger = get_logger("market_emotion")
         feature_config = self.config.get("dynamic_features", {})
+        data_config = self.config.get("data", {})
         analysis_config = self.config.get("analysis", {})
         cleaning_config = self.config.get("cleaning", {})
+        self.raw_daily_dir = self.project_root / data_config.get("daily_dir", "data/raw/daily")
         self.daily_merged_path = self.project_root / analysis_config.get(
             "input_daily_merged_path",
             "data/processed/daily_merged.csv",
@@ -65,7 +68,7 @@ class MarketEmotionBuilder:
         250万行级别 daily_merged.csv。已有历史特征从 output_path 读取，
         移除目标日期后再合并新日期，并统一重算 prev1/prev2 状态字段。
         """
-        trade_dates = self.discover_partition_dates(start_date=start_date, end_date=end_date)
+        trade_dates = self.discover_partition_dates(start_date=start_date, end_date=end_date, include_state_context=True)
         if not trade_dates:
             raise RuntimeError(f"没有找到可构建市场情绪的日线分片: {self.daily_merged_by_date_dir}")
         daily = self.load_daily_partitions(trade_dates)
@@ -105,29 +108,74 @@ class MarketEmotionBuilder:
 
         return pd.DataFrame(rows)
 
-    def discover_partition_dates(self, start_date: str | None = None, end_date: str | None = None) -> list[str]:
-        dates = sorted(path.stem for path in self.daily_merged_by_date_dir.glob("*.csv"))
-        return [
+    def discover_partition_dates(
+        self,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        include_state_context: bool = False,
+    ) -> list[str]:
+        dates = sorted(
+            {
+                path.stem
+                for path in list(self.daily_merged_by_date_dir.glob("*.csv")) + list(self.raw_daily_dir.glob("*.csv"))
+            }
+        )
+        selected = [
             date
             for date in dates
             if (start_date is None or date >= str(start_date)) and (end_date is None or date <= str(end_date))
         ]
+        if include_state_context and selected:
+            # 实盘只更新目标日，但 segment_retreat_state 依赖前两个交易日。
+            # 因此最多补读两个日线分片作为状态上下文，不读取回测用两年大表。
+            first_index = dates.index(selected[0])
+            context = dates[max(0, first_index - 2):first_index]
+            selected = sorted(set(context + selected))
+        return selected
 
     def load_daily_partitions(self, trade_dates: list[str]) -> pd.DataFrame:
         frames = []
+        cleaner = DataCleaner()
         for trade_date in trade_dates:
             path = self.daily_merged_by_date_dir / f"{trade_date}.csv"
             if path.exists():
                 frames.append(pd.read_csv(path, dtype={"trade_date": str, "ts_code": str}, low_memory=False))
+            else:
+                # 前两日状态上下文可能还没有写入 daily_merged_by_date。
+                # 这里只按日临时清洗 raw 文件，不读取 daily_merged.csv 回测大表。
+                frame = cleaner.clean_daily_by_date(trade_date)
+                if not frame.empty:
+                    frames.append(frame)
         if not frames:
             return pd.DataFrame()
         return pd.concat(frames, ignore_index=True, sort=False)
 
     def load_limit_up_for_dates(self, trade_dates: list[str]) -> pd.DataFrame:
+        cleaner = DataCleaner()
+        result_frames = []
         if not self.limit_up_merged_path.exists():
+            limit_up = pd.DataFrame()
+        else:
+            limit_up = pd.read_csv(self.limit_up_merged_path, dtype={"trade_date": str, "ts_code": str}, low_memory=False)
+            limit_up["trade_date"] = limit_up["trade_date"].astype(str).str.replace(r"\.0$", "", regex=True)
+        for trade_date in trade_dates:
+            daily = pd.DataFrame()
+            if not limit_up.empty:
+                matched = limit_up[limit_up["trade_date"].eq(trade_date)].copy()
+                if not matched.empty:
+                    result_frames.append(matched)
+                    continue
+            daily_part = self.daily_merged_by_date_dir / f"{trade_date}.csv"
+            if daily_part.exists():
+                daily = pd.read_csv(daily_part, dtype={"trade_date": str, "ts_code": str}, low_memory=False)
+            else:
+                daily = cleaner.clean_daily_by_date(trade_date)
+            fallback = cleaner.clean_limit_up_by_date(trade_date, daily)
+            if not fallback.empty:
+                result_frames.append(fallback)
+        if not result_frames:
             return pd.DataFrame()
-        limit_up = pd.read_csv(self.limit_up_merged_path, dtype={"trade_date": str, "ts_code": str}, low_memory=False)
-        return limit_up[limit_up["trade_date"].astype(str).isin(set(trade_dates))].copy()
+        return pd.concat(result_frames, ignore_index=True, sort=False)
 
     @staticmethod
     def drop_state_columns(features: pd.DataFrame) -> pd.DataFrame:

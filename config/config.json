@@ -189,9 +189,14 @@
     "drop_missing_daily_basic": true,
     "limit_list_start_date": "20191128",
     "low_amount_threshold": 10000,
+    "live_signal_window_trade_days": 3,
+    "live_signal_window_note": "实盘收盘流水线只维护最近N个交易日缓存：1天策略只读当天，L/市场状态需要前2日上下文所以默认3天；回测研究大表不在日常实盘自动更新。",
     "daily_merged_path": "data/processed/daily_merged.csv",
+    "daily_merged_by_date_dir": "data/processed/daily_merged_by_date",
     "limit_up_merged_path": "data/processed/limit_up_merged.csv",
-    "market_sentiment_path": "data/processed/market_sentiment.csv"
+    "market_sentiment_path": "data/processed/market_sentiment.csv",
+    "live_limit_up_path": "data/processed/live_limit_up_merged.csv",
+    "live_market_sentiment_path": "data/processed/live_market_sentiment.csv"
   },
   "fill_model": {
     "input_limit_up_path": "data/processed/limit_up_merged.csv",

@@ -44,6 +44,12 @@ class DataCleaner:
         self.market_sentiment_path = self.project_root / cleaning_config.get(
             "market_sentiment_path", "data/processed/market_sentiment.csv"
         )
+        self.live_limit_up_path = self.project_root / cleaning_config.get(
+            "live_limit_up_path", "data/processed/live_limit_up_merged.csv"
+        )
+        self.live_market_sentiment_path = self.project_root / cleaning_config.get(
+            "live_market_sentiment_path", "data/processed/live_market_sentiment.csv"
+        )
 
     def clean(
         self,
@@ -101,19 +107,23 @@ class DataCleaner:
             daily_output = pd.concat(daily_frames, ignore_index=True) if daily_frames else pd.DataFrame()
             limit_output = pd.concat(limit_frames, ignore_index=True) if limit_frames else pd.DataFrame()
             self._write_daily_partitions(daily_output, trade_dates)
-            self._replace_trade_dates_in_output(self.limit_up_merged_path, limit_output, trade_dates)
-            self._replace_trade_dates_in_output(self.market_sentiment_path, market_sentiment, trade_dates)
+            # 实盘增量只写 live_* 文件。全量 limit_up_merged/market_sentiment 属于
+            # 回测研究输入，只有手动全量清洗时更新，避免日常启动顺手维护历史大表。
+            self._write_csv_with_retry(limit_output, self.live_limit_up_path)
+            self._write_csv_with_retry(market_sentiment, self.live_market_sentiment_path)
         else:
             self._write_csv_with_retry(market_sentiment, self.market_sentiment_path)
         daily_output_path = self.daily_merged_by_date_dir if incremental_replace else self.daily_merged_path
         self.logger.info("日线%s已生成: %s, 行数: %s", "分片" if incremental_replace else "合并表", daily_output_path, daily_total_rows)
-        self.logger.info("涨停合并表已生成: %s, 行数: %s", self.limit_up_merged_path, limit_total_rows)
-        self.logger.info("市场情绪表已生成: %s, 行数: %s", self.market_sentiment_path, len(market_sentiment))
+        limit_output_path = self.live_limit_up_path if incremental_replace else self.limit_up_merged_path
+        sentiment_output_path = self.live_market_sentiment_path if incremental_replace else self.market_sentiment_path
+        self.logger.info("涨停%s已生成: %s, 行数: %s", "实盘表" if incremental_replace else "合并表", limit_output_path, limit_total_rows)
+        self.logger.info("市场情绪%s已生成: %s, 行数: %s", "实盘表" if incremental_replace else "表", sentiment_output_path, len(market_sentiment))
 
         return {
             "daily_merged": self.daily_merged_by_date_dir if incremental_replace else self.daily_merged_path,
-            "limit_up_merged": self.limit_up_merged_path,
-            "market_sentiment": self.market_sentiment_path,
+            "limit_up_merged": limit_output_path,
+            "market_sentiment": sentiment_output_path,
         }
 
     def clean_daily_by_date(self, trade_date: str) -> pd.DataFrame:

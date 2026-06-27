@@ -253,7 +253,8 @@ class StrategyConditionOptimizer:
         收盘流水线打开 250万行级别单体 CSV。
         """
         columns = ["trade_date", "ts_code", "pct_chg", "amount", "turnover_rate"]
-        if self.input_daily_merged_path.exists():
+        live_input = self.input_trades_path.name.startswith("live_")
+        if self.input_daily_merged_path.exists() and not live_input:
             return pd.read_csv(
                 self.input_daily_merged_path,
                 dtype={"trade_date": str, "ts_code": str},

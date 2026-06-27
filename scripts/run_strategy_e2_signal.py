@@ -51,7 +51,8 @@ from src.rolling_signal_store import (
 LIMIT_DIR = PROJECT_ROOT / "data" / "raw" / "limit_list"
 DAILY_DIR = PROJECT_ROOT / "data" / "raw" / "daily"
 CALENDAR_PATH = PROJECT_ROOT / "data" / "raw" / "trade_calendar.csv"
-SCORED_PATH = PROJECT_ROOT / "data" / "processed" / "limit_up_fill_scored.csv"
+LIVE_SCORED_PATH = PROJECT_ROOT / "data" / "processed" / "live_limit_up_fill_scored.csv"
+SCORED_PATH = LIVE_SCORED_PATH if LIVE_SCORED_PATH.exists() else PROJECT_ROOT / "data" / "processed" / "limit_up_fill_scored.csv"
 POSITIONS_PATH = PROJECT_ROOT / "data" / "processed" / "positions.json"
 DAILY_OPS_DIR = PROJECT_ROOT / "reports" / "paper_trade" / "ab_filtered_daily_ops"
 OUTPUT_DIR = PROJECT_ROOT / "reports" / "strategy_e2"
@@ -397,10 +398,10 @@ def save_candidates(signal_date: str, candidates: pd.DataFrame, dry_run: bool) -
 # ── 主流程 ────────────────────────────────────────────────────────────────────
 
 def resolve_signal_date() -> str:
-    """推断今日信号日期：limit_up_fill_scored.csv 的 trade_date。"""
+    """推断今日信号日期：实盘打分表中的最新 trade_date。"""
     if SCORED_PATH.exists():
         try:
-            df = pd.read_csv(SCORED_PATH, usecols=["trade_date"], nrows=5)
+            df = pd.read_csv(SCORED_PATH, usecols=["trade_date"], low_memory=False)
             dates = df["trade_date"].astype(str).str.replace(r"\.0$", "", regex=True)
             latest = dates.max()
             if latest and latest != "nan":

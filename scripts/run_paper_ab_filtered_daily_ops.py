@@ -54,6 +54,10 @@ def parse_args() -> argparse.Namespace:
         default="reports/paper_trade/ab_filtered_daily_ops/a_strict_plus_b0018_filtered_plus_c_hold3",
         help="输出文件前缀。",
     )
+    parser.add_argument("--input-trades-path", help="候选输入表。实盘流水线传 live_limit_up_fill_scored.csv。")
+    parser.add_argument("--fill-scored-path", help="数据质量检查用打分表。默认读取配置中的研究表。")
+    parser.add_argument("--market-emotion-features-path", help="实盘市场情绪特征表。")
+    parser.add_argument("--theme-heat-features-path", help="实盘题材热度特征表。")
     return parser.parse_args()
 
 
@@ -165,9 +169,10 @@ def validate_signal_data_quality(
     runtime_config_path: str | Path,
     strategy_config: dict[str, Any],
     signal_date: str,
+    fill_scored_path: str | Path | None = None,
 ) -> tuple[bool, dict[str, Any]]:
     runtime_config = load_json_config(runtime_config_path)
-    fill_path = PROJECT_ROOT / runtime_config.get("fill_model", {}).get(
+    fill_path = resolve_path(fill_scored_path) if fill_scored_path else PROJECT_ROOT / runtime_config.get("fill_model", {}).get(
         "output_limit_up_fill_scored_path",
         "data/processed/limit_up_fill_scored.csv",
     )
@@ -708,10 +713,15 @@ def main() -> None:
     output_prefix = resolve_path(args.output_prefix)
     mkdir_p(output_prefix.parent)
 
-    base_generator = PaperCandidateGenerator(args.strategy_config)
+    base_generator = PaperCandidateGenerator(
+        args.strategy_config,
+        input_trades_path=args.input_trades_path,
+        market_emotion_features_path=args.market_emotion_features_path,
+        theme_heat_features_path=args.theme_heat_features_path,
+    )
     if args.signal_date:
         signal_date = normalize_date(args.signal_date)
-        data_ok, quality = validate_signal_data_quality(args.runtime_config, config, signal_date)
+        data_ok, quality = validate_signal_data_quality(args.runtime_config, config, signal_date, args.fill_scored_path)
         if not data_ok and bool(
             config.get("paper_ab_filtered_strategy", {})
             .get("data_quality_requirements", {})
@@ -725,7 +735,7 @@ def main() -> None:
             return
     all_candidates = base_generator.load_all_candidates()
     signal_date = normalize_date(args.signal_date) if args.signal_date else latest_signal_date(all_candidates)
-    data_ok, quality = validate_signal_data_quality(args.runtime_config, config, signal_date)
+    data_ok, quality = validate_signal_data_quality(args.runtime_config, config, signal_date, args.fill_scored_path)
     if not data_ok and bool(
         config.get("paper_ab_filtered_strategy", {})
         .get("data_quality_requirements", {})
@@ -738,12 +748,16 @@ def main() -> None:
         print(pd.read_csv(paths["checklist"]).to_string(index=False))
         return
     selected_action = config.get("paper_candidate", {}).get("planned_action_for_selected", "PLAN_BUY_T1_OPEN")
+    live_plan_mode = bool(args.input_trades_path)
     audit = PaperDailyFlowRunner(args.strategy_config).load_audit_trades(
         PROJECT_ROOT / config.get("paper_daily_flow", {}).get("input_audit_trades_path", "")
-    )
+    ) if not live_plan_mode else pd.DataFrame()
 
     a_config = copy.deepcopy(config)
     a_generator = build_generator(args.strategy_config, a_config)
+    a_generator.input_trades_path = base_generator.input_trades_path
+    a_generator.market_emotion_features_path = base_generator.market_emotion_features_path
+    a_generator.theme_heat_features_path = base_generator.theme_heat_features_path
     a_filtered = a_generator.apply_strategy_filters(all_candidates)
     a_candidates = apply_and_rank(a_generator, a_filtered, signal_date, top_n=args.top_n)
     a_selected = selected_candidate(a_candidates, selected_action)
@@ -757,7 +771,10 @@ def main() -> None:
     selection_status = ""
 
     if a_selected is not None:
-        operation_status, account_return, return_source, note = resolve_a_execution(audit, signal_date, a_selected)
+        if live_plan_mode:
+            operation_status, account_return, return_source, note = "PLAN_ONLY_PENDING", 0.0, "live_signal_plan", "A 实盘计划模式：只生成开仓计划，不读取历史回测成交回放。"
+        else:
+            operation_status, account_return, return_source, note = resolve_a_execution(audit, signal_date, a_selected)
         selected = build_selected_row("A", a_selected, operation_status, "A_SELECTED_HAS_PRIORITY", account_return, return_source, note)
     else:
         b_conditions = configured_b_conditions(config)
@@ -778,10 +795,19 @@ def main() -> None:
                 b_rejected["risk_reject_detail"] = risk_reject_detail(b_rejected, config)
                 selection_status = "A_NO_SELECTED_B_RISK_FILTERED"
             else:
-                execution_reference, operation_status, account_return, return_source, note = resolve_b_execution(
-                    b_selected_frame,
-                    args.runtime_config,
-                )
+                if live_plan_mode:
+                    execution_reference, operation_status, account_return, return_source, note = (
+                        pd.DataFrame(),
+                        "PLAN_ONLY_PENDING",
+                        0.0,
+                        "live_signal_plan",
+                        "B 实盘计划模式：只生成开仓计划，不读取历史回测成交回放。",
+                    )
+                else:
+                    execution_reference, operation_status, account_return, return_source, note = resolve_b_execution(
+                        b_selected_frame,
+                        args.runtime_config,
+                    )
                 selected = build_selected_row(
                     "B",
                     b_selected,
@@ -795,6 +821,8 @@ def main() -> None:
                     selection_status = f"A_NO_SELECTED_B_NOT_FILLED:{operation_status}"
 
         if selected.empty or (
+            not live_plan_mode
+            and
             not selected.empty
             and str(selected.iloc[0].get("strategy_leg", "")) == "B"
             and str(selected.iloc[0].get("operation_status", "")) != "HISTORICAL_SIM_FILLED"
@@ -817,11 +845,20 @@ def main() -> None:
                         if selected.empty:
                             selection_status = "A_B_NO_FILLED_C_RISK_FILTERED"
                     else:
-                        c_reference, c_status, c_return, c_source, c_note = resolve_c_execution(
-                            c_selected_frame,
-                            args.runtime_config,
-                            config,
-                        )
+                        if live_plan_mode:
+                            c_reference, c_status, c_return, c_source, c_note = (
+                                pd.DataFrame(),
+                                "PLAN_ONLY_PENDING",
+                                0.0,
+                                "live_signal_plan",
+                                "C 实盘计划模式：只生成开仓计划，不读取历史回测成交回放。",
+                            )
+                        else:
+                            c_reference, c_status, c_return, c_source, c_note = resolve_c_execution(
+                                c_selected_frame,
+                                args.runtime_config,
+                                config,
+                            )
                         execution_reference = c_reference
                         selected = build_selected_row(
                             "C",

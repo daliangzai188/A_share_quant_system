@@ -36,7 +36,13 @@ class PaperCandidateGenerator:
         "is_win",
     }
 
-    def __init__(self, strategy_config_path: str | Path = "config/strategy_config.json") -> None:
+    def __init__(
+        self,
+        strategy_config_path: str | Path = "config/strategy_config.json",
+        input_trades_path: str | Path | None = None,
+        market_emotion_features_path: str | Path | None = None,
+        theme_heat_features_path: str | Path | None = None,
+    ) -> None:
         self.project_root = get_project_root()
         self.strategy_config_path = strategy_config_path
         self.config = load_json_config(strategy_config_path)
@@ -57,6 +63,9 @@ class PaperCandidateGenerator:
             self.paper_config.get("include_historical_reference_columns", True)
         )
         self.risk_thresholds = self.paper_config.get("risk_thresholds", {})
+        self.input_trades_path = self.resolve_optional_path(input_trades_path)
+        self.market_emotion_features_path = self.resolve_optional_path(market_emotion_features_path)
+        self.theme_heat_features_path = self.resolve_optional_path(theme_heat_features_path)
 
     def generate(self, signal_date: str | None = None, top_n: int | None = None) -> dict[str, Path]:
         self.assert_safe_mode()
@@ -106,6 +115,12 @@ class PaperCandidateGenerator:
             config_path=self.runtime_config_path,
             optimization_config_key=self.optimization_config_key,
         )
+        if self.input_trades_path is not None:
+            optimizer.input_trades_path = self.input_trades_path
+        if self.market_emotion_features_path is not None:
+            optimizer.optional_market_emotion_features_path = self.market_emotion_features_path
+        if self.theme_heat_features_path is not None:
+            optimizer.optional_theme_heat_features_path = self.theme_heat_features_path
         candidates = optimizer.load_trades(require_complete_exit=False)
         if candidates.empty:
             raise RuntimeError("本地候选数据为空，请先完成数据清洗、成交概率和因子计算。")
@@ -215,6 +230,12 @@ class PaperCandidateGenerator:
                 continue
             score.loc[candidates[column].fillna("missing").astype(str).isin(values)] += weight
         return score
+
+    def resolve_optional_path(self, path: str | Path | None) -> Path | None:
+        if path is None:
+            return None
+        candidate = Path(path)
+        return candidate if candidate.is_absolute() else self.project_root / candidate
 
     def build_output(self, ranked: pd.DataFrame, signal_date: str, top_n: int) -> pd.DataFrame:
         selected = ranked.head(top_n).copy()

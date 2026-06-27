@@ -21,6 +21,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-theme-heat", action="store_true", help="跳过题材热度特征。")
     parser.add_argument("--start-date", help="开始日期 YYYYMMDD。传入后按日线分片增量更新，避免读取 daily_merged.csv 大文件。")
     parser.add_argument("--end-date", help="结束日期 YYYYMMDD。传入后按日线分片增量更新，避免读取 daily_merged.csv 大文件。")
+    parser.add_argument("--limit-up-path", help="实盘涨停输入表。不填则使用配置中的研究表。")
+    parser.add_argument("--market-emotion-output", help="市场情绪特征输出路径。不填则使用配置中的研究表。")
+    parser.add_argument("--theme-heat-output", help="题材热度特征输出路径。不填则使用配置中的研究表。")
     return parser.parse_args()
 
 
@@ -35,12 +38,22 @@ def main() -> None:
     )
     outputs = {}
     if not args.skip_market_emotion:
-        outputs["market_emotion"] = MarketEmotionBuilder(config_path=args.config).build(
+        market_builder = MarketEmotionBuilder(config_path=args.config)
+        if args.limit_up_path:
+            market_builder.limit_up_merged_path = PROJECT_ROOT / args.limit_up_path
+        if args.market_emotion_output:
+            market_builder.output_path = PROJECT_ROOT / args.market_emotion_output
+        outputs["market_emotion"] = market_builder.build(
             start_date=args.start_date,
             end_date=args.end_date,
         )
     if not args.skip_theme_heat:
-        outputs["theme_heat"] = ThemeHeatBuilder(config_path=args.config).build()
+        outputs["theme_heat"] = ThemeHeatBuilder(config_path=args.config).build(
+            start_date=args.start_date,
+            end_date=args.end_date,
+            input_path=args.limit_up_path,
+            output_path=args.theme_heat_output,
+        )
 
     print("动态特征构建完成：")
     for name, path in outputs.items():

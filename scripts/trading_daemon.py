@@ -308,9 +308,21 @@ def _has_signal_for_date(date: datetime.date) -> bool:
 
 
 def _date_in_scored(target_date: datetime.date) -> bool:
-    """检查 limit_up_fill_scored.csv 是否包含 target_date 的记录（不导入 pandas）。"""
-    path = PROJECT_ROOT / "data" / "processed" / "limit_up_fill_scored.csv"
+    """检查实盘打分表是否包含 target_date 的记录（不导入 pandas）。"""
+    path = _prefer_live_processed_path("live_limit_up_fill_scored.csv", "limit_up_fill_scored.csv")
     return _date_in_csv(path, target_date, "trade_date")
+
+
+def _prefer_live_processed_path(live_name: str, fallback_name: str) -> Path:
+    live_path = PROJECT_ROOT / "data" / "processed" / live_name
+    if live_path.exists():
+        return live_path
+    fallback_path = Path(fallback_name)
+    if fallback_path.is_absolute():
+        return fallback_path
+    if len(fallback_path.parts) > 1:
+        return PROJECT_ROOT / fallback_path
+    return PROJECT_ROOT / "data" / "processed" / fallback_path
 
 
 def _date_in_csv(path: Path, target_date: datetime.date, date_column: str = "trade_date") -> bool:
@@ -2278,9 +2290,9 @@ def _strategy_d_monitor_running() -> bool:
 def _processed_data_ready_for_date(target_date: datetime.date) -> bool:
     """启动自检：实盘审计依赖的 processed 表必须包含目标信号日。"""
     required_paths = [
-        PROJECT_ROOT / "data" / "processed" / "market_sentiment.csv",
-        PROJECT_ROOT / "data" / "processed" / "market_emotion_features.csv",
-        PROJECT_ROOT / "data" / "processed" / "limit_up_fill_scored.csv",
+        _prefer_live_processed_path("live_market_sentiment.csv", "market_sentiment.csv"),
+        _prefer_live_processed_path("live_market_emotion_features.csv", "market_emotion_features.csv"),
+        _prefer_live_processed_path("live_limit_up_fill_scored.csv", "limit_up_fill_scored.csv"),
     ]
     return all(_date_in_csv(path, target_date, "trade_date") for path in required_paths)
 
@@ -2685,25 +2697,51 @@ def job_post_market(end_date: str | None = None) -> None:
     target_date = datetime.datetime.strptime(target_str, "%Y%m%d").date()
     logger().info("===== 收盘流水线（目标日期 %s）=====", target_str)
 
-    # 收盘流水线只需要补齐目标信号日当天的 raw/processed 行。
-    # 历史窗口已经保存在 processed 全表里，动态特征和成交概率步骤会基于全表重建。
-    recent_start = target_str
+    cfg = load_json_config(PROJECT_ROOT / "config" / "config.json")
+    live_window_days = max(1, int(cfg.get("cleaning", {}).get("live_signal_window_trade_days", 3)))
+    # 实盘只维护策略判断所需的最近N个交易日缓存。
+    # 1天策略从窗口里读目标日；L/市场状态需要前两日上下文，所以默认N=3。
+    # 已有 raw 缓存由 collect_all_data.py 自动跳过，缺哪天才补哪天；回测研究大表不在这里更新。
+    recent_start_date = prev_n_trade_days(target_date, live_window_days - 1) if live_window_days > 1 else target_date
+    recent_start = recent_start_date.strftime("%Y%m%d")
+    live_limit_up_path = "data/processed/live_limit_up_merged.csv"
+    live_market_sentiment_path = "data/processed/live_market_sentiment.csv"
+    live_market_emotion_path = "data/processed/live_market_emotion_features.csv"
+    live_theme_heat_path = "data/processed/live_theme_heat_features.csv"
+    live_fill_scored_path = "data/processed/live_limit_up_fill_scored.csv"
 
     steps = [
         ("collect_all_data.py",               "① 采集日线 + 涨停池",             TIMEOUT_DATA_STEP,  "约1分钟"),
         ("clean_collected_data.py",            "② 清洗合并数据",                   TIMEOUT_DATA_STEP,  "约1分钟"),
         ("build_dynamic_features.py",          "③ 市场情绪 / 题材热度",            TIMEOUT_DATA_STEP,  "约1分钟"),
         ("score_limit_up_fill_probability.py", "④ 涨停成交概率打分",               TIMEOUT_DATA_STEP,  "约1分钟"),
-        ("analyze_next_day_premium.py",        "⑤ 次日溢价因子",                   TIMEOUT_DATA_STEP,  "约1分钟"),
-        ("run_paper_ab_filtered_daily_ops.py", "⑥ A+B+C 信号生成",                TIMEOUT_SIGNAL_STEP,"约1分钟"),
-        ("run_strategy_e2_signal.py",          "⑦ E2 信号生成（板块中性小市值）", TIMEOUT_SIGNAL_STEP,"约30秒"),
-        ("run_strategy_l_signal.py",           "⑧ L 龙头信号生成（独立模式备用）", TIMEOUT_SIGNAL_STEP,"约30秒"),
+        ("run_paper_ab_filtered_daily_ops.py", "⑤ A+B+C 信号生成",                TIMEOUT_SIGNAL_STEP,"约1分钟"),
+        ("run_strategy_e2_signal.py",          "⑥ E2 信号生成（板块中性小市值）", TIMEOUT_SIGNAL_STEP,"约30秒"),
+        ("run_strategy_l_signal.py",           "⑦ L 龙头信号生成（独立模式备用）", TIMEOUT_SIGNAL_STEP,"约30秒"),
     ]
     extra_args: dict[str, list[str]] = {
         "collect_all_data.py": ["--start-date", recent_start, "--end-date", target_str, "--require-end-date-limit"],
         "clean_collected_data.py": ["--start-date", recent_start, "--end-date", target_str, "--incremental-replace"],
-        "build_dynamic_features.py": ["--start-date", recent_start, "--end-date", target_str],
-        "run_paper_ab_filtered_daily_ops.py": ["--signal-date", target_str, "--top-n", "10"],
+        "build_dynamic_features.py": [
+            "--start-date", target_str,
+            "--end-date", target_str,
+            "--limit-up-path", live_limit_up_path,
+            "--market-emotion-output", live_market_emotion_path,
+            "--theme-heat-output", live_theme_heat_path,
+        ],
+        "score_limit_up_fill_probability.py": [
+            "--input-path", live_limit_up_path,
+            "--output-path", live_fill_scored_path,
+            "--market-sentiment-path", live_market_sentiment_path,
+        ],
+        "run_paper_ab_filtered_daily_ops.py": [
+            "--signal-date", target_str,
+            "--top-n", "10",
+            "--input-trades-path", live_fill_scored_path,
+            "--fill-scored-path", live_fill_scored_path,
+            "--market-emotion-features-path", live_market_emotion_path,
+            "--theme-heat-features-path", live_theme_heat_path,
+        ],
         "run_strategy_e2_signal.py": ["--signal-date", target_str],
         # L 信号默认只落文件，不会接入实盘；必须 mode=2 且 strategy_l.live_order_enabled=true
         # 时，组合状态机才会把昨日 L 信号转换为次日实盘买入计划。
@@ -2739,7 +2777,7 @@ def job_post_market(end_date: str | None = None) -> None:
     # 关键检查：今日数据是否真的从 Tushare 入库了
     if not _date_in_scored(target_date):
         logger().warning(
-            "⚠️ Tushare %s 数据尚未就绪（limit_up_fill_scored.csv 无该日记录），流水线步骤已完成但需等数据",
+            "⚠️ Tushare %s 数据尚未就绪（live_limit_up_fill_scored.csv 无该日记录），流水线步骤已完成但需等数据",
             target_str,
         )
         report_next_day_candidates()
@@ -2845,11 +2883,11 @@ def _segment_label(ts_code: str, market_segment: str = "") -> str:
 
 
 def _load_limit_for_codes(ts_codes: list[str]) -> tuple[str, dict[str, dict]]:
-    """从 limit_up_merged.csv 读最新交易日的涨停状态和封单金额。
+    """从实盘涨停表读最新交易日的涨停状态和封单金额。
     返回 (最新交易日, {ts_code: {limit, open_times, fd_amount_wan, last_time}})。"""
     try:
         import pandas as pd
-        path = PROJECT_ROOT / "data" / "processed" / "limit_up_merged.csv"
+        path = _prefer_live_processed_path("live_limit_up_merged.csv", "limit_up_merged.csv")
         if not path.exists():
             return "", {}
         need = ["ts_code", "trade_date", "limit", "open_times", "fd_amount", "last_time"]
@@ -3089,9 +3127,9 @@ def report_signal_readiness_summary(signal_date: str) -> None:
 
         cfg = load_json_config(PROJECT_ROOT / "config" / "config.json")
         strategy_cfg = load_json_config(PROJECT_ROOT / "config" / "strategy_config.json")
-        fill_path = PROJECT_ROOT / cfg.get("fill_model", {}).get(
-            "output_limit_up_fill_scored_path",
-            "data/processed/limit_up_fill_scored.csv",
+        fill_path = _prefer_live_processed_path(
+            "live_limit_up_fill_scored.csv",
+            cfg.get("fill_model", {}).get("output_limit_up_fill_scored_path", "data/processed/limit_up_fill_scored.csv"),
         )
         requirements = (
             strategy_cfg.get("paper_ab_filtered_strategy", {})
@@ -3108,7 +3146,7 @@ def report_signal_readiness_summary(signal_date: str) -> None:
         scored = pd.read_csv(fill_path, dtype={"trade_date": str, "ts_code": str}, low_memory=False)
         daily = scored[scored["trade_date"].astype(str) == str(signal_date)].copy()
         if daily.empty:
-            logger().warning("  数据口径：❌ limit_up_fill_scored.csv 没有 %s 记录", signal_date)
+            logger().warning("  数据口径：❌ %s 没有 %s 记录", fill_path.name, signal_date)
             return
 
         source_counts = _value_counts_text(daily, "limit_data_source")
@@ -3194,15 +3232,15 @@ def _log_market_environment(signal_date: str) -> None:
     try:
         import pandas as pd
 
-        sentiment_path = PROJECT_ROOT / "data" / "processed" / "market_sentiment.csv"
-        emotion_path = PROJECT_ROOT / "data" / "processed" / "market_emotion_features.csv"
+        sentiment_path = _prefer_live_processed_path("live_market_sentiment.csv", "market_sentiment.csv")
+        emotion_path = _prefer_live_processed_path("live_market_emotion_features.csv", "market_emotion_features.csv")
         if not sentiment_path.exists():
-            logger().info("  市场环境：未找到 market_sentiment.csv")
+            logger().info("  市场环境：未找到 %s", sentiment_path.name)
             return
         sentiment = pd.read_csv(sentiment_path, dtype={"trade_date": str}, low_memory=False)
         row_df = sentiment[sentiment["trade_date"].astype(str) == str(signal_date)]
         if row_df.empty:
-            logger().info("  市场环境：market_sentiment.csv 无 %s 记录", signal_date)
+            logger().info("  市场环境：%s 无 %s 记录", sentiment_path.name, signal_date)
             return
         row = row_df.iloc[0]
         emotion = pd.DataFrame()

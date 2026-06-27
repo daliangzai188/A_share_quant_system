@@ -33,12 +33,26 @@ class ThemeHeatBuilder:
             "data/processed/stock_theme_reference.csv",
         )
 
-    def build(self) -> Path:
+    def build(
+        self,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        input_path: str | Path | None = None,
+        output_path: str | Path | None = None,
+    ) -> Path:
+        source_path = self.project_root / input_path if input_path and not Path(input_path).is_absolute() else Path(input_path or self.limit_up_merged_path)
+        target_path = self.project_root / output_path if output_path and not Path(output_path).is_absolute() else Path(output_path or self.output_path)
         limit_up = pd.read_csv(
-            self.limit_up_merged_path,
+            source_path,
             dtype={"trade_date": str, "ts_code": str},
             low_memory=False,
         )
+        if start_date or end_date:
+            limit_up["trade_date"] = limit_up["trade_date"].astype(str).str.replace(r"\.0$", "", regex=True)
+            if start_date:
+                limit_up = limit_up[limit_up["trade_date"] >= str(start_date)].copy()
+            if end_date:
+                limit_up = limit_up[limit_up["trade_date"] <= str(end_date)].copy()
         theme_column = self.resolve_theme_column(limit_up)
         if theme_column is None:
             limit_up, theme_column = self.attach_theme_reference(limit_up)
@@ -49,10 +63,10 @@ class ThemeHeatBuilder:
             features = self.build_theme_features(limit_up, theme_column)
             self.logger.info("使用题材字段构建热度: %s", theme_column)
 
-        mkdir_p(self.output_path.parent)
-        features.to_csv(self.output_path, index=False, encoding="utf-8-sig")
-        self.logger.info("题材热度特征已生成: %s, 行数: %s", self.output_path, len(features))
-        return self.output_path
+        mkdir_p(target_path.parent)
+        features.to_csv(target_path, index=False, encoding="utf-8-sig")
+        self.logger.info("题材热度特征已生成: %s, 行数: %s", target_path, len(features))
+        return target_path
 
     def resolve_theme_column(self, data: pd.DataFrame) -> str | None:
         for column in self.THEME_COLUMN_PRIORITY:

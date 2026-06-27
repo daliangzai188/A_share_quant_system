@@ -211,6 +211,7 @@ class FillProbabilityEstimator:
         input_path: str | Path,
         output_path: str | Path,
         planned_buy_amount: float,
+        market_sentiment_path: str | Path | None = None,
     ) -> Path:
         input_path = self.project_root / input_path if not Path(input_path).is_absolute() else Path(input_path)
         output_path = self.project_root / output_path if not Path(output_path).is_absolute() else Path(output_path)
@@ -219,10 +220,16 @@ class FillProbabilityEstimator:
             raise RuntimeError(f"涨停合并表为空: {input_path}")
         required_market_columns = {"market_sentiment_level", "limit_up_count", "segment_market_sentiment_level"}
         if not required_market_columns.issubset(set(limit_up.columns)):
+            sentiment_config_path = market_sentiment_path or self.config.get("fill_model", {}).get(
+                "input_market_sentiment_path", "data/processed/market_sentiment.csv"
+            )
+            sentiment_path = (
+                self.project_root / sentiment_config_path
+                if not Path(sentiment_config_path).is_absolute()
+                else Path(sentiment_config_path)
+            )
             market = pd.read_csv(
-                self.project_root / self.config.get("fill_model", {}).get(
-                    "input_market_sentiment_path", "data/processed/market_sentiment.csv"
-                ),
+                sentiment_path,
                 dtype={"trade_date": str},
             )
             market_columns = [column for column in market.columns if column != "trade_date" and column not in limit_up.columns]
