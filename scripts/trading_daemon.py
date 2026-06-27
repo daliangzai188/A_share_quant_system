@@ -390,6 +390,21 @@ def market_is_open() -> bool:
     )
 
 
+def qmt_is_critical_window() -> bool:
+    """判断 QMT 心跳是否处于必须严格告警的窗口。
+
+    非交易日/夜间 QMT 账户查询偶发卡住很常见，不能按一次超时就推送“账户断连”。
+    但交易日前后、持仓中、盘前买单待确认时，QMT 可用性会直接影响买卖执行，
+    必须保持严格检测和快速重连。
+    """
+    now = now_beijing()
+    if has_open_local_position() or load_pending_buys():
+        return True
+    if not is_trade_day(now.date()):
+        return False
+    return datetime.time(9, 0) <= now.time() <= datetime.time(15, 10)
+
+
 # ── 持仓状态文件 ──────────────────────────────────────────────────────────────
 
 def load_positions() -> list[dict[str, Any]]:
@@ -3592,8 +3607,8 @@ _qmt_adapter: Any = None             # 持久连接，程序生命周期内保�
 _qmt_lock = threading.Lock()         # 保护 _qmt_adapter 并发访问
 
 
-def _qmt_connect(broker_config: dict) -> Any:
-    """建立新 QMT 连接（带20秒超时）。不持有 _qmt_lock，调用方按需加锁。"""
+def _qmt_connect_once(broker_config: dict, *, preferred_only: bool, timeout_sec: float) -> Any:
+    """单次建立 QMT 连接，给 preferred/full 两种模式各自独立超时。"""
     from src.qmt_adapter import QMTBrokerAdapter
     adapter = QMTBrokerAdapter.from_config(broker_config)
     done = threading.Event()
@@ -3601,25 +3616,47 @@ def _qmt_connect(broker_config: dict) -> Any:
 
     def _do() -> None:
         try:
-            try:
-                adapter.connect(preferred_only=True)
-            except Exception:
-                adapter.connect(preferred_only=False)
+            adapter.connect(preferred_only=preferred_only)
         except Exception as e:
             err.append(e)
         finally:
             done.set()
 
     threading.Thread(target=_do, daemon=True).start()
-    if not done.wait(20.0):
+    if not done.wait(timeout_sec):
         try:
             adapter.disconnect()
         except Exception:
             pass
-        raise TimeoutError("QMT 连接超时（20秒无响应）")
+        mode = "首选path/session" if preferred_only else "完整备用path/session"
+        raise TimeoutError(f"QMT {mode}连接超时（{int(timeout_sec)}秒无响应）")
     if err:
         raise err[0]
     return adapter
+
+
+def _qmt_connect(broker_config: dict) -> Any:
+    """建立新 QMT 连接。不持有 _qmt_lock，调用方按需加锁。
+
+    非关键时段只尝试首选 path/session，避免周末/夜间账户查询卡顿时全量扫描备用
+    session，造成“刚打印已连接又被总超时判失败”的误判和刷屏。
+    关键窗口才允许完整备用扫描，保证实盘买卖期间的恢复能力。
+    """
+    errors: list[str] = []
+    modes = [(True, 30.0)]
+    if qmt_is_critical_window():
+        modes.append((False, 45.0))
+    for preferred_only, timeout_sec in modes:
+        try:
+            return _qmt_connect_once(
+                broker_config,
+                preferred_only=preferred_only,
+                timeout_sec=timeout_sec,
+            )
+        except Exception as exc:
+            mode = "首选path/session" if preferred_only else "完整备用path/session"
+            errors.append(f"{mode}: {exc}")
+    raise RuntimeError("QMT连接失败: " + " | ".join(errors))
 
 
 def _qmt_get(broker_config: dict) -> Any:
@@ -3643,7 +3680,8 @@ def _qmt_reset() -> None:
 
 def _print_account_status(log: Any) -> None:
     """账户信息轮询（后台线程）：复用持久连接，查询无需重新握手。
-    真正断线时立刻重连一次，失败则等下次轮询。"""
+    关键交易窗口真正断线时立刻重连；非交易时段先降噪，避免 QMT 偶发
+    账户 RPC 卡顿被误判为实盘级断连。"""
     global _qmt_reconnect_count
     now_str = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
     try:
@@ -3671,15 +3709,33 @@ def _print_account_status(log: Any) -> None:
                 if codes:
                     quote_map = adapter.get_full_tick(codes)
             if _qmt_reconnect_count > 0:
-                log.info("✅ QMT连接已恢复（第%d次重连后恢复）", _qmt_reconnect_count)
-                _notify("connection", "✅ 账户重连成功", "QMT连接已恢复正常。")
+                log.info("✅ QMT连接已恢复（第%d次心跳失败后恢复）", _qmt_reconnect_count)
+                if qmt_is_critical_window():
+                    _notify("connection", "✅ 账户重连成功", "QMT连接已恢复正常。")
                 _qmt_reconnect_count = 0
         except Exception as first_err:
             _qmt_reset()
             _qmt_reconnect_count += 1
-            log.warning("⚠️ QMT掉线（第%d次），立刻重连：%s", _qmt_reconnect_count, first_err)
-            # 仅在刚断连那一刻告警（叠加节流），避免每轮轮询刷屏
-            if _qmt_reconnect_count == 1:
+            critical_window = qmt_is_critical_window()
+            if not critical_window and _qmt_reconnect_count < 3:
+                log.warning(
+                    "⚠️ QMT心跳暂时无响应（第%d/3次，非交易关键时段，暂不推送断连，稍后重试）：%s",
+                    _qmt_reconnect_count,
+                    first_err,
+                )
+                return
+
+            if critical_window:
+                log.warning("⚠️ QMT掉线（第%d次），立刻重连：%s", _qmt_reconnect_count, first_err)
+            else:
+                log.warning(
+                    "⚠️ QMT非交易时段连续%d次无响应，开始静默重连：%s",
+                    _qmt_reconnect_count,
+                    first_err,
+                )
+
+            # 关键窗口刚断连时告警；非关键时段只写日志，避免周末/夜间刷通知。
+            if critical_window and _qmt_reconnect_count == 1:
                 _notify("connection", "🔌 账户断连", "QMT连接断开，正在自动重连，请关注。",
                         level="critical", call=False)
             try:
@@ -3693,13 +3749,14 @@ def _print_account_status(log: Any) -> None:
                     if codes:
                         quote_map = adapter.get_full_tick(codes)
                 log.info("✅ QMT重连成功（第%d次恢复）", _qmt_reconnect_count)
-                _notify("connection", "✅ 账户重连成功", "QMT连接已恢复正常。")
+                if critical_window:
+                    _notify("connection", "✅ 账户重连成功", "QMT连接已恢复正常。")
                 _qmt_reconnect_count = 0
             except Exception as retry_err:
                 log.warning("⚠️ QMT重连失败（第%d次），等待下次重试：%s",
                             _qmt_reconnect_count, retry_err)
-                # 仅在连续多次失败时告警，避免偶发抖动刷屏（叠加节流）
-                if _qmt_reconnect_count >= 3:
+                # 仅关键窗口连续多次失败时告警；非交易时段不升级为持续响铃。
+                if critical_window and _qmt_reconnect_count >= 3:
                     _notify("system_error", "❌ QMT持续掉线",
                             "QMT连接已连续多次重连失败，实盘下单/平仓可能受影响，请立即检查。",
                             level="critical", call=True)
@@ -3940,10 +3997,12 @@ def main() -> None:
         sleep_secs = (wake_dt - now).total_seconds()
         log.info("下次任务：%s（%.0f 秒后）", wake_dt.strftime("%Y-%m-%d %H:%M"), sleep_secs)
 
-        # 账户轮询：交易时段10秒/次，非交易时段60秒/次；掉线时立刻重连，后续15秒间隔
-        _ACCT_INTERVAL = 60       # 非交易时段间隔
-        _ACCT_TRADING = 10        # 交易时段间隔
-        _RETRY_INTERVAL = 15      # 掉线重连间隔
+        # 账户轮询：交易时段高频，非交易关键时段低频。
+        # QMT 在周末/夜间账户 RPC 容易偶发无响应，低频保活即可；有持仓/待确认买单/交易关键窗口仍严格轮询。
+        _ACCT_IDLE = 300          # 非交易关键时段间隔
+        _ACCT_CRITICAL = 60       # 交易日前后、有持仓或有待确认买单
+        _ACCT_TRADING = 10        # 连续竞价交易时段
+        _RETRY_INTERVAL = 15      # 关键窗口掉线重连间隔
         deadline = time.monotonic() + sleep_secs
         last_acct_ts = time.monotonic()
         last_trade_check_ts = 0.0  # 交易时段状态每5秒刷新一次，避免频繁计算
@@ -3962,10 +4021,16 @@ def main() -> None:
             if now_ts - last_trade_check_ts >= 5:
                 is_trading = market_is_open()
                 last_trade_check_ts = now_ts
+            qmt_critical = qmt_is_critical_window()
             if _qmt_reconnect_count == 0:
-                interval = _ACCT_TRADING if is_trading else _ACCT_INTERVAL
+                if is_trading:
+                    interval = _ACCT_TRADING
+                elif qmt_critical:
+                    interval = _ACCT_CRITICAL
+                else:
+                    interval = _ACCT_IDLE
             else:
-                interval = _RETRY_INTERVAL
+                interval = _RETRY_INTERVAL if qmt_critical else _ACCT_IDLE
             if now_ts - last_acct_ts >= interval:
                 if _acct_thread is None or not _acct_thread.is_alive():
                     last_acct_ts = now_ts
