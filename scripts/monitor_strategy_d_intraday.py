@@ -59,6 +59,7 @@ MONITOR_START_HHMM = 930     # 脚本等待开始扫描的时间（集合竞价�
 D_POSITION_PCT = 0.80        # 默认仓位比例，优先使用 config.json/strategy_d/position_pct
 D_RETRY_TOP_N = 1            # 严格对齐D原始回测口径：只尝试排序第1名，失败不补偿
 MIN_D_VALID_LIMIT_PRICE = 1.0  # D只做正常A股涨停价；QMT异常行情可能返回0.x，必须本地拦截
+MAX_D_INVALID_PRICE_TICKS = 3  # 连续3轮仍异常才判定为行情源有问题，避免单帧脏数据误伤
 STRATEGY_REMARK = "D_FIRST_BOARD"
 DEFAULT_ALLOWED_SEGMENTS = {"sh_main", "sz_main", "chi_next", "star", "bj", "other"}
 
@@ -83,6 +84,7 @@ class StockState:
     buy_signaled: bool = False     # 买入信号已发出
     order_id: str = ""
     last_order_fail_reason: str = ""
+    invalid_price_ticks: int = 0   # 连续异常涨停价轮数，用于过滤QMT偶发脏行情
 
 
 # ── 工具函数 ──────────────────────────────────────────────────────────────────
@@ -494,6 +496,19 @@ class StrategyDMonitor:
                 )
             st = self.states[ts_code]
             st.upper_limit = upper_limit
+            if upper_limit < MIN_D_VALID_LIMIT_PRICE:
+                st.invalid_price_ticks += 1
+                if st.invalid_price_ticks <= MAX_D_INVALID_PRICE_TICKS:
+                    self.logger.warning(
+                        "[PRICE GUARD] %s %s 涨停价异常%.2f，连续%d/%d轮，等待下一轮行情复核",
+                        ts_code,
+                        name,
+                        upper_limit,
+                        st.invalid_price_ticks,
+                        MAX_D_INVALID_PRICE_TICKS,
+                    )
+            else:
+                st.invalid_price_ticks = 0
             st.circ_mv = float(self.circ_mv_map.get(ts_code, st.circ_mv) or 0.0)
 
             if at_limit:
@@ -681,7 +696,15 @@ class StrategyDMonitor:
         if st.ts_code in self.yesterday_limit_codes:
             return False, "昨日已涨停，非首板"
         if st.upper_limit < MIN_D_VALID_LIMIT_PRICE:
-            return False, f"涨停价异常{st.upper_limit:.2f}元，低于最低有效价{MIN_D_VALID_LIMIT_PRICE:.2f}元"
+            if st.invalid_price_ticks < MAX_D_INVALID_PRICE_TICKS:
+                return False, (
+                    f"涨停价异常{st.upper_limit:.2f}元，连续{st.invalid_price_ticks}/{MAX_D_INVALID_PRICE_TICKS}轮，"
+                    "等待下一轮行情复核"
+                )
+            return False, (
+                f"涨停价异常{st.upper_limit:.2f}元，已连续{st.invalid_price_ticks}轮低于"
+                f"{MIN_D_VALID_LIMIT_PRICE:.2f}元，本地风控确认拦截"
+            )
         if not st.was_sealed:
             return False, "当前不在涨停封板状态"
         if st.open_times_today < 1:
@@ -790,9 +813,11 @@ class StrategyDMonitor:
                 self.logger.warning("本会话已有D委托，拒绝再次下单: %s", st.ts_code)
                 return True
             if st.upper_limit < MIN_D_VALID_LIMIT_PRICE:
+                level = "确认拦截" if st.invalid_price_ticks >= MAX_D_INVALID_PRICE_TICKS else "等待复核"
                 fail_reason = (
-                    f"本地风控拦截：D涨停价异常{st.upper_limit:.2f}元，"
-                    f"低于最低有效价{MIN_D_VALID_LIMIT_PRICE:.2f}元，疑似QMT行情字段异常"
+                    f"本地风控{level}：D涨停价异常{st.upper_limit:.2f}元，"
+                    f"已连续{st.invalid_price_ticks}/{MAX_D_INVALID_PRICE_TICKS}轮低于"
+                    f"{MIN_D_VALID_LIMIT_PRICE:.2f}元，疑似QMT行情字段异常"
                 )
                 self.logger.error(
                     "D下单拦截: 策略=D 股票=%s %s %s",
