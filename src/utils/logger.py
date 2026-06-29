@@ -12,11 +12,17 @@ _BEIJING_TZ = ZoneInfo("Asia/Shanghai")
 
 
 class _BeijingFormatter(logging.Formatter):
-    """所有日志时间戳强制使用北京时间（UTC+8）。"""
+    """所有日志时间戳强制使用北京时间（UTC+8），并压缩实盘日志前缀。"""
 
     def formatTime(self, record: logging.LogRecord, datefmt: str | None = None) -> str:
         dt = datetime.datetime.fromtimestamp(record.created, tz=_BEIJING_TZ)
         return dt.strftime(datefmt or "%Y-%m-%d %H:%M:%S")
+
+    def format(self, record: logging.LogRecord) -> str:
+        # INFO 是实盘最高频日志，隐藏级别和 logger 名称，避免每行重复
+        # "INFO | a_share_quant.trading_daemon"。WARNING/ERROR 保留级别，便于终端着色和排错。
+        record.levelprefix = "" if record.levelno == logging.INFO else f"{record.levelname} | "
+        return super().format(record)
 
 
 def setup_logger(
@@ -51,7 +57,7 @@ def setup_logger(
             log_path.mkdir(parents=True, exist_ok=True)
 
     formatter = _BeijingFormatter(
-        fmt="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+        fmt="%(asctime)s | %(levelprefix)s%(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
