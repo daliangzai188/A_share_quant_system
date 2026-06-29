@@ -2275,9 +2275,13 @@ def handle_combined_order_preview(
 
 
 def job_strategy_d() -> None:
-    """09:20 盘前任务后立即启动策略D监控（后台子进程，不阻塞 daemon）。
+    """09:20 盘前任务后立即启动策略D监控（后台线程，不阻塞 daemon）。
+
+    架构原则：QMT 连接只能由主守护进程持有。D监控在线程内运行，
+    通过 SharedQMTBrokerProxy 复用主连接，禁止再启动独立 QMT 子进程。
     监控脚本内部等到09:30开始扫描，10:00起发WATCH提醒，14:00起发BUY信号，14:55自动撤单。
     """
+    global _d_monitor_thread
     logger().info("===== 策略D监控启动（盘中后台）=====")
     try:
         if _strategy_d_monitor_running():
@@ -2295,46 +2299,62 @@ def job_strategy_d() -> None:
             logger().warning("QMT行情未启用，跳过D盘中监控；D策略需要实时行情。")
             return
         live_order = bool(config.get("trade_mode", "").lower() == "live" and config.get("live_trade", {}).get("enabled"))
-        cmd = [PYTHON, "-u", "-B", str(PROJECT_ROOT / "scripts" / "monitor_strategy_d_intraday.py")]
-        if live_order:
-            cmd.append("--live-order")
-        child_env = os.environ.copy()
-        child_env["PYTHONIOENCODING"] = "utf-8"
-        child_env["PYTHONUTF8"] = "1"
-        # Popen 非阻塞：D 监控脚本自管循环 + 14:55 自动撤单，daemon 继续正常运行
-        popen_kwargs: dict[str, Any] = {
-            "cwd": PROJECT_ROOT,
-            "env": child_env,
-            "stdout": subprocess.PIPE,
-            "stderr": subprocess.STDOUT,
-            "text": True,
-            "encoding": "utf-8",
-            "errors": "replace",
-            "bufsize": 1,
-        }
-        if sys.platform.startswith("win"):
-            startupinfo = subprocess.STARTUPINFO()
-            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            popen_kwargs["startupinfo"] = startupinfo
-            popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
-        proc = subprocess.Popen(cmd, **popen_kwargs)
-        _start_d_monitor_log_forwarder(proc)
-        _start_d_monitor_health_probe(proc)
-        mkdir_p(D_MONITOR_PID_FILE.parent)
-        D_MONITOR_PID_FILE.write_text(str(proc.pid), encoding="utf-8")
-        logger().info(
-            "策略D监控已启动（PID %d，live_order=%s，输出已接入主终端日志）",
-            proc.pid,
-            live_order,
+
+        import importlib.util
+
+        d_module_path = PROJECT_ROOT / "scripts" / "monitor_strategy_d_intraday.py"
+        d_spec = importlib.util.spec_from_file_location("a_system_strategy_d_monitor", d_module_path)
+        if d_spec is None or d_spec.loader is None:
+            raise RuntimeError(f"无法加载D监控模块：{d_module_path}")
+        d_module = importlib.util.module_from_spec(d_spec)
+        sys.modules[d_spec.name] = d_module
+        d_spec.loader.exec_module(d_module)
+        StrategyDMonitor = d_module.StrategyDMonitor
+        configured_allowed_segments = d_module.configured_allowed_segments
+        configured_position_pct = d_module.configured_position_pct
+
+        today_str = today_beijing().strftime("%Y%m%d")
+        signal_dir = PROJECT_ROOT / "reports" / "strategy_d"
+        mkdir_p(signal_dir)
+        signal_csv = signal_dir / f"intraday_signals_{today_str}.csv"
+        monitor = StrategyDMonitor(
+            broker=SharedQMTBrokerProxy(broker_config),
+            live_order=live_order,
+            logger=logger(),
+            signal_csv=signal_csv,
+            allowed_segments=configured_allowed_segments(config),
+            position_pct=configured_position_pct(config),
+            config=config,
         )
+
+        def _run_monitor() -> None:
+            try:
+                monitor.run()
+            except Exception as exc:
+                logger().exception("D监控线程异常退出：%s", exc)
+
+        _d_monitor_thread = threading.Thread(
+            target=_run_monitor,
+            daemon=True,
+            name="strategy-d-monitor",
+        )
+        _d_monitor_thread.start()
+        if D_MONITOR_PID_FILE.exists():
+            D_MONITOR_PID_FILE.unlink(missing_ok=True)
+        logger().info("策略D监控已在线程内启动（live_order=%s，QMT连接复用主守护进程）", live_order)
     except Exception as e:
         logger().error("策略D监控启动失败：%s", e)
-    logger().info("===== 策略D监控已独立运行，不阻塞主程序 =====")
+    logger().info("===== 策略D监控已在线程内运行，不阻塞主程序 =====")
 
 
 def stop_strategy_d_monitor(reason: str = "") -> None:
-    """停止 D 盘中监控进程，保证它跟随主守护进程生命周期。"""
+    """停止 D 盘中监控。
+
+    新架构下 D 监控是 daemon 线程，跟随主守护进程退出；这里主要兼容清理旧版子进程PID。
+    """
     try:
+        if _d_monitor_thread is not None and _d_monitor_thread.is_alive():
+            logger().info("D策略监控为主进程内线程，将随主守护进程退出。%s", f"原因：{reason}" if reason else "")
         if not D_MONITOR_PID_FILE.exists():
             return
         pid_text = D_MONITOR_PID_FILE.read_text(encoding="utf-8").strip()
@@ -2422,6 +2442,8 @@ def _pid_is_running(pid: int) -> bool:
 
 def _strategy_d_monitor_running() -> bool:
     try:
+        if _d_monitor_thread is not None and _d_monitor_thread.is_alive():
+            return True
         if not D_MONITOR_PID_FILE.exists():
             return False
         pid_text = D_MONITOR_PID_FILE.read_text(encoding="utf-8").strip()
@@ -3772,6 +3794,7 @@ _qmt_adapter: Any = None             # 持久连接，程序生命周期内保�
 _qmt_last_verified_at: str = ""      # 最近一次 query_account/query_positions 成功时间
 _last_account_has_position: bool = False  # 最近一次券商账户心跳是否确认有持仓
 _qmt_lock = threading.Lock()         # 保护 _qmt_adapter 并发访问
+_d_monitor_thread: threading.Thread | None = None  # D监控线程；D不再独立连接QMT
 
 
 def _broker_config_with_qmt_override(
@@ -3953,6 +3976,54 @@ def _qmt_get(broker_config: dict, *, allow_full_scan: bool | None = None) -> Any
     if _qmt_adapter is None:
         _qmt_adapter = _qmt_connect(broker_config, allow_full_scan=allow_full_scan)
     return _qmt_adapter
+
+
+class SharedQMTBrokerProxy:
+    """D监控使用的共享QMT代理。
+
+    架构约束：一个进程生命周期内只允许主守护进程持有 QMT 连接。
+    D监控不能再作为独立子进程连接 QMT，否则会和账户心跳/下单互抢 session。
+    该代理把 D 监控需要的 broker 方法统一转发到 `_qmt_get` 的唯一连接上。
+    """
+
+    def __init__(self, broker_config: dict[str, Any]) -> None:
+        self.broker_config = broker_config
+
+    def query_account(self) -> Any:
+        with _qmt_lock:
+            return _qmt_get(self.broker_config).query_account()
+
+    def query_positions(self) -> Any:
+        with _qmt_lock:
+            return _qmt_get(self.broker_config).query_positions()
+
+    def query_orders(self) -> Any:
+        with _qmt_lock:
+            return _qmt_get(self.broker_config).query_orders()
+
+    def query_trades(self) -> Any:
+        with _qmt_lock:
+            return _qmt_get(self.broker_config).query_trades()
+
+    def get_full_tick(self, ts_codes: list[str]) -> Any:
+        with _qmt_lock:
+            return _qmt_get(self.broker_config).get_full_tick(ts_codes)
+
+    def place_order(self, request: Any) -> Any:
+        with _qmt_lock:
+            return _qmt_get(self.broker_config).place_order(request)
+
+    def cancel_order(self, order_id: str) -> Any:
+        with _qmt_lock:
+            return _qmt_get(self.broker_config).cancel_order(order_id)
+
+    def get_order_fill(self, order_id: str) -> Any:
+        with _qmt_lock:
+            return _qmt_get(self.broker_config).get_order_fill(order_id)
+
+    def disconnect(self) -> None:
+        """共享连接由主守护进程管理，D监控退出时不能断开。"""
+        return None
 
 
 def _qmt_query_account_positions(adapter: Any, *, timeout_sec: float = 25.0) -> tuple[Any, Any]:
