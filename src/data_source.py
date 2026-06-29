@@ -176,6 +176,24 @@ class TushareDataSource:
     ) -> pd.DataFrame:
         return self._call("stk_limit", trade_date=trade_date, fields=fields)
 
+    def get_moneyflow(
+        self,
+        trade_date: str,
+        fields: Optional[str] = None,
+    ) -> pd.DataFrame:
+        """拉取个股资金流。该接口可能受 Tushare 权限和当日发布时间影响。"""
+
+        return self._call("moneyflow", trade_date=trade_date, fields=fields)
+
+    def get_top_list(
+        self,
+        trade_date: str,
+        fields: Optional[str] = None,
+    ) -> pd.DataFrame:
+        """拉取龙虎榜。该接口通常在收盘后较晚才完整。"""
+
+        return self._call("top_list", trade_date=trade_date, fields=fields)
+
     def get_minute_bars(
         self,
         ts_code: str,

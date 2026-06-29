@@ -2915,9 +2915,10 @@ def job_post_market(end_date: str | None = None) -> None:
         ("clean_collected_data.py",            "② 清洗合并数据",                   TIMEOUT_DATA_STEP,  "约1分钟"),
         ("build_dynamic_features.py",          "③ 市场情绪 / 题材热度",            TIMEOUT_DATA_STEP,  "约1分钟"),
         ("score_limit_up_fill_probability.py", "④ 涨停成交概率打分",               TIMEOUT_DATA_STEP,  "约1分钟"),
-        ("run_paper_ab_filtered_daily_ops.py", "⑤ A+B+C 信号生成",                TIMEOUT_SIGNAL_STEP,"约1分钟"),
-        ("run_strategy_e2_signal.py",          "⑥ E2 信号生成（板块中性小市值）", TIMEOUT_SIGNAL_STEP,"约30秒"),
-        ("run_strategy_l_signal.py",           "⑦ L 龙头信号生成（独立模式备用）", TIMEOUT_SIGNAL_STEP,"约30秒"),
+        ("build_live_enhanced_features.py",    "⑤ 增强因子生成（资金流/龙虎榜/竞价审计）", TIMEOUT_DATA_STEP, "约1分钟"),
+        ("run_paper_ab_filtered_daily_ops.py", "⑥ A+B+C 信号生成",                TIMEOUT_SIGNAL_STEP,"约1分钟"),
+        ("run_strategy_e2_signal.py",          "⑦ E2 信号生成（板块中性小市值）", TIMEOUT_SIGNAL_STEP,"约30秒"),
+        ("run_strategy_l_signal.py",           "⑧ L 龙头信号生成（独立模式备用）", TIMEOUT_SIGNAL_STEP,"约30秒"),
     ]
     extra_args: dict[str, list[str]] = {
         "collect_all_data.py": ["--start-date", recent_start, "--end-date", target_str, "--require-end-date-limit"],
@@ -2933,6 +2934,11 @@ def job_post_market(end_date: str | None = None) -> None:
             "--input-path", live_limit_up_path,
             "--output-path", live_fill_scored_path,
             "--market-sentiment-path", live_market_sentiment_path,
+        ],
+        "build_live_enhanced_features.py": [
+            "--trade-date", target_str,
+            "--input-path", live_fill_scored_path,
+            "--max-trade-days", "10",
         ],
         "run_paper_ab_filtered_daily_ops.py": [
             "--signal-date", target_str,
