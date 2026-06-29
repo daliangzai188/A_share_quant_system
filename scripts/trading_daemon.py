@@ -691,6 +691,31 @@ def _confirm_fill(broker_cfg: dict, order_id: str, expected_qty: int, tag: str) 
         time.sleep(poll)
 
 
+def _format_order_fill_detail(fill: Any) -> str:
+    """把券商委托终态尽量转成可读说明，尤其用于废单排查。"""
+    raw = fill.raw if isinstance(getattr(fill, "raw", None), dict) else {}
+    detail_parts = [
+        f"状态码={getattr(fill, 'status_code', '')}",
+        f"状态={getattr(fill, 'status_text', '')}",
+        f"已成={getattr(fill, 'filled_qty', 0)}股",
+    ]
+    interesting_keywords = (
+        "error", "err", "fail", "失败", "废", "拒",
+        "msg", "message", "remark", "memo", "note", "status", "reason",
+        "m_str", "order", "entrust",
+    )
+    extra: list[str] = []
+    for key, value in raw.items():
+        if value in {None, ""}:
+            continue
+        key_text = str(key)
+        if any(word.lower() in key_text.lower() for word in interesting_keywords):
+            extra.append(f"{key_text}={value}")
+    if extra:
+        detail_parts.append("原始字段：" + "；".join(extra[:12]))
+    return "；".join(detail_parts)
+
+
 # ── 平仓检查（最高优先级，独立运行，绝不因其他错误跳过）────────────────────
 
 def _execute_orders_inprocess(
@@ -2469,12 +2494,17 @@ def _e2_open_price_ok(ts_code: str, tolerance: float = 0.02) -> bool:
 def _e2_place_order_direct(ts_code: str, name: str, planned_qty: int, signal_date: str,
                             strategy_leg: str, exit_n_days: int,
                             config: dict, broker_cfg: dict, confirm: str) -> bool:
-    """按ask5/ask1/last_price挂FIXED_PRICE限价买单，不走CSV→validate流水线。"""
+    """按ask5/ask1/last_price挂FIXED_PRICE限价买单，不走CSV→validate流水线。
+
+    返回 True 仅表示已真实成交并记账；False 表示本次未成交/未提交。
+    终态废单会在调用方通过 _last_e2_terminal_reject 判断后停止重试。
+    """
     from src.broker_adapter import OrderRequest
     from src.live_order_gateway import LiveOrderGateway
 
     today_str = today_beijing().strftime("%Y%m%d")
     log = logger()
+    _e2_place_order_direct.last_terminal_reject = False  # type: ignore[attr-defined]
 
     gateway = LiveOrderGateway(PROJECT_ROOT / "config" / "config.json")
     try:
@@ -2575,8 +2605,11 @@ def _e2_place_order_direct(ts_code: str, name: str, planned_qty: int, signal_dat
                     f"持仓{fill.filled_qty}股 成本{fill_price:.2f} 市值{_fmt_wan(amount)}")
         return True
     else:
-        log.error("❌ [E2延迟开仓] %s %s 未成交（状态=%s），不记录持仓，避免幽灵持仓。",
-                  ts_code, name, fill.status_text)
+        detail = _format_order_fill_detail(fill)
+        log.error("❌ [E2延迟开仓] %s %s 未成交（%s），不记录持仓，避免幽灵持仓。",
+                  ts_code, name, detail)
+        if fill.is_terminal:
+            _e2_place_order_direct.last_terminal_reject = True  # type: ignore[attr-defined]
         return False
 
 
@@ -2640,6 +2673,7 @@ def _e2_delayed_buy_loop(combined_orders_path, decisions) -> None:
             return
 
         placed_any = False
+        terminal_reject_any = False
         for _, row in rows.iterrows():
             code = str(row.get("ts_code", ""))
             if code not in ts_codes:
@@ -2657,9 +2691,18 @@ def _e2_delayed_buy_loop(combined_orders_path, decisions) -> None:
             )
             if ok:
                 placed_any = True
+            if bool(getattr(_e2_place_order_direct, "last_terminal_reject", False)):
+                terminal_reject_any = True
 
         if placed_any:
             log.info("E2延迟开仓：提交成功，退出重试线程。")
+            return
+        if terminal_reject_any:
+            log.warning(
+                "E2延迟开仓：券商已返回终态废单/终态未成交，停止重复提交同一计划，释放资金占用并补启动D监控。"
+            )
+            if not _strategy_d_monitor_running():
+                job_strategy_d()
             return
         log.warning("E2延迟开仓：本次提交未成功，%d秒后重试。", RETRY_INTERVAL_S)
 
@@ -3791,6 +3834,18 @@ def _clear_qmt_last_success(reason: str) -> None:
         logger().warning("QMT成功会话缓存清除失败：%s", exc)
 
 
+def _should_clear_qmt_cache_for_error(error_text: str) -> bool:
+    """判断是否真的要清除 QMT 成功会话缓存。
+
+    超时通常表示 QMT/xtquant 暂时忙或 Windows 环境响应慢，不代表 session 不可用；
+    贸然清缓存会导致后续退回完整扫描，反而更慢。只有明确 connect=-1/全部失败
+    这类硬失败才清除缓存。
+    """
+    text = str(error_text)
+    hard_fail_markers = ["connect=-1", "全部失败", "ORDER_REJECTED_BY_QMT"]
+    return any(marker in text for marker in hard_fail_markers)
+
+
 def _qmt_connect_once(
     broker_config: dict,
     *,
@@ -3886,7 +3941,7 @@ def _qmt_connect(broker_config: dict, *, allow_full_scan: bool | None = None) ->
             return adapter
         except Exception as exc:
             errors.append(f"{attempt['label']}: {exc}")
-            if attempt["label"] == "上次成功path/session":
+            if attempt["label"] == "上次成功path/session" and _should_clear_qmt_cache_for_error(str(exc)):
                 _clear_qmt_last_success(str(exc))
     raise RuntimeError("QMT连接失败: " + " | ".join(errors))
 
@@ -4220,7 +4275,7 @@ def check_qmt_connection() -> bool:
                 last_error = f"QMT探测子进程超时（{int(plan['timeout'])}秒）"
             except Exception as e:
                 last_error = str(e)
-            if bool(plan.get("preferred_only")):
+            if bool(plan.get("preferred_only")) and _should_clear_qmt_cache_for_error(last_error):
                 _clear_qmt_last_success(last_error)
             if attempt < len(startup_attempts):
                 retry_seconds = int(plan["retry_seconds"])
