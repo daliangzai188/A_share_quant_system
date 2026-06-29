@@ -4237,6 +4237,18 @@ def wait_for_qmt_startup_gate() -> None:
         time.sleep(10)
 
 
+def _should_run_startup_signal_audit(now: datetime.datetime) -> bool:
+    """启动时是否自动跑重量信号审计。
+
+    信号审计会读取成交打标、市场情绪、A/B/C逐层漏斗等文件，纯属人工复盘展示；
+    交易决策由09:00/09:15/09:20定时任务和组合状态机负责，不依赖启动审计输出。
+    为避免启动后抢 CPU/磁盘、拖慢 QMT 心跳，只有盘前关键窗口自动跑。
+    """
+    if not is_trade_day(now.date()):
+        return False
+    return datetime.time(8, 50) <= now.time() <= datetime.time(9, 35)
+
+
 def main() -> None:
     setup()
     log = logger()
@@ -4274,12 +4286,19 @@ def main() -> None:
         expected = today_beijing()
         expected_str = expected.strftime("%Y%m%d")
 
-    # 候选播报和信号审计放后台线程：纯展示，不影响开仓关键路径。
+    # 候选播报放后台线程：纯展示，不影响开仓关键路径。
+    # 重量信号审计只在盘前关键窗口自动跑；盘中/夜间启动只播报候选和L/model3状态。
     # 如果收盘数据缺失，先让收盘流水线补齐，流水线完成后会自行播报，避免启动时先打印旧审计。
     def _startup_report() -> None:
         try:
             report_next_day_candidates()
-            report_signal_readiness_summary(expected_str)
+            if _should_run_startup_signal_audit(now_beijing()):
+                report_signal_readiness_summary(expected_str)
+            else:
+                log.info(
+                    "启动信号审计：当前不在盘前关键窗口，已跳过重量A/B/C逐层审计；"
+                    "候选与L/model3状态已播报，完整审计会在盘前/收盘流水线按需执行。"
+                )
         except Exception as exc:
             log.error("启动候选播报异常：%s", exc)
 
