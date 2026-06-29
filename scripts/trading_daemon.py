@@ -3557,6 +3557,23 @@ def _planned_shares_by_equity(position_pct: Any, price: float) -> int:
     return 0
 
 
+def _exit_method_desc(strategy: str, exit_rule: str) -> str:
+    """按对应策略的平仓逻辑给出平仓时点/方式描述。
+
+    - D：09:23 集合竞价挂跌停（成交≈开盘价）；或被A/B/C/E2接力时T+1开盘让路。
+    - T+1开盘卖（含 *_open）：09:30 开盘平仓，买10/买5挂限价。
+    - T+2收盘卖（默认 ABC/E2/L *_close）：14:50 收盘平仓，买10/买5挂限价。
+    口径与 check_and_close_positions / job_premarket_sell 一致。
+    """
+    s = str(strategy).upper()
+    rule = str(exit_rule).lower()
+    if s == "D":
+        return "09:23集合竞价挂跌停平仓（成交≈开盘价）"
+    if "open" in rule:
+        return "09:30开盘平仓（买10/买5挂限价）"
+    return "14:50收盘平仓（买10/买5挂限价确保成交）"
+
+
 def _log_final_decision_summary(signal_date: str, action_date_compact: str, buy_orders: Any) -> None:
     """打印【最终结果】：按当前总策略模式判定下一交易日实际开仓计划。
 
@@ -3577,12 +3594,20 @@ def _log_final_decision_summary(signal_date: str, action_date_compact: str, buy_
         abc_rows: list[dict[str, Any]] = []
         if buy_orders is not None and not buy_orders.empty:
             for _, r in buy_orders.iterrows():
+                exit_n = int(r.get("exit_n_days", 2) or 2)
+                try:
+                    bd = datetime.datetime.strptime(action_date_compact, "%Y%m%d").date()
+                    exit_date = next_n_trade_days(bd, exit_n).strftime("%Y%m%d")
+                except Exception:
+                    exit_date = ""
                 abc_rows.append({
                     "strategy": str(r.get("strategy_leg", "")) or "ABC",
                     "ts_code": str(r.get("ts_code", "")),
                     "name": str(r.get("name", "")),
                     "shares": int(r.get("round_lot_shares", r.get("estimated_shares", 0)) or 0),
                     "price": float(r.get("reference_price", 0.0) or 0.0),
+                    "exit_date": exit_date,
+                    "exit_rule": "T+2收盘",
                 })
         e2_sig = _load_e2_signal_for_signal_date(signal_date)
         e2_buy: dict[str, Any] | None = None
@@ -3596,6 +3621,8 @@ def _log_final_decision_summary(signal_date: str, action_date_compact: str, buy_
                 "name": str(e2_sig.get("name", "")),
                 "shares": _planned_shares_by_equity(e2_sig.get("position_pct", 0.8), price),
                 "price": price,
+                "exit_date": str(e2_sig.get("planned_exit_date", "")),
+                "exit_rule": str(e2_sig.get("planned_exit_rule", "T+2_close")),
             }
         mode1_buys = abc_rows if abc_rows else ([e2_buy] if e2_buy else [])
 
@@ -3615,6 +3642,8 @@ def _log_final_decision_summary(signal_date: str, action_date_compact: str, buy_
                     "name": str(l_sig.get("name", "")),
                     "shares": l_shares,
                     "price": l_price,
+                    "exit_date": str(l_sig.get("planned_exit_date", "")),
+                    "exit_rule": str(l_sig.get("planned_exit_rule", "T+2_close")),
                 }
 
         # ── 按模式决策 ──
@@ -3665,6 +3694,16 @@ def _log_final_decision_summary(signal_date: str, action_date_compact: str, buy_
                     b["strategy"], b["ts_code"], b["name"], b["shares"], b["price"], amount,
                 )
             logger().info("准备下单时间：%s 09:00生成计划 → 09:15集合竞价预挂 → 09:30确认/补单", readable)
+            seen_exits: set[tuple[str, str]] = set()
+            for b in final_buys:
+                ed = str(b.get("exit_date", ""))
+                ed_readable = f"{ed[:4]}-{ed[4:6]}-{ed[6:]}" if len(ed) == 8 else (ed or "未知")
+                method = _exit_method_desc(b.get("strategy", ""), b.get("exit_rule", ""))
+                key = (ed_readable, method)
+                if key in seen_exits:
+                    continue
+                seen_exits.add(key)
+                logger().info("准备平仓时间：%s %s", ed_readable, method)
         logger().info("==========================================================")
     except Exception as exc:
         logger().error("最终结果汇总异常：%s", exc)

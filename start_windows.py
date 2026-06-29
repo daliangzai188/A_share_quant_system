@@ -165,6 +165,7 @@ def should_print_line(text: str) -> bool:
         "开仓计划",
         "计划买入",
         "准备下单时间",
+        "准备平仓时间",
         "E2策略",
         "L/model3状态",
         "L龙头策略",
