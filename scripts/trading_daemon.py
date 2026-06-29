@@ -3752,6 +3752,16 @@ def _save_qmt_last_success(*, qmt_path: str, session_id: str, account_id: str = 
         logger().warning("QMT成功会话缓存写入失败：%s", exc)
 
 
+def _clear_qmt_last_success(reason: str) -> None:
+    """清除失效的 QMT 成功会话缓存，避免下次启动继续先试坏 session。"""
+    try:
+        if QMT_LAST_SUCCESS_FILE.exists():
+            QMT_LAST_SUCCESS_FILE.unlink()
+            logger().warning("QMT成功会话缓存已清除：%s", reason)
+    except Exception as exc:
+        logger().warning("QMT成功会话缓存清除失败：%s", exc)
+
+
 def _qmt_connect_once(
     broker_config: dict,
     *,
@@ -3815,7 +3825,7 @@ def _qmt_connect(broker_config: dict, *, allow_full_scan: bool | None = None) ->
         attempts.append({
             "label": "上次成功path/session",
             "preferred_only": True,
-            "timeout_sec": 18.0,
+            "timeout_sec": 8.0,
             "qmt_path": str(cached.get("qmt_path", "")),
             "session_id": str(cached.get("session_id", "")),
         })
@@ -3825,7 +3835,7 @@ def _qmt_connect(broker_config: dict, *, allow_full_scan: bool | None = None) ->
     attempts.append({
         "label": "完整备用path/session",
         "preferred_only": False,
-        "timeout_sec": 30.0 if allow_full_scan is False else 45.0,
+        "timeout_sec": 18.0 if allow_full_scan is False else 25.0,
         "qmt_path": "",
         "session_id": "",
     })
@@ -3847,6 +3857,8 @@ def _qmt_connect(broker_config: dict, *, allow_full_scan: bool | None = None) ->
             return adapter
         except Exception as exc:
             errors.append(f"{attempt['label']}: {exc}")
+            if attempt["label"] == "上次成功path/session":
+                _clear_qmt_last_success(str(exc))
     raise RuntimeError("QMT连接失败: " + " | ".join(errors))
 
 
@@ -4117,7 +4129,7 @@ def check_qmt_connection() -> bool:
             startup_attempts.append({
                 "label": "上次成功path/session",
                 "preferred_only": True,
-                "timeout": 18,
+                "timeout": 8,
                 "retry_seconds": 1,
                 "qmt_path": str(cached_session.get("qmt_path", "")),
                 "session_id": str(cached_session.get("session_id", "")),
@@ -4127,7 +4139,7 @@ def check_qmt_connection() -> bool:
         startup_attempts.append({
             "label": "完整备用path/session",
             "preferred_only": False,
-            "timeout": 30,
+            "timeout": 22,
             "retry_seconds": 0,
         })
         for attempt, plan in enumerate(startup_attempts, start=1):
@@ -4179,6 +4191,8 @@ def check_qmt_connection() -> bool:
                 last_error = f"QMT探测子进程超时（{int(plan['timeout'])}秒）"
             except Exception as e:
                 last_error = str(e)
+            if bool(plan.get("preferred_only")):
+                _clear_qmt_last_success(last_error)
             if attempt < len(startup_attempts):
                 retry_seconds = int(plan["retry_seconds"])
                 log.warning(

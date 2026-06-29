@@ -144,7 +144,11 @@ class QMTBrokerAdapter(BrokerAdapter):
         """从 config/config.json 的 broker 配置创建 QMT 适配器。"""
 
         project_root = get_project_root()
-        load_dotenv(project_root / ".env", override=True)
+        # 不覆盖调用方已经设置的环境变量。
+        # 启动门禁和自动重连会把“上次验证成功的 qmt_path/session_id”临时写入环境变量，
+        # 如果这里 override=True，会被 .env 里的默认 session_id 覆盖回旧值，
+        # 导致日志显示尝试缓存会话，实际仍连接默认 1001，启动被无效失败拖慢。
+        load_dotenv(project_root / ".env", override=False)
 
         account_id = os.getenv(str(broker_config.get("account_id_env", "QMT_ACCOUNT_ID")), "").strip()
         qmt_path = os.getenv(str(broker_config.get("qmt_path_env", "QMT_PATH")), "").strip()
