@@ -3355,6 +3355,7 @@ def report_next_day_candidates() -> None:
                 logger().warning("  ⚠️  数据未更新！信号来自 %s，今日（%s）收盘流水线未成功运行", signal_date_str, today_str)
             _log_e2_signal_status(signal_date_str)
             _log_l_model3_signal_status(signal_date_str, action_date_str.replace("-", ""))
+            _log_final_decision_summary(signal_date_str, action_date_str.replace("-", ""), None)
             logger().info("=" * 60)
             return
         except Exception as e:
@@ -3456,6 +3457,7 @@ def report_next_day_candidates() -> None:
             _log_e2_signal_status(signal_date_str)
             _log_l_model3_signal_status(signal_date_str, action_date_str.replace("-", ""))
 
+        _log_final_decision_summary(signal_date_str, action_date_str.replace("-", ""), buy_orders)
         logger().info("=" * 60)
     except Exception as e:
         logger().error("播报候选异常：%s", e)
@@ -3531,6 +3533,141 @@ def _log_e2_signal_status(signal_date: str) -> None:
         )
     except Exception as exc:
         logger().error("播报E2状态异常：%s", exc)
+
+
+def _planned_shares_by_equity(position_pct: Any, price: float) -> int:
+    """按初始资金模型估算计划买入股数（floor 到 100 股）。
+
+    实盘 09:30 下单前会由 resize_buy_orders_for_live_account 按真实可用资金再缩放，
+    这里只用于收盘/启动播报展示一个"计划数量"参考值。
+    """
+    try:
+        cfg = load_json_config(PROJECT_ROOT / "config" / "config.json")
+        initial_cash = float(cfg.get("position", {}).get("initial_cash", 500_000.0))
+        amount = initial_cash * float(position_pct or 0.0)
+        if str(cfg.get("trade_mode", "")).lower() == "live":
+            cap = float(cfg.get("live_trade", {}).get("max_single_order_amount", amount) or amount)
+            amount = min(amount, cap)
+        if price and price > 0:
+            shares = int(amount // price)
+            shares -= shares % 100
+            return max(shares, 0)
+    except Exception as exc:
+        logger().debug("估算计划股数失败：%s", exc)
+    return 0
+
+
+def _log_final_decision_summary(signal_date: str, action_date_compact: str, buy_orders: Any) -> None:
+    """打印【最终结果】：按当前总策略模式判定下一交易日实际开仓计划。
+
+    - 模式1(ABCDE2)：A/B/C 计划单优先，无则 E2。
+    - 模式2(L)：仅当 strategy_l.live_order_enabled 且 L 信号满足时开仓。
+    - 模式3(MODEL3)：先取 mode1 计划；mode1 有买入则仅在 L 通过替换保护时由 L 替换，
+      mode1 无买入则 L 通过基础条件时补位。
+    与 combined_live_engine.build_model3_plan 的判定口径保持一致。
+    """
+    try:
+        cfg = load_json_config(PROJECT_ROOT / "config" / "config.json")
+        mode = int(cfg.get("active_strategy_profile", {}).get("mode", 1))
+        mode_name = {1: "ABCDE2", 2: "L龙头", 3: "MODEL3"}.get(mode, str(mode))
+        readable = f"{action_date_compact[:4]}-{action_date_compact[4:6]}-{action_date_compact[6:]}" \
+            if len(action_date_compact) == 8 else action_date_compact
+
+        # ── mode1 候选：A/B/C 计划单优先，否则 E2 ──
+        abc_rows: list[dict[str, Any]] = []
+        if buy_orders is not None and not buy_orders.empty:
+            for _, r in buy_orders.iterrows():
+                abc_rows.append({
+                    "strategy": str(r.get("strategy_leg", "")) or "ABC",
+                    "ts_code": str(r.get("ts_code", "")),
+                    "name": str(r.get("name", "")),
+                    "shares": int(r.get("round_lot_shares", r.get("estimated_shares", 0)) or 0),
+                    "price": float(r.get("reference_price", 0.0) or 0.0),
+                })
+        e2_sig = _load_e2_signal_for_signal_date(signal_date)
+        e2_buy: dict[str, Any] | None = None
+        if (not abc_rows and e2_sig
+                and str(e2_sig.get("planned_buy_date", "")) == action_date_compact
+                and bool(e2_sig.get("allow_buy_reliable", False))):
+            price = float(e2_sig.get("limit_close", 0.0) or 0.0)
+            e2_buy = {
+                "strategy": "E2",
+                "ts_code": str(e2_sig.get("ts_code", "")),
+                "name": str(e2_sig.get("name", "")),
+                "shares": _planned_shares_by_equity(e2_sig.get("position_pct", 0.8), price),
+                "price": price,
+            }
+        mode1_buys = abc_rows if abc_rows else ([e2_buy] if e2_buy else [])
+
+        # ── L 候选 ──
+        l_sig = _load_l_signal_for_signal_date(signal_date)
+        l_buy: dict[str, Any] | None = None
+        l_base_ok = l_guard_ok = False
+        if l_sig and str(l_sig.get("planned_buy_date", "")) == action_date_compact:
+            l_base_ok, _ = _model3_l_base_rule_pass_for_log(l_sig)
+            l_guard_ok, _ = _model3_l_replace_guard_pass_for_log(l_sig)
+            l_price = float(l_sig.get("limit_close", 0.0) or 0.0)
+            l_shares = _planned_shares_by_equity(l_sig.get("position_pct", 0.8), l_price)
+            if l_shares > 0:
+                l_buy = {
+                    "strategy": "L龙头",
+                    "ts_code": str(l_sig.get("ts_code", "")),
+                    "name": str(l_sig.get("name", "")),
+                    "shares": l_shares,
+                    "price": l_price,
+                }
+
+        # ── 按模式决策 ──
+        final_buys: list[dict[str, Any]] = []
+        note = ""
+        if mode == 1:
+            final_buys = mode1_buys
+            note = "模式1：执行ABCDE2组合（A/B/C优先，无则E2）"
+        elif mode == 2:
+            l_live = bool(cfg.get("strategy_l", {}).get("live_order_enabled", False))
+            if l_buy and l_live:
+                final_buys = [l_buy]
+                note = "模式2：独立L龙头策略开仓"
+            else:
+                note = "模式2：L龙头未满足实盘开仓（live_order_enabled=false 或信号不满足）"
+        else:  # mode == 3
+            m3 = cfg.get("strategy_model3", {})
+            if not (bool(m3.get("enabled")) and bool(m3.get("live_order_enabled"))):
+                final_buys = mode1_buys
+                note = "模式3：model3未完全开启，沿用mode1计划"
+            elif mode1_buys:
+                if l_buy and l_guard_ok:
+                    final_buys = [l_buy]
+                    note = "模式3：mode1有买入，L通过替换保护 → 由L替换"
+                else:
+                    final_buys = mode1_buys
+                    note = "模式3：mode1有买入，L替换保护不通过 → 保留mode1买入"
+            else:
+                if l_buy and l_base_ok:
+                    final_buys = [l_buy]
+                    note = "模式3：mode1无买入，L通过基础条件 → L补位"
+                else:
+                    note = "模式3：mode1无买入，L也不满足 → 不开仓"
+
+        # ── 打印 ──
+        logger().info("=" * 60)
+        logger().info("======================== 最终结果 ========================")
+        logger().info("明日(%s)  总策略模式：%s (%s)", readable, mode, mode_name)
+        logger().info("判定：%s", note)
+        if not final_buys:
+            logger().info("开仓计划：❌ 无 —— ABCDE2 与龙头均无开仓计划")
+        else:
+            logger().info("开仓计划：✅ 共 %d 笔", len(final_buys))
+            for b in final_buys:
+                amount = b["shares"] * b["price"]
+                logger().info(
+                    "  • 策略 %s | %s %s | 计划买入 %d 股 @%.2f元（约%.0f元，实盘按可用资金缩放）",
+                    b["strategy"], b["ts_code"], b["name"], b["shares"], b["price"], amount,
+                )
+            logger().info("准备下单时间：%s 09:00生成计划 → 09:15集合竞价预挂 → 09:30确认/补单", readable)
+        logger().info("==========================================================")
+    except Exception as exc:
+        logger().error("最终结果汇总异常：%s", exc)
 
 
 def _load_l_signal_for_signal_date(signal_date: str) -> dict[str, Any] | None:
