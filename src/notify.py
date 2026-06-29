@@ -62,7 +62,7 @@ def notify(event: str, title: str, body: str = "", *, level: str = "active",
     """推送一条告警。event 用于按配置开关过滤与节流。返回是否实际推送成功。
 
     level: Bark 通知级别 active/timeSensitive/critical（critical 可在勿扰模式下响铃）。
-    call: True 时持续响铃约30秒（警报式，用于重大错误），需 App 已开启「重要提醒」权限。
+    call: True 时持续响铃约30秒（警报式），当前只允许卖出/平仓失败使用。
     """
     cfg = _load_notify_config()
     if not cfg.get("enabled", False):
@@ -81,6 +81,12 @@ def notify(event: str, title: str, body: str = "", *, level: str = "active",
     if not base:
         _logger.warning("notify: 未配置 BARK_URL（.env），跳过推送：%s", title)
         return False
+
+    # 只有卖出/平仓失败保留30秒响铃警报；其它高等级告警统一降为普通通知，避免非平仓风险打扰过强。
+    is_sell_failure = str(event) == "sell_fail"
+    if not is_sell_failure and (call or str(level).lower() == "critical"):
+        level = "active"
+        call = False
 
     throttle_sec = float(cfg.get("throttle_sec", 300))
     # 节流键含 level/call：同一事件的"普通通知"和"警报"分别计数，互不挤占
