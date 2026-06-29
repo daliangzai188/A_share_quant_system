@@ -58,6 +58,7 @@ POLL_INTERVAL_SEC = 30       # 每批轮询间隔（秒）
 MONITOR_START_HHMM = 930     # 脚本等待开始扫描的时间（集合竞价结束后）
 D_POSITION_PCT = 0.80        # 默认仓位比例，优先使用 config.json/strategy_d/position_pct
 D_RETRY_TOP_N = 1            # 严格对齐D原始回测口径：只尝试排序第1名，失败不补偿
+MIN_D_VALID_LIMIT_PRICE = 1.0  # D只做正常A股涨停价；QMT异常行情可能返回0.x，必须本地拦截
 STRATEGY_REMARK = "D_FIRST_BOARD"
 DEFAULT_ALLOWED_SEGMENTS = {"sh_main", "sz_main", "chi_next", "star", "bj", "other"}
 
@@ -679,6 +680,8 @@ class StrategyDMonitor:
             return False, f"市场分段{segment}不在允许范围{','.join(sorted(self.allowed_segments))}"
         if st.ts_code in self.yesterday_limit_codes:
             return False, "昨日已涨停，非首板"
+        if st.upper_limit < MIN_D_VALID_LIMIT_PRICE:
+            return False, f"涨停价异常{st.upper_limit:.2f}元，低于最低有效价{MIN_D_VALID_LIMIT_PRICE:.2f}元"
         if not st.was_sealed:
             return False, "当前不在涨停封板状态"
         if st.open_times_today < 1:
@@ -786,6 +789,25 @@ class StrategyDMonitor:
             if self.session_orders:
                 self.logger.warning("本会话已有D委托，拒绝再次下单: %s", st.ts_code)
                 return True
+            if st.upper_limit < MIN_D_VALID_LIMIT_PRICE:
+                fail_reason = (
+                    f"本地风控拦截：D涨停价异常{st.upper_limit:.2f}元，"
+                    f"低于最低有效价{MIN_D_VALID_LIMIT_PRICE:.2f}元，疑似QMT行情字段异常"
+                )
+                self.logger.error(
+                    "D下单拦截: 策略=D 股票=%s %s %s",
+                    st.ts_code,
+                    st.name,
+                    fail_reason,
+                )
+                print(f"  → 下单拦截: 策略=D {st.ts_code} {st.name} {fail_reason}")
+                st.last_order_fail_reason = fail_reason
+                record["order_status"] = "REJECTED_LOCAL_PRICE_GUARD"
+                record["order_status_text"] = fail_reason
+                record["failure_reason"] = fail_reason
+                self.order_placed = False
+                self.order_locked_ts_code = ""
+                return False
             cash = get_account_cash(self.broker)
             max_order_amount = float(self.config.get("live_trade", {}).get("max_single_order_amount", 50000))
             shares = calc_shares_below_amount(cash, st.upper_limit, self.position_pct, max_order_amount)

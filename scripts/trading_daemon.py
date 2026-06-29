@@ -4262,6 +4262,8 @@ def _print_account_status(log: Any) -> None:
 
 
 def check_qmt_connection() -> bool:
+    global _qmt_last_verified_at, _last_account_has_position, _qmt_reconnect_count
+
     log = logger()
     try:
         config = load_json_config(PROJECT_ROOT / "config" / "config.json")
@@ -4270,104 +4272,39 @@ def check_qmt_connection() -> bool:
             log.info("QMT 未启用，跳过连接检查")
             return True
 
-        last_error = ""
-        cached_session: dict[str, Any] = {}
-        try:
-            if QMT_LAST_SUCCESS_FILE.exists():
-                cached_session = json.loads(QMT_LAST_SUCCESS_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            cached_session = {}
-        # 启动阶段优先验证 QMT，但必须隔离在独立子进程里。
-        # xtquant 加载/连接偶发会卡住解释器或 GIL，放在线程里仍可能拖慢 daemon；
-        # 子进程超时后可直接杀掉，不影响主守护进程继续做明确决策。
-        startup_attempts: list[dict[str, Any]] = []
-        if cached_session.get("qmt_path") and cached_session.get("session_id"):
-            startup_attempts.append({
-                "label": "上次成功path/session",
-                "preferred_only": True,
-                "timeout": 8,
-                "retry_seconds": 1,
-                "qmt_path": str(cached_session.get("qmt_path", "")),
-                "session_id": str(cached_session.get("session_id", "")),
-            })
-        # 不再固定先试配置首选 session=1001。实测该 session 经常 connect=-1，
-        # 会白白拖慢启动；没有成功缓存时直接完整扫描，找到真实可用 session 后写入缓存。
-        startup_attempts.append({
-            "label": "完整备用path/session",
-            "preferred_only": False,
-            "timeout": 22,
-            "retry_seconds": 0,
-        })
-        for attempt, plan in enumerate(startup_attempts, start=1):
-            try:
-                preferred_only = bool(plan["preferred_only"])
-                if preferred_only:
-                    log.info(
-                        "QMT快速连接尝试：第 %d/%d 次，仅尝试%s。",
-                        attempt,
-                        len(startup_attempts),
-                        plan.get("label", "首选path/session"),
-                    )
-                else:
-                    log.info("QMT完整连接尝试：第 %d/%d 次，扫描所有备用 path/session。", attempt, len(startup_attempts))
-                cmd = [PYTHON, "-u", "-B", str(PROJECT_ROOT / "scripts" / "qmt_connection_probe.py")]
-                if preferred_only:
-                    cmd.append("--preferred-only")
-                if plan.get("qmt_path"):
-                    cmd.extend(["--qmt-path", str(plan["qmt_path"])])
-                if plan.get("session_id"):
-                    cmd.extend(["--session-id", str(plan["session_id"])])
-                result = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=int(plan["timeout"]),
-                )
-                stdout = (result.stdout or "").strip().splitlines()
-                payload = json.loads(stdout[-1]) if stdout else {}
-                if result.returncode != 0 or not payload.get("ok"):
-                    raise RuntimeError(str(payload.get("error") or result.stderr or "QMT探测失败"))
-                log.info(
-                    "✅ QMT连接成功且账户已验证：账户 %s，可用资金 %.0f 元（第 %d 次尝试，path=%s session=%s）",
-                    payload.get("account_id", ""),
-                    float(payload.get("available_cash", 0.0) or 0.0),
-                    attempt,
-                    payload.get("qmt_path", ""),
-                    payload.get("session_id", ""),
-                )
-                _save_qmt_last_success(
-                    qmt_path=str(payload.get("qmt_path", "")),
-                    session_id=str(payload.get("session_id", "")),
-                    account_id=str(payload.get("account_id", "")),
-                )
-                _notify_async("connection", "✅ 账户连接成功",
-                              f"守护进程启动就绪，QMT已连接，账户{_mask_account(str(payload.get('account_id', '')))}。")
-                return True
-            except subprocess.TimeoutExpired:
-                last_error = f"QMT探测子进程超时（{int(plan['timeout'])}秒）"
-            except Exception as e:
-                last_error = str(e)
-            if bool(plan.get("preferred_only")) and _should_clear_qmt_cache_for_error(last_error):
-                _clear_qmt_last_success(last_error)
-            if attempt < len(startup_attempts):
-                retry_seconds = int(plan["retry_seconds"])
-                log.warning(
-                    "⚠️ QMT暂时未就绪，第 %d/%d 次连接失败，%d秒后自动重试：%s",
-                    attempt,
-                    len(startup_attempts),
-                    retry_seconds,
-                    last_error,
-                )
-                if retry_seconds > 0:
-                    time.sleep(retry_seconds)
+        # 启动门禁必须建立主进程自己的持久连接，而不是只用子进程探测。
+        # 否则会出现“启动验证成功，但D监控/账户心跳第一次使用QMT又重新连接并超时”的双连接口径。
+        broker_config = config.get("broker", {})
+        log.info("QMT启动门禁：建立主进程持久连接并验证账户/持仓。")
+        with _qmt_lock:
+            adapter = _qmt_get(broker_config, allow_full_scan=True)
+            account, positions = _qmt_query_account_positions(adapter)
 
-        log.error("❌ QMT连接失败：连续 %d 次失败。最后错误：%s", len(startup_attempts), last_error)
-        _notify_async("system_error", "❌ QMT启动连接失败",
-                      f"守护进程启动时QMT连续{len(startup_attempts)}次连接失败，实盘功能不可用，请立即检查。",
-                      level="critical", call=True)
-        return False
+        account_id = str(getattr(account, "account_id", "") or getattr(getattr(adapter, "config", None), "account_id", ""))
+        available_cash = float(getattr(account, "available_cash", 0.0) or 0.0)
+        _qmt_last_verified_at = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
+        _last_account_has_position = any(float(getattr(p, "volume", 0) or 0) > 0 for p in positions)
+        _qmt_reconnect_count = 0
+        log.info(
+            "✅ QMT连接成功且账户已验证：账户 %s，可用资金 %.0f 元（主进程持久连接，path=%s session=%s）",
+            account_id,
+            available_cash,
+            getattr(adapter, "_active_qmt_path", ""),
+            getattr(adapter, "_active_session_id", ""),
+        )
+        _notify_async(
+            "connection",
+            "✅ 账户连接成功",
+            f"守护进程启动就绪，QMT主连接已建立，账户{_mask_account(account_id)}。",
+        )
+        return True
     except Exception as e:
-        log.error("❌ QMT连接失败：%s", e)
+        log.error("❌ QMT主连接验证失败：%s", e)
+        try:
+            with _qmt_lock:
+                _qmt_reset()
+        except Exception:
+            pass
         _notify_async("system_error", "❌ QMT启动连接异常",
                       "守护进程启动连接QMT时发生异常，实盘功能不可用，请立即检查。",
                       level="critical", call=True)
@@ -4377,8 +4314,8 @@ def check_qmt_connection() -> bool:
 def wait_for_qmt_startup_gate() -> None:
     """QMT 启动门禁：账户未验证成功前，不进入启动检查和主循环。
 
-    QMT 探测放在独立子进程里并有硬超时，因此不会再把 daemon 卡死；
-    但业务流程必须等 QMT 账户连接验证成功后才能继续。
+    这里验证的是主守护进程自己的持久 QMT 连接。
+    启动成功后，账户心跳、盘前下单和D线程都复用同一个连接，避免多进程互抢QMT session。
     """
     log = logger()
     round_no = 0
