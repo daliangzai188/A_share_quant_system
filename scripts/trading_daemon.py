@@ -22,6 +22,7 @@ A_System 量化策略常驻守护进程。
 from __future__ import annotations
 
 import datetime
+import csv
 import glob
 import json
 import os
@@ -129,6 +130,11 @@ HEARTBEAT_FILE = PROJECT_ROOT / "logs" / "daemon_heartbeat.txt"
 D_MONITOR_PID_FILE = PROJECT_ROOT / "logs" / "strategy_d_monitor.pid"
 QMT_LAST_SUCCESS_FILE = PROJECT_ROOT / "logs" / "qmt_last_success.json"
 CALENDAR_STALE_WARNED: set[str] = set()
+_TRADE_CALENDAR_CACHE: dict[str, Any] = {
+    "mtime": None,
+    "open_dates": set(),
+    "max_date": "",
+}
 
 # subprocess 超时（秒）：防止某步骤挂死
 TIMEOUT_DATA_STEP = 600      # 数据采集/清洗步骤：10 分钟
@@ -205,15 +211,38 @@ def has_post_market_run_today(date: datetime.date) -> bool:
 # ── 交易日历 ───────────────────────────────────────────────────────────────────
 
 def _load_calendar() -> tuple[set[str], str]:
+    """读取交易日历。
+
+    启动路径会频繁判断交易日，不能每次都 import pandas 再读 CSV。
+    Windows/Z盘环境下 pandas 首次导入和网络盘 CSV 读取会显著拖慢启动，
+    这里改用标准库 csv，并按文件 mtime 做进程内缓存。
+    """
     try:
-        import pandas as pd
         cal_path = PROJECT_ROOT / "data" / "raw" / "trade_calendar.csv"
         if not cal_path.exists():
             return set(), ""
-        cal = pd.read_csv(cal_path, dtype={"cal_date": str})
-        open_days = cal[cal["is_open"].astype(str).isin({"1", "1.0", "True", "true"})].copy()
-        open_dates = set(open_days["cal_date"].astype(str).tolist())
-        max_date = str(cal["cal_date"].astype(str).max()) if "cal_date" in cal.columns and not cal.empty else ""
+        mtime = cal_path.stat().st_mtime
+        if _TRADE_CALENDAR_CACHE.get("mtime") == mtime:
+            return (
+                set(_TRADE_CALENDAR_CACHE.get("open_dates") or set()),
+                str(_TRADE_CALENDAR_CACHE.get("max_date") or ""),
+            )
+
+        open_dates: set[str] = set()
+        max_date = ""
+        with cal_path.open("r", encoding="utf-8-sig", newline="") as file:
+            for row in csv.DictReader(file):
+                cal_date = str(row.get("cal_date", "")).strip()
+                if not cal_date:
+                    continue
+                if cal_date > max_date:
+                    max_date = cal_date
+                if str(row.get("is_open", "")).strip() in {"1", "1.0", "True", "true"}:
+                    open_dates.add(cal_date)
+
+        _TRADE_CALENDAR_CACHE["mtime"] = mtime
+        _TRADE_CALENDAR_CACHE["open_dates"] = set(open_dates)
+        _TRADE_CALENDAR_CACHE["max_date"] = max_date
         return open_dates, max_date
     except Exception:
         return set(), ""
