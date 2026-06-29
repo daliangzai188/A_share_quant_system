@@ -2485,7 +2485,7 @@ def _json_signal_has_date(path: Path, signal_date: str) -> bool:
         return False
 
 
-def report_next_trade_factor_readiness(signal_date: str) -> None:
+def report_next_trade_factor_readiness(signal_date: str) -> bool:
     """收盘后确认下个交易日开盘计算所需因子是否准备齐全。
 
     口径说明：
@@ -2496,39 +2496,56 @@ def report_next_trade_factor_readiness(signal_date: str) -> None:
         signal_dt = datetime.datetime.strptime(signal_date, "%Y%m%d").date()
     except Exception:
         logger().warning("因子就绪检查跳过：signal_date非法=%s", signal_date)
-        return
+        return False
     next_date = next_n_trade_days(signal_dt, 1).strftime("%Y%m%d")
     processed = PROJECT_ROOT / "data" / "processed"
     raw = PROJECT_ROOT / "data" / "raw"
     checks = [
-        ("raw日线", raw / "daily" / f"{signal_date}.csv", ["trade_date", "ts_code", "open", "close", "amount"], True),
-        ("raw每日基本面", raw / "daily_basic" / f"{signal_date}.csv", ["trade_date", "ts_code", "turnover_rate", "volume_ratio", "circ_mv"], True),
-        ("raw涨停池", raw / "limit_list" / f"{signal_date}.csv", ["trade_date", "ts_code", "first_time", "last_time", "open_times", "limit_times"], True),
-        ("实盘涨停合并", processed / "live_limit_up_merged.csv", ["trade_date", "ts_code", "fd_amount", "fd_amount_to_circ_mv", "market_segment"], True),
-        ("成交概率打分", processed / "live_limit_up_fill_scored.csv", ["trade_date", "ts_code", "fill_probability", "allow_buy_reliable", "is_fill_score_reliable"], True),
-        ("市场情绪", processed / "live_market_emotion_features.csv", ["trade_date", "market_segment", "market_chain_count", "segment_emotion_state"], True),
-        ("题材热度", processed / "live_theme_heat_features.csv", ["trade_date", "ts_code", "theme_name", "theme_heat_rank", "theme_limit_count"], True),
-        ("资金流增强", processed / "sector_moneyflow_features.csv", ["trade_date", "ts_code", "sector_moneyflow_score"], False),
-        ("龙虎榜增强", processed / "top_list_features.csv", ["trade_date", "ts_code", "top_list_net_buy_score"], False),
-        ("集合竞价审计", processed / "auction_features.csv", ["trade_date", "ts_code", "auction_strength_score"], False),
-        ("开盘5分钟审计", processed / "open_5m_features.csv", ["trade_date", "ts_code", "open_5m_strength_score"], False),
+        ("raw日线", raw / "daily" / f"{signal_date}.csv", ["trade_date", "ts_code", "open", "close", "amount"], True, False),
+        ("raw每日基本面", raw / "daily_basic" / f"{signal_date}.csv", ["trade_date", "ts_code", "turnover_rate", "volume_ratio", "circ_mv"], True, False),
+        ("raw涨停池", raw / "limit_list" / f"{signal_date}.csv", ["trade_date", "ts_code", "first_time", "last_time", "open_times", "limit_times"], True, False),
+        ("实盘涨停合并", processed / "live_limit_up_merged.csv", ["trade_date", "ts_code", "fd_amount", "fd_amount_to_circ_mv", "market_segment"], True, False),
+        ("成交概率打分", processed / "live_limit_up_fill_scored.csv", ["trade_date", "ts_code", "fill_probability", "allow_buy_reliable", "is_fill_score_reliable"], True, False),
+        ("市场情绪", processed / "live_market_emotion_features.csv", ["trade_date", "market_segment", "market_chain_count", "segment_emotion_state"], True, False),
+        ("题材热度", processed / "live_theme_heat_features.csv", ["trade_date", "ts_code", "theme_name", "theme_heat_rank", "theme_limit_count"], True, False),
+        # 资金流和龙虎榜是T日收盘后应尽量补齐的增强因子；如果整日数据全不可用，继续走5分钟重试。
+        ("资金流增强", processed / "sector_moneyflow_features.csv", ["trade_date", "ts_code", "sector_moneyflow_score"], False, True),
+        ("龙虎榜增强", processed / "top_list_features.csv", ["trade_date", "ts_code", "top_list_net_buy_score"], False, True),
+        # 集合竞价/开盘5分钟属于T+1盘中数据，T日晚只能生成审计占位，不能用未来数据伪造分数。
+        ("集合竞价审计", processed / "auction_features.csv", ["trade_date", "ts_code", "auction_strength_score"], False, False),
+        ("开盘5分钟审计", processed / "open_5m_features.csv", ["trade_date", "ts_code", "open_5m_strength_score"], False, False),
     ]
 
     critical_missing: list[str] = []
+    retry_missing: list[str] = []
     enhanced_missing: list[str] = []
     logger().info("----- 明日开盘因子就绪检查：signal_date=%s next_trade_date=%s -----", signal_date, next_date)
-    for name, path, cols, critical in checks:
+    for name, path, cols, critical, require_available in checks:
         status = _csv_readiness(path, signal_date, cols)
         detail = f"{name}: rows={status['rows']} file={path.name}"
         if status.get("data_available_false") not in (None, 0):
             detail += f" data_available_false={status['data_available_false']}"
+        all_unavailable = (
+            require_available
+            and int(status.get("rows") or 0) > 0
+            and status.get("data_available_false") == status.get("rows")
+        )
         if status["ok"]:
-            logger().info("  ✅ %s", detail)
+            if all_unavailable:
+                logger().warning("  ⚠️ %s 当日数据全不可用，将等待接口补齐", detail)
+                retry_missing.append(name)
+            else:
+                logger().info("  ✅ %s", detail)
         else:
             missing_text = ",".join(status.get("missing_columns") or [])
             err = status.get("error", "")
             logger().warning("  ⚠️ %s 缺失字段=%s 错误=%s", detail, missing_text or "无", err or "无")
-            (critical_missing if critical else enhanced_missing).append(name)
+            if critical:
+                critical_missing.append(name)
+            elif require_available:
+                retry_missing.append(name)
+            else:
+                enhanced_missing.append(name)
 
     abc_ready = _has_signal_for_date(signal_dt)
     e2_ready = _json_signal_has_date(PROJECT_ROOT / "reports" / "strategy_e2" / "e2_signals_recent.json", signal_date)
@@ -2539,19 +2556,27 @@ def report_next_trade_factor_readiness(signal_date: str) -> None:
     if not abc_ready:
         critical_missing.append("A/B/C planned_orders")
     if not e2_ready:
-        enhanced_missing.append("E2 signal")
+        enhanced_missing.append("E2 signal（可能是当日不触发）")
     if not l_ready:
-        enhanced_missing.append("L signal")
+        enhanced_missing.append("L signal（可能是当日不触发）")
 
     if critical_missing:
         body = f"signal_date={signal_date} next={next_date} 缺关键因子/计划：{', '.join(critical_missing)}。明日09:00计划可能不可用。"
         logger().error("❌ 明日开盘关键因子未齐：%s", body)
         _notify("system_error", "❌ 明日开盘关键因子未齐", body, level="critical", call=True)
+        logger().info("----- 明日开盘因子就绪检查结束 -----")
+        return False
+    if retry_missing:
+        body = f"signal_date={signal_date} next={next_date} 待补齐增强因子：{', '.join(retry_missing)}。收盘流水线将5分钟后重试。"
+        logger().warning("⚠️ 明日开盘增强因子未齐：%s", body)
+        logger().info("----- 明日开盘因子就绪检查结束 -----")
+        return False
     elif enhanced_missing:
         logger().warning("⚠️ 明日开盘关键因子已齐，增强/备用项缺失：%s", ", ".join(enhanced_missing))
     else:
         logger().info("✅ 明日开盘因子已齐：ABCE2/L/D 所需关键文件均已准备")
     logger().info("----- 明日开盘因子就绪检查结束 -----")
+    return True
 
 
 def _strategy_d_monitor_running() -> bool:
@@ -3130,10 +3155,12 @@ def job_post_market(end_date: str | None = None) -> None:
         report_signal_readiness_summary(target_str)
         return False
 
-    logger().info("===== 收盘流水线完成 =====")
     report_next_day_candidates()
     report_signal_readiness_summary(target_str)
-    report_next_trade_factor_readiness(target_str)
+    if not report_next_trade_factor_readiness(target_str):
+        logger().warning("⚠️ 明日开盘因子尚未完全就绪，本次不标记收盘完成；5分钟后自动重试")
+        return False
+    logger().info("===== 收盘流水线完成 =====")
     mark_post_market_done(target_date)
     try:
         open_cnt = sum(1 for p in load_positions() if p.get("status") == "open")
@@ -3156,7 +3183,7 @@ def job_post_market(end_date: str | None = None) -> None:
 
 
 def _run_post_market_with_retry(end_date: str | None = None) -> None:
-    """运行收盘流水线，若完整涨停池未就绪则短间隔重试，直到 23:00。"""
+    """运行收盘流水线，若收盘数据或明日开盘因子未就绪则每5分钟重试，直到23:00。"""
     cutoff_hour = 23
     retry_seconds = 300
     date_str = end_date or today_beijing().strftime("%Y%m%d")
@@ -3174,7 +3201,7 @@ def _run_post_market_with_retry(end_date: str | None = None) -> None:
             break
         next_retry = now + datetime.timedelta(seconds=retry_seconds)
         logger().warning(
-            "⚠️ Tushare %s 完整涨停池尚未就绪，%d分钟后（%s）自动重试",
+            "⚠️ %s 收盘数据/因子尚未就绪，%d分钟后（%s）自动重试",
             date_str,
             retry_seconds // 60,
             next_retry.strftime("%H:%M"),
