@@ -2440,6 +2440,120 @@ def _pid_is_running(pid: int) -> bool:
         return False
 
 
+def _csv_readiness(path: Path, signal_date: str, required_columns: list[str]) -> dict[str, Any]:
+    """轻量检查某个因子文件是否包含信号日数据和必需字段。"""
+    result: dict[str, Any] = {
+        "path": str(path),
+        "exists": path.exists(),
+        "rows": 0,
+        "missing_columns": [],
+        "ok": False,
+        "data_available_false": None,
+    }
+    if not path.exists():
+        result["missing_columns"] = required_columns
+        return result
+    try:
+        import pandas as pd
+
+        header = pd.read_csv(path, nrows=0).columns.tolist()
+        missing = [c for c in required_columns if c not in header]
+        result["missing_columns"] = missing
+        if "trade_date" not in header:
+            return result
+        usecols = sorted(set(["trade_date", "data_available", *required_columns]) & set(header))
+        data = pd.read_csv(path, usecols=usecols, dtype={"trade_date": str}, low_memory=False)
+        day = data[data["trade_date"].astype(str).eq(signal_date)].copy()
+        result["rows"] = int(len(day))
+        if "data_available" in day.columns and len(day) > 0:
+            available = day["data_available"].astype(str).str.lower().isin({"true", "1", "1.0"})
+            result["data_available_false"] = int((~available).sum())
+        result["ok"] = len(day) > 0 and not missing
+        return result
+    except Exception as exc:  # noqa: BLE001
+        result["error"] = str(exc)
+        return result
+
+
+def _json_signal_has_date(path: Path, signal_date: str) -> bool:
+    if not path.exists():
+        return False
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return any(str(item.get("signal_date", "")) == signal_date for item in data.get("signals", []))
+    except Exception:
+        return False
+
+
+def report_next_trade_factor_readiness(signal_date: str) -> None:
+    """收盘后确认下个交易日开盘计算所需因子是否准备齐全。
+
+    口径说明：
+    - T日收盘能准备 T日涨停/日线/情绪/题材/资金/龙虎榜，用于 T+1 09:00 计划。
+    - T+1集合竞价和开盘5分钟是真实未来盘中数据，不可能在T日晚提前获取；这里只检查审计文件。
+    """
+    try:
+        signal_dt = datetime.datetime.strptime(signal_date, "%Y%m%d").date()
+    except Exception:
+        logger().warning("因子就绪检查跳过：signal_date非法=%s", signal_date)
+        return
+    next_date = next_n_trade_days(signal_dt, 1).strftime("%Y%m%d")
+    processed = PROJECT_ROOT / "data" / "processed"
+    raw = PROJECT_ROOT / "data" / "raw"
+    checks = [
+        ("raw日线", raw / "daily" / f"{signal_date}.csv", ["trade_date", "ts_code", "open", "close", "amount"], True),
+        ("raw每日基本面", raw / "daily_basic" / f"{signal_date}.csv", ["trade_date", "ts_code", "turnover_rate", "volume_ratio", "circ_mv"], True),
+        ("raw涨停池", raw / "limit_list" / f"{signal_date}.csv", ["trade_date", "ts_code", "first_time", "last_time", "open_times", "limit_times"], True),
+        ("实盘涨停合并", processed / "live_limit_up_merged.csv", ["trade_date", "ts_code", "fd_amount", "fd_amount_to_circ_mv", "market_segment"], True),
+        ("成交概率打分", processed / "live_limit_up_fill_scored.csv", ["trade_date", "ts_code", "fill_probability", "allow_buy_reliable", "is_fill_score_reliable"], True),
+        ("市场情绪", processed / "live_market_emotion_features.csv", ["trade_date", "market_segment", "market_chain_count", "segment_emotion_state"], True),
+        ("题材热度", processed / "live_theme_heat_features.csv", ["trade_date", "ts_code", "theme_name", "theme_heat_rank", "theme_limit_count"], True),
+        ("资金流增强", processed / "sector_moneyflow_features.csv", ["trade_date", "ts_code", "sector_moneyflow_score"], False),
+        ("龙虎榜增强", processed / "top_list_features.csv", ["trade_date", "ts_code", "top_list_net_buy_score"], False),
+        ("集合竞价审计", processed / "auction_features.csv", ["trade_date", "ts_code", "auction_strength_score"], False),
+        ("开盘5分钟审计", processed / "open_5m_features.csv", ["trade_date", "ts_code", "open_5m_strength_score"], False),
+    ]
+
+    critical_missing: list[str] = []
+    enhanced_missing: list[str] = []
+    logger().info("----- 明日开盘因子就绪检查：signal_date=%s next_trade_date=%s -----", signal_date, next_date)
+    for name, path, cols, critical in checks:
+        status = _csv_readiness(path, signal_date, cols)
+        detail = f"{name}: rows={status['rows']} file={path.name}"
+        if status.get("data_available_false") not in (None, 0):
+            detail += f" data_available_false={status['data_available_false']}"
+        if status["ok"]:
+            logger().info("  ✅ %s", detail)
+        else:
+            missing_text = ",".join(status.get("missing_columns") or [])
+            err = status.get("error", "")
+            logger().warning("  ⚠️ %s 缺失字段=%s 错误=%s", detail, missing_text or "无", err or "无")
+            (critical_missing if critical else enhanced_missing).append(name)
+
+    abc_ready = _has_signal_for_date(signal_dt)
+    e2_ready = _json_signal_has_date(PROJECT_ROOT / "reports" / "strategy_e2" / "e2_signals_recent.json", signal_date)
+    l_ready = _json_signal_has_date(PROJECT_ROOT / "reports" / "strategy_l" / "l_signals_recent.json", signal_date)
+    logger().info("  %s A/B/C计划或空计划文件已生成", "✅" if abc_ready else "⚠️")
+    logger().info("  %s E2信号文件含signal_date=%s", "✅" if e2_ready else "⚠️", signal_date)
+    logger().info("  %s L信号文件含signal_date=%s", "✅" if l_ready else "⚠️", signal_date)
+    if not abc_ready:
+        critical_missing.append("A/B/C planned_orders")
+    if not e2_ready:
+        enhanced_missing.append("E2 signal")
+    if not l_ready:
+        enhanced_missing.append("L signal")
+
+    if critical_missing:
+        body = f"signal_date={signal_date} next={next_date} 缺关键因子/计划：{', '.join(critical_missing)}。明日09:00计划可能不可用。"
+        logger().error("❌ 明日开盘关键因子未齐：%s", body)
+        _notify("system_error", "❌ 明日开盘关键因子未齐", body, level="critical", call=True)
+    elif enhanced_missing:
+        logger().warning("⚠️ 明日开盘关键因子已齐，增强/备用项缺失：%s", ", ".join(enhanced_missing))
+    else:
+        logger().info("✅ 明日开盘因子已齐：ABCE2/L/D 所需关键文件均已准备")
+    logger().info("----- 明日开盘因子就绪检查结束 -----")
+
+
 def _strategy_d_monitor_running() -> bool:
     try:
         if _d_monitor_thread is not None and _d_monitor_thread.is_alive():
@@ -3019,6 +3133,7 @@ def job_post_market(end_date: str | None = None) -> None:
     logger().info("===== 收盘流水线完成 =====")
     report_next_day_candidates()
     report_signal_readiness_summary(target_str)
+    report_next_trade_factor_readiness(target_str)
     mark_post_market_done(target_date)
     try:
         open_cnt = sum(1 for p in load_positions() if p.get("status") == "open")
