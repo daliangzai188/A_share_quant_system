@@ -2674,12 +2674,16 @@ def startup_catchup_strategy_d() -> None:
     if _strategy_d_monitor_running():
         logger().info("启动补检：D策略监控已在运行。")
         return
-    logger().info("启动补检：当前处于D盘中监控时段，检查是否需要补启动D。")
-    combined = load_combined_decisions()
+    logger().info("启动补检：当前处于D盘中监控时段，优先读取今日组合状态机缓存，检查是否需要补启动D。")
+    # 启动补检不是正式计划生成点，不能在非关键时段再重跑一次组合状态机。
+    # 09:00 会生成当天计划；09:15 会直接读缓存挂单。这里若重新运行
+    # run_combined_live_plan.py，容易和启动候选播报/信号审计同时抢 CPU 与文件，
+    # 造成 180 秒超时，并拖慢 QMT 心跳。缓存不存在时保守跳过，等下一轮定时任务处理。
+    combined = read_cached_combined_decisions()
     decisions = combined[0] if combined is not None else None
     combined_orders_path = combined[1] if combined is not None else None
     if decisions is None:
-        logger().warning("启动补检：组合状态机决策生成失败，不补启动D。")
+        logger().warning("启动补检：今日组合状态机缓存不存在或读取失败，不重算、不补启动D。")
         return
     if has_combined_action(decisions, "PLAN_SELL_D_FIRST"):
         logger().info("启动补检：存在D待卖优先动作，不补启动新的D监控。")
