@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -16,12 +17,19 @@ from src.utils.config import load_json_config
 def main() -> int:
     parser = argparse.ArgumentParser(description="QMT账户可用性探测。")
     parser.add_argument("--preferred-only", action="store_true", help="只尝试配置里的首选 path/session。")
+    parser.add_argument("--qmt-path", default="", help="覆盖 QMT_PATH，用于优先尝试上次成功路径。")
+    parser.add_argument("--session-id", default="", help="覆盖 QMT_SESSION_ID，用于优先尝试上次成功 session。")
     args = parser.parse_args()
 
     adapter = None
     try:
         config = load_json_config(PROJECT_ROOT / "config" / "config.json")
-        adapter = QMTBrokerAdapter.from_config(config.get("broker", {}))
+        broker_cfg = config.get("broker", {})
+        if args.qmt_path:
+            os.environ[str(broker_cfg.get("qmt_path_env", "QMT_PATH"))] = args.qmt_path
+        if args.session_id:
+            os.environ[str(broker_cfg.get("session_id_env", "QMT_SESSION_ID"))] = args.session_id
+        adapter = QMTBrokerAdapter.from_config(broker_cfg)
         adapter.connect(preferred_only=args.preferred_only)
         account = adapter.query_account()
         positions = adapter.query_positions()
@@ -30,6 +38,8 @@ def main() -> int:
             "account_id": account.account_id,
             "available_cash": account.available_cash,
             "position_count": len(positions or []),
+            "qmt_path": getattr(adapter, "_active_qmt_path", ""),
+            "session_id": getattr(adapter, "_active_session_id", ""),
         }
         print(json.dumps(payload, ensure_ascii=False), flush=True)
         return 0

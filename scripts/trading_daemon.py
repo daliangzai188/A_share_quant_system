@@ -103,6 +103,7 @@ POSITIONS_FILE = PROJECT_ROOT / "data" / "processed" / "positions.json"
 PENDING_BUY_FILE = PROJECT_ROOT / "data" / "processed" / "pending_premarket_buy.json"
 HEARTBEAT_FILE = PROJECT_ROOT / "logs" / "daemon_heartbeat.txt"
 D_MONITOR_PID_FILE = PROJECT_ROOT / "logs" / "strategy_d_monitor.pid"
+QMT_LAST_SUCCESS_FILE = PROJECT_ROOT / "logs" / "qmt_last_success.json"
 CALENDAR_STALE_WARNED: set[str] = set()
 
 # subprocess 超时（秒）：防止某步骤挂死
@@ -3923,24 +3924,48 @@ def check_qmt_connection() -> bool:
             return True
 
         last_error = ""
+        cached_session: dict[str, Any] = {}
+        try:
+            if QMT_LAST_SUCCESS_FILE.exists():
+                cached_session = json.loads(QMT_LAST_SUCCESS_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            cached_session = {}
         # 启动阶段优先验证 QMT，但必须隔离在独立子进程里。
         # xtquant 加载/连接偶发会卡住解释器或 GIL，放在线程里仍可能拖慢 daemon；
         # 子进程超时后可直接杀掉，不影响主守护进程继续做明确决策。
-        startup_attempts = [
-            {"preferred_only": True, "timeout": 10, "retry_seconds": 1},
-            {"preferred_only": False, "timeout": 25, "retry_seconds": 1},
-            {"preferred_only": False, "timeout": 25, "retry_seconds": 0},
-        ]
+        startup_attempts: list[dict[str, Any]] = []
+        if cached_session.get("qmt_path") and cached_session.get("session_id"):
+            startup_attempts.append({
+                "label": "上次成功path/session",
+                "preferred_only": True,
+                "timeout": 18,
+                "retry_seconds": 1,
+                "qmt_path": str(cached_session.get("qmt_path", "")),
+                "session_id": str(cached_session.get("session_id", "")),
+            })
+        startup_attempts.extend([
+            {"label": "配置首选path/session", "preferred_only": True, "timeout": 10, "retry_seconds": 1},
+            {"label": "完整备用path/session", "preferred_only": False, "timeout": 25, "retry_seconds": 0},
+        ])
         for attempt, plan in enumerate(startup_attempts, start=1):
             try:
                 preferred_only = bool(plan["preferred_only"])
                 if preferred_only:
-                    log.info("QMT快速连接尝试：第 %d/%d 次，仅尝试首选 path/session。", attempt, len(startup_attempts))
+                    log.info(
+                        "QMT快速连接尝试：第 %d/%d 次，仅尝试%s。",
+                        attempt,
+                        len(startup_attempts),
+                        plan.get("label", "首选path/session"),
+                    )
                 else:
                     log.info("QMT完整连接尝试：第 %d/%d 次，扫描所有备用 path/session。", attempt, len(startup_attempts))
                 cmd = [PYTHON, "-u", "-B", str(PROJECT_ROOT / "scripts" / "qmt_connection_probe.py")]
                 if preferred_only:
                     cmd.append("--preferred-only")
+                if plan.get("qmt_path"):
+                    cmd.extend(["--qmt-path", str(plan["qmt_path"])])
+                if plan.get("session_id"):
+                    cmd.extend(["--session-id", str(plan["session_id"])])
                 result = subprocess.run(
                     cmd,
                     capture_output=True,
@@ -3952,11 +3977,30 @@ def check_qmt_connection() -> bool:
                 if result.returncode != 0 or not payload.get("ok"):
                     raise RuntimeError(str(payload.get("error") or result.stderr or "QMT探测失败"))
                 log.info(
-                    "✅ QMT连接成功且账户已验证：账户 %s，可用资金 %.0f 元（第 %d 次尝试）",
+                    "✅ QMT连接成功且账户已验证：账户 %s，可用资金 %.0f 元（第 %d 次尝试，path=%s session=%s）",
                     payload.get("account_id", ""),
                     float(payload.get("available_cash", 0.0) or 0.0),
                     attempt,
+                    payload.get("qmt_path", ""),
+                    payload.get("session_id", ""),
                 )
+                try:
+                    mkdir_p(QMT_LAST_SUCCESS_FILE.parent)
+                    QMT_LAST_SUCCESS_FILE.write_text(
+                        json.dumps(
+                            {
+                                "qmt_path": str(payload.get("qmt_path", "")),
+                                "session_id": str(payload.get("session_id", "")),
+                                "account_id": str(payload.get("account_id", "")),
+                                "verified_at": now_beijing().isoformat(),
+                            },
+                            ensure_ascii=False,
+                            indent=2,
+                        ),
+                        encoding="utf-8",
+                    )
+                except Exception as cache_exc:
+                    log.warning("QMT成功会话缓存写入失败：%s", cache_exc)
                 _notify("connection", "✅ 账户连接成功",
                         f"守护进程启动就绪，QMT已连接，账户{_mask_account(str(payload.get('account_id', '')))}。")
                 return True
