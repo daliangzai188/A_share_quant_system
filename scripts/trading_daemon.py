@@ -3923,30 +3923,39 @@ def _qmt_connect_once(
 def _qmt_connect(broker_config: dict, *, allow_full_scan: bool | None = None) -> Any:
     """建立新 QMT 连接。不持有 _qmt_lock，调用方按需加锁。
 
-    优先复用启动门禁探测成功的 path/session；如果缓存失效，再完整扫描备用
-    session。不要固定先试配置 session=1001，该 session 在实盘环境里经常失败。
+    连接原则：
+    1. 启动门禁/关键重连使用 allow_full_scan=True，只做一次完整扫描。
+       不先试缓存再叠加完整扫描，避免首选 session 超时线程未退出时又抢 QMT。
+    2. 轻量心跳使用缓存优先，失败后交给下一轮关键重连处理。
     """
     errors: list[str] = []
     cached = _load_qmt_last_success()
     attempts: list[dict[str, Any]] = []
-    if cached:
+
+    if allow_full_scan is True:
+        attempts.append({
+            "label": "完整备用path/session",
+            "preferred_only": False,
+            "timeout_sec": 70.0,
+            "qmt_path": "",
+            "session_id": "",
+        })
+    elif cached:
         attempts.append({
             "label": "上次成功path/session",
             "preferred_only": True,
-            "timeout_sec": 8.0,
+            "timeout_sec": 12.0,
             "qmt_path": str(cached.get("qmt_path", "")),
             "session_id": str(cached.get("session_id", "")),
         })
-
-    # allow_full_scan=False 只用于极轻量非关键心跳；没有缓存时也不该回到固定1001，
-    # 因为固定1001失败会制造长时间假断连。这里仍直接完整扫描。
-    attempts.append({
-        "label": "完整备用path/session",
-        "preferred_only": False,
-        "timeout_sec": 18.0 if allow_full_scan is False else 25.0,
-        "qmt_path": "",
-        "session_id": "",
-    })
+    else:
+        attempts.append({
+            "label": "完整备用path/session",
+            "preferred_only": False,
+            "timeout_sec": 25.0,
+            "qmt_path": "",
+            "session_id": "",
+        })
 
     for attempt in attempts:
         try:
@@ -4275,7 +4284,7 @@ def check_qmt_connection() -> bool:
         # 启动门禁必须建立主进程自己的持久连接，而不是只用子进程探测。
         # 否则会出现“启动验证成功，但D监控/账户心跳第一次使用QMT又重新连接并超时”的双连接口径。
         broker_config = config.get("broker", {})
-        log.info("QMT启动门禁：建立主进程持久连接并验证账户/持仓。")
+        log.info("QMT启动门禁：建立主进程持久连接并验证账户/持仓（单次完整扫描，不叠加缓存快连）。")
         with _qmt_lock:
             adapter = _qmt_get(broker_config, allow_full_scan=True)
             account, positions = _qmt_query_account_positions(adapter)
