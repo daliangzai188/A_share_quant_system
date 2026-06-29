@@ -3837,12 +3837,13 @@ def _clear_qmt_last_success(reason: str) -> None:
 def _should_clear_qmt_cache_for_error(error_text: str) -> bool:
     """判断是否真的要清除 QMT 成功会话缓存。
 
-    超时通常表示 QMT/xtquant 暂时忙或 Windows 环境响应慢，不代表 session 不可用；
-    贸然清缓存会导致后续退回完整扫描，反而更慢。只有明确 connect=-1/全部失败
-    这类硬失败才清除缓存。
+    QMT 的 connect=-1 在实盘环境里可能是短暂忙，不一定代表 session 永久失效；
+    日志里已经出现过同一 session 先 connect=-1、随后完整扫描又成功的情况。
+    因此首选 session 单次失败不清缓存，完整扫描成功后会自然刷新缓存。
+    只有缓存路径本身明显不可用时才清除。
     """
     text = str(error_text)
-    hard_fail_markers = ["connect=-1", "全部失败", "ORDER_REJECTED_BY_QMT"]
+    hard_fail_markers = ["No such file", "不存在", "路径不存在", "not found"]
     return any(marker in text for marker in hard_fail_markers)
 
 
