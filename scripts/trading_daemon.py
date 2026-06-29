@@ -9,8 +9,10 @@ A_System 量化策略常驻守护进程。
 5. 心跳文件每分钟更新，外部可监控守护进程存活状态。
 
 调度时间表（A 股交易日）：
-    09:20  盘前  —— 平仓检查（优先） + 组合状态机 + D监控
-    09:30  开盘  —— 刷新组合状态机 + 执行 A/B/C/E2 买入
+    09:00  盘前计划 —— 生成/刷新组合状态机买入计划
+    09:15  集合竞价 —— 已有计划立刻按涨停价预挂买入
+    09:20  盘前复核 —— 平仓检查（优先） + 组合状态机复核 + D监控
+    09:30  开盘确认 —— 确认09:15预挂成交，未成交再补买
     14:50  盘中  —— 平仓检查（优先）
     15:10  收盘  —— 数据流水线 + 信号生成
 
@@ -67,6 +69,18 @@ def _notify(event: str, title: str, body: str = "", *, level: str = "active",
             pass
 
 
+def _notify_async(event: str, title: str, body: str = "", *, level: str = "active",
+                  call: bool = False) -> None:
+    """后台推送通知，避免 Bark/网络响应拖慢 QMT 门禁和交易主流程。"""
+    threading.Thread(
+        target=_notify,
+        args=(event, title, body),
+        kwargs={"level": level, "call": call},
+        daemon=True,
+        name=f"notify-{event}",
+    ).start()
+
+
 def _mask_account(account_id: str) -> str:
     """账号脱敏：前缀4星号 + 后2位。"""
     acct = str(account_id or "")
@@ -82,6 +96,7 @@ def _fmt_wan(amount: float) -> str:
 
 # ── 常量 ───────────────────────────────────────────────────────────────────────
 SCHEDULE = [
+    datetime.time(9, 0),    # 盘前：提前生成/刷新组合状态机，避免09:20才开始算买入决策
     datetime.time(9, 15),   # 集合竞价开始：按涨停价预挂买入
     datetime.time(9, 20),   # 盘前：平仓检查 + 组合状态机
     datetime.time(9, 23),   # 集合竞价：按跌停价挂单平仓
@@ -91,6 +106,15 @@ SCHEDULE = [
     datetime.time(14, 55),  # 全策略未成交委托撤单
     datetime.time(15, 10),  # 收盘流水线
 ]
+SCHED_PREOPEN_PLAN = datetime.time(9, 0)
+SCHED_PREMARKET_BUY = datetime.time(9, 15)
+SCHED_MORNING_REVIEW = datetime.time(9, 20)
+SCHED_PREMARKET_SELL = datetime.time(9, 23)
+SCHED_PREMARKET_SYNC = datetime.time(9, 26)
+SCHED_OPENING_BUY = datetime.time(9, 30)
+SCHED_AFTERNOON_CLOSE = datetime.time(14, 50)
+SCHED_CANCEL_PENDING = datetime.time(14, 55)
+SCHED_POST_MARKET = datetime.time(15, 10)
 import sys as _sys
 import platform as _platform
 if _platform.system() == "Windows":
@@ -1055,7 +1079,10 @@ def explain_reject_reasons(row: Any) -> str:
     parts = []
     for code in [item for item in raw.split("|") if item]:
         if code == "OUTSIDE_TRADING_TIME":
-            parts.append(f"不在允许交易时间内；{side} 只允许 09:30-11:30、13:00-14:55/15:00，当前任务若在09:20会被拒")
+            if side == "BUY":
+                parts.append(f"不在允许交易时间内；BUY 允许 09:15-14:55，09:15前或14:55后会被拒")
+            else:
+                parts.append(f"不在允许交易时间内；SELL 允许 09:15-11:30、13:00-15:00")
         elif code == "EXCEED_POSITION_PCT":
             cap = total_asset * max_position_pct
             parts.append(f"超过单票仓位上限：订单约{estimated_amount:.0f}元，上限={total_asset:.0f}×{max_position_pct:.0%}={cap:.0f}元")
@@ -1585,6 +1612,53 @@ def job_premarket_position_sync() -> None:
     logger().info("===== 盘前持仓同步完成 =====")
 
 
+def _combined_paths_for_today() -> tuple[Path, Path]:
+    today_str = today_beijing().strftime("%Y%m%d")
+    base = PROJECT_ROOT / "reports" / "live_trade" / "combined"
+    return (
+        base / f"combined_decisions_{today_str}.csv",
+        base / f"combined_planned_orders_{today_str}.csv",
+    )
+
+
+def read_cached_combined_decisions():
+    """只读取今天已经生成的组合状态机文件，不重新运行脚本。
+
+    09:15 集合竞价挂单必须快：计划在09:00已生成，09:15只读缓存并下单，
+    避免重新计算导致错过集合竞价排队时间。
+    """
+    try:
+        import pandas as pd
+
+        path, orders_path = _combined_paths_for_today()
+        if not path.exists():
+            logger().info("今日组合状态机缓存不存在：%s", path)
+            return None
+        decisions = pd.read_csv(path)
+        if not decisions.empty and "action" in decisions.columns:
+            action_summary = decisions["action"].astype(str).value_counts().to_dict()
+            logger().info("读取今日组合状态机缓存：%s", action_summary)
+        return decisions, orders_path
+    except Exception as e:
+        logger().error("读取今日组合状态机缓存失败：%s", e)
+        return None
+
+
+def job_preopen_plan() -> None:
+    """09:00 提前生成组合状态机计划。
+
+    A/B/C/E2/L/model3 的盘前开仓信息都来自上个交易日收盘后已有数据，D策略除外。
+    因此开仓计划不需要等到09:20才计算；09:00先生成，09:15可以直接挂单。
+    """
+    logger().info("===== 盘前计划生成（09:00）=====")
+    combined = load_combined_decisions()
+    if combined is None:
+        logger().error("09:00 组合状态机决策生成失败，09:15将无法按计划预挂买入。")
+        return
+    logger().info("09:00 组合状态机计划已生成，09:15如有开仓计划将直接按涨停价预挂。")
+    logger().info("===== 盘前计划生成完成 =====")
+
+
 def job_premarket_buy() -> None:
     """09:15 集合竞价预挂：对计划开仓且当前无持仓的标的，优先按涨停价挂限价买单。
 
@@ -1600,7 +1674,10 @@ def job_premarket_buy() -> None:
         logger().info("09:15 已有本地持仓，跳过集合竞价买入预挂。")
         return
 
-    combined = load_combined_decisions()
+    combined = read_cached_combined_decisions()
+    if combined is None:
+        logger().warning("09:15 未找到今日组合状态机缓存，临时生成一次；若耗时较长可能影响集合竞价排队。")
+        combined = load_combined_decisions()
     decisions          = combined[0] if combined is not None else None
     combined_orders_path = combined[1] if combined is not None else None
     if decisions is None:
@@ -2576,12 +2653,21 @@ def _start_e2_retry_thread(combined_orders_path, decisions) -> None:
 def startup_catchup_strategy_d() -> None:
     """盘中重启守护进程时，补启动错过 09:20 的 D 监控。
 
-    不在这里执行 A/B/C 买入预览，避免盘中重启重复触发开仓动作；
+    09:15-09:30 属于集合竞价预挂窗口，若守护进程刚启动或09:00任务错过，
+    这里会立即补挂计划买单；09:30之后不在这里执行 A/B/C 买入预览，避免盘中重启重复触发开仓动作；
     只读取组合状态机，如果它明确允许 D 才补启动监控。
     对于 E2 开仓：若 9:30 后市场仍开盘（14:00 前），允许延迟重试（涨幅≤2%%）。
     """
     now = now_beijing()
     if not is_trade_day(now.date()):
+        return
+    if datetime.time(9, 0) <= now.time() < datetime.time(9, 15):
+        logger().info("启动补检：当前已过09:00未到09:15，先补生成今日组合计划。")
+        job_preopen_plan()
+        return
+    if datetime.time(9, 15) <= now.time() < datetime.time(9, 30):
+        logger().warning("启动补检：当前已过09:15未到09:30，立即补执行集合竞价买入预挂。")
+        job_premarket_buy()
         return
     if not (datetime.time(9, 20) <= now.time() < datetime.time(14, 55)):
         return
@@ -3573,21 +3659,23 @@ def next_event(now: datetime.datetime) -> tuple[datetime.datetime, datetime.time
 def run_job(scheduled_time: datetime.time) -> None:
     today = today_beijing()
     trade_day = is_trade_day(today)
-    if scheduled_time == SCHEDULE[0]:     # 09:15
+    if scheduled_time == SCHED_PREOPEN_PLAN:   # 09:00
+        job_preopen_plan() if trade_day else logger().info("非交易日，跳过盘前计划生成")
+    elif scheduled_time == SCHED_PREMARKET_BUY:     # 09:15
         job_premarket_buy() if trade_day else logger().info("非交易日，跳过盘前买入")
-    elif scheduled_time == SCHEDULE[1]:   # 09:20
+    elif scheduled_time == SCHED_MORNING_REVIEW:   # 09:20
         job_morning() if trade_day else logger().info("非交易日，跳过盘前任务")
-    elif scheduled_time == SCHEDULE[2]:   # 09:23
+    elif scheduled_time == SCHED_PREMARKET_SELL:   # 09:23
         job_premarket_sell() if trade_day else logger().info("非交易日，跳过集合竞价平仓")
-    elif scheduled_time == SCHEDULE[3]:   # 09:26
+    elif scheduled_time == SCHED_PREMARKET_SYNC:   # 09:26
         job_premarket_position_sync() if trade_day else logger().info("非交易日，跳过盘前持仓同步")
-    elif scheduled_time == SCHEDULE[4]:   # 09:30
+    elif scheduled_time == SCHED_OPENING_BUY:   # 09:30
         job_opening_buy() if trade_day else logger().info("非交易日，跳过开盘买入任务")
-    elif scheduled_time == SCHEDULE[5]:   # 14:50
+    elif scheduled_time == SCHED_AFTERNOON_CLOSE:   # 14:50
         job_afternoon() if trade_day else logger().info("非交易日，跳过盘中任务")
-    elif scheduled_time == SCHEDULE[6]:   # 14:55
+    elif scheduled_time == SCHED_CANCEL_PENDING:   # 14:55
         job_cancel_all_pending_orders() if trade_day else logger().info("非交易日，跳过14:55撤单")
-    elif scheduled_time == SCHEDULE[7]:   # 15:10
+    elif scheduled_time == SCHED_POST_MARKET:   # 15:10
         if trade_day:
             # 收盘全量对账（只读+告警，独立于数据流水线，先跑）
             try:
@@ -3606,10 +3694,68 @@ def run_job(scheduled_time: datetime.time) -> None:
 _qmt_reconnect_count: int = 0       # 累计重连次数，成功后归零
 _qmt_adapter: Any = None             # 持久连接，程序生命周期内保持
 _qmt_last_verified_at: str = ""      # 最近一次 query_account/query_positions 成功时间
+_last_account_has_position: bool = False  # 最近一次券商账户心跳是否确认有持仓
 _qmt_lock = threading.Lock()         # 保护 _qmt_adapter 并发访问
 
 
-def _qmt_connect_once(broker_config: dict, *, preferred_only: bool, timeout_sec: float) -> Any:
+def _broker_config_with_qmt_override(
+    broker_config: dict,
+    *,
+    qmt_path: str = "",
+    session_id: str = "",
+) -> dict:
+    """按上次成功会话覆盖 QMT path/session，避免重复连接已知失败的默认 session。"""
+    if not qmt_path and not session_id:
+        return broker_config
+    cfg = dict(broker_config)
+    if qmt_path:
+        os.environ[str(cfg.get("qmt_path_env", "QMT_PATH"))] = qmt_path
+    if session_id:
+        os.environ[str(cfg.get("session_id_env", "QMT_SESSION_ID"))] = str(session_id)
+    return cfg
+
+
+def _load_qmt_last_success() -> dict[str, Any]:
+    try:
+        if QMT_LAST_SUCCESS_FILE.exists():
+            data = json.loads(QMT_LAST_SUCCESS_FILE.read_text(encoding="utf-8"))
+            if data.get("qmt_path") and data.get("session_id"):
+                return data
+    except Exception:
+        return {}
+    return {}
+
+
+def _save_qmt_last_success(*, qmt_path: str, session_id: str, account_id: str = "") -> None:
+    try:
+        if not qmt_path or not session_id:
+            return
+        mkdir_p(QMT_LAST_SUCCESS_FILE.parent)
+        QMT_LAST_SUCCESS_FILE.write_text(
+            json.dumps(
+                {
+                    "qmt_path": str(qmt_path),
+                    "session_id": str(session_id),
+                    "account_id": str(account_id),
+                    "verified_at": now_beijing().isoformat(),
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    except Exception as exc:
+        logger().warning("QMT成功会话缓存写入失败：%s", exc)
+
+
+def _qmt_connect_once(
+    broker_config: dict,
+    *,
+    preferred_only: bool,
+    timeout_sec: float,
+    qmt_path: str = "",
+    session_id: str = "",
+) -> Any:
     """单次建立 QMT 连接，给创建适配器、加载 xtquant 和 connect 全流程独立超时。"""
     done = threading.Event()
     timed_out = threading.Event()
@@ -3620,7 +3766,13 @@ def _qmt_connect_once(broker_config: dict, *, preferred_only: bool, timeout_sec:
         try:
             from src.qmt_adapter import QMTBrokerAdapter
 
-            adapter = QMTBrokerAdapter.from_config(broker_config)
+            adapter = QMTBrokerAdapter.from_config(
+                _broker_config_with_qmt_override(
+                    broker_config,
+                    qmt_path=qmt_path,
+                    session_id=session_id,
+                )
+            )
             adapter.connect(preferred_only=preferred_only)
             if timed_out.is_set():
                 try:
@@ -3649,26 +3801,48 @@ def _qmt_connect_once(broker_config: dict, *, preferred_only: bool, timeout_sec:
 def _qmt_connect(broker_config: dict, *, allow_full_scan: bool | None = None) -> Any:
     """建立新 QMT 连接。不持有 _qmt_lock，调用方按需加锁。
 
-    非关键时段只尝试首选 path/session，避免周末/夜间账户查询卡顿时全量扫描备用
-    session，造成“刚打印已连接又被总超时判失败”的误判和刷屏。
-    关键窗口或连续失败后的恢复动作允许完整备用扫描，保证实盘买卖期间的恢复能力。
+    优先复用启动门禁探测成功的 path/session；如果缓存失效，再完整扫描备用
+    session。不要固定先试配置 session=1001，该 session 在实盘环境里经常失败。
     """
     errors: list[str] = []
-    modes = [(True, 30.0)]
-    if allow_full_scan is None:
-        allow_full_scan = qmt_is_critical_window()
-    if allow_full_scan:
-        modes.append((False, 45.0))
-    for preferred_only, timeout_sec in modes:
+    cached = _load_qmt_last_success()
+    attempts: list[dict[str, Any]] = []
+    if cached:
+        attempts.append({
+            "label": "上次成功path/session",
+            "preferred_only": True,
+            "timeout_sec": 18.0,
+            "qmt_path": str(cached.get("qmt_path", "")),
+            "session_id": str(cached.get("session_id", "")),
+        })
+
+    # allow_full_scan=False 只用于极轻量非关键心跳；没有缓存时也不该回到固定1001，
+    # 因为固定1001失败会制造长时间假断连。这里仍直接完整扫描。
+    attempts.append({
+        "label": "完整备用path/session",
+        "preferred_only": False,
+        "timeout_sec": 30.0 if allow_full_scan is False else 45.0,
+        "qmt_path": "",
+        "session_id": "",
+    })
+
+    for attempt in attempts:
         try:
-            return _qmt_connect_once(
+            adapter = _qmt_connect_once(
                 broker_config,
-                preferred_only=preferred_only,
-                timeout_sec=timeout_sec,
+                preferred_only=bool(attempt["preferred_only"]),
+                timeout_sec=float(attempt["timeout_sec"]),
+                qmt_path=str(attempt.get("qmt_path", "")),
+                session_id=str(attempt.get("session_id", "")),
             )
+            _save_qmt_last_success(
+                qmt_path=str(getattr(adapter, "_active_qmt_path", "")),
+                session_id=str(getattr(adapter, "_active_session_id", "")),
+                account_id=str(getattr(getattr(adapter, "config", None), "account_id", "")),
+            )
+            return adapter
         except Exception as exc:
-            mode = "首选path/session" if preferred_only else "完整备用path/session"
-            errors.append(f"{mode}: {exc}")
+            errors.append(f"{attempt['label']}: {exc}")
     raise RuntimeError("QMT连接失败: " + " | ".join(errors))
 
 
@@ -3721,7 +3895,7 @@ def _print_account_status(log: Any) -> None:
     """账户信息轮询（后台线程）：复用持久连接，查询无需重新握手。
     只有 query_account/query_positions 成功返回，才算账户连接已验证可用。
     关键交易窗口账户不可用时立刻重连和告警；非交易时段只做低频恢复尝试。"""
-    global _qmt_reconnect_count, _qmt_last_verified_at
+    global _qmt_reconnect_count, _qmt_last_verified_at, _last_account_has_position
     now_str = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
     try:
         config = load_json_config(PROJECT_ROOT / "config" / "config.json")
@@ -3828,6 +4002,7 @@ def _print_account_status(log: Any) -> None:
     masked_acct = f"****{acct_id[-2:]}" if len(acct_id) >= 2 else f"****{acct_id}"
     total_asset = float(getattr(account, "total_asset", 0.0) or 0.0)
     live_positions = [p for p in (positions or []) if int(getattr(p, "volume", 0) or 0) > 0]
+    _last_account_has_position = bool(live_positions)
     if live_positions:
         local_positions = load_positions()
         local_pos_map = {
@@ -3988,25 +4163,13 @@ def check_qmt_connection() -> bool:
                     payload.get("qmt_path", ""),
                     payload.get("session_id", ""),
                 )
-                try:
-                    mkdir_p(QMT_LAST_SUCCESS_FILE.parent)
-                    QMT_LAST_SUCCESS_FILE.write_text(
-                        json.dumps(
-                            {
-                                "qmt_path": str(payload.get("qmt_path", "")),
-                                "session_id": str(payload.get("session_id", "")),
-                                "account_id": str(payload.get("account_id", "")),
-                                "verified_at": now_beijing().isoformat(),
-                            },
-                            ensure_ascii=False,
-                            indent=2,
-                        ),
-                        encoding="utf-8",
-                    )
-                except Exception as cache_exc:
-                    log.warning("QMT成功会话缓存写入失败：%s", cache_exc)
-                _notify("connection", "✅ 账户连接成功",
-                        f"守护进程启动就绪，QMT已连接，账户{_mask_account(str(payload.get('account_id', '')))}。")
+                _save_qmt_last_success(
+                    qmt_path=str(payload.get("qmt_path", "")),
+                    session_id=str(payload.get("session_id", "")),
+                    account_id=str(payload.get("account_id", "")),
+                )
+                _notify_async("connection", "✅ 账户连接成功",
+                              f"守护进程启动就绪，QMT已连接，账户{_mask_account(str(payload.get('account_id', '')))}。")
                 return True
             except subprocess.TimeoutExpired:
                 last_error = f"QMT探测子进程超时（{int(plan['timeout'])}秒）"
@@ -4025,15 +4188,15 @@ def check_qmt_connection() -> bool:
                     time.sleep(retry_seconds)
 
         log.error("❌ QMT连接失败：连续 %d 次失败。最后错误：%s", len(startup_attempts), last_error)
-        _notify("system_error", "❌ QMT启动连接失败",
-                f"守护进程启动时QMT连续{len(startup_attempts)}次连接失败，实盘功能不可用，请立即检查。",
-                level="critical", call=True)
+        _notify_async("system_error", "❌ QMT启动连接失败",
+                      f"守护进程启动时QMT连续{len(startup_attempts)}次连接失败，实盘功能不可用，请立即检查。",
+                      level="critical", call=True)
         return False
     except Exception as e:
         log.error("❌ QMT连接失败：%s", e)
-        _notify("system_error", "❌ QMT启动连接异常",
-                "守护进程启动连接QMT时发生异常，实盘功能不可用，请立即检查。",
-                level="critical", call=True)
+        _notify_async("system_error", "❌ QMT启动连接异常",
+                      "守护进程启动连接QMT时发生异常，实盘功能不可用，请立即检查。",
+                      level="critical", call=True)
         return False
 
 
@@ -4143,11 +4306,9 @@ def main() -> None:
         sleep_secs = (wake_dt - now).total_seconds()
         log.info("下次任务：%s（%.0f 秒后）", wake_dt.strftime("%Y-%m-%d %H:%M"), sleep_secs)
 
-        # 账户轮询：交易时段高频，非交易关键时段低频。
-        # QMT 在周末/夜间账户 RPC 容易偶发无响应，低频保活即可；有持仓/待确认买单/交易关键窗口仍严格轮询。
-        _ACCT_IDLE = 300          # 非交易关键时段间隔
-        _ACCT_CRITICAL = 60       # 交易日前后、有持仓或有待确认买单
-        _ACCT_TRADING = 10        # 连续竞价交易时段
+        # 账户轮询：只有“交易时间 + 有持仓”才高频，其余统一60秒，避免无持仓时刷屏。
+        _ACCT_DEFAULT = 60        # 无持仓、非交易时段、交易日前后：每60秒打印一次
+        _ACCT_POSITION_TRADING = 10  # 交易时间且有持仓：每10秒打印一次
         _RETRY_INTERVAL = 15      # 关键窗口掉线重连间隔
         deadline = time.monotonic() + sleep_secs
         last_acct_ts = time.monotonic()
@@ -4169,14 +4330,13 @@ def main() -> None:
                 last_trade_check_ts = now_ts
             qmt_critical = qmt_is_critical_window()
             if _qmt_reconnect_count == 0:
-                if is_trading:
-                    interval = _ACCT_TRADING
-                elif qmt_critical:
-                    interval = _ACCT_CRITICAL
+                has_position_for_poll = has_open_local_position() or _last_account_has_position
+                if is_trading and has_position_for_poll:
+                    interval = _ACCT_POSITION_TRADING
                 else:
-                    interval = _ACCT_IDLE
+                    interval = _ACCT_DEFAULT
             else:
-                interval = _RETRY_INTERVAL if qmt_critical else _ACCT_IDLE
+                interval = _RETRY_INTERVAL if qmt_critical else _ACCT_DEFAULT
             if now_ts - last_acct_ts >= interval:
                 if _acct_thread is None or not _acct_thread.is_alive():
                     last_acct_ts = now_ts
