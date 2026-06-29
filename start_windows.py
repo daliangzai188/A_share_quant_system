@@ -159,6 +159,7 @@ def should_print_line(text: str) -> bool:
         "收盘数据缓存",
         "【今日候选】",
         "【明日候选】",
+        "E2策略",
         "L/model3状态",
         "L龙头策略",
         "L龙头条件",
