@@ -4107,8 +4107,13 @@ def _print_account_status(log: Any) -> None:
 
 def check_qmt_connection() -> bool:
     log = logger()
+    started_at = time.perf_counter()
     try:
+        before_config = time.perf_counter()
         config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+        config_elapsed = time.perf_counter() - before_config
+        if config_elapsed > 1:
+            log.warning("QMT启动门禁：读取配置耗时 %.2fs，请检查磁盘/同步盘状态。", config_elapsed)
         if not (config.get("broker_adapter_enabled") and config.get("qmt_enabled") and
                 config.get("broker", {}).get("enabled")):
             log.info("QMT 未启用，跳过连接检查")
@@ -4116,11 +4121,15 @@ def check_qmt_connection() -> bool:
 
         last_error = ""
         cached_session: dict[str, Any] = {}
+        before_cache = time.perf_counter()
         try:
             if QMT_LAST_SUCCESS_FILE.exists():
                 cached_session = json.loads(QMT_LAST_SUCCESS_FILE.read_text(encoding="utf-8"))
         except Exception:
             cached_session = {}
+        cache_elapsed = time.perf_counter() - before_cache
+        if cache_elapsed > 1:
+            log.warning("QMT启动门禁：读取上次成功会话缓存耗时 %.2fs。", cache_elapsed)
         # 启动阶段优先验证 QMT，但必须隔离在独立子进程里。
         # xtquant 加载/连接偶发会卡住解释器或 GIL，放在线程里仍可能拖慢 daemon；
         # 子进程超时后可直接杀掉，不影响主守护进程继续做明确决策。
@@ -4157,27 +4166,33 @@ def check_qmt_connection() -> bool:
                 cmd = [PYTHON, "-u", "-B", str(PROJECT_ROOT / "scripts" / "qmt_connection_probe.py")]
                 if preferred_only:
                     cmd.append("--preferred-only")
+                cmd.append("--skip-positions")
                 if plan.get("qmt_path"):
                     cmd.extend(["--qmt-path", str(plan["qmt_path"])])
                 if plan.get("session_id"):
                     cmd.extend(["--session-id", str(plan["session_id"])])
+                probe_started_at = time.perf_counter()
                 result = subprocess.run(
                     cmd,
                     capture_output=True,
                     text=True,
                     timeout=int(plan["timeout"]),
                 )
+                probe_elapsed = time.perf_counter() - probe_started_at
                 stdout = (result.stdout or "").strip().splitlines()
                 payload = json.loads(stdout[-1]) if stdout else {}
                 if result.returncode != 0 or not payload.get("ok"):
                     raise RuntimeError(str(payload.get("error") or result.stderr or "QMT探测失败"))
+                timing = payload.get("timing_sec") or {}
                 log.info(
-                    "✅ QMT连接成功且账户已验证：账户 %s，可用资金 %.0f 元（第 %d 次尝试，path=%s session=%s）",
+                    "✅ QMT连接成功且账户已验证：账户 %s，可用资金 %.0f 元（第 %d 次尝试，path=%s session=%s，探测耗时%.2fs，明细=%s）",
                     payload.get("account_id", ""),
                     float(payload.get("available_cash", 0.0) or 0.0),
                     attempt,
                     payload.get("qmt_path", ""),
                     payload.get("session_id", ""),
+                    probe_elapsed,
+                    timing,
                 )
                 _save_qmt_last_success(
                     qmt_path=str(payload.get("qmt_path", "")),
@@ -4186,6 +4201,9 @@ def check_qmt_connection() -> bool:
                 )
                 _notify_async("connection", "✅ 账户连接成功",
                               f"守护进程启动就绪，QMT已连接，账户{_mask_account(str(payload.get('account_id', '')))}。")
+                total_elapsed = time.perf_counter() - started_at
+                if total_elapsed > 15:
+                    log.warning("QMT启动门禁：本轮连接总耗时 %.2fs，已连接成功但仍偏慢，请参考探测明细定位。", total_elapsed)
                 return True
             except subprocess.TimeoutExpired:
                 last_error = f"QMT探测子进程超时（{int(plan['timeout'])}秒）"
