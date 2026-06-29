@@ -3943,10 +3943,14 @@ def check_qmt_connection() -> bool:
                 "qmt_path": str(cached_session.get("qmt_path", "")),
                 "session_id": str(cached_session.get("session_id", "")),
             })
-        startup_attempts.extend([
-            {"label": "配置首选path/session", "preferred_only": True, "timeout": 10, "retry_seconds": 1},
-            {"label": "完整备用path/session", "preferred_only": False, "timeout": 25, "retry_seconds": 0},
-        ])
+        # 不再固定先试配置首选 session=1001。实测该 session 经常 connect=-1，
+        # 会白白拖慢启动；没有成功缓存时直接完整扫描，找到真实可用 session 后写入缓存。
+        startup_attempts.append({
+            "label": "完整备用path/session",
+            "preferred_only": False,
+            "timeout": 30,
+            "retry_seconds": 0,
+        })
         for attempt, plan in enumerate(startup_attempts, start=1):
             try:
                 preferred_only = bool(plan["preferred_only"])
