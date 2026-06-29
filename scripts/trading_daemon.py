@@ -3353,6 +3353,7 @@ def report_next_day_candidates() -> None:
                 logger().info("  A/B/C 均无符合条件标的，%s", no_candidate_msg)
             else:
                 logger().warning("  ⚠️  数据未更新！信号来自 %s，今日（%s）收盘流水线未成功运行", signal_date_str, today_str)
+            _log_e2_signal_status(signal_date_str)
             _log_l_model3_signal_status(signal_date_str, action_date_str.replace("-", ""))
             logger().info("=" * 60)
             return
@@ -3402,6 +3403,7 @@ def report_next_day_candidates() -> None:
                     logger().info("  下一步：%s", row.get("next_action", ""))
             else:
                 logger().info("  A/B/C 均无符合条件标的，%s", no_candidate_msg)
+            _log_e2_signal_status(signal_date_str)
             _log_l_model3_signal_status(signal_date_str, action_date_str.replace("-", ""))
         else:
             ts_codes = buy_orders["ts_code"].astype(str).tolist()
@@ -3451,11 +3453,84 @@ def report_next_day_candidates() -> None:
                     "     计划：策略 %s  参考价 %.2f元  %d股  预估 %.0f元",
                     leg, ref_px, shares, amount,
                 )
+            _log_e2_signal_status(signal_date_str)
             _log_l_model3_signal_status(signal_date_str, action_date_str.replace("-", ""))
 
         logger().info("=" * 60)
     except Exception as e:
         logger().error("播报候选异常：%s", e)
+
+
+def _load_e2_signal_for_signal_date(signal_date: str) -> dict[str, Any] | None:
+    """读取 e2_signals_recent.json 中对应 signal_date 的入选信号。"""
+    try:
+        import json
+
+        path = PROJECT_ROOT / "reports" / "strategy_e2" / "e2_signals_recent.json"
+        if not path.exists():
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+        signals = data.get("signals", [])
+        if not isinstance(signals, list):
+            return None
+        for signal in reversed(signals):
+            if str(signal.get("signal_date", "")) == str(signal_date):
+                return signal
+    except Exception as exc:
+        logger().debug("读取E2信号失败：%s", exc)
+    return None
+
+
+def _load_e2_candidate_count(signal_date: str) -> int | None:
+    """读取 E2 候选池规模（通过筛选的可买候选数，按 circ_mv 升序取首位为选中）。"""
+    try:
+        import pandas as pd
+
+        path = PROJECT_ROOT / "reports" / "strategy_e2" / f"e2_signal_{signal_date}_candidates.csv"
+        if not path.exists():
+            return None
+        return int(len(pd.read_csv(path, low_memory=False)))
+    except Exception as exc:
+        logger().debug("读取E2候选数失败：%s", exc)
+        return None
+
+
+def _log_e2_signal_status(signal_date: str) -> None:
+    """播报 E2 候选/选中标的/allow_buy_reliable/计划买卖日。
+
+    E2 信号存于 reports/strategy_e2/e2_signals_recent.json，与 A/B/C 的
+    planned_orders.csv、L 的 l_signals_recent.json 都不同。启动播报若不单独
+    读取，会出现"有 E2 信号却完全看不到"的盲区，故在此独立播报。
+    """
+    try:
+        candidate_count = _load_e2_candidate_count(signal_date)
+        count_text = "未知" if candidate_count is None else str(candidate_count)
+        signal = _load_e2_signal_for_signal_date(signal_date)
+        if signal is None:
+            logger().info(
+                "  E2策略：信号日期 %s 无E2入选信号，候选池=%s",
+                signal_date,
+                count_text,
+            )
+            return
+        logger().info(
+            "  E2策略：信号日期 %s 候选池=%s，选中 %s %s，板块=%s，"
+            "allow_buy_reliable=%s，仓位=%s，计划买入=%s(%s)，计划卖出=%s(%s)，状态=%s",
+            signal_date,
+            count_text,
+            signal.get("ts_code", ""),
+            signal.get("name", ""),
+            signal.get("market_segment", ""),
+            bool(signal.get("allow_buy_reliable", False)),
+            signal.get("position_pct", ""),
+            signal.get("planned_buy_date", ""),
+            signal.get("planned_buy_price", ""),
+            signal.get("planned_exit_date", ""),
+            signal.get("planned_exit_rule", ""),
+            signal.get("status", ""),
+        )
+    except Exception as exc:
+        logger().error("播报E2状态异常：%s", exc)
 
 
 def _load_l_signal_for_signal_date(signal_date: str) -> dict[str, Any] | None:
