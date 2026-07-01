@@ -4685,10 +4685,18 @@ def _qmt_connect(broker_config: dict, *, allow_full_scan: bool | None = None) ->
     attempts: list[dict[str, Any]] = []
 
     if allow_full_scan is True:
+        if cached:
+            attempts.append({
+                "label": "上次成功path/session",
+                "preferred_only": True,
+                "timeout_sec": 18.0,
+                "qmt_path": str(cached.get("qmt_path", "")),
+                "session_id": str(cached.get("session_id", "")),
+            })
         attempts.append({
             "label": "完整备用path/session",
             "preferred_only": False,
-            "timeout_sec": 70.0,
+            "timeout_sec": 55.0,
             "qmt_path": "",
             "session_id": "",
         })
@@ -5050,7 +5058,7 @@ def check_qmt_connection() -> bool:
         # 启动门禁必须建立主进程自己的持久连接，而不是只用子进程探测。
         # 否则会出现“启动验证成功，但D监控/账户心跳第一次使用QMT又重新连接并超时”的双连接口径。
         broker_config = config.get("broker", {})
-        log.info("QMT启动门禁：建立主进程持久连接并验证账户/持仓（单次完整扫描，不叠加缓存快连）。")
+        log.info("QMT启动门禁：建立主进程持久连接并验证账户/持仓（优先上次成功session，失败再完整扫描；不并发抢QMT）。")
         with _qmt_lock:
             adapter = _qmt_get(broker_config, allow_full_scan=True)
             account, positions = _qmt_query_account_positions(adapter)
