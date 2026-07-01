@@ -31,6 +31,7 @@ import subprocess
 import sys
 import threading
 import time
+from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any
 
@@ -652,7 +653,15 @@ def reconcile_positions_with_broker() -> None:
             level="timeSensitive")
 
 
-def _confirm_fill(broker_cfg: dict, order_id: str, expected_qty: int, tag: str) -> "OrderFill":
+def _confirm_fill(
+    broker_cfg: dict,
+    order_id: str,
+    expected_qty: int,
+    tag: str,
+    *,
+    timeout_sec: float | None = None,
+    poll_sec: float | None = None,
+) -> "OrderFill":
     """轮询确认委托成交情况。受理(accepted)不等于成交(filled)，此处确认真实成交股数与均价。
 
     - fill_confirm_enabled=False 时返回"乐观全成"（avg_price=0，调用方回退到参考价）。
@@ -668,8 +677,8 @@ def _confirm_fill(broker_cfg: dict, order_id: str, expected_qty: int, tag: str) 
         return OrderFill(order_id=str(order_id), filled_qty=int(expected_qty),
                          is_terminal=True, is_filled=True, status_text="确认已禁用")
 
-    timeout = float(lt.get("fill_confirm_timeout_sec", 60))
-    poll = max(1.0, float(lt.get("fill_confirm_poll_sec", 3)))
+    timeout = float(timeout_sec if timeout_sec is not None else lt.get("fill_confirm_timeout_sec", 60))
+    poll = max(1.0, float(poll_sec if poll_sec is not None else lt.get("fill_confirm_poll_sec", 3)))
     deadline = time.monotonic() + timeout
     last_fill = OrderFill(order_id=str(order_id))
 
@@ -1595,10 +1604,12 @@ def job_premarket_sell() -> None:
 
 
 def job_premarket_position_sync() -> None:
-    """09:26 集合竞价成交确认：对比实盘持仓与本地持仓，若实盘已无某标的则同步标记平仓，并刷新今日组合决策。
+    """09:26 集合竞价成交确认：确认09:15买单 + 同步09:23平仓成交。
 
-    9:25集合竞价撮合完成后，券商持仓会更新。若9:23挂单的卖出已成交，本地标记为closed，
-    再重新运行组合状态机，让后续09:30补充买入任务能看到正确的空仓+有买入计划的决策。
+    9:25集合竞价撮合完成后，券商委托/持仓会更新：
+    1. 先确认09:15预挂买单，成交则立刻记录本地持仓；未成交但仍排队则不撤单。
+    2. 再确认09:23平仓卖单，若实盘已无某标的则同步标记平仓。
+    3. 若平仓状态发生变化，再刷新组合状态机，给09:30兜底任务使用。
     """
     logger().info("===== 盘前持仓同步（09:26）=====")
 
@@ -1610,6 +1621,11 @@ def job_premarket_position_sync() -> None:
         logger().info("[盘前持仓同步] 模拟盘，跳过实盘查询。")
         logger().info("===== 盘前持仓同步完成 =====")
         return
+
+    try:
+        confirm_pending_premarket_buys(confirm_source="09:26")
+    except Exception as e:
+        logger().error("09:26 盘前买单成交确认异常：%s —— 请手动核对！", e)
 
     broker_cfg = config.get("broker", {})
     try:
@@ -1824,24 +1840,11 @@ def job_premarket_buy() -> None:
             if qty <= 0:
                 continue
 
-            quote      = quote_map.get(ts_code)
-            ask_prices = getattr(quote, "ask_prices", None) if quote else None
-            upper_limit = float(getattr(quote, "upper_limit", 0.0) or 0.0) if quote else 0.0
-
-            if upper_limit > 0:
-                price = round(upper_limit, 2)
-                price_label = "涨停价"
-            elif ask_prices and len(ask_prices) >= 5 and ask_prices[4] > 0:
-                price = round(ask_prices[4], 2)
-                price_label = "卖5（涨停价不可用）"
-            elif ask_prices and len(ask_prices) >= 1 and ask_prices[0] > 0:
-                price = round(ask_prices[0], 2)
-                price_label = "卖1（涨停价不可用）"
-            elif quote and getattr(quote, "last_price", 0) > 0:
-                price = round(float(quote.last_price), 2)
-                price_label = "最新价（涨停价/盘口不可用）"
-            else:
-                logger().warning("09:15 %s %s 无法获取涨停价/卖档价格，跳过。", ts_code, name_s)
+            signal_date_s = str(row.get("signal_date", ""))
+            quote = quote_map.get(ts_code)
+            price, price_label = _premarket_buy_price(quote, ts_code, name_s, signal_date_s)
+            if price <= 0:
+                logger().warning("09:15 %s %s 无法获取涨停价/估算涨停价/卖档价格，跳过。", ts_code, name_s)
                 continue
 
             logger().warning("⏳ [盘前买入] %s %s  %d股  %s=%.2f元", ts_code, name_s, qty, price_label, price)
@@ -1868,7 +1871,7 @@ def job_premarket_buy() -> None:
                     "order_id": str(result.order_id or f"premarket-{today_str}-{ts_code}"),
                     "ts_code": ts_code,
                     "name": name_s,
-                    "signal_date": str(row.get("signal_date", "")),
+                    "signal_date": signal_date_s,
                     "strategy_leg": str(row.get("strategy_leg", "")),
                     "qty": qty,
                     "ref_price": price,
@@ -1953,6 +1956,11 @@ def job_opening_buy() -> None:
 
     if has_open_local_position():
         logger().info("09:30 检测到已有本地持仓（09:15盘前买入已成交），跳过重复买入。")
+        logger().info("===== 开盘买入任务完成 =====")
+        return
+
+    if load_pending_buys():
+        logger().info("09:30 仍有09:15盘前买单在排队/待补挂，跳过新的开盘补买，避免重复委托。")
         logger().info("===== 开盘买入任务完成 =====")
         return
 
@@ -2135,17 +2143,116 @@ def _replace_pending_buy_order(old_order_id: str, new_order: dict[str, Any] | No
         logger().error("更新盘前待确认买单失败：%s", e)
 
 
-def _premarket_buy_price(quote: Any) -> tuple[float, str]:
+def _limit_up_pct_for_stock(ts_code: str, name: str = "") -> float:
+    """按A股交易板块估算涨停幅度，供QMT未返回upper_limit时兜底。
+
+    这里不用卖一/卖五替代涨停价。盘前预挂的目标是尽量贴近回测的
+    “T+1按涨停价排队/成交”口径，QMT行情缺涨停价时只能用昨收价估算。
+    """
+    code = str(ts_code).upper()
+    name_s = str(name).upper()
+    if "ST" in name_s:
+        return 0.05
+    if code.startswith(("300", "301", "688", "689")):
+        return 0.20
+    if code.startswith(("8", "4", "920", "830", "870")) or code.endswith(".BJ"):
+        return 0.30
+    return 0.10
+
+
+def _round_stock_price(value: float) -> float:
+    """A股价格保留2位小数，使用四舍五入到分，避免Python round的银行家舍入。"""
+    return float(Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+
+def _find_local_prev_close(ts_code: str, signal_date: str = "") -> tuple[float, str]:
+    """从收盘流水线数据中读取上一交易日收盘价，供T+1涨停价估算兜底。
+
+    优先使用 live_limit_up_fill_scored/live_limit_up_merged，因为它们是实盘收盘
+    流水线生成的轻量文件；再兜底 daily_merged_by_date/{signal_date}.csv。
+    """
+    import pandas as pd
+
+    code = str(ts_code)
+    date_s = str(signal_date or "").strip()
+    candidates: list[tuple[Path, str]] = [
+        (PROJECT_ROOT / "data" / "processed" / "live_limit_up_fill_scored.csv", "live_limit_up_fill_scored.close"),
+        (PROJECT_ROOT / "data" / "processed" / "live_limit_up_merged.csv", "live_limit_up_merged.close"),
+    ]
+    if date_s:
+        candidates.append((
+            PROJECT_ROOT / "data" / "processed" / "daily_merged_by_date" / f"{date_s}.csv",
+            f"daily_merged_by_date/{date_s}.close",
+        ))
+    for path, source in candidates:
+        if not path.exists():
+            continue
+        try:
+            df = pd.read_csv(path, dtype={"ts_code": str, "trade_date": str})
+            if "ts_code" not in df.columns or "close" not in df.columns:
+                continue
+            sub = df[df["ts_code"].astype(str).eq(code)]
+            if date_s and "trade_date" in sub.columns:
+                sub = sub[sub["trade_date"].astype(str).eq(date_s)]
+            if sub.empty:
+                continue
+            close = float(sub.iloc[-1].get("close", 0.0) or 0.0)
+            if close > 0:
+                return close, source
+        except Exception as e:
+            logger().warning("读取本地昨收价失败：%s %s", path, e)
+    return 0.0, ""
+
+
+def _estimate_limit_up_price(quote: Any, ts_code: str, name: str = "") -> float:
+    """QMT未给涨停价时，用昨收价估算涨停价；没有昨收价则返回0。"""
+    if not quote:
+        return 0.0
+    pre_close = float(
+        getattr(quote, "pre_close", 0.0)
+        or getattr(quote, "last_close", 0.0)
+        or getattr(quote, "prev_close", 0.0)
+        or 0.0
+    )
+    if pre_close <= 0:
+        return 0.0
+    return _round_stock_price(pre_close * (1 + _limit_up_pct_for_stock(ts_code, name)))
+
+
+def _premarket_buy_price(
+    quote: Any,
+    ts_code: str = "",
+    name: str = "",
+    signal_date: str = "",
+) -> tuple[float, str]:
     ask_prices = getattr(quote, "ask_prices", None) if quote else None
     upper_limit = float(getattr(quote, "upper_limit", 0.0) or 0.0) if quote else 0.0
     if upper_limit > 0:
-        return round(upper_limit, 2), "涨停价"
-    if ask_prices and len(ask_prices) >= 5 and ask_prices[4] > 0:
-        return round(float(ask_prices[4]), 2), "卖5（涨停价不可用）"
-    if ask_prices and len(ask_prices) >= 1 and ask_prices[0] > 0:
-        return round(float(ask_prices[0]), 2), "卖1（涨停价不可用）"
+        return _round_stock_price(upper_limit), "涨停价"
+    estimated_limit = _estimate_limit_up_price(quote, ts_code, name)
+    if estimated_limit > 0:
+        return estimated_limit, "估算涨停价（QMT未返回涨停价）"
+    local_close, source = _find_local_prev_close(ts_code, signal_date)
+    if local_close > 0:
+        local_limit = _round_stock_price(local_close * (1 + _limit_up_pct_for_stock(ts_code, name)))
+        return local_limit, f"本地收盘价估算涨停价（{source}）"
+
+    # 最后兜底：如果完全拿不到涨停价/昨收价依据，但QMT仍有盘口或最新价，
+    # 按“当前可见价格 × 1.099”挂单，尽量贴近10cm涨停，避免再次挂成卖一低价。
+    fallback_base = 0.0
+    fallback_source = ""
     if quote and getattr(quote, "last_price", 0) > 0:
-        return round(float(quote.last_price), 2), "最新价（涨停价/盘口不可用）"
+        fallback_base = float(quote.last_price)
+        fallback_source = "最新价"
+    elif ask_prices and len(ask_prices) >= 1 and ask_prices[0] > 0:
+        fallback_base = float(ask_prices[0])
+        fallback_source = "卖1"
+    elif ask_prices and len(ask_prices) >= 5 and ask_prices[4] > 0:
+        fallback_base = float(ask_prices[4])
+        fallback_source = "卖5"
+    if fallback_base > 0:
+        return _round_stock_price(fallback_base * 1.099), f"{fallback_source}×1.099兜底价（涨停价/昨收价不可用）"
+
     return 0.0, "无可用价格"
 
 
@@ -2194,7 +2301,7 @@ def _resubmit_premarket_buy(s: dict[str, Any], broker_cfg: dict, config: dict) -
         account = adapter.query_account()
         quote = adapter.get_full_tick([ts_code]).get(ts_code)
 
-    price, price_label = _premarket_buy_price(quote)
+    price, price_label = _premarket_buy_price(quote, ts_code, name_s, str(s.get("signal_date", "")))
     if price <= 0:
         logger().warning("盘前买入监控：%s %s 无法获取补挂价格，等待下一轮。", ts_code, name_s)
         return None
@@ -2245,12 +2352,12 @@ def _resubmit_premarket_buy(s: dict[str, Any], broker_cfg: dict, config: dict) -
 
 
 def _premarket_buy_monitor_loop() -> None:
-    """9:15-9:30监控预挂买单；若券商撤单/废单，立刻补挂，避免拖到盘中延迟重试。"""
+    """监控09:15预挂买单；若券商撤单/废单，按涨停价补挂，直到撤单窗口前。"""
     config = load_json_config(PROJECT_ROOT / "config" / "config.json")
     broker_cfg = config.get("broker", {})
-    cutoff = datetime.time(9, 30)
+    cutoff = datetime.time(14, 55)
     poll_seconds = 15
-    logger().info("盘前买入监控已启动：9:15-9:30 每%d秒检查一次撤单/废单。", poll_seconds)
+    logger().info("盘前买入监控已启动：09:15-14:55 每%d秒检查一次成交/撤单/废单。", poll_seconds)
     while now_beijing().time() < cutoff:
         if has_open_local_position():
             logger().info("盘前买入监控：已检测到本地持仓，退出。")
@@ -2283,14 +2390,14 @@ def _premarket_buy_monitor_loop() -> None:
             except Exception as e:
                 logger().warning("盘前买入监控异常 order_id=%s：%s", order_id, e)
         time.sleep(poll_seconds)
-    logger().info("盘前买入监控结束：已到09:30，交给开盘确认流程。")
+    logger().info("盘前买入监控结束：已到14:55撤单窗口。")
 
 
 def _start_premarket_buy_monitor() -> None:
     global _premarket_buy_monitor_thread
     if _premarket_buy_monitor_thread is not None and _premarket_buy_monitor_thread.is_alive():
         return
-    if now_beijing().time() >= datetime.time(9, 30):
+    if now_beijing().time() >= datetime.time(14, 55):
         return
     _premarket_buy_monitor_thread = threading.Thread(
         target=_premarket_buy_monitor_loop,
@@ -2300,16 +2407,21 @@ def _start_premarket_buy_monitor() -> None:
     _premarket_buy_monitor_thread.start()
 
 
-def confirm_pending_premarket_buys() -> None:
-    """09:30开盘后确认09:15盘前买单成交：全成/部成→按实际记录持仓；未成→撤掉残单，避免与开盘补单重复成交。"""
+def confirm_pending_premarket_buys(confirm_source: str = "09:30") -> None:
+    """确认09:15盘前买单成交。
+
+    已成交按实际成交记录持仓；仍是“已报/部成未终态”的排队单不主动撤，
+    继续交给监控线程跟踪，避免把09:15排队优势撤掉。
+    """
     pending = load_pending_buys()
     if not pending:
         return
 
-    logger().info("===== 确认盘前买单成交（09:30）共%d笔 =====", len(pending))
+    logger().info("===== 确认盘前买单成交（%s）共%d笔 =====", confirm_source, len(pending))
     config = load_json_config(PROJECT_ROOT / "config" / "config.json")
     broker_cfg = config.get("broker", {})
     today_str = today_beijing().strftime("%Y%m%d")
+    still_pending: list[dict[str, Any]] = []
 
     for s in pending:
         try:
@@ -2317,7 +2429,14 @@ def confirm_pending_premarket_buys() -> None:
             ts_code = str(s.get("ts_code", ""))
             qty = int(s.get("qty", 0))
             ref_price = float(s.get("ref_price", 0.0))
-            fill = _confirm_fill(broker_cfg, order_id, qty, "盘前买入确认")
+            fill = _confirm_fill(
+                broker_cfg,
+                order_id,
+                qty,
+                f"盘前买入确认-{confirm_source}",
+                timeout_sec=8,
+                poll_sec=2,
+            )
             fill_price = fill.avg_price if fill.avg_price > 0 else ref_price
             if fill.filled_qty > 0:
                 record_buy(
@@ -2353,16 +2472,29 @@ def confirm_pending_premarket_buys() -> None:
                             f"策略={strategy_leg_s} {ts_code} {name_s} "
                             f"持仓{fill.filled_qty}股 成本{fill_price:.2f} 市值{_fmt_wan(amount)}")
             else:
-                logger().warning("⚠️ [盘前买入确认] %s 开盘未成交（状态=%s），撤单后转09:30开盘补买。",
-                                 ts_code, fill.status_text)
-                _try_cancel_order(broker_cfg, order_id, ts_code)
+                if not fill.is_terminal:
+                    still_pending.append(s)
+                    logger().warning(
+                        "⚠️ [盘前买入确认] %s %s暂未成交（状态=%s），原委托仍在排队，不撤单，继续监控。",
+                        ts_code, confirm_source, fill.status_text,
+                    )
+                else:
+                    still_pending.append(s)
+                    logger().warning(
+                        "⚠️ [盘前买入确认] %s %s未成交且已终态（状态=%s），不跑组合补单，交给监控线程按涨停价补挂。",
+                        ts_code, confirm_source, fill.status_text,
+                    )
         except Exception as e:
             logger().error("❌ [盘前买入确认] %s 异常：%s —— 请手动核对！", s.get("ts_code"), e)
             _notify("buy_result", "❌ 盘前开仓确认异常",
                     f"{s.get('ts_code','')} 盘前买单成交确认出现异常，请回终端核对持仓。",
                     level="critical", call=True)
 
-    clear_pending_buys()
+    if still_pending and not has_open_local_position():
+        save_pending_buys(still_pending)
+        _start_premarket_buy_monitor()
+    else:
+        clear_pending_buys()
     logger().info("===== 盘前买单成交确认完成 =====")
 
 
