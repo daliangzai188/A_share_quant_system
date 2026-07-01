@@ -47,6 +47,19 @@ segment_retreat_state_bucket in neutral/warming_2day
 market_chain_count_bucket in 8_15/15_30/gte_30
 ```
 
+## 核心优先级逻辑
+
+当前实盘的核心逻辑是先生成 mode=1 的 A/B/C/E2/D 计划，再判断 L 是否参与。L 不能无条件抢单，只有满足认证过的补位或替换规则时才会改变 mode=1 结果。
+
+| 情况 | 结果 |
+|---|---|
+| mode=1 有 A/B/C/E2 计划，L 不满足替换保护 | 继续执行 A/B/C/E2 |
+| mode=1 没有计划，L 满足基础条件 | L 补位 |
+| mode=1 有计划，L 满足更严格替换条件 | L 替换 mode=1 计划 |
+| L 不满足条件 | 回到 mode=1，也就是 A/B/C 优先，无 A/B/C 才 E2 |
+
+这条优先级是当前实盘 mode=3 的资金占用核心：同一时间只允许一套策略占用同一资金，避免 L、A/B/C、E2、D 之间重复开仓。
+
 ## 模拟实盘口径认证
 
 认证脚本：
