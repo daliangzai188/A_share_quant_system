@@ -135,6 +135,8 @@ _TRADE_CALENDAR_CACHE: dict[str, Any] = {
     "open_dates": set(),
     "max_date": "",
 }
+_pending_buy_lock = threading.Lock()
+_premarket_buy_monitor_thread: threading.Thread | None = None
 
 # subprocess 超时（秒）：防止某步骤挂死
 TIMEOUT_DATA_STEP = 600      # 数据采集/清洗步骤：10 分钟
@@ -1882,6 +1884,7 @@ def job_premarket_buy() -> None:
 
     if pending_buys:
         save_pending_buys(pending_buys)
+        _start_premarket_buy_monitor()
     logger().info("===== 盘前买入挂单完成（受理%d笔，待开盘确认）=====", len(pending_buys))
 
 
@@ -2065,11 +2068,12 @@ def has_open_local_position() -> bool:
 def save_pending_buys(orders: list[dict[str, Any]]) -> None:
     """记录09:15盘前已受理买单，等09:30开盘后确认成交。"""
     try:
-        mkdir_p(PENDING_BUY_FILE.parent)
-        payload = {"date": today_beijing().strftime("%Y%m%d"), "orders": orders}
-        tmp = PENDING_BUY_FILE.with_suffix(".tmp")
-        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(PENDING_BUY_FILE)
+        with _pending_buy_lock:
+            mkdir_p(PENDING_BUY_FILE.parent)
+            payload = {"date": today_beijing().strftime("%Y%m%d"), "orders": orders}
+            tmp = PENDING_BUY_FILE.with_suffix(".tmp")
+            tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp.replace(PENDING_BUY_FILE)
     except Exception as e:
         logger().error("保存盘前待确认买单失败：%s", e)
 
@@ -2077,12 +2081,13 @@ def save_pending_buys(orders: list[dict[str, Any]]) -> None:
 def load_pending_buys() -> list[dict[str, Any]]:
     """读取当日盘前待确认买单（非当日的视为过期，忽略）。"""
     try:
-        if not PENDING_BUY_FILE.exists():
-            return []
-        payload = json.loads(PENDING_BUY_FILE.read_text(encoding="utf-8"))
-        if payload.get("date") != today_beijing().strftime("%Y%m%d"):
-            return []
-        return payload.get("orders", [])
+        with _pending_buy_lock:
+            if not PENDING_BUY_FILE.exists():
+                return []
+            payload = json.loads(PENDING_BUY_FILE.read_text(encoding="utf-8"))
+            if payload.get("date") != today_beijing().strftime("%Y%m%d"):
+                return []
+            return payload.get("orders", [])
     except Exception as e:
         logger().error("读取盘前待确认买单失败：%s", e)
         return []
@@ -2090,10 +2095,209 @@ def load_pending_buys() -> list[dict[str, Any]]:
 
 def clear_pending_buys() -> None:
     try:
-        if PENDING_BUY_FILE.exists():
-            PENDING_BUY_FILE.unlink()
+        with _pending_buy_lock:
+            if PENDING_BUY_FILE.exists():
+                PENDING_BUY_FILE.unlink()
     except Exception as e:
         logger().error("清除盘前待确认买单失败：%s", e)
+
+
+def _replace_pending_buy_order(old_order_id: str, new_order: dict[str, Any] | None) -> None:
+    """替换或移除某笔09:15待确认买单，供集合竞价监控线程使用。"""
+    try:
+        with _pending_buy_lock:
+            if not PENDING_BUY_FILE.exists():
+                return
+            payload = json.loads(PENDING_BUY_FILE.read_text(encoding="utf-8"))
+            if payload.get("date") != today_beijing().strftime("%Y%m%d"):
+                return
+            updated: list[dict[str, Any]] = []
+            replaced = False
+            for order in payload.get("orders", []):
+                if str(order.get("order_id", "")) == str(old_order_id):
+                    replaced = True
+                    if new_order is not None:
+                        updated.append(new_order)
+                else:
+                    updated.append(order)
+            if not replaced:
+                return
+            if updated:
+                tmp = PENDING_BUY_FILE.with_suffix(".tmp")
+                tmp.write_text(
+                    json.dumps({"date": payload.get("date"), "orders": updated}, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                tmp.replace(PENDING_BUY_FILE)
+            else:
+                PENDING_BUY_FILE.unlink(missing_ok=True)
+    except Exception as e:
+        logger().error("更新盘前待确认买单失败：%s", e)
+
+
+def _premarket_buy_price(quote: Any) -> tuple[float, str]:
+    ask_prices = getattr(quote, "ask_prices", None) if quote else None
+    upper_limit = float(getattr(quote, "upper_limit", 0.0) or 0.0) if quote else 0.0
+    if upper_limit > 0:
+        return round(upper_limit, 2), "涨停价"
+    if ask_prices and len(ask_prices) >= 5 and ask_prices[4] > 0:
+        return round(float(ask_prices[4]), 2), "卖5（涨停价不可用）"
+    if ask_prices and len(ask_prices) >= 1 and ask_prices[0] > 0:
+        return round(float(ask_prices[0]), 2), "卖1（涨停价不可用）"
+    if quote and getattr(quote, "last_price", 0) > 0:
+        return round(float(quote.last_price), 2), "最新价（涨停价/盘口不可用）"
+    return 0.0, "无可用价格"
+
+
+def _record_premarket_buy_fill(s: dict[str, Any], fill: Any, fallback_price: float) -> None:
+    today_str = today_beijing().strftime("%Y%m%d")
+    fill_price = fill.avg_price if getattr(fill, "avg_price", 0) > 0 else fallback_price
+    record_buy(
+        order_id=str(s.get("order_id", "")),
+        ts_code=str(s.get("ts_code", "")),
+        name=str(s.get("name", "")),
+        signal_date=str(s.get("signal_date", "")),
+        buy_date=today_str,
+        shares=int(fill.filled_qty),
+        buy_price=float(fill_price),
+        strategy_leg=str(s.get("strategy_leg", "")),
+        exit_n_days=int(s.get("exit_n", 2)),
+    )
+    amount = int(fill.filled_qty) * float(fill_price)
+    logger().info("✅ [盘前买入监控] 持仓信息：策略=%s %s %s 持仓%d股 成本%.2f 市值%s",
+                  s.get("strategy_leg", ""), s.get("ts_code", ""), s.get("name", ""),
+                  int(fill.filled_qty), fill_price, _fmt_wan(amount))
+    _notify("buy_result", "✅ 盘前持仓信息",
+            f"策略={s.get('strategy_leg', '')} {s.get('ts_code', '')} {s.get('name', '')} "
+            f"持仓{int(fill.filled_qty)}股 成本{fill_price:.2f} 市值{_fmt_wan(amount)}")
+
+
+def _resubmit_premarket_buy(s: dict[str, Any], broker_cfg: dict, config: dict) -> dict[str, Any] | None:
+    """9:15-9:30内发现预挂单被撤/废单后，重新按涨停价/卖档价补挂。"""
+    from src.broker_adapter import OrderRequest
+
+    ts_code = str(s.get("ts_code", ""))
+    name_s = str(s.get("name", ""))
+    planned_qty = int(s.get("qty", 0))
+    live_cfg = config.get("live_trade", {})
+    retry_count = int(s.get("retry_count", 0))
+    max_retry = int(live_cfg.get("premarket_resubmit_max_count", 3))
+    if retry_count >= max_retry:
+        logger().warning("盘前买入监控：%s %s 已补挂%d次仍失败，停止集合竞价补挂，等待09:30流程。",
+                         ts_code, name_s, retry_count)
+        return None
+    if not ts_code or planned_qty <= 0:
+        return None
+
+    with _qmt_lock:
+        adapter = _qmt_get(broker_cfg)
+        account = adapter.query_account()
+        quote = adapter.get_full_tick([ts_code]).get(ts_code)
+
+    price, price_label = _premarket_buy_price(quote)
+    if price <= 0:
+        logger().warning("盘前买入监控：%s %s 无法获取补挂价格，等待下一轮。", ts_code, name_s)
+        return None
+
+    available_cash = float(getattr(account, "available_cash", 0.0) or 0.0)
+    total_asset = float(getattr(account, "total_asset", 0.0) or available_cash)
+    cash_buffer = float(live_cfg.get("cash_buffer_amount", 1000))
+    max_single = float(live_cfg.get("max_single_order_amount", 50000))
+    max_pct = float(live_cfg.get("max_position_pct", 0.8))
+    usable = min(available_cash - cash_buffer, total_asset * max_pct, max_single)
+    max_qty_by_cash = int(usable / price) if usable > 0 and price > 0 else 0
+    max_qty_by_cash -= max_qty_by_cash % 100
+    qty = max(0, min(planned_qty, max_qty_by_cash))
+    if qty <= 0:
+        logger().warning("盘前买入监控：%s 可用资金%.0f元不足以补挂（价格%.2f）。", ts_code, available_cash, price)
+        return None
+
+    today_str = today_beijing().strftime("%Y%m%d")
+    logger().warning("⏳ [盘前买入补挂] %s %s  %d股  %s=%.2f元", ts_code, name_s, qty, price_label, price)
+    request = OrderRequest(
+        ts_code=ts_code,
+        broker_code=ts_code,
+        side="BUY",
+        quantity=qty,
+        price_type="FIXED_PRICE",
+        price=price,
+        strategy_name="A_SYSTEM_ABC",
+        remark=f"盘前买入补挂-{price_label}-{today_str}",
+    )
+    with _qmt_lock:
+        adapter = _qmt_get(broker_cfg)
+        result = adapter.place_order(request)
+    if not result.accepted:
+        logger().error("❌ [盘前买入补挂] %s %s 提交失败：%s", ts_code, name_s, result.message)
+        return None
+
+    new_order = dict(s)
+    new_order.update({
+        "order_id": str(result.order_id or f"premarket-retry-{today_str}-{ts_code}"),
+        "qty": qty,
+        "ref_price": price,
+        "retry_count": retry_count + 1,
+        "last_retry_at": now_beijing().strftime("%H:%M:%S"),
+    })
+    logger().info("✅ [盘前买入补挂] %s %s %d股 @%.2f 委托已受理（继续等待09:30确认）",
+                  ts_code, name_s, qty, price)
+    return new_order
+
+
+def _premarket_buy_monitor_loop() -> None:
+    """9:15-9:30监控预挂买单；若券商撤单/废单，立刻补挂，避免拖到盘中延迟重试。"""
+    config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+    broker_cfg = config.get("broker", {})
+    cutoff = datetime.time(9, 30)
+    poll_seconds = 15
+    logger().info("盘前买入监控已启动：9:15-9:30 每%d秒检查一次撤单/废单。", poll_seconds)
+    while now_beijing().time() < cutoff:
+        if has_open_local_position():
+            logger().info("盘前买入监控：已检测到本地持仓，退出。")
+            return
+        pending = load_pending_buys()
+        if not pending:
+            return
+        for s in pending:
+            order_id = str(s.get("order_id", ""))
+            if not order_id:
+                continue
+            try:
+                with _qmt_lock:
+                    adapter = _qmt_get(broker_cfg)
+                    fill = adapter.get_order_fill(order_id)
+                if int(getattr(fill, "filled_qty", 0) or 0) > 0 and (
+                    getattr(fill, "is_terminal", False) or getattr(fill, "is_filled", False)
+                ):
+                    _record_premarket_buy_fill(s, fill, float(s.get("ref_price", 0.0) or 0.0))
+                    _replace_pending_buy_order(order_id, None)
+                    return
+                if getattr(fill, "is_terminal", False):
+                    logger().warning(
+                        "⚠️ [盘前买入监控] %s %s 原委托%s已终态未成交（状态=%s），准备补挂。",
+                        s.get("ts_code", ""), s.get("name", ""), order_id, getattr(fill, "status_text", ""),
+                    )
+                    new_order = _resubmit_premarket_buy(s, broker_cfg, config)
+                    if new_order is not None:
+                        _replace_pending_buy_order(order_id, new_order)
+            except Exception as e:
+                logger().warning("盘前买入监控异常 order_id=%s：%s", order_id, e)
+        time.sleep(poll_seconds)
+    logger().info("盘前买入监控结束：已到09:30，交给开盘确认流程。")
+
+
+def _start_premarket_buy_monitor() -> None:
+    global _premarket_buy_monitor_thread
+    if _premarket_buy_monitor_thread is not None and _premarket_buy_monitor_thread.is_alive():
+        return
+    if now_beijing().time() >= datetime.time(9, 30):
+        return
+    _premarket_buy_monitor_thread = threading.Thread(
+        target=_premarket_buy_monitor_loop,
+        daemon=True,
+        name="premarket-buy-monitor",
+    )
+    _premarket_buy_monitor_thread.start()
 
 
 def confirm_pending_premarket_buys() -> None:
