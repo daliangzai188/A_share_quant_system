@@ -96,6 +96,19 @@ def _fmt_wan(amount: float) -> str:
     except Exception:
         return "0.00万"
 
+
+def _fmt_position_time(value: Any, *, default_time: str = "", trim_zero_seconds: bool = False) -> str:
+    """把持仓账本里的日期/时间字段转成日志可读时间。"""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if len(text) == 8 and text.isdigit():
+        suffix = f" {default_time}" if default_time else ""
+        return f"{text[:4]}-{text[4:6]}-{text[6:8]}{suffix}"
+    if trim_zero_seconds and len(text) == 19 and text.endswith(":00"):
+        return text[:16]
+    return text
+
 # ── 常量 ───────────────────────────────────────────────────────────────────────
 SCHEDULE = [
     datetime.time(9, 0),    # 盘前：提前生成/刷新组合状态机，避免09:20才开始算买入决策
@@ -524,13 +537,17 @@ def record_buy(order_id: str, ts_code: str, name: str, signal_date: str,
     exit_date = next_n_trade_days(
         datetime.datetime.strptime(buy_date, "%Y%m%d").date(), n=exit_n_days
     )
+    buy_time = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
+    planned_exit_time = datetime.datetime.combine(exit_date, datetime.time(14, 50)).strftime("%Y-%m-%d %H:%M")
     positions.append({
         "order_id": order_id,
         "ts_code": ts_code,
         "name": name,
         "signal_date": signal_date,
         "buy_date": buy_date,
+        "buy_time": buy_time,
         "planned_exit_date": exit_date.strftime("%Y%m%d"),
+        "planned_exit_time": planned_exit_time,
         "shares": shares,
         "buy_price": buy_price,
         "strategy_leg": strategy_leg,
@@ -4938,7 +4955,19 @@ def _print_account_status(log: Any) -> None:
             current_price = p.market_value / p.volume
             lp = local_pos_map.get(p.ts_code, {})
             strategy_leg = str(lp.get("strategy_leg", "未知") or "未知").upper()
+            name_s = str(lp.get("name") or getattr(p, "name", "") or "")
             buy_price = float(lp.get("buy_price", 0))
+            buy_time_text = _fmt_position_time(lp.get("buy_time") or lp.get("buy_date"))
+            exit_time_text = _fmt_position_time(
+                lp.get("planned_exit_time") or lp.get("planned_exit_date"),
+                default_time="14:50",
+                trim_zero_seconds=True,
+            )
+            time_text = ""
+            if buy_time_text:
+                time_text += f"开{buy_time_text} "
+            if exit_time_text:
+                time_text += f"～{exit_time_text}平 "
 
             # 今日涨跌幅（相对昨收）
             quote = quote_map.get(p.ts_code)
@@ -4946,7 +4975,7 @@ def _print_account_status(log: Any) -> None:
             if pre_close > 0:
                 chg_pct = (current_price - pre_close) / pre_close * 100
                 chg_sign = "+" if chg_pct >= 0 else ""
-                chg_str = f"涨跌{chg_sign}{chg_pct:.2f}% "
+                chg_str = f"今日{chg_sign}{chg_pct:.2f}% "
             else:
                 chg_str = ""
 
@@ -4981,7 +5010,8 @@ def _print_account_status(log: Any) -> None:
                         )
                         positions_dirty = True
                 pos_parts.append(
-                    f"策略={strategy_leg} {p.ts_code}×{p.volume}股 "
+                    f"策略={strategy_leg} {p.ts_code} {name_s} ×{int(p.volume)}股 "
+                    f"{time_text}"
                     f"现价{current_price:.2f} "
                     f"{chg_str}"
                     f"收益{pnl_sign}{pnl_pct:.2f}% "
@@ -4989,15 +5019,16 @@ def _print_account_status(log: Any) -> None:
                 )
             else:
                 pos_parts.append(
-                    f"策略={strategy_leg} {p.ts_code}×{p.volume}股 "
+                    f"策略={strategy_leg} {p.ts_code} {name_s} ×{int(p.volume)}股 "
+                    f"{time_text}"
                     f"现价{current_price:.2f} "
                     f"{chg_str}"
                     f"市值{p.market_value / 10000:.2f}万"
                 )
         if positions_dirty:
             save_positions(local_positions)
-        log.info("✅ [账户] %s | 账户%s 总资产%.2f万 | 持仓：%s",
-                 now_str, masked_acct, total_asset / 10000,
+        log.info("✅ [账户] %s 总资产%.2f万 | 持仓：%s",
+                 masked_acct, total_asset / 10000,
                  "  ".join(pos_parts))
     else:
         clear_local_positions_when_broker_empty("账户心跳")
@@ -5113,6 +5144,15 @@ def main() -> None:
         check_and_close_positions()
     except Exception as e:
         log.error("启动平仓检查异常：%s —— 请立即手动检查持仓！", e)
+    startup_has_position = has_open_local_position()
+    if startup_has_position:
+        log.info("启动检查：检测到已有持仓，跳过开仓候选播报和D/E2补开仓逻辑，只保留平仓检查与账户心跳。")
+        threading.Thread(
+            target=_print_account_status,
+            args=(log,),
+            daemon=True,
+            name="startup-account-status",
+        ).start()
 
     # ── 启动时先播报当前缓存候选，再按需后台补采 ─────────────────────────────
     try:
@@ -5141,7 +5181,10 @@ def main() -> None:
 
     # 若缓存或 processed 审计数据不是最新交易日数据，后台线程补采。
     # raw 缓存存在但 processed 缺日时也必须补跑，否则盘前审计会误报旧口径。
-    if not _has_signal_for_date(expected):
+    if startup_has_position:
+        log.info("启动数据检查：已有持仓，跳过开仓侧收盘信号/processed数据检查。")
+        log.info("启动候选播报：已有持仓，跳过开仓侧候选/E2/L/model3状态播报。")
+    elif not _has_signal_for_date(expected):
         log.warning(
             "未找到 %s 收盘数据缓存，后台自动采集中（不影响主循环和 QMT 状态刷新）...",
             expected_str,
@@ -5167,10 +5210,13 @@ def main() -> None:
         log.info("已有 %s 收盘数据缓存且 processed 数据齐全，直接使用", expected_str)
         threading.Thread(target=_startup_report, daemon=True, name="startup-report").start()
 
-    try:
-        startup_catchup_strategy_d()
-    except Exception as e:
-        log.error("启动补检D策略异常：%s", e)
+    if not startup_has_position:
+        try:
+            startup_catchup_strategy_d()
+        except Exception as e:
+            log.error("启动补检D策略异常：%s", e)
+    else:
+        log.info("启动补检：已有持仓，跳过D监控/E2延迟开仓补启动。")
 
     # ── 主循环 ────────────────────────────────────────────────────────────────
     while True:
@@ -5190,6 +5236,11 @@ def main() -> None:
         is_trading = False
         last_heartbeat_ts = time.monotonic()
         _acct_thread: threading.Thread | None = None
+        if has_open_local_position() or _last_account_has_position:
+            _acct_thread = threading.Thread(
+                target=_print_account_status, args=(log,), daemon=True
+            )
+            _acct_thread.start()
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
