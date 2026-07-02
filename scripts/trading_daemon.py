@@ -13,7 +13,8 @@ A_System 量化策略常驻守护进程。
     09:15  集合竞价 —— 已有计划立刻按涨停价预挂买入
     09:20  盘前复核 —— 平仓检查（优先） + 组合状态机复核 + D监控
     09:30  开盘确认 —— 确认09:15预挂成交，未成交再补买
-    14:50  盘中  —— 平仓检查（优先）
+    14:56  收盘平仓 —— 平仓检查（最高优先，绝不被任何步骤阻塞）
+    14:57  撤买单 —— 撤销所有未成交买单（不动卖单，避免持仓被动过夜）
     15:10  收盘  —— 数据流水线 + 信号生成
 
 持仓状态：data/processed/positions.json
@@ -142,8 +143,7 @@ SCHEDULE = [
     datetime.time(9, 23),   # 集合竞价：按跌停价挂单平仓
     datetime.time(9, 26),   # 集合竞价成交后：同步实盘持仓，刷新今日买入决策
     datetime.time(9, 30),   # 开盘：若9:15未成功则补充买入
-    datetime.time(14, 50),  # 盘中平仓检查
-    datetime.time(14, 55),  # 全策略未成交委托撤单
+    datetime.time(14, 56),  # 盘中收盘平仓（最高优先）+ 内部14:57撤未成交买单
     datetime.time(15, 10),  # 收盘流水线
 ]
 SCHED_PREOPEN_PLAN = datetime.time(9, 0)
@@ -152,8 +152,10 @@ SCHED_MORNING_REVIEW = datetime.time(9, 20)
 SCHED_PREMARKET_SELL = datetime.time(9, 23)
 SCHED_PREMARKET_SYNC = datetime.time(9, 26)
 SCHED_OPENING_BUY = datetime.time(9, 30)
-SCHED_AFTERNOON_CLOSE = datetime.time(14, 50)
-SCHED_CANCEL_PENDING = datetime.time(14, 55)
+SCHED_AFTERNOON_CLOSE = datetime.time(14, 56)
+# 撤未成交买单时刻：由 job_afternoon 在平仓后内部等到此刻执行，
+# 不作为独立调度项（调度器有30秒护栏+任务后60秒sleep，14:56/14:57相邻会漏跑）。
+SCHED_CANCEL_BUY_ORDERS = datetime.time(14, 57)
 SCHED_POST_MARKET = datetime.time(15, 10)
 import sys as _sys
 import platform as _platform
@@ -563,7 +565,7 @@ def record_buy(order_id: str, ts_code: str, name: str, signal_date: str,
         datetime.datetime.strptime(buy_date, "%Y%m%d").date(), n=exit_n_days
     )
     buy_time = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
-    planned_exit_time = datetime.datetime.combine(exit_date, datetime.time(14, 50)).strftime("%Y-%m-%d %H:%M")
+    planned_exit_time = datetime.datetime.combine(exit_date, SCHED_AFTERNOON_CLOSE).strftime("%Y-%m-%d %H:%M")
     positions.append({
         "order_id": order_id,
         "ts_code": ts_code,
@@ -838,7 +840,7 @@ def _execute_orders_inprocess(
             skipped = planned_orders[t2_close_sell]
             for _, row in skipped.iterrows():
                 log.warning(
-                    "⏸️ [%s] 跳过T2收盘卖计划：%s %s planned_action=%s。该类订单只允许14:50平仓流程执行。",
+                    "⏸️ [%s] 跳过T2收盘卖计划：%s %s planned_action=%s。该类订单只允许14:56平仓流程执行。",
                     tag,
                     row.get("ts_code", ""),
                     row.get("name", ""),
@@ -1428,10 +1430,10 @@ def check_and_close_positions() -> None:
 
             t2_close_leg = strategy_leg in {"A", "B", "C", "D", "E2", "L"}
             due_today = planned_exit == today_str
-            before_close_sell_window = now_beijing().time() < datetime.time(14, 50)
+            before_close_sell_window = now_beijing().time() < SCHED_AFTERNOON_CLOSE
             if t2_close_leg and due_today and before_close_sell_window:
                 logger().warning(
-                    "T2收盘卖门禁：%s %s 策略=%s 今日到期，但当前未到14:50，保持持仓不提前平仓。",
+                    "T2收盘卖门禁：%s %s 策略=%s 今日到期，但当前未到14:56收盘平仓窗口，保持持仓不提前平仓。",
                     ts_code,
                     name,
                     strategy_leg,
@@ -1540,7 +1542,7 @@ def job_premarket_sell() -> None:
     D 默认平仓口径是 T+2 收盘卖，不在 09:23 提前卖。
     只有组合状态机给出 PLAN_SELL_D_FIRST（次日有 A/B/C/E2 接力，需要 D 让路）时，
     才按 T+1 开盘口径在集合竞价卖 D。
-    E2/ABC/D默认T+2收盘卖由 14:50 job_afternoon/check_and_close_positions 执行。
+    E2/ABC/D默认T+2收盘卖由 14:56 job_afternoon/check_and_close_positions 执行。
     """
     logger().info("===== 集合竞价平仓挂单（09:23）=====")
     positions = load_positions()
@@ -1574,7 +1576,7 @@ def job_premarket_sell() -> None:
             # 只处理 D 策略：E2/ABC 回测用收盘价，不在集合竞价提前卖出
             if strategy_leg != "D":
                 logger().info(
-                    "09:23 %s %s 策略=%s，回测用收盘价平仓，跳过集合竞价，等待14:55。",
+                    "09:23 %s %s 策略=%s，回测用收盘价平仓，跳过集合竞价，等待14:56收盘平仓。",
                     ts_code, name, strategy_leg or "未知",
                 )
                 continue
@@ -1582,11 +1584,11 @@ def job_premarket_sell() -> None:
             force_relay_sell = ts_code in force_d_sell_codes
 
             # 只处理历史 sell_pending，或因A/B/C/E2接力需要T+1开盘先卖的D持仓。
-            # D 默认 T+2 到期日也必须等 14:50 收盘平仓，不在09:23提前卖。
+            # D 默认 T+2 到期日也必须等 14:56 收盘平仓，不在09:23提前卖。
             if pos.get("status") != "sell_pending" and not force_relay_sell:
                 if planned_exit <= today_str:
                     logger().info(
-                        "09:23 D默认T+2平仓：%s %s 今日到期(%s)，等待14:50收盘平仓，不集合竞价卖出。",
+                        "09:23 D默认T+2平仓：%s %s 今日到期(%s)，等待14:56收盘平仓，不集合竞价卖出。",
                         ts_code, name, planned_exit,
                     )
                 else:
@@ -1958,7 +1960,7 @@ def job_morning() -> None:
         if has_combined_action(decisions, "ALLOW_L_BUY"):
             logger().info("当前总策略模式=2（独立L龙头策略），组合状态机允许L开仓；将于09:15/09:30按L计划执行。")
         elif has_combined_action(decisions, "PLAN_SELL_L"):
-            logger().info("当前总策略模式=2（独立L龙头策略），存在L到期平仓计划；等待14:50收盘平仓窗口。")
+            logger().info("当前总策略模式=2（独立L龙头策略），存在L到期平仓计划；等待14:56收盘平仓窗口。")
         else:
             logger().info("当前总策略模式=2（独立L龙头策略），本轮无L实盘开仓计划；ABCDE2/D已阻断。")
         logger().info("===== 盘前任务完成 =====")
@@ -3320,40 +3322,78 @@ def startup_catchup_strategy_d() -> None:
         logger().info("启动补检：组合状态机未允许D盘中监控，跳过补启动。")
 
 
+def _sleep_until_beijing(target: datetime.time, *, max_wait: float = 300.0) -> None:
+    """阻塞到北京时间当天的 target 时刻；已过则立即返回。
+
+    max_wait 兜底防止时钟异常导致超长阻塞（正常场景 14:56→14:57 只等约60秒）。
+    """
+    now = now_beijing()
+    target_dt = datetime.datetime.combine(now.date(), target, tzinfo=BEIJING_TZ)
+    wait = (target_dt - now).total_seconds()
+    if wait <= 0:
+        return
+    time.sleep(min(wait, max_wait))
+
+
 def job_afternoon() -> None:
-    logger().info("===== 盘中任务（14:50）=====")
+    logger().info("===== 盘中任务（14:56 收盘平仓 → 14:57 撤未成交买单）=====")
 
-    # ① 刷新组合状态机 + combined_planned_orders（含 E2 SELL 行）
-    try:
-        run_script("run_combined_live_plan.py", timeout=TIMEOUT_COMBINED_PLAN_STEP)
-    except Exception as e:
-        logger().error("刷新组合状态机失败：%s —— E2平仓可能依赖旧计划单", e)
-
-    # ② 平仓检查（依赖 combined_planned_orders 已更新，E2 SELL 才能正确执行）
+    # ① 平仓最高优先：任何情况下先执行，绝不被组合状态机刷新/取数/超时阻塞。
+    #    E2 SELL 依赖的 combined_planned_orders 今日文件已在 09:00/09:20/09:26 生成
+    #    （SELL 行仅按 planned_exit_date<=today 产生，与盘中这次刷新无关），
+    #    且平仓价在执行时实时取买10/买5，不从文件读死，因此先平仓完全安全。
     try:
         check_and_close_positions()
     except Exception as e:
         logger().error("平仓检查异常：%s —— 请立即手动检查持仓！", e)
 
+    # ② 等到 14:57 撤销所有未成交【买单/开仓单】。
+    #    该动作同样不被任何工作阻塞：组合状态机刷新放到撤单之后，
+    #    确保 14:57 撤单发起时没有别的步骤占用 QMT。
+    #    ⚠️ 只撤开仓买单；挂出去还没成交的平仓卖单绝不撤，避免持仓被动过夜。
+    _sleep_until_beijing(SCHED_CANCEL_BUY_ORDERS)
+    try:
+        job_cancel_unfilled_buy_orders()
+    except Exception as e:
+        logger().error("14:57撤买单异常：%s —— 请立即手动检查未成交开仓单！", e)
+
+    # ③ 平仓与撤单两个关键动作都完成后，才刷新组合状态机（后台线程，绝不阻塞调度/关键动作）。
+    #    此步即便超时被强杀，也不影响上面已执行完的平仓与撤单。
+    def _refresh_combined_plan() -> None:
+        try:
+            run_script("run_combined_live_plan.py", timeout=TIMEOUT_COMBINED_PLAN_STEP)
+        except Exception as e:
+            logger().error("刷新组合状态机失败：%s", e)
+
+    threading.Thread(target=_refresh_combined_plan, daemon=True, name="combined-refresh-after-close").start()
+
     logger().info("===== 盘中任务完成 =====")
 
 
-def job_cancel_all_pending_orders() -> None:
-    """14:55 撤销所有策略未成交委托。D策略由独立监控进程并行处理，此处兜底全量撤单。"""
+def job_cancel_unfilled_buy_orders() -> None:
+    """14:57 撤销所有未成交【买单/开仓单】。
+
+    ⚠️ 只撤买单（order_type==STOCK_BUY/23）。挂出去还没成交的平仓卖单一律不撤，
+       无法确定方向的委托也跳过（宁可漏撤买单，也绝不误撤卖单导致持仓被动过夜）。
+    D策略买单由独立监控进程并行处理，此处兜底。
+    """
     log = logger()
-    log.info("===== 14:55 全策略撤单 =====")
+    log.info("===== 14:57 撤未成交买单（不动卖单）=====")
 
     config = load_json_config(PROJECT_ROOT / "config" / "config.json")
     qmt_enabled = bool(config.get("broker_adapter_enabled")) and bool(config.get("qmt_enabled"))
     if not qmt_enabled:
-        log.info("非实盘模式，跳过14:55撤单")
+        log.info("非实盘模式，跳过14:57撤买单")
         return
 
     broker_cfg = config.get("broker", {})
     # 终态状态码：部撤(53)、已撤(54)、已成(56)、废单(57)——这些无需撤
     TERMINAL_STATUS = {53, 54, 56, 57}
+    BUY_ORDER_TYPE = 23   # STOCK_BUY（qmt_adapter：BUY->23, SELL->24）
+    SELL_ORDER_TYPE = 24  # STOCK_SELL，用于日志区分，绝不撤
     _id_names = ["order_id", "m_nOrderID", "order_sysid", "m_strOrderSysID"]
     _ts_names = ["stock_code", "m_strInstrumentID", "instrument_id", "ts_code"]
+    _type_names = ["order_type", "m_nOrderType", "order_side", "m_nDirection"]
 
     def _pick(d: dict, keys: list, default: Any = "") -> Any:
         for k in keys:
@@ -3361,55 +3401,69 @@ def job_cancel_all_pending_orders() -> None:
                 return d[k]
         return default
 
+    def _as_int(v: Any, default: int = -1) -> int:
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return default
+
     try:
         with _qmt_lock:
             adapter = _qmt_get(broker_cfg)
             orders = adapter.query_orders()
     except Exception as e:
-        log.error("14:55撤单：查询委托失败：%s", e)
+        log.error("14:57撤买单：查询委托失败：%s", e)
         return
 
     if not orders:
-        log.info("14:55撤单：无委托记录")
+        log.info("14:57撤买单：无委托记录")
         return
 
-    cancelled = failed = skipped = 0
+    cancelled = failed = skipped = kept_sell = 0
     for o in orders:
         order_id = str(_pick(o, _id_names, "")).strip()
         if not order_id:
             continue
-        status_code = int(_pick(o, ["order_status", "m_nOrderStatus", "status"], -1) or -1)
+        status_code = _as_int(_pick(o, ["order_status", "m_nOrderStatus", "status"], -1))
         if status_code in TERMINAL_STATUS:
             skipped += 1
             continue
         ts_code = str(_pick(o, _ts_names, "")).strip()
+        order_type = _as_int(_pick(o, _type_names, -1))
+        # 只撤能明确判定为买单的委托；卖单/未知方向一律保留，绝不误撤平仓单。
+        if order_type != BUY_ORDER_TYPE:
+            kept_sell += 1
+            label = "卖单(平仓)" if order_type == SELL_ORDER_TYPE else f"未知方向(order_type={order_type})"
+            log.warning("14:57撤买单：保留不撤 %s order_id=%s [%s]", ts_code, order_id, label)
+            continue
         try:
             with _qmt_lock:
                 adapter = _qmt_get(broker_cfg)
                 ok = adapter.cancel_order(order_id)
             if ok:
                 cancelled += 1
-                log.warning("14:55撤单已发: %s order_id=%s 状态码=%s", ts_code, order_id, status_code)
+                log.warning("14:57撤买单已发: %s order_id=%s 状态码=%s", ts_code, order_id, status_code)
             else:
                 failed += 1
-                log.error("14:55撤单失败: %s order_id=%s 状态码=%s", ts_code, order_id, status_code)
+                log.error("14:57撤买单失败: %s order_id=%s 状态码=%s", ts_code, order_id, status_code)
         except Exception as e:
             failed += 1
-            log.error("14:55撤单异常: %s order_id=%s: %s", ts_code, order_id, e)
+            log.error("14:57撤买单异常: %s order_id=%s: %s", ts_code, order_id, e)
 
-    log.warning("14:55撤单完成：撤单=%d 失败=%d 已终态跳过=%d", cancelled, failed, skipped)
+    log.warning("14:57撤买单完成：撤买单=%d 失败=%d 保留卖单/未知=%d 已终态跳过=%d",
+                cancelled, failed, kept_sell, skipped)
     if cancelled > 0 or failed > 0:
         try:
             _notify(
                 "sell_result",
-                "14:55全策略撤单" if failed == 0 else "⚠️ 14:55撤单部分失败",
-                f"撤单={cancelled}笔 失败={failed}笔 终态跳过={skipped}笔",
+                "14:57撤未成交买单" if failed == 0 else "⚠️ 14:57撤买单部分失败",
+                f"撤买单={cancelled}笔 失败={failed}笔 保留卖单={kept_sell}笔 终态跳过={skipped}笔",
                 level="timeSensitive" if failed == 0 else "critical",
             )
         except Exception:
             pass
 
-    log.info("===== 14:55 全策略撤单完成 =====")
+    log.info("===== 14:57 撤未成交买单完成 =====")
 
 
 def job_post_market(end_date: str | None = None) -> None:
@@ -3943,7 +3997,7 @@ def _exit_method_desc(strategy: str, exit_rule: str) -> str:
 
     - D：09:23 集合竞价挂跌停（成交≈开盘价）；或被A/B/C/E2接力时T+1开盘让路。
     - T+1开盘卖（含 *_open）：09:30 开盘平仓，买10/买5挂限价。
-    - T+2收盘卖（默认 ABC/E2/L *_close）：14:50 收盘平仓，买10/买5挂限价。
+    - T+2收盘卖（默认 ABC/E2/L *_close）：14:56 收盘平仓，买10/买5挂限价。
     口径与 check_and_close_positions / job_premarket_sell 一致。
     """
     s = str(strategy).upper()
@@ -3952,7 +4006,7 @@ def _exit_method_desc(strategy: str, exit_rule: str) -> str:
         return "09:23集合竞价挂跌停平仓（成交≈开盘价）"
     if "open" in rule:
         return "09:30开盘平仓（买10/买5挂限价）"
-    return "14:50收盘平仓（买10/买5挂限价确保成交）"
+    return "14:56收盘平仓（买10/买5挂限价确保成交）"
 
 
 def _log_final_decision_summary(signal_date: str, action_date_compact: str, buy_orders: Any) -> None:
@@ -4549,10 +4603,8 @@ def run_job(scheduled_time: datetime.time) -> None:
         job_premarket_position_sync() if trade_day else logger().info("非交易日，跳过盘前持仓同步")
     elif scheduled_time == SCHED_OPENING_BUY:   # 09:30
         job_opening_buy() if trade_day else logger().info("非交易日，跳过开盘买入任务")
-    elif scheduled_time == SCHED_AFTERNOON_CLOSE:   # 14:50
+    elif scheduled_time == SCHED_AFTERNOON_CLOSE:   # 14:56（内部含14:57撤买单）
         job_afternoon() if trade_day else logger().info("非交易日，跳过盘中任务")
-    elif scheduled_time == SCHED_CANCEL_PENDING:   # 14:55
-        job_cancel_all_pending_orders() if trade_day else logger().info("非交易日，跳过14:55撤单")
     elif scheduled_time == SCHED_POST_MARKET:   # 15:10
         if trade_day:
             # 收盘全量对账（只读+告警，独立于数据流水线，先跑）
@@ -5003,7 +5055,7 @@ def _print_account_status(log: Any) -> None:
             buy_time_text = _fmt_position_time(lp.get("buy_time") or lp.get("buy_date"))
             exit_time_text = _fmt_position_time(
                 lp.get("planned_exit_time") or lp.get("planned_exit_date"),
-                default_time="14:50",
+                default_time="14:56",
                 trim_zero_seconds=True,
             )
             time_text = ""
