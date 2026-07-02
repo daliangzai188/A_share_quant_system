@@ -2,7 +2,7 @@
 set -euo pipefail
 
 VM_NAME="${1:-Windows}"
-DISPLAY_MODE="${DISPLAY_MODE:-virtio-ramfb-gl}"
+DISPLAY_MODE="${DISPLAY_MODE:-virtio-ramfb}"
 UTMCTL="${UTMCTL:-/Applications/UTM.app/Contents/MacOS/utmctl}"
 UTM_DOCS="${UTM_DOCS:-$HOME/Library/Containers/com.utmapp.UTM/Data/Documents}"
 STABLE_MODE="${STABLE_MODE:-0}"
@@ -23,7 +23,7 @@ usage() {
   STABLE_MODE=1 scripts/fix_utm_windows_display.sh
 
 可选环境变量：
-  DISPLAY_MODE=virtio-ramfb-gl
+  DISPLAY_MODE=virtio-ramfb
   UTMCTL=/Applications/UTM.app/Contents/MacOS/utmctl
   FORCE_ON_STOP_TIMEOUT=1
 EOF
