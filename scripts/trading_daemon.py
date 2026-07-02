@@ -109,6 +109,31 @@ def _fmt_position_time(value: Any, *, default_time: str = "", trim_zero_seconds:
         return text[:16]
     return text
 
+
+def _normalize_ts_code(value: Any) -> str:
+    """统一股票代码格式，兼容 QMT 返回 002687 / 002687.SZ 两种口径。"""
+    text = str(value or "").strip().upper()
+    if not text:
+        return ""
+    if "." in text:
+        return text
+    if text.startswith(("6", "9")):
+        return f"{text}.SH"
+    if text.startswith(("0", "2", "3")):
+        return f"{text}.SZ"
+    if text.startswith(("4", "8")):
+        return f"{text}.BJ"
+    return text
+
+
+def _ts_code_aliases(value: Any) -> set[str]:
+    normalized = _normalize_ts_code(value)
+    raw = str(value or "").strip().upper()
+    aliases = {code for code in {normalized, raw} if code}
+    if normalized and "." in normalized:
+        aliases.add(normalized.split(".")[0])
+    return aliases
+
 # ── 常量 ───────────────────────────────────────────────────────────────────────
 SCHEDULE = [
     datetime.time(9, 0),    # 盘前：提前生成/刷新组合状态机，避免09:20才开始算买入决策
@@ -583,8 +608,11 @@ def reduce_position_shares(order_id: str, remaining_shares: int) -> None:
 def find_open_position_by_code(ts_code: str, strategy_leg: str | None = None) -> dict[str, Any] | None:
     """按 ts_code（可选 strategy_leg）查找一条未平持仓，用于卖出后回写。"""
     leg = (strategy_leg or "").upper()
+    target_aliases = _ts_code_aliases(ts_code)
     for p in load_positions():
-        if str(p.get("status", "")).lower() not in {"open", "sell_pending"} or str(p.get("ts_code", "")) != str(ts_code):
+        if str(p.get("status", "")).lower() not in {"open", "sell_pending"}:
+            continue
+        if not (_ts_code_aliases(p.get("ts_code", "")) & target_aliases):
             continue
         if leg and str(p.get("strategy_leg", "")).upper() != leg:
             continue
@@ -1692,8 +1720,8 @@ def job_premarket_position_sync() -> None:
     logger().info("[盘前持仓同步] 持仓已更新，重新生成今日组合决策...")
     try:
         from src.combined_live_engine import CombinedLiveEngine
-        engine = CombinedLiveEngine(PROJECT_ROOT)
-        engine.run()
+        engine = CombinedLiveEngine(PROJECT_ROOT / "config" / "config.json")
+        engine.write_plan()
         logger().info("✅ [盘前持仓同步] 组合决策已刷新，后续09:30补充买入任务将使用最新决策。")
     except Exception as e:
         logger().error("[盘前持仓同步] 刷新组合决策失败：%s，09:30补充买入将沿用旧决策。", e)
@@ -4946,11 +4974,12 @@ def _print_account_status(log: Any) -> None:
     _last_account_has_position = bool(live_positions)
     if live_positions:
         local_positions = load_positions()
-        local_pos_map = {
-            lp["ts_code"]: lp
-            for lp in local_positions
-            if lp.get("status") == "open"
-        }
+        local_pos_map: dict[str, dict[str, Any]] = {}
+        for lp in local_positions:
+            if str(lp.get("status", "")).lower() not in {"open", "sell_pending"}:
+                continue
+            for alias in _ts_code_aliases(lp.get("ts_code", "")):
+                local_pos_map[alias] = lp
         notify_cfg = config.get("notify", {}) if isinstance(config, dict) else {}
         loss_thresholds = notify_cfg.get("position_loss_alert_thresholds_pct", [-5, -10, -15, -20, -30])
         try:
@@ -4961,10 +4990,16 @@ def _print_account_status(log: Any) -> None:
         pos_parts = []
         for p in live_positions:
             current_price = p.market_value / p.volume
-            lp = local_pos_map.get(p.ts_code, {})
+            lp = {}
+            for alias in _ts_code_aliases(p.ts_code):
+                if alias in local_pos_map:
+                    lp = local_pos_map[alias]
+                    break
             strategy_leg = str(lp.get("strategy_leg", "未知") or "未知").upper()
             name_s = str(lp.get("name") or getattr(p, "name", "") or "")
-            buy_price = float(lp.get("buy_price", 0))
+            buy_price = float(lp.get("buy_price", 0) or 0)
+            if buy_price <= 0:
+                buy_price = float(getattr(p, "cost_price", 0.0) or 0.0)
             buy_time_text = _fmt_position_time(lp.get("buy_time") or lp.get("buy_date"))
             exit_time_text = _fmt_position_time(
                 lp.get("planned_exit_time") or lp.get("planned_exit_date"),
@@ -5154,7 +5189,7 @@ def main() -> None:
         log.error("启动平仓检查异常：%s —— 请立即手动检查持仓！", e)
     startup_has_position = has_open_local_position()
     if startup_has_position:
-        log.info("启动检查：检测到已有持仓，跳过开仓候选播报和D/E2补开仓逻辑，只保留平仓检查与账户心跳。")
+        log.info("启动检查：检测到已有持仓，仍会检查/补跑收盘数据与候选信号；仅跳过D/E2盘中补开仓逻辑。")
         threading.Thread(
             target=_print_account_status,
             args=(log,),
@@ -5189,10 +5224,7 @@ def main() -> None:
 
     # 若缓存或 processed 审计数据不是最新交易日数据，后台线程补采。
     # raw 缓存存在但 processed 缺日时也必须补跑，否则盘前审计会误报旧口径。
-    if startup_has_position:
-        log.info("启动数据检查：已有持仓，跳过开仓侧收盘信号/processed数据检查。")
-        log.info("启动候选播报：已有持仓，跳过开仓侧候选/E2/L/model3状态播报。")
-    elif not _has_signal_for_date(expected):
+    if not _has_signal_for_date(expected):
         log.warning(
             "未找到 %s 收盘数据缓存，后台自动采集中（不影响主循环和 QMT 状态刷新）...",
             expected_str,
