@@ -141,7 +141,7 @@ scripts/trading_daemon.py
 ```text
 positions.json 中 strategy_leg=L
 planned_exit_date 到期
-14:50 后进入 check_and_close_positions()
+14:56 收盘平仓窗口进入 check_and_close_positions()
 复用 A/B/C 的收盘平仓链路
 按买10/买5优先挂限价卖出
 成交后回写本地持仓

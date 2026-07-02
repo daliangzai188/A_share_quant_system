@@ -234,7 +234,7 @@ SCHEDULE = [
 
 ### 6.2 非阻塞启动原因
 
-D 监控脚本从 13:30 持续运行到 14:55（约 85 分钟），若用 `subprocess.run` 会阻塞守护进程，导致 14:50 平仓任务无法执行。改用 `subprocess.Popen`，守护进程立即返回，D 监控在后台独立运行。
+D 监控脚本从 13:30 持续运行到 14:55（约 85 分钟），若用 `subprocess.run` 会阻塞守护进程，导致 14:56 收盘平仓任务无法执行。改用 `subprocess.Popen`，守护进程立即返回，D 监控在后台独立运行。
 
 ```python
 def job_strategy_d() -> None:
@@ -251,7 +251,7 @@ def job_strategy_d() -> None:
 |---|---|---|
 | 09:20 | 平仓检查 + 读取买入计划单（job_morning）| 是 |
 | 13:30 | 启动 D 监控子进程（job_strategy_d）| 否（Popen） |
-| 14:50 | 盘中平仓检查（job_afternoon）| 是 |
+| 14:56 | 盘中收盘平仓 + 14:57 撤未成交买单（job_afternoon）| 是 |
 | 15:10 | 收盘流水线 + A+B+C 信号（job_post_market）| 是 |
 
 ---

@@ -21,7 +21,41 @@ QMT / miniQMT 只能在 Windows 上运行。项目采用双机架构：
 | Mac（主机） | 编辑代码、Tushare 数据采集、信号生成 |
 | Windows VM（UTM 虚拟机） | 运行 miniQMT 客户端、执行实盘委托 |
 
-A_System 目录通过 UTM 共享文件夹挂载到 Windows VM 的 `Z:` 盘，代码在 Mac 修改后 Windows 即时可见。
+A_System 目录通过 UTM 共享文件夹（WebDAV）挂载到 Windows VM 的 `Z:` 盘，代码在 Mac 修改后 Windows 即时可见。
+
+> ⚠️ 但 `Z:` 是 WebDAV 共享盘，负载下会间歇性抛 `WinError 58`（网络错误），拖慢甚至卡死文件 I/O。
+> 因此 **运行期间不直接跑在 `Z:` 上**，而是"启动时把代码同步到 VM 本地盘、之后全程本地运行"。见下节。
+
+### 运行位置：本地盘运行 + 代码/记录双向同步
+
+**问题背景**：早期 daemon 直接从 `Z:`（WebDAV 共享盘）运行，每个周期都从 `Z:` 读脚本、把 `positions.json`/CSV/日志写回 `Z:`。共享盘一抽风（`WinError 58`），平仓、收盘流水线等关键 I/O 就会被拖住（曾出现 `run_combined_live_plan.py` 卡满 180s、`run_strategy_l_signal.py` 因 `Z:` 建目录报 `WinError 58` 崩溃）。
+
+**解决架构**：把「代码」和「运行时状态」分开，各有一个权威方，做**系统级双向同步（不是同一文件双向覆盖）**：
+
+| 内容 | 权威方 | 同步方向 | 说明 |
+|---|---|---|---|
+| 代码 `src/` `scripts/` `config/` `docs/` + 根级脚本 | **Mac** | Mac → 本地 | 你在 Mac 改，重启自动同步进来 |
+| 持仓 `data/processed/positions.json`（开仓/平仓记录） | **VM 本地** | 本地 → Mac | 运行时写，回传给 Mac 查看 |
+| 候选、开仓计划、组合计划单（`reports/`） | **VM 本地** | 本地 → Mac | 同上 |
+| live 信号/评分 CSV（`data/processed/`）、日志 | **VM 本地** | 本地 → Mac | 同上 |
+| 行情缓存 `data/raw/`（1.7G） | VM 本地 | 不回传 | Mac 侧已有且可重采，无需回传 |
+
+整体是双向的（代码下去、记录上来），但**任何单个文件都不会被反方向覆盖**——尤其绝不让 Mac 上一份旧的 `positions.json` 回灌覆盖实盘持仓。
+
+> ⚠️ 约定：切换到本地运行后，**Mac 上的 `data/processed/` 是 VM 回传的只读镜像**。不要在 Mac 上手改 `positions.json`（改了不生效，会被下次回传覆盖）；要改持仓状态必须在 VM 本地改。
+
+**运行目录**：`C:\A_System`（可用环境变量 `A_SYSTEM_HOME` 覆盖）。`start_windows.py` / `stop_windows.py` 都以此为准。
+
+**启动流程（`start_windows.py`，命令不变，仍是 `py -3.11 start_windows.py`）**：
+
+1. **同步代码** Mac(`Z:`)→本地：`src`/`scripts`/`docs` 用 `robocopy /MIR` 镜像（改名/删除跟随，排除 `__pycache__`），`config` 与根级脚本用 `/E` 复制更新；全部带 `/R:3 /W:2` 重试抗 WebDAV 抖动。**代码同步失败则中止启动**，绝不跑旧/半同步代码。
+2. **首次播种运行状态（只搬几 MB 小状态）**：若本地无 `.state_seeded` 标记，只把实盘必需的小状态从 `Z:` 拷到本地一次——`data/processed/positions.json` + 当日 `live_*.csv` 信号 + `reports/{live_trade,strategy_l,strategy_e2}`，成功后写标记。**绝不搬** `data/raw`（1.7G 行情缓存）、研究大表和历史回测报告——那些是 Mac 上做回测用的，VM 实盘运行时按需自行采集/生成。（早期版本曾整盘搬 5G，走 WebDAV 会把 VM I/O 打满卡死，已改为最小集。）
+3. **从本地运行 daemon**：`C:\A_System\scripts\trading_daemon.py`，`PROJECT_ROOT` 即 `C:\A_System`，所有热点 I/O 落本地盘。
+4. **拉起回传进程** `scripts/sync_back_windows.py`：独立进程，每 5 分钟把本地 `reports/` + `data/processed/` + `logs/` 单向回传 `Z:`；带超时、全 best-effort，卡住/失败都不影响交易 daemon。
+
+**停止（`stop_windows.py`）**：pid/目录指向 `C:\A_System`，同时停掉 daemon、D 监控、回传进程。
+
+**相关文件**：`start_windows.py`、`stop_windows.py`、`scripts/sync_back_windows.py`。
 
 ### Windows VM 环境
 
@@ -165,7 +199,7 @@ reports/paper_trade/ab_filtered_daily_ops/
 | 时间 | 任务 |
 |---|---|
 | 09:20 | 盘前：平仓检查 + 组合状态机 + A/B/C 买入 + 策略D监控启动 |
-| 14:50 | 盘中：持仓检查 |
+| 14:56 | 盘中收盘平仓（最高优先，绝不被任何步骤阻塞）→ 内部等到 14:57 撤销所有未成交**买单**（不撤卖单，避免平仓单被误撤） |
 | 15:35 | 收盘：采集数据 → 清洗 → 生成信号 → 明日候选 |
 
 ## 只读账户检查
@@ -209,8 +243,11 @@ miniQMT 是 x64 程序，必须用 x64 Python 才能加载 xtquant 的 DLL。ARM
 ### QMT session 短暂释放失败（已缓解）
 快速停止后立刻启动时，QMT 可能短时间返回 `connect=-1`。修复：Windows 启动脚本等待 15 秒释放旧 session，守护进程启动检查最多重试 5 次，每次间隔 15 秒。
 
-### Windows 共享盘 WinError 58（已缓解）
-UTM WebDAV 共享盘偶发返回 `WinError 58`，导致目录检查、CSV 写入或清洗读取失败。修复：数据采集和清洗模块对目录创建、文件存在检查、CSV 读写增加重试。
+### Windows 共享盘 WinError 58（根治：本地盘运行）
+UTM WebDAV 共享盘偶发返回 `WinError 58`，导致目录检查、CSV 写入或清洗读取失败，曾拖垮 14:xx 平仓前的组合刷新（`run_combined_live_plan.py` 卡满 180s 被强杀）、并让 `run_strategy_l_signal.py` 在 `Z:\reports\strategy_l` 建目录时崩溃。早期缓解：采集/清洗模块对目录创建、文件存在检查、CSV 读写增加重试。**根治**：daemon 不再直接跑在 `Z:`，而是启动时把代码同步到本地盘、全程本地运行（见上文「运行位置：本地盘运行 + 代码/记录双向同步」）。
+
+### Tushare 单请求超时（已加固）
+`Z:` / 网络抖动或 Tushare 限流时，单个请求可能长时间卡住，拖满收盘流水线 `collect_all_data.py` 的 600s 预算。修复：`data_source.py` 给每个 Tushare 请求加应用层墙钟超时（`config.json` 的 `data_source.request_timeout_seconds`，默认 60s），超时即中止交给 tenacity 重试，避免单接口卡死拖垮整条流水线。
 
 ### PowerShell 中文乱码（已修复）
 守护进程调用子进程时使用 `python -u` 实时输出，并设置 `PYTHONIOENCODING=utf-8`、`PYTHONUTF8=1`。主进程读取输出时优先 UTF-8，失败再 GBK 兜底。
