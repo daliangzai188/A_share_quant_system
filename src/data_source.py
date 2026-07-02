@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import os
+import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import pandas as pd
 import tushare as ts
@@ -19,6 +20,7 @@ class TushareConfig:
     token_env: str
     retry_times: int
     retry_wait_seconds: int
+    request_timeout_seconds: int
 
 
 class TushareDataSource:
@@ -41,6 +43,7 @@ class TushareDataSource:
             token_env=source_config.get("token_env", "TUSHARE_TOKEN"),
             retry_times=int(source_config.get("request_retry_times", 3)),
             retry_wait_seconds=int(source_config.get("request_retry_wait_seconds", 3)),
+            request_timeout_seconds=int(source_config.get("request_timeout_seconds", 60)),
         )
         token = os.getenv(self.tushare_config.token_env) or source_config.get("token")
         if not token:
@@ -51,7 +54,16 @@ class TushareDataSource:
 
         self.token = token.strip()
         ts.set_token(self.token)
-        self.pro = ts.pro_api(self.token)
+        # 优先把超时下沉到 http 层（新版 tushare 的 pro_api 支持 timeout 参数）；
+        # 老版本不支持时回退到无参构造，仍由 _run_with_timeout 兜底应用层超时。
+        request_timeout = self.tushare_config.request_timeout_seconds
+        if request_timeout > 0:
+            try:
+                self.pro = ts.pro_api(self.token, timeout=request_timeout)
+            except TypeError:
+                self.pro = ts.pro_api(self.token)
+        else:
+            self.pro = ts.pro_api(self.token)
 
     def _retry_decorator(self):
         return retry(
@@ -60,15 +72,48 @@ class TushareDataSource:
             reraise=True,
         )
 
+    def _run_with_timeout(self, fn: Callable[[], pd.DataFrame], api_name: str) -> pd.DataFrame:
+        """给单个 Tushare 请求套一层应用层墙钟超时。
+
+        即便底层 http 超时被忽略（连接半开、DNS 卡住等），也能在 request_timeout_seconds
+        后抛出 TimeoutError 交给上层 tenacity 重试，避免单个接口卡死拖满收盘流水线的 600s 预算。
+        超时后底层线程无法强制杀掉，标记为 daemon 丢弃即可（进程退出不受其阻塞）。
+        """
+        timeout = self.tushare_config.request_timeout_seconds
+        if timeout <= 0:
+            return fn()
+
+        result_box: dict[str, pd.DataFrame] = {}
+        error_box: dict[str, BaseException] = {}
+
+        def _worker() -> None:
+            try:
+                result_box["value"] = fn()
+            except BaseException as exc:  # noqa: BLE001 - 原样转交主线程重抛
+                error_box["error"] = exc
+
+        worker = threading.Thread(target=_worker, name=f"tushare-{api_name}", daemon=True)
+        worker.start()
+        worker.join(timeout)
+        if worker.is_alive():
+            raise TimeoutError(
+                f"Tushare 接口 {api_name} 超过 {timeout}s 未返回，已中止本次请求（后台线程丢弃，交由重试处理）"
+            )
+        if "error" in error_box:
+            raise error_box["error"]
+        return result_box.get("value", pd.DataFrame())
+
     def _call(self, api_name: str, **kwargs: Any) -> pd.DataFrame:
         @self._retry_decorator()
         def _request() -> pd.DataFrame:
             self.logger.debug("请求 Tushare 接口: %s, 参数: %s", api_name, kwargs)
-            api = getattr(self.pro, api_name)
-            result = api(**kwargs)
-            if result is None:
-                return pd.DataFrame()
-            return result
+
+            def _do() -> pd.DataFrame:
+                api = getattr(self.pro, api_name)
+                result = api(**kwargs)
+                return pd.DataFrame() if result is None else result
+
+            return self._run_with_timeout(_do, api_name)
 
         return _request()
 
@@ -76,10 +121,12 @@ class TushareDataSource:
         @self._retry_decorator()
         def _request() -> pd.DataFrame:
             self.logger.debug("请求 Tushare query 接口: %s, 参数: %s", api_name, kwargs)
-            result = self.pro.query(api_name, **kwargs)
-            if result is None:
-                return pd.DataFrame()
-            return result
+
+            def _do() -> pd.DataFrame:
+                result = self.pro.query(api_name, **kwargs)
+                return pd.DataFrame() if result is None else result
+
+            return self._run_with_timeout(_do, api_name)
 
         return _request()
 

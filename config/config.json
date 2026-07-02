@@ -154,7 +154,9 @@
     "token": "515772e0adce68462fa330260bbd3a4129fec709f002f1eff3d84766",
     "token_note": "填入 Tushare Pro Token 后 daemon 可自动采集数据，无需交互输入。优先级：环境变量 > 此字段。",
     "request_retry_times": 3,
-    "request_retry_wait_seconds": 3
+    "request_retry_wait_seconds": 3,
+    "request_timeout_seconds": 60,
+    "request_timeout_note": "单个 Tushare 请求最长等待秒数，超时即中止并交给重试；<=0 表示不限制。防止单个接口卡死拖满收盘流水线 600s 预算。"
   },
   "data": {
     "start_date": "20190101",
