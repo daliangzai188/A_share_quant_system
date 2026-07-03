@@ -5587,8 +5587,11 @@ def wait_for_qmt_startup_gate() -> None:
     while True:
         round_no += 1
         log.info("QMT启动门禁：第%d轮验证账户连接，验证成功前不执行启动检查/下次任务。", round_no)
-        has_cached_session = bool(_load_qmt_last_success())
-        allow_full_scan = (not has_cached_session) or round_no >= 2
+        # 第1轮就允许全量扫描：缓存 session 在刚 stop 旧 daemon 后常被占用（connect=-1），
+        # 若第1轮只试缓存必然失败，白白多花“一整轮 + sleep 10s + 一条误告警”。
+        # 全量扫描本身仍是“缓存 preferred 优先，失败才 fallback 扫描”：
+        # 缓存可用时 preferred 秒连、速度不变；缓存坏时同一轮内直接扫到可用 session。
+        allow_full_scan = True
         if check_qmt_connection(allow_full_scan=allow_full_scan):
             log.info("QMT启动门禁：账户连接已验证，继续启动流程。")
             return
