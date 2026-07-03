@@ -4738,7 +4738,28 @@ def _log_decision_chain_summary(signal_date: str) -> None:
         # 两个框永远完整闭合，框内不会掺杂其他打印。
         date_banner = f"{P}━━━ {day_label}{readable} · 基于{signal_date}收盘数据 ━━━"
         bottom = f"{P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        # 框0：决策优先级总图（静态规则+当日实际路径标记），与决策链同一条
+        # 原子消息：决策链打印它就打印，不打印就都不打印。
+        m1_has = mode1_buy is not None
+        t2y = m1_has and (l_buy is not None) and l_guard_ok
+        t3y = (not m1_has) and (l_buy is not None) and l_base_ok
+        TAG = " ◄―今日路径"
         lines = [
+            f"{P}━━━━━━━━━━━━ 决策优先级总图（mode=3） ━━━━━━━━━━━━",
+            f"{P} 【0】有未到期持仓? ─是→ 不开新仓，等到期日14:56收盘平仓",
+            f"{P}   ↓否",
+            f"{P} 【1】mode1选票（串行先中先得）: ①A主 → ②B备 → ③C补位 → ④E2兜底",
+            f"{P}   ├─有票 → 进【2】L替换审查{TAG if m1_has else ''}",
+            f"{P}   └─无票 → 跳【3】L补位审查{TAG if not m1_has else ''}",
+            f"{P} 【2】L替换窄门: 基础规则 ∧ 创业板 ∧ 题材涨停≥2 ∧ 非尾盘首板",
+            f"{P}   ├─过　 → ★改买L的票（顶掉mode1）■{TAG if t2y else ''}",
+            f"{P}   └─不过 → ★买mode1的票（①~④命中者）■{TAG if (m1_has and not t2y) else ''}",
+            f"{P} 【3】L补位: 只需基础规则（非科创板∧情绪OK∧连板≥8，不限板块）",
+            f"{P}   ├─过　 → ★买L的票（补位）■{TAG if t3y else ''}",
+            f"{P}   └─不过 → 进【4】{TAG if (not m1_has and not t3y) else ''}",
+            f"{P} 【4】D盘中扫描（兜底）: 开盘后实时监控，仍需成交概率+风控校验",
+            bottom,
+            P,
             # 框1：开仓决策链（策略顺序 + 各策略成立/不成立及原因）
             f"{P}━━━━━━━━━━━━━━ 开仓决策链 ━━━━━━━━━━━━━━",
             date_banner,
