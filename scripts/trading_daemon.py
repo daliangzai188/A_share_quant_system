@@ -4583,6 +4583,24 @@ def _model3_l_base_rule_pass_for_log(signal: dict[str, Any]) -> tuple[bool, str]
 
 
 def _model3_l_replace_guard_pass_for_log(signal: dict[str, Any]) -> tuple[bool, str]:
+    """model=3 替换保护：判定 L 是否有资格顶掉 mode=1（ABC/E2）已有的买入计划。
+
+    为什么替换要设更高门槛——机会成本逻辑：
+    mode=1 本身是认证过的正期望策略，L 替换它等于放弃一笔大概率赚钱的交易，
+    所以 L 的期望收益必须"显著更高"才划算，而不是"还行"就行。
+    注意：本保护只管"抢同一笔资金"的场景；mode=1 空闲日 L 补位只需基础规则，
+    不受这里的板块限制（主板/北交所补位单都允许）。
+
+    三个条件均来自 9 种候选规则的穷举赛马
+    （reports/strategy_model3/occupancy_guards/model3_occupancy_guard_summary.csv）：
+    选中组合 8302x/胜率69.9%/回撤-18.3% 为最优；只要创业板不加条件 6861x；
+    不限板块的宽松规则掉到 4778~6172x，连用未来信息的理论上限(6548x)都不如选中组合。
+    - 创业板(chi_next)：L 赚的是龙头次日溢价，20cm 弹性是主板(10cm)两倍；
+      主板龙头期望溢价平均不够补偿放弃 mode=1 的机会成本（回测中此类替换为负贡献）。
+    - theme_limit_count>=2：题材有梯队（非孤板），接力胜率更高。
+    - 排除 after_1430：尾盘偷袭板封板质量弱，次日溢价差。
+    配置出处：config.json strategy_model3.replace_guard（规则名 replace_theme_ge_2_not_after_1430）。
+    """
     segment = str(signal.get("market_segment", ""))
     first_time_bucket = str(signal.get("first_time_detail_bucket", ""))
     try:
@@ -4591,11 +4609,13 @@ def _model3_l_replace_guard_pass_for_log(signal: dict[str, Any]) -> tuple[bool, 
         theme_limit_count = 0.0
     reasons = []
     if segment != "chi_next":
-        reasons.append(f"替换要求创业板，当前market_segment={segment}")
+        reasons.append(
+            f"替换要求创业板（20cm龙头溢价弹性是主板2倍，主板L替换在回测中为负贡献），当前market_segment={segment}"
+        )
     if theme_limit_count < 2:
-        reasons.append(f"替换要求theme_limit_count>=2，当前={theme_limit_count:g}")
+        reasons.append(f"替换要求theme_limit_count>=2（题材有梯队接力胜率更高），当前={theme_limit_count:g}")
     if first_time_bucket == "after_1430":
-        reasons.append("替换排除first_time_detail_bucket=after_1430")
+        reasons.append("替换排除first_time_detail_bucket=after_1430（尾盘偷袭板封板质量弱、次日溢价差）")
     return not reasons, "；".join(reasons) if reasons else "L通过model=3替换保护条件"
 
 
@@ -4663,9 +4683,23 @@ def _log_l_model3_signal_status(signal_date: str, action_date: str | None = None
         elif not base_ok:
             logger().info("  L/model3结论：L未通过基础规则，沿用mode=1。")
         elif guard_ok:
-            logger().info("  L/model3结论：若%s无mode=1买入则L可补位；若有mode=1买入，L也具备替换资格。", planned_buy_date)
+            logger().info(
+                "  L/model3结论：若%s无mode=1买入则L可补位；若有mode=1买入，L也具备替换资格"
+                "（创业板+题材梯队+非尾盘板三条件全部满足）。",
+                planned_buy_date,
+            )
         else:
-            logger().info("  L/model3结论：若%s无mode=1买入则L可补位；若已有mode=1买入则不替换，原因=%s。", planned_buy_date, guard_reason)
+            logger().info(
+                "  L/model3结论：若%s无mode=1买入则L可补位（补位只需基础规则，不限板块，主板也能买）；"
+                "若已有mode=1买入则不替换，原因=%s。",
+                planned_buy_date,
+                guard_reason,
+            )
+            logger().info(
+                "  L替换保护依据：mode1是认证正期望策略，L顶掉它有机会成本，期望收益须显著更高才划算；"
+                "穷举9种替换规则中「创业板+题材涨停≥2+非尾盘首板」组合认证最优（8302x/胜率69.9%），"
+                "放宽板块限制复利降至4778~6172x。该限制只作用于替换场景，与账户交易权限无关。"
+            )
     except Exception as exc:
         logger().warning("  L/model3状态播报失败：%s", exc)
 
