@@ -3970,6 +3970,7 @@ def job_post_market(end_date: str | None = None) -> None:
     if not report_next_trade_factor_readiness(target_str):
         logger().warning("⚠️ 明日开盘因子尚未完全就绪，本次不标记收盘完成；5分钟后自动重试")
         return False
+    _log_decision_chain_summary(target_str)
     logger().info("===== 收盘流水线完成 =====")
     mark_post_market_done(target_date)
     try:
@@ -4534,6 +4535,191 @@ def _log_final_decision_summary(signal_date: str, action_date_compact: str, buy_
         logger().info("==========================================================")
     except Exception as exc:
         logger().error("最终结果汇总异常：%s", exc)
+
+
+def _log_decision_chain_summary(signal_date: str) -> None:
+    """收盘流水线完成后，用一段决策链日志讲清楚明日开仓逻辑。
+
+    每行统一以 ┃ 开头：start_windows.py 终端着色按该前缀显示紫色，
+    与其他日志区分；日志文件本身仍是纯文本，不含 ANSI 码。
+    内容：策略优先级顺序 → 每个策略成立/不成立及原因 → 明日开仓计划
+    （基于 signal_date 收盘数据统计的下一交易日计划），已持仓时标注。
+    只做展示，任何异常不影响流水线。
+    """
+    try:
+        import pandas as pd
+        P = "┃"
+
+        cfg = load_json_config(PROJECT_ROOT / "config" / "config.json")
+        mode = int(cfg.get("active_strategy_profile", {}).get("mode", 1))
+        try:
+            sd = datetime.datetime.strptime(signal_date, "%Y%m%d").date()
+            action_date = next_n_trade_days(sd, 1).strftime("%Y%m%d")
+        except Exception:
+            action_date = ""
+        readable = f"{action_date[:4]}-{action_date[4:6]}-{action_date[6:]}" if len(action_date) == 8 else action_date
+
+        # ── ABC：checklist + 计划单 ──
+        checklist = _load_ab_checklist(signal_date)
+        ss, top_code, top_name = "", "", ""
+        a_cnt = b_cnt = c_cnt = 0
+        if not checklist.empty:
+            row = checklist.iloc[0]
+            ss = str(row.get("selection_status", ""))
+            top_code = str(row.get("top_ts_code", "") or "")
+            top_name = str(row.get("top_name", "") or "")
+            a_cnt = int(row.get("a_candidate_count", 0) or 0)
+            b_cnt = int(row.get("b_candidate_count", 0) or 0)
+            c_cnt = int(row.get("c_candidate_count", 0) or 0)
+        hit_cond = ss.split(":", 1)[1] if ":" in ss else ""
+
+        abc_buy: dict[str, Any] | None = None
+        try:
+            po_files = sorted(glob.glob(str(PROJECT_ROOT / f"reports/paper_trade/ab_filtered_daily_ops/*_{signal_date}_planned_orders.csv")))
+            if po_files:
+                po = pd.read_csv(po_files[-1], low_memory=False)
+                buys = po[po.get("side", pd.Series(dtype=str)).astype(str).str.upper() == "BUY"] if not po.empty else po
+                for _, r in (buys.iterrows() if not buys.empty else []):
+                    qty = int(float(r.get("round_lot_shares", 0) or 0))
+                    price = float(r.get("reference_price", 0.0) or 0.0)
+                    if qty > 0 and price > 0:
+                        abc_buy = {"strategy": str(r.get("strategy_leg", "") or "ABC"), "ts_code": str(r.get("ts_code", "")),
+                                   "name": str(r.get("name", "")), "shares": qty, "price": price}
+                        break
+        except Exception:
+            pass
+
+        # A/B/C 三行文案：selection_status → 成立/不成立及原因
+        if ss.startswith("A_SELECTED"):
+            a_line = f"成立｜候选{a_cnt}，选中 {top_code} {top_name}"
+            b_line = "未启用｜A已选中，B不再评估"
+            c_line = "未启用｜A已选中，C不再评估"
+        elif ss.startswith("A_NO_SELECTED_B_SELECTED"):
+            a_line = f"不成立｜候选{a_cnt}，未形成可成交标的"
+            b_line = f"成立｜候选{b_cnt}，选中 {top_code} {top_name}" + (f"（命中：{hit_cond}）" if hit_cond else "")
+            c_line = "未启用｜B已选中，C不再评估"
+        elif ss.startswith("A_NO_SELECTED_B_RISK_FILTERED"):
+            a_line = f"不成立｜候选{a_cnt}，未形成可成交标的"
+            b_line = f"不成立｜B首选命中风险过滤规则被剔除（候选{b_cnt}）"
+            c_line = f"候选{c_cnt}" if c_cnt else "不成立｜无候选"
+        elif ss.startswith("A_B_NO_FILLED_C_SELECTED"):
+            a_line = f"不成立｜候选{a_cnt}，未形成可成交标的"
+            b_line = f"不成立｜候选{b_cnt}，未形成可成交标的"
+            c_line = f"成立｜候选{c_cnt}，补位选中 {top_code} {top_name}" + (f"（命中：{hit_cond}）" if hit_cond else "")
+        elif ss.startswith("A_B_NO_FILLED_C_NO_SELECTED") or ss.startswith("A_NO_SELECTED_B_NO_SELECTED"):
+            a_line = f"不成立｜候选{a_cnt}，未形成可成交标的"
+            b_line = f"不成立｜候选{b_cnt}，未形成可成交标的"
+            c_line = f"不成立｜候选{c_cnt}，无补位标的"
+        else:
+            a_line = b_line = c_line = f"状态={ss or '无checklist'}"
+
+        # ABC名义上选中但计划单无有效股数/价格（如影子计划或参考价缺失）时，
+        # 执行层按"无ABC计划"处理，文案必须与实际执行一致，避免自相矛盾。
+        if abc_buy is None and ("SELECTED" in ss and not ss.endswith("NO_SELECTED")):
+            note_shadow = "（但计划单无有效股数/价格，实盘按无ABC计划处理）"
+            if ss.startswith("A_SELECTED"):
+                a_line += note_shadow
+            elif "B_SELECTED" in ss:
+                b_line += note_shadow
+            elif "C_SELECTED" in ss:
+                c_line += note_shadow
+
+        # ── E2 ──
+        e2_sig = _load_e2_signal_for_signal_date(signal_date)
+        e2_buy: dict[str, Any] | None = None
+        if (e2_sig and str(e2_sig.get("planned_buy_date", "")) == action_date
+                and bool(e2_sig.get("allow_buy_reliable", False))):
+            price = float(e2_sig.get("limit_close", 0.0) or 0.0)
+            e2_buy = {"strategy": "E2", "ts_code": str(e2_sig.get("ts_code", "")),
+                      "name": str(e2_sig.get("name", "")),
+                      "shares": _planned_shares_by_equity(e2_sig.get("position_pct", 0.8), price), "price": price}
+        if abc_buy:
+            e2_line = "让位｜ABC已有买入计划，同一资金不重复占用" + (
+                f"（E2备选={e2_buy['ts_code']} {e2_buy['name']}）" if e2_buy else "")
+        elif e2_buy:
+            e2_line = f"成立｜兜底顶上，选中 {e2_buy['ts_code']} {e2_buy['name']}"
+        elif e2_sig:
+            e2_line = f"不成立｜信号存在但不满足执行条件（计划买入日={e2_sig.get('planned_buy_date','')}≠{action_date} 或不可靠）"
+        else:
+            e2_line = "不成立｜无E2信号"
+
+        # ── D ──
+        d_line = ("阻断｜明日已有A/B/C/E2开仓计划占用同一资金" if (abc_buy or e2_buy)
+                  else "允许｜无开仓计划时启动盘中监控（仍需实时行情+风控校验）")
+
+        # ── L / model3 ──
+        mode1_buy = abc_buy or e2_buy
+        l_sig = _load_l_signal_for_signal_date(signal_date)
+        l_buy: dict[str, Any] | None = None
+        l_base_ok = l_guard_ok = False
+        base_reason = guard_reason = ""
+        if l_sig:
+            l_base_ok, base_reason = _model3_l_base_rule_pass_for_log(l_sig)
+            l_guard_ok, guard_reason = _model3_l_replace_guard_pass_for_log(l_sig)
+            if l_base_ok:
+                l_price = float(l_sig.get("limit_close", 0.0) or 0.0)
+                l_buy = {"strategy": "L", "ts_code": str(l_sig.get("ts_code", "")),
+                         "name": str(l_sig.get("name", "")),
+                         "shares": _planned_shares_by_equity(l_sig.get("position_pct", 0.8), l_price), "price": l_price}
+        if not l_sig:
+            l_line = "不参与｜无L信号"
+        elif not l_base_ok:
+            l_line = f"不参与｜基础规则不通过（{base_reason}）"
+        elif mode1_buy and l_guard_ok:
+            l_line = f"替换｜{l_sig.get('ts_code','')} {l_sig.get('name','')} 通过替换保护，顶掉mode1买入"
+        elif mode1_buy:
+            l_line = f"不替换｜选中{l_sig.get('ts_code','')} {l_sig.get('name','')}但替换保护不通过（{guard_reason}）"
+        else:
+            l_line = f"补位｜mode1无买入，L补位 {l_sig.get('ts_code','')} {l_sig.get('name','')}（补位不限板块）"
+
+        # ── 最终计划（与【最终结果】/组合状态机同口径） ──
+        final_buy: dict[str, Any] | None = None
+        if mode == 2:
+            final_buy = l_buy
+        elif mode == 3 and mode1_buy and l_buy and l_guard_ok:
+            final_buy = l_buy
+        elif mode == 3 and not mode1_buy and l_buy and l_base_ok:
+            final_buy = l_buy
+        else:
+            final_buy = mode1_buy
+
+        # ── 持仓标注 ──
+        open_pos = [p for p in load_positions() if str(p.get("status", "")).lower() in {"open", "sell_pending"}]
+        pos_note = ""
+        if final_buy:
+            same = [p for p in open_pos if str(p.get("ts_code", "")) == final_buy["ts_code"]]
+            others = [p for p in open_pos if str(p.get("ts_code", "")) != final_buy["ts_code"]]
+            if same:
+                pos_note = "（已持仓）"
+            elif others:
+                blocking = [p for p in others if str(p.get("planned_exit_date", "99991231")) > action_date]
+                if blocking:
+                    pos_note = ("（注意：当前持仓 "
+                                + "、".join(f"{p.get('ts_code','')} {p.get('name','')}" for p in blocking)
+                                + f" {readable}尚未到期，组合状态机将阻断该新开仓）")
+                else:
+                    pos_note = "（当前持仓明日到期，先平仓释放资金后执行）"
+
+        logger().info("%s━━━━━━ 开仓决策链 · 明日%s · 基于%s收盘数据 ━━━━━━", P, readable, signal_date)
+        logger().info("%s 策略顺序：mode1内 A主 > B备 > C补位 > E2兜底 > D盘中；L按model3规则补位/替换（当前mode=%s）", P, mode)
+        logger().info("%s ① A主策略：%s", P, a_line)
+        logger().info("%s ② B备用策略：%s", P, b_line)
+        logger().info("%s ③ C补位策略：%s", P, c_line)
+        logger().info("%s ④ E2兜底：%s", P, e2_line)
+        logger().info("%s ⑤ D盘中：%s", P, d_line)
+        logger().info("%s ⑥ L/model3：%s", P, l_line)
+        if final_buy:
+            amount = final_buy["shares"] * final_buy["price"]
+            logger().info(
+                "%s ★ %s开仓计划：策略%s %s %s %d股@参考%.2f ≈%.2f万（09:15集合竞价预挂→09:30确认，实际按账户资金/单笔限额缩放）%s",
+                P, readable, final_buy["strategy"], final_buy["ts_code"], final_buy["name"],
+                final_buy["shares"], final_buy["price"], amount / 10000, pos_note,
+            )
+        else:
+            logger().info("%s ★ %s开仓计划：无 —— 全部策略不成立或被阻断，明日不开新仓", P, readable)
+        logger().info("%s━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", P)
+    except Exception as exc:
+        logger().warning("开仓决策链播报失败（不影响流水线）：%s", exc)
 
 
 def _load_l_signal_for_signal_date(signal_date: str) -> dict[str, Any] | None:
