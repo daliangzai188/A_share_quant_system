@@ -4784,21 +4784,20 @@ def _decision_chain_broadcast_loop() -> None:
 
     只在决策结果已产出（存在 planned_orders 信号文件）且执行日未过期时重播：
     执行日==今天盘中也播（标签自动切换为"今日"），执行日已过则静默等新信号。
+    启动后立即播第一次（覆盖"缓存命中不跑流水线"的启动路径），再进入30分钟循环。
     纯展示线程，任何异常不影响交易主流程。
     """
     while True:
-        time.sleep(1800)
         try:
             sd = _latest_planned_orders_signal_date()
-            if not sd:
-                continue
-            sd_date = datetime.datetime.strptime(sd, "%Y%m%d").date()
-            action_date = next_n_trade_days(sd_date, 1).strftime("%Y%m%d")
-            if action_date < today_beijing().strftime("%Y%m%d"):
-                continue
-            _log_decision_chain_summary(sd)
+            if sd:
+                sd_date = datetime.datetime.strptime(sd, "%Y%m%d").date()
+                action_date = next_n_trade_days(sd_date, 1).strftime("%Y%m%d")
+                if action_date >= today_beijing().strftime("%Y%m%d"):
+                    _log_decision_chain_summary(sd)
         except Exception as exc:
             logger().debug("决策链周期播报异常：%s", exc)
+        time.sleep(1800)
 
 
 def _load_l_signal_for_signal_date(signal_date: str) -> dict[str, Any] | None:
