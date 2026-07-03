@@ -1,4 +1,3 @@
-import re
 import subprocess
 import sys
 import time
@@ -244,9 +243,11 @@ def _run_capture(cmd: list[str], timeout: float) -> str:
 def _scan_related_pids() -> dict[int, str]:
     """按命令行特征扫描所有相关 python 进程，返回 {pid: label}。
 
-    覆盖 pid 文件追踪不到的孤儿进程（例如重复启动导致旧 daemon 未被记录）。
-    优先 wmic（快），不可用时回退 PowerShell CIM。只匹配脚本文件名，
-    stop_windows.py / send_notify.py 等自身进程天然不含关键字，不会误杀。
+    只作为兜底：pid 文件里找不到任何存活进程时才调用（常规停止不跑）。
+    只用 PowerShell CIM——wmic 已从新版 Windows 移除（2026-07-03 实测
+    WinError 2），且全盘扫描+高IO压力曾把虚拟机卡到重启，不能每次都跑。
+    只匹配脚本文件名，stop_windows.py / send_notify.py 等自身进程
+    天然不含关键字，不会误杀。失败/超时返回空，不阻塞停止流程。
     """
     keywords = {DAEMON_KEYWORD: "daemon", D_MONITOR_KEYWORD: "D monitor"}
     found: dict[int, str] = {}
@@ -258,30 +259,12 @@ def _scan_related_pids() -> dict[int, str]:
                 return label
         return None
 
-    # 1) wmic list 格式：记录以空行分隔，字段各占一行 CommandLine=... / ProcessId=...
-    out = _run_capture(
-        ["wmic", "process", "where", "name like '%python%'",
-         "get", "ProcessId,CommandLine", "/format:list"],
-        timeout=20.0,
-    )
-    if out.strip():
-        text = out.replace("\r\n", "\n").replace("\r", "\n")
-        for block in re.split(r"\n\s*\n", text):
-            cmd_m = re.search(r"CommandLine=(.*)", block)
-            pid_m = re.search(r"ProcessId=(\d+)", block)
-            if not cmd_m or not pid_m:
-                continue
-            label = _classify(cmd_m.group(1))
-            if label:
-                found[int(pid_m.group(1))] = label
-        return found
-
-    # 2) 回退 PowerShell CIM：每行 "pid|commandline"
+    # PowerShell CIM：每行 "pid|commandline"
     out = _run_capture(
         ["powershell", "-NoProfile", "-NonInteractive", "-Command",
          "Get-CimInstance Win32_Process -Filter \"Name like 'python%'\" | "
          "ForEach-Object { \"$($_.ProcessId)|$($_.CommandLine)\" }"],
-        timeout=25.0,
+        timeout=15.0,
     )
     for line in out.replace("\r\n", "\n").split("\n"):
         if "|" not in line:
@@ -298,7 +281,9 @@ def _scan_related_pids() -> dict[int, str]:
 
 print(GREEN + f"{timestamp()} | 停止 A_System：清理全部守护进程 / D 监控进程..." + RESET, flush=True)
 
-# 目标进程集合：pid 文件（精确、毫秒级）+ 命令行扫描（兜底孤儿），去重合并。
+# 目标进程集合：pid 文件（精确、毫秒级）优先；子进程由 _stop_and_verify 的
+# 进程树清理带走。只有 pid 文件找不到任何存活进程时，才用命令行扫描兜底找孤儿——
+# 全盘 CIM 扫描要十几秒且吃CPU/IO，每次都跑曾把停止拖到 62 秒、虚拟机卡到重启。
 targets: dict[int, str] = {}
 for path, label in [(pid_file, "daemon"), (d_monitor_pid_file, "D monitor")]:
     if path.exists():
@@ -306,8 +291,9 @@ for path, label in [(pid_file, "daemon"), (d_monitor_pid_file, "D monitor")]:
         if pid_text.isdigit() and _pid_exists(pid_text):
             targets[int(pid_text)] = label
 
-for pid, label in _scan_related_pids().items():
-    targets.setdefault(pid, label)
+if not targets:
+    for pid, label in _scan_related_pids().items():
+        targets.setdefault(pid, label)
 
 if not targets:
     # 无存活进程：清掉可能残留的 pid 文件，明确告知“确实没在跑”。
