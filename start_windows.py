@@ -1,4 +1,5 @@
 import subprocess, sys, os, time
+from datetime import datetime
 from pathlib import Path
 
 sys.stdout.reconfigure(encoding="utf-8")
@@ -115,8 +116,12 @@ RED   = "\033[91m"
 BOLD  = "\033[1m"
 RESET = "\033[0m"
 
-print(GREEN + BOLD + "A_System 已启动，默认只显示关键日志；完整日志仍写入文件。" + RESET)
-print("Ctrl+C 可立即脱离终端，daemon 会继续运行。需要终端显示全部日志可用：py -3.11 start_windows.py --full-log")
+def timestamp() -> str:
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+print(GREEN + BOLD + f"{timestamp()} | A_System 已启动，默认只显示关键日志；完整日志仍写入文件。" + RESET)
+print(f"{timestamp()} | Ctrl+C 可立即脱离终端，daemon 会继续运行。需要终端显示全部日志可用：py -3.11 start_windows.py --full-log")
 
 
 def color_for_line(text: str) -> str:
@@ -126,6 +131,14 @@ def color_for_line(text: str) -> str:
         "程序正常",
         "当日涨停池模拟观察计划已生成",
         "收盘流水线完成",
+        "收盘流水线进度",
+        "采集结果",
+        "清洗结果",
+        "动态特征",
+        "增强因子",
+        "A/B/C策略状态",
+        "E2策略状态",
+        "L策略状态",
         "计划单",
     ]
     warning_words = ["⚠️", "| WARNING |", "WARNING", "仅供参考", "暂不开仓"]
@@ -189,6 +202,23 @@ def should_print_line(text: str) -> bool:
         "数据口径",
         "必需字段",
         "成交概率",
+        "执行:",
+        "进度：已运行",
+        "完成，用时",
+        "日线采集进度",
+        "每日基本面采集进度",
+        "涨停池采集进度",
+        "检查本地日线行情文件",
+        "检查本地每日基本面文件",
+        "检查本地涨停池文件",
+        "跳过日线行情",
+        "跳过每日基本面",
+        "跳过涨停池",
+        "请求 Tushare",
+        "保存日线行情",
+        "保存每日基本面",
+        "保存涨停池",
+        "Tushare ",
     ]
     suppressed_words = [
         "A/B/C逐层筛选漏斗",
@@ -223,5 +253,5 @@ try:
             else:
                 time.sleep(0.5)
 except KeyboardInterrupt:
-    print("\n已脱离实时日志，daemon 继续后台运行。查看完整日志：logs/trading_daemon.log", flush=True)
+    print(f"\n{timestamp()} | 已脱离实时日志，daemon 继续后台运行。查看完整日志：logs/trading_daemon.log", flush=True)
     os._exit(0)

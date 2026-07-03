@@ -1457,10 +1457,132 @@ def check_and_close_positions() -> None:
 
 # ── subprocess 执行（带超时）──────────────────────────────────────────────────
 
+_pipeline_thread: threading.Thread | None = None
+_pipeline_thread_lock = threading.Lock()
+_pipeline_resume_event = threading.Event()
+_pipeline_resume_event.set()
+_pipeline_pause_reason = ""
+
+
+def _pipeline_paused() -> bool:
+    return not _pipeline_resume_event.is_set()
+
+
+def _pause_pipeline_for_trade(reason: str) -> None:
+    """交易执行优先：平仓/撤单窗口临时暂停数据流水线后续步骤。"""
+    global _pipeline_pause_reason
+    if not _pipeline_paused():
+        logger().warning("交易优先暂停：%s；收盘/采集流水线将在安全点暂停，交易处理完成后继续。", reason)
+    _pipeline_pause_reason = reason
+    _pipeline_resume_event.clear()
+
+
+def _resume_pipeline_after_trade(reason: str) -> None:
+    global _pipeline_pause_reason
+    if _pipeline_paused():
+        logger().info("交易优先恢复：%s；收盘/采集流水线继续执行。", reason)
+    _pipeline_pause_reason = ""
+    _pipeline_resume_event.set()
+
+
+def _wait_if_pipeline_paused(context: str) -> None:
+    last_log = 0.0
+    while _pipeline_paused():
+        now_ts = time.time()
+        if now_ts - last_log >= 15:
+            logger().warning(
+                "%s 暂停中：当前交易优先任务=%s；等待平仓/撤单处理完成后继续。",
+                context,
+                _pipeline_pause_reason or "未知",
+            )
+            last_log = now_ts
+        time.sleep(1)
+    if last_log > 0:
+        logger().info("%s 暂停结束：交易优先任务已释放，继续执行。", context)
+
+
+def _strategy_d_force_sell_codes_today() -> set[str]:
+    today_str = today_beijing().strftime("%Y%m%d")
+    try:
+        combined = load_combined_decisions()
+        decisions = combined[0] if combined is not None else None
+        if decisions is None or decisions.empty or not {"action", "strategy_leg"}.issubset(decisions.columns):
+            return set()
+        rows = decisions[
+            (decisions["action"].astype(str) == "PLAN_SELL_D_FIRST")
+            & (decisions["strategy_leg"].astype(str).str.upper() == "D")
+        ]
+        return {
+            str(code)
+            for code in rows.get("ts_code", []).dropna().astype(str).tolist()
+            if str(code)
+        }
+    except Exception as exc:
+        logger().debug("读取D接力让路计划失败：%s", exc)
+        return set()
+
+
+def _has_premarket_close_plan() -> bool:
+    force_d_codes = _strategy_d_force_sell_codes_today()
+    for pos in load_positions():
+        status = str(pos.get("status", "")).lower()
+        if status == "closed":
+            continue
+        strategy_leg = str(pos.get("strategy_leg", "")).upper()
+        ts_code = str(pos.get("ts_code", ""))
+        if status == "sell_pending":
+            return True
+        if strategy_leg == "D" and ts_code in force_d_codes:
+            return True
+    return False
+
+
+def _has_due_close_plan_now() -> bool:
+    today_str = today_beijing().strftime("%Y%m%d")
+    now_time = now_beijing().time()
+    for pos in load_positions():
+        status = str(pos.get("status", "")).lower()
+        if status == "closed":
+            continue
+        planned_exit = str(pos.get("planned_exit_date", "99991231"))
+        if status == "sell_pending":
+            return True
+        if planned_exit < today_str:
+            return True
+        if planned_exit == today_str and now_time >= SCHED_AFTERNOON_CLOSE:
+            return True
+    return False
+
+
+def _maybe_resume_pipeline_after_trade() -> None:
+    if _pipeline_paused() and not _has_due_close_plan_now() and not _has_premarket_close_plan():
+        _resume_pipeline_after_trade("未检测到仍需执行的平仓计划")
+
+
+def _start_post_market_pipeline(end_date: str | None = None, *, reason: str = "") -> None:
+    """后台启动收盘/补采流水线。主调度继续运行；流水线遇到交易暂停门禁会等待。"""
+    global _pipeline_thread
+    with _pipeline_thread_lock:
+        if _pipeline_thread is not None and _pipeline_thread.is_alive():
+            logger().warning("收盘/采集流水线已在运行，本次不重复启动：%s", reason or "未指定原因")
+            return
+
+        def _target() -> None:
+            try:
+                _run_post_market_with_retry(end_date)
+            finally:
+                logger().info("收盘/采集流水线线程结束：%s", reason or "正常结束")
+
+        _pipeline_thread = threading.Thread(target=_target, daemon=True, name="post-market-pipeline")
+        _pipeline_thread.start()
+        logger().info("收盘/采集流水线已后台启动：%s", reason or "未指定原因")
+
+
 def run_script(name: str, *args: str, timeout: int = TIMEOUT_DATA_STEP) -> bool:
     import platform as _plat
     import queue as _queue
     import threading as _threading
+    _wait_if_pipeline_paused(f"{name} 启动前")
     cmd = [PYTHON, "-u", "-B", str(PROJECT_ROOT / "scripts" / name)] + list(args)
     logger().info("执行: %s", " ".join(cmd))
     kwargs: dict = {
@@ -1496,6 +1618,8 @@ def run_script(name: str, *args: str, timeout: int = TIMEOUT_DATA_STEP) -> bool:
         reader = _threading.Thread(target=_reader, daemon=True)
         reader.start()
         started_at = time.time()
+        last_progress_at = started_at
+        last_output_at = started_at
 
         while proc.poll() is None:
             try:
@@ -1503,14 +1627,30 @@ def run_script(name: str, *args: str, timeout: int = TIMEOUT_DATA_STEP) -> bool:
             except _queue.Empty:
                 line = ""
             if line:
+                last_output_at = time.time()
                 output_lines.append(line)
                 if "| ERROR |" in line or "Traceback" in line or line.startswith("ERROR:"):
                     logger().error("  [%s] %s", name, line)
                 else:
                     logger().info("  [%s] %s", name, line)
-            if time.time() - started_at > timeout:
+            now_ts = time.time()
+            if now_ts - last_progress_at >= 15:
+                logger().info(
+                    "  [%s] 进度：已运行%d秒 / 超时上限%d秒，最近输出%d秒前；仍在执行，请等待...",
+                    name,
+                    int(now_ts - started_at),
+                    timeout,
+                    int(now_ts - last_output_at),
+                )
+                last_progress_at = now_ts
+            if now_ts - started_at > timeout:
                 proc.kill()
-                logger().error("%s 超时（%ds），已强制终止", name, timeout)
+                logger().error(
+                    "%s 超时（%ds），已强制终止；最近输出%d秒前",
+                    name,
+                    timeout,
+                    int(now_ts - last_output_at),
+                )
                 return False
 
         while True:
@@ -1528,6 +1668,7 @@ def run_script(name: str, *args: str, timeout: int = TIMEOUT_DATA_STEP) -> bool:
         if proc.returncode != 0:
             logger().error("%s 退出码 %d", name, proc.returncode)
             return False
+        logger().info("%s 完成，用时%d秒", name, int(time.time() - started_at))
         return True
     except Exception as e:
         logger().error("%s 执行异常：%s", name, e)
@@ -3337,6 +3478,11 @@ def _sleep_until_beijing(target: datetime.time, *, max_wait: float = 300.0) -> N
 
 def job_afternoon() -> None:
     logger().info("===== 盘中任务（14:56 收盘平仓 → 14:57 撤未成交买单）=====")
+    close_plan_exists = _has_due_close_plan_now()
+    if close_plan_exists:
+        _pause_pipeline_for_trade("14:56收盘平仓计划")
+    else:
+        logger().info("14:56 未检测到到期平仓计划，流水线无需暂停。")
 
     # ① 平仓最高优先：任何情况下先执行，绝不被组合状态机刷新/取数/超时阻塞。
     #    E2 SELL 依赖的 combined_planned_orders 今日文件已在 09:00/09:20/09:26 生成
@@ -3346,6 +3492,12 @@ def job_afternoon() -> None:
         check_and_close_positions()
     except Exception as e:
         logger().error("平仓检查异常：%s —— 请立即手动检查持仓！", e)
+    finally:
+        if close_plan_exists:
+            if _has_due_close_plan_now():
+                logger().warning("14:56平仓后仍检测到待平仓计划，流水线保持暂停；等待后续成交确认/人工处理。")
+            else:
+                _resume_pipeline_after_trade("14:56收盘平仓处理完成")
 
     # ② 等到 14:57 撤销所有未成交【买单/开仓单】。
     #    该动作同样不被任何工作阻塞：组合状态机刷新放到撤单之后，
@@ -3466,6 +3618,199 @@ def job_cancel_unfilled_buy_orders() -> None:
     log.info("===== 14:57 撤未成交买单完成 =====")
 
 
+def _log_collection_brief(signal_date: str) -> None:
+    try:
+        import pandas as pd
+
+        daily_path = PROJECT_ROOT / "data" / "raw" / "daily" / f"{signal_date}.csv"
+        basic_path = PROJECT_ROOT / "data" / "raw" / "daily_basic" / f"{signal_date}.csv"
+        limit_path = PROJECT_ROOT / "data" / "raw" / "limit_list" / f"{signal_date}.csv"
+        daily_rows = len(pd.read_csv(daily_path, low_memory=False)) if daily_path.exists() else 0
+        basic_rows = len(pd.read_csv(basic_path, low_memory=False)) if basic_path.exists() else 0
+        if not limit_path.exists():
+            logger().warning("涨停数据状态：❌ %s 涨停池文件不存在：%s", signal_date, limit_path)
+            return
+        limit_df = pd.read_csv(limit_path, dtype={"trade_date": str, "ts_code": str}, low_memory=False)
+        open_times = pd.to_numeric(limit_df.get("open_times"), errors="coerce").fillna(0)
+        one_word = int((open_times == 0).sum()) if "open_times" in limit_df.columns else 0
+        opened = int((open_times > 0).sum()) if "open_times" in limit_df.columns else 0
+        logger().info(
+            "采集结果：✅ %s raw日线=%s行，每日基本面=%s行，涨停池=%s行",
+            signal_date,
+            daily_rows,
+            basic_rows,
+            len(limit_df),
+        )
+        logger().info(
+            "涨停数据状态：✅ %s 涨停池已获取，数量=%d，一字板=%d，开板/炸板=%d，source={%s} quality={%s} compatible={%s}",
+            signal_date,
+            len(limit_df),
+            one_word,
+            opened,
+            _value_counts_text(limit_df, "limit_data_source"),
+            _value_counts_text(limit_df, "limit_data_quality"),
+            _value_counts_text(limit_df, "strategy_compatible"),
+        )
+    except Exception as exc:
+        logger().warning("采集结果摘要失败：%s", exc)
+
+
+def _log_cleaning_brief(signal_date: str) -> None:
+    try:
+        import pandas as pd
+
+        daily_path = PROJECT_ROOT / "data" / "processed" / "daily_merged_by_date" / f"{signal_date}.csv"
+        limit_path = _prefer_live_processed_path("live_limit_up_merged.csv", "limit_up_merged.csv")
+        daily_rows = len(pd.read_csv(daily_path, low_memory=False)) if daily_path.exists() else 0
+        limit_df = pd.read_csv(limit_path, dtype={"trade_date": str, "ts_code": str}, low_memory=False) if limit_path.exists() else pd.DataFrame()
+        if not limit_df.empty and "trade_date" in limit_df.columns:
+            limit_df = limit_df[limit_df["trade_date"].astype(str).eq(str(signal_date))].copy()
+        logger().info(
+            "清洗结果：%s 日线合并 rows=%s；涨停合并 rows=%s source={%s} quality={%s}",
+            signal_date,
+            daily_rows,
+            len(limit_df),
+            _value_counts_text(limit_df, "limit_data_source"),
+            _value_counts_text(limit_df, "limit_data_quality"),
+        )
+    except Exception as exc:
+        logger().warning("清洗结果摘要失败：%s", exc)
+
+
+def _log_dynamic_feature_brief(signal_date: str) -> None:
+    try:
+        import pandas as pd
+
+        sentiment_path = _prefer_live_processed_path("live_market_sentiment.csv", "market_sentiment.csv")
+        emotion_path = _prefer_live_processed_path("live_market_emotion_features.csv", "market_emotion_features.csv")
+        theme_path = _prefer_live_processed_path("live_theme_heat_features.csv", "theme_heat_features.csv")
+        sentiment = pd.read_csv(sentiment_path, dtype={"trade_date": str}, low_memory=False) if sentiment_path.exists() else pd.DataFrame()
+        emotion = pd.read_csv(emotion_path, dtype={"trade_date": str}, low_memory=False) if emotion_path.exists() else pd.DataFrame()
+        theme = pd.read_csv(theme_path, dtype={"trade_date": str}, low_memory=False) if theme_path.exists() else pd.DataFrame()
+        srow = sentiment[sentiment["trade_date"].astype(str).eq(str(signal_date))].iloc[0] if not sentiment.empty and "trade_date" in sentiment.columns and not sentiment[sentiment["trade_date"].astype(str).eq(str(signal_date))].empty else pd.Series(dtype=object)
+        erow = emotion[emotion["trade_date"].astype(str).eq(str(signal_date))].iloc[0] if not emotion.empty and "trade_date" in emotion.columns and not emotion[emotion["trade_date"].astype(str).eq(str(signal_date))].empty else pd.Series(dtype=object)
+        theme_daily = theme[theme["trade_date"].astype(str).eq(str(signal_date))].copy() if not theme.empty and "trade_date" in theme.columns else pd.DataFrame()
+        lead_count = int(pd.to_numeric(theme_daily.get("theme_limit_count"), errors="coerce").fillna(0).ge(2).sum()) if not theme_daily.empty else 0
+        top_theme = str(theme_daily.iloc[0].get("theme_name", theme_daily.iloc[0].get("theme", ""))) if not theme_daily.empty else "NA"
+        logger().info(
+            "动态特征：✅ 市场情绪已计算，全市场涨停=%s，跌停=%s，连板数=%s，最高板=%s",
+            srow.get("limit_up_count", "NA"),
+            erow.get("market_limit_down_count", "NA"),
+            erow.get("market_chain_count", srow.get("limit_up_max_height", "NA")),
+            srow.get("limit_up_max_height", "NA"),
+        )
+        logger().info("动态特征：✅ 题材热度已计算，rows=%d，主线样本=%d，首位题材=%s", len(theme_daily), lead_count, top_theme)
+    except Exception as exc:
+        logger().warning("动态特征摘要失败：%s", exc)
+
+
+def _log_fill_score_brief(signal_date: str) -> None:
+    try:
+        import pandas as pd
+
+        path = _prefer_live_processed_path("live_limit_up_fill_scored.csv", "limit_up_fill_scored.csv")
+        data = pd.read_csv(path, dtype={"trade_date": str}, low_memory=False) if path.exists() else pd.DataFrame()
+        daily = data[data["trade_date"].astype(str).eq(str(signal_date))].copy() if not data.empty and "trade_date" in data.columns else pd.DataFrame()
+        prob_source = daily["fill_probability"] if "fill_probability" in daily.columns else pd.Series(dtype=float)
+        prob = pd.to_numeric(prob_source, errors="coerce")
+        if prob.empty or prob.isna().all():
+            fallback_source = daily["estimated_fill_probability"] if "estimated_fill_probability" in daily.columns else pd.Series(dtype=float)
+            prob = pd.to_numeric(fallback_source, errors="coerce")
+        avg_text = "NA" if prob.isna().all() else f"{prob.mean() * 100:.1f}%"
+        logger().info(
+            "成交概率：✅ %s 打分完成，rows=%d，平均成交概率=%s，allow_buy_reliable={%s}，score_reliable={%s}",
+            signal_date,
+            len(daily),
+            avg_text,
+            _value_counts_text(daily, "allow_buy_reliable"),
+            _value_counts_text(daily, "is_fill_score_reliable"),
+        )
+    except Exception as exc:
+        logger().warning("成交概率摘要失败：%s", exc)
+
+
+def _log_enhanced_feature_brief(signal_date: str) -> None:
+    try:
+        import pandas as pd
+
+        items = [
+            ("资金流", PROJECT_ROOT / "data" / "processed" / "sector_moneyflow_features.csv"),
+            ("龙虎榜", PROJECT_ROOT / "data" / "processed" / "top_list_features.csv"),
+            ("集合竞价", PROJECT_ROOT / "data" / "processed" / "auction_features.csv"),
+            ("开盘5分钟", PROJECT_ROOT / "data" / "processed" / "open_5m_features.csv"),
+        ]
+        parts = []
+        for label, path in items:
+            data = pd.read_csv(path, dtype={"trade_date": str}, low_memory=False) if path.exists() else pd.DataFrame()
+            daily = data[data["trade_date"].astype(str).eq(str(signal_date))].copy() if not data.empty and "trade_date" in data.columns else pd.DataFrame()
+            available = len(daily)
+            if "data_available" in daily.columns:
+                available = int(daily["data_available"].fillna(False).astype(bool).sum())
+            parts.append(f"{label}=rows{len(daily)}/available{available}")
+        logger().info("增强因子：✅ %s %s", signal_date, "；".join(parts))
+    except Exception as exc:
+        logger().warning("增强因子摘要失败：%s", exc)
+
+
+def _log_abc_strategy_brief(signal_date: str) -> None:
+    try:
+        import pandas as pd
+
+        checklist = _load_ab_checklist(signal_date)
+        if checklist.empty:
+            logger().warning("A/B/C策略状态：⚠️ 未找到 %s checklist，A/B/C 本步可能未完成", signal_date)
+            return
+        row = checklist.iloc[0]
+        planned_count = int(float(row.get("planned_order_count", 0) or 0))
+        if planned_count > 0:
+            logger().info(
+                "A/B/C策略状态：✅ 符合开仓条件，计划单=%d，选中=%s %s，operation=%s，selection=%s",
+                planned_count,
+                row.get("top_ts_code", ""),
+                row.get("top_name", ""),
+                row.get("operation_status", ""),
+                row.get("selection_status", ""),
+            )
+        else:
+            logger().info(
+                "A/B/C策略状态：ℹ️ 今日暂无可执行计划单；原因：selection=%s（%s） operation=%s（%s）",
+                row.get("selection_status", ""),
+                row.get("selection_status_desc", ""),
+                row.get("operation_status", ""),
+                row.get("operation_status_desc", ""),
+            )
+            logger().info(
+                "A/B/C候选分布：A=%s，B=%s，B过滤=%s，C=%s，C过滤=%s，最终选中=%s",
+                row.get("a_candidate_count", 0),
+                row.get("b_candidate_count", 0),
+                row.get("b_rejected_by_filter_count", 0),
+                row.get("c_candidate_count", 0),
+                row.get("c_rejected_by_filter_count", 0),
+                row.get("selected_count", 0),
+            )
+    except Exception as exc:
+        logger().warning("A/B/C策略摘要失败：%s", exc)
+
+
+def _log_post_market_step_brief(script: str, signal_date: str) -> None:
+    if script == "collect_all_data.py":
+        _log_collection_brief(signal_date)
+    elif script == "clean_collected_data.py":
+        _log_cleaning_brief(signal_date)
+    elif script == "build_dynamic_features.py":
+        _log_dynamic_feature_brief(signal_date)
+    elif script == "score_limit_up_fill_probability.py":
+        _log_fill_score_brief(signal_date)
+    elif script == "build_live_enhanced_features.py":
+        _log_enhanced_feature_brief(signal_date)
+    elif script == "run_paper_ab_filtered_daily_ops.py":
+        _log_abc_strategy_brief(signal_date)
+    elif script == "run_strategy_e2_signal.py":
+        _log_e2_signal_status(signal_date)
+    elif script == "run_strategy_l_signal.py":
+        _log_l_model3_signal_status(signal_date)
+
+
 def job_post_market(end_date: str | None = None) -> None:
     target_str = end_date or today_beijing().strftime("%Y%m%d")
     target_date = datetime.datetime.strptime(target_str, "%Y%m%d").date()
@@ -3533,14 +3878,22 @@ def job_post_market(end_date: str | None = None) -> None:
         "score_limit_up_fill_probability.py",
     }
 
-    for script, desc, timeout, eta in steps:
+    total_steps = len(steps)
+    for step_index, (script, desc, timeout, eta) in enumerate(steps, 1):
         try:
-            logger().info("%s（%s）", desc, eta)
+            logger().info(
+                "收盘流水线进度：%d/%d %s（预计%s，单步超时上限%d秒）",
+                step_index,
+                total_steps,
+                desc,
+                eta,
+                timeout,
+            )
             args = extra_args.get(script, [])
             ok = run_script(script, *args, timeout=timeout)
             if not ok:
                 if script in critical_scripts:
-                    logger().warning("%s 第一次失败，等待10秒后自动重试一次", desc)
+                    logger().warning("收盘流水线进度：%d/%d %s 第一次失败，等待10秒后自动重试一次", step_index, total_steps, desc)
                     time.sleep(10)
                     ok = run_script(script, *args, timeout=timeout)
                 if not ok and script in critical_scripts:
@@ -3548,6 +3901,10 @@ def job_post_market(end_date: str | None = None) -> None:
                     return False
                 if not ok:
                     logger().error("%s 失败，继续后续步骤", desc)
+                    _log_post_market_step_brief(script, target_str)
+                    continue
+            logger().info("收盘流水线进度：%d/%d %s 完成", step_index, total_steps, desc)
+            _log_post_market_step_brief(script, target_str)
         except Exception as e:
             if script in critical_scripts:
                 logger().error("❌ %s 异常：%s，本次收盘流水线停止；不生成计划单，避免使用旧信号", desc, e)
@@ -4607,7 +4964,21 @@ def run_job(scheduled_time: datetime.time) -> None:
     elif scheduled_time == SCHED_MORNING_REVIEW:   # 09:20
         job_morning() if trade_day else logger().info("非交易日，跳过盘前任务")
     elif scheduled_time == SCHED_PREMARKET_SELL:   # 09:23
-        job_premarket_sell() if trade_day else logger().info("非交易日，跳过集合竞价平仓")
+        if trade_day:
+            if _has_premarket_close_plan():
+                _pause_pipeline_for_trade("09:23集合竞价平仓计划")
+                try:
+                    job_premarket_sell()
+                finally:
+                    if _has_due_close_plan_now() or _has_premarket_close_plan():
+                        logger().warning("09:23平仓后仍检测到待平仓计划，流水线保持暂停；等待后续平仓确认或持仓清理。")
+                    else:
+                        _resume_pipeline_after_trade("09:23集合竞价平仓处理完成")
+            else:
+                logger().info("09:23 未检测到集合竞价平仓计划，流水线无需暂停。")
+                job_premarket_sell()
+        else:
+            logger().info("非交易日，跳过集合竞价平仓")
     elif scheduled_time == SCHED_PREMARKET_SYNC:   # 09:26
         job_premarket_position_sync() if trade_day else logger().info("非交易日，跳过盘前持仓同步")
     elif scheduled_time == SCHED_OPENING_BUY:   # 09:30
@@ -4621,11 +4992,7 @@ def run_job(scheduled_time: datetime.time) -> None:
                 reconcile_positions_with_broker()
             except Exception as e:
                 logger().error("收盘对账异常：%s", e)
-            threading.Thread(
-                target=_run_post_market_with_retry,
-                daemon=True,
-                name="pipeline",
-            ).start()
+            _start_post_market_pipeline(reason="15:10收盘流水线")
         else:
             logger().info("非交易日，跳过收盘流水线")
 
@@ -5289,29 +5656,13 @@ def main() -> None:
     # 若缓存或 processed 审计数据不是最新交易日数据，后台线程补采。
     # raw 缓存存在但 processed 缺日时也必须补跑，否则盘前审计会误报旧口径。
     if not _has_signal_for_date(expected):
-        log.warning(
-            "未找到 %s 收盘数据缓存，后台自动采集中（不影响主循环和 QMT 状态刷新）...",
-            expected_str,
-        )
-        threading.Thread(
-            target=_run_post_market_with_retry,
-            args=(expected_str,),
-            daemon=True,
-            name="pipeline",
-        ).start()
+        log.warning("未找到 %s 收盘数据缓存，后台启动收盘/采集流水线补齐；若遇到平仓窗口会自动暂停让路。", expected_str)
+        _start_post_market_pipeline(expected_str, reason=f"启动补齐缺失收盘信号 {expected_str}")
     elif not _processed_data_ready_for_date(expected):
-        log.warning(
-            "已有 %s 收盘信号缓存，但 processed 审计数据缺失该日期，后台自动补齐（不影响主循环和 QMT 状态刷新）...",
-            expected_str,
-        )
-        threading.Thread(
-            target=_run_post_market_with_retry,
-            args=(expected_str,),
-            daemon=True,
-            name="pipeline-processed-repair",
-        ).start()
+        log.warning("已有 %s 收盘信号缓存，但 processed 审计数据缺失该日期，后台启动流水线补齐；raw缓存命中会直接跳过采集。", expected_str)
+        _start_post_market_pipeline(expected_str, reason=f"启动补齐processed审计数据 {expected_str}")
     else:
-        log.info("已有 %s 收盘数据缓存且 processed 数据齐全，直接使用", expected_str)
+        log.info("缓存命中：已有 %s 收盘数据缓存且 processed 数据齐全，直接使用缓存，不重复采集/计算。", expected_str)
         threading.Thread(target=_startup_report, daemon=True, name="startup-report").start()
 
     if not startup_has_position:

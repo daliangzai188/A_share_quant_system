@@ -47,11 +47,14 @@ class DataCollector:
         self.logger.info("开始采集日线数据，交易日数量: %s", len(trade_dates))
 
         stats = {"daily_saved": 0, "daily_skipped": 0, "daily_basic_saved": 0, "daily_basic_skipped": 0}
-        for trade_date in trade_dates:
+        total = len(trade_dates)
+        for index, trade_date in enumerate(trade_dates, 1):
+            self.logger.info("日线采集进度 %d/%d: trade_date=%s", index, total, trade_date)
             daily_saved = self.collect_daily_by_date(trade_date=trade_date, overwrite=overwrite)
             stats["daily_saved" if daily_saved else "daily_skipped"] += 1
 
             if include_daily_basic:
+                self.logger.info("每日基本面采集进度 %d/%d: trade_date=%s", index, total, trade_date)
                 try:
                     basic_saved = self.collect_daily_basic_by_date(trade_date=trade_date, overwrite=overwrite)
                     stats["daily_basic_saved" if basic_saved else "daily_basic_skipped"] += 1
@@ -80,7 +83,9 @@ class DataCollector:
         self.logger.info("开始采集涨停池数据，交易日数量: %s", len(trade_dates))
 
         stats = {"limit_saved": 0, "limit_skipped": 0}
-        for trade_date in trade_dates:
+        total = len(trade_dates)
+        for index, trade_date in enumerate(trade_dates, 1):
+            self.logger.info("涨停池采集进度 %d/%d: trade_date=%s", index, total, trade_date)
             saved = self.collect_limit_by_date(trade_date=trade_date, overwrite=overwrite)
             stats["limit_saved" if saved else "limit_skipped"] += 1
 
@@ -89,35 +94,53 @@ class DataCollector:
 
     def collect_daily_by_date(self, trade_date: str, overwrite: bool = False) -> bool:
         output_path = self.daily_dir / f"{trade_date}.csv"
+        self.logger.info("检查本地日线行情文件: %s", output_path)
         if self._should_skip(output_path, overwrite):
+            self.logger.info("跳过日线行情: %s 已存在且有数据", output_path)
             return False
 
         fields = self.config["collection"].get("daily_fields")
+        started = time.monotonic()
+        self.logger.info("请求 Tushare daily: trade_date=%s", trade_date)
         daily = self.data_source.get_daily(trade_date=trade_date, fields=fields)
         if daily.empty:
-            self.logger.warning("Tushare 未返回 %s 日线数据，不保存（下次重试可重新采集）", trade_date)
+            self.logger.warning(
+                "Tushare 未返回 %s 日线数据，不保存（下次重试可重新采集），用时 %.1f 秒",
+                trade_date,
+                time.monotonic() - started,
+            )
             return False
         self._save_dataframe(daily, output_path)
-        self.logger.info("保存日线行情: %s, 行数: %s", output_path, len(daily))
+        self.logger.info("保存日线行情: %s, 行数: %s, 用时 %.1f 秒", output_path, len(daily), time.monotonic() - started)
         return True
 
     def collect_daily_basic_by_date(self, trade_date: str, overwrite: bool = False) -> bool:
         output_path = self.daily_basic_dir / f"{trade_date}.csv"
+        self.logger.info("检查本地每日基本面文件: %s", output_path)
         if self._should_skip(output_path, overwrite):
+            self.logger.info("跳过每日基本面: %s 已存在且有数据", output_path)
             return False
 
         fields = self.config["collection"].get("daily_basic_fields")
+        started = time.monotonic()
+        self.logger.info("请求 Tushare daily_basic: trade_date=%s", trade_date)
         daily_basic = self.data_source.get_daily_basic(trade_date=trade_date, fields=fields)
         if daily_basic.empty:
-            self.logger.warning("Tushare 未返回 %s 基本面数据，不保存（下次重试可重新采集）", trade_date)
+            self.logger.warning(
+                "Tushare 未返回 %s 基本面数据，不保存（下次重试可重新采集），用时 %.1f 秒",
+                trade_date,
+                time.monotonic() - started,
+            )
             return False
         self._save_dataframe(daily_basic, output_path)
-        self.logger.info("保存每日基本面: %s, 行数: %s", output_path, len(daily_basic))
+        self.logger.info("保存每日基本面: %s, 行数: %s, 用时 %.1f 秒", output_path, len(daily_basic), time.monotonic() - started)
         return True
 
     def collect_limit_by_date(self, trade_date: str, overwrite: bool = False) -> bool:
         output_path = self.limit_list_dir / f"{trade_date}.csv"
+        self.logger.info("检查本地涨停池文件: %s", output_path)
         if self._should_skip_limit_file(output_path, overwrite):
+            self.logger.info("跳过涨停池: %s 已存在且为完整 limit_list_d 口径", output_path)
             return False
 
         fields = self.config["collection"].get("limit_list_fields")
@@ -193,14 +216,23 @@ class DataCollector:
         ]
         for method, loader in probes:
             try:
+                started = time.monotonic()
+                self.logger.info("请求 Tushare %s: trade_date=%s", method, trade_date)
                 data = loader()
             except Exception as exc:
                 self.logger.warning("Tushare %s 获取 %s 涨停池失败: %s", method, trade_date, exc)
                 continue
             data = self._filter_trade_date(data, trade_date)
             if not data.empty:
+                self.logger.info(
+                    "Tushare %s 返回 %s 涨停池数据，行数=%s，用时 %.1f 秒",
+                    method,
+                    trade_date,
+                    len(data),
+                    time.monotonic() - started,
+                )
                 return data, method
-            self.logger.info("Tushare %s 未返回 %s 涨停池数据", method, trade_date)
+            self.logger.info("Tushare %s 未返回 %s 涨停池数据，用时 %.1f 秒", method, trade_date, time.monotonic() - started)
         return pd.DataFrame(), "none"
 
     @staticmethod
