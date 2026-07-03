@@ -181,7 +181,7 @@ _premarket_buy_monitor_thread: threading.Thread | None = None
 
 # subprocess 超时（秒）：防止某步骤挂死
 TIMEOUT_DATA_STEP = 600      # 数据采集/清洗步骤：10 分钟
-TIMEOUT_SIGNAL_STEP = 300    # 信号生成步骤：5 分钟
+TIMEOUT_SIGNAL_STEP = 900    # 信号生成步骤：15 分钟；A/B/C 首次加载特征较慢，不能误杀导致旧信号
 TIMEOUT_ORDER_STEP = 60      # 下单预览步骤：1 分钟
 TIMEOUT_COMBINED_PLAN_STEP = 180  # 组合状态机生成：Windows/QMT环境下首次加载特征较慢
 
@@ -3769,19 +3769,27 @@ def report_next_day_candidates() -> None:
         logger().info("=" * 60)
 
         if not files:
-            logger().warning("【%s】%s  ⚠️  未找到 planned_orders 文件，收盘流水线可能从未成功运行",
-                             header_label, action_date_str)
+            logger().warning("【%s】%s  ⚠️  未找到 A/B/C planned_orders 文件", header_label, action_date_str)
+            if require_today:
+                signal_date_str = today_str
+                logger().info("  A/B/C：今日未生成计划单，继续检查 E2/L 是否已有 %s 信号", signal_date_str)
+                _log_e2_signal_status(signal_date_str)
+                _log_l_model3_signal_status(signal_date_str, action_date_str.replace("-", ""))
+                _log_final_decision_summary(signal_date_str, action_date_str.replace("-", ""), pd.DataFrame())
             logger().info("=" * 60)
             return
 
-        latest_file = Path(files[-1])
-        _m = _re.search(r"\d{8}", latest_file.stem)
-        signal_date_str = _m.group() if _m else "未知"
-        # 收盘后必须是今天的信号；收盘前最新缓存就算新鲜
+        today_files = [Path(file) for file in files if today_str in Path(file).stem]
+        latest_file = today_files[-1] if (require_today and today_files) else (Path(files[-1]) if not require_today else None)
+        signal_date_str = today_str if require_today and latest_file is None else "未知"
+        if latest_file is not None:
+            _m = _re.search(r"\d{8}", latest_file.stem)
+            signal_date_str = _m.group() if _m else "未知"
+        # 收盘后必须是今天的信号；如果 A/B/C 今天无文件，也按今天检查 E2/L，不能回退到旧 planned_orders。
         data_fresh = (signal_date_str == today_str) or (not require_today)
 
         try:
-            orders = pd.read_csv(latest_file)
+            orders = pd.read_csv(latest_file) if latest_file is not None else pd.DataFrame()
         except pd.errors.EmptyDataError:
             logger().info("【%s】%s  信号日期：%s", header_label, action_date_str, signal_date_str)
             if data_fresh:
@@ -3794,16 +3802,17 @@ def report_next_day_candidates() -> None:
             logger().info("=" * 60)
             return
         except Exception as e:
-            logger().error("  读取 planned_orders 失败（%s）：%s", latest_file.name, e)
+            file_name = latest_file.name if latest_file is not None else "无今日A/B/C planned_orders"
+            logger().error("  读取 planned_orders 失败（%s）：%s", file_name, e)
             logger().info("=" * 60)
             return
 
-        if "signal_date" in orders.columns and not orders["signal_date"].dropna().empty:
+        if not orders.empty and "signal_date" in orders.columns and not orders["signal_date"].dropna().empty:
             signal_date_str = str(orders["signal_date"].dropna().iloc[0])
 
         buy_orders = (
             orders[orders["side"].astype(str).str.upper() == "BUY"].copy()
-            if "side" in orders.columns else pd.DataFrame()
+            if not orders.empty and "side" in orders.columns else pd.DataFrame()
         )
 
         logger().info("【%s】%s  信号日期：%s", header_label, action_date_str, signal_date_str)
@@ -5131,7 +5140,7 @@ def _print_account_status(log: Any) -> None:
                  now_str, masked_acct, total_asset / 10000)
 
 
-def check_qmt_connection() -> bool:
+def check_qmt_connection(*, allow_full_scan: bool | None = None) -> bool:
     global _qmt_last_verified_at, _last_account_has_position, _qmt_reconnect_count
 
     log = logger()
@@ -5145,9 +5154,10 @@ def check_qmt_connection() -> bool:
         # 启动门禁必须建立主进程自己的持久连接，而不是只用子进程探测。
         # 否则会出现“启动验证成功，但D监控/账户心跳第一次使用QMT又重新连接并超时”的双连接口径。
         broker_config = config.get("broker", {})
-        log.info("QMT启动门禁：建立主进程持久连接并验证账户/持仓（优先上次成功session，失败再完整扫描；不并发抢QMT）。")
+        scan_desc = "完整扫描备用path/session" if allow_full_scan else "上次成功path/session优先"
+        log.info("QMT启动门禁：建立主进程持久连接并验证账户/持仓（%s；不并发抢QMT）。", scan_desc)
         with _qmt_lock:
-            adapter = _qmt_get(broker_config, allow_full_scan=True)
+            adapter = _qmt_get(broker_config, allow_full_scan=allow_full_scan)
             account, positions = _qmt_query_account_positions(adapter)
 
         account_id = str(getattr(account, "account_id", "") or getattr(getattr(adapter, "config", None), "account_id", ""))
@@ -5192,7 +5202,9 @@ def wait_for_qmt_startup_gate() -> None:
     while True:
         round_no += 1
         log.info("QMT启动门禁：第%d轮验证账户连接，验证成功前不执行启动检查/下次任务。", round_no)
-        if check_qmt_connection():
+        has_cached_session = bool(_load_qmt_last_success())
+        allow_full_scan = (not has_cached_session) or round_no >= 2
+        if check_qmt_connection(allow_full_scan=allow_full_scan):
             log.info("QMT启动门禁：账户连接已验证，继续启动流程。")
             return
         write_heartbeat("qmt_blocked")
