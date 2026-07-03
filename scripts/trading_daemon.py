@@ -524,13 +524,41 @@ def save_positions(positions: list[dict[str, Any]]) -> None:
         logger().error("保存持仓文件失败：%s", e)
 
 
+_broker_empty_streak = 0  # 连续"券商空但本地有持仓"的确认计数，见下方两次确认机制
+
+
+def _note_broker_has_positions() -> None:
+    """券商查询确认有实盘持仓时调用，重置幽灵清理确认计数。"""
+    global _broker_empty_streak
+    _broker_empty_streak = 0
+
+
 def clear_local_positions_when_broker_empty(source: str) -> int:
     """券商接口已明确返回无持仓时，清理本地 open/sell_pending 幽灵持仓。
 
     只能在 query_positions() 成功且已确认实盘 volume>0 持仓为空后调用。
     接口失败、QMT未启用、未拿到明确结果时严禁调用，避免误删真实持仓记录。
+
+    两次确认机制：QMT 偶发会在调用成功时返回空持仓（客户端数据未同步/
+    session 切换瞬间），单次空结果就清理曾导致 20260701 乔治白真实持仓
+    被误清、20260701 到期日平仓流程失明漏卖（T+2 被动变 T+3）。
+    因此连续第 2 次（不同轮查询）确认为空才执行清理，第 1 次只告警等复核；
+    任何一次查到券商有持仓即由 _note_broker_has_positions() 归零计数。
     """
+    global _broker_empty_streak
     positions = load_positions()
+    open_like = [p for p in positions if str(p.get("status", "")).lower() in {"open", "sell_pending"}]
+    if not open_like:
+        _broker_empty_streak = 0
+        return 0
+    _broker_empty_streak += 1
+    if _broker_empty_streak < 2:
+        logger().warning(
+            "⚠️ [幽灵持仓疑似] QMT返回无持仓，但本地有%d条open/sell_pending记录（来源=%s，第1次发现）。"
+            "暂不清理，等待下一轮查询复核（防QMT数据未同步误清真实持仓）。",
+            len(open_like), source,
+        )
+        return 0
     changed = 0
     now_str = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
     for pos in positions:
@@ -548,10 +576,11 @@ def clear_local_positions_when_broker_empty(source: str) -> int:
     if changed:
         save_positions(positions)
         logger().warning(
-            "🧹 [幽灵持仓清理] QMT接口确认实盘无持仓，已将本地%d条open/sell_pending持仓标记为closed。来源=%s",
+            "🧹 [幽灵持仓清理] QMT连续2轮确认实盘无持仓，已将本地%d条open/sell_pending持仓标记为closed。来源=%s",
             changed,
             source,
         )
+    _broker_empty_streak = 0
     return changed
 
 
@@ -1860,6 +1889,8 @@ def job_premarket_position_sync() -> None:
         cleared = clear_local_positions_when_broker_empty("盘前持仓同步09:26")
         synced_any = synced_any or cleared > 0
         local_positions = load_positions()
+    else:
+        _note_broker_has_positions()
 
     for pos in local_positions:
         if pos.get("status") != "open":
@@ -5754,6 +5785,7 @@ def _print_account_status(log: Any) -> None:
     live_positions = [p for p in (positions or []) if int(getattr(p, "volume", 0) or 0) > 0]
     _last_account_has_position = bool(live_positions)
     if live_positions:
+        _note_broker_has_positions()
         local_positions = load_positions()
         local_pos_map: dict[str, dict[str, Any]] = {}
         for lp in local_positions:
