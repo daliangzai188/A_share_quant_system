@@ -4707,8 +4707,8 @@ def _log_decision_chain_summary(signal_date: str) -> None:
             else:
                 hold_line = f"目前已持仓：{desc}；{day_label}持仓到期先平仓释放资金后，再执行开仓计划"
 
+        # 块1：决策逻辑（策略顺序 + 各策略成立/不成立及原因）
         logger().info("%s━━━━━━━━━━━━━━ 开仓决策链 ━━━━━━━━━━━━━━", P)
-        logger().info("%s━━━ %s%s · 基于%s收盘数据 ━━━", P, day_label, readable, signal_date)
         logger().info("%s 策略顺序：mode1内 A主 > B备 > C补位 > E2兜底 > D盘中；L按model3规则补位/替换（当前mode=%s）", P, mode)
         logger().info("%s ① A主策略：%s", P, a_line)
         logger().info("%s ② B备用策略：%s", P, b_line)
@@ -4716,15 +4716,17 @@ def _log_decision_chain_summary(signal_date: str) -> None:
         logger().info("%s ④ E2兜底：%s", P, e2_line)
         logger().info("%s ⑤ D盘中：%s", P, d_line)
         logger().info("%s ⑥ L/model3：%s", P, l_line)
+        # 块2：决策结果（哪个交易日、基于什么数据、开仓计划与持仓状态）
+        logger().info("%s━━━━━ %s%s · 基于%s收盘数据 ━━━━━", P, day_label, readable, signal_date)
         if final_buy:
             amount = final_buy["shares"] * final_buy["price"]
             logger().info(
-                "%s ★ %s%s开仓计划：策略%s %s %s %d股@参考%.2f ≈%.2f万（09:15集合竞价预挂→09:30确认，实际按账户资金/单笔限额缩放）%s",
-                P, day_label, readable, final_buy["strategy"], final_buy["ts_code"], final_buy["name"],
+                "%s ★ 开仓计划：策略%s %s %s %d股@参考%.2f ≈%.2f万（09:15集合竞价预挂→09:30确认，实际按账户资金/单笔限额缩放）%s",
+                P, final_buy["strategy"], final_buy["ts_code"], final_buy["name"],
                 final_buy["shares"], final_buy["price"], amount / 10000, pos_note,
             )
         else:
-            logger().info("%s ★ %s%s所有策略均无开仓计划", P, day_label, readable)
+            logger().info("%s ★ %s所有策略均无开仓计划", P, day_label)
         if hold_line:
             logger().info("%s ⚠ %s", P, hold_line)
         logger().info("%s━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", P)
