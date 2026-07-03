@@ -1,6 +1,8 @@
+import re
 import subprocess
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 sys.stdout.reconfigure(encoding="utf-8")
@@ -11,9 +13,16 @@ if str(ROOT) not in sys.path:
 
 pid_file = ROOT / ".daemon_pid"
 d_monitor_pid_file = ROOT / "logs" / "strategy_d_monitor.pid"
+# 按命令行特征识别相关进程；即使 pid 文件丢失/被覆盖也能扫到孤儿进程。
+DAEMON_KEYWORD = "trading_daemon.py"
+D_MONITOR_KEYWORD = "monitor_strategy_d_intraday.py"
 GREEN = "\033[92m"
 YELLOW = "\033[93m"
 RESET = "\033[0m"
+
+
+def timestamp() -> str:
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 STOP_VERIFY_TIMEOUT_SEC = 60
 PROCESS_TERMINATE = 0x0001
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
@@ -211,12 +220,124 @@ def _stop_pid_file(path: Path, label: str) -> bool:
     return False
 
 
-if pid_file.exists():
-    daemon_ok = _stop_pid_file(pid_file, "daemon")
-    d_ok = _stop_pid_file(d_monitor_pid_file, "D monitor")
-    if daemon_ok and d_ok:
-        _notify_stopped_async()
+def _run_capture(cmd: list[str], timeout: float) -> str:
+    """执行命令并返回 stdout；失败/超时返回空串，不抛出。"""
+    try:
+        creationflags = 0
+        if hasattr(subprocess, "CREATE_NO_WINDOW"):
+            creationflags |= subprocess.CREATE_NO_WINDOW
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="ignore",
+            timeout=timeout,
+            creationflags=creationflags,
+        )
+        return proc.stdout or ""
+    except Exception as exc:
+        print(YELLOW + f"进程扫描命令失败（{cmd[0]}）：{exc}" + RESET, flush=True)
+        return ""
+
+
+def _scan_related_pids() -> dict[int, str]:
+    """按命令行特征扫描所有相关 python 进程，返回 {pid: label}。
+
+    覆盖 pid 文件追踪不到的孤儿进程（例如重复启动导致旧 daemon 未被记录）。
+    优先 wmic（快），不可用时回退 PowerShell CIM。只匹配脚本文件名，
+    stop_windows.py / send_notify.py 等自身进程天然不含关键字，不会误杀。
+    """
+    keywords = {DAEMON_KEYWORD: "daemon", D_MONITOR_KEYWORD: "D monitor"}
+    found: dict[int, str] = {}
+
+    def _classify(cmdline: str) -> str | None:
+        low = cmdline.lower().replace("\\", "/")
+        for kw, label in keywords.items():
+            if kw in low:
+                return label
+        return None
+
+    # 1) wmic list 格式：记录以空行分隔，字段各占一行 CommandLine=... / ProcessId=...
+    out = _run_capture(
+        ["wmic", "process", "where", "name like '%python%'",
+         "get", "ProcessId,CommandLine", "/format:list"],
+        timeout=20.0,
+    )
+    if out.strip():
+        text = out.replace("\r\n", "\n").replace("\r", "\n")
+        for block in re.split(r"\n\s*\n", text):
+            cmd_m = re.search(r"CommandLine=(.*)", block)
+            pid_m = re.search(r"ProcessId=(\d+)", block)
+            if not cmd_m or not pid_m:
+                continue
+            label = _classify(cmd_m.group(1))
+            if label:
+                found[int(pid_m.group(1))] = label
+        return found
+
+    # 2) 回退 PowerShell CIM：每行 "pid|commandline"
+    out = _run_capture(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+         "Get-CimInstance Win32_Process -Filter \"Name like 'python%'\" | "
+         "ForEach-Object { \"$($_.ProcessId)|$($_.CommandLine)\" }"],
+        timeout=25.0,
+    )
+    for line in out.replace("\r\n", "\n").split("\n"):
+        if "|" not in line:
+            continue
+        pid_text, _, cmdline = line.partition("|")
+        pid_text = pid_text.strip()
+        if not pid_text.isdigit():
+            continue
+        label = _classify(cmdline)
+        if label:
+            found[int(pid_text)] = label
+    return found
+
+
+print(GREEN + f"{timestamp()} | 停止 A_System：清理全部守护进程 / D 监控进程..." + RESET, flush=True)
+
+# 目标进程集合：pid 文件（精确、毫秒级）+ 命令行扫描（兜底孤儿），去重合并。
+targets: dict[int, str] = {}
+for path, label in [(pid_file, "daemon"), (d_monitor_pid_file, "D monitor")]:
+    if path.exists():
+        pid_text = path.read_text().strip()
+        if pid_text.isdigit() and _pid_exists(pid_text):
+            targets[int(pid_text)] = label
+
+for pid, label in _scan_related_pids().items():
+    targets.setdefault(pid, label)
+
+if not targets:
+    # 无存活进程：清掉可能残留的 pid 文件，明确告知“确实没在跑”。
+    pid_file.unlink(missing_ok=True)
+    d_monitor_pid_file.unlink(missing_ok=True)
+    print(YELLOW + f"{timestamp()} | 未发现运行中的守护/监控进程（已清理残留 pid 文件）。" + RESET, flush=True)
+    sys.exit(0)
+
+all_ok = True
+cleared = 0
+for pid in sorted(targets):
+    pid_str = str(pid)
+    if not _pid_exists(pid_str):
+        continue  # 可能已被先前进程树清理带走
+    print(f"{timestamp()} | Stopping {targets[pid]} PID {pid} ...", flush=True)
+    if _stop_and_verify(pid_str):
+        cleared += 1
+        print(GREEN + f"{timestamp()} | Stopped {targets[pid]} PID {pid}" + RESET, flush=True)
     else:
-        raise SystemExit(1)
+        all_ok = False
+        print(YELLOW + f"{timestamp()} | {targets[pid]} PID {pid} 未确认停止。" + RESET, flush=True)
+
+# 停止动作已完成，统一清理 pid 文件。
+pid_file.unlink(missing_ok=True)
+d_monitor_pid_file.unlink(missing_ok=True)
+
+if all_ok:
+    print(GREEN + f"{timestamp()} | 已清理 {cleared} 个进程，全部停止确认，可安全重启。" + RESET, flush=True)
+    if cleared > 0:
+        _notify_stopped_async()
 else:
-    print(YELLOW + "Not running" + RESET, flush=True)
+    print(YELLOW + f"{timestamp()} | 部分进程未确认停止；先看任务管理器或再次执行 stop，勿立即启动。" + RESET, flush=True)
+    raise SystemExit(1)
