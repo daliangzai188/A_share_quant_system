@@ -3970,9 +3970,11 @@ def job_post_market(end_date: str | None = None) -> None:
     if not report_next_trade_factor_readiness(target_str):
         logger().warning("⚠️ 明日开盘因子尚未完全就绪，本次不标记收盘完成；5分钟后自动重试")
         return False
-    _log_decision_chain_summary(target_str)
     logger().info("===== 收盘流水线完成 =====")
     mark_post_market_done(target_date)
+    # 数据与因子全部就绪、流水线正式完成后，再讲决策逻辑和结果；
+    # 之后由 _decision_chain_broadcast_loop 每30分钟重播一次。
+    _log_decision_chain_summary(target_str)
     try:
         open_cnt = sum(1 for p in load_positions() if p.get("status") == "open")
         acct_part = ""
@@ -4558,6 +4560,7 @@ def _log_decision_chain_summary(signal_date: str) -> None:
         except Exception:
             action_date = ""
         readable = f"{action_date[:4]}-{action_date[4:6]}-{action_date[6:]}" if len(action_date) == 8 else action_date
+        day_label = "今日" if (action_date and action_date == today_beijing().strftime("%Y%m%d")) else "明日"
 
         # ── ABC：checklist + 计划单 ──
         checklist = _load_ab_checklist(signal_date)
@@ -4644,7 +4647,7 @@ def _log_decision_chain_summary(signal_date: str) -> None:
             e2_line = "不成立｜无E2信号"
 
         # ── D ──
-        d_line = ("阻断｜明日已有A/B/C/E2开仓计划占用同一资金" if (abc_buy or e2_buy)
+        d_line = (f"阻断｜{day_label}已有A/B/C/E2开仓计划占用同一资金" if (abc_buy or e2_buy)
                   else "允许｜无开仓计划时启动盘中监控（仍需实时行情+风控校验）")
 
         # ── L / model3 ──
@@ -4684,23 +4687,28 @@ def _log_decision_chain_summary(signal_date: str) -> None:
             final_buy = mode1_buy
 
         # ── 持仓标注 ──
+        # ★行只保留"（已持仓）"；非D持仓的占用/阻断说明单独成行，
+        # 无论有无开仓候选都要让读者知道"目前谁在持仓、明日开不开仓"。
         open_pos = [p for p in load_positions() if str(p.get("status", "")).lower() in {"open", "sell_pending"}]
+        non_d_pos = [p for p in open_pos if str(p.get("strategy_leg", "")).upper() != "D"]
         pos_note = ""
-        if final_buy:
-            same = [p for p in open_pos if str(p.get("ts_code", "")) == final_buy["ts_code"]]
-            others = [p for p in open_pos if str(p.get("ts_code", "")) != final_buy["ts_code"]]
-            if same:
-                pos_note = "（已持仓）"
-            elif others:
-                blocking = [p for p in others if str(p.get("planned_exit_date", "99991231")) > action_date]
-                if blocking:
-                    pos_note = ("（注意：当前持仓 "
-                                + "、".join(f"{p.get('ts_code','')} {p.get('name','')}" for p in blocking)
-                                + f" {readable}尚未到期，组合状态机将阻断该新开仓）")
-                else:
-                    pos_note = "（当前持仓明日到期，先平仓释放资金后执行）"
+        if final_buy and any(str(p.get("ts_code", "")) == final_buy["ts_code"] for p in open_pos):
+            pos_note = "（已持仓）"
+        hold_line = ""
+        if non_d_pos:
+            desc = "、".join(
+                f"{str(p.get('strategy_leg','') or '?').upper()}策略 {p.get('ts_code','')} {p.get('name','')}"
+                f"（计划{p.get('planned_exit_date','')}平仓）"
+                for p in non_d_pos
+            )
+            blocking = [p for p in non_d_pos if str(p.get("planned_exit_date", "99991231")) > action_date]
+            if blocking:
+                hold_line = f"目前已持仓：{desc}；非D策略持仓未到期，{day_label}暂不开新仓"
+            else:
+                hold_line = f"目前已持仓：{desc}；{day_label}持仓到期先平仓释放资金后，再执行开仓计划"
 
-        logger().info("%s━━━━━━ 开仓决策链 · 明日%s · 基于%s收盘数据 ━━━━━━", P, readable, signal_date)
+        logger().info("%s━━━━━━━━━━━━━━ 开仓决策链 ━━━━━━━━━━━━━━", P)
+        logger().info("%s━━━ %s%s · 基于%s收盘数据 ━━━", P, day_label, readable, signal_date)
         logger().info("%s 策略顺序：mode1内 A主 > B备 > C补位 > E2兜底 > D盘中；L按model3规则补位/替换（当前mode=%s）", P, mode)
         logger().info("%s ① A主策略：%s", P, a_line)
         logger().info("%s ② B备用策略：%s", P, b_line)
@@ -4711,15 +4719,54 @@ def _log_decision_chain_summary(signal_date: str) -> None:
         if final_buy:
             amount = final_buy["shares"] * final_buy["price"]
             logger().info(
-                "%s ★ %s开仓计划：策略%s %s %s %d股@参考%.2f ≈%.2f万（09:15集合竞价预挂→09:30确认，实际按账户资金/单笔限额缩放）%s",
-                P, readable, final_buy["strategy"], final_buy["ts_code"], final_buy["name"],
+                "%s ★ %s%s开仓计划：策略%s %s %s %d股@参考%.2f ≈%.2f万（09:15集合竞价预挂→09:30确认，实际按账户资金/单笔限额缩放）%s",
+                P, day_label, readable, final_buy["strategy"], final_buy["ts_code"], final_buy["name"],
                 final_buy["shares"], final_buy["price"], amount / 10000, pos_note,
             )
         else:
-            logger().info("%s ★ %s开仓计划：无 —— 全部策略不成立或被阻断，明日不开新仓", P, readable)
+            logger().info("%s ★ %s%s所有策略均无开仓计划", P, day_label, readable)
+        if hold_line:
+            logger().info("%s ⚠ %s", P, hold_line)
         logger().info("%s━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", P)
     except Exception as exc:
         logger().warning("开仓决策链播报失败（不影响流水线）：%s", exc)
+
+
+def _latest_planned_orders_signal_date() -> str:
+    """最新 planned_orders 文件名里的信号日期；无文件返回空串。"""
+    try:
+        import re as _re
+
+        dates = []
+        for f in glob.glob(str(PROJECT_ROOT / "reports/paper_trade/ab_filtered_daily_ops/*_planned_orders.csv")):
+            m = _re.search(r"_(\d{8})_planned_orders\.csv$", f)
+            if m:
+                dates.append(m.group(1))
+        return max(dates) if dates else ""
+    except Exception:
+        return ""
+
+
+def _decision_chain_broadcast_loop() -> None:
+    """每30分钟重播一次开仓决策链（后台线程），方便随时查看明日计划。
+
+    只在决策结果已产出（存在 planned_orders 信号文件）且执行日未过期时重播：
+    执行日==今天盘中也播（标签自动切换为"今日"），执行日已过则静默等新信号。
+    纯展示线程，任何异常不影响交易主流程。
+    """
+    while True:
+        time.sleep(1800)
+        try:
+            sd = _latest_planned_orders_signal_date()
+            if not sd:
+                continue
+            sd_date = datetime.datetime.strptime(sd, "%Y%m%d").date()
+            action_date = next_n_trade_days(sd_date, 1).strftime("%Y%m%d")
+            if action_date < today_beijing().strftime("%Y%m%d"):
+                continue
+            _log_decision_chain_summary(sd)
+        except Exception as exc:
+            logger().debug("决策链周期播报异常：%s", exc)
 
 
 def _load_l_signal_for_signal_date(signal_date: str) -> dict[str, Any] | None:
@@ -5860,6 +5907,13 @@ def main() -> None:
     wait_for_qmt_startup_gate()
 
     ensure_trade_calendar_fresh()
+
+    # 开仓决策链周期播报（每30分钟，纯展示）：已有决策结果且执行日未过期时重播。
+    threading.Thread(
+        target=_decision_chain_broadcast_loop,
+        daemon=True,
+        name="decision-chain-broadcast",
+    ).start()
 
     # ── 启动时立刻执行平仓检查 ────────────────────────────────────────────────
     log.info("启动检查：扫描逾期/待平仓持仓...")
