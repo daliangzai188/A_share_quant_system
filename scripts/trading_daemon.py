@@ -4732,35 +4732,42 @@ def _log_decision_chain_summary(signal_date: str) -> None:
                 hold_line = (f"目前已持仓：{desc}；{day_label}到期将于14:56收盘平仓，"
                              "不阻断开仓计划（09:15照常下单，按可用资金校验/缩放）")
 
-        # 框1：开仓决策链（策略顺序 + 各策略成立/不成立及原因），独立完整框
+        # 整个决策链拼成一条多行日志、单次原子写入：daemon 是多线程
+        # （账户心跳/候选播报/周期播报并发打日志），逐行输出必然被其他
+        # 线程的日志穿插进框内。单条消息由 logging 内部锁保证原子性，
+        # 两个框永远完整闭合，框内不会掺杂其他打印。
         date_banner = f"{P}━━━ {day_label}{readable} · 基于{signal_date}收盘数据 ━━━"
         bottom = f"{P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        logger().info("%s━━━━━━━━━━━━━━ 开仓决策链 ━━━━━━━━━━━━━━", P)
-        logger().info("%s", date_banner)
-        logger().info("%s 策略顺序：mode1内 A主 > B备 > C补位 > E2兜底 > D盘中；L按model3规则补位/替换（当前mode=%s）", P, mode)
-        logger().info("%s ① A主策略：%s", P, a_line)
-        logger().info("%s ② B备用策略：%s", P, b_line)
-        logger().info("%s ③ C补位策略：%s", P, c_line)
-        logger().info("%s ④ E2兜底：%s", P, e2_line)
-        logger().info("%s ⑤ D盘中：%s", P, d_line)
-        logger().info("%s ⑥ L/model3：%s", P, l_line)
-        logger().info("%s", bottom)
-        logger().info("%s", P)
-        # 框2：最终开仓计划（开仓计划/无计划 + 持仓状态），独立完整框
-        logger().info("%s━━━━━━━━━━━━━━ 最终开仓计划 ━━━━━━━━━━━━━━", P)
-        logger().info("%s", date_banner)
+        lines = [
+            # 框1：开仓决策链（策略顺序 + 各策略成立/不成立及原因）
+            f"{P}━━━━━━━━━━━━━━ 开仓决策链 ━━━━━━━━━━━━━━",
+            date_banner,
+            f"{P} 策略顺序：mode1内 A主 > B备 > C补位 > E2兜底 > D盘中；L按model3规则补位/替换（当前mode={mode}）",
+            f"{P} ① A主策略：{a_line}",
+            f"{P} ② B备用策略：{b_line}",
+            f"{P} ③ C补位策略：{c_line}",
+            f"{P} ④ E2兜底：{e2_line}",
+            f"{P} ⑤ D盘中：{d_line}",
+            f"{P} ⑥ L/model3：{l_line}",
+            bottom,
+            P,
+            # 框2：最终开仓计划（开仓计划/无计划 + 持仓状态）
+            f"{P}━━━━━━━━━━━━━━ 最终开仓计划 ━━━━━━━━━━━━━━",
+            date_banner,
+        ]
         if final_buy:
             amount = final_buy["shares"] * final_buy["price"]
-            logger().info(
-                "%s ★ 开仓计划：策略%s %s %s %d股@参考%.2f ≈%.2f万（09:15集合竞价预挂→09:30确认，实际按账户资金/单笔限额缩放）%s",
-                P, final_buy["strategy"], final_buy["ts_code"], final_buy["name"],
-                final_buy["shares"], final_buy["price"], amount / 10000, pos_note,
+            lines.append(
+                f"{P} ★ 开仓计划：策略{final_buy['strategy']} {final_buy['ts_code']} {final_buy['name']} "
+                f"{final_buy['shares']}股@参考{final_buy['price']:.2f} ≈{amount / 10000:.2f}万"
+                f"（09:15集合竞价预挂→09:30确认，实际按账户资金/单笔限额缩放）{pos_note}"
             )
         else:
-            logger().info("%s ★ %s所有策略均无开仓计划", P, day_label)
+            lines.append(f"{P} ★ {day_label}所有策略均无开仓计划")
         if hold_line:
-            logger().info("%s ⚠ %s", P, hold_line)
-        logger().info("%s", bottom)
+            lines.append(f"{P} ⚠ {hold_line}")
+        lines.append(bottom)
+        logger().info("\n".join(lines))
     except Exception as exc:
         logger().warning("开仓决策链播报失败（不影响流水线）：%s", exc)
 

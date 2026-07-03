@@ -183,7 +183,7 @@ for _ in range(10):
 GREEN = "\033[92m"
 YELLOW = "\033[93m"
 RED   = "\033[91m"
-MAGENTA = "\033[95m"
+ORANGE = "\033[38;5;208m"
 BOLD  = "\033[1m"
 RESET = "\033[0m"
 
@@ -196,10 +196,10 @@ print(f"{timestamp()} | Ctrl+C 可立即脱离终端，daemon 会继续运行。
 
 
 def color_for_line(text: str) -> str:
-    # 开仓决策链整段（行内以┃为标记）显示紫色，优先于其他颜色规则，
+    # 开仓决策链整段（行内以┃为标记）显示橙色，优先于其他颜色规则，
     # 与普通成功/警告日志区分开，方便一眼定位明日开仓逻辑。
     if "┃" in text:
-        return MAGENTA
+        return ORANGE
     success_words = [
         "✅",
         "QMT连接成功",
