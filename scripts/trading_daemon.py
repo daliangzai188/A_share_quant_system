@@ -1351,18 +1351,42 @@ def _do_sell(pos: dict[str, Any], qmt_enabled: bool) -> None:
             strategy_leg = str(pos.get("strategy_leg", "")).upper()
             if strategy_leg == "E2":
                 # E2 卖出计划单由 combined_planned_orders 生成（包含 PLAN_SELL_T2_CLOSE 行）
-                # 成交确认与持仓回写由 _execute_orders_inprocess 内部完成
+                # 成交确认与持仓回写由 _execute_orders_inprocess 内部完成。
+                # 平仓不允许单点依赖计划文件：09:00组合状态机若失败/文件缺失/
+                # 无本标的SELL行，原逻辑会静默跳过导致被动过夜。兜底改走
+                # ABC/L 同款直接卖出（买10/买5挂限价+成交确认+失败告警），
+                # 保证 T+2 收盘必卖，与回测口径一致。
                 combined_path = (
                     PROJECT_ROOT / "reports" / "live_trade" / "combined"
                     / f"combined_planned_orders_{today_str}.csv"
                 )
-                _execute_orders_inprocess(
-                    combined_path,
-                    confirm,
-                    "E2平仓",
-                    allowed_sides={"SELL"},
-                    allow_t2_close_sell_now=True,
-                )
+                has_sell_row = False
+                if combined_path.exists():
+                    try:
+                        import pandas as pd
+
+                        _po = pd.read_csv(combined_path, low_memory=False)
+                        if not _po.empty and {"side", "ts_code"}.issubset(_po.columns):
+                            has_sell_row = bool((
+                                (_po["side"].astype(str).str.upper() == "SELL")
+                                & (_po["ts_code"].astype(str) == str(ts_code))
+                            ).any())
+                    except Exception as read_err:
+                        logger().warning("E2平仓：读取组合计划单失败（%s），走直接卖出兜底。", read_err)
+                if has_sell_row:
+                    _execute_orders_inprocess(
+                        combined_path,
+                        confirm,
+                        "E2平仓",
+                        allowed_sides={"SELL"},
+                        allow_t2_close_sell_now=True,
+                    )
+                else:
+                    logger().warning(
+                        "E2平仓兜底：组合计划单缺失或无 %s 的SELL行（%s），直接按买10/买5挂限价卖出。",
+                        ts_code, combined_path,
+                    )
+                    _abc_place_sell_order_direct(ts_code, name, shares, order_id, confirm, config, broker_cfg)
             elif strategy_leg in {"A", "B", "C", "L"}:
                 # A/B/C/L 均是 T+N 收盘卖出口径：
                 # planned_orders 文件通常只负责买入计划，平仓时直接按买10/买5挂限价卖出。
