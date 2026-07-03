@@ -4413,6 +4413,14 @@ def _log_final_decision_summary(signal_date: str, action_date_compact: str, buy_
         abc_rows: list[dict[str, Any]] = []
         if buy_orders is not None and not buy_orders.empty:
             for _, r in buy_orders.iterrows():
+                shares = int(r.get("round_lot_shares", r.get("estimated_shares", 0)) or 0)
+                price = float(r.get("reference_price", 0.0) or 0.0)
+                if shares <= 0 or price <= 0:
+                    # PLAN_ONLY 占位计划（如C策略0股@0.00仅模拟观察）不算实盘买入。
+                    # 必须与 combined_live_engine.build_abc_buy_decisions 的
+                    # qty>0 & ref_price>0 过滤口径一致，否则【最终结果】会把
+                    # 模拟观察计划当成mode1买入展示，与实际执行（E2顶上）不符。
+                    continue
                 exit_n = int(r.get("exit_n_days", 2) or 2)
                 try:
                     bd = datetime.datetime.strptime(action_date_compact, "%Y%m%d").date()
@@ -4423,8 +4431,8 @@ def _log_final_decision_summary(signal_date: str, action_date_compact: str, buy_
                     "strategy": str(r.get("strategy_leg", "")) or "ABC",
                     "ts_code": str(r.get("ts_code", "")),
                     "name": str(r.get("name", "")),
-                    "shares": int(r.get("round_lot_shares", r.get("estimated_shares", 0)) or 0),
-                    "price": float(r.get("reference_price", 0.0) or 0.0),
+                    "shares": shares,
+                    "price": price,
                     "exit_date": exit_date,
                     "exit_rule": "T+2收盘",
                 })
