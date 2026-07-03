@@ -4729,7 +4729,8 @@ def _log_decision_chain_summary(signal_date: str) -> None:
             if blocking:
                 hold_line = f"目前已持仓：{desc}；非D策略持仓未到期，{day_label}暂不开新仓"
             else:
-                hold_line = f"目前已持仓：{desc}；{day_label}持仓到期先平仓释放资金后，再执行开仓计划"
+                hold_line = (f"目前已持仓：{desc}；{day_label}到期将于14:56收盘平仓，"
+                             "不阻断开仓计划（09:15照常下单，按可用资金校验/缩放）")
 
         # 框1：开仓决策链（策略顺序 + 各策略成立/不成立及原因），独立完整框
         date_banner = f"{P}━━━ {day_label}{readable} · 基于{signal_date}收盘数据 ━━━"
