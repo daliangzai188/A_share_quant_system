@@ -3877,6 +3877,13 @@ def job_post_market(end_date: str | None = None) -> None:
         "clean_collected_data.py",
         "score_limit_up_fill_probability.py",
     }
+    # 信号生成步骤：失败时本趟内立即用已缓存数据就地重试一次（不阻断后续、不停止流水线）。
+    # A/B/C 在慢 IO 夜晚易被单步超时误杀；此时 raw/清洗数据已缓存，重试仅剩加载+选股，命中率高。
+    signal_retry_scripts = {
+        "run_paper_ab_filtered_daily_ops.py",
+        "run_strategy_e2_signal.py",
+        "run_strategy_l_signal.py",
+    }
 
     total_steps = len(steps)
     for step_index, (script, desc, timeout, eta) in enumerate(steps, 1):
@@ -3894,6 +3901,10 @@ def job_post_market(end_date: str | None = None) -> None:
             if not ok:
                 if script in critical_scripts:
                     logger().warning("收盘流水线进度：%d/%d %s 第一次失败，等待10秒后自动重试一次", step_index, total_steps, desc)
+                    time.sleep(10)
+                    ok = run_script(script, *args, timeout=timeout)
+                elif script in signal_retry_scripts:
+                    logger().warning("收盘流水线进度：%d/%d %s 第一次失败（不阻断后续步骤），等待10秒后就地重试一次", step_index, total_steps, desc)
                     time.sleep(10)
                     ok = run_script(script, *args, timeout=timeout)
                 if not ok and script in critical_scripts:
@@ -3925,14 +3936,21 @@ def job_post_market(end_date: str | None = None) -> None:
             "A/B/C 未生成 %s 计划单，自动使用当日涨停池生成安全模拟观察计划...",
             target_str,
         )
-        fallback_ok = run_script(
-            "generate_live_limit_pool_daily_ops.py",
-            "--signal-date",
-            target_str,
-            "--top-n",
-            "10",
-            timeout=TIMEOUT_SIGNAL_STEP,
-        )
+        def _run_limit_pool_fallback() -> bool:
+            return run_script(
+                "generate_live_limit_pool_daily_ops.py",
+                "--signal-date",
+                target_str,
+                "--top-n",
+                "10",
+                timeout=TIMEOUT_SIGNAL_STEP,
+            )
+
+        fallback_ok = _run_limit_pool_fallback()
+        if not (fallback_ok and _has_signal_for_date(target_date)):
+            logger().warning("兜底涨停池观察计划第一次失败，等待10秒后就地重试一次：signal_date=%s", target_str)
+            time.sleep(10)
+            fallback_ok = _run_limit_pool_fallback()
         if fallback_ok and _has_signal_for_date(target_date):
             logger().info("✅ 当日涨停池模拟观察计划已生成：signal_date=%s，live_order_enabled=False", target_str)
         else:
