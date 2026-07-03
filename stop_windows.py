@@ -93,6 +93,67 @@ def _terminate_process(pid: str) -> bool:
         return False
 
 
+def _list_descendant_pids(root_pid: str) -> list[int]:
+    """用进程快照枚举 root_pid 的全部后代进程。
+
+    纯 Windows API（CreateToolhelp32Snapshot），不启动 taskkill/PowerShell，
+    毫秒级完成，不会在慢IO机器上卡顿。
+    必须在杀主进程之前调用：TerminateProcess 不级联杀子进程，
+    收盘流水线子进程（collect/clean等）成孤儿后会继续狂读写共享盘，
+    把下次启动的 import/读配置拖到分钟级（2026-07-03 实测2.5分钟+）。
+    """
+    try:
+        import ctypes
+
+        TH32CS_SNAPPROCESS = 0x00000002
+
+        class PROCESSENTRY32W(ctypes.Structure):
+            _fields_ = [
+                ("dwSize", ctypes.c_ulong),
+                ("cntUsage", ctypes.c_ulong),
+                ("th32ProcessID", ctypes.c_ulong),
+                ("th32DefaultHeapID", ctypes.c_size_t),
+                ("th32ModuleID", ctypes.c_ulong),
+                ("cntThreads", ctypes.c_ulong),
+                ("th32ParentProcessID", ctypes.c_ulong),
+                ("pcPriClassBase", ctypes.c_long),
+                ("dwFlags", ctypes.c_ulong),
+                ("szExeFile", ctypes.c_wchar * 260),
+            ]
+
+        kernel32 = ctypes.windll.kernel32
+        kernel32.CreateToolhelp32Snapshot.restype = ctypes.c_void_p
+        snapshot = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+        if not snapshot or snapshot == ctypes.c_void_p(-1).value:
+            return []
+        snap_handle = ctypes.c_void_p(snapshot)
+        parent_map: dict[int, list[int]] = {}
+        try:
+            entry = PROCESSENTRY32W()
+            entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+            if kernel32.Process32FirstW(snap_handle, ctypes.byref(entry)):
+                while True:
+                    parent_map.setdefault(int(entry.th32ParentProcessID), []).append(int(entry.th32ProcessID))
+                    if not kernel32.Process32NextW(snap_handle, ctypes.byref(entry)):
+                        break
+        finally:
+            kernel32.CloseHandle(snap_handle)
+        descendants: list[int] = []
+        seen: set[int] = set()
+        queue = [int(root_pid)]
+        while queue:
+            pid = queue.pop()
+            for child in parent_map.get(pid, []):
+                if child not in seen:
+                    seen.add(child)
+                    descendants.append(child)
+                    queue.append(child)
+        return descendants
+    except Exception as exc:
+        print(YELLOW + f"枚举 PID {root_pid} 子进程失败（继续停止主进程）：{exc}" + RESET, flush=True)
+        return []
+
+
 def _wait_until_pid_gone(pid: str) -> bool:
     """等待到 PID 真正从进程表消失。
 
@@ -117,9 +178,20 @@ def _wait_until_pid_gone(pid: str) -> bool:
 def _stop_and_verify(pid: str) -> bool:
     if not _pid_exists(pid):
         return True
+    # 杀主进程前先枚举后代：之后父子关系依然保留在快照结果里，逐个清理。
+    descendants = _list_descendant_pids(pid)
     if not _terminate_process(pid):
         return False
-    return _wait_until_pid_gone(pid)
+    ok = _wait_until_pid_gone(pid)
+    for child_pid in descendants:
+        child = str(child_pid)
+        if not _pid_exists(child):
+            continue
+        print(f"Stopping child process PID {child} ...", flush=True)
+        if not _terminate_process(child) or not _wait_until_pid_gone(child):
+            print(YELLOW + f"child PID {child} stop not confirmed." + RESET, flush=True)
+            ok = False
+    return ok
 
 
 def _stop_pid_file(path: Path, label: str) -> bool:
