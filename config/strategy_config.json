@@ -205,12 +205,13 @@
     "avg_sell_slippage": 0.002525
   },
   "pre_paper_trade_requirements": {
-    "must_review_each_trade": true,
+    "file_role": "A/B/C复核与准入要求。2026-07-03 用户确认放开ABC实盘：must_review_each_trade=false 后仅 risk_flags 非空标的生成复核单，复核不阻塞实盘执行链。",
+    "must_review_each_trade": false,
     "must_generate_review_checklist": true,
-    "must_validate_minute_data_before_live": true,
-    "must_run_paper_trade_before_live": true,
+    "must_validate_minute_data_before_live": false,
+    "must_run_paper_trade_before_live": false,
     "minimum_paper_trade_days": 20,
-    "manual_confirm_required": true
+    "manual_confirm_required": false
   },
   "paper_trade": {
     "file_role": "模拟盘配置。只读取本地审计逐笔交易文件，生成本地模拟账本，不接券商接口，不真实下单。",

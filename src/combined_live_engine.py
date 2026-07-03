@@ -840,6 +840,21 @@ class CombinedLiveEngine:
         # 非D持仓中今日不到期的部分——才是真正占用资金、阻断新开仓的持仓
         holding_non_d_positions = [p for p in open_non_d_positions if p not in due_e2_positions]
         abc_path, abc_orders = self.load_latest_abc_orders()
+        # ABC 计划单日期校验（E2 planned_buy_date==today 的同款保护）：
+        # load_latest_abc_orders 只按文件时间取最新，若某晚收盘流水线失败，
+        # 第二天会读到前一天的计划——只执行 planned_order_date==today 的行，陈旧计划一律丢弃。
+        if not abc_orders.empty and "planned_order_date" in abc_orders.columns:
+            date_ok = abc_orders["planned_order_date"].astype(str).str.strip() == str(today)
+            stale = abc_orders[~date_ok]
+            if not stale.empty:
+                import logging as _logging
+                for _, srow in stale.iterrows():
+                    _logging.getLogger(__name__).warning(
+                        "ABC计划单 %s %s planned_order_date=%s ≠ today=%s，视为陈旧计划跳过。",
+                        srow.get("ts_code", ""), srow.get("name", ""),
+                        srow.get("planned_order_date", ""), today,
+                    )
+            abc_orders = abc_orders[date_ok].copy()
 
         decisions: list[CombinedLiveDecision] = []
         planned_orders: list[dict[str, Any]] = []

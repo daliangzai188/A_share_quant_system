@@ -24,6 +24,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.audit_backup_strategy_b import find_a_audit_row, replay_selected_b
+from scripts.run_strategy_e2_signal import next_trade_day
 from scripts.run_paper_ab_filtered_observation_window import (
     configured_b_conditions,
     condition_text,
@@ -486,13 +487,42 @@ def resolve_c_execution(
     return replayed, "HISTORICAL_SIM_FILLED", account_return, row.get("strict_return_source", "c_conservative_daily_replay"), note
 
 
-def estimate_planned_order(config: dict[str, Any], selected: pd.Series, signal_date: str) -> pd.DataFrame:
+def estimate_planned_order(
+    config: dict[str, Any],
+    selected: pd.Series,
+    signal_date: str,
+    live_plan_mode: bool = False,
+    reference_price_fallback: float = 0.0,
+    runtime_config: dict[str, Any] | None = None,
+) -> pd.DataFrame:
     position = config.get("position", {})
     paper_trade = config.get("paper_trade", {})
     planned_equity = float(position.get("initial_cash", 500000))
     planned_position_pct = to_float(selected.get("planned_position_pct", position.get("target_position_pct", 0.8)))
     planned_amount = planned_equity * planned_position_pct
     reference_price = to_float(selected.get("historical_reference_next_open", 0.0))
+    planned_order_date = str(selected.get("historical_reference_next_trade_date", "") or "")
+    live_order_enabled = False
+    if live_plan_mode:
+        # 实盘计划模式：信号日当晚没有次日开盘价，参考价用信号日涨停收盘价（与E2口径一致）。
+        # selected 行经过策略过滤后不含价格列，由调用方从 all_candidates 按
+        # ts_code+signal_date 反查 limit_close 传入 reference_price_fallback。
+        # 实际下单时 resize_buy_orders_for_live_account 会按实时行情和账户资金重算股数，
+        # 这里的股数只是种子，必须>0 才能通过组合状态机 qty>0 的过滤进入实盘执行。
+        if reference_price <= 0:
+            reference_price = to_float(selected.get("limit_close", selected.get("close", 0.0)))
+        if reference_price <= 0:
+            reference_price = float(reference_price_fallback or 0.0)
+        # 单笔限额与 E2/执行层同一口径，种子金额不超过 live_trade.max_single_order_amount。
+        # 注意 config 参数是策略配置（无 trade_mode/live_trade），限额必须读运行时配置。
+        rt_cfg = runtime_config or {}
+        if str(rt_cfg.get("trade_mode", "")).lower() == "live":
+            max_single = float(rt_cfg.get("live_trade", {}).get("max_single_order_amount", planned_amount))
+            planned_amount = min(planned_amount, max_single)
+        # 计划执行日=信号日的下一交易日；组合状态机按 planned_order_date==today 校验，
+        # 防止收盘流水线失败后第二天误执行陈旧计划（E2 的 planned_buy_date 同款保护）。
+        planned_order_date = next_trade_day(signal_date, 1)
+        live_order_enabled = True
     round_lot = int(paper_trade.get("round_lot_size", 100))
     estimated_shares = int(planned_amount // reference_price) if reference_price > 0 else 0
     round_lot_shares = estimated_shares - estimated_shares % round_lot if round_lot > 0 else estimated_shares
@@ -506,7 +536,7 @@ def estimate_planned_order(config: dict[str, Any], selected: pd.Series, signal_d
                 "paper_order_id": f"AB-{signal_date}-{selected.get('strategy_leg', '')}-{selected.get('ts_code', '')}",
                 "signal_date": signal_date,
                 "strategy_leg": selected.get("strategy_leg", ""),
-                "planned_order_date": selected.get("historical_reference_next_trade_date", ""),
+                "planned_order_date": planned_order_date,
                 "side": "BUY",
                 "ts_code": selected.get("ts_code", ""),
                 "name": selected.get("name", ""),
@@ -519,7 +549,7 @@ def estimate_planned_order(config: dict[str, Any], selected: pd.Series, signal_d
                 "estimated_shares": estimated_shares,
                 "round_lot_shares": round_lot_shares,
                 "risk_flags": selected.get("risk_flags", ""),
-                "live_order_enabled": False,
+                "live_order_enabled": live_order_enabled,
                 "exit_n_days": exit_n_days,
             }
         ]
@@ -563,6 +593,7 @@ def build_checklist(
     b_rejected: pd.DataFrame,
     c_candidates: pd.DataFrame,
     c_rejected: pd.DataFrame,
+    live_plan_mode: bool = False,
 ) -> pd.DataFrame:
     if selected.empty:
         return enrich_checklist(pd.DataFrame(
@@ -594,7 +625,15 @@ def build_checklist(
     operation_status = str(row.get("operation_status", ""))
     if needs_review and operation_status == "HISTORICAL_SIM_FILLED":
         operation_status = "REVIEW_REQUIRED_PLAN_ONLY"
-    next_action = "先人工复核；通过后只进入模拟观察，不进入实盘。" if needs_review else "只生成模拟计划，等待后续数据验证。"
+    if live_plan_mode:
+        next_action = (
+            "已生成实盘开仓计划；下一交易日09:15集合竞价预挂、09:30确认/补单，"
+            "股数下单时按账户资金和单笔限额重算。"
+        )
+        if needs_review:
+            next_action = "命中人工复核条件，请复核；" + next_action
+    else:
+        next_action = "先人工复核；通过后只进入模拟观察，不进入实盘。" if needs_review else "只生成模拟计划，等待后续数据验证。"
     return enrich_checklist(pd.DataFrame(
         [
             {
@@ -620,9 +659,14 @@ def build_checklist(
                 "account_return": to_float(row.get("account_return", 0.0)),
                 "return_source": row.get("return_source", ""),
                 "execution_note": row.get("execution_note", ""),
-                "paper_observation_allowed": False,
-                "live_order_enabled": False,
-                "safety_note": "A+B+C filtered 只允许模拟观察；未完成分钟K、盘口和连续模拟验证前，不允许实盘。",
+                "paper_observation_allowed": not live_plan_mode,
+                "live_order_enabled": live_plan_mode,
+                "safety_note": (
+                    "A+B+C 实盘已放开：计划单经组合状态机（planned_order_date==today校验）→ "
+                    "LiveOrderGateway 校验 → 按账户资金/单笔限额缩放后下单。"
+                    if live_plan_mode
+                    else "A+B+C filtered 只允许模拟观察；未完成分钟K、盘口和连续模拟验证前，不允许实盘。"
+                ),
             }
         ]
     ))
@@ -872,7 +916,25 @@ def main() -> None:
                 elif selected.empty:
                     selection_status = "A_B_NO_FILLED_C_NO_SELECTED"
 
-    planned_orders = estimate_planned_order(config, selected.iloc[0], signal_date) if not selected.empty else pd.DataFrame()
+    # live 模式下 selected 行没有价格列，从候选源数据按 ts_code+signal_date 反查涨停收盘价做参考价
+    reference_price_fallback = 0.0
+    if live_plan_mode and not selected.empty:
+        _sel_code = str(selected.iloc[0].get("ts_code", ""))
+        _match = all_candidates[
+            (all_candidates["ts_code"].astype(str) == _sel_code)
+            & (all_candidates["trade_date"].map(normalize_date) == signal_date)
+        ]
+        if not _match.empty:
+            reference_price_fallback = to_float(_match.iloc[0].get("limit_close", _match.iloc[0].get("close", 0.0)))
+    planned_orders = (
+        estimate_planned_order(
+            config, selected.iloc[0], signal_date,
+            live_plan_mode=live_plan_mode,
+            reference_price_fallback=reference_price_fallback,
+            runtime_config=load_json_config(args.runtime_config),
+        )
+        if not selected.empty else pd.DataFrame()
+    )
     manual_review = build_manual_review(config, selected, signal_date)
     checklist = build_checklist(
         signal_date,
@@ -884,6 +946,7 @@ def main() -> None:
         b_rejected,
         c_candidates,
         c_rejected,
+        live_plan_mode=live_plan_mode,
     )
     if selection_status and selected.empty:
         checklist["selection_status"] = selection_status
