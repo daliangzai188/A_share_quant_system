@@ -105,6 +105,7 @@ class OrderFill:
     is_terminal: bool = False      # 订单已到终态（全成/废单/已撤/部撤），不会再有新成交
     is_filled: bool = False        # 全部成交
     is_partial: bool = False       # 部分成交（仍可能继续成交，除非同时 is_terminal）
+    traded_at: str = ""            # 最后一笔成交回报的时间（券商原始格式），审计成交时点用
     raw: dict[str, Any] | None = None
 
 

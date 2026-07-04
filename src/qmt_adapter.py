@@ -421,6 +421,7 @@ class QMTBrokerAdapter(BrokerAdapter):
         # 2) 成交回报（按 order_id 聚合，VWAP）
         trade_qty = 0
         trade_amount = 0.0
+        traded_at = ""
         try:
             for t in self.query_trades():
                 if str(first_present(t, _id_names, "")).strip() == oid:
@@ -429,6 +430,9 @@ class QMTBrokerAdapter(BrokerAdapter):
                     if q > 0:
                         trade_qty += q
                         trade_amount += q * p
+                        tt = str(first_present(t, ["traded_time", "m_strTradeTime", "trade_time", "m_nTradeTime"], "") or "")
+                        if tt:
+                            traded_at = tt
         except Exception as e:
             self.logger.warning("查询成交回报失败 order_id=%s: %s", oid, e)
 
@@ -453,5 +457,6 @@ class QMTBrokerAdapter(BrokerAdapter):
             is_terminal=is_terminal,
             is_filled=is_filled,
             is_partial=is_partial,
+            traded_at=traded_at,
             raw=raw_order,
         )

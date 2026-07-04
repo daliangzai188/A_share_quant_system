@@ -586,7 +586,7 @@ def clear_local_positions_when_broker_empty(source: str) -> int:
 
 def record_buy(order_id: str, ts_code: str, name: str, signal_date: str,
                buy_date: str, shares: int, buy_price: float, strategy_leg: str,
-               exit_n_days: int = 2) -> None:
+               exit_n_days: int = 2, traded_at: str = "") -> None:
     positions = load_positions()
     if any(p["order_id"] == order_id for p in positions):
         return
@@ -597,6 +597,8 @@ def record_buy(order_id: str, ts_code: str, name: str, signal_date: str,
     planned_exit_time = datetime.datetime.combine(exit_date, SCHED_AFTERNOON_CLOSE).strftime("%Y-%m-%d %H:%M")
     positions.append({
         "order_id": order_id,
+        # buy_time=确认回写时刻；traded_at=券商成交回报的真实成交时间（审计成交时点用）
+        "traded_at": traded_at,
         "ts_code": ts_code,
         "name": name,
         "signal_date": signal_date,
@@ -1024,6 +1026,7 @@ def _execute_orders_inprocess(
                         buy_price=fill_price,
                         strategy_leg=s["strategy_leg"],
                         exit_n_days=s["exit_n"],
+                        traded_at=getattr(fill, "traded_at", ""),
                     )
                     amount = fill.filled_qty * fill_price
                     if fill.filled_qty < s["qty"]:
@@ -2234,6 +2237,16 @@ def job_opening_buy() -> None:
         logger().info("===== 开盘买入任务完成 =====")
         return
 
+    # 走到这里=今日有买入窗口但09:15预挂链路没有产生持仓、也没有待确认单
+    # （预挂失败/未执行/被拒）。属于执行降级：失去集合竞价排队优势，
+    # 补买按最新价成交。当天必须推送告警，不能等用户几天后从成交价反推。
+    # （2026-07-03 德冠新材即此场景：预挂未生效，09:30补买20.33，事后才发现。）
+    if has_combined_action(decisions, "ALLOW_ABC_BUY_PREVIEW") or has_combined_action(decisions, "ALLOW_E2_BUY"):
+        logger().warning("⚠️ 开仓执行降级：09:15盘前预挂未生效（09:30无持仓且无待确认单），转09:30按最新价补买。")
+        _notify("buy_result", "⚠️ 开仓执行降级",
+                "09:15盘前预挂未生效，已转09:30按最新价补买。请留意成交价与开盘价的差异。",
+                level="timeSensitive")
+
     attempted_buy = False
     accepted_buy = False
     if has_combined_action(decisions, "ALLOW_ABC_BUY_PREVIEW"):
@@ -2512,6 +2525,7 @@ def _record_premarket_buy_fill(s: dict[str, Any], fill: Any, fallback_price: flo
         buy_price=float(fill_price),
         strategy_leg=str(s.get("strategy_leg", "")),
         exit_n_days=int(s.get("exit_n", 2)),
+        traded_at=getattr(fill, "traded_at", ""),
     )
     amount = int(fill.filled_qty) * float(fill_price)
     logger().info("✅ [盘前买入监控] 持仓信息：策略=%s %s %s 持仓%d股 成本%.2f 市值%s",
@@ -2692,6 +2706,7 @@ def confirm_pending_premarket_buys(confirm_source: str = "09:30") -> None:
                     buy_price=fill_price,
                     strategy_leg=str(s.get("strategy_leg", "")),
                     exit_n_days=int(s.get("exit_n", 2)),
+                    traded_at=getattr(fill, "traded_at", ""),
                 )
                 name_s = str(s.get("name", ""))
                 amount = fill.filled_qty * fill_price
@@ -3326,6 +3341,7 @@ def _e2_place_order_direct(ts_code: str, name: str, planned_qty: int, signal_dat
             buy_price=fill_price,
             strategy_leg=strategy_leg,
             exit_n_days=exit_n_days,
+            traded_at=getattr(fill, "traded_at", ""),
         )
         amount = fill.filled_qty * fill_price
         if fill.filled_qty < qty:
