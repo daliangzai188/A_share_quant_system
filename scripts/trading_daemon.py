@@ -1988,8 +1988,8 @@ def job_premarket_buy() -> None:
     """
     logger().info("===== 集合竞价买入预挂（09:15）=====")
 
-    if has_open_local_position():
-        logger().info("09:15 已有本地持仓，跳过集合竞价买入预挂。")
+    if has_position_bought_today():
+        logger().info("09:15 今日已有买入成交，跳过集合竞价买入预挂。")
         return
 
     combined = read_cached_combined_decisions()
@@ -2200,8 +2200,8 @@ def job_opening_buy() -> None:
     except Exception as e:
         logger().error("盘前买单成交确认异常：%s —— 请手动核对！", e)
 
-    if has_open_local_position():
-        logger().info("09:30 检测到已有本地持仓（09:15盘前买入已成交），跳过重复买入。")
+    if has_position_bought_today():
+        logger().info("09:30 检测到今日已有买入成交（09:15盘前买入已成交），跳过重复买入。")
         logger().info("===== 开盘买入任务完成 =====")
         return
 
@@ -2230,7 +2230,7 @@ def job_opening_buy() -> None:
                 reason="L 09:30开仓",
                 allowed_sides={"BUY"},
             )
-            if not accepted and not has_open_local_position():
+            if not accepted and not has_position_bought_today():
                 logger().warning("09:30 L开仓未提交成功/未成交，今日不切回ABCDE2/D，避免策略模式混跑。")
         else:
             logger().info("09:30 L模式无 ALLOW_L_BUY，跳过开盘买入。")
@@ -2271,7 +2271,7 @@ def job_opening_buy() -> None:
 
     if not attempted_buy:
         logger().info("09:30无A/B/C/E2买入计划。")
-    elif not accepted_buy and not has_open_local_position():
+    elif not accepted_buy and not has_position_bought_today():
         if has_combined_action(decisions, "ALLOW_E2_BUY"):
             logger().warning(
                 "09:30 E2开仓未提交成功，启动延迟重试（9:31-13:30，相对开盘涨幅≤2%%）。"
@@ -2325,6 +2325,20 @@ def has_combined_action(decisions, action: str) -> bool:
 
 def has_open_local_position() -> bool:
     return any(str(p.get("status", "")).lower() in {"open", "sell_pending"} for p in load_positions())
+
+
+def has_position_bought_today() -> bool:
+    """今日已有买入成交的持仓——09:15/09:30 防重复买入的正确判据。
+
+    不能用 has_open_local_position()：衔接日（旧仓当日14:56到期平仓）早上
+    买新仓是回测口径的一部分，旧仓(buy_date<今日)的存在不能阻止新仓买入。
+    2026-07-06 贤丰控股漏买事故根因：旧仓德冠新材让09:15/09:30全部跳过。"""
+    today = today_beijing().strftime("%Y%m%d")
+    return any(
+        str(p.get("status", "")).lower() in {"open", "sell_pending"}
+        and str(p.get("buy_date", "")) == today
+        for p in load_positions()
+    )
 
 
 # ── 盘前买单待确认（09:15挂单→09:30开盘成交确认）────────────────────────────
@@ -2616,8 +2630,8 @@ def _premarket_buy_monitor_loop() -> None:
     poll_seconds = 15
     logger().info("盘前买入监控已启动：09:15-14:55 每%d秒检查一次成交/撤单/废单。", poll_seconds)
     while now_beijing().time() < cutoff:
-        if has_open_local_position():
-            logger().info("盘前买入监控：已检测到本地持仓，退出。")
+        if has_position_bought_today():
+            logger().info("盘前买入监控：今日买入已成交，退出。")
             return
         pending = load_pending_buys()
         if not pending:
@@ -2748,7 +2762,7 @@ def confirm_pending_premarket_buys(confirm_source: str = "09:30") -> None:
                     f"{s.get('ts_code','')} 盘前买单成交确认出现异常，请回终端核对持仓。",
                     level="critical", call=True)
 
-    if still_pending and not has_open_local_position():
+    if still_pending and not has_position_bought_today():
         save_pending_buys(still_pending)
         _start_premarket_buy_monitor()
     else:
@@ -3402,8 +3416,8 @@ def _e2_delayed_buy_loop(combined_orders_path, decisions) -> None:
         time.sleep(RETRY_INTERVAL_S)
         now = now_beijing()
 
-        if has_open_local_position():
-            log.info("E2延迟开仓：已有本地持仓，退出重试线程。")
+        if has_position_bought_today():
+            log.info("E2延迟开仓：今日买入已成交，退出重试线程。")
             return
 
         if now.time() >= CUTOFF:
