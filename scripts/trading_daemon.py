@@ -593,6 +593,15 @@ def record_buy(order_id: str, ts_code: str, name: str, signal_date: str,
     exit_date = next_n_trade_days(
         datetime.datetime.strptime(buy_date, "%Y%m%d").date(), n=exit_n_days
     )
+    # 券商成交回报时间常是Unix秒（国金QMT实测），转成可读北京时间便于审计成交时点；
+    # 其他格式（HHMMSS整数、已是字符串）原样保留，不做破坏性解析。
+    if traded_at and str(traded_at).isdigit() and int(traded_at) > 1_000_000_000:
+        try:
+            traded_at = datetime.datetime.fromtimestamp(
+                int(traded_at), tz=BEIJING_TZ
+            ).strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            pass
     buy_time = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
     planned_exit_time = datetime.datetime.combine(exit_date, SCHED_AFTERNOON_CLOSE).strftime("%Y-%m-%d %H:%M")
     positions.append({
@@ -2134,6 +2143,21 @@ def job_premarket_buy() -> None:
     if pending_buys:
         save_pending_buys(pending_buys)
         _start_premarket_buy_monitor()
+        # 开仓计划通知：09:15预挂成功即推送，让用户开盘前就知道今日买什么，
+        # 不必等09:30成交确认。金额按预挂价（涨停价）估算，实际按集合竞价开盘价
+        # 成交通常更低；预挂失败的场景由09:30补买路径的“开仓执行降级”告警覆盖。
+        plan_parts = []
+        for b in pending_buys:
+            qty_b = int(b.get("qty", 0))
+            rp_b = float(b.get("ref_price", 0.0))
+            plan_parts.append(
+                f"策略{b.get('strategy_leg','')} {b.get('ts_code','')} {b.get('name','')} "
+                f"{qty_b}股（预挂{rp_b:.2f}元，预估约{qty_b * rp_b / 10000:.2f}万）"
+            )
+        _notify("buy_result", "📋 今日开仓计划已预挂",
+                "；".join(plan_parts) + "。09:15集合竞价预挂完成，实际按开盘价成交（通常低于预挂价），"
+                "09:30确认成交后再推送持仓通知。",
+                level="timeSensitive")
     logger().info("===== 盘前买入挂单完成（受理%d笔，待开盘确认）=====", len(pending_buys))
 
 
