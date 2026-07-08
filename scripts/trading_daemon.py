@@ -1260,10 +1260,23 @@ def explain_reject_reasons(row: Any) -> str:
 
 
 def _pick_sell_limit_price(quote: Any) -> tuple[float, str]:
-    """平仓挂单取价：优先买10（有10档盘口时），否则买5；都没有再退买1/最新价。
+    """平仓挂单取价：跌停价限价（市价单效果），确保成交。
 
-    挂得越深越能吃穿买盘、越确保成交（代价是成交价略差）。返回 (价格, 档位标签)。
+    2026-07-08 皇氏集团事故：14:56挂买5价3.26，尾盘tick滞后/瞬间下砸导致
+    已报0成交，持仓被动过夜。买N档取价的致命弱点：挂单瞬间价格跌破挂价
+    就变成排队单，且深市14:57后进收盘集合竞价不可撤单，无补救窗口。
+    改挂跌停价（D策略09:23集合竞价同款"挂跌停不砸盘"原理）：
+    - 连续竞价中＝吃买盘直到成交，成交价≈买一起的真实对手价，不会真砸到跌停；
+    - 进收盘集合竞价＝低于任何可能收盘价，必以收盘价成交——与回测口径
+      （T+2收盘价卖出）完全一致；
+    - 仅当股价已真实跌停（无买盘）才可能不成交，那是市场极端，任何挂法都无解。
+    gateway 的 reject_limit_down_sell 拒的是"股价已跌停时的卖出"，
+    不拒"挂单价=跌停价"，两者不冲突。
+    跌停价缺失时退回买10/买5/买1/最新价（原逻辑兜底）。
     """
+    lower_limit = float(getattr(quote, "lower_limit", 0.0) or 0.0) if quote else 0.0
+    if lower_limit > 0:
+        return round(lower_limit, 2), "跌停价(市价效果)"
     bid_prices = list(getattr(quote, "bid_prices", None) or []) if quote else []
     if len(bid_prices) >= 10 and bid_prices[9] > 0:
         return round(float(bid_prices[9]), 2), "买10"
@@ -1553,6 +1566,14 @@ def _resume_pipeline_after_trade(reason: str) -> None:
 def _wait_if_pipeline_paused(context: str) -> None:
     last_log = 0.0
     while _pipeline_paused():
+        # 收盘后自动释放：15:05后交易窗口已结束，卖单要么已成交要么已成废单，
+        # 继续暂停毫无意义，却会把晚间数据采集/明日信号生成全部堵死。
+        # 2026-07-08 皇氏平仓失败后"保持暂停等人工"卡死流水线1小时+，即此场景。
+        if now_beijing().time() >= datetime.time(15, 5):
+            _resume_pipeline_after_trade(
+                f"收盘后自动释放（原因={_pipeline_pause_reason or '未知'}）：15:05后不再阻塞数据流水线"
+            )
+            break
         now_ts = time.time()
         if now_ts - last_log >= 15:
             logger().warning(
