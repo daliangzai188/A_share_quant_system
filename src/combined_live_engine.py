@@ -924,7 +924,7 @@ class CombinedLiveEngine:
                         action="PLAN_SELL_D_T2_CLOSE",
                         reason=(
                             f"D持仓到默认T+2平仓日，planned_exit_date={position.get('planned_exit_date', '')}，"
-                            f"今日={today}，按D回测口径等待14:50收盘平仓，不在09:23集合竞价卖出。"
+                            f"今日={today}，按D回测口径等待14:53收盘平仓，不在09:23集合竞价卖出。"
                         ),
                     ))
                     planned_orders.append(self.build_d_sell_order(
@@ -1073,7 +1073,7 @@ class CombinedLiveEngine:
 
         if has_e2_sell:
             e2_status_action = "PLAN_SELL_E2_TODAY"
-            e2_status_reason = f"E2持仓今日到期，收盘前平仓（14:50 job_afternoon 执行）。"
+            e2_status_reason = f"E2持仓今日到期，收盘前平仓（14:53 job_afternoon 执行）。"
         elif has_e2_buy:
             e2_status_action = "ALLOW_E2_BUY_TODAY"
             e2_status_reason = "E2今日T+1开仓，已加入组合计划单。"
@@ -1181,7 +1181,7 @@ class CombinedLiveEngine:
                     if action == "ALLOW_L_BUY":
                         print(f"  ✅ 今日 L 开仓计划 → {code} {nm}  {row.get('quantity', 0)}股")
                     elif action == "PLAN_SELL_L":
-                        print(f"  ⏳ 今日 L 到期平仓 → {code} {nm}  {row.get('quantity', 0)}股  14:50收盘前卖出")
+                        print(f"  ⏳ 今日 L 到期平仓 → {code} {nm}  {row.get('quantity', 0)}股  14:53收盘前卖出")
                     elif action == "BLOCK_L_LIVE_ORDER":
                         print(f"  ✘ L实盘买入未开启：{reason}")
                     else:
@@ -1235,7 +1235,7 @@ class CombinedLiveEngine:
                 except Exception:
                     qty_str = ""
                 if action == "PLAN_SELL_E2":
-                    print(f"  ⏳ 今日 T+2 平仓 → {code} {nm}  {qty_str}  14:50收盘前卖出")
+                    print(f"  ⏳ 今日 T+2 平仓 → {code} {nm}  {qty_str}  14:53收盘前卖出")
                 elif action == "ALLOW_E2_BUY":
                     amount_text = ""
                     if not planned_orders.empty and "ts_code" in planned_orders.columns:
