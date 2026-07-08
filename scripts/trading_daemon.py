@@ -766,6 +766,16 @@ def _confirm_fill(
 
     timeout = float(timeout_sec if timeout_sec is not None else lt.get("fill_confirm_timeout_sec", 60))
     poll = max(1.0, float(poll_sec if poll_sec is not None else lt.get("fill_confirm_poll_sec", 3)))
+    # 集合竞价时段（09:15~09:25）挂的单要到09:25集中撮合才有成交回报，
+    # 固定60秒超时必然误报"未成交"（如逾期持仓09:20清理挂单）。
+    # 确认窗口自动延长到09:25:20之后，避免虚假critical告警。
+    now_t = now_beijing()
+    if datetime.time(9, 15) <= now_t.time() < datetime.time(9, 25):
+        auction_done = now_t.replace(hour=9, minute=25, second=20, microsecond=0)
+        wait_to_auction = (auction_done - now_t).total_seconds()
+        if wait_to_auction + 10 > timeout:
+            timeout = wait_to_auction + 10
+            log.info("[%s] 集合竞价时段挂单，成交确认窗口延长至09:25:30（%.0f秒）", tag, timeout)
     deadline = time.monotonic() + timeout
     last_fill = OrderFill(order_id=str(order_id))
 
@@ -4839,8 +4849,12 @@ def _log_decision_chain_summary(signal_date: str) -> None:
                 for p in non_d_pos
             )
             blocking = [p for p in non_d_pos if str(p.get("planned_exit_date", "99991231")) > action_date]
+            overdue = [p for p in non_d_pos if str(p.get("planned_exit_date", "99991231")) < action_date]
             if blocking:
                 hold_line = f"目前已持仓：{desc}；非D策略持仓未到期，{day_label}暂不开新仓"
+            elif overdue:
+                hold_line = (f"目前已持仓：{desc}；⚠该持仓已逾期（平仓失败残留），"
+                             f"{day_label}09:20开盘窗口将第一时间挂跌停价清理；不阻断开仓计划")
             else:
                 hold_line = (f"目前已持仓：{desc}；{day_label}到期将于14:53收盘平仓，"
                              "不阻断开仓计划（09:15照常下单，按可用资金校验/缩放）")
