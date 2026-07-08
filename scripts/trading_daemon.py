@@ -1518,7 +1518,14 @@ def check_and_close_positions() -> None:
                 )
                 continue
 
-            if market_is_open() or pending:
+            # 逾期持仓（计划平仓日已过=事故残留，如2026-07-08皇氏平仓失败过夜）
+            # 必须第一时间清理：09:15后即可挂跌停价卖单（参与集合竞价/连续竞价，
+            # 必成交），不等14:53、也不依赖上一轮先标记sell_pending。
+            overdue_past = planned_exit < today_str
+            sellable_now = now_beijing().time() >= datetime.time(9, 15) and now_beijing().time() <= datetime.time(15, 0)
+            if market_is_open() or pending or (overdue_past and sellable_now):
+                if overdue_past:
+                    logger().warning("⚠️ 逾期持仓第一时间清理：%s %s 计划平仓日%s已过，立即挂单卖出。", ts_code, name, planned_exit)
                 _do_sell(pos, qmt_enabled)
             else:
                 # 市场未开盘，标记 sell_pending，等开盘时处理
