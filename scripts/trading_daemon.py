@@ -167,6 +167,7 @@ else:
     PYTHON = str(_venv_python) if _venv_python.exists() else _sys.executable
 POSITIONS_FILE = PROJECT_ROOT / "data" / "processed" / "positions.json"
 PENDING_BUY_FILE = PROJECT_ROOT / "data" / "processed" / "pending_premarket_buy.json"
+E2_CAPACITY_FILE = PROJECT_ROOT / "data" / "processed" / "e2_capacity_history.json"
 HEARTBEAT_FILE = PROJECT_ROOT / "logs" / "daemon_heartbeat.txt"
 D_MONITOR_PID_FILE = PROJECT_ROOT / "logs" / "strategy_d_monitor.pid"
 QMT_LAST_SUCCESS_FILE = PROJECT_ROOT / "logs" / "qmt_last_success.json"
@@ -2035,6 +2036,61 @@ def job_preopen_plan() -> None:
     logger().info("===== 盘前计划生成完成 =====")
 
 
+def _record_e2_capacity_and_alert(records: list[dict[str, Any]], live_cfg: dict) -> None:
+    """E2 容量档案与关停预警。必须在 09:24 关键窗口结束后调用（含共享盘IO与推送）。
+
+    E2 仓位 = min(缩单额, 竞价额×参与率)：账户资金增长后若频繁被竞价盘钳制，
+    E2 的绝对收益不再随资金增长，而隔夜持仓风险与运维成本不变。
+    钳制比 = 实际可用仓位/计划仓位；竞价额兜底(fallback)的记录不计入容量证据。
+    最近 window 笔竞价记录中钳制 ≥ min_hits 次 → 强提醒建议关闭 E2。
+    """
+    log = logger()
+    alert_ratio = float(live_cfg.get("e2_capacity_alert_clamp_ratio", 0.5))
+    window = int(live_cfg.get("e2_capacity_alert_window", 5))
+    min_hits = int(live_cfg.get("e2_capacity_alert_min_hits", 3))
+    try:
+        payload = json.loads(E2_CAPACITY_FILE.read_text(encoding="utf-8")) if E2_CAPACITY_FILE.exists() else {}
+    except Exception:
+        payload = {}
+    history = payload.get("records", [])
+    for rec in records:
+        planned = float(rec.get("planned_amt", 0) or 0)
+        rec["clamp_ratio"] = round(float(rec.get("cap", 0) or 0) / planned, 4) if planned > 0 else 1.0
+        history.append(rec)
+        if rec.get("source") == "auction" and rec["clamp_ratio"] < alert_ratio:
+            _notify_async(
+                "buy_result", "📉 E2容量提示：仓位被竞价盘钳制",
+                f"{rec.get('ts_code','')} {rec.get('name','')} 计划{planned / 1e4:.2f}万，"
+                f"竞价容量只允许{float(rec.get('cap', 0)) / 1e4:.2f}万（{rec['clamp_ratio']:.0%}）。"
+                f"资金规模已接近E2标的的竞价容量上限。",
+            )
+    history = history[-30:]
+    auction_recent = [r for r in history if r.get("source") == "auction"][-window:]
+    hits = [r for r in auction_recent if float(r.get("clamp_ratio", 1.0)) < alert_ratio]
+    today_str = today_beijing().strftime("%Y%m%d")
+    if len(auction_recent) >= window and len(hits) >= min_hits and payload.get("last_capacity_alert_date") != today_str:
+        payload["last_capacity_alert_date"] = today_str
+        avg_clamp = sum(float(r["clamp_ratio"]) for r in hits) / len(hits)
+        _notify(
+            "buy_result", "⚠️ E2容量预警：建议评估关闭E2",
+            f"最近{len(auction_recent)}笔E2竞价开仓中有{len(hits)}笔被竞价盘钳制"
+            f"（被钳制笔平均只能用计划资金的{avg_clamp:.0%}）。"
+            f"资金规模已超出E2小市值标的的竞价容量：E2绝对收益不再随资金增长，"
+            f"而隔夜持仓风险和运维成本不变。如决定停用：把 config/config.json 的 "
+            f"live_trade.e2_enabled 改为 false（信号照常生成，只停止下单）。",
+            level="timeSensitive",
+        )
+        log.warning("E2容量预警已推送：最近%d笔中%d笔钳制（阈值%.0f%%）。", len(auction_recent), len(hits), alert_ratio * 100)
+    payload["records"] = history
+    try:
+        mkdir_p(E2_CAPACITY_FILE.parent)
+        tmp = E2_CAPACITY_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(E2_CAPACITY_FILE)
+    except Exception as e:
+        log.error("E2容量档案写入失败：%s", e)
+
+
 def _e2_auction_buy_worker(e2_rows: list[Any], broker_cfg: dict, today_str: str) -> None:
     """E2 竞价动态买入：09:24 读实时竞价撮合量，按参与率上限定仓后挂涨停价。
 
@@ -2051,8 +2107,12 @@ def _e2_auction_buy_worker(e2_rows: list[Any], broker_cfg: dict, today_str: str)
         # 只剩两次短锁QMT调用(读tick+下单),把慢IO挡在时间窗之外。
         cfg = load_json_config(PROJECT_ROOT / "config" / "config.json")
         lt = cfg.get("live_trade", {})
+        if not bool(lt.get("e2_enabled", True)):
+            log.warning("E2已被 live_trade.e2_enabled=false 关闭，今日%d只E2候选不挂单。", len(e2_rows))
+            return
         ratio = float(lt.get("e2_auction_participation_ratio", 0.10))
         fallback_amt = float(lt.get("e2_auction_fallback_amount", 50000))
+        capacity_records: list[dict[str, Any]] = []
         target = now_beijing().replace(hour=9, minute=24, second=0, microsecond=0)
         wait = (target - now_beijing()).total_seconds()
         if wait > 0:
@@ -2081,6 +2141,12 @@ def _e2_auction_buy_worker(e2_rows: list[Any], broker_cfg: dict, today_str: str)
                 else:
                     cap = min(planned_amt, fallback_amt)
                     src = f"竞价额不可得,兜底{fallback_amt / 1e4:.0f}万"
+                # 只在内存收集容量记录；落盘和推送在09:24关键窗口结束后统一执行
+                capacity_records.append({
+                    "date": today_str, "ts_code": ts_code, "name": name_s,
+                    "planned_amt": planned_amt, "auction_amt": auction_amt, "cap": cap,
+                    "source": "auction" if auction_amt > 0 else "fallback",
+                })
                 price, price_label = _premarket_buy_price(quote, ts_code, name_s, str(row.get("signal_date", "")))
                 if price <= 0:
                     log.warning("E2竞价买入：%s 无法取得涨停价，跳过。", ts_code)
@@ -2122,6 +2188,11 @@ def _e2_auction_buy_worker(e2_rows: list[Any], broker_cfg: dict, today_str: str)
             existing = load_pending_buys()
             save_pending_buys(existing + new_pending)
             _start_premarket_buy_monitor()
+        if capacity_records:
+            try:
+                _record_e2_capacity_and_alert(capacity_records, lt)
+            except Exception as e:
+                log.error("E2容量预警统计异常（不影响交易）：%s", e)
     except Exception as e:
         log.error("E2竞价动态买入线程异常：%s", e)
 
@@ -2245,6 +2316,9 @@ def job_premarket_buy() -> None:
             # 皇氏实测68万），50万级固定仓位会吃掉大半竞价盘直接顶高开盘价。
             # E2标的从不一字开盘，9:24挂单无排队损失；ABC/L保持9:15排队优势。
             if str(row.get("strategy_leg", "")).upper() == "E2":
+                if not bool(config.get("live_trade", {}).get("e2_enabled", True)):
+                    logger().warning("E2已被 live_trade.e2_enabled=false 关闭，跳过E2买入计划：%s", row.get("ts_code"))
+                    continue
                 e2_rows.append(row.copy())
                 continue
             ts_code  = str(row["ts_code"])
