@@ -2023,7 +2023,13 @@ def job_preopen_plan() -> None:
     logger().info("===== 盘前计划生成（09:00）=====")
     combined = load_combined_decisions()
     if combined is None:
-        logger().error("09:00 组合状态机决策生成失败，09:15将无法按计划预挂买入。")
+        # 2026-07-09 事故链第一环：09:00生成失败（共享盘IO慢180秒超时）后
+        # 干等到09:15才现场重算，又耗180秒，把09:15预挂拖到09:21、挤掉09:20
+        # 平仓检查。失败后立即重试一次，把恢复动作留在09:00~09:06的富余时段。
+        logger().warning("09:00 组合状态机生成失败，立即重试一次（避免拖累09:15预挂窗口）。")
+        combined = load_combined_decisions()
+    if combined is None:
+        logger().error("09:00 组合状态机决策生成两次失败，09:15将现场重算（可能影响集合竞价排队）。")
         return
     logger().info("09:00 组合状态机计划已生成，09:15如有开仓计划将直接按涨停价预挂。")
     logger().info("===== 盘前计划生成完成 =====")
