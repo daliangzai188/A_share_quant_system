@@ -2071,13 +2071,18 @@ def _record_e2_capacity_and_alert(records: list[dict[str, Any]], live_cfg: dict)
     if len(auction_recent) >= window and len(hits) >= min_hits and payload.get("last_capacity_alert_date") != today_str:
         payload["last_capacity_alert_date"] = today_str
         avg_clamp = sum(float(r["clamp_ratio"]) for r in hits) / len(hits)
+        detail = "；".join(
+            f"{r.get('name') or r.get('ts_code', '')} {r.get('date','')[-4:]} "
+            f"竞价{float(r.get('auction_amt', 0)) / 1e4:.0f}万→仓位{float(r.get('clamp_ratio', 1.0)):.0%}"
+            for r in hits[-3:]
+        )
         _notify(
             "buy_result", "⚠️ E2容量预警：建议评估关闭E2",
             f"最近{len(auction_recent)}笔E2竞价开仓中有{len(hits)}笔被竞价盘钳制"
-            f"（被钳制笔平均只能用计划资金的{avg_clamp:.0%}）。"
-            f"资金规模已超出E2小市值标的的竞价容量：E2绝对收益不再随资金增长，"
-            f"而隔夜持仓风险和运维成本不变。如决定停用：把 config/config.json 的 "
-            f"live_trade.e2_enabled 改为 false（信号照常生成，只停止下单）。",
+            f"（被钳制笔平均只能用计划资金的{avg_clamp:.0%}）。明细：{detail}。"
+            f"若竞价额普遍几十万级则是资金超容量（E2绝对收益不再随资金增长，隔夜风险不变），"
+            f"如决定停用：config的 live_trade.e2_enabled 改为 false（信号照常生成，只停止下单）；"
+            f"若竞价额只是近期偶发偏小，可以先观察。",
             level="timeSensitive",
         )
         log.warning("E2容量预警已推送：最近%d笔中%d笔钳制（阈值%.0f%%）。", len(auction_recent), len(hits), alert_ratio * 100)
