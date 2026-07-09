@@ -1789,6 +1789,11 @@ def job_premarket_sell() -> None:
     E2/ABC/D默认T+2收盘卖由 14:53 job_afternoon/check_and_close_positions 执行。
     """
     logger().info("===== 集合竞价平仓挂单（09:23）=====")
+    # 平仓检查冗余点②：09:20被挤掉时由此兜底（见09:15处注释）
+    try:
+        check_and_close_positions()
+    except Exception as e:
+        logger().error("09:23 平仓检查异常：%s", e)
     positions = load_positions()
     if not positions:
         logger().info("09:23 无持仓，跳过集合竞价平仓。")
@@ -2035,6 +2040,15 @@ def job_premarket_buy() -> None:
     """
     logger().info("===== 集合竞价买入预挂（09:15）=====")
 
+    # 平仓最高优先：逾期持仓（如昨日平仓失败残留）先于一切买入动作清理。
+    # 2026-07-09 事故：共享盘IO慢→09:15任务拖到09:21→09:20平仓检查被调度器
+    # 跳过→逾期仓整个上午无人处理。平仓检查冗余挂载到09:15/09:23/09:30，
+    # 任一任务存活即可完成清理；无逾期仓时本调用毫秒级返回。
+    try:
+        check_and_close_positions()
+    except Exception as e:
+        logger().error("09:15 平仓检查异常：%s", e)
+
     if has_position_bought_today():
         logger().info("09:15 今日已有买入成交，跳过集合竞价买入预挂。")
         return
@@ -2255,6 +2269,12 @@ def job_morning() -> None:
 
 def job_opening_buy() -> None:
     logger().info("===== 开盘买入任务（09:30）=====")
+
+    # 平仓检查冗余点③：确保逾期清理不因09:20/09:23被挤而丢失（见09:15处注释）
+    try:
+        check_and_close_positions()
+    except Exception as e:
+        logger().error("09:30 平仓检查异常：%s", e)
 
     # 先确认09:15盘前买单是否在开盘成交，再决定是否需要补单
     try:
