@@ -112,6 +112,8 @@
     "max_position_pct": 0.8,
     "max_total_position_pct": 0.8,
     "max_single_order_amount": 66000,
+    "e2_auction_participation_ratio": 0.10,
+    "e2_auction_fallback_amount": 50000,
     "limit_price_tolerance": 0.001,
     "enforce_trading_time": true,
     "reject_limit_up_buy": true,

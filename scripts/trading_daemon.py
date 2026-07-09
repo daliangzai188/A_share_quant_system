@@ -2029,6 +2029,91 @@ def job_preopen_plan() -> None:
     logger().info("===== 盘前计划生成完成 =====")
 
 
+def _e2_auction_buy_worker(e2_rows: list[Any], broker_cfg: dict, today_str: str) -> None:
+    """E2 竞价动态买入：09:24 读实时竞价撮合量，按参与率上限定仓后挂涨停价。
+
+    仓位 = min(资金缩单后金额, 实时竞价成交额 × e2_auction_participation_ratio)。
+    竞价额读不到（QMT竞价时段字段可能无效）时用 e2_auction_fallback_amount 兜底。
+    E2 标的从不一字开盘，09:24 挂单无排队损失；挂单后并入 pending_buys，
+    由既有的 09:30 确认链路和盘前监控线程统一收尾。
+    """
+    from src.broker_adapter import OrderRequest
+
+    log = logger()
+    try:
+        cfg = load_json_config(PROJECT_ROOT / "config" / "config.json")
+        lt = cfg.get("live_trade", {})
+        ratio = float(lt.get("e2_auction_participation_ratio", 0.10))
+        fallback_amt = float(lt.get("e2_auction_fallback_amount", 50000))
+        target = now_beijing().replace(hour=9, minute=24, second=0, microsecond=0)
+        wait = (target - now_beijing()).total_seconds()
+        if wait > 0:
+            time.sleep(min(wait, 540))
+        new_pending: list[dict[str, Any]] = []
+        for row in e2_rows:
+            try:
+                ts_code = str(row["ts_code"]); name_s = str(row.get("name", ""))
+                planned_amt = float(row.get("round_lot_shares", 0) or 0) * float(row.get("reference_price", 0.0) or 0.0)
+                with _qmt_lock:
+                    adapter = _qmt_get(broker_cfg)
+                    quote_map = adapter.get_full_tick([ts_code])
+                quote = quote_map.get(ts_code)
+                auction_amt = float(getattr(quote, "amount", 0.0) or 0.0) if quote else 0.0
+                if auction_amt <= 0 and quote is not None:
+                    vol = float(getattr(quote, "volume", 0.0) or 0.0)
+                    lp = float(getattr(quote, "last_price", 0.0) or 0.0)
+                    auction_amt = vol * lp * 100 if vol > 0 and lp > 0 else 0.0
+                if auction_amt > 0:
+                    cap = min(planned_amt, auction_amt * ratio)
+                    src = f"竞价额{auction_amt / 1e4:.0f}万×{ratio:.0%}"
+                else:
+                    cap = min(planned_amt, fallback_amt)
+                    src = f"竞价额不可得,兜底{fallback_amt / 1e4:.0f}万"
+                price, price_label = _premarket_buy_price(quote, ts_code, name_s, str(row.get("signal_date", "")))
+                if price <= 0:
+                    log.warning("E2竞价买入：%s 无法取得涨停价，跳过。", ts_code)
+                    continue
+                qty = int(cap // price // 100) * 100
+                if qty <= 0:
+                    log.warning("E2竞价买入：%s 动态仓位不足一手（%s，计划%.0f元），放弃本笔。", ts_code, src, planned_amt)
+                    _notify("buy_result", "⚠️ E2流动性不足放弃开仓",
+                            f"{ts_code} {name_s} 竞价盘过小（{src}），动态仓位不足一手，今日放弃。", level="timeSensitive")
+                    continue
+                log.warning("⏳ [E2竞价买入] %s %s %d股 %s=%.2f元（动态仓位：%s → %.1f万）",
+                            ts_code, name_s, qty, price_label, price, src, qty * price / 1e4)
+                request = OrderRequest(
+                    ts_code=ts_code, broker_code=str(row.get("broker_code", ts_code)),
+                    side="BUY", quantity=qty, price_type="FIXED_PRICE", price=price,
+                    strategy_name=str(row.get("strategy_name", "A_SYSTEM_ABC")),
+                    remark=f"E2竞价动态-{today_str}",
+                )
+                with _qmt_lock:
+                    adapter = _qmt_get(broker_cfg)
+                    result = adapter.place_order(request)
+                if result.accepted:
+                    raw_exit_n = row.get("exit_n_days", None)
+                    exit_n = int(float(raw_exit_n)) if raw_exit_n is not None and str(raw_exit_n) not in {"", "nan"} else 1
+                    new_pending.append({
+                        "order_id": str(result.order_id or f"e2auction-{today_str}-{ts_code}"),
+                        "ts_code": ts_code, "name": name_s,
+                        "signal_date": str(row.get("signal_date", "")),
+                        "strategy_leg": "E2", "qty": qty, "ref_price": price, "exit_n": exit_n,
+                    })
+                    log.info("✅ [E2竞价买入] %s %s %d股 @%.2f 已受理（待09:30确认）", ts_code, name_s, qty, price)
+                    _notify("buy_result", "📋 E2竞价动态开仓已挂单",
+                            f"{ts_code} {name_s} {qty}股@{price:.2f}（{src}），待09:30确认成交。", level="timeSensitive")
+                else:
+                    log.error("❌ [E2竞价买入] %s 提交失败：%s", ts_code, result.message)
+            except Exception as e:
+                log.error("E2竞价买入异常（%s）：%s", row.get("ts_code"), e)
+        if new_pending:
+            existing = load_pending_buys()
+            save_pending_buys(existing + new_pending)
+            _start_premarket_buy_monitor()
+    except Exception as e:
+        log.error("E2竞价动态买入线程异常：%s", e)
+
+
 def job_premarket_buy() -> None:
     """09:15 集合竞价预挂：对计划开仓且当前无持仓的标的，优先按涨停价挂限价买单。
 
@@ -2139,8 +2224,17 @@ def job_premarket_buy() -> None:
     )
 
     pending_buys: list[dict[str, Any]] = []
+    e2_rows: list[Any] = []
     for _, row in buy_orders.iterrows():
         try:
+            # E2 专属通道：不在09:15挂单，推迟到09:24读实时竞价撮合量后
+            # 按 min(缩单金额, 竞价额×参与率) 动态定仓再挂涨停价参与竞价。
+            # 原因：E2标的为冷门小市值，竞价盘常仅几十~几百万（2026-07-09
+            # 皇氏实测68万），50万级固定仓位会吃掉大半竞价盘直接顶高开盘价。
+            # E2标的从不一字开盘，9:24挂单无排队损失；ABC/L保持9:15排队优势。
+            if str(row.get("strategy_leg", "")).upper() == "E2":
+                e2_rows.append(row.copy())
+                continue
             ts_code  = str(row["ts_code"])
             name_s   = str(row.get("name", ""))
             qty      = int(row.get("round_lot_shares", 0))
@@ -2210,7 +2304,15 @@ def job_premarket_buy() -> None:
                 "；".join(plan_parts) + "。09:15集合竞价预挂完成，实际按开盘价成交（通常低于预挂价），"
                 "09:30确认成交后再推送持仓通知。",
                 level="timeSensitive")
-    logger().info("===== 盘前买入挂单完成（受理%d笔，待开盘确认）=====", len(pending_buys))
+    if e2_rows:
+        threading.Thread(
+            target=_e2_auction_buy_worker,
+            args=(e2_rows, broker_cfg, today_str),
+            daemon=True,
+            name="e2-auction-buy",
+        ).start()
+        logger().info("E2竞价动态买入线程已启动：09:24读实时竞价量后定仓挂单（%d只候选）。", len(e2_rows))
+    logger().info("===== 盘前买入挂单完成（受理%d笔，待开盘确认；E2延迟至09:24=%d笔）=====", len(pending_buys), len(e2_rows))
 
 
 def job_morning() -> None:
