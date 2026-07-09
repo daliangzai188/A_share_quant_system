@@ -350,9 +350,23 @@ class QMTBrokerAdapter(BrokerAdapter):
             raise ValueError(f"不支持的委托方向: {request.side}")
 
         price_type_name = request.price_type.upper()
+        # xtconstant 的限价常量名是 FIX_PRICE；历史代码统一传 "FIXED_PRICE"，
+        # getattr 找不到曾静默退化为 LATEST_PRICE（最新价委托，price参数被忽略）。
+        # 后果实录：2026-07-08 皇氏平仓传3.26实际按最新价3.29挂卖单→已报0成交
+        # 被动过夜；2026-07-09 建研院预挂传涨停价4.46实际按竞价价4.32委托。
+        # 修复：别名映射 + 限价常量硬兜底(FIX_PRICE=11) + 退化时告警不再静默。
+        _PRICE_TYPE_ALIAS = {"FIXED_PRICE": "FIX_PRICE"}
+        price_type_name = _PRICE_TYPE_ALIAS.get(price_type_name, price_type_name)
         price_type = self._constant(price_type_name, None)
         if price_type is None:
-            price_type = self._constant("LATEST_PRICE", 5)
+            if price_type_name == "FIX_PRICE":
+                price_type = 11  # xtconstant.FIX_PRICE 已知值，双保险
+            else:
+                self.logger.warning(
+                    "价格类型 %s 在 xtconstant 中不存在，退化为 LATEST_PRICE（最新价，price参数将被忽略）",
+                    price_type_name,
+                )
+                price_type = self._constant("LATEST_PRICE", 5)
 
         raw_order_id = self.trader.order_stock(
             self.account,
