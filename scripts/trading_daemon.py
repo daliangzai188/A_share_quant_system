@@ -2041,6 +2041,8 @@ def _e2_auction_buy_worker(e2_rows: list[Any], broker_cfg: dict, today_str: str)
 
     log = logger()
     try:
+        # 所有共享盘IO(读配置)在09:15线程启动时就完成,09:24关键窗口内
+        # 只剩两次短锁QMT调用(读tick+下单),把慢IO挡在时间窗之外。
         cfg = load_json_config(PROJECT_ROOT / "config" / "config.json")
         lt = cfg.get("live_trade", {})
         ratio = float(lt.get("e2_auction_participation_ratio", 0.10))
@@ -2049,6 +2051,10 @@ def _e2_auction_buy_worker(e2_rows: list[Any], broker_cfg: dict, today_str: str)
         wait = (target - now_beijing()).total_seconds()
         if wait > 0:
             time.sleep(min(wait, 540))
+        # 窗口预算监控:9:25撮合前必须完成挂单;超时由09:30补买路径兜底,
+        # 这里只负责让日志能看出迟到。
+        if now_beijing().time() >= datetime.time(9, 25, 0):
+            log.warning("E2竞价买入线程晚于09:25启动执行（可能被IO/锁延误），仍尝试挂单；若错过竞价将由09:30补买兜底。")
         new_pending: list[dict[str, Any]] = []
         for row in e2_rows:
             try:
