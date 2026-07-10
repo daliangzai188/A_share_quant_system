@@ -2,6 +2,19 @@ import subprocess, sys, os, time
 from datetime import datetime
 from pathlib import Path
 
+# ── 迁移防呆闸（2026-07-10 起系统真身在 C:\A_System）──────────────────
+# 从 Z:（网络共享，仅作 Mac 同步用）启动会用不完整/过期的运行时数据，
+# 且共享盘存在 SMB 目录枚举兼容问题（"无效签名"），流水线必卡死。
+_here = os.path.abspath(__file__)
+if _here.upper().startswith("Z:") or _here.startswith("\\\\"):
+    print("=" * 62)
+    print("!!  拒绝启动：系统已迁移到本地盘，Z: 只用于与 Mac 同步。")
+    print("!!  正确启动方式：")
+    print("!!      cd C:\\A_System")
+    print("!!      py -3.11 start_windows.py")
+    print("=" * 62)
+    sys.exit(1)
+
 sys.stdout.reconfigure(encoding="utf-8")
 full_log = "--full-log" in sys.argv
 PROCESS_TERMINATE = 0x0001
