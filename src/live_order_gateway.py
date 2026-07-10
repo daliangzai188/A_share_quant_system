@@ -222,7 +222,10 @@ class LiveOrderGateway:
                 reject_reasons.append("EXCEED_TOTAL_POSITION_PCT")
             if side == "BUY" and estimated_amount > account_cash:
                 reject_reasons.append("INSUFFICIENT_CASH")
-            if estimated_amount >= max_order_amount:
+            # 单笔金额上限只约束买入敞口；SELL平仓是风险释放，持仓上涨后
+            # 卖出市值必然超过买入限额，拦截会导致"赚钱就平不了仓"
+            # （2026-07-10 建研院事故：15200股卖出67640元被66000上限拒单）。
+            if side == "BUY" and estimated_amount >= max_order_amount:
                 reject_reasons.append("EXCEED_SINGLE_ORDER_AMOUNT")
             if duplicate_order_check and any(self.active_order_match(open_order, ts_code, side) for open_order in open_orders):
                 reject_reasons.append("DUPLICATE_ACTIVE_ORDER")
