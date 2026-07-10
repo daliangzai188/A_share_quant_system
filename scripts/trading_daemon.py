@@ -300,7 +300,10 @@ def ensure_trade_calendar_fresh() -> None:
         start_date = str(data_cfg.get("start_date", "20190101"))
         end_date = str(data_cfg.get("end_date", "20261231"))
         today_str = today_beijing().strftime("%Y%m%d")
-        target_date = max(today_str, end_date)
+        # 滚动前瞻：日历须覆盖今天+30天，否则刷新；拉取到今天+370天，
+        # 避免配置end_date写死导致跨年后永远刷不出新日历、降级周历误判节假日。
+        target_date = max(today_str, (today_beijing() + datetime.timedelta(days=30)).strftime("%Y%m%d"))
+        fetch_end = max(end_date, (today_beijing() + datetime.timedelta(days=370)).strftime("%Y%m%d"))
 
         _, max_date = _load_calendar()
         if max_date and max_date >= target_date:
@@ -318,7 +321,7 @@ def ensure_trade_calendar_fresh() -> None:
         source = TushareDataSource(PROJECT_ROOT / "config" / "config.json")
         calendar = TradingCalendar(source, PROJECT_ROOT / "config" / "config.json").fetch_and_save(
             start_date,
-            end_date,
+            fetch_end,
             overwrite=True,
         )
         max_after = str(calendar["cal_date"].astype(str).max()) if "cal_date" in calendar.columns and not calendar.empty else ""
@@ -1495,6 +1498,9 @@ def _intraday_takeprofit_monitor() -> None:
 
     log = logger()
     REMARK_PREFIX = "盘中止盈"
+    place_tries: dict[str, int] = {}   # 当日每标的发单次数（熔断用）
+    tries_day = ""
+    MAX_PLACE_TRIES = 5
     while True:
         try:
             now = now_beijing(); t = now.time()
@@ -1514,6 +1520,8 @@ def _intraday_takeprofit_monitor() -> None:
                 time.sleep(300); continue
             broker_cfg = config.get("broker", {})
             today_str = today_beijing().strftime("%Y%m%d")
+            if tries_day != today_str:
+                place_tries.clear(); tries_day = today_str
             due = [p for p in load_positions()
                    if str(p.get("status", "")).lower() == "open"
                    and str(p.get("planned_exit_date", "")) == today_str]
@@ -1614,6 +1622,8 @@ def _intraday_takeprofit_monitor() -> None:
                     # 若撤前有部分成交，本地持仓不会自动扣减，请人工核对。
                     log.info("[盘中止盈] %s %s 止盈单已被撤销（疑人工干预），不再补挂；14:53收盘平仓仍生效。", ts_code, name_s)
                     continue
+                if place_tries.get(short, 0) >= MAX_PLACE_TRIES:
+                    continue   # 当日发单熔断：反复被拒/废单说明环境异常，放弃当日预挂
                 # 未挂单 → 预挂（涨停价-0.01，参与集合竞价）；重启后由此补挂
                 tick_map = _polite_qmt("get_full_tick", ([ts_code],), call_timeout=5.0)
                 quote = tick_map.get(ts_code) if tick_map else None
@@ -1631,6 +1641,12 @@ def _intraday_takeprofit_monitor() -> None:
                     quantity=shares, price_type="FIXED_PRICE", price=sell_price,
                     strategy_name="A_SYSTEM_ABC", remark=f"{REMARK_PREFIX}-{today_str}",
                 )
+                place_tries[short] = place_tries.get(short, 0) + 1
+                if place_tries[short] >= MAX_PLACE_TRIES:
+                    _notify("sell_fail", "⚠️ 盘中止盈熔断",
+                            f"{ts_code} {name_s} 止盈委托当日已尝试{MAX_PLACE_TRIES}次仍无活单"
+                            f"（反复被拒或废单，疑节假日/通道异常），今日放弃预挂，14:53收盘平仓照常兜底。",
+                            level="critical")
                 result = _polite_qmt("place_order", (request,))
                 if result is None:
                     log.warning("[盘中止盈] %s 挂单未执行（QMT忙/超时），下轮重试。", ts_code)
