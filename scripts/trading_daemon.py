@@ -911,6 +911,15 @@ def _execute_orders_inprocess(
       try:
         adapter = _qmt_get(broker_cfg)
         account = adapter.query_account()
+        if "side" in planned_orders.columns:
+            _sell_codes = set(
+                planned_orders.loc[planned_orders["side"].astype(str).str.upper() == "SELL", "ts_code"]
+                .dropna().astype(str)
+            )
+            if _sell_codes:
+                # 先撤自家止盈单再取 positions/open_orders 快照：
+                # 否则可用股数不足与重复单校验都会拒掉平仓单
+                _cancel_own_takeprofit_orders(adapter, _sell_codes)
         positions = adapter.query_positions()
         open_orders = adapter.query_orders()
         ts_codes = sorted(
@@ -1304,6 +1313,58 @@ def _pick_sell_limit_price(quote: Any) -> tuple[float, str]:
     return 0.0, ""
 
 
+def _cancel_own_takeprofit_orders(adapter: Any, ts_codes: set[str], wait_sec: float = 6.0) -> None:
+    """平仓前撤掉目标标的的"盘中止盈"活卖单，释放冻结股份。
+
+    不先撤会两头堵：QMT可用股数不足拒卖（SELL_VOLUME_NOT_AVAILABLE），
+    gateway 重复单校验也会拒（DUPLICATE_ACTIVE_ORDER）。
+    撤单成败以订单状态为准（2026-07-10 事故口径），最长等 wait_sec 秒。
+    调用者需持有 _qmt_lock（RLock 可重入）。
+    """
+    from src.qmt_adapter import object_to_dict, first_present, to_int
+    log = logger()
+    try:
+        orders = adapter.query_orders()
+    except Exception as e:
+        log.warning("[平仓前置] 查询委托失败（%s），跳过止盈单清理。", e)
+        return
+    shorts = {str(c).split(".")[0] for c in ts_codes}
+    targets = []
+    for o in orders or []:
+        od = object_to_dict(o)
+        remark = str(first_present(od, ["order_remark", "m_strRemark", "remark"], ""))
+        if not remark.startswith("盘中止盈"):
+            continue
+        code = str(first_present(od, ["stock_code", "m_strInstrumentID", "ts_code"], "")).upper().split(".")[0]
+        st = to_int(first_present(od, ["order_status", "m_nOrderStatus", "status"], -1), -1)
+        if code in shorts and st in (48, 49, 50, 51, 52, 55):
+            targets.append((code, str(first_present(od, ["order_id", "m_nOrderID"], ""))))
+    for code, oid in targets:
+        log.warning("[平仓前置] %s 存在未撤的盘中止盈卖单(order_id=%s)，先撤单释放冻结股份。", code, oid)
+        try:
+            adapter.cancel_order(oid)
+        except Exception:
+            pass
+        deadline = time.time() + wait_sec
+        while time.time() < deadline:
+            time.sleep(1.0)
+            try:
+                cur = adapter.query_orders()
+            except Exception:
+                continue
+            st = -2
+            for o in cur or []:
+                od = object_to_dict(o)
+                if str(first_present(od, ["order_id", "m_nOrderID"], "")) == oid:
+                    st = to_int(first_present(od, ["order_status", "m_nOrderStatus", "status"], -1), -1)
+                    break
+            if st in (53, 54, 56, -2):
+                log.info("[平仓前置] %s 止盈单已了结（状态%s），继续平仓。", code, st)
+                break
+        else:
+            log.error("[平仓前置] %s 止盈单撤单超时未确认，平仓可能因股份冻结被拒！", code)
+
+
 def _abc_place_sell_order_direct(
     ts_code: str, name: str, shares: int, order_id: str,
     confirm: str, config: dict, broker_cfg: dict
@@ -1331,6 +1392,7 @@ def _abc_place_sell_order_direct(
 
     with _qmt_lock:
         adapter = _qmt_get(broker_cfg)
+        _cancel_own_takeprofit_orders(adapter, {ts_code})
         quote_map = adapter.get_full_tick([ts_code])
 
     quote = quote_map.get(ts_code)
@@ -1477,6 +1539,76 @@ def _do_sell(pos: dict[str, Any], qmt_enabled: bool) -> None:
                 level="critical", call=True)
 
 
+def _close_position_watchdog() -> None:
+    """收盘平仓看门狗（独立常驻线程）：14:52/14:54 两次核查当日到期持仓是否已有人管。
+
+    2026-07-10 事故：主调度线程被锁竞争拖慢，14:50 平仓迟到 6 分钟且被拒后，
+    没有独立哨兵发现"到点未平仓"，只能靠用户自己盯盘手动平仓。
+    本线程只告警不下单（避免与主流程双发卖单）：
+    - 判据="该标的当日存在活跃(48~52,55)或已成(56)委托"——主平仓已发单、
+      止盈单已成交都算有人管；已撤/废单不算；
+    - 拿不到 _qmt_lock（超时2秒）说明主流程正在使用 QMT（大概率正在平仓），
+      本次静默跳过，下一检查点再核。
+    """
+    log = logger()
+    fired: set[str] = set()
+    checkpoints = (datetime.time(14, 52), datetime.time(14, 54))
+    while True:
+        try:
+            now = now_beijing(); t = now.time()
+            today_str = today_beijing().strftime("%Y%m%d")
+            if is_trade_day(now.date()) and t < datetime.time(15, 0):
+                for chk in checkpoints:
+                    key = f"{today_str}-{chk}"
+                    if key in fired or t < chk:
+                        continue
+                    fired.add(key)
+                    due = [p for p in load_positions()
+                           if str(p.get("status", "")).lower() in {"open", "sell_pending"}
+                           and str(p.get("planned_exit_date", "99991231")) <= today_str]
+                    if not due:
+                        continue
+                    if not _qmt_lock.acquire(timeout=2):
+                        log.info("[平仓看门狗] %s QMT忙（主流程可能正在平仓），本次跳过。", chk)
+                        continue
+                    try:
+                        config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+                        adapter = _qmt_get(config.get("broker", {}))
+                        orders = adapter.query_orders()
+                    except Exception as e:
+                        log.error("[平仓看门狗] 查询委托失败：%s", e)
+                        continue
+                    finally:
+                        _qmt_lock.release()
+                    from src.qmt_adapter import object_to_dict, first_present, to_int
+                    covered: set[str] = set()
+                    for o in orders or []:
+                        od = object_to_dict(o)
+                        st = to_int(first_present(od, ["order_status", "m_nOrderStatus", "status"], -1), -1)
+                        if st in (48, 49, 50, 51, 52, 55, 56):
+                            code = str(first_present(od, ["stock_code", "m_strInstrumentID", "ts_code"], "")).upper().split(".")[0]
+                            covered.add(code)
+                    missing = [p for p in due if str(p.get("ts_code", "")).split(".")[0] not in covered]
+                    if missing:
+                        codes = "、".join(f"{p.get('ts_code','')} {p.get('name','')}" for p in missing)
+                        log.error("🛑 [平仓看门狗] %s 核查：%s 今日到期但未发现有效卖出委托！", chk, codes)
+                        _notify("sell_fail", "🛑 收盘平仓疑似未执行",
+                                f"{chk.strftime('%H:%M')}核查：{codes} 今日到期，QMT中未发现活跃/已成委托，"
+                                f"平仓流程可能被卡住或被拒。请立即人工核对并手动平仓（15:00收盘前）！",
+                                level="critical", call=True)
+                    else:
+                        log.info("[平仓看门狗] %s 核查通过：%d笔到期持仓均已有委托在场。", chk, len(due))
+        except Exception as e:
+            logger().error("平仓看门狗异常：%s", e)
+        # 距下一个14:52超过10分钟就长睡，窗口附近10秒粒度
+        now2 = now_beijing()
+        nxt = now2.replace(hour=14, minute=52, second=0, microsecond=0)
+        if now2 >= now2.replace(hour=15, minute=0, second=0, microsecond=0):
+            nxt += datetime.timedelta(days=1)
+        gap = (nxt - now2).total_seconds()
+        time.sleep(10 if 0 <= gap <= 600 or now2.time() >= datetime.time(14, 52) and now2.time() < datetime.time(15, 0) else min(max(gap - 600, 60), 3600))
+
+
 def _daily_calendar_sentinel() -> None:
     """每个自然日 08:30 交易日历晨检（独立常驻线程）。
 
@@ -1544,6 +1676,7 @@ def _intraday_takeprofit_monitor() -> None:
     place_tries: dict[str, int] = {}   # 当日每标的发单次数（熔断用）
     tries_day = ""
     MAX_PLACE_TRIES = 5
+    qmt_stall = {"n": 0, "alerted": False}   # 当日QMT调用超时计数（通道卡滞监测）
     while True:
         try:
             now = now_beijing(); t = now.time()
@@ -1565,6 +1698,7 @@ def _intraday_takeprofit_monitor() -> None:
             today_str = today_beijing().strftime("%Y%m%d")
             if tries_day != today_str:
                 place_tries.clear(); tries_day = today_str
+                qmt_stall.update(n=0, alerted=False)
             due = [p for p in load_positions()
                    if str(p.get("status", "")).lower() == "open"
                    and str(p.get("planned_exit_date", "")) == today_str]
@@ -1590,7 +1724,17 @@ def _intraday_takeprofit_monitor() -> None:
                             err.append(e)
                     th = threading.Thread(target=_run, daemon=True)
                     th.start(); th.join(call_timeout)
-                    if th.is_alive() or err or not result:
+                    if th.is_alive():
+                        # 调用线程超时未归（泄漏）：QMT/共享盘IO变慢的早期信号
+                        qmt_stall["n"] += 1
+                        if qmt_stall["n"] >= 8 and not qmt_stall["alerted"]:
+                            qmt_stall["alerted"] = True
+                            _notify("system_error", "⚠️ QMT通道疑似卡滞",
+                                    f"盘中止盈线程今日已{qmt_stall['n']}次QMT调用超时，"
+                                    f"通道/共享盘IO疑似恶化，请关注14:50平仓链路是否正常。",
+                                    level="critical")
+                        return None
+                    if err or not result:
                         return None
                     return result[0]
                 finally:
@@ -5979,7 +6123,7 @@ _qmt_reconnect_count: int = 0       # 累计重连次数，成功后归零
 _qmt_adapter: Any = None             # 持久连接，程序生命周期内保持
 _qmt_last_verified_at: str = ""      # 最近一次 query_account/query_positions 成功时间
 _last_account_has_position: bool = False  # 最近一次券商账户心跳是否确认有持仓
-_qmt_lock = threading.Lock()         # 保护 _qmt_adapter 并发访问
+_qmt_lock = threading.RLock()        # 保护 _qmt_adapter 并发访问（可重入：平仓路径内嵌撤止盈单）
 _d_monitor_thread: threading.Thread | None = None  # D监控线程；D不再独立连接QMT
 
 
@@ -6599,6 +6743,13 @@ def main() -> None:
         target=_daily_calendar_sentinel,
         daemon=True,
         name="calendar-sentinel",
+    ).start()
+
+    # 收盘平仓看门狗（14:52/14:54核查到期持仓是否有人管，只告警不下单）
+    threading.Thread(
+        target=_close_position_watchdog,
+        daemon=True,
+        name="close-watchdog",
     ).start()
 
     # 开仓决策链周期播报（每30分钟，纯展示）：已有决策结果且执行日未过期时重播。

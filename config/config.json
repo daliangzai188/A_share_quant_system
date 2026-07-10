@@ -123,7 +123,7 @@
     "limit_price_tolerance": 0.001,
     "enforce_trading_time": true,
     "reject_limit_up_buy": true,
-    "reject_limit_down_sell": true,
+    "reject_limit_down_sell": false,
     "duplicate_order_check": true,
     "fill_confirm_enabled": true,
     "fill_confirm_timeout_sec": 60,
