@@ -1477,6 +1477,49 @@ def _do_sell(pos: dict[str, Any], qmt_enabled: bool) -> None:
                 level="critical", call=True)
 
 
+def _daily_calendar_sentinel() -> None:
+    """每个自然日 08:30 交易日历晨检（独立常驻线程）。
+
+    9:00 起就有盘前计划/挂单等交易动作，必须在此之前明确"今天是否交易日"。
+    不能挂在 SCHEDULE 调度上——next_event 只在交易日历认定的交易日安排任务，
+    日历误判时晨检自己就被跳过了。本线程按自然日无条件触发：
+    - 日历覆盖不足自动刷新（ensure_trade_calendar_fresh 内含失败告警）；
+    - 刷新后仍覆盖不到今天 → critical电话告警，9点前留人工确认窗口；
+    - 正常时打一行明确结论日志（交易日/节假日休市）。
+    """
+    log = logger()
+    last_checked = ""
+    while True:
+        try:
+            now = now_beijing()
+            today_str = today_beijing().strftime("%Y%m%d")
+            if now.time() >= datetime.time(8, 30) and last_checked != today_str:
+                last_checked = today_str
+                try:
+                    ensure_trade_calendar_fresh()
+                except Exception as e:
+                    log.error("晨检：日历刷新异常：%s", e)
+                cal, max_date = _load_calendar()
+                if not cal or today_str > max_date:
+                    log.error("🛑 晨检：交易日历未覆盖今天 %s（最大=%s），将退化周历判断，节假日可能被误判！", today_str, max_date or "无")
+                    _notify("system_error", "🛑 交易日历晨检失败",
+                            f"日历数据缺失或未覆盖今天（最大={max_date or '无'}），今日交易日判断退化为周历，"
+                            f"非周末节假日会被误判为交易日。请在9:00前人工确认今天({today_str})是否交易日，"
+                            f"必要时停止daemon。", level="critical", call=True)
+                elif is_trade_day(now.date()):
+                    log.info("✅ 晨检(08:30)：今天 %s 是交易日（真实日历确认），今日交易任务照常。", today_str)
+                else:
+                    log.info("💤 晨检(08:30)：今天 %s 非交易日（周末/节假日休市），全天交易任务自动跳过。", today_str)
+        except Exception as e:
+            logger().error("晨检线程异常：%s", e)
+        # 睡到下一个08:30（当天已过则次日），上限1小时防时钟跳变
+        now = now_beijing()
+        nxt = now.replace(hour=8, minute=30, second=0, microsecond=0)
+        if now >= nxt:
+            nxt += datetime.timedelta(days=1)
+        time.sleep(min(max((nxt - now).total_seconds(), 60), 3600))
+
+
 def _intraday_takeprofit_monitor() -> None:
     """当日到期持仓的涨停预挂止盈（常驻线程，2026-07-10 用户定稿规则）。
 
@@ -6526,6 +6569,13 @@ def main() -> None:
     wait_for_qmt_startup_gate()
 
     ensure_trade_calendar_fresh()
+
+    # 交易日历晨检（每自然日08:30，确保9点前明确今天是否交易日）
+    threading.Thread(
+        target=_daily_calendar_sentinel,
+        daemon=True,
+        name="calendar-sentinel",
+    ).start()
 
     # 开仓决策链周期播报（每30分钟，纯展示）：已有决策结果且执行日未过期时重播。
     threading.Thread(
