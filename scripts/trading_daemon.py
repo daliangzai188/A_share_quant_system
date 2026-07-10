@@ -1545,8 +1545,10 @@ def _intraday_takeprofit_monitor() -> None:
                 finally:
                     _qmt_lock.release()
 
-            # 认领自家止盈单（无状态，防重启丢单/重复挂）
+            # 认领自家止盈单（无状态，防重启丢单/重复挂；重启后查不到
+            # 自家活单会自动走下方补挂分支——交易时间内重启即接管）
             active: dict[str, dict] = {}
+            cancelled_codes: set[str] = set()
             orders_raw = _polite_qmt("query_orders")
             if orders_raw is None:
                 time.sleep(60); continue
@@ -1559,7 +1561,12 @@ def _intraday_takeprofit_monitor() -> None:
                 status = to_int(first_present(od, ["order_status", "m_nOrderStatus", "status"], -1), -1)
                 code = str(first_present(od, ["stock_code", "m_strInstrumentID", "ts_code"], "")).upper()
                 oid = str(first_present(od, ["order_id", "m_nOrderID"], ""))
-                active[code.split(".")[0]] = {"order_id": oid, "status": status}
+                short_c = code.split(".")[0]
+                if status in (53, 54):   # 部撤/已撤：死单不占坑，单独记录（区分人工撤单）
+                    cancelled_codes.add(short_c); continue
+                if status == 57:         # 废单：不占坑 → 下面走补挂重试
+                    continue
+                active[short_c] = {"order_id": oid, "status": status}
 
             cancel_window = t >= datetime.time(14, 45)
             for pos in due:
@@ -1596,7 +1603,12 @@ def _intraday_takeprofit_monitor() -> None:
                     continue
                 if cancel_window:
                     continue   # 14:45后不再新挂
-                # 未挂单 → 09:20起无条件预挂（涨停价-0.01，参与集合竞价）
+                if short in cancelled_codes:
+                    # 14:45前出现已撤单只可能是人工撤的 → 尊重人工干预不补挂；
+                    # 若撤前有部分成交，本地持仓不会自动扣减，请人工核对。
+                    log.info("[盘中止盈] %s %s 止盈单已被撤销（疑人工干预），不再补挂；14:53收盘平仓仍生效。", ts_code, name_s)
+                    continue
+                # 未挂单 → 预挂（涨停价-0.01，参与集合竞价）；重启后由此补挂
                 tick_map = _polite_qmt("get_full_tick", ([ts_code],), call_timeout=5.0)
                 quote = tick_map.get(ts_code) if tick_map else None
                 pre = float(getattr(quote, "pre_close", 0.0) or 0.0) if quote else 0.0
