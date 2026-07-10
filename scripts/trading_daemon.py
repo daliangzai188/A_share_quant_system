@@ -1478,8 +1478,8 @@ def _intraday_takeprofit_monitor() -> None:
     """当日到期持仓的涨停预挂止盈（常驻线程，2026-07-10 用户定稿规则）。
 
     规则（零轮询压力版）：
-    - 今日有平仓计划(planned_exit_date==今日)的 open 持仓，09:30 无条件
-      挂（涨停价-0.01）限价卖单——不看涨幅、不做盘中判断；
+    - 今日有平仓计划(planned_exit_date==今日)的 open 持仓，09:20 无条件
+      挂（涨停价-0.01）限价卖单（参与集合竞价）——不看涨幅、不做盘中判断；
     - 冲板/秒板/炸板前触及 → 自动成交在涨停-0.01（锁定强势卖出）；
     - 14:45 仍未成交 → 撤单（礼让式重试3次），14:53 收盘平仓主流程接管；
     - 非当日到期持仓不做任何操作。
@@ -1498,8 +1498,11 @@ def _intraday_takeprofit_monitor() -> None:
     while True:
         try:
             now = now_beijing(); t = now.time()
-            if not is_trade_day(now.date()) or t < datetime.time(9, 30) or t >= datetime.time(14, 53):
-                time.sleep(120); continue
+            # 09:20起挂单：让止盈卖单参与集合竞价——开盘即涨停的极端日
+            # 在09:25直接按开盘价(=涨停价)成交，消灭9:25~9:30静默期的
+            # 炸板空窗；9:20后竞价不可撤单对本单无碍（本就挂到14:45）。
+            if not is_trade_day(now.date()) or t < datetime.time(9, 20) or t >= datetime.time(14, 53):
+                time.sleep(60 if datetime.time(9, 0) <= t < datetime.time(9, 20) else 120); continue
             config = load_json_config(PROJECT_ROOT / "config" / "config.json")
             lt = config.get("live_trade", {})
             if not lt.get("intraday_takeprofit_enabled", True):
@@ -1588,7 +1591,7 @@ def _intraday_takeprofit_monitor() -> None:
                     continue
                 if cancel_window:
                     continue   # 14:45后不再新挂
-                # 未挂单 → 09:30起无条件预挂（涨停价-0.01）
+                # 未挂单 → 09:20起无条件预挂（涨停价-0.01，参与集合竞价）
                 tick_map = _polite_qmt("get_full_tick", ([ts_code],), call_timeout=5.0)
                 quote = tick_map.get(ts_code) if tick_map else None
                 pre = float(getattr(quote, "pre_close", 0.0) or 0.0) if quote else 0.0
@@ -1610,7 +1613,7 @@ def _intraday_takeprofit_monitor() -> None:
                     log.warning("[盘中止盈] %s 挂单未执行（QMT忙/超时），下轮重试。", ts_code)
                     continue
                 if result.accepted:
-                    log.warning("⏳ [盘中止盈] %s %s 当日到期，09:30预挂涨停-%.2f止盈卖单 %d股@%.2f（14:45未成交自动撤）",
+                    log.warning("⏳ [盘中止盈] %s %s 当日到期，09:20预挂涨停-%.2f止盈卖单 %d股@%.2f（14:45未成交自动撤）",
                                 ts_code, name_s, offset, shares, sell_price)
                     _notify("sell_success", "📈 止盈卖单已预挂",
                             f"{ts_code} {name_s} 今日到期，已挂{sell_price:.2f}（涨停-{offset:.2f}）止盈卖单，"
