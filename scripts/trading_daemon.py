@@ -1569,6 +1569,12 @@ def _intraday_takeprofit_monitor() -> None:
                 active[short_c] = {"order_id": oid, "status": status}
 
             cancel_window = t >= datetime.time(14, 45)
+            # 可发新委托的时段：9:20~9:25（竞价申报）、9:30~11:30、13:00~14:45。
+            # 午休、9:25~9:30静默期等非交易时间不发委托（无论是否刚重启），
+            # 已挂单的成交监控/撤单照常。
+            can_place = ((datetime.time(9, 20) <= t < datetime.time(9, 25))
+                         or (datetime.time(9, 30) <= t < datetime.time(11, 30))
+                         or (datetime.time(13, 0) <= t < datetime.time(14, 45)))
             for pos in due:
                 ts_code = str(pos.get("ts_code", "")); short = ts_code.split(".")[0]
                 shares = int(pos.get("shares", 0)); name_s = str(pos.get("name", ""))
@@ -1601,8 +1607,8 @@ def _intraday_takeprofit_monitor() -> None:
                                     f"{ts_code} 盘中止盈单14:45撤单三次失败，请立即手动处理，避免与14:53平仓冲突。",
                                     level="critical", call=True)
                     continue
-                if cancel_window:
-                    continue   # 14:45后不再新挂
+                if cancel_window or not can_place:
+                    continue   # 14:45后/非交易时段（午休、竞价静默期）不发新委托
                 if short in cancelled_codes:
                     # 14:45前出现已撤单只可能是人工撤的 → 尊重人工干预不补挂；
                     # 若撤前有部分成交，本地持仓不会自动扣减，请人工核对。
