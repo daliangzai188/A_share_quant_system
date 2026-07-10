@@ -1474,6 +1474,136 @@ def _do_sell(pos: dict[str, Any], qmt_enabled: bool) -> None:
                 level="critical", call=True)
 
 
+def _intraday_takeprofit_monitor() -> None:
+    """当日到期持仓的盘中涨停止盈监控（常驻线程，2026-07-10 用户规则）。
+
+    规则：仅对 planned_exit_date==今日 的 open 持仓——
+    - 盘中现价涨幅 ≥7% → 挂（涨停价-0.01）限价卖单锁定强势卖出；
+    - 14:50 仍未成交 → 撤单（重试3次），14:53 收盘平仓主流程正常接管；
+    - 涨幅不足 7% 或非当日到期持仓 → 不做任何操作。
+    回测验证（E2 62笔）：8.8x→9.1x；封死涨停笔代价-0.03%，炸板笔+2.4%。
+
+    设计约束：
+    - 无状态：每轮从 query_orders 按 remark 前缀识别自家止盈单，不依赖内存，
+      daemon 中途重启后自动重新接管，也不会重复挂单；
+    - 全程独立线程+短锁 QMT 调用，挂单/撤单都不阻塞主调度线程；
+    - 止盈单成交 → 确认后回写平仓；部分成交撤单后缩减本地股数，
+      剩余由 14:53 主流程卖出。
+    """
+    from src.broker_adapter import OrderRequest
+
+    log = logger()
+    REMARK_PREFIX = "盘中止盈"
+    while True:
+        try:
+            now = now_beijing(); t = now.time()
+            if not is_trade_day(now.date()) or t < datetime.time(9, 30) or t >= datetime.time(14, 53):
+                time.sleep(120); continue
+            config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+            lt = config.get("live_trade", {})
+            if not lt.get("intraday_takeprofit_enabled", True):
+                time.sleep(300); continue
+            threshold = float(lt.get("intraday_takeprofit_threshold", 0.07))
+            offset = float(lt.get("intraday_takeprofit_offset", 0.01))
+            qmt_on = (config.get("broker_adapter_enabled") and config.get("qmt_enabled")
+                      and config.get("broker", {}).get("enabled"))
+            if not qmt_on:
+                time.sleep(300); continue
+            broker_cfg = config.get("broker", {})
+            today_str = today_beijing().strftime("%Y%m%d")
+            due = [p for p in load_positions()
+                   if str(p.get("status", "")).lower() == "open"
+                   and str(p.get("planned_exit_date", "")) == today_str]
+            # 每轮从QMT读自家止盈单真相（无状态，防重启丢单）
+            active: dict[str, dict] = {}
+            with _qmt_lock:
+                adapter = _qmt_get(broker_cfg)
+                for o in adapter.query_orders():
+                    from src.qmt_adapter import object_to_dict, first_present, to_int
+                    od = object_to_dict(o)
+                    remark = str(first_present(od, ["order_remark", "m_strRemark", "remark"], ""))
+                    if not remark.startswith(REMARK_PREFIX):
+                        continue
+                    status = to_int(first_present(od, ["order_status", "m_nOrderStatus", "status"], -1), -1)
+                    code = str(first_present(od, ["stock_code", "m_strInstrumentID", "ts_code"], "")).upper()
+                    oid = str(first_present(od, ["order_id", "m_nOrderID"], ""))
+                    active[code.split(".")[0]] = {"order_id": oid, "status": status}
+            cancel_window = t >= datetime.time(14, 50)
+            for pos in due:
+                ts_code = str(pos.get("ts_code", "")); short = ts_code.split(".")[0]
+                shares = int(pos.get("shares", 0))
+                rec = active.get(short)
+                if rec:
+                    status = rec["status"]
+                    if status == 56:  # 已成
+                        fill = _confirm_fill(broker_cfg, rec["order_id"], shares, "盘中止盈确认", timeout_sec=10)
+                        price = fill.avg_price if fill.avg_price > 0 else 0.0
+                        mark_position_closed(pos.get("order_id", ""), today_str, price)
+                        log.info("✅ [盘中止盈] %s %s 全部成交 @%.2f，已平仓。", ts_code, pos.get("name", ""), price)
+                        _notify("sell_success", "✅ 盘中止盈成交",
+                                f"{ts_code} {pos.get('name','')} 涨停附近止盈卖出成交 @{price:.2f}。")
+                    elif cancel_window and status in (50, 55):  # 已报/部成 → 14:50撤
+                        ok = False
+                        for _ in range(3):
+                            try:
+                                with _qmt_lock:
+                                    adapter = _qmt_get(broker_cfg)
+                                    adapter.cancel_order(rec["order_id"])
+                                ok = True; break
+                            except Exception as ce:
+                                log.warning("盘中止盈撤单重试：%s %s", ts_code, ce)
+                                time.sleep(2)
+                        if ok:
+                            log.info("[盘中止盈] %s 14:50未成交已撤单，交回14:53收盘平仓。", ts_code)
+                            fill = _confirm_fill(broker_cfg, rec["order_id"], shares, "止盈撤单后确认", timeout_sec=8)
+                            if 0 < fill.filled_qty < shares:
+                                reduce_position_shares(pos.get("order_id", ""), shares - fill.filled_qty)
+                                log.warning("[盘中止盈] %s 部成%d/%d股后撤单，剩余%d股由14:53平仓。",
+                                            ts_code, fill.filled_qty, shares, shares - fill.filled_qty)
+                        else:
+                            _notify("sell_fail", "⚠️ 止盈单撤单失败",
+                                    f"{ts_code} 盘中止盈单14:50撤单三次失败，请立即手动处理，避免与14:53平仓冲突。",
+                                    level="critical", call=True)
+                    continue
+                if cancel_window:
+                    continue  # 14:50后不再新挂
+                # 未挂单：检查涨幅
+                with _qmt_lock:
+                    adapter = _qmt_get(broker_cfg)
+                    quote = adapter.get_full_tick([ts_code]).get(ts_code)
+                if quote is None:
+                    continue
+                last = float(getattr(quote, "last_price", 0.0) or 0.0)
+                pre = float(getattr(quote, "pre_close", 0.0) or 0.0)
+                upper = float(getattr(quote, "upper_limit", 0.0) or 0.0)
+                if last <= 0 or pre <= 0:
+                    continue
+                if upper <= 0:
+                    pcap = 0.30 if ts_code.endswith(".BJ") else (0.20 if short.startswith(("300", "301", "688", "689")) else 0.10)
+                    upper = round(pre * (1 + pcap), 2)
+                if last / pre - 1 >= threshold:
+                    sell_price = round(upper - offset, 2)
+                    request = OrderRequest(
+                        ts_code=ts_code, broker_code=ts_code, side="SELL",
+                        quantity=shares, price_type="FIXED_PRICE", price=sell_price,
+                        strategy_name="A_SYSTEM_ABC", remark=f"{REMARK_PREFIX}-{today_str}",
+                    )
+                    with _qmt_lock:
+                        adapter = _qmt_get(broker_cfg)
+                        result = adapter.place_order(request)
+                    if result.accepted:
+                        log.warning("⏳ [盘中止盈] %s %s 涨幅%.1f%%≥%.0f%%，挂涨停-%.2f止盈卖单 %d股@%.2f（14:50未成交自动撤）",
+                                    ts_code, pos.get("name", ""), (last / pre - 1) * 100, threshold * 100, offset, shares, sell_price)
+                        _notify("sell_success", "📈 盘中止盈单已挂",
+                                f"{ts_code} {pos.get('name','')} 涨幅{(last/pre-1):.1%}，已挂{sell_price:.2f}止盈卖单，14:50未成交自动撤单。",
+                                level="timeSensitive")
+                    else:
+                        log.error("❌ [盘中止盈] %s 挂单失败：%s", ts_code, result.message)
+        except Exception as e:
+            log.error("盘中止盈监控异常：%s", e)
+        time.sleep(30)
+
+
 def check_and_close_positions() -> None:
     """
     扫描所有持仓，对满足平仓条件的立即处理。
@@ -6337,6 +6467,13 @@ def main() -> None:
         target=_decision_chain_broadcast_loop,
         daemon=True,
         name="decision-chain-broadcast",
+    ).start()
+
+    # 盘中涨停止盈监控（当日到期持仓涨幅≥7%挂涨停-0.01卖单，14:50未成交撤单）
+    threading.Thread(
+        target=_intraday_takeprofit_monitor,
+        daemon=True,
+        name="intraday-takeprofit",
     ).start()
 
     # ── 启动时立刻执行平仓检查 ────────────────────────────────────────────────
