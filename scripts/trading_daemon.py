@@ -1514,20 +1514,46 @@ def _intraday_takeprofit_monitor() -> None:
             due = [p for p in load_positions()
                    if str(p.get("status", "")).lower() == "open"
                    and str(p.get("planned_exit_date", "")) == today_str]
+            if not due:
+                # 无当日到期持仓：本线程完全不碰QMT锁（绝大多数日子零成本）
+                time.sleep(120); continue
+
+            def _polite_qmt(fn_name: str, args: tuple = (), lock_timeout: float = 3.0, call_timeout: float = 8.0):
+                """礼让式QMT调用：拿不到锁(有人在用)或调用超时都返回None放弃本轮，
+                绝不排队等锁、绝不持锁死等——本监控线程任何情况下不堵塞主交易流程。"""
+                if not _qmt_lock.acquire(timeout=lock_timeout):
+                    return None
+                try:
+                    result: list[Any] = []; err: list[BaseException] = []
+                    def _run() -> None:
+                        try:
+                            adapter = _qmt_get(broker_cfg)
+                            result.append(getattr(adapter, fn_name)(*args))
+                        except BaseException as e:
+                            err.append(e)
+                    th = threading.Thread(target=_run, daemon=True)
+                    th.start(); th.join(call_timeout)
+                    if th.is_alive() or err or not result:
+                        return None
+                    return result[0]
+                finally:
+                    _qmt_lock.release()
+
             # 每轮从QMT读自家止盈单真相（无状态，防重启丢单）
             active: dict[str, dict] = {}
-            with _qmt_lock:
-                adapter = _qmt_get(broker_cfg)
-                for o in adapter.query_orders():
-                    from src.qmt_adapter import object_to_dict, first_present, to_int
-                    od = object_to_dict(o)
-                    remark = str(first_present(od, ["order_remark", "m_strRemark", "remark"], ""))
-                    if not remark.startswith(REMARK_PREFIX):
-                        continue
-                    status = to_int(first_present(od, ["order_status", "m_nOrderStatus", "status"], -1), -1)
-                    code = str(first_present(od, ["stock_code", "m_strInstrumentID", "ts_code"], "")).upper()
-                    oid = str(first_present(od, ["order_id", "m_nOrderID"], ""))
-                    active[code.split(".")[0]] = {"order_id": oid, "status": status}
+            orders_raw = _polite_qmt("query_orders")
+            if orders_raw is None:
+                time.sleep(30); continue   # QMT忙/慢，让路，下轮再来
+            for o in orders_raw:
+                from src.qmt_adapter import object_to_dict, first_present, to_int
+                od = object_to_dict(o)
+                remark = str(first_present(od, ["order_remark", "m_strRemark", "remark"], ""))
+                if not remark.startswith(REMARK_PREFIX):
+                    continue
+                status = to_int(first_present(od, ["order_status", "m_nOrderStatus", "status"], -1), -1)
+                code = str(first_present(od, ["stock_code", "m_strInstrumentID", "ts_code"], "")).upper()
+                oid = str(first_present(od, ["order_id", "m_nOrderID"], ""))
+                active[code.split(".")[0]] = {"order_id": oid, "status": status}
             cancel_window = t >= datetime.time(14, 50)
             for pos in due:
                 ts_code = str(pos.get("ts_code", "")); short = ts_code.split(".")[0]
@@ -1545,14 +1571,10 @@ def _intraday_takeprofit_monitor() -> None:
                     elif cancel_window and status in (50, 55):  # 已报/部成 → 14:50撤
                         ok = False
                         for _ in range(3):
-                            try:
-                                with _qmt_lock:
-                                    adapter = _qmt_get(broker_cfg)
-                                    adapter.cancel_order(rec["order_id"])
+                            if _polite_qmt("cancel_order", (rec["order_id"],)) is not None:
                                 ok = True; break
-                            except Exception as ce:
-                                log.warning("盘中止盈撤单重试：%s %s", ts_code, ce)
-                                time.sleep(2)
+                            log.warning("盘中止盈撤单未确认（QMT忙/超时），2秒后重试：%s", ts_code)
+                            time.sleep(2)
                         if ok:
                             log.info("[盘中止盈] %s 14:50未成交已撤单，交回14:53收盘平仓。", ts_code)
                             fill = _confirm_fill(broker_cfg, rec["order_id"], shares, "止盈撤单后确认", timeout_sec=8)
@@ -1568,11 +1590,10 @@ def _intraday_takeprofit_monitor() -> None:
                 if cancel_window:
                     continue  # 14:50后不再新挂
                 # 未挂单：检查涨幅
-                with _qmt_lock:
-                    adapter = _qmt_get(broker_cfg)
-                    quote = adapter.get_full_tick([ts_code]).get(ts_code)
+                tick_map = _polite_qmt("get_full_tick", ([ts_code],), call_timeout=5.0)
+                quote = tick_map.get(ts_code) if tick_map else None
                 if quote is None:
-                    continue
+                    continue   # QMT忙/慢，本轮让路
                 last = float(getattr(quote, "last_price", 0.0) or 0.0)
                 pre = float(getattr(quote, "pre_close", 0.0) or 0.0)
                 upper = float(getattr(quote, "upper_limit", 0.0) or 0.0)
@@ -1588,9 +1609,10 @@ def _intraday_takeprofit_monitor() -> None:
                         quantity=shares, price_type="FIXED_PRICE", price=sell_price,
                         strategy_name="A_SYSTEM_ABC", remark=f"{REMARK_PREFIX}-{today_str}",
                     )
-                    with _qmt_lock:
-                        adapter = _qmt_get(broker_cfg)
-                        result = adapter.place_order(request)
+                    result = _polite_qmt("place_order", (request,))
+                    if result is None:
+                        log.warning("[盘中止盈] %s 挂单未执行（QMT忙/超时），下轮重试。", ts_code)
+                        continue
                     if result.accepted:
                         log.warning("⏳ [盘中止盈] %s %s 涨幅%.1f%%≥%.0f%%，挂涨停-%.2f止盈卖单 %d股@%.2f（14:50未成交自动撤）",
                                     ts_code, pos.get("name", ""), (last / pre - 1) * 100, threshold * 100, offset, shares, sell_price)
