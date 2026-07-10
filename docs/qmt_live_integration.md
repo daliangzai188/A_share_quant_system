@@ -42,20 +42,24 @@ A_System 目录通过 UTM 共享文件夹（WebDAV）挂载到 Windows VM 的 `Z
 
 整体是双向的（代码下去、记录上来），但**任何单个文件都不会被反方向覆盖**——尤其绝不让 Mac 上一份旧的 `positions.json` 回灌覆盖实盘持仓。
 
-> ⚠️ 约定：切换到本地运行后，**Mac 上的 `data/processed/` 是 VM 回传的只读镜像**。不要在 Mac 上手改 `positions.json`（改了不生效，会被下次回传覆盖）；要改持仓状态必须在 VM 本地改。
+> ⚠️ 约定：Mac 与 VM 本地 `C:\A_System` 通过 **Syncthing 双向实时同步**（2026-07-10 定稿）。运行状态（positions.json 等）以 VM 端为权威；人工修正持仓请在盘后进行，改动会自动双向传播。
 
-**运行目录**：`C:\A_System`（可用环境变量 `A_SYSTEM_HOME` 覆盖）。`start_windows.py` / `stop_windows.py` 都以此为准。
+**运行目录**：`C:\A_System`。启动/停止都在此目录执行（`cd C:\A_System` 后 `py -3.11 start_windows.py` / `stop_windows.py`）。`start_windows.py` 带防呆闸：从 `Z:`/UNC 路径启动会被直接拒绝并提示正确命令。
 
-**启动流程（`start_windows.py`，命令不变，仍是 `py -3.11 start_windows.py`）**：
+**同步机制（Syncthing，2026-07-10 起取代全部旧方案）**：
 
-1. **同步代码** Mac(`Z:`)→本地：`src`/`scripts`/`docs` 用 `robocopy /MIR` 镜像（改名/删除跟随，排除 `__pycache__`），`config` 与根级脚本用 `/E` 复制更新；全部带 `/R:3 /W:2` 重试抗 WebDAV 抖动。**代码同步失败则中止启动**，绝不跑旧/半同步代码。
-2. **首次播种运行状态（只搬几 MB 小状态）**：若本地无 `.state_seeded` 标记，只把实盘必需的小状态从 `Z:` 拷到本地一次——`data/processed/positions.json` + 当日 `live_*.csv` 信号 + `reports/{live_trade,strategy_l,strategy_e2}`，成功后写标记。**绝不搬** `data/raw`（1.7G 行情缓存）、研究大表和历史回测报告——那些是 Mac 上做回测用的，VM 实盘运行时按需自行采集/生成。（早期版本曾整盘搬 5G，走 WebDAV 会把 VM I/O 打满卡死，已改为最小集。）
-3. **从本地运行 daemon**：`C:\A_System\scripts\trading_daemon.py`，`PROJECT_ROOT` 即 `C:\A_System`，所有热点 I/O 落本地盘。
-4. **拉起回传进程** `scripts/sync_back_windows.py`：独立进程，每 5 分钟把本地 `reports/` + `data/processed/` + `logs/` 单向回传 `Z:`；带超时、全 best-effort，卡住/失败都不影响交易 daemon。
+- Mac 端：Homebrew 安装，`brew services` 常驻自启；文件夹 id=`a-system`，路径 `/Users/user/Desktop/A_System`；外部 relay 与全球发现已关闭（数据只走 Mac↔VM 内网直连）。
+- VM 端：winget 安装原生 ARM64 版（`winget install Syncthing.Syncthing`），文件夹路径 `C:\A_System`，开机自启走启动文件夹快捷方式（`syncthing serve --no-console --no-browser`），Web UI `127.0.0.1:8384`。
+- 忽略规则见根目录 `.stignore`（__pycache__、*.pyc 等）。
+- 日常流：Mac 改代码 → 秒级到 C 盘 →（需重启 daemon 生效）；VM 产生的 logs/reports/data 秒级回 Mac 供分析。
+- **历史方案均已废弃，勿再启用**：
+  - UTM WebDAV 共享盘直跑：IO 慢 1~2 个数量级，四次实盘事故根因；
+  - Mac SMB 共享（192.168.64.1）：macOS smbd 与 Windows 11 ARM 存在 SMB 签名兼容 bug，大目录枚举必报"[WinError -2146893818] 无效签名"，SMB210/302/311 dialect 全部复现，只能弃用；
+  - robocopy 同步/回传脚本：依赖上述通道，且方向靠人记，误跑会用旧文件覆盖新文件，已删除。
 
-**停止（`stop_windows.py`）**：pid/目录指向 `C:\A_System`，同时停掉 daemon、D 监控、回传进程。
+**停止（`stop_windows.py`）**：pid/目录指向 `C:\A_System`，同时停掉 daemon 与 D 监控。
 
-**相关文件**：`start_windows.py`、`stop_windows.py`、`scripts/sync_back_windows.py`。
+**相关文件**：`start_windows.py`、`stop_windows.py`、`.stignore`。
 
 ### Windows VM 环境
 

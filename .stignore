@@ -1,0 +1,13 @@
+// Syncthing 忽略规则（注意：.stignore 本身不参与同步，两端各配一份）
+// 运行时锁/PID —— 每端进程私有，同步必冲突
+daemon_pid
+*.pid
+(?d).sync-conflict-*
+// 系统与缓存杂物
+(?d).DS_Store
+(?d)Thumbs.db
+__pycache__
+*.pyc
+a_system.zip
+.stfolder
+.stversions
