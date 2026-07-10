@@ -1517,6 +1517,11 @@ def _intraday_takeprofit_monitor() -> None:
             due = [p for p in load_positions()
                    if str(p.get("status", "")).lower() == "open"
                    and str(p.get("planned_exit_date", "")) == today_str]
+            if t < datetime.time(9, 30):
+                # D 让路仓走09:23竞价挂跌停卖（口径=开盘价），9:20抢先挂止盈
+                # 单会冻结股份让09:23挂单被拒，把D劣化成收盘卖。D一律等9:30
+                # 后再挂（让路仓届时已closed，剩下的是T+2收盘卖仓，安全）。
+                due = [p for p in due if str(p.get("strategy_leg", "")).upper() != "D"]
             if not due:
                 time.sleep(300); continue   # 无当日到期持仓：不碰QMT，5分钟后再看
 
