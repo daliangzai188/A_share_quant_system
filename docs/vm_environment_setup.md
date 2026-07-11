@@ -13,6 +13,7 @@
    - Fusion:`~/Virtual Machines.localized/*.vmwarevm`;
 3. 新 Mac 装同款宿主软件,打开拷来的虚拟机包,启动;
 4. Fusion 首次启动若询问 "Moved or Copied?" → 选 **I Copied It**;
+   ⚠️ Fusion 虚拟机带 TPM 加密——拷到新 Mac 首次开机会要求输入**创建虚拟机时设置的加密密码**(macOS 钥匙串不跟机器走)。此密码务必记录在密码本,丢失=虚拟机永久无法打开;
 5. 跳到【七、验证清单】。QMT/Python/Syncthing 全部原样带走,无需重装。
 
 ## 路线B:从零重建(以下各节)
