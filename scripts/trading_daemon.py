@@ -4337,11 +4337,17 @@ def job_cancel_unfilled_buy_orders() -> None:
         log.info("14:55撤买单：无委托记录")
         return
 
-    cancelled = failed = skipped = kept_sell = 0
+    # 自家买单 remark 白名单：只撤本系统下的单。手动单、新股/新债申购
+    # (如733xxx申购代码, order_id常为0)、任何第三方委托一律不碰
+    # （2026-07-14 事故：撤买单把可转债申购单当自家买单撤，order_id=0报错）。
+    OWN_BUY_PREFIXES = ("A_SYSTEM", "E2竞价动态")
+    _remark_names = ["order_remark", "m_strRemark", "remark"]
+
+    cancelled = failed = skipped = kept_sell = kept_foreign = 0
     for o in orders:
         order_id = str(_pick(o, _id_names, "")).strip()
-        if not order_id:
-            continue
+        if not order_id or _as_int(order_id, 0) <= 0:
+            continue   # 无效order_id（申购单常为0），无法撤也不该撤
         status_code = _as_int(_pick(o, ["order_status", "m_nOrderStatus", "status"], -1))
         if status_code in TERMINAL_STATUS:
             skipped += 1
@@ -4353,6 +4359,12 @@ def job_cancel_unfilled_buy_orders() -> None:
             kept_sell += 1
             label = "卖单(平仓)" if order_type == SELL_ORDER_TYPE else f"未知方向(order_type={order_type})"
             log.warning("14:55撤买单：保留不撤 %s order_id=%s [%s]", ts_code, order_id, label)
+            continue
+        remark = str(_pick(o, _remark_names, "")).strip()
+        if not remark.startswith(OWN_BUY_PREFIXES):
+            kept_foreign += 1
+            log.info("14:55撤买单：非本系统委托，保留不撤 %s order_id=%s remark=%r（手动/申购/第三方）",
+                     ts_code, order_id, remark[:20])
             continue
         try:
             with _qmt_lock:
@@ -4368,8 +4380,8 @@ def job_cancel_unfilled_buy_orders() -> None:
             failed += 1
             log.error("14:55撤买单异常: %s order_id=%s: %s", ts_code, order_id, e)
 
-    log.warning("14:55撤买单完成：撤买单=%d 失败=%d 保留卖单/未知=%d 已终态跳过=%d",
-                cancelled, failed, kept_sell, skipped)
+    log.warning("14:55撤买单完成：撤买单=%d 失败=%d 保留卖单/未知=%d 非本系统保留=%d 已终态跳过=%d",
+                cancelled, failed, kept_sell, kept_foreign, skipped)
     if cancelled > 0 or failed > 0:
         try:
             _notify(
