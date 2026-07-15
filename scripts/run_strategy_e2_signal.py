@@ -323,11 +323,6 @@ def load_e2_candidates(signal_date: str, segment_states: dict[str, str]) -> pd.D
     df = df[df["limit_data_quality"].fillna("").astype(str).eq("full")].copy()
     df = df[df["strategy_compatible"].fillna("").astype(str).str.lower().isin(["true", "1"])].copy()
     df = df[~df["is_st"].astype(str).str.lower().isin(["true", "1"])].copy()
-    # 显式排除科创板（2026-07-14 数据判决）：E2 场景下科创板 5 笔历史信号
-    # 净收益均值 -2.4%，若参与复利被拖累 -10.9%。此前靠"无权限被券商拒单"
-    # 隐形排除；用户开通科创板权限后此闸门消失，改为规则显式焊死。
-    # 注意：A/B/C 不排除科创板（涨停接力场景科创板均值 +5.14% 胜率 63%）。
-    df = df[~df["ts_code"].astype(str).str.startswith(("688", "689"))].copy()
     df = df[df["allow_buy_reliable"].astype(str).str.lower().isin(["true", "1"])].copy()
     df = df[df["is_fill_score_reliable"].astype(str).str.lower().isin(["true", "1"])].copy()
 
