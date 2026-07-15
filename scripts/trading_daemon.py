@@ -1587,6 +1587,13 @@ def _watchdog_rescue_sell(pos: dict, log: Any) -> str:
             if lower <= 0:
                 log.error("[平仓看门狗] %s 无法取得任何卖出价格，补挂放弃。", ts_code)
                 return ""
+            # 自我冲击保护（2026-07-15）：历史最薄收盘竞价日我方卖单占比可达49%，
+            # 裸挂跌停会自己把撮合价砸穿。保护价=现价×0.95：正常日与挂跌停等价
+            # （成交价=收盘价）；极薄盘日最多承受-5%冲击，压穿则宁可不成交过夜，
+            # 不在自己制造的崩盘价里甩卖。
+            lp = float(getattr(quote, "last_price", 0.0) or 0.0) if quote else 0.0
+            if lp > 0:
+                lower = max(lower, round(lp * 0.95, 2))
             request = OrderRequest(
                 ts_code=ts_code, broker_code=ts_code, side="SELL",
                 quantity=avail, price_type="FIXED_PRICE", price=lower,
