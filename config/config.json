@@ -111,7 +111,7 @@
     "round_lot_size": 100,
     "max_position_pct": 0.8,
     "max_total_position_pct": 0.8,
-    "max_single_order_amount": 80000,
+    "max_single_order_amount": 100000,
     "e2_auction_participation_ratio": 0.10,
     "e2_auction_fallback_amount": 50000,
     "intraday_takeprofit_enabled": true,
