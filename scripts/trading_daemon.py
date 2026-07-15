@@ -1544,16 +1544,76 @@ def _do_sell(pos: dict[str, Any], qmt_enabled: bool) -> None:
                 level="critical", call=True)
 
 
-def _close_position_watchdog() -> None:
-    """收盘平仓看门狗（独立常驻线程）：14:52/14:55 两次核查当日到期持仓是否已有人管。
+_watchdog_pending: list = []   # (position, order_id) 待15:00:30成交确认的补挂单
 
-    2026-07-10 事故：主调度线程被锁竞争拖慢，14:55 平仓迟到 6 分钟且被拒后，
-    没有独立哨兵发现"到点未平仓"，只能靠用户自己盯盘手动平仓。
-    本线程只告警不下单（避免与主流程双发卖单）：
-    - 判据="该标的当日存在活跃(48~52,55)或已成(56)委托"——主平仓已发单、
-      止盈单已成交都算有人管；已撤/废单不算；
-    - 拿不到 _qmt_lock（超时2秒）说明主流程正在使用 QMT（大概率正在平仓），
-      本次静默跳过，下一检查点再核。
+
+def _watchdog_rescue_sell(pos: dict, log: Any) -> str:
+    """看门狗紧急补挂：按QMT实际可用持仓挂跌停价卖单（进收盘集合竞价必成交）。
+
+    返回受理的 order_id，失败返回空串。股数以 can_use_volume 为准绝不超卖；
+    跌停价缺失时用昨收×(1-跌停幅)估算，再缺用最新价×0.95 兜底。
+    """
+    from src.broker_adapter import OrderRequest
+    from src.qmt_adapter import object_to_dict, first_present, to_int
+    ts_code = str(pos.get("ts_code", ""))
+    try:
+        config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+        broker_cfg = config.get("broker", {})
+        with _qmt_lock:
+            adapter = _qmt_get(broker_cfg)
+            positions = adapter.query_positions()
+            avail = 0
+            for qp in positions or []:
+                qd = object_to_dict(qp)
+                code = str(first_present(qd, ["stock_code", "m_strInstrumentID", "ts_code"], "")).upper()
+                if code.split(".")[0] == ts_code.split(".")[0]:
+                    avail = to_int(first_present(qd, ["can_use_volume", "m_nCanUseVolume"], 0), 0)
+                    break
+            if avail <= 0:
+                log.warning("[平仓看门狗] %s QMT实际可用持仓为0，无需补挂（可能已成交/未买入）。", ts_code)
+                return ""
+            quote_map = adapter.get_full_tick([ts_code])
+            quote = quote_map.get(ts_code)
+            lower = float(getattr(quote, "lower_limit", 0.0) or 0.0) if quote else 0.0
+            if lower <= 0:
+                pre = float(getattr(quote, "pre_close", 0.0) or 0.0) if quote else 0.0
+                short = ts_code.split(".")[0]
+                cap = 0.30 if ts_code.endswith(".BJ") else (0.20 if short.startswith(("300", "301", "688", "689")) else 0.10)
+                if pre > 0:
+                    lower = round(pre * (1 - cap), 2)
+                else:
+                    lp = float(getattr(quote, "last_price", 0.0) or 0.0) if quote else 0.0
+                    lower = round(lp * 0.95, 2) if lp > 0 else 0.0
+            if lower <= 0:
+                log.error("[平仓看门狗] %s 无法取得任何卖出价格，补挂放弃。", ts_code)
+                return ""
+            request = OrderRequest(
+                ts_code=ts_code, broker_code=ts_code, side="SELL",
+                quantity=avail, price_type="FIXED_PRICE", price=lower,
+                strategy_name="A_SYSTEM_ABC", remark=f"看门狗补挂-{today_beijing().strftime('%Y%m%d')}",
+            )
+            result = adapter.place_order(request)
+        if result.accepted:
+            log.warning("🚑 [平仓看门狗] %s 补挂跌停价卖单 %d股 @%.2f 已受理（收盘竞价必成交）。", ts_code, avail, lower)
+            return str(result.order_id or "")
+        log.error("[平仓看门狗] %s 补挂被拒：%s", ts_code, result.message)
+        return ""
+    except Exception as e:
+        log.error("[平仓看门狗] %s 补挂异常：%s", ts_code, e)
+        return ""
+
+
+def _close_position_watchdog() -> None:
+    """收盘平仓看门狗（独立常驻线程）：14:57/14:59 核查 + 自动补挂（预备队）。
+
+    2026-07-10 事故：主平仓被锁竞争拖慢+被拒后无人发现。2026-07-15 用户拍板
+    升级：14:57 起收盘集合竞价仍接受申报（不可撤），挂跌停价卖单 15:00 必以
+    收盘价成交——发现无人管的到期持仓时不再只打电话，先自动补挂：
+    - 判据="该标的当日存在活跃(48~52,55)或已成(56)委托"=有人管；否则补挂；
+    - 补挂股数以 QMT 实际可用持仓(can_use_volume)为准，绝不超卖；
+    - 部分成交的单(55)算有人管：挂着的跌停单会在收盘竞价自动成交剩余部分；
+    - 14:59 岗复查：补挂后仍无委托（补挂也失败）→ critical 电话，最后一分钟人工；
+    - 15:00:30 对补挂单确认成交并回写持仓（防 sell_price=0 的账目缺口）。
     """
     log = logger()
     fired: set[str] = set()
@@ -1562,7 +1622,7 @@ def _close_position_watchdog() -> None:
         try:
             now = now_beijing(); t = now.time()
             today_str = today_beijing().strftime("%Y%m%d")
-            if is_trade_day(now.date()) and t < datetime.time(15, 0):
+            if is_trade_day(now.date()) and t < datetime.time(15, 1):
                 for chk in checkpoints:
                     key = f"{today_str}-{chk}"
                     if key in fired or t < chk:
@@ -1596,13 +1656,42 @@ def _close_position_watchdog() -> None:
                     missing = [p for p in due if str(p.get("ts_code", "")).split(".")[0] not in covered]
                     if missing:
                         codes = "、".join(f"{p.get('ts_code','')} {p.get('name','')}" for p in missing)
-                        log.error("🛑 [平仓看门狗] %s 核查：%s 今日到期但未发现有效卖出委托！", chk, codes)
-                        _notify("sell_fail", "🛑 收盘平仓疑似未执行",
-                                f"{chk.strftime('%H:%M')}核查：{codes} 今日到期，QMT中未发现活跃/已成委托，"
-                                f"平仓流程可能被卡住或被拒。请立即人工核对并手动平仓（15:00收盘前）！",
-                                level="critical", call=True)
+                        log.error("🛑 [平仓看门狗] %s 核查：%s 今日到期且无有效卖出委托，启动自动补挂！", chk, codes)
+                        rescued = []
+                        for pos in missing:
+                            oid = _watchdog_rescue_sell(pos, log)
+                            if oid:
+                                rescued.append((pos, oid))
+                        if rescued:
+                            _watchdog_pending.extend(rescued)
+                            _notify("sell_result", "🚑 平仓看门狗已自动补挂",
+                                    f"{chk.strftime('%H:%M')}发现{codes}无卖出委托，已自动补挂跌停价卖单，"
+                                    f"将在15:00收盘集合竞价成交。请留意成交确认推送。",
+                                    level="critical")
+                        if len(rescued) < len(missing):
+                            _notify("sell_fail", "🛑 收盘平仓补挂失败",
+                                    f"{chk.strftime('%H:%M')}：{codes} 部分补挂失败，"
+                                    f"请立即人工核对并手动平仓（15:00收盘前最后机会）！",
+                                    level="critical", call=True)
                     else:
                         log.info("[平仓看门狗] %s 核查通过：%d笔到期持仓均已有委托在场。", chk, len(due))
+            # 15:00:30 对补挂单确认成交并回写（防幽灵账目）
+            if _watchdog_pending and t >= datetime.time(15, 0, 30):
+                config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+                broker_cfg = config.get("broker", {})
+                for pos, oid in list(_watchdog_pending):
+                    try:
+                        fill = _confirm_fill(broker_cfg, oid, int(pos.get("shares", 0)), "看门狗补挂确认", timeout_sec=15)
+                        if fill.filled_qty > 0:
+                            price = fill.avg_price if fill.avg_price > 0 else 0.0
+                            mark_position_closed(pos.get("order_id", ""), today_str, price)
+                            log.warning("✅ [平仓看门狗] %s 补挂单收盘竞价成交 %d股 @%.2f，已回写平仓。",
+                                        pos.get("ts_code"), fill.filled_qty, price)
+                            _notify("sell_success", "✅ 看门狗补挂成交",
+                                    f"{pos.get('ts_code')} {pos.get('name','')} 补挂卖单已于收盘竞价成交 @{price:.2f}。")
+                    except Exception as e:
+                        log.error("[平仓看门狗] 补挂单确认异常：%s", e)
+                    _watchdog_pending.remove((pos, oid))
         except Exception as e:
             logger().error("平仓看门狗异常：%s", e)
         # 距下一个14:52超过10分钟就长睡，窗口附近10秒粒度
@@ -1611,7 +1700,7 @@ def _close_position_watchdog() -> None:
         if now2 >= now2.replace(hour=15, minute=0, second=0, microsecond=0):
             nxt += datetime.timedelta(days=1)
         gap = (nxt - now2).total_seconds()
-        time.sleep(10 if 0 <= gap <= 600 or now2.time() >= datetime.time(14, 52) and now2.time() < datetime.time(15, 0) else min(max(gap - 600, 60), 3600))
+        time.sleep(10 if 0 <= gap <= 600 or now2.time() >= datetime.time(14, 52) and now2.time() < datetime.time(15, 1) else min(max(gap - 600, 60), 3600))
 
 
 def _daily_calendar_sentinel() -> None:
