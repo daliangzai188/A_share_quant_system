@@ -13,8 +13,8 @@ A_System 量化策略常驻守护进程。
     09:15  集合竞价 —— 已有计划立刻按涨停价预挂买入
     09:20  盘前复核 —— 平仓检查（优先） + 组合状态机复核 + D监控
     09:30  开盘确认 —— 确认09:15预挂成交，未成交再补买
-    14:50  收盘平仓 —— 平仓检查（最高优先，绝不被任何步骤阻塞；14:50挂跌停价，留足收盘竞价前的补救窗口）
-    14:55  撤买单 —— 撤销所有未成交买单（不动卖单；深市14:57起收盘竞价不可撤单，必须在此之前）
+    14:55  收盘平仓 —— 平仓检查（最高优先，绝不被任何步骤阻塞；14:55挂跌停价，留足收盘竞价前的补救窗口）
+    14:56  撤买单 —— 撤销所有未成交买单（不动卖单；深市14:57起收盘竞价不可撤单，必须在此之前）
     15:10  收盘  —— 数据流水线 + 信号生成
 
 持仓状态：data/processed/positions.json
@@ -143,7 +143,8 @@ SCHEDULE = [
     datetime.time(9, 23),   # 集合竞价：按跌停价挂单平仓
     datetime.time(9, 26),   # 集合竞价成交后：同步实盘持仓，刷新今日买入决策
     datetime.time(9, 30),   # 开盘：若9:15未成功则补充买入
-    datetime.time(14, 50),  # 盘中收盘平仓（最高优先）+ 内部14:55撤未成交买单
+    datetime.time(14, 40),  # 撤未成交买单（提前于平仓，绝不挡住14:55平仓通道）
+    datetime.time(14, 55),  # 盘中收盘平仓（最高优先，独占QMT通道）
     datetime.time(15, 10),  # 收盘流水线
 ]
 SCHED_PREOPEN_PLAN = datetime.time(9, 0)
@@ -152,10 +153,11 @@ SCHED_MORNING_REVIEW = datetime.time(9, 20)
 SCHED_PREMARKET_SELL = datetime.time(9, 23)
 SCHED_PREMARKET_SYNC = datetime.time(9, 26)
 SCHED_OPENING_BUY = datetime.time(9, 30)
-SCHED_AFTERNOON_CLOSE = datetime.time(14, 50)
-# 撤未成交买单时刻：由 job_afternoon 在平仓后内部等到此刻执行，
-# 不作为独立调度项（调度器有30秒护栏+任务后60秒sleep，14:50/14:55相邻会漏跑）。
-SCHED_CANCEL_BUY_ORDERS = datetime.time(14, 55)
+SCHED_AFTERNOON_CLOSE = datetime.time(14, 55)
+# 撤未成交买单：2026-07-15 起提前到平仓之前、独立调度（14:40与14:55相距
+# 15分钟，调度器30秒护栏无碍）。目的：平仓时点独占QMT通道，绝不被撤单挡路；
+# 且排队一天未成交的开仓买单（一字板排队）尾盘炸板成交=高位接盘，早撤无损失。
+SCHED_CANCEL_BUY_ORDERS = datetime.time(14, 40)
 SCHED_POST_MARKET = datetime.time(15, 10)
 import sys as _sys
 import platform as _platform
@@ -894,7 +896,7 @@ def _execute_orders_inprocess(
             skipped = planned_orders[t2_close_sell]
             for _, row in skipped.iterrows():
                 log.warning(
-                    "⏸️ [%s] 跳过T2收盘卖计划：%s %s planned_action=%s。该类订单只允许14:50平仓流程执行。",
+                    "⏸️ [%s] 跳过T2收盘卖计划：%s %s planned_action=%s。该类订单只允许14:55平仓流程执行。",
                     tag,
                     row.get("ts_code", ""),
                     row.get("name", ""),
@@ -1256,7 +1258,7 @@ def explain_reject_reasons(row: Any) -> str:
     for code in [item for item in raw.split("|") if item]:
         if code == "OUTSIDE_TRADING_TIME":
             if side == "BUY":
-                parts.append(f"不在允许交易时间内；BUY 允许 09:15-14:55，09:15前或14:55后会被拒")
+                parts.append(f"不在允许交易时间内；BUY 允许 09:15-14:56，09:15前或14:56后会被拒")
             else:
                 parts.append(f"不在允许交易时间内；SELL 允许 09:15-11:30、13:00-15:00")
         elif code == "EXCEED_POSITION_PCT":
@@ -1540,9 +1542,9 @@ def _do_sell(pos: dict[str, Any], qmt_enabled: bool) -> None:
 
 
 def _close_position_watchdog() -> None:
-    """收盘平仓看门狗（独立常驻线程）：14:52/14:54 两次核查当日到期持仓是否已有人管。
+    """收盘平仓看门狗（独立常驻线程）：14:52/14:55 两次核查当日到期持仓是否已有人管。
 
-    2026-07-10 事故：主调度线程被锁竞争拖慢，14:50 平仓迟到 6 分钟且被拒后，
+    2026-07-10 事故：主调度线程被锁竞争拖慢，14:55 平仓迟到 6 分钟且被拒后，
     没有独立哨兵发现"到点未平仓"，只能靠用户自己盯盘手动平仓。
     本线程只告警不下单（避免与主流程双发卖单）：
     - 判据="该标的当日存在活跃(48~52,55)或已成(56)委托"——主平仓已发单、
@@ -1552,7 +1554,7 @@ def _close_position_watchdog() -> None:
     """
     log = logger()
     fired: set[str] = set()
-    checkpoints = (datetime.time(14, 52), datetime.time(14, 54))
+    checkpoints = (datetime.time(14, 57), datetime.time(14, 59))
     while True:
         try:
             now = now_beijing(); t = now.time()
@@ -1659,7 +1661,7 @@ def _intraday_takeprofit_monitor() -> None:
     - 今日有平仓计划(planned_exit_date==今日)的 open 持仓，09:20 无条件
       挂（涨停价-0.01）限价卖单（参与集合竞价）——不看涨幅、不做盘中判断；
     - 冲板/秒板/炸板前触及 → 自动成交在涨停-0.01（锁定强势卖出）；
-    - 14:45 仍未成交 → 撤单（礼让式重试3次），14:50 收盘平仓主流程接管；
+    - 14:45 仍未成交 → 撤单（礼让式重试3次），14:55 收盘平仓主流程接管；
     - 非当日到期持仓不做任何操作。
     回测口径不变（成交集=触及涨停-0.01，E2 62笔 8.8x→9.1x）。
 
@@ -1731,7 +1733,7 @@ def _intraday_takeprofit_monitor() -> None:
                             qmt_stall["alerted"] = True
                             _notify("system_error", "⚠️ QMT通道疑似卡滞",
                                     f"盘中止盈线程今日已{qmt_stall['n']}次QMT调用超时，"
-                                    f"通道/共享盘IO疑似恶化，请关注14:50平仓链路是否正常。",
+                                    f"通道/共享盘IO疑似恶化，请关注14:55平仓链路是否正常。",
                                     level="critical")
                         return None
                     if err or not result:
@@ -1814,16 +1816,16 @@ def _intraday_takeprofit_monitor() -> None:
                             _notify("sell_success", "✅ 盘中止盈成交",
                                     f"{ts_code} {name_s} 止盈卖单在撤单前已全部成交 @{price:.2f}。")
                         elif final_st in (53, 54, -2):
-                            log.info("[盘中止盈] %s 14:45未成交已撤单（订单状态%s确认），交回14:50收盘平仓。", ts_code, final_st)
+                            log.info("[盘中止盈] %s 14:45未成交已撤单（订单状态%s确认），交回14:55收盘平仓。", ts_code, final_st)
                             fill = _confirm_fill(broker_cfg, rec["order_id"], shares, "止盈撤单后确认", timeout_sec=8)
                             if 0 < fill.filled_qty < shares:
                                 reduce_position_shares(pos.get("order_id", ""), shares - fill.filled_qty)
-                                log.warning("[盘中止盈] %s 部成%d/%d股后撤单，剩余%d股由14:50平仓。",
+                                log.warning("[盘中止盈] %s 部成%d/%d股后撤单，剩余%d股由14:55平仓。",
                                             ts_code, fill.filled_qty, shares, shares - fill.filled_qty)
                         else:
                             _notify("sell_fail", "⚠️ 止盈单撤单失败",
                                     f"{ts_code} 盘中止盈单14:45撤单后订单状态仍未确认为已撤（最后状态={final_st}），"
-                                    f"请立即手动处理，避免与14:50平仓冲突。",
+                                    f"请立即手动处理，避免与14:55平仓冲突。",
                                     level="critical", call=True)
                     continue
                 if cancel_window or not can_place:
@@ -1831,7 +1833,7 @@ def _intraday_takeprofit_monitor() -> None:
                 if short in cancelled_codes:
                     # 14:45前出现已撤单只可能是人工撤的 → 尊重人工干预不补挂；
                     # 若撤前有部分成交，本地持仓不会自动扣减，请人工核对。
-                    log.info("[盘中止盈] %s %s 止盈单已被撤销（疑人工干预），不再补挂；14:50收盘平仓仍生效。", ts_code, name_s)
+                    log.info("[盘中止盈] %s %s 止盈单已被撤销（疑人工干预），不再补挂；14:55收盘平仓仍生效。", ts_code, name_s)
                     continue
                 if place_tries.get(short, 0) >= MAX_PLACE_TRIES:
                     continue   # 当日发单熔断：反复被拒/废单说明环境异常，放弃当日预挂
@@ -1856,7 +1858,7 @@ def _intraday_takeprofit_monitor() -> None:
                 if place_tries[short] >= MAX_PLACE_TRIES:
                     _notify("sell_fail", "⚠️ 盘中止盈熔断",
                             f"{ts_code} {name_s} 止盈委托当日已尝试{MAX_PLACE_TRIES}次仍无活单"
-                            f"（反复被拒或废单，疑节假日/通道异常），今日放弃预挂，14:50收盘平仓照常兜底。",
+                            f"（反复被拒或废单，疑节假日/通道异常），今日放弃预挂，14:55收盘平仓照常兜底。",
                             level="critical")
                 result = _polite_qmt("place_order", (request,))
                 if result is None:
@@ -1867,7 +1869,7 @@ def _intraday_takeprofit_monitor() -> None:
                                 ts_code, name_s, offset, shares, sell_price)
                     _notify("sell_success", "📈 止盈卖单已预挂",
                             f"{ts_code} {name_s} 今日到期，已挂{sell_price:.2f}（涨停-{offset:.2f}）止盈卖单，"
-                            f"冲板即成交锁定强势；14:45未成交自动撤单，14:50照常收盘平仓。",
+                            f"冲板即成交锁定强势；14:45未成交自动撤单，14:55照常收盘平仓。",
                             level="timeSensitive")
                 else:
                     log.error("❌ [盘中止盈] %s 挂单失败：%s", ts_code, result.message)
@@ -1928,7 +1930,7 @@ def check_and_close_positions() -> None:
             before_close_sell_window = now_beijing().time() < SCHED_AFTERNOON_CLOSE
             if t2_close_leg and due_today and before_close_sell_window:
                 logger().warning(
-                    "T2收盘卖门禁：%s %s 策略=%s 今日到期，但当前未到14:50收盘平仓窗口，保持持仓不提前平仓。",
+                    "T2收盘卖门禁：%s %s 策略=%s 今日到期，但当前未到14:55收盘平仓窗口，保持持仓不提前平仓。",
                     ts_code,
                     name,
                     strategy_leg,
@@ -1937,7 +1939,7 @@ def check_and_close_positions() -> None:
 
             # 逾期持仓（计划平仓日已过=事故残留，如2026-07-08皇氏平仓失败过夜）
             # 必须第一时间清理：09:15后即可挂跌停价卖单（参与集合竞价/连续竞价，
-            # 必成交），不等14:50、也不依赖上一轮先标记sell_pending。
+            # 必成交），不等14:55、也不依赖上一轮先标记sell_pending。
             overdue_past = planned_exit < today_str
             sellable_now = now_beijing().time() >= datetime.time(9, 15) and now_beijing().time() <= datetime.time(15, 0)
             if market_is_open() or pending or (overdue_past and sellable_now):
@@ -2193,7 +2195,7 @@ def job_premarket_sell() -> None:
     D 默认平仓口径是 T+2 收盘卖，不在 09:23 提前卖。
     只有组合状态机给出 PLAN_SELL_D_FIRST（次日有 A/B/C/E2 接力，需要 D 让路）时，
     才按 T+1 开盘口径在集合竞价卖 D。
-    E2/ABC/D默认T+2收盘卖由 14:50 job_afternoon/check_and_close_positions 执行。
+    E2/ABC/D默认T+2收盘卖由 14:55 job_afternoon/check_and_close_positions 执行。
     """
     logger().info("===== 集合竞价平仓挂单（09:23）=====")
     # 平仓检查冗余点②：09:20被挤掉时由此兜底（见09:15处注释）
@@ -2232,7 +2234,7 @@ def job_premarket_sell() -> None:
             # 只处理 D 策略：E2/ABC 回测用收盘价，不在集合竞价提前卖出
             if strategy_leg != "D":
                 logger().info(
-                    "09:23 %s %s 策略=%s，回测用收盘价平仓，跳过集合竞价，等待14:50收盘平仓。",
+                    "09:23 %s %s 策略=%s，回测用收盘价平仓，跳过集合竞价，等待14:55收盘平仓。",
                     ts_code, name, strategy_leg or "未知",
                 )
                 continue
@@ -2240,11 +2242,11 @@ def job_premarket_sell() -> None:
             force_relay_sell = ts_code in force_d_sell_codes
 
             # 只处理历史 sell_pending，或因A/B/C/E2接力需要T+1开盘先卖的D持仓。
-            # D 默认 T+2 到期日也必须等 14:50 收盘平仓，不在09:23提前卖。
+            # D 默认 T+2 到期日也必须等 14:55 收盘平仓，不在09:23提前卖。
             if pos.get("status") != "sell_pending" and not force_relay_sell:
                 if planned_exit <= today_str:
                     logger().info(
-                        "09:23 D默认T+2平仓：%s %s 今日到期(%s)，等待14:50收盘平仓，不集合竞价卖出。",
+                        "09:23 D默认T+2平仓：%s %s 今日到期(%s)，等待14:55收盘平仓，不集合竞价卖出。",
                         ts_code, name, planned_exit,
                     )
                 else:
@@ -2357,7 +2359,7 @@ def job_premarket_position_sync() -> None:
     for pos in local_positions:
         if pos.get("status") != "open":
             continue
-        # 只同步 D 策略持仓（D策略在9:23卖出，E2/ABC在14:50卖出不在此处）
+        # 只同步 D 策略持仓（D策略在9:23卖出，E2/ABC在14:55卖出不在此处）
         if str(pos.get("strategy_leg", "")).upper() != "D":
             continue
         ts_code = str(pos.get("ts_code", ""))
@@ -2834,7 +2836,7 @@ def job_morning() -> None:
         if has_combined_action(decisions, "ALLOW_L_BUY"):
             logger().info("当前总策略模式=2（独立L龙头策略），组合状态机允许L开仓；将于09:15/09:30按L计划执行。")
         elif has_combined_action(decisions, "PLAN_SELL_L"):
-            logger().info("当前总策略模式=2（独立L龙头策略），存在L到期平仓计划；等待14:50收盘平仓窗口。")
+            logger().info("当前总策略模式=2（独立L龙头策略），存在L到期平仓计划；等待14:55收盘平仓窗口。")
         else:
             logger().info("当前总策略模式=2（独立L龙头策略），本轮无L实盘开仓计划；ABCDE2/D已阻断。")
         logger().info("===== 盘前任务完成 =====")
@@ -3011,7 +3013,7 @@ def has_open_local_position() -> bool:
 def has_position_bought_today() -> bool:
     """今日已有买入成交的持仓——09:15/09:30 防重复买入的正确判据。
 
-    不能用 has_open_local_position()：衔接日（旧仓当日14:50到期平仓）早上
+    不能用 has_open_local_position()：衔接日（旧仓当日14:55到期平仓）早上
     买新仓是回测口径的一部分，旧仓(buy_date<今日)的存在不能阻止新仓买入。
     2026-07-06 贤丰控股漏买事故根因：旧仓德冠新材让09:15/09:30全部跳过。"""
     today = today_beijing().strftime("%Y%m%d")
@@ -3309,7 +3311,7 @@ def _premarket_buy_monitor_loop() -> None:
     broker_cfg = config.get("broker", {})
     cutoff = datetime.time(14, 55)
     poll_seconds = 15
-    logger().info("盘前买入监控已启动：09:15-14:55 每%d秒检查一次成交/撤单/废单。", poll_seconds)
+    logger().info("盘前买入监控已启动：09:15-14:56 每%d秒检查一次成交/撤单/废单。", poll_seconds)
     while now_beijing().time() < cutoff:
         if has_position_bought_today():
             logger().info("盘前买入监控：今日买入已成交，退出。")
@@ -3342,7 +3344,7 @@ def _premarket_buy_monitor_loop() -> None:
             except Exception as e:
                 logger().warning("盘前买入监控异常 order_id=%s：%s", order_id, e)
         time.sleep(poll_seconds)
-    logger().info("盘前买入监控结束：已到14:55撤单窗口。")
+    logger().info("盘前买入监控结束：已到14:56撤单窗口。")
 
 
 def _start_premarket_buy_monitor() -> None:
@@ -3568,7 +3570,7 @@ def job_strategy_d() -> None:
 
     架构原则：QMT 连接只能由主守护进程持有。D监控在线程内运行，
     通过 SharedQMTBrokerProxy 复用主连接，禁止再启动独立 QMT 子进程。
-    监控脚本内部等到09:30开始扫描，10:00起发WATCH提醒，14:00起发BUY信号，14:55自动撤单。
+    监控脚本内部等到09:30开始扫描，10:00起发WATCH提醒，14:00起发BUY信号，14:56自动撤单。
     """
     global _d_monitor_thread
     logger().info("===== 策略D监控启动（盘中后台）=====")
@@ -4232,7 +4234,7 @@ def startup_catchup_strategy_d() -> None:
 def _sleep_until_beijing(target: datetime.time, *, max_wait: float = 300.0) -> None:
     """阻塞到北京时间当天的 target 时刻；已过则立即返回。
 
-    max_wait 兜底防止时钟异常导致超长阻塞（正常场景 14:50→14:55 只等约120秒）。
+    max_wait 兜底防止时钟异常导致超长阻塞（正常场景 14:55→14:56 只等约120秒）。
     """
     now = now_beijing()
     target_dt = datetime.datetime.combine(now.date(), target, tzinfo=BEIJING_TZ)
@@ -4243,12 +4245,12 @@ def _sleep_until_beijing(target: datetime.time, *, max_wait: float = 300.0) -> N
 
 
 def job_afternoon() -> None:
-    logger().info("===== 盘中任务（14:50 收盘平仓 → 14:55 撤未成交买单）=====")
+    logger().info("===== 盘中任务（14:55 收盘平仓 → 14:40 撤未成交买单）=====")
     close_plan_exists = _has_due_close_plan_now()
     if close_plan_exists:
-        _pause_pipeline_for_trade("14:50收盘平仓计划")
+        _pause_pipeline_for_trade("14:55收盘平仓计划")
     else:
-        logger().info("14:50 未检测到到期平仓计划，流水线无需暂停。")
+        logger().info("14:55 未检测到到期平仓计划，流水线无需暂停。")
 
     # ① 平仓最高优先：任何情况下先执行，绝不被组合状态机刷新/取数/超时阻塞。
     #    E2 SELL 依赖的 combined_planned_orders 今日文件已在 09:00/09:20/09:26 生成
@@ -4261,21 +4263,14 @@ def job_afternoon() -> None:
     finally:
         if close_plan_exists:
             if _has_due_close_plan_now():
-                logger().warning("14:50平仓后仍检测到待平仓计划，流水线保持暂停；等待后续成交确认/人工处理。")
+                logger().warning("14:55平仓后仍检测到待平仓计划，流水线保持暂停；等待后续成交确认/人工处理。")
             else:
-                _resume_pipeline_after_trade("14:50收盘平仓处理完成")
+                _resume_pipeline_after_trade("14:55收盘平仓处理完成")
 
-    # ② 等到 14:55 撤销所有未成交【买单/开仓单】。
-    #    该动作同样不被任何工作阻塞：组合状态机刷新放到撤单之后，
-    #    确保 14:55 撤单发起时没有别的步骤占用 QMT。
-    #    ⚠️ 只撤开仓买单；挂出去还没成交的平仓卖单绝不撤，避免持仓被动过夜。
-    _sleep_until_beijing(SCHED_CANCEL_BUY_ORDERS)
-    try:
-        job_cancel_unfilled_buy_orders()
-    except Exception as e:
-        logger().error("14:55撤买单异常：%s —— 请立即手动检查未成交开仓单！", e)
+    # ②（2026-07-15 起）撤未成交买单已前移至 14:40 独立调度执行，
+    #    平仓时点独占 QMT 通道，此处不再有任何撤单动作。
 
-    # ③ 平仓与撤单两个关键动作都完成后，才刷新组合状态机（后台线程，绝不阻塞调度/关键动作）。
+    # ③ 平仓完成后刷新组合状态机（后台线程，绝不阻塞调度/关键动作）。
     #    此步即便超时被强杀，也不影响上面已执行完的平仓与撤单。
     def _refresh_combined_plan() -> None:
         try:
@@ -4289,19 +4284,19 @@ def job_afternoon() -> None:
 
 
 def job_cancel_unfilled_buy_orders() -> None:
-    """14:55 撤销所有未成交【买单/开仓单】。
+    """14:40 撤销所有未成交【买单/开仓单】。
 
     ⚠️ 只撤买单（order_type==STOCK_BUY/23）。挂出去还没成交的平仓卖单一律不撤，
        无法确定方向的委托也跳过（宁可漏撤买单，也绝不误撤卖单导致持仓被动过夜）。
     D策略买单由独立监控进程并行处理，此处兜底。
     """
     log = logger()
-    log.info("===== 14:55 撤未成交买单（不动卖单）=====")
+    log.info("===== 14:40 撤未成交买单（不动卖单）=====")
 
     config = load_json_config(PROJECT_ROOT / "config" / "config.json")
     qmt_enabled = bool(config.get("broker_adapter_enabled")) and bool(config.get("qmt_enabled"))
     if not qmt_enabled:
-        log.info("非实盘模式，跳过14:55撤买单")
+        log.info("非实盘模式，跳过14:40撤买单")
         return
 
     broker_cfg = config.get("broker", {})
@@ -4330,11 +4325,11 @@ def job_cancel_unfilled_buy_orders() -> None:
             adapter = _qmt_get(broker_cfg)
             orders = adapter.query_orders()
     except Exception as e:
-        log.error("14:55撤买单：查询委托失败：%s", e)
+        log.error("14:40撤买单：查询委托失败：%s", e)
         return
 
     if not orders:
-        log.info("14:55撤买单：无委托记录")
+        log.info("14:40撤买单：无委托记录")
         return
 
     # 自家买单 remark 白名单：只撤本系统下的单。手动单、新股/新债申购
@@ -4358,12 +4353,12 @@ def job_cancel_unfilled_buy_orders() -> None:
         if order_type != BUY_ORDER_TYPE:
             kept_sell += 1
             label = "卖单(平仓)" if order_type == SELL_ORDER_TYPE else f"未知方向(order_type={order_type})"
-            log.warning("14:55撤买单：保留不撤 %s order_id=%s [%s]", ts_code, order_id, label)
+            log.warning("14:40撤买单：保留不撤 %s order_id=%s [%s]", ts_code, order_id, label)
             continue
         remark = str(_pick(o, _remark_names, "")).strip()
         if not remark.startswith(OWN_BUY_PREFIXES):
             kept_foreign += 1
-            log.info("14:55撤买单：非本系统委托，保留不撤 %s order_id=%s remark=%r（手动/申购/第三方）",
+            log.info("14:40撤买单：非本系统委托，保留不撤 %s order_id=%s remark=%r（手动/申购/第三方）",
                      ts_code, order_id, remark[:20])
             continue
         try:
@@ -4372,28 +4367,28 @@ def job_cancel_unfilled_buy_orders() -> None:
                 ok = adapter.cancel_order(order_id)
             if ok:
                 cancelled += 1
-                log.warning("14:55撤买单已发: %s order_id=%s 状态码=%s", ts_code, order_id, status_code)
+                log.warning("14:40撤买单已发: %s order_id=%s 状态码=%s", ts_code, order_id, status_code)
             else:
                 failed += 1
-                log.error("14:55撤买单失败: %s order_id=%s 状态码=%s", ts_code, order_id, status_code)
+                log.error("14:40撤买单失败: %s order_id=%s 状态码=%s", ts_code, order_id, status_code)
         except Exception as e:
             failed += 1
-            log.error("14:55撤买单异常: %s order_id=%s: %s", ts_code, order_id, e)
+            log.error("14:40撤买单异常: %s order_id=%s: %s", ts_code, order_id, e)
 
-    log.warning("14:55撤买单完成：撤买单=%d 失败=%d 保留卖单/未知=%d 非本系统保留=%d 已终态跳过=%d",
+    log.warning("14:40撤买单完成：撤买单=%d 失败=%d 保留卖单/未知=%d 非本系统保留=%d 已终态跳过=%d",
                 cancelled, failed, kept_sell, kept_foreign, skipped)
     if cancelled > 0 or failed > 0:
         try:
             _notify(
                 "sell_result",
-                "14:55撤未成交买单" if failed == 0 else "⚠️ 14:55撤买单部分失败",
+                "14:56撤未成交买单" if failed == 0 else "⚠️ 14:40撤买单部分失败",
                 f"撤买单={cancelled}笔 失败={failed}笔 保留卖单={kept_sell}笔 终态跳过={skipped}笔",
                 level="timeSensitive" if failed == 0 else "critical",
             )
         except Exception:
             pass
 
-    log.info("===== 14:55 撤未成交买单完成 =====")
+    log.info("===== 14:40 撤未成交买单完成 =====")
 
 
 def _log_collection_brief(signal_date: str) -> None:
@@ -5162,7 +5157,7 @@ def _exit_method_desc(strategy: str, exit_rule: str) -> str:
 
     - D：09:23 集合竞价挂跌停（成交≈开盘价）；或被A/B/C/E2接力时T+1开盘让路。
     - T+1开盘卖（含 *_open）：09:30 开盘平仓，买10/买5挂限价。
-    - T+2收盘卖（默认 ABC/E2/L *_close）：14:50 收盘平仓，跌停价挂限价（市价效果）。
+    - T+2收盘卖（默认 ABC/E2/L *_close）：14:55 收盘平仓，跌停价挂限价（市价效果）。
     口径与 check_and_close_positions / job_premarket_sell 一致。
     """
     s = str(strategy).upper()
@@ -5171,7 +5166,7 @@ def _exit_method_desc(strategy: str, exit_rule: str) -> str:
         return "09:23集合竞价挂跌停平仓（成交≈开盘价）"
     if "open" in rule:
         return "09:30开盘平仓（买10/买5挂限价）"
-    return "14:50收盘平仓（跌停价挂限价确保成交）"
+    return "14:55收盘平仓（跌停价挂限价确保成交）"
 
 
 def _log_final_decision_summary(signal_date: str, action_date_compact: str, buy_orders: Any) -> None:
@@ -5487,7 +5482,7 @@ def _log_decision_chain_summary(signal_date: str) -> None:
                 hold_line = (f"目前已持仓：{desc}；⚠该持仓已逾期（平仓失败残留），"
                              f"{day_label}09:20开盘窗口将第一时间挂跌停价清理；不阻断开仓计划")
             else:
-                hold_line = (f"目前已持仓：{desc}；{day_label}到期将于14:50收盘平仓，"
+                hold_line = (f"目前已持仓：{desc}；{day_label}到期将于14:55收盘平仓，"
                              "不阻断开仓计划（09:15照常下单，按可用资金校验/缩放）")
 
         # 整个决策链拼成一条多行日志、单次原子写入：daemon 是多线程
@@ -5506,7 +5501,7 @@ def _log_decision_chain_summary(signal_date: str) -> None:
             f"{P}━━━━━━━━━━━━ 决策优先级树状图（mode=3） ━━━━━━━━━━━━",
             f"{P} │ 有未到期持仓？",
             f"{P} │",
-            f"{P} ├─ 是 ──▶ 等到期平仓（14:50收盘）──▶ 结束",
+            f"{P} ├─ 是 ──▶ 等到期平仓（14:55收盘）──▶ 结束",
             f"{P} │",
             f"{P} └─ 否 ──▶ mode1 选票",
             f"{P}           │ A > B > C > E2，先中先得",
@@ -5527,7 +5522,7 @@ def _log_decision_chain_summary(signal_date: str) -> None:
             bottom,
             P,
             f"{P}━━━━━━━━━━━━ 决策优先级总图（mode=3） ━━━━━━━━━━━━",
-            f"{P} 【0】有未到期持仓? ─是→ 不开新仓，等到期日14:50收盘平仓",
+            f"{P} 【0】有未到期持仓? ─是→ 不开新仓，等到期日14:55收盘平仓",
             f"{P}   ↓否",
             f"{P} 【1】mode1选票（串行先中先得）: ①A主 → ②B备 → ③C补位 → ④E2兜底",
             f"{P}   ├─有票 → 进【2】L替换审查{TAG if m1_has else ''}",
@@ -6036,7 +6031,7 @@ def _log_d_status_for_signal(signal_date: str) -> None:
             logger().info("  D策略停止点：组合状态机。原因：今日已有 A/B/C 买入计划，阻断 D 盘中监控，避免同一资金重复占用。")
         elif not in_d_start_window:
             logger().info(
-                "  D策略停止点：交易时段。原因：当前不是 D 盘中监控时段。D 只在交易日 09:20 组合状态机允许后启动，09:30后扫描，10:00起WATCH，14:00起BUY，14:55停止/撤单。"
+                "  D策略停止点：交易时段。原因：当前不是 D 盘中监控时段。D 只在交易日 09:20 组合状态机允许后启动，09:30后扫描，10:00起WATCH，14:00起BUY，14:56停止/撤单。"
             )
             logger().info(
                 "  D策略后续过滤链：组合状态机允许 -> 实时行情扫描 -> 首板且昨日未涨停 -> 当前封涨停 -> 曾炸板至少1次 -> 今日曾涨停数量达到强情绪阈值 -> 14:00后按实时封单金额/流通市值(fd_amount_to_circ_mv)排序 -> LiveOrderGateway二次风控。"
@@ -6117,7 +6112,9 @@ def run_job(scheduled_time: datetime.time) -> None:
         job_premarket_position_sync() if trade_day else logger().info("非交易日，跳过盘前持仓同步")
     elif scheduled_time == SCHED_OPENING_BUY:   # 09:30
         job_opening_buy() if trade_day else logger().info("非交易日，跳过开盘买入任务")
-    elif scheduled_time == SCHED_AFTERNOON_CLOSE:   # 14:50（内部含14:55撤买单）
+    elif scheduled_time == SCHED_CANCEL_BUY_ORDERS:   # 14:40 独立撤未成交买单
+        job_cancel_unfilled_buy_orders() if trade_day else logger().info("非交易日，跳过撤买单")
+    elif scheduled_time == SCHED_AFTERNOON_CLOSE:   # 14:55 收盘平仓
         job_afternoon() if trade_day else logger().info("非交易日，跳过盘中任务")
     elif scheduled_time == SCHED_POST_MARKET:   # 15:10
         if trade_day:
@@ -6757,7 +6754,7 @@ def main() -> None:
         name="calendar-sentinel",
     ).start()
 
-    # 收盘平仓看门狗（14:52/14:54核查到期持仓是否有人管，只告警不下单）
+    # 收盘平仓看门狗（14:52/14:55核查到期持仓是否有人管，只告警不下单）
     threading.Thread(
         target=_close_position_watchdog,
         daemon=True,
@@ -6771,7 +6768,7 @@ def main() -> None:
         name="decision-chain-broadcast",
     ).start()
 
-    # 盘中涨停止盈监控（当日到期持仓涨幅≥7%挂涨停-0.01卖单，14:50未成交撤单）
+    # 盘中涨停止盈监控（当日到期持仓涨幅≥7%挂涨停-0.01卖单，14:55未成交撤单）
     threading.Thread(
         target=_intraday_takeprofit_monitor,
         daemon=True,
