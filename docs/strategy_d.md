@@ -249,7 +249,7 @@ def job_strategy_d() -> None:
 
 | 时间 | 任务 | 是否阻塞守护进程 |
 |---|---|---|
-| 09:20 | 平仓检查 + 读取买入计划单（job_morning）| 是 |
+| 09:20 | 平仓检查 + 复核组合状态 + 有开仓计划时预挂买单（job_morning → job_premarket_buy）| 是 |
 | 13:30 | 启动 D 监控子进程（job_strategy_d）| 否（Popen） |
 | 14:56 | 盘中收盘平仓 + 14:57 撤未成交买单（job_afternoon）| 是 |
 | 15:10 | 收盘流水线 + A+B+C 信号（job_post_market）| 是 |

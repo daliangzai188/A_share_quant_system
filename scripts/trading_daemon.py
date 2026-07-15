@@ -10,9 +10,8 @@ A_System 量化策略常驻守护进程。
 
 调度时间表（A 股交易日）：
     09:00  盘前计划 —— 生成/刷新组合状态机买入计划
-    09:15  集合竞价 —— 已有计划立刻按涨停价预挂买入
-    09:20  盘前复核 —— 平仓检查（优先） + 组合状态机复核 + D监控
-    09:30  开盘确认 —— 确认09:15预挂成交，未成交再补买
+    09:20  盘前复核 —— 平仓检查（优先） + 组合状态机复核 + 按涨停价预挂买入 + D监控
+    09:30  开盘确认 —— 确认09:20预挂成交，未成交再补买
     14:55  收盘平仓 —— 平仓检查（最高优先，绝不被任何步骤阻塞；14:55挂跌停价，留足收盘竞价前的补救窗口）
     14:56  撤买单 —— 撤销所有未成交买单（不动卖单；深市14:57起收盘竞价不可撤单，必须在此之前）
     15:10  收盘  —— 数据流水线 + 信号生成
@@ -138,17 +137,15 @@ def _ts_code_aliases(value: Any) -> set[str]:
 # ── 常量 ───────────────────────────────────────────────────────────────────────
 SCHEDULE = [
     datetime.time(9, 0),    # 盘前：提前生成/刷新组合状态机，避免09:20才开始算买入决策
-    datetime.time(9, 15),   # 集合竞价开始：按涨停价预挂买入
-    datetime.time(9, 20),   # 盘前：平仓检查 + 组合状态机
+    datetime.time(9, 20),   # 盘前：平仓检查 + 组合状态机复核 + 按涨停价预挂买入
     datetime.time(9, 23),   # 集合竞价：按跌停价挂单平仓
     datetime.time(9, 26),   # 集合竞价成交后：同步实盘持仓，刷新今日买入决策
-    datetime.time(9, 30),   # 开盘：若9:15未成功则补充买入
+    datetime.time(9, 30),   # 开盘：若9:20预挂未成功则补充买入
     datetime.time(14, 40),  # 撤未成交买单（提前于平仓，绝不挡住14:55平仓通道）
     datetime.time(14, 55),  # 盘中收盘平仓（最高优先，独占QMT通道）
     datetime.time(15, 10),  # 收盘流水线
 ]
 SCHED_PREOPEN_PLAN = datetime.time(9, 0)
-SCHED_PREMARKET_BUY = datetime.time(9, 15)
 SCHED_MORNING_REVIEW = datetime.time(9, 20)
 SCHED_PREMARKET_SELL = datetime.time(9, 23)
 SCHED_PREMARKET_SYNC = datetime.time(9, 26)
@@ -1158,7 +1155,7 @@ def resize_buy_orders_for_live_account(
         adjusted["risk_flags"] = ""
     else:
         # planned_orders 来自 CSV 时，空 risk_flags 会被 pandas 读成 float64 NaN。
-        # 后续需要追加 LIVE_SIZE_ADJUSTED 等字符串标记，先转 object，避免 09:15 实盘缩单时报 dtype 错误。
+        # 后续需要追加 LIVE_SIZE_ADJUSTED 等字符串标记，先转 object，避免 09:20 实盘缩单时报 dtype 错误。
         adjusted["risk_flags"] = adjusted["risk_flags"].astype("object")
 
     for idx, row in adjusted.iterrows():
@@ -2349,7 +2346,7 @@ def job_premarket_sell() -> None:
     E2/ABC/D默认T+2收盘卖由 14:55 job_afternoon/check_and_close_positions 执行。
     """
     logger().info("===== 集合竞价平仓挂单（09:23）=====")
-    # 平仓检查冗余点②：09:20被挤掉时由此兜底（见09:15处注释）
+    # 平仓检查冗余点②：09:20被挤掉时由此兜底（见 job_premarket_buy 处注释）
     try:
         check_and_close_positions()
     except Exception as e:
@@ -2460,10 +2457,10 @@ def job_premarket_sell() -> None:
 
 
 def job_premarket_position_sync() -> None:
-    """09:26 集合竞价成交确认：确认09:15买单 + 同步09:23平仓成交。
+    """09:26 集合竞价成交确认：确认09:20买单 + 同步09:23平仓成交。
 
     9:25集合竞价撮合完成后，券商委托/持仓会更新：
-    1. 先确认09:15预挂买单，成交则立刻记录本地持仓；未成交但仍排队则不撤单。
+    1. 先确认09:20预挂买单，成交则立刻记录本地持仓；未成交但仍排队则不撤单。
     2. 再确认09:23平仓卖单，若实盘已无某标的则同步标记平仓。
     3. 若平仓状态发生变化，再刷新组合状态机，给09:30兜底任务使用。
     """
@@ -2554,7 +2551,7 @@ def _combined_paths_for_today() -> tuple[Path, Path]:
 def read_cached_combined_decisions():
     """只读取今天已经生成的组合状态机文件，不重新运行脚本。
 
-    09:15 集合竞价挂单必须快：计划在09:00已生成，09:15只读缓存并下单，
+    09:20 集合竞价挂单必须快：计划在09:00已生成，09:20复核后只读缓存并下单，
     避免重新计算导致错过集合竞价排队时间。
     """
     try:
@@ -2578,20 +2575,20 @@ def job_preopen_plan() -> None:
     """09:00 提前生成组合状态机计划。
 
     A/B/C/E2/L/model3 的盘前开仓信息都来自上个交易日收盘后已有数据，D策略除外。
-    因此开仓计划不需要等到09:20才计算；09:00先生成，09:15可以直接挂单。
+    因此开仓计划不需要等到09:20才计算；09:00先生成，09:20复核后可以直接挂单。
     """
     logger().info("===== 盘前计划生成（09:00）=====")
     combined = load_combined_decisions()
     if combined is None:
         # 2026-07-09 事故链第一环：09:00生成失败（共享盘IO慢180秒超时）后
-        # 干等到09:15才现场重算，又耗180秒，把09:15预挂拖到09:21、挤掉09:20
-        # 平仓检查。失败后立即重试一次，把恢复动作留在09:00~09:06的富余时段。
-        logger().warning("09:00 组合状态机生成失败，立即重试一次（避免拖累09:15预挂窗口）。")
+        # 干等到09:20才现场重算，可能耗时数分钟并错过集合竞价。
+        # 失败后立即重试一次，把恢复动作留在09:00~09:06的富余时段。
+        logger().warning("09:00 组合状态机生成失败，立即重试一次（避免拖累09:20预挂窗口）。")
         combined = load_combined_decisions()
     if combined is None:
-        logger().error("09:00 组合状态机决策生成两次失败，09:15将现场重算（可能影响集合竞价排队）。")
+        logger().error("09:00 组合状态机决策生成两次失败，09:20将现场重算（可能影响集合竞价排队）。")
         return
-    logger().info("09:00 组合状态机计划已生成，09:15如有开仓计划将直接按涨停价预挂。")
+    logger().info("09:00 组合状态机计划已生成，09:20复核后如有开仓计划将直接按涨停价预挂。")
     logger().info("===== 盘前计划生成完成 =====")
 
 
@@ -2667,7 +2664,7 @@ def _e2_auction_buy_worker(e2_rows: list[Any], broker_cfg: dict, today_str: str)
 
     log = logger()
     try:
-        # 所有共享盘IO(读配置)在09:15线程启动时就完成,09:24关键窗口内
+        # 所有共享盘IO(读配置)在09:20线程启动时就完成,09:24关键窗口内
         # 只剩两次短锁QMT调用(读tick+下单),把慢IO挡在时间窗之外。
         cfg = load_json_config(PROJECT_ROOT / "config" / "config.json")
         lt = cfg.get("live_trade", {})
@@ -2762,7 +2759,7 @@ def _e2_auction_buy_worker(e2_rows: list[Any], broker_cfg: dict, today_str: str)
 
 
 def job_premarket_buy() -> None:
-    """09:15 集合竞价预挂：对计划开仓且当前无持仓的标的，优先按涨停价挂限价买单。
+    """09:20 集合竞价预挂：对计划开仓且当前无持仓的标的，优先按涨停价挂限价买单。
 
     总策略模式说明：
       mode=1：只执行现有 A/B/C/E2 买入计划。
@@ -2770,29 +2767,29 @@ def job_premarket_buy() -> None:
       mode=3：执行 model=3 组合计划，可能是 mode=1 买入，也可能是 L 补位/替换。
     各模式互斥，避免同一资金被两套策略同时占用。
     """
-    logger().info("===== 集合竞价买入预挂（09:15）=====")
+    logger().info("===== 集合竞价买入预挂（09:20）=====")
 
     # 平仓最高优先：逾期持仓（如昨日平仓失败残留）先于一切买入动作清理。
-    # 2026-07-09 事故：共享盘IO慢→09:15任务拖到09:21→09:20平仓检查被调度器
-    # 跳过→逾期仓整个上午无人处理。平仓检查冗余挂载到09:15/09:23/09:30，
+    # 2026-07-09 事故：共享盘IO慢曾导致盘前任务拖延、逾期仓无人处理。
+    # 平仓检查冗余挂载到09:20/09:23/09:30，
     # 任一任务存活即可完成清理；无逾期仓时本调用毫秒级返回。
     try:
         check_and_close_positions()
     except Exception as e:
-        logger().error("09:15 平仓检查异常：%s", e)
+        logger().error("09:20 平仓检查异常：%s", e)
 
     if has_position_bought_today():
-        logger().info("09:15 今日已有买入成交，跳过集合竞价买入预挂。")
+        logger().info("09:20 今日已有买入成交，跳过集合竞价买入预挂。")
         return
 
     combined = read_cached_combined_decisions()
     if combined is None:
-        logger().warning("09:15 未找到今日组合状态机缓存，临时生成一次；若耗时较长可能影响集合竞价排队。")
+        logger().warning("09:20 未找到今日组合状态机缓存，临时生成一次；若耗时较长可能影响集合竞价排队。")
         combined = load_combined_decisions()
     decisions          = combined[0] if combined is not None else None
     combined_orders_path = combined[1] if combined is not None else None
     if decisions is None:
-        logger().error("09:15 组合状态机决策获取失败，跳过集合竞价买入预挂。")
+        logger().error("09:20 组合状态机决策获取失败，跳过集合竞价买入预挂。")
         return
 
     if is_strategy_l_mode():
@@ -2811,11 +2808,11 @@ def job_premarket_buy() -> None:
             has_combined_action(decisions, "ALLOW_E2_BUY")
         )
     if not has_buy_plan:
-        logger().info("09:15 今日无开仓计划，跳过集合竞价买入预挂。")
+        logger().info("09:20 今日无开仓计划，跳过集合竞价买入预挂。")
         return
 
     if has_combined_action(decisions, "PLAN_SELL_D_FIRST"):
-        logger().info("09:15 组合状态机要求先卖D，跳过集合竞价买入预挂。")
+        logger().info("09:20 组合状态机要求先卖D，跳过集合竞价买入预挂。")
         return
 
     config     = load_json_config(PROJECT_ROOT / "config" / "config.json")
@@ -2826,17 +2823,17 @@ def job_premarket_buy() -> None:
 
     import pandas as pd
     if combined_orders_path is None or not combined_orders_path.exists():
-        logger().error("09:15 找不到计划单文件，跳过集合竞价买入预挂。")
+        logger().error("09:20 找不到计划单文件，跳过集合竞价买入预挂。")
         return
     try:
         orders = pd.read_csv(combined_orders_path)
     except Exception as e:
-        logger().error("09:15 读取计划单失败：%s", e)
+        logger().error("09:20 读取计划单失败：%s", e)
         return
 
     buy_orders = orders[orders.get("side", pd.Series()).astype(str).str.upper() == "BUY"]
     if buy_orders.empty:
-        logger().info("09:15 计划单中无买入行，跳过。")
+        logger().info("09:20 计划单中无买入行，跳过。")
         return
 
     broker_cfg = config.get("broker", {})
@@ -2874,11 +2871,11 @@ def job_premarket_buy() -> None:
     e2_rows: list[Any] = []
     for _, row in buy_orders.iterrows():
         try:
-            # E2 专属通道：不在09:15挂单，推迟到09:24读实时竞价撮合量后
+            # E2 专属通道：不在09:20挂单，推迟到09:24读实时竞价撮合量后
             # 按 min(缩单金额, 竞价额×参与率) 动态定仓再挂涨停价参与竞价。
             # 原因：E2标的为冷门小市值，竞价盘常仅几十~几百万（2026-07-09
             # 皇氏实测68万），50万级固定仓位会吃掉大半竞价盘直接顶高开盘价。
-            # E2标的从不一字开盘，9:24挂单无排队损失；ABC/L保持9:15排队优势。
+            # E2标的从不一字开盘，9:24挂单无排队损失；ABC/L从09:20开始排队。
             if str(row.get("strategy_leg", "")).upper() == "E2":
                 if not bool(config.get("live_trade", {}).get("e2_enabled", True)):
                     logger().warning("E2已被 live_trade.e2_enabled=false 关闭，跳过E2买入计划：%s", row.get("ts_code"))
@@ -2895,7 +2892,7 @@ def job_premarket_buy() -> None:
             quote = quote_map.get(ts_code)
             price, price_label = _premarket_buy_price(quote, ts_code, name_s, signal_date_s)
             if price <= 0:
-                logger().warning("09:15 %s %s 无法获取涨停价/估算涨停价/卖档价格，跳过。", ts_code, name_s)
+                logger().warning("09:20 %s %s 无法获取涨停价/估算涨停价/卖档价格，跳过。", ts_code, name_s)
                 continue
 
             logger().warning("⏳ [盘前买入] %s %s  %d股  %s=%.2f元", ts_code, name_s, qty, price_label, price)
@@ -2915,7 +2912,7 @@ def job_premarket_buy() -> None:
                 result  = adapter.place_order(request)
 
             if result.accepted:
-                # 09:15集合竞价预挂单09:25开始撮合，此处不立即记录持仓，落盘待确认，09:30按实盘成交确认
+                # 09:20集合竞价预挂单09:25开始撮合，此处不立即记录持仓，落盘待确认，09:30按实盘成交确认
                 raw_exit_n = row.get("exit_n_days", None)
                 exit_n = int(float(raw_exit_n)) if raw_exit_n is not None and str(raw_exit_n) not in {"", "nan"} else 2
                 pending_buys.append({
@@ -2928,7 +2925,7 @@ def job_premarket_buy() -> None:
                     "ref_price": price,
                     "exit_n": exit_n,
                 })
-                logger().info("✅ [盘前买入] %s %s %d股 @%.2f 委托已受理（09:15预挂，待09:30确认成交）",
+                logger().info("✅ [盘前买入] %s %s %d股 @%.2f 委托已受理（09:20预挂，待09:30确认成交）",
                               ts_code, name_s, qty, price)
             else:
                 logger().error("❌ [盘前买入] %s %s 提交失败：%s", ts_code, name_s, result.message)
@@ -2939,7 +2936,7 @@ def job_premarket_buy() -> None:
     if pending_buys:
         save_pending_buys(pending_buys)
         _start_premarket_buy_monitor()
-        # 开仓计划通知：09:15预挂成功即推送，让用户开盘前就知道今日买什么，
+        # 开仓计划通知：09:20预挂成功即推送，让用户开盘前就知道今日买什么，
         # 不必等09:30成交确认。金额按预挂价（涨停价）估算，实际按集合竞价开盘价
         # 成交通常更低；预挂失败的场景由09:30补买路径的“开仓执行降级”告警覆盖。
         plan_parts = []
@@ -2951,7 +2948,7 @@ def job_premarket_buy() -> None:
                 f"{qty_b}股（预挂{rp_b:.2f}元，预估约{qty_b * rp_b / 10000:.2f}万）"
             )
         _notify("buy_result", "📋 今日开仓计划已预挂",
-                "；".join(plan_parts) + "。09:15集合竞价预挂完成，实际按开盘价成交（通常低于预挂价），"
+                "；".join(plan_parts) + "。09:20集合竞价预挂完成，实际按开盘价成交（通常低于预挂价），"
                 "09:30确认成交后再推送持仓通知。",
                 level="timeSensitive")
     if e2_rows:
@@ -2985,7 +2982,7 @@ def job_morning() -> None:
         # L 独立模式下，09:20 只做状态播报，不启动 ABC/E2/D。
         # 如果 L 买入开关关闭，组合状态机会给出 BLOCK_L_LIVE_ORDER；如果打开且有昨日信号，会给出 ALLOW_L_BUY。
         if has_combined_action(decisions, "ALLOW_L_BUY"):
-            logger().info("当前总策略模式=2（独立L龙头策略），组合状态机允许L开仓；将于09:15/09:30按L计划执行。")
+            logger().info("当前总策略模式=2（独立L龙头策略），组合状态机允许L开仓；将于09:20/09:30按L计划执行。")
         elif has_combined_action(decisions, "PLAN_SELL_L"):
             logger().info("当前总策略模式=2（独立L龙头策略），存在L到期平仓计划；等待14:55收盘平仓窗口。")
         else:
@@ -2998,15 +2995,15 @@ def job_morning() -> None:
         logger().info("组合状态机要求先卖D；等待09:23集合竞价平仓，不在09:20非交易时段提交委托。")
         return
 
-    # ③ A/B/C 买入信号 —— 09:20 只播报，不提交，避免触发 OUTSIDE_TRADING_TIME
+    # ③ A/B/C 买入信号 —— 本方法先完成09:20复核，调度器随后调用 job_premarket_buy 提交。
     if has_combined_action(decisions, "ALLOW_ABC_BUY_PREVIEW"):
-        logger().info("组合状态机允许A/B/C买入；09:15集合竞价预挂，09:30确认成交/必要时补单。")
+        logger().info("组合状态机允许A/B/C买入；09:20复核完成后立即集合竞价预挂，09:30确认成交/必要时补单。")
     else:
         logger().info("组合状态机未允许A/B/C买入，跳过。")
 
-    # ④ E2 T+1 开仓 —— 09:20 只播报，不提交，避免触发 OUTSIDE_TRADING_TIME
+    # ④ E2 T+1 开仓 —— 09:20复核后启动延迟线程，09:24按竞价容量提交。
     if has_combined_action(decisions, "ALLOW_E2_BUY"):
-        logger().info("组合状态机允许E2开仓；09:15集合竞价预挂，09:30确认成交/必要时补单。")
+        logger().info("组合状态机允许E2开仓；09:20复核后启动09:24竞价容量买入，09:30确认成交/必要时补单。")
     else:
         logger().info("组合状态机未允许E2开仓，跳过。")
 
@@ -3022,25 +3019,25 @@ def job_morning() -> None:
 def job_opening_buy() -> None:
     logger().info("===== 开盘买入任务（09:30）=====")
 
-    # 平仓检查冗余点③：确保逾期清理不因09:20/09:23被挤而丢失（见09:15处注释）
+    # 平仓检查冗余点③：确保逾期清理不因09:20/09:23被挤而丢失（见 job_premarket_buy 处注释）
     try:
         check_and_close_positions()
     except Exception as e:
         logger().error("09:30 平仓检查异常：%s", e)
 
-    # 先确认09:15盘前买单是否在开盘成交，再决定是否需要补单
+    # 先确认09:20盘前买单是否在开盘成交，再决定是否需要补单
     try:
         confirm_pending_premarket_buys()
     except Exception as e:
         logger().error("盘前买单成交确认异常：%s —— 请手动核对！", e)
 
     if has_position_bought_today():
-        logger().info("09:30 检测到今日已有买入成交（09:15盘前买入已成交），跳过重复买入。")
+        logger().info("09:30 检测到今日已有买入成交（09:20盘前买入已成交），跳过重复买入。")
         logger().info("===== 开盘买入任务完成 =====")
         return
 
     if load_pending_buys():
-        logger().info("09:30 仍有09:15盘前买单在排队/待补挂，跳过新的开盘补买，避免重复委托。")
+        logger().info("09:30 仍有09:20盘前买单在排队/待补挂，跳过新的开盘补买，避免重复委托。")
         logger().info("===== 开盘买入任务完成 =====")
         return
 
@@ -3071,14 +3068,14 @@ def job_opening_buy() -> None:
         logger().info("===== 开盘买入任务完成 =====")
         return
 
-    # 走到这里=今日有买入窗口但09:15预挂链路没有产生持仓、也没有待确认单
+    # 走到这里=今日有买入窗口但09:20预挂链路没有产生持仓、也没有待确认单
     # （预挂失败/未执行/被拒）。属于执行降级：失去集合竞价排队优势，
     # 补买按最新价成交。当天必须推送告警，不能等用户几天后从成交价反推。
     # （2026-07-03 德冠新材即此场景：预挂未生效，09:30补买20.33，事后才发现。）
     if has_combined_action(decisions, "ALLOW_ABC_BUY_PREVIEW") or has_combined_action(decisions, "ALLOW_E2_BUY"):
-        logger().warning("⚠️ 开仓执行降级：09:15盘前预挂未生效（09:30无持仓且无待确认单），转09:30按最新价补买。")
+        logger().warning("⚠️ 开仓执行降级：09:20盘前预挂未生效（09:30无持仓且无待确认单），转09:30按最新价补买。")
         _notify("buy_result", "⚠️ 开仓执行降级",
-                "09:15盘前预挂未生效，已转09:30按最新价补买。请留意成交价与开盘价的差异。",
+                "09:20盘前预挂未生效，已转09:30按最新价补买。请留意成交价与开盘价的差异。",
                 level="timeSensitive")
 
     attempted_buy = False
@@ -3162,11 +3159,11 @@ def has_open_local_position() -> bool:
 
 
 def has_position_bought_today() -> bool:
-    """今日已有买入成交的持仓——09:15/09:30 防重复买入的正确判据。
+    """今日已有买入成交的持仓——09:20/09:30 防重复买入的正确判据。
 
     不能用 has_open_local_position()：衔接日（旧仓当日14:55到期平仓）早上
     买新仓是回测口径的一部分，旧仓(buy_date<今日)的存在不能阻止新仓买入。
-    2026-07-06 贤丰控股漏买事故根因：旧仓德冠新材让09:15/09:30全部跳过。"""
+    2026-07-06 贤丰控股漏买事故根因：旧仓德冠新材让09:20/09:30全部跳过。"""
     today = today_beijing().strftime("%Y%m%d")
     return any(
         str(p.get("status", "")).lower() in {"open", "sell_pending"}
@@ -3175,10 +3172,10 @@ def has_position_bought_today() -> bool:
     )
 
 
-# ── 盘前买单待确认（09:15挂单→09:30开盘成交确认）────────────────────────────
+# ── 盘前买单待确认（09:20挂单→09:30开盘成交确认）────────────────────────────
 
 def save_pending_buys(orders: list[dict[str, Any]]) -> None:
-    """记录09:15盘前已受理买单，等09:30开盘后确认成交。"""
+    """记录09:20盘前已受理买单，等09:30开盘后确认成交。"""
     try:
         with _pending_buy_lock:
             mkdir_p(PENDING_BUY_FILE.parent)
@@ -3215,7 +3212,7 @@ def clear_pending_buys() -> None:
 
 
 def _replace_pending_buy_order(old_order_id: str, new_order: dict[str, Any] | None) -> None:
-    """替换或移除某笔09:15待确认买单，供集合竞价监控线程使用。"""
+    """替换或移除某笔09:20待确认买单，供集合竞价监控线程使用。"""
     try:
         with _pending_buy_lock:
             if not PENDING_BUY_FILE.exists():
@@ -3385,7 +3382,7 @@ def _record_premarket_buy_fill(s: dict[str, Any], fill: Any, fallback_price: flo
 
 
 def _resubmit_premarket_buy(s: dict[str, Any], broker_cfg: dict, config: dict) -> dict[str, Any] | None:
-    """9:15-9:30内发现预挂单被撤/废单后，重新按涨停价/卖档价补挂。"""
+    """9:20-9:30内发现预挂单被撤/废单后，重新按涨停价/卖档价补挂。"""
     from src.broker_adapter import OrderRequest
 
     ts_code = str(s.get("ts_code", ""))
@@ -3457,12 +3454,12 @@ def _resubmit_premarket_buy(s: dict[str, Any], broker_cfg: dict, config: dict) -
 
 
 def _premarket_buy_monitor_loop() -> None:
-    """监控09:15预挂买单；若券商撤单/废单，按涨停价补挂，直到撤单窗口前。"""
+    """监控09:20预挂买单；若券商撤单/废单，按涨停价补挂，直到撤单窗口前。"""
     config = load_json_config(PROJECT_ROOT / "config" / "config.json")
     broker_cfg = config.get("broker", {})
     cutoff = datetime.time(14, 55)
     poll_seconds = 15
-    logger().info("盘前买入监控已启动：09:15-14:56 每%d秒检查一次成交/撤单/废单。", poll_seconds)
+    logger().info("盘前买入监控已启动：09:20-14:56 每%d秒检查一次成交/撤单/废单。", poll_seconds)
     while now_beijing().time() < cutoff:
         if has_position_bought_today():
             logger().info("盘前买入监控：今日买入已成交，退出。")
@@ -3513,10 +3510,10 @@ def _start_premarket_buy_monitor() -> None:
 
 
 def confirm_pending_premarket_buys(confirm_source: str = "09:30") -> None:
-    """确认09:15盘前买单成交。
+    """确认09:20盘前买单成交。
 
     已成交按实际成交记录持仓；仍是“已报/部成未终态”的排队单不主动撤，
-    继续交给监控线程跟踪，避免把09:15排队优势撤掉。
+    继续交给监控线程跟踪，避免把09:20排队优势撤掉。
     """
     pending = load_pending_buys()
     if not pending:
@@ -4329,21 +4326,25 @@ def _start_e2_retry_thread(combined_orders_path, decisions) -> None:
 def startup_catchup_strategy_d() -> None:
     """盘中重启守护进程时，补启动错过 09:20 的 D 监控。
 
-    09:15-09:30 属于集合竞价预挂窗口，若守护进程刚启动或09:00任务错过，
-    这里会立即补挂计划买单；09:30之后不在这里执行 A/B/C 买入预览，避免盘中重启重复触发开仓动作；
+    09:20-09:25 属于本系统的集合竞价预挂窗口，若守护进程在此时段重启，
+    这里会先复核再补挂计划买单；09:25之后不再补挂集合竞价单，等09:30开盘流程处理；
     只读取组合状态机，如果它明确允许 D 才补启动监控。
     对于 E2 开仓：若 9:30 后市场仍开盘（14:00 前），允许延迟重试（涨幅≤2%%）。
     """
     now = now_beijing()
     if not is_trade_day(now.date()):
         return
-    if datetime.time(9, 0) <= now.time() < datetime.time(9, 15):
-        logger().info("启动补检：当前已过09:00未到09:15，先补生成今日组合计划。")
+    if datetime.time(9, 0) <= now.time() < datetime.time(9, 20):
+        logger().info("启动补检：当前已过09:00未到09:20，先补生成今日组合计划。")
         job_preopen_plan()
         return
-    if datetime.time(9, 15) <= now.time() < datetime.time(9, 30):
-        logger().warning("启动补检：当前已过09:15未到09:30，立即补执行集合竞价买入预挂。")
+    if datetime.time(9, 20) <= now.time() < datetime.time(9, 25):
+        logger().warning("启动补检：当前位于09:20-09:25，立即复核并补执行集合竞价买入预挂。")
+        job_morning()
         job_premarket_buy()
+        return
+    if datetime.time(9, 25) <= now.time() < datetime.time(9, 30):
+        logger().warning("启动补检：已过09:25集合竞价申报窗口，不再补挂，等09:30开盘流程。")
         return
     if not (datetime.time(9, 20) <= now.time() < datetime.time(14, 55)):
         return
@@ -4352,7 +4353,7 @@ def startup_catchup_strategy_d() -> None:
         return
     logger().info("启动补检：当前处于D盘中监控时段，优先读取今日组合状态机缓存，检查是否需要补启动D。")
     # 启动补检不是正式计划生成点，不能在非关键时段再重跑一次组合状态机。
-    # 09:00 会生成当天计划；09:15 会直接读缓存挂单。这里若重新运行
+    # 09:00 会生成当天计划；09:20 复核后会直接读缓存挂单。这里若重新运行
     # run_combined_live_plan.py，容易和启动候选播报/信号审计同时抢 CPU 与文件，
     # 造成 180 秒超时，并拖慢 QMT 心跳。缓存不存在时保守跳过，等下一轮定时任务处理。
     combined = read_cached_combined_decisions()
@@ -5447,7 +5448,7 @@ def _log_final_decision_summary(signal_date: str, action_date_compact: str, buy_
                     "  • 策略 %s | %s %s | 计划买入 %d 股 @%.2f元（约%.0f元，实盘按可用资金缩放）",
                     b["strategy"], b["ts_code"], b["name"], b["shares"], b["price"], amount,
                 )
-            logger().info("准备下单时间：%s 09:00生成计划 → 09:15集合竞价预挂 → 09:30确认/补单", readable)
+            logger().info("准备下单时间：%s 09:00生成计划 → 09:20复核并集合竞价预挂 → 09:30确认/补单", readable)
             seen_exits: set[tuple[str, str]] = set()
             for b in final_buys:
                 ed = str(b.get("exit_date", ""))
@@ -5634,7 +5635,7 @@ def _log_decision_chain_summary(signal_date: str) -> None:
                              f"{day_label}09:20开盘窗口将第一时间挂跌停价清理；不阻断开仓计划")
             else:
                 hold_line = (f"目前已持仓：{desc}；{day_label}到期将于14:55收盘平仓，"
-                             "不阻断开仓计划（09:15照常下单，按可用资金校验/缩放）")
+                             "不阻断开仓计划（09:20复核后照常下单，按可用资金校验/缩放）")
 
         # 整个决策链拼成一条多行日志、单次原子写入：daemon 是多线程
         # （账户心跳/候选播报/周期播报并发打日志），逐行输出必然被其他
@@ -5708,7 +5709,7 @@ def _log_decision_chain_summary(signal_date: str) -> None:
             lines.append(
                 f"{P} ★ 开仓计划：策略{final_buy['strategy']} {final_buy['ts_code']} {final_buy['name']} "
                 f"{final_buy['shares']}股@参考{final_buy['price']:.2f} ≈{amount / 10000:.2f}万"
-                f"（09:15集合竞价预挂→09:30确认，实际按账户资金/单笔限额缩放）{pos_note}"
+                f"（09:20复核并集合竞价预挂→09:30确认，实际按账户资金/单笔限额缩放）{pos_note}"
             )
         else:
             lines.append(f"{P} ★ {day_label}所有策略均无开仓计划")
@@ -6239,10 +6240,12 @@ def run_job(scheduled_time: datetime.time) -> None:
     trade_day = is_trade_day(today)
     if scheduled_time == SCHED_PREOPEN_PLAN:   # 09:00
         job_preopen_plan() if trade_day else logger().info("非交易日，跳过盘前计划生成")
-    elif scheduled_time == SCHED_PREMARKET_BUY:     # 09:15
-        job_premarket_buy() if trade_day else logger().info("非交易日，跳过盘前买入")
     elif scheduled_time == SCHED_MORNING_REVIEW:   # 09:20
-        job_morning() if trade_day else logger().info("非交易日，跳过盘前任务")
+        if trade_day:
+            job_morning()
+            job_premarket_buy()
+        else:
+            logger().info("非交易日，跳过盘前复核与买入")
     elif scheduled_time == SCHED_PREMARKET_SELL:   # 09:23
         if trade_day:
             if _has_premarket_close_plan():
@@ -6873,7 +6876,7 @@ def _should_run_startup_signal_audit(now: datetime.datetime) -> bool:
     """启动时是否自动跑重量信号审计。
 
     信号审计会读取成交打标、市场情绪、A/B/C逐层漏斗等文件，纯属人工复盘展示；
-    交易决策由09:00/09:15/09:20定时任务和组合状态机负责，不依赖启动审计输出。
+    交易决策由09:00/09:20定时任务和组合状态机负责，不依赖启动审计输出。
     为避免启动后抢 CPU/磁盘、拖慢 QMT 心跳，只有盘前关键窗口自动跑。
     """
     if not is_trade_day(now.date()):

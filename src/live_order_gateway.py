@@ -462,7 +462,7 @@ class LiveOrderGateway:
         now = now_beijing()
         hhmm = now.hour * 100 + now.minute
         if side.upper() == "BUY":
-            # 915-929：集合竞价预挂买单（T0收盘后已有T+1开仓计划时，9:15起挂涨停价排队）
+            # 915-929：买单可申报时段；本系统的T+1开仓计划统一从9:20起挂涨停价排队
             # 930-1455：连续竞价（含午间11:30-13:00，QMT午间挂单13:00生效）
             return 915 <= hhmm <= 1455
         if side.upper() == "SELL":

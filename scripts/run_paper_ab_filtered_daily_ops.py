@@ -629,7 +629,7 @@ def build_checklist(
         operation_status = "REVIEW_REQUIRED_PLAN_ONLY"
     if live_plan_mode:
         next_action = (
-            "已生成实盘开仓计划；下一交易日09:15集合竞价预挂、09:30确认/补单，"
+            "已生成实盘开仓计划；下一交易日09:20复核并集合竞价预挂、09:30确认/补单，"
             "股数下单时按账户资金和单笔限额重算。"
         )
         if needs_review:
