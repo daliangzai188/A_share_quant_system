@@ -1582,19 +1582,23 @@ def _watchdog_rescue_sell(pos: dict, log: Any) -> list:
             lower = float(getattr(quote, "lower_limit", 0.0) or 0.0) if quote else 0.0
             lp = float(getattr(quote, "last_price", 0.0) or 0.0) if quote else 0.0
             if lower <= 0:
+                # 跌停价缺失时的估算：任何委托价低于真实跌停都会被交易所废单，
+                # 所以估算一律取安全侧（宁高一分，绝不低于跌停）：
+                # ①昨收×(1-跌停幅)+0.01（防四舍五入与交易所差一分）；
+                # ②连昨收都没有→直接用现价（现价恒≥跌停，绝对合规）。
                 pre = float(getattr(quote, "pre_close", 0.0) or 0.0) if quote else 0.0
                 short = ts_code.split(".")[0]
                 cap = 0.30 if ts_code.endswith(".BJ") else (0.20 if short.startswith(("300", "301", "688", "689")) else 0.10)
                 if pre > 0:
-                    lower = round(pre * (1 - cap), 2)
+                    lower = round(pre * (1 - cap), 2) + 0.01
                 elif lp > 0:
-                    lower = round(lp * 0.90, 2)
-            if lower <= 0 and lp <= 0:
+                    lower = lp
+            if lower <= 0:
                 log.error("[平仓看门狗] %s 无法取得任何卖出价格，补挂放弃。", ts_code)
                 return []
-            # 4档价格：现价×0.97/0.95/0.93/跌停；低于跌停按跌停；现价缺失全归跌停档
+            # 4档价格：现价×0.97/0.95/0.93/跌停档；任何档不得低于跌停(废单红线)
             if lp > 0:
-                tiers = [max(round(lp * f, 2), lower) for f in (0.97, 0.95, 0.93)] + [lower if lower > 0 else round(lp * 0.90, 2)]
+                tiers = [max(round(lp * f, 2), lower) for f in (0.97, 0.95, 0.93)] + [lower]
             else:
                 tiers = [lower] * 4
             # 分仓：各1/4取整百，余数归最后一档(最低价，保证全部股数有单)
