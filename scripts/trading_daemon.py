@@ -158,6 +158,9 @@ SCHED_AFTERNOON_CLOSE = datetime.time(14, 55)
 # 15分钟，调度器30秒护栏无碍）。目的：平仓时点独占QMT通道，绝不被撤单挡路；
 # 且排队一天未成交的开仓买单（一字板排队）尾盘炸板成交=高位接盘，早撤无损失。
 SCHED_CANCEL_BUY_ORDERS = datetime.time(14, 40)
+# 平仓静默窗：14:53起止盈线程休眠、14:54:30~14:58账户心跳跳过，
+# 确保14:55平仓发单时QMT通道零竞争（独占通道的实现，不只是口号）。
+SCHED_TAKEPROFIT_QUIET = datetime.time(14, 53)
 SCHED_POST_MARKET = datetime.time(15, 10)
 import sys as _sys
 import platform as _platform
@@ -1685,7 +1688,7 @@ def _intraday_takeprofit_monitor() -> None:
             # 09:20起挂单：让止盈卖单参与集合竞价——开盘即涨停的极端日
             # 在09:25直接按开盘价(=涨停价)成交，消灭9:25~9:30静默期的
             # 炸板空窗；9:20后竞价不可撤单对本单无碍（本就挂到14:45）。
-            if not is_trade_day(now.date()) or t < datetime.time(9, 20) or t >= SCHED_AFTERNOON_CLOSE:
+            if not is_trade_day(now.date()) or t < datetime.time(9, 20) or t >= SCHED_TAKEPROFIT_QUIET:
                 time.sleep(60 if datetime.time(9, 0) <= t < datetime.time(9, 20) else 120); continue
             config = load_json_config(PROJECT_ROOT / "config" / "config.json")
             lt = config.get("live_trade", {})
@@ -6437,6 +6440,10 @@ def _print_account_status(log: Any) -> None:
         log.error("❌ 读取配置失败：%s", e)
         return
 
+    # 平仓窗口(14:54:30~14:58)心跳静默：不与14:55平仓抢一秒钟的锁
+    _t = now_beijing().time()
+    if datetime.time(14, 54, 30) <= _t < datetime.time(14, 58):
+        return
     account = positions = None
     quote_map: dict = {}
     with _qmt_lock:
