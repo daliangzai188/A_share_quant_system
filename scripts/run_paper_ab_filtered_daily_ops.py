@@ -517,8 +517,10 @@ def estimate_planned_order(
         # 注意 config 参数是策略配置（无 trade_mode/live_trade），限额必须读运行时配置。
         rt_cfg = runtime_config or {}
         if str(rt_cfg.get("trade_mode", "")).lower() == "live":
-            max_single = float(rt_cfg.get("live_trade", {}).get("max_single_order_amount", planned_amount))
-            planned_amount = min(planned_amount, max_single)
+            # 0=不限额（80%仓位接管），>0=单笔限额。
+            max_single = float(rt_cfg.get("live_trade", {}).get("max_single_order_amount", 0) or 0)
+            if max_single > 0:
+                planned_amount = min(planned_amount, max_single)
         # 计划执行日=信号日的下一交易日；组合状态机按 planned_order_date==today 校验，
         # 防止收盘流水线失败后第二天误执行陈旧计划（E2 的 planned_buy_date 同款保护）。
         planned_order_date = next_trade_day(signal_date, 1)

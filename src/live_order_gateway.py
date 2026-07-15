@@ -156,7 +156,8 @@ class LiveOrderGateway:
         current_market_value: float | None = None,
     ) -> pd.DataFrame:
         rows: list[dict[str, Any]] = []
-        max_order_amount = float(self.live_config.get("max_single_order_amount", 50000))
+        # 0=不限额（仓位由 max_position_pct 接管），>0=单笔限额（元）。
+        max_order_amount = float(self.live_config.get("max_single_order_amount", 0) or 0)
         max_position_pct = float(self.live_config.get("max_position_pct", 0.8))
         max_total_position_pct = float(self.live_config.get("max_total_position_pct", 0.8))
         round_lot_size = int(self.live_config.get("round_lot_size", 100))
@@ -225,7 +226,7 @@ class LiveOrderGateway:
             # 单笔金额上限只约束买入敞口；SELL平仓是风险释放，持仓上涨后
             # 卖出市值必然超过买入限额，拦截会导致"赚钱就平不了仓"
             # （2026-07-10 建研院事故：15200股卖出67640元被66000上限拒单）。
-            if side == "BUY" and estimated_amount >= max_order_amount:
+            if side == "BUY" and max_order_amount > 0 and estimated_amount >= max_order_amount:
                 reject_reasons.append("EXCEED_SINGLE_ORDER_AMOUNT")
             if duplicate_order_check and any(self.active_order_match(open_order, ts_code, side) for open_order in open_orders):
                 reject_reasons.append("DUPLICATE_ACTIVE_ORDER")

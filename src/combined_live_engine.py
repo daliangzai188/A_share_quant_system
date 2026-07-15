@@ -133,10 +133,12 @@ class CombinedLiveEngine:
         initial_equity = float(self.config.get("position", {}).get("initial_cash", 500_000.0))
         planned_amount = initial_equity * position_pct
         if str(self.config.get("trade_mode", "")).lower() == "live":
+            # 0=不限额（80%仓位接管），>0=单笔限额。
             max_single_order_amount = float(
-                self.config.get("live_trade", {}).get("max_single_order_amount", planned_amount)
+                self.config.get("live_trade", {}).get("max_single_order_amount", 0) or 0
             )
-            planned_amount = min(planned_amount, max_single_order_amount)
+            if max_single_order_amount > 0:
+                planned_amount = min(planned_amount, max_single_order_amount)
         round_lot = round_lot_shares_below_amount(planned_amount, limit_close)
         planned_amount = round_lot * limit_close
         planned_position_pct = planned_amount / initial_equity if initial_equity > 0 else position_pct
@@ -701,10 +703,12 @@ class CombinedLiveEngine:
         initial_equity = float(self.config.get("position", {}).get("initial_cash", 500_000.0))
         planned_amount = initial_equity * _E2_POSITION_PCT
         if str(self.config.get("trade_mode", "")).lower() == "live":
+            # 0=不限额（80%仓位接管），>0=单笔限额。
             max_single_order_amount = float(
-                self.config.get("live_trade", {}).get("max_single_order_amount", planned_amount)
+                self.config.get("live_trade", {}).get("max_single_order_amount", 0) or 0
             )
-            planned_amount = min(planned_amount, max_single_order_amount)
+            if max_single_order_amount > 0:
+                planned_amount = min(planned_amount, max_single_order_amount)
         round_lot = round_lot_shares_below_amount(planned_amount, limit_close)
         estimated_shares = round_lot
         planned_amount = round_lot * limit_close

@@ -112,6 +112,7 @@
     "max_position_pct": 0.8,
     "max_total_position_pct": 0.8,
     "max_single_order_amount": 150000,
+    "max_single_order_amount_note": "0=不限额(仓位由max_position_pct 80%接管,月底切换用) | >0=单笔限额(元)",
     "e2_auction_participation_ratio": 0.10,
     "e2_auction_fallback_amount": 50000,
     "intraday_takeprofit_enabled": true,

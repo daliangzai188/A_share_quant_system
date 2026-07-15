@@ -1140,7 +1140,11 @@ def resize_buy_orders_for_live_account(
 
     config = load_json_config(PROJECT_ROOT / "config" / "config.json")
     live_cfg = config.get("live_trade", {})
-    max_single_order_amount = float(live_cfg.get("max_single_order_amount", 100000))
+    # 统一语义（2026-07-15 定稿）：max_single_order_amount=0 → 不限额，
+    # 仓位由 max_position_pct(80%) 接管；>0 → 单笔限额（元）。全链路同此口径。
+    max_single_order_amount = float(live_cfg.get("max_single_order_amount", 0) or 0)
+    if max_single_order_amount <= 0:
+        max_single_order_amount = float("inf")
     max_position_pct = float(live_cfg.get("max_position_pct", 0.8))
     max_total_position_pct = float(live_cfg.get("max_total_position_pct", 0.8))
     round_lot_size = int(live_cfg.get("round_lot_size", 100))
