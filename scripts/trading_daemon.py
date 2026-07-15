@@ -1547,11 +1547,16 @@ def _do_sell(pos: dict[str, Any], qmt_enabled: bool) -> None:
 _watchdog_pending: list = []   # (position, order_id) 待15:00:30成交确认的补挂单
 
 
-def _watchdog_rescue_sell(pos: dict, log: Any) -> str:
-    """看门狗紧急补挂：按QMT实际可用持仓挂跌停价卖单（进收盘集合竞价必成交）。
+def _watchdog_rescue_sell(pos: dict, log: Any) -> list:
+    """看门狗紧急补挂：4档梯次卖单进收盘集合竞价（2026-07-15 用户定稿）。
 
-    返回受理的 order_id，失败返回空串。股数以 can_use_volume 为准绝不超卖；
-    跌停价缺失时用昨收×(1-跌停幅)估算，再缺用最新价×0.95 兜底。
+    档位=现价×0.97 / ×0.95 / ×0.93 / 跌停价，各约1/4仓（余数归跌停档）；
+    某档价低于跌停价时直接按跌停价（委托价不得低于跌停），相同价合并一单。
+    机制：自我冲击的自动稳定器——收盘价越差，参与成交的档越少，
+    我方供给随价格收缩，避免"我即市场"的极端日全量砸穿撮合价：
+      收盘价≥-3% 四档全成交(与挂跌停等价)；-3~-5%成交3/4；
+      -5~-7%成交一半；更深只有跌停档1/4保底，其余宁可过夜不甩卖。
+    股数以QMT实际可用持仓为准绝不超卖。返回受理的order_id列表。
     """
     from src.broker_adapter import OrderRequest
     from src.qmt_adapter import object_to_dict, first_present, to_int
@@ -1571,43 +1576,53 @@ def _watchdog_rescue_sell(pos: dict, log: Any) -> str:
                     break
             if avail <= 0:
                 log.warning("[平仓看门狗] %s QMT实际可用持仓为0，无需补挂（可能已成交/未买入）。", ts_code)
-                return ""
+                return []
             quote_map = adapter.get_full_tick([ts_code])
             quote = quote_map.get(ts_code)
             lower = float(getattr(quote, "lower_limit", 0.0) or 0.0) if quote else 0.0
+            lp = float(getattr(quote, "last_price", 0.0) or 0.0) if quote else 0.0
             if lower <= 0:
                 pre = float(getattr(quote, "pre_close", 0.0) or 0.0) if quote else 0.0
                 short = ts_code.split(".")[0]
                 cap = 0.30 if ts_code.endswith(".BJ") else (0.20 if short.startswith(("300", "301", "688", "689")) else 0.10)
                 if pre > 0:
                     lower = round(pre * (1 - cap), 2)
-                else:
-                    lp = float(getattr(quote, "last_price", 0.0) or 0.0) if quote else 0.0
-                    lower = round(lp * 0.95, 2) if lp > 0 else 0.0
-            if lower <= 0:
+                elif lp > 0:
+                    lower = round(lp * 0.90, 2)
+            if lower <= 0 and lp <= 0:
                 log.error("[平仓看门狗] %s 无法取得任何卖出价格，补挂放弃。", ts_code)
-                return ""
-            # 自我冲击保护（2026-07-15）：历史最薄收盘竞价日我方卖单占比可达49%，
-            # 裸挂跌停会自己把撮合价砸穿。保护价=现价×0.95：正常日与挂跌停等价
-            # （成交价=收盘价）；极薄盘日最多承受-5%冲击，压穿则宁可不成交过夜，
-            # 不在自己制造的崩盘价里甩卖。
-            lp = float(getattr(quote, "last_price", 0.0) or 0.0) if quote else 0.0
+                return []
+            # 4档价格：现价×0.97/0.95/0.93/跌停；低于跌停按跌停；现价缺失全归跌停档
             if lp > 0:
-                lower = max(lower, round(lp * 0.95, 2))
-            request = OrderRequest(
-                ts_code=ts_code, broker_code=ts_code, side="SELL",
-                quantity=avail, price_type="FIXED_PRICE", price=lower,
-                strategy_name="A_SYSTEM_ABC", remark=f"看门狗补挂-{today_beijing().strftime('%Y%m%d')}",
-            )
-            result = adapter.place_order(request)
-        if result.accepted:
-            log.warning("🚑 [平仓看门狗] %s 补挂跌停价卖单 %d股 @%.2f 已受理（收盘竞价必成交）。", ts_code, avail, lower)
-            return str(result.order_id or "")
-        log.error("[平仓看门狗] %s 补挂被拒：%s", ts_code, result.message)
-        return ""
+                tiers = [max(round(lp * f, 2), lower) for f in (0.97, 0.95, 0.93)] + [lower if lower > 0 else round(lp * 0.90, 2)]
+            else:
+                tiers = [lower] * 4
+            # 分仓：各1/4取整百，余数归最后一档(最低价，保证全部股数有单)
+            per = (avail // 4) // 100 * 100
+            qtys = [per, per, per, avail - per * 3]
+            # 相同价格档合并
+            merged: dict = {}
+            for price, qty in zip(tiers, qtys):
+                if qty > 0:
+                    merged[price] = merged.get(price, 0) + qty
+            order_ids = []
+            for price, qty in sorted(merged.items(), reverse=True):
+                request = OrderRequest(
+                    ts_code=ts_code, broker_code=ts_code, side="SELL",
+                    quantity=qty, price_type="FIXED_PRICE", price=price,
+                    strategy_name="A_SYSTEM_ABC",
+                    remark=f"看门狗补挂-{today_beijing().strftime('%Y%m%d')}",
+                )
+                result = adapter.place_order(request)
+                if result.accepted:
+                    order_ids.append(str(result.order_id or ""))
+                    log.warning("🚑 [平仓看门狗] %s 梯次补挂 %d股 @%.2f 已受理。", ts_code, qty, price)
+                else:
+                    log.error("[平仓看门狗] %s 梯次档 %d股@%.2f 被拒：%s", ts_code, qty, price, result.message)
+        return order_ids
     except Exception as e:
         log.error("[平仓看门狗] %s 补挂异常：%s", ts_code, e)
-        return ""
+        return []
 
 
 def _close_position_watchdog() -> None:
@@ -1666,9 +1681,9 @@ def _close_position_watchdog() -> None:
                         log.error("🛑 [平仓看门狗] %s 核查：%s 今日到期且无有效卖出委托，启动自动补挂！", chk, codes)
                         rescued = []
                         for pos in missing:
-                            oid = _watchdog_rescue_sell(pos, log)
-                            if oid:
-                                rescued.append((pos, oid))
+                            oids = _watchdog_rescue_sell(pos, log)
+                            if oids:
+                                rescued.append((pos, oids))
                         if rescued:
                             _watchdog_pending.extend(rescued)
                             _notify("sell_result", "🚑 平仓看门狗已自动补挂",
@@ -1686,19 +1701,38 @@ def _close_position_watchdog() -> None:
             if _watchdog_pending and t >= datetime.time(15, 0, 30):
                 config = load_json_config(PROJECT_ROOT / "config" / "config.json")
                 broker_cfg = config.get("broker", {})
-                for pos, oid in list(_watchdog_pending):
+                for pos, oids in list(_watchdog_pending):
                     try:
-                        fill = _confirm_fill(broker_cfg, oid, int(pos.get("shares", 0)), "看门狗补挂确认", timeout_sec=15)
-                        if fill.filled_qty > 0:
-                            price = fill.avg_price if fill.avg_price > 0 else 0.0
+                        total_qty, total_amt = 0, 0.0
+                        for oid in oids:
+                            fill = _confirm_fill(broker_cfg, oid, int(pos.get("shares", 0)), "看门狗补挂确认", timeout_sec=10)
+                            if fill.filled_qty > 0:
+                                total_qty += fill.filled_qty
+                                total_amt += fill.filled_qty * (fill.avg_price or 0.0)
+                        shares = int(pos.get("shares", 0))
+                        if total_qty >= shares and total_qty > 0:
+                            price = total_amt / total_qty if total_qty else 0.0
                             mark_position_closed(pos.get("order_id", ""), today_str, price)
-                            log.warning("✅ [平仓看门狗] %s 补挂单收盘竞价成交 %d股 @%.2f，已回写平仓。",
-                                        pos.get("ts_code"), fill.filled_qty, price)
+                            log.warning("✅ [平仓看门狗] %s 梯次补挂全部成交 %d股 均价%.2f，已回写平仓。",
+                                        pos.get("ts_code"), total_qty, price)
                             _notify("sell_success", "✅ 看门狗补挂成交",
-                                    f"{pos.get('ts_code')} {pos.get('name','')} 补挂卖单已于收盘竞价成交 @{price:.2f}。")
+                                    f"{pos.get('ts_code')} {pos.get('name','')} 梯次补挂已全部成交 均价{price:.2f}。")
+                        elif total_qty > 0:
+                            price = total_amt / total_qty
+                            reduce_position_shares(pos.get("order_id", ""), shares - total_qty)
+                            log.warning("⚠️ [平仓看门狗] %s 梯次部分成交 %d/%d股 均价%.2f，剩余%d股过夜(梯次保护生效)。",
+                                        pos.get("ts_code"), total_qty, shares, price, shares - total_qty)
+                            _notify("sell_result", "⚠️ 梯次补挂部分成交",
+                                    f"{pos.get('ts_code')} {pos.get('name','')} 成交{total_qty}/{shares}股 均价{price:.2f}，"
+                                    f"剩余{shares - total_qty}股按梯次保护未贱卖、持仓过夜，明日开盘处理。",
+                                    level="critical")
+                        else:
+                            _notify("sell_fail", "🛑 补挂全部未成交",
+                                    f"{pos.get('ts_code')} {pos.get('name','')} 梯次补挂无成交(收盘价低于全部档位?)，"
+                                    f"持仓过夜，明日开盘务必人工处理！", level="critical", call=True)
                     except Exception as e:
                         log.error("[平仓看门狗] 补挂单确认异常：%s", e)
-                    _watchdog_pending.remove((pos, oid))
+                    _watchdog_pending.remove((pos, oids))
         except Exception as e:
             logger().error("平仓看门狗异常：%s", e)
         # 距下一个14:52超过10分钟就长睡，窗口附近10秒粒度
