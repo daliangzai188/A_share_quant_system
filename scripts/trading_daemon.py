@@ -1183,7 +1183,11 @@ def resize_buy_orders_for_live_account(
         max_qty = int((allowed_amount - 0.01) / price) if allowed_amount > 0 else 0
         if round_lot_size > 0:
             max_qty -= max_qty % round_lot_size
-        new_qty = min(old_qty, max_qty)
+        # 2026-07-15 起执行层实时定仓（可放大可缩小）：种子股数只承载"买什么"，
+        # "买多少"由下单时刻的 min(现金,单票仓位,总仓位,单笔限额) 决定——
+        # 修复"晚间种子固化+resize只缩不放"导致改限额不生效、需手动重跑的顽疾。
+        # old_qty<=0 保持0（0股占位=策略不买的语义，绝不放大）。
+        new_qty = max_qty if old_qty > 0 else 0
         if round_lot_size > 0:
             new_qty -= new_qty % round_lot_size
         new_qty = max(0, new_qty)
@@ -1196,7 +1200,7 @@ def resize_buy_orders_for_live_account(
         if total_asset > 0:
             adjusted.at[idx, "planned_position_pct"] = new_amount / total_asset
 
-        if new_qty < old_qty:
+        if new_qty != old_qty:
             adjusted.at[idx, "risk_flags"] = append_risk_flag(
                 row.get("risk_flags", ""),
                 f"LIVE_SIZE_ADJUSTED:{old_qty}->{new_qty}",
