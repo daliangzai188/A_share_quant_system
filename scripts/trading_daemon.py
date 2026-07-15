@@ -1626,7 +1626,11 @@ def _watchdog_rescue_sell(pos: dict, log: Any) -> list:
 
 
 def _close_position_watchdog() -> None:
-    """收盘平仓看门狗（独立常驻线程）：14:57/14:59 核查 + 自动补挂（预备队）。
+    """收盘平仓看门狗（独立常驻线程）：14:56/14:57/14:59 核查 + 自动补挂（预备队）。
+
+    2026-07-15 用户增补 14:56 岗：竞价阶段价格常已回落(实测比14:57低1.5%)，
+    14:56 仍在连续竞价，梯次高档位有机会以更优价立即成交；未成交的限价单
+    自动带入收盘集合竞价，与 14:57~15:00 阶段无缝衔接，一张单管两段。
 
     2026-07-10 事故：主平仓被锁竞争拖慢+被拒后无人发现。2026-07-15 用户拍板
     升级：14:57 起收盘集合竞价仍接受申报（不可撤），挂跌停价卖单 15:00 必以
@@ -1639,7 +1643,9 @@ def _close_position_watchdog() -> None:
     """
     log = logger()
     fired: set[str] = set()
-    checkpoints = (datetime.time(14, 57), datetime.time(14, 59))
+    # 14:56=连续竞价末段抢救(价格通常优于竞价,未成单自动带入收盘竞价);
+    # 14:57/14:59=收盘竞价阶段复查(14:56已挂的单在场则不重复,缺了再补)
+    checkpoints = (datetime.time(14, 56), datetime.time(14, 57), datetime.time(14, 59))
     while True:
         try:
             now = now_beijing(); t = now.time()
