@@ -57,7 +57,8 @@ def main() -> None:
             for ts, bar in df.iterrows():
                 rows.append(dict(ts_code=code, exit_date=day, leg=leg, bar_time=str(ts),
                                  open=bar["open"], close=bar["close"],
-                                 high=bar["high"], low=bar["low"]))
+                                 high=bar["high"], low=bar["low"],
+                                 volume=bar["volume"], amount=bar["amount"]))
         except Exception as e:  # noqa: BLE001
             fails.append((code, day, str(e)[:60]))
         if i % 20 == 0:
