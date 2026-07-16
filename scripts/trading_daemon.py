@@ -1125,6 +1125,30 @@ def _execute_orders_inprocess(
     return accepted_any
 
 
+_sig_day_amount_cache: dict = {}
+
+
+def _signal_day_amount(ts_code: str, signal_date: str) -> float:
+    """信号日成交额（元）。读不到返回 0 = 不施加流动性硬顶（保守容错：行为退回现状）。"""
+    key = str(signal_date)
+    if key not in _sig_day_amount_cache:
+        try:
+            import pandas as pd
+            path = PROJECT_ROOT / "data" / "raw" / "daily" / f"{key}.csv"
+            _sig_day_amount_cache[key] = (
+                pd.read_csv(path).set_index("ts_code")["amount"] if path.exists() else None
+            )
+        except Exception:
+            _sig_day_amount_cache[key] = None
+    ser = _sig_day_amount_cache[key]
+    try:
+        if ser is not None and ts_code in ser.index:
+            return float(ser.loc[ts_code]) * 1000.0   # 日线amount单位为千元
+    except Exception:
+        pass
+    return 0.0
+
+
 def resize_buy_orders_for_live_account(
     planned_orders: "pd.DataFrame",
     account: Any,
@@ -1178,7 +1202,16 @@ def resize_buy_orders_for_live_account(
         cash_cap = max(0.0, available_cash - cash_buffer)
         single_position_cap = max(0.0, total_asset * max_position_pct)
         total_position_cap = max(0.0, total_asset * max_total_position_pct - market_value)
-        allowed_amount = min(cash_cap, single_position_cap, total_position_cap, max_single_order_amount)
+        # 流动性硬顶（2026-07-15 评估落地）：当日开仓 ≤ 信号日成交额×10%。
+        # 16万→1000万全程模拟复利代价=0（只修剪极端薄票，如天顺0.7亿→上限700万）；
+        # 极端情况的绝对防线。信号日数据读不到时不施加（容错=退回现状，只减不加）。
+        liq_cap = float("inf")
+        _sig_date = str(row.get("signal_date", "")).strip().split(".")[0]
+        if _sig_date and _sig_date.isdigit():
+            _sda = _signal_day_amount(ts_code, _sig_date)
+            if _sda > 0:
+                liq_cap = _sda * float(live_cfg.get("total_liquidity_cap_pct", 0.10))
+        allowed_amount = min(cash_cap, single_position_cap, total_position_cap, max_single_order_amount, liq_cap)
 
         old_qty = to_int(row.get("round_lot_shares", row.get("estimated_shares", 0)))
         max_qty = int((allowed_amount - 0.01) / price) if allowed_amount > 0 else 0

@@ -112,6 +112,8 @@
     "max_position_pct": 0.8,
     "max_total_position_pct": 0.8,
     "max_single_order_amount": 150000,
+    "total_liquidity_cap_pct": 0.10,
+    "total_liquidity_cap_note": "当日开仓硬顶=信号日成交额×此比例(极端薄票保护,历史模拟复利代价=0)",
     "max_single_order_amount_note": "0=不限额(仓位由max_position_pct 80%接管,月底切换用) | >0=单笔限额(元)",
     "e2_auction_participation_ratio": 0.10,
     "e2_auction_fallback_amount": 50000,
