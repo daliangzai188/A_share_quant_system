@@ -9710,6 +9710,49 @@ def _qmt_reset() -> None:
         _qmt_adapter = None
 
 
+CAPACITY_WALL_STATE = PROJECT_ROOT / "data" / "state" / "capacity_wall_milestone.json"
+
+
+def _check_capacity_wall_milestone(total_asset: float, config: dict, log: Any) -> None:
+    """容量墙里程碑提醒(2026-07-16 用户拍板):账户总资产达到1750万时推送。
+
+    背景:两年全链重放(docs/capital_roadmap_2026.md)证明当前策略在1750万
+    (0.8仓=中位票2%容量1400万)之前以接近理论上限速度复利,之后容量渐进
+    摊薄(渐近线约1亿)。达标时提醒用户启动"1750万→1亿"新阶段研究:
+    用届时积累的实盘逐片执行数据,扩大票域开发大容量新腿。
+    每周最多提醒一次,直到用户处理(关闭=config.live_trade.capacity_wall_alert_enabled=false)。
+    """
+    try:
+        lt = config.get("live_trade", {})
+        if not bool(lt.get("capacity_wall_alert_enabled", True)):
+            return
+        threshold = float(lt.get("capacity_wall_alert_threshold", 17_500_000))
+        if total_asset < threshold:
+            return
+        today_s = today_beijing().strftime("%Y%m%d")
+        state = {}
+        if CAPACITY_WALL_STATE.exists():
+            state = json.loads(CAPACITY_WALL_STATE.read_text(encoding="utf-8"))
+        last = str(state.get("last_alert", ""))
+        if last and (datetime.datetime.strptime(today_s, "%Y%m%d")
+                     - datetime.datetime.strptime(last, "%Y%m%d")).days < 7:
+            return
+        mkdir_p(CAPACITY_WALL_STATE.parent)
+        CAPACITY_WALL_STATE.write_text(
+            json.dumps({"last_alert": today_s, "total_asset": total_asset}), encoding="utf-8")
+        log.warning("🏁 [容量墙里程碑] 总资产%.0f万 ≥ %.0f万,当前策略进入容量摊薄区,推送提醒。",
+                    total_asset / 1e4, threshold / 1e4)
+        _notify("system_error", "🏁 里程碑:账户达到1750万,容量墙已至",
+                f"总资产{total_asset / 1e4:.0f}万。当前小票策略池的满速复利区已跑完"
+                f"(0.8仓位开始超过中位票2%容量),此后每笔收益率将随资金增长摊薄"
+                f"(渐近线约1亿,见docs/capital_roadmap_2026.md)。是时候启动新阶段研究:"
+                f"用这段时间积累的实盘逐片执行数据,研究1750万→1亿的最快策略"
+                f"(扩大票域/大容量新腿)。请找Claude开工。",
+                level="timeSensitive")
+    except Exception as e:
+        log.warning("容量墙里程碑检查异常(不影响交易):%s", e)
+
+
 def _print_account_status(log: Any) -> None:
     """账户信息轮询（后台线程）：复用持久连接，查询无需重新握手。
     只有 query_account/query_positions 成功返回，才算账户连接已验证可用。
@@ -9824,6 +9867,7 @@ def _print_account_status(log: Any) -> None:
     acct_id = str(account.account_id or "")
     masked_acct = f"****{acct_id[-2:]}" if len(acct_id) >= 2 else f"****{acct_id}"
     total_asset = float(getattr(account, "total_asset", 0.0) or 0.0)
+    _check_capacity_wall_milestone(total_asset, config, log)
     live_positions = [p for p in (positions or []) if int(getattr(p, "volume", 0) or 0) > 0]
     _last_account_has_position = bool(live_positions)
     if live_positions:
