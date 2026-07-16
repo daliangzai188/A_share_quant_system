@@ -131,6 +131,21 @@
     "total_liquidity_cap_note": "当日开仓硬顶=信号日成交额×此比例(极端薄票保护,历史模拟复利代价=0)",
     "pov_enabled": true,
     "pov_note": "POV贪心前置开仓(2026-07-16定稿):竞价段=信号日成交额×pov_auction_share;09:30起每5分钟片=min(剩余,上一片实测成交额×pov_participation),首片基数=信号日成交额×pov_first_slice_share,现价>开盘×(1+pov_chase_cap)或涨停则该片跳过,10:30收口放弃。目标额≤竞价段时不激活(小资金行为不变)",
+    "pov_auction_share_tiers": [
+      [
+        500000000,
+        0.0014
+      ],
+      [
+        1000000000,
+        0.001
+      ],
+      [
+        1000000000000000,
+        0.0006
+      ]
+    ],
+    "pov_auction_share_tiers_note": "竞价段占信号日成交额比例分档[[成交额上限(元),比例]]:≤5亿0.14%|5-10亿0.10%|>10亿0.06%。依据=75笔实测竞价占比25分位(1.38%/1.01%/0.60%)×10%参与率,保证3/4的日子竞价参与率≤10%红线",
     "pov_auction_share": 0.001,
     "pov_participation": 0.1,
     "pov_first_slice_share": 0.18,

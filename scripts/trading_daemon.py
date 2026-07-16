@@ -2827,6 +2827,24 @@ def _e2_auction_buy_worker(e2_rows: list[Any], broker_cfg: dict, today_str: str)
 #   10:30收口,未完成放弃——宁可仓位不满,不追高破坏回测口径。
 # 小资金向后兼容:目标额≤竞价段额度时平滑段不启动,行为与旧版完全一致。
 
+def _pov_auction_share_for(sig_amt: float, lt: dict) -> float:
+    """竞价段占信号日成交额的比例——按信号日成交额分档(2026-07-16 用户观察+数据证实:
+    竞价占比随规模递减,75笔实测中位 2-5亿=2.41%/5-10亿=1.40%/>10亿=1.00%)。
+    档位取25分位×10%参与率(保守:四分之三的日子实际竞价参与率≤10%红线)。
+    tiers格式 [[信号日成交额上限(元), share], ...],兜底 pov_auction_share。"""
+    tiers = lt.get("pov_auction_share_tiers")
+    fallback = float(lt.get("pov_auction_share", 0.001))
+    if not isinstance(tiers, list):
+        return fallback
+    try:
+        for cap_amt, share in tiers:
+            if sig_amt <= float(cap_amt):
+                return float(share)
+        return float(tiers[-1][1])
+    except Exception:
+        return fallback
+
+
 POV_STATE_FILE = PROJECT_ROOT / "data" / "state" / "pov_state.json"
 POV_EXEC_LOG = PROJECT_ROOT / "reports" / "pov_execution_log.csv"
 _pov_state_lock = threading.Lock()
@@ -3217,7 +3235,6 @@ def job_premarket_buy() -> None:
 
     lt_cfg = config.get("live_trade", {})
     pov_enabled = bool(lt_cfg.get("pov_enabled", True))
-    pov_auction_share = float(lt_cfg.get("pov_auction_share", 0.001))
     pov_items: list[dict[str, Any]] = []
 
     pending_buys: list[dict[str, Any]] = []
@@ -3250,6 +3267,7 @@ def job_premarket_buy() -> None:
                 ref_p = float(row.get("reference_price", 0.0) or 0.0)
                 sig_amt_pov = _signal_day_amount(ts_code, signal_date_s.strip().split(".")[0])
                 if ref_p > 0 and sig_amt_pov > 0:
+                    pov_auction_share = _pov_auction_share_for(sig_amt_pov, lt_cfg)
                     auction_cap = sig_amt_pov * pov_auction_share
                     est_amt = qty * ref_p
                     if est_amt > auction_cap:
