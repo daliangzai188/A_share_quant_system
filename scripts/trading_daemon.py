@@ -1311,12 +1311,35 @@ def resize_buy_orders_for_live_account(
         # 后续需要追加 LIVE_SIZE_ADJUSTED 等字符串标记，先转 object，避免09:20实盘定仓时报dtype错误。
         adjusted["risk_flags"] = adjusted["risk_flags"].astype("object")
 
+    # 同票集中度防线(2026-07-16 用户拍板):候选=已持仓同一只票 → 放弃买入。
+    # 否则衔接日会变成"早上买回X、下午卖旧仓X"=同票连续暴露4天全仓押注,
+    # 黑天鹅(连续跌停)逃不出来。历史代价=零:199笔审计中同票衔接0次。
+    held_aliases: set[str] = set()
+    if bool(live_cfg.get("same_stock_skip_enabled", True)):
+        try:
+            for p in load_positions():
+                if str(p.get("status", "")).lower() in {"open", "sell_pending"}:
+                    held_aliases.update(_ts_code_aliases(p.get("ts_code", "")))
+        except Exception as e:
+            logger().warning("同票检查读取持仓失败(本轮不拦截):%s", e)
+
     for idx, row in adjusted.iterrows():
         side = str(row.get("side", "")).upper()
         if side != "BUY":
             continue
 
         ts_code = str(row.get("ts_code", "")).upper()
+        if held_aliases and any(al in held_aliases for al in _ts_code_aliases(ts_code)):
+            adjusted.at[idx, "round_lot_shares"] = 0
+            adjusted.at[idx, "estimated_shares"] = 0
+            adjusted.at[idx, "planned_amount_by_equity"] = 0.0
+            adjusted.at[idx, "risk_flags"] = append_risk_flag(
+                row.get("risk_flags", ""), "SAME_STOCK_ALREADY_HELD_SKIP")
+            logger().warning("🚫 [同票防线] %s 今日候选与已持仓相同,放弃买入(防同票连续暴露/黑天鹅集中度)。", ts_code)
+            _notify("buy_result", "🚫 同票候选已放弃",
+                    f"{ts_code} 今日候选与当前持仓为同一只票,按集中度防线放弃买入"
+                    f"(避免同票连续暴露4天全仓押注)。", level="timeSensitive")
+            continue
         quote = quote_map.get(ts_code)
         reference_price = to_float(row.get("reference_price", 0.0))
         last_price = float(getattr(quote, "last_price", 0.0) or reference_price)

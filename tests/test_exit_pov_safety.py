@@ -1267,7 +1267,7 @@ class EntryExitCapacityGateTest(unittest.TestCase):
         quote_map = {"002800.SZ": SimpleNamespace(last_price=10.0)}
         with patch.object(trading_daemon, "load_json_config", return_value=self._config()), patch.object(
             trading_daemon, "_signal_day_amount", return_value=100_000_000.0
-        ):
+        ), patch.object(trading_daemon, "load_positions", return_value=[]):
             result = trading_daemon.resize_buy_orders_for_live_account(
                 self._planned_order(), account, quote_map, 0.0
             )
@@ -1282,7 +1282,7 @@ class EntryExitCapacityGateTest(unittest.TestCase):
         quote_map = {"002800.SZ": SimpleNamespace(last_price=10.0)}
         with patch.object(trading_daemon, "load_json_config", return_value=self._config()), patch.object(
             trading_daemon, "_signal_day_amount", return_value=0.0
-        ):
+        ), patch.object(trading_daemon, "load_positions", return_value=[]):
             result = trading_daemon.resize_buy_orders_for_live_account(
                 self._planned_order(), account, quote_map, 0.0
             )
@@ -1290,6 +1290,24 @@ class EntryExitCapacityGateTest(unittest.TestCase):
         row = result.iloc[0]
         self.assertEqual(int(row["round_lot_shares"]), 0)
         self.assertIn("LIQUIDITY_CAP_DATA_MISSING", str(row["risk_flags"]))
+
+    def test_same_stock_candidate_is_skipped_when_already_held(self) -> None:
+        """同票集中度防线:候选与已持仓同票→放弃买入(防衔接日同票连续暴露4天)。"""
+        account = SimpleNamespace(total_asset=12_500_000, available_cash=12_500_000)
+        quote_map = {"002800.SZ": SimpleNamespace(last_price=10.0)}
+        held = [{"ts_code": "002800.SZ", "status": "open", "shares": 10_000, "order_id": "x"}]
+        with patch.object(trading_daemon, "load_json_config", return_value=self._config()), patch.object(
+            trading_daemon, "_signal_day_amount", return_value=100_000_000.0
+        ), patch.object(trading_daemon, "load_positions", return_value=held), patch.object(
+            trading_daemon, "_notify"
+        ):
+            result = trading_daemon.resize_buy_orders_for_live_account(
+                self._planned_order(), account, quote_map, 0.0
+            )
+
+        row = result.iloc[0]
+        self.assertEqual(int(row["round_lot_shares"]), 0)
+        self.assertIn("SAME_STOCK_ALREADY_HELD_SKIP", str(row["risk_flags"]))
 
 
 class LargeExitForceEligibilityTest(unittest.TestCase):
