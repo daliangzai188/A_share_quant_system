@@ -782,6 +782,14 @@ def _confirm_fill(
         if wait_to_auction + 10 > timeout:
             timeout = wait_to_auction + 10
             log.info("[%s] 集合竞价时段挂单，成交确认窗口延长至09:25:30（%.0f秒）", tag, timeout)
+    # 收盘集合竞价(14:57~15:00)申报的单要到15:00统一撮合才有成交回报,
+    # 同款自动延长确认窗口(收盘竞价旁路=14:57:05挂单拿收盘价的场景)。
+    elif datetime.time(14, 56, 30) <= now_t.time() < datetime.time(15, 0):
+        close_done = now_t.replace(hour=15, minute=0, second=20, microsecond=0)
+        wait_to_close = (close_done - now_t).total_seconds()
+        if wait_to_close + 10 > timeout:
+            timeout = wait_to_close + 10
+            log.info("[%s] 收盘集合竞价时段挂单，成交确认窗口延长至15:00:30（%.0f秒）", tag, timeout)
     deadline = time.monotonic() + timeout
     last_fill = OrderFill(order_id=str(order_id))
 
@@ -1505,6 +1513,225 @@ def _abc_place_sell_order_direct(
         return False
 
 
+# ── 卖出端执行引擎(2026-07-16 方案G定稿,85笔卖出日5m带量重放验证) ──────────
+# 现状"14:55挂跌停一把梭"在1000万级损耗-1.22%/笔;方案G全含损耗-0.33%:
+#   ① 收盘竞价旁路:仓位≤收盘竞价容量×20% → 不在14:55即时卖,14:57:05申报
+#      跌停价进收盘集合竞价,15:00成交价=收盘价=回测口径完美复刻,最后5分钟
+#      右尾全收(85笔实测:收盘卖/14:55卖=1.243x复利差,右尾+3.1%/+2.5%/+2.3%);
+#   ② 卖出POV分批:大仓位13:00评估跑道,每5分钟片=上一片实测成交额×25%,
+#      挂跌停即时吃买盘;涨停→剩余全量卖(买盘无限,内置止盈);14:48收工,
+#      剩余交14:55主链路;
+#   ③ 残余过夜由既有逾期清理链路兜底(次日09:15后挂跌停,成交≈开盘价,
+#      隔夜gap实测均值-0.70%,已计入方案G损耗)。
+# 卖出与买入的根本不对称:买端动量"越早越好"(POV前置),卖端右尾在最后
+# "越晚越好"(时间成本14:30~15:00中位仅-0.10%~0),故卖端分批只为流动性让路。
+
+_exit_bypass_day = ""   # 收盘竞价旁路生效日(看门狗14:56岗据此让路)
+
+
+def _exit_auction_bypass_decision() -> bool:
+    """14:55 决策:今日到期仓位是否小到可全额进收盘集合竞价拿收盘价。"""
+    try:
+        config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+        lt = config.get("live_trade", {})
+        if not bool(lt.get("exit_auction_bypass_enabled", True)):
+            return False
+        if not (config.get("broker_adapter_enabled") and config.get("qmt_enabled")):
+            return False
+        today_str = today_beijing().strftime("%Y%m%d")
+        due = [p for p in load_positions()
+               if str(p.get("status", "")).lower() in {"open", "sell_pending"}
+               and str(p.get("planned_exit_date", "99991231")) <= today_str]
+        if not due:
+            return False
+        cap_pct = float(lt.get("exit_auction_capacity_pct", 0.008))
+        ratio = float(lt.get("exit_auction_bypass_ratio", 0.2))
+        codes = [str(p.get("ts_code", "")) for p in due]
+        with _qmt_lock:
+            adapter = _qmt_get(config.get("broker", {}))
+            quote_map = adapter.get_full_tick(codes)
+        for pos in due:
+            q = quote_map.get(str(pos.get("ts_code", "")))
+            last = float(getattr(q, "last_price", 0.0) or 0.0) if q else 0.0
+            cum = float(getattr(q, "amount", 0.0) or 0.0) if q else 0.0
+            if last <= 0 or cum <= 0:
+                return False   # 行情不可得,走常规14:55路径(确定性优先)
+            sell_amt = int(pos.get("shares", 0)) * last
+            if sell_amt > cum * cap_pct * ratio:
+                return False
+        logger().warning("💤 [收盘竞价旁路] 到期仓位≤收盘竞价容量×%.0f%%,推迟至14:57:05申报进"
+                         "收盘集合竞价:成交价=收盘价=回测口径,最后5分钟右尾全收。", ratio * 100)
+        return True
+    except Exception as e:
+        logger().error("收盘竞价旁路决策异常(退回常规14:55路径):%s", e)
+        return False
+
+
+def _exit_pov_slice(plan: dict[str, Any], broker_cfg: dict, part: float, log: Any) -> None:
+    """卖出POV单片:预算=上一片实测成交额×part,挂跌停即时吃买盘;涨停全量卖。"""
+    from src.broker_adapter import OrderRequest
+
+    pos = plan["pos"]
+    ts_code = str(pos.get("ts_code", ""))
+    today_str = today_beijing().strftime("%Y%m%d")
+    try:
+        with _qmt_lock:
+            adapter = _qmt_get(broker_cfg)
+            quote = adapter.get_full_tick([ts_code]).get(ts_code)
+        if quote is None:
+            return
+        last = float(getattr(quote, "last_price", 0.0) or 0.0)
+        upper = float(getattr(quote, "upper_limit", 0.0) or 0.0)
+        lower = float(getattr(quote, "lower_limit", 0.0) or 0.0)
+        cum = float(getattr(quote, "amount", 0.0) or 0.0)
+        prev = float(plan.get("prev_cum", 0.0) or 0.0)
+        plan["prev_cum"] = cum
+        if last <= 0:
+            return
+        budget = max(cum - prev, 0.0) * part
+        if upper > 0 and last >= upper - 1e-6:
+            qty = int(plan["remain_sh"])   # 涨停:买盘无限,剩余全量卖=拿涨停价(内置止盈)
+            note = "涨停全量卖"
+        else:
+            qty = min(int(plan["remain_sh"]), int(budget / last // 100) * 100)
+            note = "片卖"
+            if qty < 100:
+                return
+        # 挂跌停价=连续竞价即时吃买盘成交(平仓取价口径,不会真砸到跌停)
+        price = lower if lower > 0 else _round_stock_price(last * 0.98)
+        request = OrderRequest(
+            ts_code=ts_code, broker_code=ts_code, side="SELL",
+            quantity=qty, price_type="FIXED_PRICE", price=price,
+            strategy_name="A_SYSTEM_ABC", remark=f"POV平滑卖-{today_str}",
+        )
+        with _qmt_lock:
+            adapter = _qmt_get(broker_cfg)
+            result = adapter.place_order(request)
+        if not result.accepted:
+            log.error("❌ [卖出POV] %s %s提交失败:%s", ts_code, note, result.message)
+            return
+        oid = str(result.order_id or "")
+        fill = _confirm_fill(broker_cfg, oid, qty, "卖出POV片", timeout_sec=90, poll_sec=5)
+        if fill.filled_qty < qty and not fill.is_terminal:
+            _try_cancel_order(broker_cfg, oid, ts_code)
+            fill = _confirm_fill(broker_cfg, oid, qty, "卖出POV片终态", timeout_sec=20, poll_sec=3)
+        fq = int(fill.filled_qty or 0)
+        fp = float(fill.avg_price) if float(getattr(fill, "avg_price", 0) or 0) > 0 else last
+        if fq > 0:
+            plan["remain_sh"] = int(plan["remain_sh"]) - fq
+            plan["sold_qty"] = int(plan.get("sold_qty", 0)) + fq
+            plan["sold_amt"] = float(plan.get("sold_amt", 0.0)) + fq * fp
+            if plan["remain_sh"] < 100:
+                avg = plan["sold_amt"] / plan["sold_qty"]
+                mark_position_closed(pos.get("order_id", ""), today_str, avg)
+                plan["done"] = True
+                log.warning("✅ [卖出POV] %s %s 分批平仓完成:共%d股 均价%.2f(%s)",
+                            ts_code, pos.get("name", ""), plan["sold_qty"], avg, note)
+                _notify("sell_success", "✅ 卖出POV分批平仓完成",
+                        f"{ts_code} {pos.get('name','')} 分批卖出{plan['sold_qty']}股 均价{avg:.2f} "
+                        f"市值{_fmt_wan(plan['sold_amt'])}（大仓位流动性分批,14:55前完成）")
+            else:
+                reduce_position_shares(pos.get("order_id", ""), int(plan["remain_sh"]))
+        log.info("[卖出POV] %s %s:预算%.1f万 挂%d股 成%d股@%.2f 剩%d股",
+                 ts_code, note, budget / 1e4, qty, fq, fp, int(plan["remain_sh"]))
+    except Exception as e:
+        log.error("卖出POV片异常(%s):%s", ts_code, e)
+
+
+def _exit_pov_monitor() -> None:
+    """卖出端POV分批平仓常驻线程:13:00评估当日到期仓跑道,需要>1片才启动。
+
+    小资金(跑道≤1片)零介入,行为与现状完全一致;启动前撤止盈预挂单释放
+    冻结股份(止盈线程对已撤单不补挂=天然互斥),涨停全量卖规则内置替代。
+    """
+    log = logger()
+    done_day = ""
+    while True:
+        try:
+            now = now_beijing(); t = now.time()
+            today_str = today_beijing().strftime("%Y%m%d")
+            if (not is_trade_day(now.date())) or done_day == today_str or t >= datetime.time(14, 48):
+                if t >= datetime.time(14, 48):
+                    done_day = today_str
+                time.sleep(300); continue
+            if t < datetime.time(13, 0, 5):
+                time.sleep(min(120, max(5, (now.replace(hour=13, minute=0, second=5) - now).total_seconds()))); continue
+            config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+            lt = config.get("live_trade", {})
+            qmt_on = (config.get("broker_adapter_enabled") and config.get("qmt_enabled")
+                      and config.get("broker", {}).get("enabled"))
+            if not bool(lt.get("exit_pov_enabled", True)) or not qmt_on:
+                done_day = today_str; continue
+            due = [p for p in load_positions()
+                   if str(p.get("status", "")).lower() == "open"
+                   and str(p.get("planned_exit_date", "")) == today_str
+                   and str(p.get("strategy_leg", "")).upper() in {"A", "B", "C", "E2", "L"}]
+            if not due:
+                done_day = today_str; continue
+            part = float(lt.get("exit_pov_participation", 0.25))
+            buffer_k = float(lt.get("exit_pov_runway_buffer", 1.5))
+            pm_k = float(lt.get("exit_pov_pm_extrapolate", 0.44))
+            broker_cfg = config.get("broker", {})
+            # ── 13:00 跑道决策(实时已见量外推下午容量,自动捕捉缩量日) ──
+            codes = [str(p.get("ts_code", "")) for p in due]
+            with _qmt_lock:
+                adapter = _qmt_get(broker_cfg)
+                quote_map = adapter.get_full_tick(codes)
+            plans: list[dict[str, Any]] = []
+            for pos in due:
+                q = quote_map.get(str(pos.get("ts_code", "")))
+                last = float(getattr(q, "last_price", 0.0) or 0.0) if q else 0.0
+                cum = float(getattr(q, "amount", 0.0) or 0.0) if q else 0.0
+                if last <= 0 or cum <= 0:
+                    continue
+                sell_amt = int(pos.get("shares", 0)) * last
+                slice_est = cum * pm_k / 21.0        # 13:05~14:45约21片
+                need = int(sell_amt * buffer_k / (slice_est * part)) + 1 if slice_est > 0 else 99
+                if need <= 1:
+                    continue    # 小仓位:今日不分批,14:55主链路/收盘竞价旁路处理
+                slots = min(need, 21)
+                start_dt = now.replace(hour=14, minute=45, second=0, microsecond=0) - datetime.timedelta(minutes=5 * slots)
+                plans.append(dict(pos=pos, prev_cum=cum, start=start_dt,
+                                  remain_sh=int(pos.get("shares", 0)), sold_qty=0, sold_amt=0.0, done=False))
+                log.warning("🏃 [卖出POV] %s %s 仓位%.0f万>单片容量,启动分批:%d片,%s起,片参与率%.0f%%",
+                            pos.get("ts_code"), pos.get("name"), sell_amt / 1e4, slots,
+                            start_dt.strftime("%H:%M"), part * 100)
+            if not plans:
+                done_day = today_str; continue
+            # 撤止盈预挂单(释放冻结股份;涨停全量卖规则内置替代其职能)
+            try:
+                with _qmt_lock:
+                    adapter = _qmt_get(broker_cfg)
+                    _cancel_own_takeprofit_orders(adapter, {str(p["pos"].get("ts_code", "")) for p in plans})
+            except Exception as e:
+                log.error("卖出POV撤止盈单异常:%s", e)
+            _notify("sell_result", "🏃 大仓位分批平仓启动",
+                    "；".join(f"{p['pos'].get('ts_code','')} {p['pos'].get('name','')} 分批卖出" for p in plans)
+                    + f"。13:00起按流动性分片(片=5分钟成交×{part:.0%}),14:48前收工,剩余交14:55收盘平仓。")
+            # ── 分片执行(5分钟网格) ──
+            while now_beijing().time() < datetime.time(14, 46):
+                for plan in plans:
+                    if not plan["done"] and now_beijing() >= plan["start"]:
+                        _exit_pov_slice(plan, broker_cfg, part, log)
+                if all(p["done"] for p in plans):
+                    break
+                now2 = now_beijing()
+                nxt = (now2 + datetime.timedelta(seconds=300)).replace(second=10, microsecond=0)
+                nxt -= datetime.timedelta(minutes=nxt.minute % 5)
+                sl = (nxt - now2).total_seconds()
+                if sl > 0:
+                    time.sleep(sl)
+            leftover = [p for p in plans if not p["done"]]
+            if leftover:
+                log.warning("[卖出POV] 收工:%d只未卖完(剩余%s),交14:55主平仓链路。",
+                            len(leftover),
+                            "、".join(f"{p['pos'].get('ts_code','')}{p['remain_sh']}股" for p in leftover))
+            done_day = today_str
+        except Exception as e:
+            log.error("卖出POV线程异常:%s", e)
+            time.sleep(60)
+
+
 def _do_sell(pos: dict[str, Any], qmt_enabled: bool) -> None:
     """对单个持仓执行卖出动作，完全独立、单独 try/except。"""
     ts_code = pos["ts_code"]
@@ -1686,8 +1913,9 @@ def _close_position_watchdog() -> None:
     log = logger()
     fired: set[str] = set()
     # 14:56=连续竞价末段抢救(价格通常优于竞价,未成单自动带入收盘竞价);
-    # 14:57/14:59=收盘竞价阶段复查(14:56已挂的单在场则不重复,缺了再补)
-    checkpoints = (datetime.time(14, 56), datetime.time(14, 57), datetime.time(14, 59))
+    # 14:57:40/14:59=收盘竞价阶段复查(14:56已挂的单在场则不重复,缺了再补;
+    # 14:57岗后移40秒,给收盘竞价旁路的14:57:05申报留出核查余量)
+    checkpoints = (datetime.time(14, 56), datetime.time(14, 57, 40), datetime.time(14, 59))
     while True:
         try:
             now = now_beijing(); t = now.time()
@@ -1698,6 +1926,11 @@ def _close_position_watchdog() -> None:
                     if key in fired or t < chk:
                         continue
                     fired.add(key)
+                    if chk == checkpoints[0] and _exit_bypass_day == today_str:
+                        # 收盘竞价旁路日:14:55主流程按计划在14:57:05才申报,
+                        # 14:56岗此时无委托属正常,不补挂(补挂会即时成交丢右尾)。
+                        log.info("[平仓看门狗] 14:56岗:收盘竞价旁路生效,跳过;14:57:40岗核查申报。")
+                        continue
                     due = [p for p in load_positions()
                            if str(p.get("status", "")).lower() in {"open", "sell_pending"}
                            and str(p.get("planned_exit_date", "99991231")) <= today_str]
@@ -4824,6 +5057,15 @@ def job_afternoon() -> None:
     #    （SELL 行仅按 planned_exit_date<=today 产生，与盘中这次刷新无关），
     #    且平仓价在执行时实时取买10/买5，不从文件读死，因此先平仓完全安全。
     try:
+        # 收盘竞价旁路(2026-07-16 方案G):小仓位推迟至14:57:05申报进收盘集合
+        # 竞价,成交价=收盘价=回测口径,右尾全收(85笔实测复利差1.243x)。
+        if close_plan_exists and _exit_auction_bypass_decision():
+            global _exit_bypass_day
+            _exit_bypass_day = today_beijing().strftime("%Y%m%d")
+            target = now_beijing().replace(hour=14, minute=57, second=5, microsecond=0)
+            wait_s = (target - now_beijing()).total_seconds()
+            if wait_s > 0:
+                time.sleep(wait_s)
         check_and_close_positions()
     except Exception as e:
         logger().error("平仓检查异常：%s —— 请立即手动检查持仓！", e)
@@ -7348,6 +7590,13 @@ def main() -> None:
         target=_intraday_takeprofit_monitor,
         daemon=True,
         name="intraday-takeprofit",
+    ).start()
+
+    # 卖出端POV分批平仓(大仓位13:00评估跑道分批卖,小资金零介入)
+    threading.Thread(
+        target=_exit_pov_monitor,
+        daemon=True,
+        name="exit-pov",
     ).start()
 
     # POV平滑执行断点恢复：daemon在09:25~10:30间重启时接续未完成的平滑买入
