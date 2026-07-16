@@ -41,13 +41,22 @@
     "selected_rule_description": "mode=1默认优先；L通过稳健基础条件才参与；mode=1空闲时允许L补位；mode=1有交易计划时，L替换必须满足创业板、theme_limit_count>=2、first_time_detail_bucket!=after_1430。",
     "base_l_rule": {
       "market_segment": "not_star",
-      "segment_retreat_state_bucket": ["neutral", "warming_2day"],
-      "market_chain_count_bucket": ["8_15", "15_30", "gte_30"]
+      "segment_retreat_state_bucket": [
+        "neutral",
+        "warming_2day"
+      ],
+      "market_chain_count_bucket": [
+        "8_15",
+        "15_30",
+        "gte_30"
+      ]
     },
     "replace_guard": {
       "market_segment": "chi_next",
       "theme_limit_count_min": 2,
-      "first_time_detail_bucket_exclude": ["after_1430"]
+      "first_time_detail_bucket_exclude": [
+        "after_1430"
+      ]
     },
     "live_candidate_metrics": {
       "trade_count": 173,
@@ -83,7 +92,13 @@
       "reconcile": true,
       "daily_summary": true
     },
-    "position_loss_alert_thresholds_pct": [-5, -10, -15, -20, -30]
+    "position_loss_alert_thresholds_pct": [
+      -5,
+      -10,
+      -15,
+      -20,
+      -30
+    ]
   },
   "broker": {
     "file_role": "券商连接配置。默认关闭，只用于 QMT / miniQMT 只读检查、实盘预览和后续真实下单。",
@@ -112,10 +127,16 @@
     "max_position_pct": 0.8,
     "max_total_position_pct": 0.8,
     "max_single_order_amount": 150000,
-    "total_liquidity_cap_pct": 0.10,
+    "total_liquidity_cap_pct": 0.1,
     "total_liquidity_cap_note": "当日开仓硬顶=信号日成交额×此比例(极端薄票保护,历史模拟复利代价=0)",
+    "pov_enabled": true,
+    "pov_note": "POV贪心前置开仓(2026-07-16定稿):竞价段=信号日成交额×pov_auction_share;09:30起每5分钟片=min(剩余,上一片实测成交额×pov_participation),首片基数=信号日成交额×pov_first_slice_share,现价>开盘×(1+pov_chase_cap)或涨停则该片跳过,10:30收口放弃。目标额≤竞价段时不激活(小资金行为不变)",
+    "pov_auction_share": 0.001,
+    "pov_participation": 0.1,
+    "pov_first_slice_share": 0.18,
+    "pov_chase_cap": 0.02,
     "max_single_order_amount_note": "0=不限额(仓位由max_position_pct 80%接管,月底切换用) | >0=单笔限额(元)",
-    "e2_auction_participation_ratio": 0.10,
+    "e2_auction_participation_ratio": 0.1,
     "e2_auction_fallback_amount": 50000,
     "intraday_takeprofit_enabled": true,
     "intraday_takeprofit_offset": 0.01,
@@ -135,7 +156,11 @@
   },
   "strategy_d": {
     "file_role": "策略D首板打板配置。当前账户已开通沪A、深A和创业板，因此实盘扫描/下单范围限定为沪主板、深主板、创业板；科创板和北交所未确认权限前不纳入。",
-    "allowed_market_segments": ["sh_main", "sz_main", "chi_next"],
+    "allowed_market_segments": [
+      "sh_main",
+      "sz_main",
+      "chi_next"
+    ],
     "min_fill_probability": 0.8,
     "ranking_rule": "fd_amount_to_circ_mv_desc",
     "position_pct": 0.8,
@@ -235,7 +260,7 @@
     "output_extended_factor_report_path": "reports/extended_factor_analysis_report.csv",
     "commission_rate": 0.0003,
     "stamp_tax_rate": 0.001,
-    "transfer_fee_rate": 0.00001,
+    "transfer_fee_rate": 1e-05,
     "slippage_rate": 0.001
   },
   "dynamic_features": {
@@ -251,18 +276,30 @@
         "rule_name": "stable_strong_low_fd",
         "description": "强市场情绪 + 封单金额/流通市值低于0.5%",
         "conditions": {
-          "market_sentiment_level": ["strong"],
-          "fd_ratio_bucket": ["lt_0_5pct"]
+          "market_sentiment_level": [
+            "strong"
+          ],
+          "fd_ratio_bucket": [
+            "lt_0_5pct"
+          ]
         }
       },
       {
         "rule_name": "strong_multi_midday_low_fd",
         "description": "强市场情绪 + 多次开板 + 盘中涨停 + 封单金额/流通市值低于0.5%",
         "conditions": {
-          "market_sentiment_level": ["strong"],
-          "board_type": ["multi_open"],
-          "first_time_bucket": ["midday"],
-          "fd_ratio_bucket": ["lt_0_5pct"]
+          "market_sentiment_level": [
+            "strong"
+          ],
+          "board_type": [
+            "multi_open"
+          ],
+          "first_time_bucket": [
+            "midday"
+          ],
+          "fd_ratio_bucket": [
+            "lt_0_5pct"
+          ]
         }
       }
     ]
@@ -319,10 +356,22 @@
     "min_sample_count": 50,
     "initial_cash": 1000000,
     "max_holding_count": 1,
-    "max_holding_count_options": [1],
+    "max_holding_count_options": [
+      1
+    ],
     "max_total_position_pct": 0.8,
-    "rank_position_weights": [0.8],
-    "evaluation_years": ["2020", "2021", "2022", "2023", "2024", "2025", "2026"],
+    "rank_position_weights": [
+      0.8
+    ],
+    "evaluation_years": [
+      "2020",
+      "2021",
+      "2022",
+      "2023",
+      "2024",
+      "2025",
+      "2026"
+    ],
     "target_annual_return": 1.0
   },
   "exit_rule_optimization": {
@@ -333,7 +382,9 @@
     "optional_open_5m_features_path": "data/processed/open_5m_features.csv",
     "optional_sector_moneyflow_features_path": "data/processed/sector_moneyflow_features.csv",
     "optional_top_list_features_path": "data/processed/top_list_features.csv",
-    "required_factor_columns": ["exit_rule"],
+    "required_factor_columns": [
+      "exit_rule"
+    ],
     "factor_columns": [
       "exit_rule",
       "market_segment",
@@ -354,10 +405,22 @@
     "min_sample_count": 50,
     "initial_cash": 1000000,
     "max_holding_count": 1,
-    "max_holding_count_options": [1],
+    "max_holding_count_options": [
+      1
+    ],
     "max_total_position_pct": 0.8,
-    "rank_position_weights": [0.8],
-    "evaluation_years": ["2020", "2021", "2022", "2023", "2024", "2025", "2026"],
+    "rank_position_weights": [
+      0.8
+    ],
+    "evaluation_years": [
+      "2020",
+      "2021",
+      "2022",
+      "2023",
+      "2024",
+      "2025",
+      "2026"
+    ],
     "target_annual_return": 1.0
   },
   "exit_rule_matrix": {
@@ -381,31 +444,75 @@
       "amount_ratio_bucket": "2_3"
     },
     "base_exclusions": {
-      "limit_up_count_bucket": ["gte_180"],
-      "market_chain_count_bucket": ["gte_30"],
-      "segment_limit_down_ratio_bucket": ["gte_1_5pct"],
-      "market_leader_rank_bucket": ["rank_1"],
-      "first_time_detail_bucket": ["1000_1100"],
-      "turnover_rate_bucket": ["6_10"]
+      "limit_up_count_bucket": [
+        "gte_180"
+      ],
+      "market_chain_count_bucket": [
+        "gte_30"
+      ],
+      "segment_limit_down_ratio_bucket": [
+        "gte_1_5pct"
+      ],
+      "market_leader_rank_bucket": [
+        "rank_1"
+      ],
+      "first_time_detail_bucket": [
+        "1000_1100"
+      ],
+      "turnover_rate_bucket": [
+        "6_10"
+      ]
     },
     "post_selection_exclusions": {
-      "fd_ratio_bucket": ["2pct_5pct"],
-      "segment_retreat_state_bucket": ["weak_below_3"],
-      "segment_chain_count_bucket": ["3_5"],
-      "market_segment": ["bj"]
+      "fd_ratio_bucket": [
+        "2pct_5pct"
+      ],
+      "segment_retreat_state_bucket": [
+        "weak_below_3"
+      ],
+      "segment_chain_count_bucket": [
+        "3_5"
+      ],
+      "market_segment": [
+        "bj"
+      ]
     },
     "initial_cash": 1000000,
     "position_pct": 0.8,
     "max_hold_days": 5,
-    "stop_loss_list": [-0.03, -0.05],
-    "take_profit_list": [0.05, 0.10, 0.15],
+    "stop_loss_list": [
+      -0.03,
+      -0.05
+    ],
+    "take_profit_list": [
+      0.05,
+      0.1,
+      0.15
+    ],
     "fixed_exit_rules": [
-      {"rule_name": "fixed_t2_close", "max_hold_days": 2, "exit_price_field": "close"},
-      {"rule_name": "fixed_hold3_close", "max_hold_days": 3, "exit_price_field": "close"},
-      {"rule_name": "fixed_hold5_close", "max_hold_days": 5, "exit_price_field": "close"}
+      {
+        "rule_name": "fixed_t2_close",
+        "max_hold_days": 2,
+        "exit_price_field": "close"
+      },
+      {
+        "rule_name": "fixed_hold3_close",
+        "max_hold_days": 3,
+        "exit_price_field": "close"
+      },
+      {
+        "rule_name": "fixed_hold5_close",
+        "max_hold_days": 5,
+        "exit_price_field": "close"
+      }
     ],
     "stop_take_exit_rules": [
-      {"rule_name": "stop_3_tp_15_hold3", "max_hold_days": 3, "stop_loss": -0.03, "take_profit": 0.15}
+      {
+        "rule_name": "stop_3_tp_15_hold3",
+        "max_hold_days": 3,
+        "stop_loss": -0.03,
+        "take_profit": 0.15
+      }
     ],
     "buy_slippage_rate": 0.001,
     "sell_slippage_rate": 0.001,
@@ -422,92 +529,181 @@
         "data_key": "daily_ohlc",
         "data_name": "日线 OHLCV",
         "path": "data/processed/daily_merged.csv",
-        "required_columns": ["ts_code", "trade_date", "open", "high", "low", "close", "pre_close", "vol", "amount"]
+        "required_columns": [
+          "ts_code",
+          "trade_date",
+          "open",
+          "high",
+          "low",
+          "close",
+          "pre_close",
+          "vol",
+          "amount"
+        ]
       },
       {
         "data_key": "limit_list",
         "data_name": "涨停池",
         "path": "data/processed/limit_up_merged.csv",
-        "required_columns": ["ts_code", "trade_date", "first_time", "last_time", "open_times", "fd_amount", "limit_times"]
+        "required_columns": [
+          "ts_code",
+          "trade_date",
+          "first_time",
+          "last_time",
+          "open_times",
+          "fd_amount",
+          "limit_times"
+        ]
       },
       {
         "data_key": "auction",
         "data_name": "集合竞价成交",
         "path": "data/processed/auction_features.csv",
-        "required_columns": ["ts_code", "trade_date", "auction_price", "auction_amount", "auction_volume"]
+        "required_columns": [
+          "ts_code",
+          "trade_date",
+          "auction_price",
+          "auction_amount",
+          "auction_volume"
+        ]
       },
       {
         "data_key": "open_5m",
         "data_name": "开盘 5 分钟行情",
         "path": "data/processed/open_5m_features.csv",
-        "required_columns": ["ts_code", "trade_date", "open_5m_vwap", "open_5m_high", "open_5m_low", "open_5m_amount"]
+        "required_columns": [
+          "ts_code",
+          "trade_date",
+          "open_5m_vwap",
+          "open_5m_high",
+          "open_5m_low",
+          "open_5m_amount"
+        ]
       },
       {
         "data_key": "minute_bar",
         "data_name": "分钟 K 线",
         "path": "data/processed/minute_bars.csv",
-        "required_columns": ["ts_code", "trade_date", "trade_time", "open", "high", "low", "close", "volume", "amount"]
+        "required_columns": [
+          "ts_code",
+          "trade_date",
+          "trade_time",
+          "open",
+          "high",
+          "low",
+          "close",
+          "volume",
+          "amount"
+        ]
       },
       {
         "data_key": "level2_order_book",
         "data_name": "Level-2 五档盘口",
         "path": "data/processed/level2_order_book.csv",
-        "required_columns": ["ts_code", "trade_date", "trade_time", "bid1", "bid2", "bid3", "bid4", "bid5", "ask1", "ask2", "ask3", "ask4", "ask5", "bid1_volume", "ask1_volume"]
+        "required_columns": [
+          "ts_code",
+          "trade_date",
+          "trade_time",
+          "bid1",
+          "bid2",
+          "bid3",
+          "bid4",
+          "bid5",
+          "ask1",
+          "ask2",
+          "ask3",
+          "ask4",
+          "ask5",
+          "bid1_volume",
+          "ask1_volume"
+        ]
       },
       {
         "data_key": "limit_queue",
         "data_name": "涨跌停封单队列",
         "path": "data/processed/limit_queue.csv",
-        "required_columns": ["ts_code", "trade_date", "trade_time", "limit_price", "queue_amount", "matched_amount"]
+        "required_columns": [
+          "ts_code",
+          "trade_date",
+          "trade_time",
+          "limit_price",
+          "queue_amount",
+          "matched_amount"
+        ]
       }
     ],
     "validation_items": [
       {
         "item": "T+1 开盘买入成交价",
-        "can_use_data_keys": ["daily_ohlc"],
+        "can_use_data_keys": [
+          "daily_ohlc"
+        ],
         "needs_data_keys": [],
         "current_model": "使用 T+1 open 加买入滑点，开盘涨停时按买不到处理"
       },
       {
         "item": "集合竞价成交价与成交量",
         "can_use_data_keys": [],
-        "needs_data_keys": ["auction"],
+        "needs_data_keys": [
+          "auction"
+        ],
         "current_model": "当前没有集合竞价明细，不能验证竞价成交价格和容量"
       },
       {
         "item": "开盘 5 分钟强度与 VWAP 买入",
         "can_use_data_keys": [],
-        "needs_data_keys": ["open_5m", "minute_bar"],
+        "needs_data_keys": [
+          "open_5m",
+          "minute_bar"
+        ],
         "current_model": "当前没有分钟级数据，不能验证 9:30-9:35 真实路径"
       },
       {
         "item": "涨停排队是否能买入",
-        "can_use_data_keys": ["limit_list"],
-        "needs_data_keys": ["limit_queue", "level2_order_book"],
+        "can_use_data_keys": [
+          "limit_list"
+        ],
+        "needs_data_keys": [
+          "limit_queue",
+          "level2_order_book"
+        ],
         "current_model": "当前只能用开盘涨停/封单/炸板次数做保守近似，不能精确还原排队位置"
       },
       {
         "item": "买入落在卖一到卖五哪一档",
         "can_use_data_keys": [],
-        "needs_data_keys": ["level2_order_book"],
+        "needs_data_keys": [
+          "level2_order_book"
+        ],
         "current_model": "当前没有五档盘口，不能判断卖一到卖五成交"
       },
       {
         "item": "卖出落在买一到买五哪一档",
         "can_use_data_keys": [],
-        "needs_data_keys": ["level2_order_book"],
+        "needs_data_keys": [
+          "level2_order_book"
+        ],
         "current_model": "当前没有五档盘口，不能判断买一到买五成交"
       },
       {
         "item": "止盈止损日内先后顺序",
-        "can_use_data_keys": ["daily_ohlc"],
-        "needs_data_keys": ["minute_bar"],
+        "can_use_data_keys": [
+          "daily_ohlc"
+        ],
+        "needs_data_keys": [
+          "minute_bar"
+        ],
         "current_model": "当前日线只能判断 high/low 是否触发，无法确定先后；同日冲突默认先止损"
       },
       {
         "item": "跌停是否能卖出",
-        "can_use_data_keys": ["daily_ohlc"],
-        "needs_data_keys": ["limit_queue", "level2_order_book"],
+        "can_use_data_keys": [
+          "daily_ohlc"
+        ],
+        "needs_data_keys": [
+          "limit_queue",
+          "level2_order_book"
+        ],
         "current_model": "当前日线可识别跌停风险并保守认为卖不出，但不能精确计算队列成交概率"
       }
     ]
@@ -517,7 +713,17 @@
     "output_trade_report_path": "reports/minute_trade_replay_report.csv",
     "output_summary_path": "reports/minute_trade_replay_summary.csv",
     "output_yearly_path": "reports/minute_trade_replay_yearly.csv",
-    "required_columns": ["ts_code", "trade_date", "trade_time", "open", "high", "low", "close", "volume", "amount"],
+    "required_columns": [
+      "ts_code",
+      "trade_date",
+      "trade_time",
+      "open",
+      "high",
+      "low",
+      "close",
+      "volume",
+      "amount"
+    ],
     "base_conditions": {
       "open_times_bucket": "gte_4",
       "volume_ratio_bucket": "2_4",
@@ -526,8 +732,15 @@
     "initial_cash": 1000000,
     "position_pct": 0.8,
     "max_hold_days": 5,
-    "stop_loss_list": [-0.03, -0.05],
-    "take_profit_list": [0.05, 0.10, 0.15],
+    "stop_loss_list": [
+      -0.03,
+      -0.05
+    ],
+    "take_profit_list": [
+      0.05,
+      0.1,
+      0.15
+    ],
     "buy_slippage_rate": 0.001,
     "sell_slippage_rate": 0.001,
     "limit_price_tolerance": 0.002,
@@ -541,23 +754,84 @@
     "output_import_report_path": "reports/minute_data_import_report.csv",
     "template_path": "data/templates/minute_bars_template.csv",
     "chunk_size": 300000,
-    "standard_columns": ["ts_code", "trade_date", "trade_time", "open", "high", "low", "close", "volume", "amount"],
+    "standard_columns": [
+      "ts_code",
+      "trade_date",
+      "trade_time",
+      "open",
+      "high",
+      "low",
+      "close",
+      "volume",
+      "amount"
+    ],
     "column_aliases": {
-      "ts_code": ["ts_code", "code", "symbol", "证券代码", "股票代码"],
-      "trade_date": ["trade_date", "date", "交易日期", "日期"],
-      "trade_time": ["trade_time", "time", "bar_time", "交易时间", "时间"],
-      "datetime": ["datetime", "trade_datetime", "交易日期时间", "日期时间"],
-      "open": ["open", "开盘", "开盘价"],
-      "high": ["high", "最高", "最高价"],
-      "low": ["low", "最低", "最低价"],
-      "close": ["close", "收盘", "收盘价"],
-      "volume": ["volume", "vol", "成交量"],
-      "amount": ["amount", "成交额"]
+      "ts_code": [
+        "ts_code",
+        "code",
+        "symbol",
+        "证券代码",
+        "股票代码"
+      ],
+      "trade_date": [
+        "trade_date",
+        "date",
+        "交易日期",
+        "日期"
+      ],
+      "trade_time": [
+        "trade_time",
+        "time",
+        "bar_time",
+        "交易时间",
+        "时间"
+      ],
+      "datetime": [
+        "datetime",
+        "trade_datetime",
+        "交易日期时间",
+        "日期时间"
+      ],
+      "open": [
+        "open",
+        "开盘",
+        "开盘价"
+      ],
+      "high": [
+        "high",
+        "最高",
+        "最高价"
+      ],
+      "low": [
+        "low",
+        "最低",
+        "最低价"
+      ],
+      "close": [
+        "close",
+        "收盘",
+        "收盘价"
+      ],
+      "volume": [
+        "volume",
+        "vol",
+        "成交量"
+      ],
+      "amount": [
+        "amount",
+        "成交额"
+      ]
     },
     "filter_regular_session": true,
     "regular_sessions": [
-      ["09:30", "11:30"],
-      ["13:00", "15:00"]
+      [
+        "09:30",
+        "11:30"
+      ],
+      [
+        "13:00",
+        "15:00"
+      ]
     ]
   },
   "minute_collection": {
@@ -593,8 +867,17 @@
     "output_filter_backtest_path": "reports/failure_filter_backtest.csv",
     "output_filter_backtest_yearly_path": "reports/failure_filter_backtest_yearly.csv",
     "replay_rule": "fixed_t2_close",
-    "focus_years": ["2022", "2026"],
-    "baseline_years": ["2020", "2021", "2023", "2024", "2025"],
+    "focus_years": [
+      "2022",
+      "2026"
+    ],
+    "baseline_years": [
+      "2020",
+      "2021",
+      "2023",
+      "2024",
+      "2025"
+    ],
     "position_pct": 0.8,
     "min_group_samples": 5,
     "worst_trade_count": 50,
@@ -642,7 +925,15 @@
     "max_filter_count": 3,
     "target_total_compound_return": 99.0,
     "target_min_rolling_3y_return": 9.0,
-    "evaluation_years": ["2020", "2021", "2022", "2023", "2024", "2025", "2026"],
+    "evaluation_years": [
+      "2020",
+      "2021",
+      "2022",
+      "2023",
+      "2024",
+      "2025",
+      "2026"
+    ],
     "factor_columns": [
       "market_segment",
       "limit_pct_bucket",
@@ -676,7 +967,15 @@
     "max_condition_count": 2,
     "max_candidates_per_mode": 40,
     "max_scenarios": 5000,
-    "evaluation_years": ["2020", "2021", "2022", "2023", "2024", "2025", "2026"],
+    "evaluation_years": [
+      "2020",
+      "2021",
+      "2022",
+      "2023",
+      "2024",
+      "2025",
+      "2026"
+    ],
     "factor_columns": [
       "market_emotion_state_bucket",
       "segment_emotion_state_bucket",
@@ -726,7 +1025,10 @@
         "description": "样本外复核"
       }
     ],
-    "rolling_windows": [2, 3]
+    "rolling_windows": [
+      2,
+      3
+    ]
   },
   "walk_forward_market_heat_validation": {
     "output_summary_path": "reports/walk_forward_market_heat_summary.csv",
@@ -760,14 +1062,26 @@
       "amount_ratio_bucket": "2_3"
     },
     "seed_base_exclusions": {
-      "limit_up_count_bucket": ["gte_180"],
-      "first_time_detail_bucket": ["1000_1100"],
-      "turnover_rate_bucket": ["6_10"]
+      "limit_up_count_bucket": [
+        "gte_180"
+      ],
+      "first_time_detail_bucket": [
+        "1000_1100"
+      ],
+      "turnover_rate_bucket": [
+        "6_10"
+      ]
     },
     "seed_post_exclusions": {
-      "fd_ratio_bucket": ["2pct_5pct"],
-      "segment_retreat_state_bucket": ["weak_below_3"],
-      "market_segment": ["bj"]
+      "fd_ratio_bucket": [
+        "2pct_5pct"
+      ],
+      "segment_retreat_state_bucket": [
+        "weak_below_3"
+      ],
+      "market_segment": [
+        "bj"
+      ]
     },
     "windows": [
       {
@@ -843,7 +1157,10 @@
     "output_yearly_path": "reports/dynamic_risk_overlay_split_yearly.csv",
     "output_rolling_path": "reports/dynamic_risk_overlay_split_rolling.csv",
     "initial_cash": 1000000,
-    "target_policies": ["base_no_overlay", "weak_and_segment_neutral_skip"],
+    "target_policies": [
+      "base_no_overlay",
+      "weak_and_segment_neutral_skip"
+    ],
     "splits": [
       {
         "split_name": "train_2020_2022",
@@ -864,7 +1181,10 @@
         "description": "样本外复核"
       }
     ],
-    "rolling_windows": [2, 3]
+    "rolling_windows": [
+      2,
+      3
+    ]
   },
   "a5_r1_skipped_trade_review": {
     "input_overlay_trade_path": "reports/dynamic_risk_overlay_trades.csv",
@@ -935,8 +1255,16 @@
     "min_candidate_samples": 3,
     "top_single_candidates": 18,
     "max_combo_candidates": 10,
-    "focus_names": ["max_drawdown_period", "longest_loss_streak"],
-    "excluded_candidate_factors": ["open_times_bucket", "volume_ratio_bucket", "amount_ratio_bucket", "board_type"],
+    "focus_names": [
+      "max_drawdown_period",
+      "longest_loss_streak"
+    ],
+    "excluded_candidate_factors": [
+      "open_times_bucket",
+      "volume_ratio_bucket",
+      "amount_ratio_bucket",
+      "board_type"
+    ],
     "splits": [
       {
         "split_name": "train_2020_2022",
@@ -963,13 +1291,32 @@
     "target_policy": "weak_and_segment_neutral_skip",
     "min_group_samples": 5,
     "group_definitions": [
-      ["market_segment"],
-      ["limit_pct_bucket"],
-      ["market_segment", "limit_pct_bucket"],
-      ["market_segment", "market_sentiment_level"],
-      ["market_segment", "segment_market_sentiment_level"],
-      ["limit_pct_bucket", "market_sentiment_level"],
-      ["limit_pct_bucket", "limit_times_detail_bucket"]
+      [
+        "market_segment"
+      ],
+      [
+        "limit_pct_bucket"
+      ],
+      [
+        "market_segment",
+        "limit_pct_bucket"
+      ],
+      [
+        "market_segment",
+        "market_sentiment_level"
+      ],
+      [
+        "market_segment",
+        "segment_market_sentiment_level"
+      ],
+      [
+        "limit_pct_bucket",
+        "market_sentiment_level"
+      ],
+      [
+        "limit_pct_bucket",
+        "limit_times_detail_bucket"
+      ]
     ],
     "splits": [
       {
@@ -1042,23 +1389,43 @@
     "scenarios": [
       {
         "scenario": "base_10m_slippage_no_filter",
-        "allowed_buckets": ["very_liquid", "liquid", "tradable", "high_pressure", "not_recommended"]
+        "allowed_buckets": [
+          "very_liquid",
+          "liquid",
+          "tradable",
+          "high_pressure",
+          "not_recommended"
+        ]
       },
       {
         "scenario": "exclude_not_recommended",
-        "allowed_buckets": ["very_liquid", "liquid", "tradable", "high_pressure"]
+        "allowed_buckets": [
+          "very_liquid",
+          "liquid",
+          "tradable",
+          "high_pressure"
+        ]
       },
       {
         "scenario": "exclude_high_pressure_and_not_recommended",
-        "allowed_buckets": ["very_liquid", "liquid", "tradable"]
+        "allowed_buckets": [
+          "very_liquid",
+          "liquid",
+          "tradable"
+        ]
       },
       {
         "scenario": "only_liquid_or_better",
-        "allowed_buckets": ["very_liquid", "liquid"]
+        "allowed_buckets": [
+          "very_liquid",
+          "liquid"
+        ]
       },
       {
         "scenario": "only_very_liquid",
-        "allowed_buckets": ["very_liquid"]
+        "allowed_buckets": [
+          "very_liquid"
+        ]
       }
     ]
   },
@@ -1144,11 +1511,26 @@
         "execution_mode": "compound_sequence",
         "max_buy_amount_ratio": null,
         "slippage_tiers": [
-          {"max_amount_ratio": 0.005, "slippage_rate": 0.001},
-          {"max_amount_ratio": 0.01, "slippage_rate": 0.002},
-          {"max_amount_ratio": 0.02, "slippage_rate": 0.005},
-          {"max_amount_ratio": 0.05, "slippage_rate": 0.01},
-          {"max_amount_ratio": null, "slippage_rate": 0.02}
+          {
+            "max_amount_ratio": 0.005,
+            "slippage_rate": 0.001
+          },
+          {
+            "max_amount_ratio": 0.01,
+            "slippage_rate": 0.002
+          },
+          {
+            "max_amount_ratio": 0.02,
+            "slippage_rate": 0.005
+          },
+          {
+            "max_amount_ratio": 0.05,
+            "slippage_rate": 0.01
+          },
+          {
+            "max_amount_ratio": null,
+            "slippage_rate": 0.02
+          }
         ]
       },
       {
@@ -1157,13 +1539,34 @@
         "execution_mode": "compound_sequence",
         "max_buy_amount_ratio": null,
         "slippage_tiers": [
-          {"max_amount_ratio": 0.005, "slippage_rate": 0.001},
-          {"max_amount_ratio": 0.01, "slippage_rate": 0.002},
-          {"max_amount_ratio": 0.02, "slippage_rate": 0.005},
-          {"max_amount_ratio": 0.05, "slippage_rate": 0.01},
-          {"max_amount_ratio": 0.1, "slippage_rate": 0.03},
-          {"max_amount_ratio": 0.2, "slippage_rate": 0.05},
-          {"max_amount_ratio": null, "slippage_rate": 0.08}
+          {
+            "max_amount_ratio": 0.005,
+            "slippage_rate": 0.001
+          },
+          {
+            "max_amount_ratio": 0.01,
+            "slippage_rate": 0.002
+          },
+          {
+            "max_amount_ratio": 0.02,
+            "slippage_rate": 0.005
+          },
+          {
+            "max_amount_ratio": 0.05,
+            "slippage_rate": 0.01
+          },
+          {
+            "max_amount_ratio": 0.1,
+            "slippage_rate": 0.03
+          },
+          {
+            "max_amount_ratio": 0.2,
+            "slippage_rate": 0.05
+          },
+          {
+            "max_amount_ratio": null,
+            "slippage_rate": 0.08
+          }
         ]
       },
       {
@@ -1172,13 +1575,34 @@
         "execution_mode": "compound_sequence",
         "max_buy_amount_ratio": 0.05,
         "slippage_tiers": [
-          {"max_amount_ratio": 0.005, "slippage_rate": 0.001},
-          {"max_amount_ratio": 0.01, "slippage_rate": 0.002},
-          {"max_amount_ratio": 0.02, "slippage_rate": 0.005},
-          {"max_amount_ratio": 0.05, "slippage_rate": 0.01},
-          {"max_amount_ratio": 0.1, "slippage_rate": 0.03},
-          {"max_amount_ratio": 0.2, "slippage_rate": 0.05},
-          {"max_amount_ratio": null, "slippage_rate": 0.08}
+          {
+            "max_amount_ratio": 0.005,
+            "slippage_rate": 0.001
+          },
+          {
+            "max_amount_ratio": 0.01,
+            "slippage_rate": 0.002
+          },
+          {
+            "max_amount_ratio": 0.02,
+            "slippage_rate": 0.005
+          },
+          {
+            "max_amount_ratio": 0.05,
+            "slippage_rate": 0.01
+          },
+          {
+            "max_amount_ratio": 0.1,
+            "slippage_rate": 0.03
+          },
+          {
+            "max_amount_ratio": 0.2,
+            "slippage_rate": 0.05
+          },
+          {
+            "max_amount_ratio": null,
+            "slippage_rate": 0.08
+          }
         ]
       },
       {
@@ -1187,13 +1611,34 @@
         "execution_mode": "single_position",
         "max_buy_amount_ratio": 0.05,
         "slippage_tiers": [
-          {"max_amount_ratio": 0.005, "slippage_rate": 0.001},
-          {"max_amount_ratio": 0.01, "slippage_rate": 0.002},
-          {"max_amount_ratio": 0.02, "slippage_rate": 0.005},
-          {"max_amount_ratio": 0.05, "slippage_rate": 0.01},
-          {"max_amount_ratio": 0.1, "slippage_rate": 0.03},
-          {"max_amount_ratio": 0.2, "slippage_rate": 0.05},
-          {"max_amount_ratio": null, "slippage_rate": 0.08}
+          {
+            "max_amount_ratio": 0.005,
+            "slippage_rate": 0.001
+          },
+          {
+            "max_amount_ratio": 0.01,
+            "slippage_rate": 0.002
+          },
+          {
+            "max_amount_ratio": 0.02,
+            "slippage_rate": 0.005
+          },
+          {
+            "max_amount_ratio": 0.05,
+            "slippage_rate": 0.01
+          },
+          {
+            "max_amount_ratio": 0.1,
+            "slippage_rate": 0.03
+          },
+          {
+            "max_amount_ratio": 0.2,
+            "slippage_rate": 0.05
+          },
+          {
+            "max_amount_ratio": null,
+            "slippage_rate": 0.08
+          }
         ]
       }
     ]
@@ -1214,13 +1659,34 @@
     "assume_limit_down_unsellable": true,
     "limit_price_tolerance": 0.002,
     "slippage_tiers": [
-      {"max_amount_ratio": 0.005, "slippage_rate": 0.001},
-      {"max_amount_ratio": 0.01, "slippage_rate": 0.002},
-      {"max_amount_ratio": 0.02, "slippage_rate": 0.005},
-      {"max_amount_ratio": 0.05, "slippage_rate": 0.01},
-      {"max_amount_ratio": 0.1, "slippage_rate": 0.03},
-      {"max_amount_ratio": 0.2, "slippage_rate": 0.05},
-      {"max_amount_ratio": null, "slippage_rate": 0.08}
+      {
+        "max_amount_ratio": 0.005,
+        "slippage_rate": 0.001
+      },
+      {
+        "max_amount_ratio": 0.01,
+        "slippage_rate": 0.002
+      },
+      {
+        "max_amount_ratio": 0.02,
+        "slippage_rate": 0.005
+      },
+      {
+        "max_amount_ratio": 0.05,
+        "slippage_rate": 0.01
+      },
+      {
+        "max_amount_ratio": 0.1,
+        "slippage_rate": 0.03
+      },
+      {
+        "max_amount_ratio": 0.2,
+        "slippage_rate": 0.05
+      },
+      {
+        "max_amount_ratio": null,
+        "slippage_rate": 0.08
+      }
     ]
   },
   "realistic_execution_strategy_optimization": {
@@ -1243,9 +1709,19 @@
       "segment_market_sentiment_level": "neutral"
     },
     "split_years": {
-      "train_2020_2022": ["2020", "2021", "2022"],
-      "test_2023_2024": ["2023", "2024"],
-      "sample_2025_2026": ["2025", "2026"]
+      "train_2020_2022": [
+        "2020",
+        "2021",
+        "2022"
+      ],
+      "test_2023_2024": [
+        "2023",
+        "2024"
+      ],
+      "sample_2025_2026": [
+        "2025",
+        "2026"
+      ]
     },
     "candidate_factor_columns": [
       "market_segment",
@@ -1279,13 +1755,34 @@
       "segment_retreat_state_bucket"
     ],
     "slippage_tiers": [
-      {"max_amount_ratio": 0.005, "slippage_rate": 0.001},
-      {"max_amount_ratio": 0.01, "slippage_rate": 0.002},
-      {"max_amount_ratio": 0.02, "slippage_rate": 0.005},
-      {"max_amount_ratio": 0.05, "slippage_rate": 0.01},
-      {"max_amount_ratio": 0.1, "slippage_rate": 0.03},
-      {"max_amount_ratio": 0.2, "slippage_rate": 0.05},
-      {"max_amount_ratio": null, "slippage_rate": 0.08}
+      {
+        "max_amount_ratio": 0.005,
+        "slippage_rate": 0.001
+      },
+      {
+        "max_amount_ratio": 0.01,
+        "slippage_rate": 0.002
+      },
+      {
+        "max_amount_ratio": 0.02,
+        "slippage_rate": 0.005
+      },
+      {
+        "max_amount_ratio": 0.05,
+        "slippage_rate": 0.01
+      },
+      {
+        "max_amount_ratio": 0.1,
+        "slippage_rate": 0.03
+      },
+      {
+        "max_amount_ratio": 0.2,
+        "slippage_rate": 0.05
+      },
+      {
+        "max_amount_ratio": null,
+        "slippage_rate": 0.08
+      }
     ]
   },
   "ranking_optimization": {
@@ -1299,11 +1796,25 @@
     "max_sort_factor_count": 3,
     "target_total_compound_return": 299.0,
     "target_min_rolling_3y_return": 9.0,
-    "evaluation_years": ["2020", "2021", "2022", "2023", "2024", "2025", "2026"],
+    "evaluation_years": [
+      "2020",
+      "2021",
+      "2022",
+      "2023",
+      "2024",
+      "2025",
+      "2026"
+    ],
     "base_exclusions": {
-      "limit_up_count_bucket": ["gte_180"],
-      "first_time_detail_bucket": ["1000_1100"],
-      "turnover_rate_bucket": ["6_10"]
+      "limit_up_count_bucket": [
+        "gte_180"
+      ],
+      "first_time_detail_bucket": [
+        "1000_1100"
+      ],
+      "turnover_rate_bucket": [
+        "6_10"
+      ]
     },
     "candidate_sort_columns": [
       "fill_probability",
@@ -1338,12 +1849,26 @@
     "max_sort_factor_count": 3,
     "target_total_compound_return": 299.0,
     "target_min_rolling_3y_return": 9.0,
-    "evaluation_years": ["2020", "2021", "2022", "2023", "2024", "2025", "2026"],
+    "evaluation_years": [
+      "2020",
+      "2021",
+      "2022",
+      "2023",
+      "2024",
+      "2025",
+      "2026"
+    ],
     "base_inclusions": {},
     "base_exclusions": {
-      "limit_up_count_bucket": ["gte_180"],
-      "first_time_detail_bucket": ["1000_1100"],
-      "turnover_rate_bucket": ["6_10"]
+      "limit_up_count_bucket": [
+        "gte_180"
+      ],
+      "first_time_detail_bucket": [
+        "1000_1100"
+      ],
+      "turnover_rate_bucket": [
+        "6_10"
+      ]
     },
     "factor_columns": [
       "market_leader_rank_bucket",
@@ -1406,7 +1931,15 @@
     "target_equity_multiple": 300.0,
     "max_sort_factor_count": 2,
     "max_detail_scenarios": 20,
-    "evaluation_years": ["2020", "2021", "2022", "2023", "2024", "2025", "2026"],
+    "evaluation_years": [
+      "2020",
+      "2021",
+      "2022",
+      "2023",
+      "2024",
+      "2025",
+      "2026"
+    ],
     "base_inclusions": {},
     "base_exclusions": {},
     "universe_filters": {
@@ -1469,13 +2002,34 @@
       "two_day_pct_chg"
     ],
     "slippage_tiers": [
-      {"max_amount_ratio": 0.005, "slippage_rate": 0.001},
-      {"max_amount_ratio": 0.01, "slippage_rate": 0.002},
-      {"max_amount_ratio": 0.02, "slippage_rate": 0.005},
-      {"max_amount_ratio": 0.05, "slippage_rate": 0.01},
-      {"max_amount_ratio": 0.1, "slippage_rate": 0.03},
-      {"max_amount_ratio": 0.2, "slippage_rate": 0.05},
-      {"max_amount_ratio": null, "slippage_rate": 0.08}
+      {
+        "max_amount_ratio": 0.005,
+        "slippage_rate": 0.001
+      },
+      {
+        "max_amount_ratio": 0.01,
+        "slippage_rate": 0.002
+      },
+      {
+        "max_amount_ratio": 0.02,
+        "slippage_rate": 0.005
+      },
+      {
+        "max_amount_ratio": 0.05,
+        "slippage_rate": 0.01
+      },
+      {
+        "max_amount_ratio": 0.1,
+        "slippage_rate": 0.03
+      },
+      {
+        "max_amount_ratio": 0.2,
+        "slippage_rate": 0.05
+      },
+      {
+        "max_amount_ratio": null,
+        "slippage_rate": 0.08
+      }
     ]
   },
   "realistic_condition_strategy_search": {
@@ -1506,7 +2060,15 @@
     "max_pair_sets": 12000,
     "max_triple_sets": 15000,
     "max_detail_scenarios": 30,
-    "evaluation_years": ["2020", "2021", "2022", "2023", "2024", "2025", "2026"],
+    "evaluation_years": [
+      "2020",
+      "2021",
+      "2022",
+      "2023",
+      "2024",
+      "2025",
+      "2026"
+    ],
     "universe_filters": {
       "exclude_st": false,
       "exclude_bj": false,
@@ -1548,16 +2110,47 @@
       "segment_retreat_state_bucket",
       "board_type"
     ],
-    "sort_columns": ["fill_probability", "sample_count", "amount", "turnover_rate"],
-    "sort_ascending": [false, false, false, false],
+    "sort_columns": [
+      "fill_probability",
+      "sample_count",
+      "amount",
+      "turnover_rate"
+    ],
+    "sort_ascending": [
+      false,
+      false,
+      false,
+      false
+    ],
     "slippage_tiers": [
-      {"max_amount_ratio": 0.005, "slippage_rate": 0.001},
-      {"max_amount_ratio": 0.01, "slippage_rate": 0.002},
-      {"max_amount_ratio": 0.02, "slippage_rate": 0.005},
-      {"max_amount_ratio": 0.05, "slippage_rate": 0.01},
-      {"max_amount_ratio": 0.1, "slippage_rate": 0.03},
-      {"max_amount_ratio": 0.2, "slippage_rate": 0.05},
-      {"max_amount_ratio": null, "slippage_rate": 0.08}
+      {
+        "max_amount_ratio": 0.005,
+        "slippage_rate": 0.001
+      },
+      {
+        "max_amount_ratio": 0.01,
+        "slippage_rate": 0.002
+      },
+      {
+        "max_amount_ratio": 0.02,
+        "slippage_rate": 0.005
+      },
+      {
+        "max_amount_ratio": 0.05,
+        "slippage_rate": 0.01
+      },
+      {
+        "max_amount_ratio": 0.1,
+        "slippage_rate": 0.03
+      },
+      {
+        "max_amount_ratio": 0.2,
+        "slippage_rate": 0.05
+      },
+      {
+        "max_amount_ratio": null,
+        "slippage_rate": 0.08
+      }
     ]
   },
   "recent_2y_realistic_condition_search": {
@@ -1590,27 +2183,155 @@
     "top_condition_sets": 120,
     "max_detail_scenarios": 40,
     "sort_rules": [
-      {"name": "default", "columns": ["fill_probability", "sample_count", "amount", "turnover_rate"], "ascending": [false, false, false, false]},
-      {"name": "amount_desc", "columns": ["amount"], "ascending": [false]},
-      {"name": "turnover_desc", "columns": ["turnover_rate"], "ascending": [false]},
-      {"name": "turnover_asc", "columns": ["turnover_rate"], "ascending": [true]},
-      {"name": "volume_ratio_asc", "columns": ["volume_ratio"], "ascending": [true]},
-      {"name": "volume_ratio_desc", "columns": ["volume_ratio"], "ascending": [false]},
-      {"name": "open_times_desc", "columns": ["open_times"], "ascending": [false]},
-      {"name": "leader_rank_desc", "columns": ["market_leader_rank"], "ascending": [false]},
-      {"name": "height_rank_desc", "columns": ["limit_height_rank"], "ascending": [false]},
-      {"name": "fd_ratio_asc", "columns": ["fd_amount_to_circ_mv"], "ascending": [true]}
+      {
+        "name": "default",
+        "columns": [
+          "fill_probability",
+          "sample_count",
+          "amount",
+          "turnover_rate"
+        ],
+        "ascending": [
+          false,
+          false,
+          false,
+          false
+        ]
+      },
+      {
+        "name": "amount_desc",
+        "columns": [
+          "amount"
+        ],
+        "ascending": [
+          false
+        ]
+      },
+      {
+        "name": "turnover_desc",
+        "columns": [
+          "turnover_rate"
+        ],
+        "ascending": [
+          false
+        ]
+      },
+      {
+        "name": "turnover_asc",
+        "columns": [
+          "turnover_rate"
+        ],
+        "ascending": [
+          true
+        ]
+      },
+      {
+        "name": "volume_ratio_asc",
+        "columns": [
+          "volume_ratio"
+        ],
+        "ascending": [
+          true
+        ]
+      },
+      {
+        "name": "volume_ratio_desc",
+        "columns": [
+          "volume_ratio"
+        ],
+        "ascending": [
+          false
+        ]
+      },
+      {
+        "name": "open_times_desc",
+        "columns": [
+          "open_times"
+        ],
+        "ascending": [
+          false
+        ]
+      },
+      {
+        "name": "leader_rank_desc",
+        "columns": [
+          "market_leader_rank"
+        ],
+        "ascending": [
+          false
+        ]
+      },
+      {
+        "name": "height_rank_desc",
+        "columns": [
+          "limit_height_rank"
+        ],
+        "ascending": [
+          false
+        ]
+      },
+      {
+        "name": "fd_ratio_asc",
+        "columns": [
+          "fd_amount_to_circ_mv"
+        ],
+        "ascending": [
+          true
+        ]
+      }
     ],
     "exit_rules": [
-      {"rule_name": "fixed_t2_close", "max_hold_days": 2, "exit_price_field": "close"},
-      {"rule_name": "fixed_hold3_close", "max_hold_days": 3, "exit_price_field": "close"},
-      {"rule_name": "fixed_hold5_close", "max_hold_days": 5, "exit_price_field": "close"},
-      {"rule_name": "stop_3_tp_10_hold3", "max_hold_days": 3, "stop_loss": -0.03, "take_profit": 0.10},
-      {"rule_name": "stop_3_tp_15_hold3", "max_hold_days": 3, "stop_loss": -0.03, "take_profit": 0.15},
-      {"rule_name": "stop_5_tp_10_hold3", "max_hold_days": 3, "stop_loss": -0.05, "take_profit": 0.10},
-      {"rule_name": "stop_5_tp_15_hold3", "max_hold_days": 3, "stop_loss": -0.05, "take_profit": 0.15},
-      {"rule_name": "stop_7_tp_20_hold5", "max_hold_days": 5, "stop_loss": -0.07, "take_profit": 0.20},
-      {"rule_name": "stop_10_tp_30_hold5", "max_hold_days": 5, "stop_loss": -0.10, "take_profit": 0.30}
+      {
+        "rule_name": "fixed_t2_close",
+        "max_hold_days": 2,
+        "exit_price_field": "close"
+      },
+      {
+        "rule_name": "fixed_hold3_close",
+        "max_hold_days": 3,
+        "exit_price_field": "close"
+      },
+      {
+        "rule_name": "fixed_hold5_close",
+        "max_hold_days": 5,
+        "exit_price_field": "close"
+      },
+      {
+        "rule_name": "stop_3_tp_10_hold3",
+        "max_hold_days": 3,
+        "stop_loss": -0.03,
+        "take_profit": 0.1
+      },
+      {
+        "rule_name": "stop_3_tp_15_hold3",
+        "max_hold_days": 3,
+        "stop_loss": -0.03,
+        "take_profit": 0.15
+      },
+      {
+        "rule_name": "stop_5_tp_10_hold3",
+        "max_hold_days": 3,
+        "stop_loss": -0.05,
+        "take_profit": 0.1
+      },
+      {
+        "rule_name": "stop_5_tp_15_hold3",
+        "max_hold_days": 3,
+        "stop_loss": -0.05,
+        "take_profit": 0.15
+      },
+      {
+        "rule_name": "stop_7_tp_20_hold5",
+        "max_hold_days": 5,
+        "stop_loss": -0.07,
+        "take_profit": 0.2
+      },
+      {
+        "rule_name": "stop_10_tp_30_hold5",
+        "max_hold_days": 5,
+        "stop_loss": -0.1,
+        "take_profit": 0.3
+      }
     ]
   },
   "recent_2y_fresh_optimization": {
@@ -1652,7 +2373,11 @@
     "limit_price_tolerance": 0.002,
     "ranking_column": "amount",
     "ranking_ascending": false,
-    "segments": ["all", "sh_main", "sz_main"],
+    "segments": [
+      "all",
+      "sh_main",
+      "sz_main"
+    ],
     "walk_forward": {
       "train_start": "20200101",
       "train_end": "20221231",
@@ -1660,13 +2385,34 @@
       "test_end": "20260518"
     },
     "slippage_tiers": [
-      {"max_amount_ratio": 0.005, "slippage_rate": 0.001},
-      {"max_amount_ratio": 0.01, "slippage_rate": 0.002},
-      {"max_amount_ratio": 0.02, "slippage_rate": 0.005},
-      {"max_amount_ratio": 0.05, "slippage_rate": 0.01},
-      {"max_amount_ratio": 0.1, "slippage_rate": 0.03},
-      {"max_amount_ratio": 0.2, "slippage_rate": 0.05},
-      {"max_amount_ratio": null, "slippage_rate": 0.08}
+      {
+        "max_amount_ratio": 0.005,
+        "slippage_rate": 0.001
+      },
+      {
+        "max_amount_ratio": 0.01,
+        "slippage_rate": 0.002
+      },
+      {
+        "max_amount_ratio": 0.02,
+        "slippage_rate": 0.005
+      },
+      {
+        "max_amount_ratio": 0.05,
+        "slippage_rate": 0.01
+      },
+      {
+        "max_amount_ratio": 0.1,
+        "slippage_rate": 0.03
+      },
+      {
+        "max_amount_ratio": 0.2,
+        "slippage_rate": 0.05
+      },
+      {
+        "max_amount_ratio": null,
+        "slippage_rate": 0.08
+      }
     ]
   },
   "risk": {
@@ -1677,7 +2423,7 @@
     "max_drawdown_pct": 0.15,
     "commission_rate": 0.0003,
     "stamp_tax_rate": 0.001,
-    "transfer_fee_rate": 0.00001,
+    "transfer_fee_rate": 1e-05,
     "slippage_rate": 0.001,
     "use_fill_probability_model": true,
     "min_fill_probability": 0.6,

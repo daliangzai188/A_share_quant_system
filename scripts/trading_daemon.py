@@ -2715,6 +2715,8 @@ def _e2_auction_buy_worker(e2_rows: list[Any], broker_cfg: dict, today_str: str)
         # 这里只负责让日志能看出迟到。
         if now_beijing().time() >= datetime.time(9, 25, 0):
             log.warning("E2竞价买入线程晚于09:25启动执行（可能被IO/锁延误），仍尝试挂单；若错过竞价将由09:30补买兜底。")
+        pov_enabled_e2 = bool(lt.get("pov_enabled", True))
+        pov_items_e2: list[dict[str, Any]] = []
         new_pending: list[dict[str, Any]] = []
         for row in e2_rows:
             try:
@@ -2735,6 +2737,21 @@ def _e2_auction_buy_worker(e2_rows: list[Any], broker_cfg: dict, today_str: str)
                 else:
                     cap = min(planned_amt, fallback_amt)
                     src = f"竞价额不可得,兜底{fallback_amt / 1e4:.0f}万"
+                # POV:竞价段吃不下的部分转平滑段(09:30起分片),不再整笔放弃
+                if pov_enabled_e2 and planned_amt - cap > 1:
+                    raw_exit_pov = row.get("exit_n_days", None)
+                    exit_n_pov = int(float(raw_exit_pov)) if raw_exit_pov is not None and str(raw_exit_pov) not in {"", "nan"} else 1
+                    pov_items_e2.append({
+                        "ts_code": ts_code, "name": name_s, "strategy_leg": "E2",
+                        "signal_date": str(row.get("signal_date", "")),
+                        "broker_code": str(row.get("broker_code", ts_code)),
+                        "strategy_name": str(row.get("strategy_name", "A_SYSTEM_ABC")),
+                        "exit_n": exit_n_pov,
+                        "sig_amt": _signal_day_amount(ts_code, str(row.get("signal_date", "")).strip().split(".")[0]),
+                        "target_amt": planned_amt - cap, "remain_amt": planned_amt - cap,
+                        "filled_qty": 0, "cost_amt": 0.0, "slice_no": 0,
+                        "prev_cum_amount": 0.0, "done": False,
+                    })
                 # 只在内存收集容量记录；落盘和推送在09:24关键窗口结束后统一执行
                 capacity_records.append({
                     "date": today_str, "ts_code": ts_code, "name": name_s,
@@ -2747,9 +2764,16 @@ def _e2_auction_buy_worker(e2_rows: list[Any], broker_cfg: dict, today_str: str)
                     continue
                 qty = int(cap // price // 100) * 100
                 if qty <= 0:
-                    log.warning("E2竞价买入：%s 动态仓位不足一手（%s，计划%.0f元），放弃本笔。", ts_code, src, planned_amt)
-                    _notify("buy_result", "⚠️ E2流动性不足放弃开仓",
-                            f"{ts_code} {name_s} 竞价盘过小（{src}），动态仓位不足一手，今日放弃。", level="timeSensitive")
+                    if pov_enabled_e2 and pov_items_e2 and pov_items_e2[-1]["ts_code"] == ts_code:
+                        # 竞价段不足一手:这部分额度并回平滑段,由POV在09:30后分片买入
+                        pov_items_e2[-1]["remain_amt"] += cap
+                        pov_items_e2[-1]["target_amt"] += cap
+                        log.warning("E2竞价买入：%s 竞价段不足一手（%s），全额%.1f万转POV平滑段。",
+                                    ts_code, src, planned_amt / 1e4)
+                    else:
+                        log.warning("E2竞价买入：%s 动态仓位不足一手（%s，计划%.0f元），放弃本笔。", ts_code, src, planned_amt)
+                        _notify("buy_result", "⚠️ E2流动性不足放弃开仓",
+                                f"{ts_code} {name_s} 竞价盘过小（{src}），动态仓位不足一手，今日放弃。", level="timeSensitive")
                     continue
                 log.warning("⏳ [E2竞价买入] %s %s %d股 %s=%.2f元（动态仓位：%s → %.1f万）",
                             ts_code, name_s, qty, price_label, price, src, qty * price / 1e4)
@@ -2782,6 +2806,8 @@ def _e2_auction_buy_worker(e2_rows: list[Any], broker_cfg: dict, today_str: str)
             existing = load_pending_buys()
             save_pending_buys(existing + new_pending)
             _start_premarket_buy_monitor()
+        if pov_items_e2:
+            _pov_enqueue(pov_items_e2)
         if capacity_records:
             try:
                 _record_e2_capacity_and_alert(capacity_records, lt)
@@ -2789,6 +2815,295 @@ def _e2_auction_buy_worker(e2_rows: list[Any], broker_cfg: dict, today_str: str)
                 log.error("E2容量预警统计异常（不影响交易）：%s", e)
     except Exception as e:
         log.error("E2竞价动态买入线程异常：%s", e)
+
+
+# ── POV 贪心前置开仓执行引擎 ──────────────────────────────────────────────
+# 2026-07-16 定稿(docs/two_phase_execution_design.md,83笔真实5m价格回放验证:
+# 复利打平"开盘价满仓零冲击"理想口径,VWAP/TWAP铺满窗口方案被判死)。
+#   竞价段 = 信号日成交额×pov_auction_share(0.1%),照旧09:20/09:24挂涨停参与竞价;
+#   平滑段 = 09:30起每5分钟一片,片预算=min(剩余, 上一片实测成交额×pov_participation),
+#            首片预算基数=信号日成交额×pov_first_slice_share(开盘5分钟量的实测25分位);
+#   追价保护: 现价>开盘价×(1+pov_chase_cap)或涨停 → 该片跳过(涨了不追,等回落);
+#   10:30收口,未完成放弃——宁可仓位不满,不追高破坏回测口径。
+# 小资金向后兼容:目标额≤竞价段额度时平滑段不启动,行为与旧版完全一致。
+
+POV_STATE_FILE = PROJECT_ROOT / "data" / "state" / "pov_state.json"
+POV_EXEC_LOG = PROJECT_ROOT / "reports" / "pov_execution_log.csv"
+_pov_state_lock = threading.Lock()
+_pov_thread_lock = threading.Lock()
+_pov_thread: threading.Thread | None = None
+
+
+def _pov_load_state() -> dict[str, Any]:
+    try:
+        with _pov_state_lock:
+            if not POV_STATE_FILE.exists():
+                return {}
+            payload = json.loads(POV_STATE_FILE.read_text(encoding="utf-8"))
+        if payload.get("date") != today_beijing().strftime("%Y%m%d"):
+            return {}
+        return payload
+    except Exception as e:
+        logger().error("读取POV状态失败：%s", e)
+        return {}
+
+
+def _pov_save_state(state: dict[str, Any]) -> None:
+    try:
+        with _pov_state_lock:
+            mkdir_p(POV_STATE_FILE.parent)
+            tmp = POV_STATE_FILE.with_suffix(".tmp")
+            tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp.replace(POV_STATE_FILE)
+    except Exception as e:
+        logger().error("保存POV状态失败：%s", e)
+
+
+def _pov_active_today() -> bool:
+    """今日是否仍有未完成的POV平滑段——09:30补买路径的互斥判据。"""
+    state = _pov_load_state()
+    return any(not it.get("done") for it in state.get("items", []))
+
+
+def _pov_enqueue(items: list[dict[str, Any]]) -> None:
+    """把平滑段任务并入当日队列并确保执行线程在跑。"""
+    if not items:
+        return
+    today_str = today_beijing().strftime("%Y%m%d")
+    state = _pov_load_state() or {"date": today_str, "items": []}
+    existing = {it["ts_code"] for it in state.get("items", [])}
+    for it in items:
+        if it["ts_code"] not in existing:
+            state.setdefault("items", []).append(it)
+    _pov_save_state(state)
+    for it in items:
+        logger().warning("📥 [POV] %s %s 平滑段入队：目标%.1f万（竞价段之外的剩余），09:30起分片执行。",
+                         it["ts_code"], it.get("name", ""), float(it.get("remain_amt", 0)) / 1e4)
+    _start_pov_worker()
+
+
+def _start_pov_worker() -> None:
+    global _pov_thread
+    with _pov_thread_lock:
+        if _pov_thread is not None and _pov_thread.is_alive():
+            return
+        _pov_thread = threading.Thread(target=_pov_worker, daemon=True, name="pov-smooth-buy")
+        _pov_thread.start()
+
+
+def _pov_log_slice(row: dict[str, Any]) -> None:
+    """逐片执行记录落盘——上线后据此滚动校准参数(竞价占比/首片占比/参与率)。"""
+    try:
+        import csv as _csv
+        mkdir_p(POV_EXEC_LOG.parent)
+        new_file = not POV_EXEC_LOG.exists()
+        with open(POV_EXEC_LOG, "a", newline="", encoding="utf-8-sig") as f:
+            w = _csv.DictWriter(f, fieldnames=[
+                "date", "time", "ts_code", "name", "slice_no", "last_price", "open_price",
+                "budget", "order_amt", "order_qty", "filled_qty", "fill_price", "remain_amt", "note"])
+            if new_file:
+                w.writeheader()
+            w.writerow(row)
+    except Exception as e:
+        logger().warning("POV执行日志写入失败（不影响交易）：%s", e)
+
+
+def _pov_slice_row(it: dict[str, Any], **kw: Any) -> dict[str, Any]:
+    base = dict(date=today_beijing().strftime("%Y%m%d"), time=now_beijing().strftime("%H:%M:%S"),
+                ts_code=it.get("ts_code", ""), name=it.get("name", ""), slice_no=it.get("slice_no", 0),
+                last_price="", open_price="", budget="", order_amt="", order_qty="",
+                filled_qty="", fill_price="", remain_amt=round(float(it.get("remain_amt", 0)), 2), note="")
+    base.update(kw)
+    return base
+
+
+def _pov_execute_slice(it: dict[str, Any], broker_cfg: dict, part: float, first_share: float,
+                       chase: float, today_str: str, log: Any) -> None:
+    """执行单标的的一片:定预算→追价/涨停检查→挂追价上限价→90秒确认→残单撤。"""
+    from src.broker_adapter import OrderRequest
+
+    ts_code = str(it["ts_code"])
+    name_s = str(it.get("name", ""))
+    slice_no = int(it.get("slice_no", 0))
+    it["slice_no"] = slice_no + 1
+    try:
+        with _qmt_lock:
+            adapter = _qmt_get(broker_cfg)
+            quote = adapter.get_full_tick([ts_code]).get(ts_code)
+        if quote is None:
+            _pov_log_slice(_pov_slice_row(it, note="无行情,本片跳过"))
+            return
+        last = float(getattr(quote, "last_price", 0.0) or 0.0)
+        open_p = float(getattr(quote, "open", 0.0) or 0.0) or last
+        upper = float(getattr(quote, "upper_limit", 0.0) or 0.0)
+        cum_amt = float(getattr(quote, "amount", 0.0) or 0.0)
+        prev_cum = float(it.get("prev_cum_amount", 0.0) or 0.0)
+        it["prev_cum_amount"] = cum_amt
+
+        sig_amt = float(it.get("sig_amt", 0.0) or 0.0)
+        if slice_no == 0:
+            # 首片:盘中量差分尚不可用,用信号日成交额×实测首片占比;读不到就等第二片
+            budget = sig_amt * first_share * part if sig_amt > 0 else 0.0
+        else:
+            budget = max(cum_amt - prev_cum, 0.0) * part
+        if last <= 0 or budget <= 0:
+            _pov_log_slice(_pov_slice_row(it, last_price=last, budget=round(budget, 0),
+                                          note="无现价或预算为0,本片跳过"))
+            return
+        if upper > 0 and last >= upper - 1e-6:
+            _pov_log_slice(_pov_slice_row(it, last_price=last, note="涨停,不追,本片跳过"))
+            return
+        cap_price = _round_stock_price(open_p * (1 + chase))
+        if last > cap_price:
+            _pov_log_slice(_pov_slice_row(it, last_price=last, open_price=open_p,
+                                          note=f"追价保护:现价>开盘×{1 + chase:.2f},本片跳过"))
+            return
+        if float(it["remain_amt"]) < last * 100:
+            it["done"] = True
+            it["done_reason"] = "剩余不足一手"
+            _pov_log_slice(_pov_slice_row(it, last_price=last, note="剩余不足一手,完结"))
+            return
+        amt = min(float(it["remain_amt"]), budget)
+        qty = int(amt // last // 100) * 100
+        if qty < 100:
+            _pov_log_slice(_pov_slice_row(it, last_price=last, budget=round(budget, 0),
+                                          note="预算不足一手,本片跳过"))
+            return
+        # 挂追价上限价:连续竞价按对手方价成交,实际成交价=各卖档价≤挂单价,
+        # 等效"限定最高价的市价单";绝不超过涨停价。
+        price = min(cap_price, upper) if upper > 0 else cap_price
+        request = OrderRequest(
+            ts_code=ts_code, broker_code=str(it.get("broker_code", ts_code)),
+            side="BUY", quantity=qty, price_type="FIXED_PRICE", price=price,
+            strategy_name=str(it.get("strategy_name", "A_SYSTEM_ABC")),
+            remark=f"POV平滑-{today_str}",
+        )
+        with _qmt_lock:
+            adapter = _qmt_get(broker_cfg)
+            result = adapter.place_order(request)
+        if not result.accepted:
+            log.error("❌ [POV] %s 片%d提交失败：%s", ts_code, slice_no + 1, result.message)
+            _pov_log_slice(_pov_slice_row(it, last_price=last, order_qty=qty, note=f"提交失败:{result.message}"))
+            return
+        oid = str(result.order_id or "")
+        fill = _confirm_fill(broker_cfg, oid, qty, f"POV片{slice_no + 1}", timeout_sec=90, poll_sec=5)
+        if fill.filled_qty < qty and not fill.is_terminal:
+            _try_cancel_order(broker_cfg, oid, ts_code)
+            # 撤单成败以订单终态为准(2026-07-10口径),再确认一次拿最终成交数
+            fill = _confirm_fill(broker_cfg, oid, qty, f"POV片{slice_no + 1}终态", timeout_sec=20, poll_sec=3)
+        fq = int(fill.filled_qty or 0)
+        fp = float(fill.avg_price) if float(getattr(fill, "avg_price", 0) or 0) > 0 else last
+        if fq > 0:
+            it["filled_qty"] = int(it.get("filled_qty", 0)) + fq
+            it["cost_amt"] = float(it.get("cost_amt", 0.0)) + fq * fp
+            it["remain_amt"] = max(float(it["remain_amt"]) - fq * fp, 0.0)
+            it.setdefault("order_ids", []).append(oid)
+        log.info("[POV] %s %s 片%d：预算%.1f万 挂%d股@%.2f 成交%d股@%.2f 剩余%.1f万",
+                 ts_code, name_s, slice_no + 1, budget / 1e4, qty, price, fq, fp,
+                 float(it["remain_amt"]) / 1e4)
+        _pov_log_slice(_pov_slice_row(it, last_price=last, open_price=open_p, budget=round(budget, 0),
+                                      order_amt=round(qty * price, 0), order_qty=qty,
+                                      filled_qty=fq, fill_price=round(fp, 3), note="成交" if fq else "未成撤单"))
+        if float(it["remain_amt"]) < last * 100:
+            it["done"] = True
+            it["done_reason"] = "买满"
+    except Exception as e:
+        log.error("POV片执行异常（%s）：%s", ts_code, e)
+        _pov_log_slice(_pov_slice_row(it, note=f"异常:{e}"))
+
+
+def _pov_finalize_item(it: dict[str, Any], log: Any, reason: str) -> None:
+    """单标的平滑段完结:合并成交落地一条持仓,并推送结果。"""
+    it["done"] = True
+    it["finalized"] = True
+    it["done_reason"] = reason
+    today_str = today_beijing().strftime("%Y%m%d")
+    fq = int(it.get("filled_qty", 0))
+    ts_code = str(it["ts_code"])
+    name_s = str(it.get("name", ""))
+    if fq > 0:
+        avg = float(it["cost_amt"]) / fq
+        record_buy(
+            order_id=f"pov-{today_str}-{ts_code}",
+            ts_code=ts_code, name=name_s,
+            signal_date=str(it.get("signal_date", "")),
+            buy_date=today_str, shares=fq, buy_price=avg,
+            strategy_leg=str(it.get("strategy_leg", "")),
+            exit_n_days=int(it.get("exit_n", 2)),
+        )
+        _notify("buy_result", "✅ POV平滑段买入完成",
+                f"策略={it.get('strategy_leg', '')} {ts_code} {name_s} 平滑段成交{fq}股 "
+                f"成本{avg:.2f} 市值{_fmt_wan(fq * avg)}（{reason}；与竞价段持仓独立成行,同日到期同卖出）")
+        log.warning("✅ [POV] %s %s 平滑段完结（%s）：成交%d股@%.2f 未完成%.1f万",
+                    ts_code, name_s, reason, fq, avg, float(it.get("remain_amt", 0)) / 1e4)
+    else:
+        _notify("buy_result", "⚠️ POV平滑段未成交",
+                f"{ts_code} {name_s} 平滑段目标{_fmt_wan(float(it.get('target_amt', 0)))}全程未成交（{reason}），"
+                "今日仅竞价段仓位。")
+        log.warning("⚠️ [POV] %s %s 平滑段完结（%s）：零成交", ts_code, name_s, reason)
+
+
+def _pov_worker() -> None:
+    """POV平滑段执行线程:09:30:10起每5分钟一片,10:30收口。
+
+    礼让式QMT访问(短锁),与止盈线程同款;只做BUY,与卖出链路零交叠
+    (平滑段10:30前结束,14:40撤买单/14:55平仓在其之后)。
+    """
+    log = logger()
+    try:
+        config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+        broker_cfg = config.get("broker", {})
+        lt = config.get("live_trade", {})
+        # 实盘下单闸门:worker可能由断点恢复独立启动,必须自带校验(09:20路径的
+        # gateway.assert_real_order_allowed 不覆盖这里)。
+        try:
+            from src.live_order_gateway import LiveOrderGateway
+            LiveOrderGateway(PROJECT_ROOT / "config" / "config.json").assert_real_order_allowed(
+                str(lt.get("real_order_confirm_text", "A_SYSTEM_REAL_ORDER_CONFIRMED")))
+        except RuntimeError as e:
+            log.error("❌ [POV] 实盘下单条件不满足,平滑段执行线程退出：%s", e)
+            return
+        part = float(lt.get("pov_participation", 0.10))
+        first_share = float(lt.get("pov_first_slice_share", 0.18))
+        chase = float(lt.get("pov_chase_cap", 0.02))
+        today_str = today_beijing().strftime("%Y%m%d")
+        end_dt = now_beijing().replace(hour=10, minute=30, second=0, microsecond=0)
+        base_dt = now_beijing().replace(hour=9, minute=30, second=10, microsecond=0)
+        log.info("POV平滑执行线程启动：每5分钟一片,参与率%.0f%%,首片基数%.0f%%,追价保护+%.0f%%,10:30收口。",
+                 part * 100, first_share * 100, chase * 100)
+        while True:
+            now = now_beijing()
+            state = _pov_load_state()
+            todo = [it for it in state.get("items", []) if not it.get("done")]
+            if not todo:
+                log.info("POV平滑段全部完成,线程退出。")
+                return
+            if now >= end_dt:
+                for it in todo:
+                    _pov_finalize_item(it, log, "10:30收口,放弃剩余")
+                _pov_save_state(state)
+                return
+            if now < base_dt:
+                time.sleep(min((base_dt - now).total_seconds(), 60))
+                continue
+            # 当前处于某片时刻(或恢复启动晚到):立即执行一片
+            for it in todo:
+                _pov_execute_slice(it, broker_cfg, part, first_share, chase, today_str, log)
+                if it.get("done") and not it.get("finalized"):
+                    _pov_finalize_item(it, log, str(it.get("done_reason", "完成")))
+            _pov_save_state(state)
+            # 对齐下一个5分钟网格
+            now2 = now_beijing()
+            k = int((now2 - base_dt).total_seconds() // 300) + 1
+            next_dt = min(base_dt + datetime.timedelta(seconds=k * 300), end_dt)
+            sleep_s = (next_dt - now2).total_seconds()
+            if sleep_s > 0:
+                time.sleep(sleep_s)
+    except Exception as e:
+        log.error("POV平滑执行线程异常退出：%s", e)
+        _notify("system_error", "❌ POV平滑执行线程异常",
+                f"平滑段买入线程异常:{e}。剩余买入已停止,今日仓位可能不满,请回终端核对。",
+                level="critical", call=True)
 
 
 def job_premarket_buy() -> None:
@@ -2900,6 +3215,11 @@ def job_premarket_buy() -> None:
         current_market_value=account.market_value,
     )
 
+    lt_cfg = config.get("live_trade", {})
+    pov_enabled = bool(lt_cfg.get("pov_enabled", True))
+    pov_auction_share = float(lt_cfg.get("pov_auction_share", 0.001))
+    pov_items: list[dict[str, Any]] = []
+
     pending_buys: list[dict[str, Any]] = []
     e2_rows: list[Any] = []
     for _, row in buy_orders.iterrows():
@@ -2922,6 +3242,40 @@ def job_premarket_buy() -> None:
                 continue
 
             signal_date_s = str(row.get("signal_date", ""))
+
+            # POV竞价段拆分:竞价单只买 信号日成交额×0.1%(竞价池的10%),
+            # 超出部分转平滑段09:30起分片执行。目标额≤竞价段额度时不拆分,
+            # 行为与旧版完全一致(小资金向后兼容)。
+            if pov_enabled:
+                ref_p = float(row.get("reference_price", 0.0) or 0.0)
+                sig_amt_pov = _signal_day_amount(ts_code, signal_date_s.strip().split(".")[0])
+                if ref_p > 0 and sig_amt_pov > 0:
+                    auction_cap = sig_amt_pov * pov_auction_share
+                    est_amt = qty * ref_p
+                    if est_amt > auction_cap:
+                        qty_auction = int(auction_cap // ref_p // 100) * 100
+                        smooth_amt = (qty - qty_auction) * ref_p
+                        raw_exit_pov = row.get("exit_n_days", None)
+                        exit_n_pov = int(float(raw_exit_pov)) if raw_exit_pov is not None and str(raw_exit_pov) not in {"", "nan"} else 2
+                        pov_items.append({
+                            "ts_code": ts_code, "name": name_s,
+                            "strategy_leg": str(row.get("strategy_leg", "")),
+                            "signal_date": signal_date_s,
+                            "broker_code": str(row.get("broker_code", ts_code)),
+                            "strategy_name": str(row.get("strategy_name", "A_SYSTEM_ABC")),
+                            "exit_n": exit_n_pov, "sig_amt": sig_amt_pov,
+                            "target_amt": smooth_amt, "remain_amt": smooth_amt,
+                            "filled_qty": 0, "cost_amt": 0.0, "slice_no": 0,
+                            "prev_cum_amount": 0.0, "done": False,
+                        })
+                        logger().warning("✂️ [POV] %s %s 竞价段限%.1f万(信号日成交%.0f万×%.2f%%),"
+                                         "竞价挂%d股,平滑段接管%.1f万。",
+                                         ts_code, name_s, auction_cap / 1e4, sig_amt_pov / 1e4,
+                                         pov_auction_share * 100, qty_auction, smooth_amt / 1e4)
+                        qty = qty_auction
+                        if qty <= 0:
+                            continue  # 竞价池太小不足一手,全部交给平滑段
+
             quote = quote_map.get(ts_code)
             price, price_label = _premarket_buy_price(quote, ts_code, name_s, signal_date_s)
             if price <= 0:
@@ -2992,7 +3346,10 @@ def job_premarket_buy() -> None:
             name="e2-auction-buy",
         ).start()
         logger().info("E2竞价动态买入线程已启动：09:24读实时竞价量后定仓挂单（%d只候选）。", len(e2_rows))
-    logger().info("===== 盘前买入挂单完成（受理%d笔，待开盘确认；E2延迟至09:24=%d笔）=====", len(pending_buys), len(e2_rows))
+    if pov_items:
+        _pov_enqueue(pov_items)
+    logger().info("===== 盘前买入挂单完成（受理%d笔，待开盘确认；E2延迟至09:24=%d笔；POV平滑段=%d笔）=====",
+                  len(pending_buys), len(e2_rows), len(pov_items))
 
 
 def job_morning() -> None:
@@ -3063,6 +3420,13 @@ def job_opening_buy() -> None:
         confirm_pending_premarket_buys()
     except Exception as e:
         logger().error("盘前买单成交确认异常：%s —— 请手动核对！", e)
+
+    if _pov_active_today():
+        # POV平滑段正在分片买入剩余仓位:补买路径必须让位,否则重复建仓。
+        logger().info("09:30 POV平滑段执行中，剩余买入由POV线程接管，跳过开盘补买。")
+        _start_pov_worker()
+        logger().info("===== 开盘买入任务完成 =====")
+        return
 
     if has_position_bought_today():
         logger().info("09:30 检测到今日已有买入成交（09:20盘前买入已成交），跳过重复买入。")
@@ -4520,7 +4884,9 @@ def job_cancel_unfilled_buy_orders() -> None:
     # 自家买单 remark 白名单：只撤本系统下的单。手动单、新股/新债申购
     # (如733xxx申购代码, order_id常为0)、任何第三方委托一律不碰
     # （2026-07-14 事故：撤买单把可转债申购单当自家买单撤，order_id=0报错）。
-    OWN_BUY_PREFIXES = ("A_SYSTEM", "E2竞价动态")
+    # "盘前买入"=09:20预挂单(一字板整日排队未成时必须在此撤掉,否则尾盘炸板
+    # 会变成回测口径外的买入);"POV平滑"=POV片单(片内90秒自撤,此处兜底残单)。
+    OWN_BUY_PREFIXES = ("A_SYSTEM", "E2竞价动态", "盘前买入", "POV平滑")
     _remark_names = ["order_remark", "m_strRemark", "remark"]
 
     cancelled = failed = skipped = kept_sell = kept_foreign = 0
@@ -6965,6 +7331,16 @@ def main() -> None:
         daemon=True,
         name="intraday-takeprofit",
     ).start()
+
+    # POV平滑执行断点恢复：daemon在09:25~10:30间重启时接续未完成的平滑买入
+    try:
+        if (is_trade_day(today_beijing().date())
+                and datetime.time(9, 25) <= now_beijing().time() < datetime.time(10, 30)
+                and _pov_active_today()):
+            log.warning("检测到未完成的POV平滑执行状态，恢复执行线程。")
+            _start_pov_worker()
+    except Exception as e:
+        log.error("POV状态恢复检查异常：%s", e)
 
     # ── 启动时立刻执行平仓检查 ────────────────────────────────────────────────
     log.info("启动检查：扫描逾期/待平仓持仓...")
