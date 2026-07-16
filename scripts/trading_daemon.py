@@ -1699,20 +1699,60 @@ def _exit_pov_monitor() -> None:
                 log.warning("🏃 [卖出POV] %s %s 仓位%.0f万>单片容量,启动分批:%d片,%s起,片参与率%.0f%%",
                             pos.get("ts_code"), pos.get("name"), sell_amt / 1e4, slots,
                             start_dt.strftime("%H:%M"), part * 100)
-            if not plans:
-                done_day = today_str; continue
-            # 撤止盈预挂单(释放冻结股份;涨停全量卖规则内置替代其职能)
-            try:
-                with _qmt_lock:
-                    adapter = _qmt_get(broker_cfg)
-                    _cancel_own_takeprofit_orders(adapter, {str(p["pos"].get("ts_code", "")) for p in plans})
-            except Exception as e:
-                log.error("卖出POV撤止盈单异常:%s", e)
-            _notify("sell_result", "🏃 大仓位分批平仓启动",
-                    "；".join(f"{p['pos'].get('ts_code','')} {p['pos'].get('name','')} 分批卖出" for p in plans)
-                    + f"。13:00起按流动性分片(片=5分钟成交×{part:.0%}),14:48前收工,剩余交14:55收盘平仓。")
-            # ── 分片执行(5分钟网格) ──
+            if plans:
+                # 撤止盈预挂单(释放冻结股份;涨停全量卖规则内置替代其职能)
+                try:
+                    with _qmt_lock:
+                        adapter = _qmt_get(broker_cfg)
+                        _cancel_own_takeprofit_orders(adapter, {str(p["pos"].get("ts_code", "")) for p in plans})
+                except Exception as e:
+                    log.error("卖出POV撤止盈单异常:%s", e)
+                _notify("sell_result", "🏃 大仓位分批平仓启动",
+                        "；".join(f"{p['pos'].get('ts_code','')} {p['pos'].get('name','')} 分批卖出" for p in plans)
+                        + f"。13:00起按流动性分片(片=5分钟成交×{part:.0%}),14:48前收工,剩余交14:55收盘平仓。")
+            # ── 分片执行(5分钟网格;plans空也保持循环,等14:30缩量复查) ──
+            checked_1430 = False
+            planned_ids = {str(p["pos"].get("order_id", "")) for p in plans}
             while now_beijing().time() < datetime.time(14, 46):
+                # 14:30缩量复查(2026-07-16 1m实测:θ=1%线上的单在12/81笔缩量日
+                # 会吃穿尾盘承接90分位185%):13:00未触发的仓用14:30实时累计量
+                # 重判——缩量日cum增长慢,同一θ线自动变严,补触发的走14:35起3片。
+                if not checked_1430 and now_beijing().time() >= datetime.time(14, 30):
+                    checked_1430 = True
+                    retry = [p for p in due if str(p.get("order_id", "")) not in planned_ids
+                             and str(p.get("status", "")).lower() == "open"]
+                    for pos in retry:
+                        try:
+                            ts_r = str(pos.get("ts_code", ""))
+                            with _qmt_lock:
+                                adapter = _qmt_get(broker_cfg)
+                                q = adapter.get_full_tick([ts_r]).get(ts_r)
+                            last = float(getattr(q, "last_price", 0.0) or 0.0) if q else 0.0
+                            cum = float(getattr(q, "amount", 0.0) or 0.0) if q else 0.0
+                            if last <= 0 or cum <= 0:
+                                continue
+                            sell_amt = int(pos.get("shares", 0)) * last
+                            if sell_amt <= cum * float(lt.get("exit_pov_trigger_pct", 0.01)):
+                                continue
+                            try:
+                                with _qmt_lock:
+                                    adapter = _qmt_get(broker_cfg)
+                                    _cancel_own_takeprofit_orders(adapter, {ts_r})
+                            except Exception:
+                                pass
+                            plans.append(dict(pos=pos, prev_cum=cum, start=now_beijing(),
+                                              remain_sh=int(pos.get("shares", 0)),
+                                              sold_qty=0, sold_amt=0.0, done=False))
+                            planned_ids.add(str(pos.get("order_id", "")))
+                            log.warning("🏃 [卖出POV] 14:30缩量复查触发:%s %s 仓位%.0f万>当日累计×%.1f%%,"
+                                        "14:35起补充分批。", ts_r, pos.get("name"), sell_amt / 1e4,
+                                        float(lt.get("exit_pov_trigger_pct", 0.01)) * 100)
+                        except Exception as e:
+                            log.error("14:30缩量复查异常(%s):%s", pos.get("ts_code"), e)
+                if not plans:
+                    if now_beijing().time() >= datetime.time(14, 31):
+                        break   # 两轮评估均无触发,今日无需分批
+                    time.sleep(30); continue
                 for plan in plans:
                     if not plan["done"] and now_beijing() >= plan["start"]:
                         _exit_pov_slice(plan, broker_cfg, part, log)
