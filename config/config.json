@@ -166,7 +166,7 @@
     "exit_pov_amount_unit": "CNY",
     "exit_pov_trigger_pct": 0.01,
     "exit_pov_trigger_note": "13:00初始大仓门禁；14:30不再重复比较累计额，而改用13:00~14:30实际流速预测剩余跑道，解决累计额单调增加导致旧复查永远不新增触发的问题。",
-    "exit_pov_runway_buffer": 1.5,
+    "exit_pov_runway_buffer": 1.2,
     "exit_pov_pm_extrapolate": 0.44,
     "exit_auction_bypass_enabled": false,
     "exit_auction_capacity_pct": 0.008,
@@ -188,7 +188,8 @@
     "fill_confirm_enabled": true,
     "fill_confirm_timeout_sec": 60,
     "fill_confirm_poll_sec": 3,
-    "output_prefix": "reports/live_trade/qmt_live_order"
+    "output_prefix": "reports/live_trade/qmt_live_order",
+    "exit_pov_runway_buffer_note": "跑道冗余系数(2026-07-16扫描定稿1.2):80笔重放1000万损耗1.5=-0.220%/1.2=-0.204%/1.0=-0.190%,1.2免费拿0.016%且实盘另有14:30流速复查+14:45尾段复查双兜底(重放未模拟,实际更安全);1.0再往下压安全垫过薄。35%参与率+动量调节仅再省0.02%,过拟合风险不值,不采用"
   },
   "strategy_d": {
     "file_role": "策略D首板打板配置。当前账户已开通沪A、深A和创业板，因此实盘扫描/下单范围限定为沪主板、深主板、创业板；科创板和北交所未确认权限前不纳入。",
