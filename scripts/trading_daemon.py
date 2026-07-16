@@ -1685,10 +1685,13 @@ def _exit_pov_monitor() -> None:
                 if last <= 0 or cum <= 0:
                     continue
                 sell_amt = int(pos.get("shares", 0)) * last
+                # 分批触发线(2026-07-16 θ扫描定稿):卖出市值>当日13:00累计成交×1%
+                # 才分批。更低阈值会把"一把梭不痛"的仓位拉去吃时间成本(100万档
+                # 实测-0.08%/笔);θ=1%各档不受伤,1000万档+0.23%/笔最优。
+                if sell_amt <= cum * float(lt.get("exit_pov_trigger_pct", 0.01)):
+                    continue    # 小仓位:今日不分批,14:55主链路处理
                 slice_est = cum * pm_k / 21.0        # 13:05~14:45约21片
                 need = int(sell_amt * buffer_k / (slice_est * part)) + 1 if slice_est > 0 else 99
-                if need <= 1:
-                    continue    # 小仓位:今日不分批,14:55主链路/收盘竞价旁路处理
                 slots = min(need, 21)
                 start_dt = now.replace(hour=14, minute=45, second=0, microsecond=0) - datetime.timedelta(minutes=5 * slots)
                 plans.append(dict(pos=pos, prev_cum=cum, start=start_dt,

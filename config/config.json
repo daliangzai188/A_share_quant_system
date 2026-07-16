@@ -149,6 +149,8 @@
     "exit_pov_enabled": true,
     "exit_pov_note": "卖出端(2026-07-16终版):大仓位13:00评估跑道,每5分钟片=上一片成交×25%挂跌停分批卖,涨停全量卖,14:48收工,剩余交14:55主平仓(挂跌停,现状不变)。收盘竞价旁路已判死(exit_auction_bypass_enabled=false):正确口径下收盘价vs14:55即时价复利差仅1.003x(均值0.00%),无右尾可捡,大单进竞价反而自我压价(用户实测-1.5%)+不可撤风险",
     "exit_pov_participation": 0.25,
+    "exit_pov_trigger_pct": 0.01,
+    "exit_pov_trigger_note": "分批触发线:卖出市值>当日13:00累计成交额×此值才分批(θ扫描:1%各档不伤,1000万+0.23%/笔;更低会误伤小仓吃时间成本)",
     "exit_pov_runway_buffer": 1.5,
     "exit_pov_pm_extrapolate": 0.44,
     "exit_auction_bypass_enabled": false,
