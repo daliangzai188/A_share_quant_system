@@ -328,6 +328,28 @@ class QMTBrokerAdapter(BrokerAdapter):
                 pre_close=to_float(first_present(raw, ["lastClose", "preClose", "pre_close"])),
                 upper_limit=to_float(first_present(raw, ["upperLimit", "upper_limit", "limitUp", "up_limit"])),
                 lower_limit=to_float(first_present(raw, ["lowerLimit", "lower_limit", "limitDown", "down_limit"])),
+                # xtdata.get_full_tick 的标准字段是 amount（当日累计成交额，元）。
+                # 部分 QMT/行情版本使用 turnover 等别名；只做字段归一化，不用
+                # price * volume 猜测，以免因 volume 的“股/手”口径不同放大 100 倍。
+                amount=to_float(
+                    first_present(
+                        raw,
+                        [
+                            "amount",
+                            "turnover",
+                            "turnoverAmount",
+                            "turnover_amount",
+                            "totalAmount",
+                            "total_amount",
+                            "totalTurnover",
+                            "total_turnover",
+                            "transactionAmount",
+                            "transaction_amount",
+                            "cumAmount",
+                            "cum_amount",
+                        ],
+                    )
+                ),
                 bid_prices=[to_float(v) for v in bid_prices],
                 bid_volumes=bid_volumes,
                 ask_prices=[to_float(v) for v in ask_prices],

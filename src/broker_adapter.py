@@ -46,7 +46,13 @@ class PositionSnapshot:
 
 @dataclass(frozen=True)
 class QuoteSnapshot:
-    """实时行情快照，优先承载五档盘口和涨跌停价。"""
+    """实时行情快照，优先承载五档盘口、涨跌停价和当日累计成交额。
+
+    ``amount`` 是截至快照时点的当日累计成交额，统一按人民币元保存；它不是
+    当前一分钟或当前一笔的成交额。需要计算区间成交流量时，应对两个相邻快照
+    的 ``amount`` 做差，并处理午间休市、行情重连或数据源重置造成的非递增值。
+    ``raw`` 保留券商返回的完整原始快照，便于核验不同 QMT 版本的字段与单位。
+    """
 
     ts_code: str
     broker_code: str
@@ -57,6 +63,7 @@ class QuoteSnapshot:
     pre_close: float = 0.0
     upper_limit: float = 0.0
     lower_limit: float = 0.0
+    amount: float = 0.0
     bid_prices: list[float] | None = None
     bid_volumes: list[int] | None = None
     ask_prices: list[float] | None = None
@@ -157,4 +164,3 @@ class BrokerAdapter(ABC):
     def get_order_fill(self, order_id: str) -> "OrderFill":
         """查询某笔委托的成交情况。默认返回 UNKNOWN，具体券商适配器应覆盖。"""
         return OrderFill(order_id=str(order_id))
-

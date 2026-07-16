@@ -12,8 +12,8 @@ A_System 量化策略常驻守护进程。
     09:00  盘前计划 —— 生成/刷新组合状态机买入计划
     09:20  盘前复核 —— 平仓检查（优先） + 组合状态机复核 + 按涨停价预挂买入 + D监控
     09:30  开盘确认 —— 确认09:20预挂成交，未成交再补买
-    14:55  收盘平仓 —— 平仓检查（最高优先，绝不被任何步骤阻塞；14:55挂跌停价，留足收盘竞价前的补救窗口）
-    14:56  撤买单 —— 撤销所有未成交买单（不动卖单；深市14:57起收盘竞价不可撤单，必须在此之前）
+    14:55  收盘平仓 —— 连续竞价合法价格笼子下限；14:56:20撤余单，14:57:05仅按安全账本真实余量进收盘竞价
+    14:40  撤买单 —— 提前撤销所有未成交买单，不占用14:53后的平仓QMT通道
     15:10  收盘  —— 数据流水线 + 信号生成
 
 持仓状态：data/processed/positions.json
@@ -24,6 +24,7 @@ from __future__ import annotations
 import datetime
 import csv
 import glob
+import hashlib
 import json
 import os
 import signal
@@ -31,7 +32,7 @@ import subprocess
 import sys
 import threading
 import time
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, ROUND_CEILING, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any
 
@@ -156,8 +157,12 @@ SCHED_AFTERNOON_CLOSE = datetime.time(14, 55)
 # 且排队一天未成交的开仓买单（一字板排队）尾盘炸板成交=高位接盘，早撤无损失。
 SCHED_CANCEL_BUY_ORDERS = datetime.time(14, 40)
 # 平仓静默窗：14:53起止盈线程休眠、14:54:30~14:58账户心跳跳过，
-# 确保14:55平仓发单时QMT通道零竞争（独占通道的实现，不只是口号）。
+# 确保POV交权、14:55主平仓及14:56:20撤单/竞价兜底时QMT通道零竞争。
 SCHED_TAKEPROFIT_QUIET = datetime.time(14, 53)
+SCHED_EXIT_LARGE_FORCE_START = datetime.time(14, 15)
+# 连续竞价主平仓余单的最晚撤单起点。提前于14:57留出多轮状态复核；此后
+# 14:57前禁止再新发连续竞价平仓单，避免旧价格笼子委托带入收盘集合竞价。
+SCHED_CLOSE_AUCTION_HANDOFF = datetime.time(14, 56, 20)
 SCHED_POST_MARKET = datetime.time(15, 10)
 import sys as _sys
 import platform as _platform
@@ -170,6 +175,11 @@ else:
 POSITIONS_FILE = PROJECT_ROOT / "data" / "processed" / "positions.json"
 PENDING_BUY_FILE = PROJECT_ROOT / "data" / "processed" / "pending_premarket_buy.json"
 E2_CAPACITY_FILE = PROJECT_ROOT / "data" / "processed" / "e2_capacity_history.json"
+# 卖出批次与PREPARED intent必须持久化：若进程恰在“券商已受理、QMT尚未
+# 回显”窗口崩溃，重启后仅靠query_orders会误以为没有旧单并重复卖出。
+EXIT_EXECUTION_STATE_FILE = (
+    PROJECT_ROOT / "data" / "processed" / "exit_execution_state.json"
+)
 HEARTBEAT_FILE = PROJECT_ROOT / "logs" / "daemon_heartbeat.txt"
 D_MONITOR_PID_FILE = PROJECT_ROOT / "logs" / "strategy_d_monitor.pid"
 QMT_LAST_SUCCESS_FILE = PROJECT_ROOT / "logs" / "qmt_last_success.json"
@@ -181,6 +191,21 @@ _TRADE_CALENDAR_CACHE: dict[str, Any] = {
 }
 _pending_buy_lock = threading.Lock()
 _premarket_buy_monitor_thread: threading.Thread | None = None
+# positions.json 会被POV、14:55主平仓、看门狗和账户心跳并发读改写。
+# 原子replace只能防半文件，不能防“两个线程各自读旧值后相互覆盖”。
+_positions_file_lock = threading.RLock()
+_exit_execution_state_lock = threading.RLock()
+# 卖出生命周期互斥：与_qmt_lock（只保护单次QMT调用）职责不同。该锁覆盖
+# 下单→确认→撤单→终态回写，避免POV和14:55主平仓交叉冻结/重复卖出。
+_exit_sell_lock = threading.RLock()
+_EXIT_POV_REMARK_PREFIX = "POV平滑卖"
+_SYSTEM_EXIT_REMARK_PREFIXES = (
+    _EXIT_POV_REMARK_PREFIX,
+    "ABC平仓-",
+    "看门狗补挂-",
+    "盘中止盈",
+)
+SCHED_EXIT_POV_HANDOFF = datetime.time(14, 53)
 
 # subprocess 超时（秒）：防止某步骤挂死
 TIMEOUT_DATA_STEP = 600      # 数据采集/清洗步骤：10 分钟
@@ -511,23 +536,28 @@ def qmt_is_critical_window() -> bool:
 # ── 持仓状态文件 ──────────────────────────────────────────────────────────────
 
 def load_positions() -> list[dict[str, Any]]:
-    try:
-        if not POSITIONS_FILE.exists():
+    with _positions_file_lock:
+        try:
+            if not POSITIONS_FILE.exists():
+                return []
+            return json.loads(POSITIONS_FILE.read_text(encoding="utf-8"))
+        except Exception as e:
+            logger().error("读取持仓文件失败：%s", e)
             return []
-        return json.loads(POSITIONS_FILE.read_text(encoding="utf-8"))
-    except Exception as e:
-        logger().error("读取持仓文件失败：%s", e)
-        return []
 
 
 def save_positions(positions: list[dict[str, Any]]) -> None:
-    try:
-        mkdir_p(POSITIONS_FILE.parent)
-        tmp = POSITIONS_FILE.with_suffix(".tmp")
-        tmp.write_text(json.dumps(positions, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(POSITIONS_FILE)  # 原子替换，防止写一半损坏
-    except Exception as e:
-        logger().error("保存持仓文件失败：%s", e)
+    with _positions_file_lock:
+        try:
+            mkdir_p(POSITIONS_FILE.parent)
+            tmp = POSITIONS_FILE.with_suffix(".tmp")
+            tmp.write_text(json.dumps(positions, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp.replace(POSITIONS_FILE)  # 原子替换，防止写一半损坏
+        except Exception as e:
+            logger().error("保存持仓文件失败：%s", e)
+            # 持仓回写是平仓成功的一部分，不能吞掉异常后继续
+            # 发“已平仓”通知。向上抛出后由调用方停止成功流程并告警。
+            raise RuntimeError(f"保存持仓文件失败:{e}") from e
 
 
 _broker_empty_streak = 0  # 连续"券商空但本地有持仓"的确认计数，见下方两次确认机制
@@ -552,35 +582,39 @@ def clear_local_positions_when_broker_empty(source: str) -> int:
     任何一次查到券商有持仓即由 _note_broker_has_positions() 归零计数。
     """
     global _broker_empty_streak
-    positions = load_positions()
-    open_like = [p for p in positions if str(p.get("status", "")).lower() in {"open", "sell_pending"}]
-    if not open_like:
-        _broker_empty_streak = 0
-        return 0
-    _broker_empty_streak += 1
-    if _broker_empty_streak < 2:
-        logger().warning(
-            "⚠️ [幽灵持仓疑似] QMT返回无持仓，但本地有%d条open/sell_pending记录（来源=%s，第1次发现）。"
-            "暂不清理，等待下一轮查询复核（防QMT数据未同步误清真实持仓）。",
-            len(open_like), source,
-        )
-        return 0
-    changed = 0
-    now_str = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
-    for pos in positions:
-        status = str(pos.get("status", "")).lower()
-        if status not in {"open", "sell_pending"}:
-            continue
-        pos["status"] = "closed"
-        pos["sell_date"] = pos.get("sell_date") or today_beijing().strftime("%Y%m%d")
-        pos["sell_price"] = pos.get("sell_price") or 0.0
-        pos["ghost_cleared_at"] = now_str
-        pos["ghost_clear_source"] = source
-        pos["ghost_clear_reason"] = "QMT接口查询成功且返回无实盘持仓"
-        changed += 1
+    with _positions_file_lock:
+        positions = load_positions()
+        open_like = [
+            p for p in positions
+            if str(p.get("status", "")).lower() in {"open", "sell_pending"}
+        ]
+        if not open_like:
+            _broker_empty_streak = 0
+            return 0
+        _broker_empty_streak += 1
+        if _broker_empty_streak < 2:
+            logger().warning(
+                "⚠️ [幽灵持仓疑似] QMT返回无持仓，但本地有%d条open/sell_pending记录（来源=%s，第1次发现）。"
+                "暂不清理，等待下一轮查询复核（防QMT数据未同步误清真实持仓）。",
+                len(open_like), source,
+            )
+            return 0
+        changed = 0
+        now_str = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
+        for pos in positions:
+            status = str(pos.get("status", "")).lower()
+            if status not in {"open", "sell_pending"}:
+                continue
+            pos["status"] = "closed"
+            pos["sell_date"] = pos.get("sell_date") or today_beijing().strftime("%Y%m%d")
+            pos["sell_price"] = pos.get("sell_price") or 0.0
+            pos["ghost_cleared_at"] = now_str
+            pos["ghost_clear_source"] = source
+            pos["ghost_clear_reason"] = "QMT接口查询成功且返回无实盘持仓"
+            changed += 1
 
-    if changed:
-        save_positions(positions)
+        if changed:
+            save_positions(positions)
         logger().warning(
             "🧹 [幽灵持仓清理] QMT连续2轮确认实盘无持仓，已将本地%d条open/sell_pending持仓标记为closed。来源=%s",
             changed,
@@ -593,64 +627,120 @@ def clear_local_positions_when_broker_empty(source: str) -> int:
 def record_buy(order_id: str, ts_code: str, name: str, signal_date: str,
                buy_date: str, shares: int, buy_price: float, strategy_leg: str,
                exit_n_days: int = 2, traded_at: str = "") -> None:
-    positions = load_positions()
-    if any(p["order_id"] == order_id for p in positions):
-        return
-    exit_date = next_n_trade_days(
-        datetime.datetime.strptime(buy_date, "%Y%m%d").date(), n=exit_n_days
-    )
-    # 券商成交回报时间常是Unix秒（国金QMT实测），转成可读北京时间便于审计成交时点；
-    # 其他格式（HHMMSS整数、已是字符串）原样保留，不做破坏性解析。
-    if traded_at and str(traded_at).isdigit() and int(traded_at) > 1_000_000_000:
-        try:
-            traded_at = datetime.datetime.fromtimestamp(
-                int(traded_at), tz=BEIJING_TZ
-            ).strftime("%Y-%m-%d %H:%M:%S")
-        except Exception:
-            pass
-    buy_time = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
-    planned_exit_time = datetime.datetime.combine(exit_date, SCHED_AFTERNOON_CLOSE).strftime("%Y-%m-%d %H:%M")
-    positions.append({
-        "order_id": order_id,
-        # buy_time=确认回写时刻；traded_at=券商成交回报的真实成交时间（审计成交时点用）
-        "traded_at": traded_at,
-        "ts_code": ts_code,
-        "name": name,
-        "signal_date": signal_date,
-        "buy_date": buy_date,
-        "buy_time": buy_time,
-        "planned_exit_date": exit_date.strftime("%Y%m%d"),
-        "planned_exit_time": planned_exit_time,
-        "shares": shares,
-        "buy_price": buy_price,
-        "strategy_leg": strategy_leg,
-        "status": "open",
-        "sell_date": None,
-        "sell_price": None,
-    })
-    save_positions(positions)
+    with _positions_file_lock:
+        positions = load_positions()
+        if any(p["order_id"] == order_id for p in positions):
+            return
+        exit_date = next_n_trade_days(
+            datetime.datetime.strptime(buy_date, "%Y%m%d").date(), n=exit_n_days
+        )
+        # 券商成交回报时间常是Unix秒（国金QMT实测），转成可读北京时间便于审计成交时点；
+        # 其他格式（HHMMSS整数、已是字符串）原样保留，不做破坏性解析。
+        if traded_at and str(traded_at).isdigit() and int(traded_at) > 1_000_000_000:
+            try:
+                traded_at = datetime.datetime.fromtimestamp(
+                    int(traded_at), tz=BEIJING_TZ
+                ).strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                pass
+        buy_time = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
+        planned_exit_time = datetime.datetime.combine(exit_date, SCHED_AFTERNOON_CLOSE).strftime("%Y-%m-%d %H:%M")
+        positions.append({
+            "order_id": order_id,
+            # buy_time=确认回写时刻；traded_at=券商成交回报的真实成交时间（审计成交时点用）
+            "traded_at": traded_at,
+            "ts_code": ts_code,
+            "name": name,
+            "signal_date": signal_date,
+            "buy_date": buy_date,
+            "buy_time": buy_time,
+            "planned_exit_date": exit_date.strftime("%Y%m%d"),
+            "planned_exit_time": planned_exit_time,
+            "shares": shares,
+            "entry_shares": shares,
+            "buy_price": buy_price,
+            "strategy_leg": strategy_leg,
+            "status": "open",
+            "sell_date": None,
+            "sell_price": None,
+            "exit_fills_by_date": {},
+        })
+        save_positions(positions)
     logger().info("持仓记录：策略=%s %s %s 买入日 %s 计划平仓日 %s",
                   strategy_leg, ts_code, name, buy_date, exit_date.strftime("%Y%m%d"))
 
 
+def _append_exit_fill_ledger(
+    position: dict[str, Any], *, fill_date: str, filled_qty: int, fill_price: float = 0.0
+) -> None:
+    """记录已应用到本地账的退出成交量，供收盘成交明细做幂等补账。"""
+    qty = max(int(filled_qty or 0), 0)
+    if qty <= 0:
+        return
+    date_key = str(fill_date or today_beijing().strftime("%Y%m%d")).replace("-", "")[:8]
+    ledger_raw = position.get("exit_fills_by_date")
+    ledger = dict(ledger_raw) if isinstance(ledger_raw, dict) else {}
+    day_raw = ledger.get(date_key)
+    day = dict(day_raw) if isinstance(day_raw, dict) else {}
+    day["qty"] = max(int(day.get("qty", 0) or 0), 0) + qty
+    day["amount"] = max(float(day.get("amount", 0.0) or 0.0), 0.0) + qty * max(
+        float(fill_price or 0.0), 0.0
+    )
+    ledger[date_key] = day
+    position["exit_fills_by_date"] = ledger
+
+
+def _position_exit_filled_qty_on(position: dict[str, Any], fill_date: str) -> int:
+    ledger = position.get("exit_fills_by_date")
+    if not isinstance(ledger, dict):
+        return 0
+    day = ledger.get(str(fill_date).replace("-", "")[:8])
+    if not isinstance(day, dict):
+        return 0
+    return max(int(day.get("qty", 0) or 0), 0)
+
+
 def mark_position_closed(order_id: str, sell_date: str, sell_price: float = 0.0) -> None:
-    positions = load_positions()
-    for p in positions:
-        if p["order_id"] == order_id and p["status"] != "closed":
-            p["status"] = "closed"
-            p["sell_date"] = sell_date
-            p["sell_price"] = sell_price
-    save_positions(positions)
+    with _positions_file_lock:
+        positions = load_positions()
+        for p in positions:
+            if p["order_id"] == order_id and p["status"] != "closed":
+                remaining_before = max(int(p.get("shares", 0) or 0), 0)
+                _append_exit_fill_ledger(
+                    p,
+                    fill_date=sell_date,
+                    filled_qty=remaining_before,
+                    fill_price=sell_price,
+                )
+                p.setdefault("entry_shares", remaining_before)
+                p["shares"] = 0
+                p["status"] = "closed"
+                p["sell_date"] = sell_date
+                p["sell_price"] = sell_price
+        save_positions(positions)
 
 
-def reduce_position_shares(order_id: str, remaining_shares: int) -> None:
+def reduce_position_shares(
+    order_id: str, remaining_shares: int, fill_price: float = 0.0, fill_date: str = ""
+) -> None:
     """部分成交后保留持仓，仅把剩余未卖股数写回，status 维持 open 以便下次继续卖出。"""
-    positions = load_positions()
-    for p in positions:
-        if p["order_id"] == order_id and str(p.get("status", "")).lower() in {"open", "sell_pending"}:
-            p["shares"] = int(remaining_shares)
-            p["status"] = "open"
-    save_positions(positions)
+    with _positions_file_lock:
+        positions = load_positions()
+        for p in positions:
+            if p["order_id"] == order_id and str(p.get("status", "")).lower() in {"open", "sell_pending"}:
+                current = max(int(p.get("shares", 0) or 0), 0)
+                # 本地策略仓只能因卖出减少，绝不能把券商同代码人工仓反向灌入。
+                remaining = min(max(int(remaining_shares or 0), 0), current)
+                _append_exit_fill_ledger(
+                    p,
+                    fill_date=fill_date or today_beijing().strftime("%Y%m%d"),
+                    filled_qty=current - remaining,
+                    fill_price=fill_price,
+                )
+                p.setdefault("entry_shares", current)
+                p["shares"] = remaining
+                p["status"] = "open"
+        save_positions(positions)
 
 
 def find_open_position_by_code(ts_code: str, strategy_leg: str | None = None) -> dict[str, Any] | None:
@@ -1111,7 +1201,9 @@ def _execute_orders_inprocess(
                             f"{s['ts_code']} {s['name']} 卖出{fill.filled_qty}股 "
                             f"@{fill_price:.2f} 金额{_fmt_wan(fill.filled_qty * fill_price)}")
                 elif fill.filled_qty > 0:
-                    reduce_position_shares(local_oid, held - fill.filled_qty)
+                    reduce_position_shares(
+                        local_oid, held - fill.filled_qty, fill_price=fill_price
+                    )
                     log.warning("⚠️ [%s] %s 卖出部分成交 %d/%d股 @%.2f，剩余%d股保留持仓待下次卖出。",
                                 tag, s["ts_code"], fill.filled_qty, held, fill_price, held - fill.filled_qty)
                     _notify("sell_fail", "⚠️ 平仓部分成交",
@@ -1137,7 +1229,7 @@ _sig_day_amount_cache: dict = {}
 
 
 def _signal_day_amount(ts_code: str, signal_date: str) -> float:
-    """信号日成交额（元）。读不到返回 0 = 不施加流动性硬顶（保守容错：行为退回现状）。"""
+    """信号日成交额（元）；0表示数据缺失，由调用方按fail-closed门禁处理。"""
     key = str(signal_date)
     if key not in _sig_day_amount_cache:
         try:
@@ -1155,6 +1247,35 @@ def _signal_day_amount(ts_code: str, signal_date: str) -> float:
     except Exception:
         pass
     return 0.0
+
+
+def _large_exit_force_eligible(
+    position: dict[str, Any], last_price: float, live_cfg: dict[str, Any]
+) -> tuple[bool, float, float]:
+    """判断是否启用“千万级且高流动性”14:15强制退出跑道。
+
+    返回(是否启用, 仓位参考金额, 信号日成交额)。当前市值下跌时仍以入场成本
+    识别原本的千万级仓位，避免恰在亏损日因市值跌破阈值而关闭流动性保护。
+    """
+    if not bool(live_cfg.get("exit_pov_large_force_enabled", True)):
+        return False, 0.0, 0.0
+    shares = max(int(position.get("shares", 0) or 0), 0)
+    entry_shares = max(int(position.get("entry_shares", shares) or shares), shares)
+    buy_price = max(float(position.get("buy_price", 0.0) or 0.0), 0.0)
+    reference_amount = max(shares * max(float(last_price or 0.0), 0.0), entry_shares * buy_price)
+    min_amount = float(live_cfg.get("exit_pov_large_force_min_amount", 9_500_000) or 0.0)
+    signal_date = str(position.get("signal_date", "")).replace("-", "")[:8]
+    signal_amount = _signal_day_amount(str(position.get("ts_code", "")), signal_date)
+    min_signal_amount = float(
+        live_cfg.get("exit_pov_large_force_min_signal_amount", 2_000_000_000) or 0.0
+    )
+    eligible = bool(
+        reference_amount >= min_amount
+        and signal_amount >= min_signal_amount
+        and min_amount > 0
+        and min_signal_amount > 0
+    )
+    return eligible, reference_amount, signal_amount
 
 
 def resize_buy_orders_for_live_account(
@@ -1187,7 +1308,7 @@ def resize_buy_orders_for_live_account(
         adjusted["risk_flags"] = ""
     else:
         # planned_orders 来自 CSV 时，空 risk_flags 会被 pandas 读成 float64 NaN。
-        # 后续需要追加 LIVE_SIZE_ADJUSTED 等字符串标记，先转 object，避免 09:20 实盘缩单时报 dtype 错误。
+        # 后续需要追加 LIVE_SIZE_ADJUSTED 等字符串标记，先转 object，避免09:20实盘定仓时报dtype错误。
         adjusted["risk_flags"] = adjusted["risk_flags"].astype("object")
 
     for idx, row in adjusted.iterrows():
@@ -1210,16 +1331,36 @@ def resize_buy_orders_for_live_account(
         cash_cap = max(0.0, available_cash - cash_buffer)
         single_position_cap = max(0.0, total_asset * max_position_pct)
         total_position_cap = max(0.0, total_asset * max_total_position_pct - market_value)
-        # 流动性硬顶（2026-07-15 评估落地）：当日开仓 ≤ 信号日成交额×10%。
-        # 16万→1000万全程模拟复利代价=0（只修剪极端薄票，如天顺0.7亿→上限700万）；
-        # 极端情况的绝对防线。信号日数据读不到时不施加（容错=退回现状，只减不加）。
+        pre_liquidity_cap = min(
+            cash_cap, single_position_cap, total_position_cap, max_single_order_amount
+        )
+        # 大资金退出容量硬顶。81笔5m/1m回放没有找到可“保证”14:57前退出的
+        # 信号日比例；0.5%仅作为风险上限：1000万仓位要求信号日成交额至少20亿。
+        # 当数据缺失时必须fail-closed，不能让读数失败反而解除千万级门禁。
         liq_cap = float("inf")
+        signal_day_amount = 0.0
         _sig_date = str(row.get("signal_date", "")).strip().split(".")[0]
         if _sig_date and _sig_date.isdigit():
-            _sda = _signal_day_amount(ts_code, _sig_date)
-            if _sda > 0:
-                liq_cap = _sda * float(live_cfg.get("total_liquidity_cap_pct", 0.10))
-        allowed_amount = min(cash_cap, single_position_cap, total_position_cap, max_single_order_amount, liq_cap)
+            signal_day_amount = _signal_day_amount(ts_code, _sig_date)
+        if signal_day_amount > 0:
+            liq_cap = signal_day_amount * float(
+                live_cfg.get("total_liquidity_cap_pct", 0.005)
+            )
+        elif bool(live_cfg.get("liquidity_cap_fail_closed", True)):
+            liq_cap = 0.0
+            adjusted.at[idx, "risk_flags"] = append_risk_flag(
+                adjusted.at[idx, "risk_flags"], "LIQUIDITY_CAP_DATA_MISSING"
+            )
+            logger().error(
+                "实盘开仓拒绝：%s 信号日%s成交额缺失，退出容量门禁fail-closed。",
+                ts_code, _sig_date or "未知",
+            )
+        allowed_amount = min(pre_liquidity_cap, liq_cap)
+        if liq_cap < pre_liquidity_cap and liq_cap > 0:
+            adjusted.at[idx, "risk_flags"] = append_risk_flag(
+                adjusted.at[idx, "risk_flags"],
+                f"EXIT_CAPACITY_CAP:{liq_cap:.0f}",
+            )
 
         old_qty = to_int(row.get("round_lot_shares", row.get("estimated_shares", 0)))
         max_qty = int((allowed_amount - 0.01) / price) if allowed_amount > 0 else 0
@@ -1244,12 +1385,13 @@ def resize_buy_orders_for_live_account(
 
         if new_qty != old_qty:
             adjusted.at[idx, "risk_flags"] = append_risk_flag(
-                row.get("risk_flags", ""),
+                adjusted.at[idx, "risk_flags"],
                 f"LIVE_SIZE_ADJUSTED:{old_qty}->{new_qty}",
             )
             logger().warning(
-                "实盘缩单：%s 原计划%d股，按账户资金/仓位/单笔上限调整为%d股；"
-                "可用资金%.0f元，总资产%.0f元，当前市值%.0f元，单笔上限需小于%.0f元，参考成交价%.2f元",
+                "实盘定仓：%s 种子计划%d股，按资金/仓位/单笔/退出容量调整为%d股；"
+                "可用资金%.0f元，总资产%.0f元，当前市值%.0f元，单笔上限%.0f元，"
+                "信号日成交额%.0f元，退出容量上限%.0f元，参考成交价%.2f元",
                 ts_code,
                 old_qty,
                 new_qty,
@@ -1257,6 +1399,8 @@ def resize_buy_orders_for_live_account(
                 total_asset,
                 market_value,
                 max_single_order_amount,
+                signal_day_amount,
+                liq_cap,
                 price,
             )
 
@@ -1333,24 +1477,58 @@ def explain_reject_reasons(row: Any) -> str:
     return "；".join(parts)
 
 
-def _pick_sell_limit_price(quote: Any) -> tuple[float, str]:
-    """平仓挂单取价：跌停价限价（市价单效果），确保成交。
+def _sell_price_cage_floor(quote: Any) -> float:
+    """连续竞价卖出下限：科创板纯2%，沪深其他2%/十价位，北交所5%。"""
+    if quote is None:
+        return 0.0
+    bids = list(getattr(quote, "bid_prices", None) or [])
+    asks = list(getattr(quote, "ask_prices", None) or [])
+    best_bid = float(bids[0] or 0.0) if bids else 0.0
+    best_ask = float(asks[0] or 0.0) if asks else 0.0
+    last = float(getattr(quote, "last_price", 0.0) or 0.0)
+    pre_close = float(getattr(quote, "pre_close", 0.0) or 0.0)
+    # 交易所卖出基准价顺序：最高买价→最低卖价→最新价→前收盘价。
+    benchmark = next((value for value in (best_bid, best_ask, last, pre_close) if value > 0), 0.0)
+    if benchmark <= 0:
+        return 0.0
+    code = str(getattr(quote, "ts_code", "") or "").upper()
+    short = code.split(".")[0]
+    is_star = short.startswith(("688", "689"))
+    is_bse = code.endswith(".BJ") or short.startswith(("4", "8", "920"))
+    # 科创板规则是纯2%边界；沪深其他股票及北交所还需兼顾十个最小价位。
+    ratio = 0.95 if is_bse else 0.98
+    exact_floor = benchmark * ratio if is_star else min(benchmark * ratio, benchmark - 0.10)
+    # 这是卖出申报价的“下限”，必须向上取到最小价位；四舍五入可能向下穿越
+    # 精确边界而被交易所判为无效申报（如5.1548只能报5.16，不能报5.15）。
+    cage_floor = _ceil_stock_price(exact_floor)
+    lower_limit = float(getattr(quote, "lower_limit", 0.0) or 0.0)
+    return max(cage_floor, _round_stock_price(lower_limit) if lower_limit > 0 else 0.01, 0.01)
 
-    2026-07-08 皇氏集团事故：14:56挂买5价3.26，尾盘tick滞后/瞬间下砸导致
-    已报0成交，持仓被动过夜。买N档取价的致命弱点：挂单瞬间价格跌破挂价
-    就变成排队单，且深市14:57后进收盘集合竞价不可撤单，无补救窗口。
-    改挂跌停价（D策略09:23集合竞价同款"挂跌停不砸盘"原理）：
-    - 连续竞价中＝吃买盘直到成交，成交价≈买一起的真实对手价，不会真砸到跌停；
-    - 进收盘集合竞价＝低于任何可能收盘价，必以收盘价成交——与回测口径
-      （T+2收盘价卖出）完全一致；
-    - 仅当股价已真实跌停（无买盘）才可能不成交，那是市场极端，任何挂法都无解。
-    gateway 的 reject_limit_down_sell 拒的是"股价已跌停时的卖出"，
-    不拒"挂单价=跌停价"，两者不冲突。
-    跌停价缺失时退回买10/买5/买1/最新价（原逻辑兜底）。
+
+def _pick_sell_limit_price(
+    quote: Any, *, continuous_auction: bool | None = None
+) -> tuple[float, str]:
+    """按交易阶段选择可执行卖出限价。
+
+    沪深2026版交易规则明确：连续竞价的卖出限价低于价格笼子下限属于无效
+    申报。因此14:55不能再直接报跌停价；连续竞价使用当下动态笼子下限，
+    14:57后收盘集合竞价才使用日跌停价兜底。未成交主单会从14:56:20起
+    撤销，14:57:05仅按真实余量重新申报，避免旧笼子价格卡在集合竞价里。
     """
+    if continuous_auction is None:
+        now_t = now_beijing().time()
+        continuous_auction = (
+            datetime.time(9, 30) <= now_t < datetime.time(11, 30)
+            or datetime.time(13, 0) <= now_t < datetime.time(14, 57)
+        )
+    if continuous_auction:
+        cage_floor = _sell_price_cage_floor(quote)
+        if cage_floor > 0:
+            return cage_floor, "连续竞价价格笼子下限"
+
     lower_limit = float(getattr(quote, "lower_limit", 0.0) or 0.0) if quote else 0.0
     if lower_limit > 0:
-        return round(lower_limit, 2), "跌停价(市价效果)"
+        return _round_stock_price(lower_limit), "集合竞价跌停限价"
     bid_prices = list(getattr(quote, "bid_prices", None) or []) if quote else []
     if len(bid_prices) >= 10 and bid_prices[9] > 0:
         return round(float(bid_prices[9]), 2), "买10"
@@ -1404,32 +1582,126 @@ def _cancel_own_takeprofit_orders(adapter: Any, ts_codes: set[str], wait_sec: fl
             except Exception:
                 continue
             st = -2
+            terminal_filled = 0
             for o in cur or []:
                 od = object_to_dict(o)
                 if str(first_present(od, ["order_id", "m_nOrderID"], "")) == oid:
                     st = to_int(first_present(od, ["order_status", "m_nOrderStatus", "status"], -1), -1)
+                    ordered = max(to_int(first_present(
+                        od, ["order_volume", "m_nOrderVolume", "volume", "order_qty"], 0
+                    ), 0), 0)
+                    traded = max(to_int(first_present(
+                        od, ["traded_volume", "m_nTradedVolume", "traded_qty", "deal_volume"], 0
+                    ), 0), 0)
+                    if st == 56:
+                        try:
+                            intent = _exit_intent_by_broker_order_id(oid)
+                        except Exception:
+                            intent = None
+                        terminal_filled = max(
+                            ordered,
+                            max(int((intent or {}).get("quantity", 0) or 0), 0),
+                        )
+                    else:
+                        terminal_filled = min(traded, ordered) if ordered > 0 else traded
                     break
-            if st in (53, 54, 56, -2):
+            if st in (53, 54, 56, 57):
+                _resolve_exit_intent_by_broker_order_id(
+                    oid,
+                    filled_qty=terminal_filled,
+                    terminal_known=True,
+                )
                 log.info("[平仓前置] %s 止盈单已了结（状态%s），继续平仓。", code, st)
                 break
         else:
             log.error("[平仓前置] %s 止盈单撤单超时未确认，平仓可能因股份冻结被拒！", code)
 
 
+def _max_sell_order_shares(ts_code: str) -> int:
+    """交易所限价卖单单笔上限：科创板10万、创业板30万、其余100万股。"""
+    short = str(ts_code).upper().split(".")[0]
+    if short.startswith(("688", "689")):
+        return 100_000
+    if short.startswith(("300", "301")):
+        return 300_000
+    return 1_000_000
+
+
+def _split_sell_order_quantities(ts_code: str, quantity: int) -> list[int]:
+    """把大额卖出拆到交易所单笔上限内，不丢失最终零股余量。"""
+    remaining = max(int(quantity), 0)
+    limit = _max_sell_order_shares(ts_code)
+    short = str(ts_code).upper().split(".")[0]
+    is_star = short.startswith(("688", "689"))
+    chunks: list[int] = []
+    while remaining > 0:
+        chunk = min(remaining, limit)
+        if remaining > limit:
+            if is_star:
+                # 科创板限价单最少200股、之后可按1股递增。避免先报满10万后
+                # 留下1~199股尾单（多张同时提交时柜台可能不把它视为余额）。
+                tail = remaining - chunk
+                if 0 < tail < 200:
+                    chunk -= 200 - tail
+            else:
+                chunk = chunk // 100 * 100
+        if chunk <= 0:
+            break
+        chunks.append(chunk)
+        remaining -= chunk
+    return chunks
+
+
+def _normalize_exit_slice_quantity(ts_code: str, desired_qty: int, remaining_qty: int) -> int:
+    """把POV单片股数规范到板块卖出申报单位，并保护最后零股余额。"""
+    desired = min(max(int(desired_qty or 0), 0), max(int(remaining_qty or 0), 0))
+    remaining = max(int(remaining_qty or 0), 0)
+    short = str(ts_code).upper().split(".")[0]
+    if short.startswith(("688", "689")):
+        if remaining < 200:
+            return remaining if desired >= remaining else 0
+        return desired if desired >= 200 else 0
+    if remaining >= 100:
+        return desired // 100 * 100
+    return remaining if desired >= remaining else 0
+
+
 def _abc_place_sell_order_direct(
     ts_code: str, name: str, shares: int, order_id: str,
     confirm: str, config: dict, broker_cfg: dict
 ) -> bool:
-    """A/B/C 持仓直接挂 FIXED_PRICE 卖单（优先买10/买5确保成交），不走 CSV 流水线。
+    """串行化A/B/C/E2/L整段卖出生命周期；RLock允许14:55主任务重入。"""
+    with _exit_sell_lock:
+        return _abc_place_sell_order_direct_locked(
+            ts_code,
+            name,
+            shares,
+            order_id,
+            confirm,
+            config,
+            broker_cfg,
+        )
 
-    下单受理后确认真实成交：全成→平仓回写；部成→保留剩余股数；未成→保留持仓。
-    返回 True 仅表示全部成交。
+
+def _abc_place_sell_order_direct_locked(
+    ts_code: str, name: str, shares: int, order_id: str,
+    confirm: str, config: dict, broker_cfg: dict
+) -> bool:
+    """A/B/C/E2/L 按交易阶段有效限价卖实际余仓，不走旧CSV卖出数量。
+
+    超过交易所单笔股数上限时先拆成多张委托；成交按所有子单聚合，全成回写
+    closed，部成只回写真实剩余股数。返回True仅表示本轮已全部成交。
     """
     from src.broker_adapter import OrderRequest
     from src.live_order_gateway import LiveOrderGateway
 
     today_str = today_beijing().strftime("%Y%m%d")
     log = logger()
+
+    blocked = _exit_order_submission_block_reason()
+    if blocked:
+        log.error("[ABC平仓] %s 禁止提交：%s。", ts_code, blocked)
+        return False
 
     gateway = LiveOrderGateway(PROJECT_ROOT / "config" / "config.json")
     try:
@@ -1445,6 +1717,8 @@ def _abc_place_sell_order_direct(
         adapter = _qmt_get(broker_cfg)
         _cancel_own_takeprofit_orders(adapter, {ts_code})
         quote_map = adapter.get_full_tick([ts_code])
+        broker_total, broker_can_use = _broker_position_quantities(adapter, ts_code)
+        orders = adapter.query_orders()
 
     quote = quote_map.get(ts_code)
     price, price_label = _pick_sell_limit_price(quote)
@@ -1455,76 +1729,192 @@ def _abc_place_sell_order_direct(
                 level="critical", call=True)
         return False
 
-    if shares <= 0:
-        log.error("ABC平仓：%s 持仓股数为0，跳过。", ts_code)
+    if broker_total <= 0:
+        log.error("ABC平仓：%s 本地%d股但券商查询不到实际持仓，拒绝盲目回写，请核对。", ts_code, shares)
         _notify("sell_fail", "❌ ABC平仓股数异常",
-                f"{ts_code} {name} 本地持仓股数为0，平仓未提交，请核对positions.json和QMT持仓。",
+                f"{ts_code} {name} 本地记录{shares}股但QMT未返回实际持仓，平仓未提交，请立即核对。",
                 level="critical", call=True)
+        return False
+    if broker_can_use <= 0:
+        log.error("ABC平仓：%s 券商总持仓%d股但可卖为0，可能仍有冻结委托。", ts_code, broker_total)
+        _notify("sell_fail", "❌ 平仓股份仍被冻结",
+                f"{ts_code} {name} QMT总持仓{broker_total}股、可卖0股，请立即检查未撤卖单。",
+                level="critical", call=True)
+        return False
+    if shares <= 0:
+        log.error("ABC平仓：%s 本地策略持仓股数为0，拒绝提交卖单。", ts_code)
+        return False
+    owned_before = shares
+    shares = _safe_new_exit_order_quantity(
+        ts_code,
+        requested_qty=shares,
+        broker_total=broker_total,
+        broker_can_use=broker_can_use,
+        orders=orders,
+        trade_date=today_str,
+        log=log,
+        phase="ABC主平仓",
+    )
+    if shares <= 0:
+        log.error("ABC平仓：%s 安全归属/意图预算后的可新发股数为0，拒绝提交卖单。", ts_code)
+        return False
+
+    now_t = now_beijing().time()
+    if SCHED_CLOSE_AUCTION_HANDOFF <= now_t < datetime.time(14, 57):
+        log.error(
+            "[ABC平仓] %s 已进入14:56:20撤单交接窗，禁止新发连续竞价单；"
+            "交由14:57:05看门狗按真实残仓申报。",
+            ts_code,
+        )
         return False
 
     log.warning("⏳ [ABC平仓] %s %s  %d股  %s=%.2f元", ts_code, name, shares, price_label, price)
 
-    request = OrderRequest(
-        ts_code=ts_code,
-        broker_code=ts_code,
-        side="SELL",
-        quantity=shares,
-        price_type="FIXED_PRICE",
-        price=price,
-        strategy_name="A_SYSTEM_ABC",
-        remark=f"ABC平仓-{price_label}-{today_str}",
-    )
+    chunks = _split_sell_order_quantities(ts_code, shares)
+    submitted: list[tuple[str, int, str]] = []
+    rejected_chunks = 0
     with _qmt_lock:
         adapter = _qmt_get(broker_cfg)
-        result = adapter.place_order(request)
+        for chunk_no, chunk in enumerate(chunks, start=1):
+            blocked = _exit_order_submission_block_reason()
+            if blocked:
+                rejected_chunks += len(chunks) - chunk_no + 1
+                log.error(
+                    "[ABC平仓] %s 拆单过程触发时间门禁(%s)，停止提交剩余%d张；"
+                    "已提交部分由intent/看门狗对账。",
+                    ts_code,
+                    blocked,
+                    len(chunks) - chunk_no + 1,
+                )
+                break
+            request = OrderRequest(
+                ts_code=ts_code,
+                broker_code=ts_code,
+                side="SELL",
+                quantity=chunk,
+                price_type="FIXED_PRICE",
+                price=price,
+                strategy_name="A_SYSTEM_ABC",
+                remark=f"ABC平仓-{price_label}-{today_str}-{chunk_no}/{len(chunks)}",
+            )
+            result, intent_token = _place_exit_order_with_intent(
+                adapter,
+                request,
+                phase="ABC主平仓",
+                local_order_id=order_id,
+            )
+            if result.accepted:
+                submitted.append((str(result.order_id or ""), chunk, intent_token))
+            else:
+                rejected_chunks += 1
+                log.error(
+                    "❌ [ABC平仓] %s %s 第%d/%d子单%d股提交失败：%s",
+                    ts_code, name, chunk_no, len(chunks), chunk, result.message,
+                )
 
-    if not result.accepted:
-        log.error("❌ [ABC平仓] %s %s 提交失败：%s", ts_code, name, result.message)
+    if not submitted:
         _notify("sell_fail", "❌ ABC平仓提交失败",
-                f"{ts_code} {name} 平仓委托提交失败：{result.message}。请立即回终端处理。",
+                f"{ts_code} {name} 全部平仓子单均提交失败，请立即回终端处理。",
                 level="critical", call=True)
         return False
 
-    log.info("✅ [ABC平仓] %s %s %d股 @%.2f 委托已受理（待成交确认）", ts_code, name, shares, price)
-    order_id_broker = str(result.order_id or f"abc-sell-{today_str}-{ts_code}")
-    fill = _confirm_fill(broker_cfg, order_id_broker, shares, "ABC平仓")
-    fill_price = fill.avg_price if fill.avg_price > 0 else price
-    if fill.filled_qty >= shares:
+    submitted_qty = sum(qty for _, qty, _ in submitted)
+    log.info(
+        "✅ [ABC平仓] %s %s %d股拆%d张 @%.2f 已受理（拒绝%d张，待成交确认）",
+        ts_code, name, submitted_qty, len(submitted), price, rejected_chunks,
+    )
+    confirmation_budget_sec = 60 + max(len(submitted) - 1, 0) * 5 + 10
+    now_for_confirm = now_beijing()
+    handoff_at = datetime.datetime.combine(
+        now_for_confirm.date(), SCHED_EXIT_POV_HANDOFF, tzinfo=BEIJING_TZ
+    )
+    seconds_to_handoff = (handoff_at - now_for_confirm).total_seconds()
+    if (
+        now_for_confirm.time() >= SCHED_AFTERNOON_CLOSE
+        or seconds_to_handoff <= confirmation_budget_sec
+    ):
+        # 不仅14:55主任务：任何在理论确认耗时内可能跨过14:53交权
+        # 点的调用（例如14:54启动补检），都只做“核仓→安全预算→
+        # 拆单快速提交”。绝不在全局卖出锁内逐张等待，否则会饿死
+        # 14:56:20撤单交接。成交回写交给看门狗和15:00:30安全账本对账。
+        _watchdog_pending.append(
+            (
+                {
+                    "order_id": order_id,
+                    "ts_code": ts_code,
+                    "name": name,
+                    "shares": owned_before,
+                    "status": "open",
+                    "planned_exit_date": today_str,
+                },
+                [(broker_order_id, expected_qty) for broker_order_id, expected_qty, _ in submitted],
+            )
+        )
+        log.warning(
+            "[ABC平仓] %s %d股已快速提交；成交确认移交收盘看门狗，"
+            "卖出锁已释放以保证14:56:20交接和后续标的。",
+            ts_code,
+            submitted_qty,
+        )
+        return False
+    total_filled = 0
+    total_amount = 0.0
+    last_status = "UNKNOWN"
+    for idx, (broker_order_id, expected_qty, intent_token) in enumerate(submitted):
+        fill = _confirm_fill(
+            broker_cfg,
+            broker_order_id,
+            expected_qty,
+            f"ABC平仓子单{idx + 1}/{len(submitted)}",
+            timeout_sec=60 if idx == 0 else 5,
+        )
+        filled = min(max(int(fill.filled_qty or 0), 0), expected_qty)
+        fill_price_one = float(fill.avg_price or 0.0) if float(fill.avg_price or 0.0) > 0 else price
+        total_filled += filled
+        total_amount += filled * fill_price_one
+        last_status = fill.status_text
+        if bool(getattr(fill, "is_terminal", False)):
+            _update_exit_order_intent(
+                intent_token,
+                status="RESOLVED",
+                broker_order_id=broker_order_id,
+                filled_qty=filled,
+                terminal_known=True,
+            )
+    fill_price = total_amount / total_filled if total_filled > 0 else price
+    remaining_after = max(owned_before - total_filled, 0)
+    if remaining_after == 0:
         mark_position_closed(order_id, today_str, fill_price)
-        log.info("✅ [ABC平仓] %s %s 全部成交 %d股 @%.2f，已平仓。", ts_code, name, fill.filled_qty, fill_price)
+        log.info("✅ [ABC平仓] %s %s 全部成交 %d股 @%.2f，已平仓。", ts_code, name, total_filled, fill_price)
         _notify("sell_success", "✅ 平仓成交",
-                f"{ts_code} {name} 卖出{fill.filled_qty}股 "
-                f"@{fill_price:.2f} 金额{_fmt_wan(fill.filled_qty * fill_price)}")
+                f"{ts_code} {name} 卖出{total_filled}股 "
+                f"@{fill_price:.2f} 金额{_fmt_wan(total_filled * fill_price)}")
         return True
-    elif fill.filled_qty > 0:
-        reduce_position_shares(order_id, shares - fill.filled_qty)
-        log.warning("⚠️ [ABC平仓] %s %s 部分成交 %d/%d股 @%.2f，剩余%d股保留待下次卖出。",
-                    ts_code, name, fill.filled_qty, shares, fill_price, shares - fill.filled_qty)
+    elif total_filled > 0:
+        reduce_position_shares(order_id, remaining_after, fill_price=fill_price)
+        log.warning("⚠️ [ABC平仓] %s %s 部分成交 %d/%d股 @%.2f，券商预计剩余%d股。",
+                    ts_code, name, total_filled, owned_before, fill_price, remaining_after)
         _notify("sell_fail", "⚠️ 平仓部分成交",
-                f"{ts_code} {name} 卖出{fill.filled_qty}/{shares}股 @{fill_price:.2f}，"
-                f"剩余{shares - fill.filled_qty}股仍持有，请回终端查看。", level="timeSensitive")
+                f"{ts_code} {name} 卖出{total_filled}/{owned_before}股 @{fill_price:.2f}，"
+                f"预计剩余{remaining_after}股，请回终端查看。", level="timeSensitive")
         return False
     else:
         log.error("❌ [ABC平仓] %s %s 未成交（状态=%s），持仓保留，等待下次重试或手动处理。",
-                  ts_code, name, fill.status_text)
+                  ts_code, name, last_status)
         _notify("sell_fail", "❌ 平仓未成交",
                 f"{ts_code} {name} 平仓委托未成交，可能被动过夜，请立即回终端处理。",
                 level="critical", call=True)
         return False
 
 
-# ── 卖出端执行引擎(2026-07-16 方案G定稿,85笔卖出日5m带量重放验证) ──────────
-# 现状"14:55挂跌停一把梭"在1000万级损耗-1.22%/笔;方案G全含损耗-0.33%:
-#   ① 收盘竞价旁路:仓位≤收盘竞价容量×20% → 不在14:55即时卖,14:57:05申报
-#      跌停价进收盘集合竞价,15:00成交价=收盘价=回测口径完美复刻,最后5分钟
-#      右尾全收(85笔实测:收盘卖/14:55卖=1.243x复利差,右尾+3.1%/+2.5%/+2.3%);
-#   ② 卖出POV分批:大仓位13:00评估跑道,每5分钟片=上一片实测成交额×25%,
-#      挂跌停即时吃买盘;涨停→剩余全量卖(买盘无限,内置止盈);14:48收工,
-#      剩余交14:55主链路;
-#   ③ 残余过夜由既有逾期清理链路兜底(次日09:15后挂跌停,成交≈开盘价,
-#      隔夜gap实测均值-0.70%,已计入方案G损耗)。
-# 卖出与买入的根本不对称:买端动量"越早越好"(POV前置),卖端右尾在最后
-# "越晚越好"(时间成本14:30~15:00中位仅-0.10%~0),故卖端分批只为流动性让路。
+# ── 卖出端执行引擎（85笔5m、其中84笔尾盘1m容量压力回放）──────────────
+# 目标不是预测精确盘口冲击，而是避免1000万级仓位全部挤在14:55：
+#   ① 13:00/14:30按5分钟真实流量×25%拆单；
+#   ② 14:45复查最近15分钟流速，容量不足则14:46~14:52切1分钟×35%；
+#   ③ 14:53撤销POV交权，14:55主链路按券商实际余量卖出；14:56:20起撤销
+#      未成系统单，14:57:05只把真实残仓重新提交到收盘集合竞价兜底。
+# 分钟总成交额不等于买盘深度；离线报告另用35%/50%/65%容量折扣做敏感性
+# 测试。极端跌停或缩量仍可能无法退出，必须保留未成交告警与隔夜清理。
 
 _exit_bypass_day = ""   # 收盘竞价旁路生效日(看门狗14:56岗据此让路)
 
@@ -1567,82 +1957,1258 @@ def _exit_auction_bypass_decision() -> bool:
         return False
 
 
-def _exit_pov_slice(plan: dict[str, Any], broker_cfg: dict, part: float, log: Any) -> None:
-    """卖出POV单片:预算=上一片实测成交额×part,挂跌停即时吃买盘;涨停全量卖。"""
+def _broker_position_quantities(adapter: Any, ts_code: str) -> tuple[int, int]:
+    """返回券商端该标的(总持仓, 可卖持仓)，找不到时返回(0, 0)。"""
+    from src.qmt_adapter import first_present, object_to_dict, to_int
+
+    aliases = _ts_code_aliases(ts_code)
+    for item in adapter.query_positions() or []:
+        data = object_to_dict(item)
+        code = first_present(data, ["ts_code", "stock_code", "m_strInstrumentID"], "")
+        if not (_ts_code_aliases(code) & aliases):
+            continue
+        volume = to_int(first_present(data, ["volume", "m_nVolume", "total_volume"], 0), 0)
+        can_use = to_int(
+            first_present(data, ["can_use_volume", "m_nCanUseVolume", "enable_amount"], 0), 0
+        )
+        return max(volume, 0), max(can_use, 0)
+    return 0, 0
+
+
+_exit_safety_alerted: set[str] = set()
+
+
+def _empty_exit_execution_state() -> dict[str, Any]:
+    return {"version": 1, "batches": {}, "intents": []}
+
+
+def _load_exit_execution_state() -> dict[str, Any]:
+    """读取退出批次/意图账本；损坏时抛错并阻断卖单，绝不静默清空。"""
+    with _exit_execution_state_lock:
+        if not EXIT_EXECUTION_STATE_FILE.exists():
+            return _empty_exit_execution_state()
+        try:
+            state = json.loads(EXIT_EXECUTION_STATE_FILE.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise RuntimeError(f"退出执行状态文件读取失败:{exc}") from exc
+        if not isinstance(state, dict):
+            raise RuntimeError("退出执行状态文件根节点不是object")
+        batches = state.get("batches")
+        intents = state.get("intents")
+        if not isinstance(batches, dict) or not isinstance(intents, list):
+            raise RuntimeError("退出执行状态文件缺少batches/intents")
+        return state
+
+
+def _save_exit_execution_state(state: dict[str, Any]) -> None:
+    """原子保存退出状态；PREPARED必须先于券商place_order落盘。"""
+    with _exit_execution_state_lock:
+        mkdir_p(EXIT_EXECUTION_STATE_FILE.parent)
+        tmp = EXIT_EXECUTION_STATE_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(EXIT_EXECUTION_STATE_FILE)
+
+
+def _exit_batch_key(trade_date: str, ts_code: str) -> str:
+    return f"{str(trade_date).replace('-', '')[:8]}|{str(ts_code).upper().split('.')[0]}"
+
+
+def _exit_account_fingerprint() -> str:
+    """用不可逆短指纹绑定退出批次到账户，不把账号明文写入状态文件。"""
+    config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+    broker = config.get("broker", {})
+    env_name = str(broker.get("account_id_env", "QMT_ACCOUNT_ID") or "QMT_ACCOUNT_ID")
+    account_id = str(os.getenv(env_name, "") or "").strip()
+    identity = account_id or "|".join(
+        [
+            "UNSET",
+            env_name,
+            str(broker.get("broker_name", "")),
+            str(broker.get("session_id", "")),
+        ]
+    )
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
+
+
+def _local_exit_quantities(ts_code: str, trade_date: str) -> tuple[int, int]:
+    """返回(今日到期策略股数, 该代码全部本地未平策略股数)。"""
+    short = str(ts_code).upper().split(".")[0]
+    date_key = str(trade_date).replace("-", "")[:8]
+    due_qty = 0
+    all_open_qty = 0
+    for pos in load_positions():
+        if str(pos.get("status", "")).lower() not in {"open", "sell_pending"}:
+            continue
+        if str(pos.get("ts_code", "")).upper().split(".")[0] != short:
+            continue
+        qty = max(int(pos.get("shares", 0) or 0), 0)
+        all_open_qty += qty
+        planned = str(pos.get("planned_exit_date", "99991231")).replace("-", "")[:8]
+        if planned <= date_key:
+            due_qty += qty
+    return due_qty, all_open_qty
+
+
+def _alert_exit_safety_once(ts_code: str, reason_key: str, title: str, body: str) -> None:
+    key = f"{today_beijing().strftime('%Y%m%d')}|{str(ts_code).upper()}|{reason_key}"
+    if key in _exit_safety_alerted:
+        return
+    _exit_safety_alerted.add(key)
+    _notify("sell_fail", title, body, level="critical", call=True)
+
+
+def _ensure_exit_batch(
+    ts_code: str,
+    *,
+    broker_total: int,
+    trade_date: str,
+    log: Any,
+) -> dict[str, Any] | None:
+    """建立不可变的当日退出目标与非目标仓保护底线。
+
+    首笔系统卖单前，QMT总持仓必须与本地全部未平策略仓精确相等。由此确认
+    账户没有同代码人工/其他策略混仓，并把非今日到期仓记为永不触碰的floor。
+    状态一经建立持久化，daemon重启后沿用同一target，不能按滞后本地账重建。
+    """
+    date_key = str(trade_date).replace("-", "")[:8]
+    key = _exit_batch_key(date_key, ts_code)
+    account_fingerprint = _exit_account_fingerprint()
+    try:
+        state = _load_exit_execution_state()
+    except Exception as exc:
+        log.error("[退出安全账本] %s，阻断自动卖出。", exc)
+        _alert_exit_safety_once(
+            ts_code,
+            "state_corrupt",
+            "🛑 退出安全账本异常",
+            f"{ts_code} 无法读取退出安全账本，系统已阻断自动卖出，请立即核查。",
+        )
+        return None
+    existing = state["batches"].get(key)
+    if isinstance(existing, dict):
+        if str(existing.get("account_fingerprint", "")) != account_fingerprint:
+            log.error(
+                "🛑 [退出安全账本] %s 当日批次属于另一账户指纹；禁止复用后自动卖出。",
+                ts_code,
+            )
+            _alert_exit_safety_once(
+                ts_code,
+                "account_switched",
+                "🛑 检测到交易账户切换",
+                f"{ts_code} 当日退出批次与当前QMT账户不一致；请人工核对并重建安全批次。",
+            )
+            return None
+        return existing
+
+    due_qty, all_open_qty = _local_exit_quantities(ts_code, date_key)
+    if due_qty <= 0 or all_open_qty <= 0:
+        log.error(
+            "[退出安全账本] %s 本地今日到期%d股/全部未平%d股，无法建立退出批次。",
+            ts_code,
+            due_qty,
+            all_open_qty,
+        )
+        return None
+    if max(int(broker_total or 0), 0) != all_open_qty:
+        log.error(
+            "🛑 [退出安全账本] %s 首单前QMT总持仓%d股≠本地全部策略仓%d股；"
+            "疑似同代码人工混仓、成交回写延迟或QMT快照异常，自动卖出fail-closed。",
+            ts_code,
+            broker_total,
+            all_open_qty,
+        )
+        _alert_exit_safety_once(
+            ts_code,
+            "ownership_mismatch",
+            "🛑 同代码仓位归属不清",
+            f"{ts_code} QMT总持仓{broker_total}股、本地策略仓{all_open_qty}股不一致；"
+            "为防误卖人工/其他策略仓，自动平仓已阻断，请立即人工核对。",
+        )
+        return None
+
+    batch = {
+        "trade_date": date_key,
+        "ts_code": str(ts_code).upper(),
+        "target_qty": due_qty,
+        "non_target_floor": max(all_open_qty - due_qty, 0),
+        "verified_broker_total": all_open_qty,
+        "account_fingerprint": account_fingerprint,
+        "created_at": now_beijing().isoformat(),
+    }
+    # 与另一个卖出线程竞争时必须在同一把状态锁内重新读取、只创建一次。
+    with _exit_execution_state_lock:
+        state = _load_exit_execution_state()
+        if key not in state["batches"]:
+            state["batches"][key] = batch
+            _save_exit_execution_state(state)
+        else:
+            batch = state["batches"][key]
+            if str(batch.get("account_fingerprint", "")) != account_fingerprint:
+                log.error(
+                    "🛑 [退出安全账本] %s 并发建批时检测到另一账户批次，阻断卖出。",
+                    ts_code,
+                )
+                return None
+    log.info(
+        "[退出安全账本] %s 建立批次：今日目标%d股，非目标仓保护底线%d股。",
+        ts_code,
+        int(batch.get("target_qty", 0) or 0),
+        int(batch.get("non_target_floor", 0) or 0),
+    )
+    return batch
+
+
+def _order_is_sell(data: dict[str, Any]) -> bool:
+    from src.qmt_adapter import first_present, to_int
+
+    side = str(first_present(data, ["side", "order_side", "direction"], "")).upper()
+    order_type = to_int(first_present(data, ["order_type", "m_nOrderType"], -1), -1)
+    return order_type == 24 or side in {"SELL", "24", "卖出"}
+
+
+def _order_is_system_exit(data: dict[str, Any]) -> bool:
+    from src.qmt_adapter import first_present
+
+    remark = str(first_present(data, ["order_remark", "m_strRemark", "remark"], ""))
+    return remark.startswith(_SYSTEM_EXIT_REMARK_PREFIXES)
+
+
+def _order_commitment(data: dict[str, Any], fallback_qty: int = 0) -> tuple[int, int, int]:
+    """返回(已耗用, 活跃预留, 未知预留)；未知永远按最坏情况占用。"""
+    from src.qmt_adapter import first_present, to_int
+
+    active_states = {48, 49, 50, 51, 52, 55}
+    terminal_states = {53, 54, 56, 57}
+    status = to_int(first_present(data, ["order_status", "m_nOrderStatus", "status"], -1), -1)
+    ordered = max(
+        to_int(
+            first_present(
+                data,
+                ["order_volume", "m_nOrderVolume", "volume", "order_qty"],
+                fallback_qty,
+            ),
+            fallback_qty,
+        ),
+        max(int(fallback_qty or 0), 0),
+    )
+    traded = min(
+        max(
+            to_int(
+                first_present(
+                    data,
+                    ["traded_volume", "m_nTradedVolume", "traded_qty", "deal_volume"],
+                    0,
+                ),
+                0,
+            ),
+            0,
+        ),
+        ordered,
+    )
+    # QMT状态56=全部成交；即使成交明细/字段尚未同步，也必须按整单已耗用，
+    # 否则14:57会把“晚成但未回写”的数量再次补卖。
+    if status == 56:
+        return ordered, 0, 0
+    if status in active_states:
+        return traded, max(ordered - traded, 0), 0
+    if status in terminal_states:
+        return traded, 0, 0
+    return traded, 0, max(ordered - traded, 0)
+
+
+def _exit_commitments_by_code(
+    ts_code: str,
+    *,
+    trade_date: str,
+    orders: Any,
+) -> tuple[int, int, int]:
+    """合并持久化intent与QMT订单，且不重复计算同一broker order id。"""
+    from src.qmt_adapter import first_present, object_to_dict, to_int
+
+    short = str(ts_code).upper().split(".")[0]
+    date_key = str(trade_date).replace("-", "")[:8]
+    state = _load_exit_execution_state()
+    account_fingerprint = _exit_account_fingerprint()
+    order_rows: list[dict[str, Any]] = [object_to_dict(item) for item in (orders or [])]
+    by_id: dict[str, dict[str, Any]] = {}
+    for data in order_rows:
+        for name in ("order_id", "m_nOrderID", "order_sysid", "m_strOrderSysID"):
+            oid = str(data.get(name, "") or "").strip()
+            if oid:
+                by_id[oid] = data
+
+    filled = active = unknown = 0
+    matched_object_ids: set[int] = set()
+    for intent in state.get("intents", []):
+        if not isinstance(intent, dict):
+            continue
+        if str(intent.get("trade_date", "")) != date_key:
+            continue
+        if str(intent.get("account_fingerprint", "")) != account_fingerprint:
+            continue
+        if str(intent.get("ts_code", "")).upper().split(".")[0] != short:
+            continue
+        qty = max(int(intent.get("quantity", 0) or 0), 0)
+        if qty <= 0 or str(intent.get("status", "")).upper() == "REJECTED":
+            continue
+        oid = str(intent.get("broker_order_id", "") or "").strip()
+        data = by_id.get(oid) if oid else None
+        if data is None and not oid:
+            # 柜台可能已受理，但place_order返回时单号为空或进程在
+            # 回写单号前崩溃。只在“代码+系统remark+精确数量”唯一
+            # 匹配时恢复该单；多个候选时继续按PREPARED全量未知占用。
+            intent_remark = str(intent.get("remark", "") or "")
+            recovery_candidates: list[dict[str, Any]] = []
+            for candidate in order_rows:
+                if id(candidate) in matched_object_ids:
+                    continue
+                candidate_code = str(
+                    first_present(candidate, ["stock_code", "m_strInstrumentID", "ts_code"], "")
+                ).upper().split(".")[0]
+                candidate_remark = str(
+                    first_present(candidate, ["order_remark", "m_strRemark", "remark"], "")
+                )
+                candidate_qty = max(
+                    to_int(
+                        first_present(
+                            candidate,
+                            ["order_volume", "m_nOrderVolume", "volume", "order_qty"],
+                            0,
+                        ),
+                        0,
+                    ),
+                    0,
+                )
+                if (
+                    candidate_code == short
+                    and intent_remark
+                    and candidate_remark == intent_remark
+                    and candidate_qty == qty
+                    and _order_is_sell(candidate)
+                    and _order_is_system_exit(candidate)
+                ):
+                    recovery_candidates.append(candidate)
+            if len(recovery_candidates) == 1:
+                data = recovery_candidates[0]
+                recovered_oid = str(
+                    first_present(
+                        data,
+                        ["order_id", "m_nOrderID", "order_sysid", "m_strOrderSysID"],
+                        "",
+                    )
+                    or ""
+                ).strip()
+                if recovered_oid and str(intent.get("token", "")):
+                    _update_exit_order_intent(
+                        str(intent.get("token", "")),
+                        status=str(intent.get("status", "PREPARED") or "PREPARED"),
+                        broker_order_id=recovered_oid,
+                    )
+        if str(intent.get("status", "")).upper() == "RESOLVED" and bool(
+            intent.get("terminal_known")
+        ):
+            # 本地已确认终态后必须保持单调；QMT列表里偶发的旧/回退字段不能
+            # 把RESOLVED重新降级成active/unknown。但当QMT后续给出明确终态且
+            # 成交量更大时，必须允许向上修正，否则“终态先到、成交字段
+            # 后到”会永久少计成交。
+            f = min(max(int(intent.get("filled_qty", 0) or 0), 0), qty)
+            a = u = 0
+            if data is not None:
+                matched_object_ids.add(id(data))
+                qmt_status = to_int(
+                    first_present(data, ["order_status", "m_nOrderStatus", "status"], -1),
+                    -1,
+                )
+                if qmt_status in {53, 54, 56, 57}:
+                    qmt_filled, _, _ = _order_commitment(data, qty)
+                    if qmt_filled > f:
+                        f = min(qmt_filled, qty)
+                        _update_exit_order_intent(
+                            str(intent.get("token", "")),
+                            status="RESOLVED",
+                            broker_order_id=oid,
+                            filled_qty=f,
+                            terminal_known=True,
+                        )
+        elif data is not None:
+            f, a, u = _order_commitment(data, qty)
+            matched_object_ids.add(id(data))
+        else:
+            # PREPARED/SUBMITTED但QMT暂时查不到：可能已受理，必须全量占用。
+            f = a = 0
+            u = qty
+        filled += f
+        active += a
+        unknown += u
+
+    # 兼容升级前已经存在、尚未写入intent账本的本系统卖单。
+    for data in order_rows:
+        if id(data) in matched_object_ids or not _order_is_sell(data) or not _order_is_system_exit(data):
+            continue
+        code = str(
+            first_present(data, ["stock_code", "m_strInstrumentID", "ts_code"], "")
+        ).upper().split(".")[0]
+        if code != short:
+            continue
+        f, a, u = _order_commitment(data)
+        filled += f
+        active += a
+        unknown += u
+    return filled, active, unknown
+
+
+def _non_system_active_sell_exists(ts_code: str, orders: Any) -> bool:
+    from src.qmt_adapter import first_present, object_to_dict, to_int
+
+    short = str(ts_code).upper().split(".")[0]
+    terminal_states = {53, 54, 56, 57}
+    for order in orders or []:
+        data = object_to_dict(order)
+        status = to_int(first_present(data, ["order_status", "m_nOrderStatus", "status"], -1), -1)
+        code = str(
+            first_present(data, ["stock_code", "m_strInstrumentID", "ts_code"], "")
+        ).upper().split(".")[0]
+        if (
+            code == short
+            # 非系统SELL只有明确终态才可忽略。255/-1/缺字段等未知状态也必须
+            # fail-closed，不能假设它不再占用或不会晚成。
+            and status not in terminal_states
+            and _order_is_sell(data)
+            and not _order_is_system_exit(data)
+        ):
+            return True
+    return False
+
+
+def _safe_new_exit_order_quantity(
+    ts_code: str,
+    *,
+    requested_qty: int,
+    broker_total: int,
+    broker_can_use: int,
+    orders: Any,
+    trade_date: str,
+    log: Any,
+    phase: str,
+) -> int:
+    """计算本轮最多可新发数量；归属、订单状态或账本不明确即返回0。"""
+    requested = max(int(requested_qty or 0), 0)
+    if requested <= 0:
+        return 0
+    batch = _ensure_exit_batch(
+        ts_code,
+        broker_total=max(int(broker_total or 0), 0),
+        trade_date=trade_date,
+        log=log,
+    )
+    if batch is None:
+        return 0
+    if _non_system_active_sell_exists(ts_code, orders):
+        log.error(
+            "🛑 [%s] %s 存在非本系统活跃SELL；无法判定其覆盖哪一批仓位，禁止自动叠单。",
+            phase,
+            ts_code,
+        )
+        _alert_exit_safety_once(
+            ts_code,
+            "foreign_active_sell",
+            "🛑 检测到人工卖单",
+            f"{ts_code} 存在非本系统活跃卖单；为防卖到后续仓或人工仓，自动补单已阻断。",
+        )
+        return 0
+    try:
+        consumed, active_reserved, unknown_reserved = _exit_commitments_by_code(
+            ts_code,
+            trade_date=trade_date,
+            orders=orders,
+        )
+    except Exception as exc:
+        log.error("🛑 [%s] %s 退出意图核算失败:%s", phase, ts_code, exc)
+        return 0
+    if unknown_reserved > 0:
+        log.error(
+            "🛑 [%s] %s 有%d股PREPARED/订单缺失的未知占用；按全量预留，绝不重复覆盖。",
+            phase,
+            ts_code,
+            unknown_reserved,
+        )
+        _alert_exit_safety_once(
+            ts_code,
+            "unknown_exit_intent",
+            "🛑 平仓订单状态未知",
+            f"{ts_code} 有{unknown_reserved}股系统卖单处于PREPARED或QMT暂不可见状态；"
+            "系统已按全量占用防重，请立即核对QMT委托。",
+        )
+
+    target = max(int(batch.get("target_qty", 0) or 0), 0)
+    floor = max(int(batch.get("non_target_floor", 0) or 0), 0)
+    if consumed > target:
+        log.error(
+            "🛑 [%s] %s 系统已成%d股超过批次目标%d股，禁止继续下单。",
+            phase,
+            ts_code,
+            consumed,
+            target,
+        )
+        return 0
+    expected_broker_total = floor + target - consumed
+    actual_total = max(int(broker_total or 0), 0)
+    if actual_total != expected_broker_total:
+        log.error(
+            "🛑 [%s] %s QMT总持仓%d股≠安全账本期望%d股"
+            "(目标%d-已成%d+保护底线%d)；疑似回写延迟/人工混仓/QMT不同步，fail-closed。",
+            phase,
+            ts_code,
+            actual_total,
+            expected_broker_total,
+            target,
+            consumed,
+            floor,
+        )
+        _alert_exit_safety_once(
+            ts_code,
+            "runtime_ownership_mismatch",
+            "🛑 平仓数量无法安全归属",
+            f"{ts_code} QMT总持仓{actual_total}股与退出账本期望{expected_broker_total}股不一致；"
+            "系统已停止自动卖出，请立即核对成交与人工仓。",
+        )
+        return 0
+    target_budget = max(target - consumed - active_reserved - unknown_reserved, 0)
+    broker_budget = max(actual_total - floor - active_reserved - unknown_reserved, 0)
+    safe = min(
+        requested,
+        target_budget,
+        broker_budget,
+        max(int(broker_can_use or 0), 0),
+    )
+    if safe < requested:
+        log.warning(
+            "[%s] %s 新单%d股缩至%d股：目标%d/已成%d/活跃预留%d/未知预留%d/可卖%d。",
+            phase,
+            ts_code,
+            requested,
+            safe,
+            target,
+            consumed,
+            active_reserved,
+            unknown_reserved,
+            broker_can_use,
+        )
+    return max(int(safe), 0)
+
+
+def _prepare_exit_order_intent(
+    request: Any,
+    *,
+    phase: str,
+    local_order_id: str = "",
+) -> str:
+    """在place_order之前原子写PREPARED；写失败必须让下单失败。"""
+    trade_date = today_beijing().strftime("%Y%m%d")
+    key = _exit_batch_key(trade_date, str(request.ts_code))
+    account_fingerprint = _exit_account_fingerprint()
+    token = (
+        f"{trade_date}-{str(request.ts_code).upper().split('.')[0]}-"
+        f"{os.getpid()}-{threading.get_ident()}-{time.time_ns()}"
+    )
+    with _exit_execution_state_lock:
+        state = _load_exit_execution_state()
+        batch = state.get("batches", {}).get(key)
+        if not isinstance(batch, dict):
+            raise RuntimeError(f"退出批次{key}尚未建立，拒绝写下单intent")
+        if str(batch.get("account_fingerprint", "")) != account_fingerprint:
+            raise RuntimeError(f"退出批次{key}与当前账户不匹配，拒绝下单")
+        quantity = max(int(request.quantity or 0), 0)
+        if quantity <= 0:
+            raise RuntimeError("退出intent数量必须大于0")
+        state["intents"].append(
+            {
+                "token": token,
+                "batch_key": key,
+                "trade_date": trade_date,
+                "ts_code": str(request.ts_code).upper(),
+                "account_fingerprint": account_fingerprint,
+                "quantity": quantity,
+                "price": float(getattr(request, "price", 0.0) or 0.0),
+                "remark": str(getattr(request, "remark", "") or ""),
+                "phase": phase,
+                "local_order_id": str(local_order_id or ""),
+                "status": "PREPARED",
+                "broker_order_id": "",
+                "filled_qty": 0,
+                "terminal_known": False,
+                "created_at": now_beijing().isoformat(),
+            }
+        )
+        _save_exit_execution_state(state)
+    return token
+
+
+def _update_exit_order_intent(
+    token: str,
+    *,
+    status: str,
+    broker_order_id: str = "",
+    filled_qty: int | None = None,
+    terminal_known: bool | None = None,
+) -> None:
+    account_fingerprint = _exit_account_fingerprint()
+    with _exit_execution_state_lock:
+        state = _load_exit_execution_state()
+        found = False
+        for intent in state.get("intents", []):
+            if str(intent.get("token", "")) != str(token):
+                continue
+            if str(intent.get("account_fingerprint", "")) != account_fingerprint:
+                raise RuntimeError(f"退出intent属于另一账户:{token}")
+            old_status = str(intent.get("status", "")).upper()
+            requested_status = str(status).upper()
+            quantity = max(int(intent.get("quantity", 0) or 0), 0)
+            old_filled = min(max(int(intent.get("filled_qty", 0) or 0), 0), quantity)
+            old_terminal = bool(intent.get("terminal_known"))
+
+            # 委托状态只能单调前进。已确认的终态/成交量不能被
+            # QMT滞后快照或其他线程回退，否则尾盘会把已成交数量重新补卖。
+            if old_status in {"RESOLVED", "REJECTED"}:
+                next_status = old_status
+            else:
+                next_status = requested_status
+            next_terminal = old_terminal or bool(terminal_known)
+            if next_terminal and next_status not in {"REJECTED", "RESOLVED"}:
+                next_status = "RESOLVED"
+            intent["status"] = next_status
+            if broker_order_id:
+                old_oid = str(intent.get("broker_order_id", "") or "").strip()
+                if old_oid and old_oid != str(broker_order_id):
+                    raise RuntimeError(
+                        f"退出intent单号冲突:{token} {old_oid}!={broker_order_id}"
+                    )
+                intent["broker_order_id"] = str(broker_order_id)
+            if filled_qty is not None:
+                intent["filled_qty"] = min(
+                    max(old_filled, max(int(filled_qty or 0), 0)),
+                    quantity,
+                )
+            if terminal_known is not None:
+                intent["terminal_known"] = next_terminal
+            intent["updated_at"] = now_beijing().isoformat()
+            found = True
+            break
+        if not found:
+            raise RuntimeError(f"退出intent不存在:{token}")
+        _save_exit_execution_state(state)
+
+
+def _resolve_exit_intent_by_broker_order_id(
+    broker_order_id: str,
+    *,
+    filled_qty: int,
+    terminal_known: bool = True,
+) -> bool:
+    """按券商单号释放已知终态intent；兼容无intent的升级前旧单。"""
+    oid = str(broker_order_id or "").strip()
+    if not oid:
+        return False
+    account_fingerprint = _exit_account_fingerprint()
+    with _exit_execution_state_lock:
+        state = _load_exit_execution_state()
+        matched = False
+        for intent in reversed(state.get("intents", [])):
+            if str(intent.get("broker_order_id", "") or "").strip() != oid:
+                continue
+            if str(intent.get("account_fingerprint", "")) != account_fingerprint:
+                continue
+            quantity = max(int(intent.get("quantity", 0) or 0), 0)
+            old_filled = min(max(int(intent.get("filled_qty", 0) or 0), 0), quantity)
+            intent["status"] = "RESOLVED"
+            intent["filled_qty"] = min(
+                max(old_filled, max(int(filled_qty or 0), 0)),
+                quantity,
+            )
+            intent["terminal_known"] = bool(intent.get("terminal_known")) or bool(terminal_known)
+            intent["updated_at"] = now_beijing().isoformat()
+            matched = True
+            break
+        if matched:
+            _save_exit_execution_state(state)
+        return matched
+
+
+def _exit_intent_by_broker_order_id(broker_order_id: str) -> dict[str, Any] | None:
+    """返回券商单对应的持久化intent副本；找不到时返回None。"""
+    oid = str(broker_order_id or "").strip()
+    if not oid:
+        return None
+    account_fingerprint = _exit_account_fingerprint()
+    state = _load_exit_execution_state()
+    for intent in reversed(state.get("intents", [])):
+        if (
+            str(intent.get("broker_order_id", "") or "").strip() == oid
+            and str(intent.get("account_fingerprint", "")) == account_fingerprint
+        ):
+            return dict(intent)
+    return None
+
+
+def _apply_known_exit_fill(
+    local_order_id: str,
+    *,
+    broker_order_id: str,
+    current_shares: int,
+    filled_qty: int,
+    fill_price: float,
+    fill_date: str,
+) -> int:
+    """幂等地把某张券商单的“新增成交量”应用到指定本地仓。
+
+    QMT会在多轮查询中持续返回状态56的历史委托。如果每轮都把
+    order_qty再扣一次，safe_qty小于本地持仓时会把真实余仓误标为
+    closed。因此在positions.json内按broker_order_id持久化“已应用
+    的累计成交量”，并在同一持仓文件事务中只扣增量。
+    """
+    oid = str(broker_order_id or "").strip()
+    if not oid:
+        raise RuntimeError("已知成交回写缺少broker_order_id，拒绝非幂等改账")
+    confirmed_total = max(int(filled_qty or 0), 0)
+    if confirmed_total <= 0:
+        return 0
+
+    with _positions_file_lock:
+        positions = load_positions()
+        target: dict[str, Any] | None = None
+        for position in positions:
+            if str(position.get("order_id", "")) == str(local_order_id):
+                target = position
+                break
+        if target is None:
+            raise RuntimeError(f"本地持仓不存在:{local_order_id}")
+
+        applied_raw = target.get("applied_exit_fills_by_order")
+        applied_map = dict(applied_raw) if isinstance(applied_raw, dict) else {}
+        already_applied = max(int(applied_map.get(oid, 0) or 0), 0)
+        delta = max(confirmed_total - already_applied, 0)
+        if delta <= 0:
+            return 0
+
+        actual_held = max(int(target.get("shares", 0) or 0), 0)
+        caller_held = max(int(current_shares or 0), 0)
+        if caller_held != actual_held:
+            logger().warning(
+                "[成交回写] 持仓%s轮询快照%d股、文件实际%d股；以文件为准。",
+                local_order_id,
+                caller_held,
+                actual_held,
+            )
+        applied = min(delta, actual_held)
+
+        # 即使本地仓已为0，也记住该单累计已见成交量，
+        # 防止状态回退后重复尝试改账。
+        applied_map[oid] = max(already_applied, confirmed_total)
+        target["applied_exit_fills_by_order"] = applied_map
+        if applied > 0:
+            remaining = actual_held - applied
+            _append_exit_fill_ledger(
+                target,
+                fill_date=fill_date,
+                filled_qty=applied,
+                fill_price=fill_price,
+            )
+            target.setdefault("entry_shares", actual_held)
+            target["shares"] = remaining
+            if remaining == 0:
+                target["status"] = "closed"
+                target["sell_date"] = fill_date
+                target["sell_price"] = fill_price
+            else:
+                target["status"] = "open"
+        save_positions(positions)
+        return applied
+
+
+def _exit_order_submission_block_reason(
+    at: datetime.datetime | None = None,
+) -> str:
+    """返回平仓委托的硬时间门禁原因；空字符串表示允许。"""
+    now = at or now_beijing()
+    if not is_trade_day(now.date()):
+        return "当前不是交易日"
+    current = now.time()
+    in_order_session = (
+        datetime.time(9, 15) <= current <= datetime.time(11, 30)
+        or datetime.time(13, 0) <= current < datetime.time(15, 0)
+    )
+    if not in_order_session:
+        return f"当前{current.strftime('%H:%M:%S')}不在A股可申报窗口"
+    if SCHED_CLOSE_AUCTION_HANDOFF <= current < datetime.time(14, 57):
+        return "14:56:20-14:57:00为连续竞价撤单/收盘竞价交接静默窗"
+    return ""
+
+
+def _place_exit_order_with_intent(
+    adapter: Any,
+    request: Any,
+    *,
+    phase: str,
+    local_order_id: str = "",
+) -> tuple[Any, str]:
+    """PREPARED→place→SUBMITTED/REJECTED；异常时保留PREPARED全量占用。"""
+    blocked = _exit_order_submission_block_reason()
+    if blocked:
+        raise RuntimeError(f"[{phase}] 平仓委托已被时间门禁阻断:{blocked}")
+    token = _prepare_exit_order_intent(
+        request,
+        phase=phase,
+        local_order_id=local_order_id,
+    )
+    # 持久化PREPARED可能恰好跨过14:56:20或15:00。在紧邻券商
+    # place_order前再取一次时钟；未发送的PREPARED明确收敛为REJECTED。
+    blocked = _exit_order_submission_block_reason()
+    if blocked:
+        _update_exit_order_intent(token, status="REJECTED", terminal_known=True)
+        raise RuntimeError(f"[{phase}] 平仓委托在发送前被时间门禁阻断:{blocked}")
+    result = adapter.place_order(request)
+    if bool(getattr(result, "accepted", False)):
+        _update_exit_order_intent(
+            token,
+            status="SUBMITTED",
+            broker_order_id=str(getattr(result, "order_id", "") or ""),
+        )
+    else:
+        _update_exit_order_intent(token, status="REJECTED", terminal_known=True)
+    return result, token
+
+
+def _pov_depth_limit(
+    quote: Any,
+    *,
+    depth_levels: int,
+    depth_haircut: float,
+    max_slippage_bps: float,
+    bid_volume_unit: int,
+) -> tuple[int, float, str]:
+    """按可见买盘和最大扫档限制，返回(安全股数, 最差限价, 描述)。
+
+    POV阶段绝不挂跌停价扫全盘口。只有价格不低于最新价允许滑点下限的买盘档位
+    才计入，并对可见数量再打折；盘口缺失时返回0，由14:55主链路兜底。
+    """
+    last = float(getattr(quote, "last_price", 0.0) or 0.0) if quote else 0.0
+    prices = list(getattr(quote, "bid_prices", None) or []) if quote else []
+    volumes = list(getattr(quote, "bid_volumes", None) or []) if quote else []
+    if last <= 0 or not prices or not volumes:
+        return 0, 0.0, "盘口缺失"
+    best_bid = float(prices[0] or 0.0)
+    if best_bid <= 0:
+        return 0, 0.0, "买一缺失"
+    # 扫档冲击以当下真正可执行的买一为基准，不使用可能滞后的最新成交价。
+    floor_price = best_bid * (1.0 - max(max_slippage_bps, 0.0) / 10000.0)
+    accepted: list[tuple[float, int]] = []
+    for price_raw, volume_raw in zip(prices[:max(depth_levels, 1)], volumes[:max(depth_levels, 1)]):
+        price = float(price_raw or 0.0)
+        volume = int(float(volume_raw or 0.0) * max(bid_volume_unit, 1))
+        if price <= 0 or volume <= 0 or price + 1e-9 < floor_price:
+            continue
+        accepted.append((price, volume))
+    if not accepted:
+        return 0, 0.0, f"允许滑点{max_slippage_bps:.0f}bp内无买盘"
+    safe_qty = int(sum(volume for _, volume in accepted) * min(max(depth_haircut, 0.0), 1.0))
+    safe_qty = max(safe_qty, 0)
+    worst_price = min(price for price, _ in accepted)
+    return safe_qty, _round_stock_price(worst_price), f"{len(accepted)}档可见买盘折后"
+
+
+def _assert_exit_live_allowed(config: dict) -> None:
+    """POV虽直接走适配器，也必须复用实盘总门禁和SELL开关。"""
+    from src.live_order_gateway import LiveOrderGateway
+
+    gateway = LiveOrderGateway(PROJECT_ROOT / "config" / "config.json")
+    confirm = config.get("live_trade", {}).get(
+        "real_order_confirm_text", "A_SYSTEM_REAL_ORDER_CONFIRMED"
+    )
+    gateway.assert_real_order_allowed(confirm)
+    if not bool(config.get("live_trade", {}).get("allow_sell", False)):
+        raise RuntimeError("live_trade.allow_sell=false，禁止POV卖出")
+
+
+def _cancel_active_exit_pov_orders(broker_cfg: dict, *, wait_sec: float = 25.0) -> bool:
+    """串行化POV撤单交权，避免与主平仓/看门狗交叉。"""
+    with _exit_sell_lock:
+        return _cancel_active_exit_pov_orders_locked(broker_cfg, wait_sec=wait_sec)
+
+
+def _cancel_active_exit_pov_orders_locked(
+    broker_cfg: dict, *, wait_sec: float = 25.0
+) -> bool:
+    """按remark找回并撤净所有活跃POV卖单；daemon重启后同样有效。"""
+    from src.qmt_adapter import first_present, object_to_dict, to_int
+
+    active_states = {48, 49, 50, 51, 52, 55}
+    deadline = time.time() + max(wait_sec, 0.0)
+    found: list[tuple[str, str]] = []
+    with _qmt_lock:
+        adapter = _qmt_get(broker_cfg)
+        for order in adapter.query_orders() or []:
+            data = object_to_dict(order)
+            remark = str(first_present(data, ["order_remark", "m_strRemark", "remark"], ""))
+            status = to_int(first_present(data, ["order_status", "m_nOrderStatus", "status"], -1), -1)
+            if not remark.startswith(_EXIT_POV_REMARK_PREFIX) or status not in active_states:
+                continue
+            oid = str(first_present(data, ["order_id", "m_nOrderID"], ""))
+            code = str(first_present(data, ["stock_code", "m_strInstrumentID", "ts_code"], ""))
+            if oid:
+                adapter.cancel_order(oid)
+                found.append((oid, code))
+    if not found:
+        return True
+    logger().warning("[卖出POV交接] 已向%d笔活跃POV委托发出撤单，等待终态。", len(found))
+    pending = {oid for oid, _ in found}
+    while pending and time.time() < deadline:
+        time.sleep(1.0)
+        with _qmt_lock:
+            adapter = _qmt_get(broker_cfg)
+            statuses = {}
+            terminal_fills: dict[str, int] = {}
+            for order in adapter.query_orders() or []:
+                data = object_to_dict(order)
+                oid = str(first_present(data, ["order_id", "m_nOrderID"], ""))
+                if oid in pending:
+                    status = to_int(
+                        first_present(data, ["order_status", "m_nOrderStatus", "status"], -1), -1
+                    )
+                    statuses[oid] = status
+                    if status in {53, 54, 56, 57}:
+                        ordered = max(to_int(first_present(
+                            data, ["order_volume", "m_nOrderVolume", "volume", "order_qty"], 0
+                        ), 0), 0)
+                        traded = max(to_int(first_present(
+                            data, ["traded_volume", "m_nTradedVolume", "traded_qty", "deal_volume"], 0
+                        ), 0), 0)
+                        terminal_fills[oid] = ordered if status == 56 else min(traded, ordered)
+        for oid, filled_qty in terminal_fills.items():
+            _resolve_exit_intent_by_broker_order_id(
+                oid, filled_qty=filled_qty, terminal_known=True
+            )
+        # 订单从查询结果中消失不等于已撤：可能是QMT短暂不同步。缺失必须继续
+        # 视为未知占用，只有明确终态才能交权。
+        pending = {
+            oid for oid in pending
+            if oid not in statuses or statuses[oid] in active_states
+        }
+    if pending:
+        logger().error("[卖出POV交接] 撤单超时，仍有活跃委托:%s", "、".join(sorted(pending)))
+        _notify("sell_fail", "🛑 POV交接撤单未完成",
+                f"14:55主平仓前仍有{len(pending)}笔POV卖单未确认撤销，请立即检查QMT。",
+                level="critical", call=True)
+        return False
+    logger().info("[卖出POV交接] 活跃POV委托已全部终态，14:55主平仓可安全接管。")
+    return True
+
+
+def _cancel_active_close_orders_for_auction(
+    broker_cfg: dict, due_codes: set[str], *, wait_sec: float = 12.0
+) -> bool:
+    """串行化14:56:20撤单交接；成功前其他系统SELL不得插入。"""
+    with _exit_sell_lock:
+        return _cancel_active_close_orders_for_auction_locked(
+            broker_cfg,
+            due_codes,
+            wait_sec=wait_sec,
+        )
+
+
+def _cancel_active_close_orders_for_auction_locked(
+    broker_cfg: dict, due_codes: set[str], *, wait_sec: float = 12.0
+) -> bool:
+    """14:56:20起撤销系统活跃平仓单，让真实余量能在14:57按集合竞价价重报。"""
+    from src.qmt_adapter import first_present, object_to_dict, to_int
+
+    active_states = {48, 49, 50, 51, 52, 55}
+    prefixes = (_EXIT_POV_REMARK_PREFIX, "ABC平仓-", "看门狗补挂-", "盘中止盈")
+    shorts = {str(code).upper().split(".")[0] for code in due_codes if str(code)}
+    found: list[str] = []
+    with _qmt_lock:
+        adapter = _qmt_get(broker_cfg)
+        for order in adapter.query_orders() or []:
+            data = object_to_dict(order)
+            remark = str(first_present(data, ["order_remark", "m_strRemark", "remark"], ""))
+            status = to_int(first_present(data, ["order_status", "m_nOrderStatus", "status"], -1), -1)
+            code = str(first_present(
+                data, ["stock_code", "m_strInstrumentID", "ts_code"], ""
+            )).upper().split(".")[0]
+            if not remark.startswith(prefixes) or status not in active_states or code not in shorts:
+                continue
+            oid = str(first_present(data, ["order_id", "m_nOrderID"], ""))
+            if oid:
+                adapter.cancel_order(oid)
+                found.append(oid)
+    if not found:
+        return True
+
+    logger().warning(
+        "[收盘竞价交接] 对%d笔连续竞价平仓余单发出撤单；成交部分保留，仅按真实余仓重报。",
+        len(found),
+    )
+    pending = set(found)
+    deadline = time.monotonic() + max(wait_sec, 0.0)
+    while pending and time.monotonic() < deadline:
+        time.sleep(0.5)
+        with _qmt_lock:
+            adapter = _qmt_get(broker_cfg)
+            statuses: dict[str, int] = {}
+            terminal_fills: dict[str, int] = {}
+            for order in adapter.query_orders() or []:
+                data = object_to_dict(order)
+                oid = str(first_present(data, ["order_id", "m_nOrderID"], ""))
+                if oid in pending:
+                    status = to_int(
+                        first_present(data, ["order_status", "m_nOrderStatus", "status"], -1), -1
+                    )
+                    statuses[oid] = status
+                    if status in {53, 54, 56, 57}:
+                        ordered = max(to_int(first_present(
+                            data, ["order_volume", "m_nOrderVolume", "volume", "order_qty"], 0
+                        ), 0), 0)
+                        traded = max(to_int(first_present(
+                            data, ["traded_volume", "m_nTradedVolume", "traded_qty", "deal_volume"], 0
+                        ), 0), 0)
+                        terminal_fills[oid] = ordered if status == 56 else min(traded, ordered)
+        for oid, filled_qty in terminal_fills.items():
+            _resolve_exit_intent_by_broker_order_id(
+                oid, filled_qty=filled_qty, terminal_known=True
+            )
+        # 缺OID=未知，不能当作撤单成功；否则旧单晚成后14:57会重复补卖。
+        pending = {
+            oid for oid in pending
+            if oid not in statuses or statuses[oid] in active_states
+        }
+    if pending:
+        logger().error(
+            "[收盘竞价交接] %d笔连续竞价余单未在14:57前确认撤销；禁止重复覆盖，"
+            "集合竞价核查将以QMT活单和可卖量为准。",
+            len(pending),
+        )
+        return False
+    logger().info("[收盘竞价交接] 连续竞价余单已终态，14:57只需补真实余仓。")
+    return True
+
+
+def _exit_pov_slice(
+    plan: dict[str, Any],
+    broker_cfg: dict,
+    part: float,
+    log: Any,
+    *,
+    cadence_sec: int = 300,
+    confirm_timeout_sec: int = 60,
+) -> None:
+    """卖出POV单片：流量、盘口、实际可卖数量和最大扫档四重约束。"""
     from src.broker_adapter import OrderRequest
 
     pos = plan["pos"]
     ts_code = str(pos.get("ts_code", ""))
     today_str = today_beijing().strftime("%Y%m%d")
     try:
-        with _qmt_lock:
-            adapter = _qmt_get(broker_cfg)
-            quote = adapter.get_full_tick([ts_code]).get(ts_code)
-        if quote is None:
-            return
-        last = float(getattr(quote, "last_price", 0.0) or 0.0)
-        upper = float(getattr(quote, "upper_limit", 0.0) or 0.0)
-        lower = float(getattr(quote, "lower_limit", 0.0) or 0.0)
-        cum = float(getattr(quote, "amount", 0.0) or 0.0)
-        prev = float(plan.get("prev_cum", 0.0) or 0.0)
-        plan["prev_cum"] = cum
-        if last <= 0:
-            return
-        budget = max(cum - prev, 0.0) * part
-        if upper > 0 and last >= upper - 1e-6:
-            qty = int(plan["remain_sh"])   # 涨停:买盘无限,剩余全量卖=拿涨停价(内置止盈)
-            note = "涨停全量卖"
-        else:
-            qty = min(int(plan["remain_sh"]), int(budget / last // 100) * 100)
-            note = "片卖"
-            if qty < 100:
+        with _exit_sell_lock:
+            if now_beijing().time() >= SCHED_EXIT_POV_HANDOFF:
                 return
-        # 挂跌停价=连续竞价即时吃买盘成交(平仓取价口径,不会真砸到跌停)
-        price = lower if lower > 0 else _round_stock_price(last * 0.98)
-        request = OrderRequest(
-            ts_code=ts_code, broker_code=ts_code, side="SELL",
-            quantity=qty, price_type="FIXED_PRICE", price=price,
-            strategy_name="A_SYSTEM_ABC", remark=f"POV平滑卖-{today_str}",
-        )
-        with _qmt_lock:
-            adapter = _qmt_get(broker_cfg)
-            result = adapter.place_order(request)
-        if not result.accepted:
-            log.error("❌ [卖出POV] %s %s提交失败:%s", ts_code, note, result.message)
-            return
-        oid = str(result.order_id or "")
-        fill = _confirm_fill(broker_cfg, oid, qty, "卖出POV片", timeout_sec=90, poll_sec=5)
-        if fill.filled_qty < qty and not fill.is_terminal:
-            _try_cancel_order(broker_cfg, oid, ts_code)
-            fill = _confirm_fill(broker_cfg, oid, qty, "卖出POV片终态", timeout_sec=20, poll_sec=3)
-        fq = int(fill.filled_qty or 0)
-        fp = float(fill.avg_price) if float(getattr(fill, "avg_price", 0) or 0) > 0 else last
-        if fq > 0:
-            plan["remain_sh"] = int(plan["remain_sh"]) - fq
-            plan["sold_qty"] = int(plan.get("sold_qty", 0)) + fq
-            plan["sold_amt"] = float(plan.get("sold_amt", 0.0)) + fq * fp
-            if plan["remain_sh"] < 100:
-                avg = plan["sold_amt"] / plan["sold_qty"]
-                mark_position_closed(pos.get("order_id", ""), today_str, avg)
-                plan["done"] = True
-                log.warning("✅ [卖出POV] %s %s 分批平仓完成:共%d股 均价%.2f(%s)",
-                            ts_code, pos.get("name", ""), plan["sold_qty"], avg, note)
-                _notify("sell_success", "✅ 卖出POV分批平仓完成",
-                        f"{ts_code} {pos.get('name','')} 分批卖出{plan['sold_qty']}股 均价{avg:.2f} "
-                        f"市值{_fmt_wan(plan['sold_amt'])}（大仓位流动性分批,14:55前完成）")
-            else:
-                reduce_position_shares(pos.get("order_id", ""), int(plan["remain_sh"]))
-        log.info("[卖出POV] %s %s:预算%.1f万 挂%d股 成%d股@%.2f 剩%d股",
-                 ts_code, note, budget / 1e4, qty, fq, fp, int(plan["remain_sh"]))
+            config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+            _assert_exit_live_allowed(config)
+            lt = config.get("live_trade", {})
+            late_phase = cadence_sec <= 60
+            depth_levels = int(lt.get("exit_pov_depth_levels", 3))
+            depth_haircut = float(lt.get("exit_pov_depth_haircut", 0.50))
+            max_slippage_bps = float(lt.get(
+                "exit_pov_late_max_slippage_bps" if late_phase else "exit_pov_max_slippage_bps",
+                35 if late_phase else 20,
+            ))
+            bid_volume_unit = int(lt.get("exit_pov_bid_volume_unit", 1))
+            max_slice_pct = float(lt.get("exit_pov_max_slice_position_pct", 0.10))
+
+            with _qmt_lock:
+                adapter = _qmt_get(broker_cfg)
+                quote = adapter.get_full_tick([ts_code]).get(ts_code)
+                broker_total, broker_can_use = _broker_position_quantities(adapter, ts_code)
+                orders = adapter.query_orders()
+            if quote is None:
+                return
+            last = float(getattr(quote, "last_price", 0.0) or 0.0)
+            cum = float(getattr(quote, "amount", 0.0) or 0.0)
+            prev = float(plan.get("prev_cum", 0.0) or 0.0)
+            sampled_at = now_beijing()
+            last_sample_at = plan.get("last_sample_at")
+            own_fill = float(plan.pop("own_fill_since_sample", 0.0) or 0.0)
+            plan["prev_cum"] = cum
+            plan["last_sample_at"] = sampled_at
+            if last <= 0 or cum <= 0:
+                log.warning("[卖出POV] %s 行情缺少价格或累计成交额，跳过本片。", ts_code)
+                return
+            if broker_total <= 0:
+                # QMT 在客户端切换/数据同步瞬间可能“查询成功但返回空持仓”。项目已有
+                # 连续两轮确认才清幽灵仓的事故保护，这里绝不能凭一次空快照直接平账。
+                missing_hits = int(plan.get("broker_missing_hits", 0)) + 1
+                plan["broker_missing_hits"] = missing_hits
+                log.error(
+                    "[卖出POV] %s 第%d次未查到券商实际持仓；本片拒绝下单且不改本地账，"
+                    "等待后续QMT复核。",
+                    ts_code,
+                    missing_hits,
+                )
+                if missing_hits == 1:
+                    _notify(
+                        "sell_fail",
+                        "⚠️ POV持仓查询异常",
+                        f"{ts_code} {pos.get('name','')} QMT本轮未返回实际持仓；"
+                        "系统已停止本片且未误标平仓，请检查QMT连接。",
+                        level="timeSensitive",
+                    )
+                return
+            plan["broker_missing_hits"] = 0
+            plan["remain_sh"] = min(int(plan.get("remain_sh", broker_total)), broker_total)
+            if broker_can_use <= 0:
+                log.warning("[卖出POV] %s 券商可卖股数为0（可能仍有冻结卖单），跳过本片。", ts_code)
+                return
+            # 计划可能13:00建立、之后才启动；普通计划的陈旧基线不能作为单片
+            # 流量。千万级强制计划是唯一例外：14:15首片必须真正开始卸载，不能
+            # 因13:00基线陈旧而平白拖到14:20。该首片仍同时受盘口50%折扣、
+            # 20bp扫档、实际可卖量和“最多余仓10%”四重上限约束；首调之后基线
+            # 已刷新，14:20起恢复严格使用相邻5分钟外部流量。
+            stale_baseline = bool(
+                isinstance(last_sample_at, datetime.datetime)
+                and (sampled_at - last_sample_at).total_seconds() > cadence_sec * 1.8
+            )
+            start_at = plan.get("start")
+            force_first_slice = bool(
+                stale_baseline
+                and plan.get("large_force")
+                and not plan.get("force_first_slice_attempted")
+                and isinstance(start_at, datetime.datetime)
+                and start_at <= sampled_at < start_at + datetime.timedelta(seconds=90)
+            )
+            if force_first_slice:
+                plan["force_first_slice_attempted"] = True
+                log.info(
+                    "[卖出POV] %s 千万级14:15首片启用；首片仍受盘口/滑点/10%%余仓上限。",
+                    ts_code,
+                )
+            elif stale_baseline:
+                log.info("[卖出POV] %s 启动/切频前刷新流量基线，等待下一片。", ts_code)
+                return
+            if cum < prev:
+                log.warning("[卖出POV] %s 累计成交额发生回退(%.0f<%.0f)，仅重置基线。", ts_code, cum, prev)
+                return
+            # 累计成交额包含我方上一片成交；扣掉后避免“自己成交→放大下一片”的自激。
+            external_flow = max(cum - prev - own_fill, 0.0)
+            budget = external_flow * min(max(part, 0.0), 1.0)
+            depth_qty, price, depth_note = _pov_depth_limit(
+                quote,
+                depth_levels=depth_levels,
+                depth_haircut=depth_haircut,
+                max_slippage_bps=max_slippage_bps,
+                bid_volume_unit=bid_volume_unit,
+            )
+            if depth_qty <= 0 or price <= 0:
+                log.info("[卖出POV] %s %s，跳过本片，不用跌停价扫盘。", ts_code, depth_note)
+                return
+            remain = int(plan["remain_sh"])
+            flow_qty = int(budget / max(last, 0.01))
+            slice_cap = max(1, int(remain * min(max(max_slice_pct, 0.0), 1.0)))
+            qty = min(
+                remain,
+                broker_can_use,
+                depth_qty,
+                flow_qty,
+                slice_cap,
+                _max_sell_order_shares(ts_code),
+            )
+            qty = _normalize_exit_slice_quantity(ts_code, qty, remain)
+            qty = _safe_new_exit_order_quantity(
+                ts_code,
+                requested_qty=qty,
+                broker_total=broker_total,
+                broker_can_use=broker_can_use,
+                orders=orders,
+                trade_date=today_str,
+                log=log,
+                phase="卖出POV",
+            )
+            qty = _normalize_exit_slice_quantity(ts_code, qty, remain)
+            if qty <= 0:
+                return
+            request = OrderRequest(
+                ts_code=ts_code, broker_code=ts_code, side="SELL",
+                quantity=qty, price_type="FIXED_PRICE", price=price,
+                strategy_name="A_SYSTEM_ABC", remark=f"{_EXIT_POV_REMARK_PREFIX}-{today_str}",
+            )
+            with _qmt_lock:
+                adapter = _qmt_get(broker_cfg)
+                result, intent_token = _place_exit_order_with_intent(
+                    adapter,
+                    request,
+                    phase="卖出POV",
+                    local_order_id=str(pos.get("order_id", "")),
+                )
+            if not result.accepted:
+                log.error("❌ [卖出POV] %s提交失败:%s", ts_code, result.message)
+                return
+            oid = str(result.order_id or "")
+            fill = _confirm_fill(
+                broker_cfg, oid, qty, "卖出POV片",
+                timeout_sec=confirm_timeout_sec, poll_sec=3 if late_phase else 5,
+            )
+            if fill.filled_qty < qty and not fill.is_terminal:
+                _try_cancel_order(broker_cfg, oid, ts_code)
+                # 尾段必须在14:53前交权，终态确认不再固定等待20秒。
+                seconds_left = max(
+                    2.0,
+                    (datetime.datetime.combine(sampled_at.date(), SCHED_EXIT_POV_HANDOFF,
+                                               tzinfo=BEIJING_TZ) - now_beijing()).total_seconds() - 2.0,
+                )
+                fill = _confirm_fill(
+                    broker_cfg, oid, qty, "卖出POV片终态",
+                    timeout_sec=min(12.0, seconds_left), poll_sec=2,
+                )
+            fq = min(int(fill.filled_qty or 0), qty)
+            fp = float(fill.avg_price) if float(getattr(fill, "avg_price", 0) or 0) > 0 else price
+            if bool(getattr(fill, "is_terminal", False)):
+                _update_exit_order_intent(
+                    intent_token,
+                    status="RESOLVED",
+                    broker_order_id=oid,
+                    filled_qty=fq,
+                    terminal_known=True,
+                )
+            if fq > 0:
+                plan["remain_sh"] = max(remain - fq, 0)
+                plan["sold_qty"] = int(plan.get("sold_qty", 0)) + fq
+                plan["sold_amt"] = float(plan.get("sold_amt", 0.0)) + fq * fp
+                plan["own_fill_since_sample"] = float(plan.get("own_fill_since_sample", 0.0)) + fq * fp
+                if plan["remain_sh"] == 0:
+                    avg = plan["sold_amt"] / max(plan["sold_qty"], 1)
+                    mark_position_closed(pos.get("order_id", ""), today_str, avg)
+                    plan["done"] = True
+                    log.warning("✅ [卖出POV] %s %s 分批平仓完成:%d股 均价%.2f",
+                                ts_code, pos.get("name", ""), plan["sold_qty"], avg)
+                    _notify("sell_success", "✅ 卖出POV分批平仓完成",
+                            f"{ts_code} {pos.get('name','')} 分批卖出{plan['sold_qty']}股 "
+                            f"均价{avg:.2f} 市值{_fmt_wan(plan['sold_amt'])}")
+                else:
+                    reduce_position_shares(
+                        pos.get("order_id", ""), int(plan["remain_sh"]), fill_price=fp
+                    )
+            log.info(
+                "[卖出POV] %s 外部流量%.1f万 预算%.1f万 %s 挂%d股@%.2f 成%d股@%.2f 剩%d股",
+                ts_code, external_flow / 1e4, budget / 1e4, depth_note,
+                qty, price, fq, fp, int(plan["remain_sh"]),
+            )
     except Exception as e:
         log.error("卖出POV片异常(%s):%s", ts_code, e)
 
 
 def _exit_pov_monitor() -> None:
-    """卖出端POV分批平仓常驻线程:13:00评估当日到期仓跑道,需要>1片才启动。
+    """卖出端POV分批平仓线程：5分钟常规卸载，14:46后1分钟加速。
 
     小资金(跑道≤1片)零介入,行为与现状完全一致;启动前撤止盈预挂单释放
-    冻结股份(止盈线程对已撤单不补挂=天然互斥),涨停全量卖规则内置替代。
+    冻结股份。每片均受外部流量、盘口深度、滑点和QMT实际可卖量约束，
+    涨停也不再假设买盘无限或直接全量卖出。
     """
     log = logger()
     done_day = ""
@@ -1650,9 +3216,14 @@ def _exit_pov_monitor() -> None:
         try:
             now = now_beijing(); t = now.time()
             today_str = today_beijing().strftime("%Y%m%d")
-            if (not is_trade_day(now.date())) or done_day == today_str or t >= datetime.time(14, 48):
-                if t >= datetime.time(14, 48):
-                    done_day = today_str
+            if (not is_trade_day(now.date())) or done_day == today_str:
+                time.sleep(300); continue
+            if t >= SCHED_EXIT_POV_HANDOFF:
+                config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+                if config.get("broker_adapter_enabled") and config.get("qmt_enabled"):
+                    with _exit_sell_lock:
+                        _cancel_active_exit_pov_orders(config.get("broker", {}), wait_sec=20)
+                done_day = today_str
                 time.sleep(300); continue
             if t < datetime.time(13, 0, 5):
                 time.sleep(min(120, max(5, (now.replace(hour=13, minute=0, second=5) - now).total_seconds()))); continue
@@ -1669,6 +3240,8 @@ def _exit_pov_monitor() -> None:
             if not due:
                 done_day = today_str; continue
             part = float(lt.get("exit_pov_participation", 0.25))
+            late_part = float(lt.get("exit_pov_late_participation", 0.35))
+            late_timeout = int(lt.get("exit_pov_late_confirm_timeout_sec", 20))
             buffer_k = float(lt.get("exit_pov_runway_buffer", 1.5))
             pm_k = float(lt.get("exit_pov_pm_extrapolate", 0.44))
             broker_cfg = config.get("broker", {})
@@ -1678,29 +3251,55 @@ def _exit_pov_monitor() -> None:
                 adapter = _qmt_get(broker_cfg)
                 quote_map = adapter.get_full_tick(codes)
             plans: list[dict[str, Any]] = []
+            cum_1300: dict[str, float] = {}
             for pos in due:
                 q = quote_map.get(str(pos.get("ts_code", "")))
                 last = float(getattr(q, "last_price", 0.0) or 0.0) if q else 0.0
                 cum = float(getattr(q, "amount", 0.0) or 0.0) if q else 0.0
                 if last <= 0 or cum <= 0:
                     continue
+                cum_1300[str(pos.get("ts_code", ""))] = cum
                 sell_amt = int(pos.get("shares", 0)) * last
+                force_large, force_ref_amount, force_signal_amount = _large_exit_force_eligible(
+                    pos, last, lt
+                )
                 # 分批触发线(2026-07-16 θ扫描定稿):卖出市值>当日13:00累计成交×1%
                 # 才分批。更低阈值会把"一把梭不痛"的仓位拉去吃时间成本(100万档
                 # 实测-0.08%/笔);θ=1%各档不受伤,1000万档+0.23%/笔最优。
-                if sell_amt <= cum * float(lt.get("exit_pov_trigger_pct", 0.01)):
+                if (
+                    not force_large
+                    and sell_amt <= cum * float(lt.get("exit_pov_trigger_pct", 0.01))
+                ):
                     continue    # 小仓位:今日不分批,14:55主链路处理
                 slice_est = cum * pm_k / 21.0        # 13:05~14:45约21片
                 need = int(sell_amt * buffer_k / (slice_est * part)) + 1 if slice_est > 0 else 99
-                slots = min(need, 21)
-                start_dt = now.replace(hour=14, minute=45, second=0, microsecond=0) - datetime.timedelta(minutes=5 * slots)
-                plans.append(dict(pos=pos, prev_cum=cum, start=start_dt,
-                                  remain_sh=int(pos.get("shares", 0)), sold_qty=0, sold_amt=0.0, done=False))
-                log.warning("🏃 [卖出POV] %s %s 仓位%.0f万>单片容量,启动分批:%d片,%s起,片参与率%.0f%%",
-                            pos.get("ts_code"), pos.get("name"), sell_amt / 1e4, slots,
-                            start_dt.strftime("%H:%M"), part * 100)
+                slots = min(need, 20)
+                if force_large:
+                    # 只对经过20亿信号日成交额门禁的千万级仓位固定14:15启动。
+                    # 17笔中15笔竞价前完成；验证集仅8笔，仍由实时流量/盘口兜底，
+                    # 不把该小样本结论扩散到小仓位或低流动性标的。
+                    start_dt = now.replace(
+                        hour=SCHED_EXIT_LARGE_FORCE_START.hour,
+                        minute=SCHED_EXIT_LARGE_FORCE_START.minute,
+                        second=0,
+                        microsecond=0,
+                    )
+                    slots = 6  # 14:15/20/25/30/35/40六个5分钟信号片
+                else:
+                    start_dt = now.replace(hour=14, minute=40, second=0, microsecond=0) - datetime.timedelta(minutes=5 * slots)
+                plans.append(dict(pos=pos, prev_cum=cum, last_sample_at=now_beijing(), start=start_dt,
+                                  remain_sh=int(pos.get("shares", 0)), sold_qty=0, sold_amt=0.0,
+                                  done=False, large_force=force_large))
+                log.warning("🏃 [卖出POV] %s %s 仓位%.0f万%s,启动分批:%d片,%s起,片参与率%.0f%%",
+                            pos.get("ts_code"), pos.get("name"), sell_amt / 1e4,
+                            (
+                                f"（千万级强制跑道；入场参考{force_ref_amount / 1e4:.0f}万/"
+                                f"信号日成交{force_signal_amount / 1e8:.1f}亿）"
+                                if force_large else ">单片容量"
+                            ),
+                            slots, start_dt.strftime("%H:%M"), part * 100)
             if plans:
-                # 撤止盈预挂单(释放冻结股份;涨停全量卖规则内置替代其职能)
+                # 撤止盈预挂单，释放被冻结的可卖股份。
                 try:
                     with _qmt_lock:
                         adapter = _qmt_get(broker_cfg)
@@ -1709,14 +3308,16 @@ def _exit_pov_monitor() -> None:
                     log.error("卖出POV撤止盈单异常:%s", e)
                 _notify("sell_result", "🏃 大仓位分批平仓启动",
                         "；".join(f"{p['pos'].get('ts_code','')} {p['pos'].get('name','')} 分批卖出" for p in plans)
-                        + f"。13:00起按流动性分片(片=5分钟成交×{part:.0%}),14:48前收工,剩余交14:55收盘平仓。")
-            # ── 分片执行(5分钟网格;plans空也保持循环,等14:30缩量复查) ──
+                        + f"。常规片=5分钟成交×{part:.0%};14:46后切1分钟×{late_part:.0%},"
+                          "14:53前停止新片并完成交接,剩余由14:55主平仓单处理。")
+            # ── 13:00~14:40按5分钟；14:45复查；14:46~14:52按1分钟 ──
             checked_1430 = False
+            checked_1445 = False
+            cum_1430: dict[str, float] = {}
             planned_ids = {str(p["pos"].get("order_id", "")) for p in plans}
-            while now_beijing().time() < datetime.time(14, 46):
-                # 14:30缩量复查(2026-07-16 1m实测:θ=1%线上的单在12/81笔缩量日
-                # 会吃穿尾盘承接90分位185%):13:00未触发的仓用14:30实时累计量
-                # 重判——缩量日cum增长慢,同一θ线自动变严,补触发的走14:35起3片。
+            while now_beijing().time() < datetime.time(14, 52, 20):
+                # 14:30按“最近实际流速×剩余分钟”重算跑道。旧版再次比较累计额×1%
+                # 永远无法新增触发（累计额只增），这里改为真正能识别午后缩量的容量条件。
                 if not checked_1430 and now_beijing().time() >= datetime.time(14, 30):
                     checked_1430 = True
                     retry = [p for p in due if str(p.get("order_id", "")) not in planned_ids
@@ -1731,8 +3332,14 @@ def _exit_pov_monitor() -> None:
                             cum = float(getattr(q, "amount", 0.0) or 0.0) if q else 0.0
                             if last <= 0 or cum <= 0:
                                 continue
+                            cum_1430[ts_r] = cum
                             sell_amt = int(pos.get("shares", 0)) * last
-                            if sell_amt <= cum * float(lt.get("exit_pov_trigger_pct", 0.01)):
+                            base_1300 = float(cum_1300.get(ts_r, 0.0) or 0.0)
+                            observed = max(cum - base_1300, 0.0)
+                            observed_minutes = 90.0
+                            per_minute = observed / observed_minutes if observed > 0 else 0.0
+                            projected = per_minute * (15.0 * part + 7.0 * late_part)
+                            if projected > 0 and sell_amt * buffer_k <= projected:
                                 continue
                             try:
                                 with _qmt_lock:
@@ -1740,33 +3347,101 @@ def _exit_pov_monitor() -> None:
                                     _cancel_own_takeprofit_orders(adapter, {ts_r})
                             except Exception:
                                 pass
-                            plans.append(dict(pos=pos, prev_cum=cum, start=now_beijing(),
+                            plans.append(dict(pos=pos, prev_cum=cum, last_sample_at=now_beijing(),
+                                              start=now_beijing(),
                                               remain_sh=int(pos.get("shares", 0)),
                                               sold_qty=0, sold_amt=0.0, done=False))
                             planned_ids.add(str(pos.get("order_id", "")))
-                            log.warning("🏃 [卖出POV] 14:30缩量复查触发:%s %s 仓位%.0f万>当日累计×%.1f%%,"
-                                        "14:35起补充分批。", ts_r, pos.get("name"), sell_amt / 1e4,
-                                        float(lt.get("exit_pov_trigger_pct", 0.01)) * 100)
+                            log.warning("🏃 [卖出POV] 14:30跑道复查触发:%s %s 仓位%.0f万，"
+                                        "预计剩余安全容量仅%.0f万，14:35起补充分批。",
+                                        ts_r, pos.get("name"), sell_amt / 1e4, projected / 1e4)
                         except Exception as e:
                             log.error("14:30缩量复查异常(%s):%s", pos.get("ts_code"), e)
+                # 14:45尾段容量复查：即使日累计量足以让θ门禁不触发，也要检查最近
+                # 15分钟流速是否足以承接实际余量。容量不足才加入1分钟卸载，避免
+                # 1000万仓位全部挤到14:55；该阶段不依赖收盘集合竞价。
+                if not checked_1445 and now_beijing().time() >= datetime.time(14, 45):
+                    checked_1445 = True
+                    fresh_by_id = {str(p.get("order_id", "")): p for p in load_positions()}
+                    retry = []
+                    for original in due:
+                        oid = str(original.get("order_id", ""))
+                        current = fresh_by_id.get(oid, original)
+                        if oid not in planned_ids and str(current.get("status", "")).lower() == "open":
+                            retry.append(current)
+                    for pos in retry:
+                        try:
+                            ts_r = str(pos.get("ts_code", ""))
+                            with _qmt_lock:
+                                adapter = _qmt_get(broker_cfg)
+                                q = adapter.get_full_tick([ts_r]).get(ts_r)
+                            last = float(getattr(q, "last_price", 0.0) or 0.0) if q else 0.0
+                            cum = float(getattr(q, "amount", 0.0) or 0.0) if q else 0.0
+                            base = float(cum_1430.get(ts_r, 0.0) or 0.0)
+                            if last <= 0 or cum <= 0:
+                                continue
+                            sell_amt = int(pos.get("shares", 0)) * last
+                            # 守护进程若14:30后重启会缺少基线，此时 projected=0，
+                            # 保守触发尾段卸载，不能因缺数据把整仓拖到14:55。
+                            projected = max(cum - base, 0.0) / 15.0 * 7.0 * late_part if base > 0 else 0.0
+                            if sell_amt * buffer_k <= projected:
+                                continue
+                            try:
+                                with _qmt_lock:
+                                    adapter = _qmt_get(broker_cfg)
+                                    _cancel_own_takeprofit_orders(adapter, {ts_r})
+                            except Exception:
+                                pass
+                            start_late = now_beijing() + datetime.timedelta(minutes=1)
+                            plans.append(dict(pos=pos, prev_cum=cum, last_sample_at=now_beijing(),
+                                              start=start_late, remain_sh=int(pos.get("shares", 0)),
+                                              sold_qty=0, sold_amt=0.0, done=False))
+                            planned_ids.add(str(pos.get("order_id", "")))
+                            log.warning(
+                                "🏃 [卖出POV] 14:45尾段容量触发:%s %s 仓位%.0f万，"
+                                "预计14:46~14:52可平滑承接%.0f万，切1分钟×%.0f%%卸载。",
+                                ts_r, pos.get("name"), sell_amt / 1e4, projected / 1e4,
+                                late_part * 100,
+                            )
+                        except Exception as e:
+                            log.error("14:45尾段容量复查异常(%s):%s", pos.get("ts_code"), e)
                 if not plans:
-                    if now_beijing().time() >= datetime.time(14, 31):
-                        break   # 两轮评估均无触发,今日无需分批
                     time.sleep(30); continue
+                now_time = now_beijing().time()
+                if datetime.time(14, 45) <= now_time < datetime.time(14, 46):
+                    time.sleep(min(20, max(1, (now_beijing().replace(
+                        hour=14, minute=46, second=5, microsecond=0
+                    ) - now_beijing()).total_seconds())))
+                    continue
+                late_phase = now_time >= datetime.time(14, 46)
+                active_part = late_part if late_phase else part
+                cadence_sec = 60 if late_phase else 300
                 for plan in plans:
                     if not plan["done"] and now_beijing() >= plan["start"]:
-                        _exit_pov_slice(plan, broker_cfg, part, log)
-                if all(p["done"] for p in plans):
+                        _exit_pov_slice(
+                            plan, broker_cfg, active_part, log,
+                            cadence_sec=cadence_sec,
+                            confirm_timeout_sec=late_timeout if late_phase else 60,
+                        )
+                # 不能因早期计划已完成就提前退出：仍需等14:45复查此前未触发的
+                # 其他到期仓位。完成尾段复查后，全部完成才可收工。
+                if checked_1445 and all(p["done"] for p in plans):
                     break
                 now2 = now_beijing()
-                nxt = (now2 + datetime.timedelta(seconds=300)).replace(second=10, microsecond=0)
-                nxt -= datetime.timedelta(minutes=nxt.minute % 5)
+                step = 60 if now2.time() >= datetime.time(14, 46) else 300
+                nxt = (now2 + datetime.timedelta(seconds=step)).replace(second=10, microsecond=0)
+                if step == 300:
+                    nxt -= datetime.timedelta(minutes=nxt.minute % 5)
                 sl = (nxt - now2).total_seconds()
                 if sl > 0:
                     time.sleep(sl)
+            # 14:53前强制撤净所有POV活单，再把控制权交给14:55主平仓。
+            with _exit_sell_lock:
+                _cancel_active_exit_pov_orders(broker_cfg, wait_sec=25)
             leftover = [p for p in plans if not p["done"]]
             if leftover:
-                log.warning("[卖出POV] 收工:%d只未卖完(剩余%s),交14:55主平仓链路。",
+                log.warning("[卖出POV] 14:53交接:%d只未卖完(剩余%s),交14:55主平仓链路；"
+                            "14:56:20起撤未成主单，14:57:05仅按真实残仓集合竞价兜底。",
                             len(leftover),
                             "、".join(f"{p['pos'].get('ts_code','')}{p['remain_sh']}股" for p in leftover))
             done_day = today_str
@@ -1792,49 +3467,12 @@ def _do_sell(pos: dict[str, Any], qmt_enabled: bool) -> None:
                 "real_order_confirm_text", "A_SYSTEM_REAL_ORDER_CONFIRMED")
             broker_cfg = config.get("broker", {})
             strategy_leg = str(pos.get("strategy_leg", "")).upper()
-            if strategy_leg == "E2":
-                # E2 卖出计划单由 combined_planned_orders 生成（包含 PLAN_SELL_T2_CLOSE 行）
-                # 成交确认与持仓回写由 _execute_orders_inprocess 内部完成。
-                # 平仓不允许单点依赖计划文件：09:00组合状态机若失败/文件缺失/
-                # 无本标的SELL行，原逻辑会静默跳过导致被动过夜。兜底改走
-                # ABC/L 同款直接卖出（买10/买5挂限价+成交确认+失败告警），
-                # 保证 T+2 收盘必卖，与回测口径一致。
-                combined_path = (
-                    PROJECT_ROOT / "reports" / "live_trade" / "combined"
-                    / f"combined_planned_orders_{today_str}.csv"
-                )
-                has_sell_row = False
-                if combined_path.exists():
-                    try:
-                        import pandas as pd
-
-                        _po = pd.read_csv(combined_path, low_memory=False)
-                        if not _po.empty and {"side", "ts_code"}.issubset(_po.columns):
-                            has_sell_row = bool((
-                                (_po["side"].astype(str).str.upper() == "SELL")
-                                & (_po["ts_code"].astype(str) == str(ts_code))
-                            ).any())
-                    except Exception as read_err:
-                        logger().warning("E2平仓：读取组合计划单失败（%s），走直接卖出兜底。", read_err)
-                if has_sell_row:
-                    _execute_orders_inprocess(
-                        combined_path,
-                        confirm,
-                        "E2平仓",
-                        allowed_sides={"SELL"},
-                        allow_t2_close_sell_now=True,
-                    )
-                else:
-                    logger().warning(
-                        "E2平仓兜底：组合计划单缺失或无 %s 的SELL行（%s），直接按买10/买5挂限价卖出。",
-                        ts_code, combined_path,
-                    )
-                    _abc_place_sell_order_direct(ts_code, name, shares, order_id, confirm, config, broker_cfg)
-            elif strategy_leg in {"A", "B", "C", "L"}:
+            if strategy_leg in {"A", "B", "C", "E2", "L"}:
                 # A/B/C/L 均是 T+N 收盘卖出口径：
                 # planned_orders 文件通常只负责买入计划，平仓时直接按买10/买5挂限价卖出。
                 # L 接入后复用同一套“确保尽量成交、成交后回写持仓”的平仓链路。
-                # 成交确认与持仓回写由 _abc_place_sell_order_direct 内部完成
+                # E2也必须走这里：早晨combined SELL保留的是分批前原始股数，POV部成后
+                # 再执行会超卖并触发SELL_VOLUME_NOT_AVAILABLE。直接链路每次从QMT校准余量。
                 _abc_place_sell_order_direct(ts_code, name, shares, order_id, confirm, config, broker_cfg)
             else:
                 # D 策略已在 9:23 集合竞价卖出，不应再进入此分支
@@ -1852,132 +3490,609 @@ def _do_sell(pos: dict[str, Any], qmt_enabled: bool) -> None:
                 level="critical", call=True)
 
 
-_watchdog_pending: list = []   # (position, order_id) 待15:00:30成交确认的补挂单
+_watchdog_pending: list = []   # (position, [(order_id, expected_qty)]) 待15:00:30确认
 
 
-def _watchdog_rescue_sell(pos: dict, log: Any) -> list:
-    """看门狗紧急补挂：4档梯次卖单进收盘集合竞价（2026-07-15 用户定稿）。
+def _active_sell_outstanding_by_code(orders: Any) -> dict[str, int]:
+    """只汇总本系统活跃SELL的未成交量；人工卖单不能冒充策略覆盖。"""
+    from src.qmt_adapter import object_to_dict, first_present, to_int
 
-    档位=现价×0.97 / ×0.95 / ×0.93 / 跌停价，各约1/4仓（余数归跌停档）；
-    某档价低于跌停价时直接按跌停价（委托价不得低于跌停），相同价合并一单。
-    机制：自我冲击的自动稳定器——收盘价越差，参与成交的档越少，
-    我方供给随价格收缩，避免"我即市场"的极端日全量砸穿撮合价：
-      收盘价≥-3% 四档全成交(与挂跌停等价)；-3~-5%成交3/4；
-      -5~-7%成交一半；更深只有跌停档1/4保底，其余宁可过夜不甩卖。
-    股数以QMT实际可用持仓为准绝不超卖。返回受理的order_id列表。
+    active_states = {48, 49, 50, 51, 52, 55}
+    outstanding: dict[str, int] = {}
+    for order in orders or []:
+        data = object_to_dict(order)
+        status = to_int(first_present(data, ["order_status", "m_nOrderStatus", "status"], -1), -1)
+        if status not in active_states:
+            continue
+        side = str(first_present(data, ["side", "order_side", "direction"], "")).upper()
+        order_type = to_int(first_present(data, ["order_type", "m_nOrderType"], -1), -1)
+        if order_type != 24 and side not in {"SELL", "24", "卖出"}:
+            continue
+        if not _order_is_system_exit(data):
+            continue
+        code = str(first_present(
+            data, ["stock_code", "m_strInstrumentID", "ts_code"], ""
+        )).upper().split(".")[0]
+        if not code:
+            continue
+        ordered = to_int(first_present(
+            data, ["order_volume", "m_nOrderVolume", "volume", "order_qty"], 0
+        ), 0)
+        traded = to_int(first_present(
+            data, ["traded_volume", "m_nTradedVolume", "traded_qty", "deal_volume"], 0
+        ), 0)
+        outstanding[code] = outstanding.get(code, 0) + max(ordered - traded, 0)
+    return outstanding
+
+
+def _exit_uncovered_by_code(
+    due: list[dict[str, Any]],
+    *,
+    broker_volume: dict[str, int],
+    active_outstanding: dict[str, int],
+) -> dict[str, int]:
+    """按股票代码聚合策略余仓后，只扣一次活跃卖单覆盖。
+
+    同一代码可能有多条本地策略记录。逐条减同一个活卖余量会漏算，因此先
+    汇总本地股数，再以券商同代码实际总持仓封顶；这里只计算缺口，不负责把
+    券商混仓自动归属到某条策略记录。
     """
+    local_by_code: dict[str, int] = {}
+    for pos in due:
+        short = str(pos.get("ts_code", "")).upper().split(".")[0]
+        if not short:
+            continue
+        local_by_code[short] = local_by_code.get(short, 0) + max(
+            int(pos.get("shares", 0) or 0), 0
+        )
+
+    uncovered: dict[str, int] = {}
+    for short, local_qty in local_by_code.items():
+        # 券商列表暂时缺代码时保留本地数量作为待核查上限；真正补单函数会再次
+        # 查询can_use_volume并在0时拒单，因此不会凭本地账盲卖。
+        broker_qty = max(int(broker_volume.get(short, local_qty) or 0), 0)
+        strategy_owned = min(local_qty, broker_qty)
+        gap = max(strategy_owned - max(int(active_outstanding.get(short, 0) or 0), 0), 0)
+        if gap > 0:
+            uncovered[short] = gap
+    return uncovered
+
+
+def _strategy_exit_trade_vwap_by_code(
+    orders: Any, trades: Any
+) -> dict[str, tuple[int, float]]:
+    """按本系统卖出委托ID聚合当日成交股数/VWAP，供收盘最终回账使用。"""
+    from src.qmt_adapter import object_to_dict, first_present, to_float, to_int
+
+    remark_prefixes = (
+        _EXIT_POV_REMARK_PREFIX,
+        "ABC平仓-",
+        "看门狗补挂-",
+        "盘中止盈",
+    )
+    id_names = ["order_id", "m_nOrderID", "order_sysid", "m_strOrderSysID"]
+    order_to_code: dict[str, str] = {}
+    for order in orders or []:
+        data = object_to_dict(order)
+        remark = str(first_present(data, ["order_remark", "m_strRemark", "remark"], ""))
+        if not remark.startswith(remark_prefixes):
+            continue
+        code = str(first_present(
+            data, ["stock_code", "m_strInstrumentID", "ts_code"], ""
+        )).upper().split(".")[0]
+        if code:
+            for id_name in id_names:
+                oid = str(data.get(id_name, "") or "").strip()
+                if oid:
+                    order_to_code[oid] = code
+
+    totals: dict[str, tuple[int, float]] = {}
+    for trade in trades or []:
+        data = object_to_dict(trade)
+        code = next(
+            (
+                order_to_code.get(str(data.get(id_name, "") or "").strip())
+                for id_name in id_names
+                if str(data.get(id_name, "") or "").strip() in order_to_code
+            ),
+            None,
+        )
+        if not code:
+            continue
+        qty = max(to_int(first_present(
+            data, ["traded_volume", "m_nVolume", "volume", "traded_qty"], 0
+        ), 0), 0)
+        price = max(to_float(first_present(
+            data, ["traded_price", "m_dPrice", "price"], 0.0
+        ), 0.0), 0.0)
+        if qty <= 0 or price <= 0:
+            continue
+        old_qty, old_amt = totals.get(code, (0, 0.0))
+        totals[code] = (old_qty + qty, old_amt + qty * price)
+    return {
+        code: (qty, amount / qty)
+        for code, (qty, amount) in totals.items()
+        if qty > 0
+    }
+
+
+def _strategy_exit_order_vwap_by_code(orders: Any) -> dict[str, tuple[int, float]]:
+    """QMT成交明细暂空时，从系统终态委托行提取成交量/价格代理。"""
+    from src.qmt_adapter import first_present, object_to_dict, to_float
+
+    totals: dict[str, tuple[int, float]] = {}
+    for order in orders or []:
+        data = object_to_dict(order)
+        if not _order_is_sell(data) or not _order_is_system_exit(data):
+            continue
+        code = str(
+            first_present(data, ["stock_code", "m_strInstrumentID", "ts_code"], "")
+        ).upper().split(".")[0]
+        if not code:
+            continue
+        filled, active, unknown = _order_commitment(data)
+        if filled <= 0 or active > 0 or unknown > 0:
+            continue
+        price = max(
+            to_float(
+                first_present(
+                    data,
+                    [
+                        "avg_price",
+                        "traded_price",
+                        "m_dTradedPrice",
+                        "deal_price",
+                        "price",
+                        "order_price",
+                        "m_dPrice",
+                    ],
+                    0.0,
+                ),
+                0.0,
+            ),
+            0.0,
+        )
+        if price <= 0:
+            continue
+        old_qty, old_amount = totals.get(code, (0, 0.0))
+        totals[code] = (old_qty + filled, old_amount + filled * price)
+    return {
+        code: (qty, amount / qty)
+        for code, (qty, amount) in totals.items()
+        if qty > 0
+    }
+
+
+def _watchdog_rescue_sell(pos: dict, log: Any, max_qty: int | None = None) -> list[tuple[str, int]]:
+    """补挂安全账本确认的未覆盖策略余量，集合竞价只作最后兜底。"""
     from src.broker_adapter import OrderRequest
     from src.qmt_adapter import object_to_dict, first_present, to_int
     ts_code = str(pos.get("ts_code", ""))
     try:
-        config = load_json_config(PROJECT_ROOT / "config" / "config.json")
-        broker_cfg = config.get("broker", {})
-        with _qmt_lock:
-            adapter = _qmt_get(broker_cfg)
-            positions = adapter.query_positions()
-            avail = 0
-            for qp in positions or []:
-                qd = object_to_dict(qp)
-                code = str(first_present(qd, ["stock_code", "m_strInstrumentID", "ts_code"], "")).upper()
-                if code.split(".")[0] == ts_code.split(".")[0]:
-                    avail = to_int(first_present(qd, ["can_use_volume", "m_nCanUseVolume"], 0), 0)
-                    break
-            if avail <= 0:
-                log.warning("[平仓看门狗] %s QMT实际可用持仓为0，无需补挂（可能已成交/未买入）。", ts_code)
-                return []
-            quote_map = adapter.get_full_tick([ts_code])
-            quote = quote_map.get(ts_code)
-            lower = float(getattr(quote, "lower_limit", 0.0) or 0.0) if quote else 0.0
-            lp = float(getattr(quote, "last_price", 0.0) or 0.0) if quote else 0.0
-            if lower <= 0:
-                # 跌停价缺失时的估算：任何委托价低于真实跌停都会被交易所废单，
-                # 所以估算一律取安全侧（宁高一分，绝不低于跌停）：
-                # ①昨收×(1-跌停幅)+0.01（防四舍五入与交易所差一分）；
-                # ②连昨收都没有→直接用现价（现价恒≥跌停，绝对合规）。
-                pre = float(getattr(quote, "pre_close", 0.0) or 0.0) if quote else 0.0
-                short = ts_code.split(".")[0]
-                cap = 0.30 if ts_code.endswith(".BJ") else (0.20 if short.startswith(("300", "301", "688", "689")) else 0.10)
-                if pre > 0:
-                    lower = round(pre * (1 - cap), 2) + 0.01
-                elif lp > 0:
-                    lower = lp
-            if lower <= 0:
-                log.error("[平仓看门狗] %s 无法取得任何卖出价格，补挂放弃。", ts_code)
-                return []
-            # 4档价格：现价×0.97/0.95/0.93/跌停档；任何档不得低于跌停(废单红线)
-            if lp > 0:
-                tiers = [max(round(lp * f, 2), lower) for f in (0.97, 0.95, 0.93)] + [lower]
-            else:
-                tiers = [lower] * 4
-            # 分仓：各1/4取整百，余数归最后一档(最低价，保证全部股数有单)
-            per = (avail // 4) // 100 * 100
-            qtys = [per, per, per, avail - per * 3]
-            # 相同价格档合并
-            merged: dict = {}
-            for price, qty in zip(tiers, qtys):
-                if qty > 0:
-                    merged[price] = merged.get(price, 0) + qty
-            order_ids = []
-            for price, qty in sorted(merged.items(), reverse=True):
-                request = OrderRequest(
-                    ts_code=ts_code, broker_code=ts_code, side="SELL",
-                    quantity=qty, price_type="FIXED_PRICE", price=price,
-                    strategy_name="A_SYSTEM_ABC",
-                    remark=f"看门狗补挂-{today_beijing().strftime('%Y%m%d')}",
+        with _exit_sell_lock:
+            config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+            broker_cfg = config.get("broker", {})
+            with _qmt_lock:
+                adapter = _qmt_get(broker_cfg)
+                positions = adapter.query_positions()
+                orders = adapter.query_orders()
+                broker_total = 0
+                broker_can_use = 0
+                for qp in positions or []:
+                    qd = object_to_dict(qp)
+                    code = str(
+                        first_present(qd, ["stock_code", "m_strInstrumentID", "ts_code"], "")
+                    ).upper()
+                    if code.split(".")[0] == ts_code.split(".")[0]:
+                        broker_total += max(
+                            to_int(first_present(qd, ["volume", "m_nVolume", "total_volume"], 0), 0),
+                            0,
+                        )
+                        broker_can_use += max(
+                            to_int(first_present(qd, ["can_use_volume", "m_nCanUseVolume"], 0), 0),
+                            0,
+                        )
+                if broker_can_use <= 0:
+                    log.warning(
+                        "[平仓看门狗] %s QMT实际可用持仓为0，无需补挂（可能已成交/被冻结）。",
+                        ts_code,
+                    )
+                    return []
+                # 每个看门狗pending组必须与一条本地持仓一一绑定，
+                # 否则同代码多策略时，一张大单的成交量无法用
+                # broker_order_id幂等回写到正确的本地行。
+                local_row_qty = max(int(pos.get("shares", 0) or 0), 0)
+                requested = min(broker_can_use, local_row_qty)
+                if max_qty is not None:
+                    requested = min(requested, max(int(max_qty), 0))
+                requested = _safe_new_exit_order_quantity(
+                    ts_code,
+                    requested_qty=requested,
+                    broker_total=broker_total,
+                    broker_can_use=broker_can_use,
+                    orders=orders,
+                    trade_date=today_beijing().strftime("%Y%m%d"),
+                    log=log,
+                    phase="平仓看门狗",
                 )
-                result = adapter.place_order(request)
-                if result.accepted:
-                    order_ids.append(str(result.order_id or ""))
-                    log.warning("🚑 [平仓看门狗] %s 梯次补挂 %d股 @%.2f 已受理。", ts_code, qty, price)
-                else:
-                    log.error("[平仓看门狗] %s 梯次档 %d股@%.2f 被拒：%s", ts_code, qty, price, result.message)
-        return order_ids
+                if requested <= 0:
+                    return []
+                quote_map = adapter.get_full_tick([ts_code])
+                quote = quote_map.get(ts_code)
+                sell_price, price_label = _pick_sell_limit_price(quote)
+                if sell_price <= 0:
+                    log.error("[平仓看门狗] %s 无法取得任何卖出价格，补挂放弃。", ts_code)
+                    return []
+                chunks = _split_sell_order_quantities(ts_code, requested)
+                accepted: list[tuple[str, int]] = []
+                for chunk_no, chunk in enumerate(chunks, start=1):
+                    request = OrderRequest(
+                        ts_code=ts_code,
+                        broker_code=ts_code,
+                        side="SELL",
+                        quantity=chunk,
+                        price_type="FIXED_PRICE",
+                        price=sell_price,
+                        strategy_name="A_SYSTEM_ABC",
+                        remark=(
+                            f"看门狗补挂-{price_label}-{today_beijing().strftime('%Y%m%d')}"
+                            f"-{chunk_no}/{len(chunks)}"
+                        ),
+                    )
+                    result, _intent_token = _place_exit_order_with_intent(
+                        adapter,
+                        request,
+                        phase="平仓看门狗",
+                        local_order_id=str(pos.get("order_id", "")),
+                    )
+                    if result.accepted:
+                        accepted.append((str(result.order_id or ""), chunk))
+                    else:
+                        log.error(
+                            "[平仓看门狗] %s 未覆盖余量子单%d/%d %d股@%.2f被拒：%s",
+                            ts_code,
+                            chunk_no,
+                            len(chunks),
+                            chunk,
+                            sell_price,
+                            result.message,
+                        )
+                if accepted:
+                    log.warning(
+                        "🚑 [平仓看门狗] %s 安全未覆盖余量%d股拆%d张按%s %.2f补挂，"
+                        "已受理%d股。",
+                        ts_code,
+                        requested,
+                        len(chunks),
+                        price_label,
+                        sell_price,
+                        sum(qty for _, qty in accepted),
+                    )
+                    return accepted
+            return []
     except Exception as e:
         log.error("[平仓看门狗] %s 补挂异常：%s", ts_code, e)
         return []
 
 
+def _watchdog_reconcile_after_close(broker_cfg: dict, log: Any) -> None:
+    """15:00:30 两次核对券商余仓，并回写竞价后才成交的主单/补挂单。
+
+    单次空持仓快照不可信；只有相隔两秒的两次成功查询都确认某代码为0，才把
+    本地到期仓标记为已平。其余情况只用本系统委托的真实成交量补记策略账，
+    绝不把QMT同代码总持仓（可能含人工/其他策略仓）直接灌入本地策略余量。
+    """
+    all_positions = load_positions()
+    due = [
+        pos for pos in all_positions
+        if str(pos.get("status", "")).lower() in {"open", "sell_pending"}
+        and str(pos.get("planned_exit_date", "99991231")) <= today_beijing().strftime("%Y%m%d")
+    ]
+    if not due:
+        return
+
+    from src.qmt_adapter import object_to_dict, first_present, to_int
+
+    def _volume_map(items: Any) -> dict[str, int]:
+        result: dict[str, int] = {}
+        for item in items or []:
+            data = object_to_dict(item)
+            code = str(first_present(
+                data, ["stock_code", "m_strInstrumentID", "ts_code"], ""
+            )).upper().split(".")[0]
+            if not code:
+                continue
+            volume = max(to_int(first_present(
+                data, ["volume", "m_nVolume", "total_volume"], 0
+            ), 0), 0)
+            result[code] = result.get(code, 0) + volume
+        return result
+
+    with _qmt_lock:
+        adapter = _qmt_get(broker_cfg)
+        first_positions = adapter.query_positions()
+        orders = adapter.query_orders()
+        trades = adapter.query_trades()
+    time.sleep(2.0)
+    with _qmt_lock:
+        adapter = _qmt_get(broker_cfg)
+        second_positions = adapter.query_positions()
+
+    first_map = _volume_map(first_positions)
+    second_map = _volume_map(second_positions)
+    vwap_by_code = _strategy_exit_trade_vwap_by_code(orders, trades)
+    order_vwap_by_code = _strategy_exit_order_vwap_by_code(orders)
+    by_code: dict[str, list[dict[str, Any]]] = {}
+    for pos in due:
+        by_code.setdefault(str(pos.get("ts_code", "")).split(".")[0], []).append(pos)
+
+    today_str = today_beijing().strftime("%Y%m%d")
+    for short, local_rows in by_code.items():
+        first_qty = max(first_map.get(short, 0), 0)
+        second_qty = max(second_map.get(short, 0), 0)
+        local_qty = sum(max(int(pos.get("shares", 0)), 0) for pos in local_rows)
+        trade_qty, trade_vwap = vwap_by_code.get(short, (0, 0.0))
+
+        # QMT成交明细可能包含确认超时后才在集合竞价成交的数量。只补“尚未应用
+        # 到本地账”的差额，避免把POV/主单已回写过的成交重复扣减。
+        applied_today = sum(
+            _position_exit_filled_qty_on(pos, today_str)
+            for pos in all_positions
+            if str(pos.get("ts_code", "")).upper().split(".")[0] == short
+        )
+        unapplied = min(max(int(trade_qty) - applied_today, 0), local_qty)
+        if unapplied > 0:
+            remaining_fill = unapplied
+            for pos in local_rows:
+                if remaining_fill <= 0:
+                    break
+                held = max(int(pos.get("shares", 0) or 0), 0)
+                apply_qty = min(held, remaining_fill)
+                if apply_qty <= 0:
+                    continue
+                if apply_qty >= held:
+                    mark_position_closed(pos.get("order_id", ""), today_str, trade_vwap)
+                else:
+                    reduce_position_shares(
+                        pos.get("order_id", ""),
+                        held - apply_qty,
+                        fill_price=trade_vwap,
+                        fill_date=today_str,
+                    )
+                remaining_fill -= apply_qty
+            log.warning(
+                "[平仓看门狗] %s 按系统成交明细补记%d股（当日系统成交%d股，"
+                "此前已回写%d股），未引用人工仓数量。",
+                short, unapplied - remaining_fill, trade_qty, applied_today,
+            )
+
+        row_ids = {str(pos.get("order_id", "")) for pos in local_rows}
+        remaining_rows = [
+            pos for pos in load_positions()
+            if str(pos.get("order_id", "")) in row_ids
+            and str(pos.get("status", "")).lower() in {"open", "sell_pending"}
+        ]
+        remaining_local = sum(max(int(pos.get("shares", 0) or 0), 0) for pos in remaining_rows)
+
+        # query_trades在收盘后也可能短暂返回空，但委托终态和券商
+        # 持仓已经先更新。若只信成交明细，本地会保留已卖股数，
+        # 翌日又因QMT持仓小于本地账而永久fail-closed。这里只在：
+        # 1) 账户指纹匹配；2) 没有活跃/未知卖单；3) 两次QMT快照一致；
+        # 4) QMT总仓精确等于floor+target-系统已成 时，才用安全批次
+        # 目标补记本地成交。人工买卖/异账户会破坏等式并立即阻断。
+        try:
+            state = _load_exit_execution_state()
+            batch = state.get("batches", {}).get(_exit_batch_key(today_str, short))
+            if (
+                isinstance(batch, dict)
+                and str(batch.get("account_fingerprint", "")) == _exit_account_fingerprint()
+            ):
+                consumed, active_reserved, unknown_reserved = _exit_commitments_by_code(
+                    short,
+                    trade_date=today_str,
+                    orders=orders,
+                )
+                target_qty = max(int(batch.get("target_qty", 0) or 0), 0)
+                floor_qty = max(int(batch.get("non_target_floor", 0) or 0), 0)
+                expected_broker_qty = floor_qty + max(target_qty - consumed, 0)
+                desired_due_remaining = max(target_qty - consumed, 0)
+                correction = max(remaining_local - desired_due_remaining, 0)
+                if (
+                    correction > 0
+                    and active_reserved == 0
+                    and unknown_reserved == 0
+                    and first_qty == second_qty == expected_broker_qty
+                ):
+                    _, order_vwap = order_vwap_by_code.get(short, (0, 0.0))
+                    reconcile_price = trade_vwap if trade_vwap > 0 else order_vwap
+                    still_to_apply = correction
+                    for pos in remaining_rows:
+                        if still_to_apply <= 0:
+                            break
+                        held = max(int(pos.get("shares", 0) or 0), 0)
+                        apply_qty = min(held, still_to_apply)
+                        if apply_qty <= 0:
+                            continue
+                        if apply_qty >= held:
+                            mark_position_closed(
+                                pos.get("order_id", ""), today_str, reconcile_price
+                            )
+                        else:
+                            reduce_position_shares(
+                                pos.get("order_id", ""),
+                                held - apply_qty,
+                                fill_price=reconcile_price,
+                                fill_date=today_str,
+                            )
+                        still_to_apply -= apply_qty
+                    applied_from_batch = correction - still_to_apply
+                    log.warning(
+                        "[平仓看门狗] %s query_trades未完整；两次QMT余仓%d股"
+                        "与安全批次一致，补记已知系统成交%d股，本地到期余仓%d股。",
+                        short,
+                        second_qty,
+                        applied_from_batch,
+                        desired_due_remaining,
+                    )
+                    remaining_rows = [
+                        pos for pos in load_positions()
+                        if str(pos.get("order_id", "")) in row_ids
+                        and str(pos.get("status", "")).lower() in {"open", "sell_pending"}
+                    ]
+                    remaining_local = sum(
+                        max(int(pos.get("shares", 0) or 0), 0) for pos in remaining_rows
+                    )
+        except Exception as exc:
+            log.error("[平仓看门狗] %s 安全批次收盘对账失败:%s", short, exc)
+
+        if first_qty == 0 and second_qty == 0:
+            for pos in remaining_rows:
+                mark_position_closed(pos.get("order_id", ""), today_str, trade_vwap)
+            log.warning(
+                "✅ [平仓看门狗] %s 两次确认QMT余仓为0；本地%d股已回写平仓，"
+                "系统卖出成交%d股、VWAP %.2f。",
+                short, local_qty, trade_qty, trade_vwap,
+            )
+            continue
+        if remaining_local == 0:
+            log.warning(
+                "✅ [平仓看门狗] %s 本系统成交已覆盖全部策略仓；QMT同代码仍有%d股，"
+                "视为人工/其他策略仓，不写回本策略。",
+                short, second_qty,
+            )
+            continue
+        if first_qty != second_qty:
+            log.error(
+                "🛑 [平仓看门狗] %s 两次收盘快照不一致(%d→%d股)，本地策略仍记%d股；"
+                "未自动改账，请人工核对。",
+                short, first_qty, second_qty, remaining_local,
+            )
+        else:
+            log.error(
+                "⚠️ [平仓看门狗] %s 收盘后QMT同代码仍有%d股，本地策略成交账仍剩%d股"
+                "（%d条）；为避免混入人工仓，未用QMT总量覆盖本地账，次日仅处理策略余量。",
+                short, second_qty, remaining_local, len(remaining_rows),
+            )
+        _notify(
+            "sell_result", "⚠️ 收盘后策略仍有余量",
+            f"{short} 本系统成交账仍剩{remaining_local}股；QMT同代码总持仓"
+            f"{second_qty}股。系统未把人工混仓写入策略账，次日将仅按策略余量继续处理。",
+            level="critical",
+        )
+
+
 def _close_position_watchdog() -> None:
-    """收盘平仓看门狗（独立常驻线程）：14:56/14:57/14:59 核查 + 自动补挂（预备队）。
+    """14:56/14:57:05/14:57:40/14:59 按实际持仓与活跃SELL核查补差额。
 
-    2026-07-15 用户增补 14:56 岗：竞价阶段价格常已回落(实测比14:57低1.5%)，
-    14:56 仍在连续竞价，梯次高档位有机会以更优价立即成交；未成交的限价单
-    自动带入收盘集合竞价，与 14:57~15:00 阶段无缝衔接，一张单管两段。
-
-    2026-07-10 事故：主平仓被锁竞争拖慢+被拒后无人发现。2026-07-15 用户拍板
-    升级：14:57 起收盘集合竞价仍接受申报（不可撤），挂跌停价卖单 15:00 必以
-    收盘价成交——发现无人管的到期持仓时不再只打电话，先自动补挂：
-    - 判据="该标的当日存在活跃(48~52,55)或已成(56)委托"=有人管；否则补挂；
-    - 补挂股数以 QMT 实际可用持仓(can_use_volume)为准，绝不超卖；
-    - 部分成交的单(55)算有人管：挂着的跌停单会在收盘竞价自动成交剩余部分；
-    - 14:59 岗复查：补挂后仍无委托（补挂也失败）→ critical 电话，最后一分钟人工；
-    - 15:00:30 对补挂单确认成交并回写持仓（防 sell_price=0 的账目缺口）。
+    不能再用“存在任意一张委托”作为有人接管的判据：已成单不覆盖当前余仓，
+    部成单只覆盖尚未成交的挂单余量，小额活单也不能覆盖整仓。补挂前再次读取
+    can_use_volume 并只卖未覆盖量，避免重复委托和超卖；15:00:30 对补挂成交及
+    券商实际余仓做最终回写。
     """
     log = logger()
     fired: set[str] = set()
-    # 14:56=连续竞价末段抢救(价格通常优于竞价,未成单自动带入收盘竞价);
-    # 14:57:40/14:59=收盘竞价阶段复查(14:56已挂的单在场则不重复,缺了再补;
-    # 14:57岗后移40秒,给收盘竞价旁路的14:57:05申报留出核查余量)
-    checkpoints = (datetime.time(14, 56), datetime.time(14, 57, 40), datetime.time(14, 59))
+    handoff_alerted: set[str] = set()
+    reconciled_day = ""
+    # 14:56先补连续竞价未覆盖量；14:56:20起撤掉尚未成交的系统余单；
+    # 14:57:05只按QMT真实余仓挂集合竞价兜底，14:57:40/14:59再核查覆盖。
+    checkpoints = (
+        datetime.time(14, 56),
+        datetime.time(14, 57, 5),
+        datetime.time(14, 57, 40),
+        datetime.time(14, 59),
+    )
     while True:
         try:
             now = now_beijing(); t = now.time()
             today_str = today_beijing().strftime("%Y%m%d")
             if is_trade_day(now.date()) and t < datetime.time(15, 1):
-                for chk in checkpoints:
+                auction_handoff_key = f"{today_str}-auction-handoff"
+                if (
+                    auction_handoff_key not in fired
+                    and SCHED_CLOSE_AUCTION_HANDOFF <= t < datetime.time(14, 57)
+                ):
+                    due_for_handoff = [
+                        p for p in load_positions()
+                        if str(p.get("status", "")).lower() in {"open", "sell_pending"}
+                        and str(p.get("planned_exit_date", "99991231")) <= today_str
+                    ]
+                    if due_for_handoff:
+                        handoff_cfg = load_json_config(PROJECT_ROOT / "config" / "config.json")
+                        seconds_to_auction = (
+                            now_beijing().replace(
+                                hour=14, minute=57, second=0, microsecond=0
+                            ) - now_beijing()
+                        ).total_seconds()
+                        handoff_ok = _cancel_active_close_orders_for_auction(
+                            handoff_cfg.get("broker", {}),
+                            {str(p.get("ts_code", "")) for p in due_for_handoff},
+                            # 单轮最多4秒，失败后仍能在14:57前进行下一轮复核。
+                            wait_sec=max(0.5, min(4.0, seconds_to_auction - 1.0)),
+                        )
+                    else:
+                        handoff_ok = True
+                    if handoff_ok:
+                        fired.add(auction_handoff_key)
+                    elif (
+                        now_beijing().time() >= datetime.time(14, 56, 50)
+                        and auction_handoff_key not in handoff_alerted
+                    ):
+                        handoff_alerted.add(auction_handoff_key)
+                        _notify(
+                            "sell_fail",
+                            "🛑 收盘竞价交接尚未完成",
+                            "14:57前仍有系统连续竞价卖单未确认撤销；系统会继续复核，"
+                            "请立即查看QMT委托状态，避免残仓被旧价格覆盖。",
+                            level="critical",
+                            call=True,
+                        )
+                if (
+                    auction_handoff_key not in fired
+                    and auction_handoff_key not in handoff_alerted
+                    and t >= datetime.time(14, 57)
+                ):
+                    handoff_alerted.add(auction_handoff_key)
+                    _notify(
+                        "sell_fail",
+                        "🛑 收盘竞价撤单交接超时",
+                        "14:57前未确认连续竞价平仓余单已撤销；看门狗将禁止重复覆盖，"
+                        "但该活单可能无法按收盘价成交，请立即人工核查。",
+                        level="critical",
+                        call=True,
+                    )
+                if (
+                    datetime.time(14, 57) <= t < datetime.time(15, 0)
+                    and auction_handoff_key not in fired
+                ):
+                    # 旧连续竞价卖单是否已撤仍是未知状态；此时任何集合竞价补单
+                    # 都可能与晚成旧单叠加。明确交接成功前硬退出本轮，宁可告警
+                    # 人工处理，也不允许自动重复覆盖。
+                    log.error(
+                        "[平仓看门狗] 14:57后交接尚未明确成功，禁止自动补挂；"
+                        "等待人工/QMT明确订单终态。"
+                    )
+                    time.sleep(1.0)
+                    continue
+                # 15:00后绝不能补发新单；只继续下方15:00:30成交确认/双快照对账。
+                for chk in (() if t >= datetime.time(15, 0) else checkpoints):
                     key = f"{today_str}-{chk}"
                     if key in fired or t < chk:
                         continue
-                    fired.add(key)
                     if chk == checkpoints[0] and _exit_bypass_day == today_str:
                         # 收盘竞价旁路日:14:55主流程按计划在14:57:05才申报,
                         # 14:56岗此时无委托属正常,不补挂(补挂会即时成交丢右尾)。
                         log.info("[平仓看门狗] 14:56岗:收盘竞价旁路生效,跳过;14:57:40岗核查申报。")
+                        fired.add(key)
+                        continue
+                    if chk == checkpoints[1] and _exit_bypass_day == today_str:
+                        log.info("[平仓看门狗] 14:57:05岗:旁路主流程正在申报,留到14:57:40核查。")
+                        fired.add(key)
                         continue
                     due = [p for p in load_positions()
                            if str(p.get("status", "")).lower() in {"open", "sell_pending"}
                            and str(p.get("planned_exit_date", "99991231")) <= today_str]
                     if not due:
+                        fired.add(key)
                         continue
                     if not _qmt_lock.acquire(timeout=2):
                         log.info("[平仓看门狗] %s QMT忙（主流程可能正在平仓），本次跳过。", chk)
@@ -1986,33 +4101,61 @@ def _close_position_watchdog() -> None:
                         config = load_json_config(PROJECT_ROOT / "config" / "config.json")
                         adapter = _qmt_get(config.get("broker", {}))
                         orders = adapter.query_orders()
+                        broker_positions = adapter.query_positions()
                     except Exception as e:
                         log.error("[平仓看门狗] 查询委托失败：%s", e)
                         continue
                     finally:
                         _qmt_lock.release()
                     from src.qmt_adapter import object_to_dict, first_present, to_int
-                    covered: set[str] = set()
-                    for o in orders or []:
-                        od = object_to_dict(o)
-                        st = to_int(first_present(od, ["order_status", "m_nOrderStatus", "status"], -1), -1)
-                        if st in (48, 49, 50, 51, 52, 55, 56):
-                            code = str(first_present(od, ["stock_code", "m_strInstrumentID", "ts_code"], "")).upper().split(".")[0]
-                            covered.add(code)
-                    missing = [p for p in due if str(p.get("ts_code", "")).split(".")[0] not in covered]
+                    active_outstanding = _active_sell_outstanding_by_code(orders)
+                    broker_volume: dict[str, int] = {}
+                    for bp in broker_positions or []:
+                        bd = object_to_dict(bp)
+                        code = str(first_present(
+                            bd, ["stock_code", "m_strInstrumentID", "ts_code"], ""
+                        )).upper().split(".")[0]
+                        broker_volume[code] = broker_volume.get(code, 0) + max(
+                            to_int(first_present(
+                                bd, ["volume", "m_nVolume", "total_volume"], 0
+                            ), 0),
+                            0,
+                        )
+                    uncovered_by_code = _exit_uncovered_by_code(
+                        due,
+                        broker_volume=broker_volume,
+                        active_outstanding=active_outstanding,
+                    )
+                    due_by_code: dict[str, list[dict[str, Any]]] = {}
+                    for pos in due:
+                        short = str(pos.get("ts_code", "")).upper().split(".")[0]
+                        due_by_code.setdefault(short, []).append(pos)
+                    missing: list[tuple[dict[str, Any], int]] = []
+                    for short, uncovered in uncovered_by_code.items():
+                        remaining_gap = max(int(uncovered or 0), 0)
+                        for pos in due_by_code.get(short, []):
+                            if remaining_gap <= 0:
+                                break
+                            row_qty = max(int(pos.get("shares", 0) or 0), 0)
+                            row_gap = min(row_qty, remaining_gap)
+                            if row_gap > 0:
+                                missing.append((pos, row_gap))
+                                remaining_gap -= row_gap
                     if missing:
-                        codes = "、".join(f"{p.get('ts_code','')} {p.get('name','')}" for p in missing)
-                        log.error("🛑 [平仓看门狗] %s 核查：%s 今日到期且无有效卖出委托，启动自动补挂！", chk, codes)
+                        codes = "、".join(
+                            f"{p.get('ts_code','')} {p.get('name','')}未覆盖{qty}股" for p, qty in missing
+                        )
+                        log.error("🛑 [平仓看门狗] %s 核查：%s，启动余量补挂！", chk, codes)
                         rescued = []
-                        for pos in missing:
-                            oids = _watchdog_rescue_sell(pos, log)
+                        for pos, uncovered in missing:
+                            oids = _watchdog_rescue_sell(pos, log, max_qty=uncovered)
                             if oids:
                                 rescued.append((pos, oids))
                         if rescued:
                             _watchdog_pending.extend(rescued)
                             _notify("sell_result", "🚑 平仓看门狗已自动补挂",
-                                    f"{chk.strftime('%H:%M')}发现{codes}无卖出委托，已自动补挂跌停价卖单，"
-                                    f"将在15:00收盘集合竞价成交。请留意成交确认推送。",
+                                    f"{chk.strftime('%H:%M:%S')}发现{codes}未被活跃卖单覆盖，"
+                                    f"已按当前交易阶段的合法限价补挂；成交不作保证，请留意成交确认。",
                                     level="critical")
                         if len(rescued) < len(missing):
                             _notify("sell_fail", "🛑 收盘平仓补挂失败",
@@ -2020,52 +4163,121 @@ def _close_position_watchdog() -> None:
                                     f"请立即人工核对并手动平仓（15:00收盘前最后机会）！",
                                     level="critical", call=True)
                     else:
-                        log.info("[平仓看门狗] %s 核查通过：%d笔到期持仓均已有委托在场。", chk, len(due))
+                        log.info("[平仓看门狗] %s 核查通过：%d笔到期持仓的活跃SELL余量均覆盖实际持仓。",
+                                 chk, len(due))
+                    # 查询、归属核算和补单尝试均已完成后才记为fired。QMT忙/异常
+                    # 会保留同一checkpoint重试机会，尤其不能丢掉14:57:05首岗。
+                    fired.add(key)
             # 15:00:30 对补挂单确认成交并回写（防幽灵账目）
             if _watchdog_pending and t >= datetime.time(15, 0, 30):
                 config = load_json_config(PROJECT_ROOT / "config" / "config.json")
                 broker_cfg = config.get("broker", {})
                 for pos, oids in list(_watchdog_pending):
+                    all_terminal = True
+                    processed = False
                     try:
-                        total_qty, total_amt = 0, 0.0
-                        for oid in oids:
-                            fill = _confirm_fill(broker_cfg, oid, int(pos.get("shares", 0)), "看门狗补挂确认", timeout_sec=10)
-                            if fill.filled_qty > 0:
-                                total_qty += fill.filled_qty
-                                total_amt += fill.filled_qty * (fill.avg_price or 0.0)
-                        shares = int(pos.get("shares", 0))
-                        if total_qty >= shares and total_qty > 0:
-                            price = total_amt / total_qty if total_qty else 0.0
-                            mark_position_closed(pos.get("order_id", ""), today_str, price)
-                            log.warning("✅ [平仓看门狗] %s 梯次补挂全部成交 %d股 均价%.2f，已回写平仓。",
-                                        pos.get("ts_code"), total_qty, price)
-                            _notify("sell_success", "✅ 看门狗补挂成交",
-                                    f"{pos.get('ts_code')} {pos.get('name','')} 梯次补挂已全部成交 均价{price:.2f}。")
-                        elif total_qty > 0:
-                            price = total_amt / total_qty
-                            reduce_position_shares(pos.get("order_id", ""), shares - total_qty)
-                            log.warning("⚠️ [平仓看门狗] %s 梯次部分成交 %d/%d股 均价%.2f，剩余%d股过夜(梯次保护生效)。",
-                                        pos.get("ts_code"), total_qty, shares, price, shares - total_qty)
-                            _notify("sell_result", "⚠️ 梯次补挂部分成交",
-                                    f"{pos.get('ts_code')} {pos.get('name','')} 成交{total_qty}/{shares}股 均价{price:.2f}，"
-                                    f"剩余{shares - total_qty}股按梯次保护未贱卖、持仓过夜，明日开盘处理。",
-                                    level="critical")
+                        total_qty, total_amt, applied_qty_total = 0, 0.0, 0
+                        for oid, expected_qty in oids:
+                            fill = _confirm_fill(
+                                broker_cfg, oid, expected_qty, "看门狗补挂确认", timeout_sec=10
+                            )
+                            filled_qty = min(
+                                max(int(fill.filled_qty or 0), 0), expected_qty
+                            )
+                            fill_price_one = max(float(fill.avg_price or 0.0), 0.0)
+                            intent = _exit_intent_by_broker_order_id(oid)
+                            if fill_price_one <= 0:
+                                # 成交状态常比成交均价字段先到；暂用该intent
+                                # 的委托限价作记账代理，后续query_trades可再复核。
+                                fill_price_one = max(
+                                    float((intent or {}).get("price", 0.0) or 0.0), 0.0
+                                )
+                            local_order_id = str(
+                                (intent or {}).get("local_order_id", "")
+                                or pos.get("order_id", "")
+                            )
+                            if filled_qty > 0 and local_order_id:
+                                current_row = next(
+                                    (
+                                        row for row in load_positions()
+                                        if str(row.get("order_id", "")) == local_order_id
+                                        and str(row.get("status", "")).lower()
+                                        in {"open", "sell_pending"}
+                                    ),
+                                    None,
+                                )
+                                if current_row is not None:
+                                    applied_qty_total += _apply_known_exit_fill(
+                                        local_order_id,
+                                        broker_order_id=oid,
+                                        current_shares=max(
+                                            int(current_row.get("shares", 0) or 0), 0
+                                        ),
+                                        filled_qty=filled_qty,
+                                        fill_price=fill_price_one,
+                                        fill_date=today_str,
+                                    )
+                            if bool(getattr(fill, "is_terminal", False)):
+                                _resolve_exit_intent_by_broker_order_id(
+                                    oid,
+                                    filled_qty=filled_qty,
+                                    terminal_known=True,
+                                )
+                            else:
+                                all_terminal = False
+                            if filled_qty > 0:
+                                total_qty += filled_qty
+                                total_amt += filled_qty * fill_price_one
+                        price = total_amt / total_qty if total_qty > 0 else 0.0
+                        if total_qty > 0:
+                            log.warning(
+                                "[平仓看门狗] %s 补挂确认成交%d股 均价%.2f；"
+                                "按broker_order_id幂等回写%d股，并继续双快照对账。",
+                                pos.get("ts_code"), total_qty, price, applied_qty_total,
+                            )
+                            _notify(
+                                "sell_result", "✅ 看门狗成交已回写",
+                                f"{pos.get('ts_code')} {pos.get('name','')} 补挂确认成交"
+                                f"{total_qty}股，已幂等回写{applied_qty_total}股并进行双快照复核。",
+                                level="timeSensitive",
+                            )
                         else:
                             _notify("sell_fail", "🛑 补挂全部未成交",
-                                    f"{pos.get('ts_code')} {pos.get('name','')} 梯次补挂无成交(收盘价低于全部档位?)，"
+                                    f"{pos.get('ts_code')} {pos.get('name','')} 余量补挂无成交，"
                                     f"持仓过夜，明日开盘务必人工处理！", level="critical", call=True)
+                        processed = True
                     except Exception as e:
                         log.error("[平仓看门狗] 补挂单确认异常：%s", e)
-                    _watchdog_pending.remove((pos, oids))
+                    if processed and all_terminal:
+                        _watchdog_pending.remove((pos, oids))
+            if (
+                is_trade_day(now.date())
+                and t >= datetime.time(15, 0, 30)
+                and t < datetime.time(15, 5)
+                and reconciled_day != today_str
+            ):
+                close_cfg = load_json_config(PROJECT_ROOT / "config" / "config.json")
+                qmt_on = bool(close_cfg.get("broker_adapter_enabled")) and bool(
+                    close_cfg.get("qmt_enabled")
+                ) and bool(close_cfg.get("broker", {}).get("enabled"))
+                if qmt_on:
+                    _watchdog_reconcile_after_close(close_cfg.get("broker", {}), log)
+                reconciled_day = today_str
         except Exception as e:
             logger().error("平仓看门狗异常：%s", e)
-        # 距下一个14:52超过10分钟就长睡，窗口附近10秒粒度
+        # 距下一个14:52超过10分钟就长睡，尾盘窗口保持10秒粒度。
         now2 = now_beijing()
         nxt = now2.replace(hour=14, minute=52, second=0, microsecond=0)
         if now2 >= now2.replace(hour=15, minute=0, second=0, microsecond=0):
             nxt += datetime.timedelta(days=1)
         gap = (nxt - now2).total_seconds()
-        time.sleep(10 if 0 <= gap <= 600 or now2.time() >= datetime.time(14, 52) and now2.time() < datetime.time(15, 1) else min(max(gap - 600, 60), 3600))
+        if SCHED_CLOSE_AUCTION_HANDOFF <= now2.time() < datetime.time(14, 57):
+            sleep_seconds = 1  # 撤单交接失败时保留多次状态复核机会
+        elif 0 <= gap <= 600 or datetime.time(14, 52) <= now2.time() < datetime.time(15, 1):
+            sleep_seconds = 10
+        else:
+            sleep_seconds = min(max(gap - 600, 60), 3600)
+        time.sleep(sleep_seconds)
 
 
 def _daily_calendar_sentinel() -> None:
@@ -2201,7 +4413,7 @@ def _intraday_takeprofit_monitor() -> None:
 
             # 认领自家止盈单（无状态，防重启丢单/重复挂；重启后查不到
             # 自家活单会自动走下方补挂分支——交易时间内重启即接管）
-            active: dict[str, dict] = {}
+            active: dict[str, list[dict[str, Any]]] = {}
             cancelled_codes: set[str] = set()
             orders_raw = _polite_qmt("query_orders")
             if orders_raw is None:
@@ -2220,10 +4432,23 @@ def _intraday_takeprofit_monitor() -> None:
                     cancelled_codes.add(short_c); continue
                 if status == 57:         # 废单：不占坑 → 下面走补挂重试
                     continue
-                active[short_c] = {"order_id": oid, "status": status}
+                ordered_qty = max(to_int(first_present(
+                    od, ["order_volume", "m_nOrderVolume", "volume", "order_qty"], 0
+                ), 0), 0)
+                traded_qty = max(to_int(first_present(
+                    od, ["traded_volume", "m_nTradedVolume", "traded_qty", "deal_volume"], 0
+                ), 0), 0)
+                active.setdefault(short_c, []).append(
+                    {
+                        "order_id": oid,
+                        "status": status,
+                        "ordered_qty": ordered_qty,
+                        "traded_qty": min(traded_qty, ordered_qty) if ordered_qty > 0 else traded_qty,
+                    }
+                )
 
             def _order_status(oid: str):
-                """查单笔委托当前状态；None=查询失败，-2=已不在委托列表。"""
+                """查单笔委托当前状态；None=查询失败，-2=本轮列表缺失(未知)。"""
                 orders2 = _polite_qmt("query_orders")
                 if orders2 is None:
                     return None
@@ -2240,19 +4465,86 @@ def _intraday_takeprofit_monitor() -> None:
             can_place = ((datetime.time(9, 20) <= t < datetime.time(9, 25))
                          or (datetime.time(9, 30) <= t < datetime.time(11, 30))
                          or (datetime.time(13, 0) <= t < datetime.time(14, 45)))
+            due_by_short: dict[str, list[dict[str, Any]]] = {}
+            for due_pos in due:
+                due_by_short.setdefault(
+                    str(due_pos.get("ts_code", "")).split(".")[0], []
+                ).append(due_pos)
+            handled_active_orders: set[str] = set()
             for pos in due:
                 ts_code = str(pos.get("ts_code", "")); short = ts_code.split(".")[0]
                 shares = int(pos.get("shares", 0)); name_s = str(pos.get("name", ""))
-                rec = active.get(short)
-                if rec:
+                recs = active.get(short, [])
+                if recs:
+                    matched: list[tuple[dict[str, Any], dict[str, Any] | None]] = []
+                    for candidate in recs:
+                        oid = str(candidate.get("order_id", ""))
+                        try:
+                            intent = _exit_intent_by_broker_order_id(oid)
+                        except Exception as exc:
+                            log.error("[盘中止盈] %s intent读取失败:%s", ts_code, exc)
+                            intent = None
+                        if intent is not None:
+                            if str(intent.get("local_order_id", "")) == str(pos.get("order_id", "")):
+                                matched.append((candidate, intent))
+                        elif len(recs) == 1 and len(due_by_short.get(short, [])) == 1:
+                            # 升级前旧单没有intent；仅在“同代码唯一订单+唯一本地仓”
+                            # 时允许按订单真实数量归属，其他情况一律fail-closed。
+                            matched.append((candidate, None))
+                    if len(matched) != 1:
+                        log.error(
+                            "🛑 [盘中止盈] %s 同代码%d张系统单/%d条到期仓无法唯一归属，"
+                            "禁止自动改账和叠单，等待14:45撤单及最终成交对账。",
+                            ts_code,
+                            len(recs),
+                            len(due_by_short.get(short, [])),
+                        )
+                        _alert_exit_safety_once(
+                            ts_code,
+                            "takeprofit_ambiguous",
+                            "🛑 止盈订单归属不明确",
+                            f"{ts_code} 同代码存在多张止盈单或多条策略仓，系统已禁止自动改账/补单，"
+                            "请核对QMT委托。",
+                        )
+                        continue
+                    rec, intent = matched[0]
+                    if str(rec.get("order_id", "")) in handled_active_orders:
+                        continue
+                    handled_active_orders.add(str(rec.get("order_id", "")))
                     status = rec["status"]
+                    intent_qty = max(int((intent or {}).get("quantity", 0) or 0), 0)
+                    order_qty = max(int(rec.get("ordered_qty", 0) or 0), intent_qty)
+                    if order_qty <= 0:
+                        log.error("[盘中止盈] %s 委托%s缺少有效订单股数，拒绝自动回写。", ts_code, rec["order_id"])
+                        continue
                     if status == 56:  # 已成 → 及时回写（否则账户心跳与本地账目失联）
-                        fill = _confirm_fill(broker_cfg, rec["order_id"], shares, "盘中止盈确认", timeout_sec=10)
-                        price = fill.avg_price if fill.avg_price > 0 else 0.0
-                        mark_position_closed(pos.get("order_id", ""), today_str, price)
-                        log.info("✅ [盘中止盈] %s %s 全部成交 @%.2f，已平仓。", ts_code, name_s, price)
+                        fill = _confirm_fill(
+                            broker_cfg, rec["order_id"], order_qty, "盘中止盈确认", timeout_sec=10
+                        )
+                        price = (
+                            fill.avg_price
+                            if fill.avg_price > 0
+                            else max(float((intent or {}).get("price", 0.0) or 0.0), 0.0)
+                        )
+                        applied_qty = _apply_known_exit_fill(
+                            str(pos.get("order_id", "")),
+                            broker_order_id=str(rec["order_id"]),
+                            current_shares=shares,
+                            filled_qty=order_qty,
+                            fill_price=price,
+                            fill_date=today_str,
+                        )
+                        # 先原子回写持仓，再解决intent。若持仓文件落盘失败，
+                        # 保留SUBMITTED/订单占用并向上抛错，绝不先声称已平仓。
+                        _resolve_exit_intent_by_broker_order_id(
+                            rec["order_id"], filled_qty=order_qty, terminal_known=True
+                        )
+                        log.info(
+                            "✅ [盘中止盈] %s %s 委托成交%d股 @%.2f，本地原持仓%d股。",
+                            ts_code, name_s, applied_qty, price, shares,
+                        )
                         _notify("sell_success", "✅ 盘中止盈成交",
-                                f"{ts_code} {name_s} 涨停附近止盈卖出成交 @{price:.2f}。")
+                                f"{ts_code} {name_s} 涨停附近止盈卖出{applied_qty}股 @{price:.2f}。")
                     elif cancel_window and status in (48, 49, 50, 51, 52, 55):  # 14:45 撤单
                         # 撤单成败以订单最终状态为准，绝不信 cancel_order 的返回值
                         # 或调用超时（2026-07-10 事故：QMT慢→调用超时→撤单实际已
@@ -2262,23 +4554,64 @@ def _intraday_takeprofit_monitor() -> None:
                             _polite_qmt("cancel_order", (rec["order_id"],))  # 发出请求即可
                             time.sleep(2)
                             st = _order_status(rec["order_id"])
-                            if st in (53, 54, 56, -2):
+                            if st in (53, 54, 56):
                                 final_st = st; break
                             time.sleep(1)
                         if final_st == 56:
-                            fill = _confirm_fill(broker_cfg, rec["order_id"], shares, "盘中止盈确认", timeout_sec=10)
-                            price = fill.avg_price if fill.avg_price > 0 else 0.0
-                            mark_position_closed(pos.get("order_id", ""), today_str, price)
-                            log.info("✅ [盘中止盈] %s %s 撤单前已全部成交 @%.2f，已平仓。", ts_code, name_s, price)
+                            fill = _confirm_fill(
+                                broker_cfg, rec["order_id"], order_qty, "盘中止盈确认", timeout_sec=10
+                            )
+                            price = (
+                                fill.avg_price
+                                if fill.avg_price > 0
+                                else max(float((intent or {}).get("price", 0.0) or 0.0), 0.0)
+                            )
+                            applied_qty = _apply_known_exit_fill(
+                                str(pos.get("order_id", "")),
+                                broker_order_id=str(rec["order_id"]),
+                                current_shares=shares,
+                                filled_qty=order_qty,
+                                fill_price=price,
+                                fill_date=today_str,
+                            )
+                            _resolve_exit_intent_by_broker_order_id(
+                                rec["order_id"], filled_qty=order_qty, terminal_known=True
+                            )
+                            log.info(
+                                "✅ [盘中止盈] %s %s 撤单前成交%d股 @%.2f。",
+                                ts_code, name_s, applied_qty, price,
+                            )
                             _notify("sell_success", "✅ 盘中止盈成交",
-                                    f"{ts_code} {name_s} 止盈卖单在撤单前已全部成交 @{price:.2f}。")
-                        elif final_st in (53, 54, -2):
+                                    f"{ts_code} {name_s} 止盈卖单在撤单前成交{applied_qty}股 @{price:.2f}。")
+                        elif final_st in (53, 54):
                             log.info("[盘中止盈] %s 14:45未成交已撤单（订单状态%s确认），交回14:55收盘平仓。", ts_code, final_st)
-                            fill = _confirm_fill(broker_cfg, rec["order_id"], shares, "止盈撤单后确认", timeout_sec=8)
-                            if 0 < fill.filled_qty < shares:
-                                reduce_position_shares(pos.get("order_id", ""), shares - fill.filled_qty)
+                            fill = _confirm_fill(
+                                broker_cfg, rec["order_id"], order_qty, "止盈撤单后确认", timeout_sec=8
+                            )
+                            applied_qty = min(
+                                max(int(fill.filled_qty or 0), 0), order_qty, shares
+                            )
+                            price = (
+                                fill.avg_price
+                                if fill.avg_price > 0
+                                else max(float((intent or {}).get("price", 0.0) or 0.0), 0.0)
+                            )
+                            applied_qty = _apply_known_exit_fill(
+                                str(pos.get("order_id", "")),
+                                broker_order_id=str(rec["order_id"]),
+                                current_shares=shares,
+                                filled_qty=applied_qty,
+                                fill_price=price,
+                                fill_date=today_str,
+                            )
+                            _resolve_exit_intent_by_broker_order_id(
+                                rec["order_id"],
+                                filled_qty=min(max(int(fill.filled_qty or 0), 0), order_qty),
+                                terminal_known=True,
+                            )
+                            if 0 < applied_qty < shares:
                                 log.warning("[盘中止盈] %s 部成%d/%d股后撤单，剩余%d股由14:55平仓。",
-                                            ts_code, fill.filled_qty, shares, shares - fill.filled_qty)
+                                            ts_code, applied_qty, shares, shares - applied_qty)
                         else:
                             _notify("sell_fail", "⚠️ 止盈单撤单失败",
                                     f"{ts_code} 盘中止盈单14:45撤单后订单状态仍未确认为已撤（最后状态={final_st}），"
@@ -2306,24 +4639,108 @@ def _intraday_takeprofit_monitor() -> None:
                     pcap = 0.30 if ts_code.endswith(".BJ") else (0.20 if short.startswith(("300", "301", "688", "689")) else 0.10)
                     upper = round(pre * (1 + pcap), 2)
                 sell_price = round(upper - offset, 2)
-                request = OrderRequest(
-                    ts_code=ts_code, broker_code=ts_code, side="SELL",
-                    quantity=shares, price_type="FIXED_PRICE", price=sell_price,
-                    strategy_name="A_SYSTEM_ABC", remark=f"{REMARK_PREFIX}-{today_str}",
-                )
                 place_tries[short] = place_tries.get(short, 0) + 1
                 if place_tries[short] >= MAX_PLACE_TRIES:
                     _notify("sell_fail", "⚠️ 盘中止盈熔断",
                             f"{ts_code} {name_s} 止盈委托当日已尝试{MAX_PLACE_TRIES}次仍无活单"
                             f"（反复被拒或废单，疑节假日/通道异常），今日放弃预挂，14:55收盘平仓照常兜底。",
                             level="critical")
-                result = _polite_qmt("place_order", (request,))
-                if result is None:
-                    log.warning("[盘中止盈] %s 挂单未执行（QMT忙/超时），下轮重试。", ts_code)
-                    continue
+                with _exit_sell_lock:
+                    # 查询→归属/预算核算→PREPARED落盘→下单必须是同一卖出生命周期
+                    # 临界区；否则14:55/看门狗可能在两次查询之间插入另一张单。
+                    positions_now = _polite_qmt("query_positions")
+                    orders_now = _polite_qmt("query_orders")
+                    if positions_now is None or orders_now is None:
+                        log.warning("[盘中止盈] %s QMT持仓/委托快照不可得，本轮不发单。", ts_code)
+                        continue
+                    broker_total = 0
+                    broker_can_use = 0
+                    for raw_pos in positions_now or []:
+                        pos_data = object_to_dict(raw_pos)
+                        pos_code = str(first_present(
+                            pos_data, ["stock_code", "m_strInstrumentID", "ts_code"], ""
+                        )).upper().split(".")[0]
+                        if pos_code != short:
+                            continue
+                        broker_total += max(to_int(first_present(
+                            pos_data, ["volume", "m_nVolume", "total_volume"], 0
+                        ), 0), 0)
+                        broker_can_use += max(to_int(first_present(
+                            pos_data, ["can_use_volume", "m_nCanUseVolume"], 0
+                        ), 0), 0)
+                    safe_qty = _safe_new_exit_order_quantity(
+                        ts_code,
+                        requested_qty=shares,
+                        broker_total=broker_total,
+                        broker_can_use=broker_can_use,
+                        orders=orders_now,
+                        trade_date=today_str,
+                        log=log,
+                        phase="盘中止盈",
+                    )
+                    safe_qty = _normalize_exit_slice_quantity(ts_code, safe_qty, shares)
+                    if safe_qty <= 0:
+                        continue
+                    request = OrderRequest(
+                        ts_code=ts_code,
+                        broker_code=ts_code,
+                        side="SELL",
+                        quantity=safe_qty,
+                        price_type="FIXED_PRICE",
+                        price=sell_price,
+                        strategy_name="A_SYSTEM_ABC",
+                        # 同代码可能同时有多条策略持仓。把本地持仓ID的短哈希
+                        # 写入remark，使PREPARED在券商单号未回写前崩溃时，仍能
+                        # 用“代码+remark+数量”唯一找回自己的QMT委托。
+                        remark=(
+                            f"{REMARK_PREFIX}-{today_str}-"
+                            f"{hashlib.sha256(str(pos.get('order_id', '')).encode('utf-8')).hexdigest()[:8]}"
+                        ),
+                    )
+                    blocked = _exit_order_submission_block_reason()
+                    if blocked:
+                        log.error("[盘中止盈] %s 发单前触发时间门禁:%s", ts_code, blocked)
+                        continue
+                    intent_token = _prepare_exit_order_intent(
+                        request,
+                        phase="盘中止盈",
+                        local_order_id=str(pos.get("order_id", "")),
+                    )
+                    blocked = _exit_order_submission_block_reason()
+                    if blocked:
+                        _update_exit_order_intent(
+                            intent_token,
+                            status="REJECTED",
+                            terminal_known=True,
+                        )
+                        log.error("[盘中止盈] %s PREPARED后触发时间门禁:%s", ts_code, blocked)
+                        continue
+                    result = _polite_qmt("place_order", (request,))
+                    if result is None:
+                        # 调用可能已送达券商；PREPARED保持全量未知占用，严禁下轮
+                        # 因query_orders暂时查不到就重复预挂。
+                        log.error(
+                            "[盘中止盈] %s 下单调用超时/未知；intent=%s保留占用，"
+                            "停止自动重发并等待QMT明确状态。",
+                            ts_code,
+                            intent_token,
+                        )
+                        continue
+                    if result.accepted:
+                        _update_exit_order_intent(
+                            intent_token,
+                            status="SUBMITTED",
+                            broker_order_id=str(result.order_id or ""),
+                        )
+                    else:
+                        _update_exit_order_intent(
+                            intent_token,
+                            status="REJECTED",
+                            terminal_known=True,
+                        )
                 if result.accepted:
                     log.warning("⏳ [盘中止盈] %s %s 当日到期，09:20预挂涨停-%.2f止盈卖单 %d股@%.2f（14:45未成交自动撤）",
-                                ts_code, name_s, offset, shares, sell_price)
+                                ts_code, name_s, offset, safe_qty, sell_price)
                     _notify("sell_success", "📈 止盈卖单已预挂",
                             f"{ts_code} {name_s} 今日到期，已挂{sell_price:.2f}（涨停-{offset:.2f}）止盈卖单，"
                             f"冲板即成交锁定强势；14:45未成交自动撤单，14:55照常收盘平仓。",
@@ -2395,8 +4812,8 @@ def check_and_close_positions() -> None:
                 continue
 
             # 逾期持仓（计划平仓日已过=事故残留，如2026-07-08皇氏平仓失败过夜）
-            # 必须第一时间清理：09:15后即可挂跌停价卖单（参与集合竞价/连续竞价，
-            # 必成交），不等14:55、也不依赖上一轮先标记sell_pending。
+            # 必须第一时间清理：09:15后立即按当前交易阶段合法限价申报，不等14:55、
+            # 也不依赖上一轮先标记sell_pending；跌停/停牌/流动性不足时仍不保证成交。
             overdue_past = planned_exit < today_str
             sellable_now = now_beijing().time() >= datetime.time(9, 15) and now_beijing().time() <= datetime.time(15, 0)
             if market_is_open() or pending or (overdue_past and sellable_now):
@@ -2405,11 +4822,12 @@ def check_and_close_positions() -> None:
                 _do_sell(pos, qmt_enabled)
             else:
                 # 市场未开盘，标记 sell_pending，等开盘时处理
-                positions_fresh = load_positions()
-                for p in positions_fresh:
-                    if p["order_id"] == pos["order_id"] and p["status"] == "open":
-                        p["status"] = "sell_pending"
-                save_positions(positions_fresh)
+                with _positions_file_lock:
+                    positions_fresh = load_positions()
+                    for p in positions_fresh:
+                        if p["order_id"] == pos["order_id"] and p["status"] == "open":
+                            p["status"] = "sell_pending"
+                    save_positions(positions_fresh)
                 logger().warning("市场未开盘，%s %s 标记 sell_pending，开盘后自动处理", ts_code, name)
 
         except Exception as e:
@@ -3957,6 +6375,11 @@ def _round_stock_price(value: float) -> float:
     return float(Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
 
+def _ceil_stock_price(value: float) -> float:
+    """把卖出价格下限向上取到0.01元，确保申报价不会低于精确笼子边界。"""
+    return float(Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_CEILING))
+
+
 def _find_local_prev_close(ts_code: str, signal_date: str = "") -> tuple[float, str]:
     """从收盘流水线数据中读取上一交易日收盘价，供T+1涨停价估算兜底。
 
@@ -5100,8 +7523,20 @@ def job_afternoon() -> None:
     #    （SELL 行仅按 planned_exit_date<=today 产生，与盘中这次刷新无关），
     #    且平仓价在执行时实时取买10/买5，不从文件读死，因此先平仓完全安全。
     try:
-        # 收盘竞价旁路(2026-07-16 方案G):小仓位推迟至14:57:05申报进收盘集合
-        # 竞价,成交价=收盘价=回测口径,右尾全收(85笔实测复利差1.243x)。
+        config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+        if config.get("broker_adapter_enabled") and config.get("qmt_enabled"):
+            # 14:53线程已做一次；这里幂等再清场，覆盖daemon重启或线程异常。
+            # 撤单函数自行持有卖出生命周期锁；不能把整批持仓提交/成交确认
+            # 包进全局锁，否则第一只慢单会饿死14:56:20交接和后续标的。
+            handoff_clean = _cancel_active_exit_pov_orders(
+                config.get("broker", {}), wait_sec=20
+            )
+            if not handoff_clean:
+                raise RuntimeError(
+                    "POV活跃委托未完成撤单，已阻止14:55主平仓重复下单；"
+                    "14:56看门狗将按实际未覆盖余量补单"
+                )
+        # 收盘竞价旁路默认关闭；只有配置显式打开才推迟主平仓。
         if close_plan_exists and _exit_auction_bypass_decision():
             global _exit_bypass_day
             _exit_bypass_day = today_beijing().strftime("%Y%m%d")
@@ -7293,7 +9728,7 @@ def _print_account_status(log: Any) -> None:
         log.error("❌ 读取配置失败：%s", e)
         return
 
-    # 平仓窗口(14:54:30~14:58)心跳静默：不与14:55平仓抢一秒钟的锁
+    # 平仓窗口(14:54:30~14:58)心跳静默：不与主平仓、撤单和竞价兜底抢QMT锁。
     _t = now_beijing().time()
     if datetime.time(14, 54, 30) <= _t < datetime.time(14, 58):
         return
@@ -7407,6 +9842,7 @@ def _print_account_status(log: Any) -> None:
         except Exception:
             loss_thresholds = [-5.0, -10.0, -15.0, -20.0, -30.0]
         positions_dirty = False
+        position_metadata_updates: dict[str, list[str]] = {}
         pos_parts = []
         for p in live_positions:
             current_price = p.market_value / p.volume
@@ -7471,6 +9907,11 @@ def _print_account_status(log: Any) -> None:
                             key=lambda x: float(x),
                             reverse=True,
                         )
+                        local_oid = str(lp.get("order_id", ""))
+                        if local_oid:
+                            position_metadata_updates[local_oid] = list(
+                                lp["notified_loss_thresholds"]
+                            )
                         positions_dirty = True
                 pos_parts.append(
                     f"策略={strategy_leg} {p.ts_code} {name_s} ×{int(p.volume)}股 "
@@ -7489,7 +9930,15 @@ def _print_account_status(log: Any) -> None:
                     f"市值{p.market_value / 10000:.2f}万"
                 )
         if positions_dirty:
-            save_positions(local_positions)
+            # 心跳计算期间POV/主平仓可能已减少股数或关闭持仓。只把本轮新增的
+            # 告警元数据合并到最新文件，禁止用旧快照整文件覆盖真实成交回写。
+            with _positions_file_lock:
+                fresh_positions = load_positions()
+                for fresh in fresh_positions:
+                    oid = str(fresh.get("order_id", ""))
+                    if oid in position_metadata_updates:
+                        fresh["notified_loss_thresholds"] = position_metadata_updates[oid]
+                save_positions(fresh_positions)
         log.info("✅ [账户] %s 总资产%.2f万 | 持仓：%s",
                  masked_acct, total_asset / 10000,
                  "  ".join(pos_parts))
@@ -7614,7 +10063,7 @@ def main() -> None:
         name="calendar-sentinel",
     ).start()
 
-    # 收盘平仓看门狗（14:52/14:55核查到期持仓是否有人管，只告警不下单）
+    # 收盘平仓看门狗：核查券商实际余仓与活跃SELL覆盖，必要时仅补未覆盖量。
     threading.Thread(
         target=_close_position_watchdog,
         daemon=True,
