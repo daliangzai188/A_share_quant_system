@@ -839,10 +839,20 @@ class CombinedLiveEngine:
             if str(p.get("planned_exit_date", "99991231")) <= today
             or str(p.get("status", "")).lower() == "sell_pending"
         ]
-        # 今日集合竞价卖出的标的代码（T+0限制：当日不可再买入同一标的）
-        due_selling_codes: set[str] = {str(p.get("ts_code", "")) for p in due_e2_positions}
+        # 衔接日到期判定必须覆盖全部非D腿(2026-07-17 天顺B腿事故修复):
+        # 原实现只把 E2 的今日到期仓从"占用"中排除,A/B/C 腿今日到期(14:55收盘平)
+        # 的仓被当成"未到期旧持仓"一刀切 BLOCK,漏掉衔接日新候选——而模式3回测
+        # 基准(5604x)正是"衔接日用剩余现金买新仓"口径,17笔衔接新仓含最大的肉。
+        # ABC 到期卖出由 daemon check_and_close_positions 直卖,不需要计划单行。
+        due_non_d_positions = [
+            p for p in open_non_d_positions
+            if str(p.get("planned_exit_date", "99991231")) <= today
+            or str(p.get("status", "")).lower() == "sell_pending"
+        ]
+        # 今日到期卖出的标的代码（T+0限制：当日不可再买入同一标的）
+        due_selling_codes: set[str] = {str(p.get("ts_code", "")) for p in due_non_d_positions}
         # 非D持仓中今日不到期的部分——才是真正占用资金、阻断新开仓的持仓
-        holding_non_d_positions = [p for p in open_non_d_positions if p not in due_e2_positions]
+        holding_non_d_positions = [p for p in open_non_d_positions if p not in due_non_d_positions]
         abc_path, abc_orders = self.load_latest_abc_orders()
         # ABC 计划单日期校验（E2 planned_buy_date==today 的同款保护）：
         # load_latest_abc_orders 只按文件时间取最新，若某晚收盘流水线失败，
@@ -995,7 +1005,9 @@ class CombinedLiveEngine:
             ))
 
         else:
-            # 账户空仓 OR 所有非D持仓今日均到期（9:23集合竞价平仓，9:25成交后资金释放）：
+            # 账户空仓 OR 所有非D持仓今日均到期（衔接日：旧仓14:55收盘平仓，
+            # 新仓早盘用剩余现金买入=模式3回测口径,日内两仓并存几小时;
+            # resize按实际可用现金定仓,天然限制在"剩余现金"内）：
             # 按优先级 ABC > E2 > D 决定今日行动
             abc_decisions = self.build_abc_buy_decisions(abc_orders, str(abc_path or ""))
             # T+0限制：过滤今日集合竞价已卖出的标的（同日不可再买入）
