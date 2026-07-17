@@ -1311,15 +1311,22 @@ def resize_buy_orders_for_live_account(
         # 后续需要追加 LIVE_SIZE_ADJUSTED 等字符串标记，先转 object，避免09:20实盘定仓时报dtype错误。
         adjusted["risk_flags"] = adjusted["risk_flags"].astype("object")
 
-    # 同票集中度防线(2026-07-16 用户拍板):候选=已持仓同一只票 → 放弃买入。
-    # 否则衔接日会变成"早上买回X、下午卖旧仓X"=同票连续暴露4天全仓押注,
-    # 黑天鹅(连续跌停)逃不出来。历史代价=零:199笔审计中同票衔接0次。
+    # 同票集中度防线(2026-07-16 用户拍板):新候选=已持仓(非当日买入)同一只票
+    # → 放弃买入。否则衔接日变成"早上买回X、下午卖旧仓X"=同票连续暴露4天
+    # 全仓押注,黑天鹅(连续跌停)逃不出来。历史代价=零:199笔审计同票衔接0次。
+    # ⚠️ 身份区分(用户强调):当日买入的持仓=POV拆单在途(竞价段已成交、
+    # 平滑段继续买同一只票),绝不算同票冲突——只拦"昨日及更早买入且未清仓"
+    # 的仓与收盘后新候选的重合。
     held_aliases: set[str] = set()
     if bool(live_cfg.get("same_stock_skip_enabled", True)):
         try:
+            _today_s = today_beijing().strftime("%Y%m%d")
             for p in load_positions():
-                if str(p.get("status", "")).lower() in {"open", "sell_pending"}:
-                    held_aliases.update(_ts_code_aliases(p.get("ts_code", "")))
+                if str(p.get("status", "")).lower() not in {"open", "sell_pending"}:
+                    continue
+                if str(p.get("buy_date", "")) == _today_s:
+                    continue  # 当日买入=本候选的拆单开仓,不是"既有持仓"
+                held_aliases.update(_ts_code_aliases(p.get("ts_code", "")))
         except Exception as e:
             logger().warning("同票检查读取持仓失败(本轮不拦截):%s", e)
 

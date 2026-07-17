@@ -1292,10 +1292,11 @@ class EntryExitCapacityGateTest(unittest.TestCase):
         self.assertIn("LIQUIDITY_CAP_DATA_MISSING", str(row["risk_flags"]))
 
     def test_same_stock_candidate_is_skipped_when_already_held(self) -> None:
-        """同票集中度防线:候选与已持仓同票→放弃买入(防衔接日同票连续暴露4天)。"""
+        """同票集中度防线:新候选与既有持仓(昨日买入未清仓)同票→放弃买入。"""
         account = SimpleNamespace(total_asset=12_500_000, available_cash=12_500_000)
         quote_map = {"002800.SZ": SimpleNamespace(last_price=10.0)}
-        held = [{"ts_code": "002800.SZ", "status": "open", "shares": 10_000, "order_id": "x"}]
+        held = [{"ts_code": "002800.SZ", "status": "open", "shares": 10_000,
+                 "order_id": "x", "buy_date": "20260715"}]  # 昨日买入=既有持仓
         with patch.object(trading_daemon, "load_json_config", return_value=self._config()), patch.object(
             trading_daemon, "_signal_day_amount", return_value=100_000_000.0
         ), patch.object(trading_daemon, "load_positions", return_value=held), patch.object(
@@ -1308,6 +1309,27 @@ class EntryExitCapacityGateTest(unittest.TestCase):
         row = result.iloc[0]
         self.assertEqual(int(row["round_lot_shares"]), 0)
         self.assertIn("SAME_STOCK_ALREADY_HELD_SKIP", str(row["risk_flags"]))
+
+    def test_same_stock_guard_ignores_today_pov_partial_fill(self) -> None:
+        """POV拆单在途不算同票冲突(用户强调):当日买入的持仓(竞价段已成交、
+        平滑段继续买同一只票)是本候选的拆单开仓,绝不能被同票防线拦截。"""
+        account = SimpleNamespace(total_asset=12_500_000, available_cash=12_500_000)
+        quote_map = {"002800.SZ": SimpleNamespace(last_price=10.0)}
+        today_s = trading_daemon.today_beijing().strftime("%Y%m%d")
+        held = [{"ts_code": "002800.SZ", "status": "open", "shares": 700,
+                 "order_id": "pov-auction", "buy_date": today_s}]  # 今日竞价段拆单已成交
+        with patch.object(trading_daemon, "load_json_config", return_value=self._config()), patch.object(
+            trading_daemon, "_signal_day_amount", return_value=100_000_000.0
+        ), patch.object(trading_daemon, "load_positions", return_value=held), patch.object(
+            trading_daemon, "_notify"
+        ):
+            result = trading_daemon.resize_buy_orders_for_live_account(
+                self._planned_order(), account, quote_map, 0.0
+            )
+
+        row = result.iloc[0]
+        self.assertNotIn("SAME_STOCK_ALREADY_HELD_SKIP", str(row["risk_flags"]))
+        self.assertGreater(int(row["round_lot_shares"]), 0)  # 正常继续定仓,不拦截
 
 
 class LargeExitForceEligibilityTest(unittest.TestCase):
