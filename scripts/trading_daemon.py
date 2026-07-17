@@ -1027,11 +1027,12 @@ def _execute_orders_inprocess(
             .dropna().astype(str).unique().tolist()
         )
         quote_map = adapter.get_full_tick(ts_codes) if ts_codes else {}
+        # 仓位口径只计策略持仓市值:打新中签/人工持仓不挤占策略额度(2026-07-17)
         planned_orders = resize_buy_orders_for_live_account(
             planned_orders=planned_orders,
             account=account,
             quote_map=quote_map,
-            current_market_value=account.market_value,
+            current_market_value=_strategy_only_market_value(positions),
         )
 
         preview = gateway.validate_planned_orders(
@@ -1041,7 +1042,7 @@ def _execute_orders_inprocess(
             quote_map,
             positions=positions,
             account_total_asset=account.total_asset,
-            current_market_value=account.market_value,
+            current_market_value=_strategy_only_market_value(positions),
         )
 
         # 保存 preview CSV 供审计
@@ -5949,12 +5950,12 @@ def job_premarket_buy() -> None:
         adapter   = _qmt_get(broker_cfg)
         quote_map = adapter.get_full_tick(ts_codes)
 
-    # 按账户资金缩放订单
+    # 按账户资金缩放订单(市值口径只计策略持仓:打新中签/人工持仓不挤占策略额度)
     buy_orders = resize_buy_orders_for_live_account(
         planned_orders=buy_orders,
         account=account,
         quote_map=quote_map,
-        current_market_value=account.market_value,
+        current_market_value=_strategy_only_market_value(positions_live),
     )
 
     lt_cfg = config.get("live_trade", {})
@@ -9785,6 +9786,31 @@ def _check_capacity_wall_milestone(total_asset: float, config: dict, log: Any) -
         log.warning("容量墙里程碑检查异常(不影响交易):%s", e)
 
 
+def _strategy_only_market_value(broker_positions: Any) -> float:
+    """QMT持仓中仅属于本策略系统的市值(2026-07-17 用户拍板:打新中签的
+    债券/股票、人工买入等一切非策略持仓,不进入交易系统逻辑)。
+
+    识别规则:QMT持仓代码能匹配本地策略持仓(open/sell_pending)=策略仓;
+    其余(申购中签/人工/理财)=外部持仓,不计入仓位口径,防止其市值挤占
+    total_position_cap 的策略额度。本地持仓文件只由策略成交写入(record_buy),
+    因此"在本地"是策略身份的唯一判据,覆盖 ABCDE2L 全部腿。
+    """
+    local_aliases: set[str] = set()
+    try:
+        for lp in load_positions():
+            if str(lp.get("status", "")).lower() in {"open", "sell_pending"}:
+                local_aliases.update(_ts_code_aliases(lp.get("ts_code", "")))
+    except Exception:
+        return 0.0
+    total = 0.0
+    for p in (broker_positions or []):
+        if int(getattr(p, "volume", 0) or 0) <= 0:
+            continue
+        if any(al in local_aliases for al in _ts_code_aliases(getattr(p, "ts_code", ""))):
+            total += float(getattr(p, "market_value", 0.0) or 0.0)
+    return total
+
+
 def _print_account_status(log: Any) -> None:
     """账户信息轮询（后台线程）：复用持久连接，查询无需重新握手。
     只有 query_account/query_positions 成功返回，才算账户连接已验证可用。
@@ -9920,6 +9946,7 @@ def _print_account_status(log: Any) -> None:
         positions_dirty = False
         position_metadata_updates: dict[str, list[str]] = {}
         pos_parts = []
+        ext_parts = []
         for p in live_positions:
             current_price = p.market_value / p.volume
             lp = {}
@@ -9927,6 +9954,13 @@ def _print_account_status(log: Any) -> None:
                 if alias in local_pos_map:
                     lp = local_pos_map[alias]
                     break
+            if not lp:
+                # 外部持仓(打新中签/人工买入,2026-07-17 用户拍板):不参与策略
+                # 逻辑,不触发浮亏告警(转债波动误报+无本地记录导致每轮重复推),
+                # 单独分段展示,与策略持仓彻底隔离。
+                ext_parts.append(
+                    f"{p.ts_code} ×{int(p.volume)} 市值{p.market_value / 10000:.2f}万")
+                continue
             strategy_leg = str(lp.get("strategy_leg", "未知") or "未知").upper()
             name_s = str(lp.get("name") or getattr(p, "name", "") or "")
             buy_price = float(lp.get("buy_price", 0) or 0)
@@ -10015,9 +10049,10 @@ def _print_account_status(log: Any) -> None:
                     if oid in position_metadata_updates:
                         fresh["notified_loss_thresholds"] = position_metadata_updates[oid]
                 save_positions(fresh_positions)
-        log.info("✅ [账户] %s 总资产%.2f万 | 持仓：%s",
+        ext_text = ("  | 外部持仓(打新/人工,不参与策略)：" + "  ".join(ext_parts)) if ext_parts else ""
+        log.info("✅ [账户] %s 总资产%.2f万 | 持仓：%s%s",
                  masked_acct, total_asset / 10000,
-                 "  ".join(pos_parts))
+                 "  ".join(pos_parts) if pos_parts else "(无策略持仓)", ext_text)
     else:
         clear_local_positions_when_broker_empty("账户心跳")
         log.info("✅ [账户] %s | 账户%s 总资产%.2f万 | 无持仓",
