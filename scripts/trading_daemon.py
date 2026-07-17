@@ -10204,7 +10204,7 @@ def main() -> None:
 
     # POV平滑执行断点恢复：daemon在09:25~10:30间重启时接续未完成的平滑买入
     try:
-        if (is_trade_day(today_beijing().date())
+        if (is_trade_day(now_beijing().date())
                 and datetime.time(9, 25) <= now_beijing().time() < datetime.time(10, 30)
                 and _pov_active_today()):
             log.warning("检测到未完成的POV平滑执行状态，恢复执行线程。")
