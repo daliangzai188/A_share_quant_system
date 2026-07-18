@@ -188,8 +188,15 @@ def main() -> None:
             )
             if lvl != prev:
                 verb = "恶化" if rank[lvl] > rank.get(prev, 0) else "恢复"
+                # 文案口径(2026-07-18 因果回测定稿):预警≠降仓信号。E2 152笔
+                # 回测:YELLOW/RED状态下一笔期望+7.11%/+5.79%(GREEN仅+0.74%),
+                # 预警时降仓两年复利2.2x→1.5x。预警的唯一用途=触发结构性核查
+                # (制度变化/玩法拥挤/规则失效),无结构性变化则按纪律满仓拿住。
+                advice = ("。⚠️按历史数据此状态后下一笔期望反而更高(均值回归),"
+                          "不要降仓;请找Claude做一次结构性核查(是正常回撤还是策略环境已变)。"
+                          if lvl in ("YELLOW", "RED") else "。")
                 bark(f"{'🔴' if lvl == 'RED' else ('🟡' if lvl == 'YELLOW' else '🟢')} 策略健康度{verb}:{group}→{lvl}",
-                     msgs[-1] + ("。建议评估降仓/停腿(e2_enabled)。" if lvl == "RED" else ""),
+                     msgs[-1] + advice,
                      critical=(lvl == "RED"))
         state[group] = lvl
     # 每周一例行摘要(不论级别)
