@@ -187,21 +187,35 @@ def main() -> None:
                 f"(基线P10={r['p10'] * 100:+.2f}%,P5={r['p5'] * 100:+.2f}%,全样本{r['all_mean'] * 100:+.2f}%,n={r['n']})"
             )
             if lvl != prev:
-                verb = "恶化" if rank[lvl] > rank.get(prev, 0) else "恢复"
-                # 文案口径(2026-07-18 因果回测定稿):预警≠降仓信号。E2 152笔
-                # 回测:YELLOW/RED状态下一笔期望+7.11%/+5.79%(GREEN仅+0.74%),
-                # 预警时降仓两年复利2.2x→1.5x。预警的唯一用途=触发结构性核查
-                # (制度变化/玩法拥挤/规则失效),无结构性变化则按纪律满仓拿住。
-                advice = ("。⚠️按历史数据此状态后下一笔期望反而更高(均值回归),"
-                          "不要降仓;请找Claude做一次结构性核查(是正常回撤还是策略环境已变)。"
-                          if lvl in ("YELLOW", "RED") else "。")
-                bark(f"{'🔴' if lvl == 'RED' else ('🟡' if lvl == 'YELLOW' else '🟢')} 策略健康度{verb}:{group}→{lvl}",
-                     msgs[-1] + advice,
-                     critical=(lvl == "RED"))
+                # 文案口径(2026-07-18 因果回测定稿):预警≠降仓信号≠坏消息。
+                # E2 152笔零前视回测:YELLOW/RED状态下一笔期望+7.11%/+5.79%
+                # (GREEN仅+0.74%,深回撤后均值回归=右尾利润藏身处);预警时降仓
+                # 两年复利2.2x→1.5x,全停→1.2x。预警的唯一用途=触发结构性核查
+                # (制度变化/玩法拥挤/规则失效——机器无法从20笔数据识别,需人工
+                # 结合场外信息),无结构性变化则按纪律满仓拿住。
+                improving = rank[lvl] < rank.get(prev, 0)
+                if improving:
+                    title = f"🟢 策略体检:{group} 回到正常区({prev}→{lvl})"
+                    advice = "。指标已回到历史正常范围,无需任何操作。"
+                elif lvl == "YELLOW":
+                    title = f"🟡 策略体检:{group} 近20笔弱于自身历史(不是亏损警报)"
+                    advice = ("。这是相对自身历史标准的体检指标,不代表在亏钱。"
+                              "历史数据:此状态后下一笔期望反而更高(均值回归),"
+                              "✋不要降仓、不要停腿;唯一动作=找Claude做一次结构性核查"
+                              "(确认是正常回撤,还是市场制度/玩法环境变了)。")
+                else:  # RED
+                    title = f"🔴 策略体检:{group} 触及历史极弱位(需要核查,不需要恐慌)"
+                    advice = ("。历史上此状态后下一笔期望+5.79%(正常时仅+0.74%),"
+                              "深回撤后的反弹正是本策略利润所在,✋不要降仓。"
+                              "但极弱位必须排除'策略环境已变'的可能:请尽快找Claude"
+                              "做结构性核查(制度变化/玩法拥挤/规则失效),核查通过则满仓拿住。")
+                bark(title, msgs[-1] + advice, critical=(lvl == "RED"))
         state[group] = lvl
     # 每周一例行摘要(不论级别)
     if datetime.date.today().weekday() == 0 and state.get("_last_weekly") != today:
-        bark("📊 策略健康度周报", "；".join(msgs))
+        bark("📊 策略体检周报", "；".join(msgs)
+             + "。(口径:滚动20笔对照自身历史分位;黄/红=弱于自身标准≠亏损,"
+             "历史上弱位后下一笔期望反而更高,任何级别都不是降仓信号)")
         state["_last_weekly"] = today
     STATE_FILE.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
     new_file = not HISTORY_FILE.exists()
