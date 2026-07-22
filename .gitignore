@@ -46,6 +46,8 @@ data/raw/limit_list/*.csv
 !data/raw/limit_list/.gitkeep
 data/processed/*
 !data/processed/.gitkeep
+# POV守护进程的本地执行账本，包含委托号并用于防止重复分片下单，禁止入库
+data/state/
 data/database/*
 !data/database/.gitkeep
 
