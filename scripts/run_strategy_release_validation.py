@@ -92,6 +92,10 @@ def assert_safe_config(config: dict[str, Any]) -> None:
         if bool(config.get(key, False)):
             raise RuntimeError(f"拒绝运行发布验证：{key}=true")
     release_config = config.get("strategy_release_validation", {})
+    if not bool(release_config.get("current_release_valid", True)):
+        raise RuntimeError(
+            "拒绝运行旧发布验证：策略B已删除，A/C组合必须重新回测并重建发布门槛。"
+        )
     if bool(release_config.get("live_order_enabled", False)):
         raise RuntimeError("拒绝运行发布验证：strategy_release_validation.live_order_enabled=true")
 

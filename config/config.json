@@ -4,11 +4,11 @@
   "broker_adapter_enabled": true,
   "qmt_enabled": true,
   "active_strategy_profile": {
-    "file_role": "总策略模式开关。1=独立ABCDE2实盘状态机；2=独立L龙头策略；3=model3自动切换实盘状态机。当前用户已确认切换到mode=3；仍必须经过LiveOrderGateway风控。",
+    "file_role": "总策略模式开关。1=独立ACDE2实盘状态机（B已删除）；2=独立L龙头策略；3=model3自动切换实盘状态机。当前用户已确认切换到mode=3；仍必须经过LiveOrderGateway风控。",
     "mode": 3,
     "mode_name": "MODEL3",
     "available_modes": {
-      "1": "ABCDE2",
+      "1": "ACDE2",
       "2": "L",
       "3": "MODEL3"
     }
@@ -209,7 +209,7 @@
     "preferred_open_times": 2
   },
   "strategy_s": {
-    "file_role": "策略S深市/创业板动量补充策略配置。S 独立于 ABCDE2，只能在组合空闲且通过实盘口径认证后接入真实下单。",
+    "file_role": "策略S深市/创业板动量补充策略配置。S 独立于 ACDE2，只能在组合空闲且通过实盘口径认证后接入真实下单。",
     "enabled": true,
     "live_order_enabled": false,
     "require_live_certification": true,

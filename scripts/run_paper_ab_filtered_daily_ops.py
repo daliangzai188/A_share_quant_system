@@ -1,10 +1,10 @@
 """
-运行 A严格策略 + B0018过滤版每日模拟盘操作台。
+运行 A严格策略 + C补位策略每日操作台。
 
 文件作用：
 1. T 日收盘后先生成 A 严格策略候选。
-2. 只有 A 无选中标的时，才启用 B0018 备用策略。
-3. B 选中后先执行配置里的风险过滤，命中过滤则跳过，不寻找下一只替代。
+2. B策略已彻底删除，不参与候选、买入或自动卖出。
+3. A无选中标的时直接尝试C，后续由组合状态机继续判断E2、D或L补位。
 4. 输出每日候选、计划委托、人工复核清单、历史成交参考和操作清单。
 
 本脚本只使用本地 CSV 和本地配置，不接实盘，不调用 QMT，不下真实订单。
@@ -23,19 +23,9 @@ PROJECT_ROOT = Path(__file__).absolute().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts.audit_backup_strategy_b import find_a_audit_row, replay_selected_b
 from scripts.run_strategy_e2_signal import next_trade_day
 from scripts.run_paper_ab_filtered_observation_window import (
-    configured_b_conditions,
-    condition_text,
-    reject_b_risk_mask,
-)
-from scripts.search_paper_backup_strategy_b import (
-    apply_and_rank,
-    backup_config,
-    build_generator,
-    normalize_date,
-    selected_candidate,
+    reject_strategy_risk_mask,
 )
 from src.paper_candidate_generator import PaperCandidateGenerator
 from src.paper_daily_flow import PaperDailyFlowRunner
@@ -45,14 +35,14 @@ from src.utils.logger import setup_logger
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="运行 A+B filtered 每日模拟盘操作台。")
+    parser = argparse.ArgumentParser(description="运行 A+C filtered 每日模拟盘操作台。")
     parser.add_argument("--strategy-config", default="config/strategy_config.json", help="策略配置文件路径。")
     parser.add_argument("--runtime-config", default="config/config.json", help="运行时通用配置文件路径。")
     parser.add_argument("--signal-date", default=None, help="信号日期，格式 YYYYMMDD。不传则使用本地最新日期。")
     parser.add_argument("--top-n", type=int, default=None, help="候选输出数量，不传则读取配置。")
     parser.add_argument(
         "--output-prefix",
-        default="reports/paper_trade/ab_filtered_daily_ops/a_strict_plus_b0018_filtered_plus_c_hold3",
+        default="reports/paper_trade/ab_filtered_daily_ops/a_strict_plus_c_hold3",
         help="输出文件前缀。",
     )
     parser.add_argument("--input-trades-path", help="候选输入表。实盘流水线传 live_limit_up_fill_scored.csv。")
@@ -65,6 +55,64 @@ def parse_args() -> argparse.Namespace:
 def resolve_path(path: str | Path) -> Path:
     candidate = Path(path)
     return candidate if candidate.is_absolute() else PROJECT_ROOT / candidate
+
+
+def normalize_date(value: object) -> str:
+    if pd.isna(value):
+        return ""
+    text = str(value).strip()
+    return text[:-2] if text.endswith(".0") else text
+
+
+def build_generator(strategy_config_path: str | Path, config: dict[str, Any]) -> PaperCandidateGenerator:
+    generator = PaperCandidateGenerator(strategy_config_path)
+    generator.config = config
+    generator.paper_config = config.get("paper_candidate", {})
+    generator.risk_thresholds = generator.paper_config.get("risk_thresholds", {})
+    return generator
+
+
+def condition_strategy_config(
+    base_config: dict[str, Any],
+    conditions: list[dict[str, str]],
+    strategy_name: str,
+) -> dict[str, Any]:
+    config = copy.deepcopy(base_config)
+    config["strategy_name"] = strategy_name
+    config.setdefault("candidate_filters", {})["conditions"] = [dict(condition) for condition in conditions]
+    return config
+
+
+def condition_text(conditions: list[dict[str, str]]) -> str:
+    return ";".join(f"{condition['column']}={condition['value']}" for condition in conditions)
+
+
+def apply_and_rank(
+    generator: PaperCandidateGenerator,
+    filtered: pd.DataFrame,
+    signal_date: str,
+    top_n: int | None = None,
+) -> pd.DataFrame:
+    daily = filtered[filtered["trade_date"].map(normalize_date) == signal_date].copy()
+    if daily.empty:
+        return pd.DataFrame()
+    ranked = generator.rank_candidates(daily)
+    return generator.build_output(ranked, signal_date, top_n=top_n or generator.default_top_n)
+
+
+def selected_candidate(output: pd.DataFrame, selected_action: str) -> pd.Series | None:
+    if output.empty:
+        return None
+    selected = output[output["planned_action"].astype(str) == selected_action].copy()
+    return None if selected.empty else selected.iloc[0]
+
+
+def find_a_audit_row(audit: pd.DataFrame, signal_date: str, ts_code: str) -> pd.Series | None:
+    matched = audit[
+        (audit["trade_date"].astype(str) == str(signal_date))
+        & (audit["ts_code"].astype(str) == str(ts_code))
+    ].copy()
+    return None if matched.empty else matched.iloc[0]
 
 
 def read_csv_if_exists(path: Path) -> pd.DataFrame:
@@ -88,7 +136,7 @@ def operation_status_desc(status: object) -> str:
     text = str(status)
     mapping = {
         "DATA_QUALITY_BLOCKED": "数据口径不满足历史策略要求，禁止生成开仓计划。",
-        "NO_SELECTED": "A/B/C 策略均未选出可执行标的。",
+        "NO_SELECTED": "A/C 策略均未选出可执行标的。",
         "HISTORICAL_SIM_FILLED": "历史保守成交模型判定可成交，仅作为模拟参考。",
         "PLAN_ONLY_PENDING": "只生成模拟观察计划，未确认历史成交。",
         "REVIEW_REQUIRED_PLAN_ONLY": "需要人工复核，只能进入模拟观察。",
@@ -108,17 +156,12 @@ def selection_status_desc(status: object) -> str:
         "REQUIRED_COLUMNS_MISSING": "缺少策略必需字段。",
         "REQUIRED_COLUMNS_EMPTY": "策略必需字段全为空。",
         "A_SELECTED_HAS_PRIORITY": "A 主策略已选中，优先使用 A。",
-        "A_NO_SELECTED_B_NO_SELECTED": "A 无候选，B 备用策略也无候选。",
-        "A_NO_SELECTED_B_RISK_FILTERED": "A 无候选，B 首选标的命中风险过滤。",
-        "A_B_NO_FILLED_C_RISK_FILTERED": "A/B 未形成可成交标的，C 首选标的命中风险过滤。",
-        "A_B_NO_FILLED_C_NO_SELECTED": "A/B 未形成可成交标的，C 也无候选。",
+        "A_NO_SELECTED_B_REMOVED": "A 无候选；B已彻底删除，直接检查C及后续组合补位。",
+        "A_NO_SELECTED_C_RISK_FILTERED": "A 无候选，C 首选标的命中风险过滤。",
+        "A_NO_SELECTED_C_NO_SELECTED": "A 无候选，C 也无候选。",
     }
-    if text.startswith("A_NO_SELECTED_B_SELECTED:"):
-        return "A 无候选，B 备用策略选中；冒号后为命中条件。"
-    if text.startswith("A_NO_SELECTED_B_NOT_FILLED:"):
-        return "A 无候选，B 选中但保守成交模型未判定成交。"
-    if text.startswith("A_B_NO_FILLED_C_SELECTED:"):
-        return "A/B 未形成可成交标的，C 补位策略选中；冒号后为命中条件。"
+    if text.startswith("A_NO_SELECTED_C_SELECTED:"):
+        return "A 无候选，C 补位策略选中；冒号后为命中条件。"
     return mapping.get(text, text)
 
 
@@ -140,13 +183,13 @@ def assert_safe_config(config: dict[str, Any]) -> None:
     safe_modes = {"paper", "simulation", "dry_run", "research"}
     trade_mode = str(config.get("trade_mode", "")).strip().lower()
     if trade_mode not in safe_modes:
-        raise RuntimeError(f"拒绝运行 A+B 每日操作台：trade_mode 不是安全模式: {trade_mode}")
+        raise RuntimeError(f"拒绝运行 A/C 每日操作台：trade_mode 不是安全模式: {trade_mode}")
     for key in ["live_trading_enabled", "broker_adapter_enabled", "qmt_enabled"]:
         if bool(config.get(key, False)):
-            raise RuntimeError(f"拒绝运行 A+B 每日操作台：{key}=true")
+            raise RuntimeError(f"拒绝运行 A/C 每日操作台：{key}=true")
     ab_config = config.get("paper_ab_filtered_strategy", {})
     if bool(ab_config.get("allow_live_order", False)) or bool(ab_config.get("live_order_enabled", False)):
-        raise RuntimeError("拒绝运行 A+B 每日操作台：paper_ab_filtered_strategy 存在实盘开关。")
+        raise RuntimeError("拒绝运行 A/C 每日操作台：paper_ab_filtered_strategy 存在实盘开关。")
 
 
 def latest_signal_date(all_candidates: pd.DataFrame) -> str:
@@ -266,8 +309,6 @@ def write_data_quality_block_outputs(
                 "selection_status": quality.get("reason", ""),
                 "next_action": "当天涨停池口径不满足历史最佳策略字段要求，不生成开仓计划；等待完整 limit_list_d 或人工确认新口径。",
                 "a_candidate_count": 0,
-                "b_candidate_count": 0,
-                "b_rejected_by_filter_count": 0,
                 "c_candidate_count": 0,
                 "c_rejected_by_filter_count": 0,
                 "selected_count": 0,
@@ -329,7 +370,7 @@ def risk_reject_detail(frame: pd.DataFrame, config: dict[str, Any]) -> pd.Series
     if frame.empty:
         return pd.Series(dtype=str)
     ab_config = config.get("paper_ab_filtered_strategy", {})
-    rules = ab_config.get("b_strategy", {}).get("risk_reject_rules", [])
+    rules = ab_config.get("c_strategy", {}).get("risk_reject_rules", [])
     details: list[str] = []
     for _, row in frame.iterrows():
         hits: list[str] = []
@@ -383,7 +424,7 @@ def risk_reject_detail(frame: pd.DataFrame, config: dict[str, Any]) -> pd.Series
                     group_parts.append(f"{column}={float(value):g} {operator} {float(threshold):g}")
                 if group_matched and group_parts:
                     hits.append(f"{rule_name}: {rule_desc}；" + "，".join(group_parts))
-        details.append("；".join(hits) if hits else "未命中可解释风险规则，请检查 reject_b_risk_mask 配置。")
+        details.append("；".join(hits) if hits else "未命中可解释风险规则，请检查 C risk_reject_rules 配置。")
     return pd.Series(details, index=frame.index)
 
 
@@ -398,25 +439,6 @@ def resolve_a_execution(
     account_return = to_float(audit_row.get("dynamic_account_return", 0.0))
     note = "A 命中历史审计成交，收益仅用于复盘参考。"
     return "HISTORICAL_SIM_FILLED", account_return, "a_audit_dynamic_account_return", note
-
-
-def resolve_b_execution(
-    selected_b: pd.DataFrame,
-    runtime_config_path: str | Path,
-) -> tuple[pd.DataFrame, str, float, str, str]:
-    selected_b = selected_b.copy()
-    if "trade_date" not in selected_b.columns and "signal_date" in selected_b.columns:
-        selected_b["trade_date"] = selected_b["signal_date"].map(normalize_date)
-    replayed = replay_selected_b(selected_b, runtime_config_path)
-    if replayed.empty:
-        return replayed, "PLAN_ONLY_PENDING", 0.0, "", "B 未生成历史回放结果，只保留模拟计划。"
-    row = replayed.iloc[0]
-    if not to_bool(row.get("buy_executed", False)):
-        return replayed, "BUY_REJECTED", 0.0, "b_conservative_daily_replay", str(row.get("buy_reject_reason", ""))
-    if not to_bool(row.get("sell_executed", False)):
-        return replayed, "SELL_UNRESOLVED", 0.0, "b_conservative_daily_replay", str(row.get("sell_reject_reason", ""))
-    account_return = to_float(row.get("strict_account_return", 0.0))
-    return replayed, "HISTORICAL_SIM_FILLED", account_return, "b_conservative_daily_replay", "B 日线保守成交回放完成。"
 
 
 def configured_c_conditions(config: dict[str, Any]) -> list[dict[str, str]]:
@@ -591,8 +613,6 @@ def build_checklist(
     planned_orders: pd.DataFrame,
     manual_review: pd.DataFrame,
     a_candidates: pd.DataFrame,
-    b_candidates: pd.DataFrame,
-    b_rejected: pd.DataFrame,
     c_candidates: pd.DataFrame,
     c_rejected: pd.DataFrame,
     live_plan_mode: bool = False,
@@ -604,10 +624,8 @@ def build_checklist(
                     "signal_date": signal_date,
                     "strategy_leg": "NONE",
                     "operation_status": "NO_SELECTED",
-                    "next_action": "A/B/C均无可用候选，今日不生成模拟买入计划。",
+                    "next_action": "A/C均无可用候选，今日不生成该层买入计划；组合状态机继续检查E2、D或L。",
                     "a_candidate_count": int(len(a_candidates)),
-                    "b_candidate_count": int(len(b_candidates)),
-                    "b_rejected_by_filter_count": int(len(b_rejected)),
                     "c_candidate_count": int(len(c_candidates)),
                     "c_rejected_by_filter_count": int(len(c_rejected)),
                     "selected_count": 0,
@@ -645,8 +663,6 @@ def build_checklist(
                 "selection_status": row.get("selection_status", ""),
                 "next_action": next_action,
                 "a_candidate_count": int(len(a_candidates)),
-                "b_candidate_count": int(len(b_candidates)),
-                "b_rejected_by_filter_count": int(len(b_rejected)),
                 "c_candidate_count": int(len(c_candidates)),
                 "c_rejected_by_filter_count": int(len(c_rejected)),
                 "selected_count": 1,
@@ -664,10 +680,10 @@ def build_checklist(
                 "paper_observation_allowed": not live_plan_mode,
                 "live_order_enabled": live_plan_mode,
                 "safety_note": (
-                    "A+B+C 实盘已放开：计划单经组合状态机（planned_order_date==today校验）→ "
+                    "A+C计划单经组合状态机（planned_order_date==today校验）→ "
                     "LiveOrderGateway 校验 → 按账户资金/单笔限额缩放后下单。"
                     if live_plan_mode
-                    else "A+B+C filtered 只允许模拟观察；未完成分钟K、盘口和连续模拟验证前，不允许实盘。"
+                    else "A+C只允许模拟观察；未完成分钟K、盘口和连续模拟验证前，不允许实盘。"
                 ),
             }
         ]
@@ -698,8 +714,6 @@ def enrich_checklist(checklist: pd.DataFrame) -> pd.DataFrame:
 def output_paths(output_prefix: Path, signal_date: str) -> dict[str, Path]:
     return {
         "a_candidates": output_prefix.with_name(output_prefix.name + f"_{signal_date}_a_candidates.csv"),
-        "b_candidates": output_prefix.with_name(output_prefix.name + f"_{signal_date}_b_candidates.csv"),
-        "b_rejected": output_prefix.with_name(output_prefix.name + f"_{signal_date}_b_rejected_by_filter.csv"),
         "c_candidates": output_prefix.with_name(output_prefix.name + f"_{signal_date}_c_candidates.csv"),
         "c_rejected": output_prefix.with_name(output_prefix.name + f"_{signal_date}_c_rejected_by_filter.csv"),
         "selected": output_prefix.with_name(output_prefix.name + f"_{signal_date}_selected.csv"),
@@ -723,7 +737,7 @@ def write_markdown(path: Path, checklist: pd.DataFrame, selected: pd.DataFrame, 
         except ImportError:
             return frame.to_string(index=False)
 
-    content = f"""# A+B+C filtered 每日模拟盘操作台
+    content = f"""# A+C filtered 每日模拟盘操作台
 
 本报告只用于本地模拟盘流程，不接实盘，不调用 QMT，不下真实订单。
 
@@ -741,9 +755,8 @@ def write_markdown(path: Path, checklist: pd.DataFrame, selected: pd.DataFrame, 
 
 ## 执行限制
 
-- A 优先；只有 A 无选中标的时才启用 B。
-- C 只在 A/B 没有生成历史模拟成交时启用。
-- B/C 命中 `risk_reject_rules` 时直接跳过，不寻找下一只替代。
+- A 优先；A 无选中标的时直接检查 C，B 已彻底删除。
+- C 命中自身 `risk_reject_rules` 时直接跳过，不寻找下一只替代。
 - `live_order_enabled` 必须为 `False`。
 - 当前仍未完成分钟 K、盘口五档、集合竞价和连续模拟盘验证，不允许实盘。
 """
@@ -774,7 +787,7 @@ def main() -> None:
             .get("block_when_not_compatible", True)
         ):
             paths = write_data_quality_block_outputs(output_prefix, signal_date, quality)
-            print("A+B+C filtered 每日模拟盘操作台完成：")
+            print("A+C filtered 每日模拟盘操作台完成：")
             for name, path in paths.items():
                 print(f"- {name}: {path}")
             print(pd.read_csv(paths["checklist"]).to_string(index=False))
@@ -788,7 +801,7 @@ def main() -> None:
         .get("block_when_not_compatible", True)
     ):
         paths = write_data_quality_block_outputs(output_prefix, signal_date, quality)
-        print("A+B+C filtered 每日模拟盘操作台完成：")
+        print("A+C filtered 每日模拟盘操作台完成：")
         for name, path in paths.items():
             print(f"- {name}: {path}")
         print(pd.read_csv(paths["checklist"]).to_string(index=False))
@@ -808,8 +821,6 @@ def main() -> None:
     a_candidates = apply_and_rank(a_generator, a_filtered, signal_date, top_n=args.top_n)
     a_selected = selected_candidate(a_candidates, selected_action)
 
-    b_candidates = pd.DataFrame()
-    b_rejected = pd.DataFrame()
     c_candidates = pd.DataFrame()
     c_rejected = pd.DataFrame()
     execution_reference = pd.DataFrame()
@@ -823,73 +834,25 @@ def main() -> None:
             operation_status, account_return, return_source, note = resolve_a_execution(audit, signal_date, a_selected)
         selected = build_selected_row("A", a_selected, operation_status, "A_SELECTED_HAS_PRIORITY", account_return, return_source, note)
     else:
-        b_conditions = configured_b_conditions(config)
-        b_config = backup_config(config, b_conditions)
-        b_generator = build_generator(args.strategy_config, b_config)
-        b_filtered = b_generator.apply_strategy_filters(all_candidates)
-        b_candidates = apply_and_rank(b_generator, b_filtered, signal_date, top_n=args.top_n)
-        b_selected = selected_candidate(b_candidates, selected_action)
-        if b_selected is None:
-            selection_status = "A_NO_SELECTED_B_NO_SELECTED"
-        else:
-            b_selected_frame = pd.DataFrame([b_selected])
-            rejected_mask = reject_b_risk_mask(b_selected_frame, config)
-            if bool(rejected_mask.iloc[0]):
-                b_rejected = b_selected_frame.copy()
-                b_rejected["reject_reason"] = "B_SELECTED_HIT_RISK_REJECT_RULES"
-                b_rejected["reject_reason_desc"] = "B 首选标的命中风险过滤规则。"
-                b_rejected["risk_reject_detail"] = risk_reject_detail(b_rejected, config)
-                selection_status = "A_NO_SELECTED_B_RISK_FILTERED"
-            else:
-                if live_plan_mode:
-                    execution_reference, operation_status, account_return, return_source, note = (
-                        pd.DataFrame(),
-                        "PLAN_ONLY_PENDING",
-                        0.0,
-                        "live_signal_plan",
-                        "B 实盘计划模式：只生成开仓计划，不读取历史回测成交回放。",
-                    )
-                else:
-                    execution_reference, operation_status, account_return, return_source, note = resolve_b_execution(
-                        b_selected_frame,
-                        args.runtime_config,
-                    )
-                selected = build_selected_row(
-                    "B",
-                    b_selected,
-                    operation_status,
-                    f"A_NO_SELECTED_B_SELECTED:{condition_text(b_conditions)}",
-                    account_return,
-                    return_source,
-                    note,
-                )
-                if operation_status != "HISTORICAL_SIM_FILLED":
-                    selection_status = f"A_NO_SELECTED_B_NOT_FILLED:{operation_status}"
-
-        if selected.empty or (
-            not live_plan_mode
-            and
-            not selected.empty
-            and str(selected.iloc[0].get("strategy_leg", "")) == "B"
-            and str(selected.iloc[0].get("operation_status", "")) != "HISTORICAL_SIM_FILLED"
-        ):
+        selection_status = "A_NO_SELECTED_B_REMOVED"
+        if selected.empty:
             c_conditions = configured_c_conditions(config)
             if c_conditions:
-                c_config = backup_config(config, c_conditions)
+                c_config = condition_strategy_config(config, c_conditions, "backup_strategy_c_current")
                 c_generator = build_generator(args.strategy_config, c_config)
                 c_filtered = c_generator.apply_strategy_filters(all_candidates)
                 c_candidates = apply_and_rank(c_generator, c_filtered, signal_date, top_n=args.top_n)
                 c_selected = selected_candidate(c_candidates, selected_action)
                 if c_selected is not None:
                     c_selected_frame = pd.DataFrame([c_selected])
-                    c_rejected_mask = reject_b_risk_mask(c_selected_frame, config)
+                    c_rejected_mask = reject_strategy_risk_mask(c_selected_frame, config, "c_strategy")
                     if bool(c_rejected_mask.iloc[0]):
                         c_rejected = c_selected_frame.copy()
                         c_rejected["reject_reason"] = "C_SELECTED_HIT_RISK_REJECT_RULES"
                         c_rejected["reject_reason_desc"] = "C 首选标的命中风险过滤规则。"
                         c_rejected["risk_reject_detail"] = risk_reject_detail(c_rejected, config)
                         if selected.empty:
-                            selection_status = "A_B_NO_FILLED_C_RISK_FILTERED"
+                            selection_status = "A_NO_SELECTED_C_RISK_FILTERED"
                     else:
                         if live_plan_mode:
                             c_reference, c_status, c_return, c_source, c_note = (
@@ -910,13 +873,13 @@ def main() -> None:
                             "C",
                             c_selected,
                             c_status,
-                            f"A_B_NO_FILLED_C_SELECTED:{condition_text(c_conditions)}",
+                            f"A_NO_SELECTED_C_SELECTED:{condition_text(c_conditions)}",
                             c_return,
                             c_source,
                             c_note,
                         )
                 elif selected.empty:
-                    selection_status = "A_B_NO_FILLED_C_NO_SELECTED"
+                    selection_status = "A_NO_SELECTED_C_NO_SELECTED"
 
     # live 模式下 selected 行没有价格列，从候选源数据按 ts_code+signal_date 反查涨停收盘价做参考价
     reference_price_fallback = 0.0
@@ -944,8 +907,6 @@ def main() -> None:
         planned_orders,
         manual_review,
         a_candidates,
-        b_candidates,
-        b_rejected,
         c_candidates,
         c_rejected,
         live_plan_mode=live_plan_mode,
@@ -956,8 +917,6 @@ def main() -> None:
 
     paths = output_paths(output_prefix, signal_date)
     a_candidates.to_csv(paths["a_candidates"], index=False, encoding="utf-8-sig")
-    b_candidates.to_csv(paths["b_candidates"], index=False, encoding="utf-8-sig")
-    b_rejected.to_csv(paths["b_rejected"], index=False, encoding="utf-8-sig")
     c_candidates.to_csv(paths["c_candidates"], index=False, encoding="utf-8-sig")
     c_rejected.to_csv(paths["c_rejected"], index=False, encoding="utf-8-sig")
     selected.to_csv(paths["selected"], index=False, encoding="utf-8-sig")
@@ -967,7 +926,7 @@ def main() -> None:
     checklist.to_csv(paths["checklist"], index=False, encoding="utf-8-sig")
     write_markdown(paths["markdown"], checklist, selected, paths)
 
-    print("A+B+C filtered 每日模拟盘操作台完成：")
+    print("A+C filtered 每日模拟盘操作台完成：")
     for name, path in paths.items():
         print(f"- {name}: {path}")
     print(checklist.to_string(index=False))
@@ -982,9 +941,9 @@ def _print_e2_status(signal_date: str, planned_orders: pd.DataFrame) -> None:
     print("  策略 E2 状态预览（板块中性小市值）")
     print("─" * 50)
 
-    # 检查 A/B/C 是否生成了计划委托
+    # 检查 A/C 是否生成了计划委托
     if not planned_orders.empty:
-        print("  A/B/C 今日已生成计划委托 → E2 不触发（资金被 A/B/C 占用）")
+        print("  A/C 今日已生成计划委托 → E2 不触发（资金被 A/C 占用）")
         print("─" * 50)
         return
 
@@ -1006,7 +965,7 @@ def _print_e2_status(signal_date: str, planned_orders: pd.DataFrame) -> None:
         print("─" * 50)
         return
 
-    print("  A/B/C 今日无委托，账户无持仓 → E2 可能触发")
+    print("  A/C 今日无委托，账户无持仓 → E2 可能触发")
     print(f"  请收盘后运行（15:30+）：")
     print(f"    python scripts/run_strategy_e2_signal.py --signal-date {signal_date}")
     print("  E2 条件：segment_retreat_state_bucket=neutral + 非ST + 成交可靠 → 选流通市值最小1只")

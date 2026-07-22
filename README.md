@@ -2,12 +2,13 @@
 
 本项目用于构建一套完整的 A股量化交易系统，目标是先完成数据采集、数据清洗、因子统计、策略回测和模拟交易，后续再接入 QMT / miniQMT 等券商接口进行半自动或实盘交易。
 
-> 当前阶段：A+B+C+D+E2 策略已定型，本地模拟盘守护进程已上线，持续自动运行。  
-> D 策略（首板打板）已完成回测（303x vs 纯 A+B+C 的 110x）并接入守护进程，每日 13:30 自动启动盘中监控。  
-> E2 策略（板块中性小市值）已完成回测（ABCD+E2 = 3640x）并实现收盘信号脚本 `run_strategy_e2_signal.py`。  
-> L 龙头策略已完成独立研究和实盘约束模拟认证，并已接入总策略模式开关；默认仍为 `mode=1`，`strategy_l.enabled=false`，不会影响当前实盘。详见 `docs/strategy_l.md`。
+> 当前阶段：策略 B 已于 2026-07-22 删除；当前交易链为 A+C+D+E2，并由 mode=3 按既有规则判断 L 补位/替换。
+> 删除 B 前的 A+B、A+B+C、ABCDE2/model=3 回测指标只保留历史审计价值，不能代表当前 A/C 组合；重新发布验证尚未完成。
+> D 策略（首板打板）和 E2（板块中性小市值）继续按资金占用规则运行；历史组合倍数不作为删除 B 后的收益承诺。
+> L 龙头策略已接入总策略模式开关；当前为 `mode=3`，只在认证规则允许时补位或替换。详见 `docs/strategy_l.md`。
 > model=3 自动切换已完成离线模拟实盘口径认证，并按用户确认切换为当前实盘状态机；mode=3 会在 mode=1 与 L 之间自动选择，但所有计划单仍必须经过 LiveOrderGateway 风控。详见 `docs/strategy_model3.md`。
 > 实盘接入：QMT / miniQMT 已完成只读连接与守护进程联调，真实下单仍必须先走小资金验证。所有时间以北京时间（Asia/Shanghai）为准。
+> 策略 B 删除范围、自动卖出硬拦截和部署检查见 `docs/strategy_b_removal_20260722.md`。
 
 ---
 
@@ -142,7 +143,7 @@ A股龙头战法最核心的问题不是股票涨不涨，而是能不能买到�
 
 - `src/broker_adapter.py`：统一券商适配器抽象层（含 `place_order` 和 `cancel_order` 接口）。
 - `src/qmt_adapter.py`：QMT / miniQMT 适配器，运行时懒加载 `xtquant`；实现了 `cancel_order_stock` 撤单。
-- `src/live_order_gateway.py`：A+B+C 计划单转实盘预览和真实下单安全闸门。
+- `src/live_order_gateway.py`：A/C 计划单转实盘预览和真实下单安全闸门（内部 ABC 命名为历史接口兼容保留）。
 - `scripts/qmt_account_check.py`：QMT 只读账户检查。
 - `scripts/preview_live_orders.py`：读取每日计划单并做实盘执行前校验，不下单。
 - `scripts/submit_live_orders.py`：真实下单入口，默认配置会拒绝执行。
@@ -307,14 +308,11 @@ docs/strategy_release_playbook.md
 常用命令：
 
 ```bash
-# 策略发布前稳定性验证：季度或半年执行一次，不用于每日改策略
+# 旧A+B发布验证已失效；当前脚本会拒绝运行，必须先完成A/C全链路重新回测
 .venv/bin/python -B scripts/run_strategy_release_validation.py
 
-# A+B+C filtered 单日模拟盘操作台：只生成模拟观察和人工复核清单，不接实盘
+# A+C filtered 单日模拟盘操作台
 .venv/bin/python -B scripts/run_paper_ab_filtered_daily_ops.py --top-n 10
-
-# A+B filtered 历史窗口回放：用于复查 60/90/120 日窗口表现；C 补位另见 backup_strategy_c 报告
-.venv/bin/python -B scripts/run_paper_ab_filtered_observation_window.py --recent-days 120 --end-date 20260518
 ```
 
 ---
@@ -381,14 +379,14 @@ AGENTS.md
 当前固定策略版本为：
 
 ```text
-a_strict_plus_b0018_filtered_plus_c_hold3
+a_strict_plus_c_hold3
 ```
 
 原则：
 
 1. 不每天改策略。
-2. 每天最多只执行当前固定策略版本的候选检查：A 优先，B 次之，C 只在 A/B 没有历史模拟成交时补位。
-3. 每 3 个月或 6 个月重新执行一次发布验证。
+2. 当前候选检查顺序：A 优先，A 无候选时检查 C；B 不再参与。
+3. 删除 B 后必须先完成全链路重新回测，再建立新的季度/半年发布验证基线。
 4. 只有发布验证通过，才考虑进入下一阶段模拟或小资金人工确认。
 5. C 补位策略当前不强制分钟 K 验收；最低验收口径是涨停排队买不到、跌停排队卖不出的日线保守成交验证。
 6. 自动实盘前仍必须完成券商接口、风控、人工确认和成交可行性验证。
@@ -417,7 +415,7 @@ a_strict_plus_b0018_filtered_plus_c_hold3
 | 09:20 | 集合竞价截止前：平仓检查（最高优先级）+ 复核组合状态 + 有开仓计划时预挂买单 |
 | 13:30 | 策略 D 盘中监控启动（独立子进程，非阻塞） |
 | 14:56 | 盘中收盘平仓（最高优先，不被组合刷新/取数/超时阻塞）→ 14:57 撤未成交买单（只撤买单，卖单不撤） |
-| 15:10 | 收盘后：完整数据流水线 + A+B+C 信号生成 |
+| 15:10 | 收盘后：完整数据流水线 + A/C 信号生成 |
 
 收盘流水线七步：
 
@@ -427,8 +425,8 @@ a_strict_plus_b0018_filtered_plus_c_hold3
 ③ build_dynamic_features.py             市场情绪 / 题材热度
 ④ score_limit_up_fill_probability.py    涨停成交概率打分
 ⑤ analyze_next_day_premium.py           次日溢价因子
-⑥ run_paper_ab_filtered_daily_ops.py    A+B+C 信号生成
-⑦ run_strategy_e2_signal.py             E2 信号生成（板块中性小市值，ABCD空闲时才触发）
+⑥ run_paper_ab_filtered_daily_ops.py    A/C 信号生成（B已删除）
+⑦ run_strategy_e2_signal.py             E2 信号生成（板块中性小市值，A/C/D空闲时才触发）
 ```
 
 其中 ①、②、④ 是关键步骤。关键步骤第一次失败会自动等待 10 秒重试一次；仍失败则停止本次收盘流水线，不生成计划单，避免继续使用旧信号。
@@ -449,7 +447,7 @@ Windows 启动脚本会实时转发子进程日志，并强制使用 UTF-8 输�
 已有 20260615 收盘数据缓存，直接使用
 ```
 
-需要完整复验无缓存流程时，可以手动删除当天原始数据、`data/processed` 汇总文件、当天 A+B+C 输出和 `logs/post_market_done_YYYYMMDD.marker`，再重新启动守护进程。
+需要完整复验无缓存流程时，可以手动删除当天原始数据、`data/processed` 汇总文件、当天 A/C 输出和 `logs/post_market_done_YYYYMMDD.marker`，再重新启动守护进程。
 
 ### Windows VM 实盘守护进程
 
@@ -525,9 +523,9 @@ D 策略在每个交易日 13:30 由守护进程以**非阻塞子进程**启动�
 - 10:00 回封 → 发出 **[WATCH]** 观察提醒；14:00+ 回封（或 WATCH 标的仍在封板）→ 发出 **[BUY]** 信号
 - 情绪要求：全市场当日累计涨停数 ≥ 100（强势市场）
 - 14:55 自动撤销所有未成交的 D 委托（`cancel_order_stock`）
-- 检测到 ABC 有持仓时跳过 D（资金冲突防护）
+- 检测到 A/C 或仅人工退出的历史 B 持仓时跳过 D（资金冲突防护）
 
-回测结果（近 2 年）：
+删除 B 前的历史回测结果（近 2 年，仅供审计，不能代表当前组合）：
 
 | 策略组合 | 资金倍数 | D 成交笔数 |
 |---|---:|---:|
@@ -540,7 +538,7 @@ D 策略在每个交易日 13:30 由守护进程以**非阻塞子进程**启动�
 
 ### 策略 E2（板块中性小市值）集成
 
-E2 策略在 A+B+C+D 均未占用资金时触发，每日收盘后（建议 15:30+）运行信号脚本。
+E2 策略在 A/C/D 均未占用资金、且不存在仅人工退出的历史 B 仓时触发，每日收盘后运行信号脚本。
 
 **触发条件：**
 - 板块今日处于中性回撤状态（`segment_retreat_state_bucket = neutral`）

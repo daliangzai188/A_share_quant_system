@@ -11,22 +11,24 @@ PROJECT_ROOT = Path(__file__).absolute().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts.run_paper_ab_filtered_daily_ops import configured_c_conditions
-from scripts.run_paper_ab_filtered_observation_window import configured_b_conditions, condition_text
-from scripts.search_paper_backup_strategy_b import backup_config
+from scripts.run_paper_ab_filtered_daily_ops import (
+    condition_strategy_config,
+    condition_text,
+    configured_c_conditions,
+)
 from src.paper_candidate_generator import PaperCandidateGenerator
 from src.utils.config import load_json_config
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="审计指定信号日的数据口径、必需字段和 A/B/C 候选筛选结果。")
+    parser = argparse.ArgumentParser(description="审计指定信号日的数据口径、必需字段和 A/C 候选筛选结果。")
     parser.add_argument("--signal-date", required=True, help="信号日期，格式 YYYYMMDD。")
     parser.add_argument("--runtime-config", default="config/config.json", help="运行时配置文件路径。")
     parser.add_argument("--strategy-config", default="config/strategy_config.json", help="策略配置文件路径。")
     parser.add_argument(
         "--output-prefix",
-        default="reports/paper_trade/ab_filtered_daily_ops/a_strict_plus_b0018_filtered_plus_c_hold3",
-        help="A/B/C 每日操作台输出前缀。",
+        default="reports/paper_trade/ab_filtered_daily_ops/a_strict_plus_c_hold3",
+        help="A/C 每日操作台输出前缀。",
     )
     return parser.parse_args()
 
@@ -323,7 +325,7 @@ def filter_trace(label: str, generator: PaperCandidateGenerator, all_candidates:
             "strategy_layer": label,
             "step": "0_load_base_candidates",
             "description": "加载实盘/配置候选输入，并复用 StrategyConditionOptimizer.load_trades 的基础可交易过滤：成交概率可靠、封单异常过滤、股票池过滤等。",
-            "reason_detail": "此处已经过滤掉成交概率不可靠、封单异常、不可执行样本；当日剩余样本是后续 A/B/C 的共同基础池。",
+            "reason_detail": "此处已经过滤掉成交概率不可靠、封单异常、不可执行样本；当日剩余样本是后续 A/C 的共同基础池。",
             "all_dates_before": len(current),
             "all_dates_after": len(current),
             "signal_date_before": daily_count(current, signal_date),
@@ -450,7 +452,7 @@ def main() -> None:
     print(f"allow_buy_reliable: {value_counts_text(scored_daily, 'allow_buy_reliable')}")
     print(f"is_fill_score_reliable: {value_counts_text(scored_daily, 'is_fill_score_reliable')}")
 
-    print_section("3. A/B/C 操作台结果")
+    print_section("3. A/C 操作台结果")
     checklist = read_csv(checklist_path)
     print(f"checklist: exists={checklist_path.exists()} rows={len(checklist)} path={checklist_path}")
     if not checklist.empty:
@@ -464,7 +466,6 @@ def main() -> None:
                 "selection_status_desc",
                 "next_action",
                 "a_candidate_count",
-                "b_candidate_count",
                 "c_candidate_count",
                 "selected_count",
                 "planned_order_count",
@@ -485,17 +486,9 @@ def main() -> None:
         all_candidates = base_generator.load_all_candidates()
         traces = [filter_trace("A主策略", base_generator, all_candidates, signal_date)]
 
-        b_conditions = configured_b_conditions(strategy_config)
-        b_config = backup_config(strategy_config, b_conditions)
-        b_generator = PaperCandidateGenerator(args.strategy_config, **generator_kwargs)
-        b_generator.config = b_config
-        b_generator.paper_config = b_config.get("paper_candidate", {})
-        b_generator.risk_thresholds = b_generator.paper_config.get("risk_thresholds", {})
-        traces.append(filter_trace(f"B备用策略（{condition_text(b_conditions)}）", b_generator, all_candidates, signal_date))
-
         c_conditions = configured_c_conditions(strategy_config)
         if c_conditions:
-            c_config = backup_config(strategy_config, c_conditions)
+            c_config = condition_strategy_config(strategy_config, c_conditions, "backup_strategy_c_current")
             c_generator = PaperCandidateGenerator(args.strategy_config, **generator_kwargs)
             c_generator.config = c_config
             c_generator.paper_config = c_config.get("paper_candidate", {})
@@ -512,7 +505,7 @@ def main() -> None:
         print(f"分层筛选漏斗生成失败: {exc}")
 
     print_section("5. 候选与过滤明细")
-    for name in ["a_candidates", "b_candidates", "b_rejected_by_filter", "c_candidates", "c_rejected_by_filter"]:
+    for name in ["a_candidates", "c_candidates", "c_rejected_by_filter"]:
         suffix = name
         path = output_prefix.with_name(output_prefix.name + f"_{signal_date}_{suffix}.csv")
         summarize_candidate_file(name, path)

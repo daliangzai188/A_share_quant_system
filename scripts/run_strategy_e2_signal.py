@@ -4,12 +4,12 @@
 策略条件：
   - 市场板块处于"neutral"回撤状态（segment_retreat_state_bucket=neutral）
   - 从符合条件的今日涨停股中选 circ_mv（流通市值）最小的1只
-  - T+1开盘买入，T+2收盘卖出（与A/B/C持仓规则相同）
-  - 仅在 A/B/C/D 均未占用资金时触发
+  - T+1开盘买入，T+2收盘卖出（与A/C持仓规则相同）
+  - 仅在 A/C/D 均未占用资金时触发；B已删除
   - 必须使用 limit_list_d/full 完整口径，且 strategy_compatible=True
 
 触发时机：
-  每日 15:30 后运行（A/B/C daily ops 和 D 盘中监控均已完成后）
+  每日 15:30 后运行（A/C daily ops 和 D 盘中监控均已完成后）
 
 输出：
   reports/strategy_e2/e2_signals_recent.json    最近10个交易日E2信号（滚动覆盖）
@@ -199,7 +199,7 @@ def load_open_positions() -> list[dict[str, Any]]:
 
 
 def has_abc_planned_order(signal_date: str) -> bool:
-    """检查 A/B/C daily ops 是否为 signal_date 生成了计划委托。"""
+    """检查 A/C daily ops 是否为 signal_date 生成了计划委托；旧B计划不占用资金。"""
     if not DAILY_OPS_DIR.exists():
         return False
     pattern = f"*{signal_date}*planned_orders*.csv"
@@ -207,6 +207,8 @@ def has_abc_planned_order(signal_date: str) -> bool:
     for f in files:
         try:
             df = pd.read_csv(f)
+            if "strategy_leg" in df.columns:
+                df = df[df["strategy_leg"].astype(str).str.upper() != "B"].copy()
             if len(df) > 0:
                 return True
         except Exception:
@@ -278,7 +280,7 @@ def load_d_intraday_status(signal_date: str) -> dict[str, Any]:
 
 
 def has_existing_open_position(open_positions: list[dict[str, Any]]) -> bool:
-    """账户是否持有任何未平仓头寸（含前日未卖出的 A/B/C/D）。"""
+    """账户是否持有任何未平仓头寸（含前日未卖出的 A/C/D，以及待手动处理的历史B仓）。"""
     return len(open_positions) > 0
 
 
@@ -432,7 +434,7 @@ def main() -> None:
         return
 
     if has_abc_planned_order(signal_date):
-        print(f"[E2信号] A/B/C 今日已生成计划委托，E2 不触发。")
+        print(f"[E2信号] A/C 今日已生成计划委托，E2 不触发。")
         return
 
     if has_d_position_today(signal_date, open_positions):

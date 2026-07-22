@@ -39,17 +39,16 @@ class CombinedLiveDecision:
 
 
 class CombinedLiveEngine:
-    """A+B+C+D+E2 / L / model=3 总策略实盘状态机。
+    """A+C+D+E2 / L / model=3 总策略实盘状态机（B已删除）。
 
     这个类只负责组合层面的顺序和阻断，不直接提交真实委托。
     当前总策略开关在 config/config.json 的 active_strategy_profile.mode：
-      1 = 现有 ABCDE2/D 组合状态机
+      1 = 现有 ACDE2/D 组合状态机
       2 = 独立 L 龙头策略状态机
       3 = model=3 自动切换实盘状态机
 
-    注意：L 接入后默认仍然 mode=1，且 strategy_l.enabled=false、live_order_enabled=false。
-    也就是说，默认只会生成/展示 L 研究信号，不会生成 L 实盘买入计划单。
-    model=3 由 strategy_model3.enabled/live_order_enabled 控制，且所有计划单仍经过 LiveOrderGateway 风控。
+    当前配置为mode=3；L独立mode=2仍关闭，L只按model=3规则补位或替换。
+    model=3 由 strategy_model3.enabled/live_order_enabled 控制，所有计划单仍经过 LiveOrderGateway 风控。
     """
 
     def __init__(self, config_path: str | Path = "config/config.json") -> None:
@@ -61,6 +60,33 @@ class CombinedLiveEngine:
         self.output_dir = self.project_root / "reports" / "live_trade" / "combined"
         mkdir_p(self.output_dir)
 
+    def is_b_new_entry_enabled(self) -> bool:
+        """读取退役标记；当前配置必须返回False，阻断全部B新增买入。"""
+        strategy_path = self.project_root / "config" / "strategy_config.json"
+        try:
+            strategy_config = load_json_config(strategy_path)
+        except Exception:
+            return False
+        b_config = strategy_config.get("paper_ab_filtered_strategy", {}).get("b_strategy", {})
+        return bool(b_config.get("enabled", False)) and not bool(
+            b_config.get("new_entries_disabled", False)
+        )
+
+    def is_b_strategy_removed(self) -> bool:
+        """B彻底删除后，组合计划不得再接收B的买单或卖单。"""
+        strategy_path = self.project_root / "config" / "strategy_config.json"
+        try:
+            strategy_config = load_json_config(strategy_path)
+        except Exception:
+            return True
+        b_config = strategy_config.get("paper_ab_filtered_strategy", {}).get("b_strategy", {})
+        return bool(b_config.get("removed", False)) or bool(b_config.get("manual_exit_only", False))
+
+    def is_manual_exit_only_position(self, position: dict[str, Any]) -> bool:
+        if bool(position.get("manual_exit_only", False)) or bool(position.get("auto_exit_disabled", False)):
+            return True
+        return str(position.get("strategy_leg", "")).upper() == "B" and self.is_b_strategy_removed()
+
     def active_strategy_mode(self) -> int:
         profile = self.config.get("active_strategy_profile", {})
         try:
@@ -71,7 +97,7 @@ class CombinedLiveEngine:
     def active_strategy_name(self) -> str:
         profile = self.config.get("active_strategy_profile", {})
         modes = profile.get("available_modes", {})
-        return str(modes.get(str(self.active_strategy_mode()), profile.get("mode_name", "ABCDE2")))
+        return str(modes.get(str(self.active_strategy_mode()), profile.get("mode_name", "ACDE2")))
 
     @staticmethod
     def is_l_position(position: dict[str, Any]) -> bool:
@@ -224,14 +250,14 @@ class CombinedLiveEngine:
                 strategy_leg="L",
                 reason=(
                     "总策略模式=2，进入独立L龙头策略状态机；"
-                    "ABCDE2/D组合状态机本轮不生成买入计划。"
+                    "ACDE2/D组合状态机本轮不生成买入计划。"
                 ),
                 source="active_strategy_profile",
             ),
             CombinedLiveDecision(
                 action="BLOCK_ABCDE2_BY_STRATEGY_MODE",
-                strategy_leg="A+B+C+D+E2",
-                reason="active_strategy_profile.mode=2，阻断现有ABCDE2/D计划，避免两套策略混跑。",
+                strategy_leg="A+C+D+E2",
+                reason="active_strategy_profile.mode=2，阻断现有ACDE2/D计划，避免两套策略混跑。",
                 source="active_strategy_profile",
             ),
         ]
@@ -272,7 +298,7 @@ class CombinedLiveEngine:
             decisions.append(CombinedLiveDecision(
                 action="BLOCK_L_DISABLED",
                 strategy_leg="L",
-                reason="strategy_l.enabled=false，L已接入但当前未开启；默认继续使用模式1的ABCDE2。",
+                reason="strategy_l.enabled=false，L已接入但当前未开启；默认继续使用模式1的ACDE2。",
                 source="config.strategy_l",
             ))
         elif not bool(l_config.get("live_order_enabled", False)):
@@ -430,6 +456,19 @@ class CombinedLiveEngine:
             return state_df, pd.DataFrame([d.__dict__ for d in decisions]), pd.DataFrame(planned_orders)
 
         mode1_state, mode1_decisions, mode1_orders = self.build_mode1_plan(today)
+        manual_exit_positions = [
+            p for p in positions
+            if self.is_open_position(p) and self.is_manual_exit_only_position(p)
+        ]
+        if manual_exit_positions:
+            extra = CombinedLiveDecision(
+                action="BLOCK_MODEL3_BUY_BY_MANUAL_EXIT_POSITION",
+                strategy_leg="MODEL3",
+                reason="存在仅人工退出的旧持仓；用户手动卖出并完成持仓同步前，禁止L补位或替换。",
+                source="positions.json",
+            )
+            decisions = pd.concat([mode1_decisions, pd.DataFrame([extra.__dict__])], ignore_index=True)
+            return mode1_state, decisions, mode1_orders
         if not bool(model3_config.get("enabled", False)) or not bool(model3_config.get("live_order_enabled", False)):
             extra = CombinedLiveDecision(
                 action="BLOCK_MODEL3_DISABLED",
@@ -542,7 +581,7 @@ class CombinedLiveEngine:
                 ),
                 CombinedLiveDecision(
                     action="BLOCK_MODE1_BUY_BY_MODEL3_L",
-                    strategy_leg="A+B+C+D+E2",
+                    strategy_leg="A+C+D+E2",
                     reason="model=3选择L替换今日mode=1买入计划，避免同一资金重复占用。",
                     source="combined_state_machine",
                 ),
@@ -573,6 +612,13 @@ class CombinedLiveEngine:
             return None, pd.DataFrame()
         except EmptyDataError:
             return None, pd.DataFrame()
+        if not orders.empty and {"strategy_leg", "side"}.issubset(orders.columns):
+            is_b = orders["strategy_leg"].astype(str).str.upper().eq("B")
+            if self.is_b_strategy_removed():
+                orders = orders[~is_b].copy()
+            elif not self.is_b_new_entry_enabled():
+                disabled_b_buy = is_b & orders["side"].astype(str).str.upper().eq("BUY")
+                orders = orders[~disabled_b_buy].copy()
         return path, orders
 
     @staticmethod
@@ -770,7 +816,7 @@ class CombinedLiveEngine:
             name=str(position.get("name", "")),
             side="SELL",
             quantity=self.as_int(position.get("shares", 0)),
-            reason=reason or f"D持仓计划平仓日={position.get('planned_exit_date', '')}，今日={today}，必须先卖D再考虑A/B/C/E2。",
+            reason=reason or f"D持仓计划平仓日={position.get('planned_exit_date', '')}，今日={today}，必须先卖D再考虑A/C/E2。",
             source="positions.json",
         )
 
@@ -822,7 +868,7 @@ class CombinedLiveEngine:
                     name=str(row.get("name", "")),
                     side="BUY",
                     quantity=self.as_int(row.get("round_lot_shares", row.get("estimated_shares", 0))),
-                    reason="无D未平仓或待卖持仓，允许进入A/B/C买入预览；真实下单仍需LiveOrderGateway二次校验。",
+                    reason="无D未平仓或待卖持仓，允许进入A/C买入预览；真实下单仍需LiveOrderGateway二次校验。",
                     source=source,
                 )
             )
@@ -840,14 +886,17 @@ class CombinedLiveEngine:
             or str(p.get("status", "")).lower() == "sell_pending"
         ]
         # 衔接日到期判定必须覆盖全部非D腿(2026-07-17 天顺B腿事故修复):
-        # 原实现只把 E2 的今日到期仓从"占用"中排除,A/B/C 腿今日到期(14:55收盘平)
+        # 原实现只把 E2 的今日到期仓从"占用"中排除；当前A/C腿今日到期(14:55收盘平)
         # 的仓被当成"未到期旧持仓"一刀切 BLOCK,漏掉衔接日新候选——而模式3回测
         # 基准(5604x)正是"衔接日用剩余现金买新仓"口径,17笔衔接新仓含最大的肉。
         # ABC 到期卖出由 daemon check_and_close_positions 直卖,不需要计划单行。
         due_non_d_positions = [
             p for p in open_non_d_positions
-            if str(p.get("planned_exit_date", "99991231")) <= today
-            or str(p.get("status", "")).lower() == "sell_pending"
+            if not self.is_manual_exit_only_position(p)
+            and (
+                str(p.get("planned_exit_date", "99991231")) <= today
+                or str(p.get("status", "")).lower() == "sell_pending"
+            )
         ]
         # 今日到期卖出的标的代码（T+0限制：当日不可再买入同一标的）
         due_selling_codes: set[str] = {str(p.get("ts_code", "")) for p in due_non_d_positions}
@@ -925,7 +974,7 @@ class CombinedLiveEngine:
             relay_d_for_abce2 = relay_d_for_abc or relay_d_for_e2
             relay_legs = []
             if relay_d_for_abc:
-                relay_legs.append("A/B/C")
+                relay_legs.append("A/C")
             if relay_d_for_e2:
                 relay_legs.append("E2")
             relay_reason = "/".join(relay_legs)
@@ -959,8 +1008,8 @@ class CombinedLiveEngine:
                     ))
                     planned_orders.append(self.build_d_sell_order(position, today))
                 decisions.append(CombinedLiveDecision(
-                    action="BLOCK_ABC_BUY", strategy_leg="A+B+C",
-                    reason="D持仓尚未确认卖出，阻断A/B/C买入；09:23卖D并同步持仓后再重新生成买入计划。",
+                    action="BLOCK_ABC_BUY", strategy_leg="A+C",
+                    reason="D持仓尚未确认卖出，阻断A/C买入；09:23卖D并同步持仓后再重新生成买入计划。",
                     source="combined_state_machine",
                 ))
                 if relay_d_for_e2:
@@ -981,8 +1030,8 @@ class CombinedLiveEngine:
                 ))
             else:
                 decisions.append(CombinedLiveDecision(
-                    action="BLOCK_ABC_BUY", strategy_leg="A+B+C",
-                    reason="D持仓未到平仓日，阻断A/B/C买入。",
+                    action="BLOCK_ABC_BUY", strategy_leg="A+C",
+                    reason="D持仓未到平仓日，阻断A/C买入。",
                     source="combined_state_machine",
                 ))
                 decisions.append(CombinedLiveDecision(
@@ -994,8 +1043,8 @@ class CombinedLiveEngine:
         elif holding_non_d_positions:
             # 有尚未到期的非D持仓，资金仍被占用，阻断新开仓
             decisions.append(CombinedLiveDecision(
-                action="BLOCK_ABC_BUY", strategy_leg="A+B+C",
-                reason="存在未到期旧持仓（A/B/C或E2），组合状态机不允许重复开仓。",
+                action="BLOCK_ABC_BUY", strategy_leg="A+C",
+                reason="存在未到期旧持仓（A/C、E2或仅人工退出的历史B仓），组合状态机不允许重复开仓。",
                 source="positions.json",
             ))
             decisions.append(CombinedLiveDecision(
@@ -1023,7 +1072,7 @@ class CombinedLiveEngine:
                 planned_orders.extend(abc_orders_buy.to_dict("records"))
                 decisions.append(CombinedLiveDecision(
                     action="BLOCK_D_INTRADAY_MONITOR", strategy_leg="D",
-                    reason="今日存在A/B/C买入计划，D盘中策略不再使用同一资金。",
+                    reason="今日存在A/C买入计划，D盘中策略不再使用同一资金。",
                     source="combined_state_machine",
                 ))
             else:
@@ -1060,8 +1109,8 @@ class CombinedLiveEngine:
                         source=str(self.project_root / "reports" / "strategy_e2"),
                     ))
                     decisions.append(CombinedLiveDecision(
-                        action="NO_ABC_BUY", strategy_leg="A+B+C",
-                        reason="今日无A/B/C买入计划，E2代替开仓。",
+                        action="NO_ABC_BUY", strategy_leg="A+C",
+                        reason="今日无A/C买入计划，E2代替开仓。",
                         source=str(abc_path or ""),
                     ))
                     decisions.append(CombinedLiveDecision(
@@ -1071,13 +1120,13 @@ class CombinedLiveEngine:
                     ))
                 else:
                     decisions.append(CombinedLiveDecision(
-                        action="NO_ABC_BUY", strategy_leg="A+B+C",
-                        reason="今日没有A/B/C买入计划。",
+                        action="NO_ABC_BUY", strategy_leg="A+C",
+                        reason="今日没有A/C买入计划。",
                         source=str(abc_path or ""),
                     ))
                     decisions.append(CombinedLiveDecision(
                         action="ALLOW_D_INTRADAY_MONITOR", strategy_leg="D",
-                        reason="无持仓且无A/B/C买入计划，允许启动D盘中监控；D本身仍需实时行情、成交概率和风控校验。",
+                        reason="无持仓且无A/C买入计划，允许启动D盘中监控；D本身仍需实时行情、成交概率和风控校验。",
                         source="combined_state_machine",
                     ))
 
@@ -1101,7 +1150,7 @@ class CombinedLiveEngine:
             e2_status_reason = f"账户有 {len(open_positions)} 个未平仓头寸，E2 不触发。"
         elif has_abc_buy:
             e2_status_action = "BLOCK_E2"
-            e2_status_reason = "今日 A/B/C 已生成买入计划，E2 不触发（资金冲突）。"
+            e2_status_reason = "今日 A/C 已生成买入计划，E2 不触发（资金冲突）。"
         else:
             e2_status_action = "ALLOW_E2_SIGNAL"
             today_signal = self.load_today_e2_signal(today)
@@ -1316,7 +1365,7 @@ class CombinedLiveEngine:
         active_name = ""
         if not state.empty:
             active_mode = str(state.iloc[0].get("active_strategy_mode", "1"))
-            active_name = str(state.iloc[0].get("active_strategy_name", "ABCDE2"))
+            active_name = str(state.iloc[0].get("active_strategy_name", "ACDE2"))
         if active_mode == "2":
             title = "L 独立龙头策略计划"
             status_leg = "L"
@@ -1326,7 +1375,7 @@ class CombinedLiveEngine:
             status_leg = "MODEL3"
             status_title = "model=3 状态"
         else:
-            title = "A+B+C+D+E2 组合实盘计划"
+            title = "A+C+D+E2 组合实盘计划（B已删除）"
             status_leg = "E2"
             status_title = "策略 E2 状态"
         status_rows = (
@@ -1359,10 +1408,10 @@ class CombinedLiveEngine:
 {strategy_status}
 ## 执行原则
 
-- 若存在 D 待卖持仓，先卖 D，未确认卖出前阻断 A/B/C 买入。
-- 若存在 A/B/C 旧持仓，阻断 D 盘中买入，避免资金冲突。
-- 若今日已有 A/B/C 买入计划，默认不启动 D 盘中买入监控。
-- 若无持仓且无 A/B/C 买入计划，才允许 D 盘中监控；ABCD 均空闲时，E2 可能触发。
+- 若存在 D 待卖持仓，先卖 D，未确认卖出前阻断 A/C 买入。
+- 若存在 A/C 旧持仓或仅人工退出的历史B仓，阻断 D 盘中买入，避免资金冲突。
+- 若今日已有 A/C 买入计划，默认不启动 D 盘中买入监控。
+- 若无持仓且无 A/C 买入计划，才允许 D 盘中监控；A/C/D 均空闲时，E2 可能触发。
 - E2 条件：segment_retreat_state_bucket=neutral + 非ST + 成交可靠 → 流通市值最小1只；T+1开盘买80%仓，T+2收盘卖。
 - L 条件：仅在 active_strategy_profile.mode=2 且 strategy_l.live_order_enabled=true 时，才把昨日 L 信号转换成今日买入计划；默认 mode=1 不启用 L。
 - model=3 条件：active_strategy_profile.mode=3 且 strategy_model3.live_order_enabled=true 时，先生成mode=1计划；mode=1空闲则允许L补位，mode=1有买入计划时仅允许满足创业板、theme_limit_count>=2、非after_1430的L替换。

@@ -205,7 +205,7 @@
     "avg_sell_slippage": 0.002525
   },
   "pre_paper_trade_requirements": {
-    "file_role": "A/B/C复核与准入要求。2026-07-03 用户确认放开ABC实盘：must_review_each_trade=false 后仅 risk_flags 非空标的生成复核单，复核不阻塞实盘执行链。",
+    "file_role": "A/C复核与准入要求。B已删除；must_review_each_trade=false 后仅 risk_flags 非空标的生成复核单，复核不阻塞实盘执行链。",
     "must_review_each_trade": false,
     "must_generate_review_checklist": true,
     "must_validate_minute_data_before_live": false,
@@ -297,8 +297,8 @@
     "allow_live_order": false
   },
   "paper_ab_filtered_strategy": {
-    "file_role": "A严格主策略 + B0018备用策略风险过滤版 + C龙头补位策略的模拟盘观察配置。只用于本地paper/simulation，不接实盘。",
-    "strategy_label": "a_strict_plus_b0018_filtered_plus_c_hold3",
+    "file_role": "A严格主策略 + C龙头补位策略配置。B策略已从当前交易链路彻底移除，历史B结果只保留在旧报告中审计。",
+    "strategy_label": "a_strict_plus_c_hold3",
     "data_quality_requirements": {
       "required_limit_data_quality": "full",
       "required_columns": [
@@ -312,26 +312,45 @@
         "is_fill_score_reliable"
       ],
       "block_when_not_compatible": true,
-      "description": "A/B/C 最佳策略来自完整 limit_list_d 历史口径。若当天仅有 stk_limit 基础涨停名单，不允许生成开仓计划。"
+      "description": "A/C策略来自完整 limit_list_d 历史口径。若当天仅有 stk_limit 基础涨停名单，不允许生成开仓计划。"
     },
     "a_strategy": {
       "description": "A策略直接使用当前candidate_filters、ranking、position和paper_candidate配置。"
     },
     "b_strategy": {
+      "enabled": false,
+      "removed": true,
+      "new_entries_disabled": true,
+      "auto_exit_enabled": false,
+      "manual_exit_only": true,
+      "disabled_at": "2026-07-22",
+      "disabled_reason": "用户确认彻底删除策略B。禁止B新增买入、自动止盈、POV卖出、14:55自动平仓和收盘看门狗补卖；2026-07-22尚未平仓的B持仓由用户手动退出。",
+      "historical_replay_only": false
+    },
+    "c_strategy": {
       "enabled": true,
       "only_when_a_no_candidate": true,
+      "only_when_a_and_b_no_candidate": false,
+      "description": "C备用龙头战法条件。B停止新增开仓后，只在A严格策略无候选且没有持仓占用时启用。",
       "conditions": [
         {
-          "column": "segment_emotion_state_bucket",
+          "column": "market_chain_count_bucket",
           "operator": "==",
-          "value": "warming",
-          "description": "B0018备用策略条件，只在A策略无候选日启用。"
+          "value": "15_30",
+          "description": "全市场连板数量在15到30之间，代表龙头情绪较强但未进入极端过热。"
+        },
+        {
+          "column": "segment_limit_up_count_bucket",
+          "operator": "==",
+          "value": "40_80",
+          "description": "所属市场分段涨停数量在40到80之间，代表局部分段有较强涨停热度。"
         }
       ],
+      "risk_reject_rules_source": "c_strategy_local_rules_after_b_removal",
       "risk_reject_rules": [
         {
           "name": "reject_fd_warn_or_loss_overlay",
-          "description": "过滤risk_flags包含封单/流通市值偏高或LOSS_OVERLAY_WATCH的B交易。",
+          "description": "过滤risk_flags包含封单/流通市值偏高或LOSS_OVERLAY_WATCH的C交易。",
           "risk_flags_contains_any": [
             "封单/流通市值偏高",
             "LOSS_OVERLAY_WATCH"
@@ -339,7 +358,7 @@
         },
         {
           "name": "reject_open_times_by_board_height",
-          "description": "按板高分档过滤炸板次数：首板不限；二板<4次；三板/四板<11次；五板及以上<4次。基于近2年34511条涨停次日开盘收益统计。",
+          "description": "按板高分档过滤炸板次数：首板不限；二板<4次；三板/四板<11次；五板及以上<4次。",
           "compound_conditions": [
             [
               {"column": "limit_times", "operator": "==", "value": 2},
@@ -360,27 +379,6 @@
           ]
         }
       ],
-      "execution_model": "conservative_daily_replay_fixed_t2_close"
-    },
-    "c_strategy": {
-      "enabled": true,
-      "only_when_a_and_b_no_candidate": true,
-      "description": "C备用龙头战法条件，只在A严格策略和B0018过滤版都无候选且没有持仓占用时启用。当前只用于本地研究和模拟盘观察，不接实盘。",
-      "conditions": [
-        {
-          "column": "market_chain_count_bucket",
-          "operator": "==",
-          "value": "15_30",
-          "description": "全市场连板数量在15到30之间，代表龙头情绪较强但未进入极端过热。"
-        },
-        {
-          "column": "segment_limit_up_count_bucket",
-          "operator": "==",
-          "value": "40_80",
-          "description": "所属市场分段涨停数量在40到80之间，代表局部分段有较强涨停热度。"
-        }
-      ],
-      "risk_reject_rules_source": "inherit_b_strategy_risk_reject_rules",
       "execution_model": "conservative_daily_replay_fixed_hold3_close",
       "minute_data_required_for_acceptance": false,
       "queue_execution_assumption": {
@@ -418,15 +416,18 @@
         "order_book_verified": false
       }
     },
-    "output_prefix": "reports/paper_trade/ab_filtered/a_strict_plus_b0018_filtered",
+    "output_prefix": "reports/paper_trade/ab_filtered/a_strict_plus_c_hold3",
     "allow_live_order": false,
     "live_order_enabled": false,
     "requires_minute_k_validation": true
   },
   "strategy_release_validation": {
-    "file_role": "策略发布前稳定性验证配置。用于固定策略版本、检查样本外和近端窗口稳定性，不用于每日改策略。",
-    "strategy_label": "a_strict_plus_b0018_filtered",
-    "release_mode": "paper_ready_review_only",
+    "file_role": "旧策略发布验证已因B删除而失效；A/C组合必须重新回测并重新建立发布门槛。",
+    "strategy_label": "a_strict_plus_c_hold3",
+    "release_mode": "invalidated_by_b_removal_revalidation_required",
+    "current_release_valid": false,
+    "invalidated_at": "2026-07-22",
+    "invalidated_reason": "策略B已删除，原A+B发布指标和B占比门槛不能继续代表当前A/C策略。",
     "rebalance_cycle": "quarterly_or_half_year",
     "oos_start_date": "20260101",
     "oos_end_date": "20260518",
@@ -441,12 +442,11 @@
       "max_drawdown_abs": 0.12,
       "max_single_loss_abs": 0.08,
       "min_executed_trade_count": 5,
-      "max_b_trade_share": 0.55,
       "max_limit_down_blocked_trade_count": 0,
       "require_live_order_disabled": true,
       "require_minute_k_validation_before_live": true
     },
-    "output_prefix": "reports/strategy_release/a_strict_plus_b0018_filtered_release_validation",
+    "output_prefix": "reports/strategy_release/a_strict_plus_c_hold3_release_validation",
     "live_order_enabled": false
   },
   "risk_notice": "该配置只表示当前本地回测和审计口径下的候选策略，不代表可直接实盘。实盘前必须完成分钟K、盘口档位、集合竞价、滑点、跌停卖出和模拟盘验证。"

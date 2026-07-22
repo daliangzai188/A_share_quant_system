@@ -47,6 +47,16 @@ def _bark_url() -> str:
     return (os.getenv("BARK_URL", "") or "").strip().rstrip("/")
 
 
+def _notifications_disabled_by_environment() -> bool:
+    """测试/离线回放的硬隔离开关，优先级高于正式配置和Bark地址。"""
+    return (os.getenv("A_SYSTEM_DISABLE_NOTIFICATIONS", "") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 def _should_throttle(key: str, throttle_sec: float) -> bool:
     now = time.monotonic()
     with _lock:
@@ -64,6 +74,10 @@ def notify(event: str, title: str, body: str = "", *, level: str = "active",
     level: Bark 通知级别 active/timeSensitive/critical（critical 可在勿扰模式下响铃）。
     call: True 时持续响铃约30秒（警报式），当前只允许卖出/平仓失败使用。
     """
+    if _notifications_disabled_by_environment():
+        _logger.info("通知：测试/离线环境硬隔离，跳过推送：%s", title)
+        return False
+
     cfg = _load_notify_config()
     if not cfg.get("enabled", False):
         return False

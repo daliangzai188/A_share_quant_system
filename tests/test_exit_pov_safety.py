@@ -4,11 +4,17 @@ import unittest
 import sys
 import datetime
 import copy
+import os
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
 from types import SimpleNamespace
 from types import ModuleType
+
+# 退出安全测试会使用冻结时钟和虚构持仓主动覆盖失败分支。无论本机 .env
+# 是否配置正式 Bark 地址，测试进程都必须先硬关闭外部通知，防止模拟告警
+# 进入真实手机通知中心。该变量只作用于当前测试进程，不修改生产配置。
+os.environ["A_SYSTEM_DISABLE_NOTIFICATIONS"] = "1"
 
 # src.qmt_adapter 在模块导入期只需要 dotenv.load_dotenv。测试环境未必安装
 # python-dotenv；注入最小无副作用桩即可测试纯字段解析，不会读取或修改 .env。

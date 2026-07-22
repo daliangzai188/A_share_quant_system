@@ -1,13 +1,15 @@
 # 策略 L 龙头策略接入说明
 
+> 2026-07-22：策略 B 已删除，mode=1 名称改为 ACDE2。旧 L/model=3 叠加认证包含 B 历史交易，当前组合需要重新回放。
+
 ## 当前结论
 
-策略 L 已接入实盘状态机，但默认不开启。
+策略 L 已接入实盘状态机。独立 mode=2 不开启；当前 mode=3 只在认证规则允许时让 L 补位或替换。
 
 当前默认配置：
 
 ```text
-active_strategy_profile.mode = 1
+active_strategy_profile.mode = 3
 strategy_l.enabled = false
 strategy_l.live_order_enabled = false
 ```
@@ -15,7 +17,7 @@ strategy_l.live_order_enabled = false
 含义：
 
 ```text
-mode=1：继续使用当前 ABCDE2/D 组合实盘状态机。
+mode=1：继续使用当前 ACDE2/D 组合实盘状态机（B已删除）。
 mode=2：切换到独立 L 龙头策略状态机。
 mode=3：model=3 自动切换实盘状态机，在 mode=1 和 L 之间按认证规则切换。
 strategy_l.enabled=false：L 已接入，但策略本身不允许生成实盘计划。
@@ -99,7 +101,7 @@ T+2 收盘卖出。
 L2 理论复利为 2254.44 倍。
 加入实盘约束后，L2 复利下降为 142.35 倍。
 下降主要来自同一资金持仓占用导致 63 个信号被跳过。
-当前只是接入但默认不开启，不会影响 ABCDE2/D。
+L独立mode=2仍关闭；当前mode=3只在既有保护规则允许时参与ACDE2/D。
 ```
 
 ## 实盘接入链路
@@ -142,7 +144,7 @@ scripts/trading_daemon.py
 positions.json 中 strategy_leg=L
 planned_exit_date 到期
 14:56 收盘平仓窗口进入 check_and_close_positions()
-复用 A/B/C 的收盘平仓链路
+复用 A/C 的收盘平仓链路（内部ABC命名为历史接口兼容保留）
 按买10/买5优先挂限价卖出
 成交后回写本地持仓
 ```

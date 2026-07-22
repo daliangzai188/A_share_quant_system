@@ -99,6 +99,14 @@ def configured_b_conditions(config: dict[str, Any]) -> list[dict[str, str]]:
     return conditions
 
 
+def is_b_strategy_enabled(config: dict[str, Any]) -> bool:
+    """读取B退役标记；当前策略配置必须返回False。"""
+    b_config = config.get("paper_ab_filtered_strategy", {}).get("b_strategy", {})
+    return bool(b_config.get("enabled", False)) and not bool(
+        b_config.get("new_entries_disabled", False)
+    )
+
+
 def condition_text(conditions: list[dict[str, str]]) -> str:
     return ";".join(f"{condition['column']}={condition['value']}" for condition in conditions)
 
@@ -117,14 +125,19 @@ def _apply_numeric_condition(values: pd.Series, operator: str, threshold: float)
     return pd.Series(False, index=values.index)
 
 
-def reject_b_risk_mask(replayed_b: pd.DataFrame, config: dict[str, Any]) -> pd.Series:
-    if replayed_b.empty:
-        return pd.Series(False, index=replayed_b.index)
+def reject_strategy_risk_mask(
+    replayed: pd.DataFrame,
+    config: dict[str, Any],
+    strategy_key: str,
+) -> pd.Series:
+    """按指定策略自身的风险规则过滤，避免C继续依赖已删除的B配置。"""
+    if replayed.empty:
+        return pd.Series(False, index=replayed.index)
     ab_config = config.get("paper_ab_filtered_strategy", {})
-    b_config = ab_config.get("b_strategy", {})
-    rules = b_config.get("risk_reject_rules", [])
-    mask = pd.Series(False, index=replayed_b.index)
-    risk_flags = replayed_b.get("risk_flags", pd.Series("", index=replayed_b.index)).fillna("").astype(str)
+    strategy_config = ab_config.get(strategy_key, {})
+    rules = strategy_config.get("risk_reject_rules", [])
+    mask = pd.Series(False, index=replayed.index)
+    risk_flags = replayed.get("risk_flags", pd.Series("", index=replayed.index)).fillna("").astype(str)
     for rule in rules:
         for keyword in rule.get("risk_flags_contains_any", []):
             mask = mask | risk_flags.str.contains(str(keyword), regex=False)
@@ -134,22 +147,27 @@ def reject_b_risk_mask(replayed_b: pd.DataFrame, config: dict[str, Any]) -> pd.S
             threshold = pd.to_numeric(condition.get("value", 0), errors="coerce")
             if not column or pd.isna(threshold):
                 continue
-            values = pd.to_numeric(replayed_b.get(column, pd.Series(0.0, index=replayed_b.index)), errors="coerce")
+            values = pd.to_numeric(replayed.get(column, pd.Series(0.0, index=replayed.index)), errors="coerce")
             mask = mask | _apply_numeric_condition(values, operator, float(threshold))
         # compound_conditions: list of AND-groups, OR'd together
         for group in rule.get("compound_conditions", []):
-            sub = pd.Series(True, index=replayed_b.index)
+            sub = pd.Series(True, index=replayed.index)
             for condition in group:
                 column = str(condition.get("column", ""))
                 operator = str(condition.get("operator", "==")).strip()
                 threshold = pd.to_numeric(condition.get("value", 0), errors="coerce")
                 if not column or pd.isna(threshold):
-                    sub = pd.Series(False, index=replayed_b.index)
+                    sub = pd.Series(False, index=replayed.index)
                     break
-                values = pd.to_numeric(replayed_b.get(column, pd.Series(0.0, index=replayed_b.index)), errors="coerce")
+                values = pd.to_numeric(replayed.get(column, pd.Series(0.0, index=replayed.index)), errors="coerce")
                 sub = sub & _apply_numeric_condition(values, operator, float(threshold))
             mask = mask | sub.fillna(False)
     return mask.fillna(False).astype(bool)
+
+
+def reject_b_risk_mask(replayed_b: pd.DataFrame, config: dict[str, Any]) -> pd.Series:
+    """仅供历史B回放脚本复现旧报告；当前交易链路不再调用。"""
+    return reject_strategy_risk_mask(replayed_b, config, "b_strategy")
 
 
 def add_filter_summary_columns(
@@ -260,6 +278,8 @@ def main() -> None:
     ab_config = base_config.get("paper_ab_filtered_strategy", {})
     if bool(ab_config.get("allow_live_order", False)) or bool(ab_config.get("live_order_enabled", False)):
         raise RuntimeError("拒绝运行A+B filtered观察：配置中存在实盘开关。")
+    if not is_b_strategy_enabled(base_config):
+        raise RuntimeError("拒绝运行B观察回放：策略B已彻底删除，旧脚本仅保留历史代码审计。")
 
     base_generator = PaperCandidateGenerator(args.strategy_config)
     all_candidates = base_generator.load_all_candidates()

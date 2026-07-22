@@ -2,7 +2,7 @@
 从当日 limit_up_fill_scored.csv 生成安全的次日模拟观察计划。
 
 用途：
-1. A/B/C 历史回放候选只能生成到有完整未来价格的日期。
+1. A/C 历史回放候选只能生成到有完整未来价格的日期，B策略已删除。
 2. 收盘后实盘准备需要看到当日最新涨停池的模拟观察计划。
 3. 本脚本只生成 PLAN_ONLY / WATCH_ONLY 文件，不接 QMT，不下真实订单。
 """
@@ -22,7 +22,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from src.utils.config import load_json_config, mkdir_p
 
 
-OUTPUT_PREFIX = "reports/paper_trade/ab_filtered_daily_ops/a_strict_plus_b0018_filtered_plus_c_hold3"
+OUTPUT_PREFIX = "reports/paper_trade/ab_filtered_daily_ops/a_strict_plus_c_hold3"
 
 
 def parse_args() -> argparse.Namespace:
@@ -218,11 +218,6 @@ def select_candidates(data: pd.DataFrame, config: dict[str, Any], top_n: int) ->
     if not a_pool.empty:
         return "LIVE_LIMIT_POOL_A", rank_candidates(a_pool, config, top_n)
 
-    b_conditions = config.get("paper_ab_filtered_strategy", {}).get("b_strategy", {}).get("conditions", [])
-    b_pool = apply_conditions(base, b_conditions, strict_missing=True)
-    if not b_pool.empty:
-        return "LIVE_LIMIT_POOL_B", rank_candidates(b_pool, config, top_n)
-
     c_conditions = config.get("paper_ab_filtered_strategy", {}).get("c_strategy", {}).get("conditions", [])
     c_pool = apply_conditions(base, c_conditions, strict_missing=True)
     if not c_pool.empty:
@@ -248,8 +243,6 @@ def rank_candidates(data: pd.DataFrame, config: dict[str, Any], top_n: int) -> p
 def output_paths(output_prefix: Path, signal_date: str) -> dict[str, Path]:
     return {
         "a_candidates": output_prefix.with_name(output_prefix.name + f"_{signal_date}_a_candidates.csv"),
-        "b_candidates": output_prefix.with_name(output_prefix.name + f"_{signal_date}_b_candidates.csv"),
-        "b_rejected": output_prefix.with_name(output_prefix.name + f"_{signal_date}_b_rejected_by_filter.csv"),
         "c_candidates": output_prefix.with_name(output_prefix.name + f"_{signal_date}_c_candidates.csv"),
         "c_rejected": output_prefix.with_name(output_prefix.name + f"_{signal_date}_c_rejected_by_filter.csv"),
         "selected": output_prefix.with_name(output_prefix.name + f"_{signal_date}_selected.csv"),
@@ -267,7 +260,7 @@ def build_outputs(candidates: pd.DataFrame, strategy_leg: str, signal_date: str,
     planned_equity = float(position.get("initial_cash", 500000))
     planned_position_pct = float(position.get("target_position_pct", 0.8))
     round_lot = int(paper_trade.get("round_lot_size", 100))
-    # 兜底来源不是完整 A/B/C 历史回放结果，只允许生成观察清单，不生成 BUY 委托。
+    # 兜底来源不是完整 A/C 历史回放结果，只允许生成观察清单，不生成 BUY 委托。
     selected_count = 0
 
     selected_rows: list[dict[str, Any]] = []
@@ -353,8 +346,6 @@ def build_outputs(candidates: pd.DataFrame, strategy_leg: str, signal_date: str,
                 if not planned_orders.empty
                 else "当日涨停池没有可观察标的，明日暂不开仓。",
                 "a_candidate_count": 0,
-                "b_candidate_count": 0,
-                "b_rejected_by_filter_count": 0,
                 "c_candidate_count": 0,
                 "c_rejected_by_filter_count": 0,
                 "selected_count": int(len(planned_orders)),
@@ -404,7 +395,7 @@ def write_markdown(path: Path, checklist: pd.DataFrame, selected: pd.DataFrame, 
 ## 安全限制
 
 - `live_order_enabled=False`，不允许真实下单。
-- 本报告不使用未来收益字段，只解决“当天数据已更新但 A/B/C 历史回放日期滞后”的启动问题。
+- 本报告不使用未来收益字段，只解决“当天数据已更新但 A/C 历史回放日期滞后”的启动问题。
 - 实盘前必须继续走 QMT 预览、人工复核和小资金验证。
 """
     path.write_text(content, encoding="utf-8")
@@ -446,10 +437,10 @@ def main() -> None:
     paths = output_paths(output_prefix, signal_date)
 
     empty = pd.DataFrame()
-    selected.to_csv(paths["a_candidates"], index=False, encoding="utf-8-sig")
-    empty.to_csv(paths["b_candidates"], index=False, encoding="utf-8-sig")
-    empty.to_csv(paths["b_rejected"], index=False, encoding="utf-8-sig")
-    empty.to_csv(paths["c_candidates"], index=False, encoding="utf-8-sig")
+    a_output = selected if strategy_leg == "LIVE_LIMIT_POOL_A" else empty
+    c_output = selected if strategy_leg == "LIVE_LIMIT_POOL_C" else empty
+    a_output.to_csv(paths["a_candidates"], index=False, encoding="utf-8-sig")
+    c_output.to_csv(paths["c_candidates"], index=False, encoding="utf-8-sig")
     empty.to_csv(paths["c_rejected"], index=False, encoding="utf-8-sig")
     selected.to_csv(paths["selected"], index=False, encoding="utf-8-sig")
     planned_orders.to_csv(paths["planned_orders"], index=False, encoding="utf-8-sig")
