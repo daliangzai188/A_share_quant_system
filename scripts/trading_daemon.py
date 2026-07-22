@@ -45,6 +45,22 @@ if str(PROJECT_ROOT) not in sys.path:
 from src.utils.logger import get_logger, setup_logger
 from src.utils.config import load_json_config, mkdir_p
 from src.utils.time_utils import BEIJING_TZ, now_beijing, today_beijing
+from src.execution_completion_tracker import ExecutionCompletionTracker
+
+
+_execution_completion_tracker = ExecutionCompletionTracker(PROJECT_ROOT)
+
+
+def _track_execution(method: str, **values: Any) -> Any:
+    """执行审计失败只能告警，绝不能改变下单、撤单或持仓回写结果。"""
+    try:
+        return getattr(_execution_completion_tracker, method)(**values)
+    except Exception as exc:  # noqa: BLE001
+        try:
+            get_logger("a_share_quant").warning("成交完成率记录失败（%s，不影响交易）：%s", method, exc)
+        except Exception:
+            pass
+        return None
 
 
 def _notify(event: str, title: str, body: str = "", *, level: str = "active",
@@ -96,6 +112,16 @@ def _fmt_wan(amount: float) -> str:
         return f"{float(amount) / 10000:.2f}万"
     except Exception:
         return "0.00万"
+
+
+def _execution_time_only(value: Any) -> str:
+    """把券商时间统一为HH:MM:SS，避免ISO时区后缀被误当成成交时间。"""
+    text = str(value or "").strip()
+    if len(text) >= 19 and text[10] in {" ", "T"}:
+        return text[11:19]
+    if len(text) >= 8 and text[-8:-6].isdigit() and text[-5:-3].isdigit():
+        return text[-8:]
+    return text
 
 
 def _fmt_position_time(value: Any, *, default_time: str = "", trim_zero_seconds: bool = False) -> str:
@@ -626,7 +652,10 @@ def clear_local_positions_when_broker_empty(source: str) -> int:
 
 def record_buy(order_id: str, ts_code: str, name: str, signal_date: str,
                buy_date: str, shares: int, buy_price: float, strategy_leg: str,
-               exit_n_days: int = 2, traded_at: str = "") -> None:
+               exit_n_days: int = 2, traded_at: str = "",
+               execution_channel: str = "其他买入", planned_order_qty: int = 0,
+               benchmark_open: float = 0.0) -> None:
+    added = False
     with _positions_file_lock:
         positions = load_positions()
         if any(p["order_id"] == order_id for p in positions):
@@ -666,6 +695,26 @@ def record_buy(order_id: str, ts_code: str, name: str, signal_date: str,
             "exit_fills_by_date": {},
         })
         save_positions(positions)
+        added = True
+    if added:
+        _track_execution(
+            "record_buy_slice",
+            event_id=f"买入成交|{order_id}",
+            entry_date=buy_date,
+            time=_execution_time_only(traded_at or buy_time),
+            ts_code=ts_code,
+            name=name,
+            strategy_leg=strategy_leg,
+            signal_date=signal_date,
+            channel=execution_channel,
+            order_id=order_id,
+            order_qty=planned_order_qty or shares,
+            filled_qty=shares,
+            fill_price=buy_price,
+            benchmark_open=benchmark_open,
+            status="已成交",
+            note="持仓成交回写",
+        )
     logger().info("持仓记录：策略=%s %s %s 买入日 %s 计划平仓日 %s",
                   strategy_leg, ts_code, name, buy_date, exit_date.strftime("%Y%m%d"))
 
@@ -701,6 +750,7 @@ def _position_exit_filled_qty_on(position: dict[str, Any], fill_date: str) -> in
 
 
 def mark_position_closed(order_id: str, sell_date: str, sell_price: float = 0.0) -> None:
+    changed = False
     with _positions_file_lock:
         positions = load_positions()
         for p in positions:
@@ -717,13 +767,17 @@ def mark_position_closed(order_id: str, sell_date: str, sell_price: float = 0.0)
                 p["status"] = "closed"
                 p["sell_date"] = sell_date
                 p["sell_price"] = sell_price
+                changed = True
         save_positions(positions)
+    if changed:
+        _track_execution("rebuild_summary")
 
 
 def reduce_position_shares(
     order_id: str, remaining_shares: int, fill_price: float = 0.0, fill_date: str = ""
 ) -> None:
     """部分成交后保留持仓，仅把剩余未卖股数写回，status 维持 open 以便下次继续卖出。"""
+    changed = False
     with _positions_file_lock:
         positions = load_positions()
         for p in positions:
@@ -740,7 +794,10 @@ def reduce_position_shares(
                 p.setdefault("entry_shares", current)
                 p["shares"] = remaining
                 p["status"] = "open"
+                changed = changed or remaining < current
         save_positions(positions)
+    if changed:
+        _track_execution("rebuild_summary")
 
 
 def find_open_position_by_code(ts_code: str, strategy_leg: str | None = None) -> dict[str, Any] | None:
@@ -1117,6 +1174,22 @@ def _execute_orders_inprocess(
                     ref_price = sell_price
                     order_remark = f"{order_remark}|平仓{sell_label}".strip("|")
                     log.info("[%s] %s 平仓挂单取价 %s=%.2f", tag, row["ts_code"], sell_label, sell_price)
+            else:
+                _track_execution(
+                    "register_entry_plan",
+                    entry_date=today_beijing().strftime("%Y%m%d"),
+                    ts_code=str(row.get("ts_code", "")),
+                    name=str(row.get("name", "")),
+                    strategy_leg=str(row.get("strategy_leg", "")),
+                    signal_date=str(row.get("signal_date", "")),
+                    target_qty=qty,
+                    target_amount=qty * ref_price,
+                    reference_price=ref_price,
+                    auction_planned_qty=0,
+                    pov_planned_qty=0,
+                    pov_target_amount=0,
+                    status="待开盘补买执行",
+                )
             request = OrderRequest(
                 ts_code=str(row["ts_code"]),
                 broker_code=str(row["broker_code"]),
@@ -1178,6 +1251,9 @@ def _execute_orders_inprocess(
                         strategy_leg=s["strategy_leg"],
                         exit_n_days=s["exit_n"],
                         traded_at=getattr(fill, "traded_at", ""),
+                        execution_channel="开盘补买" if "09:30" in tag else "普通买入",
+                        planned_order_qty=s["qty"],
+                        benchmark_open=0.0,
                     )
                     amount = fill.filled_qty * fill_price
                     if fill.filled_qty < s["qty"]:
@@ -3041,6 +3117,40 @@ def _cancel_active_close_orders_for_auction_locked(
     return True
 
 
+def _record_exit_pov_slice(plan: dict[str, Any], **values: Any) -> None:
+    """持久化卖出POV逐片明细；记录失败不改变平仓流程。"""
+    pos = plan.get("pos", {})
+    if not all(
+        str(pos.get(field, "") or "").strip()
+        for field in ("buy_date", "ts_code", "strategy_leg", "signal_date")
+    ):
+        # 缺少交易身份时不能生成可能串单的坏主键；真实持仓均应具备这些字段。
+        return
+    slice_no = int(plan.get("slice_no", 0) or 0)
+    broker_order_id = str(values.get("broker_order_id", "") or "")
+    event_id = (
+        f"卖出POV|{today_beijing().strftime('%Y%m%d')}|"
+        f"{pos.get('order_id', '')}|{slice_no}|{broker_order_id or values.get('status', '')}"
+    )
+    _track_execution(
+        "record_sell_slice",
+        event_id=event_id,
+        entry_date=pos.get("buy_date", ""),
+        exit_date=today_beijing().strftime("%Y%m%d"),
+        time=now_beijing().strftime("%H:%M:%S"),
+        ts_code=pos.get("ts_code", ""), name=pos.get("name", ""),
+        strategy_leg=pos.get("strategy_leg", ""), signal_date=pos.get("signal_date", ""),
+        channel="卖出POV", slice_no=slice_no,
+        local_order_id=pos.get("order_id", ""), broker_order_id=broker_order_id,
+        external_flow=values.get("external_flow", 0), budget=values.get("budget", 0),
+        depth_limit_qty=values.get("depth_limit_qty", 0), depth_note=values.get("depth_note", ""),
+        order_price=values.get("order_price", 0), order_qty=values.get("order_qty", 0),
+        filled_qty=values.get("filled_qty", 0), fill_price=values.get("fill_price", 0),
+        remaining_qty=values.get("remaining_qty", plan.get("remain_sh", 0)),
+        status=values.get("status", ""), note=values.get("note", ""),
+    )
+
+
 def _exit_pov_slice(
     plan: dict[str, Any],
     broker_cfg: dict,
@@ -3056,6 +3166,7 @@ def _exit_pov_slice(
     pos = plan["pos"]
     ts_code = str(pos.get("ts_code", ""))
     today_str = today_beijing().strftime("%Y%m%d")
+    plan["slice_no"] = int(plan.get("slice_no", 0) or 0) + 1
     try:
         with _exit_sell_lock:
             if now_beijing().time() >= SCHED_EXIT_POV_HANDOFF:
@@ -3079,6 +3190,7 @@ def _exit_pov_slice(
                 broker_total, broker_can_use = _broker_position_quantities(adapter, ts_code)
                 orders = adapter.query_orders()
             if quote is None:
+                _record_exit_pov_slice(plan, status="跳过", note="行情为空")
                 return
             last = float(getattr(quote, "last_price", 0.0) or 0.0)
             cum = float(getattr(quote, "amount", 0.0) or 0.0)
@@ -3090,6 +3202,7 @@ def _exit_pov_slice(
             plan["last_sample_at"] = sampled_at
             if last <= 0 or cum <= 0:
                 log.warning("[卖出POV] %s 行情缺少价格或累计成交额，跳过本片。", ts_code)
+                _record_exit_pov_slice(plan, status="跳过", note="行情缺少价格或累计成交额")
                 return
             if broker_total <= 0:
                 # QMT 在客户端切换/数据同步瞬间可能“查询成功但返回空持仓”。项目已有
@@ -3110,11 +3223,13 @@ def _exit_pov_slice(
                         "系统已停止本片且未误标平仓，请检查QMT连接。",
                         level="timeSensitive",
                     )
+                _record_exit_pov_slice(plan, status="跳过", note="券商实际持仓查询为空")
                 return
             plan["broker_missing_hits"] = 0
             plan["remain_sh"] = min(int(plan.get("remain_sh", broker_total)), broker_total)
             if broker_can_use <= 0:
                 log.warning("[卖出POV] %s 券商可卖股数为0（可能仍有冻结卖单），跳过本片。", ts_code)
+                _record_exit_pov_slice(plan, status="跳过", note="券商可卖股数为0")
                 return
             # 计划可能13:00建立、之后才启动；普通计划的陈旧基线不能作为单片
             # 流量。千万级强制计划是唯一例外：14:15首片必须真正开始卸载，不能
@@ -3141,9 +3256,11 @@ def _exit_pov_slice(
                 )
             elif stale_baseline:
                 log.info("[卖出POV] %s 启动/切频前刷新流量基线，等待下一片。", ts_code)
+                _record_exit_pov_slice(plan, status="跳过", note="刷新流量基线")
                 return
             if cum < prev:
                 log.warning("[卖出POV] %s 累计成交额发生回退(%.0f<%.0f)，仅重置基线。", ts_code, cum, prev)
+                _record_exit_pov_slice(plan, status="跳过", note="累计成交额回退")
                 return
             # 累计成交额包含我方上一片成交；扣掉后避免“自己成交→放大下一片”的自激。
             external_flow = max(cum - prev - own_fill, 0.0)
@@ -3157,6 +3274,11 @@ def _exit_pov_slice(
             )
             if depth_qty <= 0 or price <= 0:
                 log.info("[卖出POV] %s %s，跳过本片，不用跌停价扫盘。", ts_code, depth_note)
+                _record_exit_pov_slice(
+                    plan, external_flow=external_flow, budget=budget,
+                    depth_limit_qty=depth_qty, depth_note=depth_note,
+                    status="跳过", note="盘口深度或价格不足",
+                )
                 return
             remain = int(plan["remain_sh"])
             flow_qty = int(budget / max(last, 0.01))
@@ -3182,6 +3304,11 @@ def _exit_pov_slice(
             )
             qty = _normalize_exit_slice_quantity(ts_code, qty, remain)
             if qty <= 0:
+                _record_exit_pov_slice(
+                    plan, external_flow=external_flow, budget=budget,
+                    depth_limit_qty=depth_qty, depth_note=depth_note,
+                    order_price=price, status="跳过", note="安全可卖数量不足申报单位",
+                )
                 return
             request = OrderRequest(
                 ts_code=ts_code, broker_code=ts_code, side="SELL",
@@ -3198,6 +3325,11 @@ def _exit_pov_slice(
                 )
             if not result.accepted:
                 log.error("❌ [卖出POV] %s提交失败:%s", ts_code, result.message)
+                _record_exit_pov_slice(
+                    plan, external_flow=external_flow, budget=budget,
+                    depth_limit_qty=depth_qty, depth_note=depth_note,
+                    order_price=price, order_qty=qty, status="提交失败", note=result.message,
+                )
                 return
             oid = str(result.order_id or "")
             fill = _confirm_fill(
@@ -3249,8 +3381,17 @@ def _exit_pov_slice(
                 ts_code, external_flow / 1e4, budget / 1e4, depth_note,
                 qty, price, fq, fp, int(plan["remain_sh"]),
             )
+            _record_exit_pov_slice(
+                plan, broker_order_id=oid, external_flow=external_flow, budget=budget,
+                depth_limit_qty=depth_qty, depth_note=depth_note,
+                order_price=price, order_qty=qty, filled_qty=fq, fill_price=fp,
+                remaining_qty=int(plan["remain_sh"]),
+                status="已成交" if fq > 0 else "未成交",
+                note="终态已确认" if bool(getattr(fill, "is_terminal", False)) else "终态待后续核对",
+            )
     except Exception as e:
         log.error("卖出POV片异常(%s):%s", ts_code, e)
+        _record_exit_pov_slice(plan, status="异常", note=str(e))
 
 
 def _exit_pov_monitor() -> None:
@@ -3340,7 +3481,7 @@ def _exit_pov_monitor() -> None:
                     start_dt = now.replace(hour=14, minute=40, second=0, microsecond=0) - datetime.timedelta(minutes=5 * slots)
                 plans.append(dict(pos=pos, prev_cum=cum, last_sample_at=now_beijing(), start=start_dt,
                                   remain_sh=int(pos.get("shares", 0)), sold_qty=0, sold_amt=0.0,
-                                  done=False, large_force=force_large))
+                                  done=False, large_force=force_large, slice_no=0))
                 log.warning("🏃 [卖出POV] %s %s 仓位%.0f万%s,启动分批:%d片,%s起,片参与率%.0f%%",
                             pos.get("ts_code"), pos.get("name"), sell_amt / 1e4,
                             (
@@ -3401,7 +3542,7 @@ def _exit_pov_monitor() -> None:
                             plans.append(dict(pos=pos, prev_cum=cum, last_sample_at=now_beijing(),
                                               start=now_beijing(),
                                               remain_sh=int(pos.get("shares", 0)),
-                                              sold_qty=0, sold_amt=0.0, done=False))
+                                              sold_qty=0, sold_amt=0.0, done=False, slice_no=0))
                             planned_ids.add(str(pos.get("order_id", "")))
                             log.warning("🏃 [卖出POV] 14:30跑道复查触发:%s %s 仓位%.0f万，"
                                         "预计剩余安全容量仅%.0f万，14:35起补充分批。",
@@ -3446,7 +3587,7 @@ def _exit_pov_monitor() -> None:
                             start_late = now_beijing() + datetime.timedelta(minutes=1)
                             plans.append(dict(pos=pos, prev_cum=cum, last_sample_at=now_beijing(),
                                               start=start_late, remain_sh=int(pos.get("shares", 0)),
-                                              sold_qty=0, sold_amt=0.0, done=False))
+                                              sold_qty=0, sold_amt=0.0, done=False, slice_no=0))
                             planned_ids.add(str(pos.get("order_id", "")))
                             log.warning(
                                 "🏃 [卖出POV] 14:45尾段容量触发:%s %s 仓位%.0f万，"
@@ -3491,6 +3632,13 @@ def _exit_pov_monitor() -> None:
                 _cancel_active_exit_pov_orders(broker_cfg, wait_sec=25)
             leftover = [p for p in plans if not p["done"]]
             if leftover:
+                for plan in leftover:
+                    _record_exit_pov_slice(
+                        plan,
+                        remaining_qty=int(plan.get("remain_sh", 0) or 0),
+                        status="14:53交接",
+                        note="卖出POV停止新片，剩余股数交给14:55主平仓链路",
+                    )
                 log.warning("[卖出POV] 14:53交接:%d只未卖完(剩余%s),交14:55主平仓链路；"
                             "14:56:20起撤未成主单，14:57:05仅按真实残仓集合竞价兜底。",
                             len(leftover),
@@ -5496,7 +5644,10 @@ def _e2_auction_buy_worker(e2_rows: list[Any], broker_cfg: dict, today_str: str)
         for row in e2_rows:
             try:
                 ts_code = str(row["ts_code"]); name_s = str(row.get("name", ""))
-                planned_amt = float(row.get("round_lot_shares", 0) or 0) * float(row.get("reference_price", 0.0) or 0.0)
+                total_target_qty = int(row.get("round_lot_shares", 0) or 0)
+                reference_price = float(row.get("reference_price", 0.0) or 0.0)
+                planned_amt = total_target_qty * reference_price
+                signal_date_s = str(row.get("signal_date", ""))
                 with _qmt_lock:
                     adapter = _qmt_get(broker_cfg)
                     quote_map = adapter.get_full_tick([ts_code])
@@ -5518,12 +5669,15 @@ def _e2_auction_buy_worker(e2_rows: list[Any], broker_cfg: dict, today_str: str)
                     exit_n_pov = int(float(raw_exit_pov)) if raw_exit_pov is not None and str(raw_exit_pov) not in {"", "nan"} else 1
                     pov_items_e2.append({
                         "ts_code": ts_code, "name": name_s, "strategy_leg": "E2",
-                        "signal_date": str(row.get("signal_date", "")),
+                        "signal_date": signal_date_s,
                         "broker_code": str(row.get("broker_code", ts_code)),
                         "strategy_name": str(row.get("strategy_name", "A_SYSTEM_ABC")),
                         "exit_n": exit_n_pov,
                         "sig_amt": _signal_day_amount(ts_code, str(row.get("signal_date", "")).strip().split(".")[0]),
                         "target_amt": planned_amt - cap, "remain_amt": planned_amt - cap,
+                        "total_target_qty": total_target_qty,
+                        "total_target_amt": planned_amt,
+                        "reference_price": reference_price,
                         "filled_qty": 0, "cost_amt": 0.0, "slice_no": 0,
                         "prev_cum_amount": 0.0, "done": False,
                     })
@@ -5533,16 +5687,56 @@ def _e2_auction_buy_worker(e2_rows: list[Any], broker_cfg: dict, today_str: str)
                     "planned_amt": planned_amt, "auction_amt": auction_amt, "cap": cap,
                     "source": "auction" if auction_amt > 0 else "fallback",
                 })
-                price, price_label = _premarket_buy_price(quote, ts_code, name_s, str(row.get("signal_date", "")))
+                price, price_label = _premarket_buy_price(quote, ts_code, name_s, signal_date_s)
                 if price <= 0:
+                    _track_execution(
+                        "register_entry_plan",
+                        entry_date=today_str, ts_code=ts_code, name=name_s,
+                        strategy_leg="E2", signal_date=signal_date_s,
+                        target_qty=total_target_qty, target_amount=planned_amt,
+                        reference_price=reference_price, auction_planned_qty=0,
+                        pov_planned_qty=total_target_qty if pov_enabled_e2 else 0,
+                        pov_target_amount=planned_amt if pov_enabled_e2 else 0,
+                        status="价格不可得",
+                    )
                     log.warning("E2竞价买入：%s 无法取得涨停价，跳过。", ts_code)
                     continue
                 qty = int(cap // price // 100) * 100
+                pov_target_amount = max(planned_amt - cap, 0.0) if pov_enabled_e2 else 0.0
+                pov_planned_qty = (
+                    int(pov_target_amount // reference_price // 100) * 100
+                    if pov_enabled_e2 and reference_price > 0 else 0
+                )
+                if pov_items_e2 and pov_items_e2[-1]["ts_code"] == ts_code:
+                    pov_items_e2[-1]["auction_planned_qty"] = qty
+                    pov_items_e2[-1]["pov_planned_qty"] = pov_planned_qty
+                _track_execution(
+                    "register_entry_plan",
+                    entry_date=today_str, ts_code=ts_code, name=name_s,
+                    strategy_leg="E2", signal_date=signal_date_s,
+                    target_qty=total_target_qty, target_amount=planned_amt,
+                    reference_price=reference_price, auction_planned_qty=qty,
+                    pov_planned_qty=pov_planned_qty,
+                    pov_target_amount=pov_target_amount,
+                    status="待竞价及POV执行",
+                )
                 if qty <= 0:
                     if pov_enabled_e2 and pov_items_e2 and pov_items_e2[-1]["ts_code"] == ts_code:
                         # 竞价段不足一手:这部分额度并回平滑段,由POV在09:30后分片买入
                         pov_items_e2[-1]["remain_amt"] += cap
                         pov_items_e2[-1]["target_amt"] += cap
+                        pov_items_e2[-1]["auction_planned_qty"] = 0
+                        pov_items_e2[-1]["pov_planned_qty"] = total_target_qty
+                        _track_execution(
+                            "register_entry_plan",
+                            entry_date=today_str, ts_code=ts_code, name=name_s,
+                            strategy_leg="E2", signal_date=signal_date_s,
+                            target_qty=total_target_qty, target_amount=planned_amt,
+                            reference_price=reference_price, auction_planned_qty=0,
+                            pov_planned_qty=total_target_qty,
+                            pov_target_amount=planned_amt,
+                            status="全部转买入POV",
+                        )
                         log.warning("E2竞价买入：%s 竞价段不足一手（%s），全额%.1f万转POV平滑段。",
                                     ts_code, src, planned_amt / 1e4)
                     else:
@@ -5567,8 +5761,10 @@ def _e2_auction_buy_worker(e2_rows: list[Any], broker_cfg: dict, today_str: str)
                     new_pending.append({
                         "order_id": str(result.order_id or f"e2auction-{today_str}-{ts_code}"),
                         "ts_code": ts_code, "name": name_s,
-                        "signal_date": str(row.get("signal_date", "")),
+                        "signal_date": signal_date_s,
                         "strategy_leg": "E2", "qty": qty, "ref_price": price, "exit_n": exit_n,
+                        "entry_target_qty": total_target_qty,
+                        "entry_target_amount": planned_amt,
                     })
                     log.info("✅ [E2竞价买入] %s %s %d股 @%.2f 已受理（待09:30确认）", ts_code, name_s, qty, price)
                     _notify("buy_result", "📋 E2竞价动态开仓已挂单",
@@ -5693,10 +5889,25 @@ def _pov_log_slice(row: dict[str, Any]) -> None:
         with open(POV_EXEC_LOG, "a", newline="", encoding="utf-8-sig") as f:
             w = _csv.DictWriter(f, fieldnames=[
                 "date", "time", "ts_code", "name", "slice_no", "last_price", "open_price",
-                "budget", "order_amt", "order_qty", "filled_qty", "fill_price", "remain_amt", "note"])
+                "budget", "order_amt", "order_qty", "filled_qty", "fill_price", "remain_amt", "note"],
+                extrasaction="ignore")
             if new_file:
                 w.writeheader()
             w.writerow(row)
+        _track_execution(
+            "record_buy_slice",
+            event_id=row.get("event_id", ""),
+            entry_date=row.get("date", ""), time=row.get("time", ""),
+            ts_code=row.get("ts_code", ""), name=row.get("name", ""),
+            strategy_leg=row.get("strategy_leg", ""), signal_date=row.get("signal_date", ""),
+            channel="买入POV", slice_no=row.get("slice_no", 0),
+            order_id=row.get("order_id", ""), budget=row.get("budget", 0),
+            order_price=row.get("order_price", 0), order_qty=row.get("order_qty", 0),
+            filled_qty=row.get("filled_qty", 0), fill_price=row.get("fill_price", 0),
+            benchmark_open=row.get("open_price", 0), remaining_amount=row.get("remain_amt", 0),
+            status="已成交" if int(row.get("filled_qty", 0) or 0) > 0 else "未成交",
+            note=row.get("note", ""),
+        )
     except Exception as e:
         logger().warning("POV执行日志写入失败（不影响交易）：%s", e)
 
@@ -5705,7 +5916,9 @@ def _pov_slice_row(it: dict[str, Any], **kw: Any) -> dict[str, Any]:
     base = dict(date=today_beijing().strftime("%Y%m%d"), time=now_beijing().strftime("%H:%M:%S"),
                 ts_code=it.get("ts_code", ""), name=it.get("name", ""), slice_no=it.get("slice_no", 0),
                 last_price="", open_price="", budget="", order_amt="", order_qty="",
-                filled_qty="", fill_price="", remain_amt=round(float(it.get("remain_amt", 0)), 2), note="")
+                filled_qty="", fill_price="", remain_amt=round(float(it.get("remain_amt", 0)), 2), note="",
+                strategy_leg=it.get("strategy_leg", ""), signal_date=it.get("signal_date", ""),
+                order_id="", order_price="", event_id="")
     base.update(kw)
     return base
 
@@ -5794,7 +6007,9 @@ def _pov_execute_slice(it: dict[str, Any], broker_cfg: dict, part: float, first_
         log.info("[POV] %s %s 片%d：预算%.1f万 挂%d股@%.2f 成交%d股@%.2f 剩余%.1f万",
                  ts_code, name_s, slice_no + 1, budget / 1e4, qty, price, fq, fp,
                  float(it["remain_amt"]) / 1e4)
-        _pov_log_slice(_pov_slice_row(it, last_price=last, open_price=open_p, budget=round(budget, 0),
+        _pov_log_slice(_pov_slice_row(it, event_id=f"买入POV|{today_str}|{ts_code}|{slice_no + 1}|{oid}",
+                                      order_id=oid, order_price=price,
+                                      last_price=last, open_price=open_p, budget=round(budget, 0),
                                       order_amt=round(qty * price, 0), order_qty=qty,
                                       filled_qty=fq, fill_price=round(fp, 3), note="成交" if fq else "未成撤单"))
         if float(it["remain_amt"]) < last * 100:
@@ -5823,17 +6038,33 @@ def _pov_finalize_item(it: dict[str, Any], log: Any, reason: str) -> None:
             buy_date=today_str, shares=fq, buy_price=avg,
             strategy_leg=str(it.get("strategy_leg", "")),
             exit_n_days=int(it.get("exit_n", 2)),
+            execution_channel="买入POV",
+            planned_order_qty=int(it.get("pov_planned_qty", fq) or fq),
         )
         _notify("buy_result", "✅ POV平滑段买入完成",
                 f"策略={it.get('strategy_leg', '')} {ts_code} {name_s} 平滑段成交{fq}股 "
                 f"成本{avg:.2f} 市值{_fmt_wan(fq * avg)}（{reason}；与竞价段持仓独立成行,同日到期同卖出）")
         log.warning("✅ [POV] %s %s 平滑段完结（%s）：成交%d股@%.2f 未完成%.1f万",
                     ts_code, name_s, reason, fq, avg, float(it.get("remain_amt", 0)) / 1e4)
+        _track_execution(
+            "update_entry_status",
+            entry_date=today_str, ts_code=ts_code,
+            strategy_leg=str(it.get("strategy_leg", "")),
+            signal_date=str(it.get("signal_date", "")),
+            status="买入POV已结束",
+        )
     else:
         _notify("buy_result", "⚠️ POV平滑段未成交",
                 f"{ts_code} {name_s} 平滑段目标{_fmt_wan(float(it.get('target_amt', 0)))}全程未成交（{reason}），"
                 "今日仅竞价段仓位。")
         log.warning("⚠️ [POV] %s %s 平滑段完结（%s）：零成交", ts_code, name_s, reason)
+        _track_execution(
+            "update_entry_status",
+            entry_date=today_str, ts_code=ts_code,
+            strategy_leg=str(it.get("strategy_leg", "")),
+            signal_date=str(it.get("signal_date", "")),
+            status="买入POV零成交",
+        )
 
 
 def _pov_worker() -> None:
@@ -6034,6 +6265,11 @@ def job_premarket_buy() -> None:
                 continue
 
             signal_date_s = str(row.get("signal_date", ""))
+            total_target_qty = qty
+            reference_price = float(row.get("reference_price", 0.0) or 0.0)
+            total_target_amount = total_target_qty * reference_price
+            pov_planned_qty = 0
+            pov_target_amount = 0.0
 
             # POV竞价段拆分:竞价单只买 信号日成交额×0.1%(竞价池的10%),
             # 超出部分转平滑段09:30起分片执行。目标额≤竞价段额度时不拆分,
@@ -6058,6 +6294,11 @@ def job_premarket_buy() -> None:
                             "strategy_name": str(row.get("strategy_name", "A_SYSTEM_ABC")),
                             "exit_n": exit_n_pov, "sig_amt": sig_amt_pov,
                             "target_amt": smooth_amt, "remain_amt": smooth_amt,
+                            "total_target_qty": total_target_qty,
+                            "total_target_amt": total_target_amount,
+                            "reference_price": reference_price,
+                            "auction_planned_qty": qty_auction,
+                            "pov_planned_qty": total_target_qty - qty_auction,
                             "filled_qty": 0, "cost_amt": 0.0, "slice_no": 0,
                             "prev_cum_amount": 0.0, "done": False,
                         })
@@ -6066,8 +6307,37 @@ def job_premarket_buy() -> None:
                                          ts_code, name_s, auction_cap / 1e4, sig_amt_pov / 1e4,
                                          pov_auction_share * 100, qty_auction, smooth_amt / 1e4)
                         qty = qty_auction
+                        pov_planned_qty = max(total_target_qty - qty_auction, 0)
+                        pov_target_amount = smooth_amt
                         if qty <= 0:
+                            _track_execution(
+                                "register_entry_plan",
+                                entry_date=today_str, ts_code=ts_code, name=name_s,
+                                strategy_leg=str(row.get("strategy_leg", "")),
+                                signal_date=signal_date_s,
+                                target_qty=total_target_qty,
+                                target_amount=total_target_amount,
+                                reference_price=reference_price,
+                                auction_planned_qty=0,
+                                pov_planned_qty=pov_planned_qty,
+                                pov_target_amount=pov_target_amount,
+                                status="全部转买入POV",
+                            )
                             continue  # 竞价池太小不足一手,全部交给平滑段
+
+            _track_execution(
+                "register_entry_plan",
+                entry_date=today_str, ts_code=ts_code, name=name_s,
+                strategy_leg=str(row.get("strategy_leg", "")),
+                signal_date=signal_date_s,
+                target_qty=total_target_qty,
+                target_amount=total_target_amount,
+                reference_price=reference_price,
+                auction_planned_qty=qty,
+                pov_planned_qty=pov_planned_qty,
+                pov_target_amount=pov_target_amount,
+                status="待竞价及POV执行" if pov_planned_qty else "待竞价执行",
+            )
 
             quote = quote_map.get(ts_code)
             price, price_label = _premarket_buy_price(quote, ts_code, name_s, signal_date_s)
@@ -6104,6 +6374,8 @@ def job_premarket_buy() -> None:
                     "qty": qty,
                     "ref_price": price,
                     "exit_n": exit_n,
+                    "entry_target_qty": total_target_qty,
+                    "entry_target_amount": total_target_amount,
                 })
                 logger().info("✅ [盘前买入] %s %s %d股 @%.2f 委托已受理（09:20预挂，待09:30确认成交）",
                               ts_code, name_s, qty, price)
@@ -6566,6 +6838,9 @@ def _record_premarket_buy_fill(s: dict[str, Any], fill: Any, fallback_price: flo
         strategy_leg=str(s.get("strategy_leg", "")),
         exit_n_days=int(s.get("exit_n", 2)),
         traded_at=getattr(fill, "traded_at", ""),
+        execution_channel="集合竞价买入",
+        planned_order_qty=int(s.get("qty", 0) or 0),
+        benchmark_open=0.0,
     )
     amount = int(fill.filled_qty) * float(fill_price)
     logger().info("✅ [盘前买入监控] 持仓信息：策略=%s %s %s 持仓%d股 成本%.2f 市值%s",
@@ -6747,6 +7022,9 @@ def confirm_pending_premarket_buys(confirm_source: str = "09:30") -> None:
                     strategy_leg=str(s.get("strategy_leg", "")),
                     exit_n_days=int(s.get("exit_n", 2)),
                     traded_at=getattr(fill, "traded_at", ""),
+                    execution_channel="集合竞价买入",
+                    planned_order_qty=qty,
+                    benchmark_open=0.0,
                 )
                 name_s = str(s.get("name", ""))
                 amount = fill.filled_qty * fill_price
@@ -7981,6 +8259,7 @@ def job_post_market(end_date: str | None = None) -> None:
         ("run_strategy_l_signal.py",           "⑧ L 龙头信号生成（独立模式备用）", TIMEOUT_SIGNAL_STEP,"约30秒"),
         ("strategy_health_monitor.py",         "⑨ 策略健康度监控（滚动20笔期望分位）", TIMEOUT_DATA_STEP, "约10秒"),
         ("live_execution_audit.py",            "⑩ 实盘执行对账（逐笔损耗vs回测基准）", TIMEOUT_DATA_STEP, "约5秒"),
+        ("update_execution_completion.py",     "⑪ 真实成交完成率汇总（逐片+一笔一行）", TIMEOUT_DATA_STEP, "约5秒"),
     ]
     extra_args: dict[str, list[str]] = {
         "collect_all_data.py": ["--start-date", recent_start, "--end-date", target_str, "--require-end-date-limit"],
