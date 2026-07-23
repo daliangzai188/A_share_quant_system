@@ -9356,8 +9356,24 @@ def _log_decision_chain_summary(signal_date: str) -> None:
             l_line = f"补位｜mode1无买入，L补位 {l_sig.get('ts_code','')} {l_sig.get('name','')}（补位不限板块）"
 
         # ── 最终计划（与【最终结果】/组合状态机同口径） ──
+        # L 串行单仓守卫（2026-07-23）：播报必须和下单口径(build_model3_plan)一致——
+        # 有未到期非L持仓(如D北方长龙)占用资金时，串行单仓下不开任何新仓，L补位/替换
+        # 和 mode1 都挡住。否则播报误报"L开仓"、08:50推送误导，而09:20实际不买(下单有守卫)。
+        # 今日到期(衔接日会平)或 sell_pending 的持仓不算占用。
+        _open_now = [p for p in load_positions()
+                     if str(p.get("status", "")).lower() in {"open", "sell_pending"}]
+        _holding_non_l = [
+            p for p in _open_now
+            if str(p.get("strategy_leg", "")).upper() != "L"
+            and str(p.get("planned_exit_date", "99991231")) > str(action_date)
+            and str(p.get("status", "")).lower() != "sell_pending"
+        ]
+        _blocked_by_holding = bool(_holding_non_l)
+
         final_buy: dict[str, Any] | None = None
-        if mode == 2:
+        if _blocked_by_holding:
+            final_buy = None   # 有未到期非L持仓，串行单仓，不开新仓（与下单口径一致）
+        elif mode == 2:
             final_buy = l_buy
         elif mode == 3 and mode1_buy and l_buy and l_guard_ok:
             final_buy = l_buy
@@ -9398,6 +9414,17 @@ def _log_decision_chain_summary(signal_date: str) -> None:
             else:
                 hold_line = (f"目前已持仓：{desc}；{day_label}到期将于14:55收盘平仓，"
                              "不阻断开仓计划（09:20复核后照常下单，按可用资金校验/缩放）")
+
+        # D 持仓占用说明（non_d_pos 不含 D，上面漏掉；D 未到期占资金会挡住 L 补位/替换，
+        # 必须说明为何"无开仓计划"，否则播报=无计划却不讲原因，用户困惑）。
+        if _blocked_by_holding and not hold_line:
+            d_desc = "、".join(
+                f"{str(p.get('strategy_leg','?') or '?').upper()}策略 {p.get('ts_code','')} {p.get('name','')}"
+                f"（计划{p.get('planned_exit_date','')}平仓）"
+                for p in _holding_non_l
+            )
+            hold_line = (f"目前已持仓：{d_desc}；持仓未到期占用资金，{day_label}不开新仓"
+                         "（含L补位/替换均按串行单仓口径挡住；到期或让路后再择机开仓）")
 
         # 整个决策链拼成一条多行日志、单次原子写入：daemon 是多线程
         # （账户心跳/候选播报/周期播报并发打日志），逐行输出必然被其他
