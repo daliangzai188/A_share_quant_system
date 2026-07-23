@@ -5061,8 +5061,16 @@ def check_and_close_positions() -> None:
     try:
         positions = load_positions()
     except Exception as e:
-        logger().error("平仓检查：读取持仓失败 %s", e)
-        return
+        # 读失败重试一次：瞬时IO抖动不该让整轮平仓检查作废
+        try:
+            time.sleep(1)
+            positions = load_positions()
+        except Exception as e2:
+            logger().error("平仓检查：读取持仓两次失败 %s / %s", e, e2)
+            _notify("sell_fail", "❌ 平仓检查无法读取持仓",
+                    f"positions.json两次读取失败（{e2}），本轮自动平仓未执行，请立即人工检查持仓！",
+                    level="timeSensitive")
+            return
 
     if not positions:
         logger().info("平仓检查：无持仓")
@@ -5072,9 +5080,20 @@ def check_and_close_positions() -> None:
 
     try:
         config = load_json_config(PROJECT_ROOT / "config" / "config.json")
-        qmt_enabled = bool(config.get("broker_adapter_enabled")) and bool(config.get("qmt_enabled"))
-    except Exception:
-        qmt_enabled = False
+    except Exception as e:
+        # 绝不能因config瞬时读取失败静默降级成"模拟盘"：模拟分支会把实盘持仓
+        # 本地标closed而真实股票没卖，账实立刻脱节。重试一次，再失败就告警停手。
+        try:
+            time.sleep(1)
+            config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+        except Exception as e2:
+            logger().error("平仓检查：读取config两次失败 %s / %s，无法确认实盘模式，本轮平仓停手。", e, e2)
+            _notify("sell_fail", "❌ 平仓检查无法读取配置",
+                    f"config.json两次读取失败（{e2}），无法确认实盘/模拟模式，本轮自动平仓未执行，"
+                    f"请立即人工检查持仓！",
+                    level="timeSensitive")
+            return
+    qmt_enabled = bool(config.get("broker_adapter_enabled")) and bool(config.get("qmt_enabled"))
 
     for pos in positions:
         try:
@@ -7996,6 +8015,13 @@ def job_afternoon() -> None:
         check_and_close_positions()
     except Exception as e:
         logger().error("平仓检查异常：%s —— 请立即手动检查持仓！", e)
+        # 14:55主平仓被异常中断绝不能只留终端日志：手机必须知道
+        # （14:57:05看门狗仍会按安全账本真实余量进收盘竞价兜底）。
+        if close_plan_exists:
+            _notify("sell_fail", "❌ 14:55主平仓被异常中断",
+                    f"异常：{e}。今日有到期平仓计划但主平仓流程未完成，"
+                    f"14:57收盘竞价看门狗将按真实余量兜底；请立即回终端核查！",
+                    level="timeSensitive")
     finally:
         if close_plan_exists:
             if _has_due_close_plan_now():
