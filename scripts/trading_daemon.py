@@ -7667,9 +7667,11 @@ def report_next_trade_factor_readiness(signal_date: str) -> bool:
         ("成交概率打分", processed / "live_limit_up_fill_scored.csv", ["trade_date", "ts_code", "fill_probability", "allow_buy_reliable", "is_fill_score_reliable"], True, False),
         ("市场情绪", processed / "live_market_emotion_features.csv", ["trade_date", "market_segment", "market_chain_count", "segment_emotion_state"], True, False),
         ("题材热度", processed / "live_theme_heat_features.csv", ["trade_date", "ts_code", "theme_name", "theme_heat_rank", "theme_limit_count"], True, False),
-        # 资金流和龙虎榜是T日收盘后应尽量补齐的增强因子；如果整日数据全不可用，继续走5分钟重试。
-        ("资金流增强", processed / "sector_moneyflow_features.csv", ["trade_date", "ts_code", "sector_moneyflow_score"], False, True),
-        ("龙虎榜增强", processed / "top_list_features.csv", ["trade_date", "ts_code", "top_list_net_buy_score"], False, True),
+        # 资金流/龙虎榜是纯记录性增强因子，A/C/E2/L/D 选股都不以它们为条件（龙虎榜策略已判死）。
+        # 龙虎榜是交易所晚发布数据，tushare 常整日无数据/无权限（2026-07-23 卡住收盘流水线到18点+）；
+        # 故 require_available=False：当日不可用只记录、不阻塞收盘完成与明日计划推送（2026-07-23 修）。
+        ("资金流增强", processed / "sector_moneyflow_features.csv", ["trade_date", "ts_code", "sector_moneyflow_score"], False, False),
+        ("龙虎榜增强", processed / "top_list_features.csv", ["trade_date", "ts_code", "top_list_net_buy_score"], False, False),
         # 集合竞价/开盘5分钟属于T+1盘中数据，T日晚只能生成审计占位，不能用未来数据伪造分数。
         ("集合竞价审计", processed / "auction_features.csv", ["trade_date", "ts_code", "auction_strength_score"], False, False),
         ("开盘5分钟审计", processed / "open_5m_features.csv", ["trade_date", "ts_code", "open_5m_strength_score"], False, False),
