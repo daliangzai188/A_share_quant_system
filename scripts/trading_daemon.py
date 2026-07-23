@@ -168,6 +168,7 @@ SCHEDULE = [
     datetime.time(9, 23),   # 集合竞价：按跌停价挂单平仓
     datetime.time(9, 26),   # 集合竞价成交后：同步实盘持仓，刷新今日买入决策
     datetime.time(9, 30),   # 开盘：若9:20预挂未成功则补充买入
+    datetime.time(9, 35),   # 开仓核查：计划没买成必有推送提醒（不允许无声漏买）
     datetime.time(14, 40),  # 撤未成交买单（提前于平仓，绝不挡住14:55平仓通道）
     datetime.time(14, 55),  # 盘中收盘平仓（最高优先，独占QMT通道）
     datetime.time(15, 10),  # 收盘流水线
@@ -177,6 +178,7 @@ SCHED_MORNING_REVIEW = datetime.time(9, 20)
 SCHED_PREMARKET_SELL = datetime.time(9, 23)
 SCHED_PREMARKET_SYNC = datetime.time(9, 26)
 SCHED_OPENING_BUY = datetime.time(9, 30)
+SCHED_OPEN_PLAN_FILL_CHECK = datetime.time(9, 35)
 SCHED_AFTERNOON_CLOSE = datetime.time(14, 55)
 # 撤未成交买单：2026-07-15 起提前到平仓之前、独立调度（14:40与14:55相距
 # 15分钟，调度器30秒护栏无碍）。目的：平仓时点独占QMT通道，绝不被撤单挡路；
@@ -9380,6 +9382,85 @@ def _latest_planned_orders_signal_date() -> str:
         return ""
 
 
+def job_open_plan_fill_check() -> None:
+    """09:35 开仓计划成交核查（2026-07-23 用户要求：计划没买成绝不允许无声漏过）。
+
+    背景：07-23 星辉环材有开仓计划，却被幽灵持仓 BLOCK、全程零提醒，用户盘后才发现
+    漏买。此任务在开仓窗口（09:20预挂→09:30确认）结束后核查，三种结果三种动作：
+      ① 今日已有买入成交 → 计划已执行，静默；
+      ② 无成交但QMT有计划票的在途买单 → 排队中（买涨停排板是常态），推送知会；
+      ③ 无成交且无在途买单 → 计划未执行，强告警，提示用户可手动介入。
+    纯只读检查+推送：不下单、不撤单、不改任何交易状态，任何异常不影响交易主流程。
+    """
+    log = logger()
+    try:
+        global _last_final_plan
+        today_compact = today_beijing().strftime("%Y%m%d")
+        plan = _last_final_plan
+        if not plan or str(plan.get("action_date", "")) != today_compact:
+            # daemon 刚重启、广播线程还没来得及播时内存可能为空——现场补算一次
+            sd = _latest_planned_orders_signal_date()
+            if sd:
+                _log_decision_chain_summary(sd)
+                plan = _last_final_plan
+        if not plan or str(plan.get("action_date", "")) != today_compact:
+            log.info("[开仓核查] 没有今日的开仓计划数据（信号文件缺失或执行日不是今天），跳过核查。")
+            return
+        fb = plan.get("final_buy")
+        if not fb:
+            log.info("[开仓核查] 今日本来就无开仓计划，无需核查。")
+            return
+        detail = (f"策略{fb.get('strategy','')} {fb.get('ts_code','')} {fb.get('name','')} "
+                  f"计划{int(fb.get('shares', 0))}股@参考{float(fb.get('price', 0)):.2f}")
+        if has_position_bought_today():
+            log.info("[开仓核查] ✅ 今日已有买入成交，开仓计划已执行（%s）。", detail)
+            return
+        config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+        if not (bool(config.get("broker_adapter_enabled")) and bool(config.get("qmt_enabled"))):
+            log.info("[开仓核查] 非实盘模式，跳过核查。")
+            return
+        # 查在途买单：买涨停一字板排队到尾盘是常态，排队中≠未执行，不能误报
+        pending_buy = False
+        try:
+            with _qmt_lock:
+                adapter = _qmt_get(config.get("broker", {}))
+                orders = adapter.query_orders() or []
+            plan_aliases = _ts_code_aliases(fb.get("ts_code", ""))
+            TERMINAL_STATUS = {53, 54, 56, 57}   # 部撤/已撤/已成/废单（与14:40撤买单同口径）
+            for o in orders:
+                if not isinstance(o, dict):
+                    o = getattr(o, "__dict__", {}) or {}
+                def _pick(keys, default=""):
+                    for k in keys:
+                        if k in o and o[k] not in (None, ""):
+                            return o[k]
+                    return default
+                try:
+                    otype = int(_pick(["order_type", "m_nOrderType", "order_side", "m_nDirection"], -1))
+                    status = int(_pick(["order_status", "m_nOrderStatus", "status"], -1))
+                except (TypeError, ValueError):
+                    continue
+                code = str(_pick(["stock_code", "m_strInstrumentID", "instrument_id", "ts_code"], "")).strip()
+                if otype == 23 and status not in TERMINAL_STATUS and (_ts_code_aliases(code) & plan_aliases):
+                    pending_buy = True
+                    break
+        except Exception as e:
+            log.warning("[开仓核查] 查询在途委托失败（%s），按无在途单继续告警——宁可多提醒一次，不可无声漏过。", e)
+        if pending_buy:
+            _notify("buy_result", "⏳ 开仓计划排队中",
+                    f"{detail}。买单已挂出、尚未成交（买涨停排队是常态），继续排队，14:40仍未成交会自动撤单。",
+                    level="active")
+            log.info("[开仓核查] ⏳ %s：买单在途排队中，已推送知会。", detail)
+        else:
+            _notify("buy_result", "⚠️ 开仓计划未执行!",
+                    f"{detail}。09:35核查：既无成交、也无在途买单——计划可能被阻断或程序异常，"
+                    f"请立即查看daemon日志；如决定手动买入，买入后需告知系统登记持仓（否则不会自动平仓）。",
+                    level="timeSensitive")
+            log.warning("[开仓核查] ⚠️ %s：既无成交也无在途买单，开仓计划未执行，已强告警。", detail)
+    except Exception as e:
+        log.warning("开仓核查异常（不影响交易）：%s", e)
+
+
 def _decision_chain_broadcast_loop() -> None:
     """每30分钟重播一次开仓决策链（后台线程），方便随时查看明日计划。
 
@@ -9902,6 +9983,8 @@ def run_job(scheduled_time: datetime.time) -> None:
         job_premarket_position_sync() if trade_day else logger().info("非交易日，跳过盘前持仓同步")
     elif scheduled_time == SCHED_OPENING_BUY:   # 09:30
         job_opening_buy() if trade_day else logger().info("非交易日，跳过开盘买入任务")
+    elif scheduled_time == SCHED_OPEN_PLAN_FILL_CHECK:   # 09:35 开仓计划成交核查
+        job_open_plan_fill_check() if trade_day else logger().info("非交易日，跳过开仓核查")
     elif scheduled_time == SCHED_CANCEL_BUY_ORDERS:   # 14:40 独立撤未成交买单
         job_cancel_unfilled_buy_orders() if trade_day else logger().info("非交易日，跳过撤买单")
     elif scheduled_time == SCHED_AFTERNOON_CLOSE:   # 14:55 收盘平仓
