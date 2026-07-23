@@ -27,6 +27,7 @@ reports/*.xlsx
 reports/**/*.csv
 reports/**/*.xlsx
 reports/**/*.md
+data/state/open_plan_push.json
 reports/strategy_health/state.json
 reports/strategy_e2/e2_signals_recent.json
 reports/strategy_l/l_signals_recent.json

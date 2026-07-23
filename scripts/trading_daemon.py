@@ -5623,6 +5623,12 @@ def job_preopen_plan() -> None:
         logger().error("09:00 组合状态机决策生成两次失败，09:20将现场重算（可能影响集合竞价排队）。")
         return
     logger().info("09:00 组合状态机计划已生成，09:20复核后如有开仓计划将直接按涨停价预挂。")
+    # 早盘推送今日开仓计划(2026-07-23 用户要求):先刷新最终计划再推,有则详细/无则明示
+    try:
+        report_next_day_candidates()
+        push_open_plan_notification("早盘")
+    except Exception as e:
+        logger().warning("早盘开仓计划推送异常(不影响交易):%s", e)
     logger().info("===== 盘前计划生成完成 =====")
 
 
@@ -8466,6 +8472,7 @@ def job_post_market(end_date: str | None = None) -> None:
         return False
 
     report_next_day_candidates()
+    push_open_plan_notification("收盘")   # 收盘流水线完成→推明日开仓计划(有则详细/无则明示)
     report_signal_readiness_summary(target_str)
     if not report_next_trade_factor_readiness(target_str):
         logger().warning("⚠️ 明日开盘因子尚未完全就绪，本次不标记收盘完成；5分钟后自动重试")
@@ -9291,8 +9298,67 @@ def _log_decision_chain_summary(signal_date: str) -> None:
             lines.append(f"{P} ⚠ {hold_line}")
         lines.append(bottom)
         logger().info("\n".join(lines))
+        # 暴露最终计划给推送用(与日志同源,保证推送=真实开仓口径,不重算)
+        global _last_final_plan
+        _last_final_plan = {
+            "final_buy": final_buy,
+            "day_label": day_label,
+            "hold_line": hold_line,
+            "action_date": str(action_date_compact),
+            "computed_at": now_beijing().strftime("%Y-%m-%d %H:%M:%S"),
+        }
     except Exception as exc:
         logger().warning("开仓决策链播报失败（不影响流水线）：%s", exc)
+
+
+_last_final_plan: dict[str, Any] | None = None
+_PLAN_PUSH_STATE = PROJECT_ROOT / "data" / "state" / "open_plan_push.json"
+
+
+def push_open_plan_notification(occasion: str) -> None:
+    """推送开仓计划(2026-07-23 用户要求:收盘流水线完成推明日计划、早盘推今日计划,
+    详细到策略名+股票+金额;无候选则明确提示无新开仓计划)。
+
+    occasion='收盘'/'早盘'。数据源=_last_final_plan(由 _log_final_decision_summary
+    刚算出,与开仓决策链日志同源,保证推送=真实开仓口径)。去重:同一 action_date
+    +occasion 只推一次(防 report 被多次调用重复推)。
+    """
+    try:
+        plan = _last_final_plan
+        if not plan:
+            logger().info("[开仓计划推送] 无最终计划数据(report 未生成),跳过 %s 推送。", occasion)
+            return
+        action = str(plan.get("action_date", ""))
+        key = f"{action}-{occasion}"
+        state = {}
+        if _PLAN_PUSH_STATE.exists():
+            try:
+                state = json.loads(_PLAN_PUSH_STATE.read_text(encoding="utf-8"))
+            except Exception:
+                state = {}
+        if state.get("last_pushed") == key:
+            return   # 已推过,不重复
+        label = "明日" if occasion == "收盘" else "今日"
+        fb = plan.get("final_buy")
+        hold = plan.get("hold_line") or ""
+        if fb:
+            amount = float(fb.get("shares", 0)) * float(fb.get("price", 0))
+            title = f"📋 {label}开仓计划:{fb.get('strategy','')} {fb.get('name','')}"
+            body = (f"策略{fb.get('strategy','')} {fb.get('ts_code','')} {fb.get('name','')} "
+                    f"{int(fb.get('shares',0))}股 @参考{float(fb.get('price',0)):.2f} "
+                    f"≈{amount / 10000:.2f}万。09:20集合竞价预挂→09:30确认,"
+                    f"实际按账户资金/单笔限额缩放。")
+        else:
+            title = f"📋 {label}无新开仓计划"
+            body = f"{label}所有策略(A/C/E2/L)均无符合条件标的,不开新仓。"
+        if hold:
+            body += f" ⚠{hold}"
+        _notify("buy_result", title, body, level="timeSensitive")
+        mkdir_p(_PLAN_PUSH_STATE.parent)
+        _PLAN_PUSH_STATE.write_text(json.dumps({"last_pushed": key}, ensure_ascii=False), encoding="utf-8")
+        logger().info("[开仓计划推送] 已推送 %s:%s", occasion, title)
+    except Exception as e:
+        logger().warning("开仓计划推送异常(不影响交易):%s", e)
 
 
 def _latest_planned_orders_signal_date() -> str:
