@@ -163,6 +163,7 @@ def _ts_code_aliases(value: Any) -> set[str]:
 
 # ── 常量 ───────────────────────────────────────────────────────────────────────
 SCHEDULE = [
+    datetime.time(8, 50),   # 早盘推送：今日开仓计划（读昨晚缓存的轻活，不与09:00生成任务抢时间）
     datetime.time(9, 0),    # 盘前：提前生成/刷新组合状态机，避免09:20才开始算买入决策
     datetime.time(9, 20),   # 盘前：平仓检查 + 组合状态机复核 + 按涨停价预挂买入
     datetime.time(9, 23),   # 集合竞价：按跌停价挂单平仓
@@ -173,6 +174,7 @@ SCHEDULE = [
     datetime.time(14, 55),  # 盘中收盘平仓（最高优先，独占QMT通道）
     datetime.time(15, 10),  # 收盘流水线
 ]
+SCHED_MORNING_PLAN_PUSH = datetime.time(8, 50)
 SCHED_PREOPEN_PLAN = datetime.time(9, 0)
 SCHED_MORNING_REVIEW = datetime.time(9, 20)
 SCHED_PREMARKET_SELL = datetime.time(9, 23)
@@ -5644,13 +5646,24 @@ def job_preopen_plan() -> None:
         logger().error("09:00 组合状态机决策生成两次失败，09:20将现场重算（可能影响集合竞价排队）。")
         return
     logger().info("09:00 组合状态机计划已生成，09:20复核后如有开仓计划将直接按涨停价预挂。")
-    # 早盘推送今日开仓计划(2026-07-23 用户要求):先刷新最终计划再推,有则详细/无则明示
+    # 早盘开仓计划推送已前移至 08:50 独立任务(job_morning_plan_push)：
+    # 09:00 专心生成计划，不与推送抢时间(2026-07-24 用户要求)。
+    logger().info("===== 盘前计划生成完成 =====")
+
+
+def job_morning_plan_push() -> None:
+    """08:50 早盘推送今日开仓计划(2026-07-24 用户要求从09:00前移)。
+
+    推送读的是昨晚收盘流水线已生成的信号缓存(planned_orders)，与 09:00 的
+    计划生成无依赖——纯轻活，提前到 08:50 让 09:00 专心干正事。
+    有计划推详细(策略/股票/股数/金额)，无计划明示"今日无新开仓计划"。
+    """
+    logger().info("===== 早盘开仓计划推送（08:50）=====")
     try:
         report_next_day_candidates()
         push_open_plan_notification("早盘")
     except Exception as e:
-        logger().warning("早盘开仓计划推送异常(不影响交易):%s", e)
-    logger().info("===== 盘前计划生成完成 =====")
+        logger().warning("早盘开仓计划推送异常(不影响交易)：%s", e)
 
 
 def _record_e2_capacity_and_alert(records: list[dict[str, Any]], live_cfg: dict) -> None:
@@ -9981,7 +9994,9 @@ def next_event(now: datetime.datetime) -> tuple[datetime.datetime, datetime.time
 def run_job(scheduled_time: datetime.time) -> None:
     today = today_beijing()
     trade_day = is_trade_day(today)
-    if scheduled_time == SCHED_PREOPEN_PLAN:   # 09:00
+    if scheduled_time == SCHED_MORNING_PLAN_PUSH:   # 08:50 早盘推送今日开仓计划
+        job_morning_plan_push() if trade_day else logger().info("非交易日，跳过早盘计划推送")
+    elif scheduled_time == SCHED_PREOPEN_PLAN:   # 09:00
         job_preopen_plan() if trade_day else logger().info("非交易日，跳过盘前计划生成")
     elif scheduled_time == SCHED_MORNING_REVIEW:   # 09:20
         if trade_day:
