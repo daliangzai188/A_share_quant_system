@@ -7169,22 +7169,24 @@ def _try_cancel_order(broker_cfg: dict, order_id: str, ts_code: str) -> None:
 
 
 def blocks_d_for_opening_plan(decisions) -> bool:
-    """识别 D 是否只是被当日 A/C/E2 开仓计划占用资金挡住。
+    """识别 D 是否只是被当日 A/C/E2/L 开仓计划占用资金挡住。
 
     盘中补启动只用于开仓窗口已经过去、且本地无持仓的场景；如果 D 是因为待卖、
     行情时段、风控等原因被挡住，不在这里强行放行。
+    L 与 A/C/E2 同为"占用同一资金"的开仓腿(mode3 优先级 mode1>L>D)：只有当
+    A/C/E2/L 的开仓计划全部落空、账户仍空仓时,才放行 D 兜底(2026-07-23 补 L)。
     """
     if decisions is None or decisions.empty or "action" not in decisions.columns:
         return False
     actions = decisions["action"].astype(str)
-    if actions.isin({"ALLOW_ABC_BUY_PREVIEW", "ALLOW_E2_BUY"}).any():
+    if actions.isin({"ALLOW_ABC_BUY_PREVIEW", "ALLOW_E2_BUY", "ALLOW_L_BUY"}).any():
         return True
     if not actions.eq("BLOCK_D_INTRADAY_MONITOR").any():
         return False
     reason_text = ""
     if "reason" in decisions.columns:
         reason_text = " ".join(decisions["reason"].fillna("").astype(str).tolist())
-    return any(keyword in reason_text for keyword in ("开仓", "同一资金", "A/C", "A/B/C", "E2"))
+    return any(keyword in reason_text for keyword in ("开仓", "同一资金", "A/C", "A/B/C", "E2", "L补位"))
 
 
 def handle_combined_order_preview(
@@ -7933,7 +7935,7 @@ def startup_catchup_strategy_d() -> None:
             _start_e2_retry_thread(combined_orders_path, decisions)
         else:
             logger().warning(
-                "启动补检：daemon重启后发现——今日A/C/E2本有开仓计划但都没买成、账户也空仓，"
+                "启动补检：daemon重启后发现——今日A/C/E2/L本有开仓计划但都没买成、账户也空仓，"
                 "开仓窗口(09:20~09:30)已过不再补买；这些落空的计划本来占着资金、挡住了D兜底腿，"
                 "现判定它们已作废、把资金放开，启动D盘中兜底扫描(今日还没任何持仓时的最后开仓机会)。"
             )
