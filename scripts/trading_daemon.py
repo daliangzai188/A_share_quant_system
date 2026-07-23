@@ -161,6 +161,18 @@ def _ts_code_aliases(value: Any) -> set[str]:
         aliases.add(normalized.split(".")[0])
     return aliases
 
+
+def st_open_forbidden(ts_code: str, name: Any) -> bool:
+    """ST/风险警示股全局禁买闸（2026-07-23 用户铁律：无论如何不允许开仓）。
+
+    判据=名字带ST/退（*ST/ST/退市整理；A股正常中文名不含这些字样，零误伤）。
+    信号层照常生成计划（保持与回测口径的对照透明），本闸插在 daemon 全部5个
+    BUY 委托出口，是最后一道拦截；D腿另有涨停幅≈5%反推的加强判据
+    （monitor_strategy_d_intraday，防名字缓存不带前缀的场景）。
+    """
+    text = str(name or "")
+    return ("ST" in text.upper()) or ("退" in text)
+
 # ── 常量 ───────────────────────────────────────────────────────────────────────
 SCHEDULE = [
     datetime.time(8, 50),   # 早盘推送：今日开仓计划（读昨晚缓存的轻活，不与09:00生成任务抢时间）
@@ -5862,6 +5874,12 @@ def _e2_auction_buy_worker(e2_rows: list[Any], broker_cfg: dict, today_str: str)
                         _notify("buy_result", "⚠️ E2流动性不足放弃开仓",
                                 f"{ts_code} {name_s} 竞价盘过小（{src}），动态仓位不足一手，今日放弃。", level="timeSensitive")
                     continue
+                if st_open_forbidden(ts_code, name_s):
+                    log.error("⛔ [ST禁买] %s %s 命中ST/风险警示铁律，拦截E2竞价买入委托。", ts_code, name_s)
+                    _notify("buy_result", "⛔ ST股禁买拦截",
+                            f"{ts_code} {name_s} 为ST/风险警示股，全局铁律禁止开仓，已拦截E2竞价买入。",
+                            level="timeSensitive")
+                    continue
                 log.warning("⏳ [E2竞价买入] %s %s %d股 %s=%.2f元（动态仓位：%s → %.1f万）",
                             ts_code, name_s, qty, price_label, price, src, qty * price / 1e4)
                 request = OrderRequest(
@@ -6096,6 +6114,14 @@ def _pov_execute_slice(it: dict[str, Any], broker_cfg: dict, part: float, first_
         # 挂追价上限价:连续竞价按对手方价成交,实际成交价=各卖档价≤挂单价,
         # 等效"限定最高价的市价单";绝不超过涨停价。
         price = min(cap_price, upper) if upper > 0 else cap_price
+        if st_open_forbidden(ts_code, it.get("name", "")):
+            if not it.get("st_blocked_notified"):
+                it["st_blocked_notified"] = True
+                log.error("⛔ [ST禁买] %s %s 命中ST/风险警示铁律，POV全部买入片拦截。", ts_code, it.get("name", ""))
+                _notify("buy_result", "⛔ ST股禁买拦截",
+                        f"{ts_code} {it.get('name','')} 为ST/风险警示股，全局铁律禁止开仓，POV买入片已全部拦截。",
+                        level="timeSensitive")
+            return
         request = OrderRequest(
             ts_code=ts_code, broker_code=str(it.get("broker_code", ts_code)),
             side="BUY", quantity=qty, price_type="FIXED_PRICE", price=price,
@@ -6463,6 +6489,12 @@ def job_premarket_buy() -> None:
                 logger().warning("09:20 %s %s 无法获取涨停价/估算涨停价/卖档价格，跳过。", ts_code, name_s)
                 continue
 
+            if st_open_forbidden(ts_code, name_s):
+                logger().error("⛔ [ST禁买] %s %s 命中ST/风险警示铁律，拦截09:20盘前买入委托。", ts_code, name_s)
+                _notify("buy_result", "⛔ ST股禁买拦截",
+                        f"{ts_code} {name_s} 为ST/风险警示股，全局铁律禁止开仓，已拦截盘前买入。",
+                        level="timeSensitive")
+                continue
             logger().warning("⏳ [盘前买入] %s %s  %d股  %s=%.2f元", ts_code, name_s, qty, price_label, price)
 
             request = OrderRequest(
@@ -7021,6 +7053,12 @@ def _resubmit_premarket_buy(s: dict[str, Any], broker_cfg: dict, config: dict) -
         strategy_name="A_SYSTEM_ABC",
         remark=f"盘前买入补挂-{price_label}-{today_str}",
     )
+    if st_open_forbidden(ts_code, s.get("name", "")):
+        logger().error("⛔ [ST禁买] %s %s 命中ST/风险警示铁律，拦截盘前买入补挂。", ts_code, s.get("name", ""))
+        _notify("buy_result", "⛔ ST股禁买拦截",
+                f"{ts_code} {s.get('name','')} 为ST/风险警示股，全局铁律禁止开仓，已拦截补挂买入。",
+                level="timeSensitive")
+        return None
     with _qmt_lock:
         adapter = _qmt_get(broker_cfg)
         result = adapter.place_order(request)
@@ -7756,6 +7794,12 @@ def _e2_place_order_direct(ts_code: str, name: str, planned_qty: int, signal_dat
         strategy_name="A_SYSTEM_ABC",
         remark=f"E2延迟开仓-{price_label}-{today_str}",
     )
+    if st_open_forbidden(ts_code, name):
+        log.error("⛔ [ST禁买] %s %s 命中ST/风险警示铁律，拦截E2延迟开仓委托。", ts_code, name)
+        _notify("buy_result", "⛔ ST股禁买拦截",
+                f"{ts_code} {name} 为ST/风险警示股，全局铁律禁止开仓，已拦截E2延迟开仓。",
+                level="timeSensitive")
+        return None
     with _qmt_lock:
         adapter = _qmt_get(broker_cfg)
         result = adapter.place_order(request)
