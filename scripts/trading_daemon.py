@@ -9161,10 +9161,24 @@ def _log_final_decision_summary(signal_date: str, action_date_compact: str, buy_
                     "exit_rule": str(l_sig.get("planned_exit_rule", "T+2_close")),
                 }
 
+        # L 串行单仓守卫（2026-07-23）：播报必须和下单口径(build_model3_plan)一致——
+        # 有未到期非L持仓(如D北方长龙)占资金时，串行单仓下不开任何新仓。与
+        # _log_decision_chain_summary 同一口径；今日到期(衔接日会平)/sell_pending 不算占用。
+        _blocked_by_holding = bool([
+            p for p in load_positions()
+            if str(p.get("status", "")).lower() in {"open", "sell_pending"}
+            and str(p.get("strategy_leg", "")).upper() != "L"
+            and str(p.get("planned_exit_date", "99991231")) > str(action_date_compact)
+            and str(p.get("status", "")).lower() != "sell_pending"
+        ])
+
         # ── 按模式决策 ──
         final_buys: list[dict[str, Any]] = []
         note = ""
-        if mode == 1:
+        if _blocked_by_holding:
+            final_buys = []
+            note = "有未到期非L持仓占用资金，串行单仓不开新仓（含mode1/L补位/替换均挡，与下单口径一致）"
+        elif mode == 1:
             final_buys = mode1_buys
             note = "模式1：执行ACDE2组合（A/C优先，无则E2；B已删除）"
         elif mode == 2:
