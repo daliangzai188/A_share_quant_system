@@ -10207,6 +10207,31 @@ def _strategy_only_market_value(broker_positions: Any) -> float:
     return total
 
 
+def _broker_has_strategy_position(broker_positions: Any) -> bool:
+    """券商持仓中是否有匹配本地策略持仓(positions.json)的票。
+
+    2026-07-23 用户重申:打新中签的债券/股票、人工买入等外部持仓,绝不占用
+    交易逻辑。_last_account_has_position 原从券商全部持仓(含转债)设,会让
+    "账户只剩一个打新转债"被误判为"有持仓"→影响轮询/盯盘判定。改用策略口径:
+    仅当券商持有能匹配本地 open/sell_pending 记录的票才算 True。
+    """
+    try:
+        local_aliases: set[str] = set()
+        for lp in load_positions():
+            if str(lp.get("status", "")).lower() in {"open", "sell_pending"}:
+                local_aliases.update(_ts_code_aliases(lp.get("ts_code", "")))
+        if not local_aliases:
+            return False
+        for p in (broker_positions or []):
+            if int(getattr(p, "volume", 0) or 0) <= 0:
+                continue
+            if any(al in local_aliases for al in _ts_code_aliases(getattr(p, "ts_code", ""))):
+                return True
+    except Exception:
+        return False
+    return False
+
+
 def _print_account_status(log: Any) -> None:
     """账户信息轮询（后台线程）：复用持久连接，查询无需重新握手。
     只有 query_account/query_positions 成功返回，才算账户连接已验证可用。
@@ -10323,7 +10348,8 @@ def _print_account_status(log: Any) -> None:
     total_asset = float(getattr(account, "total_asset", 0.0) or 0.0)
     _check_capacity_wall_milestone(total_asset, config, log)
     live_positions = [p for p in (positions or []) if int(getattr(p, "volume", 0) or 0) > 0]
-    _last_account_has_position = bool(live_positions)
+    # 只认策略持仓:打新中签转债/股票等外部持仓不算"有持仓"(2026-07-23 用户重申)
+    _last_account_has_position = _broker_has_strategy_position(positions)
     if live_positions:
         _note_broker_has_positions()
         # 逐票同步(2026-07-23):账户非空(如有打新中签转债)时,原全账户清理不触发,
@@ -10485,7 +10511,8 @@ def check_qmt_connection(*, allow_full_scan: bool | None = None) -> bool:
         account_id = str(getattr(account, "account_id", "") or getattr(getattr(adapter, "config", None), "account_id", ""))
         available_cash = float(getattr(account, "available_cash", 0.0) or 0.0)
         _qmt_last_verified_at = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
-        _last_account_has_position = any(float(getattr(p, "volume", 0) or 0) > 0 for p in positions)
+        # 只认策略持仓:外部持仓(打新中签/人工)不算(2026-07-23 用户重申)
+        _last_account_has_position = _broker_has_strategy_position(positions)
         _qmt_reconnect_count = 0
         log.info(
             "✅ QMT连接成功且账户已验证：账户 %s，可用资金 %.0f 元（主进程持久连接，path=%s session=%s）",
