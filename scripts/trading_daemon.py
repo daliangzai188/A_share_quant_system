@@ -9194,7 +9194,8 @@ def _log_final_decision_summary(signal_date: str, action_date_compact: str, buy_
         # ── 打印 ──
         logger().info("=" * 60)
         logger().info("======================== 最终结果 ========================")
-        logger().info("明日(%s)  总策略模式：%s (%s)", readable, mode, mode_name)
+        _day_lab = "今日" if readable == today_beijing().strftime("%Y-%m-%d") else "明日"
+        logger().info("%s(%s)  总策略模式：%s (%s)", _day_lab, readable, mode, mode_name)
         logger().info("判定：%s", note)
         if not final_buys:
             logger().info("开仓计划：❌ 无 —— ACDE2 与龙头均无开仓计划（B已删除）")
