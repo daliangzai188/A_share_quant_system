@@ -9304,7 +9304,7 @@ def _log_decision_chain_summary(signal_date: str) -> None:
             "final_buy": final_buy,
             "day_label": day_label,
             "hold_line": hold_line,
-            "action_date": str(action_date_compact),
+            "action_date": str(action_date),
             "computed_at": now_beijing().strftime("%Y-%m-%d %H:%M:%S"),
         }
     except Exception as exc:
