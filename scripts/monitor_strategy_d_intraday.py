@@ -85,6 +85,9 @@ class StockState:
     order_id: str = ""
     last_order_fail_reason: str = ""
     invalid_price_ticks: int = 0   # 连续异常涨停价轮数，用于过滤QMT偶发脏行情
+    last_price: float = 0.0        # 最近一次行情现价（封板时=真实涨停价，下单价自洽校验用）
+    st_suspect: bool = False       # ST/风险警示嫌疑（名字带ST/退 或 QMT涨停幅≈5%）
+    st_suspect_logged: bool = False  # 排除日志只打一次
 
 
 # ── 工具函数 ──────────────────────────────────────────────────────────────────
@@ -497,6 +500,14 @@ class StrategyDMonitor:
                 )
             st = self.states[ts_code]
             st.upper_limit = upper_limit
+            st.last_price = float(snap.last_price or 0.0)
+            # ST/风险警示识别（对齐回测口径 ~is_st，2026-07-23 春兴精工废单事故）：
+            # ①名字带ST/退；②QMT真实涨停幅≈5%（名字缓存可能不带前缀，这次就栽在名字上，
+            # 涨停幅是交易所口径、不会骗人）。命中任一即嫌疑。
+            pre_c = float(snap.pre_close or 0.0)
+            name_st = ("ST" in str(name).upper()) or ("退" in str(name))
+            ratio_st = bool(qmt_limit > 0 and pre_c > 0 and 0.04 <= (qmt_limit / pre_c - 1.0) <= 0.06)
+            st.st_suspect = name_st or ratio_st
             if upper_limit < MIN_D_VALID_LIMIT_PRICE:
                 st.invalid_price_ticks += 1
                 if st.invalid_price_ticks <= MAX_D_INVALID_PRICE_TICKS:
@@ -543,7 +554,16 @@ class StrategyDMonitor:
     # ── 信号检测与分级触发 ────────────────────────────────────────────────────
 
     def _passes_base_filters(self, ts_code: str, st: StockState) -> bool:
-        """通用过滤：首板 + 开板回封 + 当前涨停 + strong情绪。"""
+        """通用过滤：首板 + 开板回封 + 当前涨停 + strong情绪 + 非ST。"""
+        if st.st_suspect:  # 回测口径 ~is_st：ST/风险警示股从不入D候选池
+            if not st.st_suspect_logged:
+                st.st_suspect_logged = True
+                self.logger.warning(
+                    "[D过滤] %s %s 判定为ST/风险警示（名字带ST/退 或 QMT涨停幅≈5%%），"
+                    "回测口径(~is_st)从不买这类票，排除出D候选。",
+                    ts_code, st.name,
+                )
+            return False
         if ts_code in self.yesterday_limit_codes:  # 排除2板+
             return False
         if not st.was_sealed:                      # 当前不在涨停
@@ -826,6 +846,23 @@ class StrategyDMonitor:
                     st.name,
                     fail_reason,
                 )
+                print(f"  → 下单拦截: 策略=D {st.ts_code} {st.name} {fail_reason}")
+                st.last_order_fail_reason = fail_reason
+                record["order_status"] = "REJECTED_LOCAL_PRICE_GUARD"
+                record["order_status_text"] = fail_reason
+                record["failure_reason"] = fail_reason
+                self.order_placed = False
+                self.order_locked_ts_code = ""
+                return False
+            if st.last_price > 0 and st.upper_limit > st.last_price * 1.005:
+                # 价格自洽校验（2026-07-23 春兴精工废单事故）：封板状态下现价=真实涨停价；
+                # 下单价明显高于现价，说明涨停幅度判断有误（如ST股按10%误算2.08/真涨停1.98），
+                # 挂出必成废单。按"买不进当天放弃"口径放弃该票，绝不猜价格。
+                fail_reason = (
+                    f"本地风控拦截：D下单价{st.upper_limit:.2f}高于现价{st.last_price:.2f}超0.5%，"
+                    f"涨停幅度判断可能有误（疑似ST/风险警示按普通幅度误算），挂出必成废单，放弃该票"
+                )
+                self.logger.error("D下单拦截: 策略=D 股票=%s %s %s", st.ts_code, st.name, fail_reason)
                 print(f"  → 下单拦截: 策略=D {st.ts_code} {st.name} {fail_reason}")
                 st.last_order_fail_reason = fail_reason
                 record["order_status"] = "REJECTED_LOCAL_PRICE_GUARD"
