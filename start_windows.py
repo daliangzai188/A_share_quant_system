@@ -230,7 +230,10 @@ def color_for_line(text: str) -> str:
         "计划单",
     ]
     warning_words = ["⚠️", "| WARNING |", "WARNING", "仅供参考", "暂不开仓"]
-    error_words = ["❌", "| ERROR |", "ERROR", "失败", "异常"]
+    # 只按日志级别标记(❌/ERROR级)判红,不再按"失败/异常"等字面词——
+    # 否则说明性日志(如"D规则:买不进就放弃、不用第2名将就")含"失败"会被误标红，
+    # 让用户误以为出错。真正的错误由 ERROR 级别前缀(❌/| ERROR |)着色。
+    error_words = ["❌", "| ERROR |"]
     if any(word in text for word in error_words):
         return RED
     if any(word in text for word in success_words):

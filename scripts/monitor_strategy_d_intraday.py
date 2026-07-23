@@ -438,7 +438,8 @@ class StrategyDMonitor:
             SENTIMENT_STRONG_MIN,
         )
         self.logger.info(
-            "D排序规则: 按实时封单金额/流通市值(fd_amount_to_circ_mv)降序；严格对齐 reports/strategy_d/d_trades.csv 原始D口径，只尝试第1名，失败不补偿。",
+            "D选票规则: 每天最多买1只，挑「涨停封单最凶」的（封单金额÷流通市值最大=封得最死、最不易炸板）；"
+            "规则与303倍回测的D口径完全一致；只买排第1的那只，买不进当天就放弃、不用第2名将就。",
         )
         self.logger.info(
             "D开仓参数: 仓位=%.0f%% 单笔金额上限<%.0f元 买入价=涨停价 14:55处理未成交/部分成交委托",
