@@ -162,6 +162,95 @@ def _ts_code_aliases(value: Any) -> set[str]:
     return aliases
 
 
+def reconcile_d_orphan_fills() -> None:
+    """找回孤儿D成交：QMT当日 remark=D_FIRST_BOARD 已成交、但本地无记录的委托，自动回写持仓。
+
+    场景（2026-07-23 北方长龙事故）：盘中重启daemon后，旧会话D监控的内存委托明细
+    丢失，14:55确认流程认不出旧单——成交的股票落在账户里没人管（显示为外部持仓、
+    次日9:23不会卖出），且本地空仓误判可能让D重复开仓。
+    调用点：daemon启动检查前 + 15:10收盘对账后。幂等：按order_id与(当日+代码+D腿)双重去重。
+    """
+    log = logger()
+    config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+    if not (bool(config.get("broker_adapter_enabled")) and bool(config.get("qmt_enabled"))):
+        return
+    today_str = today_beijing().strftime("%Y%m%d")
+    try:
+        with _qmt_lock:
+            adapter = _qmt_get(config.get("broker", {}))
+            orders = adapter.query_orders() or []
+    except Exception as e:
+        log.warning("孤儿D成交恢复：查询当日委托失败（%s），本轮跳过。", e)
+        return
+
+    def _pick(d: dict, keys: list, default: Any = "") -> Any:
+        for k in keys:
+            if k in d and d[k] not in (None, ""):
+                return d[k]
+        return default
+
+    positions = load_positions()
+    known_ids = {str(p.get("order_id", "")) for p in positions}
+    has_today_d = any(
+        str(p.get("strategy_leg", "")).upper() == "D" and str(p.get("buy_date", "")) == today_str
+        and str(p.get("status", "")).lower() in {"open", "sell_pending"}
+        for p in positions
+    )
+    recovered = 0
+    for o in orders:
+        if not isinstance(o, dict):
+            o = getattr(o, "__dict__", {}) or {}
+        remark = str(_pick(o, ["order_remark", "m_strRemark", "remark"], "")).strip()
+        if not remark.startswith("D_FIRST_BOARD"):
+            continue
+        try:
+            otype = int(_pick(o, ["order_type", "m_nOrderType", "order_side", "m_nDirection"], -1))
+            traded = int(float(_pick(o, ["traded_volume", "m_nTradedVolume", "traded_qty", "deal_volume"], 0) or 0))
+        except (TypeError, ValueError):
+            continue
+        if otype != 23 or traded <= 0:
+            continue   # 只认买单且有实际成交（部成也算）
+        oid = str(_pick(o, ["order_id", "m_nOrderID", "order_sysid", "m_strOrderSysID"], "")).strip()
+        ts_code = _normalize_ts_code(_pick(o, ["stock_code", "m_strInstrumentID", "instrument_id", "ts_code"], ""))
+        if not oid or not ts_code or oid in known_ids:
+            continue
+        if has_today_d and any(
+            str(p.get("ts_code", "")) == ts_code and str(p.get("buy_date", "")) == today_str
+            for p in positions
+        ):
+            continue   # 同票同日已有记录（可能旧会话已回写），不重复
+        price = float(_pick(o, ["traded_price", "m_dTradedPrice", "avg_price", "deal_price"], 0) or 0)
+        if price <= 0:
+            price = float(_pick(o, ["price", "m_dPrice", "order_price"], 0) or 0)
+        name = str(_pick(o, ["stock_name", "m_strInstrumentName", "instrument_name"], "")).strip()
+        try:
+            planned_exit = next_n_trade_days(today_beijing(), 2).strftime("%Y%m%d")
+        except Exception:
+            planned_exit = today_str
+        positions.append({
+            "order_id": oid, "ts_code": ts_code, "name": name,
+            "signal_date": today_str, "buy_date": today_str,
+            "planned_exit_date": planned_exit,
+            "shares": traded, "buy_price": round(price, 4),
+            "strategy_leg": "D", "status": "open",
+            "sell_date": None, "sell_price": None,
+            "orphan_recovered": True,
+            "note": "daemon重启后从QMT当日委托自动找回的D成交（旧会话内存丢失）",
+        })
+        recovered += 1
+        log.warning(
+            "🧷 [孤儿D恢复] %s %s %d股@%.2f 已自动回写持仓账本（order_id=%s，计划%s平仓）。",
+            ts_code, name or "?", traded, price, oid, planned_exit,
+        )
+        _notify("buy_result", "🧷 已自动找回D成交持仓",
+                f"策略D {ts_code} {name} {traded}股@{price:.2f}（daemon重启导致旧会话失忆，"
+                f"已从QMT当日委托自动恢复），明日9:23照常集合竞价卖出。",
+                level="timeSensitive")
+    if recovered:
+        save_positions(positions)
+        log.warning("孤儿D成交恢复完成：共找回 %d 笔，持仓账本已更新。", recovered)
+
+
 def st_open_forbidden(ts_code: str, name: Any) -> bool:
     """ST/风险警示股全局禁买闸（2026-07-23 用户铁律：无论如何不允许开仓）。
 
@@ -10081,6 +10170,10 @@ def run_job(scheduled_time: datetime.time) -> None:
                 reconcile_positions_with_broker()
             except Exception as e:
                 logger().error("收盘对账异常：%s", e)
+            try:
+                reconcile_d_orphan_fills()   # 兜底：盘中重启导致的孤儿D成交，收盘再扫一次
+            except Exception as e:
+                logger().error("收盘孤儿D恢复异常：%s", e)
             _start_post_market_pipeline(reason="15:10收盘流水线")
         else:
             logger().info("非交易日，跳过收盘流水线")
@@ -10879,6 +10972,16 @@ def main() -> None:
             _start_pov_worker()
     except Exception as e:
         log.error("POV状态恢复检查异常：%s", e)
+
+    # ── 启动时恢复孤儿D成交（必须在平仓检查/持仓判定之前）─────────────────────
+    # 2026-07-23 事故：盘中重启daemon后,旧会话D已成交委托(北方长龙301357)失忆——
+    # 本地无记录→被当外部持仓→无人平仓,且D补启动误判空仓可能重复买入。
+    # 此步从QMT当日委托(remark=D_FIRST_BOARD)自动找回已成交、本地无记录的D单,
+    # 回写持仓账本;回写后has_open_local_position()=True,D补启动自然不再拉起。
+    try:
+        reconcile_d_orphan_fills()
+    except Exception as e:
+        log.error("孤儿D成交恢复异常：%s", e)
 
     # ── 启动时立刻执行平仓检查 ────────────────────────────────────────────────
     log.info("启动检查：扫描逾期/待平仓持仓...")
