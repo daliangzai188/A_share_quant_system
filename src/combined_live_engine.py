@@ -524,6 +524,35 @@ class CombinedLiveEngine:
             return mode1_state, decisions, mode1_orders
 
         if mode1_buy_orders.empty:
+            # 串行单仓守卫（2026-07-23 北方长龙 D+L 并存 bug）：mode1 无买入若是因未到期
+            # 非L持仓（D/E2/A/C）占用资金所致（build_mode1_plan 已 BLOCK_ABC_BUY），L 补位
+            # 同样不得开仓，否则与旧仓并存，违反 8302x daily_cash_constraint 串行单仓口径。
+            # 仅今日到期（衔接日会在14:55平仓）或 sell_pending 的持仓不算占用；L 替换分支
+            # 不受影响（走到那里说明 mode1 有买入=已是空仓/衔接日/D让路的可开仓态）。
+            holding_non_l_positions = [
+                p for p in positions
+                if self.is_open_position(p) and not self.is_l_position(p)
+                and str(p.get("planned_exit_date", "99991231")) > today
+                and str(p.get("status", "")).lower() != "sell_pending"
+            ]
+            if holding_non_l_positions:
+                blockers = "、".join(
+                    f"{str(p.get('strategy_leg', '?')).upper()} {p.get('ts_code', '')} {p.get('name', '')}"
+                    for p in holding_non_l_positions
+                )
+                extra = CombinedLiveDecision(
+                    action="BLOCK_MODEL3_L_BY_HOLDING_POSITION",
+                    strategy_leg="MODEL3",
+                    ts_code=str(signal.get("ts_code", "")),
+                    name=str(signal.get("name", "")),
+                    reason=(
+                        f"已有未到期非L持仓（{blockers}）占用资金，L补位不得开新仓"
+                        f"（串行单仓口径，与A/C/E2/D一致）；等其到期平仓后再择机开L。"
+                    ),
+                    source="positions.json",
+                )
+                decisions = pd.concat([mode1_decisions, pd.DataFrame([extra.__dict__])], ignore_index=True)
+                return mode1_state, decisions, mode1_orders
             filtered_mode1_decisions = mode1_decisions[
                 ~mode1_decisions["action"].astype(str).isin({"ALLOW_D_INTRADAY_MONITOR"})
             ].copy()
