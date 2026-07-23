@@ -595,6 +595,84 @@ def _note_broker_has_positions() -> None:
     _broker_empty_streak = 0
 
 
+_broker_missing_streak: dict[str, int] = {}   # {ts_code: 连续查无此票的次数}
+
+
+def reconcile_missing_local_positions(broker_positions: Any, source: str) -> int:
+    """逐票同步:本地 open 但券商连续 N 次查无此票 → 标 closed(2026-07-23 用户要求)。
+
+    背景(京基智农事故):原 clear_local_positions_when_broker_empty 只在【全账户
+    空仓】才触发。账户有打新中签可转债等外部持仓时永不空仓,导致手动卖出的策略
+    持仓(如京基智农 B 腿 manual_exit)在券商侧已消失、本地却永远 open,持续
+    BLOCK 次日开仓、卡住整个组合。改为逐票核对:某本地持仓 ts_code 连续
+    broker_missing_confirm_count(默认3)次不在券商持仓集合里 → 标 closed。
+
+    安全三重(与全账户清理同等严格):
+      ① 调用方必须保证 query_positions() 成功(接口失败/QMT未启用严禁调用);
+      ② 连续 N 次确认才动手,防 QMT 偶发返回不全的抽风(乔治白误清事故教训);
+      ③ 当日买入(buy_date==今日)持仓豁免——QMT 可能尚未同步新成交,不误标。
+    券商侧仍在的票即时归零其计数;标 closed 保留原字段并打同步来源标记。
+    """
+    with _positions_file_lock:
+        positions = load_positions()
+        open_like = [p for p in positions
+                     if str(p.get("status", "")).lower() in {"open", "sell_pending"}]
+        if not open_like:
+            _broker_missing_streak.clear()
+            return 0
+        try:
+            cfg = load_json_config(PROJECT_ROOT / "config" / "config.json")
+            need = int(cfg.get("live_trade", {}).get("broker_missing_confirm_count", 3))
+        except Exception:
+            need = 3
+        # 券商侧全部持仓的别名集合(volume>0)
+        broker_aliases: set[str] = set()
+        for bp in (broker_positions or []):
+            if int(getattr(bp, "volume", 0) or 0) > 0:
+                broker_aliases.update(_ts_code_aliases(getattr(bp, "ts_code", "")))
+        today = today_beijing().strftime("%Y%m%d")
+        now_str = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
+        changed = 0
+        seen_codes: set[str] = set()
+        for pos in positions:
+            if str(pos.get("status", "")).lower() not in {"open", "sell_pending"}:
+                continue
+            code = str(pos.get("ts_code", ""))
+            seen_codes.add(code)
+            in_broker = any(al in broker_aliases for al in _ts_code_aliases(code))
+            if in_broker:
+                _broker_missing_streak.pop(code, None)   # 券商仍有→归零
+                continue
+            if str(pos.get("buy_date", "")) == today:
+                continue   # 当日买入豁免:QMT 可能延迟,不误标
+            _broker_missing_streak[code] = _broker_missing_streak.get(code, 0) + 1
+            n = _broker_missing_streak[code]
+            if n < need:
+                logger().warning(
+                    "⚠️ [逐票同步] %s %s 券商查无此持仓(本地仍 open,第%d/%d次,来源=%s)。"
+                    "暂不同步,防 QMT 抽风;连续%d次确认后标 closed。",
+                    code, pos.get("name", ""), n, need, source, need)
+                continue
+            pos["status"] = "closed"
+            pos["sell_date"] = pos.get("sell_date") or today
+            pos["sell_price"] = pos.get("sell_price") or 0.0
+            pos["ghost_cleared_at"] = now_str
+            pos["ghost_clear_source"] = f"逐票同步-{source}"
+            pos["ghost_clear_reason"] = f"券商连续{need}次查无此持仓(手动卖出/已平仓同步)"
+            _broker_missing_streak.pop(code, None)
+            changed += 1
+            logger().warning(
+                "🧹 [逐票同步] %s %s 券商连续%d次查无此持仓,已标 closed(来源=%s)。"
+                "解除其对开仓的占用/BLOCK。", code, pos.get("name", ""), need, source)
+        # 清理已消失(已 closed 或不再 open)的 code 的计数,防泄漏
+        for code in list(_broker_missing_streak):
+            if code not in seen_codes:
+                _broker_missing_streak.pop(code, None)
+        if changed:
+            save_positions(positions)
+    return changed
+
+
 def clear_local_positions_when_broker_empty(source: str) -> int:
     """券商接口已明确返回无持仓时，清理本地 open/sell_pending 幽灵持仓。
 
@@ -10248,6 +10326,13 @@ def _print_account_status(log: Any) -> None:
     _last_account_has_position = bool(live_positions)
     if live_positions:
         _note_broker_has_positions()
+        # 逐票同步(2026-07-23):账户非空(如有打新中签转债)时,原全账户清理不触发,
+        # 手动卖出的策略持仓会成永久幽灵仓卡住开仓。此处逐票核对券商实际持仓,
+        # 连续N次查无的本地持仓自动标 closed(query_positions 已成功,可安全核对)。
+        try:
+            reconcile_missing_local_positions(positions, "账户心跳")
+        except Exception as _e:
+            log.error("逐票持仓同步异常(不影响交易):%s", _e)
         local_positions = load_positions()
         local_pos_map: dict[str, dict[str, Any]] = {}
         for lp in local_positions:

@@ -193,6 +193,8 @@
     "fill_confirm_enabled": true,
     "fill_confirm_timeout_sec": 60,
     "fill_confirm_poll_sec": 3,
+    "broker_missing_confirm_count": 3,
+    "broker_missing_confirm_note": "逐票持仓同步:某本地open持仓连续此次数不在券商持仓里→标closed(手动卖出/已平仓同步,解除幽灵仓BLOCK)。当日买入豁免+接口成功才核对(2026-07-23京基智农事故)",
     "output_prefix": "reports/live_trade/qmt_live_order",
     "exit_pov_runway_buffer_note": "跑道冗余系数(2026-07-16扫描定稿1.2):80笔重放1000万损耗1.5=-0.220%/1.2=-0.204%/1.0=-0.190%,1.2免费拿0.016%且实盘另有14:30流速复查+14:45尾段复查双兜底(重放未模拟,实际更安全);1.0再往下压安全垫过薄。35%参与率+动量调节仅再省0.02%,过拟合风险不值,不采用"
   },
