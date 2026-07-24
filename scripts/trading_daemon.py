@@ -9443,6 +9443,25 @@ def _log_decision_chain_summary(signal_date: str) -> None:
             hold_line = (f"目前已持仓：{d_desc}；持仓未到期占用资金，{day_label}不开新仓"
                          "（含L补位/替换均按串行单仓口径挡住；到期或让路后再择机开仓）")
 
+        # D 持仓当日到期（衔接日）说明：D 到期不算占用（上面 non_d_pos 不含D、_blocked_by_holding
+        # 也不含到期仓），若不单独说明，框里会光显示"L开仓"却对D只字未提，用户困惑"D还持仓着怎么开L"。
+        # 2026-07-24 北方长龙0727到期日L补位场景补此说明。
+        d_due_today = [
+            p for p in open_pos
+            if str(p.get("strategy_leg", "")).upper() == "D"
+            and str(p.get("planned_exit_date", "99991231")) == str(action_date)
+        ]
+        if d_due_today and not hold_line:
+            d_desc = "、".join(f"D策略 {p.get('ts_code','')} {p.get('name','')}" for p in d_due_today)
+            if final_buy:
+                hold_line = (
+                    f"目前已持仓：{d_desc}（{day_label}到期）；D按T+2口径{day_label}14:55收盘平仓，"
+                    f"腾出资金后{final_buy['strategy']}策略{final_buy['name']}衔接开仓"
+                    f"（衔接日：早盘用剩余现金买入、尾盘D平仓，日内两仓并存几小时，按可用资金缩放）"
+                )
+            else:
+                hold_line = f"目前已持仓：{d_desc}（{day_label}到期）；D按T+2口径{day_label}14:55收盘平仓，之后无新开仓计划"
+
         # 整个决策链拼成一条多行日志、单次原子写入：daemon 是多线程
         # （账户心跳/候选播报/周期播报并发打日志），逐行输出必然被其他
         # 线程的日志穿插进框内。单条消息由 logging 内部锁保证原子性，
