@@ -532,7 +532,7 @@ class CombinedLiveEngine:
             holding_non_l_positions = [
                 p for p in positions
                 if self.is_open_position(p) and not self.is_l_position(p)
-                and str(p.get("planned_exit_date", "99991231")) > today
+                and str(p.get("planned_exit_date", "99991231")) >= today
                 and str(p.get("status", "")).lower() != "sell_pending"
             ]
             if holding_non_l_positions:
