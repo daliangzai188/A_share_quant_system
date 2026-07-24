@@ -9171,7 +9171,7 @@ def _log_final_decision_summary(signal_date: str, action_date_compact: str, buy_
             p for p in load_positions()
             if str(p.get("status", "")).lower() in {"open", "sell_pending"}
             and str(p.get("strategy_leg", "")).upper() != "L"
-            and str(p.get("planned_exit_date", "99991231")) >= str(action_date_compact)
+            and str(p.get("planned_exit_date", "99991231")) > str(action_date_compact)
             and str(p.get("status", "")).lower() != "sell_pending"
         ])
 
@@ -9180,18 +9180,7 @@ def _log_final_decision_summary(signal_date: str, action_date_compact: str, buy_
         note = ""
         if _blocked_by_holding:
             final_buys = []
-            _due_today = any(
-                str(p.get("planned_exit_date", "")) == str(action_date_compact)
-                for p in load_positions()
-                if str(p.get("status", "")).lower() == "open"
-                and str(p.get("strategy_leg", "")).upper() != "L"
-            )
-            note = (
-                "有持仓今日14:55才平仓，L早盘开仓会与其并存（8302x回测cash_overlap=0从不并存），"
-                "故不开新仓；等其平仓后下一交易日再开（D不为L让路）"
-                if _due_today else
-                "有未到期非L持仓占用资金，串行单仓不开新仓（含mode1/L补位/替换均挡，与下单口径一致）"
-            )
+            note = "有未到期非L持仓占用资金，串行单仓不开新仓（含mode1/L补位/替换均挡，与下单口径一致）"
         elif mode == 1:
             final_buys = mode1_buys
             note = "模式1：执行ACDE2组合（A/C优先，无则E2；B已删除）"
@@ -9393,7 +9382,7 @@ def _log_decision_chain_summary(signal_date: str) -> None:
         _holding_non_l = [
             p for p in _open_now
             if str(p.get("strategy_leg", "")).upper() != "L"
-            and str(p.get("planned_exit_date", "99991231")) >= str(action_date)
+            and str(p.get("planned_exit_date", "99991231")) > str(action_date)
             and str(p.get("status", "")).lower() != "sell_pending"
         ]
         _blocked_by_holding = bool(_holding_non_l)
@@ -9443,29 +9432,39 @@ def _log_decision_chain_summary(signal_date: str) -> None:
                 hold_line = (f"目前已持仓：{desc}；{day_label}到期将于14:55收盘平仓，"
                              "不阻断开仓计划（09:20复核后照常下单，按可用资金校验/缩放）")
 
-        # 持仓占用说明（non_d_pos 不含 D，上面漏掉 D；D 占资金会挡住 L 补位/替换，必须讲清
-        # 为何"无开仓计划"，否则框里光显示无计划却不讲原因，用户困惑）。
-        # 口径依据（2026-07-24 用户指出）：8302x 基准 cash_overlap_old_positions 全为 0，
-        # 从不并存——新仓开仓时账户绝无旧仓占资金。D 到期日当天 D 也要到 14:55 才卖，L 早盘
-        # 买入会与 D 并存，违反此口径，故 D 只要今天还没卖完（planned_exit>=今日）就挡 L。
+        # 持仓占用说明：区分两种情形，讲清"为何不开/为何能开"，不留光秃秃的结论。
+        # 口径依据（2026-07-24 用户逐笔核对）：8302x 衔接日有效——旧仓T+2到期日当天卖出、
+        # 新仓当天用"剩余现金"买入（cash_active_old_position_pct 均值0.519=旧仓占约半资金，
+        # 新仓 resize 按剩余现金；账户现金够时新仓满仓）。故：
+        #   ① 非L持仓【未到期】(planned_exit>今日)：占资金全程，L 不开；
+        #   ② 非L持仓【今日到期】(planned_exit==今日)：衔接日，D 14:55平仓、L 早盘用剩余现金开。
         if _blocked_by_holding and not hold_line:
             d_desc = "、".join(
                 f"{str(p.get('strategy_leg','?') or '?').upper()}策略 {p.get('ts_code','')} {p.get('name','')}"
                 f"（计划{p.get('planned_exit_date','')}平仓）"
                 for p in _holding_non_l
             )
-            due_today = any(str(p.get("planned_exit_date", "")) == str(action_date) for p in _holding_non_l)
-            if due_today:
+            hold_line = (
+                f"目前已持仓：{d_desc}；持仓未到期占用资金，{day_label}不开新仓"
+                "（含L补位/替换均按串行单仓口径挡住；到期平仓后再择机开仓）"
+            )
+
+        # D/非L持仓【今日到期】的衔接日说明（_blocked_by_holding 只含未到期，此处补到期日）：
+        d_due_today = [
+            p for p in open_pos
+            if str(p.get("strategy_leg", "")).upper() != "L"
+            and str(p.get("planned_exit_date", "99991231")) == str(action_date)
+        ]
+        if d_due_today and not hold_line:
+            dd = "、".join(f"{str(p.get('strategy_leg','?')).upper()}策略 {p.get('ts_code','')} {p.get('name','')}" for p in d_due_today)
+            if final_buy:
                 hold_line = (
-                    f"目前已持仓：{d_desc}；该持仓{day_label}14:55收盘才平仓，L若{day_label}早盘开仓"
-                    f"会与其并存——8302x回测从不并存（cash_overlap=0），故{day_label}不开L；"
-                    f"等其平仓后（下一交易日起）L再择机开仓。（D不为L让路，故不提前腾资金）"
+                    f"目前已持仓：{dd}（{day_label}到期）；该持仓{day_label}14:55收盘平仓，"
+                    f"{final_buy['strategy']}策略{final_buy['name']}{day_label}早盘用剩余现金衔接开仓"
+                    f"（衔接日：8302x回测口径=旧仓当日卖+新仓当日剩余现金买、日内并存，按可用资金 resize）"
                 )
             else:
-                hold_line = (
-                    f"目前已持仓：{d_desc}；持仓未到期占用资金，{day_label}不开新仓"
-                    "（含L补位/替换均按串行单仓口径挡住；到期平仓后再择机开仓）"
-                )
+                hold_line = f"目前已持仓：{dd}（{day_label}到期）；该持仓{day_label}14:55收盘平仓，之后无新开仓计划"
 
         # 整个决策链拼成一条多行日志、单次原子写入：daemon 是多线程
         # （账户心跳/候选播报/周期播报并发打日志），逐行输出必然被其他
