@@ -8652,6 +8652,10 @@ def job_post_market(end_date: str | None = None) -> None:
         return False
 
     report_next_day_candidates()
+    # 决策链 summary 必须先于收盘推送：它设置 _last_final_plan（推送的唯一数据源）。
+    # 原顺序 push 在前、summary 在后，push 用到的是上一次的旧计划——2026-07-24 北方长龙
+    # 到期日(衔接日)L补位本应开仓，推送却误报"无计划"（旧数据恰好是前一日的无计划）。
+    _log_decision_chain_summary(target_str)
     push_open_plan_notification("收盘")   # 收盘流水线完成→推明日开仓计划(有则详细/无则明示)
     report_signal_readiness_summary(target_str)
     if not report_next_trade_factor_readiness(target_str):
@@ -8659,9 +8663,8 @@ def job_post_market(end_date: str | None = None) -> None:
         return False
     logger().info("===== 收盘流水线完成 =====")
     mark_post_market_done(target_date)
-    # 数据与因子全部就绪、流水线正式完成后，再讲决策逻辑和结果；
+    # 决策链已在推送前播报并设好 _last_final_plan；
     # 之后由 _decision_chain_broadcast_loop 每30分钟重播一次。
-    _log_decision_chain_summary(target_str)
     try:
         open_cnt = sum(1 for p in load_positions() if p.get("status") == "open")
         acct_part = ""
