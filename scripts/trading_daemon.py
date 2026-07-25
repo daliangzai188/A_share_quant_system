@@ -10527,7 +10527,60 @@ def _qmt_query_account_positions(adapter: Any, *, timeout_sec: float = 25.0) -> 
         raise err[0]
     if not result:
         raise RuntimeError("QMT账户查询未返回结果")
-    return result[0]
+    account, positions = result[0]
+    _sanitize_account_snapshot(account, positions)
+    return account, positions
+
+
+_ASSET_SANITY_ALERT_DAY = ""
+
+
+def _sanitize_account_snapshot(account: Any, positions: Any) -> None:
+    """总资产自洽性校验（2026-07-25 事故：非交易日QMT先返回0、后返回1亿）。
+
+    QMT 偶发返回脏的 total_asset，而它直接决定单票/总仓位上限：
+      - total_asset=0   → 仓位上限=0 → 当日买入全部被拒（漏开仓）；
+      - total_asset=1亿 → 误触发容量墙里程碑，且7.30取消单笔硬顶后会超买。
+    校验用两个独立字段交叉验证：total_asset ≈ available_cash + Σ持仓市值。
+    偏离一倍以上判定脏读，改用 implied 值（可信度更高：由两个独立字段算出），
+    并推送告警。implied 也不可用时保持原值不动，交由上层风控/人工处理。
+    """
+    global _ASSET_SANITY_ALERT_DAY
+    try:
+        total = float(getattr(account, "total_asset", 0.0) or 0.0)
+        cash = float(getattr(account, "available_cash", 0.0) or 0.0)
+        mv = 0.0
+        for p in (positions or []):
+            try:
+                mv += float(getattr(p, "market_value", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                continue
+        implied = cash + mv
+        if implied <= 0:
+            return   # 两个字段都不可用，无从校正，保持原值
+        # 容差：total 落在 implied 的 [0.5, 2] 倍内视为正常（含日内浮盈亏/冻结资金差异）
+        if 0.5 * implied <= total <= 2.0 * implied:
+            return
+        today = today_beijing().strftime("%Y%m%d")
+        logger().error(
+            "⚠️ [账户资产脏读] QMT返回总资产%.2f万，与可用资金%.2f万+持仓市值%.2f万=%.2f万严重不符；"
+            "已改用%.2f万参与仓位计算（防止仓位上限=0漏开仓或异常放大超买）。",
+            total / 10000, cash / 10000, mv / 10000, implied / 10000, implied / 10000,
+        )
+        try:
+            setattr(account, "total_asset", implied)
+        except Exception:
+            return
+        if _ASSET_SANITY_ALERT_DAY != today:
+            _ASSET_SANITY_ALERT_DAY = today
+            _notify(
+                "system_error", "⚠️ 账户总资产脏读已自动校正",
+                f"QMT返回总资产{total / 10000:.2f}万，与可用{cash / 10000:.2f}万+市值{mv / 10000:.2f}万"
+                f"={implied / 10000:.2f}万不符，已改用{implied / 10000:.2f}万。若持续出现请检查QMT终端。",
+                level="timeSensitive",
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger().warning("账户资产自洽性校验异常（不影响主流程）：%s", exc)
 
 
 def _qmt_reset() -> None:
