@@ -10584,8 +10584,9 @@ def _sanitize_account_snapshot(account: Any, positions: Any) -> None:
 
 
 _LAST_QMT_ERROR_TEXT = ""
-# 套接字资源耗尽时的退出码：keeper 见到它就知道"该进程资源被污染，拉起新进程即可自愈"，
-# 与普通崩溃区分（2026-07-27 事故）。
+# 套接字资源耗尽时的退出码（2026-07-27 事故）。注意：daemon 由 start_windows.py 以
+# DETACHED_PROCESS 启动，keeper 拿不到本退出码——它只按"进程不在就拉起"工作，行为一致。
+# 本退出码用于人工排查（事件查看器/手动前台运行时可见），以及未来若改为非 detached 启动。
 EXIT_CODE_SOCKET_EXHAUSTED = 87
 _ONCE_PER_STATE: dict[str, float] = {}
 

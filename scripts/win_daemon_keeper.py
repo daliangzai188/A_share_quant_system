@@ -32,7 +32,12 @@ BEIJING = timezone(timedelta(hours=8))
 CHECK_INTERVAL = 30          # 检查间隔（秒）
 STALE_LIMIT = 15 * 60        # 心跳陈旧阈值：超过视为假死，重启
 BLOCKED_ALERT_AFTER = 10 * 60  # qmt_blocked 持续多久后告警（券商维护通知）
-EXIT_CODE_SOCKET_EXHAUSTED = 87
+
+# 防无限重启：daemon 若因配置错/依赖坏/磁盘满等原因“一启动就崩”，无脑每 30 秒拉起
+# 会刷屏、掩盖真实故障。连续 N 次拉起后仍活不过 MIN_ALIVE_SEC，即判定为持续崩溃，
+# 停止自动拉起并强告警，交人工处理（券商维护那种“进程活着只是连不上”不受影响）。
+MAX_CONSECUTIVE_RESTARTS = 5
+MIN_ALIVE_SEC = 120          # 拉起后至少活这么久，才算一次“有效启动”
 
 
 def now() -> str:
@@ -106,6 +111,9 @@ def main() -> None:
     blocked_since: float | None = None
     alerted_blocked = False
     was_down = False
+    consecutive_restarts = 0     # 连续"拉起后很快又死"的次数
+    last_start_ts = 0.0
+    giving_up = False            # 判定持续崩溃后停止自动拉起
 
     while True:
         try:
@@ -115,7 +123,34 @@ def main() -> None:
 
             # ── 1. 进程不在 → 拉起（含资源耗尽自退、崩溃、被误杀）──
             if not alive:
-                log(f"daemon 不在运行（pid={pid}），准备拉起。")
+                # 已判定持续崩溃：直接静默等待人工介入。必须放在计数之前——否则
+                # 放弃后 last_start_ts 不再更新，时间一长 (now-last_start) 会超过
+                # MIN_ALIVE_SEC 而走到 else 把计数重置为 1，导致周期性无限重启
+                # （2026-07-27 推演测试实测：10 轮里拉起了 7 次，防护形同虚设）。
+                if giving_up:
+                    time.sleep(CHECK_INTERVAL)
+                    continue
+
+                # 上次拉起后活了多久？活不过 MIN_ALIVE_SEC 视为"启动即崩"。
+                if last_start_ts and (time.time() - last_start_ts) < MIN_ALIVE_SEC:
+                    consecutive_restarts += 1
+                else:
+                    consecutive_restarts = 1
+
+                if consecutive_restarts > MAX_CONSECUTIVE_RESTARTS:
+                    giving_up = True
+                    log(f"连续 {consecutive_restarts} 次拉起后仍在 {MIN_ALIVE_SEC}s 内退出，"
+                        f"判定持续崩溃，停止自动拉起。")
+                    notify("🛑 daemon 持续崩溃，已停止自动拉起",
+                           f"连续 {consecutive_restarts} 次启动后都在 {MIN_ALIVE_SEC} 秒内退出，"
+                           f"说明不是临时故障（常见：配置错误、依赖损坏、磁盘满）。"
+                           f"守护器已停止自动重启以免掩盖问题，请人工查看 "
+                           f"logs/trading_daemon.log。持仓到期请用手机App手动平仓。",
+                           level="critical")
+                    time.sleep(CHECK_INTERVAL)
+                    continue
+
+                log(f"daemon 不在运行（pid={pid}），准备拉起（第{consecutive_restarts}次）。")
                 if not was_down:
                     was_down = True
                     notify("🔄 daemon 已退出，守护器正在拉起",
@@ -123,6 +158,7 @@ def main() -> None:
                            "守护器正在启动全新进程。恢复后会再次通知。",
                            level="timeSensitive")
                 start_daemon()
+                last_start_ts = time.time()
                 time.sleep(CHECK_INTERVAL)
                 continue
 
@@ -161,6 +197,11 @@ def main() -> None:
                 blocked_since = None
                 alerted_blocked = False
                 was_down = False
+                # daemon 稳定运行超过 MIN_ALIVE_SEC → 本轮故障已过去，清零崩溃计数，
+                # 让后续真正的临时故障仍能享受自动拉起（否则计数残留会提前触发放弃）。
+                if last_start_ts and (time.time() - last_start_ts) >= MIN_ALIVE_SEC:
+                    consecutive_restarts = 0
+                    giving_up = False
 
             time.sleep(CHECK_INTERVAL)
         except KeyboardInterrupt:
