@@ -10,9 +10,8 @@
   2. 不间断重启：daemon 意外退出（含资源耗尽自退）→ 自动拉起，维护结束后无人值守恢复；
   3. 账户与程序恢复正常 → 再通知一次，明确"可以不用管了"。
 
-用法（代替直接跑 start_windows.py）：
-    py -3.11 scripts/win_daemon_keeper.py
-Ctrl+C 停止 keeper（不会停 daemon）；要完全停止请先 Ctrl+C 再 py -3.11 stop_windows.py。
+用法：无需手动运行。start_windows.py 会自动拉起本守护器，
+    stop_windows.py 会连带停止。用户的启动/停止命令保持不变。
 """
 from __future__ import annotations
 
@@ -113,7 +112,7 @@ def main() -> None:
     KEEPER_PID_FILE.write_text(str(os.getpid()))
     log("守护器启动（pid=%d）：每%d秒检查一次；daemon 退出/假死自动拉起。"
         % (os.getpid(), CHECK_INTERVAL))
-    log("停止方式：py -3.11 stop_windows.py（会连 keeper 一起停，无需先 Ctrl+C）")
+    log("由 start_windows.py 自动拉起；stop_windows.py 会连带停止。用户命令保持不变。")
     blocked_since: float | None = None
     alerted_blocked = False
     was_down = False

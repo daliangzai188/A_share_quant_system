@@ -28,6 +28,7 @@ root = Path(__file__).absolute().parent
 log = root / "logs" / "trading_daemon.log"
 pid_file = root / ".daemon_pid"
 d_monitor_pid_file = root / "logs" / "strategy_d_monitor.pid"
+keeper_pid_file = root / ".keeper_pid"   # 守护器；由本脚本自动拉起，stop_windows.py 连带停止
 daemon = root / "scripts" / "trading_daemon.py"
 log.parent.mkdir(exist_ok=True)
 
@@ -189,6 +190,34 @@ proc = subprocess.Popen(
 pid_file.write_text(str(proc.pid))
 print(f"Started PID {proc.pid}")
 print(f"Log: {log}")
+
+# ── 自动拉起守护器 keeper（2026-07-27）───────────────────────────────────────
+# 用户的启动/停止命令保持不变：start_windows.py 一条命令同时带起 daemon 和 keeper，
+# stop_windows.py 一条命令全停。keeper 负责：QMT 长时间连不上时告警、daemon 崩溃/
+# 假死/资源耗尽自退时自动拉起、恢复后通知。
+# 防递归：keeper 恢复 daemon 时也会调本脚本（--no-tail），此处先检查 keeper 是否
+# 已在运行，已在跑就不重复启动，避免 keeper 套 keeper。
+def _keeper_running() -> bool:
+    if not keeper_pid_file.exists():
+        return False
+    text = keeper_pid_file.read_text().strip()
+    return bool(text.isdigit() and pid_exists(text))
+
+try:
+    if _keeper_running():
+        print(f"Keeper already running (PID {keeper_pid_file.read_text().strip()})")
+    else:
+        kproc = subprocess.Popen(
+            [sys.executable, str(root / "scripts" / "win_daemon_keeper.py")],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+        )
+        keeper_pid_file.write_text(str(kproc.pid))
+        print(f"Keeper started PID {kproc.pid} (掉线告警/崩溃自愈/恢复通知)")
+except Exception as exc:
+    # keeper 起不来不影响交易主进程，只是失去自愈能力，明确提示而不中断。
+    print(f"⚠️ Keeper 启动失败（daemon 不受影响，但失去自动重启能力）：{exc}")
 
 # 等日志文件出现
 for _ in range(10):
