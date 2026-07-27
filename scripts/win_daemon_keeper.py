@@ -25,6 +25,9 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 PID_FILE = PROJECT_ROOT / ".daemon_pid"
+# keeper 自己的 pid 文件：stop_windows.py 会先停 keeper 再停 daemon，
+# 否则用户按老习惯只停 daemon，keeper 会在 30 秒内把它拉回来（2026-07-27）。
+KEEPER_PID_FILE = PROJECT_ROOT / ".keeper_pid"
 HEARTBEAT = PROJECT_ROOT / "logs" / "daemon_heartbeat.txt"
 START_SCRIPT = PROJECT_ROOT / "start_windows.py"
 BEIJING = timezone(timedelta(hours=8))
@@ -107,7 +110,10 @@ def start_daemon() -> None:
 
 
 def main() -> None:
-    log("守护器启动：每%d秒检查一次；daemon 退出/假死自动拉起。" % CHECK_INTERVAL)
+    KEEPER_PID_FILE.write_text(str(os.getpid()))
+    log("守护器启动（pid=%d）：每%d秒检查一次；daemon 退出/假死自动拉起。"
+        % (os.getpid(), CHECK_INTERVAL))
+    log("停止方式：py -3.11 stop_windows.py（会连 keeper 一起停，无需先 Ctrl+C）")
     blocked_since: float | None = None
     alerted_blocked = False
     was_down = False
@@ -206,6 +212,7 @@ def main() -> None:
             time.sleep(CHECK_INTERVAL)
         except KeyboardInterrupt:
             log("收到中断，守护器退出（daemon 继续运行）。")
+            KEEPER_PID_FILE.unlink(missing_ok=True)
             return
         except Exception as exc:  # noqa: BLE001
             log(f"守护循环异常（继续守护）：{exc}")

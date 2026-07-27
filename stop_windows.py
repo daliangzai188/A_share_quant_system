@@ -12,6 +12,7 @@ if str(ROOT) not in sys.path:
 
 pid_file = ROOT / ".daemon_pid"
 d_monitor_pid_file = ROOT / "logs" / "strategy_d_monitor.pid"
+keeper_pid_file = ROOT / ".keeper_pid"   # 守护器（win_daemon_keeper.py），须先于 daemon 停止
 # 按命令行特征识别相关进程；即使 pid 文件丢失/被覆盖也能扫到孤儿进程。
 DAEMON_KEYWORD = "trading_daemon.py"
 D_MONITOR_KEYWORD = "monitor_strategy_d_intraday.py"
@@ -285,7 +286,10 @@ print(GREEN + f"{timestamp()} | 停止 A_System：清理全部守护进程 / D �
 # 进程树清理带走。只有 pid 文件找不到任何存活进程时，才用命令行扫描兜底找孤儿——
 # 全盘 CIM 扫描要十几秒且吃CPU/IO，每次都跑曾把停止拖到 62 秒、虚拟机卡到重启。
 targets: dict[int, str] = {}
-for path, label in [(pid_file, "daemon"), (d_monitor_pid_file, "D monitor")]:
+# keeper 必须排在最前：它的职责是"发现 daemon 不在就拉起"，若不先停它，
+# 停掉 daemon 后 30 秒内会被自动拉回来，用户按老习惯 stop 会以为没停掉
+# （2026-07-27 新增 keeper 后的可用性保护）。
+for path, label in [(keeper_pid_file, "keeper"), (pid_file, "daemon"), (d_monitor_pid_file, "D monitor")]:
     if path.exists():
         pid_text = path.read_text().strip()
         if pid_text.isdigit() and _pid_exists(pid_text):
@@ -299,6 +303,7 @@ if not targets:
     # 无存活进程：清掉可能残留的 pid 文件，明确告知“确实没在跑”。
     pid_file.unlink(missing_ok=True)
     d_monitor_pid_file.unlink(missing_ok=True)
+    keeper_pid_file.unlink(missing_ok=True)
     print(YELLOW + f"{timestamp()} | 未发现运行中的守护/监控进程（已清理残留 pid 文件）。" + RESET, flush=True)
     sys.exit(0)
 
