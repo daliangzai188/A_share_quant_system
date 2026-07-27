@@ -10583,6 +10583,39 @@ def _sanitize_account_snapshot(account: Any, positions: Any) -> None:
         logger().warning("账户资产自洽性校验异常（不影响主流程）：%s", exc)
 
 
+_LAST_QMT_ERROR_TEXT = ""
+_EXHAUSTED_WAIT_SEC = 600          # 资源耗尽后的固定长间隔（等人工重启，不再自救）
+_ONCE_PER_STATE: dict[str, float] = {}
+
+# Windows 套接字/句柄资源耗尽类错误码。出现这些说明系统资源已经见底，
+# 再怎么重试都不会成功，只会让泄漏更严重——必须停手、告警、等人工重启。
+_SOCKET_EXHAUSTED_MARKERS = (
+    "10055",   # WSAENOBUFS 系统缓冲区空间不足或队列已满
+    "10024",   # WSAEMFILE 打开的套接字太多
+    "缓冲区空间不足",
+    "队列已满",
+    "打开的套接字太多",
+)
+
+
+def _is_socket_resource_exhausted(err_text: str) -> bool:
+    text = str(err_text or "")
+    return any(marker in text for marker in _SOCKET_EXHAUSTED_MARKERS)
+
+
+def _notify_once_per(key: str, interval_sec: float, title: str, body: str, **kwargs: Any) -> None:
+    """同一 key 在 interval_sec 内只推一次（防长时间故障刷屏）。"""
+    now_ts = time.time()
+    last = _ONCE_PER_STATE.get(key, 0.0)
+    if now_ts - last < interval_sec:
+        return
+    _ONCE_PER_STATE[key] = now_ts
+    try:
+        _notify("system_error", title, body, **kwargs)
+    except Exception as exc:  # noqa: BLE001
+        logger().warning("资源告警推送失败：%s", exc)
+
+
 def _qmt_reset() -> None:
     """断开并清除持久连接。调用方须持有 _qmt_lock。"""
     global _qmt_adapter
@@ -10983,10 +11016,19 @@ def check_qmt_connection(*, allow_full_scan: bool | None = None) -> bool:
         )
         return True
     except Exception as e:
+        global _LAST_QMT_ERROR_TEXT
+        _LAST_QMT_ERROR_TEXT = str(e)   # 供门禁判断是否为套接字资源耗尽
         log.error("❌ QMT主连接验证失败：%s", e)
         try:
             with _qmt_lock:
                 _qmt_reset()
+        except Exception:
+            pass
+        # 失败连接对象可能仍被引用（xtquant 内部持有线程/套接字）。主动触发一次
+        # 回收，尽量把 Python 侧能释放的释放掉；底层 C++ 资源仍依赖库自身实现。
+        try:
+            import gc
+            gc.collect()
         except Exception:
             pass
         _notify_async("system_error", "❌ QMT启动连接异常",
@@ -11024,8 +11066,28 @@ def wait_for_qmt_startup_gate() -> None:
             log.info("QMT启动门禁：账户连接已验证，继续启动流程。")
             return
         write_heartbeat("qmt_blocked")
+        # 资源耗尽自锁检测（2026-07-27 事故根治）：xtquant 的 XtQuantTrader 在
+        # start()/connect() 失败时不会完全回收其内部套接字/线程（第三方库行为，
+        # 我们已调用 stop() 但无法保证其内部释放）。一旦系统报套接字资源耗尽，
+        # 继续重试既徒劳（资源没了必然再失败）又会加剧泄漏，把自己越锁越死——
+        # 必须立刻停止高频重试、退到最长间隔，并强告警要求人工重启虚拟机。
+        if _is_socket_resource_exhausted(_LAST_QMT_ERROR_TEXT):
+            log.error(
+                "🛑 QMT启动门禁：检测到系统套接字资源耗尽（WinError 10055 等）。"
+                "继续重试无意义且会加剧泄漏，已退到%d秒最长间隔。"
+                "【必须人工处理】重启虚拟机以回收资源，再登录QMT、启动daemon。",
+                _EXHAUSTED_WAIT_SEC,
+            )
+            _notify_once_per(
+                "qmt_socket_exhausted", 1800,
+                "🛑 系统资源耗尽，需重启虚拟机",
+                "QMT连接报套接字资源耗尽(WinError 10055)，程序已停止高频重试。"
+                "请【重启虚拟机】回收资源→登录QMT→启动daemon。持仓到期请用手机App手动平仓。",
+                level="critical", call=True,
+            )
+            wait_sec = _EXHAUSTED_WAIT_SEC
         log.error("QMT启动门禁：账户连接未验证成功，%d秒后继续重试；不会进入启动检查和任务调度。"
-                  "（长时间不通请检查QMT是否登录；本进程已退避，不会耗尽套接字资源）", wait_sec)
+                  "（长时间不通请检查QMT是否登录）", wait_sec)
         time.sleep(wait_sec)
 
 
