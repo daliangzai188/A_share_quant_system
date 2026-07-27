@@ -10,7 +10,7 @@ PROJECT_ROOT = Path(__file__).absolute().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.qmt_adapter import QMTBrokerAdapter
+from src.qmt_adapter import QMTBrokerAdapter, mask_account_id
 from src.utils.config import load_json_config
 
 
@@ -35,7 +35,7 @@ def main() -> int:
         positions = adapter.query_positions()
         payload = {
             "ok": True,
-            "account_id": account.account_id,
+            "account_id": mask_account_id(account.account_id),
             "available_cash": account.available_cash,
             "position_count": len(positions or []),
             "qmt_path": getattr(adapter, "_active_qmt_path", ""),

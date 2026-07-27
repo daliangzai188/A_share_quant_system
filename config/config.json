@@ -100,6 +100,16 @@
       -30
     ]
   },
+  "broker_recovery": {
+    "file_role": "券商维护与进程自愈配置。账户持续不可用时告警；daemon退出或假死时自动拉起；快速崩溃达到上限后改为低频永久重试，不会永久放弃；恢复通知必须同时通过当前PID的程序心跳和账户查询验证。",
+    "check_interval_sec": 30,
+    "outage_alert_after_sec": 120,
+    "heartbeat_stale_sec": 900,
+    "startup_heartbeat_grace_sec": 300,
+    "max_fast_restarts": 5,
+    "stable_alive_sec": 120,
+    "crash_loop_retry_sec": 600
+  },
   "broker": {
     "file_role": "券商连接配置。默认关闭，只用于 QMT / miniQMT 只读检查、实盘预览和后续真实下单。",
     "enabled": true,

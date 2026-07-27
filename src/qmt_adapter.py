@@ -32,6 +32,13 @@ def qmt_to_tushare_code(code: str) -> str:
     return str(code).strip().upper()
 
 
+def mask_account_id(account_id: str) -> str:
+    """券商账号日志脱敏：只保留后两位，禁止完整账号进入日志/诊断输出。"""
+
+    value = str(account_id or "")
+    return f"****{value[-2:]}" if len(value) >= 2 else f"****{value}"
+
+
 # QMT/xtquant 委托状态码（xtconstant.ORDER_*）
 _ORDER_STATUS_TEXT: dict[int, str] = {
     48: "未报",
@@ -236,7 +243,7 @@ class QMTBrokerAdapter(BrokerAdapter):
                         self.logger.debug("QMT 账户订阅结果: %s", subscribe_result)
                     self.logger.info(
                         "QMT 已连接: account_id=%s qmt_path=%s session_id=%s",
-                        self.config.account_id,
+                        mask_account_id(self.config.account_id),
                         qmt_path,
                         session_id,
                     )

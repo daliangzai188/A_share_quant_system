@@ -5,7 +5,7 @@
   1. Windows 设置→Windows更新→检查并安装全部更新→立即重启
   2. 重启后:登录 QMT(独立交易)
   3. PowerShell: cd C:\\A_System; py -3.11 start_windows.py
-  4. 确认手机收到"账户连接成功"Bark 推送
+  4. 确认手机收到"程序与账户已恢复正常"Bark 推送
 launchd: com.asystem.maintenance (StartCalendarInterval 周六10:00)
 """
 import datetime
@@ -31,7 +31,7 @@ def main() -> None:
         "5分钟维护清单:①Windows更新→装完→立即重启 "
         "②重启后登录QMT(独立交易) "
         "③PowerShell: cd C:\\A_System 后 py -3.11 start_windows.py "
-        "④确认收到'账户连接成功'推送。完成后本月不用再管。"
+        "④确认收到'程序与账户已恢复正常'推送。完成后本月不用再管。"
     )
     try:
         urllib.request.urlopen(f"{url}/{title}/{body}?group=A股实盘", timeout=20)

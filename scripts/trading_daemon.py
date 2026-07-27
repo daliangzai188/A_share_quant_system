@@ -100,6 +100,24 @@ def _notify_async(event: str, title: str, body: str = "", *, level: str = "activ
     ).start()
 
 
+SYSTEM_READY_TITLE = "✅ 程序与账户已恢复正常"
+SYSTEM_READY_BODY = (
+    "daemon 调度心跳正常，当前进程已成功查询QMT账户与持仓；"
+    "交易任务已恢复正常执行，无需人工干预。"
+)
+
+
+def _publish_system_ready() -> None:
+    """调度器与账户门禁均就绪后，写心跳并发送唯一的启动/恢复成功通知。"""
+    write_heartbeat("running")
+    _notify_async(
+        "connection",
+        SYSTEM_READY_TITLE,
+        SYSTEM_READY_BODY,
+        level="timeSensitive",
+    )
+
+
 def _mask_account(account_id: str) -> str:
     """账号脱敏：前缀4星号 + 后2位。"""
     acct = str(account_id or "")
@@ -312,6 +330,7 @@ EXIT_EXECUTION_STATE_FILE = (
     PROJECT_ROOT / "data" / "processed" / "exit_execution_state.json"
 )
 HEARTBEAT_FILE = PROJECT_ROOT / "logs" / "daemon_heartbeat.txt"
+BROKER_HEALTH_FILE = PROJECT_ROOT / "logs" / "broker_health.json"
 D_MONITOR_PID_FILE = PROJECT_ROOT / "logs" / "strategy_d_monitor.pid"
 QMT_LAST_SUCCESS_FILE = PROJECT_ROOT / "logs" / "qmt_last_success.json"
 CALENDAR_STALE_WARNED: set[str] = set()
@@ -379,11 +398,51 @@ def is_strategy_model3_mode() -> bool:
 def write_heartbeat(status: str = "running") -> None:
     try:
         HEARTBEAT_FILE.write_text(
-            f"{now_beijing().isoformat()} {status}\n",
+            f"{now_beijing().isoformat()} pid={os.getpid()} {status}\n",
             encoding="utf-8",
         )
     except Exception:
         pass
+
+
+def write_broker_health(
+    status: str,
+    *,
+    account_id: str = "",
+    error: Any = "",
+    failure_count: int = 0,
+) -> None:
+    """原子写入账户连接健康状态，供外层 keeper 做真实恢复判定。
+
+    daemon 心跳只证明 Python 进程还活着，不能证明 QMT 账户可查询。这里单独记录
+    当前进程 PID、账户查询结果与更新时间，keeper 只有在 PID 匹配且 status=verified
+    时才允许发送“程序与账户均恢复”通知，避免沿用上个进程的成功状态产生假恢复。
+    """
+    try:
+        mkdir_p(BROKER_HEALTH_FILE.parent)
+        error_text = " ".join(str(error or "").split())[:500]
+        payload = {
+            "updated_at": now_beijing().isoformat(),
+            "updated_ts": time.time(),
+            "pid": os.getpid(),
+            "status": str(status or "unknown"),
+            "account": _mask_account(account_id) if account_id else "",
+            "failure_count": max(0, int(failure_count or 0)),
+            "error": error_text,
+        }
+        temp_path = BROKER_HEALTH_FILE.with_name(
+            f"{BROKER_HEALTH_FILE.name}.{os.getpid()}.tmp"
+        )
+        temp_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        os.replace(temp_path, BROKER_HEALTH_FILE)
+    except Exception as exc:  # noqa: BLE001
+        try:
+            logger().warning("写入QMT账户健康状态失败（不影响交易主流程）：%s", exc)
+        except Exception:
+            pass
 
 
 def post_market_marker_path(date: datetime.date) -> Path:
@@ -10286,7 +10345,7 @@ def _load_qmt_last_success() -> dict[str, Any]:
     return {}
 
 
-def _save_qmt_last_success(*, qmt_path: str, session_id: str, account_id: str = "") -> None:
+def _save_qmt_last_success(*, qmt_path: str, session_id: str) -> None:
     try:
         if not qmt_path or not session_id:
             return
@@ -10296,7 +10355,6 @@ def _save_qmt_last_success(*, qmt_path: str, session_id: str, account_id: str = 
                 {
                     "qmt_path": str(qmt_path),
                     "session_id": str(session_id),
-                    "account_id": str(account_id),
                     "verified_at": now_beijing().isoformat(),
                 },
                 ensure_ascii=False,
@@ -10438,7 +10496,6 @@ def _qmt_connect(broker_config: dict, *, allow_full_scan: bool | None = None) ->
             _save_qmt_last_success(
                 qmt_path=str(getattr(adapter, "_active_qmt_path", "")),
                 session_id=str(getattr(adapter, "_active_session_id", "")),
-                account_id=str(getattr(getattr(adapter, "config", None), "account_id", "")),
             )
             return adapter
         except Exception as exc:
@@ -10734,10 +10791,12 @@ def _print_account_status(log: Any) -> None:
         qmt_on = (config.get("broker_adapter_enabled") and config.get("qmt_enabled")
                   and config.get("broker", {}).get("enabled"))
         if not qmt_on:
+            write_broker_health("disabled")
             log.info("✅ [账户] %s | 程序正常 | QMT未启用", now_str)
             return
         broker_cfg = config.get("broker", {})
     except Exception as e:
+        write_broker_health("unavailable", error=f"读取配置失败：{e}")
         log.error("❌ 读取配置失败：%s", e)
         return
 
@@ -10765,6 +10824,11 @@ def _print_account_status(log: Any) -> None:
         except Exception as first_err:
             _qmt_reset()
             _qmt_reconnect_count += 1
+            write_broker_health(
+                "unavailable",
+                error=first_err,
+                failure_count=_qmt_reconnect_count,
+            )
             critical_window = qmt_is_critical_window()
             last_ok = _qmt_last_verified_at or "本轮启动后尚未验证成功"
             if not critical_window and _qmt_reconnect_count < 3:
@@ -10820,6 +10884,11 @@ def _print_account_status(log: Any) -> None:
                     _notify("connection", "✅ 账户重连成功", "QMT连接已恢复正常。")
                 _qmt_reconnect_count = 0
             except Exception as retry_err:
+                write_broker_health(
+                    "unavailable",
+                    error=retry_err,
+                    failure_count=_qmt_reconnect_count,
+                )
                 if critical_window:
                     log.warning("⚠️ QMT重连失败（第%d次），等待下次重试：%s",
                                 _qmt_reconnect_count, retry_err)
@@ -10835,6 +10904,7 @@ def _print_account_status(log: Any) -> None:
 
     now_str = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
     acct_id = str(account.account_id or "")
+    write_broker_health("verified", account_id=acct_id)
     masked_acct = f"****{acct_id[-2:]}" if len(acct_id) >= 2 else f"****{acct_id}"
     total_asset = float(getattr(account, "total_asset", 0.0) or 0.0)
     _check_capacity_wall_milestone(total_asset, config, log)
@@ -11007,20 +11077,17 @@ def check_qmt_connection(*, allow_full_scan: bool | None = None) -> bool:
         _qmt_reconnect_count = 0
         log.info(
             "✅ QMT连接成功且账户已验证：账户 %s，可用资金 %.0f 元（主进程持久连接，path=%s session=%s）",
-            account_id,
+            _mask_account(account_id),
             available_cash,
             getattr(adapter, "_active_qmt_path", ""),
             getattr(adapter, "_active_session_id", ""),
         )
-        _notify_async(
-            "connection",
-            "✅ 账户连接成功",
-            f"守护进程启动就绪，QMT主连接已建立，账户{_mask_account(account_id)}。",
-        )
+        write_broker_health("verified", account_id=account_id)
         return True
     except Exception as e:
         global _LAST_QMT_ERROR_TEXT
         _LAST_QMT_ERROR_TEXT = str(e)   # 供门禁判断是否为套接字资源耗尽
+        write_broker_health("unavailable", error=e)
         log.error("❌ QMT主连接验证失败：%s", e)
         try:
             with _qmt_lock:
@@ -11034,9 +11101,8 @@ def check_qmt_connection(*, allow_full_scan: bool | None = None) -> bool:
             gc.collect()
         except Exception:
             pass
-        _notify_async("system_error", "❌ QMT启动连接异常",
-                      "守护进程启动连接QMT时发生异常，实盘功能不可用，请立即检查。",
-                      level="critical", call=True)
+        # 启动门禁会持续重试；外层 keeper 仅在连续不可用达到配置阈值后统一告警，
+        # 避免一次瞬时握手失败就发送维护误报，也避免 daemon/keeper 双重重复通知。
         return False
 
 
@@ -11067,15 +11133,6 @@ def wait_for_qmt_startup_gate() -> None:
                  round_no, "全量扫描" if allow_full_scan else "仅首选session", wait_sec)
         if check_qmt_connection(allow_full_scan=allow_full_scan):
             log.info("QMT启动门禁：账户连接已验证，继续启动流程。")
-            if round_no > 1:
-                # 曾经失败过才推"恢复"通知：券商维护/终端掉线结束后，明确告诉用户
-                # 程序已自动接上、账户可用，不必再守着（2026-07-27 用户要求）。
-                _notify(
-                    "connection", "✅ QMT已恢复，程序自动接管",
-                    f"经过{round_no}轮重试后连接成功，账户与持仓已验证，"
-                    f"交易任务恢复正常调度。",
-                    level="timeSensitive",
-                )
             return
         write_heartbeat("qmt_blocked")
         # 资源耗尽自锁检测（2026-07-27 事故根治）：xtquant 的 XtQuantTrader 在
@@ -11098,6 +11155,11 @@ def wait_for_qmt_startup_gate() -> None:
                 "（资源清零后继续重连）。若持续未恢复，请检查QMT是否登录；"
                 "持仓到期时如程序仍未恢复，请用手机App手动平仓。",
                 level="timeSensitive",
+            )
+            write_broker_health(
+                "restarting",
+                error=_LAST_QMT_ERROR_TEXT,
+                failure_count=round_no,
             )
             write_heartbeat("qmt_exhausted_restarting")
             time.sleep(3)
@@ -11123,12 +11185,15 @@ def main() -> None:
     setup()
     log = logger()
     log.info("A_System 守护进程启动（PID %d）", os.getpid() if (os := __import__("os")) else 0)
+    # 启动即覆盖上个进程遗留的 verified，防 keeper 在本进程尚未验证账户时误报恢复。
+    write_broker_health("starting")
 
     def _exit(signum, _frame):
         log.info("收到信号 %d，退出", signum)
         _notify("system_error", "🔌 守护进程已停止",
                 "守护进程被主动停止，实盘自动交易已暂停。如需恢复请重新启动。")
         stop_strategy_d_monitor("主守护进程退出")
+        write_broker_health("stopped")
         write_heartbeat("stopped")
         sys.exit(0)
 
@@ -11255,6 +11320,10 @@ def main() -> None:
             log.error("启动补检D策略异常：%s", e)
     else:
         log.info("启动补检：已有持仓，跳过D监控/E2延迟开仓补启动。")
+
+    # 到这里才代表账户门禁、启动持仓核对、任务线程和补检全部完成。
+    # 统一在“程序调度+账户查询”双就绪后通知；不再在QMT刚握手成功时提前通知。
+    _publish_system_ready()
 
     # ── 主循环 ────────────────────────────────────────────────────────────────
     while True:

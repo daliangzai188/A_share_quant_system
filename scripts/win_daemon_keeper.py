@@ -15,11 +15,14 @@
 """
 from __future__ import annotations
 
+import json
+import logging
 import os
 import subprocess
 import sys
 import time
 from datetime import datetime, timedelta, timezone
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -28,37 +31,109 @@ PID_FILE = PROJECT_ROOT / ".daemon_pid"
 # 否则用户按老习惯只停 daemon，keeper 会在 30 秒内把它拉回来（2026-07-27）。
 KEEPER_PID_FILE = PROJECT_ROOT / ".keeper_pid"
 HEARTBEAT = PROJECT_ROOT / "logs" / "daemon_heartbeat.txt"
+BROKER_HEALTH = PROJECT_ROOT / "logs" / "broker_health.json"
+KEEPER_LOG = PROJECT_ROOT / "logs" / "win_daemon_keeper.log"
 START_SCRIPT = PROJECT_ROOT / "start_windows.py"
 BEIJING = timezone(timedelta(hours=8))
 
-CHECK_INTERVAL = 30          # 检查间隔（秒）
-STALE_LIMIT = 15 * 60        # 心跳陈旧阈值：超过视为假死，重启
-BLOCKED_ALERT_AFTER = 10 * 60  # qmt_blocked 持续多久后告警（券商维护通知）
 
-# 防无限重启：daemon 若因配置错/依赖坏/磁盘满等原因“一启动就崩”，无脑每 30 秒拉起
-# 会刷屏、掩盖真实故障。连续 N 次拉起后仍活不过 MIN_ALIVE_SEC，即判定为持续崩溃，
-# 停止自动拉起并强告警，交人工处理（券商维护那种“进程活着只是连不上”不受影响）。
-MAX_CONSECUTIVE_RESTARTS = 5
-MIN_ALIVE_SEC = 120          # 拉起后至少活这么久，才算一次“有效启动”
+def _load_recovery_settings() -> dict:
+    try:
+        config_path = PROJECT_ROOT / "config" / "config.json"
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        settings = config.get("broker_recovery", {})
+        return settings if isinstance(settings, dict) else {}
+    except Exception:
+        return {}
+
+
+def _positive_int(settings: dict, key: str, default: int, minimum: int) -> int:
+    try:
+        return max(minimum, int(settings.get(key, default)))
+    except (TypeError, ValueError):
+        return default
+
+
+_RECOVERY_SETTINGS = _load_recovery_settings()
+CHECK_INTERVAL = _positive_int(_RECOVERY_SETTINGS, "check_interval_sec", 30, 5)
+STALE_LIMIT = _positive_int(_RECOVERY_SETTINGS, "heartbeat_stale_sec", 15 * 60, 60)
+BLOCKED_ALERT_AFTER = _positive_int(
+    _RECOVERY_SETTINGS, "outage_alert_after_sec", 2 * 60, 30
+)
+
+# 防重启风暴：daemon 若因配置错/依赖坏/磁盘满等原因“一启动就崩”，不能每30秒
+# 无限拉起。前 N 次快速拉起，之后降为低频永久重试并告警；不会永久放弃自愈。
+MAX_CONSECUTIVE_RESTARTS = _positive_int(
+    _RECOVERY_SETTINGS, "max_fast_restarts", 5, 1
+)
+MIN_ALIVE_SEC = _positive_int(_RECOVERY_SETTINGS, "stable_alive_sec", 120, 30)
+CRASH_LOOP_RETRY_SEC = _positive_int(
+    _RECOVERY_SETTINGS, "crash_loop_retry_sec", 10 * 60, 60
+)
+STARTUP_HEARTBEAT_GRACE_SEC = _positive_int(
+    _RECOVERY_SETTINGS, "startup_heartbeat_grace_sec", 5 * 60, 60
+)
+HEALTHY_PROGRAM_STATES = {"running", "sleeping"}
+BROKER_UNAVAILABLE_STATES = {"unavailable", "restarting"}
 
 
 def now() -> str:
     return datetime.now(BEIJING).strftime("%Y-%m-%d %H:%M:%S")
 
 
+_file_logger: logging.Logger | None = None
+
+
+def _get_file_logger() -> logging.Logger:
+    global _file_logger
+    if _file_logger is not None:
+        return _file_logger
+    KEEPER_LOG.parent.mkdir(parents=True, exist_ok=True)
+    file_logger = logging.getLogger("win_daemon_keeper")
+    file_logger.setLevel(logging.INFO)
+    file_logger.propagate = False
+    if not file_logger.handlers:
+        handler = RotatingFileHandler(
+            KEEPER_LOG,
+            maxBytes=5 * 1024 * 1024,
+            backupCount=3,
+            encoding="utf-8",
+        )
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        file_logger.addHandler(handler)
+    _file_logger = file_logger
+    return file_logger
+
+
 def log(msg: str) -> None:
-    print(f"{now()} | [keeper] {msg}", flush=True)
+    line = f"{now()} | [keeper] {msg}"
+    print(line, flush=True)
+    try:
+        _get_file_logger().info(line)
+    except Exception:
+        pass
 
 
-def notify(title: str, body: str, level: str = "active") -> None:
+def notify(
+    title: str,
+    body: str,
+    level: str = "active",
+    *,
+    event: str = "system_error",
+) -> bool:
     """走项目自带的 Bark 通道；失败不影响守护主逻辑。"""
     try:
         sys.path.insert(0, str(PROJECT_ROOT))
         from src.notify import notify as _n
-        _n("system_error", title, body, level=level)
-        log(f"已推送：{title}")
+        sent = bool(_n(event, title, body, level=level))
+        if sent:
+            log(f"已推送：{title}")
+        else:
+            log(f"推送未成功，后续状态轮询会按需重试：{title}")
+        return sent
     except Exception as exc:  # noqa: BLE001
         log(f"推送失败（不影响守护）：{exc}")
+        return False
 
 
 def read_pid() -> int | None:
@@ -91,21 +166,81 @@ def pid_alive(pid: int) -> bool:
         k32.CloseHandle(h)
 
 
-def heartbeat_state() -> tuple[str, float]:
-    """返回 (状态标记, 心跳年龄秒)。读不到时返回 ('', 极大值)。"""
+def heartbeat_state() -> tuple[str, float, int | None]:
+    """返回 (状态标记, 心跳年龄秒, 写入心跳的daemon PID)。"""
     try:
         text = HEARTBEAT.read_text(encoding="utf-8").strip()
         age = time.time() - HEARTBEAT.stat().st_mtime
-        state = text.split()[-1] if text else ""
-        return state, age
+        parts = text.split()
+        state = parts[-1] if parts else ""
+        heartbeat_pid = None
+        for part in parts:
+            if part.startswith("pid=") and part[4:].isdigit():
+                heartbeat_pid = int(part[4:])
+                break
+        return state, age, heartbeat_pid
     except Exception:
-        return "", float("inf")
+        return "", float("inf"), None
 
 
-def start_daemon() -> None:
+def broker_health_state(expected_pid: int | None) -> tuple[str, float, bool]:
+    """返回 (账户状态, 状态年龄秒, 是否属于当前 daemon PID)。"""
+    try:
+        payload = json.loads(BROKER_HEALTH.read_text(encoding="utf-8"))
+        status = str(payload.get("status", "") or "")
+        updated_ts = float(payload.get("updated_ts", 0.0) or 0.0)
+        age = max(0.0, time.time() - updated_ts) if updated_ts > 0 else (
+            time.time() - BROKER_HEALTH.stat().st_mtime
+        )
+        health_pid = int(payload.get("pid", 0) or 0)
+        same_process = bool(expected_pid and health_pid == int(expected_pid))
+        return status, age, same_process
+    except Exception:
+        return "", float("inf"), False
+
+
+def program_and_account_ready(
+    *,
+    program_state: str,
+    heartbeat_age: float,
+    heartbeat_same_process: bool,
+    broker_state: str,
+    broker_same_process: bool,
+) -> bool:
+    """恢复通知的唯一门禁：进程调度已运行，且本进程真实查过账户。"""
+    return (
+        program_state in HEALTHY_PROGRAM_STATES
+        and heartbeat_age <= STALE_LIMIT
+        and heartbeat_same_process
+        and broker_same_process
+        and broker_state == "verified"
+    )
+
+
+def restart_delay_seconds(attempt_no: int) -> int:
+    """快速重启额度用尽后降频，但任意次数都仍返回下一次重试间隔。"""
+    if int(attempt_no) > MAX_CONSECUTIVE_RESTARTS:
+        return CRASH_LOOP_RETRY_SEC
+    return CHECK_INTERVAL
+
+
+def start_daemon() -> bool:
     log("拉起 daemon ...")
-    subprocess.run([sys.executable, str(START_SCRIPT), "--no-tail"],
-                   cwd=str(PROJECT_ROOT), check=False)
+    try:
+        result = subprocess.run(
+            [sys.executable, str(START_SCRIPT), "--no-tail"],
+            cwd=str(PROJECT_ROOT),
+            check=False,
+            timeout=120,
+        )
+        if result.returncode == 0:
+            return True
+        log(f"start_windows.py 返回 {result.returncode}，本轮拉起未确认成功。")
+    except subprocess.TimeoutExpired:
+        log("start_windows.py 运行超过120秒，放弃本轮并等待下次守护重试。")
+    except Exception as exc:  # noqa: BLE001
+        log(f"拉起 daemon 异常（会继续重试）：{exc}")
+    return False
 
 
 def main() -> None:
@@ -118,42 +253,39 @@ def main() -> None:
     was_down = False
     consecutive_restarts = 0     # 连续"拉起后很快又死"的次数
     last_start_ts = 0.0
-    giving_up = False            # 判定持续崩溃后停止自动拉起
+    next_restart_not_before = 0.0
+    crash_loop_alerted = False
+    observed_pid: int | None = None
+    observed_pid_since = 0.0
 
     while True:
         try:
             pid = read_pid()
             alive = bool(pid and pid_alive(pid))
-            state, age = heartbeat_state()
+            state, age, heartbeat_pid = heartbeat_state()
 
             # ── 1. 进程不在 → 拉起（含资源耗尽自退、崩溃、被误杀）──
             if not alive:
-                # 已判定持续崩溃：直接静默等待人工介入。必须放在计数之前——否则
-                # 放弃后 last_start_ts 不再更新，时间一长 (now-last_start) 会超过
-                # MIN_ALIVE_SEC 而走到 else 把计数重置为 1，导致周期性无限重启
-                # （2026-07-27 推演测试实测：10 轮里拉起了 7 次，防护形同虚设）。
-                if giving_up:
+                observed_pid = None
+                observed_pid_since = 0.0
+                now_ts = time.time()
+                if now_ts < next_restart_not_before:
                     time.sleep(CHECK_INTERVAL)
                     continue
 
-                # 上次拉起后活了多久？活不过 MIN_ALIVE_SEC 视为"启动即崩"。
-                if last_start_ts and (time.time() - last_start_ts) < MIN_ALIVE_SEC:
-                    consecutive_restarts += 1
-                else:
-                    consecutive_restarts = 1
+                consecutive_restarts += 1
 
                 if consecutive_restarts > MAX_CONSECUTIVE_RESTARTS:
-                    giving_up = True
-                    log(f"连续 {consecutive_restarts} 次拉起后仍在 {MIN_ALIVE_SEC}s 内退出，"
-                        f"判定持续崩溃，停止自动拉起。")
-                    notify("🛑 daemon 持续崩溃，已停止自动拉起",
-                           f"连续 {consecutive_restarts} 次启动后都在 {MIN_ALIVE_SEC} 秒内退出，"
-                           f"说明不是临时故障（常见：配置错误、依赖损坏、磁盘满）。"
-                           f"守护器已停止自动重启以免掩盖问题，请人工查看 "
-                           f"logs/trading_daemon.log。持仓到期请用手机App手动平仓。",
-                           level="critical")
-                    time.sleep(CHECK_INTERVAL)
-                    continue
+                    if not crash_loop_alerted:
+                        crash_loop_alerted = notify(
+                            "🛑 daemon 持续崩溃，已转为低频永久重试",
+                            f"连续 {consecutive_restarts - 1} 次快速启动均未稳定运行 "
+                            f"{MIN_ALIVE_SEC} 秒。常见原因：配置错误、依赖损坏、磁盘满或QMT资源异常。"
+                            f"为避免重启风暴，现改为每 {CRASH_LOOP_RETRY_SEC // 60} 分钟拉起一次，"
+                            f"不会永久停止；请人工查看 logs/trading_daemon.log。"
+                            f"持仓到期时如仍未恢复，请用手机App手动平仓。",
+                            level="timeSensitive",
+                        )
 
                 log(f"daemon 不在运行（pid={pid}），准备拉起（第{consecutive_restarts}次）。")
                 if not was_down:
@@ -162,51 +294,95 @@ def main() -> None:
                            "检测到守护进程不在运行（可能是资源耗尽自愈退出或异常崩溃），"
                            "守护器正在启动全新进程。恢复后会再次通知。",
                            level="timeSensitive")
-                start_daemon()
-                last_start_ts = time.time()
+                started = start_daemon()
+                if started:
+                    last_start_ts = time.time()
+                retry_delay = restart_delay_seconds(consecutive_restarts)
+                next_restart_not_before = time.time() + retry_delay
                 time.sleep(CHECK_INTERVAL)
                 continue
+
+            if pid != observed_pid:
+                observed_pid = pid
+                observed_pid_since = time.time()
+            heartbeat_same_process = bool(pid and heartbeat_pid == pid)
 
             # ── 2. 心跳陈旧 → 假死，强制重启 ──
-            if age > STALE_LIMIT:
-                log(f"心跳陈旧 {age/60:.1f} 分钟，判定假死，重启 daemon。")
+            if age > STALE_LIMIT or not heartbeat_same_process:
+                if time.time() - observed_pid_since < STARTUP_HEARTBEAT_GRACE_SEC:
+                    log(
+                        f"新 daemon PID {pid} 尚无本进程心跳，处于"
+                        f"{STARTUP_HEARTBEAT_GRACE_SEC // 60}分钟启动宽限内，暂不误杀。"
+                    )
+                    time.sleep(CHECK_INTERVAL)
+                    continue
+                stale_desc = (
+                    f"心跳陈旧 {age/60:.1f} 分钟"
+                    if age > STALE_LIMIT
+                    else f"心跳仍属于旧PID {heartbeat_pid}"
+                )
+                log(f"{stale_desc}，判定假死，重启 daemon。")
                 notify("⚠️ daemon 假死，守护器强制重启",
-                       f"心跳已 {age/60:.0f} 分钟未更新，守护器将重启守护进程。",
+                       f"{stale_desc}，守护器将重启守护进程。",
                        level="timeSensitive")
-                subprocess.run([sys.executable, str(PROJECT_ROOT / "stop_windows.py")],
-                               cwd=str(PROJECT_ROOT), check=False)
-                time.sleep(3)
-                start_daemon()
+                # 不能调用 stop_windows.py：它会先停止 keeper 自己，导致执行不到后续拉起。
+                # start_windows.py --no-tail 会只清理旧 daemon/D 子进程，保留当前 keeper。
                 was_down = True
+                consecutive_restarts += 1
+                if start_daemon():
+                    last_start_ts = time.time()
+                next_restart_not_before = time.time() + CHECK_INTERVAL
                 time.sleep(CHECK_INTERVAL)
                 continue
 
+            # daemon 进程已稳定存活，清空进程级崩溃计数；账户仍可独立保持 unavailable。
+            if last_start_ts and (time.time() - last_start_ts) >= MIN_ALIVE_SEC:
+                consecutive_restarts = 0
+                next_restart_not_before = 0.0
+                crash_loop_alerted = False
+                last_start_ts = 0.0
+
+            broker_state, _broker_age, broker_same_process = broker_health_state(pid)
+            account_unavailable = (
+                broker_same_process and broker_state in BROKER_UNAVAILABLE_STATES
+            )
+
             # ── 3. QMT 长时间连不上 → 通知（券商维护/终端未登录）──
-            if state == "qmt_blocked":
+            if state == "qmt_blocked" or account_unavailable:
                 if blocked_since is None:
                     blocked_since = time.time()
                 elif (not alerted_blocked) and time.time() - blocked_since >= BLOCKED_ALERT_AFTER:
-                    alerted_blocked = True
-                    notify("⚠️ QMT 持续连不上，交易任务暂停",
-                           f"daemon 已阻塞 {BLOCKED_ALERT_AFTER//60} 分钟以上（常见原因：券商周末维护、"
-                           f"QMT 终端未登录）。程序会持续重试，恢复后自动接管并通知。"
-                           f"若临近持仓到期仍未恢复，请用手机App手动平仓。",
-                           level="timeSensitive")
-            else:
-                # ── 4. 从阻塞/宕机恢复 → 通知一次 ──
+                    alerted_blocked = notify(
+                        "⚠️ QMT 持续连不上，交易任务暂停",
+                        f"账户已连续 {BLOCKED_ALERT_AFTER // 60} 分钟以上无法完成查询验证"
+                        f"（常见原因：券商周末维护、QMT终端未登录）。"
+                        f"程序会持续重连；若进程异常则自动重启，恢复后会再次通知。"
+                        f"若临近持仓到期仍未恢复，请用手机App手动平仓。",
+                        level="timeSensitive",
+                        event="connection",
+                    )
+            elif program_and_account_ready(
+                program_state=state,
+                heartbeat_age=age,
+                heartbeat_same_process=heartbeat_same_process,
+                broker_state=broker_state,
+                broker_same_process=broker_same_process,
+            ):
+                # ── 4. 从阻塞/宕机恢复 → 进程+账户双验证后通知一次 ──
                 if alerted_blocked or was_down:
-                    notify("✅ 程序与账户已恢复正常",
-                           f"daemon 运行中，QMT 连接与账户状态正常（心跳状态：{state or '正常'}）。"
-                           f"交易任务已恢复调度，无需人工干预。",
-                           level="timeSensitive")
+                    recovery_sent = notify(
+                        "✅ 程序与账户已恢复正常",
+                        "daemon 调度心跳正常，当前进程已成功查询QMT账户与持仓；"
+                        "交易任务已恢复正常执行，无需人工干预。",
+                        level="timeSensitive",
+                        event="connection",
+                    )
+                    if not recovery_sent:
+                        time.sleep(CHECK_INTERVAL)
+                        continue
                 blocked_since = None
                 alerted_blocked = False
                 was_down = False
-                # daemon 稳定运行超过 MIN_ALIVE_SEC → 本轮故障已过去，清零崩溃计数，
-                # 让后续真正的临时故障仍能享受自动拉起（否则计数残留会提前触发放弃）。
-                if last_start_ts and (time.time() - last_start_ts) >= MIN_ALIVE_SEC:
-                    consecutive_restarts = 0
-                    giving_up = False
 
             time.sleep(CHECK_INTERVAL)
         except KeyboardInterrupt:
