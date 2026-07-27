@@ -11005,18 +11005,28 @@ def wait_for_qmt_startup_gate() -> None:
     round_no = 0
     while True:
         round_no += 1
-        log.info("QMT启动门禁：第%d轮验证账户连接，验证成功前不执行启动检查/下次任务。", round_no)
-        # 第1轮就允许全量扫描：缓存 session 在刚 stop 旧 daemon 后常被占用（connect=-1），
-        # 若第1轮只试缓存必然失败，白白多花“一整轮 + sleep 10s + 一条误告警”。
-        # 全量扫描本身仍是“缓存 preferred 优先，失败才 fallback 扫描”：
-        # 缓存可用时 preferred 秒连、速度不变；缓存坏时同一轮内直接扫到可用 session。
-        allow_full_scan = True
+        # 退避策略（2026-07-27 事故修复）：QMT 长时间不可用时，旧实现每 10 秒做一次
+        # 全量扫描（10 个 path/session 组合），38 小时累计 13756 轮 ≈ 13.7 万次 connect，
+        # 把 Windows 套接字资源耗尽（WinError 10055 系统缓冲区/队列已满），导致 QMT
+        # 恢复登录后程序反而连不上，交易日 09:20/09:30 开仓窗口全部空过。
+        #   前 3 轮：全量扫描 + 10 秒（覆盖"刚 stop 旧 daemon、session 被占"的正常场景）
+        #   4~10 轮：只试首选 session + 30 秒（少开套接字，给终端留登录窗口）
+        #   10 轮以后：只试首选 session + 300 秒（QMT 确实不在，纯等待，不再消耗资源）
+        if round_no <= 3:
+            allow_full_scan, wait_sec = True, 10
+        elif round_no <= 10:
+            allow_full_scan, wait_sec = False, 30
+        else:
+            allow_full_scan, wait_sec = False, 300
+        log.info("QMT启动门禁：第%d轮验证账户连接（%s，失败后等%d秒），验证成功前不执行启动检查/下次任务。",
+                 round_no, "全量扫描" if allow_full_scan else "仅首选session", wait_sec)
         if check_qmt_connection(allow_full_scan=allow_full_scan):
             log.info("QMT启动门禁：账户连接已验证，继续启动流程。")
             return
         write_heartbeat("qmt_blocked")
-        log.error("QMT启动门禁：账户连接未验证成功，10秒后继续重试；不会进入启动检查和任务调度。")
-        time.sleep(10)
+        log.error("QMT启动门禁：账户连接未验证成功，%d秒后继续重试；不会进入启动检查和任务调度。"
+                  "（长时间不通请检查QMT是否登录；本进程已退避，不会耗尽套接字资源）", wait_sec)
+        time.sleep(wait_sec)
 
 
 def _should_run_startup_signal_audit(now: datetime.datetime) -> bool:
