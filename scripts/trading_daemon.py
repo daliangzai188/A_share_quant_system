@@ -10584,7 +10584,9 @@ def _sanitize_account_snapshot(account: Any, positions: Any) -> None:
 
 
 _LAST_QMT_ERROR_TEXT = ""
-_EXHAUSTED_WAIT_SEC = 600          # 资源耗尽后的固定长间隔（等人工重启，不再自救）
+# 套接字资源耗尽时的退出码：keeper 见到它就知道"该进程资源被污染，拉起新进程即可自愈"，
+# 与普通崩溃区分（2026-07-27 事故）。
+EXIT_CODE_SOCKET_EXHAUSTED = 87
 _ONCE_PER_STATE: dict[str, float] = {}
 
 # Windows 套接字/句柄资源耗尽类错误码。出现这些说明系统资源已经见底，
@@ -11064,6 +11066,15 @@ def wait_for_qmt_startup_gate() -> None:
                  round_no, "全量扫描" if allow_full_scan else "仅首选session", wait_sec)
         if check_qmt_connection(allow_full_scan=allow_full_scan):
             log.info("QMT启动门禁：账户连接已验证，继续启动流程。")
+            if round_no > 1:
+                # 曾经失败过才推"恢复"通知：券商维护/终端掉线结束后，明确告诉用户
+                # 程序已自动接上、账户可用，不必再守着（2026-07-27 用户要求）。
+                _notify(
+                    "connection", "✅ QMT已恢复，程序自动接管",
+                    f"经过{round_no}轮重试后连接成功，账户与持仓已验证，"
+                    f"交易任务恢复正常调度。",
+                    level="timeSensitive",
+                )
             return
         write_heartbeat("qmt_blocked")
         # 资源耗尽自锁检测（2026-07-27 事故根治）：xtquant 的 XtQuantTrader 在
@@ -11072,20 +11083,24 @@ def wait_for_qmt_startup_gate() -> None:
         # 继续重试既徒劳（资源没了必然再失败）又会加剧泄漏，把自己越锁越死——
         # 必须立刻停止高频重试、退到最长间隔，并强告警要求人工重启虚拟机。
         if _is_socket_resource_exhausted(_LAST_QMT_ERROR_TEXT):
+            # 2026-07-27 实测：套接字资源由本进程持有，进程退出即释放（当天 stop→start
+            # 未重启虚拟机即恢复）。因此不再"退到长间隔干等人工"，而是主动退出，
+            # 由 keeper 拉起全新进程 = 资源清零后继续重试，实现无人值守自愈。
             log.error(
-                "🛑 QMT启动门禁：检测到系统套接字资源耗尽（WinError 10055 等）。"
-                "继续重试无意义且会加剧泄漏，已退到%d秒最长间隔。"
-                "【必须人工处理】重启虚拟机以回收资源，再登录QMT、启动daemon。",
-                _EXHAUSTED_WAIT_SEC,
+                "🛑 QMT启动门禁：检测到套接字资源耗尽（WinError 10055 等）。"
+                "本进程资源已污染，继续重试无意义；主动退出，由 keeper 拉起全新进程自愈。"
             )
             _notify_once_per(
                 "qmt_socket_exhausted", 1800,
-                "🛑 系统资源耗尽，需重启虚拟机",
-                "QMT连接报套接字资源耗尽(WinError 10055)，程序已停止高频重试。"
-                "请【重启虚拟机】回收资源→登录QMT→启动daemon。持仓到期请用手机App手动平仓。",
-                level="critical", call=True,
+                "🔄 资源耗尽，程序自动重启中",
+                "QMT连接报套接字资源耗尽，daemon 主动退出并由守护脚本拉起全新进程"
+                "（资源清零后继续重连）。若持续未恢复，请检查QMT是否登录；"
+                "持仓到期时如程序仍未恢复，请用手机App手动平仓。",
+                level="timeSensitive",
             )
-            wait_sec = _EXHAUSTED_WAIT_SEC
+            write_heartbeat("qmt_exhausted_restarting")
+            time.sleep(3)
+            raise SystemExit(EXIT_CODE_SOCKET_EXHAUSTED)
         log.error("QMT启动门禁：账户连接未验证成功，%d秒后继续重试；不会进入启动检查和任务调度。"
                   "（长时间不通请检查QMT是否登录）", wait_sec)
         time.sleep(wait_sec)

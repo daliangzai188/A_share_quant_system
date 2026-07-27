@@ -17,6 +17,9 @@ if _here.upper().startswith("Z:") or _here.startswith("\\\\"):
 
 sys.stdout.reconfigure(encoding="utf-8")
 full_log = "--full-log" in sys.argv
+# --no-tail：启动 daemon 后立刻返回，不在终端跟随日志。
+# 供 win_daemon_keeper.py 调用——守护器需要 start 调用能立即返回才能继续守护循环。
+no_tail = "--no-tail" in sys.argv
 PROCESS_TERMINATE = 0x0001
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 STILL_ACTIVE = 259
@@ -326,6 +329,11 @@ def should_print_line(text: str) -> bool:
         return False
     return any(word in text for word in important_words)
 
+
+if no_tail:
+    # keeper 调用路径：daemon 已在后台启动，这里立即返回，不进入日志跟随循环。
+    print(f"{timestamp()} | --no-tail：daemon 已启动，不跟随日志，本进程退出。")
+    raise SystemExit(0)
 
 try:
     with open(log, "r", encoding="utf-8", errors="replace") as f:
