@@ -31,7 +31,7 @@
     "exclude_delisting_risk": true,
     "exclude_suspended": true,
     "exclude_market_segments": ["star"],
-    "exclude_market_segments_note": "2026-07-24 起：exclude_bj 权限锁放开（A认证做北交所13笔，风险过滤由A的bj_risk_filter策略规则自动完成，对齐回测）。exclude_market_segments 保留 star——排除科创板是 A/C 策略口径本身（A认证strategy_name=a_clean_plus_exclude_star，科创板0笔），不是权限锁，D/E2 各走自己的 universe 做科创板。用户下周开通北交所权限，权限到位前若命中北交所会废单（ST铁闸+价格自洽拦截+推送兜底，零损失）。注：实盘候选池数据源当前未采北交所行情，光放开此锁尚不生效，数据采集对齐为周末待办。",
+    "exclude_market_segments_note": "2026-07-28 已确认科创板和北交所交易权限全部开通，北交所权限锁保持放开（exclude_bj=false），实盘候选数据已能识别bj。exclude_market_segments保留star：这是A/C认证策略自身的板块规则（strategy_name=a_clean_plus_exclude_star，认证交易中科创板0笔），不是账户权限拦截；D/E2继续按各自认证口径使用科创板。",
     "exclude_bj": false,
     "exclude_chi_next": false,
     "exclude_sh_main": false,
@@ -69,7 +69,7 @@
         "column": "market_segment",
         "operator": "==",
         "value": "star",
-        "description": "排除科创板。"
+        "description": "A/C认证策略排除科创板；这是策略条件，不是账户权限拦截。"
       }
     ],
     "exclude_rules": [

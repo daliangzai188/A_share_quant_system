@@ -4,6 +4,7 @@ import unittest
 import sys
 import datetime
 import copy
+import json
 import os
 import tempfile
 from pathlib import Path
@@ -1551,6 +1552,90 @@ class TransitionLiveOrderGatewayTest(unittest.TestCase):
         self.assertIn("EXCEED_TOTAL_POSITION_PCT", ordinary["reject_reasons"])
         self.assertEqual(transition["validation_status"], "PASS")
         self.assertIn("EXCEED_POSITION_PCT", above_hard_cap["reject_reasons"])
+
+
+class ExchangePermissionGatewayTest(unittest.TestCase):
+    """验证科创板和北交所不会被实盘交易所权限门禁误拦截。"""
+
+    @staticmethod
+    def _gateway() -> LiveOrderGateway:
+        gateway = object.__new__(LiveOrderGateway)
+        gateway.live_config = {
+            "allowed_exchanges": ["SH", "SZ", "BJ"],
+            "max_single_order_amount": 0,
+            "max_position_pct": 0.85,
+            "max_total_position_pct": 0.8,
+            "round_lot_size": 100,
+            "allow_buy": True,
+            "allow_sell": True,
+            "enforce_trading_time": False,
+            "reject_limit_up_buy": False,
+            "reject_limit_down_sell": False,
+            "duplicate_order_check": False,
+            "real_order_enabled": True,
+        }
+        return gateway
+
+    def test_star_and_bse_buy_orders_pass_exchange_permission_gate(self) -> None:
+        """科创板归属SH、北交所归属BJ，两类买单都必须通过交易所许可校验。"""
+        planned_orders = pd.DataFrame([
+            {
+                "side": "BUY",
+                "ts_code": "688146.SH",
+                "name": "测试科创股",
+                "reference_price": 10.0,
+                # 科创板买入至少200股；这里同时验证不会被全局100股整手校验误拒。
+                "round_lot_shares": 200,
+                "planned_amount_by_equity": 2_000.0,
+            },
+            {
+                "side": "BUY",
+                "ts_code": "920001.BJ",
+                "name": "测试北交股",
+                "reference_price": 10.0,
+                "round_lot_shares": 100,
+                "planned_amount_by_equity": 1_000.0,
+            },
+        ])
+        quote_map = {
+            code: SimpleNamespace(
+                last_price=10.0,
+                upper_limit=12.0 if code.endswith(".SH") else 13.0,
+                lower_limit=8.0 if code.endswith(".SH") else 7.0,
+                suspended=False,
+            )
+            for code in planned_orders["ts_code"]
+        }
+
+        preview = self._gateway().validate_planned_orders(
+            planned_orders,
+            account_cash=1_000_000.0,
+            open_orders=[],
+            quote_map=quote_map,
+            positions=[],
+            account_total_asset=1_000_000.0,
+            current_market_value=0.0,
+        )
+
+        self.assertEqual(set(preview["ts_code"]), {"688146.SH", "920001.BJ"})
+        self.assertTrue((preview["validation_status"] == "PASS").all())
+        self.assertFalse(preview["reject_reasons"].str.contains("EXCHANGE_NOT_PERMITTED").any())
+
+    def test_production_config_explicitly_allows_all_enabled_exchanges(self) -> None:
+        """生产配置必须显式允许沪深市场及北交所，D股票池同时覆盖star和bj。"""
+        config_path = trading_daemon.PROJECT_ROOT / "config" / "config.json"
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(
+            set(config["live_trade"]["allowed_exchanges"]),
+            {"SH", "SZ", "BJ"},
+        )
+        self.assertTrue(
+            {"sh_main", "sz_main", "chi_next", "star", "bj"}.issubset(
+                set(config["strategy_d"]["allowed_market_segments"])
+            )
+        )
+        self.assertFalse(bool(config["cleaning"]["exclude_bj"]))
 
 
 class LargeExitForceEligibilityTest(unittest.TestCase):

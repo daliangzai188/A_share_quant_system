@@ -133,6 +133,12 @@
     "default_price_type": "LATEST_PRICE",
     "allow_buy": true,
     "allow_sell": true,
+    "allowed_exchanges": [
+      "SH",
+      "SZ",
+      "BJ"
+    ],
+    "allowed_exchanges_note": "2026-07-28 已确认沪深主板、创业板、科创板和北交所交易权限全部开通。科创板代码后缀为SH，北交所后缀为BJ；此列表只做交易所代码合法性校验，不改变各策略经回测认证的板块筛选条件。",
     "round_lot_size": 100,
     "max_position_pct": 0.85,
     "max_total_position_pct": 0.8,
@@ -211,7 +217,7 @@
     "exit_pov_runway_buffer_note": "跑道冗余系数(2026-07-16扫描定稿1.2):80笔重放1000万损耗1.5=-0.220%/1.2=-0.204%/1.0=-0.190%,1.2免费拿0.016%且实盘另有14:30流速复查+14:45尾段复查双兜底(重放未模拟,实际更安全);1.0再往下压安全垫过薄。35%参与率+动量调节仅再省0.02%,过拟合风险不值,不采用"
   },
   "strategy_d": {
-    "file_role": "策略D首板打板配置。2026-07-24 起纳入科创板(star)与北交所(bj)，对齐回测口径(d_trades含star5笔/bj3笔)——用户下周开通科创板+北交所交易权限，权限到位前若D命中star/bj会被柜台废单(有ST铁闸+下单价自洽拦截+推送兜底，零成交损失)。北交所30%/科创板20%涨停幅度已在monitor_strategy_d_intraday.limit_up_pct正确处理；北交所流动性差、30%一字板买卖滑点大，容量提醒见D单仓300万线。",
+    "file_role": "策略D首板打板配置。2026-07-24 起纳入科创板(star)与北交所(bj)，对齐回测口径(d_trades含star5笔/bj3笔)；2026-07-28 已确认科创板和北交所交易权限开通。北交所30%/科创板20%涨停幅度已在monitor_strategy_d_intraday.limit_up_pct正确处理；北交所流动性差、30%一字板买卖滑点大，容量提醒见D单仓300万线。",
     "allowed_market_segments": [
       "sh_main",
       "sz_main",

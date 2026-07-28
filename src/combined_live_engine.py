@@ -379,8 +379,10 @@ class CombinedLiveEngine:
         retreat = str(signal.get("segment_retreat_state_bucket", ""))
         chain = str(signal.get("market_chain_count_bucket", ""))
         reasons = []
+        # 这是model3-L认证规则，不是券商权限锁。即使科创板权限已开通，
+        # 也必须保留该条件，否则会改变8302x认证样本和策略风险收益口径。
         if segment == "star":
-            reasons.append("market_segment=star被排除")
+            reasons.append("market_segment=star被策略认证规则排除（非权限拦截）")
         if retreat not in {"neutral", "warming_2day"}:
             reasons.append(f"segment_retreat_state_bucket={retreat}不在neutral/warming_2day")
         if chain not in {"8_15", "15_30", "gte_30"}:

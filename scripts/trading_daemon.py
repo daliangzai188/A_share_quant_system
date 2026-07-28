@@ -9864,8 +9864,10 @@ def _model3_l_base_rule_pass_for_log(signal: dict[str, Any]) -> tuple[bool, str]
     retreat = str(signal.get("segment_retreat_state_bucket", ""))
     chain = str(signal.get("market_chain_count_bucket", ""))
     reasons = []
+    # 科创板权限已经开通；这里仍排除star是model3-L认证规则，不是权限锁。
+    # 日志必须明确区分，避免以后因账户权限变化误删策略条件。
     if segment == "star":
-        reasons.append("market_segment=star被排除")
+        reasons.append("market_segment=star被策略认证规则排除（非权限拦截）")
     if retreat not in {"neutral", "warming_2day"}:
         reasons.append(f"segment_retreat_state_bucket={retreat}不在neutral/warming_2day")
     if chain not in {"8_15", "15_30", "gte_30"}:

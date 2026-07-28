@@ -1130,7 +1130,10 @@ class StrategyDMonitor:
         if status_code == 57:
             inference = "柜台返回废单，委托已终止且0成交"
             if segment == "bj":
-                inference += "；该股票属于北交所，若账户未开通北交所权限会直接废单"
+                inference += (
+                    "；账户已确认开通北交所权限，如仍废单应检查柜台返回原因、"
+                    "证券代码格式、价格和申报数量"
+                )
         elif status_code == 54:
             inference = "委托已撤且0成交"
         elif status_code == 53:
