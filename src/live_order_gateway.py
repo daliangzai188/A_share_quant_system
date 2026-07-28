@@ -138,6 +138,8 @@ class LiveOrderGateway:
             "available_cash",
             "total_asset",
             "current_market_value",
+            "transition_full_cash",
+            "effective_total_position_pct",
             "strategy_name",
             "remark",
             "validation_status",
@@ -154,12 +156,16 @@ class LiveOrderGateway:
         positions: list[PositionSnapshot] | None = None,
         account_total_asset: float | None = None,
         current_market_value: float | None = None,
+        transition_full_cash: bool = False,
     ) -> pd.DataFrame:
         rows: list[dict[str, Any]] = []
-        # 0=不限额（仓位由 max_position_pct 接管），>0=单笔限额（元）。
+        # 0=取消固定金额限额（改由普通日80%总仓位/衔接日85%单票硬顶接管）。
         max_order_amount = float(self.live_config.get("max_single_order_amount", 0) or 0)
         max_position_pct = float(self.live_config.get("max_position_pct", 0.8))
         max_total_position_pct = float(self.live_config.get("max_total_position_pct", 0.8))
+        effective_total_position_pct = (
+            max_position_pct if transition_full_cash else max_total_position_pct
+        )
         round_lot_size = int(self.live_config.get("round_lot_size", 100))
         limit_tolerance = float(self.live_config.get("limit_price_tolerance", 0.001))
         default_price_type = str(self.live_config.get("default_price_type", "LATEST_PRICE"))
@@ -219,7 +225,12 @@ class LiveOrderGateway:
                 reject_reasons.append("SELL_VOLUME_NOT_AVAILABLE")
             if side == "BUY" and total_asset > 0 and current_stock_market_value + estimated_amount > total_asset * max_position_pct:
                 reject_reasons.append("EXCEED_POSITION_PCT")
-            if side == "BUY" and total_asset > 0 and market_value + estimated_amount > total_asset * max_total_position_pct:
+            if (
+                side == "BUY"
+                and total_asset > 0
+                and market_value + estimated_amount
+                > total_asset * effective_total_position_pct
+            ):
                 reject_reasons.append("EXCEED_TOTAL_POSITION_PCT")
             if side == "BUY" and estimated_amount > account_cash:
                 reject_reasons.append("INSUFFICIENT_CASH")
@@ -250,6 +261,8 @@ class LiveOrderGateway:
                     "available_cash": account_cash,
                     "total_asset": total_asset,
                     "current_market_value": market_value,
+                    "transition_full_cash": bool(transition_full_cash),
+                    "effective_total_position_pct": effective_total_position_pct,
                     "strategy_name": strategy_name,
                     "remark": f"{strategy_name}-{order.get('signal_date', '')}-{order.get('strategy_leg', '')}",
                     "validation_status": "PASS" if not reject_reasons else "REJECTED",

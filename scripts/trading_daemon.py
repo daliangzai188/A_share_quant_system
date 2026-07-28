@@ -1345,11 +1345,21 @@ def _execute_orders_inprocess(
         )
         quote_map = adapter.get_full_tick(ts_codes) if ts_codes else {}
         # 仓位口径只计策略持仓市值:打新中签/人工持仓不挤占策略额度(2026-07-17)
+        # 衔接日旧仓明确在今日14:55到期，开新仓时不占普通日80%新仓额度；但券商
+        # available_cash 仍包含其资金占用，因此新仓只能使用尚未占用的剩余现金。
+        transition_full_cash = bool(
+            gateway.live_config.get("transition_use_full_available_cash", True)
+        ) and _has_due_today_strategy_position(positions)
+        entry_market_value = _strategy_only_market_value(
+            positions,
+            exclude_due_today=True,
+        )
         planned_orders = resize_buy_orders_for_live_account(
             planned_orders=planned_orders,
             account=account,
             quote_map=quote_map,
-            current_market_value=_strategy_only_market_value(positions),
+            current_market_value=entry_market_value,
+            transition_full_cash=transition_full_cash,
         )
 
         preview = gateway.validate_planned_orders(
@@ -1359,7 +1369,8 @@ def _execute_orders_inprocess(
             quote_map,
             positions=positions,
             account_total_asset=account.total_asset,
-            current_market_value=_strategy_only_market_value(positions),
+            current_market_value=entry_market_value,
+            transition_full_cash=transition_full_cash,
         )
 
         # 保存 preview CSV 供审计
@@ -1620,6 +1631,7 @@ def resize_buy_orders_for_live_account(
     account: Any,
     quote_map: dict[str, Any],
     current_market_value: float,
+    transition_full_cash: bool = False,
 ) -> "pd.DataFrame":
     """按实盘账户资金和风控上限缩放买入计划，避免用回测初始资金生成超额订单。"""
     if planned_orders.empty or "side" not in planned_orders.columns:
@@ -1627,13 +1639,18 @@ def resize_buy_orders_for_live_account(
 
     config = load_json_config(PROJECT_ROOT / "config" / "config.json")
     live_cfg = config.get("live_trade", {})
-    # 统一语义（2026-07-15 定稿）：max_single_order_amount=0 → 不限额，
-    # 仓位由 max_position_pct(80%) 接管；>0 → 单笔限额（元）。全链路同此口径。
-    max_single_order_amount = float(live_cfg.get("max_single_order_amount", 0) or 0)
-    if max_single_order_amount <= 0:
-        max_single_order_amount = float("inf")
+    # 统一语义：max_single_order_amount=0 → 取消固定金额限额，普通日由80%总仓位
+    # 接管；衔接日使用实时剩余现金并受85%单票硬顶；>0 → 单笔固定限额（元）。
+    max_single_order_amount = _effective_single_order_cap(live_cfg)
     max_position_pct = float(live_cfg.get("max_position_pct", 0.8))
     max_total_position_pct = float(live_cfg.get("max_total_position_pct", 0.8))
+    transition_full_cash = bool(
+        transition_full_cash
+        and live_cfg.get("transition_use_full_available_cash", True)
+    )
+    effective_total_position_pct = (
+        max_position_pct if transition_full_cash else max_total_position_pct
+    )
     round_lot_size = int(live_cfg.get("round_lot_size", 100))
     cash_buffer = float(live_cfg.get("cash_buffer_amount", 1000))
 
@@ -1697,7 +1714,10 @@ def resize_buy_orders_for_live_account(
 
         cash_cap = max(0.0, available_cash - cash_buffer)
         single_position_cap = max(0.0, total_asset * max_position_pct)
-        total_position_cap = max(0.0, total_asset * max_total_position_pct - market_value)
+        total_position_cap = max(
+            0.0,
+            total_asset * effective_total_position_pct - market_value,
+        )
         pre_liquidity_cap = min(
             cash_cap, single_position_cap, total_position_cap, max_single_order_amount
         )
@@ -1749,6 +1769,7 @@ def resize_buy_orders_for_live_account(
         adjusted.at[idx, "planned_equity"] = total_asset
         if total_asset > 0:
             adjusted.at[idx, "planned_position_pct"] = new_amount / total_asset
+        adjusted.at[idx, "transition_full_cash"] = transition_full_cash
 
         if new_qty != old_qty:
             adjusted.at[idx, "risk_flags"] = append_risk_flag(
@@ -1777,6 +1798,12 @@ def resize_buy_orders_for_live_account(
 def append_risk_flag(current: Any, flag: str) -> str:
     text = "" if current is None or str(current) == "nan" else str(current)
     return flag if not text else f"{text}|{flag}"
+
+
+def _effective_single_order_cap(live_cfg: dict[str, Any]) -> float:
+    """统一单笔限额语义：配置<=0表示不限额，由现金、仓位和流动性上限接管。"""
+    configured_cap = float(live_cfg.get("max_single_order_amount", 0) or 0)
+    return configured_cap if configured_cap > 0 else float("inf")
 
 
 def to_float(value: Any, default: float = 0.0) -> float:
@@ -1812,6 +1839,10 @@ def explain_reject_reasons(row: Any) -> str:
     max_cfg = load_json_config(PROJECT_ROOT / "config" / "config.json").get("live_trade", {})
     max_position_pct = float(max_cfg.get("max_position_pct", 0.8))
     max_total_position_pct = float(max_cfg.get("max_total_position_pct", 0.8))
+    effective_total_position_pct = to_float(
+        row.get("effective_total_position_pct", max_total_position_pct),
+        max_total_position_pct,
+    )
     max_single_order_amount = float(max_cfg.get("max_single_order_amount", 100000))
 
     parts = []
@@ -1825,8 +1856,11 @@ def explain_reject_reasons(row: Any) -> str:
             cap = total_asset * max_position_pct
             parts.append(f"超过单票仓位上限：订单约{estimated_amount:.0f}元，上限={total_asset:.0f}×{max_position_pct:.0%}={cap:.0f}元")
         elif code == "EXCEED_TOTAL_POSITION_PCT":
-            cap = total_asset * max_total_position_pct - current_market_value
-            parts.append(f"超过总仓位上限：订单约{estimated_amount:.0f}元，剩余额度约{cap:.0f}元")
+            cap = total_asset * effective_total_position_pct - current_market_value
+            parts.append(
+                f"超过总仓位上限：订单约{estimated_amount:.0f}元，"
+                f"当前口径上限{effective_total_position_pct:.0%}，剩余额度约{cap:.0f}元"
+            )
         elif code == "INSUFFICIENT_CASH":
             parts.append(f"可用资金不足：订单约{estimated_amount:.0f}元，可用资金{available_cash:.0f}元")
         elif code == "EXCEED_SINGLE_ORDER_AMOUNT":
@@ -6524,11 +6558,19 @@ def job_premarket_buy() -> None:
         quote_map = adapter.get_full_tick(ts_codes)
 
     # 按账户资金缩放订单(市值口径只计策略持仓:打新中签/人工持仓不挤占策略额度)
+    # 衔接日今日到期旧仓不占普通日80%额度；真实可用现金仍由券商账户硬约束。
+    transition_full_cash = bool(
+        config.get("live_trade", {}).get("transition_use_full_available_cash", True)
+    ) and _has_due_today_strategy_position(positions_live)
     buy_orders = resize_buy_orders_for_live_account(
         planned_orders=buy_orders,
         account=account,
         quote_map=quote_map,
-        current_market_value=_strategy_only_market_value(positions_live),
+        current_market_value=_strategy_only_market_value(
+            positions_live,
+            exclude_due_today=True,
+        ),
+        transition_full_cash=transition_full_cash,
     )
 
     lt_cfg = config.get("live_trade", {})
@@ -7179,7 +7221,7 @@ def _resubmit_premarket_buy(s: dict[str, Any], broker_cfg: dict, config: dict) -
     available_cash = float(getattr(account, "available_cash", 0.0) or 0.0)
     total_asset = float(getattr(account, "total_asset", 0.0) or available_cash)
     cash_buffer = float(live_cfg.get("cash_buffer_amount", 1000))
-    max_single = float(live_cfg.get("max_single_order_amount", 50000))
+    max_single = _effective_single_order_cap(live_cfg)
     max_pct = float(live_cfg.get("max_position_pct", 0.8))
     usable = min(available_cash - cash_buffer, total_asset * max_pct, max_single)
     max_qty_by_cash = int(usable / price) if usable > 0 and price > 0 else 0
@@ -7918,9 +7960,10 @@ def _e2_place_order_direct(ts_code: str, name: str, planned_qty: int, signal_dat
     # 按账户可用资金计算可买股数，上限为计划股数
     available_cash = float(getattr(account, "available_cash", 0.0) or 0.0)
     total_asset = float(getattr(account, "total_asset", 0.0) or available_cash)
-    cash_buffer = float(config.get("live_trade", {}).get("cash_buffer_amount", 1000))
-    max_single = float(config.get("live_trade", {}).get("max_single_order_amount", 50000))
-    max_pct = float(config.get("live_trade", {}).get("max_position_pct", 0.8))
+    live_cfg = config.get("live_trade", {})
+    cash_buffer = float(live_cfg.get("cash_buffer_amount", 1000))
+    max_single = _effective_single_order_cap(live_cfg)
+    max_pct = float(live_cfg.get("max_position_pct", 0.8))
     usable = min(available_cash - cash_buffer, total_asset * max_pct, max_single)
     max_qty_by_cash = int(usable / price) if usable > 0 and price > 0 else 0
     max_qty_by_cash = max_qty_by_cash - (max_qty_by_cash % 100)
@@ -10730,7 +10773,11 @@ def _check_capacity_wall_milestone(total_asset: float, config: dict, log: Any) -
         log.warning("容量墙里程碑检查异常(不影响交易):%s", e)
 
 
-def _strategy_only_market_value(broker_positions: Any) -> float:
+def _strategy_only_market_value(
+    broker_positions: Any,
+    *,
+    exclude_due_today: bool = False,
+) -> float:
     """QMT持仓中仅属于本策略系统的市值(2026-07-17 用户拍板:打新中签的
     债券/股票、人工买入等一切非策略持仓,不进入交易系统逻辑)。
 
@@ -10738,12 +10785,28 @@ def _strategy_only_market_value(broker_positions: Any) -> float:
     其余(申购中签/人工/理财)=外部持仓,不计入仓位口径,防止其市值挤占
     total_position_cap 的策略额度。本地持仓文件只由策略成交写入(record_buy),
     因此"在本地"是策略身份的唯一判据，覆盖 ACDE2L 全部当前腿；历史B腿只用于退役识别。
+
+    exclude_due_today=True 仅用于开新仓定仓/校验：明确计划今日14:55自动平仓
+    的旧仓不占普通日80%额度，让衔接日由券商 available_cash 自然限制为全部
+    剩余现金，再由85%单票硬顶截断。未到期、逾期及人工退出仓仍计入。
     """
     local_aliases: set[str] = set()
+    today_str = today_beijing().strftime("%Y%m%d") if exclude_due_today else ""
     try:
         for lp in load_positions():
-            if str(lp.get("status", "")).lower() in {"open", "sell_pending"}:
-                local_aliases.update(_ts_code_aliases(lp.get("ts_code", "")))
+            if str(lp.get("status", "")).lower() not in {"open", "sell_pending"}:
+                continue
+            planned_exit = "".join(
+                char for char in str(lp.get("planned_exit_date", "")) if char.isdigit()
+            )[:8]
+            due_today = (
+                exclude_due_today
+                and planned_exit == today_str
+                and not _position_manual_exit_only(lp)
+            )
+            if due_today:
+                continue
+            local_aliases.update(_ts_code_aliases(lp.get("ts_code", "")))
     except Exception:
         return 0.0
     total = 0.0
@@ -10753,6 +10816,41 @@ def _strategy_only_market_value(broker_positions: Any) -> float:
         if any(al in local_aliases for al in _ts_code_aliases(getattr(p, "ts_code", ""))):
             total += float(getattr(p, "market_value", 0.0) or 0.0)
     return total
+
+
+def _has_due_today_strategy_position(broker_positions: Any) -> bool:
+    """券商实际持有本系统今日到期仓时才允许进入衔接日剩余现金模式。
+
+    仅本地策略账本中的 open/sell_pending 且 planned_exit_date=今日、
+    非人工退出记录可触发。打新中签、债券、人工持仓没有本地策略身份，
+    因而不会触发；只有本地记录但券商已无实际持仓也不会触发。
+    """
+    today_str = today_beijing().strftime("%Y%m%d")
+    due_aliases: set[str] = set()
+    try:
+        for position in load_positions():
+            if str(position.get("status", "")).lower() not in {"open", "sell_pending"}:
+                continue
+            planned_exit = "".join(
+                char
+                for char in str(position.get("planned_exit_date", ""))
+                if char.isdigit()
+            )[:8]
+            if planned_exit != today_str or _position_manual_exit_only(position):
+                continue
+            due_aliases.update(_ts_code_aliases(position.get("ts_code", "")))
+    except Exception:
+        return False
+    if not due_aliases:
+        return False
+    return any(
+        int(getattr(position, "volume", 0) or 0) > 0
+        and any(
+            alias in due_aliases
+            for alias in _ts_code_aliases(getattr(position, "ts_code", ""))
+        )
+        for position in (broker_positions or [])
+    )
 
 
 def _broker_has_strategy_position(broker_positions: Any) -> bool:

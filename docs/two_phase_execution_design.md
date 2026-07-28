@@ -10,14 +10,24 @@
 ## 一、三层限额结构
 
 ```
-目标仓位 target = min( 权益 × max_position_pct(80%),
+普通空仓日 target = min( 权益 × max_total_position_pct(80%),
+                       权益 × max_position_pct(85%单票硬顶),
                        信号日成交额 × total_liquidity_cap_pct(2%),    ← 风险硬顶
                        max_single_order_amount(>0 时) )
+
+衔接日 target = min( 券商实时可用现金,
+                    权益 × max_position_pct(85%单票硬顶),
+                    信号日成交额 × total_liquidity_cap_pct(2%),
+                    max_single_order_amount(>0 时) )
 
 竞价段限额 auction_cap = 信号日成交额 × auction_share_est(1%) × auction_participation(10%)
                        = 信号日成交额 × 0.1%
 ```
 
+- **衔接日定义**:券商账户中确实存在本系统今日到期策略仓时才成立。打新
+  中签股票/债券、人工持仓不触发；未到期、逾期未平和人工退出策略仓也不
+  触发。旧仓尚未在14:55卖出，卖出资金未回笼，因此新仓只使用券商当时
+  的真实剩余现金，剩余比例可以是20%、60%等，不固定为20%;
 - **auction_share_est = 1%**:竞价占信号日成交额的估计,来源=83 笔买入日 1 分钟
   数据剥离法实测中位 1.05%(research_buy_auction_1m.csv);上线后每笔实盘自动
   回写实测值,滚动校准;
