@@ -1658,6 +1658,14 @@ def resize_buy_orders_for_live_account(
     available_cash = float(getattr(account, "available_cash", 0.0) or 0.0)
     market_value = float(current_market_value or 0.0)
     adjusted = planned_orders.copy()
+    # 可用现金上限落盘(2026-07-31)：本函数按参考价/最新价折算股数——这是目标仓位
+    # 口径（8302x回测按资金比例建模，不预测成交价），而09:20按涨停价委托，限价买单
+    # 冻结资金=委托价×股数（创业板差20%、北交所差30%）。现金成为绑定约束时(衔接日
+    # 旧仓14:55才卖)会挂出超可用资金的委托被券商拒单，故把纯现金上限单独交给下单方
+    # 按真实委托价再折一次。只折现金、不折仓位上限——仓位上限按委托价折会让资金充裕
+    # 时每笔无谓少买(50万测算 21400→17900 股)，系统性偏离基准。
+    if "live_cash_cap" not in adjusted.columns:
+        adjusted["live_cash_cap"] = 0.0
     if "risk_flags" not in adjusted.columns:
         adjusted["risk_flags"] = ""
     else:
@@ -1766,6 +1774,7 @@ def resize_buy_orders_for_live_account(
         adjusted.at[idx, "estimated_shares"] = new_qty
         adjusted.at[idx, "round_lot_shares"] = new_qty
         adjusted.at[idx, "planned_amount_by_equity"] = new_amount
+        adjusted.at[idx, "live_cash_cap"] = cash_cap
         adjusted.at[idx, "planned_equity"] = total_asset
         if total_asset > 0:
             adjusted.at[idx, "planned_position_pct"] = new_amount / total_asset
@@ -6599,6 +6608,40 @@ def job_premarket_buy() -> None:
                 continue
 
             signal_date_s = str(row.get("signal_date", ""))
+
+            # 冻结资金按委托价核一次(2026-07-31)：resize 用参考价折算股数=目标仓位口径
+            # （8302x回测按资金比例建模，不预测成交价），但限价买单冻结的是委托价×股数
+            # （创业板差20%、北交所差30%）。现金成为绑定约束时
+            # （衔接日旧仓14:55才卖，早盘只剩部分现金）不核这一刀，就会挂出超过可用资金
+            # 的委托被券商拒单，白丢集合竞价排队。只用现金上限截断，不动仓位上限。
+            # E2的09:24通道本就是 cap//涨停价，此处对齐同一口径。
+            # 取价必须在 register_entry_plan 之前，台账登记的才是真正挂出去的股数。
+            quote = quote_map.get(ts_code)
+            price, price_label = _premarket_buy_price(quote, ts_code, name_s, signal_date_s)
+            if price <= 0:
+                logger().warning("09:20 %s %s 无法获取涨停价/估算涨停价/卖档价格，跳过。", ts_code, name_s)
+                continue
+            cash_cap_amt = to_float(row.get("live_cash_cap", 0.0))
+            if cash_cap_amt > 0:
+                qty_by_cash = int(cash_cap_amt // price // 100) * 100
+                if qty_by_cash < qty:
+                    logger().warning(
+                        "🔻 [盘前买入] %s %s 按委托价%.2f元核冻结资金：%d股→%d股"
+                        "（可用现金上限%.2f万；按参考价定仓会超出冻结资金被券商拒单）。",
+                        ts_code, name_s, price, qty, qty_by_cash, cash_cap_amt / 1e4,
+                    )
+                    qty = qty_by_cash
+            if qty <= 0:
+                logger().error(
+                    "❌ [盘前买入] %s %s 按委托价%.2f元折算不足一手（可用现金%.2f万），放弃本笔。",
+                    ts_code, name_s, price, cash_cap_amt / 1e4,
+                )
+                _notify("buy_result", "⚠️ 资金不足放弃开仓",
+                        f"{ts_code} {name_s} 按委托价{price:.2f}元折算不足一手"
+                        f"（可用现金{cash_cap_amt / 1e4:.2f}万），今日放弃开仓。",
+                        level="timeSensitive")
+                continue
+
             total_target_qty = qty
             reference_price = float(row.get("reference_price", 0.0) or 0.0)
             total_target_amount = total_target_qty * reference_price
@@ -6672,12 +6715,6 @@ def job_premarket_buy() -> None:
                 pov_target_amount=pov_target_amount,
                 status="待竞价及POV执行" if pov_planned_qty else "待竞价执行",
             )
-
-            quote = quote_map.get(ts_code)
-            price, price_label = _premarket_buy_price(quote, ts_code, name_s, signal_date_s)
-            if price <= 0:
-                logger().warning("09:20 %s %s 无法获取涨停价/估算涨停价/卖档价格，跳过。", ts_code, name_s)
-                continue
 
             if st_open_forbidden(ts_code, name_s):
                 logger().error("⛔ [ST禁买] %s %s 命中ST/风险警示铁律，拦截09:20盘前买入委托。", ts_code, name_s)
@@ -9147,15 +9184,29 @@ def _log_e2_signal_status(signal_date: str) -> None:
         logger().error("播报E2状态异常：%s", exc)
 
 
-def _planned_shares_by_equity(position_pct: Any, price: float) -> int:
-    """按初始资金模型估算计划买入股数（floor 到 100 股）。
+def _planned_equity_base() -> float:
+    """播报用的名义资金基数（回测初始资金模型），不参与任何实盘定仓。
 
-    实盘 09:30 下单前会由 resize_buy_orders_for_live_account 按真实可用资金再缩放，
-    这里只用于收盘/启动播报展示一个"计划数量"参考值。
+    config.position.initial_cash 缺省时为50万——真实账户小于它时，播报数字会明显
+    高于实际可开仓量，故播报文案必须标注为名义上限（2026-07-31）。
     """
     try:
         cfg = load_json_config(PROJECT_ROOT / "config" / "config.json")
-        initial_cash = float(cfg.get("position", {}).get("initial_cash", 500_000.0))
+        return float(cfg.get("position", {}).get("initial_cash", 500_000.0) or 500_000.0)
+    except Exception:
+        return 500_000.0
+
+
+def _planned_shares_by_equity(position_pct: Any, price: float) -> int:
+    """按初始资金模型估算计划买入股数（floor 到 100 股）。
+
+    实盘 09:20/09:30 下单前会由 resize_buy_orders_for_live_account 按真实可用资金
+    再缩放、并在挂单时按涨停价核一次冻结资金，这里只用于收盘/启动播报展示一个
+    "计划数量"名义参考值。
+    """
+    try:
+        cfg = load_json_config(PROJECT_ROOT / "config" / "config.json")
+        initial_cash = _planned_equity_base()
         amount = initial_cash * float(position_pct or 0.0)
         if str(cfg.get("trade_mode", "")).lower() == "live":
             cap = float(cfg.get("live_trade", {}).get("max_single_order_amount", amount) or amount)
@@ -9167,6 +9218,116 @@ def _planned_shares_by_equity(position_pct: Any, price: float) -> int:
     except Exception as exc:
         logger().debug("估算计划股数失败：%s", exc)
     return 0
+
+
+def _live_plan_sizing(
+    final_buy: dict[str, Any], action_date: str, signal_date: str
+) -> dict[str, Any] | None:
+    """用真实账户预演下一交易日09:20定仓，供播报/推送显示真实股数(2026-07-31)。
+
+    口径必须与实盘同源，因此直接复用 resize_buy_orders_for_live_account 本身
+    （现金/单票/总仓位/单笔/退出容量五道上限），再按明日委托价=涨停价核一次
+    冻结资金——和 job_premarket_buy 完全一致。区别只有两点：
+      ① 到期判断按 action_date（明日）而非今天，衔接日旧仓才会被正确豁免；
+      ② quote_map 传空，reference_price 即目标仓位折算价（收盘后无实时盘口）。
+    只读不下单；QMT不可用或任何异常都返回 None，由调用方回退名义值播报。
+    """
+    try:
+        import pandas as pd
+
+        ts_code = str(final_buy.get("ts_code", ""))
+        name_s = str(final_buy.get("name", ""))
+        ref_price = float(final_buy.get("price", 0.0) or 0.0)
+        seed_qty = int(final_buy.get("shares", 0) or 0)
+        if not ts_code or ref_price <= 0 or seed_qty <= 0:
+            return None
+
+        config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+        with _qmt_lock:
+            adapter = _qmt_get(config.get("broker", {}))
+            account, positions_live = _qmt_query_account_positions(adapter, timeout_sec=20.0)
+
+        transition = bool(
+            config.get("live_trade", {}).get("transition_use_full_available_cash", True)
+        ) and _has_due_today_strategy_position(positions_live, action_date)
+        market_value = _strategy_only_market_value(
+            positions_live, exclude_due_today=True, as_of_date=action_date
+        )
+        sized = resize_buy_orders_for_live_account(
+            planned_orders=pd.DataFrame([{
+                "ts_code": ts_code,
+                "name": name_s,
+                "side": "BUY",
+                "strategy_leg": str(final_buy.get("strategy", "")),
+                "signal_date": signal_date,
+                "reference_price": ref_price,
+                "round_lot_shares": seed_qty,
+                "estimated_shares": seed_qty,
+            }]),
+            account=account,
+            quote_map={},
+            current_market_value=market_value,
+            transition_full_cash=transition,
+        )
+        row = sized.iloc[0]
+        qty = int(row.get("round_lot_shares", 0) or 0)
+        cash_cap = to_float(row.get("live_cash_cap", 0.0))
+        order_price = _round_stock_price(
+            ref_price * (1 + _limit_up_pct_for_stock(ts_code, name_s))
+        )
+        if cash_cap > 0 and order_price > 0:
+            qty = min(qty, int(cash_cap // order_price // 100) * 100)
+        # 绑定约束判据：冻结后剩下的钱不够再买一手 = 现金已用满（衔接日常态）；
+        # 还够买好几手却没买 = 被仓位/单笔/退出容量上限截住。不能用固定金额阈值，
+        # 整百股取整本身最多就会剩下99股的钱。
+        cash_bound = bool(
+            cash_cap > 0 and order_price > 0
+            and (cash_cap - qty * order_price) < 100 * order_price
+        )
+        return {
+            "shares": max(qty, 0),
+            "order_price": order_price,
+            "reference_price": ref_price,
+            "cash_cap": cash_cap,
+            "cash_bound": cash_bound,
+            "available_cash": float(getattr(account, "available_cash", 0.0) or 0.0),
+            "total_asset": float(getattr(account, "total_asset", 0.0) or 0.0),
+            "transition": transition,
+            "risk_flags": str(row.get("risk_flags", "") or ""),
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger().warning("播报预演实盘定仓失败（回退名义值播报，不影响交易）：%s", exc)
+        return None
+
+
+def _format_live_plan_line(final_buy: dict[str, Any], live: dict[str, Any] | None) -> str:
+    """开仓计划正文：可用资金 → 挂单价 → 计划股数，三样都是下单前就确定的事实。
+
+    刻意不显示"预计成交金额"：挂涨停价排队，成交价落在今日开盘价到涨停价之间的
+    哪一点无法预知（一字板=涨停价成交，高开回落=开盘价成交），按参考价折算出来的
+    金额是伪精度，会误导对占用资金的判断（2026-07-31 用户指出）。能确定的只有
+    委托冻结额=挂单价×股数。
+    """
+    head = f"策略{final_buy['strategy']} {final_buy['ts_code']} {final_buy['name']}"
+    if live is None:
+        return (f"{head} 名义计划{final_buy['shares']}股"
+                f"【QMT账户不可读，此为按{_planned_equity_base() / 10000:.0f}万资金模型的"
+                f"名义值，不是实际下单量；09:20仍会按真实可用资金÷涨停价定仓】")
+    if live["shares"] <= 0:
+        return (f"{head} 明日资金不足，开不出仓（可用资金{live['available_cash'] / 10000:.2f}万，"
+                f"按涨停价{live['order_price']:.2f}元不足一手）"
+                + (f"；风控标记：{live['risk_flags']}" if live["risk_flags"] else ""))
+    froze = live["shares"] * live["order_price"]
+    # 说清"钱为什么没花完"：cash_bound=剩余不够再买一手，现金已用满（衔接日常态）；
+    # 否则是被目标仓位/单笔/退出容量上限截住，账上还有钱是故意不用。
+    binding = ("（已按可用资金满额）" if live.get("cash_bound")
+               else "（受目标仓位/容量上限约束，账上余钱是刻意不用）")
+    return (f"{head}｜可用资金{live['available_cash'] / 10000:.2f}万"
+            f"（总资产{live['total_asset'] / 10000:.2f}万）"
+            f"→ 09:20按涨停价{live['order_price']:.2f}元集合竞价预挂"
+            f"→ 计划开仓{live['shares']}股，冻结{froze / 10000:.2f}万{binding}"
+            + ("；衔接日：旧仓14:55才卖，早盘只有这些剩余现金" if live["transition"] else "")
+            + "。成交价以开盘撮合为准（今开~涨停之间），成交额届时才确定")
 
 
 def _exit_method_desc(strategy: str, exit_rule: str) -> str:
@@ -9636,12 +9797,10 @@ def _log_decision_chain_summary(signal_date: str) -> None:
             f"{P}━━━━━━━━━━━━━━ 最终开仓计划 ━━━━━━━━━━━━━━",
             date_banner,
         ]
+        live_sizing = _live_plan_sizing(final_buy, action_date, signal_date) if final_buy else None
         if final_buy:
-            amount = final_buy["shares"] * final_buy["price"]
             lines.append(
-                f"{P} ★ 开仓计划：策略{final_buy['strategy']} {final_buy['ts_code']} {final_buy['name']} "
-                f"{final_buy['shares']}股@参考{final_buy['price']:.2f} ≈{amount / 10000:.2f}万"
-                f"（09:20复核并集合竞价预挂→09:30确认，实际按账户资金/单笔限额缩放）{pos_note}"
+                f"{P} ★ 开仓计划：{_format_live_plan_line(final_buy, live_sizing)}{pos_note}"
             )
         else:
             lines.append(f"{P} ★ {day_label}所有策略均无开仓计划")
@@ -9653,6 +9812,7 @@ def _log_decision_chain_summary(signal_date: str) -> None:
         global _last_final_plan
         _last_final_plan = {
             "final_buy": final_buy,
+            "live_sizing": live_sizing,
             "day_label": day_label,
             "hold_line": hold_line,
             "action_date": str(action_date),
@@ -9693,12 +9853,13 @@ def push_open_plan_notification(occasion: str) -> None:
         fb = plan.get("final_buy")
         hold = plan.get("hold_line") or ""
         if fb:
-            amount = float(fb.get("shares", 0)) * float(fb.get("price", 0))
-            title = f"📋 {label}开仓计划:{fb.get('strategy','')} {fb.get('name','')}"
-            body = (f"策略{fb.get('strategy','')} {fb.get('ts_code','')} {fb.get('name','')} "
-                    f"{int(fb.get('shares',0))}股 @参考{float(fb.get('price',0)):.2f} "
-                    f"≈{amount / 10000:.2f}万。09:20集合竞价预挂→09:30确认,"
-                    f"实际按账户资金/单笔限额缩放。")
+            _ls = plan.get("live_sizing")
+            if _ls is not None and int(_ls.get("shares", 0) or 0) <= 0:
+                title = f"⚠️ {label}资金不足开不出仓:{fb.get('name','')}"
+            else:
+                title = f"📋 {label}开仓计划:{fb.get('strategy','')} {fb.get('name','')}"
+            # 与决策链日志同源：直接用播报时算好的真实账户定仓结果，不重算
+            body = _format_live_plan_line(fb, plan.get("live_sizing")) + "。"
         else:
             title = f"📋 {label}无新开仓计划"
             body = f"{label}所有策略(A/C/E2/L)均无符合条件标的,不开新仓。"
@@ -10779,6 +10940,7 @@ def _strategy_only_market_value(
     broker_positions: Any,
     *,
     exclude_due_today: bool = False,
+    as_of_date: str = "",
 ) -> float:
     """QMT持仓中仅属于本策略系统的市值(2026-07-17 用户拍板:打新中签的
     债券/股票、人工买入等一切非策略持仓,不进入交易系统逻辑)。
@@ -10791,9 +10953,13 @@ def _strategy_only_market_value(
     exclude_due_today=True 仅用于开新仓定仓/校验：明确计划今日14:55自动平仓
     的旧仓不占普通日80%额度，让衔接日由券商 available_cash 自然限制为全部
     剩余现金，再由85%单票硬顶截断。未到期、逾期及人工退出仓仍计入。
+
+    as_of_date 指定"以哪一天为准"判断到期，缺省=今天。收盘播报要按下一交易日
+    预演明日仓位，必须传 action_date；09:20 实盘定仓仍用默认的今天。同一函数
+    两种调用，避免播报与下单各写一套口径(2026-07-31)。
     """
     local_aliases: set[str] = set()
-    today_str = today_beijing().strftime("%Y%m%d") if exclude_due_today else ""
+    today_str = (as_of_date or today_beijing().strftime("%Y%m%d")) if exclude_due_today else ""
     try:
         for lp in load_positions():
             if str(lp.get("status", "")).lower() not in {"open", "sell_pending"}:
@@ -10820,14 +10986,16 @@ def _strategy_only_market_value(
     return total
 
 
-def _has_due_today_strategy_position(broker_positions: Any) -> bool:
+def _has_due_today_strategy_position(broker_positions: Any, as_of_date: str = "") -> bool:
     """券商实际持有本系统今日到期仓时才允许进入衔接日剩余现金模式。
 
     仅本地策略账本中的 open/sell_pending 且 planned_exit_date=今日、
     非人工退出记录可触发。打新中签、债券、人工持仓没有本地策略身份，
     因而不会触发；只有本地记录但券商已无实际持仓也不会触发。
+
+    as_of_date 同 _strategy_only_market_value：收盘播报预演明日时传 action_date。
     """
-    today_str = today_beijing().strftime("%Y%m%d")
+    today_str = as_of_date or today_beijing().strftime("%Y%m%d")
     due_aliases: set[str] = set()
     try:
         for position in load_positions():
