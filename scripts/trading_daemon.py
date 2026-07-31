@@ -9220,6 +9220,10 @@ def _planned_shares_by_equity(position_pct: Any, price: float) -> int:
     return 0
 
 
+_LIVE_SIZING_CACHE: dict[str, tuple[float, dict[str, Any] | None]] = {}
+_LIVE_SIZING_TTL_SEC = 120.0
+
+
 def _live_plan_sizing(
     final_buy: dict[str, Any], action_date: str, signal_date: str
 ) -> dict[str, Any] | None:
@@ -9231,7 +9235,24 @@ def _live_plan_sizing(
       ① 到期判断按 action_date（明日）而非今天，衔接日旧仓才会被正确豁免；
       ② quote_map 传空，reference_price 即目标仓位折算价（收盘后无实时盘口）。
     只读不下单；QMT不可用或任何异常都返回 None，由调用方回退名义值播报。
+
+    同一次收盘流水线里【最终结果】和【最终开仓计划】两处播报都要用，故按
+    标的+操作日缓存120秒，避免重复占用 QMT 连接；失败结果同样缓存，防止每处
+    播报都各等一次20秒超时。
     """
+    cache_key = f"{final_buy.get('ts_code', '')}|{action_date}"
+    hit = _LIVE_SIZING_CACHE.get(cache_key)
+    if hit is not None and (time.time() - hit[0]) < _LIVE_SIZING_TTL_SEC:
+        return hit[1]
+    result = _live_plan_sizing_uncached(final_buy, action_date, signal_date)
+    _LIVE_SIZING_CACHE[cache_key] = (time.time(), result)
+    return result
+
+
+def _live_plan_sizing_uncached(
+    final_buy: dict[str, Any], action_date: str, signal_date: str
+) -> dict[str, Any] | None:
+    """_live_plan_sizing 的实际查询体，见其文档字符串。"""
     try:
         import pandas as pd
 
@@ -9300,7 +9321,12 @@ def _live_plan_sizing(
         return None
 
 
-def _format_live_plan_line(final_buy: dict[str, Any], live: dict[str, Any] | None) -> str:
+def _format_live_plan_line(
+    final_buy: dict[str, Any],
+    live: dict[str, Any] | None,
+    *,
+    fallback_reason: str = "QMT账户不可读",
+) -> str:
     """开仓计划正文：可用资金 → 挂单价 → 计划股数，三样都是下单前就确定的事实。
 
     刻意不显示"预计成交金额"：挂涨停价排队，成交价落在今日开盘价到涨停价之间的
@@ -9311,7 +9337,7 @@ def _format_live_plan_line(final_buy: dict[str, Any], live: dict[str, Any] | Non
     head = f"策略{final_buy['strategy']} {final_buy['ts_code']} {final_buy['name']}"
     if live is None:
         return (f"{head} 名义计划{final_buy['shares']}股"
-                f"【QMT账户不可读，此为按{_planned_equity_base() / 10000:.0f}万资金模型的"
+                f"【{fallback_reason}，此为按{_planned_equity_base() / 10000:.0f}万资金模型的"
                 f"名义值，不是实际下单量；09:20仍会按真实可用资金÷涨停价定仓】")
     if live["shares"] <= 0:
         return (f"{head} 明日资金不足，开不出仓（可用资金{live['available_cash'] / 10000:.2f}万，"
@@ -9484,10 +9510,18 @@ def _log_final_decision_summary(signal_date: str, action_date_compact: str, buy_
         else:
             logger().info("开仓计划：✅ 共 %d 笔", len(final_buys))
             for b in final_buys:
-                amount = b["shares"] * b["price"]
+                # 与【最终开仓计划】框同一套口径：单笔时按真实账户预演09:20定仓，
+                # 显示可用资金/挂单价/计划股数；多笔（串行单仓下不应出现）时无法
+                # 逐笔分配同一笔现金，回退名义值并由 _format_live_plan_line 标注。
+                live_b = (_live_plan_sizing(b, action_date_compact, signal_date)
+                          if len(final_buys) == 1 else None)
                 logger().info(
-                    "  • 策略 %s | %s %s | 计划买入 %d 股 @%.2f元（约%.0f元，实盘按可用资金缩放）",
-                    b["strategy"], b["ts_code"], b["name"], b["shares"], b["price"], amount,
+                    "  • %s",
+                    _format_live_plan_line(
+                        b, live_b,
+                        fallback_reason=("多笔计划无法逐笔预演同一笔现金"
+                                         if len(final_buys) > 1 else "QMT账户不可读"),
+                    ),
                 )
             logger().info("准备下单时间：%s 09:00生成计划 → 09:20复核并集合竞价预挂 → 09:30确认/补单", readable)
             seen_exits: set[tuple[str, str]] = set()
