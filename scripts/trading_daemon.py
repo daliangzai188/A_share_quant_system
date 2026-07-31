@@ -1632,8 +1632,14 @@ def resize_buy_orders_for_live_account(
     quote_map: dict[str, Any],
     current_market_value: float,
     transition_full_cash: bool = False,
+    log_adjust: bool = True,
 ) -> "pd.DataFrame":
-    """按实盘账户资金和风控上限缩放买入计划，避免用回测初始资金生成超额订单。"""
+    """按实盘账户资金和风控上限缩放买入计划，避免用回测初始资金生成超额订单。
+
+    log_adjust=False 供播报预演调用：那条"实盘定仓…调整为N股"是下单路径的语义，
+    播报时打出来既是噪音，数字也和播报最终展示的股数（还要再按涨停价核冻结资金）
+    不一致，会让人误以为要买N股(2026-07-31)。
+    """
     if planned_orders.empty or "side" not in planned_orders.columns:
         return planned_orders
 
@@ -1785,6 +1791,7 @@ def resize_buy_orders_for_live_account(
                 adjusted.at[idx, "risk_flags"],
                 f"LIVE_SIZE_ADJUSTED:{old_qty}->{new_qty}",
             )
+        if new_qty != old_qty and log_adjust:
             logger().warning(
                 "实盘定仓：%s 种子计划%d股，按资金/仓位/单笔/退出容量调整为%d股；"
                 "可用资金%.0f元，总资产%.0f元，当前市值%.0f元，单笔上限%.0f元，"
@@ -9222,6 +9229,9 @@ def _planned_shares_by_equity(position_pct: Any, price: float) -> int:
 
 _LIVE_SIZING_CACHE: dict[str, tuple[float, dict[str, Any] | None]] = {}
 _LIVE_SIZING_TTL_SEC = 120.0
+# 整个"查缓存→查询→写缓存"必须串行(2026-07-31)：【最终结果】与【最终开仓计划】
+# 由不同线程几乎同时播报，只加缓存不加锁两边都会判定未命中，各查一次QMT账户。
+_LIVE_SIZING_LOCK = threading.Lock()
 
 
 def _live_plan_sizing(
@@ -9241,12 +9251,13 @@ def _live_plan_sizing(
     播报都各等一次20秒超时。
     """
     cache_key = f"{final_buy.get('ts_code', '')}|{action_date}"
-    hit = _LIVE_SIZING_CACHE.get(cache_key)
-    if hit is not None and (time.time() - hit[0]) < _LIVE_SIZING_TTL_SEC:
-        return hit[1]
-    result = _live_plan_sizing_uncached(final_buy, action_date, signal_date)
-    _LIVE_SIZING_CACHE[cache_key] = (time.time(), result)
-    return result
+    with _LIVE_SIZING_LOCK:
+        hit = _LIVE_SIZING_CACHE.get(cache_key)
+        if hit is not None and (time.time() - hit[0]) < _LIVE_SIZING_TTL_SEC:
+            return hit[1]
+        result = _live_plan_sizing_uncached(final_buy, action_date, signal_date)
+        _LIVE_SIZING_CACHE[cache_key] = (time.time(), result)
+        return result
 
 
 def _live_plan_sizing_uncached(
@@ -9289,6 +9300,7 @@ def _live_plan_sizing_uncached(
             quote_map={},
             current_market_value=market_value,
             transition_full_cash=transition,
+            log_adjust=False,   # 播报预演，不打下单路径的"实盘定仓…调整为N股"
         )
         row = sized.iloc[0]
         qty = int(row.get("round_lot_shares", 0) or 0)
@@ -9333,6 +9345,11 @@ def _format_live_plan_line(
     哪一点无法预知（一字板=涨停价成交，高开回落=开盘价成交），按参考价折算出来的
     金额是伪精度，会误导对占用资金的判断（2026-07-31 用户指出）。能确定的只有
     委托冻结额=挂单价×股数。
+
+    ⚠️ 改这里的措辞必须同步核对 start_windows.py 的 should_print_line 白名单：
+    终端默认按关键词逐行过滤，【最终结果】里这行没有 ┃ 前缀兜底，措辞一旦不含
+    白名单词就会被终端整行吞掉（日志文件仍完整），表现为"打印消失"。当前依赖的
+    命中词：可用资金 / 名义计划 / 计划开仓 / 开不出仓。
     """
     head = f"策略{final_buy['strategy']} {final_buy['ts_code']} {final_buy['name']}"
     if live is None:
@@ -9500,30 +9517,34 @@ def _log_final_decision_summary(signal_date: str, action_date_compact: str, buy_
                     note = "模式3：mode1无买入，L也不满足 → 不开仓"
 
         # ── 打印 ──
-        logger().info("=" * 60)
-        logger().info("======================== 最终结果 ========================")
+        # 必须"先算完、再单次原子写入"(2026-07-31)：daemon 多线程并发打日志
+        # （账户心跳/候选播报/决策链播报），逐行 logger 输出之间只要有耗时动作
+        # （这里是预演定仓要查一次 QMT 账户），别的线程就会把整块日志插进来，
+        # 用户看到的就是"开仓计划：共1笔"后面紧跟一大段无关内容、明细行不见了。
+        # 与【决策优先级树状图】同一写法：拼 lines，最后一条消息落盘。
         _day_lab = "今日" if readable == today_beijing().strftime("%Y-%m-%d") else "明日"
-        logger().info("%s(%s)  总策略模式：%s (%s)", _day_lab, readable, mode, mode_name)
-        logger().info("判定：%s", note)
+        out: list[str] = [
+            "=" * 60,
+            "======================== 最终结果 ========================",
+            f"{_day_lab}({readable})  总策略模式：{mode} ({mode_name})",
+            f"判定：{note}",
+        ]
         if not final_buys:
-            logger().info("开仓计划：❌ 无 —— ACDE2 与龙头均无开仓计划（B已删除）")
+            out.append("开仓计划：❌ 无 —— ACDE2 与龙头均无开仓计划（B已删除）")
         else:
-            logger().info("开仓计划：✅ 共 %d 笔", len(final_buys))
+            out.append(f"开仓计划：✅ 共 {len(final_buys)} 笔")
             for b in final_buys:
                 # 与【最终开仓计划】框同一套口径：单笔时按真实账户预演09:20定仓，
                 # 显示可用资金/挂单价/计划股数；多笔（串行单仓下不应出现）时无法
                 # 逐笔分配同一笔现金，回退名义值并由 _format_live_plan_line 标注。
                 live_b = (_live_plan_sizing(b, action_date_compact, signal_date)
                           if len(final_buys) == 1 else None)
-                logger().info(
-                    "  • %s",
-                    _format_live_plan_line(
-                        b, live_b,
-                        fallback_reason=("多笔计划无法逐笔预演同一笔现金"
-                                         if len(final_buys) > 1 else "QMT账户不可读"),
-                    ),
-                )
-            logger().info("准备下单时间：%s 09:00生成计划 → 09:20复核并集合竞价预挂 → 09:30确认/补单", readable)
+                out.append("  • " + _format_live_plan_line(
+                    b, live_b,
+                    fallback_reason=("多笔计划无法逐笔预演同一笔现金"
+                                     if len(final_buys) > 1 else "QMT账户不可读"),
+                ))
+            out.append(f"准备下单时间：{readable} 09:00生成计划 → 09:20复核并集合竞价预挂 → 09:30确认/补单")
             seen_exits: set[tuple[str, str]] = set()
             for b in final_buys:
                 ed = str(b.get("exit_date", ""))
@@ -9533,8 +9554,9 @@ def _log_final_decision_summary(signal_date: str, action_date_compact: str, buy_
                 if key in seen_exits:
                     continue
                 seen_exits.add(key)
-                logger().info("准备平仓时间：%s %s", ed_readable, method)
-        logger().info("==========================================================")
+                out.append(f"准备平仓时间：{ed_readable} {method}")
+        out.append("==========================================================")
+        logger().info("\n".join(out))
     except Exception as exc:
         logger().error("最终结果汇总异常：%s", exc)
 
