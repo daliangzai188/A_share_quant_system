@@ -151,6 +151,77 @@ class BrokerHealthStateTests(unittest.TestCase):
 
 
 class RecoveryGateTests(unittest.TestCase):
+    def test_keeper_only_notifies_recovery_after_real_outage(self) -> None:
+        # 守护器首次看到健康状态时不重复发“已恢复”；只有断连/宕机后才发送。
+        self.assertFalse(
+            keeper.should_publish_recovery(
+                alerted_blocked=False,
+                was_down=False,
+            )
+        )
+        self.assertTrue(
+            keeper.should_publish_recovery(
+                alerted_blocked=True,
+                was_down=False,
+            )
+        )
+        self.assertTrue(
+            keeper.should_publish_recovery(
+                alerted_blocked=False,
+                was_down=True,
+            )
+        )
+
+    def test_gbk_console_cannot_break_keeper_log(self) -> None:
+        class GbkConsole:
+            encoding = "gbk"
+
+            def __init__(self) -> None:
+                self.output: list[str] = []
+
+            def write(self, value: str) -> int:
+                # 模拟 Windows PowerShell：原始 emoji 无法编码，替换后的文本可输出。
+                value.encode(self.encoding)
+                self.output.append(value)
+                return len(value)
+
+            def flush(self) -> None:
+                return None
+
+        console = GbkConsole()
+        file_logger = MagicMock()
+        with patch.object(keeper.sys, "stdout", console), patch.object(
+            keeper,
+            "_get_file_logger",
+            return_value=file_logger,
+        ):
+            keeper.log("✅ 程序与账户已恢复正常")
+
+        file_logger.info.assert_called_once()
+        self.assertIn("✅ 程序与账户已恢复正常", file_logger.info.call_args.args[0])
+        self.assertTrue(console.output)
+
+    def test_successful_push_stays_successful_when_log_fails(self) -> None:
+        encoding_error = UnicodeEncodeError(
+            "gbk",
+            "✅",
+            0,
+            1,
+            "illegal multibyte sequence",
+        )
+        with patch("src.notify.notify", return_value=True), patch.object(
+            keeper,
+            "log",
+            side_effect=encoding_error,
+        ):
+            sent = keeper.notify(
+                "✅ 程序与账户已恢复正常",
+                "模拟恢复通知",
+                event="connection",
+            )
+
+        self.assertTrue(sent)
+
     def test_recovery_requires_program_and_account_from_same_process(self) -> None:
         healthy = keeper.program_and_account_ready(
             program_state="sleeping",

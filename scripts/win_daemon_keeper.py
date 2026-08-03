@@ -105,11 +105,41 @@ def _get_file_logger() -> logging.Logger:
     return file_logger
 
 
+def _print_console_safely(line: str) -> None:
+    """兼容 Windows GBK 控制台；终端打印失败绝不能影响守护状态。"""
+    try:
+        print(line, flush=True)
+        return
+    except UnicodeEncodeError:
+        # Windows PowerShell 可能仍使用 GBK，无法直接打印“✅”等字符。
+        # 这里仅替换控制台无法表示的字符，UTF-8 日志文件仍保留完整原文。
+        encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+        safe_line = line.encode(encoding, errors="replace").decode(
+            encoding,
+            errors="replace",
+        )
+        try:
+            print(safe_line, flush=True)
+        except Exception:
+            pass
+    except Exception:
+        # 控制台被关闭或重定向异常时仍继续文件日志和守护循环。
+        pass
+
+
 def log(msg: str) -> None:
     line = f"{now()} | [keeper] {msg}"
-    print(line, flush=True)
+    _print_console_safely(line)
     try:
         _get_file_logger().info(line)
+    except Exception:
+        pass
+
+
+def _log_without_affecting_result(msg: str) -> None:
+    """尽力记录日志，但不允许日志异常改写通知通道的真实返回值。"""
+    try:
+        log(msg)
     except Exception:
         pass
 
@@ -121,19 +151,24 @@ def notify(
     *,
     event: str = "system_error",
 ) -> bool:
-    """走项目自带的 Bark 通道；失败不影响守护主逻辑。"""
+    """走项目自带的 Bark 通道；返回值只取决于通知通道是否发送成功。"""
     try:
         sys.path.insert(0, str(PROJECT_ROOT))
         from src.notify import notify as _n
         sent = bool(_n(event, title, body, level=level))
-        if sent:
-            log(f"已推送：{title}")
-        else:
-            log(f"推送未成功，后续状态轮询会按需重试：{title}")
-        return sent
     except Exception as exc:  # noqa: BLE001
-        log(f"推送失败（不影响守护）：{exc}")
+        _log_without_affecting_result(f"推送失败（不影响守护）：{exc}")
         return False
+
+    # 通知已经成功后，即使 Windows 控制台无法打印标题里的 emoji，也必须返回 True。
+    # 否则恢复标记不会清除，守护器会把一条成功通知误当失败而反复发送。
+    if sent:
+        _log_without_affecting_result(f"已推送：{title}")
+    else:
+        _log_without_affecting_result(
+            f"推送未成功，后续状态轮询会按需重试：{title}"
+        )
+    return sent
 
 
 def read_pid() -> int | None:
@@ -215,6 +250,11 @@ def program_and_account_ready(
         and broker_same_process
         and broker_state == "verified"
     )
+
+
+def should_publish_recovery(*, alerted_blocked: bool, was_down: bool) -> bool:
+    """首次健康轮询不通知；仅在真实断连或宕机恢复后通知一次。"""
+    return bool(alerted_blocked or was_down)
 
 
 def restart_delay_seconds(attempt_no: int) -> int:
@@ -369,7 +409,10 @@ def main() -> None:
                 broker_same_process=broker_same_process,
             ):
                 # ── 4. 从阻塞/宕机恢复 → 进程+账户双验证后通知一次 ──
-                if alerted_blocked or was_down:
+                if should_publish_recovery(
+                    alerted_blocked=alerted_blocked,
+                    was_down=was_down,
+                ):
                     recovery_sent = notify(
                         "✅ 程序与账户已恢复正常",
                         "daemon 调度心跳正常，当前进程已成功查询QMT账户与持仓；"
