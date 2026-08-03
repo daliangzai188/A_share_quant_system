@@ -11,7 +11,10 @@ A_System 量化策略常驻守护进程。
 调度时间表（A 股交易日）：
     09:00  盘前计划 —— 生成/刷新组合状态机买入计划
     09:20  盘前复核 —— 平仓检查（优先） + 组合状态机复核 + 按涨停价预挂买入 + D监控
+    09:23  D接力竞价 —— 仅卖虚拟匹配量可安全承接的部分，不再整仓砸开盘
+    09:26  竞价确认 —— 按D真实成交额建立接力资金账
     09:30  开盘确认 —— 确认09:20预挂成交，未成交再补买
+    09:30-10:30 D接力 —— 卖D确认一片后，才用该片释放资金买候选一片
     13:00  卖出容量检查 —— 普通D等收盘退出腿仅在仓位超过实时容量门槛时启动POV
     14:30/14:45 —— 按实际成交流速复核容量，小仓位继续等待14:55
     14:55  收盘平仓 —— 连续竞价合法价格笼子下限；14:56:20撤余单，14:57:05仅按安全账本真实余量进收盘竞价
@@ -51,6 +54,12 @@ from src.execution_completion_tracker import ExecutionCompletionTracker
 from src.strategy_model3_policy import (
     model3_l_base_rule_pass,
     model3_l_replace_guard_pass,
+)
+from src.strategy_d_relay_execution import (
+    calculate_auction_safe_sell_quantity,
+    calculate_relay_buy_quantity,
+    floor_lot as relay_floor_lot,
+    relay_buy_limit_price,
 )
 
 
@@ -268,7 +277,7 @@ def reconcile_d_orphan_fills() -> None:
         )
         _notify("buy_result", "🧷 已自动找回D成交持仓",
                 f"策略D {ts_code} {name} {traded}股@{price:.2f}（daemon重启导致旧会话失忆，"
-                f"已从QMT当日委托自动恢复），明日9:23照常集合竞价卖出。",
+                f"已从QMT当日委托自动恢复），按持仓计划日执行普通D平仓；若出现接力候选则走安全竞价部分＋成对POV。",
                 level="timeSensitive")
     if recovered:
         save_positions(positions)
@@ -291,7 +300,7 @@ SCHEDULE = [
     datetime.time(8, 50),   # 早盘推送：今日开仓计划（读昨晚缓存的轻活，不与09:00生成任务抢时间）
     datetime.time(9, 0),    # 盘前：提前生成/刷新组合状态机，避免09:20才开始算买入决策
     datetime.time(9, 20),   # 盘前：平仓检查 + 组合状态机复核 + 按涨停价预挂买入
-    datetime.time(9, 23),   # 集合竞价：按跌停价挂单平仓
+    datetime.time(9, 23),   # 集合竞价：D接力仅提交盘口可安全承接的部分
     datetime.time(9, 26),   # 集合竞价成交后：同步实盘持仓，刷新今日买入决策
     datetime.time(9, 30),   # 开盘：若9:20预挂未成功则补充买入
     datetime.time(9, 35),   # 开仓核查：计划没买成必有推送提醒（不允许无声漏买）
@@ -335,6 +344,8 @@ E2_CAPACITY_FILE = PROJECT_ROOT / "data" / "processed" / "e2_capacity_history.js
 EXIT_EXECUTION_STATE_FILE = (
     PROJECT_ROOT / "data" / "processed" / "exit_execution_state.json"
 )
+D_RELAY_PAIR_STATE_FILE = PROJECT_ROOT / "data" / "state" / "d_relay_pair_state.json"
+D_RELAY_PAIR_EXEC_LOG = PROJECT_ROOT / "reports" / "d_relay_pair_execution_log.csv"
 HEARTBEAT_FILE = PROJECT_ROOT / "logs" / "daemon_heartbeat.txt"
 BROKER_HEALTH_FILE = PROJECT_ROOT / "logs" / "broker_health.json"
 D_MONITOR_PID_FILE = PROJECT_ROOT / "logs" / "strategy_d_monitor.pid"
@@ -354,9 +365,14 @@ _exit_execution_state_lock = threading.RLock()
 # 卖出生命周期互斥：与_qmt_lock（只保护单次QMT调用）职责不同。该锁覆盖
 # 下单→确认→撤单→终态回写，避免POV和14:55主平仓交叉冻结/重复卖出。
 _exit_sell_lock = threading.RLock()
+_d_relay_pair_state_lock = threading.RLock()
+_d_relay_pair_thread_lock = threading.Lock()
+_d_relay_pair_thread: threading.Thread | None = None
 _EXIT_POV_REMARK_PREFIX = "POV平滑卖"
+_D_RELAY_SELL_REMARK_PREFIX = "D接力卖-"
 _SYSTEM_EXIT_REMARK_PREFIXES = (
     _EXIT_POV_REMARK_PREFIX,
+    _D_RELAY_SELL_REMARK_PREFIX,
     "ABC平仓-",
     "看门狗补挂-",
     "盘中止盈",
@@ -2655,6 +2671,7 @@ def _ensure_exit_batch(
     broker_total: int,
     trade_date: str,
     log: Any,
+    target_qty_override: int = 0,
 ) -> dict[str, Any] | None:
     """建立不可变的当日退出目标与非目标仓保护底线。
 
@@ -2690,15 +2707,27 @@ def _ensure_exit_batch(
                 f"{ts_code} 当日退出批次与当前QMT账户不一致；请人工核对并重建安全批次。",
             )
             return None
+        requested_override = max(int(target_qty_override or 0), 0)
+        if requested_override > 0 and int(existing.get("target_qty", 0) or 0) != requested_override:
+            log.error(
+                "🛑 [退出安全账本] %s 已有批次目标%d股，与D接力锁定目标%d股不一致，禁止复用。",
+                ts_code,
+                int(existing.get("target_qty", 0) or 0),
+                requested_override,
+            )
+            return None
         return existing
 
     due_qty, all_open_qty = _local_exit_quantities(ts_code, date_key)
-    if due_qty <= 0 or all_open_qty <= 0:
+    # D接力发生在默认T+2到期日前，因此不能用“今日到期股数”建退出批次。
+    # 调用方只能在已经锁定D本地订单、并核对券商同代码总仓等于本地全部策略仓后，
+    # 显式传入接力目标。普通平仓调用不传值，继续沿用原来的到期股数口径。
+    relay_target = max(int(target_qty_override or 0), 0)
+    target_qty = relay_target if relay_target > 0 else due_qty
+    if target_qty <= 0 or all_open_qty <= 0 or target_qty > all_open_qty:
         log.error(
-            "[退出安全账本] %s 本地今日到期%d股/全部未平%d股，无法建立退出批次。",
-            ts_code,
-            due_qty,
-            all_open_qty,
+            "[退出安全账本] %s 本地今日到期%d股/接力目标%d股/全部未平%d股，无法建立退出批次。",
+            ts_code, due_qty, relay_target, all_open_qty,
         )
         return None
     if max(int(broker_total or 0), 0) != all_open_qty:
@@ -2721,9 +2750,10 @@ def _ensure_exit_batch(
     batch = {
         "trade_date": date_key,
         "ts_code": str(ts_code).upper(),
-        "target_qty": due_qty,
-        "non_target_floor": max(all_open_qty - due_qty, 0),
+        "target_qty": target_qty,
+        "non_target_floor": max(all_open_qty - target_qty, 0),
         "verified_broker_total": all_open_qty,
+        "target_source": "D_RELAY" if relay_target > 0 else "DUE_EXIT",
         "account_fingerprint": account_fingerprint,
         "created_at": now_beijing().isoformat(),
     }
@@ -2982,6 +3012,7 @@ def _safe_new_exit_order_quantity(
     trade_date: str,
     log: Any,
     phase: str,
+    target_qty_override: int = 0,
 ) -> int:
     """计算本轮最多可新发数量；归属、订单状态或账本不明确即返回0。"""
     requested = max(int(requested_qty or 0), 0)
@@ -2992,6 +3023,7 @@ def _safe_new_exit_order_quantity(
         broker_total=max(int(broker_total or 0), 0),
         trade_date=trade_date,
         log=log,
+        target_qty_override=target_qty_override,
     )
     if batch is None:
         return 0
@@ -5061,9 +5093,9 @@ def _intraday_takeprofit_monitor() -> None:
                    and str(p.get("planned_exit_date", "")) == today_str
                    and not _position_manual_exit_only(p)]
             if t < datetime.time(9, 30):
-                # D 让路仓走09:23竞价挂跌停卖（口径=开盘价），9:20抢先挂止盈
-                # 单会冻结股份让09:23挂单被拒，把D劣化成收盘卖。D一律等9:30
-                # 后再挂（让路仓届时已closed，剩下的是T+2收盘卖仓，安全）。
+                # D接力仓09:23可能提交竞价安全部分，9:20抢先挂止盈会冻结股份并
+                # 破坏接力安全账本。D一律等9:30后再挂止盈；接力余仓由专用成对POV
+                # 管理，普通T+2到期仓再沿用原止盈流程。
                 due = [p for p in due if str(p.get("strategy_leg", "")).upper() != "D"]
             if not due:
                 time.sleep(300); continue   # 无当日到期持仓：不碰QMT，5分钟后再看
@@ -5782,12 +5814,961 @@ def run_script(name: str, *args: str, timeout: int = TIMEOUT_DATA_STEP) -> bool:
 
 # ── 定时任务 ───────────────────────────────────────────────────────────────────
 
+def _d_relay_pair_load_state() -> dict[str, Any]:
+    """读取当日D接力成对POV状态；当日文件损坏时抛错并停止交易。"""
+    with _d_relay_pair_state_lock:
+        if not D_RELAY_PAIR_STATE_FILE.exists():
+            return {}
+        try:
+            state = json.loads(D_RELAY_PAIR_STATE_FILE.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise RuntimeError(f"D接力状态文件读取失败:{exc}") from exc
+        if not isinstance(state, dict):
+            raise RuntimeError("D接力状态文件根节点不是object")
+        if str(state.get("date", "")) != today_beijing().strftime("%Y%m%d"):
+            return {}
+        return state
+
+
+def _d_relay_pair_save_state(state: dict[str, Any]) -> None:
+    """原子保存D接力状态；保存失败必须向上抛出，不能在失忆状态下继续下单。"""
+    with _d_relay_pair_state_lock:
+        mkdir_p(D_RELAY_PAIR_STATE_FILE.parent)
+        tmp = D_RELAY_PAIR_STATE_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(D_RELAY_PAIR_STATE_FILE)
+
+
+def _d_relay_pair_active_today() -> bool:
+    try:
+        state = _d_relay_pair_load_state()
+    except Exception as exc:
+        logger().error("D接力状态异常，按活跃任务处理并阻断普通买入：%s", exc)
+        return True
+    return str(state.get("status", "")).upper() in {
+        "PREPARED", "AUCTION_SUBMITTED", "ACTIVE", "BUY_CREDIT_PENDING"
+    }
+
+
+def _d_relay_pair_log(state: dict[str, Any], **values: Any) -> None:
+    """记录每一片卖D/买新仓的真实成交，供后续按资金规模校准参数。"""
+    try:
+        mkdir_p(D_RELAY_PAIR_EXEC_LOG.parent)
+        new_file = not D_RELAY_PAIR_EXEC_LOG.exists()
+        row = {
+            "date": state.get("date", ""),
+            "time": now_beijing().strftime("%H:%M:%S"),
+            "slice_no": state.get("slice_no", 0),
+            "d_ts_code": state.get("d", {}).get("ts_code", ""),
+            "next_ts_code": state.get("candidate", {}).get("ts_code", ""),
+            "event": "",
+            "order_id": "",
+            "order_qty": 0,
+            "filled_qty": 0,
+            "fill_price": 0.0,
+            "filled_amount": 0.0,
+            "confirmed_sell_amount": state.get("confirmed_sell_amount", 0.0),
+            "confirmed_buy_amount": state.get("confirmed_buy_amount", 0.0),
+            "remaining_d_shares": state.get("d", {}).get("remaining_shares", 0),
+            "note": "",
+        }
+        row.update(values)
+        with open(D_RELAY_PAIR_EXEC_LOG, "a", newline="", encoding="utf-8-sig") as handle:
+            writer = csv.DictWriter(handle, fieldnames=list(row.keys()), extrasaction="ignore")
+            if new_file:
+                writer.writeheader()
+            writer.writerow(row)
+    except Exception as exc:
+        logger().warning("D接力逐片日志写入失败（不改变交易状态）：%s", exc)
+
+
+def _load_d_relay_candidate_order() -> dict[str, Any] | None:
+    """读取组合状态机锁定的D接力候选影子计划。"""
+    import pandas as pd
+
+    _decisions_path, orders_path = _combined_paths_for_today()
+    if not orders_path.exists():
+        return None
+    orders = pd.read_csv(orders_path)
+    if orders.empty or "planned_action" not in orders.columns:
+        return None
+    rows = orders[
+        orders["planned_action"].astype(str).eq("PLAN_D_RELAY_PAIRED_BUY")
+    ]
+    if len(rows) != 1:
+        if len(rows) > 1:
+            raise RuntimeError(f"D接力候选必须唯一，实际{len(rows)}条")
+        return None
+    return rows.iloc[0].to_dict()
+
+
+def _d_relay_prepare_state(
+    pos: dict[str, Any],
+    candidate: dict[str, Any],
+    *,
+    account: Any,
+    broker_total: int,
+    broker_can_use: int,
+) -> dict[str, Any]:
+    """建立一次D→A/C/E2资金中性接力任务，不覆盖同日已有任务。"""
+    old = _d_relay_pair_load_state()
+    if old:
+        old_d = str(old.get("d", {}).get("ts_code", ""))
+        old_next = str(old.get("candidate", {}).get("ts_code", ""))
+        if old_d != str(pos.get("ts_code", "")) or old_next != str(candidate.get("ts_code", "")):
+            raise RuntimeError(
+                f"同日已有另一D接力任务 {old_d}→{old_next}，禁止覆盖"
+            )
+        return old
+
+    local_shares = max(int(pos.get("shares", 0) or 0), 0)
+    if local_shares <= 0:
+        raise RuntimeError("D本地持仓股数为0")
+    if broker_total != local_shares or broker_can_use < local_shares:
+        raise RuntimeError(
+            f"D仓位归属/可卖量不一致：本地{local_shares}、券商总仓{broker_total}、可卖{broker_can_use}"
+        )
+    total_asset = float(getattr(account, "total_asset", 0.0) or 0.0)
+    available_cash = float(getattr(account, "available_cash", 0.0) or 0.0)
+    if total_asset <= 0 or available_cash < 0:
+        raise RuntimeError("QMT总资产或可用余额无效")
+    live_cfg = load_json_config(PROJECT_ROOT / "config" / "config.json").get("live_trade", {})
+    target_pct = min(float(live_cfg.get("max_total_position_pct", 0.825)), 0.825)
+    hard_pct = min(float(live_cfg.get("max_position_pct", 0.85)), 0.85)
+    signal_date = str(candidate.get("signal_date", "")).strip().split(".")[0]
+    candidate_code = str(candidate.get("ts_code", ""))
+    signal_day_amount = _signal_day_amount(candidate_code, signal_date)
+    if signal_day_amount <= 0 and bool(live_cfg.get("liquidity_cap_fail_closed", True)):
+        raise RuntimeError(
+            f"接力候选{candidate_code}信号日{signal_date}成交额缺失，禁止先卖D"
+        )
+    liquidity_cap = (
+        signal_day_amount * float(live_cfg.get("total_liquidity_cap_pct", 0.02))
+        if signal_day_amount > 0 else float("inf")
+    )
+    fixed_cap = float(live_cfg.get("max_single_order_amount", 0.0) or 0.0)
+    if fixed_cap <= 0:
+        fixed_cap = float("inf")
+    try:
+        exit_n_raw = float(candidate.get("exit_n_days", 2) or 2)
+        exit_n_days = max(int(exit_n_raw), 1) if exit_n_raw == exit_n_raw else 2
+    except (TypeError, ValueError, OverflowError):
+        exit_n_days = 2
+    try:
+        reference_raw = float(candidate.get("reference_price", 0.0) or 0.0)
+        reference_price = reference_raw if reference_raw == reference_raw else 0.0
+    except (TypeError, ValueError):
+        reference_price = 0.0
+    target_amount = min(total_asset * target_pct, liquidity_cap, fixed_cap)
+    hard_cap_amount = min(total_asset * hard_pct, liquidity_cap, fixed_cap)
+    candidate_short = candidate_code.upper().split(".")[0]
+    candidate_min_buy = 200 if candidate_short.startswith(("688", "689")) else int(
+        live_cfg.get("round_lot_size", 100)
+    )
+    if reference_price <= 0 or min(target_amount, hard_cap_amount) < reference_price * candidate_min_buy:
+        raise RuntimeError(
+            f"接力候选{candidate_code}参考价/安全资金不足最小申报量，禁止先卖D"
+        )
+    state = {
+        "version": 1,
+        "date": today_beijing().strftime("%Y%m%d"),
+        "status": "PREPARED",
+        "created_at": now_beijing().isoformat(),
+        "account_fingerprint": _exit_account_fingerprint(),
+        "total_asset_snapshot": total_asset,
+        "available_cash_baseline": available_cash,
+        "target_amount": target_amount,
+        "hard_cap_amount": hard_cap_amount,
+        "confirmed_sell_qty": 0,
+        "confirmed_sell_amount": 0.0,
+        "confirmed_buy_qty": 0,
+        "confirmed_buy_amount": 0.0,
+        "slice_no": 0,
+        "d_prev_cum_amount": 0.0,
+        "next_prev_cum_amount": 0.0,
+        "pending_sell": None,
+        "pending_buy": None,
+        "d": {
+            "local_order_id": str(pos.get("order_id", "")),
+            "ts_code": str(pos.get("ts_code", "")),
+            "name": str(pos.get("name", "")),
+            "signal_date": str(pos.get("signal_date", "")),
+            "initial_shares": local_shares,
+            "remaining_shares": local_shares,
+            "planned_exit_date": str(pos.get("planned_exit_date", "")),
+        },
+        "candidate": {
+            "paper_order_id": str(candidate.get("paper_order_id", "")),
+            "ts_code": str(candidate.get("ts_code", "")),
+            "name": str(candidate.get("name", "")),
+            "strategy_leg": str(candidate.get("strategy_leg", "")),
+            "signal_date": signal_date,
+            "exit_n_days": exit_n_days,
+            "reference_price": reference_price,
+            "signal_day_amount": signal_day_amount,
+        },
+    }
+    _d_relay_pair_save_state(state)
+    return state
+
+
+def _handoff_same_stock_d_relay(state: dict[str, Any]) -> None:
+    """D与接力候选同票时直接变更策略归属，避免无意义卖出后原价买回。"""
+    d = state["d"]
+    candidate = state["candidate"]
+    if not (_ts_code_aliases(d["ts_code"]) & _ts_code_aliases(candidate["ts_code"])):
+        raise RuntimeError("同票接力方法收到不同股票")
+    buy_date = state["date"]
+    exit_date = next_n_trade_days(
+        datetime.datetime.strptime(buy_date, "%Y%m%d").date(),
+        n=max(int(candidate.get("exit_n_days", 2) or 2), 1),
+    )
+    with _positions_file_lock:
+        positions = load_positions()
+        matched = 0
+        for position in positions:
+            if str(position.get("order_id", "")) != str(d.get("local_order_id", "")):
+                continue
+            if str(position.get("status", "")).lower() not in {"open", "sell_pending"}:
+                continue
+            position["relay_from_strategy_leg"] = "D"
+            position["relay_handoff_date"] = buy_date
+            position["relay_handoff_reference_price"] = float(candidate.get("reference_price", 0.0) or 0.0)
+            position["strategy_leg"] = str(candidate.get("strategy_leg", ""))
+            position["signal_date"] = str(candidate.get("signal_date", ""))
+            position["planned_exit_date"] = exit_date.strftime("%Y%m%d")
+            position["planned_exit_time"] = datetime.datetime.combine(
+                exit_date, SCHED_AFTERNOON_CLOSE
+            ).strftime("%Y-%m-%d %H:%M")
+            position["status"] = "open"
+            matched += 1
+        if matched != 1:
+            raise RuntimeError(f"同票接力本地D持仓必须唯一，实际{matched}条")
+        save_positions(positions)
+    state["status"] = "DONE"
+    state["done_reason"] = "D与接力候选同票，已直接变更策略归属，未产生卖买委托"
+    state["completed_at"] = now_beijing().isoformat()
+    _d_relay_pair_save_state(state)
+    _d_relay_pair_log(state, event="同票策略交接", note=state["done_reason"])
+    _notify(
+        "buy_result", "✅ D同票接力已无交易切换",
+        f"{d['ts_code']} {d.get('name','')} 与接力候选相同，未卖出再买回；"
+        f"策略归属已切换为{candidate.get('strategy_leg','')}，计划{exit_date.strftime('%Y%m%d')}平仓。",
+    )
+
+
+def _d_relay_block(state: dict[str, Any], reason: str, *, notify: bool = True) -> None:
+    """阻断本次接力后停止新增卖单和买单，保留已确认成交。"""
+    state["status"] = "BLOCKED"
+    state["blocked_reason"] = str(reason)
+    state["blocked_at"] = now_beijing().isoformat()
+    _d_relay_pair_save_state(state)
+    logger().error("🛑 [D接力成对POV] %s", reason)
+    if notify:
+        _notify(
+            "sell_fail", "🛑 D接力已停止",
+            f"{state.get('d',{}).get('ts_code','')}→{state.get('candidate',{}).get('ts_code','')}：{reason}。"
+            "系统不会继续卖D或透支买新仓，请核对QMT委托与持仓。",
+            level="critical", call=True,
+        )
+
+
+def _d_relay_recover_order_id(adapter: Any, pending: dict[str, Any], *, side: str) -> str:
+    """按唯一remark恢复崩溃窗口内已经受理、但尚未来得及回写单号的委托。"""
+    existing = str(pending.get("order_id", "") or "").strip()
+    if existing:
+        return existing
+    from src.qmt_adapter import first_present, object_to_dict, to_int
+
+    remark = str(pending.get("remark", "") or "")
+    target_short = str(pending.get("ts_code", "")).upper().split(".")[0]
+    target_qty = max(int(pending.get("quantity", 0) or 0), 0)
+    target_side = str(side).upper()
+    matches: list[str] = []
+    for order in adapter.query_orders() or []:
+        data = object_to_dict(order)
+        code = str(first_present(data, ["stock_code", "m_strInstrumentID", "ts_code"], "")).upper().split(".")[0]
+        order_remark = str(first_present(data, ["order_remark", "m_strRemark", "remark"], ""))
+        quantity = max(to_int(first_present(
+            data, ["order_volume", "m_nOrderVolume", "volume", "order_qty"], 0
+        ), 0), 0)
+        order_type = to_int(first_present(data, ["order_type", "m_nOrderType"], -1), -1)
+        side_text = str(first_present(data, ["side", "order_side", "direction"], "")).upper()
+        side_ok = (
+            (target_side == "BUY" and (order_type == 23 or side_text in {"BUY", "23", "买入"}))
+            or (target_side == "SELL" and (order_type == 24 or side_text in {"SELL", "24", "卖出"}))
+        )
+        if code == target_short and order_remark == remark and quantity == target_qty and side_ok:
+            order_id = str(first_present(data, ["order_id", "m_nOrderID", "order_sysid"], "") or "")
+            if order_id:
+                matches.append(order_id)
+    return matches[0] if len(set(matches)) == 1 else ""
+
+
+def _d_relay_apply_sell_fill(
+    state: dict[str, Any],
+    *,
+    filled_qty: int,
+    fill_price: float,
+    order_id: str,
+) -> None:
+    """把一笔D卖出成交幂等写入本地持仓和接力资金账。"""
+    pending = state.get("pending_sell") or {}
+    if bool(pending.get("applied", False)):
+        return
+    qty = max(int(filled_qty or 0), 0)
+    d = state["d"]
+    old_confirmed = max(int(state.get("confirmed_sell_qty", 0) or 0), 0)
+    total_confirmed = min(
+        old_confirmed + qty,
+        max(int(d.get("initial_shares", 0) or 0), 0),
+    )
+    remaining = max(int(d.get("initial_shares", 0) or 0) - total_confirmed, 0)
+    if qty > 0:
+        # remaining是根据“初始股数-累计确认成交”推导的绝对值；即使进程恰在
+        # 本地回写后崩溃，重启重放也不会再次多减一次。
+        if remaining > 0:
+            reduce_position_shares(
+                str(d.get("local_order_id", "")), remaining,
+                fill_price=fill_price, fill_date=state["date"],
+            )
+        else:
+            mark_position_closed(
+                str(d.get("local_order_id", "")), state["date"], fill_price
+            )
+        state["confirmed_sell_qty"] = total_confirmed
+        state["confirmed_sell_amount"] = float(state.get("confirmed_sell_amount", 0.0) or 0.0) + qty * fill_price
+        d["remaining_shares"] = remaining
+    pending["applied"] = True
+    pending["filled_qty"] = qty
+    pending["fill_price"] = fill_price
+    pending["status"] = "RESOLVED"
+    state["pending_sell"] = pending
+    _d_relay_pair_save_state(state)
+    _d_relay_pair_log(
+        state, event="卖D成交", order_id=order_id,
+        order_qty=int(pending.get("quantity", 0) or 0), filled_qty=qty,
+        fill_price=fill_price, filled_amount=qty * fill_price,
+        note=str(pending.get("phase", "")),
+    )
+
+
+def _d_relay_reconcile_pending_sell(
+    state: dict[str, Any], broker_cfg: dict, *, cancel_nonterminal: bool
+) -> bool:
+    """确认当前D卖单终态；状态未知时阻断后续接力。"""
+    pending = state.get("pending_sell")
+    if not isinstance(pending, dict) or str(pending.get("status", "")).upper() == "RESOLVED":
+        return True
+    with _qmt_lock:
+        adapter = _qmt_get(broker_cfg)
+        order_id = _d_relay_recover_order_id(adapter, pending, side="SELL")
+    if not order_id:
+        _d_relay_block(state, "D卖单处于PREPARED但无法从QMT唯一恢复，按全量未知占用停止")
+        return False
+    pending["order_id"] = order_id
+    pending["status"] = "SUBMITTED"
+    state["pending_sell"] = pending
+    _d_relay_pair_save_state(state)
+    fill = _confirm_fill(
+        broker_cfg, order_id, int(pending.get("quantity", 0) or 0),
+        f"D接力卖-{pending.get('phase','')}", timeout_sec=12, poll_sec=2,
+    )
+    if not fill.is_terminal and cancel_nonterminal:
+        _try_cancel_order(broker_cfg, order_id, str(pending.get("ts_code", "")))
+        fill = _confirm_fill(
+            broker_cfg, order_id, int(pending.get("quantity", 0) or 0),
+            "D接力卖撤单终态", timeout_sec=20, poll_sec=2,
+        )
+    if not fill.is_terminal:
+        _d_relay_block(state, f"D卖单{order_id}未确认终态，禁止继续覆盖或买入")
+        return False
+    try:
+        token = str(pending.get("intent_token", "") or "")
+        if token:
+            _update_exit_order_intent(
+                token,
+                status="RESOLVED",
+                broker_order_id=order_id,
+                filled_qty=int(fill.filled_qty or 0),
+                terminal_known=True,
+            )
+        else:
+            _resolve_exit_intent_by_broker_order_id(
+                order_id,
+                filled_qty=int(fill.filled_qty or 0),
+                terminal_known=True,
+            )
+    except Exception as exc:
+        _d_relay_block(state, f"D卖单退出安全账本无法收口:{exc}")
+        return False
+    fill_price = float(getattr(fill, "avg_price", 0.0) or 0.0)
+    if fill_price <= 0:
+        try:
+            with _qmt_lock:
+                adapter = _qmt_get(broker_cfg)
+                quote = adapter.get_full_tick([str(pending.get("ts_code", ""))]).get(
+                    str(pending.get("ts_code", ""))
+                )
+            fill_price = float(
+                getattr(quote, "open_price", 0.0)
+                or getattr(quote, "last_price", 0.0)
+                or 0.0
+            )
+        except Exception:
+            fill_price = 0.0
+    if fill_price <= 0:
+        # 最后兜底使用委托价只会低估D卖出可用金额，不会透支；同时记录告警，
+        # 方便用户从QMT成交回报核对价格字段兼容性。
+        fill_price = float(pending.get("price", 0.0) or 0.0)
+        logger().warning(
+            "[D接力] 卖单%s成交均价缺失，使用保守委托价%.2f核算释放资金。",
+            order_id, fill_price,
+        )
+    _d_relay_apply_sell_fill(
+        state,
+        filled_qty=int(fill.filled_qty or 0),
+        fill_price=fill_price,
+        order_id=order_id,
+    )
+    state["pending_sell"] = None
+    _d_relay_pair_save_state(state)
+    return True
+
+
+def _d_relay_apply_buy_fill(
+    state: dict[str, Any],
+    *,
+    filled_qty: int,
+    fill_price: float,
+    order_id: str,
+    traded_at: str = "",
+) -> None:
+    """把接力买入成交先写持仓、再写资金账；重启重放不会重复建仓。"""
+    pending = state.get("pending_buy") or {}
+    if bool(pending.get("applied", False)):
+        return
+    qty = max(int(filled_qty or 0), 0)
+    candidate = state["candidate"]
+    if qty > 0:
+        record_buy(
+            order_id=f"d-relay-{state['date']}-{order_id}",
+            ts_code=str(candidate.get("ts_code", "")),
+            name=str(candidate.get("name", "")),
+            signal_date=str(candidate.get("signal_date", "")),
+            buy_date=state["date"],
+            shares=qty,
+            buy_price=fill_price,
+            strategy_leg=str(candidate.get("strategy_leg", "")),
+            exit_n_days=max(int(candidate.get("exit_n_days", 2) or 2), 1),
+            traded_at=traded_at,
+            execution_channel="D接力成对POV",
+            planned_order_qty=int(pending.get("quantity", qty) or qty),
+            benchmark_open=float(pending.get("open_price", 0.0) or 0.0),
+        )
+        state["confirmed_buy_qty"] = int(state.get("confirmed_buy_qty", 0) or 0) + qty
+        state["confirmed_buy_amount"] = float(state.get("confirmed_buy_amount", 0.0) or 0.0) + qty * fill_price
+    pending["applied"] = True
+    pending["filled_qty"] = qty
+    pending["fill_price"] = fill_price
+    pending["status"] = "RESOLVED"
+    state["pending_buy"] = pending
+    _d_relay_pair_save_state(state)
+    _d_relay_pair_log(
+        state, event="买接力仓成交", order_id=order_id,
+        order_qty=int(pending.get("quantity", 0) or 0), filled_qty=qty,
+        fill_price=fill_price, filled_amount=qty * fill_price,
+        note="累计买入额不超过累计D卖出额",
+    )
+
+
+def _d_relay_reconcile_pending_buy(
+    state: dict[str, Any], broker_cfg: dict, *, cancel_nonterminal: bool
+) -> bool:
+    """确认接力买单；未确认终态前不允许再卖下一片D。"""
+    pending = state.get("pending_buy")
+    if not isinstance(pending, dict) or str(pending.get("status", "")).upper() == "RESOLVED":
+        return True
+    with _qmt_lock:
+        adapter = _qmt_get(broker_cfg)
+        order_id = _d_relay_recover_order_id(adapter, pending, side="BUY")
+    if not order_id:
+        _d_relay_block(state, "接力买单处于PREPARED但无法从QMT唯一恢复，停止全部后续卖买")
+        return False
+    pending["order_id"] = order_id
+    pending["status"] = "SUBMITTED"
+    state["pending_buy"] = pending
+    _d_relay_pair_save_state(state)
+    fill = _confirm_fill(
+        broker_cfg, order_id, int(pending.get("quantity", 0) or 0),
+        "D接力买", timeout_sec=45, poll_sec=3,
+    )
+    if not fill.is_terminal and cancel_nonterminal:
+        _try_cancel_order(broker_cfg, order_id, str(pending.get("ts_code", "")))
+        fill = _confirm_fill(
+            broker_cfg, order_id, int(pending.get("quantity", 0) or 0),
+            "D接力买撤单终态", timeout_sec=20, poll_sec=2,
+        )
+    if not fill.is_terminal:
+        _d_relay_block(state, f"接力买单{order_id}未确认终态；为防重复买入，停止后续接力")
+        return False
+    fill_price = float(getattr(fill, "avg_price", 0.0) or 0.0)
+    if fill_price <= 0:
+        fill_price = float(pending.get("price", 0.0) or 0.0)
+    _d_relay_apply_buy_fill(
+        state,
+        filled_qty=int(fill.filled_qty or 0),
+        fill_price=fill_price,
+        order_id=order_id,
+        traded_at=str(getattr(fill, "traded_at", "") or ""),
+    )
+    state["pending_buy"] = None
+    _d_relay_pair_save_state(state)
+    return True
+
+
+def _d_relay_flow_budget(
+    state: dict[str, Any], quote: Any, *, key: str, participation: float
+) -> float:
+    """按相邻快照真实成交额差计算单片预算；首片使用开盘累计成交额。"""
+    current = float(getattr(quote, "amount", 0.0) or 0.0) if quote else 0.0
+    previous = float(state.get(key, 0.0) or 0.0)
+    state[key] = current
+    if current <= 0:
+        return 0.0
+    external_flow = current if previous <= 0 else max(current - previous, 0.0)
+    return external_flow * min(max(float(participation), 0.0), 1.0)
+
+
+def _d_relay_submit_buy(
+    state: dict[str, Any],
+    broker_cfg: dict,
+    *,
+    account: Any,
+    quote: Any,
+    flow_budget: float,
+    chase_cap: float,
+    cash_buffer: float,
+    lot_size: int,
+) -> bool:
+    """只用D已确认释放且尚未使用的资金提交一片接力买单。"""
+    from src.broker_adapter import OrderRequest
+    from src.live_order_gateway import LiveOrderGateway
+
+    candidate = state["candidate"]
+    ts_code = str(candidate.get("ts_code", ""))
+    name = str(candidate.get("name", ""))
+    short_code = ts_code.upper().split(".")[0]
+    is_star_market = short_code.startswith(("688", "689"))
+    buy_step = 1 if is_star_market else lot_size
+    min_buy_qty = 200 if is_star_market else lot_size
+    price, gate_reason = relay_buy_limit_price(quote, chase_cap=chase_cap)
+    if price <= 0:
+        _d_relay_pair_log(state, event="买入跳过", note=gate_reason)
+        return False
+    if st_open_forbidden(ts_code, name):
+        _d_relay_block(state, f"接力候选{ts_code} {name}命中ST/退市禁买铁律")
+        return False
+
+    current_total_asset = float(getattr(account, "total_asset", 0.0) or 0.0)
+    current_hard_cap = current_total_asset * 0.85 if current_total_asset > 0 else 0.0
+    snapshot_hard_cap = float(state.get("hard_cap_amount", 0.0) or 0.0)
+    hard_cap = min(
+        cap for cap in (snapshot_hard_cap, current_hard_cap) if cap > 0
+    ) if (snapshot_hard_cap > 0 or current_hard_cap > 0) else 0.0
+    decision = calculate_relay_buy_quantity(
+        target_amount=float(state.get("target_amount", 0.0) or 0.0),
+        hard_cap_amount=hard_cap,
+        confirmed_buy_amount=float(state.get("confirmed_buy_amount", 0.0) or 0.0),
+        confirmed_sell_amount=float(state.get("confirmed_sell_amount", 0.0) or 0.0),
+        available_cash=float(getattr(account, "available_cash", 0.0) or 0.0),
+        cash_buffer=cash_buffer,
+        flow_budget=flow_budget,
+        order_price=price,
+        lot_size=buy_step,
+    )
+    if decision.quantity < min_buy_qty:
+        _d_relay_pair_log(
+            state, event="买入等待",
+            note=(
+                f"{decision.reason}；D释放未用{decision.released_cash_room:.2f}元，"
+                f"本片流量预算{flow_budget:.2f}元"
+            ),
+        )
+        return False
+    order_quantity = min(decision.quantity, _max_sell_order_shares(ts_code))
+    if order_quantity < min_buy_qty:
+        return False
+    if float(state.get("confirmed_buy_amount", 0.0) or 0.0) + order_quantity * price > hard_cap + 1e-6:
+        _d_relay_block(state, "接力买单下单前85%硬顶断言失败")
+        return False
+
+    config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+    confirm = str(config.get("live_trade", {}).get(
+        "real_order_confirm_text", "A_SYSTEM_REAL_ORDER_CONFIRMED"
+    ))
+    LiveOrderGateway(PROJECT_ROOT / "config" / "config.json").assert_real_order_allowed(confirm)
+    if not bool(config.get("live_trade", {}).get("allow_buy", False)):
+        raise RuntimeError("live_trade.allow_buy=false，禁止D接力买入")
+
+    slice_no = int(state.get("slice_no", 0) or 0)
+    remark = f"D接力买-{state['date']}-{slice_no:02d}"
+    pending = {
+        "status": "PREPARED",
+        "side": "BUY",
+        "ts_code": ts_code,
+        "quantity": order_quantity,
+        "price": price,
+        "open_price": float(getattr(quote, "open_price", 0.0) or 0.0),
+        "remark": remark,
+        "order_id": "",
+        "applied": False,
+        "created_at": now_beijing().isoformat(),
+    }
+    state["pending_buy"] = pending
+    state["status"] = "BUY_CREDIT_PENDING"
+    _d_relay_pair_save_state(state)
+    request = OrderRequest(
+        ts_code=ts_code,
+        broker_code=ts_code,
+        side="BUY",
+        quantity=order_quantity,
+        price_type="FIXED_PRICE",
+        price=price,
+        strategy_name="A_SYSTEM_D_RELAY_PAIR",
+        remark=remark,
+    )
+    with _qmt_lock:
+        adapter = _qmt_get(broker_cfg)
+        result = adapter.place_order(request)
+    if not result.accepted:
+        pending["status"] = "REJECTED"
+        pending["message"] = str(result.message)
+        state["pending_buy"] = None
+        state["status"] = "ACTIVE"
+        _d_relay_pair_save_state(state)
+        _d_relay_pair_log(state, event="买入拒单", order_qty=order_quantity, note=str(result.message))
+        logger().error("❌ [D接力成对POV] %s买单拒绝：%s", ts_code, result.message)
+        return False
+    pending["status"] = "SUBMITTED"
+    pending["order_id"] = str(result.order_id or "")
+    state["pending_buy"] = pending
+    _d_relay_pair_save_state(state)
+    ok = _d_relay_reconcile_pending_buy(state, broker_cfg, cancel_nonterminal=True)
+    if ok and str(state.get("status", "")).upper() != "BLOCKED":
+        state["status"] = "ACTIVE"
+        _d_relay_pair_save_state(state)
+    return ok
+
+
+def _d_relay_submit_sell(
+    state: dict[str, Any],
+    broker_cfg: dict,
+    *,
+    quote: Any,
+    requested_qty: int,
+    limit_price: float,
+    phase: str,
+) -> bool:
+    """在退出安全账本保护下提交一片D卖单。"""
+    from src.broker_adapter import OrderRequest
+
+    d = state["d"]
+    ts_code = str(d.get("ts_code", ""))
+    with _exit_sell_lock:
+        config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+        _assert_exit_live_allowed(config)
+        with _qmt_lock:
+            adapter = _qmt_get(broker_cfg)
+            broker_total, broker_can_use = _broker_position_quantities(adapter, ts_code)
+            orders = adapter.query_orders()
+        safe_qty = _safe_new_exit_order_quantity(
+            ts_code,
+            requested_qty=requested_qty,
+            broker_total=broker_total,
+            broker_can_use=broker_can_use,
+            orders=orders,
+            trade_date=state["date"],
+            log=logger(),
+            phase=phase,
+            target_qty_override=int(d.get("initial_shares", 0) or 0),
+        )
+        safe_qty = min(safe_qty, _max_sell_order_shares(ts_code))
+        safe_qty = _normalize_exit_slice_quantity(
+            ts_code, safe_qty, max(int(d.get("remaining_shares", 0) or 0), 0)
+        )
+        if safe_qty <= 0:
+            _d_relay_pair_log(state, event="卖出跳过", note=f"{phase}安全可卖量为0")
+            return False
+        remark = f"{_D_RELAY_SELL_REMARK_PREFIX}{state['date']}-{int(state.get('slice_no',0)):02d}"
+        request = OrderRequest(
+            ts_code=ts_code,
+            broker_code=ts_code,
+            side="SELL",
+            quantity=safe_qty,
+            price_type="FIXED_PRICE",
+            price=limit_price,
+            strategy_name="A_SYSTEM_D_RELAY_PAIR",
+            remark=remark,
+        )
+        pending = {
+            "status": "PREPARED",
+            "side": "SELL",
+            "phase": phase,
+            "ts_code": ts_code,
+            "quantity": safe_qty,
+            "price": limit_price,
+            "remark": remark,
+            "order_id": "",
+            "intent_token": "",
+            "applied": False,
+            "created_at": now_beijing().isoformat(),
+        }
+        state["pending_sell"] = pending
+        _d_relay_pair_save_state(state)
+        # 卖出intent先于券商委托落盘；即使进程在place_order回报前崩溃，也会按
+        # 全量未知占用阻止重复卖出。
+        with _qmt_lock:
+            adapter = _qmt_get(broker_cfg)
+            result, token = _place_exit_order_with_intent(
+                adapter, request, phase=phase,
+                local_order_id=str(d.get("local_order_id", "")),
+            )
+        pending["status"] = "SUBMITTED" if result.accepted else "REJECTED"
+        pending["order_id"] = str(result.order_id or "")
+        pending["intent_token"] = token
+        if not result.accepted:
+            state["pending_sell"] = None
+            _d_relay_pair_save_state(state)
+            _d_relay_pair_log(state, event="卖出拒单", order_qty=safe_qty, note=str(result.message))
+            return False
+        state["pending_sell"] = pending
+        _d_relay_pair_save_state(state)
+    return True
+
+
+def _d_relay_execute_pair_slice(state: dict[str, Any], broker_cfg: dict) -> None:
+    """执行一轮：先消化已释放资金，再安全卖D一片并立即买候选一片。"""
+    status = str(state.get("status", "")).upper()
+    if status not in {"PREPARED", "AUCTION_SUBMITTED", "ACTIVE", "BUY_CREDIT_PENDING"}:
+        return
+    if str(state.get("account_fingerprint", "")) != _exit_account_fingerprint():
+        _d_relay_block(state, "QMT账户与09:23接力任务绑定账户不一致，禁止继续")
+        return
+    if not _d_relay_reconcile_pending_sell(state, broker_cfg, cancel_nonterminal=True):
+        return
+    if not _d_relay_reconcile_pending_buy(state, broker_cfg, cancel_nonterminal=True):
+        return
+    if str(state.get("status", "")).upper() not in {"BLOCKED", "DONE"}:
+        state["status"] = "ACTIVE"
+        _d_relay_pair_save_state(state)
+
+    config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+    live_cfg = config.get("live_trade", {})
+    d = state["d"]
+    candidate = state["candidate"]
+    d_code = str(d.get("ts_code", ""))
+    next_code = str(candidate.get("ts_code", ""))
+    with _qmt_lock:
+        adapter = _qmt_get(broker_cfg)
+        account = adapter.query_account()
+        quote_map = adapter.get_full_tick([d_code, next_code])
+    d_quote = quote_map.get(d_code)
+    next_quote = quote_map.get(next_code)
+    if next_quote is None:
+        _d_relay_pair_log(state, event="本片跳过", note="候选行情为空")
+        return
+
+    buy_participation = float(live_cfg.get("d_relay_pair_buy_participation", live_cfg.get("pov_participation", 0.10)))
+    sell_participation = float(live_cfg.get("d_relay_pair_sell_participation", 0.10))
+    chase_cap = float(live_cfg.get("d_relay_pair_chase_cap", live_cfg.get("pov_chase_cap", 0.02)))
+    cash_buffer = float(live_cfg.get("cash_buffer_amount", 1000.0))
+    lot_size = int(live_cfg.get("round_lot_size", 100))
+    buy_flow_budget = _d_relay_flow_budget(
+        state, next_quote, key="next_prev_cum_amount", participation=buy_participation
+    )
+    # 有已确认卖出而尚未买回的资金时，必须先尝试买新仓，绝不继续卖D扩大裸露现金。
+    outstanding_credit = max(
+        float(state.get("confirmed_sell_amount", 0.0) or 0.0)
+        - float(state.get("confirmed_buy_amount", 0.0) or 0.0),
+        0.0,
+    )
+    next_price, gate_reason = relay_buy_limit_price(next_quote, chase_cap=chase_cap)
+    next_short = next_code.upper().split(".")[0]
+    next_min_buy_qty = 200 if next_short.startswith(("688", "689")) else lot_size
+    if outstanding_credit >= max(next_price, 0.0) * next_min_buy_qty and next_price > 0:
+        _d_relay_submit_buy(
+            state, broker_cfg, account=account, quote=next_quote,
+            flow_budget=buy_flow_budget, chase_cap=chase_cap,
+            cash_buffer=cash_buffer, lot_size=lot_size,
+        )
+        _d_relay_pair_save_state(state)
+        return
+    if next_price <= 0:
+        _d_relay_pair_log(state, event="停止新增卖D", note=gate_reason)
+        return
+
+    remaining = max(int(d.get("remaining_shares", 0) or 0), 0)
+    target_room = max(
+        float(state.get("target_amount", 0.0) or 0.0)
+        - float(state.get("confirmed_buy_amount", 0.0) or 0.0),
+        0.0,
+    )
+    if remaining <= 0 or target_room < next_price * next_min_buy_qty:
+        return
+    if d_quote is None:
+        _d_relay_pair_log(state, event="本片跳过", note="D仍有余仓但行情为空")
+        return
+
+    depth_qty, d_limit_price, depth_note = _pov_depth_limit(
+        d_quote,
+        depth_levels=int(live_cfg.get("d_relay_pair_depth_levels", live_cfg.get("exit_pov_depth_levels", 3))),
+        depth_haircut=float(live_cfg.get("d_relay_pair_depth_haircut", live_cfg.get("exit_pov_depth_haircut", 0.5))),
+        max_slippage_bps=float(live_cfg.get("d_relay_pair_max_slippage_bps", live_cfg.get("exit_pov_max_slippage_bps", 20))),
+        bid_volume_unit=int(live_cfg.get("exit_pov_bid_volume_unit", 1)),
+    )
+    if depth_qty <= 0 or d_limit_price <= 0:
+        _d_relay_pair_log(state, event="卖出跳过", note=depth_note)
+        return
+    d_flow_budget = _d_relay_flow_budget(
+        state, d_quote, key="d_prev_cum_amount", participation=sell_participation
+    )
+    max_slice_pct = min(max(float(live_cfg.get("d_relay_pair_max_slice_position_pct", 0.10)), 0.0), 1.0)
+    max_slice_qty = relay_floor_lot(
+        int(d.get("initial_shares", 0) or 0) * max_slice_pct, lot_size
+    )
+    # 卖D本片同时受D自身流量、买盘深度、候选可承接流量和单片仓位比例约束。
+    # 这样即便候选流动性更弱，也不会先卖出一大块后长期买不回来。
+    d_flow_qty = relay_floor_lot(d_flow_budget / d_limit_price, lot_size)
+    candidate_room_amount = min(buy_flow_budget, target_room)
+    candidate_match_qty = relay_floor_lot(candidate_room_amount / d_limit_price, lot_size)
+    requested = min(remaining, depth_qty, d_flow_qty, candidate_match_qty, max_slice_qty)
+    requested = relay_floor_lot(requested, lot_size)
+    requested = _normalize_exit_slice_quantity(d_code, requested, remaining)
+    if requested <= 0:
+        _d_relay_pair_log(
+            state, event="卖出等待",
+            note=(f"本片不足一手：深度{depth_qty}、D流量{d_flow_qty}、"
+                  f"候选承接{candidate_match_qty}、单片上限{max_slice_qty}"),
+        )
+        _d_relay_pair_save_state(state)
+        return
+
+    state["slice_no"] = int(state.get("slice_no", 0) or 0) + 1
+    _d_relay_pair_save_state(state)
+    if not _d_relay_submit_sell(
+        state, broker_cfg, quote=d_quote, requested_qty=requested,
+        limit_price=d_limit_price, phase=f"D接力成对POV片{state['slice_no']}",
+    ):
+        return
+    if not _d_relay_reconcile_pending_sell(state, broker_cfg, cancel_nonterminal=True):
+        return
+    # 卖出真实成交后重新查询QMT可用余额；绝不使用卖出前余额倒推，防止多1元废单。
+    with _qmt_lock:
+        adapter = _qmt_get(broker_cfg)
+        account_after_sell = adapter.query_account()
+        next_quote_after = adapter.get_full_tick([next_code]).get(next_code)
+    if next_quote_after is None:
+        _d_relay_pair_log(state, event="买入等待", note="卖D后候选行情为空，保留已释放资金下片重试")
+        return
+    _d_relay_submit_buy(
+        state, broker_cfg, account=account_after_sell, quote=next_quote_after,
+        flow_budget=buy_flow_budget, chase_cap=chase_cap,
+        cash_buffer=cash_buffer, lot_size=lot_size,
+    )
+    if str(state.get("status", "")).upper() != "BLOCKED":
+        state["status"] = "ACTIVE"
+        _d_relay_pair_save_state(state)
+
+
+def _d_relay_finalize(state: dict[str, Any], reason: str) -> None:
+    """10:30收口：D余仓继续持有至原平仓日，不再强行追价接力。"""
+    if str(state.get("status", "")).upper() == "BLOCKED":
+        return
+    state["status"] = "DONE"
+    state["done_reason"] = reason
+    state["completed_at"] = now_beijing().isoformat()
+    _d_relay_pair_save_state(state)
+    d = state.get("d", {})
+    candidate = state.get("candidate", {})
+    sell_amount = float(state.get("confirmed_sell_amount", 0.0) or 0.0)
+    buy_amount = float(state.get("confirmed_buy_amount", 0.0) or 0.0)
+    _d_relay_pair_log(state, event="接力收口", note=reason)
+    _notify(
+        "buy_result", "✅ D接力成对POV已收口",
+        f"{d.get('ts_code','')}→{candidate.get('ts_code','')}：D确认卖出{_fmt_wan(sell_amount)}，"
+        f"新仓确认买入{_fmt_wan(buy_amount)}，D剩余{int(d.get('remaining_shares',0) or 0)}股。"
+        f"{reason}；未使用原有空闲现金，未突破85%单票硬顶。",
+    )
+
+
+def _d_relay_pair_worker() -> None:
+    """09:30:10—10:30每5分钟执行一轮资金中性D接力。"""
+    try:
+        state = _d_relay_pair_load_state()
+        if not state or str(state.get("status", "")).upper() not in {
+            "ACTIVE", "BUY_CREDIT_PENDING", "AUCTION_SUBMITTED", "PREPARED"
+        }:
+            return
+        config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+        broker_cfg = config.get("broker", {})
+        live_cfg = config.get("live_trade", {})
+        cadence = max(int(live_cfg.get("d_relay_pair_cadence_sec", 300)), 60)
+        base_dt = now_beijing().replace(hour=9, minute=30, second=10, microsecond=0)
+        end_dt = now_beijing().replace(hour=10, minute=30, second=0, microsecond=0)
+        while now_beijing() < base_dt:
+            time.sleep(min((base_dt - now_beijing()).total_seconds(), 60))
+        logger().warning(
+            "[D接力成对POV] 启动：%s→%s，每%d秒一片，卖D确认后才买新仓。",
+            state.get("d", {}).get("ts_code", ""),
+            state.get("candidate", {}).get("ts_code", ""), cadence,
+        )
+        while True:
+            state = _d_relay_pair_load_state()
+            if str(state.get("status", "")).upper() in {"DONE", "BLOCKED"}:
+                return
+            if now_beijing() >= end_dt:
+                _d_relay_reconcile_pending_sell(state, broker_cfg, cancel_nonterminal=True)
+                _d_relay_reconcile_pending_buy(state, broker_cfg, cancel_nonterminal=True)
+                if str(state.get("status", "")).upper() != "BLOCKED":
+                    _d_relay_finalize(state, "10:30到时收口，停止追价；D余仓保留至原计划平仓日")
+                return
+            _d_relay_execute_pair_slice(state, broker_cfg)
+            next_run = now_beijing() + datetime.timedelta(seconds=cadence)
+            while now_beijing() < next_run:
+                time.sleep(min((next_run - now_beijing()).total_seconds(), 60))
+    except Exception as exc:
+        logger().exception("D接力成对POV线程异常：%s", exc)
+        try:
+            state = _d_relay_pair_load_state()
+            if state:
+                _d_relay_block(state, f"执行线程异常:{exc}")
+        except Exception:
+            _notify(
+                "system_error", "🛑 D接力线程与状态同时异常",
+                f"{exc}。系统已停止继续下单，请立即核对QMT委托、持仓和本地状态文件。",
+                level="critical", call=True,
+            )
+
+
+def _start_d_relay_pair_worker() -> None:
+    global _d_relay_pair_thread
+    with _d_relay_pair_thread_lock:
+        if _d_relay_pair_thread is not None and _d_relay_pair_thread.is_alive():
+            return
+        _d_relay_pair_thread = threading.Thread(
+            target=_d_relay_pair_worker, daemon=True, name="d-relay-paired-pov"
+        )
+        _d_relay_pair_thread.start()
+
+
 def job_premarket_sell() -> None:
-    """09:23 集合竞价：仅处理 D 接力让路或历史 sell_pending 的平仓。
+    """09:23 集合竞价：D接力只卖安全部分；历史sell_pending仍按原应急路径。
 
     D 默认平仓口径是 T+2 收盘卖，不在 09:23 提前卖。
     只有组合状态机给出 PLAN_SELL_D_FIRST（次日有 A/C/E2 接力，需要 D 让路）时，
-    才按 T+1 开盘口径在集合竞价卖 D。
+    才建立资金中性接力任务：竞价安全部分先卖，09:30后卖D一片、确认成交资金后
+    再买候选一片。禁止再用跌停价整仓D直接冲击开盘集合竞价。
     E2/ABC/D默认T+2收盘卖由 14:55 job_afternoon/check_and_close_positions 执行。
     """
     logger().info("===== 集合竞价平仓挂单（09:23）=====")
@@ -5847,7 +6828,7 @@ def job_premarket_sell() -> None:
                 continue
             if force_relay_sell and planned_exit > today_str:
                 logger().warning(
-                    "09:23 D接力平仓：%s %s 默认计划平仓日%s，但今日有A/C/E2接力买入计划，按回测口径T+1开盘先卖D。",
+                    "09:23 D接力准备：%s %s 默认计划平仓日%s，但今日有A/C/E2接力候选；只卖竞价安全部分，其余09:30后成对POV。",
                     ts_code, name, planned_exit,
                 )
 
@@ -5856,7 +6837,122 @@ def job_premarket_sell() -> None:
                 continue
 
             broker_cfg = config.get("broker", {})
-            confirm    = config.get("live_trade", {}).get("real_order_confirm_text", "A_SYSTEM_REAL_ORDER_CONFIRMED")
+
+            if force_relay_sell:
+                # D接力必须先锁定唯一候选。计划缺失或多候选时宁可继续持有D，
+                # 也不能先卖出后才临时决定买什么。
+                try:
+                    candidate = _load_d_relay_candidate_order()
+                    if candidate is None:
+                        raise RuntimeError("组合计划没有唯一PLAN_D_RELAY_PAIRED_BUY候选")
+                    with _qmt_lock:
+                        adapter = _qmt_get(broker_cfg)
+                        account = adapter.query_account()
+                        broker_total, broker_can_use = _broker_position_quantities(adapter, ts_code)
+                        quote = adapter.get_full_tick([ts_code]).get(ts_code)
+                    state = _d_relay_prepare_state(
+                        pos, candidate, account=account,
+                        broker_total=broker_total, broker_can_use=broker_can_use,
+                    )
+                    state_status = str(state.get("status", "")).upper()
+                    if state_status in {"DONE", "BLOCKED"}:
+                        logger().warning(
+                            "[D接力] 当日任务已经%s（%s），09:23重复触发不再提交任何委托。",
+                            state_status, state.get("done_reason", state.get("blocked_reason", "")),
+                        )
+                        continue
+                    pending_sell = state.get("pending_sell")
+                    if isinstance(pending_sell, dict) and str(pending_sell.get("status", "")).upper() != "RESOLVED":
+                        logger().warning(
+                            "[D接力] 已有未终态卖单%s，09:23重复触发不叠单。",
+                            pending_sell.get("order_id", "PREPARED"),
+                        )
+                        continue
+                    if bool(state.get("auction_decided", False)):
+                        logger().warning("[D接力] 09:23竞价容量已经判定，重复触发不再提交第二张竞价卖单。")
+                        continue
+                    if _ts_code_aliases(ts_code) & _ts_code_aliases(candidate.get("ts_code", "")):
+                        _handoff_same_stock_d_relay(state)
+                        logger().warning(
+                            "✅ [D接力] %s与候选同票，已直接切换策略归属，不提交卖出/买入委托。",
+                            ts_code,
+                        )
+                        continue
+
+                    live_cfg = config.get("live_trade", {})
+                    if not bool(live_cfg.get("d_relay_paired_pov_enabled", False)):
+                        raise RuntimeError("d_relay_paired_pov_enabled=false，禁止退回旧版整仓竞价卖D")
+                    auction_decision = calculate_auction_safe_sell_quantity(
+                        quote,
+                        position_shares=shares,
+                        max_participation=float(live_cfg.get("d_relay_auction_max_participation", 0.025)),
+                        max_unmatched_sell_ratio=float(live_cfg.get("d_relay_auction_max_unmatched_sell_ratio", 0.05)),
+                        book_volume_unit=int(live_cfg.get("d_relay_auction_book_volume_unit", 1)),
+                        lot_size=int(live_cfg.get("round_lot_size", 100)),
+                        max_reference_spread_pct=float(live_cfg.get("d_relay_auction_max_reference_spread_pct", 0.001)),
+                    )
+                    auction_safe_qty = _normalize_exit_slice_quantity(
+                        ts_code, auction_decision.quantity, shares
+                    )
+                    _d_relay_pair_log(
+                        state, event="竞价容量判定", order_qty=auction_safe_qty,
+                        fill_price=auction_decision.reference_price,
+                        note=(f"{auction_decision.reason}；匹配量{auction_decision.matched_quantity}股，"
+                              f"卖方失衡{auction_decision.unmatched_sell_ratio:.2%}"),
+                    )
+                    state["auction_decided"] = True
+                    if auction_safe_qty <= 0:
+                        state["status"] = "ACTIVE"
+                        state["auction_skip_reason"] = auction_decision.reason
+                        _d_relay_pair_save_state(state)
+                        logger().warning(
+                            "🛡️ [D接力竞价保护] %s 本次竞价安全卖量为0（%s）；不卖D，"
+                            "09:30后仅按盘口与流量做成对POV。",
+                            ts_code, auction_decision.reason,
+                        )
+                        continue
+                    lower_limit = float(getattr(quote, "lower_limit", 0.0) or 0.0) if quote else 0.0
+                    if lower_limit <= 0:
+                        state["status"] = "ACTIVE"
+                        state["auction_skip_reason"] = "跌停申报价缺失"
+                        _d_relay_pair_save_state(state)
+                        logger().warning(
+                            "🛡️ [D接力竞价保护] %s 跌停申报价缺失，竞价不提交；09:30后成对POV。",
+                            ts_code,
+                        )
+                        continue
+                    submitted = _d_relay_submit_sell(
+                        state, broker_cfg, quote=quote,
+                        requested_qty=auction_safe_qty,
+                        limit_price=lower_limit, phase="D接力竞价安全部分",
+                    )
+                    state["status"] = "AUCTION_SUBMITTED" if submitted else "ACTIVE"
+                    _d_relay_pair_save_state(state)
+                    if submitted:
+                        submitted_qty = int((state.get("pending_sell") or {}).get("quantity", 0) or 0)
+                        logger().warning(
+                            "⏳ [D接力竞价安全部分] %s %s 仅提交%d/%d股@跌停申报价%.2f；"
+                            "实际按开盘撮合价成交，09:26确认后才计入可买资金。",
+                            ts_code, name, submitted_qty, shares, lower_limit,
+                        )
+                    else:
+                        logger().warning(
+                            "[D接力竞价安全部分] %s 未提交成功，保留D，09:30后成对POV继续评估。",
+                            ts_code,
+                        )
+                except Exception as exc:
+                    logger().exception("D接力竞价准备失败（%s）：%s", ts_code, exc)
+                    try:
+                        state = _d_relay_pair_load_state()
+                        if state:
+                            _d_relay_block(state, f"09:23竞价准备失败:{exc}")
+                    except Exception:
+                        _notify(
+                            "sell_fail", "🛑 D接力竞价准备失败",
+                            f"{ts_code} {name}：{exc}。未执行旧版整仓卖出，请立即核对。",
+                            level="critical", call=True,
+                        )
+                continue
 
             with _qmt_lock:
                 adapter   = _qmt_get(broker_cfg)
@@ -5906,8 +7002,8 @@ def job_premarket_position_sync() -> None:
 
     9:25集合竞价撮合完成后，券商委托/持仓会更新：
     1. 先确认09:20预挂买单，成交则立刻记录本地持仓；未成交但仍排队则不撤单。
-    2. 再确认09:23平仓卖单，若实盘已无某标的则同步标记平仓。
-    3. 若平仓状态发生变化，再刷新组合状态机，给09:30兜底任务使用。
+    2. D接力卖单按QMT真实成交股数/均价回写部分持仓与可买资金，不用“代码消失”猜测；
+    3. 历史sell_pending仍按实盘代码是否消失同步；接力候选由09:30专用成对POV接管。
     """
     logger().info("===== 盘前持仓同步（09:26）=====")
 
@@ -5926,6 +7022,36 @@ def job_premarket_position_sync() -> None:
         logger().error("09:26 盘前买单成交确认异常：%s —— 请手动核对！", e)
 
     broker_cfg = config.get("broker", {})
+    relay_managed_code = ""
+    try:
+        relay_state = _d_relay_pair_load_state()
+        if relay_state and str(relay_state.get("status", "")).upper() in {
+            "PREPARED", "AUCTION_SUBMITTED", "ACTIVE", "BUY_CREDIT_PENDING"
+        }:
+            relay_managed_code = str(relay_state.get("d", {}).get("ts_code", ""))
+            if not _d_relay_reconcile_pending_sell(
+                relay_state, broker_cfg, cancel_nonterminal=True
+            ):
+                logger().error("09:26 D接力竞价卖单未安全收口，后续成对POV已停止。")
+            elif str(relay_state.get("status", "")).upper() != "BLOCKED":
+                relay_state["status"] = "ACTIVE"
+                _d_relay_pair_save_state(relay_state)
+                logger().info(
+                    "✅ [D接力09:26] 竞价确认完成：D已卖%d股、释放%s，剩余%d股；"
+                    "09:30后按确认资金成对POV。",
+                    int(relay_state.get("confirmed_sell_qty", 0) or 0),
+                    _fmt_wan(float(relay_state.get("confirmed_sell_amount", 0.0) or 0.0)),
+                    int(relay_state.get("d", {}).get("remaining_shares", 0) or 0),
+                )
+    except Exception as exc:
+        logger().exception("09:26 D接力竞价确认异常：%s", exc)
+        try:
+            relay_state = _d_relay_pair_load_state()
+            if relay_state:
+                _d_relay_block(relay_state, f"09:26竞价确认异常:{exc}")
+        except Exception:
+            pass
+
     try:
         with _qmt_lock:
             adapter = _qmt_get(broker_cfg)
@@ -5956,6 +7082,10 @@ def job_premarket_position_sync() -> None:
         if str(pos.get("strategy_leg", "")).upper() != "D":
             continue
         ts_code = str(pos.get("ts_code", ""))
+        if relay_managed_code and (_ts_code_aliases(ts_code) & _ts_code_aliases(relay_managed_code)):
+            # 部分卖出和全成均已由上面的接力成交回报按真实股数处理；这里不能再按
+            # “代码是否消失”做第二次模糊回写，否则会覆盖部分持仓或重复记账。
+            continue
         if ts_code and ts_code not in live_codes:
             logger().info(
                 "✅ [盘前持仓同步] %s %s (D策略) 实盘持仓已消失（集合竞价成交），本地标记已平仓。",
@@ -7379,6 +8509,14 @@ def job_opening_buy() -> None:
     except Exception as e:
         logger().error("盘前买单成交确认异常：%s —— 请手动核对！", e)
 
+    if _d_relay_pair_active_today():
+        # D接力拥有独立的资金中性状态账：卖D确认一片后才买候选一片。
+        # 普通09:30补买和普通买入POV都必须让位，避免动用原有17.5%现金或重复建仓。
+        logger().warning("09:30 D接力成对POV接管本次开仓，普通开盘补买路径跳过。")
+        _start_d_relay_pair_worker()
+        logger().info("===== 开盘买入任务完成 =====")
+        return
+
     if _pov_active_today():
         # POV平滑段正在分片买入剩余仓位:补买路径必须让位,否则重复建仓。
         logger().info("09:30 POV平滑段执行中，剩余买入由POV线程接管，跳过开盘补买。")
@@ -8797,6 +9935,11 @@ def startup_catchup_strategy_d() -> None:
         return
     if not (datetime.time(9, 20) <= now.time() < datetime.time(14, 55)):
         return
+    if _d_relay_pair_active_today():
+        logger().info("启动补检：今日D接力成对POV仍在执行/待恢复，恢复专用线程并阻断其他开仓路径。")
+        if now.time() < datetime.time(10, 30):
+            _start_d_relay_pair_worker()
+        return
     if _pov_active_today():
         logger().info("启动补检：今日实际成交额POV仍在执行/待恢复，不启动E2延迟买入或D兜底，避免重复开仓。")
         _start_pov_worker()
@@ -9980,7 +11123,7 @@ def _exit_method_desc(strategy: str, exit_rule: str) -> str:
     """按对应策略的平仓逻辑给出平仓时点/方式描述。
 
     - 普通D：T+2小仓位14:55卖；实时容量不足的大仓位先POV、14:55卖余仓。
-    - D接力：仅状态机明确选择A/C/E2接力时，T+1的09:23先卖D。
+    - D接力：T+1的09:23只卖竞价安全部分，其余在09:30后资金中性成对POV。
     - T+1开盘卖（含 *_open）：09:30 开盘平仓，买10/买5挂限价。
     - T+N收盘卖（默认 A/C/D/E2/L *_close）：14:55卖出实际余仓。
     口径与 check_and_close_positions / job_premarket_sell 一致。
@@ -9989,7 +11132,7 @@ def _exit_method_desc(strategy: str, exit_rule: str) -> str:
     rule = str(exit_rule).lower()
     if s == "D":
         if "open" in rule:
-            return "D接力09:23集合竞价先卖（成交≈开盘价）"
+            return "D接力：09:23竞价安全部分＋09:30后卖D/买候选成对POV"
         return "普通D按T+2收盘退出：小仓位14:55卖；容量不足的大仓位先POV，14:55卖实际余仓"
     if "open" in rule:
         return "09:30开盘平仓（买10/买5挂限价）"
@@ -10308,7 +11451,7 @@ def _log_decision_chain_summary(signal_date: str) -> None:
         _blocked_by_holding = bool(_holding_non_l)
         if _blocked_by_holding:
             l_line = "不参与｜旧策略仓尚未实际清空，取消衔接开仓（L补位/替换均阻断）"
-            d_line = "阻断｜旧策略仓尚未实际清空；仅D接力流程在09:23先卖并确认空仓后可重建买入计划"
+            d_line = "阻断普通新仓｜仅D接力可在09:23卖安全部分，并于09:30后按确认释放资金成对POV"
 
         final_buy: dict[str, Any] | None = None
         if _blocked_by_holding:
@@ -11099,7 +12242,11 @@ def run_job(scheduled_time: datetime.time) -> None:
                 try:
                     job_premarket_sell()
                 finally:
-                    if _has_due_close_plan_now() or _has_premarket_close_plan():
+                    if _d_relay_pair_active_today():
+                        # 接力任务已有独立持久化状态和专用线程，不需要为了等待10:30
+                        # 一直占用“平仓优先”暂停门；数据流水线恢复不影响QMT卖买锁。
+                        _resume_pipeline_after_trade("D接力成对POV已接管后续执行")
+                    elif _has_due_close_plan_now() or _has_premarket_close_plan():
                         logger().warning("09:23平仓后仍检测到待平仓计划，流水线保持暂停；等待后续平仓确认或持仓清理。")
                     else:
                         _resume_pipeline_after_trade("09:23集合竞价平仓处理完成")
@@ -12113,7 +13260,32 @@ def main() -> None:
         name="exit-pov",
     ).start()
 
-    # POV平滑执行断点恢复：daemon在09:25~10:30间重启时接续未完成的平滑买入
+    # D接力成对POV断点恢复：状态文件锁定D、候选和所有确认金额；重启后先恢复
+    # 未知委托终态，再继续“卖一片、买一片”，不会退回旧版整仓竞价卖出。
+    try:
+        if is_trade_day(now_beijing().date()) and _d_relay_pair_active_today():
+            if datetime.time(9, 25) <= now_beijing().time() < datetime.time(10, 30):
+                log.warning("检测到未完成的D接力成对POV状态，恢复执行线程。")
+                _start_d_relay_pair_worker()
+            elif now_beijing().time() >= datetime.time(10, 30):
+                # 进程可能恰在10:30收口前崩溃。重启后先处理未知委托终态，再把
+                # D余仓留到原计划日，不能让ACTIVE状态悬空到收盘。
+                relay_state = _d_relay_pair_load_state()
+                relay_broker_cfg = load_json_config(
+                    PROJECT_ROOT / "config" / "config.json"
+                ).get("broker", {})
+                _d_relay_reconcile_pending_sell(
+                    relay_state, relay_broker_cfg, cancel_nonterminal=True
+                )
+                _d_relay_reconcile_pending_buy(
+                    relay_state, relay_broker_cfg, cancel_nonterminal=True
+                )
+                if str(relay_state.get("status", "")).upper() != "BLOCKED":
+                    _d_relay_finalize(relay_state, "daemon在10:30后重启，已恢复委托终态并收口")
+    except Exception as e:
+        log.error("D接力成对POV状态恢复检查异常：%s", e)
+
+    # 普通POV平滑执行断点恢复：daemon在09:25~10:30间重启时接续未完成的平滑买入
     try:
         if (is_trade_day(now_beijing().date())
                 and datetime.time(9, 25) <= now_beijing().time() < datetime.time(10, 30)

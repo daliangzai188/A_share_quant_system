@@ -168,7 +168,7 @@ class OpeningPositionPolicyTests(unittest.TestCase):
         self.assertIn("BLOCK_L_BUY_BY_L_POSITION", set(decisions["action"]))
         self.assertTrue(orders["side"].astype(str).str.upper().eq("SELL").all())
 
-    def test_d_relay_for_ac_candidate_still_sells_first_and_does_not_buy_early(self) -> None:
+    def test_d_relay_locks_candidate_for_paired_pov_but_does_not_enable_ordinary_buy(self) -> None:
         position = {
             "strategy_leg": "D",
             "ts_code": "600001.SH",
@@ -183,8 +183,40 @@ class OpeningPositionPolicyTests(unittest.TestCase):
         _state, decisions, orders = engine.build_mode1_plan("20260803")
 
         self.assertIn("PLAN_SELL_D_FIRST", set(decisions["action"]))
-        self.assertTrue(orders["side"].astype(str).str.upper().eq("SELL").all())
-        self.assertFalse(orders["side"].astype(str).str.upper().eq("BUY").any())
+        self.assertIn("PLAN_D_RELAY_PAIRED_BUY", set(decisions["action"]))
+        shadow = orders[
+            orders["planned_action"].astype(str).eq("PLAN_D_RELAY_PAIRED_BUY")
+        ]
+        self.assertEqual(len(shadow), 1)
+        self.assertEqual(str(shadow.iloc[0]["ts_code"]), "002800.SZ")
+        self.assertEqual(str(shadow.iloc[0]["order_status"]), "WAIT_D_CONFIRMED_SELL")
+        self.assertFalse(bool(shadow.iloc[0]["live_order_enabled"]))
+
+        # 影子计划只保存候选身份，不是普通开仓许可；D未确认卖出时仍无
+        # ALLOW_ABC_BUY_PREVIEW/ALLOW_E2_BUY，09:20普通买入路径不会执行它。
+        self.assertNotIn("ALLOW_ABC_BUY_PREVIEW", set(decisions["action"]))
+        self.assertNotIn("ALLOW_E2_BUY", set(decisions["action"]))
+
+    def test_model3_d_relay_shadow_does_not_trigger_l_replacement(self) -> None:
+        position = {
+            "strategy_leg": "D",
+            "ts_code": "600001.SH",
+            "name": "D旧仓",
+            "status": "open",
+            "shares": 3_000,
+            "buy_date": "20260731",
+            "planned_exit_date": "20260805",
+        }
+        engine = make_engine([position])
+
+        _state, decisions, orders = engine.build_model3_plan("20260803")
+
+        self.assertIn("BLOCK_MODEL3_L_BY_HOLDING_POSITION", set(decisions["action"]))
+        self.assertNotIn("ALLOW_MODEL3_L_REPLACE", set(decisions["action"]))
+        shadow = orders[
+            orders["planned_action"].astype(str).eq("PLAN_D_RELAY_PAIRED_BUY")
+        ]
+        self.assertEqual(len(shadow), 1)
 
     def test_d_does_not_relay_for_l_only_candidate(self) -> None:
         position = {

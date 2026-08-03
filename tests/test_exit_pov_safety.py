@@ -967,6 +967,37 @@ class ExitExecutionSafetyStateTest(unittest.TestCase):
         save_state.assert_not_called()
         alert.assert_called_once()
 
+    def test_d_relay_can_build_exit_batch_before_default_due_date_only_with_explicit_target(self) -> None:
+        empty_state = trading_daemon._empty_exit_execution_state()
+
+        with patch.object(
+            trading_daemon, "_load_exit_execution_state", return_value=empty_state
+        ), patch.object(
+            trading_daemon, "_local_exit_quantities", return_value=(0, 100_000)
+        ), patch.object(
+            trading_daemon, "_save_exit_execution_state"
+        ), patch.object(
+            trading_daemon, "_exit_account_fingerprint", return_value="TEST-ACCOUNT"
+        ):
+            blocked_without_override = trading_daemon._ensure_exit_batch(
+                "002800.SZ",
+                broker_total=100_000,
+                trade_date="20260716",
+                log=_NoopLog(),
+            )
+            relay_batch = trading_daemon._ensure_exit_batch(
+                "002800.SZ",
+                broker_total=100_000,
+                trade_date="20260716",
+                log=_NoopLog(),
+                target_qty_override=100_000,
+            )
+
+        self.assertIsNone(blocked_without_override)
+        self.assertIsNotNone(relay_batch)
+        self.assertEqual(int(relay_batch["target_qty"]), 100_000)
+        self.assertEqual(relay_batch["target_source"], "D_RELAY")
+
 
 class ExitWatchdogLifecycleTest(unittest.TestCase):
     def test_single_empty_broker_snapshot_does_not_mark_position_closed(self) -> None:
