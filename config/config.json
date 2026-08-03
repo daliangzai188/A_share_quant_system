@@ -142,6 +142,9 @@
     "round_lot_size": 100,
     "max_position_pct": 0.85,
     "max_total_position_pct": 0.825,
+    "entry_min_acceptable_position_pct": 0.8,
+    "entry_actual_amount_rebalance_enabled": true,
+    "entry_actual_amount_rebalance_note": "以09:20开仓前QMT总资产快照为基准：82.5%是累计实际成交额目标，80%是最低验收线，85%是累计实际成交额及最坏委托金额绝对硬顶。集合竞价确认后，09:30-10:30复用现有POV按实际成交金额缺口动态补足；现价超过开盘价2%、涨停、现金不足或不足一手时不追，10:30仍低于80%则高优先告警。",
     "max_single_order_amount": 0,
     "transition_use_full_available_cash": false,
     "transition_use_full_available_cash_note": "已停用：只要券商仍实际持有本系统旧策略仓（含今日到期、逾期、sell_pending），就禁止生成和提交新买单。旧仓实际卖出并同步为空仓后，下一次正常开仓按总资产82.5%定仓；仅保留D策略09:23先卖、确认清仓后再买A/C/E2候选的接力流程。打新中签、债券和人工仓不算策略仓。",
@@ -154,7 +157,7 @@
     "capacity_wall_alert_note": "容量墙里程碑:总资产约≥1700万(82.5%仓≈中位票2%容量1400万)时每周推送提醒，启动扩容研究(docs/capital_roadmap_2026.md)。历史80%口径对应1750万。",
     "liquidity_cap_fail_closed": true,
     "pov_enabled": true,
-    "pov_note": "POV贪心前置开仓(2026-07-16定稿):竞价段=信号日成交额×pov_auction_share;09:30起每5分钟片=min(剩余,上一片实测成交额×pov_participation),首片基数=信号日成交额×pov_first_slice_share,现价>开盘×(1+pov_chase_cap)或涨停则该片跳过,10:30收口放弃。目标额≤竞价段时不激活(小资金行为不变)",
+    "pov_note": "POV贪心前置开仓:竞价段=信号日成交额×pov_auction_share;09:30确认竞价实际成交后，每5分钟按累计实际成交额重算82.5%目标缺口，片金额=min(目标缺口,85%硬顶剩余,真实可用现金-缓冲,上一片实测成交额×pov_participation)，首片基数=信号日成交额×pov_first_slice_share。现价>开盘×(1+pov_chase_cap)或涨停则该片跳过，10:30收口。",
     "pov_auction_share_tiers": [
       [
         500000000,

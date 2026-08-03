@@ -82,6 +82,8 @@ class OpeningPositionPolicyTests(unittest.TestCase):
 
         self.assertEqual(runtime["live_trade"]["max_total_position_pct"], 0.825)
         self.assertEqual(runtime["live_trade"]["max_position_pct"], 0.85)
+        self.assertEqual(runtime["live_trade"]["entry_min_acceptable_position_pct"], 0.8)
+        self.assertTrue(runtime["live_trade"]["entry_actual_amount_rebalance_enabled"])
         self.assertFalse(runtime["live_trade"]["transition_use_full_available_cash"])
         self.assertEqual(runtime["strategy_d"]["position_pct"], 0.825)
         self.assertEqual(runtime["strategy_l"]["position_pct"], 0.825)

@@ -27,7 +27,7 @@ if "dotenv" not in sys.modules:
     sys.modules["dotenv"] = dotenv_stub
 
 from scripts import trading_daemon
-from src.broker_adapter import OrderRequest, QuoteSnapshot
+from src.broker_adapter import OrderFill, OrderRequest, OrderResult, QuoteSnapshot
 from src.live_order_gateway import LiveOrderGateway
 
 
@@ -1265,6 +1265,8 @@ class EntryExitCapacityGateTest(unittest.TestCase):
                 "max_single_order_amount": 0,
                 "max_position_pct": 0.85,
                 "max_total_position_pct": 0.825,
+                "entry_min_acceptable_position_pct": 0.80,
+                "entry_actual_amount_rebalance_enabled": True,
                 "transition_use_full_available_cash": False,
                 "round_lot_size": 100,
                 "cash_buffer_amount": 0,
@@ -1284,9 +1286,10 @@ class EntryExitCapacityGateTest(unittest.TestCase):
             )
 
         row = result.iloc[0]
-        self.assertEqual(int(row["round_lot_shares"]), 49_900)
-        self.assertLess(float(row["planned_amount_by_equity"]), 500_000.0)
+        self.assertEqual(int(row["round_lot_shares"]), 50_000)
+        self.assertLessEqual(float(row["planned_amount_by_equity"]), 500_000.0)
         self.assertIn("EXIT_CAPACITY_CAP:500000", str(row["risk_flags"]))
+        self.assertIn("ENTRY_BELOW_80_BY_EXIT_CAP", str(row["risk_flags"]))
 
     def test_zero_single_order_amount_means_unbounded_in_all_buy_paths(self) -> None:
         cap = trading_daemon._effective_single_order_cap(
@@ -1396,7 +1399,54 @@ class EntryExitCapacityGateTest(unittest.TestCase):
                 0.0,
                 transition_full_cash=False,
             )
-        self.assertEqual(float(result.iloc[0]["planned_amount_by_equity"]), 824_000.0)
+        row = result.iloc[0]
+        self.assertEqual(float(row["planned_amount_by_equity"]), 825_000.0)
+        self.assertEqual(float(row["live_target_amount"]), 825_000.0)
+        self.assertEqual(float(row["live_min_acceptable_amount"]), 800_000.0)
+        self.assertEqual(float(row["live_hard_cap_amount"]), 850_000.0)
+
+    def test_cash_below_eighty_percent_rejects_entry_before_ordering(self) -> None:
+        """总资产100万但可用现金不足80万时，不生成明显偏小的开仓种子单。"""
+        account = SimpleNamespace(total_asset=1_000_000.0, available_cash=790_000.0)
+        quote_map = {"002800.SZ": SimpleNamespace(last_price=10.0)}
+        with patch.object(
+            trading_daemon, "load_positions", return_value=[]
+        ), patch.object(
+            trading_daemon, "load_json_config", return_value=self._config()
+        ), patch.object(
+            trading_daemon, "_signal_day_amount", return_value=200_000_000.0
+        ):
+            result = trading_daemon.resize_buy_orders_for_live_account(
+                self._planned_order(), account, quote_map, 0.0
+            )
+
+        row = result.iloc[0]
+        self.assertEqual(int(row["round_lot_shares"]), 0)
+        self.assertEqual(float(row["live_target_amount"]), 0.0)
+        self.assertIn("ENTRY_MIN_80_PCT_UNREACHABLE", str(row["risk_flags"]))
+
+    def test_configuration_cannot_loosen_82_5_target_or_85_hard_cap(self) -> None:
+        """误把配置调高也只能收紧，不能突破本版代码级82.5%/85%红线。"""
+        config = self._config()
+        config["live_trade"]["max_total_position_pct"] = 0.90
+        config["live_trade"]["max_position_pct"] = 0.95
+        account = SimpleNamespace(total_asset=1_000_000.0, available_cash=1_000_000.0)
+        with patch.object(
+            trading_daemon, "load_positions", return_value=[]
+        ), patch.object(
+            trading_daemon, "load_json_config", return_value=config
+        ), patch.object(
+            trading_daemon, "_signal_day_amount", return_value=200_000_000.0
+        ):
+            result = trading_daemon.resize_buy_orders_for_live_account(
+                self._planned_order(), account,
+                {"002800.SZ": SimpleNamespace(last_price=10.0)}, 0.0,
+            )
+
+        row = result.iloc[0]
+        self.assertEqual(float(row["live_target_amount"]), 825_000.0)
+        self.assertEqual(float(row["live_hard_cap_amount"]), 850_000.0)
+
 
     def test_all_old_strategy_position_states_block_new_entry(self) -> None:
         """未到期、逾期、今日到期和人工退出仓都属于旧策略仓。"""
@@ -1464,6 +1514,236 @@ class EntryExitCapacityGateTest(unittest.TestCase):
             self.assertFalse(
                 trading_daemon._broker_has_preexisting_strategy_position(broker)
             )
+
+
+class EntryActualAmountRebalanceTest(unittest.TestCase):
+    def test_auction_seed_uses_limit_price_without_crossing_eighty_five_percent(self) -> None:
+        """10cm/20cm/30cm涨停预挂均按最坏委托价锁在85%以内。"""
+        hard_cap = 850_000.0
+        expected = {11.0: 77_200, 12.0: 70_800, 13.0: 65_300}
+        for limit_price, expected_qty in expected.items():
+            with self.subTest(limit_price=limit_price):
+                qty = trading_daemon._floor_buy_quantity_by_amount(
+                    hard_cap, limit_price, 100
+                )
+                self.assertEqual(qty, expected_qty)
+                self.assertLessEqual(qty * limit_price, hard_cap)
+                self.assertGreater((qty + 100) * limit_price, hard_cap)
+
+    def test_pov_supplements_actual_gap_instead_of_reference_share_gap(self) -> None:
+        """竞价实际77万后，只补到82.5万；委托价按开盘+2%计算仍不越线。"""
+        qty, target_gap, hard_room, order_cap = trading_daemon._calculate_pov_buy_quantity(
+            target_amount=825_000.0,
+            hard_cap_amount=850_000.0,
+            confirmed_actual_amount=770_000.0,
+            available_cash=230_000.0,
+            cash_buffer=1_000.0,
+            slice_budget=1_000_000.0,
+            order_price=10.20,
+            lot_size=100,
+        )
+
+        self.assertEqual(target_gap, 55_000.0)
+        self.assertEqual(hard_room, 80_000.0)
+        self.assertEqual(order_cap, 55_000.0)
+        self.assertEqual(qty, 5_300)
+        self.assertLessEqual(770_000.0 + qty * 10.20, 825_000.0)
+        self.assertGreaterEqual(770_000.0 + qty * 10.20, 800_000.0)
+
+    def test_pov_never_supplements_after_target_is_reached(self) -> None:
+        qty, target_gap, hard_room, order_cap = trading_daemon._calculate_pov_buy_quantity(
+            target_amount=825_000.0,
+            hard_cap_amount=850_000.0,
+            confirmed_actual_amount=830_000.0,
+            available_cash=170_000.0,
+            cash_buffer=1_000.0,
+            slice_budget=1_000_000.0,
+            order_price=10.20,
+            lot_size=100,
+        )
+
+        self.assertEqual(qty, 0)
+        self.assertEqual(target_gap, 0.0)
+        self.assertEqual(hard_room, 20_000.0)
+        self.assertEqual(order_cap, 0.0)
+
+    def test_actual_cost_excludes_same_stock_manual_baseline(self) -> None:
+        """09:20已存在的人工同票成本不计入本次策略实际开仓额。"""
+        item = {
+            "ts_code": "002800.SZ",
+            "broker_baseline_cost_amount": 2_000.0,
+            "cost_amt": 0.0,
+        }
+        broker_positions = [SimpleNamespace(
+            ts_code="002800.SZ", volume=1_200, cost_price=10.0
+        )]
+        with patch.object(trading_daemon, "_today_local_entry_cost", return_value=0.0):
+            actual = trading_daemon._confirmed_entry_actual_amount(
+                item, broker_positions
+            )
+        self.assertEqual(actual, 10_000.0)
+
+    def test_existing_pov_executes_recalculated_actual_amount_gap(self) -> None:
+        """即使盘前原计划不需拆分，开盘后也能用现有POV补真实金额缺口。"""
+        class FakeAdapter:
+            def __init__(self) -> None:
+                self.requests: list[OrderRequest] = []
+
+            def query_account(self):
+                return SimpleNamespace(total_asset=1_000_000.0, available_cash=230_000.0)
+
+            def query_positions(self):
+                return []
+
+            def get_full_tick(self, _codes):
+                return {
+                    "002800.SZ": QuoteSnapshot(
+                        ts_code="002800.SZ",
+                        broker_code="002800.SZ",
+                        last_price=10.0,
+                        open_price=10.0,
+                        upper_limit=11.0,
+                        amount=100_000_000.0,
+                    )
+                }
+
+            def place_order(self, request: OrderRequest):
+                self.requests.append(request)
+                return OrderResult(
+                    ts_code=request.ts_code,
+                    broker_code=request.broker_code,
+                    side=request.side,
+                    quantity=request.quantity,
+                    accepted=True,
+                    order_id="POV-1",
+                )
+
+        item = {
+            "ts_code": "002800.SZ",
+            "name": "测试股",
+            "target_actual_amount": 825_000.0,
+            "target_amt": 825_000.0,
+            "remain_amt": 825_000.0,
+            "min_acceptable_amount": 800_000.0,
+            "hard_cap_amount": 850_000.0,
+            "equity_snapshot": 1_000_000.0,
+            "sig_amt": 100_000_000.0,
+            "slice_no": 0,
+            "prev_cum_amount": 0.0,
+            "cost_amt": 0.0,
+            "filled_qty": 0,
+            "done": False,
+        }
+        adapter = FakeAdapter()
+        fill = OrderFill(
+            order_id="POV-1",
+            status_code=56,
+            status_text="已成",
+            filled_qty=5_300,
+            avg_price=10.0,
+            is_terminal=True,
+            is_filled=True,
+        )
+        with patch.object(trading_daemon, "_qmt_get", return_value=adapter), patch.object(
+            trading_daemon, "_has_pending_buy_for_code", return_value=False
+        ), patch.object(
+            trading_daemon, "_today_local_entry_cost", return_value=770_000.0
+        ), patch.object(
+            trading_daemon, "_confirm_fill", return_value=fill
+        ), patch.object(
+            trading_daemon, "_pov_log_slice"
+        ), patch.object(
+            trading_daemon, "_track_execution"
+        ), patch.object(
+            trading_daemon, "st_open_forbidden", return_value=False
+        ):
+            trading_daemon._pov_execute_slice(
+                item, {}, 0.10, 0.18, 0.02, "20260803", _NoopLog(),
+                cash_buffer=1_000.0, max_position_pct=0.85, lot_size=100,
+            )
+
+        self.assertEqual(len(adapter.requests), 1)
+        request = adapter.requests[0]
+        self.assertEqual(request.quantity, 5_300)
+        self.assertEqual(request.price, 10.20)
+        self.assertLessEqual(770_000.0 + request.quantity * request.price, 825_000.0)
+        self.assertEqual(item["confirmed_actual_amount"], 823_000.0)
+
+
+class PremarketBuyHandoffTest(unittest.TestCase):
+    @staticmethod
+    def _pending_order() -> dict:
+        return {
+            "order_id": "AUCTION-1",
+            "ts_code": "002800.SZ",
+            "name": "测试股",
+            "signal_date": "20260731",
+            "strategy_leg": "A",
+            "qty": 10_000,
+            "ref_price": 11.0,
+            "exit_n": 2,
+        }
+
+    @staticmethod
+    def _fill(*, qty: int, terminal: bool):
+        return SimpleNamespace(
+            filled_qty=qty,
+            avg_price=10.0 if qty else 0.0,
+            is_terminal=terminal,
+            is_filled=qty == 10_000,
+            status_text="部成" if qty else "已报",
+            traded_at="09:25:00",
+        )
+
+    def test_0926_partial_nonterminal_order_keeps_queue_until_open(self) -> None:
+        pending = self._pending_order()
+        with patch.object(
+            trading_daemon, "load_pending_buys", return_value=[pending]
+        ), patch.object(
+            trading_daemon, "load_json_config", return_value={"broker": {}}
+        ), patch.object(
+            trading_daemon, "now_beijing",
+            return_value=datetime.datetime(2026, 8, 3, 9, 26, tzinfo=trading_daemon.BEIJING_TZ),
+        ), patch.object(
+            trading_daemon, "_confirm_fill", return_value=self._fill(qty=5_000, terminal=False)
+        ), patch.object(
+            trading_daemon, "_try_cancel_order"
+        ) as cancel_mock, patch.object(
+            trading_daemon, "record_buy"
+        ) as record_mock, patch.object(
+            trading_daemon, "save_pending_buys"
+        ) as save_mock, patch.object(
+            trading_daemon, "_start_premarket_buy_monitor"
+        ), patch.object(trading_daemon, "_notify"):
+            trading_daemon.confirm_pending_premarket_buys("09:26")
+
+        cancel_mock.assert_not_called()
+        record_mock.assert_not_called()
+        save_mock.assert_called_once_with([pending])
+
+    def test_0930_cancels_partial_order_before_handing_gap_to_pov(self) -> None:
+        pending = self._pending_order()
+        first = self._fill(qty=5_000, terminal=False)
+        terminal = self._fill(qty=5_000, terminal=True)
+        with patch.object(
+            trading_daemon, "load_pending_buys", return_value=[pending]
+        ), patch.object(
+            trading_daemon, "load_json_config", return_value={"broker": {}}
+        ), patch.object(
+            trading_daemon, "_confirm_fill", side_effect=[first, terminal]
+        ) as confirm_mock, patch.object(
+            trading_daemon, "_try_cancel_order"
+        ) as cancel_mock, patch.object(
+            trading_daemon, "record_buy"
+        ) as record_mock, patch.object(
+            trading_daemon, "clear_pending_buys"
+        ) as clear_mock, patch.object(trading_daemon, "_notify"):
+            trading_daemon.confirm_pending_premarket_buys("09:30")
+
+        self.assertEqual(confirm_mock.call_count, 2)
+        cancel_mock.assert_called_once_with({}, "AUCTION-1", "002800.SZ")
+        self.assertEqual(record_mock.call_args.kwargs["shares"], 5_000)
+        clear_mock.assert_called_once()
 
 
 class TransitionLiveOrderGatewayTest(unittest.TestCase):
