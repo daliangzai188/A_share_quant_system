@@ -1,0 +1,15 @@
+{
+  "strategy_leg": "L",
+  "max_trade_days": 20,
+  "updated_at": "2026-08-03 18:09:40",
+  "runs": [
+    {
+      "signal_date": "20260803",
+      "status": "NO_CANDIDATE",
+      "reason": "今日无符合L2的候选，L不触发",
+      "candidate_count": 0,
+      "strategy_leg": "L",
+      "generated_at": "2026-08-03 18:09:40"
+    }
+  ]
+}
