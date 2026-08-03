@@ -168,10 +168,10 @@
   },
   "position": {
     "initial_cash": 500000,
-    "target_position_pct": 0.8,
+    "target_position_pct": 0.825,
     "max_holding_count": 1,
-    "max_total_position_pct": 0.8,
-    "cash_buffer_pct": 0.2
+    "max_total_position_pct": 0.825,
+    "cash_buffer_pct": 0.175
   },
   "execution_assumption": {
     "buy_price_model": "T+1 open with dynamic slippage",

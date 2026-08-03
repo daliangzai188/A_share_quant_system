@@ -258,7 +258,7 @@ def build_outputs(candidates: pd.DataFrame, strategy_leg: str, signal_date: str,
     position = config.get("position", {})
     paper_trade = config.get("paper_trade", {})
     planned_equity = float(position.get("initial_cash", 500000))
-    planned_position_pct = float(position.get("target_position_pct", 0.8))
+    planned_position_pct = float(position.get("target_position_pct", 0.825))
     round_lot = int(paper_trade.get("round_lot_size", 100))
     # 兜底来源不是完整 A/C 历史回放结果，只允许生成观察清单，不生成 BUY 委托。
     selected_count = 0

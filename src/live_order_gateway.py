@@ -159,13 +159,13 @@ class LiveOrderGateway:
         transition_full_cash: bool = False,
     ) -> pd.DataFrame:
         rows: list[dict[str, Any]] = []
-        # 0=取消固定金额限额（改由普通日80%总仓位/衔接日85%单票硬顶接管）。
+        # 0=取消固定金额限额，改由82.5%目标总仓位和85%单票硬顶接管。
+        # transition_full_cash 参数仅为兼容旧计划文件保留，不再具有放宽仓位的能力；
+        # 否则历史调用传 True 会重新打开已经取消的“旧仓未卖先买”衔接口径。
         max_order_amount = float(self.live_config.get("max_single_order_amount", 0) or 0)
-        max_position_pct = float(self.live_config.get("max_position_pct", 0.8))
-        max_total_position_pct = float(self.live_config.get("max_total_position_pct", 0.8))
-        effective_total_position_pct = (
-            max_position_pct if transition_full_cash else max_total_position_pct
-        )
+        max_position_pct = float(self.live_config.get("max_position_pct", 0.85))
+        max_total_position_pct = float(self.live_config.get("max_total_position_pct", 0.825))
+        effective_total_position_pct = max_total_position_pct
         round_lot_size = int(self.live_config.get("round_lot_size", 100))
         limit_tolerance = float(self.live_config.get("limit_price_tolerance", 0.001))
         default_price_type = str(self.live_config.get("default_price_type", "LATEST_PRICE"))
@@ -261,7 +261,7 @@ class LiveOrderGateway:
                     "available_cash": account_cash,
                     "total_asset": total_asset,
                     "current_market_value": market_value,
-                    "transition_full_cash": bool(transition_full_cash),
+                    "transition_full_cash": False,
                     "effective_total_position_pct": effective_total_position_pct,
                     "strategy_name": strategy_name,
                     "remark": f"{strategy_name}-{order.get('signal_date', '')}-{order.get('strategy_leg', '')}",

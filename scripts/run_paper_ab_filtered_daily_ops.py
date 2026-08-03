@@ -520,7 +520,7 @@ def estimate_planned_order(
     position = config.get("position", {})
     paper_trade = config.get("paper_trade", {})
     planned_equity = float(position.get("initial_cash", 500000))
-    planned_position_pct = to_float(selected.get("planned_position_pct", position.get("target_position_pct", 0.8)))
+    planned_position_pct = to_float(selected.get("planned_position_pct", position.get("target_position_pct", 0.825)))
     planned_amount = planned_equity * planned_position_pct
     reference_price = to_float(selected.get("historical_reference_next_open", 0.0))
     planned_order_date = str(selected.get("historical_reference_next_trade_date", "") or "")
@@ -539,7 +539,7 @@ def estimate_planned_order(
         # 注意 config 参数是策略配置（无 trade_mode/live_trade），限额必须读运行时配置。
         rt_cfg = runtime_config or {}
         if str(rt_cfg.get("trade_mode", "")).lower() == "live":
-            # 0=不限额（80%仓位接管），>0=单笔限额。
+            # 0=不限额（82.5%目标仓位接管），>0=单笔限额。
             max_single = float(rt_cfg.get("live_trade", {}).get("max_single_order_amount", 0) or 0)
             if max_single > 0:
                 planned_amount = min(planned_amount, max_single)
@@ -969,7 +969,7 @@ def _print_e2_status(signal_date: str, planned_orders: pd.DataFrame) -> None:
     print(f"  请收盘后运行（15:30+）：")
     print(f"    python scripts/run_strategy_e2_signal.py --signal-date {signal_date}")
     print("  E2 条件：segment_retreat_state_bucket=neutral + 非ST + 成交可靠 → 选流通市值最小1只")
-    print("  E2 执行：T+1开盘买入 80%仓位，T+2收盘卖出")
+    print("  E2 执行：T+1开盘买入 82.5%目标仓位，T+2收盘卖出")
     print("─" * 50)
 
 

@@ -325,7 +325,7 @@ def build_signal(signal_date: str, candidate: pd.Series, config: dict[str, Any])
         "planned_buy_price": "T+1_open_or_limit_order",
         "planned_exit_date": next_trade_day(signal_date, 2),
         "planned_exit_rule": "T+2_close",
-        "position_pct": float(l_config.get("position_pct", 0.8)),
+        "position_pct": float(l_config.get("position_pct", 0.825)),
         "live_order_enabled": bool(l_config.get("live_order_enabled", False)),
         "status": "pending",
         "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -409,7 +409,7 @@ def main() -> None:
     print(f"  股票: {signal['ts_code']} {signal['name']}  题材/行业={signal['theme_name']}")
     print(f"  排名: theme_heat_rank={signal['theme_heat_rank']} theme_leader_rank={signal['theme_leader_rank']} theme_height_rank={signal['theme_height_rank']}")
     print(f"  过滤: segment_retreat_state_bucket={signal['segment_retreat_state_bucket']} segment_limit_down_count_bucket={signal['segment_limit_down_count_bucket']} theme_limit_count={signal['theme_limit_count']}")
-    print(f"  计划: {signal['planned_buy_date']} 买入，{signal['planned_exit_date']} 收盘平仓，仓位{signal['position_pct']:.0%}")
+    print(f"  计划: {signal['planned_buy_date']} 买入，{signal['planned_exit_date']} 收盘平仓，目标仓位{signal['position_pct']:.1%}")
     print(f"  策略开关: strategy_l.enabled={bool(config.get('strategy_l', {}).get('enabled', False))}")
     print(f"  实盘开关: strategy_l.live_order_enabled={signal['live_order_enabled']}")
     print("=" * 60)

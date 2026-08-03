@@ -59,7 +59,7 @@ OUTPUT_DIR = PROJECT_ROOT / "reports" / "strategy_e2"
 ROLLING_SIGNAL_PATH = OUTPUT_DIR / "e2_signals_recent.json"
 STRATEGY_D_SIGNAL_DIR = PROJECT_ROOT / "reports" / "strategy_d"
 
-POSITION_PCT = 0.8
+POSITION_PCT = 0.825
 E2_MIN_CIRC_MV = 0       # 不设下限
 E2_MAX_CIRC_MV = float("inf")
 E2_VERSION = "E2_segment_neutral_circ_mv_asc_v1"
@@ -483,7 +483,7 @@ def main() -> None:
     print(f"  板块:       {signal['market_segment']}  ({signal['segment_retreat_state_bucket']})")
     print(f"  流通市值:   {signal['circ_mv']/10000:.1f} 亿")
     print(f"  成交概率:   {signal['fill_probability']:.1%}")
-    print(f"  买入计划:   {signal['planned_buy_date']} 开盘价买入  仓位{signal['position_pct']:.0%}")
+    print(f"  买入计划:   {signal['planned_buy_date']} 开盘价买入  目标仓位{signal['position_pct']:.1%}")
     print(f"  卖出计划:   {signal['planned_exit_date']} 收盘前卖出")
     print("=" * 60)
     print()

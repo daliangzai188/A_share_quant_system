@@ -1264,8 +1264,8 @@ class EntryExitCapacityGateTest(unittest.TestCase):
             "live_trade": {
                 "max_single_order_amount": 0,
                 "max_position_pct": 0.85,
-                "max_total_position_pct": 0.8,
-                "transition_use_full_available_cash": True,
+                "max_total_position_pct": 0.825,
+                "transition_use_full_available_cash": False,
                 "round_lot_size": 100,
                 "cash_buffer_amount": 0,
                 "total_liquidity_cap_pct": 0.005,
@@ -1354,72 +1354,32 @@ class EntryExitCapacityGateTest(unittest.TestCase):
         self.assertNotIn("SAME_STOCK_ALREADY_HELD_SKIP", str(row["risk_flags"]))
         self.assertGreater(int(row["round_lot_shares"]), 0)  # 正常继续定仓,不拦截
 
-    def test_transition_day_due_position_uses_all_remaining_cash_up_to_85_pct(self) -> None:
-        """衔接日使用全部剩余现金，但任何一只新仓不得超过总资产85%。"""
+    def test_due_position_is_counted_and_blocks_transition_entry(self) -> None:
+        """今日到期仓仍是实际旧仓：计入市值，并触发执行层串行单仓阻断。"""
         today_str = trading_daemon.today_beijing().strftime("%Y%m%d")
-        quote_map = {"002800.SZ": SimpleNamespace(last_price=10.0)}
-        cases = [
-            (200_000.0, 800_000.0, 199_000.0),
-            (600_000.0, 400_000.0, 599_000.0),
-            (900_000.0, 100_000.0, 849_000.0),
-        ]
-
-        for available_cash, old_market_value, expected_amount in cases:
-            held = [{
-                "ts_code": "600000.SH",
-                "status": "open",
-                "shares": int(old_market_value / 10),
-                "order_id": "due-today",
-                "buy_date": "20260727",
-                "planned_exit_date": today_str,
-            }]
-            broker_positions = [
-                SimpleNamespace(
-                    ts_code="600000.SH",
-                    volume=int(old_market_value / 10),
-                    market_value=old_market_value,
-                )
-            ]
-            account = SimpleNamespace(
-                total_asset=1_000_000.0,
-                available_cash=available_cash,
+        held = [{
+            "ts_code": "600000.SH",
+            "status": "open",
+            "shares": 80_000,
+            "order_id": "due-today",
+            "buy_date": "20260727",
+            "planned_exit_date": today_str,
+        }]
+        broker_positions = [SimpleNamespace(
+            ts_code="600000.SH", volume=80_000, market_value=800_000.0,
+        )]
+        with patch.object(trading_daemon, "load_positions", return_value=held):
+            self.assertEqual(
+                trading_daemon._strategy_only_market_value(
+                    broker_positions, exclude_due_today=True
+                ),
+                800_000.0,
+            )
+            self.assertTrue(
+                trading_daemon._broker_has_preexisting_strategy_position(broker_positions)
             )
 
-            with self.subTest(available_cash=available_cash), patch.object(
-                trading_daemon, "load_positions", return_value=held
-            ), patch.object(
-                trading_daemon, "load_json_config", return_value=self._config()
-            ), patch.object(
-                trading_daemon, "_signal_day_amount", return_value=200_000_000.0
-            ):
-                self.assertTrue(
-                    trading_daemon._has_due_today_strategy_position(broker_positions)
-                )
-                entry_market_value = trading_daemon._strategy_only_market_value(
-                    broker_positions,
-                    exclude_due_today=True,
-                )
-                result = trading_daemon.resize_buy_orders_for_live_account(
-                    self._planned_order(),
-                    account,
-                    quote_map,
-                    entry_market_value,
-                    transition_full_cash=True,
-                )
-
-            row = result.iloc[0]
-            self.assertEqual(entry_market_value, 0.0)
-            self.assertEqual(float(row["planned_amount_by_equity"]), expected_amount)
-            self.assertLessEqual(
-                float(row["planned_amount_by_equity"]),
-                account.available_cash,
-            )
-            self.assertLess(
-                float(row["planned_amount_by_equity"]),
-                account.total_asset * 0.85,
-            )
-
-    def test_normal_empty_account_keeps_80_pct_target(self) -> None:
+    def test_normal_empty_account_uses_82_5_pct_target(self) -> None:
         account = SimpleNamespace(total_asset=1_000_000.0, available_cash=1_000_000.0)
         quote_map = {"002800.SZ": SimpleNamespace(last_price=10.0)}
         with patch.object(
@@ -1436,10 +1396,10 @@ class EntryExitCapacityGateTest(unittest.TestCase):
                 0.0,
                 transition_full_cash=False,
             )
-        self.assertEqual(float(result.iloc[0]["planned_amount_by_equity"]), 799_000.0)
+        self.assertEqual(float(result.iloc[0]["planned_amount_by_equity"]), 824_000.0)
 
-    def test_non_due_or_manual_exit_position_still_uses_total_position_cap(self) -> None:
-        """未到期、逾期或人工退出仓不能借衔接日规则绕过总仓位上限。"""
+    def test_all_old_strategy_position_states_block_new_entry(self) -> None:
+        """未到期、逾期、今日到期和人工退出仓都属于旧策略仓。"""
         today_str = trading_daemon.today_beijing().strftime("%Y%m%d")
         broker_positions = [
             SimpleNamespace(
@@ -1472,8 +1432,8 @@ class EntryExitCapacityGateTest(unittest.TestCase):
                     exclude_due_today=True,
                 )
                 self.assertEqual(entry_market_value, 800_000.0)
-                self.assertFalse(
-                    trading_daemon._has_due_today_strategy_position(broker_positions)
+                self.assertTrue(
+                    trading_daemon._broker_has_preexisting_strategy_position(broker_positions)
                 )
 
     def test_external_broker_position_does_not_trigger_transition_mode(self) -> None:
@@ -1491,7 +1451,18 @@ class EntryExitCapacityGateTest(unittest.TestCase):
         ]
         with patch.object(trading_daemon, "load_positions", return_value=[]):
             self.assertFalse(
-                trading_daemon._has_due_today_strategy_position(external_positions)
+                trading_daemon._broker_has_preexisting_strategy_position(external_positions)
+            )
+
+    def test_today_pov_partial_fill_is_not_treated_as_old_position(self) -> None:
+        today_str = trading_daemon.today_beijing().strftime("%Y%m%d")
+        local = [{
+            "ts_code": "002800.SZ", "status": "open", "buy_date": today_str,
+        }]
+        broker = [SimpleNamespace(ts_code="002800.SZ", volume=500, market_value=5_000.0)]
+        with patch.object(trading_daemon, "load_positions", return_value=local):
+            self.assertFalse(
+                trading_daemon._broker_has_preexisting_strategy_position(broker)
             )
 
 
@@ -1502,7 +1473,7 @@ class TransitionLiveOrderGatewayTest(unittest.TestCase):
         gateway.live_config = {
             "max_single_order_amount": 0,
             "max_position_pct": 0.85,
-            "max_total_position_pct": 0.8,
+            "max_total_position_pct": 0.825,
             "round_lot_size": 100,
             "allow_buy": True,
             "allow_sell": True,
@@ -1543,14 +1514,17 @@ class TransitionLiveOrderGatewayTest(unittest.TestCase):
             transition_full_cash=transition,
         ).iloc[0]
 
-    def test_transition_gateway_allows_above_80_but_not_above_85_pct(self) -> None:
+    def test_legacy_transition_flag_cannot_override_82_5_pct_cap(self) -> None:
         gateway = self._gateway()
+        within_target = self._preview(gateway, 824_000.0, transition=False)
         ordinary = self._preview(gateway, 830_000.0, transition=False)
-        transition = self._preview(gateway, 830_000.0, transition=True)
+        legacy_transition = self._preview(gateway, 830_000.0, transition=True)
         above_hard_cap = self._preview(gateway, 860_000.0, transition=True)
 
+        self.assertEqual(within_target["validation_status"], "PASS")
         self.assertIn("EXCEED_TOTAL_POSITION_PCT", ordinary["reject_reasons"])
-        self.assertEqual(transition["validation_status"], "PASS")
+        self.assertIn("EXCEED_TOTAL_POSITION_PCT", legacy_transition["reject_reasons"])
+        self.assertFalse(bool(legacy_transition["transition_full_cash"]))
         self.assertIn("EXCEED_POSITION_PCT", above_hard_cap["reject_reasons"])
 
 
@@ -1564,7 +1538,7 @@ class ExchangePermissionGatewayTest(unittest.TestCase):
             "allowed_exchanges": ["SH", "SZ", "BJ"],
             "max_single_order_amount": 0,
             "max_position_pct": 0.85,
-            "max_total_position_pct": 0.8,
+            "max_total_position_pct": 0.825,
             "round_lot_size": 100,
             "allow_buy": True,
             "allow_sell": True,

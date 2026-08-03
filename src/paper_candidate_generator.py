@@ -260,7 +260,7 @@ class PaperCandidateGenerator:
             "name": row.name,
             "market_segment": getattr(row, "market_segment", ""),
             "profit_source_score": float(getattr(row, "profit_source_score", 0.0)),
-            "planned_position_pct": float(self.config.get("position", {}).get("target_position_pct", 0.8))
+            "planned_position_pct": float(self.config.get("position", {}).get("target_position_pct", 0.825))
             if planned_action == self.paper_config.get("planned_action_for_selected", "PLAN_BUY_T1_OPEN")
             else 0.0,
             "selection_reason": self.conditions_text(),

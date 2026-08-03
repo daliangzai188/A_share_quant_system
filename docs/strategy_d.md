@@ -152,7 +152,7 @@ scripts/monitor_strategy_d_intraday.py
 | `CANCEL_HHMM` | 1455 | 自动撤单时间 |
 | `POLL_BATCH_SIZE` | 500 | 每批 get_full_tick 数量 |
 | `POLL_INTERVAL_SEC` | 30 | 轮询间隔（秒） |
-| `D_POSITION_PCT` | 0.80 | 仓位比例 |
+| `D_POSITION_PCT` | 0.825 | 普通空仓日目标仓位82.5%，仍受85%单票硬顶 |
 
 ### 5.3 股票状态跟踪（StockState）
 

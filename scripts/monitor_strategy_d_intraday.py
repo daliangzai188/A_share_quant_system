@@ -56,7 +56,7 @@ CANCEL_HHMM = 1455           # 14:55 撤销所有未成交D委托
 POLL_BATCH_SIZE = 500        # 每次 get_full_tick 的股票数量
 POLL_INTERVAL_SEC = 30       # 每批轮询间隔（秒）
 MONITOR_START_HHMM = 930     # 脚本等待开始扫描的时间（集合竞价结束后）
-D_POSITION_PCT = 0.80        # 默认仓位比例，优先使用 config.json/strategy_d/position_pct
+D_POSITION_PCT = 0.825       # 默认目标仓位82.5%，优先使用 config.json/strategy_d/position_pct
 D_RETRY_TOP_N = 1            # 严格对齐D原始回测口径：只尝试排序第1名，失败不补偿
 MIN_D_VALID_LIMIT_PRICE = 1.0  # D只做正常A股涨停价；QMT异常行情可能返回0.x，必须本地拦截
 MAX_D_INVALID_PRICE_TICKS = 3  # 连续3轮仍异常才判定为行情源有问题，避免单帧脏数据误伤
@@ -283,22 +283,44 @@ def estimate_upper_limit(ts_code: str, pre_close: float, name: object | None = N
     return round_price(pre_close * (1 + limit_up_pct(ts_code, name)))
 
 
-def check_abc_position_occupied() -> tuple[bool, str]:
-    """检查是否有未平仓的ABC持仓。有持仓则返回(True, 持仓描述)，否则(False, '')。"""
+def check_strategy_position_occupied(broker: Any | None = None) -> tuple[bool, str]:
+    """检查券商是否仍实际持有本系统旧策略仓。
+
+    本地open/sell_pending记录只负责识别策略身份，券商volume>0负责确认真实持仓；
+    因此打新中签、债券和人工仓不会误阻断D。今日到期、逾期、待卖以及D自身旧仓
+    都属于旧策略仓，实际清空前禁止D再次开仓。
+    """
     pos_file = PROJECT_ROOT / "data" / "processed" / "positions.json"
     if not pos_file.exists():
         return False, ""
     try:
         import json
         positions = json.loads(pos_file.read_text(encoding="utf-8"))
-        open_pos = [p for p in positions if p.get("status") == "open"
-                    and p.get("strategy_leg", "").upper() != "D"]
+        open_pos = [
+            p for p in positions
+            if str(p.get("status", "")).lower() in {"open", "sell_pending"}
+        ]
         if not open_pos:
             return False, ""
+        if broker is not None:
+            try:
+                broker_codes = {
+                    str(getattr(p, "ts_code", "")).split(".")[0]
+                    for p in (broker.query_positions() or [])
+                    if int(getattr(p, "volume", 0) or 0) > 0
+                }
+            except Exception as exc:
+                return True, f"券商持仓查询失败，按安全口径禁止D开仓({exc})"
+            open_pos = [
+                p for p in open_pos
+                if str(p.get("ts_code", "")).split(".")[0] in broker_codes
+            ]
+            if not open_pos:
+                return False, ""
         desc = ", ".join(f"{p['ts_code']}({p.get('strategy_leg','?')})" for p in open_pos)
         return True, desc
     except Exception as e:
-        return False, f"读取持仓失败({e})"
+        return True, f"读取持仓失败，按安全口径禁止D开仓({e})"
 
 
 def load_stock_names() -> dict[str, str]:
@@ -315,25 +337,10 @@ def load_stock_names() -> dict[str, str]:
     return {}
 
 
-def get_account_cash(broker) -> float:
-    try:
-        return broker.query_account().available_cash
-    except Exception:
-        return 0.0
-
-
-def calc_shares(cash: float, price: float, position_pct: float) -> int:
-    if price <= 0:
+def calc_shares_below_target_amount(target_amount: float, price: float) -> int:
+    """按已经完成全部资金与仓位风控的目标金额向下取整到100股。"""
+    if target_amount <= 0 or price <= 0:
         return 0
-    return max(int(cash * position_pct / price / 100) * 100, 0)
-
-
-def calc_shares_below_amount(cash: float, price: float, position_pct: float, max_order_amount: float) -> int:
-    if price <= 0:
-        return 0
-    target_amount = cash * position_pct
-    if max_order_amount > 0:
-        target_amount = min(target_amount, max_order_amount)
     return max(int((target_amount - 0.01) / price / 100) * 100, 0)
 
 
@@ -444,10 +451,11 @@ class StrategyDMonitor:
             "D选票规则: 每天最多买1只，挑「涨停封单最凶」的（封单金额÷流通市值最大=封得最死、最不易炸板）；"
             "规则与303倍回测的D口径完全一致；只买排第1的那只，买不进当天就放弃、不用第2名将就。",
         )
+        fixed_cap_text = f"{max_order_amount:.0f}元" if max_order_amount > 0 else "不设固定金额上限"
         self.logger.info(
-            "D开仓参数: 仓位=%.0f%% 单笔金额上限<%.0f元 买入价=涨停价 14:55处理未成交/部分成交委托",
+            "D开仓参数: 目标仓位=%.1f%% 单票硬顶=85%% 固定单笔上限=%s 买入价=涨停价 14:55处理未成交/部分成交委托",
             self.position_pct * 100,
-            max_order_amount,
+            fixed_cap_text,
         )
 
     def _batches(self) -> list[list[str]]:
@@ -871,15 +879,38 @@ class StrategyDMonitor:
                 self.order_placed = False
                 self.order_locked_ts_code = ""
                 return False
-            cash = get_account_cash(self.broker)
-            max_order_amount = float(self.config.get("live_trade", {}).get("max_single_order_amount", 50000))
-            shares = calc_shares_below_amount(cash, st.upper_limit, self.position_pct, max_order_amount)
+            occupied, occupied_desc = check_strategy_position_occupied(
+                self.broker if self.live_order else None
+            )
+            if occupied:
+                fail_reason = f"旧策略仓未实际清空，取消D开仓：{occupied_desc}"
+                self.logger.warning("D下单拦截: %s", fail_reason)
+                record["order_status"] = "REJECTED_EXISTING_STRATEGY_POSITION"
+                record["order_status_text"] = fail_reason
+                record["failure_reason"] = fail_reason
+                return True
+            account = self.broker.query_account()
+            available_cash = float(getattr(account, "available_cash", 0.0) or 0.0)
+            total_asset = float(getattr(account, "total_asset", 0.0) or available_cash)
+            live_cfg = self.config.get("live_trade", {})
+            max_order_amount = float(live_cfg.get("max_single_order_amount", 0) or 0)
+            max_position_pct = float(live_cfg.get("max_position_pct", 0.85))
+            max_total_position_pct = float(live_cfg.get("max_total_position_pct", 0.825))
+            cash_buffer = float(live_cfg.get("cash_buffer_amount", 1000) or 0)
+            target_amount = min(
+                max(available_cash - cash_buffer, 0.0),
+                total_asset * self.position_pct,
+                total_asset * max_total_position_pct,
+                total_asset * max_position_pct,
+            )
+            if max_order_amount > 0:
+                target_amount = min(target_amount, max_order_amount)
+            shares = calc_shares_below_target_amount(target_amount, st.upper_limit)
             if shares <= 0:
                 self.logger.warning("可用资金不足，跳过下单: %s", st.ts_code)
                 return True
-            target_amount = cash * self.position_pct
             actual_amount = shares * st.upper_limit
-            actual_position_pct = actual_amount / cash if cash > 0 else 0.0
+            actual_position_pct = actual_amount / total_asset if total_asset > 0 else 0.0
             req = OrderRequest(
                 ts_code=st.ts_code,
                 broker_code=tushare_to_qmt_code(st.ts_code),
@@ -996,7 +1027,7 @@ class StrategyDMonitor:
                     record["filled_qty"] = checked_qty
                     record["filled_amount"] = checked_amount
                     self.logger.info(
-                        "D委托信息: 策略=D 股票=%s %s 委托%d股 %.2f 总委托金额=%.2f 已成交%d股 已成交金额=%.2f 未成交金额=%.2f 目标仓位=%.0f%% 实际仓位=%.2f%% 单笔上限需小于%.0f order_id=%s 提交后状态=%s(%s)",
+                        "D委托信息: 策略=D 股票=%s %s 委托%d股 %.2f 总委托金额=%.2f 已成交%d股 已成交金额=%.2f 未成交金额=%.2f 目标仓位=%.1f%% 实际仓位=%.2f%% 固定单笔上限=%s order_id=%s 提交后状态=%s(%s)",
                         st.ts_code,
                         st.name,
                         shares,
@@ -1007,7 +1038,7 @@ class StrategyDMonitor:
                         unchecked_amount,
                         self.position_pct * 100,
                         actual_position_pct * 100,
-                        max_order_amount,
+                        f"{max_order_amount:.0f}元" if max_order_amount > 0 else "无",
                         result.order_id,
                         fill_check.status_text,
                         fill_check.status_code,
@@ -1469,18 +1500,18 @@ class StrategyDMonitor:
     def run(self) -> None:
         self.setup()
 
-        # ── ABC持仓检测：有持仓就直接退出，不做D ────────────────────────────
-        occupied, desc = check_abc_position_occupied()
+        # ── 串行单仓检测：券商仍有任何旧策略仓就直接退出，不做D ─────────────
+        occupied, desc = check_strategy_position_occupied(self.broker if self.live_order else None)
         if occupied:
             msg = (
                 f"\n{'='*55}\n"
-                f"  [跳过] 今日检测到ABC持仓，D策略不启动\n"
+                f"  [跳过] 今日检测到旧策略仓，D策略不启动\n"
                 f"  持仓: {desc}\n"
-                f"  原因: 资金被占用（回测验证此情况D胜率仅20%，均亏2%）\n"
+                f"  原因: 已取消衔接开仓；券商确认实际清仓前禁止D买入\n"
                 f"{'='*55}\n"
             )
             print(msg)
-            self.logger.info("ABC有持仓，D监控跳过: %s", desc)
+            self.logger.info("旧策略仓未实际清空，D监控跳过: %s", desc)
             return
 
         while now_hhmm() < self.monitor_start_hhmm:
@@ -1575,7 +1606,7 @@ def main() -> None:
         print("  D排序口径: 实时封单金额 / 流通市值(fd_amount_to_circ_mv) 降序")
         print(f"  炸板次数上限: {D_MAX_OPEN_TIMES}")
         print(f"  允许市场分段: {','.join(sorted(allowed_segments))}")
-        print(f"  开仓仓位: {position_pct:.0%}")
+        print(f"  目标开仓仓位: {position_pct:.1%}")
         print("  补偿机制: 已取消，只尝试D排序第1名")
         print(f"  扫描开始: {hhmm_to_str(args.start_hhmm)}")
         print(f"  观察提醒: {hhmm_to_str(WATCH_START_HHMM)} 起（10:00后回封发WATCH）")

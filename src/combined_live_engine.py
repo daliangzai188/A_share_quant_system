@@ -13,7 +13,7 @@ from src.rolling_signal_store import latest_signal_for_buy_date, signal_by_signa
 from src.utils.config import get_project_root, load_json_config, mkdir_p
 from src.utils.time_utils import today_beijing
 
-_E2_POSITION_PCT = 0.8
+_E2_POSITION_PCT = 0.825
 _E2_LOT_SIZE = 100
 
 
@@ -155,11 +155,11 @@ class CombinedLiveEngine:
         和 LiveOrderGateway 的交易时间、账户资金、涨跌停、重复委托等校验。
         """
         limit_close = float(signal.get("limit_close", 0.0))
-        position_pct = float(self.config.get("strategy_l", {}).get("position_pct", signal.get("position_pct", 0.8)))
+        position_pct = float(self.config.get("strategy_l", {}).get("position_pct", signal.get("position_pct", 0.825)))
         initial_equity = float(self.config.get("position", {}).get("initial_cash", 500_000.0))
         planned_amount = initial_equity * position_pct
         if str(self.config.get("trade_mode", "")).lower() == "live":
-            # 0=不限额（80%仓位接管），>0=单笔限额。
+            # 0=不限额（82.5%目标仓位接管），>0=单笔限额。
             max_single_order_amount = float(
                 self.config.get("live_trade", {}).get("max_single_order_amount", 0) or 0
             )
@@ -230,7 +230,6 @@ class CombinedLiveEngine:
             if str(p.get("planned_exit_date", "99991231")) <= today
             or str(p.get("status", "")).lower() == "sell_pending"
         ]
-        holding_l_positions = [p for p in open_l_positions if p not in due_l_positions]
         state_df = pd.DataFrame([{
             "today": today,
             "active_strategy_mode": self.active_strategy_mode(),
@@ -287,11 +286,11 @@ class CombinedLiveEngine:
                 reason="当前仍有非L旧持仓，L独立模式不重复占用资金；先处理旧持仓再考虑L。",
                 source="positions.json",
             ))
-        elif holding_l_positions:
+        elif open_l_positions:
             decisions.append(CombinedLiveDecision(
                 action="BLOCK_L_BUY_BY_L_POSITION",
                 strategy_leg="L",
-                reason="已有未到期L持仓，L独立模式不重复开仓。",
+                reason="仍有L持仓（含今日到期或待卖）；券商确认清仓前，L独立模式禁止新开仓。",
                 source="positions.json",
             ))
         elif not bool(l_config.get("enabled", False)):
@@ -529,13 +528,10 @@ class CombinedLiveEngine:
             # 串行单仓守卫（2026-07-23 北方长龙 D+L 并存 bug）：mode1 无买入若是因未到期
             # 非L持仓（D/E2/A/C）占用资金所致（build_mode1_plan 已 BLOCK_ABC_BUY），L 补位
             # 同样不得开仓，否则与旧仓并存，违反 8302x daily_cash_constraint 串行单仓口径。
-            # 仅今日到期（衔接日会在14:55平仓）或 sell_pending 的持仓不算占用；L 替换分支
-            # 不受影响（走到那里说明 mode1 有买入=已是空仓/衔接日/D让路的可开仓态）。
+            # 今日到期、逾期和 sell_pending 仍属于实际旧仓；只要未确认清仓，L补位也禁止开仓。
             holding_non_l_positions = [
                 p for p in positions
                 if self.is_open_position(p) and not self.is_l_position(p)
-                and str(p.get("planned_exit_date", "99991231")) > today
-                and str(p.get("status", "")).lower() != "sell_pending"
             ]
             if holding_non_l_positions:
                 blockers = "、".join(
@@ -548,8 +544,8 @@ class CombinedLiveEngine:
                     ts_code=str(signal.get("ts_code", "")),
                     name=str(signal.get("name", "")),
                     reason=(
-                        f"已有未到期非L持仓（{blockers}）占用资金，L补位不得开新仓"
-                        f"（串行单仓口径，与A/C/E2/D一致）；等其到期平仓后再择机开L。"
+                        f"已有非L策略持仓（{blockers}）尚未实际清空，L补位不得开新仓"
+                        f"（串行单仓口径，与A/C/E2/D一致）；券商确认清仓后再择机开L。"
                     ),
                     source="positions.json",
                 )
@@ -780,7 +776,7 @@ class CombinedLiveEngine:
         initial_equity = float(self.config.get("position", {}).get("initial_cash", 500_000.0))
         planned_amount = initial_equity * _E2_POSITION_PCT
         if str(self.config.get("trade_mode", "")).lower() == "live":
-            # 0=不限额（80%仓位接管），>0=单笔限额。
+            # 0=不限额（82.5%目标仓位接管），>0=单笔限额。
             max_single_order_amount = float(
                 self.config.get("live_trade", {}).get("max_single_order_amount", 0) or 0
             )
@@ -916,11 +912,9 @@ class CombinedLiveEngine:
             if str(p.get("planned_exit_date", "99991231")) <= today
             or str(p.get("status", "")).lower() == "sell_pending"
         ]
-        # 衔接日到期判定必须覆盖全部非D腿(2026-07-17 天顺B腿事故修复):
-        # 原实现只把 E2 的今日到期仓从"占用"中排除；当前A/C腿今日到期(14:55收盘平)
-        # 的仓被当成"未到期旧持仓"一刀切 BLOCK,漏掉衔接日新候选——而模式3回测
-        # 基准(5604x)正是"衔接日用剩余现金买新仓"口径,17笔衔接新仓含最大的肉。
-        # ABC 到期卖出由 daemon check_and_close_positions 直卖,不需要计划单行。
+        # 今日到期集合只用于生成退出计划和T+0同票保护，绝不能再从开仓占用中排除。
+        # 新口径（2026-08-03）：旧仓实际清空前一律不买新仓，取消尾盘旧仓与早盘新仓并存。
+        # ABC 到期卖出仍由 daemon check_and_close_positions 执行，不需要额外计划单行。
         due_non_d_positions = [
             p for p in open_non_d_positions
             if not self.is_manual_exit_only_position(p)
@@ -931,8 +925,6 @@ class CombinedLiveEngine:
         ]
         # 今日到期卖出的标的代码（T+0限制：当日不可再买入同一标的）
         due_selling_codes: set[str] = {str(p.get("ts_code", "")) for p in due_non_d_positions}
-        # 非D持仓中今日不到期的部分——才是真正占用资金、阻断新开仓的持仓
-        holding_non_d_positions = [p for p in open_non_d_positions if p not in due_non_d_positions]
         abc_path, abc_orders = self.load_latest_abc_orders()
         # ABC 计划单日期校验（E2 planned_buy_date==today 的同款保护）：
         # load_latest_abc_orders 只按文件时间取最新，若某晚收盘流水线失败，
@@ -1071,23 +1063,23 @@ class CombinedLiveEngine:
                     source="combined_state_machine",
                 ))
 
-        elif holding_non_d_positions:
-            # 有尚未到期的非D持仓，资金仍被占用，阻断新开仓
+        elif open_non_d_positions:
+            # 只要非D旧仓尚未实际清空（含今日到期、逾期、sell_pending），就阻断所有新开仓。
             decisions.append(CombinedLiveDecision(
                 action="BLOCK_ABC_BUY", strategy_leg="A+C",
-                reason="存在未到期旧持仓（A/C、E2或仅人工退出的历史B仓），组合状态机不允许重复开仓。",
+                reason="存在尚未实际清空的旧策略仓（A/C、E2/L或仅人工退出的历史B仓），取消衔接开仓；券商确认清仓前不允许新买入。",
                 source="positions.json",
             ))
             decisions.append(CombinedLiveDecision(
                 action="BLOCK_D_INTRADAY_MONITOR", strategy_leg="D",
-                reason="存在未到期旧持仓占用资金，D盘中策略跳过。",
+                reason="存在尚未实际清空的旧策略仓，D盘中策略跳过；确认清仓后才允许下一次正常开仓。",
                 source="positions.json",
             ))
 
         else:
-            # 账户空仓 OR 所有非D持仓今日均到期（衔接日：旧仓14:55收盘平仓，
-            # 新仓早盘用剩余现金买入=模式3回测口径,日内两仓并存几小时;
-            # resize按实际可用现金定仓,天然限制在"剩余现金"内）：
+            # 只有账户无旧策略仓时，才按优先级 ABC > E2 > D 决定今日行动。
+            # D策略接力是独立流程：09:23卖出D并确认券商空仓后，状态机会重新生成计划；
+            # 未确认卖出前仍不会进入本分支。
             # 按优先级 ABC > E2 > D 决定今日行动
             abc_decisions = self.build_abc_buy_decisions(abc_orders, str(abc_path or ""))
             # T+0限制：过滤今日集合竞价已卖出的标的（同日不可再买入）
@@ -1443,7 +1435,8 @@ class CombinedLiveEngine:
 - 若存在 A/C 旧持仓或仅人工退出的历史B仓，阻断 D 盘中买入，避免资金冲突。
 - 若今日已有 A/C 买入计划，默认不启动 D 盘中买入监控。
 - 若无持仓且无 A/C 买入计划，才允许 D 盘中监控；A/C/D 均空闲时，E2 可能触发。
-- E2 条件：segment_retreat_state_bucket=neutral + 非ST + 成交可靠 → 流通市值最小1只；T+1开盘买80%仓，T+2收盘卖。
+- 普通空仓日目标仓位为总资产82.5%，任何单票仍受总资产85%硬顶；旧策略仓未实际清空前取消衔接开仓。
+- E2 条件：segment_retreat_state_bucket=neutral + 非ST + 成交可靠 → 流通市值最小1只；T+1开盘买82.5%目标仓，T+2收盘卖。
 - L 条件：仅在 active_strategy_profile.mode=2 且 strategy_l.live_order_enabled=true 时，才把昨日 L 信号转换成今日买入计划；默认 mode=1 不启用 L。
 - model=3 条件：active_strategy_profile.mode=3 且 strategy_model3.live_order_enabled=true 时，先生成mode=1计划；mode=1空闲则允许L补位，mode=1有买入计划时仅允许满足创业板、theme_limit_count>=2、非after_1430的L替换。
 - 真实下单仍必须经过 LiveOrderGateway 的交易时间、涨跌停、持仓、资金和重复委托校验。

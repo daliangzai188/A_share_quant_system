@@ -1344,22 +1344,42 @@ def _execute_orders_inprocess(
             .dropna().astype(str).unique().tolist()
         )
         quote_map = adapter.get_full_tick(ts_codes) if ts_codes else {}
-        # 仓位口径只计策略持仓市值:打新中签/人工持仓不挤占策略额度(2026-07-17)
-        # 衔接日旧仓明确在今日14:55到期，开新仓时不占普通日80%新仓额度；但券商
-        # available_cash 仍包含其资金占用，因此新仓只能使用尚未占用的剩余现金。
-        transition_full_cash = bool(
-            gateway.live_config.get("transition_use_full_available_cash", True)
-        ) and _has_due_today_strategy_position(positions)
+        # 旧策略仓未实际清空时取消衔接买入。这里是执行层兜底：即使磁盘上残留了
+        # 旧版买入计划，也只保留卖单，绝不让历史计划绕过新的串行单仓口径。
+        if _broker_has_preexisting_strategy_position(positions):
+            buy_mask = planned_orders["side"].astype(str).str.upper().eq("BUY")
+            if buy_mask.any():
+                blocked = planned_orders[buy_mask]
+                blocked_names = "、".join(
+                    f"{row.get('ts_code', '')} {row.get('name', '')}" for _, row in blocked.iterrows()
+                )
+                log.warning(
+                    "🚫 [%s] 券商仍有本系统旧策略仓，取消衔接开仓；已拦截买单：%s。",
+                    tag,
+                    blocked_names,
+                )
+                planned_orders = planned_orders[~buy_mask].copy()
+                _notify(
+                    "buy_result",
+                    "🚫 旧仓未清空，已拦截新开仓",
+                    f"{blocked_names} 未提交；券商仍实际持有本系统旧策略仓，确认清仓前不允许新买入。",
+                    level="timeSensitive",
+                )
+        if planned_orders.empty:
+            return False
+
+        # 仓位口径只计策略持仓市值：打新中签/人工持仓不挤占策略额度。
+        # 今日到期仓也必须计入，直到券商实际清空为止。
         entry_market_value = _strategy_only_market_value(
             positions,
-            exclude_due_today=True,
+            exclude_due_today=False,
         )
         planned_orders = resize_buy_orders_for_live_account(
             planned_orders=planned_orders,
             account=account,
             quote_map=quote_map,
             current_market_value=entry_market_value,
-            transition_full_cash=transition_full_cash,
+            transition_full_cash=False,
         )
 
         preview = gateway.validate_planned_orders(
@@ -1370,7 +1390,7 @@ def _execute_orders_inprocess(
             positions=positions,
             account_total_asset=account.total_asset,
             current_market_value=entry_market_value,
-            transition_full_cash=transition_full_cash,
+            transition_full_cash=False,
         )
 
         # 保存 preview CSV 供审计
@@ -1645,18 +1665,14 @@ def resize_buy_orders_for_live_account(
 
     config = load_json_config(PROJECT_ROOT / "config" / "config.json")
     live_cfg = config.get("live_trade", {})
-    # 统一语义：max_single_order_amount=0 → 取消固定金额限额，普通日由80%总仓位
-    # 接管；衔接日使用实时剩余现金并受85%单票硬顶；>0 → 单笔固定限额（元）。
+    # 统一语义：max_single_order_amount=0 → 取消固定金额限额，空仓日由82.5%
+    # 目标总仓位接管，同时保留85%单票硬顶；>0 → 额外施加单笔固定限额（元）。
+    # transition_full_cash 仅兼容旧调用签名，不再放宽总仓位上限。
     max_single_order_amount = _effective_single_order_cap(live_cfg)
-    max_position_pct = float(live_cfg.get("max_position_pct", 0.8))
-    max_total_position_pct = float(live_cfg.get("max_total_position_pct", 0.8))
-    transition_full_cash = bool(
-        transition_full_cash
-        and live_cfg.get("transition_use_full_available_cash", True)
-    )
-    effective_total_position_pct = (
-        max_position_pct if transition_full_cash else max_total_position_pct
-    )
+    max_position_pct = float(live_cfg.get("max_position_pct", 0.85))
+    max_total_position_pct = float(live_cfg.get("max_total_position_pct", 0.825))
+    transition_full_cash = False
+    effective_total_position_pct = max_total_position_pct
     round_lot_size = int(live_cfg.get("round_lot_size", 100))
     cash_buffer = float(live_cfg.get("cash_buffer_amount", 1000))
 
@@ -1666,8 +1682,8 @@ def resize_buy_orders_for_live_account(
     adjusted = planned_orders.copy()
     # 可用现金上限落盘(2026-07-31)：本函数按参考价/最新价折算股数——这是目标仓位
     # 口径（8302x回测按资金比例建模，不预测成交价），而09:20按涨停价委托，限价买单
-    # 冻结资金=委托价×股数（创业板差20%、北交所差30%）。现金成为绑定约束时(衔接日
-    # 旧仓14:55才卖)会挂出超可用资金的委托被券商拒单，故把纯现金上限单独交给下单方
+    # 冻结资金=委托价×股数（创业板差20%、北交所差30%）。即使空仓，手续费、打新冻结
+    # 或人工资金占用也可能让可用现金成为约束，故把纯现金上限单独交给下单方
     # 按真实委托价再折一次。只折现金、不折仓位上限——仓位上限按委托价折会让资金充裕
     # 时每笔无谓少买(50万测算 21400→17900 股)，系统性偏离基准。
     if "live_cash_cap" not in adjusted.columns:
@@ -1679,9 +1695,8 @@ def resize_buy_orders_for_live_account(
         # 后续需要追加 LIVE_SIZE_ADJUSTED 等字符串标记，先转 object，避免09:20实盘定仓时报dtype错误。
         adjusted["risk_flags"] = adjusted["risk_flags"].astype("object")
 
-    # 同票集中度防线(2026-07-16 用户拍板):新候选=已持仓(非当日买入)同一只票
-    # → 放弃买入。否则衔接日变成"早上买回X、下午卖旧仓X"=同票连续暴露4天
-    # 全仓押注,黑天鹅(连续跌停)逃不出来。历史代价=零:199笔审计同票衔接0次。
+    # 同票集中度防线仍保留为纵深保护：即使上游串行仓位门禁失效，新候选也不能
+    # 与昨日及更早买入且未清仓的同一标的重合。
     # ⚠️ 身份区分(用户强调):当日买入的持仓=POV拆单在途(竞价段已成交、
     # 平滑段继续买同一只票),绝不算同票冲突——只拦"昨日及更早买入且未清仓"
     # 的仓与收盘后新候选的重合。
@@ -1853,8 +1868,8 @@ def explain_reject_reasons(row: Any) -> str:
     current_market_value = to_float(row.get("current_market_value", 0.0))
     last_price = to_float(row.get("last_price", 0.0))
     max_cfg = load_json_config(PROJECT_ROOT / "config" / "config.json").get("live_trade", {})
-    max_position_pct = float(max_cfg.get("max_position_pct", 0.8))
-    max_total_position_pct = float(max_cfg.get("max_total_position_pct", 0.8))
+    max_position_pct = float(max_cfg.get("max_position_pct", 0.85))
+    max_total_position_pct = float(max_cfg.get("max_total_position_pct", 0.825))
     effective_total_position_pct = to_float(
         row.get("effective_total_position_pct", max_total_position_pct),
         max_total_position_pct,
@@ -1870,12 +1885,12 @@ def explain_reject_reasons(row: Any) -> str:
                 parts.append(f"不在允许交易时间内；SELL 允许 09:15-11:30、13:00-15:00")
         elif code == "EXCEED_POSITION_PCT":
             cap = total_asset * max_position_pct
-            parts.append(f"超过单票仓位上限：订单约{estimated_amount:.0f}元，上限={total_asset:.0f}×{max_position_pct:.0%}={cap:.0f}元")
+            parts.append(f"超过单票仓位上限：订单约{estimated_amount:.0f}元，上限={total_asset:.0f}×{max_position_pct:.1%}={cap:.0f}元")
         elif code == "EXCEED_TOTAL_POSITION_PCT":
             cap = total_asset * effective_total_position_pct - current_market_value
             parts.append(
                 f"超过总仓位上限：订单约{estimated_amount:.0f}元，"
-                f"当前口径上限{effective_total_position_pct:.0%}，剩余额度约{cap:.0f}元"
+                f"当前口径上限{effective_total_position_pct:.1%}，剩余额度约{cap:.0f}元"
             )
         elif code == "INSUFFICIENT_CASH":
             parts.append(f"可用资金不足：订单约{estimated_amount:.0f}元，可用资金{available_cash:.0f}元")
@@ -5966,6 +5981,14 @@ def _e2_auction_buy_worker(e2_rows: list[Any], broker_cfg: dict, today_str: str)
         # 这里只负责让日志能看出迟到。
         if now_beijing().time() >= datetime.time(9, 25, 0):
             log.warning("E2竞价买入线程晚于09:25启动执行（可能被IO/锁延误），仍尝试挂单；若错过竞价将由09:30补买兜底。")
+        # 09:20检查后到09:24仍可能发生人工成交或状态变化，提交E2买单前再次读取
+        # 券商持仓。只拦昨日及更早的策略仓，不拦当日本次开仓的部分成交。
+        with _qmt_lock:
+            adapter = _qmt_get(broker_cfg)
+            positions_live = adapter.query_positions()
+        if _broker_has_preexisting_strategy_position(positions_live):
+            log.warning("🚫 [E2竞价买入] 券商仍有本系统旧策略仓，取消衔接开仓；E2本轮不挂单。")
+            return
         pov_enabled_e2 = bool(lt.get("pov_enabled", True))
         pov_items_e2: list[dict[str, Any]] = []
         new_pending: list[dict[str, Any]] = []
@@ -6429,6 +6452,14 @@ def _pov_worker() -> None:
         except RuntimeError as e:
             log.error("❌ [POV] 实盘下单条件不满足,平滑段执行线程退出：%s", e)
             return
+        # POV线程支持断点恢复，不能假设一定经过当天09:20的计划门禁；恢复后先用
+        # 券商真实持仓做一次串行单仓校验，防止旧状态文件在旧仓未清时继续买入。
+        with _qmt_lock:
+            adapter = _qmt_get(broker_cfg)
+            positions_live = adapter.query_positions()
+        if _broker_has_preexisting_strategy_position(positions_live):
+            log.warning("🚫 [POV] 券商仍有本系统旧策略仓，取消剩余买入POV，线程退出。")
+            return
         part = float(lt.get("pov_participation", 0.10))
         first_share = float(lt.get("pov_first_slice_share", 0.18))
         chase = float(lt.get("pov_chase_cap", 0.02))
@@ -6568,25 +6599,35 @@ def job_premarket_buy() -> None:
         account = adapter.query_account()
         positions_live = adapter.query_positions()
 
+    # 实盘执行层必须以券商真实持仓为准。旧策略仓（含今日到期/待卖）尚未清空时，
+    # 即使组合计划文件因缓存或旧版本仍带BUY，也要在任何委托提交前直接拦截。
+    # 当日集合竞价/POV已成交的同一笔新仓不属于“旧仓”，不会误伤后续拆单。
+    if _broker_has_preexisting_strategy_position(positions_live):
+        logger().warning("🚫 [盘前买入] 券商仍有本系统旧策略仓，取消衔接开仓；本轮全部买单跳过。")
+        _notify(
+            "buy_result",
+            "🚫 旧仓未清空，今日不开新仓",
+            "券商仍实际持有本系统旧策略仓（含今日到期或待卖仓）；按82.5%串行单仓新口径，本轮买单全部取消。",
+            level="timeSensitive",
+        )
+        return
+
     ts_codes = buy_orders["ts_code"].dropna().astype(str).tolist()
     with _qmt_lock:
         adapter   = _qmt_get(broker_cfg)
         quote_map = adapter.get_full_tick(ts_codes)
 
-    # 按账户资金缩放订单(市值口径只计策略持仓:打新中签/人工持仓不挤占策略额度)
-    # 衔接日今日到期旧仓不占普通日80%额度；真实可用现金仍由券商账户硬约束。
-    transition_full_cash = bool(
-        config.get("live_trade", {}).get("transition_use_full_available_cash", True)
-    ) and _has_due_today_strategy_position(positions_live)
+    # 按账户资金缩放订单：只计策略持仓市值，打新中签/人工持仓不挤占策略额度；
+    # 但所有未清空的策略仓都计入，不再排除今日到期仓。
     buy_orders = resize_buy_orders_for_live_account(
         planned_orders=buy_orders,
         account=account,
         quote_map=quote_map,
         current_market_value=_strategy_only_market_value(
             positions_live,
-            exclude_due_today=True,
+            exclude_due_today=False,
         ),
-        transition_full_cash=transition_full_cash,
+        transition_full_cash=False,
     )
 
     lt_cfg = config.get("live_trade", {})
@@ -6619,7 +6660,7 @@ def job_premarket_buy() -> None:
             # 冻结资金按委托价核一次(2026-07-31)：resize 用参考价折算股数=目标仓位口径
             # （8302x回测按资金比例建模，不预测成交价），但限价买单冻结的是委托价×股数
             # （创业板差20%、北交所差30%）。现金成为绑定约束时
-            # （衔接日旧仓14:55才卖，早盘只剩部分现金）不核这一刀，就会挂出超过可用资金
+            # （例如手续费缓冲、打新冻结或人工资金占用）不核这一刀，就会挂出超过可用资金
             # 的委托被券商拒单，白丢集合竞价排队。只用现金上限截断，不动仓位上限。
             # E2的09:24通道本就是 cap//涨停价，此处对齐同一口径。
             # 取价必须在 register_entry_plan 之前，台账登记的才是真正挂出去的股数。
@@ -7007,9 +7048,9 @@ def has_open_local_position() -> bool:
 def has_position_bought_today() -> bool:
     """今日已有买入成交的持仓——09:20/09:30 防重复买入的正确判据。
 
-    不能用 has_open_local_position()：衔接日（旧仓当日14:55到期平仓）早上
-    买新仓是回测口径的一部分，旧仓(buy_date<今日)的存在不能阻止新仓买入。
-    2026-07-06 贤丰控股漏买事故根因：旧仓德冠新材让09:20/09:30全部跳过。"""
+    该函数只识别“今天这笔开仓是否已成交”，供集合竞价/POV同一笔防重使用。
+    旧仓是否阻断新开仓由 _broker_has_preexisting_strategy_position 单独负责，
+    两种身份不能混用，否则会误伤当日POV部分成交后的继续拆单。"""
     today = today_beijing().strftime("%Y%m%d")
     return any(
         str(p.get("status", "")).lower() in {"open", "sell_pending"}
@@ -7255,7 +7296,12 @@ def _resubmit_premarket_buy(s: dict[str, Any], broker_cfg: dict, config: dict) -
     with _qmt_lock:
         adapter = _qmt_get(broker_cfg)
         account = adapter.query_account()
+        positions_live = adapter.query_positions()
         quote = adapter.get_full_tick([ts_code]).get(ts_code)
+
+    if _broker_has_preexisting_strategy_position(positions_live):
+        logger().warning("🚫 [盘前买入补挂] 券商仍有本系统旧策略仓，取消本次补挂。")
+        return None
 
     price, price_label = _premarket_buy_price(quote, ts_code, name_s, str(s.get("signal_date", "")))
     if price <= 0:
@@ -7266,8 +7312,14 @@ def _resubmit_premarket_buy(s: dict[str, Any], broker_cfg: dict, config: dict) -
     total_asset = float(getattr(account, "total_asset", 0.0) or available_cash)
     cash_buffer = float(live_cfg.get("cash_buffer_amount", 1000))
     max_single = _effective_single_order_cap(live_cfg)
-    max_pct = float(live_cfg.get("max_position_pct", 0.8))
-    usable = min(available_cash - cash_buffer, total_asset * max_pct, max_single)
+    max_position_pct = float(live_cfg.get("max_position_pct", 0.85))
+    max_total_position_pct = float(live_cfg.get("max_total_position_pct", 0.825))
+    usable = min(
+        available_cash - cash_buffer,
+        total_asset * max_position_pct,
+        total_asset * max_total_position_pct,
+        max_single,
+    )
     max_qty_by_cash = int(usable / price) if usable > 0 and price > 0 else 0
     max_qty_by_cash -= max_qty_by_cash % 100
     qty = max(0, min(planned_qty, max_qty_by_cash))
@@ -7983,7 +8035,12 @@ def _e2_place_order_direct(ts_code: str, name: str, planned_qty: int, signal_dat
     with _qmt_lock:
         adapter = _qmt_get(broker_cfg)
         account = adapter.query_account()
+        positions_live = adapter.query_positions()
         quote_map = adapter.get_full_tick([ts_code])
+
+    if _broker_has_preexisting_strategy_position(positions_live):
+        log.warning("🚫 [E2延迟开仓] 券商仍有本系统旧策略仓，取消本次延迟买入。")
+        return False
 
     quote = quote_map.get(ts_code)
     ask_prices = getattr(quote, "ask_prices", None) if quote else None
@@ -8007,8 +8064,14 @@ def _e2_place_order_direct(ts_code: str, name: str, planned_qty: int, signal_dat
     live_cfg = config.get("live_trade", {})
     cash_buffer = float(live_cfg.get("cash_buffer_amount", 1000))
     max_single = _effective_single_order_cap(live_cfg)
-    max_pct = float(live_cfg.get("max_position_pct", 0.8))
-    usable = min(available_cash - cash_buffer, total_asset * max_pct, max_single)
+    max_position_pct = float(live_cfg.get("max_position_pct", 0.85))
+    max_total_position_pct = float(live_cfg.get("max_total_position_pct", 0.825))
+    usable = min(
+        available_cash - cash_buffer,
+        total_asset * max_position_pct,
+        total_asset * max_total_position_pct,
+        max_single,
+    )
     max_qty_by_cash = int(usable / price) if usable > 0 and price > 0 else 0
     max_qty_by_cash = max_qty_by_cash - (max_qty_by_cash % 100)
     qty = max(0, min(planned_qty, max_qty_by_cash))
@@ -8799,8 +8862,8 @@ def job_post_market(end_date: str | None = None) -> None:
 
     report_next_day_candidates()
     # 决策链 summary 必须先于收盘推送：它设置 _last_final_plan（推送的唯一数据源）。
-    # 原顺序 push 在前、summary 在后，push 用到的是上一次的旧计划——2026-07-24 北方长龙
-    # 到期日(衔接日)L补位本应开仓，推送却误报"无计划"（旧数据恰好是前一日的无计划）。
+    # 原顺序 push 在前、summary 在后，push 会读到上一次旧计划；必须先生成本次
+    # 串行单仓结论，再推送“82.5%开仓”或“旧仓未清空不买”的准确结果。
     _log_decision_chain_summary(target_str)
     push_open_plan_notification("收盘")   # 收盘流水线完成→推明日开仓计划(有则详细/无则明示)
     report_signal_readiness_summary(target_str)
@@ -9241,9 +9304,8 @@ def _live_plan_sizing(
 
     口径必须与实盘同源，因此直接复用 resize_buy_orders_for_live_account 本身
     （现金/单票/总仓位/单笔/退出容量五道上限），再按明日委托价=涨停价核一次
-    冻结资金——和 job_premarket_buy 完全一致。区别只有两点：
-      ① 到期判断按 action_date（明日）而非今天，衔接日旧仓才会被正确豁免；
-      ② quote_map 传空，reference_price 即目标仓位折算价（收盘后无实时盘口）。
+    冻结资金——和 job_premarket_buy 完全一致。若券商仍有旧策略仓则返回0股，
+    不再按“明日到期”提前豁免；quote_map 传空时 reference_price 作为折算价。
     只读不下单；QMT不可用或任何异常都返回 None，由调用方回退名义值播报。
 
     同一次收盘流水线里【最终结果】和【最终开仓计划】两处播报都要用，故按
@@ -9279,11 +9341,23 @@ def _live_plan_sizing_uncached(
             adapter = _qmt_get(config.get("broker", {}))
             account, positions_live = _qmt_query_account_positions(adapter, timeout_sec=20.0)
 
-        transition = bool(
-            config.get("live_trade", {}).get("transition_use_full_available_cash", True)
-        ) and _has_due_today_strategy_position(positions_live, action_date)
+        if _broker_has_preexisting_strategy_position(positions_live, action_date):
+            return {
+                "shares": 0,
+                "order_price": _round_stock_price(
+                    ref_price * (1 + _limit_up_pct_for_stock(ts_code, name_s))
+                ),
+                "reference_price": ref_price,
+                "cash_cap": 0.0,
+                "cash_bound": False,
+                "blocked_by_existing_position": True,
+                "available_cash": float(getattr(account, "available_cash", 0.0) or 0.0),
+                "total_asset": float(getattr(account, "total_asset", 0.0) or 0.0),
+                "transition": False,
+                "risk_flags": "EXISTING_STRATEGY_POSITION_BLOCK",
+            }
         market_value = _strategy_only_market_value(
-            positions_live, exclude_due_today=True, as_of_date=action_date
+            positions_live, exclude_due_today=False, as_of_date=action_date
         )
         sized = resize_buy_orders_for_live_account(
             planned_orders=pd.DataFrame([{
@@ -9299,7 +9373,7 @@ def _live_plan_sizing_uncached(
             account=account,
             quote_map={},
             current_market_value=market_value,
-            transition_full_cash=transition,
+            transition_full_cash=False,
             log_adjust=False,   # 播报预演，不打下单路径的"实盘定仓…调整为N股"
         )
         row = sized.iloc[0]
@@ -9310,7 +9384,7 @@ def _live_plan_sizing_uncached(
         )
         if cash_cap > 0 and order_price > 0:
             qty = min(qty, int(cash_cap // order_price // 100) * 100)
-        # 绑定约束判据：冻结后剩下的钱不够再买一手 = 现金已用满（衔接日常态）；
+        # 绑定约束判据：冻结后剩下的钱不够再买一手 = 现金已用满；
         # 还够买好几手却没买 = 被仓位/单笔/退出容量上限截住。不能用固定金额阈值，
         # 整百股取整本身最多就会剩下99股的钱。
         cash_bound = bool(
@@ -9325,7 +9399,7 @@ def _live_plan_sizing_uncached(
             "cash_bound": cash_bound,
             "available_cash": float(getattr(account, "available_cash", 0.0) or 0.0),
             "total_asset": float(getattr(account, "total_asset", 0.0) or 0.0),
-            "transition": transition,
+            "transition": False,
             "risk_flags": str(row.get("risk_flags", "") or ""),
         }
     except Exception as exc:  # noqa: BLE001
@@ -9356,12 +9430,14 @@ def _format_live_plan_line(
         return (f"{head} 名义计划{final_buy['shares']}股"
                 f"【{fallback_reason}，此为按{_planned_equity_base() / 10000:.0f}万资金模型的"
                 f"名义值，不是实际下单量；09:20仍会按真实可用资金÷涨停价定仓】")
+    if live.get("blocked_by_existing_position"):
+        return f"{head} 暂不开仓（券商仍有本系统旧策略仓，确认清仓前禁止新买入）"
     if live["shares"] <= 0:
         return (f"{head} 明日资金不足，开不出仓（可用资金{live['available_cash'] / 10000:.2f}万，"
                 f"按涨停价{live['order_price']:.2f}元不足一手）"
                 + (f"；风控标记：{live['risk_flags']}" if live["risk_flags"] else ""))
     froze = live["shares"] * live["order_price"]
-    # 说清"钱为什么没花完"：cash_bound=剩余不够再买一手，现金已用满（衔接日常态）；
+    # 说清"钱为什么没花完"：cash_bound=剩余不够再买一手，现金已用满；
     # 否则是被目标仓位/单笔/退出容量上限截住，账上还有钱是故意不用。
     binding = ("（已按可用资金满额）" if live.get("cash_bound")
                else "（受目标仓位/容量上限约束，账上余钱是刻意不用）")
@@ -9369,7 +9445,6 @@ def _format_live_plan_line(
             f"（总资产{live['total_asset'] / 10000:.2f}万）"
             f"→ 09:20按涨停价{live['order_price']:.2f}元集合竞价预挂"
             f"→ 计划开仓{live['shares']}股，冻结{froze / 10000:.2f}万{binding}"
-            + ("；衔接日：旧仓14:55才卖，早盘只有这些剩余现金" if live["transition"] else "")
             + "。成交价以开盘撮合为准（今开~涨停之间），成交额届时才确定")
 
 
@@ -9443,7 +9518,7 @@ def _log_final_decision_summary(signal_date: str, action_date_compact: str, buy_
                 "strategy": "E2",
                 "ts_code": str(e2_sig.get("ts_code", "")),
                 "name": str(e2_sig.get("name", "")),
-                "shares": _planned_shares_by_equity(e2_sig.get("position_pct", 0.8), price),
+                "shares": _planned_shares_by_equity(e2_sig.get("position_pct", 0.825), price),
                 "price": price,
                 "exit_date": str(e2_sig.get("planned_exit_date", "")),
                 "exit_rule": str(e2_sig.get("planned_exit_rule", "T+2_close")),
@@ -9458,7 +9533,7 @@ def _log_final_decision_summary(signal_date: str, action_date_compact: str, buy_
             l_base_ok, _ = _model3_l_base_rule_pass_for_log(l_sig)
             l_guard_ok, _ = _model3_l_replace_guard_pass_for_log(l_sig)
             l_price = float(l_sig.get("limit_close", 0.0) or 0.0)
-            l_shares = _planned_shares_by_equity(l_sig.get("position_pct", 0.8), l_price)
+            l_shares = _planned_shares_by_equity(l_sig.get("position_pct", 0.825), l_price)
             if l_shares > 0:
                 l_buy = {
                     "strategy": "L龙头",
@@ -9471,14 +9546,12 @@ def _log_final_decision_summary(signal_date: str, action_date_compact: str, buy_
                 }
 
         # L 串行单仓守卫（2026-07-23）：播报必须和下单口径(build_model3_plan)一致——
-        # 有未到期非L持仓(如D北方长龙)占资金时，串行单仓下不开任何新仓。与
-        # _log_decision_chain_summary 同一口径；今日到期(衔接日会平)/sell_pending 不算占用。
+        # 有任何非L旧策略仓时，串行单仓下不开新仓；今日到期、逾期和
+        # sell_pending 同样阻断，直到券商实际清空。
         _blocked_by_holding = bool([
             p for p in load_positions()
             if str(p.get("status", "")).lower() in {"open", "sell_pending"}
             and str(p.get("strategy_leg", "")).upper() != "L"
-            and str(p.get("planned_exit_date", "99991231")) > str(action_date_compact)
-            and str(p.get("status", "")).lower() != "sell_pending"
         ])
 
         # ── 按模式决策 ──
@@ -9486,7 +9559,7 @@ def _log_final_decision_summary(signal_date: str, action_date_compact: str, buy_
         note = ""
         if _blocked_by_holding:
             final_buys = []
-            note = "有未到期非L持仓占用资金，串行单仓不开新仓（含mode1/L补位/替换均挡，与下单口径一致）"
+            note = "有非L旧策略仓尚未实际清空，取消衔接开仓（含mode1/L补位/替换均阻断）"
         elif mode == 1:
             final_buys = mode1_buys
             note = "模式1：执行ACDE2组合（A/C优先，无则E2；B已删除）"
@@ -9651,7 +9724,7 @@ def _log_decision_chain_summary(signal_date: str) -> None:
             price = float(e2_sig.get("limit_close", 0.0) or 0.0)
             e2_buy = {"strategy": "E2", "ts_code": str(e2_sig.get("ts_code", "")),
                       "name": str(e2_sig.get("name", "")),
-                      "shares": _planned_shares_by_equity(e2_sig.get("position_pct", 0.8), price), "price": price}
+                      "shares": _planned_shares_by_equity(e2_sig.get("position_pct", 0.825), price), "price": price}
         if abc_buy:
             e2_line = "让位｜A/C已有买入计划，同一资金不重复占用" + (
                 f"（E2备选={e2_buy['ts_code']} {e2_buy['name']}）" if e2_buy else "")
@@ -9679,7 +9752,7 @@ def _log_decision_chain_summary(signal_date: str) -> None:
                 l_price = float(l_sig.get("limit_close", 0.0) or 0.0)
                 l_buy = {"strategy": "L", "ts_code": str(l_sig.get("ts_code", "")),
                          "name": str(l_sig.get("name", "")),
-                         "shares": _planned_shares_by_equity(l_sig.get("position_pct", 0.8), l_price), "price": l_price}
+                         "shares": _planned_shares_by_equity(l_sig.get("position_pct", 0.825), l_price), "price": l_price}
         if not l_sig:
             l_line = "不参与｜无L信号"
         elif not l_base_ok:
@@ -9693,22 +9766,22 @@ def _log_decision_chain_summary(signal_date: str) -> None:
 
         # ── 最终计划（与【最终结果】/组合状态机同口径） ──
         # L 串行单仓守卫（2026-07-23）：播报必须和下单口径(build_model3_plan)一致——
-        # 有未到期非L持仓(如D北方长龙)占用资金时，串行单仓下不开任何新仓，L补位/替换
-        # 和 mode1 都挡住。否则播报误报"L开仓"、08:50推送误导，而09:20实际不买(下单有守卫)。
-        # 今日到期(衔接日会平)或 sell_pending 的持仓不算占用。
+        # 有任何非L旧策略仓（含今日到期、逾期、sell_pending）时，串行单仓下不开新仓，
+        # L补位/替换和mode1全部挡住；必须等券商确认实际清仓后再重新生成计划。
         _open_now = [p for p in load_positions()
                      if str(p.get("status", "")).lower() in {"open", "sell_pending"}]
         _holding_non_l = [
             p for p in _open_now
             if str(p.get("strategy_leg", "")).upper() != "L"
-            and str(p.get("planned_exit_date", "99991231")) > str(action_date)
-            and str(p.get("status", "")).lower() != "sell_pending"
         ]
         _blocked_by_holding = bool(_holding_non_l)
+        if _blocked_by_holding:
+            l_line = "不参与｜旧策略仓尚未实际清空，取消衔接开仓（L补位/替换均阻断）"
+            d_line = "阻断｜旧策略仓尚未实际清空；仅D接力流程在09:23先卖并确认空仓后可重建买入计划"
 
         final_buy: dict[str, Any] | None = None
         if _blocked_by_holding:
-            final_buy = None   # 有未到期非L持仓，串行单仓，不开新仓（与下单口径一致）
+            final_buy = None   # 旧非L策略仓未实际清空，串行单仓，不开新仓（与下单口径一致）
         elif mode == 2:
             final_buy = l_buy
         elif mode == 3 and mode1_buy and l_buy and l_guard_ok:
@@ -9738,25 +9811,21 @@ def _log_decision_chain_summary(signal_date: str) -> None:
                 for p in non_d_pos
             )
             manual_exit_positions = [p for p in non_d_pos if _position_manual_exit_only(p)]
-            blocking = [p for p in non_d_pos if str(p.get("planned_exit_date", "99991231")) > action_date]
+            blocking = list(non_d_pos)
             overdue = [p for p in non_d_pos if str(p.get("planned_exit_date", "99991231")) < action_date]
             if manual_exit_positions:
                 hold_line = f"目前已持仓：{desc}；等待用户手动卖出，系统不会提交任何卖单，持仓期间不开新仓"
             elif blocking:
-                hold_line = f"目前已持仓：{desc}；非D策略持仓未到期，{day_label}暂不开新仓"
+                hold_line = f"目前已持仓：{desc}；该策略仓实际清空前，{day_label}不开新仓"
             elif overdue:
                 hold_line = (f"目前已持仓：{desc}；⚠该持仓已逾期（平仓失败残留），"
-                             f"{day_label}09:20开盘窗口将第一时间挂跌停价清理；不阻断开仓计划")
+                             f"清理并确认券商空仓前禁止新开仓")
             else:
                 hold_line = (f"目前已持仓：{desc}；{day_label}到期将于14:55收盘平仓，"
-                             "不阻断开仓计划（09:20复核后照常下单，按可用资金校验/缩放）")
+                             "取消早盘衔接买入，确认清仓后再等待下一次候选")
 
-        # 持仓占用说明：区分两种情形，讲清"为何不开/为何能开"，不留光秃秃的结论。
-        # 口径依据（2026-07-24 用户逐笔核对）：8302x 衔接日有效——旧仓T+2到期日当天卖出、
-        # 新仓当天用"剩余现金"买入（cash_active_old_position_pct 均值0.519=旧仓占约半资金，
-        # 新仓 resize 按剩余现金；账户现金够时新仓满仓）。故：
-        #   ① 非L持仓【未到期】(planned_exit>今日)：占资金全程，L 不开；
-        #   ② 非L持仓【今日到期】(planned_exit==今日)：衔接日，D 14:55平仓、L 早盘用剩余现金开。
+        # 持仓占用说明统一为串行单仓：旧仓无论是否今日到期，只要券商仍有实际持仓，
+        # 所有新开仓都阻断。D策略09:23接力必须先卖出并确认券商为空仓，才会重建买入计划。
         if _blocked_by_holding and not hold_line:
             d_desc = "、".join(
                 f"{str(p.get('strategy_leg','?') or '?').upper()}策略 {p.get('ts_code','')} {p.get('name','')}"
@@ -9764,11 +9833,11 @@ def _log_decision_chain_summary(signal_date: str) -> None:
                 for p in _holding_non_l
             )
             hold_line = (
-                f"目前已持仓：{d_desc}；持仓未到期占用资金，{day_label}不开新仓"
-                "（含L补位/替换均按串行单仓口径挡住；到期平仓后再择机开仓）"
+                f"目前已持仓：{d_desc}；旧策略仓尚未实际清空，{day_label}不开新仓"
+                "（含L补位/替换均按串行单仓口径挡住；券商确认清仓后再择机开仓）"
             )
 
-        # D/非L持仓【今日到期】的衔接日说明（_blocked_by_holding 只含未到期，此处补到期日）：
+        # 今日到期持仓也明确展示“取消衔接”，避免通知继续沿用旧口径。
         d_due_today = [
             p for p in open_pos
             if str(p.get("strategy_leg", "")).upper() != "L"
@@ -9776,14 +9845,10 @@ def _log_decision_chain_summary(signal_date: str) -> None:
         ]
         if d_due_today and not hold_line:
             dd = "、".join(f"{str(p.get('strategy_leg','?')).upper()}策略 {p.get('ts_code','')} {p.get('name','')}" for p in d_due_today)
-            if final_buy:
-                hold_line = (
-                    f"目前已持仓：{dd}（{day_label}到期）；该持仓{day_label}14:55收盘平仓，"
-                    f"{final_buy['strategy']}策略{final_buy['name']}{day_label}早盘用剩余现金衔接开仓"
-                    f"（衔接日：8302x回测口径=旧仓当日卖+新仓当日剩余现金买、日内并存，按可用资金 resize）"
-                )
-            else:
-                hold_line = f"目前已持仓：{dd}（{day_label}到期）；该持仓{day_label}14:55收盘平仓，之后无新开仓计划"
+            hold_line = (
+                f"目前已持仓：{dd}（{day_label}到期）；该持仓{day_label}14:55收盘平仓，"
+                "取消尾盘旧仓未卖时的早盘衔接开仓，确认清仓后再等待下一次候选"
+            )
 
         # 整个决策链拼成一条多行日志、单次原子写入：daemon 是多线程
         # （账户心跳/候选播报/周期播报并发打日志），逐行输出必然被其他
@@ -9799,11 +9864,11 @@ def _log_decision_chain_summary(signal_date: str) -> None:
         TAG = " ◄―今日路径"
         lines = [
             f"{P}━━━━━━━━━━━━ 决策优先级树状图（mode=3） ━━━━━━━━━━━━",
-            f"{P} │ 有【未到期】持仓？（未到期=明日之后才平、全天占资金）",
+            f"{P} │ 券商仍有【旧策略仓】？（含今日到期、逾期、待卖）",
             f"{P} │",
-            f"{P} ├─ 是 ──▶ 不开新仓，等到期平仓（14:55收盘）──▶ 结束",
+            f"{P} ├─ 是 ──▶ 不开新仓，确认实际清仓后再等下一候选 ──▶ 结束",
             f"{P} │",
-            f"{P} └─ 否（空仓，或持仓【今日到期】=衔接日：14:55平旧仓＋早盘用剩余现金开新仓）",
+            f"{P} └─ 否（券商已确认无旧策略仓；打新和人工仓不计入）",
             f"{P}      └─▶ mode1 选票",
             f"{P}           │ A > C > E2，先中先得（B已删除）",
             f"{P}           │",
@@ -9823,7 +9888,7 @@ def _log_decision_chain_summary(signal_date: str) -> None:
             bottom,
             P,
             f"{P}━━━━━━━━━━━━ 决策优先级总图（mode=3） ━━━━━━━━━━━━",
-            f"{P} 【0】有未到期持仓? ─是→ 不开新仓，等到期日14:55收盘平仓",
+            f"{P} 【0】券商仍有旧策略仓? ─是→ 不开新仓（含今日到期/待卖），确认清仓后再等下一候选",
             f"{P}   ↓否",
             f"{P} 【1】mode1选票（串行先中先得）: ①A主 → ②C补位 → ③E2兜底（B已删除）",
             f"{P}   ├─有票 → 进【2】L替换审查{TAG if m1_has else ''}",
@@ -10953,11 +11018,11 @@ CAPACITY_WALL_STATE = PROJECT_ROOT / "data" / "state" / "capacity_wall_milestone
 
 
 def _check_capacity_wall_milestone(total_asset: float, config: dict, log: Any) -> None:
-    """容量墙里程碑提醒(2026-07-16 用户拍板):账户总资产达到1750万时推送。
+    """容量墙里程碑提醒：82.5%目标仓位下账户总资产约达到1700万时推送。
 
-    背景:两年全链重放(docs/capital_roadmap_2026.md)证明当前策略在1750万
-    (0.8仓=中位票2%容量1400万)之前以接近理论上限速度复利,之后容量渐进
-    摊薄(渐近线约1亿)。达标时提醒用户启动"1750万→1亿"新阶段研究:
+    背景:历史两年全链重放(docs/capital_roadmap_2026.md)的80%口径阈值为1750万；
+    当前82.5%目标仓位达到同一1400万容量约需1700万，之后容量渐进摊薄。
+    达标时提醒用户启动扩容研究：
     用届时积累的实盘逐片执行数据,扩大票域开发大容量新腿。
     每周最多提醒一次,直到用户处理(关闭=config.live_trade.capacity_wall_alert_enabled=false)。
     """
@@ -10965,7 +11030,7 @@ def _check_capacity_wall_milestone(total_asset: float, config: dict, log: Any) -
         lt = config.get("live_trade", {})
         if not bool(lt.get("capacity_wall_alert_enabled", True)):
             return
-        threshold = float(lt.get("capacity_wall_alert_threshold", 17_500_000))
+        threshold = float(lt.get("capacity_wall_alert_threshold", 17_000_000))
         if total_asset < threshold:
             return
         today_s = today_beijing().strftime("%Y%m%d")
@@ -10981,11 +11046,11 @@ def _check_capacity_wall_milestone(total_asset: float, config: dict, log: Any) -
             json.dumps({"last_alert": today_s, "total_asset": total_asset}), encoding="utf-8")
         log.warning("🏁 [容量墙里程碑] 总资产%.0f万 ≥ %.0f万,当前策略进入容量摊薄区,推送提醒。",
                     total_asset / 1e4, threshold / 1e4)
-        _notify("system_error", "🏁 里程碑:账户达到1750万,容量墙已至",
+        _notify("system_error", "🏁 里程碑:账户达到当前容量墙",
                 f"总资产{total_asset / 1e4:.0f}万。当前小票策略池的满速复利区已跑完"
-                f"(0.8仓位开始超过中位票2%容量),此后每笔收益率将随资金增长摊薄"
+                f"(82.5%目标仓位开始超过中位票2%容量),此后每笔收益率将随资金增长摊薄"
                 f"(渐近线约1亿,见docs/capital_roadmap_2026.md)。是时候启动新阶段研究:"
-                f"用这段时间积累的实盘逐片执行数据,研究1750万→1亿的最快策略"
+                f"用这段时间积累的实盘逐片执行数据,研究容量墙之后的扩容策略"
                 f"(扩大票域/大容量新腿)。请找Claude开工。",
                 level="timeSensitive")
     except Exception as e:
@@ -11006,29 +11071,14 @@ def _strategy_only_market_value(
     total_position_cap 的策略额度。本地持仓文件只由策略成交写入(record_buy),
     因此"在本地"是策略身份的唯一判据，覆盖 ACDE2L 全部当前腿；历史B腿只用于退役识别。
 
-    exclude_due_today=True 仅用于开新仓定仓/校验：明确计划今日14:55自动平仓
-    的旧仓不占普通日80%额度，让衔接日由券商 available_cash 自然限制为全部
-    剩余现金，再由85%单票硬顶截断。未到期、逾期及人工退出仓仍计入。
-
-    as_of_date 指定"以哪一天为准"判断到期，缺省=今天。收盘播报要按下一交易日
-    预演明日仓位，必须传 action_date；09:20 实盘定仓仍用默认的今天。同一函数
-    两种调用，避免播报与下单各写一套口径(2026-07-31)。
+    exclude_due_today/as_of_date 仅为兼容旧调用签名保留，现已不再排除到期仓。
+    新口径要求旧策略仓实际清空前禁止新开仓，因此今日到期、逾期、sell_pending
+    与普通未到期仓都必须计入策略市值。
     """
     local_aliases: set[str] = set()
-    today_str = (as_of_date or today_beijing().strftime("%Y%m%d")) if exclude_due_today else ""
     try:
         for lp in load_positions():
             if str(lp.get("status", "")).lower() not in {"open", "sell_pending"}:
-                continue
-            planned_exit = "".join(
-                char for char in str(lp.get("planned_exit_date", "")) if char.isdigit()
-            )[:8]
-            due_today = (
-                exclude_due_today
-                and planned_exit == today_str
-                and not _position_manual_exit_only(lp)
-            )
-            if due_today:
                 continue
             local_aliases.update(_ts_code_aliases(lp.get("ts_code", "")))
     except Exception:
@@ -11040,43 +11090,6 @@ def _strategy_only_market_value(
         if any(al in local_aliases for al in _ts_code_aliases(getattr(p, "ts_code", ""))):
             total += float(getattr(p, "market_value", 0.0) or 0.0)
     return total
-
-
-def _has_due_today_strategy_position(broker_positions: Any, as_of_date: str = "") -> bool:
-    """券商实际持有本系统今日到期仓时才允许进入衔接日剩余现金模式。
-
-    仅本地策略账本中的 open/sell_pending 且 planned_exit_date=今日、
-    非人工退出记录可触发。打新中签、债券、人工持仓没有本地策略身份，
-    因而不会触发；只有本地记录但券商已无实际持仓也不会触发。
-
-    as_of_date 同 _strategy_only_market_value：收盘播报预演明日时传 action_date。
-    """
-    today_str = as_of_date or today_beijing().strftime("%Y%m%d")
-    due_aliases: set[str] = set()
-    try:
-        for position in load_positions():
-            if str(position.get("status", "")).lower() not in {"open", "sell_pending"}:
-                continue
-            planned_exit = "".join(
-                char
-                for char in str(position.get("planned_exit_date", ""))
-                if char.isdigit()
-            )[:8]
-            if planned_exit != today_str or _position_manual_exit_only(position):
-                continue
-            due_aliases.update(_ts_code_aliases(position.get("ts_code", "")))
-    except Exception:
-        return False
-    if not due_aliases:
-        return False
-    return any(
-        int(getattr(position, "volume", 0) or 0) > 0
-        and any(
-            alias in due_aliases
-            for alias in _ts_code_aliases(getattr(position, "ts_code", ""))
-        )
-        for position in (broker_positions or [])
-    )
 
 
 def _broker_has_strategy_position(broker_positions: Any) -> bool:
@@ -11102,6 +11115,44 @@ def _broker_has_strategy_position(broker_positions: Any) -> bool:
     except Exception:
         return False
     return False
+
+
+def _broker_has_preexisting_strategy_position(
+    broker_positions: Any,
+    as_of_date: str = "",
+) -> bool:
+    """券商是否仍实际持有“本次开仓日前已存在”的系统策略仓。
+
+    本地 open/sell_pending 记录提供策略身份，券商 volume>0 提供实际持仓事实；
+    两者必须同时匹配才阻断，因此打新中签、债券和人工仓不会误触发。
+    buy_date 等于检查日的记录是当日本次集合竞价/POV部分成交，允许继续完成同一笔；
+    buy_date 早于检查日或缺失的记录都视为旧仓，含今日到期、逾期和待卖状态。
+    """
+    check_date = as_of_date or today_beijing().strftime("%Y%m%d")
+    preexisting_aliases: set[str] = set()
+    try:
+        for position in load_positions():
+            if str(position.get("status", "")).lower() not in {"open", "sell_pending"}:
+                continue
+            buy_date = "".join(
+                char for char in str(position.get("buy_date", "")) if char.isdigit()
+            )[:8]
+            if buy_date == check_date:
+                continue
+            preexisting_aliases.update(_ts_code_aliases(position.get("ts_code", "")))
+        if not preexisting_aliases:
+            return False
+        return any(
+            int(getattr(position, "volume", 0) or 0) > 0
+            and any(
+                alias in preexisting_aliases
+                for alias in _ts_code_aliases(getattr(position, "ts_code", ""))
+            )
+            for position in (broker_positions or [])
+        )
+    except Exception:
+        # 无法完成身份匹配时不把外部持仓误当策略仓；上游计划层仍会按本地旧仓阻断。
+        return False
 
 
 def _print_account_status(log: Any) -> None:

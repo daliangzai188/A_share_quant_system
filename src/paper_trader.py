@@ -44,7 +44,7 @@ class PaperTradeSimulator:
         )
         self.output_prefix = output_prefix
         self.initial_cash = float(self.position_config.get("initial_cash", 500000))
-        self.target_position_pct = float(self.position_config.get("target_position_pct", 0.8))
+        self.target_position_pct = float(self.position_config.get("target_position_pct", 0.825))
         self.round_lot_size = int(self.paper_config.get("round_lot_size", 100))
 
     def run(self) -> dict[str, Path]:
