@@ -731,10 +731,8 @@ class CombinedLiveEngine:
             if not segment_states:
                 result["reason"] = f"raw/limit_list/{today}.csv 尚未采集，板块状态未知"
                 return result
-            if not neutral_segs:
-                result["has_candidate"] = False
-                result["reason"] = f"今日无neutral板块，E2不触发。各板块：{segment_states}"
-                return result
+            # 此处的板块状态只用于盘中预览。正式E2 neutral必须由统一R1特征链计算，
+            # 不能再用旧“连续自然交易日”算法提前阻断，否则实盘会与回测漂移。
 
             # ── 2. 候选（需要 limit_up_fill_scored.csv 含今日记录）────────────
             has_scored = False
@@ -753,10 +751,10 @@ class CombinedLiveEngine:
                 )
                 return result
 
-            candidates = load_e2_candidates(today, segment_states)
+            candidates = load_e2_candidates(today)
             if candidates.empty:
                 result["has_candidate"] = False
-                result["reason"] = f"neutral板块={neutral_segs}，但今日涨停池无符合条件候选（非ST+成交可靠）。"
+                result["reason"] = "统一R1候选宇宙内无neutral且成交可靠的标的。"
                 return result
 
             top = candidates.iloc[0]
@@ -767,6 +765,8 @@ class CombinedLiveEngine:
             result["circ_mv"] = float(top.get("circ_mv", 0) or 0)
             result["fill_probability"] = float(top.get("fill_probability", 0) or 0)
             result["limit_close"] = float(top.get("limit_close", 0) or 0)
+            result["r1_scenario_rank"] = int(top.get("scenario_rank", 0) or 0)
+            result["exit_rule"] = str(top.get("exit_rule", ""))
         except Exception as exc:
             result["reason"] = f"预判异常：{exc}"
         return result
@@ -804,7 +804,9 @@ class CombinedLiveEngine:
             "round_lot_shares": round_lot,
             "risk_flags": "",
             "live_order_enabled": True,
-            "exit_n_days": 1,  # buy T+1, sell T+2 = 1 day later
+            # R1规则允许T+2或T+3退出。exit_offset相对信号日，买入发生在T+1，
+            # 因此持仓登记使用exit_offset-1；信号缺字段时沿用T+2旧安全默认值。
+            "exit_n_days": max(int(signal.get("exit_offset", 2) or 2) - 1, 1),
         }
 
     def build_e2_sell_order(self, position: dict[str, Any], today: str) -> dict[str, Any]:
@@ -959,7 +961,7 @@ class CombinedLiveEngine:
             }
         ]
 
-        # ── E2 到期卖出（T+2 收盘，最优先加入计划单，不阻断其他流程） ──────────
+        # ── E2 到期卖出（R1可能T+2/T+3，以planned_exit_date为唯一依据） ───────
         for pos in due_e2_positions:
             decisions.append(
                 CombinedLiveDecision(
@@ -971,7 +973,7 @@ class CombinedLiveEngine:
                     quantity=self.as_int(pos.get("shares", 0)),
                     reason=(
                         f"E2持仓到期平仓，planned_exit_date={pos.get('planned_exit_date','')}，"
-                        f"今日={today}，T+2收盘卖出。"
+                        f"今日={today}，按R1信号锁定的到期日收盘卖出。"
                     ),
                     source="positions.json",
                 )
@@ -1127,7 +1129,7 @@ class CombinedLiveEngine:
                             f"{yesterday_signal.get('name')}，"  # type: ignore[union-attr]
                             f"T+1开盘买入{e2_order.get('round_lot_shares', 0)}股，"
                             f"计划金额约{float(e2_order.get('planned_amount_by_equity', 0.0)):.0f}元，"
-                            "T+2收盘卖出。"
+                            f"按R1信号在T+{int(yesterday_signal.get('exit_offset', 2) or 2)}收盘卖出。"  # type: ignore[union-attr]
                         ),
                         source=str(self.project_root / "reports" / "strategy_e2"),
                     ))
@@ -1305,7 +1307,7 @@ class CombinedLiveEngine:
         # 打印 E2 状态
         print()
         print("─" * 60)
-        print("  策略 E2 状态（板块中性小市值 T+1买T+2卖）")
+        print("  策略 E2 状态（无前视单账户R1 · T+1买/T+2或T+3卖）")
         print("─" * 60)
         if not decisions.empty and "strategy_leg" in decisions.columns:
             # 当日买卖动作行（PLAN_SELL_E2 / ALLOW_E2_BUY）
@@ -1436,7 +1438,7 @@ class CombinedLiveEngine:
 - 若今日已有 A/C 买入计划，默认不启动 D 盘中买入监控。
 - 若无持仓且无 A/C 买入计划，才允许 D 盘中监控；A/C/D 均空闲时，E2 可能触发。
 - 普通空仓日目标仓位为总资产82.5%，任何单票仍受总资产85%硬顶；旧策略仓未实际清空前取消衔接开仓。
-- E2 条件：segment_retreat_state_bucket=neutral + 非ST + 成交可靠 → 流通市值最小1只；T+1开盘买82.5%目标仓，T+2收盘卖。
+- E2 条件：40条R1规则的当日第一名并集 → neutral + 非ST + 成交可靠 → 流通市值最小1只；T+1按82.5%目标仓开仓，按命中规则在T+2或T+3到期日卖出。
 - L 条件：仅在 active_strategy_profile.mode=2 且 strategy_l.live_order_enabled=true 时，才把昨日 L 信号转换成今日买入计划；默认 mode=1 不启用 L。
 - model=3 条件：active_strategy_profile.mode=3 且 strategy_model3.live_order_enabled=true 时，先生成mode=1计划；mode=1空闲则允许L补位，mode=1有买入计划时仅允许满足创业板、theme_limit_count>=2、非after_1430的L替换。
 - 真实下单仍必须经过 LiveOrderGateway 的交易时间、涨跌停、持仓、资金和重复委托校验。

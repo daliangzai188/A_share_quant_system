@@ -1,12 +1,12 @@
 """
 策略E2每日收盘后信号生成脚本。
 
-策略条件：
-  - 市场板块处于"neutral"回撤状态（segment_retreat_state_bucket=neutral）
-  - 从符合条件的今日涨停股中选 circ_mv（流通市值）最小的1只
-  - T+1开盘买入，T+2收盘卖出（与A/C持仓规则相同）
+策略条件（无前视、单账户R1对齐版）：
+  - 40条R1规则各选信号日第一名，合并成可执行候选宇宙
+  - 在候选宇宙里取板块neutral且流通市值最小的一只
+  - T+1开盘买入；按命中规则在T+2或T+3收盘卖出
   - 仅在 A/C/D 均未占用资金时触发；B已删除
-  - 必须使用 limit_list_d/full 完整口径，且 strategy_compatible=True
+  - 关键字段、成交可靠性或完整数据任一不满足时拒绝生成信号
 
 触发时机：
   每日 15:30 后运行（A/C daily ops 和 D 盘中监控均已完成后）
@@ -47,12 +47,19 @@ from src.rolling_signal_store import (
     migrate_legacy_daily_signal_files,
     save_recent_signal,
 )
+from src.strategy_e2 import (
+    E2_VERSION,
+    build_live_e2_candidates,
+    load_e2_spec,
+    resolve_exit_offset,
+)
 
 LIMIT_DIR = PROJECT_ROOT / "data" / "raw" / "limit_list"
 DAILY_DIR = PROJECT_ROOT / "data" / "raw" / "daily"
 CALENDAR_PATH = PROJECT_ROOT / "data" / "raw" / "trade_calendar.csv"
 LIVE_SCORED_PATH = PROJECT_ROOT / "data" / "processed" / "live_limit_up_fill_scored.csv"
-SCORED_PATH = LIVE_SCORED_PATH if LIVE_SCORED_PATH.exists() else PROJECT_ROOT / "data" / "processed" / "limit_up_fill_scored.csv"
+HIST_SCORED_PATH = PROJECT_ROOT / "data" / "processed" / "limit_up_fill_scored.csv"
+SCORED_PATH = LIVE_SCORED_PATH if LIVE_SCORED_PATH.exists() else HIST_SCORED_PATH
 POSITIONS_PATH = PROJECT_ROOT / "data" / "processed" / "positions.json"
 DAILY_OPS_DIR = PROJECT_ROOT / "reports" / "paper_trade" / "ab_filtered_daily_ops"
 OUTPUT_DIR = PROJECT_ROOT / "reports" / "strategy_e2"
@@ -62,19 +69,18 @@ STRATEGY_D_SIGNAL_DIR = PROJECT_ROOT / "reports" / "strategy_d"
 POSITION_PCT = 0.825
 E2_MIN_CIRC_MV = 0       # 不设下限
 E2_MAX_CIRC_MV = float("inf")
-E2_VERSION = "E2_segment_neutral_circ_mv_asc_v1"
 E2_RESEARCH_AUDIT = {
-    "window": "recent_2y",
-    "added_trade_count": 62,
-    "added_avg_account_return": 0.044086,
-    "added_median_account_return": 0.017896,
-    "added_win_rate": 0.645161,
-    "added_max_profit": 0.341127,
-    "added_max_loss": -0.067907,
-    "combo_equity_multiple": 3952.8312,
-    "combo_max_drawdown": -0.197489,
+    "window": "20240520~20260514",
+    "rule": "R1_no_lookahead_single_account",
+    "aligned_trade_count": 50,
+    "aligned_avg_account_return": 0.04692,
+    "aligned_win_rate": 0.64,
+    "aligned_leg_equity_multiple": 8.456977,
+    "aligned_leg_max_drawdown": -0.18418,
     "position_pct": POSITION_PCT,
-    "source_report": "reports/strategy_expansion/abcd_expansion_search_summary.csv",
+    "source_report": "reports/strategy_e2_rerun/e2_r1_alignment_report.md",
+    "old_62_trade_reference_is_live_realisable": False,
+    "overfit_warning": "40条R1规则来自同窗口样本内Top40，历史结果不代表未来收益。",
 }
 
 
@@ -286,57 +292,23 @@ def has_existing_open_position(open_positions: list[dict[str, Any]]) -> bool:
 
 # ── E2 候选筛选 ───────────────────────────────────────────────────────────────
 
-def load_e2_candidates(signal_date: str, segment_states: dict[str, str]) -> pd.DataFrame:
+def load_e2_candidates(signal_date: str) -> pd.DataFrame:
+    """调用E2唯一规则源，构造无前视、单账户R1候选。
+
+    这里不保留旧版完整涨停池兜底。规则数据不完整时必须抛错并停腿，否则实盘
+    会在不知情的情况下退化为历史负期望的另一套策略。
     """
-    从 limit_up_fill_scored.csv 加载今日涨停股，附加 segment_retreat_state_bucket，
-    过滤出 E2 符合条件的候选。
-    """
-    if not SCORED_PATH.exists():
-        return pd.DataFrame()
 
-    df = pd.read_csv(SCORED_PATH, low_memory=False)
-    df["trade_date"] = df["trade_date"].astype(str).str.replace(r"\.0$", "", regex=True)
-    df = df[df["trade_date"] == signal_date].copy()
-
-    if df.empty:
-        return pd.DataFrame()
-
-    required_columns = [
-        "market_segment",
-        "is_st",
-        "allow_buy_reliable",
-        "is_fill_score_reliable",
-        "circ_mv",
-        "limit_data_quality",
-        "strategy_compatible",
-    ]
-    missing = [column for column in required_columns if column not in df.columns]
-    if missing:
-        print(f"[E2信号] 缺少必需字段 {missing}，E2 不触发。")
-        return pd.DataFrame()
-
-    # 附加 segment_retreat_state_bucket
-    df["segment_retreat_state_bucket"] = df["market_segment"].astype(str).map(
-        lambda seg: segment_states.get(seg, "unknown")
-    )
-
-    # 基础过滤
-    df = df[df["segment_retreat_state_bucket"] == "neutral"].copy()
-    df = df[df["limit_data_quality"].fillna("").astype(str).eq("full")].copy()
-    df = df[df["strategy_compatible"].fillna("").astype(str).str.lower().isin(["true", "1"])].copy()
-    df = df[~df["is_st"].astype(str).str.lower().isin(["true", "1"])].copy()
-    df = df[df["allow_buy_reliable"].astype(str).str.lower().isin(["true", "1"])].copy()
-    df = df[df["is_fill_score_reliable"].astype(str).str.lower().isin(["true", "1"])].copy()
-
-    df["circ_mv"] = pd.to_numeric(df["circ_mv"], errors="coerce")
-    df = df[df["circ_mv"].notna()].copy()
-    return df.sort_values("circ_mv", ascending=True).reset_index(drop=True)
+    return build_live_e2_candidates(PROJECT_ROOT, signal_date)
 
 
 # ── 信号输出 ──────────────────────────────────────────────────────────────────
 
 def build_signal(signal_date: str, candidate: pd.Series, segment_states: dict[str, str]) -> dict[str, Any]:
     seg = str(candidate.get("market_segment", ""))
+    spec = load_e2_spec(PROJECT_ROOT)
+    exit_rule = str(candidate.get("exit_rule", ""))
+    exit_offset = resolve_exit_offset(spec, exit_rule)
     return {
         "strategy_leg": "E2",
         "strategy_version": E2_VERSION,
@@ -344,7 +316,12 @@ def build_signal(signal_date: str, candidate: pd.Series, segment_states: dict[st
         "ts_code": str(candidate.get("ts_code", "")),
         "name": str(candidate.get("name", candidate.get("ts_code", ""))),
         "market_segment": seg,
-        "segment_retreat_state_bucket": segment_states.get(seg, "neutral"),
+        "segment_retreat_state_bucket": str(candidate.get("segment_retreat_state_bucket", "neutral")),
+        "segment_retreat_state_legacy_preview": segment_states.get(seg, "unknown"),
+        "r1_scenario": str(candidate.get("scenario", "")),
+        "r1_scenario_rank": int(candidate.get("scenario_rank", 0) or 0),
+        "exit_rule": exit_rule,
+        "exit_offset": exit_offset,
         "limit_data_quality": str(candidate.get("limit_data_quality", "")),
         "limit_data_source": str(candidate.get("limit_data_source", "")),
         "strategy_compatible": bool(str(candidate.get("strategy_compatible", "")).lower() in ("true", "1")),
@@ -355,8 +332,8 @@ def build_signal(signal_date: str, candidate: pd.Series, segment_states: dict[st
         "is_fill_score_reliable": bool(str(candidate.get("is_fill_score_reliable", "")).lower() in ("true", "1")),
         "planned_buy_date": next_trade_day(signal_date, 1),
         "planned_buy_price": "T+1_open",
-        "planned_exit_date": next_trade_day(signal_date, 2),
-        "planned_exit_rule": "T+2_close",
+        "planned_exit_date": next_trade_day(signal_date, exit_offset),
+        "planned_exit_rule": f"T+{exit_offset}_close",
         "position_pct": POSITION_PCT,
         "research_audit": E2_RESEARCH_AUDIT,
         "status": "pending",
@@ -389,6 +366,7 @@ def save_candidates(signal_date: str, candidates: pd.DataFrame, dry_run: bool) -
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     path = OUTPUT_DIR / f"e2_signal_{signal_date}_candidates.csv"
     cols = [c for c in ["ts_code", "name", "market_segment", "segment_retreat_state_bucket",
+                         "scenario_rank", "exit_rule", "scenario",
                          "limit_data_quality", "limit_data_source", "strategy_compatible",
                          "circ_mv", "fill_probability", "allow_buy_reliable", "is_fill_score_reliable",
                          "limit_close", "fd_amount_to_circ_mv"] if c in candidates.columns]
@@ -450,22 +428,21 @@ def main() -> None:
 
     print("[E2信号] ABCD 今日均空闲，开始筛选 E2 候选。")
 
-    # ── 2. 计算 segment_retreat_state_bucket ─────────────────────────────────
+    # ── 2. 旧算法只保留作日志对照；正式neutral取值来自统一R1特征链 ───────────
     segment_states = compute_segment_retreat_states(signal_date)
-    neutral_segs = [seg for seg, st in segment_states.items() if st == "neutral"]
-    print(f"[E2信号] 今日各板块状态: {segment_states}")
-    print(f"[E2信号] neutral 板块: {neutral_segs if neutral_segs else '无'}")
+    print(f"[E2信号] 今日各板块状态（旧算法，仅对照）: {segment_states}")
 
-    if not neutral_segs:
-        print("[E2信号] 今日无 neutral 板块，E2 不触发。")
+    # ── 3. 正式R1候选；任一关键数据失败都fail-closed ─────────────────────────
+    try:
+        candidates = load_e2_candidates(signal_date)
+    except Exception as exc:
+        print(f"[E2信号] R1候选构造失败：{exc}")
+        print("[E2信号] 禁止退回旧口径，今日E2不生成实盘信号。")
         return
-
-    # ── 3. 加载并筛选候选 ─────────────────────────────────────────────────────
-    candidates = load_e2_candidates(signal_date, segment_states)
     cand_path = save_candidates(signal_date, candidates, args.dry_run)
 
     if candidates.empty:
-        print("[E2信号] 今日无符合条件的 E2 候选股，E2 不触发。")
+        print("[E2信号] R1候选宇宙内无neutral标的，E2不触发。")
         return
 
     print(f"[E2信号] 符合条件候选: {len(candidates)} 只")
@@ -483,6 +460,7 @@ def main() -> None:
     print(f"  板块:       {signal['market_segment']}  ({signal['segment_retreat_state_bucket']})")
     print(f"  流通市值:   {signal['circ_mv']/10000:.1f} 亿")
     print(f"  成交概率:   {signal['fill_probability']:.1%}")
+    print(f"  R1规则:     rank={signal['r1_scenario_rank']}  退出={signal['exit_rule']}")
     print(f"  买入计划:   {signal['planned_buy_date']} 开盘价买入  目标仓位{signal['position_pct']:.1%}")
     print(f"  卖出计划:   {signal['planned_exit_date']} 收盘前卖出")
     print("=" * 60)
