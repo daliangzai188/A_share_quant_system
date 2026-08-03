@@ -1,9 +1,10 @@
 """
 策略E2每日收盘后信号生成脚本。
 
-策略条件（无前视、单账户R1对齐版）：
+策略条件（无前视、单账户R1、入场门禁对齐版）：
   - 40条R1规则各选信号日第一名，合并成可执行候选宇宙
   - 在候选宇宙里取板块neutral且流通市值最小的一只
+  - 每日第一名若在13:30~14:30首次涨停，当日E2空仓，不回补第二名
   - T+1开盘买入；按命中规则在T+2或T+3收盘卖出
   - 仅在 A/C/D 均未占用资金时触发；B已删除
   - 关键字段、成交可靠性或完整数据任一不满足时拒绝生成信号
@@ -71,16 +72,18 @@ E2_MIN_CIRC_MV = 0       # 不设下限
 E2_MAX_CIRC_MV = float("inf")
 E2_RESEARCH_AUDIT = {
     "window": "20240520~20260514",
-    "rule": "R1_no_lookahead_single_account",
-    "aligned_trade_count": 50,
-    "aligned_avg_account_return": 0.04692,
-    "aligned_win_rate": 0.64,
-    "aligned_leg_equity_multiple": 8.456977,
-    "aligned_leg_max_drawdown": -0.18418,
+    "rule": "R1_no_lookahead_single_account_entry_gate_v4",
+    "pre_gate_trade_count": 50,
+    "aligned_trade_count": 43,
+    "aligned_avg_account_return": 0.058852,
+    "aligned_win_rate": 0.72093,
+    "aligned_leg_equity_multiple": 10.221003,
+    "aligned_leg_max_drawdown": -0.113253,
     "position_pct": POSITION_PCT,
     "source_report": "reports/strategy_e2_rerun/e2_r1_alignment_report.md",
     "old_62_trade_reference_is_live_realisable": False,
-    "overfit_warning": "40条R1规则来自同窗口样本内Top40，历史结果不代表未来收益。",
+    "entry_gate": "排除每日第一名first_time_detail_bucket=1330_1430，且不回补第二名。",
+    "overfit_warning": "40条R1规则及新增时间门禁仍来自有限历史样本；虽已通过前后半段和分年方向验证，历史结果不代表未来收益。",
 }
 
 
@@ -442,7 +445,7 @@ def main() -> None:
     cand_path = save_candidates(signal_date, candidates, args.dry_run)
 
     if candidates.empty:
-        print("[E2信号] R1候选宇宙内无neutral标的，E2不触发。")
+        print("[E2信号] R1每日第一名未通过neutral/成交可靠性/13:30~14:30入场门禁，E2不触发且不回补第二名。")
         return
 
     print(f"[E2信号] 符合条件候选: {len(candidates)} 只")

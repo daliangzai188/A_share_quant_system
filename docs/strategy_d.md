@@ -145,8 +145,9 @@ scripts/monitor_strategy_d_intraday.py
 
 | 参数 | 值 | 说明 |
 |---|---|---|
-| `SENTIMENT_STRONG_MIN` | 100 | 全市场今日累计涨停数阈值 |
+| `SENTIMENT_STRONG_MIN` | 88 | 14:00实时封板数阈值；校准对应历史收盘涨停数约100只的strong环境 |
 | `D_MAX_OPEN_TIMES` | 3 | 最大允许炸板次数 |
+| `D_PREFERRED_OPEN_TIMES` | 2 | 候选排序先优先炸板2次，再比较封单金额/流通市值 |
 | `WATCH_START_HHMM` | 935 | WATCH 信号开始时间 |
 | `SIGNAL_START_HHMM` | 1400 | BUY 信号开始时间 |
 | `CANCEL_HHMM` | 1455 | 自动撤单时间 |
@@ -184,13 +185,17 @@ class StockState:
   4. get_full_tick → 更新每只股票的 StockState
      - 当前价 == 涨停价 → was_sealed = True → 若之前炸板，open_times++
      - 当前价 < 涨停价 且之前封板 → 炸板，was_sealed = False
-  5. _check_and_fire()：
+ 5. _check_and_fire()：
      if hhmm >= 1400:
          if st.last_seal_hhmm >= 1400 or st.watch_alerted → 发 BUY 信号
      elif hhmm >= 1000 and not st.watch_alerted:
          → 发 WATCH 提醒
-  6. 14:55 → cancel_all_d_orders()，脚本退出
+ 6. 同一时刻有多只候选：先选炸板2次，再按封单金额/流通市值降序，只尝试第一名
+ 7. 14:55 → cancel_all_d_orders()，脚本退出
 ```
+
+`open_times`必须在1~3之间。该排序与回测候选选择一致；若第一名下单失败，不递补第二名，
+避免回测只记录第一名、实盘却在失败后换票造成收益口径漂移。
 
 ### 5.5 情绪计算方式
 

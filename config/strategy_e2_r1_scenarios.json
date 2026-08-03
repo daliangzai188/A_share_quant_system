@@ -1,9 +1,17 @@
 {
-  "_comment": "E2 R1候选宇宙规则。每条规则在信号日候选池中只选第一名，合并去重后再取板块neutral且流通市值最小的一只。实盘和回测必须共同读取本文件。",
-  "_warning": "40条规则来自20240520~20260514同窗口样本内Top40，存在二次筛选和过拟合风险。旧62笔12.028倍包含前视成交过滤及资金重复占用，不能作为实盘可实现收益；单账户可执行对齐版为50笔。",
+  "_comment": "E2 R1候选宇宙规则。每条规则在信号日候选池中只选第一名，合并去重后再取板块neutral且流通市值最小的一只；选出每日第一名后再执行entry_gate，禁止因门禁淘汰第一名后偷换成当日第二名。实盘和回测必须共同读取本文件。",
+  "_warning": "40条R1规则来自20240520~20260514同窗口样本内Top40，存在二次筛选和过拟合风险。旧62笔12.028倍包含前视成交过滤及资金重复占用，不能作为实盘可实现收益；50笔8.456977倍仅是门禁优化前基准。当前entry_gate只使用信号日首次涨停时间，训练半段、测试半段及2024/2025/2026三个自然年中被排除组均为负收益，但历史结果仍不代表未来收益。",
   "universe_prefilters": {
     "exclude_st_or_delisting": true,
     "exclude_amount_ratio_bucket": ["0_8_1_2"]
+  },
+  "entry_gate": {
+    "exclude_values": {
+      "first_time_detail_bucket": ["1330_1430"]
+    },
+    "apply_after_daily_first_pick": true,
+    "fallback_to_second_candidate": false,
+    "reason": "13:30~14:30首次涨停组7笔在前25笔训练段均值-4.067%、后25笔测试段均值-0.729%，且2024/2025/2026三个自然年组均值均为负；门禁字段在信号日收盘前已确定，不使用次日价格、成交结果或收益。"
   },
   "sort_rules": {
     "default": {"columns": ["fill_probability", "sample_count", "amount", "turnover_rate"], "ascending": [false, false, false, false]},
@@ -67,9 +75,13 @@
     "old_research_62_trades_position_pct": 0.8,
     "old_research_62_trades_equity_multiple": 12.028,
     "old_research_is_live_realisable": false,
-    "single_account_aligned_trades": 50,
+    "single_account_aligned_trades_before_entry_gate": 50,
     "single_account_position_pct": 0.825,
-    "single_account_equity_multiple": 8.456977,
-    "single_account_max_drawdown": -0.18418
+    "single_account_equity_multiple_before_entry_gate": 8.456977,
+    "single_account_max_drawdown_before_entry_gate": -0.18418,
+    "entry_gate_aligned_trades": 43,
+    "entry_gate_equity_multiple": 10.221003,
+    "entry_gate_max_drawdown": -0.113253,
+    "entry_gate_win_rate": 0.72093
   }
 }

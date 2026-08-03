@@ -46,6 +46,10 @@ from src.utils.logger import get_logger, setup_logger
 from src.utils.config import load_json_config, mkdir_p
 from src.utils.time_utils import BEIJING_TZ, now_beijing, today_beijing
 from src.execution_completion_tracker import ExecutionCompletionTracker
+from src.strategy_model3_policy import (
+    model3_l_base_rule_pass,
+    model3_l_replace_guard_pass,
+)
 
 
 _execution_completion_tracker = ExecutionCompletionTracker(PROJECT_ROOT)
@@ -10590,57 +10594,24 @@ def _load_l_candidate_count(signal_date: str) -> int | None:
         return None
 
 
-def _model3_l_base_rule_pass_for_log(signal: dict[str, Any]) -> tuple[bool, str]:
-    segment = str(signal.get("market_segment", ""))
-    retreat = str(signal.get("segment_retreat_state_bucket", ""))
-    chain = str(signal.get("market_chain_count_bucket", ""))
-    reasons = []
-    # 科创板权限已经开通；这里仍排除star是model3-L认证规则，不是权限锁。
-    # 日志必须明确区分，避免以后因账户权限变化误删策略条件。
-    if segment == "star":
-        reasons.append("market_segment=star被策略认证规则排除（非权限拦截）")
-    if retreat not in {"neutral", "warming_2day"}:
-        reasons.append(f"segment_retreat_state_bucket={retreat}不在neutral/warming_2day")
-    if chain not in {"8_15", "15_30", "gte_30"}:
-        reasons.append(f"market_chain_count_bucket={chain}不在8_15/15_30/gte_30")
-    return not reasons, "；".join(reasons) if reasons else "L通过model=3基础稳健条件"
+def _model3_l_base_rule_pass_for_log(
+    signal: dict[str, Any],
+    config: dict[str, Any] | None = None,
+) -> tuple[bool, str]:
+    """计划播报调用与组合实盘相同的L基础规则，避免日志口径漂移。"""
+
+    live_config = config or load_json_config(PROJECT_ROOT / "config" / "config.json")
+    return model3_l_base_rule_pass(signal, live_config)
 
 
-def _model3_l_replace_guard_pass_for_log(signal: dict[str, Any]) -> tuple[bool, str]:
-    """model=3 替换保护：判定 L 是否有资格顶掉 mode=1（ABC/E2）已有的买入计划。
+def _model3_l_replace_guard_pass_for_log(
+    signal: dict[str, Any],
+    config: dict[str, Any] | None = None,
+) -> tuple[bool, str]:
+    """计划播报调用与组合实盘相同的L替换保护规则。"""
 
-    为什么替换要设更高门槛——机会成本逻辑：
-    mode=1 本身是认证过的正期望策略，L 替换它等于放弃一笔大概率赚钱的交易，
-    所以 L 的期望收益必须"显著更高"才划算，而不是"还行"就行。
-    注意：本保护只管"抢同一笔资金"的场景；mode=1 空闲日 L 补位只需基础规则，
-    不受这里的板块限制（主板/北交所补位单都允许）。
-
-    三个条件均来自 9 种候选规则的穷举赛马
-    （reports/strategy_model3/occupancy_guards/model3_occupancy_guard_summary.csv）：
-    选中组合 8302x/胜率69.9%/回撤-18.3% 为最优；只要创业板不加条件 6861x；
-    不限板块的宽松规则掉到 4778~6172x，连用未来信息的理论上限(6548x)都不如选中组合。
-    - 创业板(chi_next)：L 赚的是龙头次日溢价，20cm 弹性是主板(10cm)两倍；
-      主板龙头期望溢价平均不够补偿放弃 mode=1 的机会成本（回测中此类替换为负贡献）。
-    - theme_limit_count>=2：题材有梯队（非孤板），接力胜率更高。
-    - 排除 after_1430：尾盘偷袭板封板质量弱，次日溢价差。
-    配置出处：config.json strategy_model3.replace_guard（规则名 replace_theme_ge_2_not_after_1430）。
-    """
-    segment = str(signal.get("market_segment", ""))
-    first_time_bucket = str(signal.get("first_time_detail_bucket", ""))
-    try:
-        theme_limit_count = float(signal.get("theme_limit_count", 0) or 0)
-    except (TypeError, ValueError):
-        theme_limit_count = 0.0
-    reasons = []
-    if segment != "chi_next":
-        reasons.append(
-            f"替换要求创业板（20cm龙头溢价弹性是主板2倍，主板L替换在回测中为负贡献），当前market_segment={segment}"
-        )
-    if theme_limit_count < 2:
-        reasons.append(f"替换要求theme_limit_count>=2（题材有梯队接力胜率更高），当前={theme_limit_count:g}")
-    if first_time_bucket == "after_1430":
-        reasons.append("替换排除first_time_detail_bucket=after_1430（尾盘偷袭板封板质量弱、次日溢价差）")
-    return not reasons, "；".join(reasons) if reasons else "L通过model=3替换保护条件"
+    live_config = config or load_json_config(PROJECT_ROOT / "config" / "config.json")
+    return model3_l_replace_guard_pass(signal, live_config)
 
 
 def _log_l_model3_signal_status(signal_date: str, action_date: str | None = None) -> None:
@@ -10672,8 +10643,8 @@ def _log_l_model3_signal_status(signal_date: str, action_date: str | None = None
             )
             return
 
-        base_ok, base_reason = _model3_l_base_rule_pass_for_log(signal)
-        guard_ok, guard_reason = _model3_l_replace_guard_pass_for_log(signal)
+        base_ok, base_reason = _model3_l_base_rule_pass_for_log(signal, config)
+        guard_ok, guard_reason = _model3_l_replace_guard_pass_for_log(signal, config)
         planned_buy_date = str(signal.get("planned_buy_date", ""))
         action_note = ""
         if action_date:

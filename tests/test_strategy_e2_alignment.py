@@ -15,12 +15,15 @@ if "dotenv" not in sys.modules:
 
 from src.combined_live_engine import CombinedLiveEngine
 from src.strategy_e2 import (
+    E2_VERSION,
     FORBIDDEN_SELECTION_COLUMNS,
+    apply_e2_entry_gate,
     build_r1_universe_from_pool,
     load_e2_spec,
     parse_scenario_name,
     required_signal_fields,
     select_e2_candidates,
+    select_e2_daily_picks,
 )
 
 
@@ -107,6 +110,11 @@ class StrategyE2AlignmentTests(unittest.TestCase):
         self.assertEqual(len(spec["scenarios"]), 40)
         self.assertTrue({"fixed_t2_close", "fixed_hold3_close"}.issubset(spec["exit_rules"]))
         self.assertFalse(required_signal_fields(spec) & FORBIDDEN_SELECTION_COLUMNS)
+        self.assertEqual(
+            spec["entry_gate"]["exclude_values"]["first_time_detail_bucket"],
+            ["1330_1430"],
+        )
+        self.assertIn("ENTRY_GATE_V4", E2_VERSION)
 
     def test_scenario_parser_restores_conditions_sort_and_exit(self) -> None:
         parsed = parse_scenario_name(
@@ -136,7 +144,7 @@ class StrategyE2AlignmentTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "is_fill_score_reliable"):
             build_r1_universe_from_pool(pool, make_test_spec())
 
-    def test_locked_50_trade_metric_is_82_5_percent_8_457x(self) -> None:
+    def test_locked_50_trade_metric_remains_pre_gate_audit_reference(self) -> None:
         path = PROJECT_ROOT / "reports" / "strategy_e2_rerun" / "e2_r1_alignment_trades.csv"
         trades = pd.read_csv(path, dtype={"trade_date": str}, low_memory=False)
         returns = pd.to_numeric(trades["net_return"], errors="raise") * 0.825
@@ -147,6 +155,50 @@ class StrategyE2AlignmentTests(unittest.TestCase):
         self.assertEqual(trades["trade_date"].nunique(), 50)
         self.assertAlmostEqual(float(equity.iloc[-1]), 8.4569765437, places=8)
         self.assertAlmostEqual(float(drawdown.min()), -0.1841821264, places=8)
+
+    def test_entry_gate_43_trade_metric_is_82_5_percent_10_221x(self) -> None:
+        path = PROJECT_ROOT / "reports" / "strategy_e2_rerun" / "e2_r1_alignment_trades.csv"
+        trades = pd.read_csv(path, dtype={"trade_date": str}, low_memory=False)
+        spec = load_e2_spec(PROJECT_ROOT)
+        eligible = apply_e2_entry_gate(trades, spec)
+        returns = pd.to_numeric(eligible["net_return"], errors="raise") * 0.825
+        equity = (1 + returns).cumprod()
+        drawdown = equity / equity.cummax() - 1
+
+        self.assertEqual(len(eligible), 43)
+        self.assertAlmostEqual(float(equity.iloc[-1]), 10.2210028037, places=8)
+        self.assertAlmostEqual(float(drawdown.min()), -0.1132530336, places=8)
+
+    def test_entry_gate_does_not_fallback_to_second_candidate(self) -> None:
+        spec = make_test_spec()
+        spec["entry_gate"] = {
+            "exclude_values": {"first_time_detail_bucket": ["1330_1430"]},
+            "apply_after_daily_first_pick": True,
+            "fallback_to_second_candidate": False,
+        }
+        universe = pd.DataFrame(
+            [
+                {
+                    "trade_date": "20260731",
+                    "ts_code": "300001.SZ",
+                    "segment_retreat_state_bucket": "neutral",
+                    "circ_mv": 100_000,
+                    "scenario_rank": 1,
+                    "first_time_detail_bucket": "1330_1430",
+                },
+                {
+                    "trade_date": "20260731",
+                    "ts_code": "300002.SZ",
+                    "segment_retreat_state_bucket": "neutral",
+                    "circ_mv": 200_000,
+                    "scenario_rank": 2,
+                    "first_time_detail_bucket": "before_1000",
+                },
+            ]
+        )
+
+        picks = select_e2_daily_picks(universe, spec)
+        self.assertTrue(picks.empty)
 
     def test_live_order_uses_scenario_exit_offset(self) -> None:
         engine = object.__new__(CombinedLiveEngine)

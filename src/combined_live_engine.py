@@ -10,6 +10,10 @@ from pandas.errors import EmptyDataError
 
 from src.live_order_gateway import LiveOrderGateway
 from src.rolling_signal_store import latest_signal_for_buy_date, signal_by_signal_date
+from src.strategy_model3_policy import (
+    model3_l_base_rule_pass,
+    model3_l_replace_guard_pass,
+)
 from src.utils.config import get_project_root, load_json_config, mkdir_p
 from src.utils.time_utils import today_beijing
 
@@ -374,35 +378,14 @@ class CombinedLiveEngine:
         return state_df, decision_df, planned_orders_df
 
     def model3_l_base_rule_pass(self, signal: dict[str, Any]) -> tuple[bool, str]:
-        segment = str(signal.get("market_segment", ""))
-        retreat = str(signal.get("segment_retreat_state_bucket", ""))
-        chain = str(signal.get("market_chain_count_bucket", ""))
-        reasons = []
-        # 这是model3-L认证规则，不是券商权限锁。即使科创板权限已开通，
-        # 也必须保留该条件，否则会改变8302x认证样本和策略风险收益口径。
-        if segment == "star":
-            reasons.append("market_segment=star被策略认证规则排除（非权限拦截）")
-        if retreat not in {"neutral", "warming_2day"}:
-            reasons.append(f"segment_retreat_state_bucket={retreat}不在neutral/warming_2day")
-        if chain not in {"8_15", "15_30", "gte_30"}:
-            reasons.append(f"market_chain_count_bucket={chain}不在8_15/15_30/gte_30")
-        return not reasons, "；".join(reasons) if reasons else "L通过model=3基础稳健条件"
+        """调用回测与实盘共用的model=3基础规则。"""
+
+        return model3_l_base_rule_pass(signal, self.config)
 
     def model3_l_replace_guard_pass(self, signal: dict[str, Any]) -> tuple[bool, str]:
-        segment = str(signal.get("market_segment", ""))
-        first_time_bucket = str(signal.get("first_time_detail_bucket", ""))
-        try:
-            theme_limit_count = float(signal.get("theme_limit_count", 0) or 0)
-        except (TypeError, ValueError):
-            theme_limit_count = 0.0
-        reasons = []
-        if segment != "chi_next":
-            reasons.append(f"替换要求创业板，当前market_segment={segment}")
-        if theme_limit_count < 2:
-            reasons.append(f"替换要求theme_limit_count>=2，当前={theme_limit_count:g}")
-        if first_time_bucket == "after_1430":
-            reasons.append("替换排除first_time_detail_bucket=after_1430")
-        return not reasons, "；".join(reasons) if reasons else "L通过model=3替换保护条件"
+        """调用回测与实盘共用的model=3替换保护。"""
+
+        return model3_l_replace_guard_pass(signal, self.config)
 
     def build_model3_plan(self, today: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         """model=3 自动切换实盘计划。
@@ -754,7 +737,10 @@ class CombinedLiveEngine:
             candidates = load_e2_candidates(today)
             if candidates.empty:
                 result["has_candidate"] = False
-                result["reason"] = "统一R1候选宇宙内无neutral且成交可靠的标的。"
+                result["reason"] = (
+                    "统一R1每日第一名未通过neutral/成交可靠性/"
+                    "13:30~14:30入场门禁；当日不回补第二名。"
+                )
                 return result
 
             top = candidates.iloc[0]

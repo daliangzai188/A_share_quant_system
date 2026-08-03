@@ -49,7 +49,8 @@ load_dotenv(PROJECT_ROOT / ".env")
 
 # ── 策略参数 ──────────────────────────────────────────────────────────────────
 SENTIMENT_STRONG_MIN = 88    # 全市场当前封板涨停数 >= 此值 → strong情绪（14:00封板数校准值，对应回测收盘≥100）
-D_MAX_OPEN_TIMES = None      # 炸板次数不限（近2年数据：strong情绪天去掉限制不减少样本，多候选按封单比选）
+D_MAX_OPEN_TIMES = 3         # 与D历史回测一致：炸板次数最多3次
+D_PREFERRED_OPEN_TIMES = 2   # 与D历史回测一致：多候选时优先炸板2次
 WATCH_START_HHMM = 935       # 09:35 开始发出观察提醒
 SIGNAL_START_HHMM = 1400     # 14:00 开始发出买入信号 / 观察升级
 CANCEL_HHMM = 1455           # 14:55 撤销所有未成交D委托
@@ -256,6 +257,32 @@ def configured_position_pct(config: dict[str, Any]) -> float:
     return min(value, 1.0)
 
 
+def configured_max_open_times(config: dict[str, Any]) -> int:
+    """读取D炸板次数硬上限；异常配置回退到历史认证值3。"""
+
+    strategy_config = load_strategy_d_config(config)
+    try:
+        value = int(strategy_config.get("max_open_times", D_MAX_OPEN_TIMES))
+    except (TypeError, ValueError):
+        return D_MAX_OPEN_TIMES
+    return value if value >= 1 else D_MAX_OPEN_TIMES
+
+
+def configured_preferred_open_times(config: dict[str, Any]) -> int:
+    """读取D排序优先炸板次数；异常配置回退到历史认证值2。"""
+
+    strategy_config = load_strategy_d_config(config)
+    try:
+        value = int(
+            strategy_config.get(
+                "preferred_open_times", D_PREFERRED_OPEN_TIMES
+            )
+        )
+    except (TypeError, ValueError):
+        return D_PREFERRED_OPEN_TIMES
+    return value if value >= 1 else D_PREFERRED_OPEN_TIMES
+
+
 def filter_universe_by_segments(universe: list[str], allowed_segments: set[str]) -> list[str]:
     return [code for code in universe if classify_market_segment(code) in allowed_segments]
 
@@ -403,6 +430,8 @@ class StrategyDMonitor:
         self.allowed_segments = allowed_segments or set(DEFAULT_ALLOWED_SEGMENTS)
         self.position_pct = position_pct
         self.config = config or {}
+        self.max_open_times = configured_max_open_times(self.config)
+        self.preferred_open_times = configured_preferred_open_times(self.config)
 
         self.yesterday_limit_codes: set[str] = set()
         self.universe: list[str] = []
@@ -443,13 +472,15 @@ class StrategyDMonitor:
         )
         max_order_amount = float(self.config.get("live_trade", {}).get("max_single_order_amount", 50000))
         self.logger.info(
-            "D最低开仓条件: 市场分段在%s | 首板(排除昨日涨停) | 当前封涨停 | 今日曾炸板>=1 | 当前封板数>=%d | 14:00后重封或09:35后观察升级 | 实盘二次复核通过",
+            "D最低开仓条件: 市场分段在%s | 首板(排除昨日涨停) | 当前封涨停 | 今日炸板1~%d次 | 当前封板数>=%d | 14:00后重封或09:35后观察升级 | 实盘二次复核通过",
             ",".join(sorted(self.allowed_segments)),
+            self.max_open_times,
             SENTIMENT_STRONG_MIN,
         )
         self.logger.info(
-            "D选票规则: 每天最多买1只，挑「涨停封单最凶」的（封单金额÷流通市值最大=封得最死、最不易炸板）；"
-            "规则与303倍回测的D口径完全一致；只买排第1的那只，买不进当天就放弃、不用第2名将就。",
+            "D选票规则: 每天最多买1只，先优先炸板%d次，再按封单金额÷流通市值降序；"
+            "只买排第1的那只，买不进当天就放弃、不用第2名递补。",
+            self.preferred_open_times,
         )
         fixed_cap_text = f"{max_order_amount:.0f}元" if max_order_amount > 0 else "不设固定金额上限"
         self.logger.info(
@@ -578,7 +609,7 @@ class StrategyDMonitor:
             return False
         if st.open_times_today < 1:                # 未曾炸板
             return False
-        if D_MAX_OPEN_TIMES is not None and st.open_times_today > D_MAX_OPEN_TIMES:
+        if st.open_times_today > self.max_open_times:
             return False
         if self.sealed_ever_count < SENTIMENT_STRONG_MIN:  # 情绪不足
             return False
@@ -601,8 +632,11 @@ class StrategyDMonitor:
             f"重封{hhmm_to_str(st.last_seal_hhmm)}"
         )
 
-    def _rank_key(self, st: StockState) -> tuple[float, int]:
+    def _rank_key(self, st: StockState) -> tuple[int, float, int]:
+        """复刻D回测排序：先优先炸板2次，再比较实时封单比。"""
+
         return (
+            int(st.open_times_today == self.preferred_open_times),
             self._fd_amount_to_circ_mv(st),
             st.bid_vol,
         )
@@ -691,10 +725,10 @@ class StrategyDMonitor:
         current_sealed = [st for st in self.states.values() if st.was_sealed]
         first_board = [st for st in current_sealed if st.ts_code not in self.yesterday_limit_codes]
         opened_once = [st for st in first_board if st.open_times_today >= 1]
-        if D_MAX_OPEN_TIMES is None:
-            open_times_ok = opened_once
-        else:
-            open_times_ok = [st for st in opened_once if st.open_times_today <= D_MAX_OPEN_TIMES]
+        open_times_ok = [
+            st for st in opened_once
+            if st.open_times_today <= self.max_open_times
+        ]
         buy_time_ok = [
             st for st in open_times_ok
             if st.last_seal_hhmm >= SIGNAL_START_HHMM or st.watch_alerted
@@ -738,8 +772,8 @@ class StrategyDMonitor:
             return False, "当前不在涨停封板状态"
         if st.open_times_today < 1:
             return False, "今日未曾炸板，不符合D开板回封要求"
-        if D_MAX_OPEN_TIMES is not None and st.open_times_today > D_MAX_OPEN_TIMES:
-            return False, f"炸板次数{st.open_times_today}超过上限{D_MAX_OPEN_TIMES}"
+        if st.open_times_today > self.max_open_times:
+            return False, f"炸板次数{st.open_times_today}超过上限{self.max_open_times}"
         if self.sealed_ever_count < SENTIMENT_STRONG_MIN:
             return False, f"情绪不足，当前封板{self.sealed_ever_count}只，要求>={SENTIMENT_STRONG_MIN}"
         if st.circ_mv <= 0:
@@ -1599,12 +1633,17 @@ def main() -> None:
     config = load_json_config(PROJECT_ROOT / "config" / "config.json")
     allowed_segments = configured_allowed_segments(config)
     position_pct = configured_position_pct(config)
+    max_open_times = configured_max_open_times(config)
+    preferred_open_times = configured_preferred_open_times(config)
 
     if args.dry_run:
         print("=== 策略D监控配置 ===")
         print(f"  情绪阈值: 全市场当前封板涨停数 >= {SENTIMENT_STRONG_MIN}")
-        print("  D排序口径: 实时封单金额 / 流通市值(fd_amount_to_circ_mv) 降序")
-        print(f"  炸板次数上限: {D_MAX_OPEN_TIMES}")
+        print(
+            f"  D排序口径: 优先炸板{preferred_open_times}次，再按实时封单金额 / "
+            "流通市值(fd_amount_to_circ_mv)降序"
+        )
+        print(f"  炸板次数上限: {max_open_times}")
         print(f"  允许市场分段: {','.join(sorted(allowed_segments))}")
         print(f"  目标开仓仓位: {position_pct:.1%}")
         print("  补偿机制: 已取消，只尝试D排序第1名")

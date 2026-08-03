@@ -35,10 +35,10 @@
     "run_mode": "live_candidate",
     "live_order_enabled": true,
     "require_live_certification": true,
-    "certification_summary_path": "reports/strategy_model3/live_candidate/model3_live_candidate_summary.csv",
-    "certification_report_path": "reports/strategy_model3/live_candidate/model3_live_candidate_report.md",
-    "selected_rule_name": "replace_theme_ge_2_not_after_1430",
-    "selected_rule_description": "mode=1默认优先；L通过稳健基础条件才参与；mode=1空闲时允许L补位；mode=1有交易计划时，L替换必须满足创业板、theme_limit_count>=2、first_time_detail_bucket!=after_1430。",
+    "certification_summary_path": "reports/current_portfolio_alignment/portfolio_summary.csv",
+    "certification_report_path": "reports/current_portfolio_alignment/portfolio_report.md",
+    "selected_rule_name": "expand_chain_3_8_and_replace_theme_ge_2_not_after_1430",
+    "selected_rule_description": "mode=1默认优先；L基础环境新增market_chain_count_bucket=3_8，其他稳健条件不变；mode=1空闲时允许L补位；mode=1有交易计划时，L替换仍必须满足创业板、theme_limit_count>=2、first_time_detail_bucket!=after_1430。",
     "base_l_rule": {
       "market_segment": "not_star",
       "segment_retreat_state_bucket": [
@@ -46,6 +46,7 @@
         "warming_2day"
       ],
       "market_chain_count_bucket": [
+        "3_8",
         "8_15",
         "15_30",
         "gte_30"
@@ -59,19 +60,19 @@
       ]
     },
     "live_candidate_metrics": {
-      "trade_count": 173,
-      "l_trade_count": 30,
-      "mode1_trade_count": 143,
-      "win_rate": 0.699422,
-      "avg_return": 0.059151,
-      "median_return": 0.02695,
-      "equity_multiple": 8302.389557,
-      "max_drawdown": -0.182761,
-      "max_loss": -0.158734,
+      "trade_count": 132,
+      "l_trade_count": 41,
+      "mode1_trade_count": 91,
+      "win_rate": 0.712121,
+      "avg_return": 0.072909,
+      "median_return": 0.043938,
+      "equity_multiple": 4712.470092,
+      "max_drawdown": -0.188406,
+      "max_loss": -0.163694,
       "max_consecutive_losses": 4,
       "max_drawdown_peak_date": "20240815",
       "max_drawdown_trough_date": "20240905",
-      "max_drawdown_recovery_date": "20240920"
+      "max_drawdown_recovery_date": "20240924"
     }
   },
   "notify": {
@@ -229,9 +230,11 @@
       "bj"
     ],
     "min_fill_probability": 0.8,
-    "ranking_rule": "fd_amount_to_circ_mv_desc",
+    "ranking_rule": "preferred_open_times_then_fd_amount_to_circ_mv_desc",
     "position_pct": 0.825,
-    "preferred_open_times": 2
+    "preferred_open_times": 2,
+    "max_open_times": 3,
+    "execution_alignment_note": "D实盘与回测共同使用：炸板次数1~3次，优先炸板2次，再按封单金额/流通市值降序；每天只尝试排序第一名，失败不递补。"
   },
   "strategy_s": {
     "file_role": "策略S深市/创业板动量补充策略配置。S 独立于 ACDE2，只能在组合空闲且通过实盘口径认证后接入真实下单。",

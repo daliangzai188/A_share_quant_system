@@ -1,6 +1,7 @@
 # model=3 自动切换候选说明
 
-> 2026-07-22：策略 B 已删除。本文中的旧认证指标包含 B 历史交易，只保留审计价值；当前执行口径为 ACDE2/L，必须重新回放后才能形成新的 model=3 发布指标。
+> 2026-08-03：策略B已删除。旧8302倍认证仅保留审计价值；当前发布标尺已经按
+> ACDE2/D/L、82.5%仓位、串行单账户和可执行成交口径重新逐日回放。
 
 ## 当前结论
 
@@ -46,8 +47,32 @@ L 稳健基础条件：
 ```text
 market_segment != star
 segment_retreat_state_bucket in neutral/warming_2day
-market_chain_count_bucket in 8_15/15_30/gte_30
+market_chain_count_bucket in 3_8/8_15/15_30/gte_30
 ```
+
+本轮只扩展L的基础环境，不改变L本体选股、T+1买入、退出规则、成交可靠性过滤，
+也不放宽L顶替A/C/E2时的三项保护。基础规则统一放在
+`src/strategy_model3_policy.py`，组合实盘、守护进程播报和历史认证共同调用；关键字段缺失时拒绝。
+
+## 当前可执行组合认证（2026-08-03）
+
+认证脚本：
+
+```bash
+python3 scripts/certify_current_executable_portfolio.py
+```
+
+| 指标 | L扩容前 | L扩容后 |
+|---|---:|---:|
+| 完整组合样本 | 129 | 132 |
+| L分支样本 | 32 | 41 |
+| L分支复利 | 3.619倍 | 7.186倍 |
+| 完整组合复利 | 3254.13倍 | 4712.47倍 |
+| 完整组合最大回撤 | -18.84% | -18.84% |
+
+最终132笔构成：A 27、C 9、D普通17、D→A 2、D→C 6、E2 30、L 41。
+扩容前后，前半段完整组合202.16→219.97倍，后半段16.10→21.42倍；2024和2025改善，
+2026短窗2.412→2.349倍（-2.58%）略降。该短窗已如实保留，不针对单笔结果继续调参。
 
 ## 核心优先级逻辑
 
@@ -194,10 +219,10 @@ python3 -m py_compile src/combined_live_engine.py scripts/certify_strategy_model
 python3 scripts/run_combined_live_plan.py
 ```
 
-重新运行 model=3 候选认证：
+重新运行当前组合认证：
 
 ```bash
-python3 scripts/certify_strategy_model3_live_candidate.py
+python3 scripts/certify_current_executable_portfolio.py
 ```
 
 ## 风险说明

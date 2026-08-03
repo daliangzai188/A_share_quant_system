@@ -15,7 +15,7 @@ from typing import Any
 import pandas as pd
 
 
-E2_VERSION = "E2_R1_NO_LOOKAHEAD_SINGLE_ACCOUNT_V3"
+E2_VERSION = "E2_R1_NO_LOOKAHEAD_SINGLE_ACCOUNT_ENTRY_GATE_V4"
 DEFAULT_SCENARIO_PATH = Path("config/strategy_e2_r1_scenarios.json")
 
 # 这些字段都属于买入日以后才能知道的结果，禁止出现在E2选股条件或排序规则中。
@@ -127,6 +127,22 @@ def load_e2_spec(project_root: Path, scenario_path: Path | None = None) -> dict[
         if int(exit_rules[exit_rule].get("hold_offset", 0)) not in {2, 3}:
             raise ValueError(f"E2只允许T+2或T+3退出：{exit_rule}")
 
+    # 入场门禁必须放在“每日第一名已经确定”之后执行。若允许第一名被过滤后
+    # 自动改买第二名，历史验证中的“删掉这一笔”就会被实盘偷换成另一只股票，
+    # 形成新的口径漂移，因此这两个开关只能保持当前安全值。
+    entry_gate = spec.get("entry_gate", {})
+    exclude_values = entry_gate.get("exclude_values", {})
+    if not isinstance(exclude_values, dict):
+        raise ValueError("E2 entry_gate.exclude_values必须是字段到排除值列表的映射")
+    if entry_gate and not bool(entry_gate.get("apply_after_daily_first_pick", False)):
+        raise ValueError("E2入场门禁必须在每日第一名确定后执行")
+    if bool(entry_gate.get("fallback_to_second_candidate", False)):
+        raise ValueError("E2入场门禁禁止回补当日第二名")
+    for column, values in exclude_values.items():
+        if not isinstance(values, list) or not values:
+            raise ValueError(f"E2入场门禁排除值非法：{column}")
+        used_columns.add(str(column))
+
     forbidden = sorted(used_columns & FORBIDDEN_SELECTION_COLUMNS)
     if forbidden:
         raise ValueError(f"E2规则包含前视结果字段，拒绝运行：{forbidden}")
@@ -142,6 +158,10 @@ def required_signal_fields(spec: dict[str, Any]) -> set[str]:
         fields.update(str(column) for column in scenario.get("conditions", {}))
         sort_rule = spec["sort_rules"][scenario["sort_rule"]]
         fields.update(str(column) for column in sort_rule.get("columns", []))
+    fields.update(
+        str(column)
+        for column in spec.get("entry_gate", {}).get("exclude_values", {})
+    )
     # universe_prefilters里的键是配置动作名，不是数据列，单独移除。
     fields.discard("exclude_st_or_delisting")
     fields.discard("exclude_amount_ratio_bucket")
@@ -265,6 +285,40 @@ def select_e2_candidates(universe: pd.DataFrame) -> pd.DataFrame:
     result = result[result["circ_mv"].notna()].copy()
     sort_columns = [column for column in ["trade_date", "circ_mv", "scenario_rank", "ts_code"] if column in result]
     return result.sort_values(sort_columns).reset_index(drop=True)
+
+
+def apply_e2_entry_gate(daily_picks: pd.DataFrame, spec: dict[str, Any]) -> pd.DataFrame:
+    """对已经确定的每日第一名执行E2入场门禁。
+
+    门禁只允许读取信号日已经存在的字段。调用方必须先选出每日第一名，再调用
+    本函数；被排除后当日直接空仓，不允许回补第二名。这个顺序同时用于历史
+    验证和实盘信号生成，确保“过滤提高复利”不是换票造成的理论结果。
+    """
+
+    if daily_picks.empty:
+        return daily_picks.copy()
+    result = daily_picks.copy()
+    exclude_values = spec.get("entry_gate", {}).get("exclude_values", {})
+    keep = pd.Series(True, index=result.index, dtype="bool")
+    for column, values in exclude_values.items():
+        if column not in result.columns:
+            raise RuntimeError(f"E2入场门禁字段缺失：{column}")
+        excluded = {str(value) for value in values}
+        keep &= ~result[column].fillna("").astype(str).isin(excluded)
+    return result.loc[keep].copy().reset_index(drop=True)
+
+
+def select_e2_daily_picks(universe: pd.DataFrame, spec: dict[str, Any]) -> pd.DataFrame:
+    """先按原R1规则取每日第一名，再执行无回补入场门禁。"""
+
+    ranked = select_e2_candidates(universe)
+    if ranked.empty:
+        return ranked
+    if "trade_date" in ranked.columns:
+        daily_first = ranked.groupby("trade_date", as_index=False).head(1).copy()
+    else:
+        daily_first = ranked.head(1).copy()
+    return apply_e2_entry_gate(daily_first, spec)
 
 
 def resolve_exit_offset(spec: dict[str, Any], exit_rule: str) -> int:
@@ -410,4 +464,13 @@ def build_live_e2_candidates(project_root: Path, signal_date: str) -> pd.DataFra
     spec = load_e2_spec(project_root)
     pool = load_bucketed_signal_pool(project_root, signal_date)
     universe = build_r1_universe_from_pool(pool, spec, signal_date=signal_date, audit_readiness=True)
-    return select_e2_candidates(universe)
+    ranked = select_e2_candidates(universe)
+    if ranked.empty:
+        return ranked
+
+    # 实盘候选文件仍可保留同日完整排序，便于审计；但只有原第一名通过门禁时
+    # 才返回。第一名被排除时返回空表，绝不顺延买第二名。
+    first_pick = ranked.head(1).copy()
+    if apply_e2_entry_gate(first_pick, spec).empty:
+        return ranked.iloc[0:0].copy()
+    return ranked
