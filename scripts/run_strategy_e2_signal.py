@@ -44,9 +44,14 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.rolling_signal_store import (
+    ERROR,
+    NO_CANDIDATE,
+    NO_SIGNAL_OCCUPIED,
+    SIGNAL_READY,
     cleanup_legacy_daily_signal_files,
     migrate_legacy_daily_signal_files,
     save_recent_signal,
+    save_recent_signal_run,
 )
 from src.strategy_e2 import (
     E2_VERSION,
@@ -65,6 +70,7 @@ POSITIONS_PATH = PROJECT_ROOT / "data" / "processed" / "positions.json"
 DAILY_OPS_DIR = PROJECT_ROOT / "reports" / "paper_trade" / "ab_filtered_daily_ops"
 OUTPUT_DIR = PROJECT_ROOT / "reports" / "strategy_e2"
 ROLLING_SIGNAL_PATH = OUTPUT_DIR / "e2_signals_recent.json"
+RUN_STATUS_PATH = OUTPUT_DIR / "e2_signal_runs_recent.json"
 STRATEGY_D_SIGNAL_DIR = PROJECT_ROOT / "reports" / "strategy_d"
 
 POSITION_PCT = 0.825
@@ -378,6 +384,37 @@ def save_candidates(signal_date: str, candidates: pd.DataFrame, dry_run: bool) -
     return path
 
 
+def save_run_status(
+    signal_date: str,
+    status: str,
+    reason: str,
+    *,
+    dry_run: bool,
+    candidate_count: int | None = None,
+    signal: dict[str, Any] | None = None,
+) -> None:
+    """记录E2当日是否正常完成；不向正式信号文件写入空信号。"""
+
+    if dry_run:
+        return
+    run: dict[str, Any] = {
+        "signal_date": signal_date,
+        "status": status,
+        "reason": reason,
+    }
+    if candidate_count is not None:
+        run["candidate_count"] = int(candidate_count)
+    if signal is not None:
+        run["ts_code"] = str(signal.get("ts_code", ""))
+        run["name"] = str(signal.get("name", ""))
+    save_recent_signal_run(
+        RUN_STATUS_PATH,
+        run,
+        strategy_leg="E2",
+        max_trade_days=20,
+    )
+
+
 # ── 主流程 ────────────────────────────────────────────────────────────────────
 
 def resolve_signal_date() -> str:
@@ -394,15 +431,11 @@ def resolve_signal_date() -> str:
     return datetime.now().strftime("%Y%m%d")
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="策略E2每日收盘后信号生成")
-    parser.add_argument("--signal-date", default=None, help="信号日期 YYYYMMDD，不传则自动推断")
-    parser.add_argument("--dry-run", action="store_true", help="仅打印，不写文件")
-    args = parser.parse_args()
+def run_signal_generation(signal_date: str, *, dry_run: bool) -> None:
+    """执行一次E2信号生成，并为每个正常退出分支写明终态。"""
 
-    signal_date = args.signal_date or resolve_signal_date()
     print(f"[E2信号] 信号日期: {signal_date}")
-    if not args.dry_run:
+    if not dry_run:
         migrate_existing_signals()
 
     # ── 1. 检查 ABCD 是否空闲 ────────────────────────────────────────────────
@@ -411,20 +444,28 @@ def main() -> None:
     if has_existing_open_position(open_positions):
         occupied = [(p.get("strategy_leg","?"), p.get("ts_code","?"), p.get("planned_exit_date","?"))
                     for p in open_positions]
-        print(f"[E2信号] 账户有未平仓头寸，E2 不触发。持仓: {occupied}")
+        reason = f"账户有未平仓头寸，E2不触发；持仓={occupied}"
+        print(f"[E2信号] {reason}")
+        save_run_status(signal_date, NO_SIGNAL_OCCUPIED, reason, dry_run=dry_run)
         return
 
     if has_abc_planned_order(signal_date):
-        print(f"[E2信号] A/C 今日已生成计划委托，E2 不触发。")
+        reason = "A/C今日已生成计划委托，E2不触发"
+        print(f"[E2信号] {reason}。")
+        save_run_status(signal_date, NO_SIGNAL_OCCUPIED, reason, dry_run=dry_run)
         return
 
     if has_d_position_today(signal_date, open_positions):
-        print(f"[E2信号] D策略今日已建仓，E2 不触发。")
+        reason = "D策略今日已建仓，E2不触发"
+        print(f"[E2信号] {reason}。")
+        save_run_status(signal_date, NO_SIGNAL_OCCUPIED, reason, dry_run=dry_run)
         return
 
     d_status = load_d_intraday_status(signal_date)
     if d_status["has_filled"]:
-        print(f"[E2信号] D盘中信号已成交或部分成交，E2 不触发。{d_status['summary']}")
+        reason = f"D盘中信号已成交或部分成交，E2不触发；{d_status['summary']}"
+        print(f"[E2信号] {reason}")
+        save_run_status(signal_date, NO_SIGNAL_OCCUPIED, reason, dry_run=dry_run)
         return
     if d_status["has_failed"]:
         print(f"[E2信号] D盘中第1名开仓失败，未占用资金，释放给E2继续判断。{d_status['summary']}")
@@ -439,13 +480,23 @@ def main() -> None:
     try:
         candidates = load_e2_candidates(signal_date)
     except Exception as exc:
-        print(f"[E2信号] R1候选构造失败：{exc}")
+        reason = f"R1候选构造失败：{exc}"
+        print(f"[E2信号] {reason}")
         print("[E2信号] 禁止退回旧口径，今日E2不生成实盘信号。")
+        save_run_status(signal_date, ERROR, reason, dry_run=dry_run)
         return
-    cand_path = save_candidates(signal_date, candidates, args.dry_run)
+    cand_path = save_candidates(signal_date, candidates, dry_run)
 
     if candidates.empty:
-        print("[E2信号] R1每日第一名未通过neutral/成交可靠性/13:30~14:30入场门禁，E2不触发且不回补第二名。")
+        reason = "R1每日第一名未通过neutral/成交可靠性/13:30~14:30入场门禁，E2不触发且不回补第二名"
+        print(f"[E2信号] {reason}。")
+        save_run_status(
+            signal_date,
+            NO_CANDIDATE,
+            reason,
+            dry_run=dry_run,
+            candidate_count=0,
+        )
         return
 
     print(f"[E2信号] 符合条件候选: {len(candidates)} 只")
@@ -471,15 +522,42 @@ def main() -> None:
     print(f"  候选完整列表: {cand_path}")
 
     # ── 6. 写信号文件 ─────────────────────────────────────────────────────────
-    sig_path = save_signal(signal, args.dry_run)
-    if args.dry_run:
+    sig_path = save_signal(signal, dry_run)
+    if dry_run:
         print(f"  [dry-run] 信号未写入文件（路径将为: {sig_path}）")
         print(f"\n  信号内容:")
         print(json.dumps(signal, ensure_ascii=False, indent=2))
     else:
         print(f"  信号已保存: {sig_path}")
+    save_run_status(
+        signal_date,
+        SIGNAL_READY,
+        f"E2已生成唯一入选信号：{signal['ts_code']} {signal['name']}",
+        dry_run=dry_run,
+        candidate_count=len(candidates),
+        signal=signal,
+    )
 
     print("\n[E2信号] 完成。")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="策略E2每日收盘后信号生成")
+    parser.add_argument("--signal-date", default=None, help="信号日期 YYYYMMDD，不传则自动推断")
+    parser.add_argument("--dry-run", action="store_true", help="仅打印，不写文件")
+    args = parser.parse_args()
+    signal_date = args.signal_date or resolve_signal_date()
+    try:
+        run_signal_generation(signal_date, dry_run=args.dry_run)
+    except Exception as exc:
+        # 未预期异常也要在当天留下ERROR，审计不能把崩溃误认为正常空信号。
+        save_run_status(
+            signal_date,
+            ERROR,
+            f"E2信号脚本异常退出：{type(exc).__name__}: {exc}",
+            dry_run=args.dry_run,
+        )
+        raise
 
 
 if __name__ == "__main__":

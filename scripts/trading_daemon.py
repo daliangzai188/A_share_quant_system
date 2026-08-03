@@ -61,6 +61,13 @@ from src.strategy_d_relay_execution import (
     floor_lot as relay_floor_lot,
     relay_buy_limit_price,
 )
+from src.rolling_signal_store import (
+    ERROR as SIGNAL_RUN_ERROR,
+    NO_CANDIDATE,
+    NO_SIGNAL_OCCUPIED,
+    SIGNAL_READY,
+    signal_run_by_signal_date,
+)
 
 
 _execution_completion_tracker = ExecutionCompletionTracker(PROJECT_ROOT)
@@ -9489,6 +9496,90 @@ def _json_signal_has_date(path: Path, signal_date: str) -> bool:
         return False
 
 
+def _strategy_signal_run_readiness(
+    *,
+    strategy_leg: str,
+    run_status_path: Path,
+    signal_path: Path,
+    signal_date: str,
+) -> dict[str, Any]:
+    """区分“正常无信号”和“脚本未运行/失败”。
+
+    正式信号JSON只保存真正入选的股票，不能用“当日没有信号行”判断脚本失败；
+    因此优先读取独立运行状态账本。兼容升级前数据：当日已有正式信号但尚无状态
+    记录时，仍视为旧版正常完成。
+    """
+
+    has_signal = _json_signal_has_date(signal_path, signal_date)
+    run = signal_run_by_signal_date(run_status_path, signal_date)
+    if run is None:
+        if has_signal:
+            return {
+                "ok": True,
+                "icon": "✅",
+                "status": "SIGNAL_READY_LEGACY",
+                "reason": "升级前正式信号已存在",
+                "has_signal": True,
+            }
+        return {
+            "ok": False,
+            "icon": "⚠️",
+            "status": "NOT_RUN",
+            "reason": "未找到当日运行状态，无法确认脚本是否执行",
+            "has_signal": False,
+        }
+
+    status = str(run.get("status", "")).strip().upper()
+    reason = str(run.get("reason", "")).strip() or "未记录原因"
+    if status == SIGNAL_RUN_ERROR:
+        return {
+            "ok": False,
+            "icon": "⚠️",
+            "status": status,
+            "reason": reason,
+            "has_signal": has_signal,
+        }
+    if status == SIGNAL_READY:
+        if not has_signal:
+            return {
+                "ok": False,
+                "icon": "⚠️",
+                "status": SIGNAL_RUN_ERROR,
+                "reason": "状态为SIGNAL_READY，但正式信号文件缺少当日记录",
+                "has_signal": False,
+            }
+        return {
+            "ok": True,
+            "icon": "✅",
+            "status": status,
+            "reason": reason,
+            "has_signal": True,
+        }
+    if status in {NO_SIGNAL_OCCUPIED, NO_CANDIDATE}:
+        if has_signal:
+            return {
+                "ok": False,
+                "icon": "⚠️",
+                "status": SIGNAL_RUN_ERROR,
+                "reason": f"状态为{status}，但正式信号文件仍含当日记录",
+                "has_signal": True,
+            }
+        return {
+            "ok": True,
+            "icon": "ℹ️",
+            "status": status,
+            "reason": reason,
+            "has_signal": False,
+        }
+    return {
+        "ok": False,
+        "icon": "⚠️",
+        "status": SIGNAL_RUN_ERROR,
+        "reason": f"{strategy_leg}运行状态非法：{status or '空值'}",
+        "has_signal": has_signal,
+    }
+
+
 def report_next_trade_factor_readiness(signal_date: str) -> bool:
     """收盘后确认下个交易日开盘计算所需因子是否准备齐全。
 
@@ -9554,17 +9645,34 @@ def report_next_trade_factor_readiness(signal_date: str) -> bool:
                 enhanced_missing.append(name)
 
     abc_ready = _has_signal_for_date(signal_dt)
-    e2_ready = _json_signal_has_date(PROJECT_ROOT / "reports" / "strategy_e2" / "e2_signals_recent.json", signal_date)
-    l_ready = _json_signal_has_date(PROJECT_ROOT / "reports" / "strategy_l" / "l_signals_recent.json", signal_date)
+    e2_status = _strategy_signal_run_readiness(
+        strategy_leg="E2",
+        run_status_path=PROJECT_ROOT / "reports" / "strategy_e2" / "e2_signal_runs_recent.json",
+        signal_path=PROJECT_ROOT / "reports" / "strategy_e2" / "e2_signals_recent.json",
+        signal_date=signal_date,
+    )
+    l_status = _strategy_signal_run_readiness(
+        strategy_leg="L",
+        run_status_path=PROJECT_ROOT / "reports" / "strategy_l" / "l_signal_runs_recent.json",
+        signal_path=PROJECT_ROOT / "reports" / "strategy_l" / "l_signals_recent.json",
+        signal_date=signal_date,
+    )
     logger().info("  %s A/C计划或空计划文件已生成", "✅" if abc_ready else "⚠️")
-    logger().info("  %s E2信号文件含signal_date=%s", "✅" if e2_ready else "⚠️", signal_date)
-    logger().info("  %s L信号文件含signal_date=%s", "✅" if l_ready else "⚠️", signal_date)
+    for strategy_leg, status in (("E2", e2_status), ("L", l_status)):
+        log_method = logger().info if status["ok"] else logger().warning
+        log_method(
+            "  %s %s信号脚本：%s；%s",
+            status["icon"],
+            strategy_leg,
+            status["status"],
+            status["reason"],
+        )
     if not abc_ready:
         critical_missing.append("A/C planned_orders")
-    if not e2_ready:
-        enhanced_missing.append("E2 signal（可能是当日不触发）")
-    if not l_ready:
-        enhanced_missing.append("L signal（可能是当日不触发）")
+    if not e2_status["ok"]:
+        enhanced_missing.append(f"E2 signal run={e2_status['status']}")
+    if not l_status["ok"]:
+        enhanced_missing.append(f"L signal run={l_status['status']}")
 
     if critical_missing:
         body = f"signal_date={signal_date} next={next_date} 缺关键因子/计划：{', '.join(critical_missing)}。明日09:00计划可能不可用。"
@@ -10887,9 +10995,17 @@ def _log_e2_signal_status(signal_date: str) -> None:
         count_text = "未知" if candidate_count is None else str(candidate_count)
         signal = _load_e2_signal_for_signal_date(signal_date)
         if signal is None:
+            run_status = _strategy_signal_run_readiness(
+                strategy_leg="E2",
+                run_status_path=PROJECT_ROOT / "reports" / "strategy_e2" / "e2_signal_runs_recent.json",
+                signal_path=PROJECT_ROOT / "reports" / "strategy_e2" / "e2_signals_recent.json",
+                signal_date=signal_date,
+            )
             logger().info(
-                "  E2策略：信号日期 %s 无E2入选信号，候选池=%s",
+                "  E2策略：信号日期 %s 无E2入选信号，运行状态=%s，原因=%s，候选池=%s",
                 signal_date,
+                run_status["status"],
+                run_status["reason"],
                 count_text,
             )
             return
@@ -11857,9 +11973,18 @@ def _log_l_model3_signal_status(signal_date: str, action_date: str | None = None
             bool(model3_config.get("live_order_enabled", False)),
         )
         if signal is None:
+            run_status = _strategy_signal_run_readiness(
+                strategy_leg="L",
+                run_status_path=PROJECT_ROOT / "reports" / "strategy_l" / "l_signal_runs_recent.json",
+                signal_path=PROJECT_ROOT / "reports" / "strategy_l" / "l_signals_recent.json",
+                signal_date=signal_date,
+            )
             logger().info(
-                "  L龙头策略：信号日期 %s 无L入选信号，候选数=%s；model=3本轮不会使用L。",
+                "  L龙头策略：信号日期 %s 无L入选信号，运行状态=%s，原因=%s，"
+                "候选数=%s；model=3本轮不会使用L。",
                 signal_date,
+                run_status["status"],
+                run_status["reason"],
                 count_text,
             )
             return

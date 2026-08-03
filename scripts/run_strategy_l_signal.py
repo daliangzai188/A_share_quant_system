@@ -42,9 +42,13 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.utils.config import load_json_config
 from src.rolling_signal_store import (
+    ERROR,
+    NO_CANDIDATE,
+    SIGNAL_READY,
     cleanup_legacy_daily_signal_files,
     migrate_legacy_daily_signal_files,
     save_recent_signal,
+    save_recent_signal_run,
 )
 
 
@@ -61,6 +65,7 @@ MARKET_EMOTION_FEATURE_PATH = (
 CALENDAR_PATH = PROJECT_ROOT / "data" / "raw" / "trade_calendar.csv"
 OUTPUT_DIR = PROJECT_ROOT / "reports" / "strategy_l"
 ROLLING_SIGNAL_PATH = OUTPUT_DIR / "l_signals_recent.json"
+RUN_STATUS_PATH = OUTPUT_DIR / "l_signal_runs_recent.json"
 
 
 def load_open_dates() -> list[str]:
@@ -364,6 +369,37 @@ def save_outputs(signal_date: str, candidates: pd.DataFrame, signal: dict[str, A
         save_recent_signal(ROLLING_SIGNAL_PATH, signal, strategy_leg="L", max_trade_days=10)
 
 
+def save_run_status(
+    signal_date: str,
+    status: str,
+    reason: str,
+    *,
+    dry_run: bool,
+    candidate_count: int | None = None,
+    signal: dict[str, Any] | None = None,
+) -> None:
+    """记录L脚本当日终态；正常无候选不再伪装成信号文件缺失。"""
+
+    if dry_run:
+        return
+    run: dict[str, Any] = {
+        "signal_date": signal_date,
+        "status": status,
+        "reason": reason,
+    }
+    if candidate_count is not None:
+        run["candidate_count"] = int(candidate_count)
+    if signal is not None:
+        run["ts_code"] = str(signal.get("ts_code", ""))
+        run["name"] = str(signal.get("name", ""))
+    save_recent_signal_run(
+        RUN_STATUS_PATH,
+        run,
+        strategy_leg="L",
+        max_trade_days=20,
+    )
+
+
 def migrate_existing_signals() -> None:
     """迁移并清理旧的每日L信号JSON；无新信号的交易日也会执行。"""
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -377,17 +413,13 @@ def migrate_existing_signals() -> None:
     cleanup_legacy_daily_signal_files(OUTPUT_DIR, "l_signal_????????.json")
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="策略L每日收盘后信号生成")
-    parser.add_argument("--signal-date", default=None, help="信号日期 YYYYMMDD，不传则自动推断")
-    parser.add_argument("--dry-run", action="store_true", help="只打印，不写文件")
-    args = parser.parse_args()
+def run_signal_generation(signal_date: str, *, dry_run: bool) -> None:
+    """执行一次L信号生成，并把有信号或正常无候选都写成明确终态。"""
 
-    signal_date = args.signal_date or resolve_signal_date()
     config = load_json_config(PROJECT_ROOT / "config" / "config.json")
     print(f"[L信号] 信号日期: {signal_date}")
     print("[L信号] 当前只生成信号文件，不提交实盘委托。")
-    if not args.dry_run:
+    if not dry_run:
         migrate_existing_signals()
 
     candidates, reasons = load_l_candidates(signal_date)
@@ -395,13 +427,29 @@ def main() -> None:
         print(f"[L信号] {reason}")
 
     if candidates.empty:
-        print("[L信号] 今日无符合 L2 的候选，L 不触发。")
-        save_outputs(signal_date, candidates, None, args.dry_run)
+        reason = "今日无符合L2的候选，L不触发"
+        print(f"[L信号] {reason}。")
+        save_outputs(signal_date, candidates, None, dry_run)
+        save_run_status(
+            signal_date,
+            NO_CANDIDATE,
+            reason,
+            dry_run=dry_run,
+            candidate_count=0,
+        )
         return
 
     selected = candidates.iloc[0]
     signal = build_signal(signal_date, selected, config)
-    save_outputs(signal_date, candidates, signal, args.dry_run)
+    save_outputs(signal_date, candidates, signal, dry_run)
+    save_run_status(
+        signal_date,
+        SIGNAL_READY,
+        f"L已生成唯一入选信号：{signal['ts_code']} {signal['name']}",
+        dry_run=dry_run,
+        candidate_count=len(candidates),
+        signal=signal,
+    )
 
     print("=" * 60)
     print("  策略 L 信号（独立龙头策略）")
@@ -413,7 +461,26 @@ def main() -> None:
     print(f"  策略开关: strategy_l.enabled={bool(config.get('strategy_l', {}).get('enabled', False))}")
     print(f"  实盘开关: strategy_l.live_order_enabled={signal['live_order_enabled']}")
     print("=" * 60)
-    print(f"[L信号] 已{'模拟' if args.dry_run else '保存'}信号：reports/strategy_l/l_signals_recent.json")
+    print(f"[L信号] 已{'模拟' if dry_run else '保存'}信号：reports/strategy_l/l_signals_recent.json")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="策略L每日收盘后信号生成")
+    parser.add_argument("--signal-date", default=None, help="信号日期 YYYYMMDD，不传则自动推断")
+    parser.add_argument("--dry-run", action="store_true", help="只打印，不写文件")
+    args = parser.parse_args()
+    signal_date = args.signal_date or resolve_signal_date()
+    try:
+        run_signal_generation(signal_date, dry_run=args.dry_run)
+    except Exception as exc:
+        # 任意未预期异常都留下ERROR，收盘审计据此告警，而不是误报成普通无候选。
+        save_run_status(
+            signal_date,
+            ERROR,
+            f"L信号脚本异常退出：{type(exc).__name__}: {exc}",
+            dry_run=args.dry_run,
+        )
+        raise
 
 
 if __name__ == "__main__":
