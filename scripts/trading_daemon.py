@@ -12,6 +12,8 @@ A_System 量化策略常驻守护进程。
     09:00  盘前计划 —— 生成/刷新组合状态机买入计划
     09:20  盘前复核 —— 平仓检查（优先） + 组合状态机复核 + 按涨停价预挂买入 + D监控
     09:30  开盘确认 —— 确认09:20预挂成交，未成交再补买
+    13:00  卖出容量检查 —— 普通D等收盘退出腿仅在仓位超过实时容量门槛时启动POV
+    14:30/14:45 —— 按实际成交流速复核容量，小仓位继续等待14:55
     14:55  收盘平仓 —— 连续竞价合法价格笼子下限；14:56:20撤余单，14:57:05仅按安全账本真实余量进收盘竞价
     14:40  撤买单 —— 提前撤销所有未成交买单，不占用14:53后的平仓QMT通道
     15:10  收盘  —— 数据流水线 + 信号生成
@@ -2190,7 +2192,7 @@ def _abc_place_sell_order_direct(
     ts_code: str, name: str, shares: int, order_id: str,
     confirm: str, config: dict, broker_cfg: dict
 ) -> bool:
-    """串行化A/C/E2/L整段卖出生命周期；RLock允许14:55主任务重入。"""
+    """串行化A/C/D/E2/L整段卖出生命周期；RLock允许14:55主任务重入。"""
     with _exit_sell_lock:
         return _abc_place_sell_order_direct_locked(
             ts_code,
@@ -2207,7 +2209,7 @@ def _abc_place_sell_order_direct_locked(
     ts_code: str, name: str, shares: int, order_id: str,
     confirm: str, config: dict, broker_cfg: dict
 ) -> bool:
-    """A/C/E2/L 按交易阶段有效限价卖实际余仓，不走旧CSV卖出数量。
+    """A/C/D/E2/L按交易阶段有效限价卖实际余仓，不走旧CSV卖出数量。
 
     超过交易所单笔股数上限时先拆成多张委托；成交按所有子单聚合，全成回写
     closed，部成只回写真实剩余股数。返回True仅表示本轮已全部成交。
@@ -2427,7 +2429,7 @@ def _abc_place_sell_order_direct_locked(
         return False
 
 
-# ── 卖出端执行引擎（85笔5m、其中84笔尾盘1m容量压力回放）──────────────
+# ── 卖出端执行引擎（普通D只在容量不足时加入，接力D仍走09:23）──────────
 # 目标不是预测精确盘口冲击，而是避免1000万级仓位全部挤在14:55：
 #   ① 13:00/14:30按5分钟真实流量×25%拆单；
 #   ② 14:45复查最近15分钟流速，容量不足则14:46~14:52切1分钟×35%；
@@ -2437,6 +2439,75 @@ def _abc_place_sell_order_direct_locked(
 # 测试。极端跌停或缩量仍可能无法退出，必须保留未成交告警与隔夜清理。
 
 _exit_bypass_day = ""   # 收盘竞价旁路生效日(看门狗14:56岗据此让路)
+
+# 这里只列“按T+N收盘退出”的策略腿。D接力的计划平仓日仍在T+2，接力日为T+1，
+# 因此不会被下面“planned_exit_date == today”选中，仍由09:23专用流程先卖后买。
+T2_CLOSE_STRATEGY_LEGS = frozenset({"A", "C", "D", "E2", "L"})
+
+
+def _configured_exit_pov_strategy_legs(live_cfg: dict[str, Any]) -> frozenset[str]:
+    """读取允许容量型卖出POV的收盘退出策略腿。
+
+    配置只能在已知收盘退出腿内取子集，避免拼写错误把未知持仓送入自动卖出。
+    缺省值包含普通D；是否真正启动POV仍须通过实时成交容量门禁。
+    """
+    raw = live_cfg.get("exit_pov_strategy_legs")
+    if not isinstance(raw, list):
+        return T2_CLOSE_STRATEGY_LEGS
+    normalized = {str(value).strip().upper() for value in raw}
+    return frozenset(normalized & T2_CLOSE_STRATEGY_LEGS)
+
+
+def _fixed_large_runway_allowed(position: dict[str, Any], live_cfg: dict[str, Any]) -> bool:
+    """固定金额14:15跑道是否适用于该策略腿。
+
+    普通D明确排除：D只能由实时成交容量触发，不能仅因绝对仓位达到950万元
+    就提前卖出，以免在流动性充足时无谓偏离T+2收盘收益口径。
+    """
+    raw = live_cfg.get("exit_pov_large_force_strategy_legs", ["A", "C", "E2", "L"])
+    if not isinstance(raw, list):
+        raw = ["A", "C", "E2", "L"]
+    allowed = {str(value).strip().upper() for value in raw}
+    return str(position.get("strategy_leg", "")).strip().upper() in allowed
+
+
+def _exit_pov_due_positions(
+    positions: list[dict[str, Any]], today_str: str, live_cfg: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """筛出今天到期且允许做容量型POV的真实策略仓。
+
+    普通D的planned_exit_date在T+2，所以T+2可进入；D接力发生在T+1，日期不等，
+    不会误进本函数。这里只接受open，已有卖单占用的sell_pending继续交给原卖出链路。
+    """
+    allowed_legs = _configured_exit_pov_strategy_legs(live_cfg)
+    return [
+        position
+        for position in positions
+        if str(position.get("status", "")).lower() == "open"
+        and str(position.get("planned_exit_date", "")) == today_str
+        and str(position.get("strategy_leg", "")).upper() in allowed_legs
+        and not _position_manual_exit_only(position)
+    ]
+
+
+def _exit_pov_capacity_triggered(
+    sell_amount: float, cumulative_amount: float, trigger_pct: float
+) -> bool:
+    """判断仓位是否大于实时成交容量门槛；等于门槛仍按小仓位处理。
+
+    参数异常时回退到已锁定的1%，避免错误配置把所有普通D都提前拆卖。
+    """
+    try:
+        pct = float(trigger_pct)
+    except (TypeError, ValueError):
+        pct = 0.01
+    if not 0 < pct <= 0.10:
+        pct = 0.01
+    return bool(
+        float(sell_amount) > 0
+        and float(cumulative_amount) > 0
+        and float(sell_amount) > float(cumulative_amount) * pct
+    )
 
 
 def _exit_auction_bypass_decision() -> bool:
@@ -3792,9 +3863,10 @@ def _exit_pov_slice(
 def _exit_pov_monitor() -> None:
     """卖出端POV分批平仓线程：5分钟常规卸载，14:46后1分钟加速。
 
-    小资金(跑道≤1片)零介入,行为与现状完全一致;启动前撤止盈预挂单释放
-    冻结股份。每片均受外部流量、盘口深度、滑点和QMT实际可卖量约束，
-    涨停也不再假设买盘无限或直接全量卖出。
+    普通D与A/C/E2/L一样仅在实时容量不足时介入；小仓位零介入并继续由
+    14:55主链路卖出。D接力日不是planned_exit_date，不会进入本线程。
+    启动前撤止盈预挂单释放冻结股份。每片均受外部流量、盘口深度、滑点
+    和QMT实际可卖量约束，涨停也不再假设买盘无限或直接全量卖出。
     """
     log = logger()
     done_day = ""
@@ -3819,11 +3891,7 @@ def _exit_pov_monitor() -> None:
                       and config.get("broker", {}).get("enabled"))
             if not bool(lt.get("exit_pov_enabled", True)) or not qmt_on:
                 done_day = today_str; continue
-            due = [p for p in load_positions()
-                   if str(p.get("status", "")).lower() == "open"
-                   and str(p.get("planned_exit_date", "")) == today_str
-                   and str(p.get("strategy_leg", "")).upper() in {"A", "C", "E2", "L"}
-                   and not _position_manual_exit_only(p)]
+            due = _exit_pov_due_positions(load_positions(), today_str, lt)
             if not due:
                 done_day = today_str; continue
             part = float(lt.get("exit_pov_participation", 0.25))
@@ -3847,15 +3915,22 @@ def _exit_pov_monitor() -> None:
                     continue
                 cum_1300[str(pos.get("ts_code", ""))] = cum
                 sell_amt = int(pos.get("shares", 0)) * last
-                force_large, force_ref_amount, force_signal_amount = _large_exit_force_eligible(
-                    pos, last, lt
-                )
+                if _fixed_large_runway_allowed(pos, lt):
+                    force_large, force_ref_amount, force_signal_amount = (
+                        _large_exit_force_eligible(pos, last, lt)
+                    )
+                else:
+                    # 普通D只服从下方实时容量比较，绝不因固定950万元门槛提前卖。
+                    force_large = False
+                    force_ref_amount = 0.0
+                    force_signal_amount = 0.0
                 # 分批触发线(2026-07-16 θ扫描定稿):卖出市值>当日13:00累计成交×1%
                 # 才分批。更低阈值会把"一把梭不痛"的仓位拉去吃时间成本(100万档
                 # 实测-0.08%/笔);θ=1%各档不受伤,1000万档+0.23%/笔最优。
-                if (
-                    not force_large
-                    and sell_amt <= cum * float(lt.get("exit_pov_trigger_pct", 0.01))
+                if not force_large and not _exit_pov_capacity_triggered(
+                    sell_amt,
+                    cum,
+                    lt.get("exit_pov_trigger_pct", 0.01),
                 ):
                     continue    # 小仓位:今日不分批,14:55主链路处理
                 slice_est = cum * pm_k / 21.0        # 13:05~14:45约21片
@@ -4069,15 +4144,15 @@ def _do_sell(pos: dict[str, Any], qmt_enabled: bool) -> None:
                 "real_order_confirm_text", "A_SYSTEM_REAL_ORDER_CONFIRMED")
             broker_cfg = config.get("broker", {})
             strategy_leg = str(pos.get("strategy_leg", "")).upper()
-            if strategy_leg in {"A", "C", "E2", "L"}:
-                # A/C/L 均是 T+N 收盘卖出口径：
+            if strategy_leg in T2_CLOSE_STRATEGY_LEGS:
+                # A/C/D/E2/L 均存在 T+N 收盘卖出口径：
                 # planned_orders 文件通常只负责买入计划，平仓时直接按买10/买5挂限价卖出。
-                # L 接入后复用同一套“确保尽量成交、成交后回写持仓”的平仓链路。
+                # 普通D同样必须复用该链路；只有状态机明确给出接力动作时，D才会
+                # 在T+1的09:23提前卖出，不能把普通D误认为已经在早盘平仓。
                 # E2也必须走这里：早晨combined SELL保留的是分批前原始股数，POV部成后
                 # 再执行会超卖并触发SELL_VOLUME_NOT_AVAILABLE。直接链路每次从QMT校准余量。
                 _abc_place_sell_order_direct(ts_code, name, shares, order_id, confirm, config, broker_cfg)
             else:
-                # D 策略已在 9:23 集合竞价卖出，不应再进入此分支
                 logger().warning(
                     "[平仓] 策略=%s 不匹配已知分支（%s %s），跳过，请手动确认。",
                     strategy_leg, ts_code, name,
@@ -9904,15 +9979,18 @@ def _format_live_plan_line(
 def _exit_method_desc(strategy: str, exit_rule: str) -> str:
     """按对应策略的平仓逻辑给出平仓时点/方式描述。
 
-    - D：09:23 集合竞价挂跌停（成交≈开盘价）；或被A/C/E2接力时T+1开盘让路。
+    - 普通D：T+2小仓位14:55卖；实时容量不足的大仓位先POV、14:55卖余仓。
+    - D接力：仅状态机明确选择A/C/E2接力时，T+1的09:23先卖D。
     - T+1开盘卖（含 *_open）：09:30 开盘平仓，买10/买5挂限价。
-    - T+2收盘卖（默认 ABC/E2/L *_close）：14:55 收盘平仓，跌停价挂限价（市价效果）。
+    - T+N收盘卖（默认 A/C/D/E2/L *_close）：14:55卖出实际余仓。
     口径与 check_and_close_positions / job_premarket_sell 一致。
     """
     s = str(strategy).upper()
     rule = str(exit_rule).lower()
     if s == "D":
-        return "09:23集合竞价挂跌停平仓（成交≈开盘价）"
+        if "open" in rule:
+            return "D接力09:23集合竞价先卖（成交≈开盘价）"
+        return "普通D按T+2收盘退出：小仓位14:55卖；容量不足的大仓位先POV，14:55卖实际余仓"
     if "open" in rule:
         return "09:30开盘平仓（买10/买5挂限价）"
     return "14:55收盘平仓（跌停价挂限价确保成交）"

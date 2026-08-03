@@ -1968,6 +1968,117 @@ class LargeExitForceEligibilityTest(unittest.TestCase):
         self.assertEqual(signal_day_amount, 0.0)
 
 
+class StrategyDConditionalExitTest(unittest.TestCase):
+    """普通D只按容量分流，接力D和策略收益口径均不得被改动。"""
+
+    def test_production_config_enables_d_for_capacity_gated_pov(self) -> None:
+        config_path = trading_daemon.PROJECT_ROOT / "config" / "config.json"
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        live_cfg = config["live_trade"]
+
+        self.assertIn("D", live_cfg["exit_pov_strategy_legs"])
+        self.assertEqual(float(live_cfg["exit_pov_trigger_pct"]), 0.01)
+        self.assertIn(
+            "D",
+            trading_daemon._configured_exit_pov_strategy_legs(live_cfg),
+        )
+        self.assertNotIn("D", live_cfg["exit_pov_large_force_strategy_legs"])
+        self.assertFalse(
+            trading_daemon._fixed_large_runway_allowed(
+                {"strategy_leg": "D"}, live_cfg
+            )
+        )
+        self.assertTrue(
+            trading_daemon._fixed_large_runway_allowed(
+                {"strategy_leg": "E2"}, live_cfg
+            )
+        )
+
+    def test_only_t2_due_d_enters_pov_pool_and_relay_d_stays_out(self) -> None:
+        positions = [
+            {
+                "order_id": "D-ORDINARY",
+                "strategy_leg": "D",
+                "status": "open",
+                "planned_exit_date": "20260803",
+            },
+            {
+                "order_id": "D-RELAY-T1",
+                "strategy_leg": "D",
+                "status": "open",
+                # 接力发生在T+1，而D普通计划日仍为T+2；今天日期不相等。
+                "planned_exit_date": "20260804",
+            },
+            {
+                "order_id": "D-MANUAL",
+                "strategy_leg": "D",
+                "status": "open",
+                "planned_exit_date": "20260803",
+                "manual_exit_only": True,
+            },
+        ]
+
+        due = trading_daemon._exit_pov_due_positions(
+            positions,
+            "20260803",
+            {"exit_pov_strategy_legs": ["A", "C", "D", "E2", "L"]},
+        )
+
+        self.assertEqual([position["order_id"] for position in due], ["D-ORDINARY"])
+
+    def test_small_d_stays_at_1455_and_only_above_capacity_triggers(self) -> None:
+        # 13:00累计成交1亿元、门槛1%：100万元及以下不拆卖，超过才进入POV。
+        self.assertFalse(
+            trading_daemon._exit_pov_capacity_triggered(1_000_000, 100_000_000, 0.01)
+        )
+        self.assertTrue(
+            trading_daemon._exit_pov_capacity_triggered(1_000_001, 100_000_000, 0.01)
+        )
+        # 错误配置不能把所有小D都提前拆卖，必须回退到1%。
+        self.assertFalse(
+            trading_daemon._exit_pov_capacity_triggered(500_000, 100_000_000, 0)
+        )
+
+    def test_ordinary_d_1455_uses_real_remaining_position_sell_path(self) -> None:
+        position = {
+            "order_id": "D-ORDINARY",
+            "ts_code": "002800.SZ",
+            "name": "测试D",
+            "shares": 10_000,
+            "strategy_leg": "D",
+            "planned_exit_date": "20260803",
+        }
+        config = {
+            "live_trade": {"real_order_confirm_text": "CONFIRMED"},
+            "broker": {"enabled": True},
+        }
+
+        with patch.object(
+            trading_daemon, "load_json_config", return_value=config
+        ), patch.object(
+            trading_daemon, "_abc_place_sell_order_direct", return_value=True
+        ) as direct_sell:
+            trading_daemon._do_sell(position, qmt_enabled=True)
+
+        direct_sell.assert_called_once_with(
+            "002800.SZ",
+            "测试D",
+            10_000,
+            "D-ORDINARY",
+            "CONFIRMED",
+            config,
+            config["broker"],
+        )
+
+    def test_d_exit_description_distinguishes_ordinary_and_relay(self) -> None:
+        ordinary = trading_daemon._exit_method_desc("D", "T+2_close")
+        relay = trading_daemon._exit_method_desc("D", "T+1_open")
+
+        self.assertIn("14:55", ordinary)
+        self.assertIn("POV", ordinary)
+        self.assertIn("09:23", relay)
+
+
 class LargeExitFirstSliceTest(unittest.TestCase):
     def test_1415_first_force_call_places_slice_instead_of_only_refreshing_stale_baseline(self) -> None:
         frozen_now = datetime.datetime(
