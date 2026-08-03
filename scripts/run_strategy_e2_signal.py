@@ -379,7 +379,8 @@ def save_candidates(signal_date: str, candidates: pd.DataFrame, dry_run: bool) -
                          "limit_data_quality", "limit_data_source", "strategy_compatible",
                          "circ_mv", "fill_probability", "allow_buy_reliable", "is_fill_score_reliable",
                          "limit_close", "fd_amount_to_circ_mv"] if c in candidates.columns]
-    if not dry_run and not candidates.empty:
+    # 即使候选为0也覆盖当天文件，防止同一天重跑后仍读到先前非空候选的陈旧结果。
+    if not dry_run:
         candidates[cols].to_csv(path, index=False, encoding="utf-8-sig")
     return path
 
@@ -392,6 +393,7 @@ def save_run_status(
     dry_run: bool,
     candidate_count: int | None = None,
     signal: dict[str, Any] | None = None,
+    candidate: pd.Series | None = None,
 ) -> None:
     """记录E2当日是否正常完成；不向正式信号文件写入空信号。"""
 
@@ -407,11 +409,71 @@ def save_run_status(
     if signal is not None:
         run["ts_code"] = str(signal.get("ts_code", ""))
         run["name"] = str(signal.get("name", ""))
+    if candidate is not None:
+        run["candidate_ts_code"] = str(candidate.get("ts_code", ""))
+        run["candidate_name"] = str(candidate.get("name", ""))
     save_recent_signal_run(
         RUN_STATUS_PATH,
         run,
         strategy_leg="E2",
         max_trade_days=20,
+    )
+
+
+def inspect_blocked_e2_candidates(
+    signal_date: str,
+    *,
+    dry_run: bool,
+) -> tuple[int | None, str, pd.Series | None]:
+    """持仓已阻断开仓时，继续做一次只读候选检查。
+
+    这里只回答“如果账户空仓，今天E2有没有候选”，不会调用``build_signal``，
+    不会写正式信号JSON，更不会提交委托。这样既保留单仓阻断，又消除“候选池未知”
+    的审计盲区。
+    """
+
+    try:
+        candidates = load_e2_candidates(signal_date)
+        save_candidates(signal_date, candidates, dry_run)
+    except Exception as exc:
+        return None, f"E2只读候选检查失败，暂时无法判断是否有候选：{exc}", None
+
+    candidate_count = int(len(candidates))
+    if candidate_count == 0:
+        return 0, "E2只读候选检查为0只，即使账户空仓也不会触发", None
+
+    selected = candidates.iloc[0]
+    code = str(selected.get("ts_code", ""))
+    name = str(selected.get("name", code))
+    return (
+        candidate_count,
+        f"E2只读候选检查有{candidate_count}只，第一名={code} {name}；"
+        "但因当前持仓阻断，不生成正式信号",
+        selected,
+    )
+
+
+def finish_occupied_without_e2_signal(
+    signal_date: str,
+    blocker_reason: str,
+    *,
+    dry_run: bool,
+) -> None:
+    """保存“资金被占用”终态，同时把候选是否存在写清楚。"""
+
+    candidate_count, candidate_reason, candidate = inspect_blocked_e2_candidates(
+        signal_date,
+        dry_run=dry_run,
+    )
+    reason = f"{blocker_reason}；{candidate_reason}"
+    print(f"[E2信号] {reason}")
+    save_run_status(
+        signal_date,
+        NO_SIGNAL_OCCUPIED,
+        reason,
+        dry_run=dry_run,
+        candidate_count=candidate_count,
+        candidate=candidate,
     )
 
 
@@ -444,28 +506,36 @@ def run_signal_generation(signal_date: str, *, dry_run: bool) -> None:
     if has_existing_open_position(open_positions):
         occupied = [(p.get("strategy_leg","?"), p.get("ts_code","?"), p.get("planned_exit_date","?"))
                     for p in open_positions]
-        reason = f"账户有未平仓头寸，E2不触发；持仓={occupied}"
-        print(f"[E2信号] {reason}")
-        save_run_status(signal_date, NO_SIGNAL_OCCUPIED, reason, dry_run=dry_run)
+        finish_occupied_without_e2_signal(
+            signal_date,
+            f"账户有未平仓头寸，E2不触发；持仓={occupied}",
+            dry_run=dry_run,
+        )
         return
 
     if has_abc_planned_order(signal_date):
-        reason = "A/C今日已生成计划委托，E2不触发"
-        print(f"[E2信号] {reason}。")
-        save_run_status(signal_date, NO_SIGNAL_OCCUPIED, reason, dry_run=dry_run)
+        finish_occupied_without_e2_signal(
+            signal_date,
+            "A/C今日已生成计划委托，E2不触发",
+            dry_run=dry_run,
+        )
         return
 
     if has_d_position_today(signal_date, open_positions):
-        reason = "D策略今日已建仓，E2不触发"
-        print(f"[E2信号] {reason}。")
-        save_run_status(signal_date, NO_SIGNAL_OCCUPIED, reason, dry_run=dry_run)
+        finish_occupied_without_e2_signal(
+            signal_date,
+            "D策略今日已建仓，E2不触发",
+            dry_run=dry_run,
+        )
         return
 
     d_status = load_d_intraday_status(signal_date)
     if d_status["has_filled"]:
-        reason = f"D盘中信号已成交或部分成交，E2不触发；{d_status['summary']}"
-        print(f"[E2信号] {reason}")
-        save_run_status(signal_date, NO_SIGNAL_OCCUPIED, reason, dry_run=dry_run)
+        finish_occupied_without_e2_signal(
+            signal_date,
+            f"D盘中信号已成交或部分成交，E2不触发；{d_status['summary']}",
+            dry_run=dry_run,
+        )
         return
     if d_status["has_failed"]:
         print(f"[E2信号] D盘中第1名开仓失败，未占用资金，释放给E2继续判断。{d_status['summary']}")

@@ -128,12 +128,14 @@ class SignalRunReadinessTests(unittest.TestCase):
 
 
 class SignalGeneratorStatusTests(unittest.TestCase):
-    def test_e2_occupied_writes_normal_terminal_status(self) -> None:
+    def test_e2_occupied_and_empty_shadow_candidates_are_explained(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             status_path = Path(temp_dir) / "e2_runs.json"
             with (
                 patch.object(e2_signal, "RUN_STATUS_PATH", status_path),
                 patch.object(e2_signal, "migrate_existing_signals"),
+                patch.object(e2_signal, "load_e2_candidates", return_value=pd.DataFrame()),
+                patch.object(e2_signal, "save_candidates"),
                 patch.object(
                     e2_signal,
                     "load_open_positions",
@@ -152,6 +154,43 @@ class SignalGeneratorStatusTests(unittest.TestCase):
             run = signal_run_by_signal_date(status_path, "20260803")
             self.assertEqual(run["status"], NO_SIGNAL_OCCUPIED)
             self.assertIn("300996.SZ", run["reason"])
+            self.assertEqual(run["candidate_count"], 0)
+            self.assertIn("即使账户空仓也不会触发", run["reason"])
+
+    def test_e2_occupied_records_available_shadow_candidate_without_signal(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            status_path = Path(temp_dir) / "e2_runs.json"
+            candidates = pd.DataFrame(
+                [{"ts_code": "000001.SZ", "name": "平安银行", "circ_mv": 100.0}]
+            )
+            with (
+                patch.object(e2_signal, "RUN_STATUS_PATH", status_path),
+                patch.object(e2_signal, "migrate_existing_signals"),
+                patch.object(e2_signal, "load_e2_candidates", return_value=candidates),
+                patch.object(e2_signal, "save_candidates"),
+                patch.object(e2_signal, "save_signal") as save_signal_mock,
+                patch.object(
+                    e2_signal,
+                    "load_open_positions",
+                    return_value=[
+                        {
+                            "strategy_leg": "L",
+                            "ts_code": "300996.SZ",
+                            "planned_exit_date": "20260804",
+                            "status": "open",
+                        }
+                    ],
+                ),
+            ):
+                e2_signal.run_signal_generation("20260803", dry_run=False)
+
+            run = signal_run_by_signal_date(status_path, "20260803")
+            self.assertEqual(run["status"], NO_SIGNAL_OCCUPIED)
+            self.assertEqual(run["candidate_count"], 1)
+            self.assertEqual(run["candidate_ts_code"], "000001.SZ")
+            self.assertEqual(run["candidate_name"], "平安银行")
+            self.assertIn("但因当前持仓阻断", run["reason"])
+            save_signal_mock.assert_not_called()
 
     def test_e2_candidate_failure_writes_error(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

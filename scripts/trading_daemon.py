@@ -10974,6 +10974,13 @@ def _load_e2_candidate_count(signal_date: str) -> int | None:
     try:
         import pandas as pd
 
+        # 同一天可能重跑，运行状态账本记录最后一次结果，优先级高于候选CSV。
+        run = signal_run_by_signal_date(
+            PROJECT_ROOT / "reports" / "strategy_e2" / "e2_signal_runs_recent.json",
+            signal_date,
+        )
+        if run is not None and run.get("candidate_count") is not None:
+            return int(run["candidate_count"])
         path = PROJECT_ROOT / "reports" / "strategy_e2" / f"e2_signal_{signal_date}_candidates.csv"
         if not path.exists():
             return None
@@ -11002,11 +11009,11 @@ def _log_e2_signal_status(signal_date: str) -> None:
                 signal_date=signal_date,
             )
             logger().info(
-                "  E2策略：信号日期 %s 无E2入选信号，运行状态=%s，原因=%s，候选池=%s",
+                "  E2策略：信号日期 %s 未生成E2正式信号，运行状态=%s，候选池=%s，原因=%s",
                 signal_date,
                 run_status["status"],
-                run_status["reason"],
                 count_text,
+                run_status["reason"],
             )
             return
         logger().info(
