@@ -46,6 +46,10 @@ from scripts.research_strategy_d_relay_fetch import (  # noqa: E402
     load_existing,
     load_relay_targets,
 )
+from scripts.research_strategy_d_relay_tushare_fetch import (  # noqa: E402
+    AUCTION_PROXY_PATH,
+    complete_auction_proxy_keys,
+)
 
 
 PORTFOLIO_PATH = (
@@ -116,6 +120,33 @@ def validate_inputs(
         raise ValueError(
             f"D接力1分钟数据不完整：缺少{sorted(expected_keys-one_keys)}，"
             f"多出{sorted(one_keys-expected_keys)}"
+        )
+
+
+def validate_proxy_inputs(
+    targets: pd.DataFrame,
+    auction_proxy: pd.DataFrame,
+    one_minute: pd.DataFrame,
+) -> None:
+    """无历史tick时，要求16个分钟角色和8笔最终竞价代理全部完整。"""
+
+    expected_roles = {
+        f"{row.signal_date}|{role}"
+        for row in targets.itertuples(index=False)
+        for role in ("D", "NEXT")
+    }
+    one_keys = complete_one_minute_keys(one_minute)
+    if one_keys != expected_roles:
+        raise ValueError(
+            f"D接力1分钟数据不完整：缺少{sorted(expected_roles-one_keys)}，"
+            f"多出{sorted(one_keys-expected_roles)}"
+        )
+    expected_signals = set(targets["signal_date"].astype(str))
+    proxy_keys = complete_auction_proxy_keys(auction_proxy)
+    if proxy_keys != expected_signals:
+        raise ValueError(
+            f"D接力竞价容量代理不完整：缺少{sorted(expected_signals-proxy_keys)}，"
+            f"多出{sorted(proxy_keys-expected_signals)}"
         )
 
 
@@ -321,6 +352,61 @@ def build_capacity_replay(
     return detail, summary
 
 
+def build_capacity_replay_from_proxy(
+    targets: pd.DataFrame,
+    auction_proxy: pd.DataFrame,
+    *,
+    position_amounts: tuple[float, ...],
+    max_auction_participation: float,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """用09:30单一价格bar回放最终竞价容量，不伪造09:23未匹配量。"""
+
+    fake_tick_rows: list[dict[str, Any]] = []
+    proxy_by_signal = auction_proxy.set_index(
+        auction_proxy["signal_date"].astype(str),
+        drop=False,
+    )
+    for target in targets.itertuples(index=False):
+        proxy = proxy_by_signal.loc[str(target.signal_date)]
+        if isinstance(proxy, pd.DataFrame):
+            proxy = proxy.iloc[-1]
+        price = float(proxy["auction_reference_price"])
+        quantity = float(proxy["matched_qty"])
+        fake_tick_rows.append(
+            {
+                "signal_date": target.signal_date,
+                "relay_date": target.relay_date,
+                "role": "D",
+                "ts_code": target.d_ts_code,
+                "bar_time": str(target.relay_date) + "093000",
+                "hhmm": "0923",
+                "bid_price_1": price,
+                "ask_price_1": price,
+                "bid_volume_1": quantity,
+                "ask_volume_1": quantity,
+                "bid_volume_2": 0.0,
+                "ask_volume_2": 0.0,
+                "pre_close": price,
+            }
+        )
+    detail, summary = build_capacity_replay(
+        targets,
+        pd.DataFrame(fake_tick_rows),
+        position_amounts=position_amounts,
+        book_volume_unit=1,
+        max_auction_participation=max_auction_participation,
+        # 最终竞价代理没有未匹配量，因此这里只做容量回放；实盘仍必须读取
+        # 09:23真实卖方未匹配量，缺失时取消接力。
+        max_sell_unmatched_ratio=1.0,
+    )
+    detail["auction_snapshot_source"] = "TUSHARE_0930_FINAL_PROXY"
+    detail["unmatched_volume_available"] = False
+    detail["proxy_note"] = (
+        "09:30单一价格bar仅代理最终竞价容量；不含09:23未匹配量，不能单独认证实盘"
+    )
+    return detail, summary
+
+
 def build_impact_sensitivity(
     targets: pd.DataFrame,
     portfolio: pd.DataFrame,
@@ -373,17 +459,36 @@ def write_report(
     book_volume_unit: int,
     max_auction_participation: float,
     max_sell_unmatched_ratio: float,
+    snapshot_source: str,
+    proxy_haircut: float,
 ) -> None:
+    is_proxy = snapshot_source == "TUSHARE_0930_FINAL_PROXY"
+    volume_note = (
+        "- 成交量统一按股；代理数据用成交额÷单一成交价反推，规避QMT股/手差异。"
+        if is_proxy
+        else f"- QMT盘口数量单位：{book_volume_unit}股/原始单位。"
+    )
+    imbalance_note = (
+        "- 代理不含买卖未匹配量；历史只筛容量，实盘缺少09:23未匹配盘口时必须取消接力。"
+        if is_proxy
+        else f"- 卖方未匹配量上限：虚拟匹配量×{max_sell_unmatched_ratio:.1%}。"
+    )
+    timing_note = (
+        "- 09:30最终竞价代理只用于历史容量筛查，不作为09:23实盘可见数据。"
+        if is_proxy
+        else "- 09:23只使用当时已见快照，不使用09:25真实开盘结果倒推决策。"
+    )
     lines = [
         "# D接力集合竞价容量研究",
         "",
         "## 固定口径",
         "",
         f"- 锁定样本：{EXPECTED_RELAY_COUNT}笔（D→A 2笔、D→C 6笔、D→E2 0笔）。",
-        f"- QMT盘口数量单位：{book_volume_unit}股/原始单位。",
+        volume_note,
+        f"- 容量快照来源：{snapshot_source}。",
         f"- 整仓竞价安全上限：虚拟匹配量×{max_auction_participation:.1%}。",
-        f"- 卖方未匹配量上限：虚拟匹配量×{max_sell_unmatched_ratio:.1%}。",
-        "- 09:23只使用当时已见快照，不使用09:25真实开盘结果倒推决策。",
+        imbalance_note,
+        timing_note,
         "- 数据异常一律CANCEL_RELAY；容量不足进入PAIRED_POV_REQUIRED，禁止整仓跌停价卖。",
         "",
         "## 不同D仓位金额的容量分流",
@@ -401,6 +506,11 @@ def write_report(
         "- CANCEL_RELAY：数据不可验证或价格保护失败时，D恢复普通T+2退出。",
         "- 本报告不等同于实盘成交承诺；样本仅8笔，不能据此无限调参。",
     ]
+    if is_proxy:
+        lines[7:7] = [
+            f"- 代理折扣：原参与率再乘{proxy_haircut:.1%}；代理只用于历史容量筛查。",
+            "- 代理没有09:23未匹配量，不能取代实盘当时盘口门禁。",
+        ]
     REPORT_PATH.write_text("\n".join(lines), encoding="utf-8")
 
 
@@ -408,6 +518,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="D接力集合竞价容量与收益冲击回放")
     parser.add_argument("--tick", type=Path, default=TICK_PATH)
     parser.add_argument("--one-minute", type=Path, default=ONE_MINUTE_PATH)
+    parser.add_argument("--auction-proxy", type=Path, default=AUCTION_PROXY_PATH)
     parser.add_argument("--position-amounts", default=DEFAULT_POSITION_AMOUNTS)
     parser.add_argument(
         "--book-volume-unit",
@@ -417,6 +528,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--max-auction-participation", type=float, default=0.05)
     parser.add_argument("--max-sell-unmatched-ratio", type=float, default=0.05)
+    parser.add_argument(
+        "--proxy-haircut",
+        type=float,
+        default=0.50,
+        help="使用09:30最终竞价代理时对安全参与率再打折，默认50%",
+    )
     return parser.parse_args()
 
 
@@ -426,24 +543,48 @@ def main() -> None:
         raise ValueError("竞价安全参与率必须在0~20%之间")
     if not 0 <= args.max_sell_unmatched_ratio <= 1.0:
         raise ValueError("卖方未匹配比例必须在0~100%之间")
+    if not 0 < args.proxy_haircut <= 1.0:
+        raise ValueError("竞价代理折扣必须在0~100%之间")
     targets = load_relay_targets()
     portfolio = load_portfolio()
     tick = load_existing(args.tick)
     one_minute = load_existing(args.one_minute)
-    validate_inputs(targets, tick, one_minute)
-    book_volume_unit = (
-        infer_book_volume_unit(tick)
-        if args.book_volume_unit == "auto"
-        else int(args.book_volume_unit)
-    )
-    detail, summary = build_capacity_replay(
-        targets,
-        tick,
-        position_amounts=parse_amounts(args.position_amounts),
-        book_volume_unit=book_volume_unit,
-        max_auction_participation=args.max_auction_participation,
-        max_sell_unmatched_ratio=args.max_sell_unmatched_ratio,
-    )
+    auction_proxy = load_existing(args.auction_proxy)
+    expected_tick_keys = {
+        f"{row.signal_date}|{role}"
+        for row in targets.itertuples(index=False)
+        for role in ("D", "NEXT")
+    }
+    if complete_tick_keys(tick) == expected_tick_keys:
+        validate_inputs(targets, tick, one_minute)
+        book_volume_unit = (
+            infer_book_volume_unit(tick)
+            if args.book_volume_unit == "auto"
+            else int(args.book_volume_unit)
+        )
+        effective_participation = args.max_auction_participation
+        snapshot_source = "QMT_0923_TICK"
+        detail, summary = build_capacity_replay(
+            targets,
+            tick,
+            position_amounts=parse_amounts(args.position_amounts),
+            book_volume_unit=book_volume_unit,
+            max_auction_participation=effective_participation,
+            max_sell_unmatched_ratio=args.max_sell_unmatched_ratio,
+        )
+    else:
+        validate_proxy_inputs(targets, auction_proxy, one_minute)
+        book_volume_unit = 1
+        effective_participation = (
+            args.max_auction_participation * args.proxy_haircut
+        )
+        snapshot_source = "TUSHARE_0930_FINAL_PROXY"
+        detail, summary = build_capacity_replay_from_proxy(
+            targets,
+            auction_proxy,
+            position_amounts=parse_amounts(args.position_amounts),
+            max_auction_participation=effective_participation,
+        )
     sensitivity = build_impact_sensitivity(targets, portfolio)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     detail.to_csv(DETAIL_PATH, index=False, encoding="utf-8-sig")
@@ -453,8 +594,10 @@ def main() -> None:
         summary,
         sensitivity,
         book_volume_unit=book_volume_unit,
-        max_auction_participation=args.max_auction_participation,
+        max_auction_participation=effective_participation,
         max_sell_unmatched_ratio=args.max_sell_unmatched_ratio,
+        snapshot_source=snapshot_source,
+        proxy_haircut=args.proxy_haircut,
     )
     print("D接力容量研究完成")
     print(summary.to_string(index=False))

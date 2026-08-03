@@ -532,3 +532,36 @@ reports/strategy_d/relay_capacity/d_relay_capacity_report.md
 验证：全部D能否在10:30前卸完、A/C/E2能否用已确认资金买到、成交均价相对开盘价
 偏差、不同资金档完成率、132笔组合复利及最大回撤。上述门禁通过前不改实盘D接力，
 通过后也必须先小资金验证真实成交与模拟偏差。
+
+### 13.5 QMT历史深度实测与Tushare补数
+
+2026-08-03在国金QMT实测：8笔接力的历史tick全部为空；一分钟行情仅最近3笔
+（20260126、20260507、20260514）可取，2024~2025的5笔为空。原容量脚本因此
+正确失败关闭，没有用日线或未来数据伪造09:23盘口。
+
+项目Token有Tushare ``stk_mins``历史分钟权限，但没有``stk_auction_o``和
+``stk_auction``单独权限。新增以下降级工具：
+
+| 文件/方法 | 作用 |
+|---|---|
+| `src/data_source.py::get_stock_minute_bars()` | 对官方`stk_mins`做单次、无快速重试调用，避免限频错误被通用重试放大 |
+| `scripts/research_strategy_d_relay_tushare_fetch.py` | 补齐16个一分钟角色；每个成功请求立即落盘；从09:30单一价格bar提取最终竞价容量代理 |
+| `build_auction_proxy()` | 用成交额÷单一成交价反推成交股数，兼容QMT分钟volume按手、Tushare按股的100倍差异 |
+
+最终竞价容量代理只回答“历史开盘最终匹配量大约能承载多大D仓位”，不能还原09:23
+买卖未匹配量。实盘若以后接入分流，仍须读取当日09:23真实虚拟盘口；读不到就取消
+大资金接力，不能用09:30历史代理替代实时门禁。
+
+当前Token实测约1次/小时，剩余5笔共8个唯一股票日期。可选择提高Tushare分钟权限，
+或盘后让下面命令隔夜断点续传；每次成功后都会立即保存，程序中断可重新运行：
+
+```powershell
+cd C:\A_System
+py -3.11 scripts\research_strategy_d_relay_tushare_fetch.py --dry-run
+py -3.11 scripts\research_strategy_d_relay_tushare_fetch.py --request-interval 3605
+py -3.11 scripts\research_strategy_d_relay_capacity.py
+```
+
+最近3笔的初步容量结果（最终匹配量×5%再打50%代理折扣，即2.5%上限）显示：D仓位
+25万元和50万元均为3/3整仓容量内；D仓位100万元为2/3容量内，另1笔需要成对POV。
+这只能说明当前约28~30万元总资产规模在这3笔中没有容量问题，不能替代8笔完整认证。

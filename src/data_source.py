@@ -270,3 +270,33 @@ class TushareDataSource:
         if result is None:
             return pd.DataFrame()
         return result
+
+    def get_stock_minute_bars(
+        self,
+        ts_code: str,
+        start_datetime: str,
+        end_datetime: str,
+        freq: str = "1min",
+        fields: Optional[str] = None,
+    ) -> pd.DataFrame:
+        """调用stk_mins获取A股历史分钟行情。
+
+        与``pro_bar``入口分开保留，便于研究脚本严格使用官方``stk_mins``字段
+        ``vol=股、amount=元``。该接口需要单独权限且限频较低，调用方必须自行
+        做间隔和断点续传，不能放入实盘交易线程。
+        """
+
+        # 分钟接口的低频权限会把“频率超限”也计入请求次数。通用``_call``的
+        # 三次快速重试反而可能不断延长限频窗口，因此该专用方法只请求一次，
+        # 由上层采集器按60秒以上间隔重试和断点续传。
+        def _do() -> pd.DataFrame:
+            result = self.pro.stk_mins(
+                ts_code=ts_code,
+                freq=freq,
+                start_date=start_datetime,
+                end_date=end_datetime,
+                fields=fields,
+            )
+            return pd.DataFrame() if result is None else result
+
+        return self._run_with_timeout(_do, "stk_mins")

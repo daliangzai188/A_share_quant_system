@@ -6,9 +6,11 @@ import pandas as pd
 
 from scripts.research_strategy_d_relay_capacity import (
     build_capacity_replay,
+    build_capacity_replay_from_proxy,
     build_impact_sensitivity,
     infer_book_volume_unit,
     load_portfolio,
+    validate_proxy_inputs,
     validate_inputs,
 )
 from scripts.research_strategy_d_relay_fetch import (
@@ -16,6 +18,11 @@ from scripts.research_strategy_d_relay_fetch import (
     complete_tick_keys,
     load_relay_targets,
     normalize_ticks,
+)
+from scripts.research_strategy_d_relay_tushare_fetch import (
+    build_auction_proxy,
+    complete_auction_proxy_keys,
+    normalize_tushare_minute,
 )
 
 
@@ -159,6 +166,81 @@ class StrategyDRelayResearchTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "1分钟数据不完整"):
             validate_inputs(self.targets, tick, one[one["signal_date"] != "20240926"])
+
+    def test_tushare_minute_builds_final_auction_proxy(self) -> None:
+        raw = pd.DataFrame(
+            [
+                {
+                    "ts_code": "002976.SZ",
+                    "trade_time": "2024-09-27 09:30:00",
+                    "open": 10.0,
+                    "close": 10.0,
+                    "high": 10.0,
+                    "low": 10.0,
+                    # 刻意模拟 QMT 常见的“手”口径；代理成交股数必须由成交额/价格推导，
+                    # 不能直接把原始 volume 当成股数，否则会少算 100 倍。
+                    "vol": 5_000,
+                    "amount": 5_000_000.0,
+                }
+            ]
+        )
+        normalized = normalize_tushare_minute(
+            raw,
+            signal_date="20240926",
+            relay_date="20240927",
+            role="D",
+            ts_code="002976.SZ",
+        )
+        one = pd.concat(
+            [
+                normalized.assign(
+                    signal_date=str(target.signal_date),
+                    relay_date=str(target.relay_date),
+                    ts_code=str(target.d_ts_code),
+                )
+                for target in self.targets.itertuples(index=False)
+            ],
+            ignore_index=True,
+        )
+        proxy = build_auction_proxy(self.targets, one)
+
+        self.assertEqual(len(complete_auction_proxy_keys(proxy)), 8)
+        self.assertTrue(proxy["single_price_proxy"].all())
+        self.assertTrue(proxy["unmatched_volume_available"].eq(False).all())
+        self.assertTrue(proxy["matched_qty"].eq(500_000).all())
+        self.assertTrue(proxy["shares_to_raw_volume_ratio"].eq(100.0).all())
+
+    def test_proxy_gate_and_capacity_replay_are_explicitly_conservative(self) -> None:
+        _tick, one = self.make_complete_inputs()
+        proxy = pd.DataFrame(
+            [
+                {
+                    "signal_date": target.signal_date,
+                    "auction_reference_price": 10.0,
+                    "matched_qty": 1_000_000,
+                    "matched_amount": 10_000_000.0,
+                    "single_price_proxy": True,
+                }
+                for target in self.targets.itertuples(index=False)
+            ]
+        )
+        validate_proxy_inputs(self.targets, proxy, one)
+        detail, _summary = build_capacity_replay_from_proxy(
+            self.targets,
+            proxy,
+            position_amounts=(25_000.0, 5_000_000.0),
+            max_auction_participation=0.025,
+        )
+
+        self.assertTrue(
+            detail["auction_snapshot_source"].eq("TUSHARE_0930_FINAL_PROXY").all()
+        )
+        self.assertTrue(detail["unmatched_volume_available"].eq(False).all())
+        self.assertTrue(
+            detail[detail["position_amount"].eq(5_000_000.0)][
+                "recommended_action"
+            ].eq("PAIRED_POV_REQUIRED").all()
+        )
 
     def test_capacity_replay_keeps_small_and_routes_large_to_paired_pov(self) -> None:
         tick, _one = self.make_complete_inputs()
