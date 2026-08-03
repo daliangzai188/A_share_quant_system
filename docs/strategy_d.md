@@ -431,3 +431,104 @@ py -3.11 scripts\research_strategy_d_exit_pov.py
 分钟K成交额不等于Level-2真实买盘深度，因此研究会对容量再打折。样本仅17笔，
 它只能用来排除明显不合格方案，不能保证未来收益。在D专属参数通过门禁前，保持
 当前1%容量阈值不变；仍须先用小资金观察实盘成交均价与收盘价的偏差。
+
+---
+
+## 十三、D接力集合竞价容量研究（实盘路径暂未修改）
+
+### 13.1 本轮结论与边界
+
+第12节“接力D必须整仓集合竞价卖出”只描述当前实盘实现，不再作为大资金方案结论。
+本轮锁定的研究方向是：
+
+1. 小资金D整仓不超过09:23虚拟匹配量安全比例时，保留整仓竞价接力；
+2. 大资金D禁止继续09:23整仓跌停价卖，只让安全部分参与竞价；
+3. 剩余D在09:30后按真实成交先卖，确认资金释放后再买A/C/E2，形成资金中性的
+   成对POV；
+4. 09:23盘口无效、卖方未匹配量过大、数据不完整或回放价格冲击过大时，直接
+   `CANCEL_RELAY`，宁可D恢复普通T+2退出，也不主动增加开盘卖压；
+5. 当前只完成数据采集与第一阶段容量分流工具，尚未修改
+   `trading_daemon.py::job_premarket_sell()`，实盘仍是09:23整仓跌停价委托。
+
+上海证券交易所的行情接口规则明确：集合竞价时买一和卖一价格同时表示虚拟开盘
+参考价，买一量和卖一量表示虚拟匹配量，买二量/卖二量分别表示买方/卖方未匹配量。
+研究脚本据此只读取09:23及以前已经发布的快照，不用09:25真实开盘结果倒推决策。
+
+### 13.2 锁定样本与收益冲击
+
+当前132笔可执行组合中共有8笔D接力：D→A 2笔、D→C 6笔、D→E2 0笔。8笔
+接力合并复利为1.623200倍，其中D的T+1腿复利仅0.935628倍，新A/C腿单独复利
+为1.734878倍。D卖出产生额外冲击时，完整组合对冲击非常敏感：
+
+| D额外卖价冲击 | 132笔组合复利 | 相对4712.470092倍变化 |
+|---:|---:|---:|
+| 0.5% | 4557.91倍 | -3.28% |
+| 1.0% | 4407.80倍 | -6.47% |
+| 2.0% | 4120.50倍 | -12.56% |
+| 3.0% | 3849.72倍 | -18.31% |
+| 5.0% | 3354.48倍 | -28.82% |
+| 10.0% | 2352.05倍 | -50.09% |
+
+这些数值是历史收益敏感性，不是对未来成交价或收益的承诺。样本只有8笔，不能用来
+反复筛选出看似最优的单一阈值。
+
+### 13.3 新增研究工具
+
+| 文件 | 方法/作用 |
+|---|---|
+| `scripts/research_strategy_d_relay_fetch.py` | `load_relay_targets()`精确锁定8笔接力；采集D与新候选共16个角色的09:15~10:30 tick和09:30~10:30一分钟行情，只连接`xtdata`，不创建交易会话、不读取账户、不下单 |
+| `scripts/research_strategy_d_relay_capacity.py` | `validate_inputs()`执行16角色完整性门禁；`infer_book_volume_unit()`自动核验盘口数量是股还是手；`build_capacity_replay()`按不同资金规模分为整仓竞价、竞价安全部分+成对POV、取消接力 |
+| `tests/test_strategy_d_relay_research.py` | 验证8笔样本锁定、两种QMT tick字段格式、时间戳、股/手单位、16角色门禁、大小资金分流、弱竞价取消及收益冲击 |
+
+第一阶段暂用5%虚拟匹配量作为“竞价安全部分”的保守研究上限，同时要求卖方未匹配
+量不超过虚拟匹配量5%。这两个数只是待验证参数，未写入实盘配置。脚本按以下顺序
+处理：
+
+```text
+快照或单位不能确认 → CANCEL_RELAY
+卖方未匹配量 > 虚拟匹配量×5% → CANCEL_RELAY
+整仓D股数 ≤ 虚拟匹配量×5% → FULL_AUCTION_RELAY
+其余 → 只让安全股数参加竞价，剩余标记PAIRED_POV_REQUIRED
+```
+
+### 13.4 Windows采集和回放方式
+
+```powershell
+cd C:\A_System
+
+# 第一步只核对目标，不能访问账户，也不会下单
+py -3.11 scripts\research_strategy_d_relay_fetch.py --dry-run
+
+# 第二步通过QMT行情接口采集8笔×2角色历史行情
+py -3.11 scripts\research_strategy_d_relay_fetch.py
+
+# 第三步：只有16/16个tick角色和16/16个一分钟角色完整才会输出容量结论
+py -3.11 scripts\research_strategy_d_relay_capacity.py
+```
+
+采集器同时兼容QMT五档数组和`bidPrice1/askPrice1`平铺字段。盘口单位默认根据
+`pvolume/volume`自动核验为1或100；比值模糊时直接停止，禁止靠猜测把容量放大
+100倍。若已通过QMT原始行情人工确认单位，也可以显式运行：
+
+```powershell
+py -3.11 scripts\research_strategy_d_relay_capacity.py --book-volume-unit 1
+# 或
+py -3.11 scripts\research_strategy_d_relay_capacity.py --book-volume-unit 100
+```
+
+输出文件：
+
+```text
+data/processed/research_strategy_d_relay_tick.csv
+data/processed/research_strategy_d_relay_1m.csv
+reports/strategy_d/relay_capacity/d_relay_fetch_report.csv
+reports/strategy_d/relay_capacity/d_relay_capacity_detail.csv
+reports/strategy_d/relay_capacity/d_relay_capacity_summary.csv
+reports/strategy_d/relay_capacity/d_relay_impact_sensitivity.csv
+reports/strategy_d/relay_capacity/d_relay_capacity_report.md
+```
+
+只有采集报告显示完整角色16/16，才进入09:30后成对POV的分钟级回放。随后仍需同时
+验证：全部D能否在10:30前卸完、A/C/E2能否用已确认资金买到、成交均价相对开盘价
+偏差、不同资金档完成率、132笔组合复利及最大回撤。上述门禁通过前不改实盘D接力，
+通过后也必须先小资金验证真实成交与模拟偏差。
