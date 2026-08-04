@@ -844,10 +844,100 @@ def markdown_table(frame: pd.DataFrame) -> str:
     return "\n".join(lines)
 
 
+SEGMENTS = [
+    ("全部", "20240520", "20260514"),
+    ("训练半段<20250603", "20240520", "20250602"),
+    ("测试半段>=20250603", "20250603", "20260514"),
+    ("自然年2024", "20240101", "20241231"),
+    ("自然年2025", "20250101", "20251231"),
+    ("自然年2026", "20260101", "20261231"),
+]
+
+
+def segment_comparison(
+    before: pd.DataFrame,
+    after: pd.DataFrame,
+    *,
+    before_label: str,
+    after_label: str,
+) -> pd.DataFrame:
+    """完整组合口径的分段对照。
+
+    单腿改善不等于组合改善：一条腿被挡下后，当天资金可能空仓，也可能被其它腿
+    接手，还会改变后续时间线。因此每个开关都必须在完整组合上分段验证，而不是
+    只看单腿数字。
+    """
+
+    rows: list[dict[str, Any]] = []
+    for label, low, high in SEGMENTS:
+        def window(detail: pd.DataFrame) -> pd.DataFrame:
+            executed = detail[detail["status"].astype(str).eq("EXECUTED")]
+            return executed[
+                (executed["signal_date"].astype(str) >= low)
+                & (executed["signal_date"].astype(str) <= high)
+            ]
+
+        before_window, after_window = window(before), window(after)
+        before_equity = float((1.0 + before_window["account_return"]).prod())
+        after_equity = float((1.0 + after_window["account_return"]).prod())
+
+        def drawdown(frame: pd.DataFrame) -> float:
+            if frame.empty:
+                return 0.0
+            curve = (1.0 + frame["account_return"]).cumprod()
+            return float((curve / curve.cummax() - 1.0).min())
+
+        rows.append(
+            {
+                "split": label,
+                f"{before_label}_trade_count": len(before_window),
+                f"{after_label}_trade_count": len(after_window),
+                f"{before_label}_total_multiple": before_equity,
+                f"{after_label}_total_multiple": after_equity,
+                "total_change": after_equity / before_equity - 1.0 if before_equity else 0.0,
+                f"{before_label}_max_drawdown": drawdown(before_window),
+                f"{after_label}_max_drawdown": drawdown(after_window),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def verdict_lines(comparison: pd.DataFrame, name: str, before_label: str, after_label: str) -> list[str]:
+    """按"非劣才改"判据逐段核对，并写出明确判定。"""
+
+    worse = comparison[comparison["total_change"] < -1e-9]["split"].tolist()
+    dd_worse = comparison[
+        comparison[f"{after_label}_max_drawdown"]
+        < comparison[f"{before_label}_max_drawdown"] - 1e-9
+    ]["split"].tolist()
+    overall = comparison.iloc[0]
+    lines = [
+        f"### 判定：{name}",
+        "",
+        f"- 全样本复利：{overall[f'{before_label}_total_multiple']:.2f}倍 → "
+        f"{overall[f'{after_label}_total_multiple']:.2f}倍（{overall['total_change']:+.2%}）",
+        f"- 复利分段检查：{'六段全部不劣' if not worse else '劣于对照的分段=' + '、'.join(worse)}",
+        f"- 回撤分段检查：{'六段全部不劣' if not dd_worse else '变差的分段=' + '、'.join(dd_worse)}",
+    ]
+    if overall["total_change"] > 0 and not worse and not dd_worse:
+        lines.append(f"- **结论：按回测判据成立，{name}维持上线。**")
+    elif overall["total_change"] > 0:
+        lines.append(
+            f"- **结论：全样本改善但存在劣段（见上），按既有先例如实保留，"
+            f"不为单段结果调参。{name}维持上线。**"
+        )
+    else:
+        lines.append(f"- **结论：按回测判据不成立，{name}不应上线。**")
+    lines.append("")
+    return lines
+
+
 def write_report(
     summary: pd.DataFrame,
     e2_validation: pd.DataFrame,
     l_validation: pd.DataFrame,
+    e2_portfolio_comparison: pd.DataFrame,
+    m_portfolio_comparison: pd.DataFrame,
 ) -> None:
     """写出中文认证报告。"""
 
@@ -862,7 +952,11 @@ def write_report(
         f"- 原可执行基线：{int(base['executed_trade_count'])}笔，{base['equity_multiple']:.2f}倍，最大回撤{base['max_drawdown']:.2%}。",
         f"- 只接入E2门禁：{int(e2_only['executed_trade_count'])}笔，{e2_only['equity_multiple']:.2f}倍，最大回撤{e2_only['max_drawdown']:.2%}。",
         f"- 再接入L连板3~8扩容：{int(optimized['executed_trade_count'])}笔，{optimized['equity_multiple']:.2f}倍，最大回撤{optimized['max_drawdown']:.2%}。",
-        f"- 总组合复利变化：{optimized['equity_multiple'] / base['equity_multiple'] - 1:.2%}。",
+        f"- 再接入M兜底腿：{int(summary.iloc[3]['executed_trade_count'])}笔，"
+        f"{summary.iloc[3]['equity_multiple']:.2f}倍，最大回撤{summary.iloc[3]['max_drawdown']:.2%}"
+        f"（**当前发布标尺**）。",
+        f"- 总组合复利变化：{summary.iloc[3]['equity_multiple'] / base['equity_multiple'] - 1:.2%}。",
+        "- M只在A/C/D/E2/L全部无候选且账户空仓时触发，五腿规则一行未改；回撤>10%自动暂停。",
         "- E2门禁字段只来自信号日首次涨停时间；每日第一名被排除后直接空仓，不回补第二名。",
         "- L扩容只增加T日已知的market_chain_count_bucket=3_8；选股、买卖时间、成交约束和替换窄门均不改变。",
         "- 2026短窗口的组合复利略低于扩容前，已在分段表中保留，不再为单笔历史结果继续调参。",
@@ -880,6 +974,22 @@ def write_report(
         "",
         markdown_table(l_validation),
         "",
+        "## E2门禁完整组合口径分段验证",
+        "",
+        "上面E2那张表是单腿口径（50笔→43笔）。单腿改善不等于组合改善：门禁挡下E2后，",
+        "当天资金可能空仓，也可能被A/C/L接手，还会改变后续时间线。下表为完整组合口径。",
+        "",
+        markdown_table(e2_portfolio_comparison),
+        "",
+        *verdict_lines(e2_portfolio_comparison, "E2入场门禁", "gate_off", "gate_on"),
+        "## M兜底腿完整组合口径分段验证",
+        "",
+        "M不与任何腿竞争，只在五腿全空时补位，因此下表的差异全部来自新增交易与其",
+        "带来的时间线错位。",
+        "",
+        markdown_table(m_portfolio_comparison),
+        "",
+        *verdict_lines(m_portfolio_comparison, "M兜底腿", "m_off", "m_on"),
         "## 实盘对齐说明",
         "",
         "- 配置：`config/strategy_e2_r1_scenarios.json`中的entry_gate。",
@@ -888,6 +998,9 @@ def write_report(
         "- E2实盘信号、model=3盘中预览和历史回测均调用同一规则源。",
         "- L共用代码：`src/strategy_model3_policy.py`；实盘状态机和本认证脚本共同调用。",
         "- D实盘排序恢复为回测口径：炸板1~3次，优先2次，再按封单金额/流通市值降序。",
+        "- M共用代码：`src/strategy_m.py`；实盘信号脚本与本认证脚本调用同一选股链。",
+        "- M候选账本由`scripts/build_strategy_m_backtest_pool.py`生成，与实盘规则源同口径。",
+        "- ⚠️M规则来自1053个方案样本内最优，参数邻域塌陷、样本外仅3笔；复利倍数不可作实盘预期。",
     ]
     (OUTPUT_DIR / "portfolio_report.md").write_text("\n".join(lines), encoding="utf-8")
 
@@ -981,7 +1094,28 @@ def main() -> None:
         index=False,
         encoding="utf-8-sig",
     )
-    write_report(summary, e2_validation, l_validation)
+    e2_portfolio_comparison = segment_comparison(
+        replay(sources, entry_gate_enabled=False, l_chain_3_8_enabled=True, m_enabled=True),
+        with_m_daily,
+        before_label="gate_off",
+        after_label="gate_on",
+    )
+    m_portfolio_comparison = segment_comparison(
+        optimized_daily,
+        with_m_daily,
+        before_label="m_off",
+        after_label="m_on",
+    )
+    e2_portfolio_comparison.to_csv(
+        OUTPUT_DIR / "e2_gate_portfolio_validation.csv", index=False, encoding="utf-8-sig"
+    )
+    m_portfolio_comparison.to_csv(
+        OUTPUT_DIR / "m_leg_portfolio_validation.csv", index=False, encoding="utf-8-sig"
+    )
+    write_report(
+        summary, e2_validation, l_validation,
+        e2_portfolio_comparison, m_portfolio_comparison,
+    )
 
     print("当前可执行组合认证完成")
     print(summary.to_string(index=False))
