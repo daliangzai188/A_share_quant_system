@@ -76,3 +76,7 @@ reports/live_trade/qmt_live_readiness.md
 # Syncthing
 .stfolder/
 .sync-conflict-*
+
+# 策略信号运行状态账本（每日流水线自动重写，无版本控制价值）
+reports/**/*signal_runs_recent.json
+reports/strategy_m/m_equity_peak.json
