@@ -2465,7 +2465,7 @@ _exit_bypass_day = ""   # 收盘竞价旁路生效日(看门狗14:56岗据此让
 
 # 这里只列“按T+N收盘退出”的策略腿。D接力的计划平仓日仍在T+2，接力日为T+1，
 # 因此不会被下面“planned_exit_date == today”选中，仍由09:23专用流程先卖后买。
-T2_CLOSE_STRATEGY_LEGS = frozenset({"A", "C", "D", "E2", "L"})
+T2_CLOSE_STRATEGY_LEGS = frozenset({"A", "C", "D", "E2", "L", "M"})
 
 
 def _configured_exit_pov_strategy_legs(live_cfg: dict[str, Any]) -> frozenset[str]:
@@ -5552,7 +5552,7 @@ def check_and_close_positions() -> None:
             logger().warning("需要平仓：%s %s  计划平仓日 %s  状态 %s  市场开盘 %s",
                              ts_code, name, planned_exit, status, market_is_open())
 
-            t2_close_leg = strategy_leg in {"A", "C", "D", "E2", "L"}
+            t2_close_leg = strategy_leg in {"A", "C", "D", "E2", "L", "M"}
             due_today = planned_exit == today_str
             before_close_sell_window = now_beijing().time() < SCHED_AFTERNOON_CLOSE
             if t2_close_leg and due_today and before_close_sell_window:
@@ -10497,9 +10497,11 @@ def job_post_market(end_date: str | None = None) -> None:
         ("run_paper_ab_filtered_daily_ops.py", "⑥ A+B+C 信号生成",                TIMEOUT_SIGNAL_STEP,"约1分钟"),
         ("run_strategy_e2_signal.py",          "⑦ E2 信号生成（板块中性小市值）", TIMEOUT_SIGNAL_STEP,"约30秒"),
         ("run_strategy_l_signal.py",           "⑧ L 龙头信号生成（独立模式备用）", TIMEOUT_SIGNAL_STEP,"约30秒"),
-        ("strategy_health_monitor.py",         "⑨ 策略健康度监控（滚动20笔期望分位）", TIMEOUT_DATA_STEP, "约10秒"),
-        ("live_execution_audit.py",            "⑩ 实盘执行对账（逐笔损耗vs回测基准）", TIMEOUT_DATA_STEP, "约5秒"),
-        ("update_execution_completion.py",     "⑪ 真实成交完成率汇总（逐片+一笔一行）", TIMEOUT_DATA_STEP, "约5秒"),
+        # M 必须排在 A/C、E2、L 之后：它要读这三者的产物才能判断"五腿是否全空"。
+        ("run_strategy_m_signal.py",           "⑨ M 兜底补位信号（五腿全空时）", TIMEOUT_SIGNAL_STEP,"约20秒"),
+        ("strategy_health_monitor.py",         "⑩ 策略健康度监控（滚动20笔期望分位）", TIMEOUT_DATA_STEP, "约10秒"),
+        ("live_execution_audit.py",            "⑪ 实盘执行对账（逐笔损耗vs回测基准）", TIMEOUT_DATA_STEP, "约5秒"),
+        ("update_execution_completion.py",     "⑫ 真实成交完成率汇总（逐片+一笔一行）", TIMEOUT_DATA_STEP, "约5秒"),
     ]
     extra_args: dict[str, list[str]] = {
         "collect_all_data.py": ["--start-date", recent_start, "--end-date", target_str, "--require-end-date-limit"],

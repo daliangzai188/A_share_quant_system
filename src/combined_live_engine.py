@@ -805,6 +805,78 @@ class CombinedLiveEngine:
             "exit_n_days": max(int(signal.get("exit_offset", 2) or 2) - 1, 1),
         }
 
+    def load_yesterday_m_signal(self, today: str) -> dict[str, Any] | None:
+        """找 planned_buy_date == today 的 M 信号。"""
+        path = self.project_root / "reports" / "strategy_m" / "m_signals_recent.json"
+        if not path.exists():
+            return None
+        return latest_signal_for_buy_date(path, today)
+
+    def build_m_buy_order_if_any(
+        self, today: str, due_selling_codes: set[str] | None = None
+    ) -> dict[str, Any] | None:
+        """M 兜底买单；未启用、无信号或不满足风控时返回 None。
+
+        M 不做任何选股，只消费收盘流水线已生成并落盘的信号。这里只负责三件事：
+        开关校验、T+0 回买拦截、按与 E2 完全相同的口径折算股数。
+        """
+        m_cfg = self.config.get("strategy_m", {})
+        if not isinstance(m_cfg, dict) or not bool(m_cfg.get("enabled", False)):
+            return None
+        if not bool(m_cfg.get("live_order_enabled", False)):
+            return None
+        signal = self.load_yesterday_m_signal(today)
+        if not signal:
+            return None
+        code = str(signal.get("ts_code", ""))
+        if not code:
+            return None
+        if due_selling_codes and code in due_selling_codes:
+            import logging as _logging
+
+            _logging.getLogger(__name__).warning(
+                "M买入标的 %s 与今日集合竞价卖出标的相同，T+0限制，跳过买入。", code
+            )
+            return None
+        limit_close = float(signal.get("limit_close", 0.0) or 0.0)
+        if limit_close <= 0:
+            return None
+        initial_equity = float(self.config.get("position", {}).get("initial_cash", 500_000.0))
+        position_pct = float(m_cfg.get("position_pct", 0.825))
+        planned_amount = initial_equity * position_pct
+        if str(self.config.get("trade_mode", "")).lower() == "live":
+            max_single_order_amount = float(
+                self.config.get("live_trade", {}).get("max_single_order_amount", 0) or 0
+            )
+            if max_single_order_amount > 0:
+                planned_amount = min(planned_amount, max_single_order_amount)
+        round_lot = round_lot_shares_below_amount(planned_amount, limit_close)
+        if round_lot <= 0:
+            return None
+        planned_amount = round_lot * limit_close
+        hold_offset = int(m_cfg.get("exit_hold_offset", 2) or 2)
+        return {
+            "paper_order_id": f"M-BUY-{today}-{code}",
+            "signal_date": str(signal.get("signal_date", "")),
+            "strategy_leg": "M",
+            "planned_order_date": today,
+            "side": "BUY",
+            "ts_code": code,
+            "name": str(signal.get("name", "")),
+            "planned_action": "PLAN_BUY_T1_OPEN",
+            "order_status": "PLAN_ONLY",
+            "planned_position_pct": planned_amount / initial_equity if initial_equity > 0 else position_pct,
+            "planned_equity": initial_equity,
+            "planned_amount_by_equity": planned_amount,
+            "reference_price": limit_close,
+            "estimated_shares": round_lot,
+            "round_lot_shares": round_lot,
+            "risk_flags": "",
+            "live_order_enabled": True,
+            # 信号日T买入T+1、T+2收盘卖，持仓登记天数=hold_offset-1。
+            "exit_n_days": max(hold_offset - 1, 1),
+        }
+
     def build_e2_sell_order(self, position: dict[str, Any], today: str) -> dict[str, Any]:
         shares = self.as_int(position.get("shares", 0))
         return {
@@ -1204,11 +1276,38 @@ class CombinedLiveEngine:
                         reason="今日没有A/C买入计划。",
                         source=str(abc_path or ""),
                     ))
-                    decisions.append(CombinedLiveDecision(
-                        action="ALLOW_D_INTRADAY_MONITOR", strategy_leg="D",
-                        reason="无持仓且无A/C买入计划，允许启动D盘中监控；D本身仍需实时行情、成交概率和风控校验。",
-                        source="combined_state_machine",
-                    ))
+                    # ── M 兜底补位腿 ────────────────────────────────────────
+                    # 走到这里说明 A/C 无计划、E2 无可执行信号、账户空仓；L 已在
+                    # 前面判断过。M 是最后一道补位，只消费昨日已生成的 M 信号，
+                    # 不做任何选股，也不与其它腿竞争。
+                    m_order = self.build_m_buy_order_if_any(today, due_selling_codes)
+                    if m_order is not None:
+                        planned_orders.append(m_order)
+                        decisions.append(CombinedLiveDecision(
+                            action="ALLOW_M_BUY",
+                            strategy_leg="M",
+                            ts_code=str(m_order.get("ts_code", "")),
+                            name=str(m_order.get("name", "")),
+                            side="BUY",
+                            quantity=int(m_order.get("round_lot_shares", 0)),
+                            reason=(
+                                f"五腿今日均无候选，M兜底开仓：{m_order.get('ts_code')} "
+                                f"{m_order.get('name')}，T+1开盘买入"
+                                f"{int(m_order.get('round_lot_shares', 0))}股，T+2收盘卖出。"
+                            ),
+                            source=str(self.project_root / "reports" / "strategy_m"),
+                        ))
+                        decisions.append(CombinedLiveDecision(
+                            action="BLOCK_D_INTRADAY_MONITOR", strategy_leg="D",
+                            reason="M今日开仓使用同一资金，D盘中监控跳过。",
+                            source="combined_state_machine",
+                        ))
+                    else:
+                        decisions.append(CombinedLiveDecision(
+                            action="ALLOW_D_INTRADAY_MONITOR", strategy_leg="D",
+                            reason="无持仓且无A/C买入计划，允许启动D盘中监控；D本身仍需实时行情、成交概率和风控校验。",
+                            source="combined_state_machine",
+                        ))
 
         # ── E2 盘中状态显示（摘要用） ─────────────────────────────────────────
         has_e2_buy = any(d.action == "ALLOW_E2_BUY" for d in decisions)

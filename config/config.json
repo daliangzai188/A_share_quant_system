@@ -28,6 +28,40 @@
     "sell_time": "按L研究明细退出规则",
     "position_pct": 0.825
   },
+  "strategy_m": {
+    "file_role": "策略M兜底补位腿配置。M只在A/C/D/E2/L全部无候选且账户空仓时触发,不与任何腿竞争优先级。默认全关,验证后再放开。",
+    "enabled": true,
+    "live_order_enabled": true,
+    "strategy_version": "M_gap_day_sz_main_weak_min_circ_mv_v1",
+    "sentiment_column": "sz_main_market_sentiment_level",
+    "sentiment_required": "weak",
+    "sentiment_note": "深市主板情绪弱的日子才做。回测481天中weak仅占12%,是M触发稀疏的主因(两年仅25笔)。",
+    "rank_column": "circ_mv",
+    "rank_ascending": true,
+    "rank_note": "候选池内取流通市值最小的一只。随机选票对照500次p=0.0000,该排序确实携带信息。",
+    "exit_hold_offset": 2,
+    "buy_time": "T+1_OPEN",
+    "sell_time": "T+2_CLOSE",
+    "position_pct": 0.825,
+    "drawdown_guard_pct": 0.1,
+    "drawdown_guard_note": "账户回撤超过该比例时暂停M。回测两年仅挡下2笔(20240902/20240911),但把组合回撤从-29.74%收窄到-24.68%。⚠️该开关只能用于M这类补位腿,绝不可推广到A/C/D/E2/L——若所有腿都被净值门控,回撤中将无腿可修复净值,系统会锁死。",
+    "require_all_legs_idle": true,
+    "research_audit": {
+      "window": "20240520~20260514",
+      "m_trade_count": 25,
+      "portfolio_without_m": 4712.4701,
+      "portfolio_with_m_dd_guard": 15891.1,
+      "portfolio_max_drawdown_without_m": -0.1884,
+      "portfolio_max_drawdown_with_m_dd_guard": -0.2468,
+      "downside_if_m_expectation_zero": 3979.7,
+      "random_stock_control_p": 0.0,
+      "random_day_control_p": 0.0,
+      "out_of_sample_trades": 3,
+      "overfit_warning": "规则来自1053个方案的样本内最优;排序与持有期均为单点最优、邻域塌陷。3.37倍不可作为实盘预期,只可作为方向性证据。"
+    },
+    "live_enabled_at": "2026-08-04",
+    "live_enable_note": "2026-08-04用户拍板并入实盘。⚠️首次启用时peak_equity为空,会以启用当日净值为峰值起点;若启用时账户正处于回撤中,M会误判为无回撤而放行。若需手动校正,编辑reports/strategy_m/m_equity_peak.json的peak_equity为真实历史最高净值。"
+  },
   "strategy_model3": {
     "file_role": "model=3 自动切换实盘配置。mode=1默认优先；L仅在满足认证规则时补位/替换；真实下单仍必须经过LiveOrderGateway交易时间、资金、仓位、涨跌停和重复委托风控。",
     "enabled": true,
@@ -194,9 +228,10 @@
       "C",
       "D",
       "E2",
-      "L"
+      "L",
+      "M"
     ],
-    "exit_pov_note": "卖出端容量型POV:普通D仅在planned_exit_date=今日的T+2普通退出进入尾盘POV；D在T+1有A/C/E2接力时改走独立d_relay_paired_pov，不再09:23跌停价整仓卖。13:00仅当仓位市值>累计成交额×1%才建普通退出跑道，小仓位继续14:55主平仓；14:30/14:45再按实测流速复核。普通退出与D接力状态、资金账和线程完全分离。",
+    "exit_pov_note": "卖出端容量型POV:普通D仅在planned_exit_date=今日的T+2普通退出进入尾盘POV；D在T+1有A/C/E2接力时改走独立d_relay_paired_pov，不再09:23跌停价整仓卖。13:00仅当仓位市值>累计成交额×1%才建普通退出跑道，小仓位继续14:55主平仓；14:30/14:45再按实测流速复核。普通退出与D接力状态、资金账和线程完全分离。 M腿与A/C/E2/L同口径:planned_exit_date当日走容量型POV,不走D的接力分支。",
     "exit_pov_participation": 0.25,
     "exit_pov_late_participation": 0.35,
     "exit_pov_late_confirm_timeout_sec": 12,
@@ -205,7 +240,8 @@
       "A",
       "C",
       "E2",
-      "L"
+      "L",
+      "M"
     ],
     "exit_pov_large_force_min_amount": 9500000,
     "exit_pov_large_force_min_signal_amount": 475000000,
