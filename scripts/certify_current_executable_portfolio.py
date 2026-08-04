@@ -78,6 +78,9 @@ NO_B_RESELECTION_PATH = (
     / "config"
     / "strategy_no_b_historical_reselection.csv"
 )
+M_POOL_PATH = (
+    PROJECT_ROOT / "reports" / "strategy_m" / "m_backtest_trades.csv"
+)
 TRADE_CALENDAR_PATH = PROJECT_ROOT / "data" / "raw" / "trade_calendar.csv"
 DAILY_PRICE_DIR = PROJECT_ROOT / "data" / "raw" / "daily"
 OUTPUT_DIR = PROJECT_ROOT / "reports" / "current_portfolio_alignment"
@@ -88,6 +91,7 @@ OLD_POSITION_PCT = 0.80
 POSITION_PCT = 0.825
 D_FILL_STRESS = 0.80
 D_ROUND_TRIP_COST = 0.0015
+M_DRAWDOWN_GUARD = 0.10   # M兜底腿回撤保护阈值,与config.json/strategy_m一致
 EPSILON = 1e-12
 
 # 先锁定门禁前基线，防止以后输入文件漂移后仍静默生成“更好”结果。
@@ -97,6 +101,9 @@ EXPECTED_E2_ONLY_TRADE_COUNT = 129
 EXPECTED_E2_ONLY_MULTIPLE = 3254.1261014125575
 EXPECTED_OPTIMIZED_TRADE_COUNT = 132
 EXPECTED_OPTIMIZED_MULTIPLE = 4712.470092237913
+# 2026-08-04 M兜底腿上线后的当前发布标尺。
+EXPECTED_WITH_M_TRADE_COUNT = 147
+EXPECTED_WITH_M_MULTIPLE = 15326.887148064476
 
 
 @dataclass(frozen=True)
@@ -108,6 +115,7 @@ class Sources:
     strategy_d: pd.DataFrame
     e2: pd.DataFrame
     no_b_reselection: pd.DataFrame
+    m_pool: pd.DataFrame | None
     l_lookup: dict[str, pd.Series]
     model3_config: dict[str, Any]
     e2_spec: dict[str, Any]
@@ -202,6 +210,14 @@ def load_sources() -> Sources:
     if set(no_b.index) != old_b_dates:
         raise ValueError("无B重选账本没有逐日覆盖全部历史B日")
 
+    m_pool: pd.DataFrame | None = None
+    if M_POOL_PATH.exists():
+        m_pool = pd.read_csv(M_POOL_PATH, dtype={"trade_date": str}, low_memory=False)
+        m_pool["trade_date"] = m_pool["trade_date"].map(normalize_date)
+        if m_pool["trade_date"].duplicated().any():
+            raise ValueError("M候选账本存在重复信号日")
+        m_pool = m_pool.set_index("trade_date")
+
     calendar = pd.read_csv(TRADE_CALENDAR_PATH, dtype={"cal_date": str})
     trade_dates = sorted(
         calendar.loc[
@@ -229,6 +245,7 @@ def load_sources() -> Sources:
         strategy_d=strategy_d,
         e2=e2,
         no_b_reselection=no_b,
+        m_pool=m_pool,
         l_lookup=build_l_lookup(l_source),
         model3_config=model3_config,
         e2_spec=load_e2_spec(PROJECT_ROOT),
@@ -490,15 +507,45 @@ def d_relay_candidate(
     }
 
 
+def m_candidate(
+    sources: Sources,
+    signal_date: str,
+    equity: float,
+    peak_equity: float,
+) -> dict[str, Any] | None:
+    """M兜底腿：只在五腿全空时调用，再过一道回撤保护。
+
+    与实盘 src/strategy_m.py 同口径：选股已在
+    scripts/build_strategy_m_backtest_pool.py 固化，这里只判断回撤闸门。
+    """
+
+    if sources.m_pool is None or signal_date not in sources.m_pool.index:
+        return None
+    if peak_equity > 0 and equity / peak_equity - 1.0 <= -M_DRAWDOWN_GUARD:
+        return None
+    row = source_row(sources.m_pool, signal_date, "M候选池")
+    return {
+        "strategy_leg": "M",
+        "ts_code": str(row.get("ts_code", "")),
+        "name": str(row.get("name", "")),
+        "buy_date": normalize_date(row.get("buy_date")),
+        "exit_date": normalize_date(row.get("exit_date")),
+        "account_return": to_float(row.get("net_return")) * POSITION_PCT,
+        "return_source": f"M兜底:{row.get('sentiment','')};流通市值最小",
+    }
+
+
 def replay(
     sources: Sources,
     *,
     entry_gate_enabled: bool,
     l_chain_3_8_enabled: bool = False,
+    m_enabled: bool = False,
 ) -> pd.DataFrame:
     """严格按释放日串行重放481个信号日。"""
 
     equity = INITIAL_EQUITY
+    peak_equity = INITIAL_EQUITY
     occupied_until = ""
     occupied_leg = ""
     occupied_code = ""
@@ -551,6 +598,10 @@ def replay(
                 chain_3_8_enabled=l_chain_3_8_enabled,
             )
 
+        # M 是最后一道兜底：走到这里说明 A/C/E2/D/L 全部无候选。
+        if selected is None and m_enabled:
+            selected = m_candidate(sources, signal_date, equity, peak_equity)
+
         if selected is None:
             rows.append(
                 {
@@ -580,6 +631,7 @@ def replay(
             raise ValueError(f"{signal_date}账户收益不允许小于等于-100%")
 
         equity *= 1.0 + account_return
+        peak_equity = max(peak_equity, equity)
         occupied_until = exit_date
         occupied_leg = str(selected.get("strategy_leg", ""))
         occupied_code = str(selected.get("ts_code", ""))
@@ -852,12 +904,18 @@ def main() -> None:
     optimized_daily = replay(
         sources, entry_gate_enabled=True, l_chain_3_8_enabled=True
     )
+    with_m_daily = replay(
+        sources, entry_gate_enabled=True, l_chain_3_8_enabled=True, m_enabled=True
+    )
     base_summary = summarize(base_daily, "current_before_e2_entry_gate")
     e2_only_summary = summarize(e2_only_daily, "current_after_e2_entry_gate")
     optimized_summary = summarize(
         optimized_daily, "current_after_e2_gate_and_l_chain_3_8_expansion"
     )
-    summary = pd.DataFrame([base_summary, e2_only_summary, optimized_summary])
+    with_m_summary = summarize(with_m_daily, "current_with_m_gap_leg")
+    summary = pd.DataFrame(
+        [base_summary, e2_only_summary, optimized_summary, with_m_summary]
+    )
 
     if base_summary["executed_trade_count"] != EXPECTED_BASE_TRADE_COUNT:
         raise RuntimeError("门禁前组合样本数漂移，拒绝发布")
@@ -871,6 +929,10 @@ def main() -> None:
         raise RuntimeError("L扩容后组合样本数漂移，拒绝发布")
     if abs(optimized_summary["equity_multiple"] - EXPECTED_OPTIMIZED_MULTIPLE) > 1e-9:
         raise RuntimeError("门禁后组合复利漂移，拒绝发布")
+    if with_m_summary["executed_trade_count"] != EXPECTED_WITH_M_TRADE_COUNT:
+        raise RuntimeError("含M组合样本数漂移，拒绝发布")
+    if abs(with_m_summary["equity_multiple"] - EXPECTED_WITH_M_MULTIPLE) > 1e-9:
+        raise RuntimeError("含M组合复利漂移，拒绝发布")
     if optimized_summary["equity_multiple"] <= e2_only_summary["equity_multiple"]:
         raise RuntimeError("L扩容没有提高完整组合复利，禁止上线")
     if optimized_summary["max_drawdown"] < base_summary["max_drawdown"]:

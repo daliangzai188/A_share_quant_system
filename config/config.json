@@ -71,8 +71,8 @@
     "require_live_certification": true,
     "certification_summary_path": "reports/current_portfolio_alignment/portfolio_summary.csv",
     "certification_report_path": "reports/current_portfolio_alignment/portfolio_report.md",
-    "selected_rule_name": "expand_chain_3_8_and_replace_theme_ge_2_not_after_1430",
-    "selected_rule_description": "mode=1默认优先；L基础环境新增market_chain_count_bucket=3_8，其他稳健条件不变；mode=1空闲时允许L补位；mode=1有交易计划时，L替换仍必须满足创业板、theme_limit_count>=2、first_time_detail_bucket!=after_1430。",
+    "selected_rule_name": "expand_chain_3_8_and_replace_theme_ge_2_not_after_1430_with_m_gap_leg",
+    "selected_rule_description": "mode=1默认优先；L基础环境含market_chain_count_bucket=3_8；L替换仍需创业板、theme_limit_count>=2、first_time_detail_bucket!=after_1430；2026-08-04新增M兜底腿：五腿全空且账户空仓时，深市主板情绪weak则买涨停池最小市值，回撤>10%暂停。",
     "base_l_rule": {
       "market_segment": "not_star",
       "segment_retreat_state_bucket": [
@@ -94,19 +94,24 @@
       ]
     },
     "live_candidate_metrics": {
-      "trade_count": 132,
-      "l_trade_count": 41,
-      "mode1_trade_count": 91,
-      "win_rate": 0.712121,
-      "avg_return": 0.072909,
-      "median_return": 0.043938,
-      "equity_multiple": 4712.470092,
-      "max_drawdown": -0.188406,
+      "trade_count": 147,
+      "l_trade_count": 38,
+      "m_trade_count": 24,
+      "mode1_trade_count": 61,
+      "win_rate": 0.687075,
+      "avg_return": 0.074493,
+      "median_return": 0.046872,
+      "equity_multiple": 15326.887148,
+      "max_drawdown": -0.246805,
       "max_loss": -0.163694,
       "max_consecutive_losses": 4,
-      "max_drawdown_peak_date": "20240815",
-      "max_drawdown_trough_date": "20240905",
-      "max_drawdown_recovery_date": "20240924"
+      "scenario": "current_with_m_gap_leg",
+      "previous_without_m": {
+        "equity_multiple": 4712.470092,
+        "trade_count": 132,
+        "max_drawdown": -0.188406
+      },
+      "note": "2026-08-04 M兜底腿上线后的发布标尺。复现:python3 scripts/certify_current_executable_portfolio.py"
     }
   },
   "notify": {

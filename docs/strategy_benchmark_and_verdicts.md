@@ -22,9 +22,19 @@
 
 ```
 文件: reports/current_portfolio_alignment/portfolio_summary.csv
-场景: current_after_e2_gate_and_l_chain_3_8_expansion
-指标: 132笔 | 4,712.47x | 最大回撤-18.84% | 最大单笔亏损-16.37%
+场景: current_with_m_gap_leg
+指标: 147笔 | 15,326.89x | 最大回撤-24.68% | 最大单笔亏损-16.37%
+复现: python3 scripts/certify_current_executable_portfolio.py
 ```
+
+> 2026-08-04 标尺更新：M兜底腿上线。M只在A/C/D/E2/L全部无候选且账户空仓时触发
+> （回测481天中命中24次），五腿规则一行未改。上一版标尺
+> `current_after_e2_gate_and_l_chain_3_8_expansion`（132笔/4,712.47x/-18.84%）
+> 保留在同一份summary里作为不含M的对照。
+>
+> ⚠️ M的规则来自1053个方案的样本内最优，参数邻域塌陷（9种排序仅"市值最小"好、
+> 次优1.13倍；T+2显著优于T+3），样本外仅3笔。**15,326.89x不可作为实盘预期**，
+> 只可作为同尺对比的基准。M期望为0时组合退回约3,980x（-15.5%，固定机会成本）。
 
 以下8302标尺只用于复核2026-07-24以前的历史研究，不再用于认证当前实盘：
 

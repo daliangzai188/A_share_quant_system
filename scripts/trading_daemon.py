@@ -11592,6 +11592,28 @@ def _log_decision_chain_summary(signal_date: str) -> None:
 
         # ── 持仓标注 ──
         # ★行只保留"（已持仓）"；非D持仓的占用/阻断说明单独成行，
+        # ── M 兜底补位腿 ──
+        # M 排在所有腿最后：只有 A/C/E2/L 全部无票、D 也没占用时才可能触发。
+        # 这里只做播报，真实开仓由 combined_live_engine 读 M 信号文件决定。
+        m_cfg = _load_config_section("strategy_m")
+        if not bool(m_cfg.get("enabled", False)):
+            m_line = "未启用｜strategy_m.enabled=false"
+        elif mode1_buy:
+            m_line = f"让位｜{day_label}已有A/C/E2开仓计划占用同一资金"
+        elif l_buy:
+            m_line = f"让位｜L已补位/替换，M不参与"
+        else:
+            m_run = _load_m_signal_run(signal_date)
+            m_sig = _load_m_signal_for_signal_date(signal_date)
+            if m_sig:
+                m_line = (f"成立｜五腿均无票，M兜底选中 {m_sig.get('ts_code','')} "
+                          f"{m_sig.get('name','')}（流通市值"
+                          f"{float(m_sig.get('circ_mv',0) or 0)/10000:.1f}亿）")
+            elif m_run:
+                m_line = f"不触发｜{m_run.get('note','') or m_run.get('status','')}"
+            else:
+                m_line = "无记录｜收盘流水线第⑨步未产出M运行状态，请检查"
+
         # 无论有无开仓候选都要让读者知道"目前谁在持仓、明日开不开仓"。
         open_pos = [p for p in load_positions() if str(p.get("status", "")).lower() in {"open", "sell_pending"}]
         non_d_pos = [p for p in open_pos if str(p.get("strategy_leg", "")).upper() != "D"]
@@ -11699,18 +11721,21 @@ def _log_decision_chain_summary(signal_date: str) -> None:
             f"{P}   ├─过　 → ★买L的票（补位）■{TAG if t3y else ''}",
             f"{P}   └─不过 → 进【4】{TAG if (not m1_has and not t3y) else ''}",
             f"{P} 【4】D盘中扫描（兜底）: 开盘后实时监控，仍需成交概率+风控校验",
+            f"{P} 【5】M兜底补位: 五腿全空且账户空仓时，深市主板情绪weak则买涨停池最小市值",
+            f"{P}      （回撤>10%自动暂停；两年仅25次，触发稀疏）",
             bottom,
             P,
             # 框1：开仓决策链（策略顺序 + 各策略成立/不成立及原因）
             f"{P}━━━━━━━━━━━━━━ 开仓决策链 ━━━━━━━━━━━━━━",
             date_banner,
-            f"{P} 策略顺序：mode1内 A主 > C补位 > E2兜底 > D盘中；L按model3规则补位/替换（当前mode={mode}，B已删除）",
+            f"{P} 策略顺序：mode1内 A主 > C补位 > E2兜底 > D盘中；L按model3规则补位/替换；M最后兜底（当前mode={mode}，B已删除）",
             f"{P} ① A主策略：{a_line}",
             f"{P} ② B策略：{b_line}",
             f"{P} ③ C补位策略：{c_line}",
             f"{P} ④ E2兜底：{e2_line}",
             f"{P} ⑤ D盘中：{d_line}",
             f"{P} ⑥ L/model3：{l_line}",
+            f"{P} ⑦ M兜底补位：{m_line}",
             bottom,
             P,
             # 框2：最终开仓计划（开仓计划/无计划 + 持仓状态）
@@ -11908,6 +11933,50 @@ def _decision_chain_broadcast_loop() -> None:
         time.sleep(1800)
 
 
+def _load_config_section(section: str) -> dict[str, Any]:
+    """读取 config.json 的某个顶层段；失败返回空字典（播报用，不参与下单）。"""
+    try:
+        config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+        value = config.get(section, {})
+        return value if isinstance(value, dict) else {}
+    except Exception:
+        return {}
+
+
+def _load_m_signal_for_signal_date(signal_date: str) -> dict[str, Any] | None:
+    """读取指定信号日的 M 正式信号。"""
+    try:
+        import json
+
+        path = PROJECT_ROOT / "reports" / "strategy_m" / "m_signals_recent.json"
+        if not path.exists():
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+        for signal in reversed(data.get("signals", []) or []):
+            if str(signal.get("signal_date", "")) == str(signal_date):
+                return signal
+    except Exception as exc:
+        logger().warning("读取M信号失败：%s", exc)
+    return None
+
+
+def _load_m_signal_run(signal_date: str) -> dict[str, Any] | None:
+    """读取指定信号日的 M 运行状态（未触发时说明原因）。"""
+    try:
+        import json
+
+        path = PROJECT_ROOT / "reports" / "strategy_m" / "m_signal_runs_recent.json"
+        if not path.exists():
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+        for run in reversed(data.get("runs", []) or []):
+            if str(run.get("signal_date", "")) == str(signal_date):
+                return run
+    except Exception as exc:
+        logger().warning("读取M运行状态失败：%s", exc)
+    return None
+
+
 def _load_l_signal_for_signal_date(signal_date: str) -> dict[str, Any] | None:
     try:
         import json
@@ -12047,8 +12116,10 @@ def _log_l_model3_signal_status(signal_date: str, action_date: str | None = None
             )
             logger().info(
                 "  L替换保护依据：mode1是认证正期望策略，L顶掉它有机会成本，期望收益须显著更高才划算；"
-                "穷举9种替换规则中「创业板+题材涨停≥2+非尾盘首板」组合认证最优（8302x/胜率69.9%），"
-                "放宽板块限制复利降至4778~6172x。该限制只作用于替换场景，与账户交易权限无关。"
+                "穷举9种替换规则中「创业板+题材涨停≥2+非尾盘首板」组合认证最优，放宽板块限制复利明显下降。"
+                "该限制只作用于替换场景，与账户交易权限无关。"
+                "（当前发布标尺：147笔/15326.89x/回撤-24.68%，见 reports/current_portfolio_alignment；"
+                "旧8302x已于2026-08-03降级为历史档案，勿再引用）"
             )
     except Exception as exc:
         logger().warning("  L/model3状态播报失败：%s", exc)
