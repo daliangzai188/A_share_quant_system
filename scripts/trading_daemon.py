@@ -11635,6 +11635,7 @@ def _log_decision_chain_summary(signal_date: str) -> None:
                     {
                         "name": str(p.get("name", "")),
                         "shares": 0,
+                        "cost": 0.0,
                         "slices": 0,
                         "exit": str(p.get("planned_exit_date", "")),
                         "manual": False,
@@ -13227,12 +13228,59 @@ def _print_account_status(log: Any) -> None:
         except Exception as _e:
             log.error("逐票持仓同步异常(不影响交易):%s", _e)
         local_positions = load_positions()
-        local_pos_map: dict[str, dict[str, Any]] = {}
+        # 同一只票可能有多条记录：09:20竞价种子单 + 09:30起的POV补单分片。
+        # 直接按alias覆盖会让后一片顶掉前一片，导致用单片买价去算整笔收益
+        # （2026-08-05华之杰：200股@46.38顶掉4800股@45.47，收益-4.44% vs 实际-2.61%）。
+        # 这里按票加权合并成本，其余字段沿用最早那片（买入时间、计划平仓日等）。
+        merged_by_code: dict[str, dict[str, Any]] = {}
         for lp in local_positions:
             if str(lp.get("status", "")).lower() not in {"open", "sell_pending"}:
                 continue
-            for alias in _ts_code_aliases(lp.get("ts_code", "")):
-                local_pos_map[alias] = lp
+            code = str(lp.get("ts_code", ""))
+            try:
+                shares = int(float(lp.get("shares", 0) or 0))
+                price = float(lp.get("buy_price", 0) or 0)
+            except (TypeError, ValueError):
+                shares, price = 0, 0.0
+            order_id = str(lp.get("order_id", ""))
+            if code not in merged_by_code:
+                merged = dict(lp)
+                merged["_total_shares"] = shares
+                merged["_total_cost"] = shares * price
+                merged["_slices"] = 1
+                # 告警去重状态要写回全部分片，只写第一片会让其余片下次重复推送。
+                merged["_slice_order_ids"] = [order_id] if order_id else []
+                notified = lp.get("notified_loss_thresholds") or []
+                merged["notified_loss_thresholds"] = list(notified)
+                merged_by_code[code] = merged
+            else:
+                merged = merged_by_code[code]
+                merged["_total_shares"] += shares
+                merged["_total_cost"] += shares * price
+                merged["_slices"] += 1
+                if order_id:
+                    merged["_slice_order_ids"].append(order_id)
+                # 任一分片已推送过的档位都算已推送，避免合并后重复告警。
+                merged["notified_loss_thresholds"] = sorted(
+                    {
+                        str(x)
+                        for x in (
+                            list(merged.get("notified_loss_thresholds") or [])
+                            + list(lp.get("notified_loss_thresholds") or [])
+                        )
+                    },
+                    key=lambda x: float(x),
+                    reverse=True,
+                )
+        for merged in merged_by_code.values():
+            if merged["_total_shares"] > 0 and merged["_total_cost"] > 0:
+                merged["shares"] = merged["_total_shares"]
+                merged["buy_price"] = merged["_total_cost"] / merged["_total_shares"]
+
+        local_pos_map: dict[str, dict[str, Any]] = {}
+        for code, merged in merged_by_code.items():
+            for alias in _ts_code_aliases(code):
+                local_pos_map[alias] = merged
         notify_cfg = config.get("notify", {}) if isinstance(config, dict) else {}
         loss_thresholds = notify_cfg.get("position_loss_alert_thresholds_pct", [-5, -10, -15, -20, -30])
         try:
@@ -13313,11 +13361,15 @@ def _print_account_status(log: Any) -> None:
                             key=lambda x: float(x),
                             reverse=True,
                         )
-                        local_oid = str(lp.get("order_id", ""))
-                        if local_oid:
-                            position_metadata_updates[local_oid] = list(
-                                lp["notified_loss_thresholds"]
-                            )
+                        # 分片持仓要把去重状态写回全部分片，否则下次仍会重复推送。
+                        slice_oids = [
+                            oid for oid in (lp.get("_slice_order_ids") or []) if oid
+                        ] or [str(lp.get("order_id", ""))]
+                        for local_oid in slice_oids:
+                            if local_oid:
+                                position_metadata_updates[local_oid] = list(
+                                    lp["notified_loss_thresholds"]
+                                )
                         positions_dirty = True
                 pos_parts.append(
                     f"策略={strategy_leg} {p.ts_code} {name_s} ×{int(p.volume)}股 "
