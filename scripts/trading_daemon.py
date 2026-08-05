@@ -791,6 +791,39 @@ def _note_broker_has_positions() -> None:
 _broker_missing_streak: dict[str, int] = {}   # {ts_code: 连续查无此票的次数}
 
 
+
+def _recover_sell_price_from_fills(pos: dict[str, Any]) -> float:
+    """幽灵清理时尽力还原真实卖出均价，避免把 sell_price 写成 0。
+
+    卖出分片会把每天的成交量与成交额记进 exit_fills_by_date，这里按
+    总成交额/总成交量算加权均价。2026-06~08 已有乔治白、兴欣新材、普联软件
+    三笔因写 0 而无法复盘，每次都要事后用日线收盘价手工补。
+
+    只影响账本记录与事后复盘，不参与任何交易决策或下单。
+    """
+
+    existing = pos.get("sell_price")
+    try:
+        if existing is not None and float(existing) > 0:
+            return float(existing)
+    except (TypeError, ValueError):
+        pass
+    fills = pos.get("exit_fills_by_date")
+    if not isinstance(fills, dict):
+        return 0.0
+    total_qty = total_amount = 0.0
+    for value in fills.values():
+        if not isinstance(value, dict):
+            continue
+        try:
+            total_qty += float(value.get("qty", 0) or 0)
+            total_amount += float(value.get("amount", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+    if total_qty > 0 and total_amount > 0:
+        return total_amount / total_qty
+    return 0.0
+
 def reconcile_missing_local_positions(broker_positions: Any, source: str) -> int:
     """逐票同步:本地 open 但券商连续 N 次查无此票 → 标 closed(2026-07-23 用户要求)。
 
@@ -848,7 +881,7 @@ def reconcile_missing_local_positions(broker_positions: Any, source: str) -> int
                 continue
             pos["status"] = "closed"
             pos["sell_date"] = pos.get("sell_date") or today
-            pos["sell_price"] = pos.get("sell_price") or 0.0
+            pos["sell_price"] = _recover_sell_price_from_fills(pos)
             pos["ghost_cleared_at"] = now_str
             pos["ghost_clear_source"] = f"逐票同步-{source}"
             pos["ghost_clear_reason"] = f"券商连续{need}次查无此持仓(手动卖出/已平仓同步)"
@@ -904,7 +937,7 @@ def clear_local_positions_when_broker_empty(source: str) -> int:
                 continue
             pos["status"] = "closed"
             pos["sell_date"] = pos.get("sell_date") or today_beijing().strftime("%Y%m%d")
-            pos["sell_price"] = pos.get("sell_price") or 0.0
+            pos["sell_price"] = _recover_sell_price_from_fills(pos)
             pos["ghost_cleared_at"] = now_str
             pos["ghost_clear_source"] = source
             pos["ghost_clear_reason"] = "QMT接口查询成功且返回无实盘持仓"
