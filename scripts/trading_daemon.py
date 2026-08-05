@@ -11622,14 +11622,88 @@ def _log_decision_chain_summary(signal_date: str) -> None:
             pos_note = "（已持仓）"
         hold_line = ""
         if non_d_pos:
-            desc = "、".join(
-                f"{str(p.get('strategy_leg','') or '?').upper()}策略 {p.get('ts_code','')} {p.get('name','')}"
-                + (
-                    "（仅人工退出，系统禁卖）"
-                    if _position_manual_exit_only(p)
-                    else f"（计划{p.get('planned_exit_date','')}平仓）"
+            # 同一只票可能有多条记录：09:20竞价种子单 + 09:30起的POV补单分片。
+            # 播报按(策略腿,股票)汇总，避免同一笔持仓被列多次让人误以为重复建仓。
+            grouped: dict[tuple[str, str], dict[str, Any]] = {}
+            for p in non_d_pos:
+                key = (
+                    str(p.get("strategy_leg", "") or "?").upper(),
+                    str(p.get("ts_code", "")),
                 )
-                for p in non_d_pos
+                item = grouped.setdefault(
+                    key,
+                    {
+                        "name": str(p.get("name", "")),
+                        "shares": 0,
+                        "slices": 0,
+                        "exit": str(p.get("planned_exit_date", "")),
+                        "manual": False,
+                    },
+                )
+                try:
+                    shares = int(float(p.get("shares", 0) or 0))
+                except (TypeError, ValueError):
+                    shares = 0
+                try:
+                    buy_price = float(p.get("buy_price", 0) or 0)
+                except (TypeError, ValueError):
+                    buy_price = 0.0
+                item["shares"] += shares
+                item["cost"] += shares * buy_price
+                item["slices"] += 1
+                if _position_manual_exit_only(p):
+                    item["manual"] = True
+
+        # 现价取不到不影响播报：QMT未连接或非交易时段时只显示成本，不阻塞。
+        last_prices: dict[str, float] = {}
+        try:
+            codes = sorted({code for _, code in grouped})
+            if codes:
+                config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+                if config.get("broker_adapter_enabled") and config.get("qmt_enabled"):
+                    with _qmt_lock:
+                        adapter = _qmt_get(config.get("broker", {}))
+                        quote_map = adapter.get_full_tick(codes)
+                    for code in codes:
+                        quote = quote_map.get(code)
+                        price = float(getattr(quote, "last_price", 0.0) or 0.0) if quote else 0.0
+                        if price > 0:
+                            last_prices[code] = price
+        except Exception as exc:
+            logger().debug("持仓播报取现价失败（不影响播报）：%s", exc)
+
+        parts: list[str] = []
+        total_cost = total_value = 0.0
+        for (leg, code), item in grouped.items():
+            avg_cost = item["cost"] / item["shares"] if item["shares"] else 0.0
+            text = (
+                f"{leg}策略 {code} {item['name']} {item['shares']}股"
+                + (f"（{item['slices']}片）" if item["slices"] > 1 else "")
+                + (f" 成本{avg_cost:.2f}" if avg_cost > 0 else "")
+            )
+            price = last_prices.get(code, 0.0)
+            if price > 0 and avg_cost > 0:
+                value = price * item["shares"]
+                total_cost += item["cost"]
+                total_value += value
+                # 收益按本地账本加权成本计算：逐片累加"股数×委托价"再除以总股数，
+                # 分片买价不同时不可用简单平均。与账户播报的QMT成本价口径可能
+                # 有差异（QMT成本含费用且按券商成交回报计），这里以本地账本为准。
+                text += (
+                    f" 现价{price:.2f} 收益{price / avg_cost - 1:+.2%}"
+                    f" 市值{value / 10000:.2f}万"
+                )
+            text += (
+                "（仅人工退出，系统禁卖）"
+                if item["manual"]
+                else f"（计划{item['exit']}平仓）"
+            )
+            parts.append(text)
+        desc = "、".join(parts)
+        if len(grouped) > 1 and total_cost > 0:
+            desc += (
+                f"；合计成本{total_cost / 10000:.2f}万 市值{total_value / 10000:.2f}万 "
+                f"收益{total_value / total_cost - 1:+.2%}"
             )
             manual_exit_positions = [p for p in non_d_pos if _position_manual_exit_only(p)]
             blocking = list(non_d_pos)
