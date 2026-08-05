@@ -11433,6 +11433,98 @@ def _log_final_decision_summary(signal_date: str, action_date_compact: str, buy_
         logger().error("最终结果汇总异常：%s", exc)
 
 
+def _describe_holdings(positions: list[dict[str, Any]], *, with_quote: bool = True) -> str:
+    """把持仓按(策略腿,股票)汇总成一行描述。
+
+    同一只票可能有多条记录：09:20竞价种子单 + 09:30起的POV补单分片。逐条打印
+    会让同一笔持仓被列多次，看起来像重复建仓；成本也必须按加权算，不能取某一
+    片的买价（2026-08-05华之杰：200股@46.38 vs 4800股@45.47，差1.8个百分点）。
+
+    现价取不到时降级只显示成本，不阻塞播报。
+    """
+
+    grouped: dict[tuple[str, str], dict[str, Any]] = {}
+    for position in positions:
+        key = (
+            str(position.get("strategy_leg", "") or "?").upper(),
+            str(position.get("ts_code", "")),
+        )
+        item = grouped.setdefault(
+            key,
+            {
+                "name": str(position.get("name", "")),
+                "shares": 0,
+                "cost": 0.0,
+                "slices": 0,
+                "exit": str(position.get("planned_exit_date", "")),
+                "manual": False,
+            },
+        )
+        try:
+            shares = int(float(position.get("shares", 0) or 0))
+        except (TypeError, ValueError):
+            shares = 0
+        try:
+            buy_price = float(position.get("buy_price", 0) or 0)
+        except (TypeError, ValueError):
+            buy_price = 0.0
+        item["shares"] += shares
+        item["cost"] += shares * buy_price
+        item["slices"] += 1
+        if _position_manual_exit_only(position):
+            item["manual"] = True
+
+    last_prices: dict[str, float] = {}
+    if with_quote:
+        try:
+            codes = sorted({code for _, code in grouped})
+            if codes:
+                config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+                if config.get("broker_adapter_enabled") and config.get("qmt_enabled"):
+                    with _qmt_lock:
+                        adapter = _qmt_get(config.get("broker", {}))
+                        quote_map = adapter.get_full_tick(codes)
+                    for code in codes:
+                        quote = quote_map.get(code)
+                        price = float(getattr(quote, "last_price", 0.0) or 0.0) if quote else 0.0
+                        if price > 0:
+                            last_prices[code] = price
+        except Exception as exc:
+            logger().debug("持仓播报取现价失败（不影响播报）：%s", exc)
+
+    parts: list[str] = []
+    total_cost = total_value = 0.0
+    for (leg, code), item in grouped.items():
+        avg_cost = item["cost"] / item["shares"] if item["shares"] else 0.0
+        text = (
+            f"{leg}策略 {code} {item['name']} {item['shares']}股"
+            + (f"（{item['slices']}片）" if item["slices"] > 1 else "")
+            + (f" 成本{avg_cost:.2f}" if avg_cost > 0 else "")
+        )
+        price = last_prices.get(code, 0.0)
+        if price > 0 and avg_cost > 0:
+            value = price * item["shares"]
+            total_cost += item["cost"]
+            total_value += value
+            text += (
+                f" 现价{price:.2f} 收益{price / avg_cost - 1:+.2%}"
+                f" 市值{value / 10000:.2f}万"
+            )
+        text += (
+            "（仅人工退出，系统禁卖）"
+            if item["manual"]
+            else f"（计划{item['exit']}平仓）"
+        )
+        parts.append(text)
+    desc = "、".join(parts)
+    if len(grouped) > 1 and total_cost > 0:
+        desc += (
+            f"；合计成本{total_cost / 10000:.2f}万 市值{total_value / 10000:.2f}万 "
+            f"收益{total_value / total_cost - 1:+.2%}"
+        )
+    return desc
+
+
 def _log_decision_chain_summary(signal_date: str) -> None:
     """收盘流水线完成后，用一段决策链日志讲清楚明日开仓逻辑。
 
@@ -11622,90 +11714,7 @@ def _log_decision_chain_summary(signal_date: str) -> None:
             pos_note = "（已持仓）"
         hold_line = ""
         if non_d_pos:
-            # 同一只票可能有多条记录：09:20竞价种子单 + 09:30起的POV补单分片。
-            # 播报按(策略腿,股票)汇总，避免同一笔持仓被列多次让人误以为重复建仓。
-            grouped: dict[tuple[str, str], dict[str, Any]] = {}
-            for p in non_d_pos:
-                key = (
-                    str(p.get("strategy_leg", "") or "?").upper(),
-                    str(p.get("ts_code", "")),
-                )
-                item = grouped.setdefault(
-                    key,
-                    {
-                        "name": str(p.get("name", "")),
-                        "shares": 0,
-                        "cost": 0.0,
-                        "slices": 0,
-                        "exit": str(p.get("planned_exit_date", "")),
-                        "manual": False,
-                    },
-                )
-                try:
-                    shares = int(float(p.get("shares", 0) or 0))
-                except (TypeError, ValueError):
-                    shares = 0
-                try:
-                    buy_price = float(p.get("buy_price", 0) or 0)
-                except (TypeError, ValueError):
-                    buy_price = 0.0
-                item["shares"] += shares
-                item["cost"] += shares * buy_price
-                item["slices"] += 1
-                if _position_manual_exit_only(p):
-                    item["manual"] = True
-
-        # 现价取不到不影响播报：QMT未连接或非交易时段时只显示成本，不阻塞。
-        last_prices: dict[str, float] = {}
-        try:
-            codes = sorted({code for _, code in grouped})
-            if codes:
-                config = load_json_config(PROJECT_ROOT / "config" / "config.json")
-                if config.get("broker_adapter_enabled") and config.get("qmt_enabled"):
-                    with _qmt_lock:
-                        adapter = _qmt_get(config.get("broker", {}))
-                        quote_map = adapter.get_full_tick(codes)
-                    for code in codes:
-                        quote = quote_map.get(code)
-                        price = float(getattr(quote, "last_price", 0.0) or 0.0) if quote else 0.0
-                        if price > 0:
-                            last_prices[code] = price
-        except Exception as exc:
-            logger().debug("持仓播报取现价失败（不影响播报）：%s", exc)
-
-        parts: list[str] = []
-        total_cost = total_value = 0.0
-        for (leg, code), item in grouped.items():
-            avg_cost = item["cost"] / item["shares"] if item["shares"] else 0.0
-            text = (
-                f"{leg}策略 {code} {item['name']} {item['shares']}股"
-                + (f"（{item['slices']}片）" if item["slices"] > 1 else "")
-                + (f" 成本{avg_cost:.2f}" if avg_cost > 0 else "")
-            )
-            price = last_prices.get(code, 0.0)
-            if price > 0 and avg_cost > 0:
-                value = price * item["shares"]
-                total_cost += item["cost"]
-                total_value += value
-                # 收益按本地账本加权成本计算：逐片累加"股数×委托价"再除以总股数，
-                # 分片买价不同时不可用简单平均。与账户播报的QMT成本价口径可能
-                # 有差异（QMT成本含费用且按券商成交回报计），这里以本地账本为准。
-                text += (
-                    f" 现价{price:.2f} 收益{price / avg_cost - 1:+.2%}"
-                    f" 市值{value / 10000:.2f}万"
-                )
-            text += (
-                "（仅人工退出，系统禁卖）"
-                if item["manual"]
-                else f"（计划{item['exit']}平仓）"
-            )
-            parts.append(text)
-        desc = "、".join(parts)
-        if len(grouped) > 1 and total_cost > 0:
-            desc += (
-                f"；合计成本{total_cost / 10000:.2f}万 市值{total_value / 10000:.2f}万 "
-                f"收益{total_value / total_cost - 1:+.2%}"
-            )
+            desc = _describe_holdings(non_d_pos)
             manual_exit_positions = [p for p in non_d_pos if _position_manual_exit_only(p)]
             blocking = list(non_d_pos)
             overdue = [p for p in non_d_pos if str(p.get("planned_exit_date", "99991231")) < action_date]
@@ -11723,11 +11732,7 @@ def _log_decision_chain_summary(signal_date: str) -> None:
         # 持仓占用说明统一为串行单仓：旧仓无论是否今日到期，只要券商仍有实际持仓，
         # 所有新开仓都阻断。D策略09:23接力必须先卖出并确认券商为空仓，才会重建买入计划。
         if _blocked_by_holding and not hold_line:
-            d_desc = "、".join(
-                f"{str(p.get('strategy_leg','?') or '?').upper()}策略 {p.get('ts_code','')} {p.get('name','')}"
-                f"（计划{p.get('planned_exit_date','')}平仓）"
-                for p in _holding_non_l
-            )
+            d_desc = _describe_holdings(_holding_non_l)
             hold_line = (
                 f"目前已持仓：{d_desc}；旧策略仓尚未实际清空，{day_label}不开新仓"
                 "（含L补位/替换均按串行单仓口径挡住；券商确认清仓后再择机开仓）"
@@ -11740,7 +11745,7 @@ def _log_decision_chain_summary(signal_date: str) -> None:
             and str(p.get("planned_exit_date", "99991231")) == str(action_date)
         ]
         if d_due_today and not hold_line:
-            dd = "、".join(f"{str(p.get('strategy_leg','?')).upper()}策略 {p.get('ts_code','')} {p.get('name','')}" for p in d_due_today)
+            dd = _describe_holdings(d_due_today)
             hold_line = (
                 f"目前已持仓：{dd}（{day_label}到期）；该持仓{day_label}14:55收盘平仓，"
                 "取消尾盘旧仓未卖时的早盘衔接开仓，确认清仓后再等待下一次候选"
