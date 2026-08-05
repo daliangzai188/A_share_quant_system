@@ -1,5 +1,5 @@
 {
-  "file_role": "策略研究配置文件。用于固化当前最佳候选策略参数，只用于本地回测、审计和模拟盘前复盘，不接实盘。",
+  "file_role": "A/C两条实盘腿的选股规则源。⚠️本文件确实驱动实盘：守护进程trading_daemon.py 与 run_paper_ab_filtered_daily_ops.py 都从这里加载A/C的入选条件。顶层enabled/live_trading_enabled/broker_adapter_enabled/qmt_enabled 是研究期遗留的占位开关，实盘总闸在 config/config.json，不要据此判断本文件是否生效。",
   "strategy_name": "a_clean_plus_exclude_star_prev0_3_bj_risk_filter",
   "enabled": false,
   "description": "A-clean+ 风险过滤版。基于模拟盘前 WARN 来源分析，在去科创板基础上，额外排除北交所且前一日涨幅0-3%的候选组合。最近2年日线保守成交口径下，较上一版复利、胜率、回撤和最大单笔亏损均改善。",
@@ -30,7 +30,9 @@
     "exclude_st": true,
     "exclude_delisting_risk": true,
     "exclude_suspended": true,
-    "exclude_market_segments": ["star"],
+    "exclude_market_segments": [
+      "star"
+    ],
     "exclude_market_segments_note": "2026-07-28 已确认科创板和北交所交易权限全部开通，北交所权限锁保持放开（exclude_bj=false），实盘候选数据已能识别bj。exclude_market_segments保留star：这是A/C认证策略自身的板块规则（strategy_name=a_clean_plus_exclude_star，认证交易中科创板0笔），不是账户权限拦截；D/E2继续按各自认证口径使用科创板。",
     "exclude_bj": false,
     "exclude_chi_next": false,
@@ -361,20 +363,52 @@
           "description": "按板高分档过滤炸板次数：首板不限；二板<4次；三板/四板<11次；五板及以上<4次。",
           "compound_conditions": [
             [
-              {"column": "limit_times", "operator": "==", "value": 2},
-              {"column": "open_times", "operator": ">=", "value": 4}
+              {
+                "column": "limit_times",
+                "operator": "==",
+                "value": 2
+              },
+              {
+                "column": "open_times",
+                "operator": ">=",
+                "value": 4
+              }
             ],
             [
-              {"column": "limit_times", "operator": "==", "value": 3},
-              {"column": "open_times", "operator": ">=", "value": 11}
+              {
+                "column": "limit_times",
+                "operator": "==",
+                "value": 3
+              },
+              {
+                "column": "open_times",
+                "operator": ">=",
+                "value": 11
+              }
             ],
             [
-              {"column": "limit_times", "operator": "==", "value": 4},
-              {"column": "open_times", "operator": ">=", "value": 11}
+              {
+                "column": "limit_times",
+                "operator": "==",
+                "value": 4
+              },
+              {
+                "column": "open_times",
+                "operator": ">=",
+                "value": 11
+              }
             ],
             [
-              {"column": "limit_times", "operator": ">=", "value": 5},
-              {"column": "open_times", "operator": ">=", "value": 4}
+              {
+                "column": "limit_times",
+                "operator": ">=",
+                "value": 5
+              },
+              {
+                "column": "open_times",
+                "operator": ">=",
+                "value": 4
+              }
             ]
           ]
         }
@@ -449,5 +483,23 @@
     "output_prefix": "reports/strategy_release/a_strict_plus_c_hold3_release_validation",
     "live_order_enabled": false
   },
-  "risk_notice": "该配置只表示当前本地回测和审计口径下的候选策略，不代表可直接实盘。实盘前必须完成分钟K、盘口档位、集合竞价、滑点、跌停卖出和模拟盘验证。"
+  "risk_notice": "该配置只表示当前本地回测和审计口径下的候选策略，不代表可直接实盘。实盘前必须完成分钟K、盘口档位、集合竞价、滑点、跌停卖出和模拟盘验证。",
+  "_config_section_map": {
+    "说明": "本文件含两套并存且互斥的规则，读之前先看清楚谁用哪一段，避免改错或误判",
+    "A策略": {
+      "规则段": "candidate_filters + ranking（顶层）",
+      "入选条件": "segment_limit_up_count_bucket=lt_5；market_chain_count_bucket=8_15；fd_ratio_bucket=0_5pct_1pct",
+      "退出": "T+2收盘",
+      "加载方": "src/paper_candidate_generator.py 的 PaperCandidateGenerator 默认配置"
+    },
+    "C策略": {
+      "规则段": "paper_ab_filtered_strategy.c_strategy",
+      "入选条件": "market_chain_count_bucket=15_30；segment_limit_up_count_bucket=40_80",
+      "退出": "T+3收盘（fixed_hold3_close，全系统唯一持有2个交易日）",
+      "触发前提": "only_when_a_no_candidate=true，仅在A无候选时补位",
+      "加载方": "scripts/run_paper_ab_filtered_daily_ops.py 的 configured_c_conditions()"
+    },
+    "⚠️易错点": "A要求market_chain_count_bucket=8_15、C要求15_30，两者互斥。C不读candidate_filters，改那一段不会影响C。2026-08-05核对实盘选股时曾因此误判。",
+    "C回测校验": "18笔全部持有3个交易日；买价=买入日开盘×1.001，卖价=卖出日收盘×0.999；C腿连乘1.8530x，单笔均值+3.81%（80%仓位口径）。用原始日线独立复算一致。"
+  }
 }
