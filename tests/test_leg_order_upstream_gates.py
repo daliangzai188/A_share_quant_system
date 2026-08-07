@@ -390,6 +390,16 @@ class MEquitySnapshotByDaemonTests(unittest.TestCase):
         m_step_pos = src.index("run_strategy_m_signal.py", job_start)
         self.assertLess(call_pos, m_step_pos, "净值快照必须排在 M 信号步骤之前")
 
+    def test_启动时也落盘一次(self) -> None:
+        """收盘流水线要等到15:10，重启后应能立刻确认M能否取到净值。"""
+
+        root = Path(__file__).absolute().parents[1]
+        src = (root / "scripts" / "trading_daemon.py").read_text(encoding="utf-8")
+        startup = src.index('log.info("启动检查：扫描逾期/待平仓持仓...")')
+        tail = src[startup:startup + 2000]
+        self.assertIn("snapshot_equity_for_m(", tail,
+                      "启动检查阶段必须做一次M净值快照，否则要等到收盘才知道M能否开仓")
+
     def test_只在空仓时落盘(self) -> None:
         """有持仓时 total_asset 含浮动盈亏，会污染峰值。"""
 

@@ -13832,6 +13832,14 @@ def main() -> None:
     except Exception as e:
         log.error("启动平仓检查异常：%s —— 请立即手动检查持仓！", e)
     startup_has_position = has_open_local_position()
+
+    # M 净值快照也在启动时做一次：收盘流水线要等到 15:10，而这一笔决定 M 这条腿
+    # 开不开得了（取不到净值 → 回撤闸按安全口径暂停）。启动时 QMT 门禁刚验证完
+    # 账户、连接就在手上，顺手落盘，重启即可确认，不必等到下一个收盘。
+    try:
+        snapshot_equity_for_m(today_beijing().strftime("%Y%m%d"))
+    except Exception as e:
+        log.warning("启动时M净值快照异常：%s", e)
     if startup_has_position:
         log.info("启动检查：检测到已有持仓，仍会检查/补跑收盘数据与候选信号；仅跳过D/E2盘中补开仓逻辑。")
         threading.Thread(
