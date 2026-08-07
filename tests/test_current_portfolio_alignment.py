@@ -100,7 +100,8 @@ class CurrentPortfolioAlignmentTests(unittest.TestCase):
         旧锁定值：A/C被裁口径 a=27 c=9 d=17 d_to_a=2 d_to_c=6 e2=30 l=41；
         仅修A/C口径 a=33 c=13 d=14 d_to_a=1 d_to_c=8 e2=30 l=40。
         再修衔接日D后 a=34 c=16 d=10 d_to_a=0 d_to_c=4 e2=30 l=41；
-        2026-08-07 D接力全关后为下方数值（D→A/D→C 归零）。
+        D接力全关后 a=34 c=17 d=14 d_to_a=0 d_to_c=0 e2=30 l=40；
+        2026-08-07 腿序重排 D>L>A>M>E2>C 后为下方数值（L 大幅上升、E2 下降）。
         """
 
         optimized = summarize(
@@ -111,13 +112,13 @@ class CurrentPortfolioAlignmentTests(unittest.TestCase):
             ),
             "optimized",
         )
-        self.assertEqual(optimized["a_trade_count"], 34)
+        self.assertEqual(optimized["a_trade_count"], 33)
         self.assertEqual(optimized["c_trade_count"], 17)
         self.assertEqual(optimized["d_trade_count"], 14)
         self.assertEqual(optimized["d_to_a_trade_count"], 0)
         self.assertEqual(optimized["d_to_c_trade_count"], 0)
-        self.assertEqual(optimized["e2_trade_count"], 30)
-        self.assertEqual(optimized["l_trade_count"], 40)
+        self.assertEqual(optimized["e2_trade_count"], 19)
+        self.assertEqual(optimized["l_trade_count"], 52)
 
 
 if __name__ == "__main__":

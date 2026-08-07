@@ -75,6 +75,98 @@ def make_engine(positions: list[dict]) -> CombinedLiveEngine:
     return engine
 
 
+class LegPriorityOrderTests(unittest.TestCase):
+    """腿序 D>L>A>M>E2>C 的实盘落地验证（2026-08-07）。
+
+    对应回测口径见 certify_current_executable_portfolio.pick_by_priority，
+    两侧必须一致：481信号日 151笔 / 27870.31x / 回撤-23.50%。
+    """
+
+    def test_l_无条件优先_不再需要过替换窄门(self) -> None:
+        """L 只要过基础规则就抢走 A 的计划，不再要求"创业板∧非尾盘首板"。
+
+        这里刻意给一个**过不了旧窄门**的 L 信号（沪主板 + after_1430），
+        旧口径会发 BLOCK_MODEL3_L_REPLACE_GUARD 沿用 A 计划——2026-08-05
+        利通电子正是这样被挡掉、当日让位给 C 华之杰的。
+        """
+
+        engine = make_engine([])
+        engine.load_yesterday_l_signal = lambda _today: {
+            "signal_date": "20260731",
+            "planned_buy_date": "20260803",
+            "ts_code": "603629.SH",
+            "name": "沪主板尾盘首板L",
+            "limit_close": 10.0,
+            "market_segment": "sh_main",          # 旧窄门要求 chi_next
+            "segment_retreat_state_bucket": "neutral",
+            "market_chain_count_bucket": "15_30",
+            "theme_limit_count": 3,
+            "first_time_detail_bucket": "after_1430",  # 旧窄门排除尾盘首板
+        }
+
+        _state, decisions, orders = engine.build_model3_plan("20260803")
+        actions = set(decisions["action"])
+
+        self.assertIn("ALLOW_MODEL3_L_REPLACE", actions)
+        self.assertNotIn("BLOCK_MODEL3_L_REPLACE_GUARD", actions)
+        buys = orders[orders["side"].astype(str).str.upper().eq("BUY")]
+        self.assertEqual(len(buys), 1)
+        self.assertEqual(str(buys.iloc[0]["ts_code"]), "603629.SH")
+
+    def test_m_排在e2之前(self) -> None:
+        """A/C 无计划时 M 先于 E2 开仓，且当天不再放行 E2。"""
+
+        engine = make_engine([])
+        engine.load_latest_abc_orders = lambda: (Path("empty.csv"), pd.DataFrame())
+        engine.load_yesterday_e2_signal = lambda _today: {
+            "signal_date": "20260731",
+            "ts_code": "300002.SZ",
+            "name": "测试E2候选",
+            "limit_close": 10.0,
+            "exit_offset": 2,
+        }
+        engine.build_m_buy_order_if_any = lambda _today, _codes: {
+            "ts_code": "300003.SZ",
+            "name": "测试M候选",
+            "side": "BUY",
+            "round_lot_shares": 5_000,
+            "planned_action": "PLAN_BUY_T1_OPEN",
+        }
+
+        _state, decisions, orders = engine.build_mode1_plan("20260803")
+        actions = set(decisions["action"])
+
+        self.assertIn("ALLOW_M_BUY", actions)
+        self.assertIn("BLOCK_E2", actions)
+        self.assertNotIn("ALLOW_E2_BUY", actions)
+        buys = orders[orders["side"].astype(str).str.upper().eq("BUY")]
+        self.assertEqual(len(buys), 1)
+        self.assertEqual(str(buys.iloc[0]["ts_code"]), "300003.SZ")
+
+    def test_m无信号时e2正常接棒(self) -> None:
+        """M 提前不影响 E2：M 当天无信号时 E2 照常开仓。"""
+
+        engine = make_engine([])
+        engine.load_latest_abc_orders = lambda: (Path("empty.csv"), pd.DataFrame())
+        engine.load_yesterday_e2_signal = lambda _today: {
+            "signal_date": "20260731",
+            "ts_code": "300002.SZ",
+            "name": "测试E2候选",
+            "limit_close": 10.0,
+            "exit_offset": 2,
+        }
+        engine.build_m_buy_order_if_any = lambda _today, _codes: None
+
+        _state, decisions, orders = engine.build_mode1_plan("20260803")
+        actions = set(decisions["action"])
+
+        self.assertIn("ALLOW_E2_BUY", actions)
+        self.assertNotIn("ALLOW_M_BUY", actions)
+        buys = orders[orders["side"].astype(str).str.upper().eq("BUY")]
+        self.assertEqual(len(buys), 1)
+        self.assertEqual(str(buys.iloc[0]["ts_code"]), "300002.SZ")
+
+
 class OpeningPositionPolicyTests(unittest.TestCase):
     def test_production_position_configuration_is_82_5_with_85_hard_cap(self) -> None:
         runtime = json.loads((PROJECT_ROOT / "config" / "config.json").read_text(encoding="utf-8"))

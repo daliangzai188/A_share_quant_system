@@ -120,15 +120,21 @@ EPSILON = 1e-12
 # 单独看是降收益的；收益由后续腿序调整补回。接力开启时的旧值降级为历史对照：
 #   BASE 133 / 5140.7613530121025    E2_ONLY 132 / 5755.436166596083
 #   OPTIMIZED 135 / 8350.331871673612 WITH_M 151 / 24911.38506562485
+# 2026-08-07 腿序改造第2步：腿序重排为 D>L>A>M>E2>C（见 pick_by_priority）。
+# L 由"补位/替换窄门"改为无条件优先，M 由末尾兜底提到 E2 之前，C 显式垫底。
+# 第1步（仅接力全关、腿序未动）的旧值降级为历史对照：
+#   BASE 133 / 4726.105464194573     E2_ONLY 132 / 5291.200358840857
+#   OPTIMIZED 135 / 7676.790727395173 WITH_M 151 / 22902.02267613949
 EXPECTED_BASE_TRADE_COUNT = 133
-EXPECTED_BASE_MULTIPLE = 4726.105464194573
+EXPECTED_BASE_MULTIPLE = 3920.935559196542
 EXPECTED_E2_ONLY_TRADE_COUNT = 132
-EXPECTED_E2_ONLY_MULTIPLE = 5291.200358840857
+EXPECTED_E2_ONLY_MULTIPLE = 5291.495551797165
 EXPECTED_OPTIMIZED_TRADE_COUNT = 135
-EXPECTED_OPTIMIZED_MULTIPLE = 7676.790727395173
-# 2026-08-04 M兜底腿上线；2026-08-07 A/C候选+衔接日D+接力全关后的当前发布标尺。
+EXPECTED_OPTIMIZED_MULTIPLE = 7677.219011035194
+# 2026-08-04 M兜底腿上线；2026-08-07 A/C候选+衔接日D+接力全关+腿序重排后的
+# 当前发布标尺。腿序 D>L>A>M>E2>C，与实盘 combined_live_engine 同口径。
 EXPECTED_WITH_M_TRADE_COUNT = 151
-EXPECTED_WITH_M_MULTIPLE = 22902.02267613949
+EXPECTED_WITH_M_MULTIPLE = 27870.30777624288
 
 
 @dataclass(frozen=True)
@@ -501,6 +507,104 @@ def choose_l(
     }
 
 
+def l_candidate(
+    sources: Sources,
+    signal_date: str,
+    *,
+    chain_3_8_enabled: bool,
+) -> dict[str, Any] | None:
+    """L 单腿候选：只过 model=3 基础规则，不再要求替换窄门。
+
+    2026-08-07 腿序改造：L 由"补位/替换两段式"改为无条件排在 A/M/E2/C 之前，
+    替换窄门（model3_l_replace_guard_pass）随之退出选股路径。窄门原本的作用是
+    "L 想抢已有 mode1 计划时必须额外满足 创业板 ∧ 非尾盘首板"，在 L 已经是最高
+    优先级之后这层限制没有意义。
+    """
+
+    l_row = sources.l_lookup.get(signal_date)
+    if l_row is None or not l_base_passes(
+        sources, l_row, chain_3_8_enabled=chain_3_8_enabled
+    ):
+        return None
+    ok, old_account_return, exit_date, status = l_trade_return(l_row)
+    if not ok:
+        return None
+    return {
+        "strategy_leg": "L",
+        "ts_code": str(l_row.get("ts_code", "")),
+        "name": str(l_row.get("name", "")),
+        "buy_date": normalize_date(l_row.get("d1_trade_date")),
+        "exit_date": normalize_date(exit_date),
+        "account_return": old_account_return * POSITION_PCT / OLD_POSITION_PCT,
+        "return_source": status,
+    }
+
+
+def pick_by_priority(
+    sources: Sources,
+    row: pd.Series,
+    row_index: int,
+    *,
+    entry_gate_enabled: bool,
+    l_chain_3_8_enabled: bool,
+    m_enabled: bool,
+    equity: float,
+    peak_equity: float,
+) -> dict[str, Any] | None:
+    """按腿序 L > A > M > E2 > C 选出当天唯一候选（D 不在此处，见 replay）。
+
+    2026-08-07 腿序改造：替换掉原来的"mode1(A/C→E2) + choose_l 补位/替换窄门
+    + M 末尾兜底"三段式。那套结构里 M、E2、L 的相对顺序由同一个替换机制耦合，
+    无法单独调整——实测把 M 提进 mode1 会连带把它顶到 L 前面，组合从 22902x
+    掉到 13715x。
+
+    A 与 C 条件互斥（A 要 market_chain_count_bucket=8_15、C 要 15_30），同一天
+    不可能都有票，所以 C 排在 A 之后的任何位置结果相同；这里显式让 C 垫底，
+    与实盘的腿序声明保持一致。
+    """
+
+    signal_date = str(row["date"])
+    ac = sources.ac_daily.get(signal_date)
+
+    # ① L：只过基础规则，无条件优先
+    l_pick = l_candidate(sources, signal_date, chain_3_8_enabled=l_chain_3_8_enabled)
+    if l_pick is not None:
+        return l_pick
+
+    # ② A
+    if ac is not None and str(ac.get("strategy_leg", "")) == "A":
+        return dict(ac)
+
+    # ③ M：回撤保护仍然生效
+    if m_enabled:
+        m_pick = m_candidate(sources, signal_date, equity, peak_equity)
+        if m_pick is not None:
+            return m_pick
+
+    # ④ E2
+    if signal_date in sources.e2.index:
+        e2 = source_row(sources.e2, signal_date, "E2 R1")
+        if not (entry_gate_enabled and not e2_entry_gate_passes(e2, sources.e2_spec)):
+            return {
+                "strategy_leg": "E2",
+                "ts_code": str(e2.get("ts_code", "")),
+                "name": str(e2.get("name", "")),
+                "buy_date": normalize_date(e2.get("buy_date")),
+                "exit_date": normalize_date(e2.get("exit_date")),
+                "account_return": to_float(e2.get("net_return")) * POSITION_PCT,
+                "return_source": (
+                    f"E2_R1:{e2.get('scenario_rank', '')};"
+                    f"first_time={e2.get('first_time_detail_bucket', '')}"
+                ),
+            }
+
+    # ⑤ C
+    if ac is not None and str(ac.get("strategy_leg", "")) == "C":
+        return dict(ac)
+
+    return None
+
+
 def daily_close(trade_date: str, ts_code: str) -> float:
     """D历史末笔缺少退出价时读取本地日线。"""
 
@@ -686,15 +790,8 @@ def replay(
             and not hit_limit_up(signal_date, occupied_code)
         )
         occupied_until = occupied_leg = occupied_code = ""
-        mode1 = mode1_candidate(
-            sources,
-            row,
-            row_index,
-            entry_gate_enabled=entry_gate_enabled,
-        )
-
-        # D在信号日盘中发生，早于收盘后A/C/E2/L计划。只有A/C/E2可接力；
-        # L不参与D接力，保持当前实盘行为。
+        # D在信号日盘中发生，早于收盘后其余各腿的计划——D 的位置由时序锁死，
+        # 不是可优化项（"看到别的腿有票就不做D"需要预知几小时后的收盘结果）。
         if abs(to_float(row.get("d_return"))) > EPSILON and not blocking_handoff:
             # 2026-08-07 接力全关：D 一律走自己的 T+2 收盘平仓，平仓当天不开新仓，
             # 下一个信号日才轮到别的腿。与实盘 combined_live_engine 同口径
@@ -706,16 +803,16 @@ def replay(
             # 换来的却是五步成对POV链路。关闭后胜率反升、执行链路变成一条直线。
             selected = d_t2_candidate(sources, signal_date)
         else:
-            selected = choose_l(
+            selected = pick_by_priority(
                 sources,
-                signal_date,
-                mode1,
-                chain_3_8_enabled=l_chain_3_8_enabled,
+                row,
+                row_index,
+                entry_gate_enabled=entry_gate_enabled,
+                l_chain_3_8_enabled=l_chain_3_8_enabled,
+                m_enabled=m_enabled,
+                equity=equity,
+                peak_equity=peak_equity,
             )
-
-        # M 是最后一道兜底：走到这里说明 A/C/E2/D/L 全部无候选。
-        if selected is None and m_enabled:
-            selected = m_candidate(sources, signal_date, equity, peak_equity)
 
         if selected is None:
             rows.append(

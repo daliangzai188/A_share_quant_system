@@ -425,11 +425,12 @@ class CombinedLiveEngine:
     def build_model3_plan(self, today: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         """model=3 自动切换实盘计划。
 
-        实盘口径：
-          1. 先生成当前 mode=1 计划。
-          2. L 通过基础稳健条件时才参与。
-          3. mode=1 无买入计划时，允许 L 补位。
-          4. mode=1 有买入计划时，L 替换必须额外满足创业板、theme_limit_count>=2、非after_1430。
+        实盘口径（2026-08-07 腿序 D>L>A>M>E2>C）：
+          1. 先生成当前 mode=1 计划（A/C → M → E2）。
+          2. L 通过 model=3 基础稳健条件时才参与。
+          3. mode=1 无买入计划时，L 补位。
+          4. mode=1 有买入计划时，L **无条件替换**——替换窄门（创业板 ∧
+             theme_limit_count>=2 ∧ 非after_1430）已随腿序重排退出选股路径。
         """
         model3_config = self.config.get("strategy_model3", {})
         positions = self.load_positions()
@@ -607,18 +608,15 @@ class CombinedLiveEngine:
             planned = pd.concat([mode1_sell_orders, pd.DataFrame([l_order])], ignore_index=True)
             decisions = pd.concat([filtered_mode1_decisions, pd.DataFrame([d.__dict__ for d in extra_decisions])], ignore_index=True)
         else:
-            guard_ok, guard_reason = self.model3_l_replace_guard_pass(signal)
-            if not guard_ok:
-                extra = CombinedLiveDecision(
-                    action="BLOCK_MODEL3_L_REPLACE_GUARD",
-                    strategy_leg="MODEL3",
-                    ts_code=str(signal.get("ts_code", "")),
-                    name=str(signal.get("name", "")),
-                    reason=f"mode=1已有买入计划，L未通过替换保护：{guard_reason}；沿用mode=1计划。",
-                    source=str(self.project_root / "reports" / "strategy_l"),
-                )
-                decisions = pd.concat([mode1_decisions, pd.DataFrame([extra.__dict__])], ignore_index=True)
-                return mode1_state, decisions, mode1_orders
+            # 2026-08-07 腿序重排：L 无条件优先于 A/M/E2/C，替换窄门
+            # （model3_l_replace_guard_pass：创业板 ∧ theme_limit_count>=2 ∧
+            # 非after_1430）退出选股路径。窄门原本的作用是"L 想抢已有 mode=1
+            # 计划时必须额外满足更严条件"，在 L 已是最高优先级之后没有意义。
+            #
+            # 依据：481信号日回放，腿序重排后 L 由 40 笔升到 52 笔、E2 由 30 降到
+            # 19 笔，组合 22902.02x → 27870.31x，回撤 -24.68% → -23.50%。
+            # 该窄门此前也确有误伤——2026-08-05 利通电子（沪主板、尾盘首板）
+            # 被它挡下，当日 L 让位给 C 华之杰。
             filtered_mode1_decisions = mode1_decisions[
                 ~mode1_decisions["action"].astype(str).isin({
                     "ALLOW_ABC_BUY_PREVIEW",
@@ -635,7 +633,7 @@ class CombinedLiveEngine:
                     name=str(signal.get("name", "")),
                     side="BUY",
                     quantity=int(l_order.get("round_lot_shares", 0)),
-                    reason=f"mode=1有买入计划，但L通过替换保护：{guard_reason}；按model=3使用L替换mode=1买入。",
+                    reason="L 无条件优先于 A/M/E2/C（腿序 D>L>A>M>E2>C），替换今日mode=1买入计划。",
                     source=str(self.project_root / "reports" / "strategy_l"),
                 ),
                 CombinedLiveDecision(
@@ -1189,19 +1187,60 @@ class CombinedLiveEngine:
                     source="combined_state_machine",
                 ))
             else:
-                # 无 ABC，检查 E2 昨日信号
-                yesterday_signal = self.load_yesterday_e2_signal(today)
-                e2_order: dict[str, Any] | None = None
-                if yesterday_signal:
-                    buy_code = str(yesterday_signal.get("ts_code", ""))
-                    if buy_code in due_selling_codes:
-                        # 今日集合竞价已卖出同一标的，T+0限制不可当日回买
-                        import logging as _logging
-                        _logging.getLogger(__name__).warning(
-                            "E2新买入标的 %s 与今日集合竞价卖出标的相同，T+0限制，跳过买入。", buy_code
-                        )
-                    else:
-                        e2_order = self.build_e2_buy_order(yesterday_signal, today)
+                # ── M 提到 E2 之前（2026-08-07 腿序 D>L>A>M>E2>C）─────────
+                # M 原本是"五腿全空才兜底"。481信号日回放显示，M 与 E2 的相对
+                # 顺序是整个腿序改造中最大的一块收益来源；把 M 提到 E2 之前后
+                # E2 由 30 笔降到 19 笔，组合 22902.02x → 27870.31x。
+                # M 自身的回撤保护（超过阈值不开仓）仍在 build_m_buy_order_if_any
+                # 内生效，不因提前而放松。
+                m_order_first = self.build_m_buy_order_if_any(today, due_selling_codes)
+                if m_order_first is not None:
+                    planned_orders.append(m_order_first)
+                    decisions.append(CombinedLiveDecision(
+                        action="ALLOW_M_BUY",
+                        strategy_leg="M",
+                        ts_code=str(m_order_first.get("ts_code", "")),
+                        name=str(m_order_first.get("name", "")),
+                        side="BUY",
+                        quantity=int(m_order_first.get("round_lot_shares", 0)),
+                        reason=(
+                            f"A/C今日无买入计划，按腿序 M 先于 E2 开仓："
+                            f"{m_order_first.get('ts_code')} {m_order_first.get('name')}，"
+                            f"T+1开盘买入{int(m_order_first.get('round_lot_shares', 0))}股，T+2收盘卖出。"
+                        ),
+                        source=str(self.project_root / "reports" / "strategy_m"),
+                    ))
+                    decisions.append(CombinedLiveDecision(
+                        action="NO_ABC_BUY", strategy_leg="A+C",
+                        reason="今日无A/C买入计划，M按腿序代替开仓。",
+                        source=str(abc_path or ""),
+                    ))
+                    decisions.append(CombinedLiveDecision(
+                        action="BLOCK_E2", strategy_leg="E2",
+                        reason="M按腿序排在E2之前且今日有信号，E2不使用同一资金。",
+                        source="combined_state_machine",
+                    ))
+                    decisions.append(CombinedLiveDecision(
+                        action="BLOCK_D_INTRADAY_MONITOR", strategy_leg="D",
+                        reason="M今日开仓使用同一资金，D盘中监控跳过。",
+                        source="combined_state_machine",
+                    ))
+                    # 不在此处 return：函数末尾还要统一记录 E2_STATUS。
+                    yesterday_signal = None
+                    e2_order: dict[str, Any] | None = None
+                else:
+                    # 无 ABC、无 M，检查 E2 昨日信号
+                    yesterday_signal = self.load_yesterday_e2_signal(today)
+                    if yesterday_signal:
+                        buy_code = str(yesterday_signal.get("ts_code", ""))
+                        if buy_code in due_selling_codes:
+                            # 今日集合竞价已卖出同一标的，T+0限制不可当日回买
+                            import logging as _logging
+                            _logging.getLogger(__name__).warning(
+                                "E2新买入标的 %s 与今日集合竞价卖出标的相同，T+0限制，跳过买入。", buy_code
+                            )
+                        else:
+                            e2_order = self.build_e2_buy_order(yesterday_signal, today)
 
                 if e2_order and e2_order.get("round_lot_shares", 0) > 0:
                     planned_orders.append(e2_order)
@@ -1237,38 +1276,13 @@ class CombinedLiveEngine:
                         reason="今日没有A/C买入计划。",
                         source=str(abc_path or ""),
                     ))
-                    # ── M 兜底补位腿 ────────────────────────────────────────
-                    # 走到这里说明 A/C 无计划、E2 无可执行信号、账户空仓；L 已在
-                    # 前面判断过。M 是最后一道补位，只消费昨日已生成的 M 信号，
-                    # 不做任何选股，也不与其它腿竞争。
-                    m_order = self.build_m_buy_order_if_any(today, due_selling_codes)
-                    if m_order is not None:
-                        planned_orders.append(m_order)
-                        decisions.append(CombinedLiveDecision(
-                            action="ALLOW_M_BUY",
-                            strategy_leg="M",
-                            ts_code=str(m_order.get("ts_code", "")),
-                            name=str(m_order.get("name", "")),
-                            side="BUY",
-                            quantity=int(m_order.get("round_lot_shares", 0)),
-                            reason=(
-                                f"五腿今日均无候选，M兜底开仓：{m_order.get('ts_code')} "
-                                f"{m_order.get('name')}，T+1开盘买入"
-                                f"{int(m_order.get('round_lot_shares', 0))}股，T+2收盘卖出。"
-                            ),
-                            source=str(self.project_root / "reports" / "strategy_m"),
-                        ))
-                        decisions.append(CombinedLiveDecision(
-                            action="BLOCK_D_INTRADAY_MONITOR", strategy_leg="D",
-                            reason="M今日开仓使用同一资金，D盘中监控跳过。",
-                            source="combined_state_machine",
-                        ))
-                    else:
-                        decisions.append(CombinedLiveDecision(
-                            action="ALLOW_D_INTRADAY_MONITOR", strategy_leg="D",
-                            reason="无持仓且无A/C买入计划，允许启动D盘中监控；D本身仍需实时行情、成交概率和风控校验。",
-                            source="combined_state_machine",
-                        ))
+                    # M 已在 E2 之前判断过（腿序 D>L>A>M>E2>C），此处不再重复：
+                    # 走到这里说明 A/C、M、E2 今日都没有可执行信号。
+                    decisions.append(CombinedLiveDecision(
+                        action="ALLOW_D_INTRADAY_MONITOR", strategy_leg="D",
+                        reason="无持仓且A/C、M、E2今日均无买入计划，允许启动D盘中监控；D本身仍需实时行情、成交概率和风控校验。",
+                        source="combined_state_machine",
+                    ))
 
         # ── E2 盘中状态显示（摘要用） ─────────────────────────────────────────
         has_e2_buy = any(d.action == "ALLOW_E2_BUY" for d in decisions)
@@ -1554,11 +1568,13 @@ class CombinedLiveEngine:
 - 若存在 D 待卖持仓，先卖 D，未确认卖出前阻断 A/C 买入。
 - 若存在 A/C 旧持仓或仅人工退出的历史B仓，阻断 D 盘中买入，避免资金冲突。
 - 若今日已有 A/C 买入计划，默认不启动 D 盘中买入监控。
-- 若无持仓且无 A/C 买入计划，才允许 D 盘中监控；A/C/D 均空闲时，E2 可能触发。
+- 若无持仓且 A/C、M、E2 今日均无买入计划，才允许 D 盘中监控。
 - 普通空仓日目标仓位为总资产82.5%，任何单票仍受总资产85%硬顶；旧策略仓未实际清空前取消衔接开仓。
 - E2 条件：40条R1规则的当日第一名并集 → neutral + 非ST + 成交可靠 → 流通市值最小1只；T+1按82.5%目标仓开仓，按命中规则在T+2或T+3到期日卖出。
 - L 条件：仅在 active_strategy_profile.mode=2 且 strategy_l.live_order_enabled=true 时，才把昨日 L 信号转换成今日买入计划；默认 mode=1 不启用 L。
-- model=3 条件：active_strategy_profile.mode=3 且 strategy_model3.live_order_enabled=true 时，先生成mode=1计划；mode=1空闲则允许L补位，mode=1有买入计划时仅允许满足创业板、theme_limit_count>=2、非after_1430的L替换。
+- 腿序：D > L > A > M > E2 > C（2026-08-07）。D 的位置由时序锁死（盘中买入，早于收盘后各腿）；L 无条件优先，替换窄门已退出选股路径；M 提到 E2 之前；A 与 C 条件互斥故 C 显式垫底。
+- D 接力已全关：D 一律走 T+2 收盘平仓，平仓确认后的下一个信号日才轮到别的腿，不再有 09:23 卖一片买一片的成对POV。
+- model=3 条件：active_strategy_profile.mode=3 且 strategy_model3.live_order_enabled=true 时，先生成mode=1计划；L 过基础规则即可补位或替换。
 - 真实下单仍必须经过 LiveOrderGateway 的交易时间、涨跌停、持仓、资金和重复委托校验。
 """
         path.write_text(content, encoding="utf-8")
