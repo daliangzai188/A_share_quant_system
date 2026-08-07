@@ -30,12 +30,13 @@ class StrategyDExitResearchTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.portfolio, cls.ordinary = load_trade_metadata()
 
-    def test_fetch_targets_include_only_17_ordinary_d_trades(self) -> None:
+    def test_fetch_targets_include_only_ordinary_d_trades(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "portfolio_trades.csv"
             self.portfolio.to_csv(path, index=False)
             targets = load_d_exit_targets(path)
-        self.assertEqual(len(targets), 17)
+        # 2026-08-07 A/C改用逐日独立候选后，部分原本单独T+2的D转为接力（旧口径17）。
+        self.assertEqual(len(targets), 14)
         self.assertNotIn("strategy_leg", targets.columns)
         self.assertTrue(targets["key"].str.contains(r"\|", regex=True).all())
 

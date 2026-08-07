@@ -78,6 +78,12 @@ NO_B_RESELECTION_PATH = (
     / "config"
     / "strategy_no_b_historical_reselection.csv"
 )
+AC_DAILY_PATH = (
+    PROJECT_ROOT / "reports" / "ac_daily_candidates" / "ac_daily_candidates.csv"
+)
+# A/C 重建候选相对认证口径的滑点差校准系数（重建用固定1.001/0.999，
+# 认证口径用动态滑点+手续费）。由66笔可比样本的比值中位数定出。
+AC_CALIB_K = 1.0016
 M_POOL_PATH = (
     PROJECT_ROOT / "reports" / "strategy_m" / "m_backtest_trades.csv"
 )
@@ -95,15 +101,21 @@ M_DRAWDOWN_GUARD = 0.10   # M兜底腿回撤保护阈值,与config.json/strategy
 EPSILON = 1e-12
 
 # 先锁定门禁前基线，防止以后输入文件漂移后仍静默生成“更好”结果。
-EXPECTED_BASE_TRADE_COUNT = 132
-EXPECTED_BASE_MULTIPLE = 2884.052538490145
-EXPECTED_E2_ONLY_TRADE_COUNT = 129
-EXPECTED_E2_ONLY_MULTIPLE = 3254.1261014125575
-EXPECTED_OPTIMIZED_TRADE_COUNT = 132
-EXPECTED_OPTIMIZED_MULTIPLE = 4712.470092237913
-# 2026-08-04 M兜底腿上线后的当前发布标尺。
-EXPECTED_WITH_M_TRADE_COUNT = 147
-EXPECTED_WITH_M_MULTIPLE = 15326.887148064476
+#
+# 2026-08-07 修正：A/C 改用逐日独立候选（见 load_ac_daily），不再被
+# baseline.abc_return 这张作废持仓表裁剪。以下为修正后的口径。
+# 旧值（A/C 被裁到90天，低估约34%）保留作历史对照，勿再当基准：
+#   BASE 132 / 2884.052538490145      E2_ONLY 129 / 3254.1261014125575
+#   OPTIMIZED 132 / 4712.470092237913 WITH_M  147 / 15326.887148064476
+EXPECTED_BASE_TRADE_COUNT = 137
+EXPECTED_BASE_MULTIPLE = 4252.40931647757
+EXPECTED_E2_ONLY_TRADE_COUNT = 136
+EXPECTED_E2_ONLY_MULTIPLE = 4760.864917583647
+EXPECTED_OPTIMIZED_TRADE_COUNT = 139
+EXPECTED_OPTIMIZED_MULTIPLE = 6907.34827166775
+# 2026-08-04 M兜底腿上线；2026-08-07 A/C候选修正后的当前发布标尺。
+EXPECTED_WITH_M_TRADE_COUNT = 155
+EXPECTED_WITH_M_MULTIPLE = 20606.559741847264
 
 
 @dataclass(frozen=True)
@@ -116,6 +128,7 @@ class Sources:
     e2: pd.DataFrame
     no_b_reselection: pd.DataFrame
     m_pool: pd.DataFrame | None
+    ac_daily: dict[str, dict[str, Any]]
     l_lookup: dict[str, pd.Series]
     model3_config: dict[str, Any]
     e2_spec: dict[str, Any]
@@ -246,6 +259,7 @@ def load_sources() -> Sources:
         e2=e2,
         no_b_reselection=no_b,
         m_pool=m_pool,
+        ac_daily=load_ac_daily(),
         l_lookup=build_l_lookup(l_source),
         model3_config=model3_config,
         e2_spec=load_e2_spec(PROJECT_ROOT),
@@ -297,6 +311,52 @@ def e2_entry_gate_passes(row: pd.Series, spec: dict[str, Any]) -> bool:
     return True
 
 
+def load_ac_daily() -> dict[str, dict[str, Any]]:
+    """加载逐日独立生成的 A/C 候选（2026-08-07 修正）。
+
+    旧口径用 `baseline.abc_return != 0` 当 A/C 的门槛，而 baseline 是
+    A/B/C 三腿**单独回放**的产物，带着那次回放自己的持仓序列：A/C 明细481天里
+    有108天是 `POSITION_OCCUPIED_SKIP`（当年被已删除的B等占掉），连 ts_code
+    都没落盘。今天的组合含 D/E2/L/M，持仓情况完全不同，那张持仓表早已作废，
+    却仍在挡 A/C —— A/C 可用天数被锁死在90天。
+
+    实盘从不受此限制：run_paper_ab_filtered_daily_ops / combined_live_engine /
+    paper_candidate_generator 三个文件都不读 baseline，每天独立跑选股规则。
+    所以这不是放宽口径，是把回测对齐到实盘一直在做的事。
+
+    本文件由 A/C 各自的认证规则逐日重算得出（A: candidate_filters+ranking，
+    T+2收盘；C: c_strategy.conditions，T+3收盘；一字涨停买不到、跌停顺延），
+    并已验证：与已知90天成交对比，69天 ts_code 完全一致，21天不一致全部是
+    已删除的B腿；无B重选表里3天实际生效的C（融发核电/岭南股份/洛凯股份）
+    全部命中同一只票。
+    """
+
+    if not AC_DAILY_PATH.exists():
+        raise FileNotFoundError(f"找不到A/C逐日候选: {AC_DAILY_PATH}")
+    frame = pd.read_csv(
+        AC_DAILY_PATH,
+        dtype={"signal_date": str, "ts_code": str, "buy_date": str, "exit_date": str},
+    )
+    result: dict[str, dict[str, Any]] = {}
+    for _, row in frame.iterrows():
+        leg = str(row.get("leg", "")).upper()
+        if leg not in {"A", "C"} or str(row.get("status", "")) != "OK":
+            continue
+        stock_return = to_float(row.get("stock_return"), float("nan"))
+        if stock_return != stock_return:      # NaN
+            continue
+        result[normalize_date(row.get("signal_date"))] = {
+            "strategy_leg": leg,
+            "ts_code": str(row.get("ts_code", "")),
+            "name": str(row.get("name", "")),
+            "buy_date": normalize_date(row.get("buy_date")),
+            "exit_date": normalize_date(row.get("exit_date")),
+            "account_return": ((1.0 + stock_return) / AC_CALIB_K - 1.0) * POSITION_PCT,
+            "return_source": "A/C逐日独立候选(校准至认证口径)",
+        }
+    return result
+
+
 def no_b_candidate(sources: Sources, signal_date: str) -> dict[str, Any] | None:
     """历史B日只接受重新选出的A/C；旧E2重选结果全部废止。
 
@@ -331,34 +391,16 @@ def mode1_candidate(
     *,
     entry_gate_enabled: bool,
 ) -> dict[str, Any] | None:
-    """按A/C优先、无则当前E2生成收盘后候选。"""
+    """按A/C优先、无则当前E2生成收盘后候选。
+
+    A/C 走 sources.ac_daily（逐日独立候选，见 load_ac_daily 的说明），
+    不再用 baseline.abc_return 当门槛——那是一张已作废的持仓表。
+    """
 
     signal_date = str(row["date"])
-    if abs(to_float(row.get("abc_return"))) > EPSILON:
-        abc = source_row(sources.abc, signal_date, "A/C/B")
-        leg = str(abc.get("strategy_leg", "")).upper()
-        if leg == "B":
-            replacement = no_b_candidate(sources, signal_date)
-            if replacement is not None:
-                return replacement
-        elif leg in {"A", "C"}:
-            buy_date = normalize_date(abc.get("buy_trade_date")) or nth_trade_date(
-                sources, signal_date, 1
-            )
-            exit_date = normalize_date(abc.get("exit_trade_date")) or infer_abc_release_date(
-                sources.baseline, row_index
-            )
-            return {
-                "strategy_leg": leg,
-                "ts_code": str(abc.get("ts_code", "")),
-                "name": str(abc.get("name", "")),
-                "buy_date": buy_date,
-                "exit_date": exit_date,
-                "account_return": to_float(abc.get("account_return"))
-                * POSITION_PCT
-                / OLD_POSITION_PCT,
-                "return_source": str(abc.get("return_source", "A/C历史执行收益")),
-            }
+    ac = sources.ac_daily.get(signal_date)
+    if ac is not None:
+        return dict(ac)
 
     if signal_date not in sources.e2.index:
         return None

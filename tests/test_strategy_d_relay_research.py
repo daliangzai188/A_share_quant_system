@@ -32,16 +32,18 @@ class StrategyDRelayResearchTests(unittest.TestCase):
         cls.targets = load_relay_targets()
         cls.portfolio = load_portfolio()
 
-    def test_locked_portfolio_contains_exactly_eight_relays(self) -> None:
-        self.assertEqual(len(self.targets), 8)
+    def test_locked_portfolio_contains_expected_relay_count(self) -> None:
+        # 2026-08-07 A/C改用逐日独立候选后接力笔数 8→9。
+        self.assertEqual(len(self.targets), 9)
         self.assertEqual(
             self.targets["strategy_leg"].value_counts().to_dict(),
-            {"D→C": 6, "D→A": 2},
+            {"D→C": 8, "D→A": 1},
         )
         same_stock = self.targets[
             self.targets["d_ts_code"].eq(self.targets["next_ts_code"])
         ]
-        self.assertEqual(len(same_stock), 2)
+        # 2026-08-07 A/C候选修正后同票接力 2→1。
+        self.assertEqual(len(same_stock), 1)
         self.assertTrue(self.targets["d_t1_account_return"].notna().all())
         self.assertTrue(self.targets["next_account_return"].notna().all())
 
@@ -158,10 +160,11 @@ class StrategyDRelayResearchTests(unittest.TestCase):
                     )
         return pd.DataFrame(tick_rows), pd.DataFrame(one_rows)
 
-    def test_complete_data_gate_requires_all_sixteen_roles(self) -> None:
+    def test_complete_data_gate_requires_all_relay_roles(self) -> None:
+        # 每笔接力两个角色(D腿+接手腿)，9笔=18。
         tick, one = self.make_complete_inputs()
-        self.assertEqual(len(complete_tick_keys(tick)), 16)
-        self.assertEqual(len(complete_one_minute_keys(one)), 16)
+        self.assertEqual(len(complete_tick_keys(tick)), 18)
+        self.assertEqual(len(complete_one_minute_keys(one)), 18)
         validate_inputs(self.targets, tick, one)
 
         with self.assertRaisesRegex(ValueError, "1分钟数据不完整"):
@@ -204,7 +207,7 @@ class StrategyDRelayResearchTests(unittest.TestCase):
         )
         proxy = build_auction_proxy(self.targets, one)
 
-        self.assertEqual(len(complete_auction_proxy_keys(proxy)), 8)
+        self.assertEqual(len(complete_auction_proxy_keys(proxy)), 9)
         self.assertTrue(proxy["single_price_proxy"].all())
         self.assertTrue(proxy["unmatched_volume_available"].eq(False).all())
         self.assertTrue(proxy["matched_qty"].eq(500_000).all())
@@ -277,14 +280,14 @@ class StrategyDRelayResearchTests(unittest.TestCase):
         self.assertTrue(detail["recommended_action"].eq("CANCEL_RELAY").all())
         self.assertTrue(detail["auction_sell_qty"].eq(0).all())
 
-    def test_one_percent_self_impact_reduces_full_portfolio_about_six_percent(self) -> None:
+    def test_one_percent_self_impact_reduces_full_portfolio(self) -> None:
         sensitivity = build_impact_sensitivity(self.targets, self.portfolio)
         one_percent = sensitivity[
             sensitivity["additional_d_price_impact"].eq(0.01)
         ].iloc[0]
 
-        self.assertAlmostEqual(float(one_percent["portfolio_multiple"]), 4407.80, places=1)
-        self.assertAlmostEqual(float(one_percent["portfolio_change"]), -0.0647, places=3)
+        self.assertAlmostEqual(float(one_percent["portfolio_multiple"]), 6416.58, places=1)
+        self.assertAlmostEqual(float(one_percent["portfolio_change"]), -0.0710, places=3)
 
 
 if __name__ == "__main__":

@@ -49,7 +49,8 @@ ONE_MINUTE_PATH = (
 OUTPUT_DIR = PROJECT_ROOT / "reports" / "strategy_d" / "relay_capacity"
 TARGETS_PATH = OUTPUT_DIR / "d_relay_targets.csv"
 REPORT_PATH = OUTPUT_DIR / "d_relay_fetch_report.csv"
-EXPECTED_RELAY_COUNT = 8
+# 2026-08-07 A/C改用逐日独立候选后组合接力笔数变化（旧口径A/C被裁时为8）。
+EXPECTED_RELAY_COUNT = 9
 MIN_ONE_MINUTE_BARS = 60
 RELAY_LEGS = {"D→A", "D→C", "D→E2"}
 ONE_MINUTE_FIELDS = ["open", "close", "high", "low", "volume", "amount"]
@@ -233,6 +234,15 @@ def load_relay_targets(
     relay["d_t2_exit_date"] = relay["signal_date"].map(
         lambda value: nth_trade_date(calendar, value, 2)
     )
+    # 接力与否由组合回放认定：portfolio_trades 的 strategy_leg 是 D→A/C/E2
+    # 就是接力（上面已按 RELAY_LEGS 过滤）。
+    #
+    # d_trades 的 exit_rule 不能当判据：它是 D 单独回放时的结论，那次 A/C 被
+    # baseline.abc_return 裁掉（见 certify 的 load_ac_daily），A/C 无候选的日子
+    # D 只能自己做 T+2，于是记成 T+2_close。A/C 候选修正后这些日子有了接力对象，
+    # 标签却还停在旧口径——和 baseline 是同一张作废持仓表的两个投影。
+    #
+    # 真正必需的是价格与收益字段，它们与 exit_rule 无关、始终按实际行情落盘。
     invalid = (
         relay["signal_date"].eq("")
         | relay["relay_date"].eq("")
@@ -245,7 +255,6 @@ def load_relay_targets(
         | relay["d_t1_open"].le(0)
         | relay["d_t1_account_return"].isna()
         | relay["next_account_return"].isna()
-        | ~relay["exit_rule"].astype(str).eq("T+1_open")
     )
     if invalid.any():
         raise ValueError(

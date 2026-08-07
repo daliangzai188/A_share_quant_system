@@ -90,6 +90,13 @@ class CurrentPortfolioAlignmentTests(unittest.TestCase):
         self.assertTrue((required["l_change"] > 0).all())
 
     def test_optimized_leg_breakdown_stays_locked(self) -> None:
+        """各腿笔数锁定，防止输入漂移后静默改变分布。
+
+        2026-08-07 更新：A/C 改用逐日独立候选（见 load_ac_daily），不再被
+        baseline.abc_return 这张作废持仓表锁在90天，A/C 笔数相应上升。
+        旧锁定值（A/C 被裁口径）：a=27 c=9 d=17 d_to_a=2 d_to_c=6 e2=30 l=41。
+        """
+
         optimized = summarize(
             replay(
                 self.sources,
@@ -98,13 +105,13 @@ class CurrentPortfolioAlignmentTests(unittest.TestCase):
             ),
             "optimized",
         )
-        self.assertEqual(optimized["a_trade_count"], 27)
-        self.assertEqual(optimized["c_trade_count"], 9)
-        self.assertEqual(optimized["d_trade_count"], 17)
-        self.assertEqual(optimized["d_to_a_trade_count"], 2)
-        self.assertEqual(optimized["d_to_c_trade_count"], 6)
+        self.assertEqual(optimized["a_trade_count"], 33)
+        self.assertEqual(optimized["c_trade_count"], 13)
+        self.assertEqual(optimized["d_trade_count"], 14)
+        self.assertEqual(optimized["d_to_a_trade_count"], 1)
+        self.assertEqual(optimized["d_to_c_trade_count"], 8)
         self.assertEqual(optimized["e2_trade_count"], 30)
-        self.assertEqual(optimized["l_trade_count"], 41)
+        self.assertEqual(optimized["l_trade_count"], 40)
 
 
 if __name__ == "__main__":

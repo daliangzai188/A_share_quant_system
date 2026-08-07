@@ -41,6 +41,7 @@ from scripts.certify_current_executable_portfolio import (  # noqa: E402
     D_FILL_STRESS,
     D_ROUND_TRIP_COST,
     POSITION_PCT,
+    daily_close,
 )
 from scripts.research_exit_pov_scan import (  # noqa: E402
     Scenario,
@@ -66,11 +67,15 @@ PORTFOLIO_TRADES_PATH = (
 )
 D_TRADES_PATH = PROJECT_ROOT / "reports" / "strategy_d" / "d_trades.csv"
 OUTPUT_DIR = PROJECT_ROOT / "reports" / "strategy_d" / "exit_pov"
-EXPECTED_D_COUNT = 17
-EXPECTED_PORTFOLIO_COUNT = 132
-EXPECTED_PORTFOLIO_MULTIPLE = 4712.470092237913
-EXPECTED_PORTFOLIO_DRAWDOWN = -0.18840599169123395
-EXPECTED_D_MULTIPLE = 2.3151193811759856
+# 2026-08-07 A/C改用逐日独立候选后，部分原本单独T+2的D转为接力（旧口径为17）。
+EXPECTED_D_COUNT = 14
+# 2026-08-07 A/C改用逐日独立候选后组合笔数变化（旧口径A/C被裁时为132）。
+EXPECTED_PORTFOLIO_COUNT = 139
+EXPECTED_PORTFOLIO_MULTIPLE = 6907.348271667727
+# 2026-08-07 A/C改用逐日独立候选后基准变化（旧口径A/C被裁时为-0.18840599169123395）。
+EXPECTED_PORTFOLIO_DRAWDOWN = -0.23504962855315803
+# 2026-08-07 A/C改用逐日独立候选后（旧口径17笔时为2.3151193811759856）。
+EXPECTED_D_MULTIPLE = 1.9463298923959242
 EPSILON = 1e-9
 
 
@@ -172,6 +177,18 @@ def load_trade_metadata() -> tuple[pd.DataFrame, pd.DataFrame]:
     fields["limit_close"] = pd.to_numeric(fields["limit_close"], errors="coerce")
     fields["exit_close"] = pd.to_numeric(fields["exit_close"], errors="coerce")
     ordinary = ordinary.merge(fields, on="signal_date", how="left", validate="one_to_one")
+
+    # d_trades 的 exit_close 只在"当年那次回放判定为普通D"的行上落盘：判成
+    # T+1_open 接力的行不需要T+2退出价，字段是空的。A/C 候选修正后（见 certify
+    # 的 load_ac_daily）部分日子的接力关系变了，这些行缺 exit_close。
+    # certify 的 d_t2_candidate 遇到同样情况直接读日线回补，这里保持一致口径。
+    missing_exit = ordinary["exit_close"].isna() | ordinary["exit_close"].le(0)
+    if missing_exit.any():
+        ordinary.loc[missing_exit, "exit_close"] = [
+            daily_close(str(row.exit_date), str(row.ts_code))
+            for row in ordinary.loc[missing_exit].itertuples()
+        ]
+
     invalid = (
         ordinary["limit_close"].isna()
         | ordinary["limit_close"].le(0)
