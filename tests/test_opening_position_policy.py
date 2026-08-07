@@ -168,7 +168,14 @@ class OpeningPositionPolicyTests(unittest.TestCase):
         self.assertIn("BLOCK_L_BUY_BY_L_POSITION", set(decisions["action"]))
         self.assertTrue(orders["side"].astype(str).str.upper().eq("SELL").all())
 
-    def test_d_relay_locks_candidate_for_paired_pov_but_does_not_enable_ordinary_buy(self) -> None:
+    def test_d_relay_disabled_未到期D不卖不接力也不放行新开仓(self) -> None:
+        """接力全关（2026-08-07）：D未到期时既不提前卖，也不生成任何接力计划。
+
+        旧口径会发 PLAN_SELL_D_FIRST（daemon 靠它填 force_d_sell_codes 触发
+        09:23 接力卖）+ PLAN_D_RELAY_PAIRED_BUY 影子计划。现口径两者都不再出现，
+        当天即使有 A/C 候选也一律阻断，等 D 自己 T+2 收盘平仓。
+        """
+
         position = {
             "strategy_leg": "D",
             "ts_code": "600001.SH",
@@ -176,28 +183,58 @@ class OpeningPositionPolicyTests(unittest.TestCase):
             "status": "open",
             "shares": 3_000,
             "buy_date": "20260731",
-            "planned_exit_date": "20260805",
+            "planned_exit_date": "20260805",   # 未到期
         }
         engine = make_engine([position])
 
         _state, decisions, orders = engine.build_mode1_plan("20260803")
+        actions = set(decisions["action"])
 
-        self.assertIn("PLAN_SELL_D_FIRST", set(decisions["action"]))
-        self.assertIn("PLAN_D_RELAY_PAIRED_BUY", set(decisions["action"]))
-        shadow = orders[
-            orders["planned_action"].astype(str).eq("PLAN_D_RELAY_PAIRED_BUY")
-        ]
-        self.assertEqual(len(shadow), 1)
-        self.assertEqual(str(shadow.iloc[0]["ts_code"]), "002800.SZ")
-        self.assertEqual(str(shadow.iloc[0]["order_status"]), "WAIT_D_CONFIRMED_SELL")
-        self.assertFalse(bool(shadow.iloc[0]["live_order_enabled"]))
+        # 接力链路的两个入口都必须消失
+        self.assertNotIn("PLAN_SELL_D_FIRST", actions)
+        self.assertNotIn("PLAN_D_RELAY_PAIRED_BUY", actions)
+        if not orders.empty and "planned_action" in orders.columns:
+            self.assertTrue(
+                orders["planned_action"].astype(str).ne("PLAN_D_RELAY_PAIRED_BUY").all()
+            )
 
-        # 影子计划只保存候选身份，不是普通开仓许可；D未确认卖出时仍无
-        # ALLOW_ABC_BUY_PREVIEW/ALLOW_E2_BUY，09:20普通买入路径不会执行它。
-        self.assertNotIn("ALLOW_ABC_BUY_PREVIEW", set(decisions["action"]))
-        self.assertNotIn("ALLOW_E2_BUY", set(decisions["action"]))
+        # 未到期不发卖出计划，且所有新开仓路径阻断
+        self.assertNotIn("PLAN_SELL_D_T2_CLOSE", actions)
+        self.assertIn("BLOCK_ABC_BUY", actions)
+        self.assertIn("BLOCK_E2_BUY", actions)
+        self.assertIn("BLOCK_D_INTRADAY_MONITOR", actions)
+        self.assertNotIn("ALLOW_ABC_BUY_PREVIEW", actions)
+        self.assertNotIn("ALLOW_E2_BUY", actions)
 
-    def test_model3_d_relay_shadow_does_not_trigger_l_replacement(self) -> None:
+    def test_d_relay_disabled_到期D只走T2收盘平仓(self) -> None:
+        """到期D发 PLAN_SELL_D_T2_CLOSE，等 14:53 收盘平仓，不在09:23竞价卖。"""
+
+        position = {
+            "strategy_leg": "D",
+            "ts_code": "600001.SH",
+            "name": "D旧仓",
+            "status": "open",
+            "shares": 3_000,
+            "buy_date": "20260731",
+            "planned_exit_date": "20260803",   # 今日到期
+        }
+        engine = make_engine([position])
+
+        _state, decisions, orders = engine.build_mode1_plan("20260803")
+        actions = set(decisions["action"])
+
+        self.assertIn("PLAN_SELL_D_T2_CLOSE", actions)
+        self.assertNotIn("PLAN_SELL_D_FIRST", actions)
+        self.assertNotIn("PLAN_D_RELAY_PAIRED_BUY", actions)
+        # 卖出计划单也必须是T+2收盘口径
+        sell = orders[orders["side"].astype(str).str.upper().eq("SELL")]
+        self.assertTrue(
+            sell["planned_action"].astype(str).eq("PLAN_SELL_D_T2_CLOSE").all()
+        )
+        # 平仓当天不开新仓
+        self.assertIn("BLOCK_ABC_BUY", actions)
+
+    def test_model3_d持仓期间L拿不到资金_且无影子计划(self) -> None:
         position = {
             "strategy_leg": "D",
             "ts_code": "600001.SH",
@@ -213,10 +250,11 @@ class OpeningPositionPolicyTests(unittest.TestCase):
 
         self.assertIn("BLOCK_MODEL3_L_BY_HOLDING_POSITION", set(decisions["action"]))
         self.assertNotIn("ALLOW_MODEL3_L_REPLACE", set(decisions["action"]))
-        shadow = orders[
-            orders["planned_action"].astype(str).eq("PLAN_D_RELAY_PAIRED_BUY")
-        ]
-        self.assertEqual(len(shadow), 1)
+        # 接力全关后不再有影子计划；D持仓期间 L 一样拿不到资金。
+        if not orders.empty and "planned_action" in orders.columns:
+            self.assertTrue(
+                orders["planned_action"].astype(str).ne("PLAN_D_RELAY_PAIRED_BUY").all()
+            )
 
     def test_d_does_not_relay_for_l_only_candidate(self) -> None:
         position = {

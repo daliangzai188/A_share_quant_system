@@ -49,8 +49,11 @@ ONE_MINUTE_PATH = (
 OUTPUT_DIR = PROJECT_ROOT / "reports" / "strategy_d" / "relay_capacity"
 TARGETS_PATH = OUTPUT_DIR / "d_relay_targets.csv"
 REPORT_PATH = OUTPUT_DIR / "d_relay_fetch_report.csv"
-# 2026-08-07 A/C改用逐日独立候选后组合接力笔数变化（旧口径A/C被裁时为8）。
-EXPECTED_RELAY_COUNT = 4
+# 2026-08-07 D接力已全关（见 combined_live_engine 顶部「腿序与接力口径」），
+# 组合里不再产生 D→A/C/E2，本研究工具随之没有研究对象。
+# 历史值：A/C被裁口径 8笔；仅修A/C口径 9笔；再修衔接日D后 4笔。
+# 保留脚本本身：若将来重新开启接力，把本常量改回实际笔数即可继续使用。
+EXPECTED_RELAY_COUNT = 0
 MIN_ONE_MINUTE_BARS = 60
 RELAY_LEGS = {"D→A", "D→C", "D→E2"}
 ONE_MINUTE_FIELDS = ["open", "close", "high", "low", "volume", "amount"]
@@ -162,6 +165,10 @@ def load_relay_targets(
         raise ValueError(
             f"当前锁定组合接力必须为{EXPECTED_RELAY_COUNT}笔，实际{len(relay)}笔"
         )
+    if EXPECTED_RELAY_COUNT == 0:
+        # D接力已关闭，组合中不存在 D→A/C/E2，无采集对象。返回空表而不是继续
+        # 往下做字段校验——那些校验假定至少有一笔接力。
+        return relay.reset_index(drop=True)
     relay["signal_date"] = relay["signal_date"].map(normalize_date)
     relay["relay_date"] = relay["buy_date"].map(normalize_date)
     relay["next_exit_date"] = relay["exit_date"].map(normalize_date)

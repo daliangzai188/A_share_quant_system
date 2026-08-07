@@ -115,15 +115,20 @@ EPSILON = 1e-12
 # 剔除后 A/C 修正版旧值（仍含不可执行的衔接日D）降级为历史对照：
 #   BASE 137 / 4252.40931647757        E2_ONLY 136 / 4760.864917583647
 #   OPTIMIZED 139 / 6907.34827166775   WITH_M  155 / 20606.559741847264
+# 2026-08-07 腿序改造第1步：D接力全关（见 replay 内注释与
+# combined_live_engine 顶部「腿序与接力口径」）。接力本身值约+8.8%，故本步
+# 单独看是降收益的；收益由后续腿序调整补回。接力开启时的旧值降级为历史对照：
+#   BASE 133 / 5140.7613530121025    E2_ONLY 132 / 5755.436166596083
+#   OPTIMIZED 135 / 8350.331871673612 WITH_M 151 / 24911.38506562485
 EXPECTED_BASE_TRADE_COUNT = 133
-EXPECTED_BASE_MULTIPLE = 5140.7613530121025
+EXPECTED_BASE_MULTIPLE = 4726.105464194573
 EXPECTED_E2_ONLY_TRADE_COUNT = 132
-EXPECTED_E2_ONLY_MULTIPLE = 5755.436166596083
+EXPECTED_E2_ONLY_MULTIPLE = 5291.200358840857
 EXPECTED_OPTIMIZED_TRADE_COUNT = 135
-EXPECTED_OPTIMIZED_MULTIPLE = 8350.331871673612
-# 2026-08-04 M兜底腿上线；2026-08-07 A/C候选+衔接日D两处修正后的当前发布标尺。
+EXPECTED_OPTIMIZED_MULTIPLE = 7676.790727395173
+# 2026-08-04 M兜底腿上线；2026-08-07 A/C候选+衔接日D+接力全关后的当前发布标尺。
 EXPECTED_WITH_M_TRADE_COUNT = 151
-EXPECTED_WITH_M_MULTIPLE = 24911.38506562485
+EXPECTED_WITH_M_MULTIPLE = 22902.02267613949
 
 
 @dataclass(frozen=True)
@@ -691,10 +696,15 @@ def replay(
         # D在信号日盘中发生，早于收盘后A/C/E2/L计划。只有A/C/E2可接力；
         # L不参与D接力，保持当前实盘行为。
         if abs(to_float(row.get("d_return"))) > EPSILON and not blocking_handoff:
-            if mode1 is not None:
-                selected = d_relay_candidate(sources, signal_date, mode1)
-            else:
-                selected = d_t2_candidate(sources, signal_date)
+            # 2026-08-07 接力全关：D 一律走自己的 T+2 收盘平仓，平仓当天不开新仓，
+            # 下一个信号日才轮到别的腿。与实盘 combined_live_engine 同口径
+            # （见该文件顶部「腿序与接力口径」）。
+            #
+            # 旧口径在此处对 A/C/E2 做 d_relay_candidate（同一天资金用两次）。
+            # 关闭依据：接力多出的收益超过一半来自口径不对称——接力的D走T+1竞价、
+            # 不打成交压力折扣，而T+2退出的D要打80%折扣；同折扣口径下接力只值+7.8%，
+            # 换来的却是五步成对POV链路。关闭后胜率反升、执行链路变成一条直线。
+            selected = d_t2_candidate(sources, signal_date)
         else:
             selected = choose_l(
                 sources,

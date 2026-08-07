@@ -14,6 +14,7 @@ from scripts.research_strategy_d_relay_capacity import (
     validate_inputs,
 )
 from scripts.research_strategy_d_relay_fetch import (
+    EXPECTED_RELAY_COUNT,
     complete_one_minute_keys,
     complete_tick_keys,
     load_relay_targets,
@@ -26,6 +27,13 @@ from scripts.research_strategy_d_relay_tushare_fetch import (
 )
 
 
+@unittest.skipIf(
+    EXPECTED_RELAY_COUNT == 0,
+    "D接力已于2026-08-07全关（见 combined_live_engine 顶部「腿序与接力口径」），"
+    "组合中不再产生 D→A/C/E2，本研究工具无研究对象。若将来重开接力，"
+    "把 research_strategy_d_relay_fetch.EXPECTED_RELAY_COUNT 改回实际笔数，"
+    "本测试类会自动恢复。",
+)
 class StrategyDRelayResearchTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -33,8 +41,7 @@ class StrategyDRelayResearchTests(unittest.TestCase):
         cls.portfolio = load_portfolio()
 
     def test_locked_portfolio_contains_expected_relay_count(self) -> None:
-        # 2026-08-07 A/C改用逐日独立候选后接力笔数 8→9。
-        self.assertEqual(len(self.targets), 4)
+        self.assertEqual(len(self.targets), EXPECTED_RELAY_COUNT)
         self.assertEqual(
             self.targets["strategy_leg"].value_counts().to_dict(),
             {"D→C": 4},

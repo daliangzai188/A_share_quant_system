@@ -1,3 +1,38 @@
+"""组合状态机：把 A/C、E2、L、M、D 五条腿合成每日唯一的开仓/平仓计划。
+
+腿序与接力口径（2026-08-07 定稿）
+================================
+
+**当前腿序：D > L > A > M > E2 > C**
+
+D 排第一不是优化结果，是时序决定的——D 在信号日**盘中**(14:00~14:56)买入，
+而 A/C/E2/L/M 的候选要到当天**收盘后**才算得出来。让 D "看到别的腿有票就不做"
+需要预知几小时后的结果，属于前视，实盘做不到。
+
+其余腿序依据（481信号日同口径回放，A/C 已用逐日独立候选、衔接日D已剔除）：
+    现状腿序        24911.39x
+    D>L>A>M>E2>C   27870.31x   +11.9%，回撤 -24.68%→-23.51%，胜率 67.55%→68.87%
+代价是 2024 段劣化（53.58→43.78），换来后半段与 2026 改善。A 与 C 的条件互斥
+（A 要 market_chain_count_bucket=8_15、C 要 15_30），同一天不可能都有票，
+所以 C 排在 A 之后的任何位置结果都相同。
+
+**D 接力：全关**
+
+旧口径下 D 未到期时若当天有 A/C/E2 候选，会在 09:23 卖竞价安全部分、09:30 后按
+「卖D一片→买候选一片」的资金中性成对POV接力，同一天资金用两次。现在 D 一律走
+自己的 T+2 收盘平仓，确认清仓后的下一个信号日才轮到别的腿。
+
+    接力全关      27870.31x  胜率68.87%
+    接力A/C/E2   30315.57x  胜率68.21%
+
+接力多出的 8.8% 里超过一半来自口径不对称——接力的 D 用 T+1 竞价卖出、不打成交
+压力折扣，而 T+2 退出的 D 要打 80% 折扣；同折扣口径下接力只值 +7.8%。换来的是
+执行链路从五步（09:23卖安全部分→09:30分片卖→确认释放→分片买→累计买入额不得
+超过累计卖出额）简化成一条直线，胜率反而更高。代价是两年里有 7 天候选被 D 的
+持仓挡掉，已计入上述 27870.31x。
+
+复现：python scripts/certify_current_executable_portfolio.py
+"""
 from __future__ import annotations
 
 import json
@@ -501,6 +536,10 @@ class CombinedLiveEngine:
         )
         # D接力影子计划只是给09:30成对POV保存候选身份，不是普通mode=1买单，
         # 更不能让model=3误以为当前资金可用并切换成L替换单。
+        #
+        # 2026-08-07 接力全关后 build_mode1_plan 不再生成该影子计划，本掩码
+        # 正常情况下恒为False。保留是防御性的：若读到接力关闭之前生成的历史
+        # 计划文件，仍必须把影子行排除在普通买入路径之外。
         buy_mask = raw_buy_mask & ~relay_shadow_mask
         mode1_buy_orders = mode1_orders[buy_mask].copy() if len(buy_mask) else pd.DataFrame()
         mode1_sell_orders = mode1_orders[~raw_buy_mask].copy() if len(raw_buy_mask) else mode1_orders.copy()
@@ -904,8 +943,11 @@ class CombinedLiveEngine:
         position: dict[str, Any],
         today: str,
         reason: str | None = None,
-        action: str = "PLAN_SELL_D_FIRST",
+        action: str = "PLAN_SELL_D_T2_CLOSE",
     ) -> CombinedLiveDecision:
+        # 默认值刻意是 T2_CLOSE 而不是 PLAN_SELL_D_FIRST：后者会被
+        # trading_daemon:6832 收进 force_d_sell_codes 触发 09:23 接力卖出。
+        # 接力全关后若有调用方漏传 action，安全的方向是走收盘平仓而不是接力。
         return CombinedLiveDecision(
             action=action,
             strategy_leg="D",
@@ -915,7 +957,7 @@ class CombinedLiveEngine:
             quantity=self.as_int(position.get("shares", 0)),
             reason=reason or (
                 f"D持仓计划平仓日={position.get('planned_exit_date', '')}，今日={today}；"
-                "只有确认卖出释放的资金才允许用于A/C/E2接力。"
+                "接力已全关，D按T+2收盘平仓，确认清仓后的下一个信号日才允许新开仓。"
             ),
             source="positions.json",
         )
@@ -924,7 +966,7 @@ class CombinedLiveEngine:
         self,
         position: dict[str, Any],
         today: str,
-        planned_action: str = "PLAN_SELL_D_FIRST",
+        planned_action: str = "PLAN_SELL_D_T2_CLOSE",
     ) -> dict[str, Any]:
         return {
             "paper_order_id": f"D-SELL-{today}-{position.get('ts_code', '')}",
@@ -1058,139 +1100,58 @@ class CombinedLiveEngine:
                 if str(p.get("planned_exit_date", "99991231")) <= today
                 or str(p.get("status", "")).lower() == "sell_pending"
             ]
-            abc_decisions_for_d = self.build_abc_buy_decisions(abc_orders, str(abc_path or ""))
-            yesterday_e2_signal_for_d = self.load_yesterday_e2_signal(today)
-            e2_order_for_d: dict[str, Any] | None = None
-            if yesterday_e2_signal_for_d:
-                e2_buy_code = str(yesterday_e2_signal_for_d.get("ts_code", ""))
-                if e2_buy_code not in due_selling_codes:
-                    e2_order_for_d = self.build_e2_buy_order(yesterday_e2_signal_for_d, today)
-            relay_d_for_abc = bool(abc_decisions_for_d)
-            relay_d_for_e2 = bool(e2_order_for_d and e2_order_for_d.get("round_lot_shares", 0) > 0)
-            relay_d_for_abce2 = relay_d_for_abc or relay_d_for_e2
-            relay_candidate_order: dict[str, Any] | None = None
-            relay_candidate_decision: CombinedLiveDecision | None = None
-            # D已经到默认T+2平仓日时仍按收盘退出，不做开盘接力；只有未到期D
-            # 为A/C/E2让路时才生成成对POV影子候选。
-            paired_relay_needed = relay_d_for_abce2 and not due_d
-            if relay_d_for_abc and paired_relay_needed:
-                # 组合优先级始终是A/C > E2。D还没卖时，原代码只留下BLOCK动作，
-                # 09:23执行层拿不到“卖完以后要买谁”，只能整仓卖完再重跑状态机。
-                # 现在把第一顺位A/C计划复制成只供成对POV读取的影子计划；它不会被
-                # 普通09:20买入路径执行，只有D确认卖出资金后才能逐片买入。
-                first_abc = abc_decisions_for_d[0]
-                abc_buy_rows = abc_orders[
-                    abc_orders.get("side", pd.Series(dtype=str)).astype(str).str.upper().eq("BUY")
-                ].copy() if not abc_orders.empty else pd.DataFrame()
-                if not abc_buy_rows.empty:
-                    exact = abc_buy_rows[
-                        abc_buy_rows.get("ts_code", pd.Series(dtype=str)).astype(str).eq(first_abc.ts_code)
-                    ]
-                    source_row = (exact.iloc[0] if not exact.empty else abc_buy_rows.iloc[0]).to_dict()
-                    relay_candidate_order = dict(source_row)
-                    relay_candidate_decision = first_abc
-            elif relay_d_for_e2 and paired_relay_needed and e2_order_for_d is not None:
-                relay_candidate_order = dict(e2_order_for_d)
-                relay_candidate_decision = CombinedLiveDecision(
-                    action="PLAN_D_RELAY_PAIRED_BUY",
-                    strategy_leg="E2",
-                    ts_code=str(e2_order_for_d.get("ts_code", "")),
-                    name=str(e2_order_for_d.get("name", "")),
-                    side="BUY",
-                    quantity=int(e2_order_for_d.get("round_lot_shares", 0) or 0),
-                    reason="D确认卖出一片后，才允许用该片实际释放资金买入E2。",
-                    source=str(self.project_root / "reports" / "strategy_e2"),
-                )
-
-            if relay_candidate_order is not None and relay_candidate_decision is not None:
-                relay_candidate_order["planned_action"] = "PLAN_D_RELAY_PAIRED_BUY"
-                relay_candidate_order["order_status"] = "WAIT_D_CONFIRMED_SELL"
-                relay_candidate_order["live_order_enabled"] = False
-                relay_candidate_order["risk_flags"] = "D_RELAY_PAIRED_POV_ONLY"
-                relay_candidate_order["relay_priority"] = "A/C" if relay_d_for_abc else "E2"
-                planned_orders.append(relay_candidate_order)
-                decisions.append(CombinedLiveDecision(
-                    action="PLAN_D_RELAY_PAIRED_BUY",
-                    strategy_leg=str(relay_candidate_order.get("strategy_leg", relay_candidate_decision.strategy_leg)),
-                    ts_code=str(relay_candidate_order.get("ts_code", relay_candidate_decision.ts_code)),
-                    name=str(relay_candidate_order.get("name", relay_candidate_decision.name)),
-                    side="BUY",
-                    quantity=self.as_int(relay_candidate_order.get(
-                        "round_lot_shares", relay_candidate_order.get("estimated_shares", relay_candidate_decision.quantity)
-                    )),
+            # ── D 接力已于 2026-08-07 全关（见本文件顶部「腿序与接力口径」）──
+            #
+            # 旧口径：D 未到期时若当天有 A/C/E2 候选，就在 09:23 卖竞价安全部分、
+            # 09:30 后按「卖D一片→买候选一片」的资金中性成对POV接力，同一天资金
+            # 用两次。现口径：D 一律走自己的 T+2 收盘平仓，平仓确认后下一个信号日
+            # 才轮到别的腿。
+            #
+            # 依据（同口径回放，481信号日、已剔除实盘拿不到的衔接日D）：
+            #   接力全关 27870.31x / 胜率68.87% / 回撤-23.51%
+            #   接力A/C/E2 30315.57x / 胜率68.21%
+            # 接力多出的收益里，超过一半来自「接力的D不打80%成交压力折扣、
+            # 而T+2的D要打」这个口径不对称；同折扣口径下接力只值 +7.8%。
+            # 换来的是：执行链路从「09:23卖安全部分→09:30分片卖→确认释放→
+            # 分片买→累计买入额不得超过累计卖出额」简化为一条直线，胜率反而更高。
+            # 代价：两年里有 7 天候选被 D 的持仓挡掉，已计入上述 27870.31x。
+            #
+            # 因此这里不再生成 PLAN_SELL_D_FIRST（daemon 靠它填 force_d_sell_codes
+            # 触发 09:23 接力）与 PLAN_D_RELAY_PAIRED_BUY 影子计划；上游一断，
+            # trading_daemon 的整条接力链路自然不触发。
+            for position in due_d:
+                decisions.append(self.build_d_sell_decision(
+                    position,
+                    today,
+                    action="PLAN_SELL_D_T2_CLOSE",
                     reason=(
-                        "D接力候选已锁定，但普通买入路径不得执行；09:23只卖竞价安全部分，"
-                        "09:30后按D实际成交一片、候选买入一片的资金中性POV执行。"
+                        f"D持仓到默认T+2平仓日，planned_exit_date={position.get('planned_exit_date', '')}，"
+                        f"今日={today}，按D回测口径等待14:53收盘平仓，不在09:23集合竞价卖出。"
                     ),
-                    source=str(relay_candidate_decision.source),
                 ))
-            relay_legs = []
-            if relay_d_for_abc:
-                relay_legs.append("A/C")
-            if relay_d_for_e2:
-                relay_legs.append("E2")
-            relay_reason = "/".join(relay_legs)
-            if due_d or relay_d_for_abce2:
-                sell_d_positions = due_d if due_d else open_d_positions
-                for position in due_d:
-                    decisions.append(self.build_d_sell_decision(
-                        position,
-                        today,
-                        action="PLAN_SELL_D_T2_CLOSE",
-                        reason=(
-                            f"D持仓到默认T+2平仓日，planned_exit_date={position.get('planned_exit_date', '')}，"
-                            f"今日={today}，按D回测口径等待14:53收盘平仓，不在09:23集合竞价卖出。"
-                        ),
-                    ))
-                    planned_orders.append(self.build_d_sell_order(
-                        position,
-                        today,
-                        planned_action="PLAN_SELL_D_T2_CLOSE",
-                    ))
-                for position in sell_d_positions:
-                    if position in due_d:
-                        continue
-                    decisions.append(self.build_d_sell_decision(
-                        position,
-                        today,
-                        reason=(
-                            f"D持仓未到默认T+2平仓日，但今日存在{relay_reason}接力买入计划；"
-                            f"09:23只卖竞价安全部分，09:30后按确认卖出资金与{relay_reason}成对POV接力。"
-                        ),
-                    ))
-                    planned_orders.append(self.build_d_sell_order(position, today))
-                decisions.append(CombinedLiveDecision(
-                    action="BLOCK_ABC_BUY", strategy_leg="A+C",
-                    reason="D持仓尚未确认卖出，普通A/C买入路径阻断；接力候选仅由资金中性成对POV执行。",
-                    source="combined_state_machine",
+                planned_orders.append(self.build_d_sell_order(
+                    position,
+                    today,
+                    planned_action="PLAN_SELL_D_T2_CLOSE",
                 ))
-                if relay_d_for_e2:
-                    decisions.append(CombinedLiveDecision(
-                        action="BLOCK_E2_BUY_UNTIL_D_SOLD",
-                        strategy_leg="E2",
-                        ts_code=str(yesterday_e2_signal_for_d.get("ts_code", "")) if yesterday_e2_signal_for_d else "",
-                        name=str(yesterday_e2_signal_for_d.get("name", "")) if yesterday_e2_signal_for_d else "",
-                        side="BUY",
-                        quantity=int(e2_order_for_d.get("round_lot_shares", 0)) if e2_order_for_d else 0,
-                        reason="今日存在E2开仓计划，但D尚未确认卖出；只允许成对POV用D实际释放资金逐片买入。",
-                        source=str(self.project_root / "reports" / "strategy_e2"),
-                    ))
-                decisions.append(CombinedLiveDecision(
-                    action="BLOCK_D_INTRADAY_MONITOR", strategy_leg="D",
-                    reason="已有D持仓处于待卖状态，今日不启动新的D盘中买入监控。",
-                    source="combined_state_machine",
-                ))
-            else:
-                decisions.append(CombinedLiveDecision(
-                    action="BLOCK_ABC_BUY", strategy_leg="A+C",
-                    reason="D持仓未到平仓日，阻断A/C买入。",
-                    source="combined_state_machine",
-                ))
-                decisions.append(CombinedLiveDecision(
-                    action="BLOCK_D_INTRADAY_MONITOR", strategy_leg="D",
-                    reason="已有D持仓占用资金，今日不启动新的D盘中买入监控。",
-                    source="combined_state_machine",
-                ))
+            decisions.append(CombinedLiveDecision(
+                action="BLOCK_ABC_BUY", strategy_leg="A+C",
+                reason=(
+                    "D持仓占用资金且接力已关闭：D按T+2收盘平仓，确认清仓后的"
+                    "下一个信号日才允许新开仓。"
+                ),
+                source="combined_state_machine",
+            ))
+            decisions.append(CombinedLiveDecision(
+                action="BLOCK_E2_BUY", strategy_leg="E2",
+                reason="D持仓占用资金且接力已关闭，E2今日不开仓。",
+                source="combined_state_machine",
+            ))
+            decisions.append(CombinedLiveDecision(
+                action="BLOCK_D_INTRADAY_MONITOR", strategy_leg="D",
+                reason="已有D持仓占用资金，今日不启动新的D盘中买入监控。",
+                source="combined_state_machine",
+            ))
 
         elif open_non_d_positions:
             # 只要非D旧仓尚未实际清空（含今日到期、逾期、sell_pending），就阻断所有新开仓。
