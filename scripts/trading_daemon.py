@@ -10530,8 +10530,10 @@ def job_post_market(end_date: str | None = None) -> None:
         ("run_paper_ab_filtered_daily_ops.py", "⑥ A+B+C 信号生成",                TIMEOUT_SIGNAL_STEP,"约1分钟"),
         ("run_strategy_e2_signal.py",          "⑦ E2 信号生成（板块中性小市值）", TIMEOUT_SIGNAL_STEP,"约30秒"),
         ("run_strategy_l_signal.py",           "⑧ L 龙头信号生成（独立模式备用）", TIMEOUT_SIGNAL_STEP,"约30秒"),
-        # M 必须排在 A/C、E2、L 之后：它要读这三者的产物才能判断"五腿是否全空"。
-        ("run_strategy_m_signal.py",           "⑨ M 兜底补位信号（五腿全空时）", TIMEOUT_SIGNAL_STEP,"约20秒"),
+        # M 必须排在 A/C（⑥）和 L（⑧）之后：腿序 D>L>A>M>E2>C 里只有这两条腿
+        # （加上已在 positions.json 里的 D 持仓）有资格挡住 M，它要读它们当日的产物。
+        # E2（⑦）排在 M 后面，M 不再读它，两者先后已无所谓。
+        ("run_strategy_m_signal.py",           "⑨ M 补位信号（腿序D>L>A>M>E2>C 第四档）", TIMEOUT_SIGNAL_STEP,"约20秒"),
         ("strategy_health_monitor.py",         "⑩ 策略健康度监控（滚动20笔期望分位）", TIMEOUT_DATA_STEP, "约10秒"),
         ("live_execution_audit.py",            "⑪ 实盘执行对账（逐笔损耗vs回测基准）", TIMEOUT_DATA_STEP, "约5秒"),
         ("update_execution_completion.py",     "⑫ 真实成交完成率汇总（逐片+一笔一行）", TIMEOUT_DATA_STEP, "约5秒"),

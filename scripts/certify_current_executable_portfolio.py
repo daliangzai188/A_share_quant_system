@@ -5,11 +5,26 @@
 1. B已删除；历史B日只保留按当前A→C重选后真实存在的A/C候选；
 2. E2使用无前视、单账户R1明细，旧E2候选和旧收益不得混入；
 3. 普通首仓按82.5%，旧策略仓未释放前不做尾盘衔接；
-4. 保留D面对A/C/E2时的09:23先卖后买接力，D不为L接力；
-5. L使用当前model=3基础条件和替换窄门；
+4. **D接力全关**：D一律T+2收盘平仓，确认清仓后的下一个信号日才轮到别的腿
+   （2026-08-07；旧口径"D为A/C/E2走09:23先卖后买接力、不为L接力"已作废）；
+5. **L无条件优先**：只过model=3基础条件，替换窄门已退出选股路径（2026-08-07）；
 6. E2入场门禁在每日第一名确定后执行，被排除时不回补第二名；
 7. model=3的L基础环境新增全市场连板数3~8档，历史与实盘调用同一规则；
 8. 所有收益按同一账户、同一时间顺序连乘，禁止把各腿复利直接相乘。
+
+腿序 **D > L > A > M > E2 > C**（2026-08-07 定稿），见 pick_by_priority。
+D 不在 pick_by_priority 里：它在信号日盘中就买了，位置由时序锁死，见 replay。
+
+⚠️ **本脚本是实盘的对照基准，两侧必须同时正确。** 实盘一侧分两层，缺一层就是空转：
+      上游门（信号生不生成）run_strategy_m_signal.higher_priority_leg_has_signal
+                            run_strategy_e2_signal.has_ac_planned_order
+      下游腿序（生成了怎么挑）combined_live_engine.build_mode1_plan / build_model3_plan
+   2026-08-07 只改下游没改上游，实盘真实跑出来是 L>A>C>E2>M，481信号日
+   22903.30x，比本脚本的 27870.31x 低 17.8%。锁见 tests/test_leg_order_upstream_gates.py。
+
+被腿序改造废弃的旧规则函数（mode1_candidate / choose_l / l_replace_guard_passes /
+d_relay_candidate / no_b_candidate / infer_abc_release_date）已于 2026-08-07 删除，
+不再留在文件里等人误接回去；需要查旧口径请看 git 历史。
 
 该报告仍是历史回放，不承诺未来收益。实盘还会受到涨停无法成交、POV追价上限、
 滑点和容量约束影响；放大资金前必须继续小资金核验真实成交。
@@ -169,12 +184,6 @@ def to_float(value: Any, default: float = 0.0) -> float:
     return default if pd.isna(number) else float(number)
 
 
-def to_bool(value: Any) -> bool:
-    """兼容CSV中的布尔文本。"""
-
-    return str(value).strip().lower() in {"true", "1", "yes"}
-
-
 def load_sources() -> Sources:
     """加载并严格校验来源；缺失或日期漂移时直接失败。"""
 
@@ -307,18 +316,6 @@ def source_row(table: pd.DataFrame, date: str, source: str) -> pd.Series:
     return row.iloc[-1] if isinstance(row, pd.DataFrame) else row
 
 
-def infer_abc_release_date(baseline: pd.DataFrame, row_index: int) -> str:
-    """从历史占仓状态推断A/C退出释放日。"""
-
-    index = row_index + 1
-    while (
-        index < len(baseline)
-        and str(baseline.loc[index, "operation_status"]) == "POSITION_OCCUPIED_SKIP"
-    ):
-        index += 1
-    return str(baseline.loc[index, "date"]) if index < len(baseline) else "99991231"
-
-
 def e2_entry_gate_passes(row: pd.Series, spec: dict[str, Any]) -> bool:
     """只用信号日字段执行配置化E2入场门禁。"""
 
@@ -376,70 +373,6 @@ def load_ac_daily() -> dict[str, dict[str, Any]]:
     return result
 
 
-def no_b_candidate(sources: Sources, signal_date: str) -> dict[str, Any] | None:
-    """历史B日只接受重新选出的A/C；旧E2重选结果全部废止。
-
-    E2现在由新的50笔R1信号日集合独立判断。旧账本里的E2属于已废止候选口径，
-    若继续使用会把前视旧E2重新混回当前组合。
-    """
-
-    row = source_row(sources.no_b_reselection, signal_date, "无B重选")
-    leg = str(row.get("replacement_leg", "NONE")).upper()
-    if leg not in {"A", "C"} or not to_bool(row.get("buy_executed")):
-        return None
-    exit_date = normalize_date(row.get("exit_trade_date"))
-    if not exit_date:
-        raise ValueError(f"{signal_date} 无B重选{leg}已成交但缺少退出日")
-    return {
-        "strategy_leg": leg,
-        "ts_code": str(row.get("ts_code", "")),
-        "name": str(row.get("name", "")),
-        "buy_date": normalize_date(row.get("buy_trade_date")),
-        "exit_date": exit_date,
-        "account_return": to_float(row.get("return_at_80pct"))
-        * POSITION_PCT
-        / OLD_POSITION_PCT,
-        "return_source": "原B日删除B后按当前A→C重选",
-    }
-
-
-def mode1_candidate(
-    sources: Sources,
-    row: pd.Series,
-    row_index: int,
-    *,
-    entry_gate_enabled: bool,
-) -> dict[str, Any] | None:
-    """按A/C优先、无则当前E2生成收盘后候选。
-
-    A/C 走 sources.ac_daily（逐日独立候选，见 load_ac_daily 的说明），
-    不再用 baseline.abc_return 当门槛——那是一张已作废的持仓表。
-    """
-
-    signal_date = str(row["date"])
-    ac = sources.ac_daily.get(signal_date)
-    if ac is not None:
-        return dict(ac)
-
-    if signal_date not in sources.e2.index:
-        return None
-    e2 = source_row(sources.e2, signal_date, "E2 R1")
-    if entry_gate_enabled and not e2_entry_gate_passes(e2, sources.e2_spec):
-        return None
-    return {
-        "strategy_leg": "E2",
-        "ts_code": str(e2.get("ts_code", "")),
-        "name": str(e2.get("name", "")),
-        "buy_date": normalize_date(e2.get("buy_date")),
-        "exit_date": normalize_date(e2.get("exit_date")),
-        "account_return": to_float(e2.get("net_return")) * POSITION_PCT,
-        "return_source": (
-            f"E2_R1:{e2.get('scenario_rank', '')};"
-            f"first_time={e2.get('first_time_detail_bucket', '')}"
-        ),
-    }
-
-
 def l_base_passes(
     sources: Sources,
     row: pd.Series | None,
@@ -465,46 +398,6 @@ def l_base_passes(
     ] = chain_values
     passed, _reason = model3_l_base_rule_pass(row.to_dict(), model3_config)
     return passed
-
-
-def l_replace_guard_passes(sources: Sources, row: pd.Series) -> bool:
-    """L替换A/C/E2必须通过实盘共用窄门。"""
-
-    passed, _reason = model3_l_replace_guard_pass(
-        row.to_dict(), sources.model3_config
-    )
-    return passed
-
-
-def choose_l(
-    sources: Sources,
-    signal_date: str,
-    mode1: dict[str, Any] | None,
-    *,
-    chain_3_8_enabled: bool,
-) -> dict[str, Any] | None:
-    """按当前model=3规则执行L补位或替换。"""
-
-    l_row = sources.l_lookup.get(signal_date)
-    if not l_base_passes(
-        sources, l_row, chain_3_8_enabled=chain_3_8_enabled
-    ) or l_row is None:
-        return mode1
-    if mode1 is not None and not l_replace_guard_passes(sources, l_row):
-        return mode1
-
-    ok, old_account_return, exit_date, status = l_trade_return(l_row)
-    if not ok:
-        return None
-    return {
-        "strategy_leg": "L",
-        "ts_code": str(l_row.get("ts_code", "")),
-        "name": str(l_row.get("name", "")),
-        "buy_date": normalize_date(l_row.get("d1_trade_date")),
-        "exit_date": normalize_date(exit_date),
-        "account_return": old_account_return * POSITION_PCT / OLD_POSITION_PCT,
-        "return_source": status,
-    }
 
 
 def l_candidate(
@@ -667,29 +560,6 @@ def d_t2_candidate(sources: Sources, signal_date: str) -> dict[str, Any]:
         "exit_date": exit_date,
         "account_return": net_return * D_FILL_STRESS * POSITION_PCT,
         "return_source": "D_T2_CLOSE;净收益×80%成交压力",
-    }
-
-
-def d_relay_candidate(
-    sources: Sources,
-    signal_date: str,
-    next_candidate: dict[str, Any],
-) -> dict[str, Any]:
-    """组合D的T+1接力收益与A/C/E2下一腿收益。"""
-
-    d_row = source_row(sources.strategy_d, signal_date, "D")
-    d_return = (
-        to_float(d_row.get("account_return"))
-        * POSITION_PCT
-        / OLD_POSITION_PCT
-    )
-    next_return = to_float(next_candidate.get("account_return"))
-    next_leg = str(next_candidate.get("strategy_leg", ""))
-    return {
-        **next_candidate,
-        "strategy_leg": f"D→{next_leg}",
-        "account_return": (1.0 + d_return) * (1.0 + next_return) - 1.0,
-        "return_source": f"D_T1_RELAY({d_return:.6f})+{next_leg}({next_return:.6f})",
     }
 
 

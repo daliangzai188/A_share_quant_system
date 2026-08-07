@@ -166,6 +166,190 @@ class LegPriorityOrderTests(unittest.TestCase):
         self.assertEqual(len(buys), 1)
         self.assertEqual(str(buys.iloc[0]["ts_code"]), "300002.SZ")
 
+    def test_l替换时_被顶掉的m不得残留在决策表(self) -> None:
+        """L 顶掉 M 后，计划单里只剩 L，决策表里也不能还写着 ALLOW_M_BUY。
+
+        M 提到 E2 之前后，"L 替换 M" 是常规情形；决策表与计划单不一致会让
+        播报和逐笔对账把同一天记成买了两只票。
+        """
+
+        engine = make_engine([])
+        engine.load_latest_abc_orders = lambda: (Path("empty.csv"), pd.DataFrame())
+        engine.build_m_buy_order_if_any = lambda _today, _codes: {
+            "ts_code": "300003.SZ",
+            "name": "测试M候选",
+            "side": "BUY",
+            "round_lot_shares": 5_000,
+            "planned_action": "PLAN_BUY_T1_OPEN",
+        }
+        engine.load_yesterday_e2_signal = lambda _today: None
+        engine.load_yesterday_l_signal = lambda _today: {
+            "signal_date": "20260731",
+            "planned_buy_date": "20260803",
+            "ts_code": "300750.SZ",
+            "name": "测试L候选",
+            "limit_close": 10.0,
+            "market_segment": "chi_next",
+            "segment_retreat_state_bucket": "neutral",
+            "market_chain_count_bucket": "15_30",
+            "theme_limit_count": 3,
+            "first_time_detail_bucket": "before_1000",
+        }
+
+        _state, decisions, orders = engine.build_model3_plan("20260803")
+        actions = set(decisions["action"])
+
+        self.assertIn("ALLOW_MODEL3_L_REPLACE", actions)
+        self.assertNotIn("ALLOW_M_BUY", actions)
+        buys = orders[orders["side"].astype(str).str.upper().eq("BUY")]
+        self.assertEqual(len(buys), 1)
+        self.assertEqual(str(buys.iloc[0]["ts_code"]), "300750.SZ")
+
+    @staticmethod
+    def _abc_orders(leg: str, ts_code: str, name: str) -> pd.DataFrame:
+        """造一份收盘流水线格式的 A/C 操作台计划单。
+
+        真实文件由 generate_live_limit_pool_daily_ops 产出，strategy_leg
+        取值就是 "A" / "C"（每个信号日只会出现其中一个）。
+        """
+
+        return pd.DataFrame([{
+            "strategy_leg": leg,
+            "ts_code": ts_code,
+            "name": name,
+            "side": "BUY",
+            "round_lot_shares": 5_000,
+            "reference_price": 10.0,
+            "planned_order_date": "20260803",
+            "planned_action": "PLAN_BUY_T1_OPEN",
+        }])
+
+    def test_c垫底_被m挡住不开仓(self) -> None:
+        """C 排在 M 之后：同日 M 有信号时 C 不得占用资金。
+
+        这是本次腿序改造前实盘与回测的最后一处口径差——改造前 C 和 A 共用
+        一份 abc_orders，等于 C 也享受了最高优先级，会抢在 M/E2 前面开仓。
+        """
+
+        engine = make_engine([])
+        engine.load_latest_abc_orders = lambda: (
+            Path("c.csv"), self._abc_orders("C", "601000.SH", "测试C候选")
+        )
+        engine.build_m_buy_order_if_any = lambda _today, _codes: {
+            "ts_code": "300003.SZ",
+            "name": "测试M候选",
+            "side": "BUY",
+            "round_lot_shares": 5_000,
+            "planned_action": "PLAN_BUY_T1_OPEN",
+        }
+        engine.load_yesterday_e2_signal = lambda _today: None
+
+        _state, decisions, orders = engine.build_mode1_plan("20260803")
+        actions = set(decisions["action"])
+
+        self.assertIn("ALLOW_M_BUY", actions)
+        self.assertNotIn("ALLOW_ABC_BUY_PREVIEW", actions)
+        buys = orders[orders["side"].astype(str).str.upper().eq("BUY")]
+        self.assertEqual(len(buys), 1)
+        self.assertEqual(str(buys.iloc[0]["ts_code"]), "300003.SZ")
+
+    def test_c垫底_被e2挡住不开仓(self) -> None:
+        """C 排在 E2 之后：M 无信号但 E2 有信号时，仍轮不到 C。"""
+
+        engine = make_engine([])
+        engine.load_latest_abc_orders = lambda: (
+            Path("c.csv"), self._abc_orders("C", "601000.SH", "测试C候选")
+        )
+        engine.build_m_buy_order_if_any = lambda _today, _codes: None
+        engine.load_yesterday_e2_signal = lambda _today: {
+            "signal_date": "20260731",
+            "ts_code": "300002.SZ",
+            "name": "测试E2候选",
+            "limit_close": 10.0,
+            "exit_offset": 2,
+        }
+
+        _state, decisions, orders = engine.build_mode1_plan("20260803")
+        actions = set(decisions["action"])
+
+        self.assertIn("ALLOW_E2_BUY", actions)
+        self.assertNotIn("ALLOW_ABC_BUY_PREVIEW", actions)
+        buys = orders[orders["side"].astype(str).str.upper().eq("BUY")]
+        self.assertEqual(len(buys), 1)
+        self.assertEqual(str(buys.iloc[0]["ts_code"]), "300002.SZ")
+
+    def test_c垫底_a和m和e2全空时c开仓(self) -> None:
+        """C 仍是有效的一腿：前面三档全空时照常开仓，并挡住 D。"""
+
+        engine = make_engine([])
+        engine.load_latest_abc_orders = lambda: (
+            Path("c.csv"), self._abc_orders("C", "601000.SH", "测试C候选")
+        )
+        engine.build_m_buy_order_if_any = lambda _today, _codes: None
+        engine.load_yesterday_e2_signal = lambda _today: None
+
+        _state, decisions, orders = engine.build_mode1_plan("20260803")
+        actions = set(decisions["action"])
+
+        self.assertIn("ALLOW_ABC_BUY_PREVIEW", actions)
+        self.assertIn("BLOCK_D_INTRADAY_MONITOR", actions)
+        self.assertNotIn("ALLOW_D_INTRADAY_MONITOR", actions)
+        buys = orders[orders["side"].astype(str).str.upper().eq("BUY")]
+        self.assertEqual(len(buys), 1)
+        self.assertEqual(str(buys.iloc[0]["ts_code"]), "601000.SH")
+
+    def test_a仍然最优先_m和e2和c都不开仓(self) -> None:
+        """A 在 M/E2/C 之前：A 有计划时后面三档全部让路。"""
+
+        engine = make_engine([])
+        engine.load_latest_abc_orders = lambda: (
+            Path("a.csv"), self._abc_orders("A", "600001.SH", "测试A候选")
+        )
+        engine.build_m_buy_order_if_any = lambda _today, _codes: {
+            "ts_code": "300003.SZ",
+            "name": "测试M候选",
+            "side": "BUY",
+            "round_lot_shares": 5_000,
+            "planned_action": "PLAN_BUY_T1_OPEN",
+        }
+        engine.load_yesterday_e2_signal = lambda _today: {
+            "signal_date": "20260731",
+            "ts_code": "300002.SZ",
+            "name": "测试E2候选",
+            "limit_close": 10.0,
+            "exit_offset": 2,
+        }
+
+        _state, decisions, orders = engine.build_mode1_plan("20260803")
+        actions = set(decisions["action"])
+
+        self.assertIn("ALLOW_ABC_BUY_PREVIEW", actions)
+        self.assertNotIn("ALLOW_M_BUY", actions)
+        self.assertNotIn("ALLOW_E2_BUY", actions)
+        buys = orders[orders["side"].astype(str).str.upper().eq("BUY")]
+        self.assertEqual(len(buys), 1)
+        self.assertEqual(str(buys.iloc[0]["ts_code"]), "600001.SH")
+
+    def test_四腿全空时放行d且不抛异常(self) -> None:
+        """A/M/E2/C 全无信号是最常见的一天，必须走到 ALLOW_D 而不是崩溃。
+
+        回归保护：M 提到 E2 之前时，e2_order 曾只在部分分支里被赋值，
+        "M无信号 + E2无信号" 会在读取 e2_order 时抛 NameError。
+        """
+
+        engine = make_engine([])
+        engine.load_latest_abc_orders = lambda: (Path("empty.csv"), pd.DataFrame())
+        engine.build_m_buy_order_if_any = lambda _today, _codes: None
+        engine.load_yesterday_e2_signal = lambda _today: None
+
+        _state, decisions, orders = engine.build_mode1_plan("20260803")
+        actions = set(decisions["action"])
+
+        self.assertIn("ALLOW_D_INTRADAY_MONITOR", actions)
+        self.assertIn("NO_ABC_BUY", actions)
+        buys = orders[orders["side"].astype(str).str.upper().eq("BUY")] if not orders.empty else orders
+        self.assertEqual(len(buys), 0)
+
 
 class OpeningPositionPolicyTests(unittest.TestCase):
     def test_production_position_configuration_is_82_5_with_85_hard_cap(self) -> None:

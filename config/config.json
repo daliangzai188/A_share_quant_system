@@ -29,7 +29,7 @@
     "position_pct": 0.825
   },
   "strategy_m": {
-    "file_role": "策略M兜底补位腿配置。M只在A/C/D/E2/L全部无候选且账户空仓时触发,不与任何腿竞争优先级。默认全关,验证后再放开。",
+    "file_role": "策略M补位腿配置。腿序 D>L>A>M>E2>C（2026-08-07 定稿）：M 只被排在它前面的 D持仓 / L信号 / A计划挡住；E2 和 C 排在 M 之后，不得挡住 M 出信号。旧描述『只在A/C/D/E2/L全部无候选时触发』已随腿序重排作废。",
     "enabled": true,
     "live_order_enabled": true,
     "strategy_version": "M_gap_day_sz_main_weak_min_circ_mv_v1",
@@ -45,11 +45,11 @@
     "position_pct": 0.825,
     "drawdown_guard_pct": 0.1,
     "drawdown_guard_note": "账户回撤超过该比例时暂停M。回测两年仅挡下2笔(20240902/20240911),但把组合回撤从-29.74%收窄到-24.68%。⚠️该开关只能用于M这类补位腿,绝不可推广到A/C/D/E2/L——若所有腿都被净值门控,回撤中将无腿可修复净值,系统会锁死。",
-    "require_all_legs_idle": true,
+    "require_all_legs_idle": false,
     "research_audit": {
       "window": "20240520~20260514",
       "m_trade_count": 25,
-      "portfolio_without_m": 6907.3483,
+      "portfolio_without_m": 7677.219,
       "portfolio_with_m_dd_guard": 15891.1,
       "portfolio_max_drawdown_without_m": -0.1884,
       "portfolio_max_drawdown_with_m_dd_guard": -0.2468,
@@ -60,7 +60,8 @@
       "overfit_warning": "规则来自1053个方案的样本内最优;排序与持有期均为单点最优、邻域塌陷。3.37倍不可作为实盘预期,只可作为方向性证据。"
     },
     "live_enabled_at": "2026-08-04",
-    "live_enable_note": "2026-08-04用户拍板并入实盘。⚠️首次启用时peak_equity为空,会以启用当日净值为峰值起点;若启用时账户正处于回撤中,M会误判为无回撤而放行。若需手动校正,编辑reports/strategy_m/m_equity_peak.json的peak_equity为真实历史最高净值。"
+    "live_enable_note": "2026-08-04用户拍板并入实盘。⚠️首次启用时peak_equity为空,会以启用当日净值为峰值起点;若启用时账户正处于回撤中,M会误判为无回撤而放行。若需手动校正,编辑reports/strategy_m/m_equity_peak.json的peak_equity为真实历史最高净值。",
+    "require_all_legs_idle_note": "2026-08-07 由 true 改为 false：M 只让位给排在它前面的腿（D/L/A）。上游门见 run_strategy_m_signal.higher_priority_leg_has_signal；认证口径见 certify_current_executable_portfolio.pick_by_priority（该函数不含D，M 在其中排第③）。"
   },
   "strategy_model3": {
     "file_role": "model=3 自动切换实盘配置。mode=1默认优先；L仅在满足认证规则时补位/替换；真实下单仍必须经过LiveOrderGateway交易时间、资金、仓位、涨跌停和重复委托风控。",
@@ -94,24 +95,24 @@
       ]
     },
     "live_candidate_metrics": {
-      "trade_count": 147,
-      "l_trade_count": 38,
-      "m_trade_count": 24,
-      "mode1_trade_count": 61,
-      "win_rate": 0.687075,
-      "avg_return": 0.074493,
+      "trade_count": 151,
+      "l_trade_count": 47,
+      "m_trade_count": 27,
+      "mode1_trade_count": 77,
+      "win_rate": 0.688742,
+      "avg_return": 0.077779,
       "median_return": 0.046872,
-      "equity_multiple": 20606.559742,
-      "max_drawdown": -0.246805,
+      "equity_multiple": 27870.307776,
+      "max_drawdown": -0.23505,
       "max_loss": -0.163694,
-      "max_consecutive_losses": 4,
+      "max_consecutive_losses": 5,
       "scenario": "current_with_m_gap_leg",
       "previous_without_m": {
-        "equity_multiple": 6907.348272,
-        "trade_count": 132,
-        "max_drawdown": -0.188406
+        "equity_multiple": 7677.219011,
+        "trade_count": 135,
+        "max_drawdown": -0.23505
       },
-      "note": "2026-08-04 M兜底腿上线后的发布标尺。复现:python3 scripts/certify_current_executable_portfolio.py"
+      "note": "2026-08-07 腿序重排 D>L>A>M>E2>C + D接力全关 + 上游信号门同步 后的发布标尺。mode1_trade_count=A+C+E2+D。复现:python3 scripts/certify_current_executable_portfolio.py"
     }
   },
   "notify": {

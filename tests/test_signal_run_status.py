@@ -199,7 +199,7 @@ class SignalGeneratorStatusTests(unittest.TestCase):
                 patch.object(e2_signal, "RUN_STATUS_PATH", status_path),
                 patch.object(e2_signal, "migrate_existing_signals"),
                 patch.object(e2_signal, "load_open_positions", return_value=[]),
-                patch.object(e2_signal, "has_abc_planned_order", return_value=False),
+                patch.object(e2_signal, "has_ac_planned_order", return_value=False),
                 patch.object(
                     e2_signal,
                     "load_d_intraday_status",

@@ -1,20 +1,25 @@
 """策略M每日收盘后信号生成脚本。
 
-M 是兜底补位腿，触发前提最严格，四个条件必须同时成立：
+M 是补位腿，在腿序 **D > L > A > M > E2 > C**（2026-08-07 定稿）里排第四。
+只有排在它**前面**的腿才有资格挡住它，三个条件必须同时成立：
 
-  1. A/C daily ops 当日未生成计划委托；
-  2. E2 当日无正式信号；
-  3. L 当日无正式信号；
-  4. 账户没有任何未平仓头寸（这一条同时覆盖 D —— D 在信号日盘中买入，
-     成交后会出现在 positions.json，因此 D 天然优先于 M）。
+  1. 账户没有任何未平仓头寸（这一条同时覆盖 D —— D 在信号日盘中买入，
+     成交后会出现在 positions.json，因此 D 天然优先于 M）；
+  2. L 当日无正式信号；
+  3. A/C daily ops 当日未生成 **strategy_leg=A** 的计划委托。
+
+  ⚠️ **E2 和 C 排在 M 后面，不得挡住 M 出信号。** 2026-08-07 之前这里还要求
+     "E2 无信号 + A/C 都无计划"，M 事实上仍是"五腿全空才兜底"，而认证口径已把
+     M 提到 E2/C 之前 —— 下游 combined_live_engine 排得再靠前也是空转。
+     481信号日回放：认证口径 27870.31x，上游门未同步时实盘只跑出 22903.30x。
 
 再叠加两道自有闸门：
 
-  5. 当日"深市主板情绪 = weak"（策略条件）；
-  6. 账户当前回撤未超过阈值（风控条件，默认 10%）。
+  4. 当日"深市主板情绪 = weak"（策略条件）；
+  5. 账户当前回撤未超过阈值（风控条件，默认 10%）。
 
-触发时机：每日收盘流水线第 ⑨ 步，必须排在 A/C、E2、L 之后运行，否则无法
-判断"五腿是否全空"。
+触发时机：每日收盘流水线第 ⑨ 步。必须排在 A/C（⑥）和 L（⑧）之后运行，
+才能读到这两者当日的产物；E2（⑦）的先后已无所谓，M 不再读它。
 
 ⚠️ 本脚本只生成信号文件，不提交任何委托。是否真实下单由
    config.json/strategy_m.live_order_enabled 与组合引擎共同决定。
@@ -38,7 +43,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.run_strategy_e2_signal import (  # noqa: E402  复用同一套占用判据
-    has_abc_planned_order,
+    has_ac_planned_order,
     has_existing_open_position,
     load_open_positions,
     next_trade_day,
@@ -62,7 +67,6 @@ from src.strategy_m import (  # noqa: E402
 CONFIG_PATH = PROJECT_ROOT / "config" / "config.json"
 LIVE_SCORED_PATH = PROJECT_ROOT / "data" / "processed" / "live_limit_up_fill_scored.csv"
 HIST_SCORED_PATH = PROJECT_ROOT / "data" / "processed" / "limit_up_fill_scored.csv"
-E2_SIGNAL_PATH = PROJECT_ROOT / "reports" / "strategy_e2" / "e2_signals_recent.json"
 L_SIGNAL_PATH = PROJECT_ROOT / "reports" / "strategy_l" / "l_signals_recent.json"
 OUTPUT_DIR = PROJECT_ROOT / "reports" / "strategy_m"
 ROLLING_SIGNAL_PATH = OUTPUT_DIR / "m_signals_recent.json"
@@ -92,18 +96,27 @@ def load_day_pool(signal_date: str) -> pd.DataFrame:
     return merged.drop_duplicates(["trade_date", "ts_code"], keep="last").reset_index(drop=True)
 
 
-def other_leg_has_signal(signal_date: str) -> tuple[bool, str]:
-    """A/C、E2、L 当日是否已有信号或计划。"""
+def higher_priority_leg_has_signal(signal_date: str) -> tuple[bool, str]:
+    """按腿序排在 M **前面** 的腿，当日是否已有信号或计划。
 
-    if has_abc_planned_order(signal_date):
-        return True, "A/C当日已生成计划委托"
-    e2 = signal_by_signal_date(E2_SIGNAL_PATH, signal_date)
-    if e2:
-        return True, f"E2当日已有信号（{e2.get('ts_code','')}）"
+    腿序 D>L>A>M>E2>C（2026-08-07 定稿）：M 之前只有 D、L、A。
+      · D  由 has_existing_open_position 覆盖（D 建仓即写 positions.json）
+      · L  查 l_signals_recent.json
+      · A  查 A/C 操作台里 strategy_leg=A 的计划委托
+    **E2 和 C 排在 M 后面，不得挡住 M 出信号。**
+
+    2026-08-07 之前这里把 E2 和 C（经不分腿的 has_abc_planned_order）也算作
+    占用，导致 M 事实上仍是"五腿全空才兜底"，而认证口径已把 M 提到 E2/C 之前。
+    下游 combined_live_engine 排得再靠前也没用——那些日子 M 根本没有信号。
+    481信号日回放：认证口径 27870.31x，上游门未同步时实盘只能跑出 22903.30x。
+    """
+
+    if has_ac_planned_order(signal_date, legs=("A",)):
+        return True, "A当日已生成计划委托（腿序A>M）"
     l_signal = signal_by_signal_date(L_SIGNAL_PATH, signal_date)
     if l_signal:
-        return True, f"L当日已有信号（{l_signal.get('ts_code','')}）"
-    return False, "A/C、E2、L当日均无信号"
+        return True, f"L当日已有信号（{l_signal.get('ts_code','')}，腿序L>M）"
+    return False, "排在M前面的L、A当日均无信号"
 
 
 def load_equity_peak() -> dict[str, Any]:
@@ -152,8 +165,10 @@ def current_equity_and_peak(config: dict[str, Any]) -> tuple[float, float, str]:
     return equity, peak, source
 
 
-def update_equity_peak(equity: float, peak: float, signal_date: str) -> None:
-    if equity <= 0:
+def update_equity_peak(equity: float, peak: float, signal_date: str, dry_run: bool = False) -> None:
+    """持久化净值与峰值。--dry-run 只打印不落盘，避免调试污染回撤闸的输入。"""
+
+    if equity <= 0 or dry_run:
         return
     state = load_equity_peak()
     state["last_equity"] = equity
@@ -217,21 +232,33 @@ def main() -> None:
         record_run(signal_date, "NO_SIGNAL_OCCUPIED", note, args.dry_run)
         return
 
-    busy, why = other_leg_has_signal(signal_date)
+    # 净值峰值必须在**每一个空仓日**都记录，不能等腿序门和回撤闸都放行了才记。
+    # 口径依据：回测里 peak_equity 是逐日维护的组合净值峰值；实盘只能在空仓日
+    # 取到同口径的"已实现净值"（有持仓时 QMT 总资产含浮动盈亏，会污染峰值），
+    # 而空仓日恰好就是 M 可能决策的全部日子。
+    #
+    # 2026-08-07 之前 update_equity_peak 在回撤闸之后，于是"别的腿有信号"或
+    # "回撤闸拦下"的空仓日一律不记峰值 —— 峰值滞后、回撤被低估、M 在真实回撤
+    # 中仍可能被放行。提前到这里后覆盖全部空仓日。本次判断结果不变：
+    # current_equity_and_peak 已把 peak 取成 max(历史峰值, 当前净值)，
+    # update_equity_peak 只负责持久化。
+    equity, peak, source = current_equity_and_peak(config)
+    update_equity_peak(equity, peak, signal_date, dry_run=args.dry_run)
+
+    busy, why = higher_priority_leg_has_signal(signal_date)
     if busy:
         print(f"[M信号] {why}，M不触发。")
-        record_run(signal_date, "NO_SIGNAL_OCCUPIED", why, args.dry_run)
+        record_run(signal_date, "NO_SIGNAL_OCCUPIED", why, args.dry_run,
+                   equity=equity, peak_equity=peak)
         return
-    print(f"[M信号] {why}，进入M兜底判断。")
+    print(f"[M信号] {why}，进入M补位判断。")
 
-    equity, peak, source = current_equity_and_peak(config)
     ok, dd_note = drawdown_guard_passed(equity, peak, spec)
     print(f"[M信号] 净值={equity:.2f}（{source}） 峰值={peak:.2f} → {dd_note}")
     if not ok:
         record_run(signal_date, "NO_SIGNAL_OCCUPIED", f"回撤保护：{dd_note}", args.dry_run,
                    equity=equity, peak_equity=peak)
         return
-    update_equity_peak(equity, peak, signal_date)
 
     pool = load_day_pool(signal_date)
     if pool.empty:
