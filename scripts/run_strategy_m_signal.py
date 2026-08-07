@@ -245,6 +245,26 @@ def main() -> None:
     equity, peak, source = current_equity_and_peak(config)
     update_equity_peak(equity, peak, signal_date, dry_run=args.dry_run)
 
+    # ── 取不到净值是**故障**，不是策略行为，必须记 ERROR 触发告警 ──────────
+    # 回撤闸对"净值缺失"和"真回撤超阈值"都返回 False，若都记成
+    # NO_SIGNAL_OCCUPIED，故障就被伪装成"今天正常不触发"——而 M 是贡献组合
+    # 约四分之三复利的腿，它静默关着不会有任何人发现。
+    # ERROR 会被 trading_daemon._strategy_signal_run_readiness 判为 ok=False
+    # 并按⚠️播报，与其余各腿共用同一条告警通道，不新造机制。
+    if equity <= 0 or peak <= 0:
+        note = (
+            f"取不到账户净值（来源={source}），M按安全口径暂停。"
+            f"取值链路：QMT实时总资产 → reports/strategy_m/m_equity_peak.json 的 last_equity。"
+            f"排查：①QMT是否已登录且 broker_adapter_enabled/qmt_enabled 为 true；"
+            f"②首次启用时该文件尚不存在属正常，取到一次净值后自动生成；"
+            f"③如需手工兜底，写入 peak_equity 为真实历史最高净值。"
+        )
+        print(f"[M信号] ⚠️ {note}")
+        record_run(signal_date, "ERROR", note, args.dry_run,
+                   equity=equity, peak_equity=peak, equity_source=source)
+        return
+
+
     busy, why = higher_priority_leg_has_signal(signal_date)
     if busy:
         print(f"[M信号] {why}，M不触发。")

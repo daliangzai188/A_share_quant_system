@@ -319,3 +319,49 @@ class LegOrderDeclarationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BroadcastMatchesOrderingTests(unittest.TestCase):
+    """daemon 播报层的腿序必须与下单口径一致。
+
+    播报不下单，但用户靠它盯盘——播报说买 A、实盘买 L，比不播报更糟。
+    2026-08-07 腿序改造时这一层漏改过：树状图画着 A>C>E2、最终计划仍用已退役的
+    L 替换窄门(l_guard_ok)，与 build_model3_plan 相反。
+    """
+
+    def _daemon_source(self) -> str:
+        root = Path(__file__).absolute().parents[1]
+        return (root / "scripts" / "trading_daemon.py").read_text(encoding="utf-8")
+
+    def test_不再用已退役的替换窄门做判定(self) -> None:
+        src = self._daemon_source()
+        # 允许出现在注释/参考播报里，但不得再参与任何 if 判定
+        offending = [
+            line.strip()
+            for line in src.splitlines()
+            if "l_guard_ok" in line and not line.strip().startswith("#")
+        ]
+        self.assertEqual(
+            offending, [], f"daemon 仍在用退役的 L 替换窄门做判定: {offending}"
+        )
+
+    def test_树状图与总图画的是新腿序(self) -> None:
+        src = self._daemon_source()
+        for stale in ("A > C > E2", "A主 > C补位 > E2兜底", "L 替换窄门{TAG"):
+            self.assertNotIn(stale, src, f"播报里仍有旧腿序文案: {stale}")
+        self.assertIn("腿序 D > L > A > M > E2 > C", src)
+        self.assertIn("③A主 → ④M补位 → ⑤E2 → ⑥C垫底", src)
+
+    def test_最终计划按腿序A_M_E2_C取第一个(self) -> None:
+        src = self._daemon_source()
+        self.assertIn("mode1_buy = a_buy or m_buy or e2_buy or c_buy", src)
+
+    def test_m净值缺失记ERROR而非正常态(self) -> None:
+        """M 取不到净值是故障，必须走 ERROR 告警通道，不能伪装成'今天不触发'。"""
+
+        root = Path(__file__).absolute().parents[1]
+        src = (root / "scripts" / "run_strategy_m_signal.py").read_text(encoding="utf-8")
+        self.assertIn('record_run(signal_date, "ERROR", note, args.dry_run,', src)
+        self.assertIn("取不到账户净值", src)
+        # 真回撤超阈值仍属正常策略行为
+        self.assertIn('record_run(signal_date, "NO_SIGNAL_OCCUPIED", f"回撤保护：{dd_note}"', src)
