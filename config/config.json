@@ -48,16 +48,17 @@
     "require_all_legs_idle": false,
     "research_audit": {
       "window": "20240520~20260514",
-      "m_trade_count": 25,
-      "portfolio_without_m": 7677.219,
-      "portfolio_with_m_dd_guard": 15891.1,
+      "m_trade_count": 26,
+      "portfolio_without_m": 7677.219011,
+      "portfolio_with_m_dd_guard": 29387.054989,
       "portfolio_max_drawdown_without_m": -0.1884,
-      "portfolio_max_drawdown_with_m_dd_guard": -0.2468,
+      "portfolio_max_drawdown_with_m_dd_guard": -0.235585,
       "downside_if_m_expectation_zero": 3979.7,
       "random_stock_control_p": 0.0,
       "random_day_control_p": 0.0,
       "out_of_sample_trades": 3,
-      "overfit_warning": "规则来自1053个方案的样本内最优;排序与持有期均为单点最优、邻域塌陷。3.37倍不可作为实盘预期,只可作为方向性证据。"
+      "overfit_warning": "规则来自1053个方案的样本内最优;排序与持有期均为单点最优、邻域塌陷。3.37倍不可作为实盘预期,只可作为方向性证据。",
+      "fill_note": "2026-08-07 成交口径对齐A/C：T+1一字涨停买不到该日不交易且不递补、卖出日跌停顺延、买open*1.001卖close*0.999。M池61→59天。"
     },
     "live_enabled_at": "2026-08-04",
     "live_enable_note": "2026-08-04用户拍板并入实盘。⚠️首次启用时peak_equity为空,会以启用当日净值为峰值起点;若启用时账户正处于回撤中,M会误判为无回撤而放行。若需手动校正,编辑reports/strategy_m/m_equity_peak.json的peak_equity为真实历史最高净值。",
@@ -95,15 +96,15 @@
       ]
     },
     "live_candidate_metrics": {
-      "trade_count": 151,
+      "trade_count": 150,
       "l_trade_count": 47,
-      "m_trade_count": 27,
+      "m_trade_count": 26,
       "mode1_trade_count": 77,
-      "win_rate": 0.688742,
-      "avg_return": 0.077779,
-      "median_return": 0.046872,
-      "equity_multiple": 27870.307776,
-      "max_drawdown": -0.23505,
+      "win_rate": 0.693333,
+      "avg_return": 0.078623,
+      "median_return": 0.047037,
+      "equity_multiple": 29387.054989,
+      "max_drawdown": -0.235585,
       "max_loss": -0.163694,
       "max_consecutive_losses": 5,
       "scenario": "current_with_m_gap_leg",
@@ -112,7 +113,7 @@
         "trade_count": 135,
         "max_drawdown": -0.23505
       },
-      "note": "2026-08-07 腿序重排 D>L>A>M>E2>C + D接力全关 + 上游信号门同步 后的发布标尺。mode1_trade_count=A+C+E2+D。复现:python3 scripts/certify_current_executable_portfolio.py"
+      "note": "2026-08-07 腿序重排 D>L>A>M>E2>C + D接力全关 + 上游信号门同步 + M成交口径对齐A/C（一字板买不到剔除/跌停顺延/双边0.1%）后的发布标尺。mode1_trade_count=A+C+E2+D。复现:python3 scripts/certify_current_executable_portfolio.py"
     }
   },
   "notify": {

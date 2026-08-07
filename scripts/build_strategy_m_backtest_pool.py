@@ -9,7 +9,16 @@ certify_current_executable_portfolio.py 在回放时按空档日和回撤保护�
     → 数据质量/可买性/非ST 过滤
     → 流通市值最小的一只
 
-收益口径：T+1 开盘买（含0.1%成本）、T+2 收盘卖，与 E2 R1 账本一致。
+收益口径（2026-08-07 起与 A/C 逐字相同，见 build_ac_daily_candidates.trade_return）：
+    T+1 开盘买入，买价 open*1.001；T+2 收盘卖出，卖价 close*0.999（双边各0.1%
+    滑点+费用）
+    T+1 一字涨停（open 与 low 均触及涨停价）视为排队买不到，该日不产生交易，
+      **不递补第二名**（与 A/C、D 一致）
+    卖出日跌停（当日最高价未超过跌停价）视为卖不出，顺延到 4 个交易日内的第一
+      个可卖日
+
+  ⚠️ 2026-08-07 之前只扣买入侧 0.1%、且不判一字板和跌停，池子里因此含有实盘
+     根本买不到的交易（20240809 603065.SH、以及另一笔）。修正后 M 池 61→59 天。
 
 运行：
     python3 scripts/build_strategy_m_backtest_pool.py
@@ -40,7 +49,9 @@ OUTPUT_PATH = PROJECT_ROOT / "reports" / "strategy_m" / "m_backtest_trades.csv"
 
 WINDOW_START = "20240520"
 WINDOW_END = "20260514"
-BUY_COST = 0.001  # 买入滑点+费用，与E2 R1账本口径一致
+BUY_COST = 0.001   # 买入滑点+费用
+SELL_COST = 0.001  # 卖出滑点+费用（印花税/过户费/佣金/滑点），与 A/C 口径一致
+SELL_DELAY_MAX = 4  # 卖出日跌停时最多顺延的交易日数
 
 
 def load_pool() -> pd.DataFrame:
@@ -79,7 +90,10 @@ def daily(date: str) -> pd.DataFrame | None:
             _daily_cache[date] = None
         else:
             frame = pd.read_csv(
-                path, dtype={"ts_code": str}, usecols=["ts_code", "open", "close"], low_memory=False
+                path,
+                dtype={"ts_code": str},
+                usecols=["ts_code", "open", "high", "low", "close", "pre_close"],
+                low_memory=False,
             )
             frame["ts_code"] = frame["ts_code"].str.upper()
             _daily_cache[date] = frame.set_index("ts_code")
@@ -94,6 +108,35 @@ def price(date: str, code: str, column: str) -> float:
     if key not in frame.index:
         return float("nan")
     return float(frame.loc[key, column])
+
+
+def limit_pct(code: str) -> float:
+    """创业板/科创板 20%，其余 10%。与 build_ac_daily_candidates.limit_cap 一致。"""
+
+    return 0.20 if str(code)[:3] in {"300", "301", "688"} else 0.10
+
+
+def is_limit_up_unbuyable(date: str, code: str) -> bool:
+    """T+1 一字涨停：开盘即涨停且全天最低价也在涨停价，排队买不到。"""
+
+    pre = price(date, code, "pre_close")
+    op = price(date, code, "open")
+    low = price(date, code, "low")
+    if not np.isfinite(pre) or pre <= 0 or not np.isfinite(op) or not np.isfinite(low):
+        return False
+    cap = round(pre * (1 + limit_pct(code)), 2)
+    return op >= cap - 1e-6 and low >= cap - 1e-6
+
+
+def is_limit_down_unsellable(date: str, code: str) -> bool:
+    """卖出日跌停：当日最高价都没超过跌停价，挂不出去。"""
+
+    pre = price(date, code, "pre_close")
+    high = price(date, code, "high")
+    if not np.isfinite(pre) or pre <= 0 or not np.isfinite(high):
+        return False
+    floor = round(pre * (1 - limit_pct(code)), 2)
+    return high <= floor + 1e-6
 
 
 def main() -> None:
@@ -113,11 +156,32 @@ def main() -> None:
             continue
         row = picked.iloc[0]
         code = str(row["ts_code"])
-        buy_date, exit_date = days[position + 1], days[position + hold]
+        buy_date = days[position + 1]
         buy_price = price(buy_date, code, "open")
-        exit_price = price(exit_date, code, "close")
-        if not np.isfinite(buy_price) or not np.isfinite(exit_price) or buy_price <= 0:
+        if not np.isfinite(buy_price) or buy_price <= 0:
             continue
+        # T+1 一字涨停排队买不到 → 当日无交易，且不递补第二名（与 A/C、D 一致）
+        if is_limit_up_unbuyable(buy_date, code):
+            continue
+        # 卖出日跌停顺延，最多 SELL_DELAY_MAX 天
+        exit_date = None
+        for k in range(hold, hold + SELL_DELAY_MAX):
+            if position + k >= len(days):
+                break
+            candidate_exit = days[position + k]
+            if not np.isfinite(price(candidate_exit, code, "close")):
+                continue
+            if is_limit_down_unsellable(candidate_exit, code):
+                continue
+            exit_date = candidate_exit
+            break
+        if exit_date is None:
+            continue
+        exit_price = price(exit_date, code, "close")
+        if not np.isfinite(exit_price):
+            continue
+        net_buy = buy_price * (1 + BUY_COST)
+        net_sell = exit_price * (1 - SELL_COST)
         rows.append(
             {
                 "trade_date": signal_date,
@@ -127,10 +191,10 @@ def main() -> None:
                 "circ_mv": float(pd.to_numeric(row.get("circ_mv"), errors="coerce")),
                 "sentiment": str(row.get(spec["sentiment_column"], "")),
                 "buy_date": buy_date,
-                "buy_price": buy_price * (1 + BUY_COST),
+                "buy_price": net_buy,
                 "exit_date": exit_date,
-                "exit_price": exit_price,
-                "net_return": exit_price / (buy_price * (1 + BUY_COST)) - 1.0,
+                "exit_price": net_sell,
+                "net_return": net_sell / net_buy - 1.0,
                 "select_reason": reason,
             }
         )

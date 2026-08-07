@@ -169,6 +169,75 @@ class MEquityPeakTests(unittest.TestCase):
                 self.assertTrue(peak_path.exists())
 
 
+class LiveMatchesCertifyProofTests(unittest.TestCase):
+    """代入证明：实盘代码本身跑 481 信号日，必须逐笔跑出认证标尺。
+
+    这是整套腿序工作的最终判据——上面那些门的单元测试只能验证"某一处对了"，
+    只有把 combined_live_engine.build_model3_plan 和两个上游门函数一起放进
+    回放，才能证明"合起来也对"。2026-08-07 的空转事故正是每一处单看都对、
+    合起来却差 17.8%。约 9 秒。
+    """
+
+    def test_实盘代码逐笔跑出认证标尺(self) -> None:
+        import subprocess
+
+        root = Path(__file__).absolute().parents[1]
+        proc = subprocess.run(
+            [sys.executable, str(root / "scripts" / "verify_live_engine_matches_certify.py")],
+            capture_output=True,
+            text=True,
+            cwd=root,
+            timeout=900,
+        )
+        self.assertEqual(
+            proc.returncode,
+            0,
+            f"实盘代码与认证脚本不一致：\n{proc.stdout}\n{proc.stderr}",
+        )
+        self.assertIn("✅ 通过", proc.stdout)
+
+
+class MFillMethodologyTests(unittest.TestCase):
+    """M 的成交口径必须与 A/C 逐字相同，回测里不许出现实盘买不到的交易。"""
+
+    def test_m池不含一字涨停买不到的交易(self) -> None:
+        """每一笔 M 的 T+1 都必须是能买进去的。
+
+        2026-08-07 之前 M 池直接按 open 成交、不判一字板，含有 20240716 格利尔
+        和 20240809 宿迁联盛两笔实盘根本排不到的交易。
+        """
+
+        from scripts.build_strategy_m_backtest_pool import is_limit_up_unbuyable
+
+        root = Path(__file__).absolute().parents[1]
+        trades = pd.read_csv(
+            root / "reports/strategy_m/m_backtest_trades.csv",
+            dtype={"trade_date": str, "ts_code": str, "buy_date": str, "exit_date": str},
+        )
+        bad = [
+            (r["trade_date"], r["ts_code"])
+            for _, r in trades.iterrows()
+            if is_limit_up_unbuyable(str(r["buy_date"]), str(r["ts_code"]))
+        ]
+        self.assertEqual(bad, [], f"M池含一字涨停买不到的交易: {bad}")
+
+    def test_m双边扣费与ac一致(self) -> None:
+        """买 open*1.001、卖 close*0.999，两侧都要扣。"""
+
+        from scripts.build_strategy_m_backtest_pool import BUY_COST, SELL_COST
+
+        self.assertAlmostEqual(BUY_COST, 0.001)
+        self.assertAlmostEqual(SELL_COST, 0.001, msg="卖出侧费用不得为0（印花税/过户费/佣金/滑点）")
+
+        root = Path(__file__).absolute().parents[1]
+        trades = pd.read_csv(root / "reports/strategy_m/m_backtest_trades.csv")
+        # net_return 必须等于 exit_price/buy_price-1（两列已是含费净价）
+        recomputed = trades["exit_price"] / trades["buy_price"] - 1.0
+        pd.testing.assert_series_equal(
+            recomputed, trades["net_return"], check_names=False, atol=1e-12
+        )
+
+
 class RetiredRuleFunctionsTests(unittest.TestCase):
     """被腿序改造废弃的旧规则函数必须从认证脚本里消失，不能留着等人误接回去。"""
 

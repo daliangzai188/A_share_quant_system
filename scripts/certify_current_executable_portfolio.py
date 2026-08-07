@@ -148,8 +148,15 @@ EXPECTED_OPTIMIZED_TRADE_COUNT = 135
 EXPECTED_OPTIMIZED_MULTIPLE = 7677.219011035194
 # 2026-08-04 M兜底腿上线；2026-08-07 A/C候选+衔接日D+接力全关+腿序重排后的
 # 当前发布标尺。腿序 D>L>A>M>E2>C，与实盘 combined_live_engine 同口径。
-EXPECTED_WITH_M_TRADE_COUNT = 151
-EXPECTED_WITH_M_MULTIPLE = 27870.30777624288
+#
+# 2026-08-07（同日第二次）M 成交口径对齐 A/C：此前 M 池只扣买入侧 0.1%，且
+# 不判"T+1一字涨停买不到"和"卖出日跌停顺延"，池子里含有实盘根本买不到的交易
+# （20240716 格利尔 -1.56%、20240809 宿迁联盛 -8.72%，两笔都是一字板）。
+# 修正方向全是收紧——剔交易、加卖出费用——组合却从 27870.31x 升到 29387.05x，
+# 纯因为剔掉的两笔恰好都是亏损。M池 61→59 天，组合 151→150 笔。
+# 旧值 151 / 27870.30777624288 已作废，仅作历史对照。
+EXPECTED_WITH_M_TRADE_COUNT = 150
+EXPECTED_WITH_M_MULTIPLE = 29387.054988510412
 
 
 @dataclass(frozen=True)
