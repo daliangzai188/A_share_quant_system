@@ -49,7 +49,7 @@
     "research_audit": {
       "window": "20240520~20260514",
       "m_trade_count": 25,
-      "portfolio_without_m": 4712.4701,
+      "portfolio_without_m": 6907.3483,
       "portfolio_with_m_dd_guard": 15891.1,
       "portfolio_max_drawdown_without_m": -0.1884,
       "portfolio_max_drawdown_with_m_dd_guard": -0.2468,
@@ -101,13 +101,13 @@
       "win_rate": 0.687075,
       "avg_return": 0.074493,
       "median_return": 0.046872,
-      "equity_multiple": 15326.887148,
+      "equity_multiple": 20606.559742,
       "max_drawdown": -0.246805,
       "max_loss": -0.163694,
       "max_consecutive_losses": 4,
       "scenario": "current_with_m_gap_leg",
       "previous_without_m": {
-        "equity_multiple": 4712.470092,
+        "equity_multiple": 6907.348272,
         "trade_count": 132,
         "max_drawdown": -0.188406
       },
