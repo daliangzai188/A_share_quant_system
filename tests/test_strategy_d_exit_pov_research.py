@@ -36,7 +36,7 @@ class StrategyDExitResearchTests(unittest.TestCase):
             self.portfolio.to_csv(path, index=False)
             targets = load_d_exit_targets(path)
         # 2026-08-07 A/C改用逐日独立候选后，部分原本单独T+2的D转为接力（旧口径17）。
-        self.assertEqual(len(targets), 14)
+        self.assertEqual(len(targets), 10)
         self.assertNotIn("strategy_leg", targets.columns)
         self.assertTrue(targets["key"].str.contains(r"\|", regex=True).all())
 

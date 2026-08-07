@@ -98,6 +98,9 @@ POSITION_PCT = 0.825
 D_FILL_STRESS = 0.80
 D_ROUND_TRIP_COST = 0.0015
 M_DRAWDOWN_GUARD = 0.10   # M兜底腿回撤保护阈值,与config.json/strategy_m一致
+# 09:20预挂止盈单的让价,与 config.json live_trade.intraday_takeprofit_offset 一致。
+# 衔接日判定旧仓能否盘中成交、提前释放资金时使用。
+TAKEPROFIT_OFFSET = 0.01
 EPSILON = 1e-12
 
 # 先锁定门禁前基线，防止以后输入文件漂移后仍静默生成“更好”结果。
@@ -107,15 +110,20 @@ EPSILON = 1e-12
 # 旧值（A/C 被裁到90天，低估约34%）保留作历史对照，勿再当基准：
 #   BASE 132 / 2884.052538490145      E2_ONLY 129 / 3254.1261014125575
 #   OPTIMIZED 132 / 4712.470092237913 WITH_M  147 / 15326.887148064476
-EXPECTED_BASE_TRADE_COUNT = 137
-EXPECTED_BASE_MULTIPLE = 4252.40931647757
-EXPECTED_E2_ONLY_TRADE_COUNT = 136
-EXPECTED_E2_ONLY_MULTIPLE = 4760.864917583647
-EXPECTED_OPTIMIZED_TRADE_COUNT = 139
-EXPECTED_OPTIMIZED_MULTIPLE = 6907.34827166775
-# 2026-08-04 M兜底腿上线；2026-08-07 A/C候选修正后的当前发布标尺。
-EXPECTED_WITH_M_TRADE_COUNT = 155
-EXPECTED_WITH_M_MULTIPLE = 20606.559741847264
+# 2026-08-07 第二处修正：衔接日D（见 replay 的 block_d_on_handoff）。旧仓未冲板
+# 时14:55才平仓、15:00才确认，而D的下单通道14:56关闭，那些D实盘拿不到。
+# 剔除后 A/C 修正版旧值（仍含不可执行的衔接日D）降级为历史对照：
+#   BASE 137 / 4252.40931647757        E2_ONLY 136 / 4760.864917583647
+#   OPTIMIZED 139 / 6907.34827166775   WITH_M  155 / 20606.559741847264
+EXPECTED_BASE_TRADE_COUNT = 133
+EXPECTED_BASE_MULTIPLE = 5140.7613530121025
+EXPECTED_E2_ONLY_TRADE_COUNT = 132
+EXPECTED_E2_ONLY_MULTIPLE = 5755.436166596083
+EXPECTED_OPTIMIZED_TRADE_COUNT = 135
+EXPECTED_OPTIMIZED_MULTIPLE = 8350.331871673612
+# 2026-08-04 M兜底腿上线；2026-08-07 A/C候选+衔接日D两处修正后的当前发布标尺。
+EXPECTED_WITH_M_TRADE_COUNT = 151
+EXPECTED_WITH_M_MULTIPLE = 24911.38506562485
 
 
 @dataclass(frozen=True)
@@ -502,6 +510,33 @@ def daily_close(trade_date: str, ts_code: str) -> float:
     return close
 
 
+def hit_limit_up(trade_date: str, ts_code: str) -> bool:
+    """当日是否冲到涨停（判断09:20预挂止盈单能否盘中成交）。
+
+    实盘止盈单挂在"涨停价 - intraday_takeprofit_offset(0.01元)"，冲板即成交
+    （trading_daemon:5121/5501「冲板即成交锁定强势」）。日线口径下用最高价是否
+    触及该价位近似判定；取不到行情时保守返回 False（视为未提前释放资金）。
+    """
+
+    if not trade_date or not ts_code:
+        return False
+    path = DAILY_PRICE_DIR / f"{trade_date}.csv"
+    if not path.exists():
+        return False
+    daily = pd.read_csv(path, dtype={"ts_code": str}, low_memory=False)
+    rows = daily[daily["ts_code"].astype(str).str.upper().eq(ts_code.upper())]
+    if rows.empty:
+        return False
+    row = rows.iloc[-1]
+    pre_close = to_float(row.get("pre_close"))
+    high = to_float(row.get("high"))
+    if pre_close <= 0 or high <= 0:
+        return False
+    limit_pct = 0.20 if ts_code[:3] in {"300", "301", "688"} else 0.10
+    cap = round(pre_close * (1.0 + limit_pct), 2)
+    return high >= cap - TAKEPROFIT_OFFSET - 1e-9
+
+
 def d_t2_candidate(sources: Sources, signal_date: str) -> dict[str, Any]:
     """D无接力时按T+2收盘并保留80%成交压力折扣。"""
 
@@ -583,8 +618,28 @@ def replay(
     entry_gate_enabled: bool,
     l_chain_3_8_enabled: bool = False,
     m_enabled: bool = False,
+    block_d_on_handoff: bool = True,
 ) -> pd.DataFrame:
-    """严格按释放日串行重放481个信号日。"""
+    """严格按释放日串行重放481个信号日。
+
+    block_d_on_handoff：衔接日按旧仓能否提前释放资金决定D是否可开（2026-08-07）。
+
+    A/C/E2/L/M 是 T日收盘后出信号、T+1开盘买，旧仓 T日收盘已卖完，不冲突。
+    D 不同——它是 T日**盘中**买入（trading_daemon:9326/12498 写死 14:00起BUY、
+    14:56停止），旧仓何时释放资金决定它买不买得到：
+
+    - 旧仓 T日冲到涨停：09:20 预挂的"涨停-0.01"止盈单盘中成交，资金早上回来，
+      **D 可开**；
+    - 旧仓 T日未冲板：走 14:55 主平仓、15:00 之后才确认成交，而 D 的下单通道
+      14:56 已关闭，**D 不可开**。
+
+    旧口径在衔接日一律放行D，混入了未冲板那部分实盘拿不到的交易。
+    设 False 可复现旧口径做对照。
+
+    注：13:00 起的 POV 分流卖出是另一条提前释放路径，但只在仓位超过实时容量
+    门槛时启动（trading_daemon:18），当前资金量不触发，故不纳入；资金放大后
+    需要重新评估。
+    """
 
     equity = INITIAL_EQUITY
     peak_equity = INITIAL_EQUITY
@@ -617,6 +672,14 @@ def replay(
             )
             continue
 
+        # 衔接日 = 今天正好是上一笔的退出日。旧仓冲板则09:20止盈单盘中成交、
+        # 资金早上释放；未冲板则14:55才平仓，D的14:56下单通道等不到资金。
+        blocking_handoff = (
+            block_d_on_handoff
+            and bool(occupied_until)
+            and signal_date == occupied_until
+            and not hit_limit_up(signal_date, occupied_code)
+        )
         occupied_until = occupied_leg = occupied_code = ""
         mode1 = mode1_candidate(
             sources,
@@ -627,7 +690,7 @@ def replay(
 
         # D在信号日盘中发生，早于收盘后A/C/E2/L计划。只有A/C/E2可接力；
         # L不参与D接力，保持当前实盘行为。
-        if abs(to_float(row.get("d_return"))) > EPSILON:
+        if abs(to_float(row.get("d_return"))) > EPSILON and not blocking_handoff:
             if mode1 is not None:
                 selected = d_relay_candidate(sources, signal_date, mode1)
             else:
@@ -1090,7 +1153,8 @@ def main() -> None:
         raise RuntimeError("含M组合复利漂移，拒绝发布")
     if optimized_summary["equity_multiple"] <= e2_only_summary["equity_multiple"]:
         raise RuntimeError("L扩容没有提高完整组合复利，禁止上线")
-    if optimized_summary["max_drawdown"] < base_summary["max_drawdown"]:
+    # 浮点容差：两条曲线可能落在同一段回撤上，末位差 ~1e-16 不算恶化。
+    if optimized_summary["max_drawdown"] < base_summary["max_drawdown"] - EPSILON:
         raise RuntimeError("E2门禁恶化完整组合最大回撤，禁止上线")
 
     e2_validation = e2_entry_gate_validation(sources)

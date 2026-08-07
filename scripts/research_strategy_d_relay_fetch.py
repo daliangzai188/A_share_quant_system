@@ -50,7 +50,7 @@ OUTPUT_DIR = PROJECT_ROOT / "reports" / "strategy_d" / "relay_capacity"
 TARGETS_PATH = OUTPUT_DIR / "d_relay_targets.csv"
 REPORT_PATH = OUTPUT_DIR / "d_relay_fetch_report.csv"
 # 2026-08-07 A/C改用逐日独立候选后组合接力笔数变化（旧口径A/C被裁时为8）。
-EXPECTED_RELAY_COUNT = 9
+EXPECTED_RELAY_COUNT = 4
 MIN_ONE_MINUTE_BARS = 60
 RELAY_LEGS = {"D→A", "D→C", "D→E2"}
 ONE_MINUTE_FIELDS = ["open", "close", "high", "low", "volume", "amount"]
