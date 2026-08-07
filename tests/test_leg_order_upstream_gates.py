@@ -351,6 +351,11 @@ class BroadcastMatchesOrderingTests(unittest.TestCase):
             self.assertNotIn(stale, src, f"播报里仍有旧腿序文案: {stale}")
         self.assertIn("腿序 D > L > A > M > E2 > C", src)
         self.assertIn("③A主 → ④M补位 → ⑤E2 → ⑥C垫底", src)
+        # 开仓决策链的逐腿编号必须与腿序同一套，不能出现两套矛盾编号
+        for expect in ("① D盘中：", "② L/model3：", "③ A主策略：",
+                       "④ M补位：", "⑤ E2：", "⑥ C垫底："):
+            self.assertIn(expect, src, f"决策链编号未按腿序: {expect}")
+        self.assertNotIn("⑦ M兜底补位：", src)
 
     def test_最终计划按腿序A_M_E2_C取第一个(self) -> None:
         src = self._daemon_source()
@@ -365,3 +370,39 @@ class BroadcastMatchesOrderingTests(unittest.TestCase):
         self.assertIn("取不到账户净值", src)
         # 真回撤超阈值仍属正常策略行为
         self.assertIn('record_run(signal_date, "NO_SIGNAL_OCCUPIED", f"回撤保护：{dd_note}"', src)
+
+
+class MEquitySnapshotByDaemonTests(unittest.TestCase):
+    """M 的净值必须由 daemon 主进程落盘——子进程抢不到 QMT session。
+
+    2026-08-07 首次启动实测：QMT 连接正常、账户可用资金 26 万，M 却报
+    "净值数据缺失，按安全口径暂停"。根因是 M 作为收盘流水线子进程无法持有
+    QMT 连接，而它回落读的本地账本从来没人写过。
+    """
+
+    def test_收盘流水线在第9步之前落盘净值(self) -> None:
+        root = Path(__file__).absolute().parents[1]
+        src = (root / "scripts" / "trading_daemon.py").read_text(encoding="utf-8")
+        self.assertIn("def snapshot_equity_for_m(", src)
+        # 必须在 job_post_market 里、且排在 M 信号那一步之前
+        job_start = src.index("def job_post_market(")
+        call_pos = src.index("snapshot_equity_for_m(target_str)", job_start)
+        m_step_pos = src.index("run_strategy_m_signal.py", job_start)
+        self.assertLess(call_pos, m_step_pos, "净值快照必须排在 M 信号步骤之前")
+
+    def test_只在空仓时落盘(self) -> None:
+        """有持仓时 total_asset 含浮动盈亏，会污染峰值。"""
+
+        root = Path(__file__).absolute().parents[1]
+        src = (root / "scripts" / "trading_daemon.py").read_text(encoding="utf-8")
+        fn_start = src.index("def snapshot_equity_for_m(")
+        fn_end = src.index("def job_post_market(", fn_start)
+        body = src[fn_start:fn_end]
+        self.assertIn('if str(p.get("status", "")).lower() in {"open", "sell_pending"}', body)
+        self.assertIn("if open_positions:", body)
+        self.assertIn("return", body)
+
+    def test_峰值取历史最大不被当日净值抹低(self) -> None:
+        root = Path(__file__).absolute().parents[1]
+        src = (root / "scripts" / "trading_daemon.py").read_text(encoding="utf-8")
+        self.assertIn('state["peak_equity"] = max(prev_peak, equity)', src)

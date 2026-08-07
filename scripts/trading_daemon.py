@@ -10503,10 +10503,82 @@ def _log_post_market_step_brief(script: str, signal_date: str) -> None:
         _log_l_model3_signal_status(signal_date)
 
 
+def snapshot_equity_for_m(signal_date: str) -> None:
+    """把账户"已实现净值"落盘给 M 的回撤闸用。必须在收盘流水线第⑨步之前跑。
+
+    **架构约束**（与 SharedQMTBrokerProxy 同一条）：一个进程生命周期内只有主守护
+    进程能持有 QMT 连接。M 信号脚本是收盘流水线的**子进程**，自己调
+    QmtBrokerAdapter.query_account() 抢不到 session，只能回落到本地账本
+    reports/strategy_m/m_equity_peak.json —— 而这个文件正是由本函数写的。
+
+    不落这一笔的后果：M 的回撤闸永远取不到净值，`drawdown_guard_passed` 按安全
+    口径判暂停，贡献组合约四分之三复利的腿**静默关闭**。2026-08-07 首次启动时
+    就是这样：QMT 连接正常、账户可用资金 26 万，M 却报"净值数据缺失"。
+
+    只在**空仓**时落：M 的净值口径是"已实现净值"，有持仓时 total_asset 含浮动
+    盈亏会污染峰值；而 M 本来也只在空仓日决策，两者天然吻合。
+    """
+    try:
+        open_positions = [
+            p for p in load_positions()
+            if str(p.get("status", "")).lower() in {"open", "sell_pending"}
+        ]
+        if open_positions:
+            logger().info(
+                "M净值快照：账户有 %d 个未平仓头寸，跳过（有持仓时总资产含浮动盈亏，"
+                "不符合M的已实现净值口径；M本来也不会在持仓日触发）。", len(open_positions)
+            )
+            return
+
+        cfg = load_json_config(PROJECT_ROOT / "config" / "config.json")
+        if not (cfg.get("broker_adapter_enabled") and cfg.get("qmt_enabled")):
+            logger().info("M净值快照：券商适配未启用，跳过。")
+            return
+
+        with _qmt_lock:
+            adapter = _qmt_get(cfg.get("broker", {}))
+            account = adapter.query_account()
+        equity = float(getattr(account, "total_asset", 0.0) or 0.0)
+        if equity <= 0:
+            logger().warning("M净值快照：查到的总资产为 %s，不落盘（M将按安全口径暂停并告警）。", equity)
+            return
+
+        path = PROJECT_ROOT / "reports" / "strategy_m" / "m_equity_peak.json"
+        state: dict[str, Any] = {}
+        if path.exists():
+            try:
+                state = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                state = {}
+        prev_peak = float(state.get("peak_equity", 0.0) or 0.0)
+        state["last_equity"] = equity
+        state["peak_equity"] = max(prev_peak, equity)
+        state["updated_signal_date"] = signal_date
+        state["updated_by"] = "trading_daemon.snapshot_equity_for_m"
+        mkdir_p(path.parent)
+        path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        drawdown = equity / state["peak_equity"] - 1.0 if state["peak_equity"] > 0 else 0.0
+        logger().info(
+            "M净值快照：已实现净值 %.2f 元，历史峰值 %.2f 元，当前回撤 %.2f%%（阈值10%%）→ 已落盘。",
+            equity, state["peak_equity"], drawdown * 100,
+        )
+        if prev_peak <= 0:
+            logger().warning(
+                "M净值快照：这是首次落盘，峰值以本次净值为起点。若账户当前正处于回撤中，"
+                "M 会误判为无回撤而放行——请核对 %s 的 peak_equity 是否为真实历史最高净值。",
+                path,
+            )
+    except Exception as exc:
+        logger().warning("M净值快照失败：%s（M将按安全口径暂停并记ERROR告警）", exc)
+
+
 def job_post_market(end_date: str | None = None) -> None:
     target_str = end_date or today_beijing().strftime("%Y%m%d")
     target_date = datetime.datetime.strptime(target_str, "%Y%m%d").date()
     logger().info("===== 收盘流水线（目标日期 %s）=====", target_str)
+
+    # M 的回撤闸靠这一笔快照拿净值（子进程抢不到 QMT session），必须在第⑨步之前。
+    snapshot_equity_for_m(target_str)
 
     cfg = load_json_config(PROJECT_ROOT / "config" / "config.json")
     live_window_days = max(1, int(cfg.get("cleaning", {}).get("live_signal_window_trade_days", 3)))
@@ -11922,13 +11994,16 @@ def _log_decision_chain_summary(signal_date: str) -> None:
             f"{P}━━━━━━━━━━━━━━ 开仓决策链 ━━━━━━━━━━━━━━",
             date_banner,
             f"{P} 策略顺序：① D盘中 > ② L > ③ A > ④ M > ⑤ E2 > ⑥ C（2026-08-07定稿；当前mode={mode}，B已删除）",
-            f"{P} ① A主策略：{a_line}",
-            f"{P} ② B策略：{b_line}",
-            f"{P} ③ C补位策略：{c_line}",
-            f"{P} ④ E2兜底：{e2_line}",
-            f"{P} ⑤ D盘中：{d_line}",
-            f"{P} ⑥ L/model3：{l_line}",
-            f"{P} ⑦ M兜底补位：{m_line}",
+            # 编号 = 腿序 D>L>A>M>E2>C，与上方两张图和"策略顺序"行保持同一套。
+            # 2026-08-07 之前这里是 A/B/C/E2/D/L/M 的旧展示顺序，同一个框里出现
+            # 两套互相矛盾的编号。
+            f"{P} ① D盘中：{d_line}",
+            f"{P} ② L/model3：{l_line}",
+            f"{P} ③ A主策略：{a_line}",
+            f"{P} ④ M补位：{m_line}",
+            f"{P} ⑤ E2：{e2_line}",
+            f"{P} ⑥ C垫底：{c_line}",
+            f"{P} ―― B策略：{b_line}",
             bottom,
             P,
             # 框2：最终开仓计划（开仓计划/无计划 + 持仓状态）

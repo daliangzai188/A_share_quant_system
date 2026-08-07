@@ -141,8 +141,17 @@ def current_equity_and_peak(config: dict[str, Any]) -> tuple[float, float, str]:
     净值口径与回测一致：只用"已实现"净值，即当前没有持仓时的账户总资产。
     M 只在空仓日决策，因此这个口径天然可得，也不受浮动盈亏干扰。
 
-    实盘取值优先级：QMT 实时总资产 → 本地账本记录。取不到时返回 (0,0)，
-    由调用方按安全口径暂停 M。
+    **取值优先级：QMT 实时总资产 → 本地账本 m_equity_peak.json 的 last_equity。**
+
+    ⚠️ 生产环境下**第一路必然失败，正常走第二路**：架构约束是"一个进程生命周期内
+    只有主守护进程能持有 QMT 连接"（见 trading_daemon.SharedQMTBrokerProxy），
+    而本脚本是收盘流水线的子进程，抢不到 session。第二路的文件由
+    trading_daemon.snapshot_equity_for_m() 在流水线第①步之前写入——它用主进程的
+    持久连接取账户总资产，且只在空仓时写，与本函数的已实现净值口径一致。
+    所以日志里出现一次"读取QMT账户失败"属预期，不是故障；真正的故障是
+    m_equity_peak.json 也没有值（那时返回 (0,0)，调用方记 ERROR 告警）。
+
+    手动单独跑本脚本（daemon 未运行）时第一路可能成功，这是保留它的原因。
     """
 
     state = load_equity_peak()
