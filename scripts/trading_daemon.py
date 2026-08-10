@@ -53,6 +53,7 @@ from src.utils.time_utils import BEIJING_TZ, now_beijing, today_beijing
 from src.execution_completion_tracker import ExecutionCompletionTracker
 from src.strategy_equity_ledger import (
     equity_ledger_requires_bootstrap,
+    load_equity_ledger,
     update_strategy_equity_ledger,
 )
 from src.strategy_model3_policy import (
@@ -10578,6 +10579,84 @@ def snapshot_equity_for_m(signal_date: str) -> None:
         logger().warning("M策略净值账本更新失败：%s（M将按安全口径暂停并记ERROR告警）", exc)
 
 
+def _m_run_has_equity_failure(run: dict[str, Any] | None) -> bool:
+    if not run:
+        return False
+    text = f"{run.get('note', '')} {run.get('equity_source', '')}"
+    return any(
+        marker in text
+        for marker in (
+            "净值数据缺失",
+            "取不到策略已实现净值",
+            "账本未初始化",
+            "账本有待补全",
+        )
+    )
+
+
+def refresh_m_signal_after_startup_if_needed(signal_date: str) -> None:
+    """账本恢复后，仅在买入窗口仍可执行时重算因净值缺失失败的M信号。
+
+    首次启用schema=2账本前，最近一次收盘流水线可能已把M记为净值缺失。启动时
+    即使随后成功建账，若不重算，09:00组合计划仍会沿用失败记录。已过09:25则
+    绝不补生成当日信号，避免把过期买单送入盘中链路。
+    """
+
+    try:
+        cfg = load_json_config(PROJECT_ROOT / "config" / "config.json")
+        if not bool(cfg.get("strategy_m", {}).get("enabled", False)):
+            return
+
+        signal_day = datetime.datetime.strptime(signal_date, "%Y%m%d").date()
+        if not _has_signal_for_date(signal_day) or not _processed_data_ready_for_date(signal_day):
+            logger().info(
+                "M启动恢复：%s数据缓存尚未齐全，不抢跑重算；收盘补齐流水线会按正常顺序"
+                "先更新账本、再生成M信号。",
+                signal_date,
+            )
+            return
+
+        ledger_path = PROJECT_ROOT / "reports" / "strategy_m" / "m_equity_peak.json"
+        ledger = load_equity_ledger(ledger_path)
+        if int(ledger.get("schema_version", 0) or 0) != 2 or ledger.get("ledger_ready") is not True:
+            return
+
+        run = _load_m_signal_run(signal_date)
+        if not run:
+            return
+        if not _m_run_has_equity_failure(run):
+            return
+
+        action_day = next_n_trade_days(signal_day, 1)
+        now = now_beijing()
+        action_expired = action_day < now.date() or (
+            action_day == now.date() and now.time() >= datetime.time(9, 25)
+        )
+        if action_expired:
+            logger().info(
+                "M启动恢复：净值账本现已可用，但%s信号对应买入日%s的09:25窗口已过，"
+                "不补生成过期买单；后续收盘信号将正常判断。",
+                signal_date,
+                action_day.strftime("%Y%m%d"),
+            )
+            return
+
+        logger().warning(
+            "M启动恢复：%s曾因净值账本不可用而失败，当前账本已就绪且买入窗口未过，"
+            "立即重算M信号。",
+            signal_date,
+        )
+        if not run_script(
+            "run_strategy_m_signal.py",
+            "--signal-date",
+            signal_date,
+            timeout=TIMEOUT_SIGNAL_STEP,
+        ):
+            logger().error("M启动恢复：%s信号重算失败，继续按fail-closed禁止M买入。", signal_date)
+    except Exception as exc:
+        logger().warning("M启动恢复检查失败：%s（不生成M买单，继续按安全口径运行）", exc)
+
+
 def job_post_market(end_date: str | None = None) -> None:
     target_str = end_date or today_beijing().strftime("%Y%m%d")
     target_date = datetime.datetime.strptime(target_str, "%Y%m%d").date()
@@ -11881,13 +11960,37 @@ def _log_decision_chain_summary(signal_date: str) -> None:
                 m_line = (f"成立｜L/A均无票，M按腿序在E2/C之前选中 {m_buy['ts_code']} "
                           f"{m_buy['name']}（流通市值"
                           f"{float(m_sig_for_plan.get('circ_mv',0) or 0)/10000:.1f}亿）")
+            elif m_run and _m_run_has_equity_failure(m_run):
+                ledger = load_equity_ledger(
+                    PROJECT_ROOT / "reports" / "strategy_m" / "m_equity_peak.json"
+                )
+                ledger_ready = (
+                    int(ledger.get("schema_version", 0) or 0) == 2
+                    and ledger.get("ledger_ready") is True
+                )
+                now = now_beijing()
+                action_expired = action_date < now.strftime("%Y%m%d") or (
+                    action_date == now.strftime("%Y%m%d")
+                    and now.time() >= datetime.time(9, 25)
+                )
+                if ledger_ready and action_expired:
+                    m_line = (
+                        "历史状态｜该信号生成时净值账本尚未就绪；当前账本已恢复，"
+                        "但买入窗口已过，不补过期M买单，后续收盘信号正常判断"
+                    )
+                elif ledger_ready:
+                    m_line = (
+                        "⚠️ 恢复异常｜当前净值账本已就绪，但可执行窗口内M信号仍保留旧的"
+                        "净值失败状态；继续fail-closed并检查启动重算日志"
+                    )
+                else:
+                    m_line = f"⚠️ 故障｜{m_run.get('note','') or 'M净值账本不可用'}"
             elif m_run and str(m_run.get("status", "")).upper() == "ERROR":
                 # 取不到净值属故障，不是"今天正常不触发"，必须显眼
                 m_line = f"⚠️ 故障｜{m_run.get('note','') or 'M运行异常'}"
             elif m_run:
                 m_line = f"不触发｜{m_run.get('note','') or m_run.get('status','')}"
             else:
-                m_line = "无记录｜收盘流水线第⑨步未产出M运行状态，请检查"
                 m_line = "无记录｜收盘流水线第⑨步未产出M运行状态，请检查"
 
         # 无论有无开仓候选都要让读者知道"目前谁在持仓、明日开不开仓"。
@@ -11993,7 +12096,7 @@ def _log_decision_chain_summary(signal_date: str) -> None:
             f"{P} 【注】① D 不走这条链：信号日盘中14:00后自己扫描买入，成交即占用资金，",
             f"{P}      次日落到【0】把其余腿全挡住。D接力全关，一律T+2收盘平仓。",
             f"{P} 【注】④ M 的两道自有闸：深市主板情绪weak（481天中仅12%）+ 账户回撤≤10%；",
-            f"{P}      取不到净值时按安全口径暂停并记 ERROR 告警（M 关着不该是静默的）。",
+            f"{P}      取不到净值时按安全口径暂停并记 ERROR 告警（M已开启，故障必须告警）。",
             bottom,
             P,
             # 框1：开仓决策链（策略顺序 + 各策略成立/不成立及原因）
@@ -13766,13 +13869,6 @@ def main() -> None:
         name="close-watchdog",
     ).start()
 
-    # 开仓决策链周期播报（每30分钟，纯展示）：已有决策结果且执行日未过期时重播。
-    threading.Thread(
-        target=_decision_chain_broadcast_loop,
-        daemon=True,
-        name="decision-chain-broadcast",
-    ).start()
-
     # 盘中涨停止盈监控（当日到期持仓涨幅≥7%挂涨停-0.01卖单，14:55未成交撤单）
     threading.Thread(
         target=_intraday_takeprofit_monitor,
@@ -13864,6 +13960,18 @@ def main() -> None:
         log.error("启动数据检查异常：%s", e)
         expected = today_beijing()
         expected_str = expected.strftime("%Y%m%d")
+
+    # 账本初始化后、任何候选播报或09:00计划生成前，修复最近一次因净值缺失失败的M信号。
+    # 只允许在对应买入日09:25之前重算；窗口已过时只记录说明，绝不补造过期买单。
+    refresh_m_signal_after_startup_if_needed(expected_str)
+
+    # 决策播报必须在M账本初始化/必要信号恢复之后启动。否则首次启动会先播出
+    # “净值缺失暂停”的旧状态，再宣布账本已就绪，造成运维误判。
+    threading.Thread(
+        target=_decision_chain_broadcast_loop,
+        daemon=True,
+        name="decision-chain-broadcast",
+    ).start()
 
     # 候选播报放后台线程：纯展示，不影响开仓关键路径。
     # 重量信号审计只在盘前关键窗口自动跑；盘中/夜间启动只播报候选和L/model3状态。

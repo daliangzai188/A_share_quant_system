@@ -401,6 +401,34 @@ class MEquitySnapshotByDaemonTests(unittest.TestCase):
         self.assertIn("snapshot_equity_for_m(", tail,
                       "启动检查阶段必须做一次M净值快照，否则要等到收盘才知道M能否开仓")
 
+    def test_启动先初始化并恢复m再开启决策播报(self) -> None:
+        """首次建账不能让播报线程抢跑；可执行窗口内还要重算净值缺失的M信号。"""
+
+        root = Path(__file__).absolute().parents[1]
+        src = (root / "scripts" / "trading_daemon.py").read_text(encoding="utf-8")
+        main_start = src.index("def main() -> None:")
+        main_body = src[main_start:]
+        snapshot_pos = main_body.index("snapshot_equity_for_m(today_beijing()")
+        refresh_pos = main_body.index("refresh_m_signal_after_startup_if_needed(expected_str)")
+        broadcast_pos = main_body.index('name="decision-chain-broadcast"')
+        self.assertLess(snapshot_pos, refresh_pos)
+        self.assertLess(refresh_pos, broadcast_pos)
+
+        helper_start = src.index("def refresh_m_signal_after_startup_if_needed(")
+        helper_end = src.index("def job_post_market(", helper_start)
+        helper = src[helper_start:helper_end]
+        self.assertIn("now.time() >= datetime.time(9, 25)", helper)
+        self.assertIn('"run_strategy_m_signal.py"', helper)
+        self.assertIn("不补生成过期买单", helper)
+        self.assertIn("历史状态｜该信号生成时净值账本尚未就绪", src)
+        self.assertIn("恢复异常｜当前净值账本已就绪", src)
+
+    def test_m开启后的播报文案不再声称m关闭(self) -> None:
+        root = Path(__file__).absolute().parents[1]
+        src = (root / "scripts" / "trading_daemon.py").read_text(encoding="utf-8")
+        self.assertNotIn("M 关着不该是静默的", src)
+        self.assertIn("M已开启，故障必须告警", src)
+
     def test_只在空仓时落盘(self) -> None:
         """有持仓时 total_asset 含浮动盈亏，会污染峰值。"""
 

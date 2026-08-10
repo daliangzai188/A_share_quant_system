@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import datetime as dt
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import pandas as pd
 
@@ -122,6 +124,66 @@ class StrategyEquityLedgerTests(unittest.TestCase):
             self.assertEqual(result.pending_incomplete_trade_count, 1)
             payload = json.loads(state.read_text(encoding="utf-8"))
             self.assertFalse(payload["ledger_ready"])
+
+
+class StrategyMStartupRecoveryTests(unittest.TestCase):
+    def _patch_common(self, daemon, now: dt.datetime):
+        return (
+            patch.object(daemon, "load_json_config", return_value={"strategy_m": {"enabled": True}}),
+            patch.object(daemon, "_has_signal_for_date", return_value=True),
+            patch.object(daemon, "_processed_data_ready_for_date", return_value=True),
+            patch.object(
+                daemon,
+                "load_equity_ledger",
+                return_value={"schema_version": 2, "ledger_ready": True},
+            ),
+            patch.object(
+                daemon,
+                "_load_m_signal_run",
+                return_value={"status": "ERROR", "note": "净值数据缺失"},
+            ),
+            patch.object(daemon, "next_n_trade_days", return_value=dt.date(2026, 8, 10)),
+            patch.object(daemon, "now_beijing", return_value=now),
+            patch.object(daemon, "run_script", return_value=True),
+        )
+
+    def test_0925前账本恢复会重算m信号(self) -> None:
+        from scripts import trading_daemon as daemon
+
+        patches = self._patch_common(
+            daemon,
+            dt.datetime(2026, 8, 10, 9, 0, tzinfo=daemon.BEIJING_TZ),
+        )
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7] as run:
+            daemon.refresh_m_signal_after_startup_if_needed("20260807")
+        run.assert_called_once_with(
+            "run_strategy_m_signal.py",
+            "--signal-date",
+            "20260807",
+            timeout=daemon.TIMEOUT_SIGNAL_STEP,
+        )
+
+    def test_0925后账本恢复不补生成过期m信号(self) -> None:
+        from scripts import trading_daemon as daemon
+
+        patches = self._patch_common(
+            daemon,
+            dt.datetime(2026, 8, 10, 9, 25, tzinfo=daemon.BEIJING_TZ),
+        )
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7] as run:
+            daemon.refresh_m_signal_after_startup_if_needed("20260807")
+        run.assert_not_called()
+
+    def test_数据未齐时不抢跑m信号(self) -> None:
+        from scripts import trading_daemon as daemon
+
+        with (
+            patch.object(daemon, "load_json_config", return_value={"strategy_m": {"enabled": True}}),
+            patch.object(daemon, "_has_signal_for_date", return_value=False),
+            patch.object(daemon, "run_script") as run,
+        ):
+            daemon.refresh_m_signal_after_startup_if_needed("20260807")
+        run.assert_not_called()
 
 
 if __name__ == "__main__":

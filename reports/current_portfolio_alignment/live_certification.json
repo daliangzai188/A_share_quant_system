@@ -3,7 +3,7 @@
   "status": "PASS_WITH_RISK_ACCEPTANCE",
   "current_executable": true,
   "scenario": "current_with_m_gap_leg",
-  "generated_at": "2026-08-10T04:51:49.403595+00:00",
+  "generated_at": "2026-08-10T05:22:10.438183+00:00",
   "input_start_date": "20240520",
   "input_end_date": "20260514",
   "executed_trade_count": 150,
@@ -31,7 +31,7 @@
     "src/strategy_m.py",
     "src/strategy_model3_policy.py"
   ],
-  "code_sha256": "dd3b872d87780d6f3ec3bf86d77bf05639cd4046460829121517fb0ca289a2fc",
+  "code_sha256": "0ccfd1bb2f91810c0ed850a5ef955d7b42e58d5cf22df2c8147a486000c65a3f",
   "input_files": [
     "reports/current_portfolio_alignment/input_manifest.json"
   ],
