@@ -47,6 +47,7 @@ def certification_config_sha256(config: Mapping[str, Any]) -> str:
         "strategy_m": config.get("strategy_m", {}),
         "strategy_model3": config.get("strategy_model3", {}),
         "strategy_d": config.get("strategy_d", {}),
+        "portfolio_certification": config.get("portfolio_certification", {}),
         "analysis": config.get("analysis", {}),
         "live_trade": selected_live_trade,
     }

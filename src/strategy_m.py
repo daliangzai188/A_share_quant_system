@@ -1,10 +1,11 @@
 """策略M（补位腿）共用规则。
 
-M 是唯一一条"兜底腿"：只有 A/C/D/E2/L 全部没有候选、且账户没有任何本系统
-持仓时才允许触发。它不与任何腿竞争优先级，也不会替换谁。
+M 是研究补位腿，当前腿序为 D>L>A>M>E2>C：只有账户空仓且D/L/A均未占用时
+才进入M判断；M会排在E2/C之前。由于分段回撤非劣门禁和前向样本不足，当前配置
+``live_order_enabled=false``，只生成研究/模拟信号，不得真实下单。
 
-历史回放显示 481 个信号日里有 291 天五腿全空（60.5%），M 只吃其中满足
-"深市主板情绪偏弱"的那一小部分（两年 25 天）。
+当前冻结回放为481个信号日、M实际入选26笔；M只吃满足“深市主板情绪偏弱”且
+没有被D/L/A占用的日期。
 
 本模块只做无副作用计算，不读账户、不连 QMT、不提交委托。实盘信号脚本与历史
 认证脚本必须共同调用这里，避免同一条规则在两处手写后漂移。
@@ -13,8 +14,8 @@ M 是唯一一条"兜底腿"：只有 A/C/D/E2/L 全部没有候选、且账户�
     M 的规则是从约 1053 个候选方案中按组合复利挑出的第一名。参数邻域检验显示
     "流通市值最小"这一排序显著优于其余 8 种（次优仅 1.13 倍），T+2 亦显著优于
     T+3——**单点最优、邻域塌陷是过拟合的典型指纹**。两个随机对照（各 500 次）
-    的 p 值均为 0.0000，说明规则本身携带信息，但 3.37 倍这个倍数不可当作实盘
-    预期。样本外仅 3 笔。上线后应按"期望为正、倍数远低于回测"来管理预期。
+    500次对照中虽然没有超过观测值，但经验p值不能写成0；按plus-one口径上界约
+    为1/501=0.001996，且仍未校正1053次方案搜索。样本外仅3笔，当前不得实盘。
 """
 from __future__ import annotations
 
@@ -29,21 +30,20 @@ M_VERSION = "M_gap_day_sz_main_weak_min_circ_mv_v1"
 # 任何改动后若这些数字变化，说明输入或规则漂移，必须先查清原因。
 M_RESEARCH_AUDIT = {
     "window": "20240520~20260514",
-    "gap_days_total": 291,
-    "m_trade_count": 25,
-    "m_avg_underlying_return": 0.0550,
-    "m_median_underlying_return": 0.0084,
-    "m_win_rate": 0.500,
-    "portfolio_without_m": 4712.4701,
-    "portfolio_with_m_no_guard": 14661.8,
-    "portfolio_with_m_dd_guard": 15891.1,
-    "portfolio_max_drawdown_without_m": -0.1884,
-    "portfolio_max_drawdown_with_m_dd_guard": -0.2468,
-    "downside_if_m_expectation_zero": 3979.7,
-    "random_stock_control_p": 0.0000,
-    "random_day_control_p": 0.0000,
+    "m_trade_count": 26,
+    "m_avg_account_return": 0.061991,
+    "m_median_account_return": 0.020878,
+    "m_win_rate": 0.538462,
+    "m_standalone_multiple": 4.163881,
+    "portfolio_without_m": 7677.946823,
+    "portfolio_with_m_dd_guard": 29388.980134,
+    "portfolio_max_drawdown_without_m": -0.235124,
+    "portfolio_max_drawdown_with_m_dd_guard": -0.235585,
+    "downside_if_m_expectation_zero": 7058.074525,
+    "random_stock_control_p_upper_bound": 0.001996,
+    "random_day_control_p_upper_bound": 0.001996,
     "out_of_sample_trades": 3,
-    "out_of_sample_multiple": 1.0695,
+    "live_order_enabled": False,
     "overfit_warning": (
         "规则来自1053个方案的样本内最优；排序与持有期均为单点最优、邻域塌陷。"
         "倍数不可作为实盘预期，只可作为方向性证据。"

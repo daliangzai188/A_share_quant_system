@@ -51,6 +51,10 @@ from src.utils.logger import get_logger, setup_logger
 from src.utils.config import load_json_config, mkdir_p
 from src.utils.time_utils import BEIJING_TZ, now_beijing, today_beijing
 from src.execution_completion_tracker import ExecutionCompletionTracker
+from src.strategy_equity_ledger import (
+    equity_ledger_requires_bootstrap,
+    update_strategy_equity_ledger,
+)
 from src.strategy_model3_policy import (
     model3_l_base_rule_pass,
     model3_l_replace_guard_pass,
@@ -10511,20 +10515,7 @@ def _log_post_market_step_brief(script: str, signal_date: str) -> None:
 
 
 def snapshot_equity_for_m(signal_date: str) -> None:
-    """把账户"已实现净值"落盘给 M 的回撤闸用。必须在收盘流水线第⑨步之前跑。
-
-    **架构约束**（与 SharedQMTBrokerProxy 同一条）：一个进程生命周期内只有主守护
-    进程能持有 QMT 连接。M 信号脚本是收盘流水线的**子进程**，自己调
-    QmtBrokerAdapter.query_account() 抢不到 session，只能回落到本地账本
-    reports/strategy_m/m_equity_peak.json —— 而这个文件正是由本函数写的。
-
-    不落这一笔的后果：M 的回撤闸永远取不到净值，`drawdown_guard_passed` 按安全
-    口径判暂停，贡献组合约四分之三复利的腿**静默关闭**。2026-08-07 首次启动时
-    就是这样：QMT 连接正常、账户可用资金 26 万，M 却报"净值数据缺失"。
-
-    只在**空仓**时落：M 的净值口径是"已实现净值"，有持仓时 total_asset 含浮动
-    盈亏会污染峰值；而 M 本来也只在空仓日决策，两者天然吻合。
-    """
+    """空仓时更新M的策略已实现净值；详细账务逻辑位于独立模块。"""
     try:
         open_positions = [
             p for p in load_positions()
@@ -10538,45 +10529,53 @@ def snapshot_equity_for_m(signal_date: str) -> None:
             return
 
         cfg = load_json_config(PROJECT_ROOT / "config" / "config.json")
-        if not (cfg.get("broker_adapter_enabled") and cfg.get("qmt_enabled")):
-            logger().info("M净值快照：券商适配未启用，跳过。")
-            return
-
-        with _qmt_lock:
-            adapter = _qmt_get(cfg.get("broker", {}))
-            account = adapter.query_account()
-        equity = float(getattr(account, "total_asset", 0.0) or 0.0)
-        if equity <= 0:
-            logger().warning("M净值快照：查到的总资产为 %s，不落盘（M将按安全口径暂停并告警）。", equity)
-            return
-
         path = PROJECT_ROOT / "reports" / "strategy_m" / "m_equity_peak.json"
-        state: dict[str, Any] = {}
-        if path.exists():
-            try:
-                state = json.loads(path.read_text(encoding="utf-8"))
-            except Exception:
-                state = {}
-        prev_peak = float(state.get("peak_equity", 0.0) or 0.0)
-        state["last_equity"] = equity
-        state["peak_equity"] = max(prev_peak, equity)
-        state["updated_signal_date"] = signal_date
-        state["updated_by"] = "trading_daemon.snapshot_equity_for_m"
-        mkdir_p(path.parent)
-        path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-        drawdown = equity / state["peak_equity"] - 1.0 if state["peak_equity"] > 0 else 0.0
-        logger().info(
-            "M净值快照：已实现净值 %.2f 元，历史峰值 %.2f 元，当前回撤 %.2f%%（阈值10%%）→ 已落盘。",
-            equity, state["peak_equity"], drawdown * 100,
+        bootstrap_equity: float | None = None
+        if equity_ledger_requires_bootstrap(path):
+            if not (cfg.get("broker_adapter_enabled") and cfg.get("qmt_enabled")):
+                logger().warning("M策略净值账本尚未初始化且券商适配未启用，M按安全口径暂停。")
+                return
+            with _qmt_lock:
+                adapter = _qmt_get(cfg.get("broker", {}))
+                account = adapter.query_account()
+            bootstrap_equity = float(getattr(account, "total_asset", 0.0) or 0.0)
+            if bootstrap_equity <= 0:
+                logger().warning("M策略净值账本初始化失败：券商总资产=%s。", bootstrap_equity)
+                return
+
+        snapshot = update_strategy_equity_ledger(
+            state_path=path,
+            completion_summary_path=(
+                PROJECT_ROOT / "reports" / "execution_tracking" / "trade_completion_summary.csv"
+            ),
+            signal_date=signal_date,
+            config=cfg,
+            bootstrap_equity=bootstrap_equity,
         )
-        if prev_peak <= 0:
+        drawdown = (
+            snapshot.equity / snapshot.peak_equity - 1.0
+            if snapshot.peak_equity > 0
+            else 0.0
+        )
+        logger().info(
+            "M策略净值账本：净值%.2f元，峰值%.2f元，已实现盈亏%.2f元，"
+            "新增完整交易%d笔，待补全%d笔，回撤%.2f%%。",
+            snapshot.equity,
+            snapshot.peak_equity,
+            snapshot.realized_pnl,
+            snapshot.new_trade_count,
+            snapshot.pending_incomplete_trade_count,
+            drawdown * 100,
+        )
+        if snapshot.initialized_now:
             logger().warning(
-                "M净值快照：这是首次落盘，峰值以本次净值为起点。若账户当前正处于回撤中，"
-                "M 会误判为无回撤而放行——请核对 %s 的 peak_equity 是否为真实历史最高净值。",
-                path,
+                "M策略净值账本已用一次券商总资产建立基线；后续只累计本系统完整平仓盈亏，"
+                "入金、出金和系统外持仓不再改变策略峰值。"
             )
+        if not snapshot.ledger_ready:
+            logger().warning("M策略净值账本有待补全成交，M将按fail-closed暂停。")
     except Exception as exc:
-        logger().warning("M净值快照失败：%s（M将按安全口径暂停并记ERROR告警）", exc)
+        logger().warning("M策略净值账本更新失败：%s（M将按安全口径暂停并记ERROR告警）", exc)
 
 
 def job_post_market(end_date: str | None = None) -> None:
@@ -12389,7 +12388,7 @@ def _log_l_model3_signal_status(signal_date: str, action_date: str | None = None
                 "旧「替换窄门=创业板+题材涨停≥2+非尾盘首板」已退役——2026-08-05 该窄门"
                 "误伤利通电子（沪主板+尾盘首板），当日 L 让位给 C 华之杰。481信号日重放："
                 "L 40笔→52笔、E2 30笔→19笔，组合 22902.02x→27870.31x、回撤-24.68%→-23.50%。"
-                "（当前发布标尺：150笔/29387.05x/回撤-23.56%/胜率69.33%，"
+                "（当前实盘标尺：135笔/7677.95x/回撤-23.51%/胜率70.37%；M真实下单关闭，"
                 "见 reports/current_portfolio_alignment；旧8302x/15326.89x 均为历史档案，勿再引用）"
             )
     except Exception as exc:

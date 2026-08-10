@@ -28,7 +28,7 @@ from pathlib import Path
 
 import pandas as pd
 
-ROOT = Path("/Users/user/Desktop/A_System")
+ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from src.paper_candidate_generator import PaperCandidateGenerator  # noqa: E402

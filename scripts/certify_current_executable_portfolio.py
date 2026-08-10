@@ -45,6 +45,7 @@ d_relay_candidate / no_b_candidate / infer_abc_release_date）已于 2026-08-07 
 from __future__ import annotations
 
 import copy
+import argparse
 from dataclasses import dataclass
 import datetime as dt
 import hashlib
@@ -104,9 +105,6 @@ NO_B_RESELECTION_PATH = (
 AC_DAILY_PATH = (
     PROJECT_ROOT / "reports" / "ac_daily_candidates" / "ac_daily_candidates.csv"
 )
-# A/C 重建候选相对认证口径的滑点差校准系数（重建用固定1.001/0.999，
-# 认证口径用动态滑点+手续费）。由66笔可比样本的比值中位数定出。
-AC_CALIB_K = 1.0016
 M_POOL_PATH = (
     PROJECT_ROOT / "reports" / "strategy_m" / "m_backtest_trades.csv"
 )
@@ -118,20 +116,38 @@ OUTPUT_DIR = PROJECT_ROOT / "reports" / "current_portfolio_alignment"
 RUNTIME_CONFIG_PATH = PROJECT_ROOT / "config" / "config.json"
 
 CODE_CERTIFICATION_FILES = [
+    "scripts/build_ac_daily_candidates.py",
     "scripts/certify_current_executable_portfolio.py",
+    "scripts/run_strategy_m_signal.py",
+    "scripts/trading_daemon.py",
     "src/combined_live_engine.py",
     "src/live_certification.py",
     "src/strategy_e2.py",
+    "src/strategy_equity_ledger.py",
     "src/strategy_m.py",
     "src/strategy_model3_policy.py",
 ]
 
-INITIAL_EQUITY = 500_000.0
+_RUNTIME_CONFIG = json.loads(RUNTIME_CONFIG_PATH.read_text(encoding="utf-8"))
+_CERTIFICATION_CONFIG = _RUNTIME_CONFIG.get("portfolio_certification", {})
+_ANALYSIS_CONFIG = _RUNTIME_CONFIG.get("analysis", {})
+
+INITIAL_EQUITY = float(_CERTIFICATION_CONFIG.get("initial_equity", 500_000.0))
 OLD_POSITION_PCT = 0.80
-POSITION_PCT = 0.825
+POSITION_PCT = float(_CERTIFICATION_CONFIG.get("position_pct", 0.825))
 D_FILL_STRESS = 0.80
 D_ROUND_TRIP_COST = 0.0015
-M_DRAWDOWN_GUARD = 0.10   # M兜底腿回撤保护阈值,与config.json/strategy_m一致
+M_DRAWDOWN_GUARD = float(
+    _RUNTIME_CONFIG.get("strategy_m", {}).get("drawdown_guard_pct", 0.10)
+)
+AC_BUY_FEE_RATE = float(_ANALYSIS_CONFIG.get("commission_rate", 0.0003)) + float(
+    _ANALYSIS_CONFIG.get("transfer_fee_rate", 0.00001)
+)
+AC_SELL_FEE_RATE = (
+    float(_ANALYSIS_CONFIG.get("commission_rate", 0.0003))
+    + float(_ANALYSIS_CONFIG.get("transfer_fee_rate", 0.00001))
+    + float(_ANALYSIS_CONFIG.get("stamp_tax_rate", 0.001))
+)
 # 09:20预挂止盈单的让价,与 config.json live_trade.intraday_takeprofit_offset 一致。
 # 衔接日判定旧仓能否盘中成交、提前释放资金时使用。
 TAKEPROFIT_OFFSET = 0.01
@@ -160,11 +176,11 @@ EPSILON = 1e-12
 #   BASE 133 / 4726.105464194573     E2_ONLY 132 / 5291.200358840857
 #   OPTIMIZED 135 / 7676.790727395173 WITH_M 151 / 22902.02267613949
 EXPECTED_BASE_TRADE_COUNT = 133
-EXPECTED_BASE_MULTIPLE = 3920.935559196542
+EXPECTED_BASE_MULTIPLE = 3921.324477475229
 EXPECTED_E2_ONLY_TRADE_COUNT = 132
-EXPECTED_E2_ONLY_MULTIPLE = 5291.495551797165
+EXPECTED_E2_ONLY_MULTIPLE = 5292.0391712012115
 EXPECTED_OPTIMIZED_TRADE_COUNT = 135
-EXPECTED_OPTIMIZED_MULTIPLE = 7677.219011035194
+EXPECTED_OPTIMIZED_MULTIPLE = 7677.946823375038
 # 2026-08-04 M兜底腿上线；2026-08-07 A/C候选+衔接日D+接力全关+腿序重排后的
 # 当前发布标尺。腿序 D>L>A>M>E2>C，与实盘 combined_live_engine 同口径。
 #
@@ -175,7 +191,7 @@ EXPECTED_OPTIMIZED_MULTIPLE = 7677.219011035194
 # 纯因为剔掉的两笔恰好都是亏损。M池 61→59 天，组合 151→150 笔。
 # 旧值 151 / 27870.30777624288 已作废，仅作历史对照。
 EXPECTED_WITH_M_TRADE_COUNT = 150
-EXPECTED_WITH_M_MULTIPLE = 29387.054988510412
+EXPECTED_WITH_M_MULTIPLE = 29388.980133715802
 
 
 @dataclass(frozen=True)
@@ -393,8 +409,10 @@ def load_ac_daily() -> dict[str, dict[str, Any]]:
             "name": str(row.get("name", "")),
             "buy_date": normalize_date(row.get("buy_date")),
             "exit_date": normalize_date(row.get("exit_date")),
-            "account_return": ((1.0 + stock_return) / AC_CALIB_K - 1.0) * POSITION_PCT,
-            "return_source": "A/C逐日独立候选(校准至认证口径)",
+            "account_return": (
+                stock_return - AC_BUY_FEE_RATE - (1.0 + stock_return) * AC_SELL_FEE_RATE
+            ) * POSITION_PCT,
+            "return_source": "A/C逐日独立候选(显式扣佣金/过户费/印花税)",
         }
     return result
 
@@ -1170,8 +1188,33 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def write_input_manifest() -> Path:
-    """记录冻结认证用到的数据文件版本，避免报告脱离输入后无法复核。"""
+def lock_or_verify_input_manifest(
+    path: Path,
+    manifest: dict[str, Any],
+    *,
+    refresh: bool,
+) -> None:
+    """验证锁定清单；只有显式refresh才原子更新。"""
+
+    if path.exists() and not refresh:
+        locked = json.loads(path.read_text(encoding="utf-8"))
+        if locked != manifest:
+            raise RuntimeError(
+                "认证输入与锁定清单不一致；先查明数据变化，确认后使用"
+                " --refresh-input-manifest 显式更新并单独审查差异。"
+            )
+        return
+    if not path.exists() and not refresh:
+        raise FileNotFoundError(
+            "缺少认证输入锁定清单；首次建立必须使用 --refresh-input-manifest"
+        )
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary.replace(path)
+
+
+def write_input_manifest(*, refresh: bool = False) -> Path:
+    """默认核对锁定清单；只有显式refresh才允许接受新的输入版本。"""
 
     direct = [
         BASELINE_PATH,
@@ -1210,13 +1253,11 @@ def write_input_manifest() -> Path:
         "files": rows,
     }
     path = OUTPUT_DIR / "input_manifest.json"
-    temporary = path.with_suffix(".json.tmp")
-    temporary.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-    temporary.replace(path)
+    lock_or_verify_input_manifest(path, manifest, refresh=refresh)
     return path
 
 
-def main() -> None:
+def main(*, refresh_input_manifest: bool = False) -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     write_certification(
         {
@@ -1359,7 +1400,7 @@ def main() -> None:
         current_scenario=current_scenario,
         m_live_enabled=m_live_enabled,
     )
-    manifest_path = write_input_manifest()
+    manifest_path = write_input_manifest(refresh=refresh_input_manifest)
     input_files = [str(manifest_path.relative_to(PROJECT_ROOT))]
     current_summary = summary[summary["scenario"].eq(current_scenario)].iloc[0]
     certification = {
@@ -1402,4 +1443,11 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="认证当前可执行组合")
+    parser.add_argument(
+        "--refresh-input-manifest",
+        action="store_true",
+        help="确认输入数据版本变化后，显式刷新锁定清单",
+    )
+    arguments = parser.parse_args()
+    main(refresh_input_manifest=arguments.refresh_input_manifest)

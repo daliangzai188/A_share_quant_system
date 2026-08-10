@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 import unittest
@@ -124,49 +125,55 @@ class MUpstreamGateTests(unittest.TestCase):
 
 
 class MEquityPeakTests(unittest.TestCase):
-    """净值峰值必须在每个空仓日都记录，否则回撤闸的输入是滞后的。"""
+    """M信号子进程只读schema=2策略净值账本，所有写入归主守护进程。"""
 
-    def test_腿序门拦下时仍然记录峰值(self) -> None:
-        """被 L/A 挡住的空仓日，净值同样是"已实现"的，必须计入峰值。
-
-        2026-08-07 之前 update_equity_peak 排在腿序门和回撤闸之后，这些日子
-        一律不记峰值 → 峰值滞后 → 回撤被低估 → M 在真实回撤中仍可能被放行。
-        """
-
+    def test_腿序门判断前仍读取最新账本(self) -> None:
+        calls: list[bool] = []
         with tempfile.TemporaryDirectory() as tmp:
-            peak_path = Path(tmp) / "m_equity_peak.json"
-            calls: list[tuple[float, float, str]] = []
-
-            with patch.object(m_signal, "EQUITY_PEAK_PATH", peak_path), \
-                 patch.object(m_signal, "OUTPUT_DIR", Path(tmp)), \
+            with patch.object(m_signal, "OUTPUT_DIR", Path(tmp)), \
                  patch.object(m_signal, "load_config", return_value={}), \
                  patch.object(m_signal, "load_m_spec", return_value={"enabled": True}), \
                  patch.object(m_signal, "resolve_signal_date", return_value="20260803"), \
                  patch.object(m_signal, "load_open_positions", return_value=[]), \
                  patch.object(m_signal, "has_existing_open_position", return_value=False), \
-                 patch.object(m_signal, "current_equity_and_peak",
-                              return_value=(1_000_000.0, 1_200_000.0, "测试")), \
-                 patch.object(m_signal, "update_equity_peak",
-                              side_effect=lambda e, p, d, dry_run=False: calls.append((e, p, d))), \
-                 patch.object(m_signal, "higher_priority_leg_has_signal",
-                              return_value=(True, "L当日已有信号")), \
+                 patch.object(
+                     m_signal,
+                     "current_equity_and_peak",
+                     side_effect=lambda _cfg: (calls.append(True) or (1_000_000.0, 1_200_000.0, "测试")),
+                 ), \
+                 patch.object(m_signal, "higher_priority_leg_has_signal", return_value=(True, "L当日已有信号")), \
                  patch.object(m_signal, "record_run"), \
                  patch.object(sys, "argv", ["run_strategy_m_signal.py", "--signal-date", "20260803"]):
                 m_signal.main()
+        self.assertEqual(len(calls), 1)
 
-        self.assertEqual(len(calls), 1, "被腿序门拦下的空仓日也必须记录一次峰值")
-        self.assertEqual(calls[0][0], 1_000_000.0)
-        self.assertEqual(calls[0][1], 1_200_000.0)
-
-    def test_dry_run_不写盘(self) -> None:
+    def test_只接受完整且ready的schema2账本(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             peak_path = Path(tmp) / "m_equity_peak.json"
-            with patch.object(m_signal, "EQUITY_PEAK_PATH", peak_path), \
-                 patch.object(m_signal, "OUTPUT_DIR", Path(tmp)):
-                m_signal.update_equity_peak(1_000_000.0, 1_200_000.0, "20260803", dry_run=True)
-                self.assertFalse(peak_path.exists(), "--dry-run 不得污染回撤闸的输入")
-                m_signal.update_equity_peak(1_000_000.0, 1_200_000.0, "20260803", dry_run=False)
-                self.assertTrue(peak_path.exists())
+            with patch.object(m_signal, "EQUITY_PEAK_PATH", peak_path):
+                peak_path.write_text(
+                    json.dumps(
+                        {
+                            "schema_version": 2,
+                            "ledger_ready": True,
+                            "last_equity": 900_000,
+                            "peak_equity": 1_000_000,
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                self.assertEqual(
+                    m_signal.current_equity_and_peak({}),
+                    (900_000.0, 1_000_000.0, "策略已实现盈亏账本"),
+                )
+                before = peak_path.read_text(encoding="utf-8")
+                self.assertEqual(before, peak_path.read_text(encoding="utf-8"), "读取不得改写账本")
+
+                peak_path.write_text(
+                    json.dumps({"schema_version": 2, "ledger_ready": False}),
+                    encoding="utf-8",
+                )
+                self.assertEqual(m_signal.current_equity_and_peak({})[:2], (0.0, 0.0))
 
 
 class LiveMatchesCertifyProofTests(unittest.TestCase):
@@ -366,18 +373,13 @@ class BroadcastMatchesOrderingTests(unittest.TestCase):
         root = Path(__file__).absolute().parents[1]
         src = (root / "scripts" / "run_strategy_m_signal.py").read_text(encoding="utf-8")
         self.assertIn('record_run(signal_date, "ERROR", note, args.dry_run,', src)
-        self.assertIn("取不到账户净值", src)
+        self.assertIn("取不到策略已实现净值", src)
         # 真回撤超阈值仍属正常策略行为
         self.assertIn('record_run(signal_date, "NO_SIGNAL_OCCUPIED", f"回撤保护：{dd_note}"', src)
 
 
 class MEquitySnapshotByDaemonTests(unittest.TestCase):
-    """M 的净值必须由 daemon 主进程落盘——子进程抢不到 QMT session。
-
-    2026-08-07 首次启动实测：QMT 连接正常、账户可用资金 26 万，M 却报
-    "净值数据缺失，按安全口径暂停"。根因是 M 作为收盘流水线子进程无法持有
-    QMT 连接，而它回落读的本地账本从来没人写过。
-    """
+    """daemon只负责调度，策略净值计算和原子落盘由独立账本模块完成。"""
 
     def test_收盘流水线在第9步之前落盘净值(self) -> None:
         root = Path(__file__).absolute().parents[1]
@@ -411,7 +413,10 @@ class MEquitySnapshotByDaemonTests(unittest.TestCase):
         self.assertIn("if open_positions:", body)
         self.assertIn("return", body)
 
-    def test_峰值取历史最大不被当日净值抹低(self) -> None:
+    def test_净值计算已经抽离守护进程(self) -> None:
         root = Path(__file__).absolute().parents[1]
         src = (root / "scripts" / "trading_daemon.py").read_text(encoding="utf-8")
-        self.assertIn('state["peak_equity"] = max(prev_peak, equity)', src)
+        self.assertIn("update_strategy_equity_ledger(", src)
+        module = (root / "src" / "strategy_equity_ledger.py").read_text(encoding="utf-8")
+        self.assertIn("peak = max(", module)
+        self.assertIn("temporary.replace(path)", module)

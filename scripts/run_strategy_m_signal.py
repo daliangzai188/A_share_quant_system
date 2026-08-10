@@ -128,62 +128,20 @@ def load_equity_peak() -> dict[str, Any]:
         return {}
 
 
-def save_equity_peak(state: dict[str, Any]) -> None:
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    EQUITY_PEAK_PATH.write_text(
-        json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-
-
 def current_equity_and_peak(config: dict[str, Any]) -> tuple[float, float, str]:
-    """读取账户当前净值与历史峰值。
+    """只读主守护进程维护的策略已实现净值账本，不在子进程连接QMT或写峰值。"""
 
-    净值口径与回测一致：只用"已实现"净值，即当前没有持仓时的账户总资产。
-    M 只在空仓日决策，因此这个口径天然可得，也不受浮动盈亏干扰。
-
-    **取值优先级：QMT 实时总资产 → 本地账本 m_equity_peak.json 的 last_equity。**
-
-    ⚠️ 生产环境下**第一路必然失败，正常走第二路**：架构约束是"一个进程生命周期内
-    只有主守护进程能持有 QMT 连接"（见 trading_daemon.SharedQMTBrokerProxy），
-    而本脚本是收盘流水线的子进程，抢不到 session。第二路的文件由
-    trading_daemon.snapshot_equity_for_m() 在流水线第①步之前写入——它用主进程的
-    持久连接取账户总资产，且只在空仓时写，与本函数的已实现净值口径一致。
-    所以日志里出现一次"读取QMT账户失败"属预期，不是故障；真正的故障是
-    m_equity_peak.json 也没有值（那时返回 (0,0)，调用方记 ERROR 告警）。
-
-    手动单独跑本脚本（daemon 未运行）时第一路可能成功，这是保留它的原因。
-    """
-
+    del config
     state = load_equity_peak()
-    equity = 0.0
-    source = "未取到"
-    if config.get("broker_adapter_enabled") and config.get("qmt_enabled"):
-        try:
-            from src.live_order_gateway import QmtBrokerAdapter  # noqa: WPS433
-
-            adapter = QmtBrokerAdapter(config.get("broker", {}))
-            account = adapter.query_account()
-            equity = float(getattr(account, "total_asset", 0.0) or 0.0)
-            source = "QMT实时总资产"
-        except Exception as exc:  # pragma: no cover - 实盘环境相关
-            print(f"[M信号] 读取QMT账户失败：{exc}")
-    if equity <= 0:
-        equity = float(state.get("last_equity", 0.0) or 0.0)
-        source = "本地账本last_equity" if equity > 0 else "未取到"
-    peak = max(float(state.get("peak_equity", 0.0) or 0.0), equity)
-    return equity, peak, source
-
-
-def update_equity_peak(equity: float, peak: float, signal_date: str, dry_run: bool = False) -> None:
-    """持久化净值与峰值。--dry-run 只打印不落盘，避免调试污染回撤闸的输入。"""
-
-    if equity <= 0 or dry_run:
-        return
-    state = load_equity_peak()
-    state["last_equity"] = equity
-    state["peak_equity"] = max(peak, equity)
-    state["updated_signal_date"] = signal_date
-    save_equity_peak(state)
+    if int(state.get("schema_version", 0) or 0) != 2:
+        return 0.0, 0.0, "策略净值账本未初始化"
+    if state.get("ledger_ready") is not True:
+        return 0.0, 0.0, "策略净值账本有待补全成交"
+    equity = float(state.get("last_equity", 0.0) or 0.0)
+    peak = float(state.get("peak_equity", 0.0) or 0.0)
+    if equity <= 0 or peak <= 0:
+        return 0.0, 0.0, "策略净值账本数值无效"
+    return equity, max(peak, equity), "策略已实现盈亏账本"
 
 
 def record_run(signal_date: str, status: str, note: str, dry_run: bool, **extra: Any) -> None:
@@ -241,18 +199,9 @@ def main() -> None:
         record_run(signal_date, "NO_SIGNAL_OCCUPIED", note, args.dry_run)
         return
 
-    # 净值峰值必须在**每一个空仓日**都记录，不能等腿序门和回撤闸都放行了才记。
-    # 口径依据：回测里 peak_equity 是逐日维护的组合净值峰值；实盘只能在空仓日
-    # 取到同口径的"已实现净值"（有持仓时 QMT 总资产含浮动盈亏，会污染峰值），
-    # 而空仓日恰好就是 M 可能决策的全部日子。
-    #
-    # 2026-08-07 之前 update_equity_peak 在回撤闸之后，于是"别的腿有信号"或
-    # "回撤闸拦下"的空仓日一律不记峰值 —— 峰值滞后、回撤被低估、M 在真实回撤
-    # 中仍可能被放行。提前到这里后覆盖全部空仓日。本次判断结果不变：
-    # current_equity_and_peak 已把 peak 取成 max(历史峰值, 当前净值)，
-    # update_equity_peak 只负责持久化。
+    # 主守护进程已在每个空仓日先更新策略净值账本；信号子进程只读，避免QMT连接
+    # 竞争、外部入出金污染峰值以及两个进程并发覆盖JSON。
     equity, peak, source = current_equity_and_peak(config)
-    update_equity_peak(equity, peak, signal_date, dry_run=args.dry_run)
 
     # ── 取不到净值是**故障**，不是策略行为，必须记 ERROR 触发告警 ──────────
     # 回撤闸对"净值缺失"和"真回撤超阈值"都返回 False，若都记成
@@ -262,11 +211,9 @@ def main() -> None:
     # 并按⚠️播报，与其余各腿共用同一条告警通道，不新造机制。
     if equity <= 0 or peak <= 0:
         note = (
-            f"取不到账户净值（来源={source}），M按安全口径暂停。"
-            f"取值链路：QMT实时总资产 → reports/strategy_m/m_equity_peak.json 的 last_equity。"
-            f"排查：①QMT是否已登录且 broker_adapter_enabled/qmt_enabled 为 true；"
-            f"②首次启用时该文件尚不存在属正常，取到一次净值后自动生成；"
-            f"③如需手工兜底，写入 peak_equity 为真实历史最高净值。"
+            f"取不到策略已实现净值（来源={source}），M按安全口径暂停。"
+            f"排查主守护进程是否已建立schema_version=2的m_equity_peak.json，"
+            f"以及trade_completion_summary.csv是否存在未补全退出成交。"
         )
         print(f"[M信号] ⚠️ {note}")
         record_run(signal_date, "ERROR", note, args.dry_run,
