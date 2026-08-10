@@ -34,6 +34,7 @@ if "dotenv" not in sys.modules:
 
 from scripts import run_strategy_e2_signal as e2_signal
 from scripts import run_strategy_m_signal as m_signal
+from scripts.trading_daemon import _build_candidate_choice_lines
 
 
 def write_ops(directory: Path, signal_date: str, leg: str, ts_code: str = "600000.SH") -> None:
@@ -366,6 +367,66 @@ class BroadcastMatchesOrderingTests(unittest.TestCase):
     def test_最终计划按腿序A_M_E2_C取第一个(self) -> None:
         src = self._daemon_source()
         self.assertIn("mode1_buy = a_buy or m_buy or e2_buy or c_buy", src)
+
+    def test_旧仓分支才是持仓日的今日路径(self) -> None:
+        src = self._daemon_source()
+        self.assertIn(
+            "结束{TAG if _blocked_by_holding else ''}",
+            src,
+        )
+        self.assertIn(
+            "TAG if (l_wins and not _blocked_by_holding) else ''",
+            src,
+        )
+        self.assertIn("账户空仓时无条件优先", src)
+
+    def test_持仓原因优先于L_A候选原因(self) -> None:
+        src = self._daemon_source()
+
+        decision_start = src.index("# ── M 补位腿播报")
+        decision_end = src.index("# 无论有无开仓候选", decision_start)
+        decision_body = src[decision_start:decision_end]
+        self.assertLess(
+            decision_body.index("if _blocked_by_holding:"),
+            decision_body.index('elif l_buy:'),
+        )
+
+        d_start = src.index("def _log_d_status_for_signal")
+        d_end = src.index("def _value_counts_text", d_start)
+        d_body = src[d_start:d_end]
+        self.assertLess(d_body.index("if open_positions:"), d_body.index("elif planned_count > 0:"))
+        self.assertIn("串行单仓规则优先于A/C候选判断", d_body)
+
+        l_start = src.index("def _log_l_model3_signal_status")
+        l_end = src.index("def _load_ab_checklist", l_start)
+        l_body = src[l_start:l_end]
+        self.assertIn("本次只保留L候选供审计，不生成开仓计划", l_body)
+        self.assertIn("L仅在账户空仓时无条件优先于A/M/E2/C", l_body)
+
+    def test_候选让路汇总在D持仓时明确全部不开仓(self) -> None:
+        lines = _build_candidate_choice_lines(
+            [
+                ("D", None, "当前已有D持仓，不再扫描新D"),
+                ("L", {"ts_code": "600664.SH", "name": "哈药股份"}, ""),
+                ("A", {"ts_code": "301051.SZ", "name": "信濠光电"}, ""),
+                ("M", None, "当前持仓已阻断M候选评估"),
+                ("E2", None, "无入围候选"),
+                ("C", None, "A已入围，C未继续评估"),
+            ],
+            ["L", "A", "M", "E2", "C"],
+            None,
+            ["D"],
+        )
+
+        text = "\n".join(lines)
+        self.assertIn("L策略候选：600664.SH 哈药股份", text)
+        self.assertIn("A策略候选：301051.SZ 信濠光电", text)
+        self.assertIn(
+            "账户空仓时让路排序：L策略 600664.SH 哈药股份 > A策略 301051.SZ 信濠光电",
+            text,
+        )
+        self.assertIn("按让路规则首选：L策略 600664.SH 哈药股份", text)
+        self.assertIn("由于当前D策略有持仓，以上候选均不会开仓", text)
 
     def test_m净值缺失记ERROR而非正常态(self) -> None:
         """M 取不到净值是故障，必须走 ERROR 告警通道，不能伪装成'今天不触发'。"""

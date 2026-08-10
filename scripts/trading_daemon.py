@@ -11746,6 +11746,61 @@ def _describe_holdings(positions: list[dict[str, Any]], *, with_quote: bool = Tr
     return desc
 
 
+def _format_candidate_stock(candidate: dict[str, Any]) -> str:
+    """把单腿第一名格式化为统一的“代码+名称”，只用于播报。"""
+
+    code = str(candidate.get("ts_code", "") or "").strip()
+    name = str(candidate.get("name", "") or "").strip()
+    return " ".join(part for part in (code, name) if part) or "候选信息缺失"
+
+
+def _format_strategy_candidate(strategy: str, candidate: dict[str, Any]) -> str:
+    """把单腿第一名格式化为统一的“策略+代码+名称”，只用于播报。"""
+
+    return f"{strategy}策略 {_format_candidate_stock(candidate)}"
+
+
+def _build_candidate_choice_lines(
+    candidate_rows: list[tuple[str, dict[str, Any] | None, str]],
+    ranking_legs: list[str],
+    final_buy: dict[str, Any] | None,
+    blocking_holding_legs: list[str],
+) -> list[str]:
+    """生成“各腿候选→让路排序→实际选择”的紧凑播报。
+
+    candidate_rows 每腿只放该策略按自身规则选出的第一名；没有第一名时必须同时
+    给出原因，避免把“未评估/被持仓阻断”误写成“策略没有候选”。ranking_legs
+    是当前模式真正参与资金竞争的腿序，不能让展示层自行重新解释优先级。
+    """
+
+    by_leg = {leg: candidate for leg, candidate, _reason in candidate_rows}
+    lines = ["各策略入围候选（每腿按自身规则取第一名）："]
+    for leg, candidate, reason in candidate_rows:
+        if candidate is not None:
+            lines.append(f"  {leg}策略候选：{_format_candidate_stock(candidate)}")
+        else:
+            lines.append(f"  {leg}策略候选：无（{reason}）")
+
+    ranked = [
+        _format_strategy_candidate(leg, by_leg[leg])
+        for leg in ranking_legs
+        if by_leg.get(leg) is not None
+    ]
+    lines.append(f"账户空仓时让路排序：{' > '.join(ranked) if ranked else '无入围候选'}")
+    lines.append(f"按让路规则首选：{ranked[0] if ranked else '无'}")
+
+    holding_legs = list(dict.fromkeys(str(leg).upper() for leg in blocking_holding_legs if str(leg)))
+    if holding_legs:
+        holding_text = "、".join(f"{leg}策略" for leg in holding_legs)
+        lines.append(f"实际选择：不开仓｜由于当前{holding_text}有持仓，以上候选均不会开仓")
+    elif final_buy is not None:
+        strategy = str(final_buy.get("strategy", "") or "?").upper()
+        lines.append(f"实际选择：{_format_strategy_candidate(strategy, final_buy)}")
+    else:
+        lines.append("实际选择：不开仓｜当前没有可执行候选")
+    return lines
+
+
 def _log_decision_chain_summary(signal_date: str) -> None:
     """收盘流水线完成后，用一段决策链日志讲清楚明日开仓逻辑。
 
@@ -11851,6 +11906,23 @@ def _log_decision_chain_summary(signal_date: str) -> None:
             e2_buy = {"strategy": "E2", "ts_code": str(e2_sig.get("ts_code", "")),
                       "name": str(e2_sig.get("name", "")),
                       "shares": _planned_shares_by_equity(e2_sig.get("position_pct", 0.825), price), "price": price}
+        # E2在已有持仓时不会生成正式信号，但会把只读第一名写入运行状态。候选汇总
+        # 应展示这只“若空仓本可参与”的影子候选，同时仍让 e2_buy 保持 None，绝不
+        # 把展示数据误接成可执行买单。
+        e2_candidate_for_display = e2_buy
+        if e2_candidate_for_display is None:
+            e2_run = signal_run_by_signal_date(
+                PROJECT_ROOT / "reports" / "strategy_e2" / "e2_signal_runs_recent.json",
+                signal_date,
+            )
+            if e2_run and int(e2_run.get("candidate_count", 0) or 0) > 0:
+                shadow_code = str(e2_run.get("candidate_ts_code", "") or "")
+                if shadow_code:
+                    e2_candidate_for_display = {
+                        "strategy": "E2",
+                        "ts_code": shadow_code,
+                        "name": str(e2_run.get("candidate_name", "") or ""),
+                    }
 
         # ── M（第④档，排在 E2 和 C 之前；上游门已保证只在 L/A 无信号时生成）──
         m_sig_for_plan = _load_m_signal_for_signal_date(signal_date)
@@ -11916,16 +11988,13 @@ def _log_decision_chain_summary(signal_date: str) -> None:
             l_line = f"补位｜mode1无买入，L补位 {l_sig.get('ts_code','')} {l_sig.get('name','')}（补位不限板块）"
 
         # ── 最终计划（与【最终结果】/组合状态机同口径） ──
-        # L 串行单仓守卫（2026-07-23）：播报必须和下单口径(build_model3_plan)一致——
-        # 有任何非L旧策略仓（含今日到期、逾期、sell_pending）时，串行单仓下不开新仓，
-        # L补位/替换和mode1全部挡住；必须等券商确认实际清仓后再重新生成计划。
+        # 串行单仓守卫（2026-07-23）：播报必须和下单口径(build_model3_plan)一致——
+        # 有任何旧策略仓（含L自身、今日到期、逾期、sell_pending）时都不开新仓；
+        # 必须等券商确认实际清仓后再重新生成计划。
         _open_now = [p for p in load_positions()
                      if str(p.get("status", "")).lower() in {"open", "sell_pending"}]
-        _holding_non_l = [
-            p for p in _open_now
-            if str(p.get("strategy_leg", "")).upper() != "L"
-        ]
-        _blocked_by_holding = bool(_holding_non_l)
+        _blocking_positions = list(_open_now)
+        _blocked_by_holding = bool(_blocking_positions)
         if _blocked_by_holding:
             l_line = "不参与｜旧策略仓尚未实际清空，取消衔接开仓（L补位/替换均阻断）"
             # 2026-08-07 D接力全关：D持仓期间一律阻断新开仓，等自己的T+2收盘平仓
@@ -11948,7 +12017,13 @@ def _log_decision_chain_summary(signal_date: str) -> None:
         # M 排腿序第④档（D>L>A>M>E2>C），只让位给 D持仓 / L / A；
         # E2 和 C 排在 M 之后，不得让 M 让位。
         m_cfg = _load_config_section("strategy_m")
-        if not bool(m_cfg.get("enabled", False)):
+        if _blocked_by_holding:
+            holding_legs = "/".join(sorted({
+                str(p.get("strategy_leg", "?") or "?").upper()
+                for p in _blocking_positions
+            }))
+            m_line = f"不参与｜当前{holding_legs}策略旧仓占用同一资金，M不开仓"
+        elif not bool(m_cfg.get("enabled", False)):
             m_line = "未启用｜strategy_m.enabled=false"
         elif l_buy:
             m_line = f"让位｜L无条件优先（腿序L>M），M不参与"
@@ -12019,11 +12094,45 @@ def _log_decision_chain_summary(signal_date: str) -> None:
         # 持仓占用说明统一为串行单仓：旧仓无论是否今日到期，只要券商仍有实际持仓，
         # 所有新开仓都阻断。D策略09:23接力必须先卖出并确认券商为空仓，才会重建买入计划。
         if _blocked_by_holding and not hold_line:
-            d_desc = _describe_holdings(_holding_non_l)
+            d_desc = _describe_holdings(_blocking_positions)
             hold_line = (
                 f"目前已持仓：{d_desc}；旧策略仓尚未实际清空，{day_label}不开新仓"
                 "（含L补位/替换均按串行单仓口径挡住；券商确认清仓后再择机开仓）"
             )
+
+        # ── 候选与让路结果 ──
+        # D是次日盘中实时策略，收盘时没有可提前列出的次日静态候选；其余每腿只列
+        # 自己规则选出的第一名，再按当前模式的真实腿序做跨策略排序。这样既保留
+        # “有哪些候选”，也不会把候选误说成已经生成了可执行买单。
+        d_candidate_reason = (
+            "当前已有D持仓，不再扫描新D"
+            if any(str(p.get("strategy_leg", "")).upper() == "D" for p in _open_now)
+            else "盘中实时扫描，收盘时无次日静态候选"
+        )
+        candidate_rows = [
+            ("D", None, d_candidate_reason),
+            ("L", l_buy, "无通过基础规则的候选"),
+            ("A", a_buy, "无入围候选"),
+            (
+                "M",
+                m_buy,
+                "当前持仓已阻断M候选评估" if _blocked_by_holding else "无正式候选",
+            ),
+            ("E2", e2_candidate_for_display, "无入围候选"),
+            ("C", c_buy, "A已入围，C未继续评估" if a_buy else "无入围候选"),
+        ]
+        if mode == 2:
+            ranking_legs = ["L"]
+        elif mode == 3:
+            ranking_legs = ["L", "A", "M", "E2", "C"]
+        else:
+            ranking_legs = ["A", "M", "E2", "C"]
+        candidate_choice_lines = _build_candidate_choice_lines(
+            candidate_rows,
+            ranking_legs,
+            final_buy,
+            [str(p.get("strategy_leg", "")) for p in _blocking_positions],
+        )
 
         # 今日到期持仓也明确展示“取消衔接”，避免通知继续沿用旧口径。
         d_due_today = [
@@ -12061,20 +12170,20 @@ def _log_decision_chain_summary(signal_date: str) -> None:
             f"{P} │",
             f"{P} │ 券商仍有【旧策略仓】？（含今日到期、逾期、待卖）",
             f"{P} │",
-            f"{P} ├─ 是 ──▶ 不开新仓，确认实际清仓后再等下一候选 ──▶ 结束",
+            f"{P} ├─ 是 ──▶ 不开新仓，确认实际清仓后再等下一候选 ──▶ 结束{TAG if _blocked_by_holding else ''}",
             f"{P} │",
             f"{P} └─ 否（券商已确认无旧策略仓；打新和人工仓不计入）",
-            f"{P}      └─▶ ② L 判断（无条件优先，只需过基础规则）{TAG if l_wins else ''}",
+            f"{P}      └─▶ ② L 判断（账户空仓时无条件优先，只需过基础规则）{TAG if (l_wins and not _blocked_by_holding) else ''}",
             f"{P}           │ 非科创板 + 板块情绪OK + 全市场连板家数≥3（非个股连板）",
             f"{P}           │",
-            f"{P}           ├─ 过 ──▶ 买 L 的票（顶掉后面所有腿）──▶ 结束{TAG if l_wins else ''}",
+            f"{P}           ├─ 过 ──▶ 买 L 的票（顶掉后面所有腿）──▶ 结束{TAG if (l_wins and not _blocked_by_holding) else ''}",
             f"{P}           │",
-            f"{P}           └─ 不过 ──▶ mode1 按腿序取第一个有计划的腿{TAG if (m1_has and not l_wins) else ''}",
+            f"{P}           └─ 不过 ──▶ mode1 按腿序取第一个有计划的腿{TAG if (m1_has and not l_wins and not _blocked_by_holding) else ''}",
             f"{P}                       │ ③A主 → ④M补位 → ⑤E2 → ⑥C垫底",
             f"{P}                       │",
-            f"{P}                       ├─ 有票 ──▶ 买该腿的票 ──▶ 结束{TAG if (m1_has and not l_wins) else ''}",
+            f"{P}                       ├─ 有票 ──▶ 买该腿的票 ──▶ 结束{TAG if (m1_has and not l_wins and not _blocked_by_holding) else ''}",
             f"{P}                       │",
-            f"{P}                       └─ 六腿全无票 ──▶ 空仓{TAG if (not m1_has and not l_wins) else ''}",
+            f"{P}                       └─ 六腿全无票 ──▶ 空仓{TAG if (not m1_has and not l_wins and not _blocked_by_holding) else ''}",
             f"{P}",
             f"{P} 注：D（①）不在上面这条链里——它在信号日**盘中**自己扫描买入，",
             f"{P}     成交后写 positions.json，于是次日一开盘就落到最上面那个",
@@ -12085,14 +12194,14 @@ def _log_decision_chain_summary(signal_date: str) -> None:
             P,
             f"{P}━━━━━━━━━━━━ 决策优先级总图（mode=3） ━━━━━━━━━━━━",
             f"{P} 腿序：① D（盘中先买）> ② L > ③ A > ④ M > ⑤ E2 > ⑥ C",
-            f"{P} 【0】券商仍有旧策略仓? ─是→ 不开新仓（含今日到期/待卖），确认清仓后再等下一候选",
+            f"{P} 【0】券商仍有旧策略仓? ─是→ 不开新仓（含今日到期/待卖），确认清仓后再等下一候选{TAG if _blocked_by_holding else ''}",
             f"{P}   ↓否",
-            f"{P} 【1】② L 审查（无条件优先）: 只需基础规则（非科创板∧情绪OK∧全市场连板家数≥3，不限板块）",
-            f"{P}   ├─过　 → ★买 L 的票（顶掉 A/M/E2/C）■{TAG if l_wins else ''}",
-            f"{P}   └─不过 → 进【2】{TAG if not l_wins else ''}",
+            f"{P} 【1】② L 审查（账户空仓时无条件优先）: 只需基础规则（非科创板∧情绪OK∧全市场连板家数≥3，不限板块）",
+            f"{P}   ├─过　 → ★买 L 的票（顶掉 A/M/E2/C）■{TAG if (l_wins and not _blocked_by_holding) else ''}",
+            f"{P}   └─不过 → 进【2】{TAG if (not l_wins and not _blocked_by_holding) else ''}",
             f"{P} 【2】mode1 按腿序取第一个有计划的腿: ③A主 → ④M补位 → ⑤E2 → ⑥C垫底",
-            f"{P}   ├─有票 → ★买该腿的票■{TAG if (m1_has and not l_wins) else ''}",
-            f"{P}   └─无票 → ★空仓■{TAG if (not m1_has and not l_wins) else ''}",
+            f"{P}   ├─有票 → ★买该腿的票■{TAG if (m1_has and not l_wins and not _blocked_by_holding) else ''}",
+            f"{P}   └─无票 → ★空仓■{TAG if (not m1_has and not l_wins and not _blocked_by_holding) else ''}",
             f"{P} 【注】① D 不走这条链：信号日盘中14:00后自己扫描买入，成交即占用资金，",
             f"{P}      次日落到【0】把其余腿全挡住。D接力全关，一律T+2收盘平仓。",
             f"{P} 【注】④ M 的两道自有闸：深市主板情绪weak（481天中仅12%）+ 账户回撤≤10%；",
@@ -12113,6 +12222,11 @@ def _log_decision_chain_summary(signal_date: str) -> None:
             f"{P} ⑤ E2：{e2_line}",
             f"{P} ⑥ C垫底：{c_line}",
             f"{P} ―― B策略：{b_line}",
+            bottom,
+            P,
+            f"{P}━━━━━━━━━━━━━━ 候选让路结果 ━━━━━━━━━━━━━━",
+            date_banner,
+            *(f"{P} {line}" for line in candidate_choice_lines),
             bottom,
             P,
             # 框2：最终开仓计划（开仓计划/无计划 + 持仓状态）
@@ -12480,9 +12594,19 @@ def _log_l_model3_signal_status(signal_date: str, action_date: str | None = None
             logger().info("  L/model3结论：model3开关未同时开启，沿用mode=1。")
         elif not base_ok:
             logger().info("  L/model3结论：L未通过基础规则，沿用mode=1。")
+        elif open_positions := [
+            p for p in load_positions()
+            if str(p.get("status", "")).lower() in {"open", "sell_pending"}
+        ]:
+            held = _describe_holdings(open_positions, with_quote=False)
+            logger().info(
+                "  L/model3结论：L已通过基础规则，但当前有策略持仓（%s）；"
+                "本次只保留L候选供审计，不生成开仓计划。L仅在账户空仓时无条件优先于A/M/E2/C。",
+                held,
+            )
         else:
             logger().info(
-                "  L/model3结论：L已通过基础规则，%s **无条件优先**于 A/M/E2/C —— "
+                "  L/model3结论：L已通过基础规则且账户空仓，%s **无条件优先**于 A/M/E2/C —— "
                 "无mode=1买入时补位，有mode=1买入时顶掉它，不再看替换窄门。",
                 planned_buy_date,
             )
@@ -12735,7 +12859,18 @@ def _log_d_status_for_signal(signal_date: str) -> None:
             planned_count = int(float(checklist["planned_order_count"].iloc[0] or 0))
         in_d_start_window = datetime.time(9, 20) <= now.time() <= datetime.time(14, 55)
         d_running = _strategy_d_monitor_running()
-        if d_running:
+        open_positions = [
+            p for p in load_positions()
+            if str(p.get("status", "")).lower() in {"open", "sell_pending"}
+        ]
+        if open_positions:
+            held = _describe_holdings(open_positions, with_quote=False)
+            logger().info(
+                "  D策略停止点：已有策略持仓。当前持仓=%s；串行单仓规则优先于A/C候选判断，"
+                "不启动新的D盘中监控。",
+                held,
+            )
+        elif d_running:
             config = load_json_config(PROJECT_ROOT / "config" / "config.json")
             allowed_segments = config.get("strategy_d", {}).get("allowed_market_segments", [])
             allowed_text = ",".join(str(x) for x in allowed_segments) if isinstance(allowed_segments, list) else "未配置"
