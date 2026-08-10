@@ -80,3 +80,8 @@ reports/live_trade/qmt_live_readiness.md
 # 策略信号运行状态账本（每日流水线自动重写，无版本控制价值）
 reports/**/*signal_runs_recent.json
 reports/strategy_m/m_equity_peak.json
+
+# 本地成交审计与滚动分析产物：包含真实成交明细或会被每日任务覆盖，只保留在本机
+reports/execution_tracking/*.json
+reports/july_august_review/*.json
+reports/live_performance/*.json
