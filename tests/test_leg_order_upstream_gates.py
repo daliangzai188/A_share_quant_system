@@ -276,17 +276,16 @@ class LegOrderDeclarationTests(unittest.TestCase):
 
         root = Path(__file__).absolute().parents[1]
         summary = pd.read_csv(root / "reports/current_portfolio_alignment/portfolio_summary.csv")
+        current = summary[summary["is_current_executable"].astype(bool)].iloc[0]
         with_m = summary[summary["scenario"] == "current_with_m_gap_leg"].iloc[0]
-        without_m = summary[
-            summary["scenario"] == "current_after_e2_gate_and_l_chain_3_8_expansion"
-        ].iloc[0]
 
         metrics = json.loads((root / "config" / "config.json").read_text(encoding="utf-8"))[
             "strategy_model3"
         ]["live_candidate_metrics"]
 
-        self.assertEqual(metrics["trade_count"], int(with_m["executed_trade_count"]))
-        self.assertEqual(metrics["max_consecutive_losses"], int(with_m["max_consecutive_losses"]))
+        self.assertEqual(metrics["scenario"], str(current["scenario"]))
+        self.assertEqual(metrics["trade_count"], int(current["executed_trade_count"]))
+        self.assertEqual(metrics["max_consecutive_losses"], int(current["max_consecutive_losses"]))
         for key, col in (
             ("win_rate", "win_rate"),
             ("avg_return", "avg_return"),
@@ -294,12 +293,12 @@ class LegOrderDeclarationTests(unittest.TestCase):
             ("max_drawdown", "max_drawdown"),
         ):
             self.assertAlmostEqual(
-                metrics[key], float(with_m[col]), places=5, msg=f"{key} 与认证输出不一致"
+                metrics[key], float(current[col]), places=5, msg=f"{key} 与认证输出不一致"
             )
-        prev = metrics["previous_without_m"]
-        self.assertEqual(prev["trade_count"], int(without_m["executed_trade_count"]))
-        self.assertAlmostEqual(prev["equity_multiple"], float(without_m["equity_multiple"]), places=5)
-        self.assertAlmostEqual(prev["max_drawdown"], float(without_m["max_drawdown"]), places=5)
+        research = metrics["research_with_m"]
+        self.assertEqual(research["trade_count"], int(with_m["executed_trade_count"]))
+        self.assertAlmostEqual(research["equity_multiple"], float(with_m["equity_multiple"]), places=5)
+        self.assertAlmostEqual(research["max_drawdown"], float(with_m["max_drawdown"]), places=5)
 
     def test_config_不再声明五腿全空才触发m(self) -> None:
         import json

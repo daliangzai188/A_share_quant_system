@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass
+import datetime as dt
 import json
 from pathlib import Path
 import sys
@@ -1012,13 +1013,37 @@ def verdict_lines(comparison: pd.DataFrame, name: str, before_label: str, after_
         lines.append(f"- **结论：按回测判据成立，{name}维持上线。**")
     elif overall["total_change"] > 0:
         lines.append(
-            f"- **结论：全样本改善但存在劣段（见上），按既有先例如实保留，"
-            f"不为单段结果调参。{name}维持上线。**"
+            f"- **结论：全样本改善但存在劣段（见上），未通过“分段收益与回撤均非劣”"
+            f"门禁，{name}不得用于真实新开仓。**"
         )
     else:
         lines.append(f"- **结论：按回测判据不成立，{name}不应上线。**")
     lines.append("")
     return lines
+
+
+def noninferiority_passes(
+    comparison: pd.DataFrame,
+    before_label: str,
+    after_label: str,
+) -> tuple[bool, str]:
+    """严格执行“全样本改善，且所有分段收益/回撤均不劣”。"""
+
+    if comparison.empty:
+        return False, "没有可验证分段"
+    overall = comparison.iloc[0]
+    worse_return = comparison[comparison["total_change"] < -EPSILON]["split"].tolist()
+    worse_drawdown = comparison[
+        comparison[f"{after_label}_max_drawdown"]
+        < comparison[f"{before_label}_max_drawdown"] - EPSILON
+    ]["split"].tolist()
+    if float(overall["total_change"]) <= EPSILON:
+        return False, "全样本复利没有提高"
+    if worse_return:
+        return False, "收益劣段=" + "、".join(map(str, worse_return))
+    if worse_drawdown:
+        return False, "回撤劣段=" + "、".join(map(str, worse_drawdown))
+    return True, "全样本改善且所有分段收益/回撤均非劣"
 
 
 def write_report(
@@ -1027,6 +1052,9 @@ def write_report(
     l_validation: pd.DataFrame,
     e2_portfolio_comparison: pd.DataFrame,
     m_portfolio_comparison: pd.DataFrame,
+    *,
+    current_scenario: str,
+    m_live_enabled: bool,
 ) -> None:
     """写出中文认证报告。"""
 
@@ -1041,11 +1069,13 @@ def write_report(
         f"- 原可执行基线：{int(base['executed_trade_count'])}笔，{base['equity_multiple']:.2f}倍，最大回撤{base['max_drawdown']:.2%}。",
         f"- 只接入E2门禁：{int(e2_only['executed_trade_count'])}笔，{e2_only['equity_multiple']:.2f}倍，最大回撤{e2_only['max_drawdown']:.2%}。",
         f"- 再接入L连板3~8扩容：{int(optimized['executed_trade_count'])}笔，{optimized['equity_multiple']:.2f}倍，最大回撤{optimized['max_drawdown']:.2%}。",
-        f"- 再接入M兜底腿：{int(summary.iloc[3]['executed_trade_count'])}笔，"
+        f"- M研究对照：{int(summary.iloc[3]['executed_trade_count'])}笔，"
         f"{summary.iloc[3]['equity_multiple']:.2f}倍，最大回撤{summary.iloc[3]['max_drawdown']:.2%}"
-        f"（**当前发布标尺**）。",
-        f"- 总组合复利变化：{summary.iloc[3]['equity_multiple'] / base['equity_multiple'] - 1:.2%}。",
-        "- M只在A/C/D/E2/L全部无候选且账户空仓时触发，五腿规则一行未改；回撤>10%自动暂停。",
+        f"（{'当前发布标尺' if m_live_enabled else '未纳入真实下单'}）。",
+        f"- **当前发布场景：`{current_scenario}`。**",
+        f"- 当前发布场景相对原基线复利变化："
+        f"{summary[summary['scenario'].eq(current_scenario)].iloc[0]['equity_multiple'] / base['equity_multiple'] - 1:.2%}。",
+        "- M当前排在D/L/A之后、E2/C之前，但因样本外和分段回撤门禁未通过，仅保留研究/模拟。",
         "- E2门禁字段只来自信号日首次涨停时间；每日第一名被排除后直接空仓，不回补第二名。",
         "- L扩容只增加T日已知的market_chain_count_bucket=3_8；选股、买卖时间、成交约束和替换窄门均不改变。",
         "- 2026短窗口的组合复利略低于扩容前，已在分段表中保留，不再为单笔历史结果继续调参。",
@@ -1094,8 +1124,27 @@ def write_report(
     (OUTPUT_DIR / "portfolio_report.md").write_text("\n".join(lines), encoding="utf-8")
 
 
+def write_certification(payload: dict[str, Any]) -> None:
+    """原子写认证状态，避免进程中断后留下半个JSON或沿用旧PASS。"""
+
+    path = OUTPUT_DIR / "live_certification.json"
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary.replace(path)
+
+
 def main() -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    write_certification(
+        {
+            "schema_version": 1,
+            "status": "RUNNING",
+            "current_executable": False,
+            "scenario": "",
+            "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+            "note": "认证正在重建；完成前按fail-closed禁止新买入。",
+        }
+    )
     sources = load_sources()
     base_daily = replay(
         sources, entry_gate_enabled=False, l_chain_3_8_enabled=False
@@ -1157,33 +1206,6 @@ def main() -> None:
     if bool((required_l_splits["l_change"] <= 0).any()):
         raise RuntimeError("L扩容未在全段及前后半段提高L分支复利，禁止上线")
 
-    base_daily.to_csv(
-        OUTPUT_DIR / "portfolio_daily_before_gate.csv",
-        index=False,
-        encoding="utf-8-sig",
-    )
-    e2_only_daily.to_csv(
-        OUTPUT_DIR / "portfolio_daily_after_e2_gate.csv",
-        index=False,
-        encoding="utf-8-sig",
-    )
-    optimized_daily.to_csv(
-        OUTPUT_DIR / "portfolio_daily.csv", index=False, encoding="utf-8-sig"
-    )
-    optimized_daily[
-        optimized_daily["status"].astype(str).eq("EXECUTED")
-    ].to_csv(OUTPUT_DIR / "portfolio_trades.csv", index=False, encoding="utf-8-sig")
-    summary.to_csv(OUTPUT_DIR / "portfolio_summary.csv", index=False, encoding="utf-8-sig")
-    e2_validation.to_csv(
-        OUTPUT_DIR / "e2_entry_gate_validation.csv",
-        index=False,
-        encoding="utf-8-sig",
-    )
-    l_validation.to_csv(
-        OUTPUT_DIR / "l_chain_expansion_validation.csv",
-        index=False,
-        encoding="utf-8-sig",
-    )
     e2_portfolio_comparison = segment_comparison(
         replay(sources, entry_gate_enabled=False, l_chain_3_8_enabled=True, m_enabled=True),
         with_m_daily,
@@ -1196,6 +1218,52 @@ def main() -> None:
         before_label="m_off",
         after_label="m_on",
     )
+    m_noninferior, m_noninferior_reason = noninferiority_passes(
+        m_portfolio_comparison, "m_off", "m_on"
+    )
+    runtime_config = json.loads(RUNTIME_CONFIG_PATH.read_text(encoding="utf-8"))
+    m_config = runtime_config.get("strategy_m", {})
+    m_live_enabled = bool(m_config.get("enabled", False)) and bool(
+        m_config.get("live_order_enabled", False)
+    )
+    if m_live_enabled and not m_noninferior:
+        raise RuntimeError(f"M完整组合非劣门禁未通过，禁止真实上线：{m_noninferior_reason}")
+
+    current_daily = with_m_daily if m_live_enabled else optimized_daily
+    current_scenario = (
+        "current_with_m_gap_leg"
+        if m_live_enabled
+        else "current_after_e2_gate_and_l_chain_3_8_expansion"
+    )
+    summary["is_current_executable"] = summary["scenario"].eq(current_scenario)
+
+    base_daily.to_csv(
+        OUTPUT_DIR / "portfolio_daily_before_gate.csv",
+        index=False,
+        encoding="utf-8-sig",
+    )
+    e2_only_daily.to_csv(
+        OUTPUT_DIR / "portfolio_daily_after_e2_gate.csv",
+        index=False,
+        encoding="utf-8-sig",
+    )
+    current_daily.to_csv(
+        OUTPUT_DIR / "portfolio_daily.csv", index=False, encoding="utf-8-sig"
+    )
+    current_daily[
+        current_daily["status"].astype(str).eq("EXECUTED")
+    ].to_csv(OUTPUT_DIR / "portfolio_trades.csv", index=False, encoding="utf-8-sig")
+    summary.to_csv(OUTPUT_DIR / "portfolio_summary.csv", index=False, encoding="utf-8-sig")
+    e2_validation.to_csv(
+        OUTPUT_DIR / "e2_entry_gate_validation.csv",
+        index=False,
+        encoding="utf-8-sig",
+    )
+    l_validation.to_csv(
+        OUTPUT_DIR / "l_chain_expansion_validation.csv",
+        index=False,
+        encoding="utf-8-sig",
+    )
     e2_portfolio_comparison.to_csv(
         OUTPUT_DIR / "e2_gate_portfolio_validation.csv", index=False, encoding="utf-8-sig"
     )
@@ -1205,7 +1273,27 @@ def main() -> None:
     write_report(
         summary, e2_validation, l_validation,
         e2_portfolio_comparison, m_portfolio_comparison,
+        current_scenario=current_scenario,
+        m_live_enabled=m_live_enabled,
     )
+    current_summary = summary[summary["scenario"].eq(current_scenario)].iloc[0]
+    certification = {
+        "schema_version": 1,
+        "status": "PASS",
+        "current_executable": True,
+        "scenario": current_scenario,
+        "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "input_start_date": str(current_daily["signal_date"].min()),
+        "input_end_date": str(current_daily["signal_date"].max()),
+        "executed_trade_count": int(current_summary["executed_trade_count"]),
+        "equity_multiple": float(current_summary["equity_multiple"]),
+        "max_drawdown": float(current_summary["max_drawdown"]),
+        "m_live_enabled": m_live_enabled,
+        "m_noninferiority_passed": m_noninferior,
+        "m_noninferiority_reason": m_noninferior_reason,
+        "note": "只证明冻结历史输入上的组合认证通过，不代表未来收益或真实成交容量。",
+    }
+    write_certification(certification)
 
     print("当前可执行组合认证完成")
     print(summary.to_string(index=False))

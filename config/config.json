@@ -31,7 +31,7 @@
   "strategy_m": {
     "file_role": "策略M补位腿配置。腿序 D>L>A>M>E2>C（2026-08-07 定稿）：M 只被排在它前面的 D持仓 / L信号 / A计划挡住；E2 和 C 排在 M 之后，不得挡住 M 出信号。旧描述『只在A/C/D/E2/L全部无候选时触发』已随腿序重排作废。",
     "enabled": true,
-    "live_order_enabled": true,
+    "live_order_enabled": false,
     "strategy_version": "M_gap_day_sz_main_weak_min_circ_mv_v1",
     "sentiment_column": "sz_main_market_sentiment_level",
     "sentiment_required": "weak",
@@ -61,7 +61,7 @@
       "fill_note": "2026-08-07 成交口径对齐A/C：T+1一字涨停买不到该日不交易且不递补、卖出日跌停顺延、买open*1.001卖close*0.999。M池61→59天。"
     },
     "live_enabled_at": "2026-08-04",
-    "live_enable_note": "2026-08-04用户拍板并入实盘。⚠️首次启用时peak_equity为空,会以启用当日净值为峰值起点;若启用时账户正处于回撤中,M会误判为无回撤而放行。若需手动校正,编辑reports/strategy_m/m_equity_peak.json的peak_equity为真实历史最高净值。",
+    "live_enable_note": "2026-08-10重新降为研究/模拟：M来自1053个方案搜索、样本外仅3笔，且完整组合分段回撤没有全部非劣；重新通过前向样本和分段非劣门禁前不得恢复真实下单。",
     "require_all_legs_idle_note": "2026-08-07 由 true 改为 false：M 只让位给排在它前面的腿（D/L/A）。上游门见 run_strategy_m_signal.higher_priority_leg_has_signal；认证口径见 certify_current_executable_portfolio.pick_by_priority（该函数不含D，M 在其中排第③）。"
   },
   "strategy_model3": {
@@ -71,10 +71,12 @@
     "run_mode": "live_candidate",
     "live_order_enabled": true,
     "require_live_certification": true,
-    "certification_summary_path": "reports/current_portfolio_alignment/portfolio_summary.csv",
+    "certification_summary_path": "reports/current_portfolio_alignment/live_certification.json",
     "certification_report_path": "reports/current_portfolio_alignment/portfolio_report.md",
-    "selected_rule_name": "expand_chain_3_8_and_replace_theme_ge_2_not_after_1430_with_m_gap_leg",
-    "selected_rule_description": "mode=1默认优先；L基础环境含market_chain_count_bucket=3_8；L替换仍需创业板、theme_limit_count>=2、first_time_detail_bucket!=after_1430；2026-08-04新增M兜底腿：五腿全空且账户空仓时，深市主板情绪weak则买涨停池最小市值，回撤>10%暂停。",
+    "certification_required_status": "PASS",
+    "certification_expected_scenario": "current_after_e2_gate_and_l_chain_3_8_expansion",
+    "selected_rule_name": "expand_chain_3_8_l_unconditional_priority_without_m_live",
+    "selected_rule_description": "当前实盘腿序D>L>A>E2>C；L通过基础环境条件后无条件优先。M保留研究信号但live_order_enabled=false，不得进入真实买单。",
     "base_l_rule": {
       "market_segment": "not_star",
       "segment_retreat_state_bucket": [
@@ -96,24 +98,24 @@
       ]
     },
     "live_candidate_metrics": {
-      "trade_count": 150,
-      "l_trade_count": 47,
-      "m_trade_count": 26,
-      "mode1_trade_count": 77,
-      "win_rate": 0.693333,
-      "avg_return": 0.078623,
-      "median_return": 0.047037,
-      "equity_multiple": 29387.054989,
-      "max_drawdown": -0.235585,
+      "trade_count": 135,
+      "l_trade_count": 52,
+      "m_trade_count": 0,
+      "mode1_trade_count": 83,
+      "win_rate": 0.711111,
+      "avg_return": 0.076115,
+      "median_return": 0.046872,
+      "equity_multiple": 7677.219011,
+      "max_drawdown": -0.23505,
       "max_loss": -0.163694,
       "max_consecutive_losses": 5,
-      "scenario": "current_with_m_gap_leg",
-      "previous_without_m": {
-        "equity_multiple": 7677.219011,
-        "trade_count": 135,
-        "max_drawdown": -0.23505
+      "scenario": "current_after_e2_gate_and_l_chain_3_8_expansion",
+      "research_with_m": {
+        "equity_multiple": 29387.054989,
+        "trade_count": 150,
+        "max_drawdown": -0.235585
       },
-      "note": "2026-08-07 腿序重排 D>L>A>M>E2>C + D接力全关 + 上游信号门同步 + M成交口径对齐A/C（一字板买不到剔除/跌停顺延/双边0.1%）后的发布标尺。mode1_trade_count=A+C+E2+D。复现:python3 scripts/certify_current_executable_portfolio.py"
+      "note": "2026-08-10 P0收口：M分段回撤非劣门禁未通过，真实下单关闭；当前发布标尺为E2门禁+L扩容、不含M的135笔。mode1_trade_count=A+C+E2+D。复现:python3 scripts/certify_current_executable_portfolio.py"
     }
   },
   "notify": {

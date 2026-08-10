@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "status": "PASS",
+  "current_executable": true,
+  "scenario": "current_after_e2_gate_and_l_chain_3_8_expansion",
+  "generated_at": "2026-08-10T03:51:19.486443+00:00",
+  "input_start_date": "20240520",
+  "input_end_date": "20260514",
+  "executed_trade_count": 135,
+  "equity_multiple": 7677.219011035194,
+  "max_drawdown": -0.23504962855315814,
+  "m_live_enabled": false,
+  "m_noninferiority_passed": false,
+  "m_noninferiority_reason": "回撤劣段=全部、训练半段<20250603、自然年2024",
+  "note": "只证明冻结历史输入上的组合认证通过，不代表未来收益或真实成交容量。"
+}

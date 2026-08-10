@@ -62,6 +62,7 @@ import pandas as pd
 from pandas.errors import EmptyDataError
 
 from src.live_order_gateway import LiveOrderGateway
+from src.live_certification import validate_live_certification
 from src.rolling_signal_store import latest_signal_for_buy_date, signal_by_signal_date
 from src.strategy_model3_policy import (
     model3_l_base_rule_pass,
@@ -516,6 +517,25 @@ class CombinedLiveEngine:
             )
             decisions = pd.concat([mode1_decisions, pd.DataFrame([extra.__dict__])], ignore_index=True)
             return mode1_state, decisions, mode1_orders
+
+        if bool(model3_config.get("require_live_certification", False)):
+            certification = validate_live_certification(self.project_root, model3_config)
+            if not certification.ok:
+                if not mode1_orders.empty and "side" in mode1_orders.columns:
+                    keep_mask = ~mode1_orders["side"].astype(str).str.upper().eq("BUY")
+                    safe_orders = mode1_orders[keep_mask].copy()
+                else:
+                    safe_orders = mode1_orders.copy()
+                extra = CombinedLiveDecision(
+                    action="BLOCK_MODEL3_BUY_BY_CERTIFICATION",
+                    strategy_leg="MODEL3",
+                    reason=f"实盘认证未通过，禁止所有新买入；卖出计划继续执行。{certification.reason}",
+                    source=str(certification.path),
+                )
+                decisions = pd.concat(
+                    [mode1_decisions, pd.DataFrame([extra.__dict__])], ignore_index=True
+                )
+                return mode1_state, decisions, safe_orders
 
         signal = self.load_yesterday_l_signal(today)
         if not signal:
