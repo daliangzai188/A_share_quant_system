@@ -152,6 +152,40 @@ class ExecutionCompletionTrackerTest(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(int(rows[0]["filled_qty"]), 600)
 
+    def test_same_broker_order_live_and_legacy_events_are_not_double_counted(self) -> None:
+        self._write_positions_and_audit()
+        common = {
+            "entry_date": "20260720",
+            "exit_date": "20260721",
+            "ts_code": "603161.SH",
+            "name": "科华控股",
+            "strategy_leg": "E2",
+            "signal_date": "20260717",
+            "channel": "卖出POV",
+            "local_order_id": "pov-20260720-603161.SH",
+            "broker_order_id": "QMT-DUPLICATE-1",
+            "order_qty": 2_000,
+            "filled_qty": 2_000,
+        }
+        self.tracker.record_sell_slice(
+            event_id="卖出POV|实时事件",
+            fill_price=14.51,
+            external_flow=1_000_000,
+            **common,
+        )
+        self.tracker.record_sell_slice(
+            event_id="历史退出|同一委托",
+            fill_price=14.51,
+            note="退出安全账本回填",
+            **common,
+        )
+
+        with self.tracker.summary_path.open("r", newline="", encoding="utf-8-sig") as handle:
+            row = next(csv.DictReader(handle))
+        self.assertEqual(int(row["exit_filled_qty"]), 10_800)
+        self.assertEqual(int(row["exit_pov_filled_qty"]), 2_000)
+        self.assertEqual(int(row["exit_other_filled_qty"]), 8_800)
+
     def test_legacy_closed_position_with_retained_shares_is_not_marked_overnight(self) -> None:
         legacy = self._position("LEGACY-1", 4000, 11.77)
         legacy.pop("entry_shares")

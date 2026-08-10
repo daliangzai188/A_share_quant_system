@@ -1133,6 +1133,73 @@ class LocalExitAccountingTest(unittest.TestCase):
         self.assertEqual(saved["applied_exit_fills_by_order"]["QMT-TP-1"], 1_000)
         self.assertEqual(saved["exit_fills_by_date"]["20260716"]["qty"], 1_000)
 
+    def test_confirmed_fill_repairs_ghost_cleared_row(self) -> None:
+        position = self._open_position(shares=2_500)
+        position.update(
+            {
+                "status": "closed",
+                "sell_date": "20260804",
+                "sell_price": 0.0,
+                "ghost_cleared_at": "2026-08-04 14:58:00",
+            }
+        )
+        store = _MemoryPositionStore([position])
+
+        with patch.object(trading_daemon, "load_positions", side_effect=store.load), patch.object(
+            trading_daemon, "save_positions", side_effect=store.save
+        ):
+            applied = trading_daemon._apply_known_exit_fill(
+                "LOCAL-1",
+                broker_order_id="QMT-WATCHDOG-1",
+                current_shares=2_500,
+                filled_qty=2_500,
+                fill_price=18.03,
+                fill_date="20260804",
+            )
+            repeated = trading_daemon._apply_known_exit_fill(
+                "LOCAL-1",
+                broker_order_id="QMT-WATCHDOG-1",
+                current_shares=0,
+                filled_qty=2_500,
+                fill_price=18.03,
+                fill_date="20260804",
+            )
+
+        saved = store.positions[0]
+        self.assertEqual(applied, 2_500)
+        self.assertEqual(repeated, 0)
+        self.assertEqual(saved["shares"], 0)
+        self.assertEqual(saved["status"], "closed")
+        self.assertAlmostEqual(saved["sell_price"], 18.03)
+        self.assertEqual(saved["exit_fills_by_date"]["20260804"]["qty"], 2_500)
+
+    def test_final_sell_price_is_weighted_across_partial_and_final_fills(self) -> None:
+        position = self._open_position(shares=18_400)
+        position["entry_shares"] = 20_000
+        position["exit_fills_by_date"] = {
+            "20260803": {"qty": 1_600, "amount": 17_912.0}
+        }
+        store = _MemoryPositionStore([position])
+
+        with patch.object(trading_daemon, "load_positions", side_effect=store.load), patch.object(
+            trading_daemon, "save_positions", side_effect=store.save
+        ):
+            applied = trading_daemon._apply_known_exit_fill(
+                "LOCAL-1",
+                broker_order_id="QMT-WATCHDOG-FINAL",
+                current_shares=18_400,
+                filled_qty=18_400,
+                fill_price=11.19,
+                fill_date="20260803",
+            )
+
+        saved = store.positions[0]
+        expected_price = (17_912.0 + 18_400 * 11.19) / 20_000
+        self.assertEqual(applied, 18_400)
+        self.assertEqual(saved["shares"], 0)
+        self.assertEqual(saved["exit_fills_by_date"]["20260803"]["qty"], 20_000)
+        self.assertAlmostEqual(saved["sell_price"], expected_price)
+
     def test_reduce_position_shares_never_increases_remaining_quantity(self) -> None:
         store = _MemoryPositionStore([self._open_position()])
         frozen_now = datetime.datetime(

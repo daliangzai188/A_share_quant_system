@@ -164,6 +164,40 @@ def _upsert(path: Path, fields: list[str], key_field: str, row: dict[str, Any]) 
     _write_csv(path, fields, rows)
 
 
+def _dedupe_sell_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """同一券商委托只保留一条最完整事件，避免历史回填与实时事件重复计数。"""
+    selected: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for index, event in enumerate(events):
+        broker_order_id = _text(event.get("broker_order_id"))
+        event_id = _text(event.get("event_id"))
+        key = f"broker:{broker_order_id}" if broker_order_id else f"event:{event_id or index}"
+        if key not in selected:
+            order.append(key)
+        old = selected.get(key)
+
+        def quality(row: dict[str, Any]) -> tuple[int, int, int, int, str]:
+            is_live_event = not _text(row.get("event_id")).startswith("历史退出|")
+            has_price = _float(row.get("fill_price")) > 0
+            has_amount = _float(row.get("fill_amount")) > 0
+            has_execution_context = bool(
+                _float(row.get("external_flow"))
+                or _int(row.get("depth_limit_qty"))
+                or _text(row.get("depth_note"))
+            )
+            return (
+                int(is_live_event),
+                int(has_price),
+                int(has_amount),
+                int(has_execution_context),
+                _text(row.get("recorded_at")),
+            )
+
+        if old is None or quality(event) > quality(old):
+            selected[key] = event
+    return [selected[key] for key in order]
+
+
 class ExecutionCompletionTracker:
     """线程安全、失败不影响交易主流程的成交完成率记录器。"""
 
@@ -388,7 +422,7 @@ class ExecutionCompletionTracker:
                 plan = plans.get(key, {})
                 group = position_groups.get(key, [])
                 buy_group = buy_by_key.get(key, [])
-                sell_group = sell_by_key.get(key, [])
+                sell_group = _dedupe_sell_events(sell_by_key.get(key, []))
                 seed = group[0] if group else (buy_group[0] if buy_group else (sell_group[0] if sell_group else {}))
 
                 entry_qty = sum(_int(pos.get("entry_shares", pos.get("shares", 0))) for pos in group)

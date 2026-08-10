@@ -802,15 +802,14 @@ def _recover_sell_price_from_fills(pos: dict[str, Any]) -> float:
     只影响账本记录与事后复盘，不参与任何交易决策或下单。
     """
 
-    existing = pos.get("sell_price")
+    existing_price = 0.0
     try:
-        if existing is not None and float(existing) > 0:
-            return float(existing)
+        existing_price = max(float(pos.get("sell_price", 0.0) or 0.0), 0.0)
     except (TypeError, ValueError):
-        pass
+        existing_price = 0.0
     fills = pos.get("exit_fills_by_date")
     if not isinstance(fills, dict):
-        return 0.0
+        return existing_price
     total_qty = total_amount = 0.0
     for value in fills.values():
         if not isinstance(value, dict):
@@ -820,9 +819,19 @@ def _recover_sell_price_from_fills(pos: dict[str, Any]) -> float:
             total_amount += float(value.get("amount", 0) or 0)
         except (TypeError, ValueError):
             continue
-    if total_qty > 0 and total_amount > 0:
-        return total_amount / total_qty
-    return 0.0
+    ledger_price = total_amount / total_qty if total_qty > 0 and total_amount > 0 else 0.0
+    try:
+        entry_shares = max(int(pos.get("entry_shares", 0) or 0), 0)
+    except (TypeError, ValueError):
+        entry_shares = 0
+
+    # 完整成交账优先于旧sell_price。后者在分片卖出场景里可能只是最后一片
+    # 的价格；完整账本才能给出整笔交易真实的成交额加权均价。
+    if ledger_price > 0 and (entry_shares <= 0 or total_qty >= entry_shares):
+        return ledger_price
+    if existing_price > 0:
+        return existing_price
+    return ledger_price
 
 def reconcile_missing_local_positions(broker_positions: Any, source: str) -> int:
     """逐票同步:本地 open 但券商连续 N 次查无此票 → 标 closed(2026-07-23 用户要求)。
@@ -1070,7 +1079,7 @@ def mark_position_closed(order_id: str, sell_date: str, sell_price: float = 0.0)
                 p["shares"] = 0
                 p["status"] = "closed"
                 p["sell_date"] = sell_date
-                p["sell_price"] = sell_price
+                p["sell_price"] = _recover_sell_price_from_fills(p)
                 changed = True
         save_positions(positions)
     if changed:
@@ -3382,7 +3391,7 @@ def _apply_known_exit_fill(
             if remaining == 0:
                 target["status"] = "closed"
                 target["sell_date"] = fill_date
-                target["sell_price"] = fill_price
+                target["sell_price"] = _recover_sell_price_from_fills(target)
             else:
                 target["status"] = "open"
         save_positions(positions)
@@ -4959,8 +4968,6 @@ def _close_position_watchdog() -> None:
                                     (
                                         row for row in load_positions()
                                         if str(row.get("order_id", "")) == local_order_id
-                                        and str(row.get("status", "")).lower()
-                                        in {"open", "sell_pending"}
                                     ),
                                     None,
                                 )
