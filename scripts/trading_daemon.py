@@ -12388,8 +12388,9 @@ def _log_l_model3_signal_status(signal_date: str, action_date: str | None = None
                 "旧「替换窄门=创业板+题材涨停≥2+非尾盘首板」已退役——2026-08-05 该窄门"
                 "误伤利通电子（沪主板+尾盘首板），当日 L 让位给 C 华之杰。481信号日重放："
                 "L 40笔→52笔、E2 30笔→19笔，组合 22902.02x→27870.31x、回撤-24.68%→-23.50%。"
-                "（当前实盘标尺：135笔/7677.95x/回撤-23.51%/胜率70.37%；M真实下单关闭，"
-                "见 reports/current_portfolio_alignment；旧8302x/15326.89x 均为历史档案，勿再引用）"
+                "（当前实盘标尺：150笔/29388.98x/回撤-23.56%/胜率68.67%；M按用户明确风险接受"
+                "恢复真实新开仓，但分段回撤非劣门禁仍未通过且容量未认证；见 "
+                "reports/current_portfolio_alignment；旧8302x/15326.89x 均为历史档案，勿再引用）"
             )
     except Exception as exc:
         logger().warning("  L/model3状态播报失败：%s", exc)

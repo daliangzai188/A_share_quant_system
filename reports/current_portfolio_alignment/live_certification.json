@@ -1,22 +1,24 @@
 {
   "schema_version": 1,
-  "status": "PASS",
+  "status": "PASS_WITH_RISK_ACCEPTANCE",
   "current_executable": true,
-  "scenario": "current_after_e2_gate_and_l_chain_3_8_expansion",
-  "generated_at": "2026-08-10T04:12:57.205513+00:00",
+  "scenario": "current_with_m_gap_leg",
+  "generated_at": "2026-08-10T04:51:49.403595+00:00",
   "input_start_date": "20240520",
   "input_end_date": "20260514",
-  "executed_trade_count": 135,
-  "equity_multiple": 7677.946823375038,
-  "max_drawdown": -0.23512440973736892,
-  "fixed_initial_notional_multiple": 11.275871195222228,
-  "theoretical_ending_equity": 3838973411.6875186,
-  "theoretical_next_order_amount": 3167153064.642203,
+  "executed_trade_count": 150,
+  "equity_multiple": 29388.980133715802,
+  "max_drawdown": -0.23558527770382431,
+  "fixed_initial_notional_multiple": 12.793822629275901,
+  "theoretical_ending_equity": 14694490066.8579,
+  "theoretical_next_order_amount": 12122954305.157768,
   "capacity_certified": false,
-  "m_live_enabled": false,
+  "m_live_enabled": true,
   "m_noninferiority_passed": false,
   "m_noninferiority_reason": "回撤劣段=全部、训练半段<20250603、自然年2024",
-  "config_sha256": "b35f5c9b54822d6014048fdb0c2153f14d25b899578aa0ae414457f6a6b019e9",
+  "m_live_risk_accepted": true,
+  "m_live_risk_acceptance_note": "2026-08-10用户明确决定恢复M真实新开仓：接受M未通过全部/训练半段/2024回撤非劣门禁及样本外仅3笔的风险；依据为M自身26笔、平均账户收益6.20%、中位数2.09%、单腿复利4.1639倍。该覆盖不等于门禁通过；保留10%回撤保护、82.5%仓位和全部成交/风控门禁，并先用小资金验证。",
+  "config_sha256": "22ee0a4ecd6017f91da960c503358867910da346e3fbff354bc535c7850e4bb4",
   "code_files": [
     "scripts/build_ac_daily_candidates.py",
     "scripts/certify_current_executable_portfolio.py",
@@ -29,10 +31,10 @@
     "src/strategy_m.py",
     "src/strategy_model3_policy.py"
   ],
-  "code_sha256": "a9aabab5d5a3ab1fe034cf3eb3a51e604d2c1e6ea579176f9703f02f5572feae",
+  "code_sha256": "dd3b872d87780d6f3ec3bf86d77bf05639cd4046460829121517fb0ca289a2fc",
   "input_files": [
     "reports/current_portfolio_alignment/input_manifest.json"
   ],
   "input_sha256": "b5c5bb0fc18042c8dc2bed1caf9a625633776a41dc58517241abe31f89e4561d",
-  "note": "只证明冻结历史输入上的组合认证通过；容量未认证，不代表未来收益或真实成交容量。"
+  "note": "冻结历史输入已复现；M分段回撤非劣门禁未通过，但用户明确接受风险并恢复真实新开仓。容量未认证，不代表未来收益或真实成交容量。"
 }

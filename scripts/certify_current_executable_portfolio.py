@@ -1033,7 +1033,14 @@ def segment_comparison(
     return pd.DataFrame(rows)
 
 
-def verdict_lines(comparison: pd.DataFrame, name: str, before_label: str, after_label: str) -> list[str]:
+def verdict_lines(
+    comparison: pd.DataFrame,
+    name: str,
+    before_label: str,
+    after_label: str,
+    *,
+    risk_accepted: bool = False,
+) -> list[str]:
     """按"非劣才改"判据逐段核对，并写出明确判定。"""
 
     worse = comparison[comparison["total_change"] < -1e-9]["split"].tolist()
@@ -1052,6 +1059,11 @@ def verdict_lines(comparison: pd.DataFrame, name: str, before_label: str, after_
     ]
     if overall["total_change"] > 0 and not worse and not dd_worse:
         lines.append(f"- **结论：按回测判据成立，{name}维持上线。**")
+    elif overall["total_change"] > 0 and risk_accepted:
+        lines.append(
+            f"- **结论：全样本改善但存在劣段（见上），非劣门禁判定仍为失败；"
+            f"用户明确接受该风险，{name}按`PASS_WITH_RISK_ACCEPTANCE`恢复真实新开仓。**"
+        )
     elif overall["total_change"] > 0:
         lines.append(
             f"- **结论：全样本改善但存在劣段（见上），未通过“分段收益与回撤均非劣”"
@@ -1061,6 +1073,22 @@ def verdict_lines(comparison: pd.DataFrame, name: str, before_label: str, after_
         lines.append(f"- **结论：按回测判据不成立，{name}不应上线。**")
     lines.append("")
     return lines
+
+
+def resolve_m_release_status(
+    *,
+    m_live_enabled: bool,
+    m_noninferior: bool,
+    risk_accepted: bool,
+    noninferiority_reason: str,
+) -> str:
+    """决定M发布状态；风险接受只能豁免M门禁，不能伪造门禁通过。"""
+
+    if not m_live_enabled or m_noninferior:
+        return "PASS"
+    if risk_accepted:
+        return "PASS_WITH_RISK_ACCEPTANCE"
+    raise RuntimeError(f"M完整组合非劣门禁未通过，禁止真实上线：{noninferiority_reason}")
 
 
 def noninferiority_passes(
@@ -1096,6 +1124,7 @@ def write_report(
     *,
     current_scenario: str,
     m_live_enabled: bool,
+    m_risk_accepted: bool,
 ) -> None:
     """写出中文认证报告。"""
 
@@ -1111,9 +1140,9 @@ def write_report(
         f"- 原可执行基线：{int(base['executed_trade_count'])}笔，{base['equity_multiple']:.2f}倍，最大回撤{base['max_drawdown']:.2%}。",
         f"- 只接入E2门禁：{int(e2_only['executed_trade_count'])}笔，{e2_only['equity_multiple']:.2f}倍，最大回撤{e2_only['max_drawdown']:.2%}。",
         f"- 再接入L连板3~8扩容：{int(optimized['executed_trade_count'])}笔，{optimized['equity_multiple']:.2f}倍，最大回撤{optimized['max_drawdown']:.2%}。",
-        f"- M研究对照：{int(summary.iloc[3]['executed_trade_count'])}笔，"
+        f"- 含M组合：{int(summary.iloc[3]['executed_trade_count'])}笔，"
         f"{summary.iloc[3]['equity_multiple']:.2f}倍，最大回撤{summary.iloc[3]['max_drawdown']:.2%}"
-        f"（{'当前发布标尺' if m_live_enabled else '未纳入真实下单'}）。",
+        f"（{'当前发布标尺，用户明确接受非劣性风险' if m_live_enabled and m_risk_accepted else '当前发布标尺' if m_live_enabled else '未纳入真实下单'}）。",
         f"- **当前发布场景：`{current_scenario}`。**",
         f"- 当前发布场景相对原基线复利变化："
         f"{current['equity_multiple'] / base['equity_multiple'] - 1:.2%}。",
@@ -1121,7 +1150,10 @@ def write_report(
         f"{current['fixed_initial_notional_multiple']:.2f}倍。",
         f"- 机械复利会把{INITIAL_EQUITY:,.0f}元放大为{current['theoretical_ending_equity']:,.0f}元，"
         f"下一笔理论下单额{current['theoretical_next_order_amount']:,.0f}元；该规模**未通过容量认证**。",
-        "- M当前排在D/L/A之后、E2/C之前，但因样本外和分段回撤门禁未通过，仅保留研究/模拟。",
+        "- M当前排在D/L/A之后、E2/C之前；它没有通过全部分段回撤非劣门禁，"
+        "本次按用户明确风险接受恢复真实新开仓，认证状态为`PASS_WITH_RISK_ACCEPTANCE`，不得描述为门禁通过。"
+        if m_live_enabled and m_risk_accepted
+        else "- M当前排在D/L/A之后、E2/C之前；未启用时仅保留研究/模拟。",
         "- E2门禁字段只来自信号日首次涨停时间；每日第一名被排除后直接空仓，不回补第二名。",
         "- L扩容只增加T日已知的market_chain_count_bucket=3_8；选股、买卖时间、成交约束和替换窄门均不改变。",
         "- 2026短窗口的组合复利略低于扩容前，已在分段表中保留，不再为单笔历史结果继续调参。",
@@ -1150,12 +1182,25 @@ def write_report(
         *verdict_lines(e2_portfolio_comparison, "E2入场门禁", "gate_off", "gate_on"),
         "## M兜底腿完整组合口径分段验证",
         "",
-        "M不与任何腿竞争，只在五腿全空时补位，因此下表的差异全部来自新增交易与其",
-        "带来的时间线错位。",
+        "M只让位于排在它前面的D/L/A，并优先于E2/C；因此下表差异既包括新增交易，也包括",
+        "M替代下游腿及其带来的时间线错位。",
         "",
         markdown_table(m_portfolio_comparison),
         "",
-        *verdict_lines(m_portfolio_comparison, "M兜底腿", "m_off", "m_on"),
+        *verdict_lines(
+            m_portfolio_comparison,
+            "M补位腿",
+            "m_off",
+            "m_on",
+            risk_accepted=m_live_enabled and m_risk_accepted,
+        ),
+        (
+            "- **发布覆盖说明：上述非劣门禁仍判失败；用户基于M自身26笔、平均收益和组合复利，"
+            "明确接受该风险并恢复真实新开仓。本覆盖不改变统计结论，10%回撤保护、82.5%仓位及"
+            "全部成交/风控门禁继续生效。**"
+            if m_live_enabled and m_risk_accepted
+            else ""
+        ),
         "## 实盘对齐说明",
         "",
         "- 配置：`config/strategy_e2_r1_scenarios.json`中的entry_gate。",
@@ -1350,8 +1395,13 @@ def main(*, refresh_input_manifest: bool = False) -> None:
     m_live_enabled = bool(m_config.get("enabled", False)) and bool(
         m_config.get("live_order_enabled", False)
     )
-    if m_live_enabled and not m_noninferior:
-        raise RuntimeError(f"M完整组合非劣门禁未通过，禁止真实上线：{m_noninferior_reason}")
+    m_risk_accepted = bool(m_config.get("live_noninferiority_override", False))
+    certification_status = resolve_m_release_status(
+        m_live_enabled=m_live_enabled,
+        m_noninferior=m_noninferior,
+        risk_accepted=m_risk_accepted,
+        noninferiority_reason=m_noninferior_reason,
+    )
 
     current_daily = with_m_daily if m_live_enabled else optimized_daily
     current_scenario = (
@@ -1399,13 +1449,14 @@ def main(*, refresh_input_manifest: bool = False) -> None:
         e2_portfolio_comparison, m_portfolio_comparison,
         current_scenario=current_scenario,
         m_live_enabled=m_live_enabled,
+        m_risk_accepted=m_risk_accepted,
     )
     manifest_path = write_input_manifest(refresh=refresh_input_manifest)
     input_files = [str(manifest_path.relative_to(PROJECT_ROOT))]
     current_summary = summary[summary["scenario"].eq(current_scenario)].iloc[0]
     certification = {
         "schema_version": 1,
-        "status": "PASS",
+        "status": certification_status,
         "current_executable": True,
         "scenario": current_scenario,
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
@@ -1425,12 +1476,21 @@ def main(*, refresh_input_manifest: bool = False) -> None:
         "m_live_enabled": m_live_enabled,
         "m_noninferiority_passed": m_noninferior,
         "m_noninferiority_reason": m_noninferior_reason,
+        "m_live_risk_accepted": m_risk_accepted,
+        "m_live_risk_acceptance_note": m_config.get(
+            "live_noninferiority_override_note", ""
+        ),
         "config_sha256": certification_config_sha256(runtime_config),
         "code_files": CODE_CERTIFICATION_FILES,
         "code_sha256": certification_files_sha256(PROJECT_ROOT, CODE_CERTIFICATION_FILES),
         "input_files": input_files,
         "input_sha256": certification_files_sha256(PROJECT_ROOT, input_files),
-        "note": "只证明冻结历史输入上的组合认证通过；容量未认证，不代表未来收益或真实成交容量。",
+        "note": (
+            "冻结历史输入已复现；M分段回撤非劣门禁未通过，但用户明确接受风险并恢复真实新开仓。"
+            "容量未认证，不代表未来收益或真实成交容量。"
+            if certification_status == "PASS_WITH_RISK_ACCEPTANCE"
+            else "只证明冻结历史输入上的组合认证通过；容量未认证，不代表未来收益或真实成交容量。"
+        ),
     }
     write_certification(certification)
 

@@ -3,10 +3,10 @@
 
 研究边界：
 
-* 只研究当前组合中17笔普通D（T+2收盘退出）；
-* D→A/C/E2接力仍按T+1集合竞价卖出，绝不参与本研究；
+* 只研究当前组合中14笔普通D（T+2收盘退出）；
+* D接力已经全关，不存在T+1集合竞价让路卖出；
 * 每个POV信号只能使用当时已经完成的bar，不使用未来收盘价决定是否卖；
-* POV均价替换D原收盘价后，重新计算D腿复利、132笔总复利和最大回撤；
+* POV均价替换D原收盘价后，重新计算D腿复利、150笔总复利和最大回撤；
 * 未全部成交的场景不得把残仓按收盘价伪装成成交，直接判定不可认证。
 
 先在Windows盘后采集数据，再运行：
@@ -69,13 +69,12 @@ D_TRADES_PATH = PROJECT_ROOT / "reports" / "strategy_d" / "d_trades.csv"
 OUTPUT_DIR = PROJECT_ROOT / "reports" / "strategy_d" / "exit_pov"
 # 2026-08-07 A/C改用逐日独立候选后，部分原本单独T+2的D转为接力（旧口径为17）。
 EXPECTED_D_COUNT = 14
-# 2026-08-07 A/C改用逐日独立候选后组合笔数变化（旧口径A/C被裁时为132）。
-EXPECTED_PORTFOLIO_COUNT = 135
-EXPECTED_PORTFOLIO_MULTIPLE = 7677.946823375038
-# 2026-08-07 A/C改用逐日独立候选后基准变化（旧口径A/C被裁时为-0.18840599169123395）。
-EXPECTED_PORTFOLIO_DRAWDOWN = -0.23512440973736892
-# 2026-08-07 A/C改用逐日独立候选后（旧口径17笔时为2.3151193811759856）。
-EXPECTED_D_MULTIPLE = 2.5321279494734688
+# 2026-08-10 按用户明确风险接受恢复M后的当前发布标尺；容量仍未认证。
+EXPECTED_PORTFOLIO_COUNT = 150
+EXPECTED_PORTFOLIO_MULTIPLE = 29388.980133715802
+EXPECTED_PORTFOLIO_DRAWDOWN = -0.23558527770382431
+# 含M腿序改变资金占用时间线后，当前14笔D集合的冻结复利。
+EXPECTED_D_MULTIPLE = 2.6514437985212633
 EPSILON = 1e-9
 
 
@@ -132,7 +131,7 @@ def compound(returns: pd.Series) -> float:
 
 
 def load_trade_metadata() -> tuple[pd.DataFrame, pd.DataFrame]:
-    """加载132笔组合及17笔普通D的买入价、原退出价。"""
+    """加载150笔当前组合及14笔普通D的买入价、原退出价。"""
 
     portfolio = pd.read_csv(
         PORTFOLIO_TRADES_PATH,
@@ -223,7 +222,7 @@ def validate_bar_inputs(
     one: pd.DataFrame,
     ordinary: pd.DataFrame,
 ) -> None:
-    """要求17笔普通D全部有完整5分钟和尾盘1分钟数据。"""
+    """要求14笔普通D全部有完整5分钟和尾盘1分钟数据。"""
 
     expected = set(ordinary["key"])
     five_keys = set(five["key"])

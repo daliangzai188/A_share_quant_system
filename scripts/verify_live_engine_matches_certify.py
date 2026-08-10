@@ -261,14 +261,14 @@ def main() -> None:
         shutil.rmtree(workdir, ignore_errors=True)
 
     a = certify.summarize(certified, "认证脚本 pick_by_priority")
-    b = certify.summarize(live, "计划模块研究配置 build_model3_plan + 上游门")
+    b = certify.summarize(live, "计划模块当前含M配置 build_model3_plan + 上游门")
     ex_a = certified[certified["status"] == "EXECUTED"]
     ex_b = live[live["status"] == "EXECUTED"]
 
     print("=" * 78)
     print("历史选择路径核对：实盘计划代码 vs 认证脚本，481信号日逐笔回放")
     print("=" * 78)
-    for label, s, ex in (("认证脚本", a, ex_a), ("计划模块研究配置", b, ex_b)):
+    for label, s, ex in (("认证脚本", a, ex_a), ("计划模块当前含M配置", b, ex_b)):
         print(f"{label}  {s['executed_trade_count']:>3}笔 | {s['equity_multiple']:>13.6f}x | "
               f"回撤{s['max_drawdown']:>9.6%} | 胜率{s['win_rate']:>8.4%}")
         print(f"          {ex['strategy_leg'].value_counts().to_dict()}")
@@ -304,7 +304,7 @@ def main() -> None:
             print("  " + line)
         raise SystemExit(1)
 
-    print("✅ 通过：计划模块在含M研究配置下逐笔选出与认证脚本完全相同的 "
+    print("✅ 通过：计划模块在当前含M配置下逐笔选出与认证脚本完全相同的 "
           f"{a['executed_trade_count']} 笔，复利 {a['equity_multiple']:.6f}x、"
           f"回撤 {a['max_drawdown']:.6%}、胜率 {a['win_rate']:.4%} 完全相等。")
     print("   本结果只证明冻结历史输入上的选择路径一致；未验证真实候选生成、券商成交、"

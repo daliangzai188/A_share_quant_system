@@ -12,9 +12,47 @@ from src.live_certification import (
     validate_live_certification,
 )
 from tests.test_opening_position_policy import make_engine
+from scripts.certify_current_executable_portfolio import resolve_m_release_status
 
 
 class LiveCertificationGateTests(unittest.TestCase):
+    def test_m风险接受使用独立认证状态且不伪造非劣通过(self) -> None:
+        status = resolve_m_release_status(
+            m_live_enabled=True,
+            m_noninferior=False,
+            risk_accepted=True,
+            noninferiority_reason="2024回撤变差",
+        )
+        self.assertEqual(status, "PASS_WITH_RISK_ACCEPTANCE")
+
+        with self.assertRaisesRegex(RuntimeError, "2024回撤变差"):
+            resolve_m_release_status(
+                m_live_enabled=True,
+                m_noninferior=False,
+                risk_accepted=False,
+                noninferiority_reason="2024回撤变差",
+            )
+
+    def test_validator_accepts_configured_risk_acceptance_status(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = {
+                "certification_summary_path": "cert.json",
+                "certification_required_status": "PASS_WITH_RISK_ACCEPTANCE",
+                "certification_expected_scenario": "current_with_m_gap_leg",
+            }
+            (root / "cert.json").write_text(
+                json.dumps(
+                    {
+                        "status": "PASS_WITH_RISK_ACCEPTANCE",
+                        "current_executable": True,
+                        "scenario": "current_with_m_gap_leg",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self.assertTrue(validate_live_certification(root, config).ok)
+
     def test_missing_certification_fails_closed_and_removes_only_buys(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             engine = make_engine([])
