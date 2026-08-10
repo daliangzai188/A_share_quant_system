@@ -33,6 +33,8 @@ d_relay_candidate / no_b_candidate / infer_abc_release_date）已于 2026-08-07 
     python scripts/certify_current_executable_portfolio.py
 
 输出：
+    reports/current_portfolio_alignment/live_certification.json
+    reports/current_portfolio_alignment/input_manifest.json
     reports/current_portfolio_alignment/portfolio_summary.csv
     reports/current_portfolio_alignment/portfolio_trades.csv
     reports/current_portfolio_alignment/portfolio_daily.csv
@@ -45,6 +47,7 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass
 import datetime as dt
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -63,6 +66,10 @@ from scripts.research_strategy_model3_switch import (  # noqa: E402
     selected_l2_source,
 )
 from src.strategy_e2 import load_e2_spec  # noqa: E402
+from src.live_certification import (  # noqa: E402
+    certification_config_sha256,
+    certification_files_sha256,
+)
 from src.strategy_model3_policy import (  # noqa: E402
     model3_l_base_rule_pass,
     model3_l_replace_guard_pass,
@@ -103,10 +110,21 @@ AC_CALIB_K = 1.0016
 M_POOL_PATH = (
     PROJECT_ROOT / "reports" / "strategy_m" / "m_backtest_trades.csv"
 )
+L_SOURCE_PATH = PROJECT_ROOT / "reports" / "strategy_l" / "leader_strategy_trades.csv"
+E2_SPEC_PATH = PROJECT_ROOT / "config" / "strategy_e2_r1_scenarios.json"
 TRADE_CALENDAR_PATH = PROJECT_ROOT / "data" / "raw" / "trade_calendar.csv"
 DAILY_PRICE_DIR = PROJECT_ROOT / "data" / "raw" / "daily"
 OUTPUT_DIR = PROJECT_ROOT / "reports" / "current_portfolio_alignment"
 RUNTIME_CONFIG_PATH = PROJECT_ROOT / "config" / "config.json"
+
+CODE_CERTIFICATION_FILES = [
+    "scripts/certify_current_executable_portfolio.py",
+    "src/combined_live_engine.py",
+    "src/live_certification.py",
+    "src/strategy_e2.py",
+    "src/strategy_m.py",
+    "src/strategy_model3_policy.py",
+]
 
 INITIAL_EQUITY = 500_000.0
 OLD_POSITION_PCT = 0.80
@@ -773,6 +791,7 @@ def summarize(detail: pd.DataFrame, scenario: str) -> dict[str, Any]:
     wins = returns[returns > 0]
     losses = returns[returns < 0]
     multiple = float(detail["equity_after"].iloc[-1] / INITIAL_EQUITY)
+    fixed_initial_notional_multiple = float(1.0 + returns.sum())
     legs = trades["strategy_leg"].astype(str)
     return {
         "scenario": scenario,
@@ -790,6 +809,10 @@ def summarize(detail: pd.DataFrame, scenario: str) -> dict[str, Any]:
         "avg_return": float(returns.mean()),
         "median_return": float(returns.median()),
         "equity_multiple": multiple,
+        "fixed_initial_notional_multiple": fixed_initial_notional_multiple,
+        "theoretical_ending_equity": float(INITIAL_EQUITY * multiple),
+        "theoretical_next_order_amount": float(INITIAL_EQUITY * multiple * POSITION_PCT),
+        "capacity_certified": False,
         "total_compound_return": multiple - 1.0,
         "max_drawdown": float(detail["drawdown"].min()),
         "max_profit": float(returns.max()),
@@ -1061,6 +1084,7 @@ def write_report(
     base = summary.iloc[0]
     e2_only = summary.iloc[1]
     optimized = summary.iloc[2]
+    current = summary[summary["scenario"].eq(current_scenario)].iloc[0]
     lines = [
         "# 当前可执行组合、E2门禁与L扩容认证",
         "",
@@ -1074,12 +1098,17 @@ def write_report(
         f"（{'当前发布标尺' if m_live_enabled else '未纳入真实下单'}）。",
         f"- **当前发布场景：`{current_scenario}`。**",
         f"- 当前发布场景相对原基线复利变化："
-        f"{summary[summary['scenario'].eq(current_scenario)].iloc[0]['equity_multiple'] / base['equity_multiple'] - 1:.2%}。",
+        f"{current['equity_multiple'] / base['equity_multiple'] - 1:.2%}。",
+        f"- 当前发布场景固定初始本金、不随净值放大下单的累计口径："
+        f"{current['fixed_initial_notional_multiple']:.2f}倍。",
+        f"- 机械复利会把{INITIAL_EQUITY:,.0f}元放大为{current['theoretical_ending_equity']:,.0f}元，"
+        f"下一笔理论下单额{current['theoretical_next_order_amount']:,.0f}元；该规模**未通过容量认证**。",
         "- M当前排在D/L/A之后、E2/C之前，但因样本外和分段回撤门禁未通过，仅保留研究/模拟。",
         "- E2门禁字段只来自信号日首次涨停时间；每日第一名被排除后直接空仓，不回补第二名。",
         "- L扩容只增加T日已知的market_chain_count_bucket=3_8；选股、买卖时间、成交约束和替换窄门均不改变。",
         "- 2026短窗口的组合复利略低于扩容前，已在分段表中保留，不再为单笔历史结果继续调参。",
         "- 该结果是历史回放，不是收益承诺；实盘仍须小资金验证成交、滑点、POV和容量。",
+        "- 本目录是冻结历史回归标尺；真实成交滚动结果由`python3 scripts/report_rolling_live_performance.py`独立生成，二者不得混用。",
         "",
         "## 组合新旧对照",
         "",
@@ -1131,6 +1160,60 @@ def write_certification(payload: dict[str, Any]) -> None:
     temporary = path.with_suffix(".json.tmp")
     temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     temporary.replace(path)
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def write_input_manifest() -> Path:
+    """记录冻结认证用到的数据文件版本，避免报告脱离输入后无法复核。"""
+
+    direct = [
+        BASELINE_PATH,
+        ABC_PATH,
+        D_PATH,
+        E2_PATH,
+        NO_B_RESELECTION_PATH,
+        AC_DAILY_PATH,
+        M_POOL_PATH,
+        L_SOURCE_PATH,
+        E2_SPEC_PATH,
+        TRADE_CALENDAR_PATH,
+    ]
+    daily = sorted(
+        path
+        for path in DAILY_PRICE_DIR.glob("????????.csv")
+        if "20240520" <= path.stem <= "20260514"
+    )
+    files = direct + daily
+    missing = [str(path) for path in files if not path.exists()]
+    if missing:
+        raise FileNotFoundError("认证输入清单存在缺失文件：" + "；".join(missing))
+    rows = []
+    for path in files:
+        rows.append(
+            {
+                "path": str(path.relative_to(PROJECT_ROOT)),
+                "size": path.stat().st_size,
+                "sha256": _file_sha256(path),
+            }
+        )
+    manifest = {
+        "schema_version": 1,
+        "window": "20240520~20260514",
+        "file_count": len(rows),
+        "files": rows,
+    }
+    path = OUTPUT_DIR / "input_manifest.json"
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary.replace(path)
+    return path
 
 
 def main() -> None:
@@ -1276,6 +1359,8 @@ def main() -> None:
         current_scenario=current_scenario,
         m_live_enabled=m_live_enabled,
     )
+    manifest_path = write_input_manifest()
+    input_files = [str(manifest_path.relative_to(PROJECT_ROOT))]
     current_summary = summary[summary["scenario"].eq(current_scenario)].iloc[0]
     certification = {
         "schema_version": 1,
@@ -1288,10 +1373,23 @@ def main() -> None:
         "executed_trade_count": int(current_summary["executed_trade_count"]),
         "equity_multiple": float(current_summary["equity_multiple"]),
         "max_drawdown": float(current_summary["max_drawdown"]),
+        "fixed_initial_notional_multiple": float(
+            current_summary["fixed_initial_notional_multiple"]
+        ),
+        "theoretical_ending_equity": float(current_summary["theoretical_ending_equity"]),
+        "theoretical_next_order_amount": float(
+            current_summary["theoretical_next_order_amount"]
+        ),
+        "capacity_certified": False,
         "m_live_enabled": m_live_enabled,
         "m_noninferiority_passed": m_noninferior,
         "m_noninferiority_reason": m_noninferior_reason,
-        "note": "只证明冻结历史输入上的组合认证通过，不代表未来收益或真实成交容量。",
+        "config_sha256": certification_config_sha256(runtime_config),
+        "code_files": CODE_CERTIFICATION_FILES,
+        "code_sha256": certification_files_sha256(PROJECT_ROOT, CODE_CERTIFICATION_FILES),
+        "input_files": input_files,
+        "input_sha256": certification_files_sha256(PROJECT_ROOT, input_files),
+        "note": "只证明冻结历史输入上的组合认证通过；容量未认证，不代表未来收益或真实成交容量。",
     }
     write_certification(certification)
 

@@ -75,6 +75,10 @@
     "certification_report_path": "reports/current_portfolio_alignment/portfolio_report.md",
     "certification_required_status": "PASS",
     "certification_expected_scenario": "current_after_e2_gate_and_l_chain_3_8_expansion",
+    "certification_max_age_hours": 168,
+    "certification_require_hashes": true,
+    "rolling_live_report_path": "reports/live_performance/rolling_live_status.json",
+    "rolling_min_trades_for_decision": 20,
     "selected_rule_name": "expand_chain_3_8_l_unconditional_priority_without_m_live",
     "selected_rule_description": "当前实盘腿序D>L>A>E2>C；L通过基础环境条件后无条件优先。M保留研究信号但live_order_enabled=false，不得进入真实买单。",
     "base_l_rule": {
@@ -106,6 +110,8 @@
       "avg_return": 0.076115,
       "median_return": 0.046872,
       "equity_multiple": 7677.219011,
+      "fixed_initial_notional_multiple": 11.275524,
+      "capacity_certified": false,
       "max_drawdown": -0.23505,
       "max_loss": -0.163694,
       "max_consecutive_losses": 5,
@@ -117,6 +123,25 @@
       },
       "note": "2026-08-10 P0收口：M分段回撤非劣门禁未通过，真实下单关闭；当前发布标尺为E2门禁+L扩容、不含M的135笔。mode1_trade_count=A+C+E2+D。复现:python3 scripts/certify_current_executable_portfolio.py"
     }
+  },
+  "live_performance_report": {
+    "file_role": "真实成交滚动监控；只读execution_tracking成交汇总，不连接券商、不直接改变策略。",
+    "active_legs": [
+      "A",
+      "C",
+      "D",
+      "E2",
+      "L",
+      "M"
+    ],
+    "windows": [
+      20,
+      60,
+      120
+    ],
+    "minimum_samples_for_decision": 20,
+    "minimum_commission": 5.0,
+    "note": "少于20笔只标INSUFFICIENT_SAMPLE，禁止根据少量连亏自动新增过滤；收益使用真实成交金额并估算费用。"
   },
   "notify": {
     "file_role": "实盘告警推送。渠道=bark，推送地址放 .env 的 BARK_URL。账号仅后2位、金额用万单位、标的含代码名称。",

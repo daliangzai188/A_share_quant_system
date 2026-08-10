@@ -8,20 +8,23 @@
 - M研究对照：150笔，29387.05倍，最大回撤-23.56%（未纳入真实下单）。
 - **当前发布场景：`current_after_e2_gate_and_l_chain_3_8_expansion`。**
 - 当前发布场景相对原基线复利变化：95.80%。
+- 当前发布场景固定初始本金、不随净值放大下单的累计口径：11.28倍。
+- 机械复利会把500,000元放大为3,838,609,506元，下一笔理论下单额3,166,852,842元；该规模**未通过容量认证**。
 - M当前排在D/L/A之后、E2/C之前，但因样本外和分段回撤门禁未通过，仅保留研究/模拟。
 - E2门禁字段只来自信号日首次涨停时间；每日第一名被排除后直接空仓，不回补第二名。
 - L扩容只增加T日已知的market_chain_count_bucket=3_8；选股、买卖时间、成交约束和替换窄门均不改变。
 - 2026短窗口的组合复利略低于扩容前，已在分段表中保留，不再为单笔历史结果继续调参。
 - 该结果是历史回放，不是收益承诺；实盘仍须小资金验证成交、滑点、POV和容量。
+- 本目录是冻结历史回归标尺；真实成交滚动结果由`python3 scripts/report_rolling_live_performance.py`独立生成，二者不得混用。
 
 ## 组合新旧对照
 
-| scenario | signal_day_count | executed_trade_count | a_trade_count | c_trade_count | d_trade_count | d_to_a_trade_count | d_to_c_trade_count | d_to_e2_trade_count | e2_trade_count | l_trade_count | win_rate | avg_return | median_return | equity_multiple | total_compound_return | max_drawdown | max_profit | max_loss | profit_loss_ratio | max_consecutive_losses | is_current_executable |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| current_before_e2_entry_gate | 481 | 133 | 33 | 16 | 14 | 0 | 0 | 0 | 31 | 39 | 0.699248 | 0.071705 | 0.036966 | 3920.935559 | 3919.935559 | -0.235050 | 0.817090 | -0.163694 | 3.081647 | 5 | False |
-| current_after_e2_entry_gate | 481 | 132 | 34 | 18 | 14 | 0 | 0 | 0 | 27 | 39 | 0.712121 | 0.074661 | 0.038162 | 5291.495552 | 5290.495552 | -0.235050 | 0.817090 | -0.163694 | 3.139329 | 5 | False |
-| current_after_e2_gate_and_l_chain_3_8_expansion | 481 | 135 | 33 | 17 | 14 | 0 | 0 | 0 | 19 | 52 | 0.711111 | 0.076115 | 0.046872 | 7677.219011 | 7676.219011 | -0.235050 | 0.817090 | -0.163694 | 3.191204 | 5 | True |
-| current_with_m_gap_leg | 481 | 150 | 31 | 17 | 14 | 0 | 0 | 0 | 15 | 47 | 0.693333 | 0.078623 | 0.047037 | 29387.054989 | 29386.054989 | -0.235585 | 0.817090 | -0.163694 | 3.469075 | 5 | False |
+| scenario | signal_day_count | executed_trade_count | a_trade_count | c_trade_count | d_trade_count | d_to_a_trade_count | d_to_c_trade_count | d_to_e2_trade_count | e2_trade_count | l_trade_count | win_rate | avg_return | median_return | equity_multiple | fixed_initial_notional_multiple | theoretical_ending_equity | theoretical_next_order_amount | capacity_certified | total_compound_return | max_drawdown | max_profit | max_loss | profit_loss_ratio | max_consecutive_losses | is_current_executable |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| current_before_e2_entry_gate | 481 | 133 | 33 | 16 | 14 | 0 | 0 | 0 | 31 | 39 | 0.699248 | 0.071705 | 0.036966 | 3920.935559 | 10.536705 | 1960467779.598271 | 1617385918.168573 | False | 3919.935559 | -0.235050 | 0.817090 | -0.163694 | 3.081647 | 5 | False |
+| current_after_e2_entry_gate | 481 | 132 | 34 | 18 | 14 | 0 | 0 | 0 | 27 | 39 | 0.712121 | 0.074661 | 0.038162 | 5291.495552 | 10.855204 | 2645747775.898582 | 2182741915.116331 | False | 5290.495552 | -0.235050 | 0.817090 | -0.163694 | 3.139329 | 5 | False |
+| current_after_e2_gate_and_l_chain_3_8_expansion | 481 | 135 | 33 | 17 | 14 | 0 | 0 | 0 | 19 | 52 | 0.711111 | 0.076115 | 0.046872 | 7677.219011 | 11.275524 | 3838609505.517597 | 3166852842.052018 | False | 7676.219011 | -0.235050 | 0.817090 | -0.163694 | 3.191204 | 5 | True |
+| current_with_m_gap_leg | 481 | 150 | 31 | 17 | 14 | 0 | 0 | 0 | 15 | 47 | 0.693333 | 0.078623 | 0.047037 | 29387.054989 | 12.793503 | 14693527494.255205 | 12122160182.760544 | False | 29386.054989 | -0.235585 | 0.817090 | -0.163694 | 3.469075 | 5 | False |
 
 ## E2前后半段及分年验证
 

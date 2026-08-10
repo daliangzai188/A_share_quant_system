@@ -3,14 +3,32 @@
   "status": "PASS",
   "current_executable": true,
   "scenario": "current_after_e2_gate_and_l_chain_3_8_expansion",
-  "generated_at": "2026-08-10T03:51:19.486443+00:00",
+  "generated_at": "2026-08-10T03:59:21.929911+00:00",
   "input_start_date": "20240520",
   "input_end_date": "20260514",
   "executed_trade_count": 135,
   "equity_multiple": 7677.219011035194,
   "max_drawdown": -0.23504962855315814,
+  "fixed_initial_notional_multiple": 11.275523723190783,
+  "theoretical_ending_equity": 3838609505.517597,
+  "theoretical_next_order_amount": 3166852842.0520177,
+  "capacity_certified": false,
   "m_live_enabled": false,
   "m_noninferiority_passed": false,
   "m_noninferiority_reason": "回撤劣段=全部、训练半段<20250603、自然年2024",
-  "note": "只证明冻结历史输入上的组合认证通过，不代表未来收益或真实成交容量。"
+  "config_sha256": "59e84493c59115f0f6fdd61705bbf20282c0ae3dced67eaa8892cd2847555751",
+  "code_files": [
+    "scripts/certify_current_executable_portfolio.py",
+    "src/combined_live_engine.py",
+    "src/live_certification.py",
+    "src/strategy_e2.py",
+    "src/strategy_m.py",
+    "src/strategy_model3_policy.py"
+  ],
+  "code_sha256": "4a097bfde47215718cdf9fd48cc4f697777bb0ab7cffd3a63ac065cb85d66cbc",
+  "input_files": [
+    "reports/current_portfolio_alignment/input_manifest.json"
+  ],
+  "input_sha256": "b5c5bb0fc18042c8dc2bed1caf9a625633776a41dc58517241abe31f89e4561d",
+  "note": "只证明冻结历史输入上的组合认证通过；容量未认证，不代表未来收益或真实成交容量。"
 }

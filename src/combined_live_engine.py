@@ -519,7 +519,9 @@ class CombinedLiveEngine:
             return mode1_state, decisions, mode1_orders
 
         if bool(model3_config.get("require_live_certification", False)):
-            certification = validate_live_certification(self.project_root, model3_config)
+            certification = validate_live_certification(
+                self.project_root, model3_config, full_config=self.config
+            )
             if not certification.ok:
                 if not mode1_orders.empty and "side" in mode1_orders.columns:
                     keep_mask = ~mode1_orders["side"].astype(str).str.upper().eq("BUY")

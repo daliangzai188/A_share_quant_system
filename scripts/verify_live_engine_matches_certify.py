@@ -1,4 +1,4 @@
-"""代入证明：把实盘代码本身放进 481 信号日回放，逐笔验证它能跑出认证标尺。
+"""历史选择路径核对：把实盘计划代码放进481个冻结信号日逐笔比对。
 
 为什么需要这个脚本
 ==================
@@ -18,7 +18,8 @@
 把每个信号日的各腿候选写成实盘平时读的那些文件（A/C 操作台 csv、L 信号 json），
 让实盘代码自己去读、自己做决定，再把它选出的 (腿, 代码) 与认证脚本的选择逐笔
 比对。资金占用、收益计算、回撤统计全部沿用认证脚本本身，本脚本只替换"选哪条腿"
-这一个环节——要证明的恰恰就是它。
+这一个环节。因此它只能证明冻结历史输入上的选择路径一致，不能证明真实候选生成、
+券商成交、滑点、容量或未来收益。
 
 判定
 ====
@@ -260,14 +261,14 @@ def main() -> None:
         shutil.rmtree(workdir, ignore_errors=True)
 
     a = certify.summarize(certified, "认证脚本 pick_by_priority")
-    b = certify.summarize(live, "实盘代码 build_model3_plan + 上游门")
+    b = certify.summarize(live, "计划模块研究配置 build_model3_plan + 上游门")
     ex_a = certified[certified["status"] == "EXECUTED"]
     ex_b = live[live["status"] == "EXECUTED"]
 
     print("=" * 78)
-    print("代入证明：实盘代码 vs 认证脚本，481 信号日逐笔回放")
+    print("历史选择路径核对：实盘计划代码 vs 认证脚本，481信号日逐笔回放")
     print("=" * 78)
-    for label, s, ex in (("认证脚本", a, ex_a), ("实盘代码", b, ex_b)):
+    for label, s, ex in (("认证脚本", a, ex_a), ("计划模块研究配置", b, ex_b)):
         print(f"{label}  {s['executed_trade_count']:>3}笔 | {s['equity_multiple']:>13.6f}x | "
               f"回撤{s['max_drawdown']:>9.6%} | 胜率{s['win_rate']:>8.4%}")
         print(f"          {ex['strategy_leg'].value_counts().to_dict()}")
@@ -303,10 +304,11 @@ def main() -> None:
             print("  " + line)
         raise SystemExit(1)
 
-    print("✅ 通过：实盘代码逐笔选出与认证脚本完全相同的 "
+    print("✅ 通过：计划模块在含M研究配置下逐笔选出与认证脚本完全相同的 "
           f"{a['executed_trade_count']} 笔，复利 {a['equity_multiple']:.6f}x、"
           f"回撤 {a['max_drawdown']:.6%}、胜率 {a['win_rate']:.4%} 完全相等。")
-    print("   认证标尺可以作为实盘的收益预期基准（执行损耗另计，见下方风险清单）。")
+    print("   本结果只证明冻结历史输入上的选择路径一致；未验证真实候选生成、券商成交、"
+          "滑点、容量和未来收益，不得作为实盘收益预期。")
 
 
 if __name__ == "__main__":
