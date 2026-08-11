@@ -85,3 +85,4 @@ reports/strategy_m/m_equity_peak.json
 reports/execution_tracking/*.json
 reports/july_august_review/*.json
 reports/live_performance/*.json
+reports/oos_evaluation/*.json
