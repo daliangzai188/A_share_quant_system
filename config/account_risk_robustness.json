@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "status": "FIXED_CANDIDATE_VALIDATION",
+  "validation_id": "account-risk-fixed-random-20260811-v1",
+  "selection_commit": "1ac0a0b",
+  "candidate": {
+    "candidate_id": "daily_off__dd_0p18__streak_2__cooldown_5",
+    "daily_loss_pct": null,
+    "drawdown_pct": 0.18,
+    "consecutive_losses": 2,
+    "cooldown_trade_days": 5,
+    "expected_full_equity_multiple": 24567.55237158612
+  },
+  "input_trades_path": "reports/current_portfolio_alignment/portfolio_trades.csv",
+  "input_daily_path": "reports/current_portfolio_alignment/portfolio_daily.csv",
+  "certification_path": "reports/current_portfolio_alignment/live_certification.json",
+  "runtime_config_path": "config/config.json",
+  "compound_floor_policy_path": "config/release_compound_floor.json",
+  "release_oos_status_path": "reports/oos_evaluation/release_oos_status.json",
+  "output_dir": "reports/account_risk_robustness",
+  "random_seed": 20260811,
+  "random_samples_per_window": 500,
+  "window_trade_counts": [
+    10,
+    20,
+    40,
+    60
+  ],
+  "minimum_window_retained_ratio": 0.7,
+  "minimum_window_pass_rate": 0.9,
+  "minimum_p10_retained_ratio": 0.7,
+  "minimum_drawdown_noninferior_rate": 0.8,
+  "minimum_fixed_segment_retained_ratio": 0.7,
+  "maximum_fixed_segment_drawdown_degradation_pct": 0.02,
+  "note": "候选已由上一提交固定，本步骤禁止重新搜索参数。随机连续交易窗口每次都从空风险状态启动，用来检查规则对不同历史起点是否稳定；它仍属于历史重采样，不是真正样本外。即使历史稳健性通过，真实OOS不足时也只能保持影子模式。"
+}

@@ -89,6 +89,7 @@ reports/oos_evaluation/*.json
 reports/release_guard/
 reports/account_risk_shadow/
 reports/account_risk_research/
+reports/account_risk_robustness/
 
 # 实盘运行状态备份包含持仓、委托号和成交事件，只保留本机/异地备份，禁止入库
 backups/runtime_state/
