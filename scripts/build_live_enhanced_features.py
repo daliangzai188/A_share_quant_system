@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import getpass
-import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -14,6 +12,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.data_source import TushareDataSource
+from src.secret_config import ensure_tushare_token
 from src.utils.config import load_json_config
 from src.utils.logger import setup_logger, get_logger
 
@@ -32,23 +31,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--input-path", default="data/processed/live_limit_up_fill_scored.csv", help="当日涨停候选输入。")
     parser.add_argument("--max-trade-days", type=int, default=10, help="输出文件只保留最近N个交易日。")
     return parser.parse_args()
-
-
-def ensure_tushare_token(config: dict[str, Any]) -> None:
-    token_env = config.get("data_source", {}).get("token_env", "TUSHARE_TOKEN")
-    if os.getenv(token_env):
-        return
-    stored = str(config.get("data_source", {}).get("token", "")).strip()
-    if stored:
-        os.environ[token_env] = stored
-        return
-    try:
-        token = getpass.getpass("请输入 Tushare Pro Token（不会显示，且不会保存到本地）: ").strip()
-    except EOFError as exc:
-        raise RuntimeError(f"Tushare Token 未配置：请设置环境变量 {token_env} 或 config/config.json") from exc
-    if not token:
-        raise RuntimeError("Tushare Token 不能为空。")
-    os.environ[token_env] = token
 
 
 def setup(config: dict[str, Any]) -> None:

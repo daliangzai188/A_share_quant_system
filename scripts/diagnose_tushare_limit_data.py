@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import getpass
-import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -15,6 +13,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.utils.config import load_json_config
 from src.utils.logger import setup_logger
+from src.secret_config import ensure_tushare_token
 
 
 def parse_args() -> argparse.Namespace:
@@ -22,20 +21,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--trade-date", required=True, help="交易日期，格式 YYYYMMDD。")
     parser.add_argument("--config", default="config/config.json", help="配置文件路径。")
     return parser.parse_args()
-
-
-def ensure_tushare_token(config: dict[str, Any]) -> None:
-    token_env = config.get("data_source", {}).get("token_env", "TUSHARE_TOKEN")
-    if os.getenv(token_env):
-        return
-    stored = str(config.get("data_source", {}).get("token", "")).strip()
-    if stored:
-        os.environ[token_env] = stored
-        return
-    token = getpass.getpass("请输入 Tushare Pro Token（不会显示，且不会保存到本地）: ").strip()
-    if not token:
-        raise RuntimeError("Tushare Token 不能为空。")
-    os.environ[token_env] = token
 
 
 def local_csv_status(path: Path) -> dict[str, Any]:

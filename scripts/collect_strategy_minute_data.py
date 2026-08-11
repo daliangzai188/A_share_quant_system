@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import getpass
-import os
 import sys
 from pathlib import Path
 
@@ -12,6 +10,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.data_source import TushareDataSource
 from src.minute_data_collector import StrategyMinuteDataCollector
+from src.secret_config import ensure_tushare_token
 from src.utils.config import load_json_config
 from src.utils.logger import setup_logger
 
@@ -26,16 +25,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-import", action="store_true", help="只保存原始分钟 K，不合并到标准 minute_bars.csv。")
     parser.add_argument("--dry-run-targets", action="store_true", help="只生成采集目标预览，不请求 Tushare。")
     return parser.parse_args()
-
-
-def ensure_tushare_token(config: dict) -> None:
-    token_env = config.get("data_source", {}).get("token_env", "TUSHARE_TOKEN")
-    if os.getenv(token_env):
-        return
-    token = getpass.getpass("请输入 Tushare Pro Token（不会显示，且不会保存到本地）: ").strip()
-    if not token:
-        raise RuntimeError("未输入 Tushare Pro Token。")
-    os.environ[token_env] = token
 
 
 def main() -> None:

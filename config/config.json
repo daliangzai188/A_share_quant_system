@@ -401,8 +401,8 @@
   "data_source": {
     "primary": "tushare",
     "token_env": "TUSHARE_TOKEN",
-    "token": "515772e0adce68462fa330260bbd3a4129fec709f002f1eff3d84766",
-    "token_note": "填入 Tushare Pro Token 后 daemon 可自动采集数据，无需交互输入。优先级：环境变量 > 此字段。",
+    "token": "",
+    "token_note": "本字段必须保持为空。真实Token只允许写入被Git忽略的.env中的TUSHARE_TOKEN或操作系统环境变量。",
     "request_retry_times": 3,
     "request_retry_wait_seconds": 3,
     "request_timeout_seconds": 60,

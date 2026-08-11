@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import getpass
-import os
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -12,6 +10,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.utils.config import load_json_config
+from src.secret_config import ensure_tushare_token
 from src.utils.time_utils import yesterday_beijing
 
 
@@ -30,26 +29,6 @@ def parse_args() -> argparse.Namespace:
         help="要求 end-date 的涨停池 CSV 必须存在且有数据行；守护进程收盘流水线使用。",
     )
     return parser.parse_args()
-
-
-def ensure_tushare_token(config: dict) -> None:
-    token_env = config.get("data_source", {}).get("token_env", "TUSHARE_TOKEN")
-    if os.getenv(token_env):
-        return
-    stored = config.get("data_source", {}).get("token", "").strip()
-    if stored:
-        os.environ[token_env] = stored
-        return
-    try:
-        token = getpass.getpass("请输入 Tushare Pro Token（不会显示，且不会保存到本地）: ").strip()
-    except EOFError:
-        raise RuntimeError(
-            "Tushare Token 未配置。请在 config/config.json 的 data_source.token 字段填入 token，"
-            "或设置环境变量 TUSHARE_TOKEN。"
-        )
-    if not token:
-        raise RuntimeError("Tushare Token 不能为空。")
-    os.environ[token_env] = token
 
 
 def yesterday_yyyymmdd() -> str:

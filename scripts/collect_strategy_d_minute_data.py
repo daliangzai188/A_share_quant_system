@@ -21,7 +21,6 @@
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 import time
 from pathlib import Path
@@ -34,6 +33,7 @@ import pandas as pd
 
 from src.utils.logger import setup_logger
 from src.utils.config import load_json_config
+from src.secret_config import ensure_tushare_token
 
 logger = setup_logger(
     log_dir=PROJECT_ROOT / "logs",
@@ -207,9 +207,8 @@ def main() -> None:
         return
 
     # 加载数据源
-    token = os.getenv("TUSHARE_TOKEN", "")
-    if not token:
-        raise RuntimeError("未找到 TUSHARE_TOKEN 环境变量，请在 .env 中配置或 export TUSHARE_TOKEN=xxx")
+    config = load_json_config("config/config.json")
+    ensure_tushare_token(config)
 
     from src.data_source import TushareDataSource
     data_source = TushareDataSource(config_path=str(PROJECT_ROOT / "config" / "config.json"))

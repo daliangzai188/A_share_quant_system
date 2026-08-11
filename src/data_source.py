@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -8,9 +7,9 @@ from typing import Any, Callable, Optional
 
 import pandas as pd
 import tushare as ts
-from dotenv import load_dotenv
 from tenacity import retry, stop_after_attempt, wait_fixed
 
+from src.secret_config import load_tushare_token
 from src.utils.config import get_project_root, load_json_config
 from src.utils.logger import get_logger, setup_logger
 
@@ -28,7 +27,6 @@ class TushareDataSource:
 
     def __init__(self, config_path: str | Path = "config/config.json") -> None:
         self.project_root = get_project_root()
-        load_dotenv(self.project_root / ".env")
         self.config = load_json_config(config_path)
         logging_config = self.config.get("logging", {})
         setup_logger(
@@ -45,11 +43,12 @@ class TushareDataSource:
             retry_wait_seconds=int(source_config.get("request_retry_wait_seconds", 3)),
             request_timeout_seconds=int(source_config.get("request_timeout_seconds", 60)),
         )
-        token = os.getenv(self.tushare_config.token_env) or source_config.get("token")
+        token = load_tushare_token(self.config, project_root=self.project_root)
         if not token:
             raise RuntimeError(
                 f"未找到环境变量 {self.tushare_config.token_env}。"
-                "请运行采集脚本并按提示输入 Token，或在 config/config.json 的 data_source.token 中配置。"
+                "请把真实Token写入项目根目录.env或操作系统环境变量；"
+                "禁止写入config/config.json。"
             )
 
         self.token = token.strip()

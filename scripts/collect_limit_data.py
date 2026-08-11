@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import getpass
-import os
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -12,6 +10,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.utils.config import load_json_config
+from src.secret_config import ensure_tushare_token
 from src.utils.time_utils import yesterday_beijing
 
 
@@ -49,20 +48,6 @@ def main() -> None:
                 f"{end_date} 未采集到 limit_list_d 完整涨停池数据: {limit_path}。"
                 "请不要用 stk_limit 基础口径替代历史最佳策略口径。"
             )
-
-
-def ensure_tushare_token(config: dict) -> None:
-    token_env = config.get("data_source", {}).get("token_env", "TUSHARE_TOKEN")
-    if os.getenv(token_env):
-        return
-    stored = str(config.get("data_source", {}).get("token", "")).strip()
-    if stored:
-        os.environ[token_env] = stored
-        return
-    token = getpass.getpass(f"请输入 Tushare Pro Token（不会显示，且不会保存到本地）: ").strip()
-    if not token:
-        raise RuntimeError("Tushare Token 不能为空。")
-    os.environ[token_env] = token
 
 
 def yesterday_yyyymmdd() -> str:

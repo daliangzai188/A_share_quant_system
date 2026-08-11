@@ -25,6 +25,12 @@ PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 STILL_ACTIVE = 259
 
 root = Path(__file__).absolute().parent
+try:
+    from src.secret_config import load_local_env
+
+    load_local_env(root, override=False)
+except Exception as exc:
+    print(f"WARNING: 本地.env加载失败，数据采集会在缺少TUSHARE_TOKEN时安全失败：{exc}")
 log = root / "logs" / "trading_daemon.log"
 pid_file = root / ".daemon_pid"
 d_monitor_pid_file = root / "logs" / "strategy_d_monitor.pid"
