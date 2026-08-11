@@ -7,7 +7,12 @@ import unittest
 
 import pandas as pd
 
-from src.release_oos_monitor import daily_log_lines, is_last_open_day_of_week, record_and_maybe_remind
+from src.release_oos_monitor import (
+    build_ai_review_prompt,
+    daily_log_lines,
+    is_last_open_day_of_week,
+    record_and_maybe_remind,
+)
 
 
 class ReleaseOosMonitorTest(unittest.TestCase):
@@ -22,6 +27,7 @@ class ReleaseOosMonitorTest(unittest.TestCase):
         }).to_csv(self.root / "data/raw/trade_calendar.csv", index=False)
         self.payload = {
             "release_id": "release-test",
+            "oos_start_date": "20260105",
             "status": "EARLY_OBSERVATION",
             "reason": "样本不足，只观察",
             "optimization_decision": "HOLD_RELEASE",
@@ -59,6 +65,14 @@ class ReleaseOosMonitorTest(unittest.TestCase):
         self.assertIn("真实成交=2/20", text)
         self.assertIn("不自动改策略/不阻断下单", text)
 
+    def test_ai_prompt_is_model_independent_and_blocks_direct_changes(self) -> None:
+        prompt = build_ai_review_prompt(self.payload, "20260108")
+        self.assertIn("如果你无法访问项目文件，先要求我上传", prompt)
+        self.assertIn("同一信号日的成对样本", prompt)
+        self.assertIn("D在信号日14:00后先买", prompt)
+        self.assertIn("本轮不要修改任何代码", prompt)
+        self.assertIn("少于20笔", prompt)
+
     def test_daily_history_idempotent_and_weekly_notification_deduplicated(self) -> None:
         calls: list[tuple] = []
 
@@ -71,12 +85,18 @@ class ReleaseOosMonitorTest(unittest.TestCase):
         self.assertTrue(first["weekly_notification_sent"])
         self.assertFalse(second["weekly_notification_sent"])
         self.assertEqual(len(calls), 1)
+        sent_body = calls[0][0][2]
+        self.assertIn("【复制给AI】", sent_body)
+        self.assertIn("禁止用未来信息", sent_body)
         daily = pd.read_csv(self.root / "reports/oos_evaluation/release_oos_daily_history.csv")
         weekly = pd.read_csv(self.root / "reports/oos_evaluation/release_oos_weekly_history.csv")
         self.assertEqual(len(daily), 1)
         self.assertEqual(len(weekly), 1)
         state = json.loads((self.root / "data/state/oos_analysis_reminder_state.json").read_text())
         self.assertEqual(state["last_week_key"], "release-test|2026-W02")
+        prompt_path = self.root / "reports/oos_evaluation/ai_review_prompt.md"
+        self.assertTrue(prompt_path.exists())
+        self.assertIn("发布版本样本外报告", prompt_path.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":
