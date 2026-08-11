@@ -163,6 +163,48 @@ class LivePerformanceTests(unittest.TestCase):
         self.assertEqual(int(metrics.iloc[0]["trustworthy_plan_count"]), 0)
         self.assertEqual(int(metrics.iloc[0]["backfilled_plan_count"]), 1)
 
+    def test_amount_based_top_up_within_budget_is_not_reported_as_overfill(self) -> None:
+        raw = pd.DataFrame(
+            [
+                {
+                    "strategy_leg": "C",
+                    "entry_plan_source": "LIVE_FROZEN",
+                    "entry_target_qty": 4800,
+                    "entry_filled_qty": 5000,
+                    "entry_target_amount": 231445.29,
+                    "entry_fill_amount": 227532.00,
+                    "exit_target_qty": 5000,
+                    "exit_filled_qty": 5000,
+                    "execution_status": "已平仓",
+                },
+                {
+                    "strategy_leg": "A",
+                    "entry_plan_source": "LIVE_FROZEN",
+                    "entry_target_qty": 17200,
+                    "entry_filled_qty": 20000,
+                    "entry_target_amount": 202960.00,
+                    "entry_fill_amount": 228800.00,
+                    "exit_target_qty": 20000,
+                    "exit_filled_qty": 20000,
+                    "execution_status": "已平仓",
+                },
+            ]
+        )
+
+        metrics = execution_capacity_metrics(raw, {"active_legs": ["A", "C"]})
+
+        # C虽因金额型补单多成交200股，但总金额仍低于冻结预算；A的股数、金额
+        # 均超过冻结计划，仍应保留为真正的超额成交记录。
+        self.assertEqual(int(metrics.iloc[0]["overfill_count"]), 1)
+        self.assertEqual(
+            int(metrics[metrics["segment"].eq("策略C")].iloc[0]["overfill_count"]),
+            0,
+        )
+        self.assertEqual(
+            int(metrics[metrics["segment"].eq("策略A")].iloc[0]["overfill_count"]),
+            1,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

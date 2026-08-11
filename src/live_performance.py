@@ -187,6 +187,9 @@ def _capacity_segment_metrics(
     target_amount = _numeric(trustworthy, "entry_target_amount")
     entry_amount = _numeric(trustworthy, "entry_fill_amount")
     entry_ratio = (entry_qty / target_qty.where(target_qty.gt(0))).fillna(0.0)
+    entry_amount_ratio = (
+        entry_amount / target_amount.where(target_amount.gt(0))
+    ).fillna(0.0)
     entry_ratio_capped = entry_ratio.clip(lower=0.0, upper=1.0)
     exit_qty = _numeric(trustworthy, "exit_filled_qty")
     exit_target = _numeric(trustworthy, "exit_target_qty")
@@ -224,7 +227,14 @@ def _capacity_segment_metrics(
         "backfilled_plan_count": int(frame["entry_plan_source"].eq("BACKFILLED").sum()),
         "missing_plan_count": int(frame["entry_plan_source"].eq("MISSING").sum()),
         "zero_fill_count": int(entry_qty.eq(0).sum()),
-        "overfill_count": int(entry_ratio.gt(1.01).sum()),
+        # 金额型补单会在成交价低于计划参考价时多买一手，但只要总成交金额仍在
+        # 冻结预算内，就不是资金暴露超额。目标金额缺失时才退回纯股数口径。
+        "overfill_count": int(
+            (
+                entry_ratio.gt(1.01)
+                & (target_amount.le(0) | entry_amount_ratio.gt(1.01))
+            ).sum()
+        ),
         "entry_full_fill_rate": float(entry_ratio.ge(full_fill_threshold).mean())
         if len(trustworthy)
         else 0.0,
