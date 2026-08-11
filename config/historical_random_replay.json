@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "file_role": "当前冻结发布版本的历史随机连续区间伪实盘压力测试；只生成研究报告，不改变实盘候选、腿序、仓位或风控。",
+  "random_seed": 20260811,
+  "window_lengths": [
+    20,
+    60,
+    120
+  ],
+  "samples_per_length": 200,
+  "sampling_mode": "balanced_start_year",
+  "market_emotion_path": "data/processed/market_emotion_features.csv",
+  "market_regime_breakpoints": [
+    50,
+    100,
+    150
+  ],
+  "market_regime_labels": [
+    "weak_lt_50",
+    "neutral_50_99",
+    "strong_100_149",
+    "very_strong_gte_150"
+  ],
+  "output_dir": "reports/historical_random_replay",
+  "note": "随机区间允许重叠，不能当成相互独立样本或真正样本外；窗口仅统计区间结束前已完整退出的交易，右边界未退出交易不偷看未来收益。"
+}
