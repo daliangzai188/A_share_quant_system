@@ -48,6 +48,62 @@ class ExecutionEventStoreTests(unittest.TestCase):
             self.assertEqual(audit["event_revision_count"], 2)
             self.assertEqual(audit["head_count_by_type"], {"BUY": 1})
 
+    def test_payload_can_restore_an_existing_historical_revision(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "events.sqlite3"
+            store = ExecutionEventStore(path)
+            payload_a = {"filled_qty": 100, "status": "部分成交"}
+            payload_b = {"filled_qty": 200, "status": "全部成交"}
+            first = store.append_event(
+                event_uid="BUY|ORDER-RESTORE",
+                event_type="BUY",
+                trade_key="20260811|000001.SZ|A|20260810",
+                payload=payload_a,
+            )
+            second = store.append_event(
+                event_uid="BUY|ORDER-RESTORE",
+                event_type="BUY",
+                trade_key="20260811|000001.SZ|A|20260810",
+                payload=payload_b,
+            )
+            restored = store.append_event(
+                event_uid="BUY|ORDER-RESTORE",
+                event_type="BUY",
+                trade_key="20260811|000001.SZ|A|20260810",
+                payload=payload_a,
+            )
+            duplicate_after_restore = store.append_event(
+                event_uid="BUY|ORDER-RESTORE",
+                event_type="BUY",
+                trade_key="20260811|000001.SZ|A|20260810",
+                payload=payload_a,
+            )
+            third = store.append_event(
+                event_uid="BUY|ORDER-RESTORE",
+                event_type="BUY",
+                trade_key="20260811|000001.SZ|A|20260810",
+                payload={"filled_qty": 200, "status": "已撤"},
+            )
+
+            self.assertTrue(first["inserted"])
+            self.assertTrue(second["inserted"])
+            self.assertFalse(restored["inserted"])
+            self.assertTrue(restored["restored_existing_revision"])
+            self.assertEqual(restored["revision"], 1)
+            self.assertFalse(duplicate_after_restore["inserted"])
+            self.assertFalse(duplicate_after_restore["restored_existing_revision"])
+            self.assertEqual(duplicate_after_restore["revision"], 1)
+            self.assertTrue(third["inserted"])
+            self.assertEqual(third["revision"], 3)
+            self.assertEqual(
+                [row["revision"] for row in store.event_history("BUY|ORDER-RESTORE")],
+                [1, 2, 3],
+            )
+            audit = store.audit()
+            self.assertEqual(audit["status"], "PASS")
+            self.assertEqual(audit["event_revision_count"], 3)
+            self.assertEqual(audit["event_head_count"], 1)
+
     def test_tracker_mirrors_plan_buy_and_sell_without_replacing_csv(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

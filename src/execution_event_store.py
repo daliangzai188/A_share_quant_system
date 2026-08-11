@@ -124,11 +124,45 @@ class ExecutionEventStore:
                     connection.execute("COMMIT")
                     return {
                         "inserted": False,
+                        "restored_existing_revision": False,
                         "sequence_id": int(head["sequence_id"]),
                         "revision": int(head["revision"]),
                         "payload_sha256": payload_sha256,
                     }
-                revision = int(head["revision"]) + 1 if head is not None else 1
+                # CSV/JSON权威账本可能在人工纠错、重建或崩溃恢复后回到某个
+                # 历史内容。execution_events禁止同一event_uid+payload重复保存，
+                # 因此不能再次INSERT；应复用原不可变修订并把head指回它。
+                # 这既保留A→B的历史，也允许当前视图合法地从B恢复为A。
+                existing = connection.execute(
+                    "SELECT sequence_id, revision FROM execution_events "
+                    "WHERE event_uid=? AND payload_sha256=?",
+                    (uid, payload_sha256),
+                ).fetchone()
+                if existing is not None:
+                    connection.execute(
+                        "UPDATE event_heads SET sequence_id=?, revision=?, payload_sha256=? "
+                        "WHERE event_uid=?",
+                        (
+                            int(existing["sequence_id"]),
+                            int(existing["revision"]),
+                            payload_sha256,
+                            uid,
+                        ),
+                    )
+                    connection.execute("COMMIT")
+                    return {
+                        "inserted": False,
+                        "restored_existing_revision": True,
+                        "sequence_id": int(existing["sequence_id"]),
+                        "revision": int(existing["revision"]),
+                        "payload_sha256": payload_sha256,
+                    }
+                revision_row = connection.execute(
+                    "SELECT COALESCE(MAX(revision), 0) + 1 AS next_revision "
+                    "FROM execution_events WHERE event_uid=?",
+                    (uid,),
+                ).fetchone()
+                revision = int(revision_row["next_revision"])
                 cursor = connection.execute(
                     "INSERT INTO execution_events("
                     "event_uid, revision, event_type, trade_key, payload_json, "
@@ -157,6 +191,7 @@ class ExecutionEventStore:
                 raise
         return {
             "inserted": True,
+            "restored_existing_revision": False,
             "sequence_id": sequence_id,
             "revision": revision,
             "payload_sha256": payload_sha256,
