@@ -15,8 +15,8 @@
     },
     {
       "path": "reports/strategy_d/d_trades.csv",
-      "size": 6738,
-      "sha256": "d397b39cb346bf6f6bd428429328f09ea65c64bed1b05043de87c1e2e87468b6"
+      "size": 6736,
+      "sha256": "8a9a148aaeadf8f4bb05e4c04f6c73ea35cf1a923f5ce0c976c0dcc6616ebc0f"
     },
     {
       "path": "reports/strategy_e2_rerun/e2_r1_alignment_trades.csv",

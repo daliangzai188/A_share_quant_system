@@ -335,7 +335,7 @@
     "exit_pov_runway_buffer_note": "跑道冗余系数(2026-07-16扫描定稿1.2):80笔重放1000万损耗1.5=-0.220%/1.2=-0.204%/1.0=-0.190%,1.2免费拿0.016%且实盘另有14:30流速复查+14:45尾段复查双兜底(重放未模拟,实际更安全);1.0再往下压安全垫过薄。35%参与率+动量调节仅再省0.02%,过拟合风险不值,不采用"
   },
   "strategy_d": {
-    "file_role": "策略D首板打板配置。2026-07-24 起纳入科创板(star)与北交所(bj)，对齐回测口径(d_trades含star5笔/bj3笔)；2026-07-28 已确认科创板和北交所交易权限开通。北交所30%/科创板20%涨停幅度已在monitor_strategy_d_intraday.limit_up_pct正确处理；北交所流动性差、30%一字板买卖滑点大，容量提醒见D单仓300万线。",
+    "file_role": "策略D首板打板配置。实盘必须逐字段对齐历史D核心口径：strong情绪、multi_open、炸板2~3次、首次封板不早于10:00、最后真实回封不早于14:00、成交概率>=80%且可靠、每日只取排序第一名、T+2收盘退出。09:30后才启动因缺完整日内状态必须fail-closed。",
     "allowed_market_segments": [
       "sh_main",
       "sz_main",
@@ -344,11 +344,22 @@
       "bj"
     ],
     "min_fill_probability": 0.8,
+    "min_open_times": 2,
     "ranking_rule": "preferred_open_times_then_fd_amount_to_circ_mv_desc",
     "position_pct": 0.825,
     "preferred_open_times": 2,
     "max_open_times": 3,
-    "execution_alignment_note": "D实盘与回测共同使用：炸板次数1~3次，优先炸板2次，再按封单金额/流通市值降序；每天只尝试排序第一名，失败不递补。"
+    "first_time_buckets": [
+      "midday",
+      "afternoon",
+      "late"
+    ],
+    "tail_reseal_hhmm": 1400,
+    "sentiment_current_sealed_min": 88,
+    "sentiment_current_sealed_max": 132,
+    "sentiment_proxy_note": "历史只取market_sentiment_level=strong(收盘100~150只，不含very_strong)；盘中沿用既有88/100校准比例，故实时当前封板代理区间为88~132只。该代理仍须用分钟快照持续校准。",
+    "backtest_input_path": "data/processed/next_day_premium_trades_2y.csv",
+    "execution_alignment_note": "D实盘与回测共同使用：炸板2~3次(multi_open)，优先炸板2次，再按封单金额/流通市值降序；首次封板时段、14:00后真实回封、成交概率可靠性和strong情绪桶均不可放宽；每天只尝试排序第一名，失败不递补。"
   },
   "strategy_s": {
     "file_role": "策略S深市/创业板动量补充策略配置。S 独立于 ACDE2，只能在组合空闲且通过实盘口径认证后接入真实下单。",

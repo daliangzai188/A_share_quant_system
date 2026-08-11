@@ -4,10 +4,10 @@
 【两档信号设计】
   观察档（09:35-14:00 回封）:
     首板 + multi_open + strong情绪 + 当前处于涨停 → 发出 [WATCH] 提醒
-    → 继续跟踪，若14:00时仍封板 → 自动升级为买入信号
+    → 只作观察；回测要求最后真实回封时间>=14:00，不能仅因14:00仍封着就买
 
-  买入档（14:00+ 回封，或观察中升级）:
-    满足全部条件 + 当前处于涨停 + 重封时间>=14:00（或已在观察名单中）→ 发出 [BUY] 信号
+  买入档（14:00+ 真实回封）:
+    满足全部条件 + 当前处于涨停 + 重封时间>=14:00 → 发出 [BUY] 信号
     → 涨停价挂单
 
   14:55: 撤销所有D腿未成交委托
@@ -44,15 +44,30 @@ from src.utils.logger import setup_logger
 from src.utils.config import load_json_config
 from src.utils.time_utils import now_beijing, today_beijing
 from src.notify import notify
+from src.data_cleaner import DataCleaner
+from src.fill_model import FillProbabilityEstimator
+from src.strategy_d_spec import (
+    D_FIRST_TIME_BUCKETS,
+    D_LATEST_COMPLETE_HISTORY_START_HHMM,
+    D_MAX_OPEN_TIMES,
+    D_MIN_FILL_PROBABILITY,
+    D_MIN_OPEN_TIMES,
+    D_PREFERRED_OPEN_TIMES,
+    D_TAIL_RESEAL_HHMM,
+    classify_first_time_bucket_hhmm,
+    common_candidate_rejection_reason,
+    d_rank_key,
+    intraday_history_is_complete,
+    live_sentiment_is_historical_strong,
+)
 
 load_dotenv(PROJECT_ROOT / ".env")
 
 # ── 策略参数 ──────────────────────────────────────────────────────────────────
-SENTIMENT_STRONG_MIN = 88    # 全市场当前封板涨停数 >= 此值 → strong情绪（14:00封板数校准值，对应回测收盘≥100）
-D_MAX_OPEN_TIMES = 3         # 与D历史回测一致：炸板次数最多3次
-D_PREFERRED_OPEN_TIMES = 2   # 与D历史回测一致：多候选时优先炸板2次
-WATCH_START_HHMM = 935       # 09:35 开始发出观察提醒
-SIGNAL_START_HHMM = 1400     # 14:00 开始发出买入信号 / 观察升级
+SENTIMENT_STRONG_MIN = 88    # 默认实时strong代理下界，最终读取config.strategy_d
+SENTIMENT_STRONG_MAX = 132   # 默认实时strong代理上界；历史very_strong不属于D样本
+WATCH_START_HHMM = 935       # 完整路径必须09:30开始；09:35起才允许发WATCH提醒
+SIGNAL_START_HHMM = 1400     # 14:00 开始发出买入信号；必须在此后真实回封
 CANCEL_HHMM = 1455           # 14:55 撤销所有未成交D委托
 POLL_BATCH_SIZE = 500        # 每次 get_full_tick 的股票数量
 POLL_INTERVAL_SEC = 30       # 每批轮询间隔（秒）
@@ -89,6 +104,10 @@ class StockState:
     last_price: float = 0.0        # 最近一次行情现价（封板时=真实涨停价，下单价自洽校验用）
     st_suspect: bool = False       # ST/风险警示嫌疑（名字带ST/退 或 QMT涨停幅≈5%）
     st_suspect_logged: bool = False  # 排除日志只打一次
+    fill_probability: float = 0.0
+    fill_reliable: bool = False
+    fill_matched_source: str = "none"
+    fill_reject_reason: str = "尚未计算成交概率"
 
 
 # ── 工具函数 ──────────────────────────────────────────────────────────────────
@@ -258,14 +277,31 @@ def configured_position_pct(config: dict[str, Any]) -> float:
 
 
 def configured_max_open_times(config: dict[str, Any]) -> int:
-    """读取D炸板次数硬上限；异常配置回退到历史认证值3。"""
+    """读取D炸板次数硬上限；显式偏离历史认证值时拒绝启动。"""
 
     strategy_config = load_strategy_d_config(config)
     try:
         value = int(strategy_config.get("max_open_times", D_MAX_OPEN_TIMES))
-    except (TypeError, ValueError):
-        return D_MAX_OPEN_TIMES
-    return value if value >= 1 else D_MAX_OPEN_TIMES
+    except (TypeError, ValueError) as exc:
+        raise ValueError("config.strategy_d.max_open_times无效") from exc
+    if value != D_MAX_OPEN_TIMES:
+        raise ValueError(
+            f"config.strategy_d.max_open_times={value}偏离D回测值{D_MAX_OPEN_TIMES}"
+        )
+    return value
+
+
+def configured_min_open_times(config: dict[str, Any]) -> int:
+    strategy_config = load_strategy_d_config(config)
+    try:
+        value = int(strategy_config.get("min_open_times", D_MIN_OPEN_TIMES))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("config.strategy_d.min_open_times无效") from exc
+    if value != D_MIN_OPEN_TIMES:
+        raise ValueError(
+            f"config.strategy_d.min_open_times={value}偏离D回测值{D_MIN_OPEN_TIMES}"
+        )
+    return value
 
 
 def configured_preferred_open_times(config: dict[str, Any]) -> int:
@@ -278,9 +314,84 @@ def configured_preferred_open_times(config: dict[str, Any]) -> int:
                 "preferred_open_times", D_PREFERRED_OPEN_TIMES
             )
         )
-    except (TypeError, ValueError):
-        return D_PREFERRED_OPEN_TIMES
-    return value if value >= 1 else D_PREFERRED_OPEN_TIMES
+    except (TypeError, ValueError) as exc:
+        raise ValueError("config.strategy_d.preferred_open_times无效") from exc
+    if value != D_PREFERRED_OPEN_TIMES:
+        raise ValueError(
+            "config.strategy_d.preferred_open_times="
+            f"{value}偏离D回测值{D_PREFERRED_OPEN_TIMES}"
+        )
+    return value
+
+
+def configured_min_fill_probability(config: dict[str, Any]) -> float:
+    strategy_config = load_strategy_d_config(config)
+    try:
+        value = float(
+            strategy_config.get(
+                "min_fill_probability", D_MIN_FILL_PROBABILITY
+            )
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("config.strategy_d.min_fill_probability无效") from exc
+    if abs(value - D_MIN_FILL_PROBABILITY) > 1e-12:
+        raise ValueError(
+            "config.strategy_d.min_fill_probability="
+            f"{value}偏离D回测值{D_MIN_FILL_PROBABILITY}"
+        )
+    return value
+
+
+def configured_first_time_buckets(config: dict[str, Any]) -> frozenset[str]:
+    strategy_config = load_strategy_d_config(config)
+    values = strategy_config.get(
+        "first_time_buckets", sorted(D_FIRST_TIME_BUCKETS)
+    )
+    configured = frozenset(str(value) for value in values)
+    if configured != D_FIRST_TIME_BUCKETS:
+        raise ValueError(
+            "config.strategy_d.first_time_buckets="
+            f"{sorted(configured)}偏离D回测值{sorted(D_FIRST_TIME_BUCKETS)}"
+        )
+    return configured
+
+
+def configured_tail_reseal_hhmm(config: dict[str, Any]) -> int:
+    strategy_config = load_strategy_d_config(config)
+    try:
+        value = int(strategy_config.get("tail_reseal_hhmm", D_TAIL_RESEAL_HHMM))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("config.strategy_d.tail_reseal_hhmm无效") from exc
+    if value != D_TAIL_RESEAL_HHMM:
+        raise ValueError(
+            f"config.strategy_d.tail_reseal_hhmm={value}偏离D回测值"
+            f"{D_TAIL_RESEAL_HHMM}"
+        )
+    return value
+
+
+def configured_sentiment_bounds(config: dict[str, Any]) -> tuple[int, int]:
+    strategy_config = load_strategy_d_config(config)
+    try:
+        minimum = int(
+            strategy_config.get(
+                "sentiment_current_sealed_min", SENTIMENT_STRONG_MIN
+            )
+        )
+        maximum = int(
+            strategy_config.get(
+                "sentiment_current_sealed_max", SENTIMENT_STRONG_MAX
+            )
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("config.strategy_d实时strong代理区间无效") from exc
+    expected = (SENTIMENT_STRONG_MIN, SENTIMENT_STRONG_MAX)
+    if (minimum, maximum) != expected:
+        raise ValueError(
+            "config.strategy_d实时strong代理区间="
+            f"{minimum}~{maximum}偏离D认证值{expected[0]}~{expected[1]}"
+        )
+    return minimum, maximum
 
 
 def filter_universe_by_segments(universe: list[str], allowed_segments: set[str]) -> list[str]:
@@ -430,14 +541,30 @@ class StrategyDMonitor:
         self.allowed_segments = allowed_segments or set(DEFAULT_ALLOWED_SEGMENTS)
         self.position_pct = position_pct
         self.config = config or {}
+        self.min_open_times = configured_min_open_times(self.config)
         self.max_open_times = configured_max_open_times(self.config)
         self.preferred_open_times = configured_preferred_open_times(self.config)
+        self.min_fill_probability = configured_min_fill_probability(self.config)
+        self.first_time_buckets = configured_first_time_buckets(self.config)
+        self.tail_reseal_hhmm = configured_tail_reseal_hhmm(self.config)
+        (
+            self.sentiment_current_min,
+            self.sentiment_current_max,
+        ) = configured_sentiment_bounds(self.config)
+        self.default_fill_planned_amount = float(
+            self.config.get("fill_model", {}).get(
+                "default_planned_buy_amount", 100000
+            )
+        )
 
         self.yesterday_limit_codes: set[str] = set()
         self.universe: list[str] = []
         self.name_map: dict[str, str] = {}
         self.circ_mv_map: dict[str, float] = {}
+        self.segment_stock_counts: dict[str, int] = {}
         self.states: dict[str, StockState] = {}
+        self.fill_estimator: FillProbabilityEstimator | None = None
+        self.fill_model_ready: bool = False
         self.scan_round = 0
 
         # 本次会话下单记录 {order_id: ts_code}
@@ -464,6 +591,18 @@ class StrategyDMonitor:
         for code in self.universe:
             segment = classify_market_segment(code)
             segment_counts[segment] = segment_counts.get(segment, 0) + 1
+        self.segment_stock_counts = segment_counts
+        try:
+            self.fill_estimator = FillProbabilityEstimator(
+                PROJECT_ROOT / "config" / "config.json"
+            )
+            self.fill_model_ready = True
+        except Exception as exc:
+            self.fill_estimator = None
+            self.fill_model_ready = False
+            self.logger.error(
+                "D成交概率模型初始化失败，按严格对齐口径禁止D开仓: %s", exc
+            )
         self.logger.info(
             "宇宙: %d只(原始%d只) | 允许分段=%s | 分段数量=%s | 昨日涨停(排除首板): %d只 | 全市场扫描: %d批x%d只/轮，轮间隔%d秒",
             len(self.universe), len(full_universe), ",".join(sorted(self.allowed_segments)),
@@ -472,10 +611,15 @@ class StrategyDMonitor:
         )
         max_order_amount = float(self.config.get("live_trade", {}).get("max_single_order_amount", 50000))
         self.logger.info(
-            "D最低开仓条件: 市场分段在%s | 首板(排除昨日涨停) | 当前封涨停 | 今日炸板1~%d次 | 当前封板数>=%d | 14:00后重封或09:35后观察升级 | 实盘二次复核通过",
+            "D最低开仓条件: 市场分段在%s | 首板(排除昨日涨停) | 当前封涨停 | 今日炸板%d~%d次(multi_open) | 首次封板时段=%s | 当前封板数=%d~%d(strong代理，不含very_strong) | 最后真实回封>=%s | 成交概率>=%.0f%%且可靠 | 实盘二次复核通过",
             ",".join(sorted(self.allowed_segments)),
+            self.min_open_times,
             self.max_open_times,
-            SENTIMENT_STRONG_MIN,
+            ",".join(sorted(self.first_time_buckets)),
+            self.sentiment_current_min,
+            self.sentiment_current_max,
+            hhmm_to_str(self.tail_reseal_hhmm),
+            self.min_fill_probability * 100,
         )
         self.logger.info(
             "D选票规则: 每天最多买1只，先优先炸板%d次，再按封单金额÷流通市值降序；"
@@ -503,6 +647,98 @@ class StrategyDMonitor:
         只看每只票最近一次轮询的封板状态(was_sealed)，炸板打开的不计、回封的计入。
         """
         return sum(1 for st in self.states.values() if st.was_sealed)
+
+    def _sentiment_passes(self) -> bool:
+        return live_sentiment_is_historical_strong(
+            self.sealed_ever_count,
+            minimum=self.sentiment_current_min,
+            maximum=self.sentiment_current_max,
+        )
+
+    def _segment_sentiment_level(self, segment: str) -> str:
+        stock_count = int(self.segment_stock_counts.get(segment, 0))
+        limit_count = sum(
+            1
+            for state in self.states.values()
+            if state.was_sealed and state.market_segment == segment
+        )
+        return DataCleaner.classify_segment_sentiment(
+            limit_count, stock_count
+        )
+
+    def _refresh_fill_gate(self, st: StockState) -> tuple[bool, str]:
+        """按历史成交概率模型实时复算；模型或字段缺失时fail-closed。"""
+
+        if not self.fill_model_ready or self.fill_estimator is None:
+            st.fill_probability = 0.0
+            st.fill_reliable = False
+            st.fill_matched_source = "none"
+            st.fill_reject_reason = "成交概率模型未就绪"
+            return False, st.fill_reject_reason
+        if st.circ_mv <= 0 or st.upper_limit <= 0 or st.bid_vol <= 0:
+            st.fill_probability = 0.0
+            st.fill_reliable = False
+            st.fill_matched_source = "none"
+            st.fill_reject_reason = "流通市值/涨停价/实时封单缺失"
+            return False, st.fill_reject_reason
+
+        first_bucket = classify_first_time_bucket_hhmm(st.first_seal_hhmm)
+        current_queue_amount = float(st.bid_vol) * float(st.upper_limit)
+        fd_ratio = self._fd_amount_to_circ_mv(st)
+        abnormal_threshold = float(
+            self.config.get("fill_model", {}).get(
+                "fd_amount_abnormal_ratio_threshold", 1.0
+            )
+        )
+        if fd_ratio > abnormal_threshold:
+            st.fill_probability = 0.0
+            st.fill_reliable = False
+            st.fill_matched_source = "none"
+            st.fill_reject_reason = (
+                f"封单市值比{fd_ratio:.2%}超过异常阈值{abnormal_threshold:.2%}"
+            )
+            return False, st.fill_reject_reason
+
+        try:
+            result = self.fill_estimator.estimate(
+                ts_code=st.ts_code,
+                trade_date=today_beijing().strftime("%Y%m%d"),
+                limit_times=1,
+                board_type="multi_open",
+                first_time_bucket=first_bucket,
+                market_sentiment_level="strong",
+                market_segment=st.market_segment,
+                segment_market_sentiment_level=self._segment_sentiment_level(
+                    st.market_segment
+                ),
+                circ_mv=float(st.circ_mv),
+                current_queue_amount=current_queue_amount,
+                planned_buy_amount=self.default_fill_planned_amount,
+            )
+        except Exception as exc:
+            st.fill_probability = 0.0
+            st.fill_reliable = False
+            st.fill_matched_source = "none"
+            st.fill_reject_reason = f"成交概率复算失败:{exc}"
+            return False, st.fill_reject_reason
+
+        source = str(result.get("matched_source", "none"))
+        probability = float(result.get("fill_probability", 0.0) or 0.0)
+        reliable = source != "none"
+        st.fill_probability = probability
+        st.fill_reliable = reliable
+        st.fill_matched_source = source
+        if not reliable:
+            st.fill_reject_reason = "成交概率没有可靠历史匹配"
+            return False, st.fill_reject_reason
+        if probability < self.min_fill_probability:
+            st.fill_reject_reason = (
+                f"成交概率{probability:.1%}低于回测阈值"
+                f"{self.min_fill_probability:.1%}"
+            )
+            return False, st.fill_reject_reason
+        st.fill_reject_reason = ""
+        return True, "通过回测同口径成交概率门"
 
     def _update_states(self, quotes: dict) -> None:
         hhmm = now_hhmm()
@@ -607,11 +843,13 @@ class StrategyDMonitor:
             return False
         if not st.was_sealed:                      # 当前不在涨停
             return False
-        if st.open_times_today < 1:                # 未曾炸板
+        common_reason = common_candidate_rejection_reason(
+            open_times=st.open_times_today,
+            first_seal_hhmm=st.first_seal_hhmm,
+        )
+        if common_reason:
             return False
-        if st.open_times_today > self.max_open_times:
-            return False
-        if self.sealed_ever_count < SENTIMENT_STRONG_MIN:  # 情绪不足
+        if not self._sentiment_passes():           # 只允许历史strong桶
             return False
         return True
 
@@ -625,6 +863,7 @@ class StrategyDMonitor:
     def _rank_explain(self, st: StockState) -> str:
         return (
             f"fd_ratio={self._fd_amount_to_circ_mv(st):.4%}/"
+            f"成交概率={st.fill_probability:.1%}/"
             f"封单{st.bid_vol / 10000:.1f}万股/"
             f"涨停价{st.upper_limit:.2f}/"
             f"流通市值{st.circ_mv / 10000:.2f}亿/"
@@ -632,13 +871,13 @@ class StrategyDMonitor:
             f"重封{hhmm_to_str(st.last_seal_hhmm)}"
         )
 
-    def _rank_key(self, st: StockState) -> tuple[int, float, int]:
-        """复刻D回测排序：先优先炸板2次，再比较实时封单比。"""
+    def _rank_key(self, st: StockState) -> tuple[int, float, str]:
+        """调用D共享排序：先优先炸板2次，再比较实时封单比。"""
 
-        return (
-            int(st.open_times_today == self.preferred_open_times),
-            self._fd_amount_to_circ_mv(st),
-            st.bid_vol,
+        return d_rank_key(
+            open_times=st.open_times_today,
+            fd_amount_to_circ_mv=self._fd_amount_to_circ_mv(st),
+            ts_code=st.ts_code,
         )
 
     def _check_and_fire(self) -> None:
@@ -654,10 +893,26 @@ class StrategyDMonitor:
             if not self._passes_base_filters(ts_code, st):
                 continue
 
-            # ── 场景一：14:00后 → 收集BUY候选，稍后打分排序 ─────────────────
+            # 14:00后必须发生真实回封。WATCH只提醒，不能绕过回测last_time>=14:00。
             if hhmm >= SIGNAL_START_HHMM:
-                if st.last_seal_hhmm >= SIGNAL_START_HHMM or st.watch_alerted:
-                    buy_candidates.append(st)
+                common_reason = common_candidate_rejection_reason(
+                    open_times=st.open_times_today,
+                    first_seal_hhmm=st.first_seal_hhmm,
+                    last_seal_hhmm=st.last_seal_hhmm,
+                    require_tail_reseal=True,
+                )
+                if common_reason:
+                    continue
+                fill_passed, fill_reason = self._refresh_fill_gate(st)
+                if not fill_passed:
+                    self.logger.info(
+                        "[D过滤] %s %s 未通过成交概率门: %s",
+                        st.ts_code,
+                        st.name,
+                        fill_reason,
+                    )
+                    continue
+                buy_candidates.append(st)
                 continue
 
             # ── 场景二：WATCH窗口 → 逐个发提醒 ──────────────────────────────
@@ -731,14 +986,14 @@ class StrategyDMonitor:
         ]
         buy_time_ok = [
             st for st in open_times_ok
-            if st.last_seal_hhmm >= SIGNAL_START_HHMM or st.watch_alerted
+            if st.last_seal_hhmm >= self.tail_reseal_hhmm
         ]
         sample = "  ".join(
             f"{st.ts_code}(炸{st.open_times_today},重封{hhmm_to_str(st.last_seal_hhmm)})"
             for st in buy_time_ok[:5]
         ) or "无"
         self.logger.info(
-            "[BUY FUNNEL] %s 无D买入候选：当前封板=%d 首板封板=%d 曾炸板回封=%d 炸板次数合规=%d 14:00后/观察升级=%d 情绪=%d/%d 样例=%s",
+            "[BUY FUNNEL] %s 无D买入候选：当前封板=%d 首板封板=%d 曾炸板回封=%d 炸板次数合规=%d 14:00后真实回封=%d 情绪=%d(允许%d~%d) 样例=%s",
             hhmm_to_str(hhmm),
             len(current_sealed),
             len(first_board),
@@ -746,7 +1001,8 @@ class StrategyDMonitor:
             len(open_times_ok),
             len(buy_time_ok),
             self.sealed_ever_count,
-            SENTIMENT_STRONG_MIN,
+            self.sentiment_current_min,
+            self.sentiment_current_max,
             sample,
         )
 
@@ -770,19 +1026,27 @@ class StrategyDMonitor:
             )
         if not st.was_sealed:
             return False, "当前不在涨停封板状态"
-        if st.open_times_today < 1:
-            return False, "今日未曾炸板，不符合D开板回封要求"
-        if st.open_times_today > self.max_open_times:
-            return False, f"炸板次数{st.open_times_today}超过上限{self.max_open_times}"
-        if self.sealed_ever_count < SENTIMENT_STRONG_MIN:
-            return False, f"情绪不足，当前封板{self.sealed_ever_count}只，要求>={SENTIMENT_STRONG_MIN}"
+        common_reason = common_candidate_rejection_reason(
+            open_times=st.open_times_today,
+            first_seal_hhmm=st.first_seal_hhmm,
+            last_seal_hhmm=st.last_seal_hhmm,
+            require_tail_reseal=True,
+        )
+        if common_reason:
+            return False, common_reason
+        if not self._sentiment_passes():
+            return False, (
+                f"当前封板{self.sealed_ever_count}只不在回测strong代理区间"
+                f"{self.sentiment_current_min}~{self.sentiment_current_max}"
+            )
         if st.circ_mv <= 0:
             return False, "缺少流通市值，无法按D原始fd_amount_to_circ_mv口径排序"
         hhmm = now_hhmm()
         if hhmm < SIGNAL_START_HHMM:
             return False, f"当前{hhmm_to_str(hhmm)}未到D买入时间{hhmm_to_str(SIGNAL_START_HHMM)}"
-        if not (st.last_seal_hhmm >= SIGNAL_START_HHMM or st.watch_alerted):
-            return False, "重封时间未达到14:00后，且不是观察升级候选"
+        fill_passed, fill_reason = self._refresh_fill_gate(st)
+        if not fill_passed:
+            return False, fill_reason
         return True, "通过D策略实时复核"
 
     # ── 观察提醒 ──────────────────────────────────────────────────────────────
@@ -796,7 +1060,7 @@ class StrategyDMonitor:
             f"  {st.ts_code} {st.name}  涨停价 {st.upper_limit:.2f}\n"
             f"  重封时间 {hhmm_to_str(st.last_seal_hhmm)}  "
             f"炸板 {st.open_times_today} 次\n"
-            f"  → 持续关注：若14:00时仍封板，自动升级买入信号\n"
+            f"  → 仅观察：14:00后必须再次真实回封并通过成交概率门才允许买入\n"
             f"{'─'*55}"
         )
         print(msg)
@@ -827,8 +1091,7 @@ class StrategyDMonitor:
         st.buy_signaled = True
         self.order_placed = True   # 先加锁再下单，防止QMT资金冻结延迟导致重复委托
         self.order_locked_ts_code = st.ts_code
-        upgraded = st.watch_alerted and st.last_seal_hhmm < SIGNAL_START_HHMM
-        source = "观察升级→买入" if upgraded else "直接买入"
+        source = "14:00后真实回封"
 
         msg = (
             f"\n{'='*55}\n"
@@ -855,6 +1118,12 @@ class StrategyDMonitor:
             "reseal_hhmm": st.last_seal_hhmm,
             "open_times_today": st.open_times_today,
             "sentiment_est": self.sealed_ever_count,
+            "first_time_bucket": classify_first_time_bucket_hhmm(
+                st.first_seal_hhmm
+            ),
+            "fill_probability": st.fill_probability,
+            "fill_reliable": st.fill_reliable,
+            "fill_matched_source": st.fill_matched_source,
             "source": source,
             "order_id": "",
         }
@@ -1467,17 +1736,23 @@ class StrategyDMonitor:
             self._update_states(quotes)
         self.scan_round += 1
         self.logger.info("完成全市场扫描: round=%d updated=%d states=%d", self.scan_round, updated_count, len(self.states))
-        # 情绪转强：当前封板数首次达到阈值，推送告知 D 今日具备开仓资格（只推一次）
+        # 历史D只取strong，不含very_strong；实时代理必须同时满足上下界。
         sealed = self.sealed_ever_count
-        if not self._strong_notified and sealed >= SENTIMENT_STRONG_MIN:
+        if not self._strong_notified and self._sentiment_passes():
             self._strong_notified = True
-            self.logger.warning("📈 情绪转强：当前封板%d只(≥%d)，D今日满足开仓情绪条件。",
-                                sealed, SENTIMENT_STRONG_MIN)
+            self.logger.warning(
+                "📈 情绪进入D历史strong代理区间：当前封板%d只(%d~%d)。",
+                sealed,
+                self.sentiment_current_min,
+                self.sentiment_current_max,
+            )
             try:
                 notify(
                     "buy_result",
                     "📈 D满足开仓条件",
-                    f"全市场当前封板{sealed}只(≥{SENTIMENT_STRONG_MIN})，今日D情绪条件满足，"
+                    f"全市场当前封板{sealed}只，位于D历史strong代理区间"
+                    f"{self.sentiment_current_min}~{self.sentiment_current_max}，"
+                    "且不属于very_strong；"
                     f"14:00后将扫描首板回封发出买入信号。",
                 )
             except Exception as exc:
@@ -1499,10 +1774,18 @@ class StrategyDMonitor:
             order_text = ";".join(detail_parts)
         elif self.order_locked_ts_code:
             order_text = f"{self.order_locked_ts_code}(已锁定)"
-        sentiment = (
-            f"strong({self.sealed_ever_count}只)" if self.sealed_ever_count >= SENTIMENT_STRONG_MIN
-            else f"弱({self.sealed_ever_count}只，需>={SENTIMENT_STRONG_MIN})"
-        )
+        if self._sentiment_passes():
+            sentiment = f"strong代理({self.sealed_ever_count}只)"
+        elif self.sealed_ever_count < self.sentiment_current_min:
+            sentiment = (
+                f"不足({self.sealed_ever_count}只，需>="
+                f"{self.sentiment_current_min})"
+            )
+        else:
+            sentiment = (
+                f"very_strong代理({self.sealed_ever_count}只，D上限="
+                f"{self.sentiment_current_max})"
+            )
         return (
             f"[{hhmm_to_str(hhmm)}] "
             f"扫过{len(self.states)}只 | {sentiment} | "
@@ -1532,7 +1815,29 @@ class StrategyDMonitor:
     # ── 主循环 ────────────────────────────────────────────────────────────────
 
     def run(self) -> None:
+        session_start_hhmm = now_hhmm()
         self.setup()
+
+        # 回测使用完整日内路径。午后重启若从当前快照重新计数，会把早盘已封/已炸历史
+        # 当成不存在，从而把t_board误判成multi_open。无法重建完整路径时必须fail-closed。
+        if not intraday_history_is_complete(session_start_hhmm):
+            reason = (
+                f"D监控于{hhmm_to_str(session_start_hhmm)}启动，晚于完整路径截止"
+                f"{hhmm_to_str(D_LATEST_COMPLETE_HISTORY_START_HHMM)}；缺少早盘首次封板/炸板历史，"
+                "按回测严格对齐口径今日禁止D开仓"
+            )
+            self.logger.error(reason)
+            print(f"[D跳过] {reason}")
+            try:
+                notify(
+                    "buy_result",
+                    "⛔ D因午后重启停止开仓",
+                    reason,
+                    level="critical",
+                )
+            except Exception as exc:
+                self.logger.warning("D午后重启阻断推送失败: %s", exc)
+            return
 
         # ── 串行单仓检测：券商仍有任何旧策略仓就直接退出，不做D ─────────────
         occupied, desc = check_strategy_position_occupied(self.broker if self.live_order else None)
@@ -1581,9 +1886,8 @@ class StrategyDMonitor:
         print(f"\n=== 今日策略D监控完毕 ===")
         print(f"观察提醒: {len(watched) + len(bought)} 次 | 买入信号: {len(bought)} 次")
         for st in bought:
-            upgraded = "升级" if (st.watch_alerted and st.last_seal_hhmm < SIGNAL_START_HHMM) else "直接"
             order_str = f"order_id={st.order_id}" if st.order_id else "仅提醒"
-            print(f"  [BUY/{upgraded}] {st.ts_code} {st.name} "
+            print(f"  [BUY/14:00后真实回封] {st.ts_code} {st.name} "
                   f"重封={hhmm_to_str(st.last_seal_hhmm)} 炸板={st.open_times_today}次 {order_str}")
         print(f"信号记录: {self.signal_csv}")
         self.logger.info("监控结束 观察=%d 买入=%d", len(watched) + len(bought), len(bought))
@@ -1633,23 +1937,47 @@ def main() -> None:
     config = load_json_config(PROJECT_ROOT / "config" / "config.json")
     allowed_segments = configured_allowed_segments(config)
     position_pct = configured_position_pct(config)
+    min_open_times = configured_min_open_times(config)
     max_open_times = configured_max_open_times(config)
     preferred_open_times = configured_preferred_open_times(config)
+    min_fill_probability = configured_min_fill_probability(config)
+    first_time_buckets = configured_first_time_buckets(config)
+    tail_reseal_hhmm = configured_tail_reseal_hhmm(config)
+    sentiment_min, sentiment_max = configured_sentiment_bounds(config)
 
     if args.dry_run:
         print("=== 策略D监控配置 ===")
-        print(f"  情绪阈值: 全市场当前封板涨停数 >= {SENTIMENT_STRONG_MIN}")
+        print(
+            f"  情绪阈值: 全市场当前封板涨停数 {sentiment_min}~{sentiment_max} "
+            "(代理历史strong，不含very_strong)"
+        )
         print(
             f"  D排序口径: 优先炸板{preferred_open_times}次，再按实时封单金额 / "
             "流通市值(fd_amount_to_circ_mv)降序"
         )
-        print(f"  炸板次数上限: {max_open_times}")
+        print(f"  炸板次数: {min_open_times}~{max_open_times}（multi_open）")
+        print(
+            f"  首次封板时段: {','.join(sorted(first_time_buckets))} | "
+            f"最后真实回封>={hhmm_to_str(tail_reseal_hhmm)}"
+        )
+        print(
+            f"  成交概率: >={min_fill_probability:.0%}且历史匹配可靠，"
+            "实时复算失败则禁止开仓"
+        )
         print(f"  允许市场分段: {','.join(sorted(allowed_segments))}")
         print(f"  目标开仓仓位: {position_pct:.1%}")
         print("  补偿机制: 已取消，只尝试D排序第1名")
         print(f"  扫描开始: {hhmm_to_str(args.start_hhmm)}")
-        print(f"  观察提醒: {hhmm_to_str(WATCH_START_HHMM)} 起（10:00后回封发WATCH）")
-        print(f"  买入信号: {hhmm_to_str(SIGNAL_START_HHMM)} 起（14:00后回封或WATCH升级→BUY）")
+        print(
+            f"  观察提醒: {hhmm_to_str(WATCH_START_HHMM)} 起（只提醒，不升级买入）"
+        )
+        print(
+            f"  买入信号: {hhmm_to_str(SIGNAL_START_HHMM)} 起发生真实回封才允许BUY"
+        )
+        print(
+            f"  重启保护: {hhmm_to_str(D_LATEST_COMPLETE_HISTORY_START_HHMM)}后才启动时，"
+            "因缺少完整日内路径而禁止当日D开仓"
+        )
         print(f"  撤单时间: {hhmm_to_str(CANCEL_HHMM)}")
         print(f"  实盘下单: {'是' if args.live_order else '否（仅提醒）'}")
         print(f"  信号输出: {signal_csv}")

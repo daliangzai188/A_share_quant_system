@@ -21,7 +21,7 @@
 |---|---|
 | `limit_times == 1` | 首板（当日第一次涨停，非连板） |
 | 不在昨日涨停池 | 排除昨日已涨停的股票（连板进入 A/B/C 策略） |
-| `open_times >= 1` | 曾经炸板（multi_open 板型） |
+| `open_times >= 2` | `multi_open`板型；炸板1次属于`t_board`，不在D核心回测样本内 |
 | `open_times <= 3` | 炸板次数不超过 3 次（过多炸板说明情绪不稳） |
 | 当前处于涨停封板状态 | `last_price == upper_limit` |
 
@@ -31,10 +31,12 @@
 |---|---:|---|
 | weak | < 50 | 不触发 |
 | neutral | 50–99 | 不触发 |
-| **strong** | **≥ 100** | **触发** |
-| very_strong | ≥ 150 | 触发 |
+| **strong** | **100–150** | **触发** |
+| very_strong | > 150 | 不触发（不在历史D样本） |
 
-**只在 strong / very_strong 市场情绪下触发**，这是核心过滤条件。
+**只在 strong 市场情绪下触发，不包含 very_strong**，与回测
+`market_sentiment_level == "strong"`严格一致。盘中使用当前封板88～132只作为同桶代理，
+代理范围仍需用分钟快照持续校准。
 
 ### 2.3 两档信号时序
 
@@ -44,11 +46,10 @@
 09:35  WATCH 窗口开启
   │    → 检测到符合条件的首板 multi_open 回封
   │    → 发出 [WATCH] 提醒，记录关注名单
-  │    → 继续追踪该股票（可能后续炸板）
+  │    → 继续追踪该股票（WATCH只提醒，不能直接升级买入）
   │
 14:00  BUY 窗口开启
-  │    场景一：WATCH 名单中的股票在 14:00 时仍处于封板 → 升级为 [BUY] 信号
-  │    场景二：14:00 后新出现的重封 → 直接发出 [BUY] 信号
+  │    仅当14:00后发生真实回封 → 发出 [BUY] 信号
   │    → 在涨停价挂限价买单
   │
 14:55  撤单
@@ -95,48 +96,59 @@ T+1 日（D 卖出 + ABC 买入）
 
 ---
 
-## 四、回测结果
+## 四、当前冻结回测结果（2026-08-11重放）
 
-### 4.1 全量对比（近 2 年）
+### 4.1 D 单腿信号池
 
-| 策略组合 | 资金倍数 | 总成交笔数 |
-|---|---:|---:|
-| 纯 A+B+C | 110x | 90 |
-| A+B+C+D（旧，仅 NO_CANDIDATE 日）| 235x | 90+22 |
-| **A+B+C+D（落地版，扩展触发）** | **303x** | **90+36** |
-| A+B+C+D+E2（叠加板块中性小市值策略）| 3640x | 90+36+62 |
-
-> D 出场规则（2026-08-07 起）：**一律 T+2 收盘卖出**，不再区分日状态。上表为该规则生效前的历史回测。
-
-### 4.2 D 腿单独表现（strong 情绪，22 笔完整回测）
+冻结输入为 `data/processed/next_day_premium_trades_2y.csv`，窗口与组合认证重叠部分为
+2024-05-20～2026-05-14。每日只取D排序第一名，仓位82.5%，成交压力折扣80%，
+往返费用及滑点合计0.15%，全部T+2收盘退出。
 
 | 指标 | 数值 |
 |---|---:|
-| 情绪筛选 | strong（≥ 100 只涨停）|
-| 样本笔数 | 22 |
-| 胜率 | 59.1% |
-| 平均收益 | +5.09% |
-| 仅 NO_CANDIDATE 日倍数贡献 | 235x（vs ABC 110x） |
+| 样本数 | 36笔 |
+| 胜率 | 63.9% |
+| 单票平均净收益 | +5.62% |
+| 单票中位净收益 | +3.01% |
+| 平均账户收益 | +3.71% |
+| 中位账户收益 | +1.99% |
+| 单腿机械复利倍数 | 3.3424倍 |
+| 单腿最大回撤 | -7.11% |
+| 盈亏比（账户收益总盈利/总亏损） | 5.95 |
+| 最大单笔账户盈利 | +45.40% |
+| 最大单笔账户亏损 | -5.36% |
+| 最大连续亏损 | 3笔 |
 
-### 4.3 D+ABC 叠加笔分布（36 笔）
+机械复利按历史每笔连续满额复投计算，不代表真实容量或未来收益；最大单笔账户收益
+45.40%说明结果受极端样本影响明显。
 
-| 组合类型 | 笔数 | 胜率 | 平均收益 |
-|---|---:|---:|---:|
-| D only（NO_CANDIDATE 日）| 22 | 59.1% | +5.09% |
-| D+A | 2 | 100% | +9.47% |
-| D+B | 5 | 60% | +9.10% |
-| D+C | 7 | 71.4% | +9.47% |
+### 4.2 分年稳定性
 
-### 4.4 穿越漏斗（strong 情绪，近 2 年）
+| 年份 | 样本数 | 胜率 | 单票平均净收益 | 单票中位净收益 |
+|---|---:|---:|---:|---:|
+| 2024 | 17 | 82.4% | +9.39% | +3.93% |
+| 2025 | 12 | 41.7% | +1.38% | -1.19% |
+| 2026（截至05-14） | 7 | 57.1% | +3.72% | +4.98% |
 
-```
-strong 情绪交易日：97 天
-  → 首板候选：≈ 12,000 只（各日首板总量）
-  → 满足 multi_open + open_times ≤ 3 + last_time ≥ 10:00：1,118 只
-  → 满足 last_time ≥ 14:00（尾盘重封）：491 只
-  → 当日收盘于涨停（历史成交确认）：491 只（全部）
-  → 触发 D 策略（取最优一只）：36 天
-```
+2025年中位数为负，说明D不是所有年份都稳定；不能只用整体平均收益判断是否扩大资金。
+
+### 4.3 样本结构与验证闸门
+
+| 项目 | 数据 | 结论 |
+|---|---:|---|
+| 炸板次数 | 2次32笔、3次4笔 | 与`multi_open`严格一致 |
+| 首封时段 | midday 26、afternoon 6、late 4 | 无10:00前样本 |
+| 最低成交概率 | 100% | 通过80%门槛 |
+| 市场分段 | 5个 | 覆盖通过 |
+| 样本数门槛 | 36 < 50 | **FAIL** |
+| 单笔账户收益绝对值≤25% | 最大45.40% | **WARN** |
+
+### 4.4 当前完整组合认证
+
+严格串行腿序 `D > L > A > M > E2 > C` 的冻结历史回放共150笔，其中实际执行D 14笔；
+组合胜率68.67%、平均账户收益7.86%、中位数4.70%、最大回撤-23.56%、固定初始本金
+累计口径12.79倍。机械满额复投为29388.98倍，但容量未认证，不能作为实盘收益预期。
+当前认证状态为`PASS_WITH_RISK_ACCEPTANCE`，原因是M腿风险覆盖，不是D样本门槛已通过。
 
 ---
 
@@ -153,6 +165,8 @@ scripts/monitor_strategy_d_intraday.py
 | 参数 | 值 | 说明 |
 |---|---|---|
 | `SENTIMENT_STRONG_MIN` | 88 | 14:00实时封板数阈值；校准对应历史收盘涨停数约100只的strong环境 |
+| `SENTIMENT_STRONG_MAX` | 132 | strong代理上界；超过后按very_strong代理排除 |
+| `D_MIN_OPEN_TIMES` | 2 | multi_open下限；炸板1次不得进入实盘D |
 | `D_MAX_OPEN_TIMES` | 3 | 最大允许炸板次数 |
 | `D_PREFERRED_OPEN_TIMES` | 2 | 候选排序先优先炸板2次，再比较封单金额/流通市值 |
 | `WATCH_START_HHMM` | 935 | WATCH 信号开始时间 |
@@ -194,15 +208,18 @@ class StockState:
      - 当前价 < 涨停价 且之前封板 → 炸板，was_sealed = False
  5. _check_and_fire()：
      if hhmm >= 1400:
-         if st.last_seal_hhmm >= 1400 or st.watch_alerted → 发 BUY 信号
+         if st.last_seal_hhmm >= 1400 and 成交概率>=80%且可靠 → 发 BUY 信号
      elif hhmm >= 1000 and not st.watch_alerted:
          → 发 WATCH 提醒
  6. 同一时刻有多只候选：先选炸板2次，再按封单金额/流通市值降序，只尝试第一名
  7. 14:55 → cancel_all_d_orders()，脚本退出
 ```
 
-`open_times`必须在1~3之间。该排序与回测候选选择一致；若第一名下单失败，不递补第二名，
+`open_times`必须在2~3之间。该排序与回测候选选择一致；若第一名下单失败，不递补第二名，
 避免回测只记录第一名、实盘却在失败后换票造成收益口径漂移。
+
+若D监控在09:30以后才启动（包括盘中重启程序），当天按fail-closed禁止D开仓，避免
+缺失早盘首次封板/炸板路径后错误重建候选。
 
 ### 5.5 情绪计算方式
 
@@ -235,38 +252,31 @@ reports/strategy_d/intraday_signals_YYYYMMDD.csv
 
 ### 6.1 触发时间
 
-守护进程（`scripts/trading_daemon.py`）在 **13:30** 以非阻塞子进程启动 D 监控：
+守护进程（`scripts/trading_daemon.py`）在09:20组合状态检查允许D时，以后台线程启动
+D监控；监控从09:30开始建立完整日内路径。09:30以后才启动无法复原早盘封板/炸板
+历史，因此当天fail-closed禁止D新开仓。
 
 ```python
-SCHEDULE = [
-    datetime.time(9, 20),   # 盘前：平仓检查 + 读取计划单
-    datetime.time(13, 30),  # 策略 D 盘中监控启动
-    datetime.time(14, 50),  # 盘中：平仓检查
-    datetime.time(15, 10),  # 收盘：数据流水线 + A+B+C 信号
-]
+09:20 组合状态允许D → 启动后台线程
+09:30 全市场实时路径跟踪
+09:35 WATCH只提醒
+14:00 后发生真实回封且全部门禁通过 → BUY
+14:55 撤销D未成交委托
 ```
 
 ### 6.2 非阻塞启动原因
 
-D 监控脚本从 13:30 持续运行到 14:55（约 85 分钟），若用 `subprocess.run` 会阻塞守护进程，导致 14:56 收盘平仓任务无法执行。改用 `subprocess.Popen`，守护进程立即返回，D 监控在后台独立运行。
-
-```python
-def job_strategy_d() -> None:
-    cmd = [PYTHON, "-B", str(PROJECT_ROOT / "scripts" / "monitor_strategy_d_intraday.py")]
-    if live_order:
-        cmd.append("--live-order")
-    proc = subprocess.Popen(cmd, cwd=PROJECT_ROOT)
-    logger().info("策略D监控已启动（PID %d）", proc.pid)
-```
+D监控在守护进程后台线程中运行，并通过`SharedQMTBrokerProxy`复用主进程唯一QMT连接；
+不再启动独立QMT子进程，避免多个会话争抢miniQMT，同时不阻塞平仓和收盘流水线。
 
 ### 6.3 日程全览
 
 | 时间 | 任务 | 是否阻塞守护进程 |
 |---|---|---|
 | 09:20 | 平仓检查 + 复核组合状态 + 有开仓计划时预挂买单（job_morning → job_premarket_buy）| 是 |
-| 13:30 | 启动 D 监控子进程（job_strategy_d）| 否（Popen） |
+| 09:20 | 组合允许时启动D后台线程，09:30开始完整扫描 | 否（线程，复用主QMT连接） |
 | 14:56 | 盘中收盘平仓 + 14:57 撤未成交买单（job_afternoon）| 是 |
-| 15:10 | 收盘流水线 + A+B+C 信号（job_post_market）| 是 |
+| 15:10 | 收盘流水线 + A/C/E2/L/M 信号（job_post_market）| 是 |
 
 ---
 
@@ -304,16 +314,9 @@ def cancel_order(self, order_id: str) -> bool:
 
 ## 八、ABC 持仓检测逻辑
 
-启动时读取 `data/processed/positions.json`，若存在任意 `strategy != "D"` 且 `status == "open"` 的持仓，则跳过当日 D 监控并打印警告：
-
-```python
-def check_abc_position_occupied() -> tuple[bool, str]:
-    positions = json.loads(Path("data/processed/positions.json").read_text())
-    for pos in positions:
-        if pos.get("strategy") != "D" and pos.get("status") == "open":
-            return True, f"ABC持仓占用: {pos['ts_code']}"
-    return False, ""
-```
+启动时读取`data/processed/positions.json`，识别所有`open/sell_pending`策略仓，再用券商
+实际持仓确认。只要A/C/D/E2/L/M任一旧策略仓尚未真实清空，D都跳过；打新和人工仓
+不参与策略占仓判断。券商查询失败或账本损坏时按fail-closed禁止D开仓。
 
 ---
 
@@ -329,14 +332,15 @@ D_ELIGIBLE_STATUSES = {"NO_CANDIDATE", "HISTORICAL_SIM_FILLED", "BUY_REJECTED"}
 # POSITION_OCCUPIED_SKIP 排除原因：资金冲突 + 实测胜率 20%（均收益 -2%）
 ```
 
-回测逻辑（**该脚本为 2026-08-07 前的旧口径**，当时 D 在 T+1 开盘卖出；当前发布标尺
-由 `scripts/certify_current_executable_portfolio.py` 按 D 全部 T+2 收盘平仓产出）：
-1. 按日推进，若前日有 D 持仓 → T+1 开盘卖出
-2. 若前日有 ABC 持仓且到期 → 平仓
-3. 若账户空仓且当日 op_status in D_ELIGIBLE_STATUSES → 检查是否有 D 候选
-4. D 候选条件：strong 情绪 + 首板 + multi_open + open_times ≤ 3 + last_time ≥ 140000
-5. 有 D 候选：D 当日买，T+1 开盘以 next_open 卖出
-6. 同日若有 ABC 信号（HISTORICAL_SIM_FILLED）：D 收益 + ABC 收益叠加（同一资金顺序使用的近似）
+回测逻辑：
+1. 只读取配置指定的冻结近2年输入，不允许命令行切换数据源或放宽门槛。
+2. 候选必须同时满足：strong但非very_strong、首板、非ST、multi_open、炸板2～3次、
+   首次封板不早于10:00、最后回封不早于14:00、成交概率≥80%且可靠、市场分段获准。
+3. 每个信号日优先炸板2次，再按封单金额/流通市值降序，最后按股票代码稳定排序，
+   只取第一名且失败不递补。
+4. D全部按T+2收盘退出，仓位82.5%，成交压力折扣80%，往返费用及滑点0.15%。
+5. 本脚本中的旧A/B/C叠加曲线只保留审计用途；当前组合收益和串行占仓只能以
+   `scripts/certify_current_executable_portfolio.py`为发布标尺。
 
 输出：
 ```
@@ -355,16 +359,16 @@ cd /Users/user/Desktop/A_System
 
 ---
 
-## 十、涉及的文件变动汇总
+## 十、核心文件职责
 
-| 文件 | 变动类型 | 核心内容 |
-|---|---|---|
-| `scripts/backtest_strategy_d.py` | 新建 | D 策略完整回测，触发范围扩展到 36 笔 |
-| `scripts/monitor_strategy_d_intraday.py` | 新建 | D 盘中监控，两档信号，14:55 自动撤单 |
-| `scripts/collect_strategy_d_minute_data.py` | 新建 | D 候选分钟数据采集辅助脚本 |
-| `scripts/trading_daemon.py` | 修改 | 新增 13:30 调度槽，`job_strategy_d()` 用 Popen 启动 |
-| `src/broker_adapter.py` | 修改 | 新增 `cancel_order` 抽象方法 |
-| `src/qmt_adapter.py` | 修改 | 实现 `cancel_order`（`cancel_order_stock`） |
+| 文件 | 核心内容 |
+|---|---|
+| `src/strategy_d_spec.py` | 回测与实盘共用的D不可变候选边界和排序 |
+| `scripts/backtest_strategy_d.py` | 冻结D候选、T+2收益及验证闸门 |
+| `scripts/monitor_strategy_d_intraday.py` | 09:30全日路径、WATCH/BUY、成交概率和撤单 |
+| `scripts/trading_daemon.py` | 组合状态允许时启动D线程，复用主QMT连接 |
+| `scripts/certify_current_executable_portfolio.py` | 严格串行组合回放和代码/输入指纹认证 |
+| `src/broker_adapter.py`、`src/qmt_adapter.py` | 委托、成交确认和撤单接口 |
 
 ---
 
@@ -372,13 +376,13 @@ cd /Users/user/Desktop/A_System
 
 | 项目 | 状态 |
 |---|---|
-| 回测完成 | ✅ 近 2 年，303x（混合出场：SIM日T+1开，NC/BR日T+2收） |
-| 守护进程集成 | ✅ 13:30 自动启动 |
-| 两档信号逻辑 | ✅ WATCH / BUY |
+| 回测完成 | ✅ 36笔D信号，全部T+2收盘；样本数36<50，闸门仍FAIL |
+| 守护进程集成 | ✅ 09:20允许时启动、09:30完整跟踪；晚启动fail-closed |
+| 两档信号逻辑 | ✅ WATCH只提醒；14:00后真实回封才可BUY |
 | 14:55 自动撤单 | ✅ cancel_order 已实现 |
-| QMT 实盘下单 | 待量化权限开通（--live-order 开关已就绪）|
-| 成交填充率验证 | 未做（A 股打板排队，失败即不成交，无亏损） |
-| 情绪历史准确率 | 盘中估算（ever_sealed 累计），非收盘精确数 |
+| QMT 实盘下单 | ✅ 仍须先小资金核验，不可按机械复利放大 |
+| 成交概率门 | ✅ 与回测同模型实时复算，≥80%且可靠；失败即阻断 |
+| 情绪口径 | ⚠️ 历史为收盘100～150只，盘中用当前封板88～132只代理，需持续校准 |
 
 ---
 
@@ -386,12 +390,7 @@ cd /Users/user/Desktop/A_System
 
 ### 12.1 为什么不能直接把全部D改成POV
 
-当前组合中的D退出分为两类，必须严格分开：
-
-1. **普通D（14笔）**：T+2收盘退出，理论收益使用退出日收盘价；
-2. **D→A/C/E2接力（8笔）**：T+1竞价只卖安全部分，开盘后卖D/买候选成对POV。
-
-接力D保留开盘接力时点，但不再要求整仓挤进集合竞价。普通D若不分金额全部提前卖，
+当前组合中的D全部按T+2收盘退出，D接力已经关闭。若不分金额全部提前卖，
 可能因日内价格路径损失而偏离收盘价；若仓位过大又全部挤在14:55，可能产生
 冲击成本。因此普通D只研究“**容量不足时才触发**”的分档卖出，不做无条件POV。
 
@@ -403,15 +402,14 @@ cd /Users/user/Desktop/A_System
 4. 普通D不使用“仓位达到950万元就固定14:15启动”的绝对金额规则，避免流动性
    充足时被无谓提前卖出；
 5. 14:53撤销未完成POV委托，14:55只按QMT实际余仓继续平仓；
-6. D接力发生在T+1，而普通计划平仓日仍为T+2，因此不会误入尾盘POV；
-7. 选股、打板买入、持有期和T+2收盘回测收益口径均未修改。
+6. 选股、打板买入、持有期和T+2收盘回测收益口径均未修改。
 
 ### 12.2 新增研究工具
 
 | 文件 | 作用 |
 |---|---|
-| `scripts/research_strategy_d_exit_fetch.py` | 从当前139笔组合账本精确提取14笔普通D，采集退出日全日5分钟和尾盘1分钟行情；接力D自动排除 |
-| `scripts/research_strategy_d_exit_pov.py` | 回放动态起点、14:30起点、14:45起点三种卖出方案，并复算D腿及完整139笔组合 |
+| `scripts/research_strategy_d_exit_fetch.py` | 从当前组合账本提取14笔实际执行D，采集退出日全日5分钟和尾盘1分钟行情 |
+| `scripts/research_strategy_d_exit_pov.py` | 回放动态起点、14:30起点、14:45起点三种卖出方案，并复算D腿及完整组合 |
 | `tests/test_strategy_d_exit_pov_research.py` | 验证样本隔离、无冲击时保持基准复利、分钟数据不完整时拒绝认证 |
 
 Windows盘后运行：

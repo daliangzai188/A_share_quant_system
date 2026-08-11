@@ -6,6 +6,9 @@ from pathlib import Path
 from types import ModuleType
 import sys
 import unittest
+from unittest.mock import patch
+
+import pandas as pd
 
 # 纯规则测试不读取.env；开发机缺少python-dotenv时使用无副作用桩。
 if "dotenv" not in sys.modules:
@@ -19,6 +22,10 @@ from src.combined_live_engine import CombinedLiveEngine
 from src.strategy_model3_policy import (
     model3_l_base_rule_pass,
     model3_l_replace_guard_pass,
+)
+from src.strategy_d_spec import (
+    historical_candidate_mask,
+    intraday_history_is_complete,
 )
 
 
@@ -181,6 +188,210 @@ class StrategyDLiveAlignmentTests(unittest.TestCase):
             open_times_today=4,
         )
         self.assertFalse(monitor._passes_base_filters(target.ts_code, target))
+
+    def test_d_rejects_one_open_t_board_like_yesterday_live_trade(self) -> None:
+        monitor = self.make_monitor()
+        target = StockState(
+            ts_code="600815.SH",
+            was_sealed=True,
+            open_times_today=1,
+            first_seal_hhmm=1030,
+            last_seal_hhmm=1405,
+        )
+        self.assertFalse(monitor._passes_base_filters(target.ts_code, target))
+
+    def test_d_watch_cannot_bypass_tail_reseal_gate(self) -> None:
+        monitor = self.make_monitor()
+        monitor.sentiment_current_min = 1
+        monitor.sentiment_current_max = 2
+        target = StockState(
+            ts_code="300001.SZ",
+            market_segment="chi_next",
+            upper_limit=10.0,
+            last_price=10.0,
+            was_sealed=True,
+            open_times_today=2,
+            first_seal_hhmm=1030,
+            last_seal_hhmm=1359,
+            watch_alerted=True,
+            bid_vol=100_000,
+            circ_mv=100_000,
+        )
+        monitor.states[target.ts_code] = target
+        with patch(
+            "scripts.monitor_strategy_d_intraday.now_hhmm", return_value=1405
+        ):
+            passed, reason = monitor._validate_buy_candidate(target)
+        self.assertFalse(passed)
+        self.assertIn("早于回测下限", reason)
+
+    def test_d_live_fill_gate_uses_same_80_percent_reliable_threshold(self) -> None:
+        class FakeEstimator:
+            def __init__(self, probability: float, source: str = "exact") -> None:
+                self.probability = probability
+                self.source = source
+
+            def estimate(self, **_kwargs):
+                return {
+                    "fill_probability": self.probability,
+                    "matched_source": self.source,
+                }
+
+        monitor = self.make_monitor()
+        monitor.segment_stock_counts = {"chi_next": 100}
+        target = StockState(
+            ts_code="300001.SZ",
+            market_segment="chi_next",
+            upper_limit=10.0,
+            last_price=10.0,
+            was_sealed=True,
+            open_times_today=2,
+            first_seal_hhmm=1030,
+            last_seal_hhmm=1405,
+            bid_vol=100_000,
+            circ_mv=100_000,
+        )
+        monitor.states[target.ts_code] = target
+        monitor.sentiment_current_min = 1
+        monitor.sentiment_current_max = 2
+        monitor.fill_model_ready = True
+        monitor.fill_estimator = FakeEstimator(0.79)
+        rejected, reason = monitor._refresh_fill_gate(target)
+        self.assertFalse(rejected)
+        self.assertIn("低于回测阈值", reason)
+
+        monitor.fill_estimator = FakeEstimator(0.80)
+        passed, _reason = monitor._refresh_fill_gate(target)
+        self.assertTrue(passed)
+        self.assertTrue(target.fill_reliable)
+
+        monitor.fill_estimator = FakeEstimator(1.0, source="none")
+        reliable, reason = monitor._refresh_fill_gate(target)
+        self.assertFalse(reliable)
+        self.assertIn("没有可靠历史匹配", reason)
+
+    def test_d_exact_historical_boundaries_pass_live_validation(self) -> None:
+        class ExactEstimator:
+            @staticmethod
+            def estimate(**_kwargs):
+                return {"fill_probability": 0.8, "matched_source": "exact"}
+
+        monitor = self.make_monitor()
+        monitor.segment_stock_counts = {"sh_main": 100}
+        monitor.sentiment_current_min = 1
+        monitor.sentiment_current_max = 1
+        monitor.fill_model_ready = True
+        monitor.fill_estimator = ExactEstimator()
+        target = StockState(
+            ts_code="600001.SH",
+            market_segment="sh_main",
+            upper_limit=10.0,
+            last_price=10.0,
+            was_sealed=True,
+            open_times_today=2,
+            first_seal_hhmm=1000,
+            last_seal_hhmm=1400,
+            bid_vol=100_000,
+            circ_mv=100_000,
+        )
+        monitor.states[target.ts_code] = target
+        with patch(
+            "scripts.monitor_strategy_d_intraday.now_hhmm", return_value=1400
+        ):
+            passed, reason = monitor._validate_buy_candidate(target)
+        self.assertTrue(passed, reason)
+
+        extra = StockState(ts_code="600002.SH", was_sealed=True)
+        monitor.states[extra.ts_code] = extra
+        with patch(
+            "scripts.monitor_strategy_d_intraday.now_hhmm", return_value=1400
+        ):
+            blocked, reason = monitor._validate_buy_candidate(target)
+        self.assertFalse(blocked)
+        self.assertIn("不在回测strong代理区间", reason)
+
+    def test_d_historical_mask_and_live_common_rules_share_boundaries(self) -> None:
+        rows = pd.DataFrame(
+            [
+                {
+                    "limit_times": 1,
+                    "is_st": False,
+                    "market_sentiment_level": "strong",
+                    "board_type": "multi_open",
+                    "open_times": 2,
+                    "first_time_bucket": "midday",
+                    "last_time": 140000,
+                    "fill_probability": 0.8,
+                    "is_fill_score_reliable": True,
+                    "market_segment": "sh_main",
+                },
+                {
+                    "limit_times": 1,
+                    "is_st": False,
+                    "market_sentiment_level": "strong",
+                    "board_type": "t_board",
+                    "open_times": 1,
+                    "first_time_bucket": "midday",
+                    "last_time": 140000,
+                    "fill_probability": 1.0,
+                    "is_fill_score_reliable": True,
+                    "market_segment": "sh_main",
+                },
+                {
+                    "limit_times": 1,
+                    "is_st": False,
+                    "market_sentiment_level": "very_strong",
+                    "board_type": "multi_open",
+                    "open_times": 2,
+                    "first_time_bucket": "midday",
+                    "last_time": 140000,
+                    "fill_probability": 1.0,
+                    "is_fill_score_reliable": True,
+                    "market_segment": "sh_main",
+                },
+            ]
+        )
+        mask = historical_candidate_mask(rows, allowed_segments={"sh_main"})
+        self.assertEqual(mask.tolist(), [True, False, False])
+
+    def test_d_explicit_config_drift_fails_instead_of_silently_widening(self) -> None:
+        config = {
+            "strategy_d": {
+                "min_open_times": 1,
+                "max_open_times": 3,
+                "preferred_open_times": 2,
+            }
+        }
+        with self.assertRaisesRegex(ValueError, "偏离D回测值"):
+            StrategyDMonitor(
+                broker=None,
+                live_order=False,
+                logger=logging.getLogger("test_strategy_d_config_drift"),
+                signal_csv=Path("reports/strategy_d/test_alignment.csv"),
+                config=config,
+            )
+
+    def test_d_late_restart_fails_closed(self) -> None:
+        self.assertTrue(intraday_history_is_complete(930))
+        self.assertFalse(intraday_history_is_complete(931))
+        self.assertFalse(intraday_history_is_complete(936))
+        self.assertFalse(intraday_history_is_complete(1324))
+
+    def test_d_sentiment_proxy_config_drift_fails_closed(self) -> None:
+        config = {
+            "strategy_d": {
+                "sentiment_current_sealed_min": 88,
+                "sentiment_current_sealed_max": 200,
+            }
+        }
+        with self.assertRaisesRegex(ValueError, "偏离D认证值"):
+            StrategyDMonitor(
+                broker=None,
+                live_order=False,
+                logger=logging.getLogger("test_strategy_d_sentiment_drift"),
+                signal_csv=Path("reports/strategy_d/test_sentiment_drift.csv"),
+                config=config,
+            )
 
 
 if __name__ == "__main__":

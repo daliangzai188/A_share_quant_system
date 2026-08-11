@@ -117,7 +117,9 @@ RUNTIME_CONFIG_PATH = PROJECT_ROOT / "config" / "config.json"
 
 CODE_CERTIFICATION_FILES = [
     "scripts/build_ac_daily_candidates.py",
+    "scripts/backtest_strategy_d.py",
     "scripts/certify_current_executable_portfolio.py",
+    "scripts/monitor_strategy_d_intraday.py",
     "scripts/run_strategy_m_signal.py",
     "scripts/trading_daemon.py",
     "src/combined_live_engine.py",
@@ -125,6 +127,7 @@ CODE_CERTIFICATION_FILES = [
     "src/strategy_e2.py",
     "src/strategy_equity_ledger.py",
     "src/strategy_m.py",
+    "src/strategy_d_spec.py",
     "src/strategy_model3_policy.py",
 ]
 
@@ -1208,7 +1211,7 @@ def write_report(
         "- 历史验证：`scripts/verify_strategy_e2_alignment.py`必须同时通过门禁前50/50和门禁后43/43逐票对齐。",
         "- E2实盘信号、model=3盘中预览和历史回测均调用同一规则源。",
         "- L共用代码：`src/strategy_model3_policy.py`；实盘状态机和本认证脚本共同调用。",
-        "- D实盘排序恢复为回测口径：炸板1~3次，优先2次，再按封单金额/流通市值降序。",
+        "- D实盘筛选和排序恢复为回测口径：multi_open炸板2~3次，优先2次，再按封单金额/流通市值降序。",
         "- M共用代码：`src/strategy_m.py`；实盘信号脚本与本认证脚本调用同一选股链。",
         "- M候选账本由`scripts/build_strategy_m_backtest_pool.py`生成，与实盘规则源同口径。",
         "- ⚠️M规则来自1053个方案样本内最优，参数邻域塌陷、样本外仅3笔；复利倍数不可作实盘预期。",

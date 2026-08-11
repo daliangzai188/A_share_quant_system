@@ -1,24 +1,21 @@
 """
-策略D（首板打板）完整回测脚本
+策略D（首板打板）候选与收益回测脚本
 
-正确的执行逻辑：
+当前唯一执行口径：
   - D策略在盘中执行：发现首板涨停 → 在涨停价排队买入
-  - 退出规则（按ABC当日状态分档）：
-      HISTORICAL_SIM_FILLED天：D于T+1开盘卖出 → 同一笔资金顺序交给A/B/C在T+1开盘买入
-      NO_CANDIDATE / BUY_REJECTED天：D持到T+2收盘卖出（无A/B/C信号，不存在资金冲突）
+  - D一律在T+2收盘退出，不再按ABC状态切换到T+1
   - D只在账户当天空仓时触发（没有A/B/C持仓，也没有待执行的A/B/C买入计划）
 
 模拟流程（按日推进）：
   每天开始：
-    1. 若持有D仓位（HISTORICAL_SIM_FILLED天）→ 以next_open卖出，仓位清空
+    1. 若持有D仓位且到T+2 → 以收盘价卖出，仓位清空
     2. 若持有A/B/C仓位 → 检查是否到期，到期则平仓
     3. 若账户空仓：
        a. 检查今天有无D候选（盘中机会）→ 有则打板
        b. 若D没打板 → 今晚A/B/C流水线生成信号，明天开盘执行A/B/C
 
-与A/B/C冲突处理：
-  - HISTORICAL_SIM_FILLED天：D T+1开盘卖 → A/B/C T+1开盘买，顺序使用同一笔资金，无冲突
-  - NO_CANDIDATE天：A/B/C无信号，D T+2收盘卖，无冲突
+本脚本负责冻结D候选和D单腿T+2收益。当前完整组合的真实串行占仓、D>L>A>M>E2>C
+时序与认证，以 scripts/certify_current_executable_portfolio.py 为唯一发布来源。
 
 输出：
   reports/strategy_d/
@@ -29,8 +26,9 @@
 
 用法：
     python scripts/backtest_strategy_d.py
-    python scripts/backtest_strategy_d.py --use-minute-features  # 使用分钟特征优化填单估计
-    python scripts/backtest_strategy_d.py --fill-rate 0.8        # 假设打板成功率80%
+
+发布口径固定使用配置文件中的冻结输入、80%成交压力、80%最低成交概率和82.5%仓位；
+命令行参数只用于显式拒绝旧调用，不能覆盖发布标准。
 """
 
 from __future__ import annotations
@@ -44,27 +42,27 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 import pandas as pd
+from src.strategy_d_spec import (
+    D_BOARD_TYPE,
+    D_MIN_FILL_PROBABILITY,
+    D_SENTIMENT_LEVEL,
+    d_rank_key,
+    historical_candidate_mask,
+)
 OUTPUT_DIR = PROJECT_ROOT / "reports" / "strategy_d"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 INITIAL_EQUITY = 500_000.0
-POSITION_PCT = 0.8  # 仓位比例
+POSITION_PCT = 0.825
 
 # D可触发的ABC状态集合：
 #   NO_CANDIDATE          - 账户空仓，ABC无信号  → D独立使用资金
 #   HISTORICAL_SIM_FILLED - ABC当天生成信号，T+1开盘买入
-#                           D盘中买→T+1开盘卖，与ABC买入同时发生但用同一资金顺序执行
-#                           → D收益 + ABC收益 可叠加
+#                           D盘中信号更早；当前实盘由D占仓并阻断该计划
 #   BUY_REJECTED          - ABC信号被风控拒绝，账户实际空仓 → D可独立使用资金
 #   POSITION_OCCUPIED_SKIP - ABC持有旧仓位，资金被占且D效果差（实测胜率20%,-2%）→ 不做
 D_ELIGIBLE_STATUSES = {"NO_CANDIDATE", "HISTORICAL_SIM_FILLED", "BUY_REJECTED"}
 
-# D策略候选过滤条件
-D_SENTIMENT = "strong"
-D_BOARD_TYPE = "multi_open"               # 炸板后重封，才有机会打板
-D_TIME_BUCKETS = {"midday", "afternoon", "late"}  # 非开盘即封死的时段
-D_TAIL_SEALED_HOUR = 14                   # 最终封板时间 >= 14:00（last_time >= 140000）
-D_MAX_OPEN_TIMES = 3                      # 旧报告最佳口径：炸板次数<=3
 D_FEE_RATE = 0.0015                       # 旧D回测口径：费用+滑点合计按0.15%扣除
 DEFAULT_ALLOWED_SEGMENTS = {"sh_main", "sz_main", "chi_next", "star", "bj", "other"}
 
@@ -89,6 +87,26 @@ def configured_allowed_segments() -> set[str]:
     return result or set(DEFAULT_ALLOWED_SEGMENTS)
 
 
+def configured_position_pct() -> float:
+    value = float(load_strategy_d_config().get("position_pct", POSITION_PCT))
+    if not 0 < value <= 1:
+        raise ValueError("config.strategy_d.position_pct 必须在(0,1]范围内")
+    return value
+
+
+def configured_backtest_input_path() -> Path:
+    relative = str(
+        load_strategy_d_config().get(
+            "backtest_input_path",
+            "data/processed/next_day_premium_trades_2y.csv",
+        )
+    )
+    path = PROJECT_ROOT / relative
+    if not path.exists():
+        raise FileNotFoundError(f"D回测冻结输入不存在: {path}")
+    return path
+
+
 def load_abc_detail() -> pd.DataFrame:
     """加载A+B+C最新回测逐日明细（最优配置）"""
     path = (PROJECT_ROOT / "reports" / "paper_trade" / "backup_strategy_c" /
@@ -110,25 +128,16 @@ def load_d_candidates(
     allowed_segments: set[str],
 ) -> pd.DataFrame:
     """加载D策略候选池，含收益数据"""
-    df = pd.read_csv(PROJECT_ROOT / "data" / "processed" / "next_day_premium_trades.csv")
+    df = pd.read_csv(configured_backtest_input_path(), low_memory=False)
     df["trade_date"] = df["trade_date"].astype(str)
 
-    # 基础筛选
-    df["last_time_hm"] = df["last_time"].astype(float)
     df = df[
-        (df["limit_times"] == 1) &
-        (~df["is_st"].astype(bool)) &
-        (df["market_sentiment_level"] == D_SENTIMENT) &
-        (df["board_type"] == D_BOARD_TYPE) &
-        (df["open_times"] <= D_MAX_OPEN_TIMES) &
-        (df["first_time_bucket"].isin(D_TIME_BUCKETS)) &
-        (df["last_time_hm"] >= D_TAIL_SEALED_HOUR * 10000) &   # 14点后最终封板
-        (df["fill_probability"] >= min_fill_probability) &
-        (df["is_fill_score_reliable"].astype(bool))
+        historical_candidate_mask(
+            df,
+            min_fill_probability=min_fill_probability,
+            allowed_segments=allowed_segments,
+        )
     ].copy()
-
-    if allowed_segments:
-        df = df[df["market_segment"].isin(allowed_segments)].copy()
 
     # 若有分钟特征则叠加：只选尾盘封板（tail_sealed=True）的，打板时机更稳
     minute_path = PROJECT_ROOT / "data" / "processed" / "strategy_d_minute_features.csv"
@@ -158,10 +167,17 @@ def pick_d_candidate(day_candidates: pd.DataFrame) -> pd.Series | None:
     if day_candidates.empty:
         return None
     ranked = day_candidates.copy()
-    ranked["_open_times_priority"] = (ranked["open_times"] == 2).astype(int)
+    ranked["_d_rank_key"] = ranked.apply(
+        lambda row: d_rank_key(
+            open_times=int(row["open_times"]),
+            fd_amount_to_circ_mv=float(row["fd_amount_to_circ_mv"]),
+            ts_code=str(row["ts_code"]),
+        ),
+        axis=1,
+    )
     return ranked.sort_values(
-        ["_open_times_priority", "fd_amount_to_circ_mv"],
-        ascending=[False, False],
+        ["_d_rank_key"],
+        ascending=[False],
     ).iloc[0]
 
 
@@ -178,16 +194,17 @@ def safe_float(value: object, default: float = 0.0) -> float:
 def run_simulation(
     abc_detail: pd.DataFrame,
     d_candidates: pd.DataFrame,
-    fill_rate: float = 1.0,
+    fill_rate: float = 0.8,
+    position_pct: float = POSITION_PCT,
 ) -> tuple[pd.DataFrame, pd.DataFrame, list[dict]]:
     """
-    正确的时序逻辑：
+    D候选与单腿收益冻结逻辑：
       - D策略盘中执行（当日涨停价买入）
-      - A/B/C策略收盘后生成信号（次日开盘买入，后天收盘卖出）
-      - HISTORICAL_SIM_FILLED：D T+1开盘卖，同一笔资金顺序交给A/B/C
-      - NO_CANDIDATE / BUY_REJECTED：A/B/C无实际占用资金，D持到T+2收盘卖
+      - 不论ABC历史状态，D都按T+2收盘计算
       - POSITION_OCCUPIED_SKIP：旧仓位占用资金，D不触发
-      - 因此D的收益按ABC当日状态分档叠加在A+B+C基础上
+
+    返回的ABC叠加曲线只用于旧报告审计；当前组合发布必须运行
+    certify_current_executable_portfolio.py的严格串行回放。
 
     Returns:
         df_abc: 逐日ABC资金曲线
@@ -228,17 +245,14 @@ def run_simulation(
             if candidate is not None:
                 limit_close = safe_float(candidate.get("limit_close"), 0.0)
                 fee = D_FEE_RATE
-                if op_status == "HISTORICAL_SIM_FILLED":
-                    # D T+1开盘卖，同一笔资金顺序交给A/B/C
-                    next_open = safe_float(candidate.get("next_open"), 0.0)
-                    net_ret = (next_open / limit_close - 1 - fee) if (limit_close > 0 and next_open > 0) else 0.0
-                    exit_rule = "T+1_open"
-                else:
-                    # NO_CANDIDATE / BUY_REJECTED：D持到T+2收盘，无资金冲突
-                    exit_close_val = safe_float(candidate.get("exit_close"), 0.0)
-                    net_ret = (exit_close_val / limit_close - 1 - fee) if (limit_close > 0 and exit_close_val > 0) else 0.0
-                    exit_rule = "T+2_close"
-                d_ret = net_ret * POSITION_PCT * fill_rate
+                exit_close_val = safe_float(candidate.get("exit_close"), 0.0)
+                net_ret = (
+                    exit_close_val / limit_close - 1 - fee
+                    if (limit_close > 0 and exit_close_val > 0)
+                    else 0.0
+                )
+                exit_rule = "T+2_close"
+                d_ret = net_ret * position_pct * fill_rate
                 abcd_leg = "D" if op_status == "NO_CANDIDATE" else f"D+{leg}"
                 d_trade_log.append({
                     "signal_date": dt,
@@ -262,9 +276,8 @@ def run_simulation(
                     "abc_status": op_status,
                 })
 
-        # 总收益 = A/B/C收益 + D收益
-        # HISTORICAL_SIM_FILLED天：D盘中买T→T+1卖，ABC T+1买→T+2/T+3卖，同笔资金顺序使用
-        # 因此 total_ret = abc_ret + d_ret 是对同一资金先做D再做ABC的近似叠加
+        # 这里的叠加曲线只保留旧报告横向审计价值；当前发布组合必须使用认证脚本的
+        # 严格串行占仓回放，禁止把本曲线当实盘标尺。
         total_ret = abc_acct_ret + d_ret
         equity_abcd = equity_abcd * (1 + total_ret)
         records_abcd.append({
@@ -329,7 +342,7 @@ def build_validation_gates(d_log: list[dict], d_candidates: pd.DataFrame) -> pd.
         {
             "gate": "全部成交概率不低于阈值",
             "value": round(min_fill_probability, 4),
-            "threshold": "由 --min-fill-probability 设置",
+            "threshold": D_MIN_FILL_PROBABILITY,
             "status": "PASS" if sample_count and min_fill_probability > 0 else "FAIL",
             "note": "策略D不能用买不到的涨停板收益证明有效。",
         },
@@ -392,9 +405,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="策略D（首板打板）完整回测")
     parser.add_argument("--use-minute-features", action="store_true",
                         help="使用分钟特征（需先运行 collect_strategy_d_minute_data.py）")
-    parser.add_argument("--fill-rate", type=float, default=1.0,
+    parser.add_argument("--fill-rate", type=float, default=0.8,
                         help="成交压力系数（0~1），只做确定性收益折减；成交过滤优先使用 fill_probability")
-    parser.add_argument("--min-fill-probability", type=float, default=0.8,
+    parser.add_argument(
+        "--min-fill-probability",
+        type=float,
+        default=D_MIN_FILL_PROBABILITY,
                         help="最低成交概率，默认0.8")
     parser.add_argument(
         "--allowed-segments",
@@ -403,17 +419,32 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    if not 0 <= args.fill_rate <= 1:
-        raise ValueError("--fill-rate 必须在 0~1 之间。")
-    if not 0 <= args.min_fill_probability <= 1:
-        raise ValueError("--min-fill-probability 必须在 0~1 之间。")
-    allowed_segments = parse_segments(args.allowed_segments) if args.allowed_segments else configured_allowed_segments()
+    if args.use_minute_features:
+        raise ValueError(
+            "发布版D回测禁止叠加可选分钟过滤；研究变体必须使用独立输出脚本。"
+        )
+    if abs(args.fill_rate - 0.8) > 1e-12:
+        raise ValueError("发布版D回测成交压力固定为0.8，禁止覆盖。")
+    if abs(args.min_fill_probability - D_MIN_FILL_PROBABILITY) > 1e-12:
+        raise ValueError(
+            f"发布版D回测成交概率固定为{D_MIN_FILL_PROBABILITY:.0%}，禁止覆盖。"
+        )
+    allowed_segments = configured_allowed_segments()
+    if args.allowed_segments:
+        requested_segments = parse_segments(args.allowed_segments)
+        if requested_segments != allowed_segments:
+            raise ValueError(
+                "发布版D回测市场分段必须与config.strategy_d完全一致，禁止覆盖。"
+            )
+    position_pct = configured_position_pct()
 
     print("加载 A+B+C 历史回测明细...")
     abc_detail = load_abc_detail()
     print(f"  共 {len(abc_detail)} 个交易日，{abc_detail['signal_date'].min()} ~ {abc_detail['signal_date'].max()}")
 
-    print(f"\n加载 D策略候选池（情绪={D_SENTIMENT}，板型={D_BOARD_TYPE}）...")
+    print(
+        f"\n加载 D策略候选池（情绪={D_SENTIMENT_LEVEL}，板型={D_BOARD_TYPE}）..."
+    )
     d_candidates = load_d_candidates(args.use_minute_features, args.min_fill_probability, allowed_segments)
     print(f"  共 {len(d_candidates)} 条，覆盖 {d_candidates['trade_date'].nunique()} 个交易日")
     print(f"  成交概率阈值 >= {args.min_fill_probability:.0%} | 允许分段: {','.join(sorted(allowed_segments)) or '全部'}")
@@ -424,7 +455,12 @@ def main() -> None:
     print(f"  与A+B+C回测窗口重叠: {len(d_in_window)} 条，{d_in_window['trade_date'].nunique()} 天")
 
     print(f"\n运行模拟（打板成功率={args.fill_rate:.0%}）...")
-    df_abc, df_abcd, d_log = run_simulation(abc_detail, d_in_window, fill_rate=args.fill_rate)
+    df_abc, df_abcd, d_log = run_simulation(
+        abc_detail,
+        d_in_window,
+        fill_rate=args.fill_rate,
+        position_pct=position_pct,
+    )
 
     m_abc = calc_metrics(df_abc)
     m_abcd = calc_metrics(df_abcd)
