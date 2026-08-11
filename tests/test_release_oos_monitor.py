@@ -67,6 +67,12 @@ class ReleaseOosMonitorTest(unittest.TestCase):
 
     def test_ai_prompt_is_model_independent_and_blocks_direct_changes(self) -> None:
         prompt = build_ai_review_prompt(self.payload, "20260108")
+        self.assertIn("## 总目的", prompt)
+        self.assertIn("尽量少损伤历史总复利", prompt)
+        self.assertIn("改动方向", prompt)
+        self.assertIn("具体改动内容", prompt)
+        self.assertIn("改动的好处", prompt)
+        self.assertIn("用户下一步", prompt)
         self.assertIn("如果你无法访问项目文件，先要求我上传", prompt)
         self.assertIn("同一信号日的成对样本", prompt)
         self.assertIn("D在信号日14:00后先买", prompt)
@@ -87,6 +93,9 @@ class ReleaseOosMonitorTest(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         sent_body = calls[0][0][2]
         self.assertIn("【复制给AI】", sent_body)
+        self.assertIn("总目的", sent_body)
+        self.assertIn("改动方向", sent_body)
+        self.assertIn("好处", sent_body)
         self.assertIn("禁止用未来信息", sent_body)
         daily = pd.read_csv(self.root / "reports/oos_evaluation/release_oos_daily_history.csv")
         weekly = pd.read_csv(self.root / "reports/oos_evaluation/release_oos_weekly_history.csv")
