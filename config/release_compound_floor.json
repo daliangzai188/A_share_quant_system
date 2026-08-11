@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "status": "ACTIVE",
+  "policy_id": "compound-floor-20260811-v1",
+  "anchor": {
+    "release_id": "model3-20260811-dlam-e2c-v1.2-shadow",
+    "scenario": "current_with_m_gap_leg",
+    "input_start_date": "20240520",
+    "input_end_date": "20260514",
+    "input_sha256": "d0c7b8a41d3f909db1ee90b94cc1704d4b176fc76180823eaf062aaf1680e2d1",
+    "initial_equity": 500000.0,
+    "position_pct": 0.825,
+    "equity_multiple": 29388.980133715802
+  },
+  "hard_floor_ratio": 0.7,
+  "hard_floor_multiple": 20572.28609360106,
+  "automatic_release_ratio": 1.0,
+  "automatic_release_multiple": 29388.980133715802,
+  "accepted_certification_statuses": [
+    "PASS",
+    "PASS_WITH_RISK_ACCEPTANCE"
+  ],
+  "comparison_requirements": {
+    "same_scenario": true,
+    "same_input_window": true,
+    "same_input_sha256": true,
+    "same_initial_equity": true,
+    "same_position_pct": true
+  },
+  "note": "以后任何策略优化必须先按相同历史输入、初始资金和仓位口径完成组合认证。候选复利低于锚点70%时无条件拒绝；处于70%至100%之间时只能人工审查并显式接受，不能自动发布；达到或超过锚点时才通过复利非劣门禁。该历史倍数不代表未来收益或实盘容量。"
+}

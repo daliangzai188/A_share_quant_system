@@ -86,6 +86,7 @@ reports/execution_tracking/*.json
 reports/july_august_review/*.json
 reports/live_performance/*.json
 reports/oos_evaluation/*.json
+reports/release_guard/
 
 # 实盘运行状态备份包含持仓、委托号和成交事件，只保留本机/异地备份，禁止入库
 backups/runtime_state/

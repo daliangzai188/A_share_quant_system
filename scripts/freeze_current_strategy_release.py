@@ -20,9 +20,16 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.live_certification import validate_live_certification  # noqa: E402
+from src.release_compound_guard import (  # noqa: E402
+    REVIEW_WITHIN_FLOOR,
+    enforce_release_decision,
+    evaluate_certification_candidate,
+    load_json_object,
+)
 
 
 CONFIG_PATH = PROJECT_ROOT / "config" / "config.json"
+COMPOUND_POLICY_PATH = PROJECT_ROOT / "config" / "release_compound_floor.json"
 
 
 def _compact_date(value: str) -> str:
@@ -54,6 +61,8 @@ def build_freeze_payload(
     change_reason: str,
     oos_start_date: str,
     baseline_commit: str,
+    compound_guard: dict[str, Any] | None = None,
+    compound_reduction_accepted: bool = False,
 ) -> dict[str, Any]:
     model3 = config.get("strategy_model3", {})
     research_end = _compact_date(str(certification.get("input_end_date", "")))
@@ -71,7 +80,7 @@ def build_freeze_payload(
     order = [str(value).upper() for value in model3.get("strategy_priority_order", [])]
     if not order:
         raise ValueError("strategy_model3.strategy_priority_order不能为空")
-    return {
+    payload = {
         "schema_version": 1,
         "status": "FROZEN",
         "release_id": release,
@@ -95,6 +104,25 @@ def build_freeze_payload(
             "不得用后续结果回填或重写本清单。容量未认证时继续小资金验证。"
         ),
     }
+    if compound_guard is not None:
+        payload["compound_guard"] = {
+            "policy_id": str(compound_guard.get("policy_id", "")),
+            "status": str(compound_guard.get("status", "")),
+            "anchor_equity_multiple": float(
+                compound_guard.get("anchor_equity_multiple", 0.0)
+            ),
+            "candidate_equity_multiple": float(
+                compound_guard.get("candidate_equity_multiple", 0.0)
+            ),
+            "retained_ratio": float(compound_guard.get("retained_ratio", 0.0)),
+            "hard_floor_ratio": float(compound_guard.get("hard_floor_ratio", 0.0)),
+            "hard_floor_multiple": float(
+                compound_guard.get("hard_floor_multiple", 0.0)
+            ),
+            "compound_reduction_accepted": bool(compound_reduction_accepted),
+            "reason": str(compound_guard.get("reason", "")),
+        }
+    return payload
 
 
 def main() -> None:
@@ -104,6 +132,11 @@ def main() -> None:
     parser.add_argument("--oos-start-date", required=True, help="新样本外起点YYYYMMDD")
     parser.add_argument("--baseline-commit", default="", help="策略行为基线提交，默认HEAD")
     parser.add_argument("--replace", action="store_true", help="显式替换已有冻结清单")
+    parser.add_argument(
+        "--accept-compound-reduction-within-floor",
+        action="store_true",
+        help="候选复利处于当前基准70%%至100%%时，显式接受复利下降；低于70%%仍不可发布",
+    )
     args = parser.parse_args()
 
     config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
@@ -127,6 +160,16 @@ def main() -> None:
     )
     if not check.ok:
         raise RuntimeError(f"当前认证未通过，禁止冻结：{check.reason}")
+    compound_policy = load_json_object(COMPOUND_POLICY_PATH)
+    compound_guard = evaluate_certification_candidate(
+        compound_policy,
+        check.payload,
+        config,
+    )
+    enforce_release_decision(
+        compound_guard,
+        accept_reduction_within_floor=args.accept_compound_reduction_within_floor,
+    )
     payload = build_freeze_payload(
         config,
         check.payload,
@@ -134,6 +177,11 @@ def main() -> None:
         change_reason=args.change_reason,
         oos_start_date=args.oos_start_date,
         baseline_commit=args.baseline_commit,
+        compound_guard=compound_guard,
+        compound_reduction_accepted=(
+            compound_guard["status"] == REVIEW_WITHIN_FLOOR
+            and args.accept_compound_reduction_within_floor
+        ),
     )
     freeze_path.parent.mkdir(parents=True, exist_ok=True)
     temporary = freeze_path.with_suffix(freeze_path.suffix + ".tmp")
