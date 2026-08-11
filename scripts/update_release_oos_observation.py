@@ -34,6 +34,8 @@ def main() -> None:
         monitor = record_and_maybe_remind(PROJECT_ROOT, args.signal_date, report)
         for line in monitor["log_lines"]:
             print(line)
+        for line in monitor["weekly_console_lines"]:
+            print(line)
         print(
             f"[OOS提醒] 周报日={monitor['is_weekly_report_day']} "
             f"本周已推送={monitor['weekly_notification_sent']}"

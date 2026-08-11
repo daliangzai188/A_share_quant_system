@@ -90,6 +90,12 @@ class ReleaseOosMonitorTest(unittest.TestCase):
         second = record_and_maybe_remind(self.root, "20260108", self.payload, fake_notify)
         self.assertTrue(first["weekly_notification_sent"])
         self.assertFalse(second["weekly_notification_sent"])
+        self.assertTrue(first["weekly_console_lines"])
+        self.assertFalse(second["weekly_console_lines"])
+        console_text = "\n".join(first["weekly_console_lines"])
+        self.assertIn("OOS周报复制开始", console_text)
+        self.assertIn("## 总目的", console_text)
+        self.assertIn("OOS周报复制结束", console_text)
         self.assertEqual(len(calls), 1)
         sent_body = calls[0][0][2]
         self.assertIn("【复制给AI】", sent_body)
@@ -103,6 +109,7 @@ class ReleaseOosMonitorTest(unittest.TestCase):
         self.assertEqual(len(weekly), 1)
         state = json.loads((self.root / "data/state/oos_analysis_reminder_state.json").read_text())
         self.assertEqual(state["last_week_key"], "release-test|2026-W02")
+        self.assertEqual(state["last_console_week_key"], "release-test|2026-W02")
         prompt_path = self.root / "reports/oos_evaluation/ai_review_prompt.md"
         self.assertTrue(prompt_path.exists())
         self.assertIn("发布版本样本外报告", prompt_path.read_text(encoding="utf-8"))

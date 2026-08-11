@@ -351,6 +351,9 @@ def should_print_line(text: str) -> bool:
         "保存每日基本面",
         "保存涨停池",
         "Tushare ",
+        # 每周最后交易日打印的完整AI复核提示。每行均带此前缀，默认关键日志
+        # 模式也必须显示，方便用户直接从PowerShell整段复制给任意模型。
+        "OOS周报复制",
     ]
     suppressed_words = [
         "A/B/C逐层筛选漏斗",

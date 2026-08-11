@@ -253,10 +253,21 @@ def record_and_maybe_remind(
     weekly = is_last_open_day_of_week(root, signal_date)
     sent = False
     week_key = f"{row['release_id']}|{row['iso_week']}"
+    console_lines: list[str] = []
     if weekly:
         _upsert_history(output / "release_oos_weekly_history.csv", row, ["release_id", "iso_week"])
         state_path = root / "data" / "state" / "oos_analysis_reminder_state.json"
         state = _read_json(state_path, {})
+        state_changed = False
+        if str(state.get("last_console_week_key", "")) != week_key:
+            console_lines = [
+                "[OOS周报复制开始] 复制以下内容给任意AI；本轮只分析，不直接修改代码或实盘。",
+                *[f"[OOS周报复制] {line}" for line in build_ai_review_prompt(payload, signal_date).splitlines()],
+                "[OOS周报复制结束]",
+            ]
+            state["last_console_week_key"] = week_key
+            state["last_console_signal_date"] = _date(signal_date)
+            state_changed = True
         if str(state.get("last_week_key", "")) != week_key:
             if notify_func is None:
                 from src.notify import notify as notify_func
@@ -267,15 +278,17 @@ def record_and_maybe_remind(
                 level="active",
             ))
             if sent:
-                _atomic_json({
-                    "last_week_key": week_key,
-                    "last_signal_date": _date(signal_date),
-                    "updated_at": datetime.now().isoformat(),
-                }, state_path)
+                state["last_week_key"] = week_key
+                state["last_signal_date"] = _date(signal_date)
+                state_changed = True
+        if state_changed:
+            state["updated_at"] = datetime.now().isoformat()
+            _atomic_json(state, state_path)
     return {
         "log_lines": daily_log_lines(payload, signal_date),
         "is_weekly_report_day": weekly,
         "weekly_notification_sent": sent,
         "week_key": week_key,
         "ai_review_prompt_path": str(prompt_path),
+        "weekly_console_lines": console_lines,
     }
