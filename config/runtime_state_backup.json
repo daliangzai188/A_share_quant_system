@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "file_role": "实盘关键运行状态的可校验快照配置；只备份和隔离恢复演练，不提供直接覆盖生产目录的恢复入口。",
+  "snapshot_root": "backups/runtime_state",
+  "latest_status_path": "reports/runtime_state_backup/latest_status.json",
+  "items": [
+    {"path": "config/config.json", "kind": "json", "required": true},
+    {"path": "config/strategy_config.json", "kind": "json", "required": true},
+    {"path": "config/strategy_release_freeze.json", "kind": "json", "required": true},
+    {"path": "data/processed/positions.json", "kind": "json", "required": true},
+    {"path": "data/processed/exit_execution_state.json", "kind": "json", "required": true},
+    {"path": "data/processed/pending_premarket_buy.json", "kind": "json", "required": false},
+    {"path": "data/processed/e2_capacity_history.json", "kind": "json", "required": false},
+    {"path": "data/state/pov_state.json", "kind": "json", "required": false},
+    {"path": "data/state/due_positions_ledger.json", "kind": "json", "required": false},
+    {"path": "data/state/d_relay_pair_state.json", "kind": "json", "required": false},
+    {"path": "data/state/execution_events.sqlite3", "kind": "sqlite", "required": true},
+    {"path": "reports/execution_tracking/trade_execution_plan.csv", "kind": "csv", "required": true},
+    {"path": "reports/execution_tracking/buy_execution_slices.csv", "kind": "csv", "required": true},
+    {"path": "reports/execution_tracking/sell_execution_slices.csv", "kind": "csv", "required": true},
+    {"path": "reports/execution_tracking/trade_completion_summary.csv", "kind": "csv", "required": true},
+    {"path": "reports/strategy_m/m_equity_peak.json", "kind": "json", "required": true},
+    {"path": "reports/strategy_e2/e2_signals_recent.json", "kind": "json", "required": false},
+    {"path": "reports/strategy_l/l_signals_recent.json", "kind": "json", "required": false},
+    {"path": "reports/strategy_m/m_signal_runs_recent.json", "kind": "json", "required": false}
+  ],
+  "note": "普通文件逐文件原子读取，SQLite使用在线backup API；快照能保证每个文件自身完整，但运行中跨文件不是同一事务时点。正式灾备演练应恢复到项目目录之外的全新隔离目录。"
+}
