@@ -457,6 +457,41 @@ def configured_c_conditions(config: dict[str, Any]) -> list[dict[str, str]]:
     return conditions
 
 
+def build_c_shadow_candidates(
+    strategy_config_path: str | Path,
+    config: dict[str, Any],
+    all_candidates: pd.DataFrame,
+    signal_date: str,
+    selected_action: str,
+    top_n: int | None = None,
+) -> tuple[list[dict[str, str]], pd.DataFrame, pd.Series | None, pd.DataFrame]:
+    """始终计算 C 自身候选，但不改变 A>C 的实盘让路规则。
+
+    过去只有 A 为空时才计算 C，导致 A 命中日无法观察 C 的样本外表现。
+    这里把 C 的纯计算提前，输出候选和风险拒绝结果；真正是否进入
+    ``selected/planned_orders`` 仍由调用方原有的 ``A优先`` 分支决定。
+    """
+
+    conditions = configured_c_conditions(config)
+    if not conditions:
+        return conditions, pd.DataFrame(), None, pd.DataFrame()
+    c_config = condition_strategy_config(config, conditions, "backup_strategy_c_current")
+    c_generator = build_generator(strategy_config_path, c_config)
+    c_filtered = c_generator.apply_strategy_filters(all_candidates)
+    candidates = apply_and_rank(c_generator, c_filtered, signal_date, top_n=top_n)
+    picked = selected_candidate(candidates, selected_action)
+    rejected = pd.DataFrame()
+    if picked is not None:
+        picked_frame = pd.DataFrame([picked])
+        rejected_mask = reject_strategy_risk_mask(picked_frame, config, "c_strategy")
+        if bool(rejected_mask.iloc[0]):
+            rejected = picked_frame.copy()
+            rejected["reject_reason"] = "C_SELECTED_HIT_RISK_REJECT_RULES"
+            rejected["reject_reason_desc"] = "C 首选标的命中风险过滤规则。"
+            rejected["risk_reject_detail"] = risk_reject_detail(rejected, config)
+    return conditions, candidates, picked, rejected
+
+
 def configured_c_exit_rule(config: dict[str, Any]) -> ReplayRule:
     c_config = config.get("paper_ab_filtered_strategy", {}).get("c_strategy", {})
     rule = c_config.get("exit_rule", {})
@@ -821,8 +856,16 @@ def main() -> None:
     a_candidates = apply_and_rank(a_generator, a_filtered, signal_date, top_n=args.top_n)
     a_selected = selected_candidate(a_candidates, selected_action)
 
-    c_candidates = pd.DataFrame()
-    c_rejected = pd.DataFrame()
+    # C 作为影子腿每天都独立计算并落盘，便于前向反事实评估；这里只增加
+    # 观察数据，不改变 A 命中时 C 必须让位、不得生成实盘计划的原规则。
+    c_conditions, c_candidates, c_selected, c_rejected = build_c_shadow_candidates(
+        args.strategy_config,
+        config,
+        all_candidates,
+        signal_date,
+        selected_action,
+        top_n=args.top_n,
+    )
     execution_reference = pd.DataFrame()
     selected = pd.DataFrame()
     selection_status = ""
@@ -836,21 +879,10 @@ def main() -> None:
     else:
         selection_status = "A_NO_SELECTED_B_REMOVED"
         if selected.empty:
-            c_conditions = configured_c_conditions(config)
             if c_conditions:
-                c_config = condition_strategy_config(config, c_conditions, "backup_strategy_c_current")
-                c_generator = build_generator(args.strategy_config, c_config)
-                c_filtered = c_generator.apply_strategy_filters(all_candidates)
-                c_candidates = apply_and_rank(c_generator, c_filtered, signal_date, top_n=args.top_n)
-                c_selected = selected_candidate(c_candidates, selected_action)
                 if c_selected is not None:
                     c_selected_frame = pd.DataFrame([c_selected])
-                    c_rejected_mask = reject_strategy_risk_mask(c_selected_frame, config, "c_strategy")
-                    if bool(c_rejected_mask.iloc[0]):
-                        c_rejected = c_selected_frame.copy()
-                        c_rejected["reject_reason"] = "C_SELECTED_HIT_RISK_REJECT_RULES"
-                        c_rejected["reject_reason_desc"] = "C 首选标的命中风险过滤规则。"
-                        c_rejected["risk_reject_detail"] = risk_reject_detail(c_rejected, config)
+                    if not c_rejected.empty:
                         if selected.empty:
                             selection_status = "A_NO_SELECTED_C_RISK_FILTERED"
                     else:
