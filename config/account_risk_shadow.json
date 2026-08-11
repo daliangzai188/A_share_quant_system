@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "status": "SHADOW",
+  "policy_id": "account-risk-shadow-20260811-v1",
+  "enforce_live_gate": false,
+  "observation_start_date": "20260811",
+  "max_daily_realized_loss_pct": 0.03,
+  "max_account_drawdown_pct": 0.15,
+  "max_consecutive_losses": 3,
+  "suggested_cooldown_trade_days": 5,
+  "minimum_complete_trades_for_activation_review": 20,
+  "state_path": "reports/account_risk_shadow/state.json",
+  "latest_status_path": "reports/account_risk_shadow/latest_status.json",
+  "bootstrap_equity_path": "reports/strategy_m/m_equity_peak.json",
+  "note": "本配置只做账户级风险总闸的影子观测。即使触发日亏损、账户回撤或连续亏损阈值，也只记录假设动作和告警依据，不得拦截当前实盘。是否接入下单必须先完成历史回放、样本外复核，并通过当前总复利70%硬底线。"
+}

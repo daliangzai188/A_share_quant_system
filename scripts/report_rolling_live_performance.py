@@ -22,6 +22,11 @@ from src.live_performance import (  # noqa: E402
     rolling_metrics,
 )
 from src.execution_data_quality import analyze_execution_data_quality  # noqa: E402
+from src.account_risk_shadow import (  # noqa: E402
+    load_json_object as load_risk_json,
+    update_account_risk_shadow,
+    validate_shadow_policy,
+)
 from src.utils.config import load_json_config, mkdir_p  # noqa: E402
 
 
@@ -29,6 +34,7 @@ SOURCE = PROJECT_ROOT / "reports" / "execution_tracking" / "trade_completion_sum
 SELL_EVENTS_SOURCE = PROJECT_ROOT / "reports" / "execution_tracking" / "sell_execution_slices.csv"
 POSITIONS_SOURCE = PROJECT_ROOT / "data" / "processed" / "positions.json"
 OUTPUT_DIR = PROJECT_ROOT / "reports" / "live_performance"
+ACCOUNT_RISK_POLICY_PATH = PROJECT_ROOT / "config" / "account_risk_shadow.json"
 
 
 def _markdown(frame: pd.DataFrame) -> str:
@@ -142,6 +148,21 @@ def main() -> None:
     trades, quality = completed_live_trades(raw, report_config)
     capacity_metrics = execution_capacity_metrics(raw, report_config)
     capacity_status = capacity_monitor_status(capacity_metrics, report_config)
+    risk_policy = load_risk_json(ACCOUNT_RISK_POLICY_PATH)
+    normalized_risk_policy = validate_shadow_policy(risk_policy)
+    risk_bootstrap = load_risk_json(
+        PROJECT_ROOT / normalized_risk_policy["bootstrap_equity_path"]
+    )
+    bootstrap_equity = float(risk_bootstrap.get("last_equity", 0.0) or 0.0)
+    account_risk_shadow = update_account_risk_shadow(
+        state_path=PROJECT_ROOT / normalized_risk_policy["state_path"],
+        latest_status_path=PROJECT_ROOT
+        / normalized_risk_policy["latest_status_path"],
+        policy=risk_policy,
+        complete_trades=trades,
+        bootstrap_equity=bootstrap_equity,
+        as_of_date=now_shanghai.strftime("%Y%m%d"),
+    )
     windows = [int(value) for value in report_config.get("windows", [20, 60, 120])]
     metrics = rolling_metrics(trades, windows)
     minimum = int(report_config.get("minimum_samples_for_decision", 20))
@@ -178,6 +199,7 @@ def main() -> None:
         "latest_exit_date": str(trades["exit_date"].max()) if len(trades) else "",
         "execution_data_quality": data_quality_status,
         "capacity_monitor": capacity_status,
+        "account_risk_shadow": account_risk_shadow,
         "note": "hypothetical_full_notional_multiple仅是每笔全仓串行假设，不是账户实际收益。",
     }
     (OUTPUT_DIR / "rolling_live_status.json").write_text(
@@ -211,6 +233,14 @@ def main() -> None:
         "- 该状态当前只监控、不改变下单；capacity_certified=false时继续小资金验证。",
         "",
         _capacity_markdown(capacity_metrics),
+        "",
+        "## 账户级风险总闸（影子模式）",
+        "",
+        f"- 状态：**{account_risk_shadow['status']}**",
+        f"- 判定：{account_risk_shadow['reason']}",
+        f"- 假设动作：`{account_risk_shadow['suggested_action']}`",
+        "- enforce_live_gate=false：本节只观测，不拦截当前候选、开仓、卖出或资金调度。",
+        "- 将来只有历史与样本外证据充分、且总复利不低于当前硬底线70%时，才允许另行评审是否接入。",
     ]
     (OUTPUT_DIR / "rolling_live_report.md").write_text("\n".join(report), encoding="utf-8")
     print(json.dumps(payload, ensure_ascii=False, indent=2))
