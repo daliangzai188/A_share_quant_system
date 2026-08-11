@@ -45,15 +45,16 @@ def validate_shadow_policy(policy: Mapping[str, Any]) -> dict[str, Any]:
         raise AccountRiskShadowError("账户风险影子配置缺少policy_id")
     start = _date(policy.get("observation_start_date"), "observation_start_date")
 
-    daily_loss = float(policy.get("max_daily_realized_loss_pct", 0.0) or 0.0)
+    raw_daily_loss = policy.get("max_daily_realized_loss_pct")
+    daily_loss = None if raw_daily_loss is None else float(raw_daily_loss)
     drawdown = float(policy.get("max_account_drawdown_pct", 0.0) or 0.0)
     streak = int(policy.get("max_consecutive_losses", 0) or 0)
     cooldown = int(policy.get("suggested_cooldown_trade_days", 0) or 0)
     minimum = int(
         policy.get("minimum_complete_trades_for_activation_review", 0) or 0
     )
-    if not 0 < daily_loss < 1:
-        raise AccountRiskShadowError("日亏损阈值必须在(0,1)内")
+    if daily_loss is not None and not 0 < daily_loss < 1:
+        raise AccountRiskShadowError("日亏损阈值必须为空或在(0,1)内")
     if not 0 < drawdown < 1:
         raise AccountRiskShadowError("账户回撤阈值必须在(0,1)内")
     if streak < 1 or cooldown < 1 or minimum < 1:
@@ -68,6 +69,7 @@ def validate_shadow_policy(policy: Mapping[str, Any]) -> dict[str, Any]:
         paths[field] = value
     return {
         "policy_id": policy_id,
+        "supersedes_policy_id": str(policy.get("supersedes_policy_id", "")).strip(),
         "observation_start_date": start,
         "daily_loss_limit": daily_loss,
         "drawdown_limit": drawdown,
@@ -168,8 +170,27 @@ def update_account_risk_shadow(
         state = load_json_object(state_path)
         if int(state.get("schema_version", 0) or 0) != STATE_SCHEMA_VERSION:
             raise AccountRiskShadowError("影子总闸状态版本不受支持，拒绝覆盖")
-        if str(state.get("policy_id", "")) != normalized["policy_id"]:
-            raise AccountRiskShadowError("影子总闸状态与当前policy_id不一致")
+        state_policy_id = str(state.get("policy_id", ""))
+        if state_policy_id != normalized["policy_id"]:
+            can_migrate_empty_shadow = bool(
+                state_policy_id
+                and state_policy_id == normalized["supersedes_policy_id"]
+                and int(state.get("observed_complete_trade_count", 0) or 0) == 0
+                and state.get("enforce_live_gate") is False
+            )
+            if not can_migrate_empty_shadow:
+                raise AccountRiskShadowError("影子总闸状态与当前policy_id不一致")
+            transitions = list(state.get("policy_transitions", []))
+            transitions.append(
+                {
+                    "from_policy_id": state_policy_id,
+                    "to_policy_id": normalized["policy_id"],
+                    "reason": "旧影子新增完整样本为0，迁移到固定历史稳健性候选",
+                    "migrated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+                }
+            )
+            state["policy_id"] = normalized["policy_id"]
+            state["policy_transitions"] = transitions
         if state.get("enforce_live_gate") is not False:
             raise AccountRiskShadowError("影子总闸状态出现实盘执行标记，拒绝运行")
 
@@ -230,7 +251,10 @@ def update_account_risk_shadow(
     daily_return = today_pnl / equity_before_today if equity_before_today > 0 else 0.0
     drawdown = equity / peak - 1.0
     triggers: list[str] = []
-    if daily_return <= -normalized["daily_loss_limit"]:
+    if (
+        normalized["daily_loss_limit"] is not None
+        and daily_return <= -normalized["daily_loss_limit"]
+    ):
         triggers.append("DAILY_REALIZED_LOSS")
     if drawdown <= -normalized["drawdown_limit"]:
         triggers.append("ACCOUNT_DRAWDOWN")
@@ -285,7 +309,11 @@ def update_account_risk_shadow(
         "account_drawdown_limit": -normalized["drawdown_limit"],
         "today_realized_pnl": today_pnl,
         "today_realized_return_on_start_equity": daily_return,
-        "daily_realized_loss_limit": -normalized["daily_loss_limit"],
+        "daily_realized_loss_limit": (
+            None
+            if normalized["daily_loss_limit"] is None
+            else -normalized["daily_loss_limit"]
+        ),
         "consecutive_losses": streak,
         "consecutive_loss_limit": normalized["streak_limit"],
         "triggers": triggers,

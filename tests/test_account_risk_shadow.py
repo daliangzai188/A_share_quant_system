@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 import tempfile
 import unittest
 
@@ -120,6 +121,75 @@ class AccountRiskShadowTest(unittest.TestCase):
         invalid["enforce_live_gate"] = True
         with self.assertRaisesRegex(AccountRiskShadowError, "禁止设置"):
             validate_shadow_policy(invalid)
+
+    def test_daily_loss_trigger_can_be_disabled(self) -> None:
+        policy = dict(self.policy)
+        policy["max_daily_realized_loss_pct"] = None
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            update_account_risk_shadow(
+                state_path=root / "state.json",
+                latest_status_path=root / "latest.json",
+                policy=policy,
+                complete_trades=self.trades([]),
+                bootstrap_equity=100.0,
+                as_of_date="20260811",
+            )
+            result = update_account_risk_shadow(
+                state_path=root / "state.json",
+                latest_status_path=root / "latest.json",
+                policy=policy,
+                complete_trades=self.trades([("loss", "20260812", -4.0)]),
+                bootstrap_equity=100.0,
+                as_of_date="20260812",
+            )
+            self.assertNotIn("DAILY_REALIZED_LOSS", result["triggers"])
+            self.assertIsNone(result["daily_realized_loss_limit"])
+
+    def test_empty_shadow_state_can_migrate_to_fixed_candidate_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.update(root, self.trades([]), date="20260811")
+            fixed = dict(self.policy)
+            fixed["policy_id"] = "test-shadow-v2"
+            fixed["supersedes_policy_id"] = "test-shadow"
+            fixed["max_daily_realized_loss_pct"] = None
+            fixed["max_account_drawdown_pct"] = 0.18
+            fixed["max_consecutive_losses"] = 2
+            result = update_account_risk_shadow(
+                state_path=root / "state.json",
+                latest_status_path=root / "latest.json",
+                policy=fixed,
+                complete_trades=self.trades([]),
+                bootstrap_equity=100.0,
+                as_of_date="20260811",
+            )
+            state = json.loads((root / "state.json").read_text(encoding="utf-8"))
+            self.assertEqual(result["policy_id"], "test-shadow-v2")
+            self.assertEqual(state["policy_id"], "test-shadow-v2")
+            self.assertEqual(len(state["policy_transitions"]), 1)
+
+    def test_nonempty_shadow_state_refuses_silent_policy_migration(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.update(root, self.trades([]), date="20260811")
+            self.update(
+                root,
+                self.trades([("win", "20260812", 1.0)]),
+                date="20260812",
+            )
+            fixed = dict(self.policy)
+            fixed["policy_id"] = "test-shadow-v2"
+            fixed["supersedes_policy_id"] = "test-shadow"
+            with self.assertRaisesRegex(AccountRiskShadowError, "policy_id不一致"):
+                update_account_risk_shadow(
+                    state_path=root / "state.json",
+                    latest_status_path=root / "latest.json",
+                    policy=fixed,
+                    complete_trades=self.trades([("win", "20260812", 1.0)]),
+                    bootstrap_equity=100.0,
+                    as_of_date="20260812",
+                )
 
 
 if __name__ == "__main__":

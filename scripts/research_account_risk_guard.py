@@ -217,7 +217,7 @@ def main() -> None:
         selected_id = ""
 
     shadow_spec = RiskOverlaySpec(
-        float(shadow_policy["max_daily_realized_loss_pct"]),
+        optional_float(shadow_policy["max_daily_realized_loss_pct"]),
         float(shadow_policy["max_account_drawdown_pct"]),
         int(shadow_policy["max_consecutive_losses"]),
         int(shadow_policy["suggested_cooldown_trade_days"]),
