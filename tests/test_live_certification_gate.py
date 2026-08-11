@@ -10,12 +10,30 @@ from src.live_certification import (
     certification_config_sha256,
     certification_files_sha256,
     validate_live_certification,
+    validate_strategy_release_freeze,
 )
 from tests.test_opening_position_policy import make_engine
 from scripts.certify_current_executable_portfolio import resolve_m_release_status
 
 
 class LiveCertificationGateTests(unittest.TestCase):
+    @staticmethod
+    def _freeze_payload(certification: dict, *, oos_start: str = "20260811") -> dict:
+        return {
+            "schema_version": 1,
+            "status": "FROZEN",
+            "release_id": "model3-20260811-v1",
+            "frozen_at": "2026-08-11T00:00:00+00:00",
+            "strategy_priority_order": ["D", "L", "A", "M", "E2", "C"],
+            "research_input_end_date": certification["input_end_date"],
+            "oos_start_date": oos_start,
+            "certification_status": certification["status"],
+            "certification_scenario": certification["scenario"],
+            "config_sha256": certification["config_sha256"],
+            "code_sha256": certification["code_sha256"],
+            "input_sha256": certification["input_sha256"],
+        }
+
     def test_m风险接受使用独立认证状态且不伪造非劣通过(self) -> None:
         status = resolve_m_release_status(
             m_live_enabled=True,
@@ -164,6 +182,79 @@ class LiveCertificationGateTests(unittest.TestCase):
             )
             self.assertFalse(stale.ok)
             self.assertIn("过期", stale.reason)
+
+    def test_release_freeze_binds_certification_hashes_order_and_oos_start(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            certification = {
+                "status": "PASS_WITH_RISK_ACCEPTANCE",
+                "scenario": "current_with_m_gap_leg",
+                "input_end_date": "20260514",
+                "config_sha256": "config-v1",
+                "code_sha256": "code-v1",
+                "input_sha256": "input-v1",
+            }
+            model3 = {
+                "strategy_release_freeze_path": "freeze.json",
+                "strategy_priority_order": ["D", "L", "A", "M", "E2", "C"],
+            }
+            (root / "freeze.json").write_text(
+                json.dumps(self._freeze_payload(certification)), encoding="utf-8"
+            )
+            passed = validate_strategy_release_freeze(
+                root,
+                model3,
+                certification,
+                now=dt.datetime(2026, 8, 11, 1, tzinfo=dt.timezone.utc),
+            )
+            self.assertTrue(passed.ok)
+            self.assertIn("model3-20260811-v1", passed.reason)
+
+            changed = dict(certification, code_sha256="code-v2")
+            mismatch = validate_strategy_release_freeze(
+                root,
+                model3,
+                changed,
+                now=dt.datetime(2026, 8, 11, 1, tzinfo=dt.timezone.utc),
+            )
+            self.assertFalse(mismatch.ok)
+            self.assertIn("code_sha256", mismatch.reason)
+
+            invalid_oos = self._freeze_payload(certification, oos_start="20260514")
+            (root / "freeze.json").write_text(json.dumps(invalid_oos), encoding="utf-8")
+            invalid = validate_strategy_release_freeze(
+                root,
+                model3,
+                certification,
+                now=dt.datetime(2026, 8, 11, 1, tzinfo=dt.timezone.utc),
+            )
+            self.assertFalse(invalid.ok)
+            self.assertIn("必须晚于", invalid.reason)
+
+    def test_live_certification_fails_closed_when_required_freeze_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            model3 = {
+                "certification_summary_path": "cert.json",
+                "certification_required_status": "PASS",
+                "certification_expected_scenario": "current",
+                "require_strategy_release_freeze": True,
+                "strategy_release_freeze_path": "missing-freeze.json",
+                "strategy_priority_order": ["D", "L", "A", "M", "E2", "C"],
+            }
+            (root / "cert.json").write_text(
+                json.dumps(
+                    {
+                        "status": "PASS",
+                        "current_executable": True,
+                        "scenario": "current",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            check = validate_live_certification(root, model3)
+            self.assertFalse(check.ok)
+            self.assertIn("冻结清单不存在", check.reason)
 
 
 if __name__ == "__main__":

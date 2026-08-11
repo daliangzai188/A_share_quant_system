@@ -18,6 +18,30 @@ docs/strategy_release_playbook.md
 先模拟，后小资金，再考虑扩大
 ```
 
+### 当前model=3冻结发布门禁
+
+当前实盘组合除了认证文件的配置/代码/输入哈希外，还必须通过
+`config/strategy_release_freeze.json`。认证脚本允许刷新认证时效，但不会自动改写冻结清单；
+因此同一历史窗口重新调参、改腿序或更换候选代码后，即使回测认证重新通过，也会先被实盘
+买入门禁阻断，直到人工明确发布新版本并提交冻结清单。
+
+发布新版本的固定顺序：
+
+```text
+1. 完成训练/测试/样本外、成交、回撤和容量复核
+2. python scripts/certify_current_executable_portfolio.py
+3. python scripts/freeze_current_strategy_release.py \
+     --release-id <唯一版本号> \
+     --change-reason <至少8个字符的发布原因> \
+     --oos-start-date <晚于研究截止日的YYYYMMDD> \
+     --baseline-commit <策略行为基线提交> \
+     --replace
+4. 运行全量测试并提交认证文件、冻结清单和代码
+```
+
+`oos_start_date`之后的结果只进入滚动真实成交报告，不得用于回填、改写本次冻结清单；
+如果根据这些新结果调参，必须产生新的`release_id`和新的样本外起点。
+
 ---
 
 ## 一、当前策略状态

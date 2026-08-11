@@ -22,6 +22,16 @@ class LiveCertificationCheck:
     payload: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class StrategyReleaseFreezeCheck:
+    """当前认证是否仍绑定到人工确认过的冻结发布版本。"""
+
+    ok: bool
+    reason: str
+    path: Path
+    payload: dict[str, Any]
+
+
 def _resolve_path(project_root: Path, value: Any) -> Path:
     path = Path(str(value or "").strip())
     return path if path.is_absolute() else project_root / path
@@ -82,6 +92,112 @@ def _parse_datetime(value: Any) -> dt.datetime | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=dt.timezone.utc)
     return parsed.astimezone(dt.timezone.utc)
+
+
+def _compact_date(value: Any) -> str:
+    text = str(value or "").strip().replace("-", "")
+    if len(text) != 8 or not text.isdigit():
+        return ""
+    try:
+        dt.datetime.strptime(text, "%Y%m%d")
+    except ValueError:
+        return ""
+    return text
+
+
+def validate_strategy_release_freeze(
+    project_root: Path,
+    model3_config: Mapping[str, Any],
+    certification_payload: Mapping[str, Any],
+    *,
+    now: dt.datetime | None = None,
+) -> StrategyReleaseFreezeCheck:
+    """验证认证文件没有脱离人工冻结的策略发布版本。
+
+    历史认证脚本可以重复运行以刷新时效，但只有显式更新并提交冻结清单，才允许
+    更换策略配置、候选代码、历史输入或腿序。这样可避免在同一历史窗口重新调参后，
+    仅靠重跑认证就悄悄进入实盘。
+    """
+
+    raw_path = model3_config.get("strategy_release_freeze_path", "")
+    path = _resolve_path(project_root, raw_path)
+    if not str(raw_path).strip():
+        return StrategyReleaseFreezeCheck(False, "未配置策略冻结清单路径", path, {})
+    if not path.exists():
+        return StrategyReleaseFreezeCheck(False, f"策略冻结清单不存在：{path}", path, {})
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return StrategyReleaseFreezeCheck(False, f"策略冻结清单不可读：{exc}", path, {})
+    if not isinstance(payload, dict):
+        return StrategyReleaseFreezeCheck(False, "策略冻结清单根节点不是对象", path, {})
+    if int(payload.get("schema_version", 0) or 0) != 1:
+        return StrategyReleaseFreezeCheck(False, "策略冻结清单版本不是1", path, payload)
+    release_id = str(payload.get("release_id", "")).strip()
+    if not release_id:
+        return StrategyReleaseFreezeCheck(False, "策略冻结清单缺少release_id", path, payload)
+    if str(payload.get("status", "")).upper() != "FROZEN":
+        return StrategyReleaseFreezeCheck(False, "策略发布状态不是FROZEN", path, payload)
+
+    expected_order = [
+        str(value).upper() for value in model3_config.get("strategy_priority_order", [])
+    ]
+    frozen_order = [str(value).upper() for value in payload.get("strategy_priority_order", [])]
+    if not expected_order:
+        return StrategyReleaseFreezeCheck(False, "配置缺少结构化策略腿序", path, payload)
+    if frozen_order != expected_order:
+        return StrategyReleaseFreezeCheck(
+            False,
+            f"冻结腿序={frozen_order}，当前配置腿序={expected_order}",
+            path,
+            payload,
+        )
+
+    comparisons = {
+        "certification_status": "status",
+        "certification_scenario": "scenario",
+        "config_sha256": "config_sha256",
+        "code_sha256": "code_sha256",
+        "input_sha256": "input_sha256",
+    }
+    for freeze_key, certification_key in comparisons.items():
+        frozen_value = str(payload.get(freeze_key, "")).strip()
+        certified_value = str(certification_payload.get(certification_key, "")).strip()
+        if not frozen_value or frozen_value != certified_value:
+            return StrategyReleaseFreezeCheck(
+                False,
+                f"冻结清单{freeze_key}与当前认证不一致",
+                path,
+                payload,
+            )
+
+    research_end = _compact_date(payload.get("research_input_end_date"))
+    certified_end = _compact_date(certification_payload.get("input_end_date"))
+    oos_start = _compact_date(payload.get("oos_start_date"))
+    if not research_end or research_end != certified_end:
+        return StrategyReleaseFreezeCheck(
+            False, "冻结研究截止日与认证输入截止日不一致", path, payload
+        )
+    if not oos_start or oos_start <= research_end:
+        return StrategyReleaseFreezeCheck(
+            False, "样本外起始日必须晚于冻结研究截止日", path, payload
+        )
+
+    frozen_at = _parse_datetime(payload.get("frozen_at"))
+    current = now or dt.datetime.now(dt.timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=dt.timezone.utc)
+    if frozen_at is None:
+        return StrategyReleaseFreezeCheck(False, "冻结时间缺失或格式错误", path, payload)
+    if frozen_at > current.astimezone(dt.timezone.utc) + dt.timedelta(hours=1):
+        return StrategyReleaseFreezeCheck(False, "冻结时间晚于当前时间", path, payload)
+
+    return StrategyReleaseFreezeCheck(
+        True,
+        f"策略发布已冻结：{release_id}，样本外起点{oos_start}",
+        path,
+        payload,
+    )
 
 
 def validate_live_certification(
@@ -168,9 +284,28 @@ def validate_live_certification(
             if actual_hash != expected_hash:
                 return LiveCertificationCheck(False, f"当前{label}文件与认证版本不一致", path, payload)
 
+    if bool(model3_config.get("require_strategy_release_freeze", False)):
+        freeze = validate_strategy_release_freeze(
+            project_root,
+            model3_config,
+            payload,
+            now=now,
+        )
+        if not freeze.ok:
+            return LiveCertificationCheck(
+                False,
+                f"策略发布冻结校验失败：{freeze.reason}",
+                path,
+                payload,
+            )
+
     return LiveCertificationCheck(
         True,
-        f"认证通过：{actual_scenario}",
+        (
+            f"认证通过且策略发布已冻结：{actual_scenario}"
+            if bool(model3_config.get("require_strategy_release_freeze", False))
+            else f"认证通过：{actual_scenario}"
+        ),
         path,
         payload,
     )

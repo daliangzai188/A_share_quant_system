@@ -81,6 +81,16 @@
     "certification_expected_scenario": "current_with_m_gap_leg",
     "certification_max_age_hours": 168,
     "certification_require_hashes": true,
+    "require_strategy_release_freeze": true,
+    "strategy_release_freeze_path": "config/strategy_release_freeze.json",
+    "strategy_priority_order": [
+      "D",
+      "L",
+      "A",
+      "M",
+      "E2",
+      "C"
+    ],
     "rolling_live_report_path": "reports/live_performance/rolling_live_status.json",
     "rolling_min_trades_for_decision": 20,
     "selected_rule_name": "expand_chain_3_8_l_unconditional_priority_with_m_risk_acceptance",
