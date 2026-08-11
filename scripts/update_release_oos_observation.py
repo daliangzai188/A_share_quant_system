@@ -27,9 +27,17 @@ def main() -> None:
     # 第二阶段报告模块部署后由同一个旁路步骤自动更新，交易主流程无需再次改动。
     try:
         from src.release_oos_robustness import write_release_oos_report  # type: ignore
+        from src.release_oos_monitor import record_and_maybe_remind
 
         report = write_release_oos_report(PROJECT_ROOT)
         report_status = str(report.get("status", "UPDATED"))
+        monitor = record_and_maybe_remind(PROJECT_ROOT, args.signal_date, report)
+        for line in monitor["log_lines"]:
+            print(line)
+        print(
+            f"[OOS提醒] 周报日={monitor['is_weekly_report_day']} "
+            f"本周已推送={monitor['weekly_notification_sent']}"
+        )
     except ImportError:
         pass
     payload = {
