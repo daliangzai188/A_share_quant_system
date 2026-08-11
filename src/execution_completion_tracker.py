@@ -19,6 +19,8 @@ import threading
 from pathlib import Path
 from typing import Any, Iterable
 
+from src.execution_event_store import ExecutionEventStore
+
 
 PLAN_FIELDS = [
     "trade_key", "entry_date", "ts_code", "name", "strategy_leg", "signal_date",
@@ -210,6 +212,34 @@ class ExecutionCompletionTracker:
         self.summary_path = self.report_dir / "trade_completion_summary.csv"
         self.positions_path = self.root / "data" / "processed" / "positions.json"
         self.audit_path = self.root / "reports" / "live_execution_audit.csv"
+        self.event_store_path = self.root / "data" / "state" / "execution_events.sqlite3"
+        self._event_store: ExecutionEventStore | None = None
+
+    def _store(self) -> ExecutionEventStore:
+        # 延迟创建：SQLite镜像损坏或磁盘异常不得阻断daemon模块启动。
+        if self._event_store is None:
+            self._event_store = ExecutionEventStore(self.event_store_path)
+        return self._event_store
+
+    @staticmethod
+    def _event_payload(row: dict[str, Any]) -> dict[str, Any]:
+        # 写入时间不是业务状态；排除后每日重建同一事件不会制造伪修订。
+        volatile = {"created_at", "updated_at", "recorded_at"}
+        return {key: value for key, value in row.items() if key not in volatile}
+
+    def _mirror_event(
+        self,
+        event_type: str,
+        event_uid: str,
+        trade_key: str,
+        row: dict[str, Any],
+    ) -> None:
+        self._store().append_event(
+            event_uid=event_uid,
+            event_type=event_type,
+            trade_key=trade_key,
+            payload=self._event_payload(row),
+        )
 
     def register_entry_plan(
         self,
@@ -251,6 +281,7 @@ class ExecutionCompletionTracker:
         with _tracker_lock:
             _upsert(self.plan_path, PLAN_FIELDS, "trade_key", row)
             self.rebuild_summary()
+            self._mirror_event("PLAN", f"PLAN|{key}", key, row)
         return key
 
     def update_entry_status(
@@ -265,6 +296,15 @@ class ExecutionCompletionTracker:
                 {"trade_key": key, "entry_status": _text(status), "updated_at": _now_text()},
             )
             self.rebuild_summary()
+            current = next(
+                (
+                    row
+                    for row in _read_csv(self.plan_path)
+                    if _text(row.get("trade_key")) == key
+                ),
+                {"trade_key": key, "entry_status": _text(status)},
+            )
+            self._mirror_event("PLAN", f"PLAN|{key}", key, current)
 
     def record_buy_slice(self, **values: Any) -> str:
         entry_date = _date(values.get("entry_date"))
@@ -313,6 +353,7 @@ class ExecutionCompletionTracker:
         with _tracker_lock:
             _upsert(self.buy_path, BUY_FIELDS, "event_id", row)
             self.rebuild_summary()
+            self._mirror_event("BUY", f"BUY|{event_id}", key, row)
         return event_id
 
     def record_sell_slice(self, **values: Any) -> str:
@@ -368,7 +409,51 @@ class ExecutionCompletionTracker:
         with _tracker_lock:
             _upsert(self.sell_path, SELL_FIELDS, "event_id", row)
             self.rebuild_summary()
+            self._mirror_event("SELL", f"SELL|{event_id}", key, row)
         return event_id
+
+    def mirror_existing_events(self) -> dict[str, Any]:
+        """幂等导入现有CSV并核对每类最新事件数量。"""
+
+        rows_by_type = {
+            "PLAN": _read_csv(self.plan_path),
+            "BUY": _read_csv(self.buy_path),
+            "SELL": _read_csv(self.sell_path),
+        }
+        key_fields = {"PLAN": "trade_key", "BUY": "event_id", "SELL": "event_id"}
+        expected: dict[str, int] = {}
+        expected_uids: set[str] = set()
+        with _tracker_lock:
+            for event_type, rows in rows_by_type.items():
+                key_field = key_fields[event_type]
+                valid_rows = [row for row in rows if _text(row.get(key_field))]
+                expected[event_type] = len(valid_rows)
+                for row in valid_rows:
+                    stable_id = _text(row.get(key_field))
+                    trade_key = _text(row.get("trade_key"))
+                    expected_uids.add(f"{event_type}|{stable_id}")
+                    self._mirror_event(
+                        event_type,
+                        f"{event_type}|{stable_id}",
+                        trade_key,
+                        row,
+                    )
+            audit = self._store().audit()
+            actual_uids = self._store().head_event_uids()
+        missing_uids = sorted(expected_uids - actual_uids)
+        mirror_complete = not missing_uids
+        audit.update(
+            {
+                "expected_head_count_by_type": expected,
+                "missing_event_uids": missing_uids,
+                "retained_history_head_count": len(actual_uids - expected_uids),
+                "mirror_complete": mirror_complete,
+                "status": "PASS"
+                if audit.get("status") == "PASS" and mirror_complete
+                else "FAIL",
+            }
+        )
+        return audit
 
     def _load_positions(self) -> list[dict[str, Any]]:
         try:
@@ -795,4 +880,6 @@ class ExecutionCompletionTracker:
                 remaining_qty=max(_int(pos.get("entry_shares")) - _int(intent.get("filled_qty")), 0),
                 status=intent.get("status"), note="退出安全账本回填",
             )
-        return self.rebuild_summary()
+        summary_path = self.rebuild_summary()
+        self.mirror_existing_events()
+        return summary_path

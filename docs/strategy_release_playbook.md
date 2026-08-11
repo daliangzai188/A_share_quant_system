@@ -67,6 +67,30 @@ python scripts/report_rolling_live_performance.py
 当前`capacity_review.enforce_live_gate=false`，容量状态只监控、不阻断实盘下单；达到样本门槛
 也只是允许进入人工容量复核，必须确认报告为`PASS`后才可称为容量认证通过。
 
+### 事务型执行事件镜像
+
+执行审计继续以`positions.json`和`reports/execution_tracking/*.csv`为权威口径，同时把以下事件
+镜像到`data/state/execution_events.sqlite3`：
+
+```text
+PLAN：开仓前冻结计划及状态修订
+BUY：每一笔买入委托/成交片段及后续修订
+SELL：每一笔卖出委托/成交片段及后续修订
+```
+
+SQLite使用WAL、`synchronous=FULL`和逐事件事务。同一事件相同内容重复写入保持幂等；成交数量、
+价格或状态发生变化时追加revision，旧版本不覆盖。镜像延迟初始化，daemon中的记录调用已有异常
+隔离：SQLite异常只告警，不改变下单、撤单、持仓回写或平仓结果。
+
+以下命令会从现有CSV幂等重建镜像并写出完整性报告：
+
+```text
+python scripts/update_execution_completion.py --rebuild-only
+```
+
+应看到`integrity_check=ok`、`mirror_complete=true`、`missing_event_uids=[]`。账本允许保留已从当前
+CSV视图移出的旧事件，因此`retained_history_head_count>0`不属于错误。
+
 ---
 
 ## 一、当前策略状态

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import sys
 from pathlib import Path
 
@@ -28,6 +29,15 @@ def main() -> int:
     summary_path = (
         tracker.rebuild_summary() if args.rebuild_only else tracker.backfill_existing()
     )
+    event_store_audit = tracker.mirror_existing_events()
+    event_store_audit_path = (
+        PROJECT_ROOT / "reports" / "execution_tracking" / "event_store_audit.json"
+    )
+    event_store_audit_path.parent.mkdir(parents=True, exist_ok=True)
+    event_store_audit_path.write_text(
+        json.dumps(event_store_audit, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
     row_count = 0
     if summary_path.exists():
         with summary_path.open("r", newline="", encoding="utf-8-sig") as handle:
@@ -35,6 +45,15 @@ def main() -> int:
     print(f"真实成交完成率汇总已更新：{summary_path}（{row_count}笔）")
     print(f"买入逐片明细：{tracker.buy_path}")
     print(f"卖出逐片明细：{tracker.sell_path}")
+    print(
+        "事务镜像账本："
+        f"{tracker.event_store_path}（{event_store_audit['status']}，"
+        f"最新事件{event_store_audit['event_head_count']}条，"
+        f"历史修订{event_store_audit['event_revision_count']}条）"
+    )
+    print(f"镜像完整性报告：{event_store_audit_path}")
+    if event_store_audit["status"] != "PASS":
+        raise RuntimeError("SQLite执行事件镜像与CSV不一致；不影响权威账本，但必须排查审计链")
     return 0
 
 

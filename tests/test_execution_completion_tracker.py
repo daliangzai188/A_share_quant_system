@@ -127,6 +127,9 @@ class ExecutionCompletionTrackerTest(unittest.TestCase):
         self.assertEqual(row["execution_status"], "已平仓")
         self.assertAlmostEqual(float(row["buy_slippage_bps"]), 65.1269, places=3)
         self.assertAlmostEqual(float(row["sell_slippage_bps"]), 6.8918, places=3)
+        audit = self.tracker.mirror_existing_events()
+        self.assertEqual(audit["status"], "PASS")
+        self.assertEqual(audit["head_count_by_type"], {"BUY": 1, "PLAN": 1, "SELL": 1})
 
     def test_backfilled_plan_is_explicitly_excluded_from_capacity_evidence(self) -> None:
         self._write_positions_and_audit()
