@@ -4,7 +4,12 @@ import unittest
 
 import pandas as pd
 
-from src.live_performance import completed_live_trades, rolling_metrics
+from src.live_performance import (
+    capacity_monitor_status,
+    completed_live_trades,
+    execution_capacity_metrics,
+    rolling_metrics,
+)
 
 
 class LivePerformanceTests(unittest.TestCase):
@@ -60,6 +65,103 @@ class LivePerformanceTests(unittest.TestCase):
         self.assertAlmostEqual(float(overall["total_net_pnl"]), 30.0)
         l_row = metrics[metrics["segment"].eq("策略L")].iloc[0]
         self.assertAlmostEqual(float(l_row["hypothetical_max_drawdown"]), -0.02)
+
+    def test_capacity_uses_only_frozen_plans_and_exposes_tca_quality(self) -> None:
+        raw = pd.DataFrame(
+            [
+                {
+                    "strategy_leg": "A",
+                    "entry_plan_source": "LIVE_FROZEN",
+                    "entry_target_qty": 1000,
+                    "entry_filled_qty": 1000,
+                    "entry_target_amount": 10000,
+                    "entry_fill_amount": 10050,
+                    "exit_target_qty": 1000,
+                    "exit_filled_qty": 1000,
+                    "benchmark_open": 10.0,
+                    "benchmark_close": 10.5,
+                    "buy_slippage_bps": 50,
+                    "sell_slippage_bps": 20,
+                    "execution_status": "已平仓",
+                    "overnight_residual_qty": 0,
+                },
+                {
+                    "strategy_leg": "A",
+                    "entry_plan_source": "LIVE_FROZEN",
+                    "entry_target_qty": 1000,
+                    "entry_filled_qty": 900,
+                    "entry_target_amount": 10000,
+                    "entry_fill_amount": 9000,
+                    "exit_target_qty": 900,
+                    "exit_filled_qty": 900,
+                    "benchmark_open": 10.0,
+                    "benchmark_close": 0.0,
+                    "buy_slippage_bps": 0,
+                    "sell_slippage_bps": 0,
+                    "execution_status": "已平仓",
+                    "overnight_residual_qty": 0,
+                },
+                {
+                    "strategy_leg": "E2",
+                    "entry_plan_source": "BACKFILLED",
+                    "entry_target_qty": 5000,
+                    "entry_filled_qty": 5000,
+                    "entry_target_amount": 50000,
+                    "entry_fill_amount": 50000,
+                    "exit_target_qty": 5000,
+                    "exit_filled_qty": 5000,
+                    "benchmark_open": 10.0,
+                    "benchmark_close": 10.5,
+                    "buy_slippage_bps": -500,
+                    "sell_slippage_bps": -500,
+                    "execution_status": "已平仓",
+                    "overnight_residual_qty": 0,
+                },
+            ]
+        )
+        config = {
+            "active_legs": ["A", "E2"],
+            "capacity_review": {
+                "minimum_trustworthy_plans": 2,
+                "full_fill_threshold": 0.98,
+                "minimum_full_fill_rate": 0.9,
+                "minimum_avg_entry_completion": 0.95,
+                "minimum_benchmark_coverage": 0.9,
+                "enforce_live_gate": False,
+            },
+        }
+        metrics = execution_capacity_metrics(raw, config)
+        overall = metrics.iloc[0]
+        self.assertEqual(int(overall["trustworthy_plan_count"]), 2)
+        self.assertEqual(int(overall["backfilled_plan_count"]), 1)
+        self.assertAlmostEqual(float(overall["entry_full_fill_rate"]), 0.5)
+        self.assertAlmostEqual(float(overall["avg_entry_qty_completion"]), 0.95)
+        self.assertAlmostEqual(float(overall["sell_benchmark_coverage"]), 0.5)
+        # 回填交易的-500bps不能污染真实冻结计划TCA。
+        self.assertAlmostEqual(float(overall["avg_buy_slippage_bps"]), 25.0)
+        status = capacity_monitor_status(metrics, config)
+        self.assertEqual(status["status"], "DATA_GAP")
+        self.assertFalse(status["capacity_certified"])
+        self.assertFalse(status["enforce_live_gate"])
+
+    def test_old_summary_notes_are_compatible_but_not_capacity_evidence(self) -> None:
+        raw = pd.DataFrame(
+            [
+                {
+                    "strategy_leg": "D",
+                    "entry_target_qty": 1000,
+                    "entry_filled_qty": 1000,
+                    "entry_target_amount": 10000,
+                    "entry_fill_amount": 10000,
+                    "exit_target_qty": 1000,
+                    "exit_filled_qty": 1000,
+                    "data_quality_note": "上线前原始计划未统一留档，目标股数由历史持仓/容量档案回填",
+                }
+            ]
+        )
+        metrics = execution_capacity_metrics(raw, {"active_legs": ["D"]})
+        self.assertEqual(int(metrics.iloc[0]["trustworthy_plan_count"]), 0)
+        self.assertEqual(int(metrics.iloc[0]["backfilled_plan_count"]), 1)
 
 
 if __name__ == "__main__":

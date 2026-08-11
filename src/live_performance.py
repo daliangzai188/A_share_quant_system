@@ -13,6 +13,34 @@ import pandas as pd
 ACTIVE_LEGS = {"A", "C", "D", "E2", "L", "M"}
 
 
+def _numeric(frame: pd.DataFrame, column: str) -> pd.Series:
+    values = frame.get(column)
+    if values is None:
+        return pd.Series(0.0, index=frame.index, dtype=float)
+    return pd.to_numeric(values, errors="coerce").fillna(0.0)
+
+
+def _plan_source(frame: pd.DataFrame) -> pd.Series:
+    """兼容旧汇总：历史回填目标不能用于证明真实容量。"""
+
+    if "entry_plan_source" in frame.columns:
+        return frame["entry_plan_source"].fillna("").astype(str).str.upper()
+    notes = frame.get("data_quality_note", pd.Series("", index=frame.index))
+    notes = notes.fillna("").astype(str)
+    return pd.Series(
+        [
+            "BACKFILLED"
+            if "回填" in note
+            else "MISSING"
+            if "缺少原始计划" in note
+            else "LIVE_FROZEN"
+            for note in notes
+        ],
+        index=frame.index,
+        dtype=str,
+    )
+
+
 def _maximum_consecutive_losses(values: pd.Series) -> int:
     current = maximum = 0
     for value in values:
@@ -145,3 +173,193 @@ def rolling_metrics(trades: pd.DataFrame, windows: list[int]) -> pd.DataFrame:
         for leg, group in trades.groupby("strategy_leg", sort=True)
     )
     return pd.DataFrame(rows)
+
+
+def _capacity_segment_metrics(
+    frame: pd.DataFrame,
+    segment: str,
+    *,
+    full_fill_threshold: float,
+) -> dict[str, Any]:
+    trustworthy = frame[frame["entry_plan_source"].eq("LIVE_FROZEN")].copy()
+    target_qty = _numeric(trustworthy, "entry_target_qty")
+    entry_qty = _numeric(trustworthy, "entry_filled_qty")
+    target_amount = _numeric(trustworthy, "entry_target_amount")
+    entry_amount = _numeric(trustworthy, "entry_fill_amount")
+    entry_ratio = (entry_qty / target_qty.where(target_qty.gt(0))).fillna(0.0)
+    entry_ratio_capped = entry_ratio.clip(lower=0.0, upper=1.0)
+    exit_qty = _numeric(trustworthy, "exit_filled_qty")
+    exit_target = _numeric(trustworthy, "exit_target_qty")
+    exit_ratio = (exit_qty / exit_target.where(exit_target.gt(0))).fillna(0.0)
+    overnight = _numeric(trustworthy, "overnight_residual_qty")
+    status = trustworthy.get(
+        "execution_status", pd.Series("", index=trustworthy.index)
+    ).fillna("").astype(str)
+    exit_eligible = status.isin({"已平仓", "平仓中"}) | overnight.gt(0)
+    entry_benchmark = _numeric(trustworthy, "benchmark_open")
+    exit_benchmark = _numeric(trustworthy, "benchmark_close")
+    entry_filled = entry_qty.gt(0)
+    exit_filled = exit_qty.gt(0)
+    buy_slippage = _numeric(trustworthy, "buy_slippage_bps")[
+        entry_filled & entry_benchmark.gt(0)
+    ]
+    sell_slippage = _numeric(trustworthy, "sell_slippage_bps")[
+        exit_filled & exit_benchmark.gt(0)
+    ]
+    total_slippage = (
+        _numeric(trustworthy, "buy_slippage_bps")
+        + _numeric(trustworthy, "sell_slippage_bps")
+    )[
+        entry_filled
+        & entry_benchmark.gt(0)
+        & exit_filled
+        & exit_benchmark.gt(0)
+    ]
+    eligible_count = int(exit_eligible.sum())
+    planned_amount = float(target_amount.sum())
+    return {
+        "segment": segment,
+        "all_plan_rows": int(len(frame)),
+        "trustworthy_plan_count": int(len(trustworthy)),
+        "backfilled_plan_count": int(frame["entry_plan_source"].eq("BACKFILLED").sum()),
+        "missing_plan_count": int(frame["entry_plan_source"].eq("MISSING").sum()),
+        "zero_fill_count": int(entry_qty.eq(0).sum()),
+        "overfill_count": int(entry_ratio.gt(1.01).sum()),
+        "entry_full_fill_rate": float(entry_ratio.ge(full_fill_threshold).mean())
+        if len(trustworthy)
+        else 0.0,
+        "avg_entry_qty_completion": float(entry_ratio_capped.mean())
+        if len(trustworthy)
+        else 0.0,
+        "p10_entry_qty_completion": float(entry_ratio_capped.quantile(0.10))
+        if len(trustworthy)
+        else 0.0,
+        "planned_entry_amount": planned_amount,
+        "filled_entry_amount": float(entry_amount.sum()),
+        "entry_notional_completion": float(
+            min(float(entry_amount.sum()) / planned_amount, 1.0)
+        )
+        if planned_amount > 0
+        else 0.0,
+        "exit_eligible_count": eligible_count,
+        "exit_full_completion_rate": float(
+            exit_ratio[exit_eligible].ge(full_fill_threshold).mean()
+        )
+        if eligible_count
+        else 0.0,
+        "overnight_residual_count": int(overnight.gt(0).sum()),
+        "buy_benchmark_coverage": float(entry_benchmark[entry_filled].gt(0).mean())
+        if entry_filled.any()
+        else 0.0,
+        "sell_benchmark_coverage": float(exit_benchmark[exit_filled].gt(0).mean())
+        if exit_filled.any()
+        else 0.0,
+        "avg_buy_slippage_bps": float(buy_slippage.mean()) if len(buy_slippage) else 0.0,
+        "p90_buy_slippage_bps": float(buy_slippage.quantile(0.90))
+        if len(buy_slippage)
+        else 0.0,
+        "avg_sell_slippage_bps": float(sell_slippage.mean())
+        if len(sell_slippage)
+        else 0.0,
+        "p90_sell_slippage_bps": float(sell_slippage.quantile(0.90))
+        if len(sell_slippage)
+        else 0.0,
+        "avg_total_slippage_bps": float(total_slippage.mean())
+        if len(total_slippage)
+        else 0.0,
+    }
+
+
+def execution_capacity_metrics(
+    raw: pd.DataFrame,
+    config: Mapping[str, Any],
+) -> pd.DataFrame:
+    """按真实冻结计划评估成交率和TCA；历史反推目标只披露、不参与认证。"""
+
+    required = {
+        "strategy_leg",
+        "entry_target_qty",
+        "entry_filled_qty",
+        "entry_target_amount",
+        "entry_fill_amount",
+        "exit_target_qty",
+        "exit_filled_qty",
+    }
+    missing = sorted(required - set(raw.columns))
+    if missing:
+        raise ValueError("容量/TCA汇总缺少字段：" + "、".join(missing))
+    active_legs = {
+        str(value).upper() for value in config.get("active_legs", sorted(ACTIVE_LEGS))
+    }
+    frame = raw.copy()
+    frame["strategy_leg"] = frame["strategy_leg"].fillna("").astype(str).str.upper()
+    frame = frame[frame["strategy_leg"].isin(active_legs)].copy()
+    frame["entry_plan_source"] = _plan_source(frame)
+    review = dict(config.get("capacity_review", {}))
+    threshold = float(review.get("full_fill_threshold", 0.98))
+    rows = [_capacity_segment_metrics(frame, "全部当前策略", full_fill_threshold=threshold)]
+    rows.extend(
+        _capacity_segment_metrics(group, f"策略{leg}", full_fill_threshold=threshold)
+        for leg, group in frame.groupby("strategy_leg", sort=True)
+    )
+    return pd.DataFrame(rows)
+
+
+def capacity_monitor_status(
+    capacity_metrics: pd.DataFrame,
+    config: Mapping[str, Any],
+) -> dict[str, Any]:
+    """容量状态只进入报告，除非未来另行评审，绝不自动改变实盘下单。"""
+
+    if capacity_metrics.empty:
+        return {
+            "status": "INSUFFICIENT_SAMPLE",
+            "reason": "没有可用的容量/TCA记录。",
+            "capacity_certified": False,
+        }
+    row = capacity_metrics.iloc[0]
+    review = dict(config.get("capacity_review", {}))
+    minimum = int(review.get("minimum_trustworthy_plans", 20))
+    minimum_fill_rate = float(review.get("minimum_full_fill_rate", 0.90))
+    minimum_completion = float(review.get("minimum_avg_entry_completion", 0.95))
+    minimum_benchmark = float(review.get("minimum_benchmark_coverage", 0.90))
+    count = int(row["trustworthy_plan_count"])
+    if count < minimum:
+        status = "INSUFFICIENT_SAMPLE"
+        reason = f"真实冻结计划仅{count}笔，少于容量复核门槛{minimum}笔。"
+    elif (
+        float(row["buy_benchmark_coverage"]) < minimum_benchmark
+        or float(row["sell_benchmark_coverage"]) < minimum_benchmark
+    ):
+        status = "DATA_GAP"
+        reason = "开盘或收盘基准价覆盖不足，不能认证滑点。"
+    elif (
+        float(row["entry_full_fill_rate"]) < minimum_fill_rate
+        or float(row["avg_entry_qty_completion"]) < minimum_completion
+        or (
+            int(row["exit_eligible_count"]) > 0
+            and float(row["exit_full_completion_rate"]) < minimum_fill_rate
+        )
+        or int(row["overnight_residual_count"]) > 0
+        or int(row["overfill_count"]) > 0
+    ):
+        status = "WATCH"
+        reason = "成交完成率、超额成交或隔夜残量未达到容量认证标准。"
+    else:
+        status = "PASS"
+        reason = "容量样本、成交完成率、基准覆盖和退出完整率均达到当前复核标准。"
+    return {
+        "status": status,
+        "reason": reason,
+        "capacity_certified": status == "PASS",
+        "minimum_trustworthy_plans": minimum,
+        "trustworthy_plan_count": count,
+        "entry_full_fill_rate": float(row["entry_full_fill_rate"]),
+        "avg_entry_qty_completion": float(row["avg_entry_qty_completion"]),
+        "exit_full_completion_rate": float(row["exit_full_completion_rate"]),
+        "buy_benchmark_coverage": float(row["buy_benchmark_coverage"]),
+        "sell_benchmark_coverage": float(row["sell_benchmark_coverage"]),
+        "overnight_residual_count": int(row["overnight_residual_count"]),
+        "overfill_count": int(row["overfill_count"]),
+        "enforce_live_gate": bool(review.get("enforce_live_gate", False)),
+    }

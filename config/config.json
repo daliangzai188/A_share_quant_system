@@ -168,6 +168,15 @@
     ],
     "minimum_samples_for_decision": 20,
     "minimum_commission": 5.0,
+    "capacity_review": {
+      "minimum_trustworthy_plans": 20,
+      "full_fill_threshold": 0.98,
+      "minimum_full_fill_rate": 0.9,
+      "minimum_avg_entry_completion": 0.95,
+      "minimum_benchmark_coverage": 0.9,
+      "enforce_live_gate": false,
+      "note": "只用开仓前真实冻结计划评估容量；历史反推目标不参与。当前只监控不阻断下单。"
+    },
     "note": "少于20笔只标INSUFFICIENT_SAMPLE，禁止根据少量连亏自动新增过滤；收益使用真实成交金额并估算费用。"
   },
   "notify": {

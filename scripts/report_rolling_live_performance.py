@@ -13,7 +13,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.live_performance import completed_live_trades, rolling_metrics  # noqa: E402
+from src.live_performance import (  # noqa: E402
+    capacity_monitor_status,
+    completed_live_trades,
+    execution_capacity_metrics,
+    rolling_metrics,
+)
 from src.utils.config import load_json_config, mkdir_p  # noqa: E402
 
 
@@ -38,6 +43,43 @@ def _markdown(frame: pd.DataFrame) -> str:
     return "\n".join(lines)
 
 
+def _capacity_markdown(frame: pd.DataFrame) -> str:
+    view = frame.copy()
+    for column in (
+        "entry_full_fill_rate",
+        "avg_entry_qty_completion",
+        "p10_entry_qty_completion",
+        "entry_notional_completion",
+        "exit_full_completion_rate",
+        "buy_benchmark_coverage",
+        "sell_benchmark_coverage",
+    ):
+        view[column] = pd.to_numeric(view[column], errors="coerce").map(
+            lambda value: f"{value:.2%}"
+        )
+    for column in ("planned_entry_amount", "filled_entry_amount"):
+        view[column] = pd.to_numeric(view[column], errors="coerce").map(
+            lambda value: f"{value:,.2f}"
+        )
+    for column in (
+        "avg_buy_slippage_bps",
+        "p90_buy_slippage_bps",
+        "avg_sell_slippage_bps",
+        "p90_sell_slippage_bps",
+        "avg_total_slippage_bps",
+    ):
+        view[column] = pd.to_numeric(view[column], errors="coerce").map(
+            lambda value: f"{value:.2f}"
+        )
+    headers = list(view.columns)
+    lines = [
+        "| " + " | ".join(headers) + " |",
+        "| " + " | ".join(["---"] * len(headers)) + " |",
+    ]
+    lines.extend("| " + " | ".join(map(str, row)) + " |" for row in view.values.tolist())
+    return "\n".join(lines)
+
+
 def main() -> None:
     if not SOURCE.exists():
         raise FileNotFoundError(f"找不到真实成交完成汇总：{SOURCE}")
@@ -48,6 +90,8 @@ def main() -> None:
         report_config.setdefault(key, analysis.get(key))
     raw = pd.read_csv(SOURCE, dtype={"trade_key": str, "ts_code": str}, low_memory=False)
     trades, quality = completed_live_trades(raw, report_config)
+    capacity_metrics = execution_capacity_metrics(raw, report_config)
+    capacity_status = capacity_monitor_status(capacity_metrics, report_config)
     windows = [int(value) for value in report_config.get("windows", [20, 60, 120])]
     metrics = rolling_metrics(trades, windows)
     minimum = int(report_config.get("minimum_samples_for_decision", 20))
@@ -65,6 +109,9 @@ def main() -> None:
     mkdir_p(OUTPUT_DIR)
     trades.to_csv(OUTPUT_DIR / "rolling_live_trades.csv", index=False, encoding="utf-8-sig")
     metrics.to_csv(OUTPUT_DIR / "rolling_live_metrics.csv", index=False, encoding="utf-8-sig")
+    capacity_metrics.to_csv(
+        OUTPUT_DIR / "execution_capacity_metrics.csv", index=False, encoding="utf-8-sig"
+    )
     payload = {
         "status": status,
         "reason": reason,
@@ -73,6 +120,7 @@ def main() -> None:
         "minimum_samples_for_decision": minimum,
         "valid_sample_count": int(len(trades)),
         "latest_exit_date": str(trades["exit_date"].max()) if len(trades) else "",
+        "capacity_monitor": capacity_status,
         "note": "hypothetical_full_notional_multiple仅是每笔全仓串行假设，不是账户实际收益。",
     }
     (OUTPUT_DIR / "rolling_live_status.json").write_text(
@@ -88,6 +136,15 @@ def main() -> None:
         "- 全仓串行倍数只用于比较交易分布，不能当作账户实际收益。",
         "",
         _markdown(metrics),
+        "",
+        "## 真实执行容量与TCA",
+        "",
+        f"- 容量状态：**{capacity_status['status']}**",
+        f"- 判定：{capacity_status['reason']}",
+        "- 只有开仓前真实冻结的计划参与容量判定；历史按成交反推的目标只披露，不参与认证。",
+        "- 该状态当前只监控、不改变下单；capacity_certified=false时继续小资金验证。",
+        "",
+        _capacity_markdown(capacity_metrics),
     ]
     (OUTPUT_DIR / "rolling_live_report.md").write_text("\n".join(report), encoding="utf-8")
     print(json.dumps(payload, ensure_ascii=False, indent=2))

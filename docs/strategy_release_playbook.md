@@ -42,6 +42,31 @@ docs/strategy_release_playbook.md
 `oos_start_date`之后的结果只进入滚动真实成交报告，不得用于回填、改写本次冻结清单；
 如果根据这些新结果调参，必须产生新的`release_id`和新的样本外起点。
 
+### 真实容量与TCA监控
+
+收盘流水线先重建`reports/execution_tracking/trade_completion_summary.csv`，再运行：
+
+```text
+python scripts/report_rolling_live_performance.py
+```
+
+报告的“真实执行容量与TCA”只使用开仓前已冻结的`LIVE_FROZEN`计划。上线前历史交易的
+目标数量由真实持仓反推，统一标为`BACKFILLED`，只能用于收益和成交审计，不能证明容量。
+容量状态使用以下数据：
+
+```text
+真实冻结计划数
+买入98%以上完成率
+平均及P10买入完成率
+退出完整率和隔夜残量
+开盘/收盘基准覆盖率
+买入、卖出和总滑点均值/P90
+超过计划数量的异常成交
+```
+
+当前`capacity_review.enforce_live_gate=false`，容量状态只监控、不阻断实盘下单；达到样本门槛
+也只是允许进入人工容量复核，必须确认报告为`PASS`后才可称为容量认证通过。
+
 ---
 
 ## 一、当前策略状态

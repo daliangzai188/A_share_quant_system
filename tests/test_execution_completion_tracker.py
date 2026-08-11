@@ -112,6 +112,7 @@ class ExecutionCompletionTrackerTest(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         row = rows[0]
         self.assertEqual(int(row["entry_target_qty"]), 11200)
+        self.assertEqual(row["entry_plan_source"], "LIVE_FROZEN")
         self.assertEqual(int(row["entry_filled_qty"]), 10800)
         self.assertEqual(int(row["entry_unfilled_qty"]), 400)
         self.assertEqual(float(row["auction_completion_pct"]), 100.0)
@@ -126,6 +127,25 @@ class ExecutionCompletionTrackerTest(unittest.TestCase):
         self.assertEqual(row["execution_status"], "已平仓")
         self.assertAlmostEqual(float(row["buy_slippage_bps"]), 65.1269, places=3)
         self.assertAlmostEqual(float(row["sell_slippage_bps"]), 6.8918, places=3)
+
+    def test_backfilled_plan_is_explicitly_excluded_from_capacity_evidence(self) -> None:
+        self._write_positions_and_audit()
+        self.tracker.register_entry_plan(
+            entry_date="20260720",
+            ts_code="603161.SH",
+            name="科华控股",
+            strategy_leg="E2",
+            signal_date="20260717",
+            target_qty=10800,
+            target_amount=145119,
+            reference_price=13.44,
+            planned_exit_date="20260721",
+            status="已回填",
+        )
+        with self.tracker.summary_path.open("r", newline="", encoding="utf-8-sig") as handle:
+            row = next(csv.DictReader(handle))
+        self.assertEqual(row["entry_plan_source"], "BACKFILLED")
+        self.assertIn("历史持仓/容量档案回填", row["data_quality_note"])
 
     def test_same_slice_event_is_upserted_instead_of_double_counted(self) -> None:
         values = {

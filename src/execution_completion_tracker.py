@@ -46,7 +46,7 @@ SELL_FIELDS = [
 
 SUMMARY_FIELDS = [
     "trade_key", "entry_date", "ts_code", "name", "strategy_leg", "signal_date",
-    "planned_exit_date", "entry_target_qty", "entry_target_amount",
+    "planned_exit_date", "entry_plan_source", "entry_target_qty", "entry_target_amount",
     "auction_planned_qty", "pov_planned_qty", "pov_target_amount",
     "auction_filled_qty", "auction_fill_amount", "auction_completion_pct",
     "pov_filled_qty", "pov_fill_amount", "pov_completion_pct",
@@ -568,6 +568,13 @@ class ExecutionCompletionTracker:
                     notes.append("缺少原始计划，目标股数暂以真实买入股数回填")
                 elif _text(plan.get("entry_status")) == "已回填":
                     notes.append("上线前原始计划未统一留档，目标股数由历史持仓/容量档案回填")
+                entry_plan_source = (
+                    "MISSING"
+                    if not plan
+                    else "BACKFILLED"
+                    if _text(plan.get("entry_status")) == "已回填"
+                    else "LIVE_FROZEN"
+                )
                 if not group and (buy_group or plan):
                     notes.append("尚无持仓成交账")
                 if benchmark_open <= 0:
@@ -583,6 +590,7 @@ class ExecutionCompletionTracker:
                     "strategy_leg": _text(plan.get("strategy_leg")).upper() or _text(seed.get("strategy_leg")).upper(),
                     "signal_date": _date(plan.get("signal_date")) or _date(seed.get("signal_date")),
                     "planned_exit_date": planned_exit_date,
+                    "entry_plan_source": entry_plan_source,
                     "entry_target_qty": target_qty,
                     "entry_target_amount": round(target_amount, 2),
                     "auction_planned_qty": _int(plan.get("auction_planned_qty")),
