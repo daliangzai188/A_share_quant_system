@@ -2,9 +2,11 @@
 """生成真实成交滚动报告；不连接券商、不修改策略、不下单。"""
 from __future__ import annotations
 
+import datetime as dt
 import json
 from pathlib import Path
 import sys
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -19,10 +21,13 @@ from src.live_performance import (  # noqa: E402
     execution_capacity_metrics,
     rolling_metrics,
 )
+from src.execution_data_quality import analyze_execution_data_quality  # noqa: E402
 from src.utils.config import load_json_config, mkdir_p  # noqa: E402
 
 
 SOURCE = PROJECT_ROOT / "reports" / "execution_tracking" / "trade_completion_summary.csv"
+SELL_EVENTS_SOURCE = PROJECT_ROOT / "reports" / "execution_tracking" / "sell_execution_slices.csv"
+POSITIONS_SOURCE = PROJECT_ROOT / "data" / "processed" / "positions.json"
 OUTPUT_DIR = PROJECT_ROOT / "reports" / "live_performance"
 
 
@@ -80,6 +85,31 @@ def _capacity_markdown(frame: pd.DataFrame) -> str:
     return "\n".join(lines)
 
 
+def _gap_markdown(frame: pd.DataFrame) -> str:
+    gaps = frame[~frame["gap_category"].astype(str).eq("COMPLETE")].copy()
+    if gaps.empty:
+        return "暂无成交数据缺口或未平仓记录。"
+    columns = [
+        "trade_key",
+        "planned_exit_date",
+        "gap_category",
+        "severity",
+        "recoverability",
+        "reason",
+        "recommended_action",
+    ]
+    view = gaps[columns].fillna("").astype(str)
+    headers = list(view.columns)
+    lines = [
+        "| " + " | ".join(headers) + " |",
+        "| " + " | ".join(["---"] * len(headers)) + " |",
+    ]
+    lines.extend(
+        "| " + " | ".join(map(str, row)) + " |" for row in view.values.tolist()
+    )
+    return "\n".join(lines)
+
+
 def main() -> None:
     if not SOURCE.exists():
         raise FileNotFoundError(f"找不到真实成交完成汇总：{SOURCE}")
@@ -89,6 +119,26 @@ def main() -> None:
     for key in ("commission_rate", "stamp_tax_rate", "transfer_fee_rate"):
         report_config.setdefault(key, analysis.get(key))
     raw = pd.read_csv(SOURCE, dtype={"trade_key": str, "ts_code": str}, low_memory=False)
+    sell_events = (
+        pd.read_csv(SELL_EVENTS_SOURCE, dtype=str, low_memory=False)
+        if SELL_EVENTS_SOURCE.exists()
+        else pd.DataFrame()
+    )
+    try:
+        positions = json.loads(POSITIONS_SOURCE.read_text(encoding="utf-8"))
+        if not isinstance(positions, list):
+            positions = []
+    except (OSError, json.JSONDecodeError):
+        positions = []
+    now_shanghai = dt.datetime.now(ZoneInfo("Asia/Shanghai"))
+    data_quality_detail, data_quality_status = analyze_execution_data_quality(
+        raw,
+        report_config,
+        as_of_date=now_shanghai.strftime("%Y%m%d"),
+        as_of_time=now_shanghai.strftime("%H%M%S"),
+        positions=positions,
+        sell_events=sell_events,
+    )
     trades, quality = completed_live_trades(raw, report_config)
     capacity_metrics = execution_capacity_metrics(raw, report_config)
     capacity_status = capacity_monitor_status(capacity_metrics, report_config)
@@ -112,6 +162,12 @@ def main() -> None:
     capacity_metrics.to_csv(
         OUTPUT_DIR / "execution_capacity_metrics.csv", index=False, encoding="utf-8-sig"
     )
+    data_quality_detail.to_csv(
+        OUTPUT_DIR / "execution_data_quality_detail.csv", index=False, encoding="utf-8-sig"
+    )
+    (OUTPUT_DIR / "execution_data_quality_status.json").write_text(
+        json.dumps(data_quality_status, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     payload = {
         "status": status,
         "reason": reason,
@@ -120,6 +176,7 @@ def main() -> None:
         "minimum_samples_for_decision": minimum,
         "valid_sample_count": int(len(trades)),
         "latest_exit_date": str(trades["exit_date"].max()) if len(trades) else "",
+        "execution_data_quality": data_quality_status,
         "capacity_monitor": capacity_status,
         "note": "hypothetical_full_notional_multiple仅是每笔全仓串行假设，不是账户实际收益。",
     }
@@ -132,8 +189,17 @@ def main() -> None:
         f"- 状态：**{status}**",
         f"- 判定：{reason}",
         f"- 数据完整率：{quality['data_complete_rate']:.2%}（{quality['complete_trade_rows']}/{quality['active_trade_rows']}）",
+        f"- 已结算口径完整率：{data_quality_status['settled_data_complete_rate']:.2%}（正常未到期/今日到期持仓{data_quality_status['normal_open_trade_rows']}笔不计入分母）。",
         "- 收益已按真实买卖金额并估算佣金、印花税和过户费；不完整交易不进入收益统计。",
         "- 全仓串行倍数只用于比较交易分布，不能当作账户实际收益。",
+        "",
+        "## 真实成交数据缺口",
+        "",
+        f"- 状态：**{data_quality_status['status']}**",
+        f"- 判定：{data_quality_status['reason']}",
+        "- 本节只分类、提示如何取证，不会猜卖出价，也不会自动写回持仓或成交账本。",
+        "",
+        _gap_markdown(data_quality_detail),
         "",
         _markdown(metrics),
         "",

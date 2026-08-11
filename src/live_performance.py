@@ -86,12 +86,18 @@ def completed_live_trades(
         "exit_fill_amount",
         "total_slippage_bps",
     ):
-        frame[column] = pd.to_numeric(frame.get(column, 0.0), errors="coerce").fillna(0.0)
+        frame[column] = pd.to_numeric(
+            frame.get(column, pd.Series(0.0, index=frame.index)), errors="coerce"
+        ).fillna(0.0)
+    frame["exit_date"] = (
+        frame["exit_date"].fillna("").astype(str).str.replace("-", "", regex=False).str[:8]
+    )
     frame["data_complete"] = (
         frame["entry_filled_qty"].gt(0)
         & frame["entry_fill_amount"].gt(0)
         & frame["exit_filled_qty"].eq(frame["entry_filled_qty"])
         & frame["exit_fill_amount"].gt(0)
+        & frame["exit_date"].str.fullmatch(r"\d{8}")
     )
     quality = {
         "active_trade_rows": int(len(frame)),
@@ -119,7 +125,6 @@ def completed_live_trades(
         trades["exit_fill_amount"] - trades["entry_fill_amount"] - trades["estimated_fees"]
     )
     trades["net_return"] = trades["net_pnl"] / trades["entry_fill_amount"]
-    trades["exit_date"] = trades["exit_date"].astype(str).str.replace("-", "", regex=False).str[:8]
     return trades.sort_values(["exit_date", "trade_key"]).reset_index(drop=True), quality
 
 

@@ -48,6 +48,28 @@ class LivePerformanceTests(unittest.TestCase):
         self.assertLess(float(trades.iloc[0]["net_return"]), 0.10)
         self.assertGreater(float(trades.iloc[0]["estimated_fees"]), 0)
 
+    def test_missing_exit_date_is_not_counted_as_complete(self) -> None:
+        raw = pd.DataFrame(
+            [
+                {
+                    "trade_key": "1",
+                    "entry_date": "20260801",
+                    "exit_date": "",
+                    "ts_code": "000001.SZ",
+                    "strategy_leg": "A",
+                    "entry_filled_qty": 1000,
+                    "entry_fill_amount": 10000,
+                    "exit_filled_qty": 1000,
+                    "exit_fill_amount": 11000,
+                }
+            ]
+        )
+
+        trades, quality = completed_live_trades(raw, {})
+
+        self.assertTrue(trades.empty)
+        self.assertEqual(quality["incomplete_trade_rows"], 1)
+
     def test_rolling_metrics_exposes_actual_pnl_and_loss_streak(self) -> None:
         trades = pd.DataFrame(
             {
