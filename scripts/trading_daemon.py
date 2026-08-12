@@ -5527,10 +5527,14 @@ def _intraday_takeprofit_monitor() -> None:
         time.sleep(_gap if 0 < _gap < 300 else 300)
 
 
-def check_and_close_positions() -> None:
+def check_and_close_positions(in_close_window: bool = False) -> None:
     """
     扫描所有持仓，对满足平仓条件的立即处理。
     此函数是最高优先级，任何情况下都应被调用，绝不被数据错误拦截。
+
+    in_close_window=True：调用方就是 14:55 收盘平仓任务，不必拿墙钟猜窗口。
+    调度唤醒有亚秒级抖动，2026-08-12 就因 14:54:59.99x 触发使 `now < 14:55`
+    成立而整天未平仓。
     """
     try:
         positions = load_positions()
@@ -5599,7 +5603,10 @@ def check_and_close_positions() -> None:
 
             t2_close_leg = strategy_leg in {"A", "C", "D", "E2", "L", "M"}
             due_today = planned_exit == today_str
-            before_close_sell_window = now_beijing().time() < SCHED_AFTERNOON_CLOSE
+            # 不用时间容差：容差会把窗口推到 POV 的 14:53 交接点之前。
+            before_close_sell_window = (
+                not in_close_window and now_beijing().time() < SCHED_AFTERNOON_CLOSE
+            )
             if t2_close_leg and due_today and before_close_sell_window:
                 logger().warning(
                     "T2收盘卖门禁：%s %s 策略=%s 今日到期，但当前未到14:55收盘平仓窗口，保持持仓不提前平仓。",
@@ -5724,7 +5731,14 @@ def _has_premarket_close_plan() -> bool:
     return False
 
 
-def _has_due_close_plan_now() -> bool:
+def _has_due_close_plan_now(assume_close_window: bool = False) -> bool:
+    """现在是否存在需要执行的平仓计划。
+
+    assume_close_window=True 由 14:55 的 job_afternoon 传入。返回 False 会让
+    job_afternoon 里所有 `if close_plan_exists:` 保护的告警推送全部关闭，
+    平仓失败变成静默事故（2026-08-12 即如此）。
+    """
+
     today_str = today_beijing().strftime("%Y%m%d")
     now_time = now_beijing().time()
     for pos in load_positions():
@@ -5738,7 +5752,9 @@ def _has_due_close_plan_now() -> bool:
             return True
         if planned_exit < today_str:
             return True
-        if planned_exit == today_str and now_time >= SCHED_AFTERNOON_CLOSE:
+        if planned_exit == today_str and (
+            assume_close_window or now_time >= SCHED_AFTERNOON_CLOSE
+        ):
             return True
     return False
 
@@ -10149,7 +10165,8 @@ def _sleep_until_beijing(target: datetime.time, *, max_wait: float = 300.0) -> N
 
 def job_afternoon() -> None:
     logger().info("===== 盘中任务（14:55 收盘平仓 → 14:40 撤未成交买单）=====")
-    close_plan_exists = _has_due_close_plan_now()
+    # 本调用就是 14:55 收盘平仓任务，不靠墙钟判断（否则告警链路会整个静默）
+    close_plan_exists = _has_due_close_plan_now(assume_close_window=True)
     if close_plan_exists:
         _pause_pipeline_for_trade("14:55收盘平仓计划")
     else:
@@ -10181,7 +10198,7 @@ def job_afternoon() -> None:
             wait_s = (target - now_beijing()).total_seconds()
             if wait_s > 0:
                 time.sleep(wait_s)
-        check_and_close_positions()
+        check_and_close_positions(in_close_window=True)
     except Exception as e:
         logger().error("平仓检查异常：%s —— 请立即手动检查持仓！", e)
         # 14:55主平仓被异常中断绝不能只留终端日志：手机必须知道

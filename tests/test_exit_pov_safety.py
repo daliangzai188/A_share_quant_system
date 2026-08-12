@@ -2306,5 +2306,60 @@ class LargeExitFirstSliceTest(unittest.TestCase):
         )
 
 
+class CloseWindowIdentityTest(unittest.TestCase):
+    """14:55 收盘平仓靠调用方声明身份，不靠墙钟猜窗口。
+
+    2026-08-12：调度唤醒早了亚秒级（日志截断显示 14:54:59），T2门禁
+    `now < 14:55` 与 _has_due_close_plan_now 的 `now >= 14:55` 同时判假，
+    整笔平仓被跳过，且告警链路静默。
+    """
+
+    _DUE = [{
+        "ts_code": "600815.SH", "name": "厦工股份", "strategy_leg": "D",
+        "status": "open", "shares": 61800, "planned_exit_date": "20260812",
+    }]
+    _ACCIDENT_NOW = datetime.datetime(2026, 8, 12, 14, 54, 59, 990000)
+
+    def test_两个调用点都声明了身份且默认为否(self) -> None:
+        import inspect
+
+        src = (Path(__file__).absolute().parents[1] / "scripts" / "trading_daemon.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("check_and_close_positions(in_close_window=True)", src)
+        self.assertIn("_has_due_close_plan_now(assume_close_window=True)", src)
+        for fn, name in ((trading_daemon.check_and_close_positions, "in_close_window"),
+                         (trading_daemon._has_due_close_plan_now, "assume_close_window")):
+            param = inspect.signature(fn).parameters[name]
+            self.assertFalse(param.default, f"{name} 默认必须 False，否则盘前会提前平仓")
+
+    def test_事故时刻仍能识别出到期平仓计划(self) -> None:
+        with patch.object(trading_daemon, "load_positions", return_value=self._DUE), \
+             patch.object(trading_daemon, "now_beijing", return_value=self._ACCIDENT_NOW), \
+             patch.object(trading_daemon, "today_beijing", return_value=self._ACCIDENT_NOW.date()):
+            self.assertTrue(trading_daemon._has_due_close_plan_now(assume_close_window=True))
+            self.assertFalse(trading_daemon._has_due_close_plan_now())
+
+    def test_门禁只认身份不认钟(self) -> None:
+        close_at = trading_daemon.SCHED_AFTERNOON_CLOSE
+        for in_window, now, blocked in (
+            (True, datetime.time(14, 54, 59, 990000), False),   # 事故场景必须放行
+            (False, datetime.time(9, 20), True),                # 盘前必须挡住
+            (False, datetime.time(14, 55), False),
+        ):
+            self.assertEqual((not in_window) and now < close_at, blocked,
+                             f"in_close_window={in_window} now={now}")
+
+    def test_不引入时间容差且窗口保持1455整(self) -> None:
+        """容差会把收盘窗口推到 POV 的 14:53 交接点之前。"""
+
+        src = (Path(__file__).absolute().parents[1] / "scripts" / "trading_daemon.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("CLOSE_WINDOW_TOLERANCE_SEC", src)
+        self.assertNotIn("_align_deadline", src)
+        self.assertEqual(trading_daemon.SCHED_AFTERNOON_CLOSE, datetime.time(14, 55))
+
+
 if __name__ == "__main__":
     unittest.main()
