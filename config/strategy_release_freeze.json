@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
   "status": "FROZEN",
-  "release_id": "model3-20260811-dlam-e2c-v1.4-execution-recovery",
-  "frozen_at": "2026-08-13T03:12:04.869886+00:00",
-  "baseline_strategy_commit": "5dc7666fed8ee66e7f0a787667f6990d419e2e3b",
-  "change_reason": "修复14:55平仓调度与余仓复查、开仓窗口重启恢复和早盘通知闭环；仅执行可靠性变化，不改候选、腿序、仓位或持有期",
+  "release_id": "model3-20260811-dlam-e2c-v1.5-exit-copy",
+  "frozen_at": "2026-08-13T03:13:40.417772+00:00",
+  "baseline_strategy_commit": "4546cd3",
+  "change_reason": "执行恢复版本认证后，修正平仓播报中确保成交的错误承诺；仅改人工显示，不改变订单价格、候选、腿序、仓位或持有期",
   "strategy_priority_order": [
     "D",
     "L",
@@ -18,7 +18,7 @@
   "certification_status": "PASS_WITH_RISK_ACCEPTANCE",
   "certification_scenario": "current_with_m_gap_leg",
   "config_sha256": "a046bc281bb26b8ce7b460c1de4cbeea7cb55da164b83b0f79a4f6d9d47c2a9a",
-  "code_sha256": "c90ac91a04a53f1a1da996c69dbade4ba70139127a337a97e89457efdaba0f20",
+  "code_sha256": "e0f7af436070ec3c67f48204d4547d89772e83184eaa05f760cff16656d6f7b1",
   "input_sha256": "d0c7b8a41d3f909db1ee90b94cc1704d4b176fc76180823eaf062aaf1680e2d1",
   "capacity_certified": false,
   "risk_acceptance_note": "2026-08-10用户明确决定恢复M真实新开仓：接受M未通过全部/训练半段/2024回撤非劣门禁及样本外仅3笔的风险；依据为M自身26笔、平均账户收益6.20%、中位数2.09%、单腿复利4.1639倍。该覆盖不等于门禁通过；保留10%回撤保护、82.5%仓位和全部成交/风控门禁，并先用小资金验证。",
