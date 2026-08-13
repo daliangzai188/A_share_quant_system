@@ -2333,6 +2333,51 @@ class CloseWindowIdentityTest(unittest.TestCase):
             param = inspect.signature(fn).parameters[name]
             self.assertFalse(param.default, f"{name} 默认必须 False，否则盘前会提前平仓")
 
+    def test_1455任务结束复查仍保留收盘窗口身份(self) -> None:
+        """主提交返回但本地尚未关账时，不能因墙钟仍早几毫秒而误恢复流水线。"""
+
+        due_calls: list[bool] = []
+
+        def _due(*, assume_close_window: bool = False) -> bool:
+            due_calls.append(assume_close_window)
+            return True
+
+        fake_thread = SimpleNamespace(start=lambda: None)
+        with patch.object(trading_daemon, "_has_due_close_plan_now", side_effect=_due), \
+             patch.object(trading_daemon, "_pause_pipeline_for_trade") as pause, \
+             patch.object(trading_daemon, "_resume_pipeline_after_trade") as resume, \
+             patch.object(trading_daemon, "load_json_config", return_value={}), \
+             patch.object(trading_daemon, "check_and_close_positions") as close, \
+             patch.object(trading_daemon, "_exit_auction_bypass_decision", return_value=False), \
+             patch.object(trading_daemon, "_notify") as notify, \
+             patch.object(trading_daemon.threading, "Thread", return_value=fake_thread):
+            trading_daemon.job_afternoon()
+
+        self.assertEqual(due_calls, [True, True])
+        pause.assert_called_once()
+        resume.assert_not_called()
+        close.assert_called_once_with(in_close_window=True)
+        notify.assert_called_once()
+
+    def test_临近任务不再被30秒护栏跳过(self) -> None:
+        now = datetime.datetime(2026, 8, 12, 8, 49, 45, tzinfo=trading_daemon.BEIJING_TZ)
+
+        event_at, event_time = trading_daemon.next_event(now)
+
+        self.assertEqual(event_time, trading_daemon.SCHED_MORNING_PLAN_PUSH)
+        self.assertEqual(event_at.time(), datetime.time(8, 50))
+
+    def test_完成一项后沿日程推进不会因前项变慢吞掉下一项(self) -> None:
+        completed = datetime.datetime(2026, 8, 12, 9, 20, tzinfo=trading_daemon.BEIJING_TZ)
+
+        event_at, event_time = trading_daemon.next_event_after(
+            completed,
+            trading_daemon.SCHED_MORNING_REVIEW,
+        )
+
+        self.assertEqual(event_time, trading_daemon.SCHED_PREMARKET_SELL)
+        self.assertEqual(event_at.time(), datetime.time(9, 23))
+
     def test_事故时刻仍能识别出到期平仓计划(self) -> None:
         with patch.object(trading_daemon, "load_positions", return_value=self._DUE), \
              patch.object(trading_daemon, "now_beijing", return_value=self._ACCIDENT_NOW), \

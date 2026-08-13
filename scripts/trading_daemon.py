@@ -329,7 +329,7 @@ SCHED_OPENING_BUY = datetime.time(9, 30)
 SCHED_OPEN_PLAN_FILL_CHECK = datetime.time(9, 35)
 SCHED_AFTERNOON_CLOSE = datetime.time(14, 55)
 # 撤未成交买单：2026-07-15 起提前到平仓之前、独立调度（14:40与14:55相距
-# 15分钟，调度器30秒护栏无碍）。目的：平仓时点独占QMT通道，绝不被撤单挡路；
+# 15分钟）。目的：平仓时点独占QMT通道，绝不被撤单挡路；
 # 且排队一天未成交的开仓买单（一字板排队）尾盘炸板成交=高位接盘，早撤无损失。
 SCHED_CANCEL_BUY_ORDERS = datetime.time(14, 40)
 # 平仓静默窗：14:53起止盈线程休眠、14:54:30~14:58账户心跳跳过，
@@ -10151,16 +10151,30 @@ def startup_catchup_strategy_d() -> None:
 
 
 def _sleep_until_beijing(target: datetime.time, *, max_wait: float = 300.0) -> None:
-    """阻塞到北京时间当天的 target 时刻；已过则立即返回。
+    """阻塞到北京时间当天的 ``target`` 时刻；已过则立即返回。
 
-    max_wait 兜底防止时钟异常导致超长阻塞（正常场景 14:55→14:56 只等约120秒）。
+    ``sleep`` 允许比目标时刻早几毫秒唤醒，且 Windows 墙钟与 monotonic 时钟
+    可能有轻微校正。旧实现只睡一次，2026-08-12 就在 14:54:59.99x 进入
+    14:55 任务。这里用短循环复核墙钟；``max_wait`` 只限制本次额外校时等待，
+    不改变调度器原本等待数小时到目标任务的行为。
     """
-    now = now_beijing()
-    target_dt = datetime.datetime.combine(now.date(), target, tzinfo=BEIJING_TZ)
-    wait = (target_dt - now).total_seconds()
-    if wait <= 0:
-        return
-    time.sleep(min(wait, max_wait))
+    deadline = time.monotonic() + max(float(max_wait), 0.0)
+    while True:
+        now = now_beijing()
+        target_dt = datetime.datetime.combine(now.date(), target, tzinfo=BEIJING_TZ)
+        wait = (target_dt - now).total_seconds()
+        if wait <= 0:
+            return
+        remaining_budget = deadline - time.monotonic()
+        if remaining_budget <= 0:
+            logger().warning(
+                "调度墙钟对齐超过%.1f秒：目标%s，当前%s；按任务身份继续执行并保留告警/兜底链路。",
+                max(float(max_wait), 0.0),
+                target.strftime("%H:%M:%S"),
+                now.strftime("%H:%M:%S.%f"),
+            )
+            return
+        time.sleep(min(wait, remaining_budget, 0.2))
 
 
 def job_afternoon() -> None:
@@ -10210,8 +10224,22 @@ def job_afternoon() -> None:
                     level="timeSensitive")
     finally:
         if close_plan_exists:
-            if _has_due_close_plan_now():
-                logger().warning("14:55平仓后仍检测到待平仓计划，流水线保持暂停；等待后续成交确认/人工处理。")
+            # 本次调用身份仍是14:55收盘平仓任务。即使墙钟因亚秒级抖动仍显示
+            # 14:54:59，也必须继续把“到期但未关账”视为待平仓；否则会误恢复
+            # 流水线并吞掉失败提醒，正是2026-08-12热修复仍未闭环的一处。
+            if _has_due_close_plan_now(assume_close_window=True):
+                logger().warning(
+                    "14:55平仓后仍检测到待平仓计划，流水线保持暂停；"
+                    "14:56/14:57/14:59看门狗将继续按券商真实余仓兜底。"
+                )
+                _notify(
+                    "sell_fail",
+                    "⚠️ 14:55平仓仍在处理中",
+                    "主平仓任务结束时本地仍有到期余仓/待确认卖单。系统已保持交易优先暂停，"
+                    "14:56、14:57和14:59看门狗会继续按QMT真实余仓补挂并在收盘后对账；"
+                    "请留意后续成交或失败通知。",
+                    level="timeSensitive",
+                )
             else:
                 _resume_pipeline_after_trade("14:55收盘平仓处理完成")
 
@@ -12947,13 +12975,47 @@ def _load_reject_detail(signal_date: str, suffix: str) -> str:
 # ── 调度主循环 ─────────────────────────────────────────────────────────────────
 
 def next_event(now: datetime.datetime) -> tuple[datetime.datetime, datetime.time]:
+    """返回严格晚于 ``now`` 的首个交易任务。
+
+    旧版使用 ``dt > now + 30秒`` 防重复，结果是在08:49:31之后启动时直接
+    跳过08:50通知，在任务点前30秒内重启时也会跳过开/平仓节点。主循环现在
+    用“执行完后沿日程表推进”防重复，不再牺牲临近任务。
+    """
     day = next_trade_date_on_or_after(now.date())
     while True:
         for t in SCHEDULE:
             dt = datetime.datetime.combine(day, t, tzinfo=BEIJING_TZ)
-            if dt > now + datetime.timedelta(seconds=30):
+            if dt > now:
                 return dt, t
         day = next_trade_date_on_or_after(day + datetime.timedelta(days=1))
+
+
+def next_event_after(
+    completed_at: datetime.datetime,
+    completed_time: datetime.time,
+) -> tuple[datetime.datetime, datetime.time]:
+    """沿固定日程返回刚完成任务的下一项，不因前一任务耗时而漏项。
+
+    09:20、09:23、09:26、09:30之间只有数分钟。旧主循环每项完成后固定再睡
+    60秒，并重新按墙钟寻找“未来任务”；只要某项稍慢，紧随其后的开仓/平仓
+    复核就会永久被跳过。本函数以已执行的日程位置推进：若下一项已经迟到，
+    主循环会立即执行，由各交易方法自身的时段门禁决定合法动作。
+    """
+    try:
+        index = SCHEDULE.index(completed_time)
+    except ValueError as exc:
+        raise ValueError(f"未知调度时间:{completed_time}") from exc
+    if index + 1 < len(SCHEDULE):
+        next_time = SCHEDULE[index + 1]
+        return (
+            datetime.datetime.combine(completed_at.date(), next_time, tzinfo=BEIJING_TZ),
+            next_time,
+        )
+    next_day = next_trade_date_on_or_after(completed_at.date() + datetime.timedelta(days=1))
+    return (
+        datetime.datetime.combine(next_day, SCHEDULE[0], tzinfo=BEIJING_TZ),
+        SCHEDULE[0],
+    )
 
 
 def run_job(scheduled_time: datetime.time) -> None:
@@ -14169,12 +14231,18 @@ def main() -> None:
     _publish_system_ready()
 
     # ── 主循环 ────────────────────────────────────────────────────────────────
+    # 首项按当前墙钟选择；此后严格沿SCHEDULE推进。这样临近任务不会被30秒
+    # 护栏跳过，前一任务稍慢也不会吞掉09:23/09:26/09:30等紧邻节点。
+    scheduled_dt, scheduled_time = next_event(now_beijing())
     while True:
         write_heartbeat("running")
         now = now_beijing()
-        wake_dt, sched_time = next_event(now)
-        sleep_secs = (wake_dt - now).total_seconds()
-        log.info("下次任务：%s（%.0f 秒后）", wake_dt.strftime("%Y-%m-%d %H:%M"), sleep_secs)
+        sleep_secs = max((scheduled_dt - now).total_seconds(), 0.0)
+        log.info(
+            "下次任务：%s（%.0f 秒后）",
+            scheduled_dt.strftime("%Y-%m-%d %H:%M"),
+            sleep_secs,
+        )
 
         # 账户轮询：只有“交易时间 + 有持仓”才高频，其余统一60秒，避免无持仓时刷屏。
         _ACCT_DEFAULT = 60        # 无持仓、非交易时段、交易日前后：每60秒打印一次
@@ -14220,15 +14288,17 @@ def main() -> None:
                     )
                     _acct_thread.start()
 
+        # monotonic等待偶尔会比Windows墙钟早数毫秒唤醒；交易任务提交前再按
+        # 北京墙钟对齐一次。任务身份仍会传入具体job，不靠墙钟猜是不是14:55。
+        _sleep_until_beijing(scheduled_time, max_wait=5.0)
         try:
-            run_job(sched_time)
+            run_job(scheduled_time)
         except Exception as e:
             log.exception("任务执行异常（守护进程继续）：%s", e)
             _notify("system_error", "❌ 定时任务异常",
                     "守护进程某个定时任务执行异常（进程未退出），请回终端查看日志。",
                     level="timeSensitive")
-
-        time.sleep(60)
+        scheduled_dt, scheduled_time = next_event_after(scheduled_dt, scheduled_time)
 
 
 if __name__ == "__main__":
