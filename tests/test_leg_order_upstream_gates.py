@@ -375,7 +375,7 @@ class BroadcastMatchesOrderingTests(unittest.TestCase):
             src,
         )
         self.assertIn(
-            "TAG if (l_wins and not _blocked_by_holding) else ''",
+            "TAG if (l_wins and not _blocked_by_holding and not execution_expired) else ''",
             src,
         )
         self.assertIn("账户空仓时无条件优先", src)

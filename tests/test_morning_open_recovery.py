@@ -70,7 +70,7 @@ class OpeningRecoveryWindowTest(unittest.TestCase):
 
         opening.assert_called_once_with()
 
-    def test_missing_0900_cache_is_rebuilt_once_then_d_fallback_can_start(self) -> None:
+    def test_missing_0900_cache_is_rebuilt_but_late_d_fallback_is_not_started(self) -> None:
         decisions = pd.DataFrame(
             [{"action": "ALLOW_D_INTRADAY_MONITOR", "strategy_leg": "D"}]
         )
@@ -84,11 +84,46 @@ class OpeningRecoveryWindowTest(unittest.TestCase):
                  trading_daemon,
                  "load_combined_decisions",
                  return_value=(decisions, Path("orders.csv")),
-             ) as rebuild, patch.object(trading_daemon, "job_strategy_d") as start_d:
+             ) as rebuild, patch.object(trading_daemon, "job_strategy_d") as start_d, \
+             patch.object(trading_daemon, "_notify") as notify:
             trading_daemon.startup_catchup_strategy_d()
 
         rebuild.assert_called_once_with()
-        start_d.assert_called_once_with()
+        start_d.assert_not_called()
+        notify.assert_called_once()
+
+    def test_expired_c_plan_is_display_only_and_not_current_execution(self) -> None:
+        candidate = {
+            "strategy": "C",
+            "ts_code": "600881.SH",
+            "name": "亚泰集团",
+        }
+        with patch.object(trading_daemon, "now_beijing", return_value=beijing_at(11, 19)), \
+             patch.object(trading_daemon, "has_position_bought_today", return_value=False), \
+             patch.object(trading_daemon, "has_open_local_position", return_value=False), \
+             patch.object(trading_daemon, "load_pending_buys", return_value=[]), \
+             patch.object(trading_daemon, "_pov_active_today", return_value=False):
+            self.assertTrue(
+                trading_daemon._ordinary_open_plan_expired(candidate, "20260813")
+            )
+
+        lines = trading_daemon._build_candidate_choice_lines(
+            [("C", candidate, "无入围候选")],
+            ["C"],
+            None,
+            [],
+            "原C计划窗口已过且未成交，当前不追补",
+        )
+        self.assertIn("账户空仓时让路排序：C策略 600881.SH 亚泰集团", lines)
+        self.assertIn("实际选择：不开仓｜原C计划窗口已过且未成交，当前不追补", lines)
+
+    def test_e2_is_not_mistaken_for_expired_ordinary_open_plan(self) -> None:
+        with patch.object(trading_daemon, "now_beijing", return_value=beijing_at(11, 19)):
+            self.assertFalse(
+                trading_daemon._ordinary_open_plan_expired(
+                    {"strategy": "E2", "ts_code": "000001.SZ"}, "20260813"
+                )
+            )
 
     def test_late_auction_buy_is_blocked_before_any_order_path(self) -> None:
         with patch.object(trading_daemon, "now_beijing", return_value=beijing_at(9, 25)), \
