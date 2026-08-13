@@ -2405,6 +2405,13 @@ class CloseWindowIdentityTest(unittest.TestCase):
         self.assertNotIn("_align_deadline", src)
         self.assertEqual(trading_daemon.SCHED_AFTERNOON_CLOSE, datetime.time(14, 55))
 
+    def test_平仓播报不承诺交易所一定成交(self) -> None:
+        desc = trading_daemon._exit_method_desc("C", "t_plus_2_close")
+
+        self.assertNotIn("确保成交", desc)
+        self.assertIn("仍可能无法成交", desc)
+        self.assertIn("继续核查余仓并告警", desc)
+
 
 if __name__ == "__main__":
     unittest.main()

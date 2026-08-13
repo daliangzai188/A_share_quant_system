@@ -11589,7 +11589,10 @@ def _exit_method_desc(strategy: str, exit_rule: str) -> str:
         return "普通D按T+2收盘退出：小仓位14:55卖；容量不足的大仓位先POV，14:55卖实际余仓"
     if "open" in rule:
         return "09:30开盘平仓（买10/买5挂限价）"
-    return "14:55收盘平仓（跌停价挂限价确保成交）"
+    return (
+        "14:55收盘平仓（按可成交下限价提交；跌停封死、停牌或无买盘时仍可能无法成交，"
+        "系统会继续核查余仓并告警）"
+    )
 
 
 def _log_final_decision_summary(signal_date: str, action_date_compact: str, buy_orders: Any) -> None:
