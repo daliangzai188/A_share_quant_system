@@ -91,7 +91,7 @@ def _track_execution(method: str, **values: Any) -> Any:
 
 
 def _notify(event: str, title: str, body: str = "", *, level: str = "active",
-            call: bool = False) -> None:
+            call: bool = False) -> bool:
     """告警推送（失败安全，绝不影响交易主流程）。
 
     正文口径：账号仅显示后2位（****03）；金额用「万」单位2位小数；标的可含代码+名称。
@@ -103,16 +103,18 @@ def _notify(event: str, title: str, body: str = "", *, level: str = "active",
         from src.notify import notify
         if call:
             # 普通通知（永远可见，不受警报权限影响）
-            notify(event, title, body, level="active", call=False)
+            normal_sent = bool(notify(event, title, body, level="active", call=False))
             # 警报式（持续响铃，静音/勿扰也响，需「重要提醒」权限）
-            notify(event, title, body, level="critical", call=True)
+            critical_sent = bool(notify(event, title, body, level="critical", call=True))
+            return normal_sent or critical_sent
         else:
-            notify(event, title, body, level=level, call=False)
+            return bool(notify(event, title, body, level=level, call=False))
     except Exception as exc:  # noqa: BLE001
         try:
             get_logger("a_share_quant").warning("告警推送异常：%s", exc)
         except Exception:
             pass
+        return False
 
 
 def _notify_async(event: str, title: str, body: str = "", *, level: str = "active",
@@ -6845,6 +6847,26 @@ def job_premarket_sell() -> None:
         check_and_close_positions()
     except Exception as e:
         logger().error("09:23 平仓检查异常：%s", e)
+
+    # 09:25之后已不是开盘集合竞价申报语义。若09:20任务拖慢导致本节点迟到，
+    # 保留D原仓并让09:30后的成对/常规路径重新判断，禁止把跌停限价整仓单
+    # 塞进静默段。逾期持仓已由上面的通用平仓检查优先处理并独立告警。
+    if now_beijing().time() >= datetime.time(9, 25):
+        had_plan = _has_premarket_close_plan()
+        logger().error(
+            "⛔ 09:23集合竞价平仓任务执行时已到%s，竞价窗口已关闭；"
+            "不提交D接力/历史竞价卖单。",
+            now_beijing().strftime("%H:%M:%S"),
+        )
+        if had_plan:
+            _notify(
+                "sell_fail",
+                "⚠️ 09:23集合竞价平仓窗口已错过",
+                "系统保留D原仓，未退回不安全的整仓跌停价竞价卖出；"
+                "本日不再强行建立D接力，D继续按原计划平仓日管理，请留意后续通知。",
+                level="timeSensitive",
+            )
+        return
     positions = load_positions()
     if not positions:
         logger().info("09:23 无持仓，跳过集合竞价平仓。")
@@ -7233,7 +7255,12 @@ def job_preopen_plan() -> None:
         return
     logger().info("09:00 组合状态机计划已生成，09:20复核后如有开仓计划将直接按涨停价预挂。")
     # 早盘开仓计划推送已前移至 08:50 独立任务(job_morning_plan_push)：
-    # 09:00 专心生成计划，不与推送抢时间(2026-07-24 用户要求)。
+    # 正常情况09:00不重复推；仅当08:50通知没有成功落标时，利用距09:20仍有
+    # 20分钟的窗口补发，避免“交易能下单、用户却没收到早盘计划”的静默故障。
+    try:
+        _retry_morning_plan_notification_if_needed("09:00计划生成完成")
+    except Exception as exc:
+        logger().warning("09:00早盘计划通知兜底失败（不改变下单）：%s", exc)
     logger().info("===== 盘前计划生成完成 =====")
 
 
@@ -8170,6 +8197,24 @@ def job_premarket_buy() -> None:
     except Exception as e:
         logger().error("09:20 平仓检查异常：%s", e)
 
+    # 09:25集合竞价撮合后不能再把“09:20涨停价预挂”伪装成竞价委托。
+    # 调度器现在会补跑被前一任务拖延的节点，因此这里必须用真实市场时段硬挡：
+    # 错过竞价就留给09:30确认/POV链路，绝不在09:25-09:30静默段盲发买单。
+    if now_beijing().time() >= datetime.time(9, 25):
+        logger().error(
+            "⛔ 09:20集合竞价买入任务执行时已到%s，竞价预挂窗口已关闭；"
+            "本轮禁止提交，交09:30开盘确认/补买链路处理。",
+            now_beijing().strftime("%H:%M:%S"),
+        )
+        _notify(
+            "buy_result",
+            "⚠️ 集合竞价预挂窗口已错过",
+            "09:20买入任务执行延迟到09:25之后，系统已禁止伪竞价下单；"
+            "09:30会按真实持仓、在途委托和组合计划继续确认或补买。",
+            level="timeSensitive",
+        )
+        return
+
     if has_position_bought_today():
         logger().info("09:20 今日已有买入成交，跳过集合竞价买入预挂。")
         return
@@ -8562,7 +8607,7 @@ def job_morning() -> None:
     logger().info("===== 盘前任务完成 =====")
 
 
-def job_opening_buy() -> None:
+def job_opening_buy(*, recovery_only: bool = False) -> None:
     logger().info("===== 开盘买入任务（09:30）=====")
 
     # 平仓检查冗余点③：确保逾期清理不因09:20/09:23被挤而丢失（见 job_premarket_buy 处注释）
@@ -8600,6 +8645,14 @@ def job_opening_buy() -> None:
     if load_pending_buys():
         logger().info("09:30 仍有09:20盘前买单在排队/待补挂，跳过新的开盘补买，避免重复委托。")
         logger().info("===== 开盘买入任务完成 =====")
+        return
+
+    if recovery_only:
+        logger().warning(
+            "开盘恢复确认已完成；当前已过普通开盘补买宽限，不新建A/M/C/L买单，"
+            "后续只允许既有E2延迟规则或D盘中兜底重新判断。"
+        )
+        logger().info("===== 开盘买入恢复任务完成 =====")
         return
 
     combined = load_combined_decisions()
@@ -10102,6 +10155,23 @@ def startup_catchup_strategy_d() -> None:
     if datetime.time(9, 25) <= now.time() < datetime.time(9, 30):
         logger().warning("启动补检：已过09:25集合竞价申报窗口，不再补挂，等09:30开盘流程。")
         return
+    if datetime.time(9, 30) <= now.time() < datetime.time(9, 35):
+        # 进程可能恰在开盘切换时重启。此窗口仍属于既有09:30确认/补单和
+        # POV执行模型；先恢复竞价成交、在途单及真实金额缺口，不把它误判成
+        # “整天已错过”并放弃已有成交。
+        logger().warning("启动补检：当前位于09:30-09:35，立即恢复开盘成交确认/补单链路。")
+        job_opening_buy()
+        return
+    if (
+        datetime.time(9, 35) <= now.time() < datetime.time(10, 30)
+        and load_pending_buys()
+    ):
+        # 只恢复09:20已提交委托的成交/撤残单/POV归属，绝不因重启在9:35后
+        # 新建普通开盘买单。恢复后若确实零成交，再继续下方E2/D兜底判断。
+        logger().warning("启动补检：发现09:20遗留待确认买单，先恢复真实成交与终态，不追补新普通买单。")
+        job_opening_buy(recovery_only=True)
+        if has_position_bought_today() or has_open_local_position() or _pov_active_today():
+            return
     if not (datetime.time(9, 20) <= now.time() < datetime.time(14, 55)):
         return
     if _d_relay_pair_active_today():
@@ -10125,8 +10195,26 @@ def startup_catchup_strategy_d() -> None:
     decisions = combined[0] if combined is not None else None
     combined_orders_path = combined[1] if combined is not None else None
     if decisions is None:
-        logger().warning("启动补检：今日组合状态机缓存缺失/读取失败；为避免重算抢占资源，本轮不补启动D，交下一轮定时任务处理。")
-        return
+        # 整机宕机跨过09:00时不会存在今日缓存。此时已经错过A/C/L普通开盘
+        # 窗口，再等待“下一轮定时任务”实际要到14:40，D兜底也会整天丢失。
+        # 本地盘运行后组合生成不再依赖旧Z:共享盘；这里限一次同步重建，仅生成
+        # 计划，不追补过期买单，然后继续走既有E2延迟/D兜底判断。
+        logger().warning(
+            "启动补检：今日组合状态机缓存缺失/读取失败，限一次重建今日计划；"
+            "不会追补已过期的普通开盘买单。"
+        )
+        combined = load_combined_decisions()
+        decisions = combined[0] if combined is not None else None
+        combined_orders_path = combined[1] if combined is not None else None
+        if decisions is None:
+            logger().error("启动补检：今日组合状态机重建仍失败，无法安全判断E2/D兜底。")
+            _notify(
+                "buy_result",
+                "🛑 启动后无法恢复今日开仓状态机",
+                "09:00组合缓存缺失且现场重建失败；系统不会盲目开仓，请查看daemon日志。",
+                level="critical",
+            )
+            return
     if has_combined_action(decisions, "PLAN_SELL_D_FIRST"):
         logger().info("启动补检：今日有D持仓待卖出(优先处理)，不再启动新的D买入监控。")
         return
@@ -12308,6 +12396,77 @@ def _log_decision_chain_summary(signal_date: str) -> None:
 
 _last_final_plan: dict[str, Any] | None = None
 _PLAN_PUSH_STATE = PROJECT_ROOT / "data" / "state" / "open_plan_push.json"
+_MISSED_OPEN_ALERT_STATE = PROJECT_ROOT / "data" / "state" / "missed_open_alert.json"
+
+
+def _plan_push_already_sent(action_date: str, occasion: str) -> bool:
+    key = f"{action_date}-{occasion}"
+    try:
+        state = json.loads(_PLAN_PUSH_STATE.read_text(encoding="utf-8"))
+        return state.get("last_pushed") == key
+    except Exception:
+        return False
+
+
+def _retry_morning_plan_notification_if_needed(source: str) -> None:
+    """08:50推送失败/daemon稍晚启动时，在09:20前幂等补发一次。"""
+    now = now_beijing()
+    if not is_trade_day(now.date()) or not (
+        datetime.time(8, 50) <= now.time() < datetime.time(9, 20)
+    ):
+        return
+    action_date = now.strftime("%Y%m%d")
+    if _plan_push_already_sent(action_date, "早盘"):
+        return
+    logger().warning("%s：08:50早盘计划通知尚未成功落标，立即幂等补发。", source)
+    if not _last_final_plan or str(_last_final_plan.get("action_date", "")) != action_date:
+        report_next_day_candidates()
+    push_open_plan_notification("早盘")
+
+
+def _notify_missed_open_window_if_needed(source: str) -> None:
+    """开仓窗口后启动且今日计划未执行时，只告警，不追补过期A/C/L买单。"""
+    now = now_beijing()
+    if not is_trade_day(now.date()) or not (
+        datetime.time(9, 35) <= now.time() < datetime.time(14, 40)
+    ):
+        return
+    plan = _last_final_plan
+    today_str = now.strftime("%Y%m%d")
+    if not plan or str(plan.get("action_date", "")) != today_str:
+        return
+    final_buy = plan.get("final_buy")
+    if (
+        not final_buy
+        or has_position_bought_today()
+        or has_open_local_position()
+        or bool(load_pending_buys())
+        or _pov_active_today()
+        or _d_relay_pair_active_today()
+    ):
+        return
+    key = f"{today_str}-{final_buy.get('strategy','')}-{final_buy.get('ts_code','')}"
+    try:
+        old = json.loads(_MISSED_OPEN_ALERT_STATE.read_text(encoding="utf-8"))
+        if old.get("last_alerted") == key:
+            return
+    except Exception:
+        pass
+    title = f"⚠️ 今日开仓窗口已错过:{final_buy.get('name','')}"
+    body = (
+        f"{source}发现今日原计划为策略{final_buy.get('strategy','')} "
+        f"{final_buy.get('ts_code','')} {final_buy.get('name','')}，但09:20/09:30执行窗口内"
+        "未完成开仓且当前无策略持仓/在途买单。系统不会在盘中追补过期A/M/C/L普通开盘买单，避免偏离回测；"
+        "E2只按既有延迟规则处理，若组合状态机允许，D盘中兜底会单独恢复。"
+    )
+    sent = _notify("buy_result", title, body, level="critical")
+    if sent:
+        mkdir_p(_MISSED_OPEN_ALERT_STATE.parent)
+        _MISSED_OPEN_ALERT_STATE.write_text(
+            json.dumps({"last_alerted": key, "alerted_at": now.isoformat()}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    logger().error("[开仓窗口审计] %s", body)
 
 
 def push_open_plan_notification(occasion: str) -> None:
@@ -12349,10 +12508,16 @@ def push_open_plan_notification(occasion: str) -> None:
             body = f"{label}所有策略(A/C/E2/L)均无符合条件标的,不开新仓。"
         if hold:
             body += f" ⚠{hold}"
-        _notify("buy_result", title, body, level="timeSensitive")
-        mkdir_p(_PLAN_PUSH_STATE.parent)
-        _PLAN_PUSH_STATE.write_text(json.dumps({"last_pushed": key}, ensure_ascii=False), encoding="utf-8")
-        logger().info("[开仓计划推送] 已推送 %s:%s", occasion, title)
+        sent = _notify("buy_result", title, body, level="timeSensitive")
+        if sent:
+            mkdir_p(_PLAN_PUSH_STATE.parent)
+            _PLAN_PUSH_STATE.write_text(
+                json.dumps({"last_pushed": key}, ensure_ascii=False), encoding="utf-8"
+            )
+            logger().info("[开仓计划推送] 已推送 %s:%s", occasion, title)
+        else:
+            # 不写“已推”标记，让09:00或启动补检仍有机会重试；交易本身不受影响。
+            logger().error("[开仓计划推送] %s通知未确认送达，保留重试资格:%s", occasion, title)
     except Exception as e:
         logger().warning("开仓计划推送异常(不影响交易):%s", e)
 
@@ -14196,6 +14361,10 @@ def main() -> None:
     def _startup_report() -> None:
         try:
             report_next_day_candidates()
+            # 08:50后重启补发尚未成功的早盘计划；09:35后若原计划因整机宕机
+            # 没执行，则明确告警但不追补过期普通开盘单。
+            _retry_morning_plan_notification_if_needed("daemon启动补检")
+            _notify_missed_open_window_if_needed("daemon启动补检")
             if _should_run_startup_signal_audit(now_beijing()):
                 report_signal_readiness_summary(expected_str)
             else:
