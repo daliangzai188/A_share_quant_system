@@ -13,10 +13,10 @@
 3. 原调度器还存在两个独立风险：距离任务不足30秒时直接跳过；每项任务结束固定睡60秒，
    前项稍慢会吞掉09:23/09:26/09:30等紧邻任务。`fc53759` 已改为严格沿日程推进并在
    下单前复核北京时间。
-4. 虚拟机停止不是交易程序主动执行关机。项目内不存在 `shutdown.exe`、`Stop-Computer`、
-   `poweroff` 等系统关机调用；daemon和QMT账户心跳一直正常到8月12日23:28，随后Windows
-   daemon、keeper、同步日志同时中断，8月13日10:40才重新启动。确切原因需读取Windows
-   System事件日志（1074/41/6006/6008）。
+4. 虚拟机停止不是交易程序主动执行关机，也不是异常断电或宿主崩溃。Windows System事件
+   已确认：8月12日23:29由 `MoUsoCoreWorker.exe`、23:31由 `TrustedInstaller.exe` 代表
+   `NT AUTHORITY\\SYSTEM` 发起计划内系统更新重启（Service Pack/升级）；同时只有6006正常
+   停止，没有41或6008。根因是Windows Update计划重启后虚拟机没有自动恢复运行。
 5. 8月13日 C 策略 `600881.SH 亚泰集团` 漏开仓的直接原因是虚拟机/daemon在
    08:50、09:00、09:20、09:30全程不在线，而不是策略门禁拒绝。10:40启动时只剩候选
    播报，按回测一致性原则不能盘中追买已经过期的普通开盘信号。
@@ -128,8 +128,12 @@ py -3.11 scripts\audit_windows_power_events.py --days 7
 
 报告位置：`C:\A_System\reports\runtime\windows_power_events_latest.json`。
 
-截至2026-08-13 11:09上传的现场输出，这条事件审计命令尚未执行，因此虚拟机停止的
-确切原因仍不能从交易日志单独下结论。
+2026-08-13 11:15现场报告已执行：共6条相关事件，2条1074计划重启、2条6006正常停止、
+2条6005启动；没有41或6008。1074发起进程分别为Windows更新组件
+`C:\\WINDOWS\\uus\\ARM64\\MoUsoCoreWorker.exe` 和系统维护组件
+`C:\\WINDOWS\\servicing\\TrustedInstaller.exe`，故本次根因已定为Windows Update计划重启，
+不是A_System主动关机。Mac虚拟机哨兵负责交易日07:45以后拉起未运行的VM，Windows登录/
+08:15运行兜底再补齐daemon和keeper；不关闭系统更新。
 
 看到1074时查看其message中的发起进程；看到41/6008通常表示宿主强停、断电或崩溃；
 看到6006且无41/6008通常是正常关机。不要把报告中的历史事件直接当成程序主动关机证据。
