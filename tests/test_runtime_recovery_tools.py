@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from scripts import audit_windows_power_events
@@ -43,6 +44,15 @@ class EnsureWindowsRuntimeTest(unittest.TestCase):
         self.assertEqual(result, 0)
         run.assert_not_called()
         popen.assert_not_called()
+
+    def test_normal_startup_auto_checks_and_installs_runtime_guard(self) -> None:
+        source = (Path(__file__).resolve().parents[1] / "start_windows.py").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('install_windows_runtime_guard.py', source)
+        self.assertIn('"--status"', source)
+        self.assertIn("每日08:15", source)
 
 
 if __name__ == "__main__":

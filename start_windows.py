@@ -225,6 +225,48 @@ except Exception as exc:
     # keeper 起不来不影响交易主进程，只是失去自愈能力，明确提示而不中断。
     print(f"⚠️ Keeper 启动失败（daemon 不受影响，但失去自动重启能力）：{exc}")
 
+# ── Windows开机/早盘自动恢复计划任务 ────────────────────────────────────────
+# 用户只需继续使用原来的start_windows.py。每次启动先只读检查计划任务；缺失时
+# 自动安装“登录触发 + 每日08:15 + 错过后尽快补跑”。任务执行的是
+# ensure_windows_runtime.py，只补缺失进程，健康daemon绝不会被每日任务重启。
+try:
+    guard_installer = root / "scripts" / "install_windows_runtime_guard.py"
+    status_result = subprocess.run(
+        [sys.executable, str(guard_installer), "--status"],
+        cwd=str(root),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+        check=False,
+    )
+    if status_result.returncode == 0:
+        print("Windows运行兜底计划任务：已安装（登录 + 每日08:15，只补缺失进程）。")
+    else:
+        install_result = subprocess.run(
+            [sys.executable, str(guard_installer)],
+            cwd=str(root),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=60,
+            check=False,
+        )
+        if install_result.returncode == 0:
+            print("✅ Windows运行兜底计划任务已自动安装：登录 + 每日08:15检查。")
+        else:
+            detail = (install_result.stdout or status_result.stdout or "未知错误").strip()
+            print(
+                "⚠️ Windows运行兜底计划任务自动安装失败（不影响本次daemon启动）："
+                f"{detail[-500:]}"
+            )
+except Exception as exc:
+    print(f"⚠️ Windows运行兜底计划任务检查异常（不影响本次daemon启动）：{exc}")
+
 # 等日志文件出现
 for _ in range(10):
     if log.exists():
