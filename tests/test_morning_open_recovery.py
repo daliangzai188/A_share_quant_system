@@ -62,6 +62,118 @@ class MorningNotificationDeliveryTest(unittest.TestCase):
 
 
 class OpeningRecoveryWindowTest(unittest.TestCase):
+    def test_d_broadcast_is_blocked_by_model3_l_candidate(self) -> None:
+        line = trading_daemon._d_candidate_gate_line(
+            mode=3,
+            day_label="明日",
+            l_buy={"ts_code": "603118.SH", "name": "共进股份"},
+            mode1_buy=None,
+        )
+        self.assertIn("阻断", line)
+        self.assertIn("L正式开仓计划 603118.SH 共进股份", line)
+
+    def test_fill_check_detail_uses_real_auction_seed_not_nominal_signal_shares(self) -> None:
+        plan = {
+            "final_buy": {
+                "strategy": "L",
+                "ts_code": "603118.SH",
+                "name": "共进股份",
+                "shares": 23400,
+            }
+        }
+        state = {
+            "items": [{
+                "ts_code": "603118.SH",
+                "auction_planned_qty": 12200,
+                "target_actual_amount": 229100.0,
+                "hard_cap_amount": 236100.0,
+            }]
+        }
+        with patch.object(trading_daemon, "load_positions", return_value=[]), \
+             patch.object(trading_daemon, "load_pending_buys", return_value=[]), \
+             patch.object(trading_daemon, "_pov_load_state", return_value=state):
+            detail = trading_daemon._open_plan_execution_detail(plan)
+
+        self.assertIn("实盘竞价种子计划12200股", detail)
+        self.assertIn("目标22.91万/82.5%", detail)
+        self.assertNotIn("23400股@参考", detail)
+
+    def test_0935_active_pov_reports_progress_instead_of_false_missing_order(self) -> None:
+        old_plan = trading_daemon._last_final_plan
+        trading_daemon._last_final_plan = {
+            "action_date": "20260813",
+            "final_buy": {
+                "strategy": "L",
+                "ts_code": "603118.SH",
+                "name": "共进股份",
+                "shares": 23400,
+            },
+        }
+        try:
+            with patch.object(trading_daemon, "today_beijing", return_value=beijing_at(9, 35)), \
+                 patch.object(trading_daemon, "load_positions", return_value=[]), \
+                 patch.object(trading_daemon, "load_pending_buys", return_value=[]), \
+                 patch.object(trading_daemon, "_pov_load_state", return_value={"items": []}), \
+                 patch.object(trading_daemon, "has_position_bought_today", return_value=False), \
+                 patch.object(trading_daemon, "_pov_active_today", return_value=True), \
+                 patch.object(trading_daemon, "_qmt_get") as qmt, \
+                 patch.object(trading_daemon, "_notify", return_value=True) as notify:
+                trading_daemon.job_open_plan_fill_check()
+        finally:
+            trading_daemon._last_final_plan = old_plan
+
+        qmt.assert_not_called()
+        self.assertEqual(notify.call_args.args[1], "⏳ POV开仓执行中")
+        self.assertNotIn("计划未执行", notify.call_args.args[1])
+
+    def test_fill_check_detail_prefers_actual_registered_fill(self) -> None:
+        plan = {
+            "final_buy": {
+                "strategy": "L",
+                "ts_code": "603118.SH",
+                "name": "共进股份",
+                "shares": 23400,
+            }
+        }
+        position = {
+            "status": "open",
+            "buy_date": "20260813",
+            "ts_code": "603118.SH",
+            "shares": 12100,
+            "buy_price": 17.63,
+        }
+        with patch.object(trading_daemon, "today_beijing", return_value=beijing_at(9, 35)), \
+             patch.object(trading_daemon, "load_positions", return_value=[position]):
+            detail = trading_daemon._open_plan_execution_detail(plan)
+
+        self.assertIn("实际已成交并登记12100股@均价17.63", detail)
+
+    def test_d_status_uses_final_l_candidate_instead_of_ac_count_only(self) -> None:
+        old_plan = trading_daemon._last_final_plan
+        trading_daemon._last_final_plan = {
+            "signal_date": "20260812",
+            "execution_expired": False,
+            "final_buy": {
+                "strategy": "L",
+                "ts_code": "603118.SH",
+                "name": "共进股份",
+            },
+        }
+        try:
+            with patch.object(trading_daemon, "_load_ab_checklist", return_value=pd.DataFrame()), \
+                 patch.object(trading_daemon, "now_beijing", return_value=beijing_at(18, 0)), \
+                 patch.object(trading_daemon, "_strategy_d_monitor_running", return_value=False), \
+                 patch.object(trading_daemon, "load_positions", return_value=[]), \
+                 patch.object(trading_daemon, "logger") as logger_factory:
+                trading_daemon._log_d_status_for_signal("20260812")
+        finally:
+            trading_daemon._last_final_plan = old_plan
+
+        calls = repr(logger_factory.return_value.info.call_args_list)
+        self.assertIn("今日已有%s正式候选", calls)
+        self.assertIn("603118.SH", calls)
+        self.assertIn("共进股份", calls)
+
     def test_normal_auction_uses_seed_cap_and_only_remainder_goes_to_pov(self) -> None:
         auction_qty, auction_cap, share = trading_daemon._pov_auction_seed_quantity(
             total_target_qty=8200,

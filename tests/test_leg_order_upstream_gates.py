@@ -395,7 +395,7 @@ class BroadcastMatchesOrderingTests(unittest.TestCase):
         d_end = src.index("def _value_counts_text", d_start)
         d_body = src[d_start:d_end]
         self.assertLess(d_body.index("if open_positions:"), d_body.index("elif planned_count > 0:"))
-        self.assertIn("串行单仓规则优先于A/C候选判断", d_body)
+        self.assertIn("串行单仓规则优先于其他策略候选判断", d_body)
 
         l_start = src.index("def _log_l_model3_signal_status")
         l_end = src.index("def _load_ab_checklist", l_start)

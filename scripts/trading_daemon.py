@@ -13183,12 +13183,6 @@ def _log_decision_chain_summary(signal_date: str) -> None:
             else:
                 c_line += f"；成立｜前面各腿均无票，C垫底开仓 {c_buy['ts_code']} {c_buy['name']}"
 
-        # ── D ──
-        # D 在信号日盘中 14:00 后买入，其余各腿 T+1 开盘买；这里播报的是
-        # "今天还要不要启动 D 盘中监控"，任一腿已生成买入计划就不再用同一笔资金。
-        d_line = (f"阻断｜{day_label}已有 A/M/E2/C 开仓计划占用同一资金" if mode1_buy
-                  else "允许｜无开仓计划时启动盘中监控（仍需实时行情+风控校验）")
-
         # ── L（第②档，无条件优先于 A/M/E2/C）──
         l_sig = _load_l_signal_for_signal_date(signal_date)
         l_buy: dict[str, Any] | None = None
@@ -13212,6 +13206,16 @@ def _log_decision_chain_summary(signal_date: str) -> None:
                       f"无条件优先（腿序L>A>M>E2>C），顶掉mode1买入")
         else:
             l_line = f"补位｜mode1无买入，L补位 {l_sig.get('ts_code','')} {l_sig.get('name','')}（补位不限板块）"
+
+        # ── D ──
+        # D的展示门与最终选股腿序共用：mode2/3的L也属于正式开仓计划，不能再
+        # 只看mode1而把“无计划→允许D”打印出来。持仓/过期计划会在下方继续覆盖。
+        d_line = _d_candidate_gate_line(
+            mode=mode,
+            day_label=day_label,
+            l_buy=l_buy,
+            mode1_buy=mode1_buy,
+        )
 
         # ── 最终计划（与【最终结果】/组合状态机同口径） ──
         # 串行单仓守卫（2026-07-23）：播报必须和下单口径(build_model3_plan)一致——
@@ -13519,6 +13523,7 @@ def _log_decision_chain_summary(signal_date: str) -> None:
             "day_label": day_label,
             "hold_line": hold_line,
             "action_date": str(action_date),
+            "signal_date": str(signal_date),
             "execution_expired": execution_expired,
             "computed_at": now_beijing().strftime("%Y-%m-%d %H:%M:%S"),
         }
@@ -13529,6 +13534,29 @@ def _log_decision_chain_summary(signal_date: str) -> None:
 _last_final_plan: dict[str, Any] | None = None
 _PLAN_PUSH_STATE = PROJECT_ROOT / "data" / "state" / "open_plan_push.json"
 _MISSED_OPEN_ALERT_STATE = PROJECT_ROOT / "data" / "state" / "missed_open_alert.json"
+
+
+def _d_candidate_gate_line(
+    *,
+    mode: int,
+    day_label: str,
+    l_buy: dict[str, Any] | None,
+    mode1_buy: dict[str, Any] | None,
+) -> str:
+    """决策链里的D候选门；只描述候选占用，持仓/过期状态由调用方覆盖。"""
+
+    if mode in {2, 3} and l_buy:
+        return (
+            f"阻断｜{day_label}已有L正式开仓计划 "
+            f"{l_buy.get('ts_code', '')} {l_buy.get('name', '')} 占用同一资金"
+        )
+    if mode1_buy:
+        leg = str(mode1_buy.get("strategy", "A/C/M/E2/C") or "A/C/M/E2/C")
+        return (
+            f"阻断｜{day_label}已有{leg}正式开仓计划 "
+            f"{mode1_buy.get('ts_code', '')} {mode1_buy.get('name', '')} 占用同一资金"
+        )
+    return "允许｜全策略均无正式开仓计划时启动盘中监控（仍需实时行情+风控校验）"
 
 
 def _plan_push_already_sent(action_date: str, occasion: str) -> bool:
@@ -13669,14 +13697,91 @@ def _latest_planned_orders_signal_date() -> str:
         return ""
 
 
+def _open_plan_execution_detail(plan: dict[str, Any]) -> str:
+    """09:35核查详情：优先展示真实竞价/POV执行量，不再打印信号名义股数。"""
+
+    fb = plan.get("final_buy") or {}
+    ts_code = str(fb.get("ts_code", ""))
+    head = f"策略{fb.get('strategy','')} {ts_code} {fb.get('name','')}"
+    today_str = today_beijing().strftime("%Y%m%d")
+    matched_positions = [
+        position
+        for position in load_positions()
+        if str(position.get("status", "")).lower() in {"open", "sell_pending"}
+        and str(position.get("buy_date", "")).replace("-", "") == today_str
+        and (_ts_code_aliases(position.get("ts_code", "")) & _ts_code_aliases(ts_code))
+    ]
+    actual_qty = sum(int(position.get("shares", 0) or 0) for position in matched_positions)
+    actual_cost = sum(
+        int(position.get("shares", 0) or 0) * float(position.get("buy_price", 0.0) or 0.0)
+        for position in matched_positions
+    )
+    if actual_qty > 0:
+        actual_price = actual_cost / actual_qty if actual_cost > 0 else 0.0
+        price_text = f"@均价{actual_price:.2f}" if actual_price > 0 else ""
+        return f"{head}｜实际已成交并登记{actual_qty}股{price_text}"
+    matching_pending = [
+        item
+        for item in load_pending_buys()
+        if _ts_code_aliases(item.get("ts_code", "")) & _ts_code_aliases(ts_code)
+    ]
+    pending_qty = sum(int(item.get("qty", 0) or 0) for item in matching_pending)
+    pending_price = next(
+        (float(item.get("ref_price", 0.0) or 0.0) for item in matching_pending
+         if float(item.get("ref_price", 0.0) or 0.0) > 0),
+        0.0,
+    )
+    pov_item = next(
+        (
+            item
+            for item in _pov_load_state().get("items", [])
+            if _ts_code_aliases(item.get("ts_code", "")) & _ts_code_aliases(ts_code)
+        ),
+        None,
+    )
+    if pov_item:
+        auction_qty = pending_qty or int(pov_item.get("auction_planned_qty", 0) or 0)
+        target = float(
+            pov_item.get("target_actual_amount", pov_item.get("target_amt", 0.0)) or 0.0
+        )
+        hard_cap = float(pov_item.get("hard_cap_amount", 0.0) or 0.0)
+        if auction_qty > 0:
+            if pending_qty > 0:
+                price_text = f"@委托{pending_price:.2f}" if pending_price > 0 else ""
+                seed_text = f"实际已挂竞价单{auction_qty}股{price_text}"
+            else:
+                seed_text = f"实盘竞价种子计划{auction_qty}股"
+        else:
+            seed_text = "竞价实际计划0股（竞价链未挂出，全部目标转POV）"
+        return (
+            f"{head}｜{seed_text}；POV按实际成交额校准至目标{target / 1e4:.2f}万/82.5%，"
+            f"硬顶{hard_cap / 1e4:.2f}万/85%"
+        )
+    if pending_qty > 0:
+        price_text = f"@{pending_price:.2f}" if pending_price > 0 else ""
+        return f"{head}｜实际在途买单{pending_qty}股{price_text}"
+    live = plan.get("live_sizing") or {}
+    if live:
+        return (
+            f"{head}｜执行前预估竞价种子单{int(live.get('shares', 0) or 0)}股；"
+            f"实际开仓目标{float(live.get('target_amount', 0.0) or 0.0) / 1e4:.2f}万/82.5%，"
+            f"硬顶{float(live.get('hard_cap_amount', 0.0) or 0.0) / 1e4:.2f}万/85%"
+        )
+    return (
+        f"{head}｜实际委托状态尚不可得（信号名义值{int(fb.get('shares', 0) or 0)}股"
+        "不作为实盘委托数量）"
+    )
+
+
 def job_open_plan_fill_check() -> None:
     """09:35 开仓计划成交核查（2026-07-23 用户要求：计划没买成绝不允许无声漏过）。
 
     背景：07-23 星辉环材有开仓计划，却被幽灵持仓 BLOCK、全程零提醒，用户盘后才发现
-    漏买。此任务在开仓窗口（09:20预挂→09:30确认）结束后核查，三种结果三种动作：
+    漏买。此任务在开仓窗口（09:20预挂→09:30确认）结束后核查，四种结果四种动作：
       ① 今日已有买入成交 → 计划已执行，静默；
       ② 无成交但QMT有计划票的在途买单 → 排队中（买涨停排板是常态），推送知会；
-      ③ 无成交且无在途买单 → 计划未执行，强告警，提示用户可手动介入。
+      ③ 无成交/在途单但持久化POV仍活跃 → 明示POV执行中，不误报漏单；
+      ④ 无成交、无在途买单且无活跃POV → 计划未执行，强告警，提示用户介入。
     纯只读检查+推送：不下单、不撤单、不改任何交易状态，任何异常不影响交易主流程。
     """
     log = logger()
@@ -13697,10 +13802,19 @@ def job_open_plan_fill_check() -> None:
         if not fb:
             log.info("[开仓核查] 今日本来就无开仓计划，无需核查。")
             return
-        detail = (f"策略{fb.get('strategy','')} {fb.get('ts_code','')} {fb.get('name','')} "
-                  f"计划{int(fb.get('shares', 0))}股@参考{float(fb.get('price', 0)):.2f}")
+        detail = _open_plan_execution_detail(plan)
         if has_position_bought_today():
             log.info("[开仓核查] ✅ 今日已有买入成交，开仓计划已执行（%s）。", detail)
+            return
+        if _pov_active_today():
+            _notify(
+                "buy_result",
+                "⏳ POV开仓执行中",
+                f"{detail}。09:35核查：持久化POV任务仍在运行，将继续按真实成交额和"
+                "+2%追价保护执行至10:30；当前不判定为漏单。",
+                level="active",
+            )
+            log.info("[开仓核查] ⏳ %s：POV任务仍在执行，不触发漏单告警。", detail)
             return
         config = load_json_config(PROJECT_ROOT / "config" / "config.json")
         if not (bool(config.get("broker_adapter_enabled")) and bool(config.get("qmt_enabled"))):
@@ -14208,10 +14322,17 @@ def _log_d_status_for_signal(signal_date: str) -> None:
             p for p in load_positions()
             if str(p.get("status", "")).lower() in {"open", "sell_pending"}
         ]
+        current_plan = _last_final_plan or {}
+        formal_candidate = None
+        if (
+            str(current_plan.get("signal_date", "")) == str(signal_date)
+            and not bool(current_plan.get("execution_expired", False))
+        ):
+            formal_candidate = current_plan.get("final_buy")
         if open_positions:
             held = _describe_holdings(open_positions, with_quote=False)
             logger().info(
-                "  D策略停止点：已有策略持仓。当前持仓=%s；串行单仓规则优先于A/C候选判断，"
+                "  D策略停止点：已有策略持仓。当前持仓=%s；串行单仓规则优先于其他策略候选判断，"
                 "不启动新的D盘中监控。",
                 held,
             )
@@ -14220,13 +14341,20 @@ def _log_d_status_for_signal(signal_date: str) -> None:
             allowed_segments = config.get("strategy_d", {}).get("allowed_market_segments", [])
             allowed_text = ",".join(str(x) for x in allowed_segments) if isinstance(allowed_segments, list) else "未配置"
             reason = (
-                "D盘中监控进程正在运行；若同时存在A/C计划，通常表示开仓窗口已过、"
-                "A/C/E2未实际成交且账户空仓，系统释放资金占用后补启动D。"
+                "D盘中监控线程正在运行；只有全策略无正式候选且账户空仓时才允许该状态。"
             )
             logger().info("  D策略状态：RUNNING（%s）", reason)
             logger().info("  D实盘扫描范围：%s；日志中的扫描数量为D当前配置股票池数量。", allowed_text)
+        elif formal_candidate:
+            logger().info(
+                "  D策略停止点：组合状态机。原因：今日已有%s正式候选 %s %s，"
+                "阻断D盘中监控，避免同一资金重复占用。",
+                formal_candidate.get("strategy", ""),
+                formal_candidate.get("ts_code", ""),
+                formal_candidate.get("name", ""),
+            )
         elif planned_count > 0:
-            logger().info("  D策略停止点：组合状态机。原因：今日已有 A/C 买入计划，阻断 D 盘中监控，避免同一资金重复占用。")
+            logger().info("  D策略停止点：组合状态机。原因：今日已有A/C正式候选，阻断D盘中监控，避免同一资金重复占用。")
         elif not in_d_start_window:
             logger().info(
                 "  D策略停止点：交易时段。原因：当前不是 D 盘中监控时段。D 只在交易日 09:20 组合状态机允许后启动，09:30开始完整跟踪，09:35起WATCH，14:00后真实回封才允许BUY，14:56停止/撤单。"
@@ -14234,7 +14362,7 @@ def _log_d_status_for_signal(signal_date: str) -> None:
             logger().info(
                 "  D策略后续过滤链：组合状态机允许 -> 09:30起完整实时路径 -> 首板且昨日未涨停 -> 当前封涨停 -> 炸板2~3次(multi_open) -> 首封不早于10:00 -> 当前封板88~132只(strong代理，不含very_strong) -> 14:00后真实回封 -> 成交概率>=80%且可靠 -> 按实时封单金额/流通市值(fd_amount_to_circ_mv)排序 -> LiveOrderGateway二次风控。"
             )
-            logger().info("  D策略明日判断：若 09:20 无持仓且仍无 A/C 买入计划，则允许启动 D 盘中监控；能否下单取决于盘中实时过滤。")
+            logger().info("  D策略明日判断：若09:20账户空仓且L/A/M/E2/C均无正式候选，才允许启动D盘中监控；能否下单取决于盘中实时过滤。")
         else:
             logger().info("  D策略停止点：组合状态机或实时扫描。当前处于 D 可启动/监控时段，实际是否启动以组合状态机决策明细为准；若已启动，还要看盘中实时基础过滤。")
     except Exception as exc:
