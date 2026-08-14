@@ -433,13 +433,27 @@ def is_strategy_model3_mode() -> bool:
 
 
 def write_heartbeat(status: str = "running") -> None:
+    """原子更新daemon心跳，避免keeper读到write_text截断后的空文件。
+
+    Windows侧keeper每30秒读取一次心跳。旧实现直接 ``write_text``，会先把
+    目标文件截断再写入；keeper若恰好落在这个极短窗口，会解析出
+    ``heartbeat_pid=None``，把仍在正常扫描的daemon误判为旧PID并强制重启。
+    心跳和broker_health一样必须采用同目录临时文件 + ``os.replace``。
+    """
+    tmp = HEARTBEAT_FILE.with_name(
+        f".{HEARTBEAT_FILE.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+    )
     try:
-        HEARTBEAT_FILE.write_text(
+        HEARTBEAT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(
             f"{now_beijing().isoformat()} pid={os.getpid()} {status}\n",
             encoding="utf-8",
         )
+        os.replace(tmp, HEARTBEAT_FILE)
     except Exception:
         pass
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def write_broker_health(

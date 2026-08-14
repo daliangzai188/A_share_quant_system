@@ -73,6 +73,9 @@ CRASH_LOOP_RETRY_SEC = _positive_int(
 STARTUP_HEARTBEAT_GRACE_SEC = _positive_int(
     _RECOVERY_SETTINGS, "startup_heartbeat_grace_sec", 5 * 60, 60
 )
+HEARTBEAT_PID_MISMATCH_CONFIRMATIONS = _positive_int(
+    _RECOVERY_SETTINGS, "heartbeat_pid_mismatch_confirmations", 3, 2
+)
 HEALTHY_PROGRAM_STATES = {"running", "sleeping"}
 BROKER_UNAVAILABLE_STATES = {"unavailable", "restarting"}
 
@@ -203,9 +206,11 @@ def pid_alive(pid: int) -> bool:
 
 def heartbeat_state() -> tuple[str, float, int | None]:
     """返回 (状态标记, 心跳年龄秒, 写入心跳的daemon PID)。"""
+    age = float("inf")
     try:
+        if HEARTBEAT.exists():
+            age = max(0.0, time.time() - HEARTBEAT.stat().st_mtime)
         text = HEARTBEAT.read_text(encoding="utf-8").strip()
-        age = time.time() - HEARTBEAT.stat().st_mtime
         parts = text.split()
         state = parts[-1] if parts else ""
         heartbeat_pid = None
@@ -215,7 +220,30 @@ def heartbeat_state() -> tuple[str, float, int | None]:
                 break
         return state, age, heartbeat_pid
     except Exception:
-        return "", float("inf"), None
+        # 文件存在且很新时，读取失败/内容为空更可能是瞬时替换或杀毒软件占用，
+        # 不能伪装成“陈旧15分钟”而立即误杀仍在运行的daemon。
+        return "", age, None
+
+
+def heartbeat_restart_reason(
+    *,
+    age: float,
+    heartbeat_same_process: bool,
+    mismatch_count: int,
+) -> str:
+    """返回需要重启的心跳原因；新鲜PID解析失败必须连续确认。"""
+
+    if age > STALE_LIMIT:
+        return f"心跳陈旧 {age/60:.1f} 分钟"
+    if (
+        not heartbeat_same_process
+        and int(mismatch_count) >= HEARTBEAT_PID_MISMATCH_CONFIRMATIONS
+    ):
+        return (
+            "心跳连续%d次不属于当前daemon PID"
+            % int(mismatch_count)
+        )
+    return ""
 
 
 def broker_health_state(expected_pid: int | None) -> tuple[str, float, bool]:
@@ -297,6 +325,7 @@ def main() -> None:
     crash_loop_alerted = False
     observed_pid: int | None = None
     observed_pid_since = 0.0
+    heartbeat_pid_mismatch_count = 0
 
     while True:
         try:
@@ -308,6 +337,7 @@ def main() -> None:
             if not alive:
                 observed_pid = None
                 observed_pid_since = 0.0
+                heartbeat_pid_mismatch_count = 0
                 now_ts = time.time()
                 if now_ts < next_restart_not_before:
                     time.sleep(CHECK_INTERVAL)
@@ -345,10 +375,20 @@ def main() -> None:
             if pid != observed_pid:
                 observed_pid = pid
                 observed_pid_since = time.time()
+                heartbeat_pid_mismatch_count = 0
             heartbeat_same_process = bool(pid and heartbeat_pid == pid)
+            if heartbeat_same_process:
+                heartbeat_pid_mismatch_count = 0
+            elif age <= STALE_LIMIT:
+                heartbeat_pid_mismatch_count += 1
 
             # ── 2. 心跳陈旧 → 假死，强制重启 ──
-            if age > STALE_LIMIT or not heartbeat_same_process:
+            restart_reason = heartbeat_restart_reason(
+                age=age,
+                heartbeat_same_process=heartbeat_same_process,
+                mismatch_count=heartbeat_pid_mismatch_count,
+            )
+            if restart_reason:
                 if time.time() - observed_pid_since < STARTUP_HEARTBEAT_GRACE_SEC:
                     log(
                         f"新 daemon PID {pid} 尚无本进程心跳，处于"
@@ -356,11 +396,7 @@ def main() -> None:
                     )
                     time.sleep(CHECK_INTERVAL)
                     continue
-                stale_desc = (
-                    f"心跳陈旧 {age/60:.1f} 分钟"
-                    if age > STALE_LIMIT
-                    else f"心跳仍属于旧PID {heartbeat_pid}"
-                )
+                stale_desc = restart_reason
                 log(f"{stale_desc}，判定假死，重启 daemon。")
                 notify("⚠️ daemon 假死，守护器强制重启",
                        f"{stale_desc}，守护器将重启守护进程。",
@@ -372,6 +408,19 @@ def main() -> None:
                 if start_daemon():
                     last_start_ts = time.time()
                 next_restart_not_before = time.time() + CHECK_INTERVAL
+                time.sleep(CHECK_INTERVAL)
+                continue
+            if not heartbeat_same_process:
+                log(
+                    "心跳PID本轮未能确认（heartbeat_pid=%s，当前pid=%s，"
+                    "连续%d/%d次）；先观察，不重启。"
+                    % (
+                        heartbeat_pid,
+                        pid,
+                        heartbeat_pid_mismatch_count,
+                        HEARTBEAT_PID_MISMATCH_CONFIRMATIONS,
+                    )
+                )
                 time.sleep(CHECK_INTERVAL)
                 continue
 

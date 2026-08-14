@@ -50,6 +50,7 @@ class BrokerHealthStateTests(unittest.TestCase):
             heartbeat_path = Path(temp_dir) / "daemon_heartbeat.txt"
             with patch.object(trading_daemon, "HEARTBEAT_FILE", heartbeat_path):
                 trading_daemon.write_heartbeat("sleeping")
+                self.assertFalse(list(heartbeat_path.parent.glob("*.tmp")))
             with patch.object(keeper, "HEARTBEAT", heartbeat_path):
                 status, age, heartbeat_pid = keeper.heartbeat_state()
 
@@ -151,6 +152,36 @@ class BrokerHealthStateTests(unittest.TestCase):
 
 
 class RecoveryGateTests(unittest.TestCase):
+    def test_fresh_unparsed_heartbeat_requires_consecutive_confirmation(self) -> None:
+        with patch.object(keeper, "HEARTBEAT_PID_MISMATCH_CONFIRMATIONS", 3):
+            self.assertEqual(
+                keeper.heartbeat_restart_reason(
+                    age=1,
+                    heartbeat_same_process=False,
+                    mismatch_count=1,
+                ),
+                "",
+            )
+            self.assertIn(
+                "连续3次",
+                keeper.heartbeat_restart_reason(
+                    age=1,
+                    heartbeat_same_process=False,
+                    mismatch_count=3,
+                ),
+            )
+
+    def test_stale_heartbeat_still_restarts_immediately(self) -> None:
+        with patch.object(keeper, "STALE_LIMIT", 60):
+            self.assertIn(
+                "心跳陈旧",
+                keeper.heartbeat_restart_reason(
+                    age=61,
+                    heartbeat_same_process=True,
+                    mismatch_count=0,
+                ),
+            )
+
     def test_keeper_only_notifies_recovery_after_real_outage(self) -> None:
         # 守护器首次看到健康状态时不重复发“已恢复”；只有断连/宕机后才发送。
         self.assertFalse(
