@@ -361,9 +361,13 @@ class BrokerExecutionServiceResilienceTests(unittest.TestCase):
         )
         service.shutdown()
 
-    def test_timeout_is_reported_as_unknown_not_as_rejection(self) -> None:
+    def test_timeout_poisoning_rejects_followup_and_calls_restart_hook_once(self) -> None:
         adapter = FakeAdapter()
-        service = BrokerExecutionService(default_timeout=0.01)
+        callbacks: list[tuple[str, int]] = []
+        service = BrokerExecutionService(
+            default_timeout=0.01,
+            timeout_callback=lambda reason, sequence: callbacks.append((reason, sequence)),
+        )
 
         def slow() -> str:
             time.sleep(0.05)
@@ -371,9 +375,43 @@ class BrokerExecutionServiceResilienceTests(unittest.TestCase):
 
         with self.assertRaisesRegex(TimeoutError, "结果未知"):
             service.call_function(slow, operation="slow", timeout=0.005)
-        # 等工作线程完成未知结果后仍可处理下一条命令。
+        # 即使底层调用稍后自行返回，该进程中的QMT通道仍然不可信；
+        # 必须由daemon进程级重启，不能在原线程上继续开平仓。
         time.sleep(0.06)
-        self.assertEqual(service.call_function(lambda: "next", timeout=1), "next")
+        with self.assertRaisesRegex(RuntimeError, "必须重启进程"):
+            service.call_function(lambda: "next", timeout=1)
+        self.assertEqual(len(callbacks), 1)
+        self.assertIn("operation=slow", callbacks[0][0])
+        metrics = service.metrics()
+        self.assertTrue(metrics["poisoned"])
+        self.assertEqual(metrics["poison_sequence"], callbacks[0][1])
+        service.shutdown()
+
+    def test_commands_already_queued_behind_timeout_never_reach_adapter(self) -> None:
+        entered = threading.Event()
+        release = threading.Event()
+        service = BrokerExecutionService(default_timeout=0.02)
+        errors: list[BaseException] = []
+
+        def stuck() -> str:
+            entered.set()
+            release.wait(1)
+            return "late"
+
+        def first() -> None:
+            try:
+                service.call_function(stuck, operation="stuck", timeout=0.02)
+            except BaseException as exc:
+                errors.append(exc)
+
+        thread = threading.Thread(target=first)
+        thread.start()
+        self.assertTrue(entered.wait(1))
+        with self.assertRaisesRegex(TimeoutError, "执行通道已封锁"):
+            service.call_function(lambda: "must-not-run", operation="queued", timeout=0.03)
+        release.set()
+        thread.join(1)
+        self.assertTrue(any(isinstance(exc, TimeoutError) for exc in errors))
         service.shutdown()
 
 

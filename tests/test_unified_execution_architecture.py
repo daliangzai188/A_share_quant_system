@@ -56,6 +56,20 @@ class UnifiedExecutionArchitectureTests(unittest.TestCase):
         self.assertIn("service.proxy", functions["_qmt_get"])
         self.assertNotIn("return _qmt_adapter", functions["_qmt_get"])
         self.assertIn("return _qmt_adapter", functions["_qmt_get_raw"])
+        self.assertIn("timeout_callback=_on_qmt_execution_timeout", source)
+        self.assertIn("os._exit(EXIT_CODE_QMT_CHANNEL_POISONED)", source)
+
+    def test_qmt_connect_and_account_verification_create_no_orphan_threads(self) -> None:
+        source = (PROJECT_ROOT / "scripts/trading_daemon.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        functions = {
+            node.name: ast.get_source_segment(source, node) or ""
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef)
+        }
+        self.assertNotIn("threading.Thread", functions["_qmt_connect_once"])
+        self.assertNotIn("threading.Thread", functions["_qmt_query_account_positions"])
+        self.assertIn('operation="connect_qmt"', functions["_qmt_get"])
 
     def test_recovery_gate_precedes_every_trading_thread(self) -> None:
         source = (PROJECT_ROOT / "scripts/trading_daemon.py").read_text(encoding="utf-8")

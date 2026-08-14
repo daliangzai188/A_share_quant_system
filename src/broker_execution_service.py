@@ -67,6 +67,7 @@ class BrokerExecutionService:
         name: str = "qmt-execution",
         default_timeout: float = 120.0,
         max_queue_size: int = 0,
+        timeout_callback: Callable[[str, int], None] | None = None,
     ) -> None:
         self.name = str(name or "qmt-execution")
         self.default_timeout = max(float(default_timeout), 0.1)
@@ -78,6 +79,10 @@ class BrokerExecutionService:
         self._worker: threading.Thread | None = None
         self._stop_token = object()
         self._stopping = False
+        self._poisoned = False
+        self._poison_reason = ""
+        self._poison_sequence = 0
+        self._timeout_callback = timeout_callback
         self._worker_ident: int | None = None
         self._metrics_lock = threading.Lock()
         self._submitted = 0
@@ -107,6 +112,19 @@ class BrokerExecutionService:
                 if command is self._stop_token:
                     return
                 if not isinstance(command, BrokerCommand):
+                    continue
+                with self._lifecycle_lock:
+                    poisoned_after_earlier_command = (
+                        self._poisoned and command.sequence > self._poison_sequence
+                    )
+                    poison_reason = self._poison_reason
+                if poisoned_after_earlier_command:
+                    command.future.set_exception(
+                        RuntimeError(
+                            "券商执行服务已因前一条超时命令中毒，"
+                            f"拒绝继续访问QMT:{poison_reason}"
+                        )
+                    )
                     continue
                 with self._metrics_lock:
                     self._active_operation = command.operation
@@ -156,6 +174,11 @@ class BrokerExecutionService:
         with self._lifecycle_lock:
             if self._stopping:
                 raise RuntimeError("券商执行服务正在停止，拒绝新命令")
+            if self._poisoned:
+                raise RuntimeError(
+                    "券商执行服务已因未知结果超时中毒，"
+                    f"必须重启进程后恢复:{self._poison_reason}"
+                )
             command = BrokerCommand(
                 sequence=next(self._sequence),
                 operation=str(operation),
@@ -174,9 +197,27 @@ class BrokerExecutionService:
         except FutureTimeoutError as exc:
             # 命令可能已经在QMT内部执行，绝不能把超时解释为“肯定未提交”。调用方必须
             # 让对应交易意图进入RECOVERY_REQUIRED，再查券商真实委托。
+            reason = (
+                f"sequence={command.sequence} operation={command.operation} "
+                f"timeout={wait_timeout:.1f}s"
+            )
+            callback: Callable[[str, int], None] | None = None
+            with self._lifecycle_lock:
+                if not self._poisoned:
+                    self._poisoned = True
+                    self._poison_reason = reason
+                    self._poison_sequence = command.sequence
+                    callback = self._timeout_callback
+            if callback is not None:
+                try:
+                    callback(reason, command.sequence)
+                except BaseException:
+                    # 超时回调只负责触发进程级恢复，其自身失败
+                    # 不能改写原始命令“结果未知”的事实。
+                    pass
             raise TimeoutError(
-                f"券商执行命令超时:sequence={command.sequence} operation={command.operation};"
-                "结果未知，禁止盲目重发"
+                f"券商执行命令超时:{reason};"
+                "结果未知，执行通道已封锁，禁止盲目重发"
             ) from exc
 
     def call(
@@ -227,6 +268,9 @@ class BrokerExecutionService:
                 "queue_depth": self._queue.qsize(),
                 "active_operation": self._active_operation,
                 "last_sequence": self._last_sequence,
+                "poisoned": self._poisoned,
+                "poison_reason": self._poison_reason,
+                "poison_sequence": self._poison_sequence,
             }
 
     def shutdown(self, *, wait: bool = True, timeout: float = 10.0) -> None:
@@ -317,8 +361,13 @@ class IntentBrokerExecutionService(BrokerExecutionService):
         business_date_provider: Callable[[], str],
         name: str = "qmt-intent-execution",
         default_timeout: float = 120.0,
+        timeout_callback: Callable[[str, int], None] | None = None,
     ) -> None:
-        super().__init__(name=name, default_timeout=default_timeout)
+        super().__init__(
+            name=name,
+            default_timeout=default_timeout,
+            timeout_callback=timeout_callback,
+        )
         self.intent_store = intent_store
         self.account_fingerprint_provider = account_fingerprint_provider
         self.business_date_provider = business_date_provider

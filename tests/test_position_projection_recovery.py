@@ -64,6 +64,37 @@ def filled_buy(store: TradeIntentStore, *, quantity: int = 1000) -> dict:
 
 
 class PositionProjectionRecoveryTests(unittest.TestCase):
+    def test_qmt_timeout_requests_one_process_level_restart(self) -> None:
+        exits: list[int] = []
+
+        class ImmediateThread:
+            def __init__(self, *, target, **_kwargs):
+                self.target = target
+
+            def start(self) -> None:
+                self.target()
+
+        daemon._QMT_FATAL_RESTART_EVENT.clear()
+        try:
+            with (
+                patch.object(daemon, "write_broker_health") as health,
+                patch.object(daemon, "write_heartbeat") as heartbeat,
+                patch.object(daemon, "_clear_qmt_last_success") as clear_cache,
+                patch.object(daemon, "_notify_async") as notify,
+                patch.object(daemon.threading, "Thread", ImmediateThread),
+                patch.object(daemon.time, "sleep", return_value=None),
+                patch.object(daemon.os, "_exit", side_effect=lambda code: exits.append(code)),
+            ):
+                daemon._on_qmt_execution_timeout("operation=query_positions", 7)
+                daemon._on_qmt_execution_timeout("duplicate", 8)
+            self.assertEqual(exits, [daemon.EXIT_CODE_QMT_CHANNEL_POISONED])
+            health.assert_called_once()
+            heartbeat.assert_called_once_with("qmt_channel_poisoned_restarting")
+            clear_cache.assert_called_once()
+            notify.assert_called_once()
+        finally:
+            daemon._QMT_FATAL_RESTART_EVENT.clear()
+
     def test_filled_buy_is_projected_before_marking_transaction_complete(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

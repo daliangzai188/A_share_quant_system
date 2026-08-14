@@ -13780,46 +13780,24 @@ def _qmt_connect_once(
     qmt_path: str = "",
     session_id: str = "",
 ) -> Any:
-    """单次建立 QMT 连接，给创建适配器、加载 xtquant 和 connect 全流程独立超时。"""
-    done = threading.Event()
-    timed_out = threading.Event()
-    result: list[Any] = []
-    err: list = []
+    """在唯一QMT执行线程内同步建立连接。
 
-    def _do() -> None:
-        try:
-            from src.qmt_adapter import QMTBrokerAdapter
+    超时由外层BrokerExecutionService负责；若xtquant C++调用卡死，
+    外层会标记通道中毒并终止整个daemon。这里不再创建一条无法
+    回收的连接线程，避免超时后旧线程仍在抢QMT session。
+    """
+    del timeout_sec  # 仅保留参数兼容旧调用，真正超时在唯一执行通道。
+    from src.qmt_adapter import QMTBrokerAdapter
 
-            adapter = QMTBrokerAdapter.from_config(
-                _broker_config_with_qmt_override(
-                    broker_config,
-                    qmt_path=qmt_path,
-                    session_id=session_id,
-                )
-            )
-            adapter.connect(preferred_only=preferred_only)
-            if timed_out.is_set():
-                try:
-                    adapter.disconnect()
-                except Exception:
-                    pass
-                return
-            result.append(adapter)
-        except Exception as e:
-            err.append(e)
-        finally:
-            done.set()
-
-    threading.Thread(target=_do, daemon=True).start()
-    if not done.wait(timeout_sec):
-        timed_out.set()
-        mode = "首选path/session" if preferred_only else "完整备用path/session"
-        raise TimeoutError(f"QMT {mode}连接超时（{int(timeout_sec)}秒无响应）")
-    if err:
-        raise err[0]
-    if not result:
-        raise RuntimeError("QMT连接未返回适配器")
-    return result[0]
+    adapter = QMTBrokerAdapter.from_config(
+        _broker_config_with_qmt_override(
+            broker_config,
+            qmt_path=qmt_path,
+            session_id=session_id,
+        )
+    )
+    adapter.connect(preferred_only=preferred_only)
+    return adapter
 
 
 def _qmt_connect(broker_config: dict, *, allow_full_scan: bool | None = None) -> Any:
@@ -13906,7 +13884,10 @@ def _get_qmt_execution_service() -> IntentBrokerExecutionService:
                 intent_store=_trade_intent_store(),
                 account_fingerprint_provider=_exit_account_fingerprint,
                 business_date_provider=lambda: today_beijing().strftime("%Y%m%d"),
-                default_timeout=120.0,
+                # 建连在_qmt_get里单独给90秒；建连成功后的账户/委托/
+                # 行情/下单均应在35秒内返回，否则线程已不可信。
+                default_timeout=35.0,
+                timeout_callback=_on_qmt_execution_timeout,
             )
         return _qmt_execution_service
 
@@ -13923,6 +13904,15 @@ def _qmt_get(broker_config: dict, *, allow_full_scan: bool | None = None) -> Any
     """返回统一意图执行代理；业务线程永远拿不到原始QMT adapter。"""
 
     service = _get_qmt_execution_service()
+    if _qmt_adapter is None:
+        service.call_function(
+            lambda: _qmt_get_raw(
+                broker_config,
+                allow_full_scan=allow_full_scan,
+            ),
+            operation="connect_qmt",
+            timeout=90.0,
+        )
     return service.proxy(
         lambda: _qmt_get_raw(broker_config, allow_full_scan=allow_full_scan)
     )
@@ -13977,29 +13967,10 @@ class SharedQMTBrokerProxy:
 
 
 def _qmt_query_account_positions(adapter: Any, *, timeout_sec: float = 25.0) -> tuple[Any, Any]:
-    """账户连接验证：资产和持仓都能成功返回，才算 QMT 对程序可用。"""
-    done = threading.Event()
-    result: list[tuple[Any, Any]] = []
-    err: list[BaseException] = []
-
-    def _do() -> None:
-        try:
-            account = adapter.query_account()
-            positions = adapter.query_positions()
-            result.append((account, positions))
-        except BaseException as exc:  # noqa: BLE001
-            err.append(exc)
-        finally:
-            done.set()
-
-    threading.Thread(target=_do, daemon=True).start()
-    if not done.wait(timeout_sec):
-        raise TimeoutError(f"QMT账户查询超时（{int(timeout_sec)}秒无响应）")
-    if err:
-        raise err[0]
-    if not result:
-        raise RuntimeError("QMT账户查询未返回结果")
-    account, positions = result[0]
+    """账户连接验证：资产和持仓均必须经唯一QMT队列成功返回。"""
+    del timeout_sec  # 业务调用超时由执行服务统一管理，不再额外生成孤儿线程。
+    account = adapter.query_account()
+    positions = adapter.query_positions()
     _sanitize_account_snapshot(account, positions)
     return account, positions
 
@@ -14060,7 +14031,9 @@ _LAST_QMT_ERROR_TEXT = ""
 # DETACHED_PROCESS 启动，keeper 拿不到本退出码——它只按"进程不在就拉起"工作，行为一致。
 # 本退出码用于人工排查（事件查看器/手动前台运行时可见），以及未来若改为非 detached 启动。
 EXIT_CODE_SOCKET_EXHAUSTED = 87
+EXIT_CODE_QMT_CHANNEL_POISONED = 88
 _ONCE_PER_STATE: dict[str, float] = {}
+_QMT_FATAL_RESTART_EVENT = threading.Event()
 
 # Windows 套接字/句柄资源耗尽类错误码。出现这些说明系统资源已经见底，
 # 再怎么重试都不会成功，只会让泄漏更严重——必须停手、告警、等人工重启。
@@ -14076,6 +14049,42 @@ _SOCKET_EXHAUSTED_MARKERS = (
 def _is_socket_resource_exhausted(err_text: str) -> bool:
     text = str(err_text or "")
     return any(marker in text for marker in _SOCKET_EXHAUSTED_MARKERS)
+
+
+def _on_qmt_execution_timeout(reason: str, sequence: int) -> None:
+    """QMT C++调用无法安全中断时，用进程重启回收整条通道。"""
+
+    if _QMT_FATAL_RESTART_EVENT.is_set():
+        return
+    _QMT_FATAL_RESTART_EVENT.set()
+    message = f"QMT唯一执行通道超时中毒：{reason} sequence={sequence}"
+    logger().critical("🛑 %s。程序将退出，由keeper启动全新进程并按券商真实状态恢复。", message)
+    write_broker_health("restarting", error=message)
+    write_heartbeat("qmt_channel_poisoned_restarting")
+    try:
+        _clear_qmt_last_success(message)
+    except Exception:
+        pass
+    _notify_async(
+        "system_error",
+        "🔄 QMT执行通道卡死，自动重启中",
+        f"{reason}。未知结果委托不会盲目重发；"
+        "keeper拉起新进程后会先用QMT持仓、委托和成交恢复，再启动交易线程。",
+        level="critical",
+        call=True,
+    )
+
+    def _terminate_poisoned_process() -> None:
+        # 给心跳/健康状态和通知线程留出短暂落盘时间；不等卡死的
+        # C++线程自行返回，因为那个时间不可知。
+        time.sleep(3.0)
+        os._exit(EXIT_CODE_QMT_CHANNEL_POISONED)
+
+    threading.Thread(
+        target=_terminate_poisoned_process,
+        daemon=True,
+        name="qmt-poisoned-process-exit",
+    ).start()
 
 
 def _notify_once_per(key: str, interval_sec: float, title: str, body: str, **kwargs: Any) -> None:
