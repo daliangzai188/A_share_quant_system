@@ -33,7 +33,7 @@
     "enabled": true,
     "live_order_enabled": true,
     "live_noninferiority_override": true,
-    "live_noninferiority_override_note": "2026-08-10用户明确决定恢复M真实新开仓：接受M未通过全部/训练半段/2024回撤非劣门禁及样本外仅3笔的风险；依据为M自身26笔、平均账户收益6.20%、中位数2.09%、单腿复利4.1639倍。该覆盖不等于门禁通过；保留10%回撤保护、82.5%仓位和全部成交/风控门禁，并先用小资金验证。",
+    "live_noninferiority_override_note": "2026-08-10用户明确决定恢复M真实新开仓：接受M未通过全部/训练半段/2024回撤非劣门禁及样本外仅3笔的风险；依据为M自身26笔、平均账户收益6.20%、中位数2.09%、单腿复利4.1639倍。该覆盖不等于门禁通过；当前按82.5%正式实盘并保留10%回撤保护及全部成交/风控门禁；容量尚未认证，扩大资金前必须先完成容量验证。",
     "strategy_version": "M_gap_day_sz_main_weak_min_circ_mv_v1",
     "sentiment_column": "sz_main_market_sentiment_level",
     "sentiment_required": "weak",
@@ -140,7 +140,7 @@
         "trade_count": 135,
         "max_drawdown": -0.235124
       },
-      "note": "2026-08-10按用户明确风险接受恢复M；M分段回撤非劣门禁仍未通过，不得写成验证通过。A/C收益显式扣analysis中的双边佣金/过户费和卖出印花税。当前发布标尺为含M的150笔；容量未认证，先小资金验证。复现:python3 scripts/certify_current_executable_portfolio.py"
+      "note": "2026-08-10按用户明确风险接受恢复M；M分段回撤非劣门禁仍未通过，不得写成验证通过。A/C收益显式扣analysis中的双边佣金/过户费和卖出印花税。当前发布标尺为含M的150笔；当前按82.5%正式实盘，容量尚未认证，扩大资金前必须先完成容量验证。复现:python3 scripts/certify_current_executable_portfolio.py"
     }
   },
   "portfolio_certification": {

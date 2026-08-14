@@ -230,7 +230,7 @@ def main() -> None:
         f"- 容量状态：**{capacity_status['status']}**",
         f"- 判定：{capacity_status['reason']}",
         "- 只有开仓前真实冻结的计划参与容量判定；历史按成交反推的目标只披露，不参与认证。",
-        "- 该状态当前只监控、不改变下单；capacity_certified=false时继续小资金验证。",
+        "- 该状态当前只监控、不改变下单；当前按82.5%正式实盘，capacity_certified=false表示容量尚未认证，不代表小资金模式；扩大资金前必须先完成容量验证。",
         "",
         _capacity_markdown(capacity_metrics),
         "",
