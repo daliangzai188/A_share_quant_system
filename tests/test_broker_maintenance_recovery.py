@@ -105,15 +105,15 @@ class BrokerHealthStateTests(unittest.TestCase):
     def test_ready_notification_is_sent_only_with_running_heartbeat(self) -> None:
         parent = MagicMock()
         heartbeat = parent.heartbeat
-        notify_async = parent.notify_async
+        notify_retry = parent.notify_retry
         with patch.object(
             trading_daemon,
             "write_heartbeat",
             heartbeat,
         ), patch.object(
             trading_daemon,
-            "_notify_async",
-            notify_async,
+            "_notify_with_retry_async",
+            notify_retry,
         ):
             trading_daemon._publish_system_ready()
 
@@ -121,7 +121,7 @@ class BrokerHealthStateTests(unittest.TestCase):
             parent.mock_calls,
             [
                 call.heartbeat("running"),
-                call.notify_async(
+                call.notify_retry(
                     "connection",
                     trading_daemon.SYSTEM_READY_TITLE,
                     trading_daemon.SYSTEM_READY_BODY,

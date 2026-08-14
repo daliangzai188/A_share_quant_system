@@ -64,6 +64,22 @@ def filled_buy(store: TradeIntentStore, *, quantity: int = 1000) -> dict:
 
 
 class PositionProjectionRecoveryTests(unittest.TestCase):
+    def test_daemon_periodic_alert_throttles_only_successful_delivery(self) -> None:
+        daemon._ONCE_PER_STATE.clear()
+        daemon._ONCE_PER_ATTEMPT.clear()
+        with (
+            patch.object(daemon.time, "time", side_effect=[1000.0, 1030.0, 1061.0, 1061.0]),
+            patch.object(daemon, "_notify", side_effect=[False, True]) as notify,
+        ):
+            first = daemon._notify_once_per("qmt", 300, "title", "body")
+            second = daemon._notify_once_per("qmt", 300, "title", "body")
+            third = daemon._notify_once_per("qmt", 300, "title", "body")
+        self.assertFalse(first)
+        self.assertFalse(second)
+        self.assertTrue(third)
+        self.assertEqual(notify.call_count, 2)
+        self.assertEqual(daemon._ONCE_PER_STATE["qmt"], 1061.0)
+
     def test_qmt_timeout_requests_one_process_level_restart(self) -> None:
         exits: list[int] = []
 

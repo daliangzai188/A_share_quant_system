@@ -140,6 +140,37 @@ def _notify_async(event: str, title: str, body: str = "", *, level: str = "activ
     ).start()
 
 
+def _notify_with_retry_async(
+    event: str,
+    title: str,
+    body: str = "",
+    *,
+    level: str = "active",
+    call: bool = False,
+    attempts: int = 3,
+    retry_sec: float = 30.0,
+) -> None:
+    """后台确认通知送达；网络失败时按有界次数重试。"""
+
+    def _worker() -> None:
+        total = max(int(attempts), 1)
+        for index in range(total):
+            if _notify(event, title, body, level=level, call=call):
+                return
+            if index + 1 < total:
+                time.sleep(max(float(retry_sec), 0.0))
+        logger().warning(
+            "通知连续%d次未确认送达：[%s] %s",
+            total, event, title,
+        )
+
+    threading.Thread(
+        target=_worker,
+        daemon=True,
+        name=f"notify-retry-{event}",
+    ).start()
+
+
 SYSTEM_READY_TITLE = "✅ 程序与账户已恢复正常"
 SYSTEM_READY_BODY = (
     "daemon 调度心跳正常，当前进程已成功查询QMT账户与持仓；"
@@ -150,7 +181,7 @@ SYSTEM_READY_BODY = (
 def _publish_system_ready() -> None:
     """调度器与账户门禁均就绪后，写心跳并发送唯一的启动/恢复成功通知。"""
     write_heartbeat("running")
-    _notify_async(
+    _notify_with_retry_async(
         "connection",
         SYSTEM_READY_TITLE,
         SYSTEM_READY_BODY,
@@ -14093,6 +14124,7 @@ EXIT_CODE_SOCKET_EXHAUSTED = 87
 EXIT_CODE_QMT_CHANNEL_POISONED = 88
 EXIT_CODE_D_POSITION_RECOVERY = 89
 _ONCE_PER_STATE: dict[str, float] = {}
+_ONCE_PER_ATTEMPT: dict[str, float] = {}
 _QMT_FATAL_RESTART_EVENT = threading.Event()
 
 # Windows 套接字/句柄资源耗尽类错误码。出现这些说明系统资源已经见底，
@@ -14147,17 +14179,25 @@ def _on_qmt_execution_timeout(reason: str, sequence: int) -> None:
     ).start()
 
 
-def _notify_once_per(key: str, interval_sec: float, title: str, body: str, **kwargs: Any) -> None:
-    """同一 key 在 interval_sec 内只推一次（防长时间故障刷屏）。"""
+def _notify_once_per(key: str, interval_sec: float, title: str, body: str, **kwargs: Any) -> bool:
+    """同一key只对“成功送达”节流；失败后带短退避重试。"""
     now_ts = time.time()
     last = _ONCE_PER_STATE.get(key, 0.0)
     if now_ts - last < interval_sec:
-        return
-    _ONCE_PER_STATE[key] = now_ts
+        return False
+    retry_backoff = min(max(float(interval_sec), 1.0), 60.0)
+    last_attempt = _ONCE_PER_ATTEMPT.get(key, 0.0)
+    if now_ts - last_attempt < retry_backoff:
+        return False
+    _ONCE_PER_ATTEMPT[key] = now_ts
     try:
-        _notify("system_error", title, body, **kwargs)
+        sent = bool(_notify("system_error", title, body, **kwargs))
+        if sent:
+            _ONCE_PER_STATE[key] = time.time()
+        return sent
     except Exception as exc:  # noqa: BLE001
         logger().warning("资源告警推送失败：%s", exc)
+        return False
 
 
 def _qmt_reset() -> None:

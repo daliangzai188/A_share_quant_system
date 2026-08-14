@@ -33,6 +33,7 @@ except Exception:
     pass
 _lock = threading.Lock()
 _last_sent: dict[str, float] = {}   # key -> 上次推送的单调时钟时间
+_inflight: set[str] = set()        # 正在网络发送的键，防止并发重复
 
 
 def _load_notify_config() -> dict[str, Any]:
@@ -57,14 +58,27 @@ def _notifications_disabled_by_environment() -> bool:
     }
 
 
-def _should_throttle(key: str, throttle_sec: float) -> bool:
+def _begin_delivery(key: str, throttle_sec: float) -> bool:
+    """获取一次发送资格；False表示已成功节流或同键正在发送。"""
+
     now = time.monotonic()
     with _lock:
         last = _last_sent.get(key)
         if last is not None and (now - last) < throttle_sec:
-            return True
-        _last_sent[key] = now
-    return False
+            return False
+        if key in _inflight:
+            return False
+        _inflight.add(key)
+    return True
+
+
+def _finish_delivery(key: str, *, success: bool) -> None:
+    """只有收到2xx时才写入节流时间；失败保留立即重试资格。"""
+
+    with _lock:
+        _inflight.discard(key)
+        if success:
+            _last_sent[key] = time.monotonic()
 
 
 def notify(event: str, title: str, body: str = "", *, level: str = "active",
@@ -105,7 +119,7 @@ def notify(event: str, title: str, body: str = "", *, level: str = "active",
     throttle_sec = float(cfg.get("throttle_sec", 300))
     # 节流键含 level/call：同一事件的"普通通知"和"警报"分别计数，互不挤占
     key = f"{event}|{title}|{body}|{level}|{int(call)}"
-    if _should_throttle(key, throttle_sec):
+    if not _begin_delivery(key, throttle_sec):
         _logger.info("notify: 节流跳过（%.0fs 内重复）：%s", throttle_sec, title)
         return False
 
@@ -127,6 +141,7 @@ def notify(event: str, title: str, body: str = "", *, level: str = "active",
     query = urllib.parse.urlencode(params)
     url = f"{base}/{safe_title}/{safe_body}?{query}"
 
+    ok = False
     try:
         req = urllib.request.Request(url, method="GET")
         with urllib.request.urlopen(req, timeout=8) as resp:
@@ -139,3 +154,5 @@ def notify(event: str, title: str, body: str = "", *, level: str = "active",
     except Exception as e:
         _logger.warning("notify: 推送失败 [%s] %s：%s", event, title, e)
         return False
+    finally:
+        _finish_delivery(key, success=ok)
