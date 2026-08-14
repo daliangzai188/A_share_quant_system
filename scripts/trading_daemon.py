@@ -14509,6 +14509,18 @@ def wait_for_qmt_startup_gate() -> None:
     """
     log = logger()
     round_no = 0
+    blocked_since = time.monotonic()
+    try:
+        startup_alert_after = max(
+            30,
+            int(
+                load_json_config(PROJECT_ROOT / "config" / "config.json")
+                .get("broker", {})
+                .get("startup_outage_alert_after_sec", 120)
+            ),
+        )
+    except Exception:
+        startup_alert_after = 120
     while True:
         round_no += 1
         # 退避策略（2026-07-27 事故修复）：QMT 长时间不可用时，旧实现每 10 秒做一次
@@ -14530,6 +14542,16 @@ def wait_for_qmt_startup_gate() -> None:
             log.info("QMT启动门禁：账户连接已验证，继续启动流程。")
             return
         write_heartbeat("qmt_blocked")
+        if time.monotonic() - blocked_since >= startup_alert_after:
+            _notify_once_per(
+                "qmt_startup_blocked",
+                1800,
+                "⚠️ QMT启动门禁持续阻断",
+                f"账户已连续{startup_alert_after // 60}分钟以上无法完成QMT查询验证。"
+                "daemon自己会持续重连，交易调度尚未启动；请检查QMT是否登录。"
+                "keeper只负责进程心跳，不参与本判断。",
+                level="timeSensitive",
+            )
         # 资源耗尽自锁检测（2026-07-27 事故根治）：xtquant 的 XtQuantTrader 在
         # start()/connect() 失败时不会完全回收其内部套接字/线程（第三方库行为，
         # 我们已调用 stop() 但无法保证其内部释放）。一旦系统报套接字资源耗尽，

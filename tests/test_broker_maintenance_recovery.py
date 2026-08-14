@@ -58,27 +58,7 @@ class BrokerHealthStateTests(unittest.TestCase):
         self.assertLess(age, 5)
         self.assertEqual(heartbeat_pid, os.getpid())
 
-    def test_keeper_rejects_health_left_by_previous_daemon_pid(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            health_path = Path(temp_dir) / "broker_health.json"
-            health_path.write_text(
-                json.dumps(
-                    {
-                        "status": "verified",
-                        "updated_ts": time.time(),
-                        "pid": 100,
-                    }
-                ),
-                encoding="utf-8",
-            )
-            with patch.object(keeper, "BROKER_HEALTH", health_path):
-                status, age, same_process = keeper.broker_health_state(200)
-
-        self.assertEqual(status, "verified")
-        self.assertLess(age, 5)
-        self.assertFalse(same_process)
-
-    def test_runtime_account_failure_is_visible_to_keeper_even_on_weekend(self) -> None:
+    def test_runtime_account_failure_is_recorded_by_daemon_even_on_weekend(self) -> None:
         health_writer = MagicMock()
         old_reconnect_count = trading_daemon._qmt_reconnect_count
         trading_daemon._qmt_reconnect_count = 0
@@ -182,27 +162,6 @@ class RecoveryGateTests(unittest.TestCase):
                 ),
             )
 
-    def test_keeper_only_notifies_recovery_after_real_outage(self) -> None:
-        # 守护器首次看到健康状态时不重复发“已恢复”；只有断连/宕机后才发送。
-        self.assertFalse(
-            keeper.should_publish_recovery(
-                alerted_blocked=False,
-                was_down=False,
-            )
-        )
-        self.assertTrue(
-            keeper.should_publish_recovery(
-                alerted_blocked=True,
-                was_down=False,
-            )
-        )
-        self.assertTrue(
-            keeper.should_publish_recovery(
-                alerted_blocked=False,
-                was_down=True,
-            )
-        )
-
     def test_gbk_console_cannot_break_keeper_log(self) -> None:
         class GbkConsole:
             encoding = "gbk"
@@ -253,35 +212,40 @@ class RecoveryGateTests(unittest.TestCase):
 
         self.assertTrue(sent)
 
-    def test_recovery_requires_program_and_account_from_same_process(self) -> None:
-        healthy = keeper.program_and_account_ready(
-            program_state="sleeping",
-            heartbeat_age=5,
-            heartbeat_same_process=True,
-            broker_state="verified",
-            broker_same_process=True,
+    def test_keeper_recovery_depends_only_on_current_pid_heartbeat(self) -> None:
+        self.assertTrue(
+            keeper.process_heartbeat_ready(
+                heartbeat_age=5,
+                heartbeat_same_process=True,
+            )
         )
-        self.assertTrue(healthy)
+        self.assertFalse(
+            keeper.process_heartbeat_ready(
+                heartbeat_age=keeper.STALE_LIMIT + 1,
+                heartbeat_same_process=True,
+            )
+        )
+        self.assertFalse(
+            keeper.process_heartbeat_ready(
+                heartbeat_age=1,
+                heartbeat_same_process=False,
+            )
+        )
 
-        cases = [
-            {"program_state": "qmt_blocked"},
-            {"heartbeat_age": keeper.STALE_LIMIT + 1},
-            {"heartbeat_same_process": False},
-            {"broker_state": "starting"},
-            {"broker_state": "unavailable"},
-            {"broker_same_process": False},
-        ]
-        base = {
-            "program_state": "running",
-            "heartbeat_age": 1,
-            "heartbeat_same_process": True,
-            "broker_state": "verified",
-            "broker_same_process": True,
-        }
-        for override in cases:
-            values = {**base, **override}
-            with self.subTest(override=override):
-                self.assertFalse(keeper.program_and_account_ready(**values))
+    def test_keeper_source_has_no_broker_or_trade_state_dependency(self) -> None:
+        source = Path(keeper.__file__).read_text(encoding="utf-8")
+        forbidden = (
+            "BROKER_HEALTH",
+            "broker_health_state",
+            "program_and_account_ready",
+            "query_account",
+            "query_orders",
+            "query_trades",
+            "query_positions",
+        )
+        for marker in forbidden:
+            with self.subTest(marker=marker):
+                self.assertNotIn(marker, source)
 
     def test_restart_policy_never_returns_permanent_stop(self) -> None:
         self.assertEqual(

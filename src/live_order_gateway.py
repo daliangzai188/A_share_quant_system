@@ -10,6 +10,7 @@ from pandas.errors import EmptyDataError
 
 from src.broker_adapter import PositionSnapshot
 from src.qmt_adapter import QMTBrokerAdapter, tushare_to_qmt_code
+from src.qmt_single_owner import assert_standalone_qmt_allowed
 from src.utils.config import get_project_root, load_json_config, mkdir_p
 from src.utils.logger import get_logger, setup_logger
 from src.utils.time_utils import now_beijing
@@ -68,6 +69,10 @@ class LiveOrderGateway:
 
     def create_adapter(self) -> QMTBrokerAdapter:
         self.assert_qmt_enabled()
+        assert_standalone_qmt_allowed(
+            self.project_root,
+            caller="LiveOrderGateway独立诊断/预览入口",
+        )
         return QMTBrokerAdapter.from_config(self.broker_config)
 
     def latest_planned_orders_path(self) -> Path:

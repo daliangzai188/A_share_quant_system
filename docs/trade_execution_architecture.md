@@ -87,3 +87,17 @@ daemon在QMT账户连接验证后、启动任何交易线程前，必须完成�
 平仓和看门狗即使同时发起请求，也只能依序进入原始QMT adapter。命令超时只表示调用方没有
 及时得到结果，不表示券商没有受理；下单超时必须进入`RECOVERY_REQUIRED`并通过券商委托查询
 恢复，禁止直接重发。
+
+daemon存活时，`LiveOrderGateway`、两个QMT连接探测脚本和D独立监控脚本都会先检查
+`.daemon_pid`，并拒绝建立第二条QMT交易连接。需要独立诊断时必须先停止daemon；
+读取纯行情的研究脚本不持有交易账户连接，不受此门禁影响。
+
+## keeper责任边界
+
+`win_daemon_keeper.py`只读 `.daemon_pid` 和原子替换的
+`logs/daemon_heartbeat.txt`。它只在PID不存在、心跳超时或心跳PID连续不匹配时
+重启daemon。
+
+keeper不读 `broker_health.json`，不连接QMT，不查账户/委托/成交/持仓，
+不判断交易是否可恢复。keeper发送的恢复通知只代表“daemon进程心跳恢复”；
+真正的“程序与账户已恢复正常”必须由daemon在QMT门禁和交易恢复门禁都通过后发出。

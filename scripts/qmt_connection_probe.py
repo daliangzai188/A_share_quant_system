@@ -11,6 +11,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.qmt_adapter import QMTBrokerAdapter, mask_account_id
+from src.qmt_single_owner import assert_standalone_qmt_allowed
 from src.utils.config import load_json_config
 
 
@@ -23,6 +24,10 @@ def main() -> int:
 
     adapter = None
     try:
+        assert_standalone_qmt_allowed(
+            PROJECT_ROOT,
+            caller="qmt_connection_probe.py",
+        )
         config = load_json_config(PROJECT_ROOT / "config" / "config.json")
         broker_cfg = config.get("broker", {})
         if args.qmt_path:

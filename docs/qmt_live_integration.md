@@ -311,12 +311,12 @@ for h,p,n in [('qmt.gjzq.com.cn',56001,'交易'),('114.28.170.219',56001,'交易
 - **手机 App 可交易**：到期持仓必须在到期日 14:55 前手动平仓（超期就脱离回测口径）；
 - **开仓可以放弃**：买不进只是丢机会，不亏钱；
 - **daemon 与 keeper 保持运行**：QMT 不通时启动门禁阻止交易调度，连接尝试自动退避；
-  daemon 退出或假死由 keeper 自动拉起，维护结束后只有账户与程序双验证成功才通知恢复。
+  daemon退出或假死由keeper自动拉起；keeper只确认新PID/心跳，账户与交易恢复由daemon自己验证和通知。
 
 ### 已完成的维护自愈（2026-07-27）
 
 - 前 3 轮完整扫描，4～10 轮只试首选 session 并等待 30 秒，之后每 5 分钟重试；
-- 账户连续不可用 2 分钟后发送通知，恢复后发送“程序+账户”双验证通知；
+- QMT启动门禁连续不可用2分钟后由daemon发送通知，恢复后也由daemon发送“程序+账户”验证通知；
 - 套接字资源耗尽时 daemon 主动退出释放资源，由 keeper 拉起新进程；
 - 快速崩溃超过配置上限后转为每 10 分钟低频永久重试，不再永久停掉自动恢复；
-- keeper 日志写入 `logs/win_daemon_keeper.log`，账户状态写入 `logs/broker_health.json`。
+- keeper只把进程事件写入 `logs/win_daemon_keeper.log`；`logs/broker_health.json`由daemon维护，keeper不读取。

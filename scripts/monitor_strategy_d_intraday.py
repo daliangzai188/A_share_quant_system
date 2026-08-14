@@ -14,7 +14,7 @@
 
 运行方式：
   python scripts/monitor_strategy_d_intraday.py              # 仅提醒，不下单
-  python scripts/monitor_strategy_d_intraday.py --live-order # 实盘下单（需QMT）
+  python scripts/monitor_strategy_d_intraday.py --live-order # 已退役；实盘只能由daemon统一执行
   python scripts/monitor_strategy_d_intraday.py --dry-run    # 打印配置后退出
 
 日志/输出：
@@ -1943,6 +1943,12 @@ class StrategyDMonitor:
 def build_broker(config: dict, live_order: bool) -> Any:
     try:
         from src.qmt_adapter import QMTBrokerAdapter
+        from src.qmt_single_owner import assert_standalone_qmt_allowed
+
+        assert_standalone_qmt_allowed(
+            PROJECT_ROOT,
+            caller="monitor_strategy_d_intraday.py独立入口",
+        )
         adapter = QMTBrokerAdapter.from_config(config.get("broker", {}))
         adapter.connect()
         mode = "实盘" if live_order else "行情"

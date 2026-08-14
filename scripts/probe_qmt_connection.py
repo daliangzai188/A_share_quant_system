@@ -89,6 +89,13 @@ def main() -> None:
     args = parse_args()
     load_dotenv(PROJECT_ROOT / ".env", override=True)
 
+    from src.qmt_single_owner import assert_standalone_qmt_allowed
+
+    assert_standalone_qmt_allowed(
+        PROJECT_ROOT,
+        caller="probe_qmt_connection.py",
+    )
+
     account_id = os.getenv("QMT_ACCOUNT_ID", "").strip()
     account_type = os.getenv("QMT_ACCOUNT_TYPE", "STOCK").strip() or "STOCK"
     qmt_path = os.getenv("QMT_PATH", "").strip()

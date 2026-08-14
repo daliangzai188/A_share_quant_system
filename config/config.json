@@ -205,10 +205,9 @@
       -30
     ]
   },
-  "broker_recovery": {
-    "file_role": "券商维护与进程自愈配置。账户持续不可用时告警；daemon退出或假死时自动拉起；快速崩溃达到上限后改为低频永久重试，不会永久放弃；恢复通知必须同时通过当前PID的程序心跳和账户查询验证。",
+  "process_keeper": {
+    "file_role": "Windows keeper只做进程健康管理：PID不存在或原子心跳假死时自动拉起；快速崩溃达上限后改为低频永久重试。keeper不读QMT账户/委托/持仓，不参与交易判断。",
     "check_interval_sec": 30,
-    "outage_alert_after_sec": 120,
     "heartbeat_stale_sec": 900,
     "startup_heartbeat_grace_sec": 300,
     "max_fast_restarts": 5,
@@ -224,7 +223,8 @@
     "account_type_env": "QMT_ACCOUNT_TYPE",
     "qmt_path_env": "QMT_PATH",
     "session_id_env": "QMT_SESSION_ID",
-    "session_id": 1001
+    "session_id": 1001,
+    "startup_outage_alert_after_sec": 120
   },
   "live_trade": {
     "file_role": "实盘交易安全闸门。默认关闭真实下单；即使 QMT 可连接，也只允许账户检查和订单预览。",
