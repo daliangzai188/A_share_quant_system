@@ -7,7 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
 import pandas as pd
@@ -62,6 +62,203 @@ class MorningNotificationDeliveryTest(unittest.TestCase):
 
 
 class OpeningRecoveryWindowTest(unittest.TestCase):
+    def test_normal_auction_uses_seed_cap_and_only_remainder_goes_to_pov(self) -> None:
+        auction_qty, auction_cap, share = trading_daemon._pov_auction_seed_quantity(
+            total_target_qty=8200,
+            reference_price=10.0,
+            signal_day_amount=10_000_000.0,
+            live_cfg={"pov_auction_share": 0.001},
+            lot_size=100,
+        )
+
+        self.assertEqual(auction_qty, 1000)
+        self.assertAlmostEqual(auction_cap, 10_000.0)
+        self.assertAlmostEqual(share, 0.001)
+        self.assertAlmostEqual(82_500.0 - auction_qty * 10.0, 72_500.0)
+
+    def test_0930_pov_recovery_persists_82_5_target_and_85_hard_cap(self) -> None:
+        from src.live_order_gateway import LiveOrderGateway
+
+        config = {
+            "broker": {"enabled": True},
+            "live_trade": {
+                "pov_enabled": True,
+                "entry_actual_amount_rebalance_enabled": True,
+                "real_order_confirm_text": "CONFIRMED",
+                "max_position_pct": 0.85,
+                "max_total_position_pct": 0.825,
+                "entry_min_acceptable_position_pct": 0.80,
+                "max_single_order_amount": 0,
+                "cash_buffer_amount": 1000,
+                "total_liquidity_cap_pct": 0.005,
+                "liquidity_cap_fail_closed": True,
+                "round_lot_size": 100,
+            },
+        }
+        account = SimpleNamespace(total_asset=100_000.0, available_cash=100_000.0)
+        quote = SimpleNamespace(last_price=10.0)
+        adapter = SimpleNamespace(
+            query_account=lambda: account,
+            query_positions=lambda: [],
+            get_full_tick=lambda _codes: {"600000.SH": quote},
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            plan = Path(temp_dir) / "orders.csv"
+            pd.DataFrame([{
+                "side": "BUY",
+                "strategy_leg": "L",
+                "ts_code": "600000.SH",
+                "broker_code": "600000.SH",
+                "name": "测试L",
+                "signal_date": "20260812",
+                "reference_price": 10.0,
+                "round_lot_shares": 1000,
+                "exit_n_days": 1,
+                "strategy_name": "A_SYSTEM_L",
+            }]).to_csv(plan, index=False)
+            with patch.object(trading_daemon, "load_json_config", return_value=config), \
+                 patch.object(LiveOrderGateway, "assert_real_order_allowed"), \
+                 patch.object(trading_daemon, "_qmt_get", return_value=adapter), \
+                 patch.object(trading_daemon, "_broker_has_preexisting_strategy_position", return_value=False), \
+                 patch.object(trading_daemon, "_signal_day_amount", return_value=100_000_000.0), \
+                 patch.object(trading_daemon, "st_open_forbidden", return_value=False), \
+                 patch.object(trading_daemon, "_track_execution"), \
+                 patch.object(trading_daemon, "_pov_enqueue") as enqueue:
+                ok = trading_daemon._enqueue_opening_pov_from_plan(
+                    plan,
+                    open_action="ALLOW_MODEL3_L_SUPPLEMENT",
+                    reason="测试L恢复",
+                )
+
+        self.assertTrue(ok)
+        enqueue.assert_called_once()
+        item = enqueue.call_args.args[0][0]
+        self.assertEqual(item["total_target_qty"], 8200)
+        self.assertAlmostEqual(item["target_actual_amount"], 82_500.0)
+        self.assertAlmostEqual(item["min_acceptable_amount"], 80_000.0)
+        self.assertAlmostEqual(item["hard_cap_amount"], 85_000.0)
+        self.assertEqual(item["auction_planned_qty"], 0)
+        self.assertEqual(item["pov_planned_qty"], 8200)
+
+    def test_open_action_resolver_covers_model3_l_and_m_for_both_entry_points(self) -> None:
+        l_decisions = pd.DataFrame(
+            [{"action": "ALLOW_MODEL3_L_SUPPLEMENT", "strategy_leg": "L"}]
+        )
+        m_decisions = pd.DataFrame(
+            [{"action": "ALLOW_M_BUY", "strategy_leg": "M"}]
+        )
+        with patch.object(trading_daemon, "is_strategy_l_mode", return_value=False), \
+             patch.object(trading_daemon, "is_strategy_model3_mode", return_value=True):
+            self.assertEqual(
+                trading_daemon._combined_open_action_for_current_mode(l_decisions),
+                "ALLOW_MODEL3_L_SUPPLEMENT",
+            )
+            self.assertEqual(
+                trading_daemon._combined_open_action_for_current_mode(m_decisions),
+                "ALLOW_M_BUY",
+            )
+        with patch.object(trading_daemon, "is_strategy_l_mode", return_value=False), \
+             patch.object(trading_daemon, "is_strategy_model3_mode", return_value=False):
+            self.assertEqual(
+                trading_daemon._combined_open_action_for_current_mode(m_decisions),
+                "ALLOW_M_BUY",
+            )
+
+    def test_open_action_resolver_keeps_leg_priority_when_decisions_conflict(self) -> None:
+        decisions = pd.DataFrame(
+            [
+                {"action": "ALLOW_E2_BUY", "strategy_leg": "E2"},
+                {"action": "ALLOW_M_BUY", "strategy_leg": "M"},
+                {"action": "ALLOW_MODEL3_L_REPLACE", "strategy_leg": "L"},
+            ]
+        )
+        with patch.object(trading_daemon, "is_strategy_l_mode", return_value=False), \
+             patch.object(trading_daemon, "is_strategy_model3_mode", return_value=True):
+            self.assertEqual(
+                trading_daemon._combined_open_action_for_current_mode(decisions),
+                "ALLOW_MODEL3_L_REPLACE",
+            )
+
+    def _assert_0930_executes_action(self, action: str, expected_reason: str) -> None:
+        decisions = pd.DataFrame([{"action": action, "strategy_leg": "TEST"}])
+        with patch.object(trading_daemon, "check_and_close_positions"), \
+             patch.object(trading_daemon, "confirm_pending_premarket_buys"), \
+             patch.object(trading_daemon, "_d_relay_pair_active_today", return_value=False), \
+             patch.object(trading_daemon, "_pov_active_today", return_value=False), \
+             patch.object(trading_daemon, "has_position_bought_today", return_value=False), \
+             patch.object(trading_daemon, "load_pending_buys", return_value=[]), \
+             patch.object(trading_daemon, "load_combined_decisions", return_value=(decisions, Path("orders.csv"))), \
+             patch.object(trading_daemon, "is_strategy_l_mode", return_value=False), \
+             patch.object(trading_daemon, "is_strategy_model3_mode", return_value=True), \
+             patch.object(trading_daemon, "_enqueue_opening_pov_from_plan", return_value=True) as execute, \
+             patch.object(trading_daemon, "_notify"):
+            trading_daemon.job_opening_buy()
+
+        execute.assert_called_once_with(
+            Path("orders.csv"),
+            open_action=action,
+            reason=expected_reason,
+        )
+
+    def test_0930_fallback_executes_model3_l(self) -> None:
+        self._assert_0930_executes_action(
+            "ALLOW_MODEL3_L_SUPPLEMENT", "L/model3补位 09:30开仓"
+        )
+
+    def test_0930_fallback_executes_m(self) -> None:
+        self._assert_0930_executes_action("ALLOW_M_BUY", "M 09:30开仓")
+
+    def test_formal_candidate_failure_never_switches_to_d(self) -> None:
+        decisions = pd.DataFrame(
+            [{"action": "ALLOW_ABC_BUY_PREVIEW", "strategy_leg": "A"}]
+        )
+        with patch.object(trading_daemon, "check_and_close_positions"), \
+             patch.object(trading_daemon, "confirm_pending_premarket_buys"), \
+             patch.object(trading_daemon, "_d_relay_pair_active_today", return_value=False), \
+             patch.object(trading_daemon, "_pov_active_today", return_value=False), \
+             patch.object(trading_daemon, "has_position_bought_today", return_value=False), \
+             patch.object(trading_daemon, "load_pending_buys", return_value=[]), \
+             patch.object(trading_daemon, "load_combined_decisions", return_value=(decisions, Path("orders.csv"))), \
+             patch.object(trading_daemon, "is_strategy_l_mode", return_value=False), \
+             patch.object(trading_daemon, "is_strategy_model3_mode", return_value=True), \
+             patch.object(trading_daemon, "_enqueue_opening_pov_from_plan", return_value=False), \
+             patch.object(trading_daemon, "job_strategy_d") as start_d, \
+             patch.object(trading_daemon, "_notify"):
+            trading_daemon.job_opening_buy()
+
+        start_d.assert_not_called()
+
+    def test_order_selector_rejects_multiple_buys_for_same_formal_leg(self) -> None:
+        orders = pd.DataFrame([
+            {"side": "BUY", "strategy_leg": "L", "ts_code": "600001.SH"},
+            {"side": "BUY", "strategy_leg": "L", "ts_code": "600002.SH"},
+            {"side": "BUY", "strategy_leg": "M", "ts_code": "000001.SZ"},
+        ])
+        selected = trading_daemon._select_unique_buy_order_for_action(
+            orders,
+            "ALLOW_MODEL3_L_SUPPLEMENT",
+            context="测试唯一订单",
+        )
+        self.assertTrue(selected.empty)
+
+    def test_order_selector_uses_action_leg_and_never_executes_lower_leg(self) -> None:
+        orders = pd.DataFrame([
+            {"side": "BUY", "strategy_leg": "L", "ts_code": "600001.SH"},
+            {"side": "BUY", "strategy_leg": "M", "ts_code": "000001.SZ"},
+        ])
+        selected = trading_daemon._select_unique_buy_order_for_action(
+            orders,
+            "ALLOW_MODEL3_L_SUPPLEMENT",
+            context="测试腿序订单",
+        )
+        self.assertEqual(selected["ts_code"].tolist(), ["600001.SH"])
+
+    def test_d_opening_plan_classifier_covers_every_formal_leg(self) -> None:
+        for action in trading_daemon.D_INTRADAY_BLOCKING_BUY_ACTIONS:
+            with self.subTest(action=action):
+                decisions = pd.DataFrame([{"action": action, "reason": "正式开仓"}])
+                self.assertTrue(trading_daemon.blocks_d_for_opening_plan(decisions))
+
     def test_d_gate_requires_empty_account_and_no_other_open_plan(self) -> None:
         allowed = pd.DataFrame(
             [{"action": "ALLOW_D_INTRADAY_MONITOR", "strategy_leg": "D"}]
