@@ -74,7 +74,11 @@ class QuoteSnapshot:
 
 @dataclass(frozen=True)
 class OrderRequest:
-    """标准化委托请求。"""
+    """标准化委托请求。
+
+    ``source_key``必须能区分同一策略同一股票的不同执行片；统一执行服务用它生成
+    跨重启稳定的幂等键。新增字段均有默认值，历史回测和只读工具保持兼容。
+    """
 
     ts_code: str
     broker_code: str
@@ -84,6 +88,13 @@ class OrderRequest:
     price: float = 0.0
     strategy_name: str = "A_SYSTEM"
     remark: str = ""
+    strategy_leg: str = ""
+    business_date: str = ""
+    signal_date: str = ""
+    planned_exit_date: str = ""
+    purpose: str = ""
+    source_key: str = ""
+    metadata: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -98,6 +109,7 @@ class OrderResult:
     order_id: str = ""
     message: str = ""
     raw: dict[str, Any] | None = None
+    intent_id: str = ""
 
 
 @dataclass(frozen=True)

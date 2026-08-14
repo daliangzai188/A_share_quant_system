@@ -425,6 +425,16 @@ class TradeIntentStore:
             ).fetchone()
         return self._row_to_dict(row)
 
+    def get_by_broker_order_id(self, broker_order_id: str) -> dict[str, Any] | None:
+        oid = str(broker_order_id or "").strip()
+        if not oid:
+            return None
+        with self._lock, self._connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM trade_intents WHERE broker_order_id=?", (oid,)
+            ).fetchone()
+        return self._row_to_dict(row)
+
     def transition_intent(
         self,
         intent_id: str,

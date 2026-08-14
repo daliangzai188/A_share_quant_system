@@ -37,6 +37,7 @@ import subprocess
 import sys
 import threading
 import time
+from dataclasses import replace
 from decimal import Decimal, ROUND_CEILING, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any
@@ -51,6 +52,8 @@ from src.utils.logger import get_logger, setup_logger
 from src.utils.config import load_json_config, mkdir_p
 from src.utils.time_utils import BEIJING_TZ, now_beijing, today_beijing
 from src.execution_completion_tracker import ExecutionCompletionTracker
+from src.broker_execution_service import IntentBrokerExecutionService
+from src.trade_intent_store import TradeIntentStore
 from src.strategy_equity_ledger import (
     equity_ledger_requires_bootstrap,
     load_equity_ledger,
@@ -1565,6 +1568,16 @@ def _execute_orders_inprocess(
                 price=order_price,
                 strategy_name=str(row.get("strategy_name", "A_SYSTEM_ABC")),
                 remark=order_remark,
+                strategy_leg=str(row.get("strategy_leg", "")).upper(),
+                business_date=today_beijing().strftime("%Y%m%d"),
+                signal_date=str(row.get("signal_date", "")),
+                planned_exit_date=str(row.get("planned_exit_date", "")),
+                purpose="OPEN" if side == "BUY" else "CLOSE",
+                source_key=(
+                    f"{tag}|{today_beijing().strftime('%Y%m%d')}|{side}|"
+                    f"{row['ts_code']}|{order_remark}|{qty}"
+                ),
+                metadata={"execution_channel": tag},
             )
             result = adapter.place_order(request)
             results.append(asdict(result))
@@ -2277,9 +2290,18 @@ def _normalize_exit_slice_quantity(ts_code: str, desired_qty: int, remaining_qty
 
 def _abc_place_sell_order_direct(
     ts_code: str, name: str, shares: int, order_id: str,
-    confirm: str, config: dict, broker_cfg: dict
+    confirm: str, config: dict, broker_cfg: dict, strategy_leg: str = ""
 ) -> bool:
     """串行化A/C/D/E2/L整段卖出生命周期；RLock允许14:55主任务重入。"""
+    resolved_leg = str(strategy_leg or "").upper()
+    if not resolved_leg:
+        for row in load_positions():
+            if (
+                str(row.get("order_id", "")) == str(order_id)
+                and str(row.get("ts_code", "")).upper() == str(ts_code).upper()
+            ):
+                resolved_leg = str(row.get("strategy_leg", "")).upper()
+                break
     with _exit_sell_lock:
         return _abc_place_sell_order_direct_locked(
             ts_code,
@@ -2289,12 +2311,13 @@ def _abc_place_sell_order_direct(
             confirm,
             config,
             broker_cfg,
+            resolved_leg,
         )
 
 
 def _abc_place_sell_order_direct_locked(
     ts_code: str, name: str, shares: int, order_id: str,
-    confirm: str, config: dict, broker_cfg: dict
+    confirm: str, config: dict, broker_cfg: dict, strategy_leg: str = ""
 ) -> bool:
     """A/C/D/E2/L按交易阶段有效限价卖实际余仓，不走旧CSV卖出数量。
 
@@ -2405,6 +2428,14 @@ def _abc_place_sell_order_direct_locked(
                 price=price,
                 strategy_name="A_SYSTEM_ABC",
                 remark=f"ABC平仓-{price_label}-{today_str}-{chunk_no}/{len(chunks)}",
+                strategy_leg=str(strategy_leg or "").upper(),
+                business_date=today_str,
+                purpose="CLOSE",
+                source_key=(
+                    f"ABC_CLOSE|{today_str}|{order_id}|{ts_code}|"
+                    f"{chunk_no}/{len(chunks)}"
+                ),
+                metadata={"execution_channel": "ABC主平仓", "name": name},
             )
             result, intent_token = _place_exit_order_with_intent(
                 adapter,
@@ -3455,6 +3486,13 @@ def _place_exit_order_with_intent(
         phase=phase,
         local_order_id=local_order_id,
     )
+    # 旧退出安全账本token同时作为统一SQLite意图的唯一执行片source_key；这样同一股票
+    # 多张等量拆单也不会碰撞，崩溃后还能用本地token+券商remark双向找回。
+    request = replace(
+        request,
+        purpose=str(getattr(request, "purpose", "") or "CLOSE"),
+        source_key=str(getattr(request, "source_key", "") or token),
+    )
     # 持久化PREPARED可能恰好跨过14:56:20或15:00。在紧邻券商
     # place_order前再取一次时钟；未发送的PREPARED明确收敛为REJECTED。
     blocked = _exit_order_submission_block_reason()
@@ -3883,6 +3921,16 @@ def _exit_pov_slice(
                 ts_code=ts_code, broker_code=ts_code, side="SELL",
                 quantity=qty, price_type="FIXED_PRICE", price=price,
                 strategy_name="A_SYSTEM_ABC", remark=f"{_EXIT_POV_REMARK_PREFIX}-{today_str}",
+                strategy_leg=str(pos.get("strategy_leg", "")).upper(),
+                business_date=today_str,
+                signal_date=str(pos.get("signal_date", "")),
+                planned_exit_date=str(pos.get("planned_exit_date", "")),
+                purpose="CLOSE",
+                source_key=(
+                    f"EXIT_POV|{today_str}|{pos.get('order_id', '')}|"
+                    f"{ts_code}|{plan.get('slice_no', 0)}"
+                ),
+                metadata={"execution_channel": "卖出POV", "name": pos.get("name", "")},
             )
             with _qmt_lock:
                 adapter = _qmt_get(broker_cfg)
@@ -4254,7 +4302,9 @@ def _do_sell(pos: dict[str, Any], qmt_enabled: bool) -> None:
                 # 在T+1的09:23提前卖出，不能把普通D误认为已经在早盘平仓。
                 # E2也必须走这里：早晨combined SELL保留的是分批前原始股数，POV部成后
                 # 再执行会超卖并触发SELL_VOLUME_NOT_AVAILABLE。直接链路每次从QMT校准余量。
-                _abc_place_sell_order_direct(ts_code, name, shares, order_id, confirm, config, broker_cfg)
+                _abc_place_sell_order_direct(
+                    ts_code, name, shares, order_id, confirm, config, broker_cfg
+                )
             else:
                 logger().warning(
                     "[平仓] 策略=%s 不匹配已知分支（%s %s），跳过，请手动确认。",
@@ -4524,6 +4574,16 @@ def _watchdog_rescue_sell(pos: dict, log: Any, max_qty: int | None = None) -> li
                             f"看门狗补挂-{price_label}-{today_beijing().strftime('%Y%m%d')}"
                             f"-{chunk_no}/{len(chunks)}"
                         ),
+                        strategy_leg=str(pos.get("strategy_leg", "")).upper(),
+                        business_date=today_beijing().strftime("%Y%m%d"),
+                        signal_date=str(pos.get("signal_date", "")),
+                        planned_exit_date=str(pos.get("planned_exit_date", "")),
+                        purpose="CLOSE",
+                        source_key=(
+                            f"EXIT_WATCHDOG|{today_beijing().strftime('%Y%m%d')}|"
+                            f"{pos.get('order_id', '')}|{ts_code}|{chunk_no}/{len(chunks)}"
+                        ),
+                        metadata={"execution_channel": "平仓看门狗", "name": pos.get("name", "")},
                     )
                     result, _intent_token = _place_exit_order_with_intent(
                         adapter,
@@ -5484,6 +5544,15 @@ def _intraday_takeprofit_monitor() -> None:
                             f"{REMARK_PREFIX}-{today_str}-"
                             f"{hashlib.sha256(str(pos.get('order_id', '')).encode('utf-8')).hexdigest()[:8]}"
                         ),
+                        strategy_leg=str(pos.get("strategy_leg", "")).upper(),
+                        business_date=today_str,
+                        signal_date=str(pos.get("signal_date", "")),
+                        planned_exit_date=str(pos.get("planned_exit_date", "")),
+                        purpose="CLOSE",
+                        source_key=(
+                            f"TAKEPROFIT|{today_str}|{pos.get('order_id', '')}|{ts_code}"
+                        ),
+                        metadata={"execution_channel": "盘中止盈", "name": name_s},
                     )
                     blocked = _exit_order_submission_block_reason()
                     if blocked:
@@ -6522,6 +6591,13 @@ def _d_relay_submit_buy(
         price=price,
         strategy_name="A_SYSTEM_D_RELAY_PAIR",
         remark=remark,
+        strategy_leg=str(candidate.get("strategy_leg", "")).upper(),
+        business_date=str(state.get("date", "")),
+        signal_date=str(candidate.get("signal_date", "")),
+        planned_exit_date=str(candidate.get("planned_exit_date", "")),
+        purpose="OPEN",
+        source_key=remark,
+        metadata={"execution_channel": "D接力成对POV", "name": name},
     )
     with _qmt_lock:
         adapter = _qmt_get(broker_cfg)
@@ -6595,6 +6671,13 @@ def _d_relay_submit_sell(
             price=limit_price,
             strategy_name="A_SYSTEM_D_RELAY_PAIR",
             remark=remark,
+            strategy_leg="D",
+            business_date=str(state.get("date", "")),
+            signal_date=str(d.get("signal_date", "")),
+            planned_exit_date=str(d.get("planned_exit_date", "")),
+            purpose="CLOSE",
+            source_key=remark,
+            metadata={"execution_channel": phase, "name": d.get("name", "")},
         )
         pending = {
             "status": "PREPARED",
@@ -7082,6 +7165,15 @@ def job_premarket_sell() -> None:
                 price=lower_limit,
                 strategy_name="A_SYSTEM_PREMARKET_SELL",
                 remark=f"集合竞价平仓-{today_str}",
+                strategy_leg=strategy_leg,
+                business_date=today_str,
+                signal_date=str(pos.get("signal_date", "")),
+                planned_exit_date=str(pos.get("planned_exit_date", "")),
+                purpose="CLOSE",
+                source_key=(
+                    f"PREMARKET_CLOSE|{today_str}|{pos.get('order_id', '')}|{ts_code}"
+                ),
+                metadata={"execution_channel": "集合竞价平仓", "name": name},
             )
             with _qmt_lock:
                 adapter = _qmt_get(broker_cfg)
@@ -7541,6 +7633,13 @@ def _e2_auction_buy_worker(e2_rows: list[Any], broker_cfg: dict, today_str: str)
                     side="BUY", quantity=qty, price_type="FIXED_PRICE", price=price,
                     strategy_name=str(row.get("strategy_name", "A_SYSTEM_ABC")),
                     remark=f"E2竞价动态-{today_str}",
+                    strategy_leg="E2",
+                    business_date=today_str,
+                    signal_date=signal_date_s,
+                    planned_exit_date=str(row.get("planned_exit_date", "")),
+                    purpose="OPEN",
+                    source_key=f"E2_AUCTION|{today_str}|{ts_code}",
+                    metadata={"execution_channel": "E2竞价动态", "name": name_s},
                 )
                 with _qmt_lock:
                     adapter = _qmt_get(broker_cfg)
@@ -7977,6 +8076,13 @@ def _pov_execute_slice(
             side="BUY", quantity=qty, price_type="FIXED_PRICE", price=price,
             strategy_name=str(it.get("strategy_name", "A_SYSTEM_ABC")),
             remark=f"POV实际金额校准-{today_str}",
+            strategy_leg=str(it.get("strategy_leg", "")).upper(),
+            business_date=today_str,
+            signal_date=str(it.get("signal_date", "")),
+            planned_exit_date=str(it.get("planned_exit_date", "")),
+            purpose="OPEN",
+            source_key=f"BUY_POV|{today_str}|{ts_code}|{slice_no + 1}",
+            metadata={"execution_channel": "买入POV", "name": name_s},
         )
         with _qmt_lock:
             adapter = _qmt_get(broker_cfg)
@@ -8504,6 +8610,15 @@ def job_premarket_buy() -> None:
                 price=price,
                 strategy_name=str(row.get("strategy_name", "A_SYSTEM_ABC")),
                 remark=f"盘前买入-{price_label}-{today_str}",
+                strategy_leg=str(row.get("strategy_leg", "")).upper(),
+                business_date=today_str,
+                signal_date=signal_date_s,
+                planned_exit_date=str(row.get("planned_exit_date", "")),
+                purpose="OPEN",
+                source_key=(
+                    f"PREMARKET_OPEN|{today_str}|{row.get('strategy_leg', '')}|{ts_code}"
+                ),
+                metadata={"execution_channel": "盘前买入", "name": name_s},
             )
             with _qmt_lock:
                 adapter = _qmt_get(broker_cfg)
@@ -9135,6 +9250,16 @@ def _resubmit_premarket_buy(s: dict[str, Any], broker_cfg: dict, config: dict) -
         price=price,
         strategy_name="A_SYSTEM_ABC",
         remark=f"盘前买入补挂-{price_label}-{today_str}",
+        strategy_leg=str(s.get("strategy_leg", "")).upper(),
+        business_date=today_str,
+        signal_date=str(s.get("signal_date", "")),
+        planned_exit_date=str(s.get("planned_exit_date", "")),
+        purpose="OPEN",
+        source_key=(
+            f"PREMARKET_RETRY|{today_str}|{s.get('strategy_leg', '')}|"
+            f"{ts_code}|{retry_count + 1}"
+        ),
+        metadata={"execution_channel": "盘前买入补挂", "name": name_s},
     )
     if st_open_forbidden(ts_code, s.get("name", "")):
         logger().error("⛔ [ST禁买] %s %s 命中ST/风险警示铁律，拦截盘前买入补挂。", ts_code, s.get("name", ""))
@@ -10034,6 +10159,12 @@ def _e2_place_order_direct(ts_code: str, name: str, planned_qty: int, signal_dat
         price=price,
         strategy_name="A_SYSTEM_ABC",
         remark=f"E2延迟开仓-{price_label}-{today_str}",
+        strategy_leg=str(strategy_leg or "E2").upper(),
+        business_date=today_str,
+        signal_date=signal_date,
+        purpose="OPEN",
+        source_key=f"E2_DELAYED|{today_str}|{ts_code}",
+        metadata={"execution_channel": "E2延迟开仓", "name": name},
     )
     if st_open_forbidden(ts_code, name):
         log.error("⛔ [ST禁买] %s %s 命中ST/风险警示铁律，拦截E2延迟开仓委托。", ts_code, name)
@@ -13427,6 +13558,9 @@ def run_job(scheduled_time: datetime.time) -> None:
 
 _qmt_reconnect_count: int = 0       # 累计重连次数，成功后归零
 _qmt_adapter: Any = None             # 持久连接，程序生命周期内保持
+_qmt_execution_service: IntentBrokerExecutionService | None = None
+_trade_intent_store_instance: TradeIntentStore | None = None
+_qmt_execution_init_lock = threading.RLock()
 _qmt_last_verified_at: str = ""      # 最近一次 query_account/query_positions 成功时间
 _last_account_has_position: bool = False  # 最近一次券商账户心跳是否确认有持仓
 _qmt_lock = threading.RLock()        # 保护 _qmt_adapter 并发访问（可重入：平仓路径内嵌撤止盈单）
@@ -13621,12 +13755,44 @@ def _qmt_connect(broker_config: dict, *, allow_full_scan: bool | None = None) ->
     raise RuntimeError("QMT连接失败: " + " | ".join(errors))
 
 
-def _qmt_get(broker_config: dict, *, allow_full_scan: bool | None = None) -> Any:
-    """返回持久连接，未连接时建立。调用方须持有 _qmt_lock。"""
+def _trade_intent_store() -> TradeIntentStore:
+    global _trade_intent_store_instance
+    with _qmt_execution_init_lock:
+        if _trade_intent_store_instance is None:
+            _trade_intent_store_instance = TradeIntentStore(
+                PROJECT_ROOT / "data" / "state" / "execution_events.sqlite3"
+            )
+        return _trade_intent_store_instance
+
+
+def _get_qmt_execution_service() -> IntentBrokerExecutionService:
+    global _qmt_execution_service
+    with _qmt_execution_init_lock:
+        if _qmt_execution_service is None:
+            _qmt_execution_service = IntentBrokerExecutionService(
+                intent_store=_trade_intent_store(),
+                account_fingerprint_provider=_exit_account_fingerprint,
+                business_date_provider=lambda: today_beijing().strftime("%Y%m%d"),
+                default_timeout=120.0,
+            )
+        return _qmt_execution_service
+
+
+def _qmt_get_raw(broker_config: dict, *, allow_full_scan: bool | None = None) -> Any:
+    """仅供唯一执行线程获取原始持久QMT连接。"""
     global _qmt_adapter
     if _qmt_adapter is None:
         _qmt_adapter = _qmt_connect(broker_config, allow_full_scan=allow_full_scan)
     return _qmt_adapter
+
+
+def _qmt_get(broker_config: dict, *, allow_full_scan: bool | None = None) -> Any:
+    """返回统一意图执行代理；业务线程永远拿不到原始QMT adapter。"""
+
+    service = _get_qmt_execution_service()
+    return service.proxy(
+        lambda: _qmt_get_raw(broker_config, allow_full_scan=allow_full_scan)
+    )
 
 
 class SharedQMTBrokerProxy:
@@ -13634,7 +13800,7 @@ class SharedQMTBrokerProxy:
 
     架构约束：一个进程生命周期内只允许主守护进程持有 QMT 连接。
     D监控不能再作为独立子进程连接 QMT，否则会和账户心跳/下单互抢 session。
-    该代理把 D 监控需要的 broker 方法统一转发到 `_qmt_get` 的唯一连接上。
+    该代理把 D 监控需要的 broker 方法统一转发到交易意图状态机和唯一QMT执行线程。
     """
 
     def __init__(self, broker_config: dict[str, Any]) -> None:
@@ -13793,7 +13959,14 @@ def _notify_once_per(key: str, interval_sec: float, title: str, body: str, **kwa
 
 
 def _qmt_reset() -> None:
-    """断开并清除持久连接。调用方须持有 _qmt_lock。"""
+    """通过唯一执行线程断开并清除持久连接。"""
+
+    service = _get_qmt_execution_service()
+    service.call_function(_qmt_reset_raw, operation="reset_qmt_connection", timeout=30)
+
+
+def _qmt_reset_raw() -> None:
+    """只允许唯一执行线程调用的原始连接清理。"""
     global _qmt_adapter
     if _qmt_adapter is not None:
         try:
@@ -14284,7 +14457,11 @@ def check_qmt_connection(*, allow_full_scan: bool | None = None) -> bool:
             adapter = _qmt_get(broker_config, allow_full_scan=allow_full_scan)
             account, positions = _qmt_query_account_positions(adapter)
 
-        account_id = str(getattr(account, "account_id", "") or getattr(getattr(adapter, "config", None), "account_id", ""))
+        adapter_config = adapter.get_serialized_attribute("config", None)
+        account_id = str(
+            getattr(account, "account_id", "")
+            or getattr(adapter_config, "account_id", "")
+        )
         available_cash = float(getattr(account, "available_cash", 0.0) or 0.0)
         _qmt_last_verified_at = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
         # 只认策略持仓:外部持仓(打新中签/人工)不算(2026-07-23 用户重申)
@@ -14294,8 +14471,8 @@ def check_qmt_connection(*, allow_full_scan: bool | None = None) -> bool:
             "✅ QMT连接成功且账户已验证：账户 %s，可用资金 %.0f 元（主进程持久连接，path=%s session=%s）",
             _mask_account(account_id),
             available_cash,
-            getattr(adapter, "_active_qmt_path", ""),
-            getattr(adapter, "_active_session_id", ""),
+            adapter.get_serialized_attribute("_active_qmt_path", ""),
+            adapter.get_serialized_attribute("_active_session_id", ""),
         )
         write_broker_health("verified", account_id=account_id)
         return True

@@ -1254,6 +1254,14 @@ class StrategyDMonitor:
                 price=st.upper_limit,
                 strategy_name="STRATEGY_D",
                 remark=STRATEGY_REMARK,
+                strategy_leg="D",
+                business_date=today_beijing().strftime("%Y%m%d"),
+                signal_date=today_beijing().strftime("%Y%m%d"),
+                purpose="OPEN",
+                source_key=(
+                    f"D_FIRST_BOARD|{today_beijing().strftime('%Y%m%d')}|{st.ts_code}"
+                ),
+                metadata={"name": st.name, "entry_clock": now_beijing().strftime("%H:%M:%S")},
             )
             result = self.broker.place_order(req)
             if result.accepted:
@@ -1954,6 +1962,12 @@ def main() -> None:
     parser.add_argument("--start-hhmm", type=int, default=MONITOR_START_HHMM,
                         help=f"开始扫描时间，默认{MONITOR_START_HHMM}")
     args = parser.parse_args()
+
+    if args.live_order:
+        raise RuntimeError(
+            "策略D独立进程实盘下单入口已退役；"
+            "请由trading_daemon内嵌监控器经统一交易意图和唯一串行QMT通道执行。"
+        )
 
     today_str = today_beijing().strftime("%Y%m%d")
     signal_dir = PROJECT_ROOT / "reports" / "strategy_d"

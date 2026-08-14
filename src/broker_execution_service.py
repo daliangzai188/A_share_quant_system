@@ -10,7 +10,7 @@ import queue
 import threading
 import time
 from concurrent.futures import Future, TimeoutError as FutureTimeoutError
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Mapping
 
 from src.broker_adapter import (
@@ -21,6 +21,25 @@ from src.broker_adapter import (
     OrderResult,
     PositionSnapshot,
     QuoteSnapshot,
+)
+from src.trade_intent_store import (
+    RECOVERABLE_STATUSES,
+    STATUS_CANCELLED,
+    STATUS_CANCEL_REQUESTED,
+    STATUS_FAILED,
+    STATUS_FILLED,
+    STATUS_PARTIALLY_FILLED,
+    STATUS_PLANNED,
+    STATUS_PREPARED,
+    STATUS_RECOVERY_REQUIRED,
+    STATUS_REJECTED,
+    STATUS_SUBMITTED,
+    STATUS_SUBMITTING,
+    STATUS_VALIDATED,
+    TERMINAL_STATUSES,
+    TradeIntentSpec,
+    TradeIntentStore,
+    build_idempotency_key,
 )
 
 
@@ -272,3 +291,297 @@ class SerializedBrokerProxy(BrokerAdapter):
             read_attribute,
             operation=f"getattr:{name}",
         )
+
+
+def _infer_strategy_leg(request: OrderRequest) -> str:
+    declared = str(request.strategy_leg or "").strip().upper()
+    if declared:
+        return declared
+    text = f"{request.strategy_name}|{request.remark}".upper()
+    for leg in ("E2", "D", "L", "M", "A", "C"):
+        markers = (f"STRATEGY_{leg}", f"A_SYSTEM_{leg}", f"{leg}策略", f"|{leg}|")
+        if any(marker in text for marker in markers):
+            return leg
+    # ABC公共执行路径必须由调用方声明实际腿；UNKNOWN会被统一执行器拒绝。
+    return ""
+
+
+class IntentBrokerExecutionService(BrokerExecutionService):
+    """在唯一串行通道内原子推进交易意图和真实QMT动作。"""
+
+    def __init__(
+        self,
+        *,
+        intent_store: TradeIntentStore,
+        account_fingerprint_provider: Callable[[], str],
+        business_date_provider: Callable[[], str],
+        name: str = "qmt-intent-execution",
+        default_timeout: float = 120.0,
+    ) -> None:
+        super().__init__(name=name, default_timeout=default_timeout)
+        self.intent_store = intent_store
+        self.account_fingerprint_provider = account_fingerprint_provider
+        self.business_date_provider = business_date_provider
+
+    def proxy(self, adapter_provider: AdapterProvider) -> "IntentSerializedBrokerProxy":
+        return IntentSerializedBrokerProxy(self, adapter_provider)
+
+    def _intent_spec(self, request: OrderRequest) -> TradeIntentSpec:
+        account_fingerprint = str(self.account_fingerprint_provider() or "").strip()
+        business_date = str(request.business_date or self.business_date_provider() or "").strip()
+        strategy_leg = _infer_strategy_leg(request)
+        purpose = str(request.purpose or ("OPEN" if request.side.upper() == "BUY" else "CLOSE")).upper()
+        source_key = str(request.source_key or "").strip()
+        if not strategy_leg:
+            raise RuntimeError(
+                f"统一交易意图缺少strategy_leg:{request.ts_code} {request.remark}"
+            )
+        if not source_key:
+            raise RuntimeError(
+                f"统一交易意图缺少source_key:{request.ts_code} {request.remark}"
+            )
+        key = build_idempotency_key(
+            account_fingerprint=account_fingerprint,
+            business_date=business_date,
+            strategy_leg=strategy_leg,
+            side=request.side,
+            ts_code=request.ts_code,
+            purpose=purpose,
+            source_key=source_key,
+        )
+        return TradeIntentSpec(
+            idempotency_key=key,
+            account_fingerprint=account_fingerprint,
+            strategy_leg=strategy_leg,
+            side=request.side,
+            ts_code=request.ts_code,
+            business_date=business_date,
+            signal_date=request.signal_date,
+            planned_exit_date=request.planned_exit_date,
+            purpose=purpose,
+            source_key=source_key,
+            target_qty=request.quantity,
+            target_amount=max(float(request.quantity or 0) * float(request.price or 0), 0.0),
+            price_type=request.price_type,
+            limit_price=request.price,
+            metadata={
+                "broker_code": request.broker_code,
+                "strategy_name": request.strategy_name,
+                "remark": request.remark,
+                **dict(request.metadata or {}),
+            },
+        )
+
+    def submit_order(
+        self,
+        adapter_provider: AdapterProvider,
+        request: OrderRequest,
+        *,
+        timeout: float | None = None,
+    ) -> OrderResult:
+        spec = self._intent_spec(request)
+        row = self.intent_store.create_intent(spec)
+        intent_id = str(row["intent_id"])
+        status = str(row["status"])
+        if status in {STATUS_SUBMITTED, STATUS_PARTIALLY_FILLED, STATUS_CANCEL_REQUESTED}:
+            order_id = str(row.get("broker_order_id", "") or "")
+            if not order_id:
+                raise RuntimeError(f"活跃交易意图缺少券商单号:{intent_id}")
+            return OrderResult(
+                ts_code=request.ts_code,
+                broker_code=request.broker_code,
+                side=request.side,
+                quantity=request.quantity,
+                accepted=True,
+                order_id=order_id,
+                message="ORDER_ALREADY_SUBMITTED_IDEMPOTENT",
+                intent_id=intent_id,
+            )
+        if status == STATUS_FILLED:
+            return OrderResult(
+                ts_code=request.ts_code,
+                broker_code=request.broker_code,
+                side=request.side,
+                quantity=request.quantity,
+                accepted=True,
+                order_id=str(row.get("broker_order_id", "") or ""),
+                message="ORDER_ALREADY_FILLED_IDEMPOTENT",
+                intent_id=intent_id,
+            )
+        if status in {STATUS_SUBMITTING, STATUS_RECOVERY_REQUIRED}:
+            raise RuntimeError(
+                f"交易意图结果未知，必须先按券商真实状态恢复，禁止重发:{intent_id}"
+            )
+        if status in TERMINAL_STATUSES:
+            return OrderResult(
+                ts_code=request.ts_code,
+                broker_code=request.broker_code,
+                side=request.side,
+                quantity=request.quantity,
+                accepted=False,
+                order_id=str(row.get("broker_order_id", "") or ""),
+                message=f"INTENT_TERMINAL_{status}",
+                intent_id=intent_id,
+            )
+
+        if status == STATUS_PLANNED:
+            row = self.intent_store.transition_intent(
+                intent_id, STATUS_VALIDATED, expected_statuses={STATUS_PLANNED}, reason="统一执行校验通过"
+            )
+            status = str(row["status"])
+        if status == STATUS_VALIDATED:
+            row = self.intent_store.transition_intent(
+                intent_id, STATUS_PREPARED, expected_statuses={STATUS_VALIDATED}, reason="券商提交前事务落盘"
+            )
+            status = str(row["status"])
+        if status != STATUS_PREPARED:
+            raise RuntimeError(f"交易意图不在可提交状态:{intent_id} status={status}")
+
+        def execute() -> OrderResult:
+            self.intent_store.transition_intent(
+                intent_id,
+                STATUS_SUBMITTING,
+                expected_statuses={STATUS_PREPARED},
+                reason="进入唯一QMT执行通道",
+            )
+            try:
+                result = adapter_provider().place_order(request)
+            except BaseException as exc:
+                self.intent_store.transition_intent(
+                    intent_id,
+                    STATUS_RECOVERY_REQUIRED,
+                    expected_statuses={STATUS_SUBMITTING},
+                    reason="QMT提交抛异常，结果未知",
+                    error_code=type(exc).__name__,
+                    error_message=str(exc),
+                )
+                raise
+            if bool(result.accepted):
+                order_id = str(result.order_id or "").strip()
+                if not order_id:
+                    self.intent_store.transition_intent(
+                        intent_id,
+                        STATUS_RECOVERY_REQUIRED,
+                        expected_statuses={STATUS_SUBMITTING},
+                        reason="QMT受理但未返回券商单号",
+                        error_code="MISSING_ORDER_ID",
+                    )
+                    raise RuntimeError("QMT受理委托但未返回order_id，禁止盲目重发")
+                self.intent_store.transition_intent(
+                    intent_id,
+                    STATUS_SUBMITTED,
+                    expected_statuses={STATUS_SUBMITTING},
+                    reason="QMT委托已受理",
+                    broker_order_id=order_id,
+                )
+            else:
+                self.intent_store.transition_intent(
+                    intent_id,
+                    STATUS_REJECTED,
+                    expected_statuses={STATUS_SUBMITTING},
+                    reason="QMT明确拒单",
+                    error_code="QMT_REJECTED",
+                    error_message=str(result.message or ""),
+                )
+            return replace(result, intent_id=intent_id)
+
+        try:
+            return self.call_function(
+                execute,
+                operation=f"submit_intent:{intent_id}",
+                timeout=timeout,
+            )
+        except TimeoutError:
+            # 工作线程仍可能完成并自行写SUBMITTED；若进程终止则保留SUBMITTING，
+            # 两种情况都由启动恢复统一查询券商，调用方不得重发。
+            raise
+
+    def request_cancel(
+        self,
+        adapter_provider: AdapterProvider,
+        order_id: str,
+        *,
+        timeout: float | None = None,
+    ) -> bool:
+        intent = self.intent_store.get_by_broker_order_id(order_id)
+        if intent is not None and str(intent["status"]) in {
+            STATUS_SUBMITTED,
+            STATUS_PARTIALLY_FILLED,
+        }:
+            self.intent_store.transition_intent(
+                str(intent["intent_id"]),
+                STATUS_CANCEL_REQUESTED,
+                expected_statuses={STATUS_SUBMITTED, STATUS_PARTIALLY_FILLED},
+                reason="撤单请求进入唯一QMT执行通道",
+            )
+        try:
+            return bool(self.call(adapter_provider, "cancel_order", order_id, timeout=timeout))
+        except BaseException as exc:
+            current = self.intent_store.get_by_broker_order_id(order_id)
+            if current is not None and str(current["status"]) not in TERMINAL_STATUSES:
+                self.intent_store.transition_intent(
+                    str(current["intent_id"]),
+                    STATUS_RECOVERY_REQUIRED,
+                    expected_statuses={str(current["status"])},
+                    reason="撤单调用异常，订单终态未知",
+                    error_code=type(exc).__name__,
+                    error_message=str(exc),
+                )
+            raise
+
+    def query_order_fill(
+        self,
+        adapter_provider: AdapterProvider,
+        order_id: str,
+        *,
+        timeout: float | None = None,
+    ) -> OrderFill:
+        fill: OrderFill = self.call(
+            adapter_provider, "get_order_fill", order_id, timeout=timeout
+        )
+        intent = self.intent_store.get_by_broker_order_id(order_id)
+        if intent is None:
+            return fill
+        status = str(intent["status"])
+        if status in TERMINAL_STATUSES:
+            return fill
+        qty = max(int(fill.filled_qty or 0), 0)
+        amount = qty * max(float(fill.avg_price or 0.0), 0.0)
+        if fill.is_filled or qty >= int(intent["target_qty"]):
+            target = STATUS_FILLED
+        elif fill.is_terminal:
+            target = STATUS_CANCELLED if status != STATUS_SUBMITTING else STATUS_REJECTED
+        elif qty > 0:
+            target = STATUS_PARTIALLY_FILLED
+        else:
+            return fill
+        allowed_current = set(RECOVERABLE_STATUSES) | {STATUS_SUBMITTED, STATUS_PARTIALLY_FILLED}
+        if status in allowed_current:
+            self.intent_store.transition_intent(
+                str(intent["intent_id"]),
+                target,
+                expected_statuses={status},
+                reason="QMT成交/委托终态确认",
+                filled_qty=qty,
+                filled_amount=amount,
+            )
+        return fill
+
+
+class IntentSerializedBrokerProxy(SerializedBrokerProxy):
+    def __init__(
+        self,
+        service: IntentBrokerExecutionService,
+        adapter_provider: AdapterProvider,
+    ) -> None:
+        super().__init__(service, adapter_provider)
+        self._intent_service = service
+
+    def place_order(self, request: OrderRequest) -> OrderResult:
+        return self._intent_service.submit_order(self._adapter_provider, request)
+
+    def cancel_order(self, order_id: str) -> bool:
+        return self._intent_service.request_cancel(self._adapter_provider, order_id)
+
+    def get_order_fill(self, order_id: str) -> OrderFill:
+        return self._intent_service.query_order_fill(self._adapter_provider, order_id)

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import threading
 import time
+import tempfile
 import unittest
+from pathlib import Path
 
 from src.broker_adapter import (
     AccountSnapshot,
@@ -11,7 +13,14 @@ from src.broker_adapter import (
     OrderResult,
     PositionSnapshot,
 )
-from src.broker_execution_service import BrokerExecutionService
+from src.broker_execution_service import BrokerExecutionService, IntentBrokerExecutionService
+from src.trade_intent_store import (
+    STATUS_CANCELLED,
+    STATUS_FILLED,
+    STATUS_RECOVERY_REQUIRED,
+    STATUS_SUBMITTED,
+    TradeIntentStore,
+)
 
 
 class FakeAdapter:
@@ -125,6 +134,154 @@ class BrokerExecutionServiceTests(unittest.TestCase):
         self.assertEqual(metrics["submitted"], 12)
         self.assertEqual(metrics["completed"], 12)
         self.assertEqual(metrics["failed"], 0)
+
+
+class IntentBrokerExecutionServiceTests(unittest.TestCase):
+    def _service(self, path: Path) -> tuple[IntentBrokerExecutionService, FakeAdapter]:
+        adapter = FakeAdapter()
+        service = IntentBrokerExecutionService(
+            intent_store=TradeIntentStore(path),
+            account_fingerprint_provider=lambda: "acct-hash",
+            business_date_provider=lambda: "20260817",
+            default_timeout=2,
+        )
+        return service, adapter
+
+    @staticmethod
+    def _request(source_key: str = "A-open-1") -> OrderRequest:
+        return OrderRequest(
+            ts_code="000001.SZ",
+            broker_code="000001.SZ",
+            side="BUY",
+            quantity=100,
+            price_type="FIXED_PRICE",
+            price=10,
+            strategy_name="A_SYSTEM_ABC",
+            remark="盘前买入-20260817",
+            strategy_leg="A",
+            business_date="20260817",
+            signal_date="20260814",
+            planned_exit_date="20260819",
+            purpose="OPEN",
+            source_key=source_key,
+        )
+
+    def test_order_is_persisted_before_qmt_and_duplicate_is_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "execution_events.sqlite3"
+            service, adapter = self._service(path)
+            proxy = service.proxy(lambda: adapter)
+            first = proxy.place_order(self._request())
+            duplicate = proxy.place_order(self._request())
+            self.assertTrue(first.accepted)
+            self.assertEqual(first.intent_id, duplicate.intent_id)
+            self.assertEqual(first.order_id, duplicate.order_id)
+            self.assertEqual(adapter.calls, ["place:盘前买入-20260817"])
+            row = TradeIntentStore(path).get_intent(first.intent_id)
+            self.assertEqual(row["status"], STATUS_SUBMITTED)
+            self.assertEqual(row["broker_order_id"], first.order_id)
+            service.shutdown()
+
+    def test_unknown_submit_result_blocks_blind_retry(self) -> None:
+        class ExplodingAdapter(FakeAdapter):
+            def place_order(self, request: OrderRequest) -> OrderResult:
+                self._enter(f"place:{request.remark}")
+                raise RuntimeError("QMT reply lost")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "execution_events.sqlite3"
+            adapter = ExplodingAdapter()
+            service = IntentBrokerExecutionService(
+                intent_store=TradeIntentStore(path),
+                account_fingerprint_provider=lambda: "acct-hash",
+                business_date_provider=lambda: "20260817",
+                default_timeout=2,
+            )
+            proxy = service.proxy(lambda: adapter)
+            with self.assertRaisesRegex(RuntimeError, "reply lost"):
+                proxy.place_order(self._request())
+            row = TradeIntentStore(path).list_recoverable_intents()[0]
+            self.assertEqual(row["status"], STATUS_RECOVERY_REQUIRED)
+            with self.assertRaisesRegex(RuntimeError, "禁止重发"):
+                proxy.place_order(self._request())
+            self.assertEqual(adapter.calls, ["place:盘前买入-20260817"])
+            service.shutdown()
+
+    def test_fill_and_cancel_update_same_authoritative_intent(self) -> None:
+        class FilledAdapter(FakeAdapter):
+            terminal = False
+
+            def get_order_fill(self, order_id: str) -> OrderFill:
+                self._enter(f"fill:{order_id}")
+                if self.terminal:
+                    return OrderFill(
+                        order_id=order_id,
+                        status_text="已撤",
+                        filled_qty=40,
+                        avg_price=10,
+                        is_terminal=True,
+                        is_partial=True,
+                    )
+                return OrderFill(
+                    order_id=order_id,
+                    status_text="部成",
+                    filled_qty=40,
+                    avg_price=10,
+                    is_partial=True,
+                )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "execution_events.sqlite3"
+            adapter = FilledAdapter()
+            service = IntentBrokerExecutionService(
+                intent_store=TradeIntentStore(path),
+                account_fingerprint_provider=lambda: "acct-hash",
+                business_date_provider=lambda: "20260817",
+                default_timeout=2,
+            )
+            proxy = service.proxy(lambda: adapter)
+            result = proxy.place_order(self._request())
+            proxy.get_order_fill(result.order_id)
+            row = TradeIntentStore(path).get_intent(result.intent_id)
+            self.assertEqual(row["filled_qty"], 40)
+            self.assertTrue(proxy.cancel_order(result.order_id))
+            adapter.terminal = True
+            proxy.get_order_fill(result.order_id)
+            row = TradeIntentStore(path).get_intent(result.intent_id)
+            self.assertEqual(row["status"], STATUS_CANCELLED)
+            self.assertEqual(row["filled_qty"], 40)
+            service.shutdown()
+
+    def test_full_fill_enters_terminal_filled_state(self) -> None:
+        class FilledAdapter(FakeAdapter):
+            def get_order_fill(self, order_id: str) -> OrderFill:
+                return OrderFill(
+                    order_id=order_id,
+                    status_text="全成",
+                    filled_qty=100,
+                    avg_price=10.1,
+                    is_terminal=True,
+                    is_filled=True,
+                )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "execution_events.sqlite3"
+            adapter = FilledAdapter()
+            service = IntentBrokerExecutionService(
+                intent_store=TradeIntentStore(path),
+                account_fingerprint_provider=lambda: "acct-hash",
+                business_date_provider=lambda: "20260817",
+            )
+            proxy = service.proxy(lambda: adapter)
+            result = proxy.place_order(self._request())
+            proxy.get_order_fill(result.order_id)
+            row = TradeIntentStore(path).get_intent(result.intent_id)
+            self.assertEqual(row["status"], STATUS_FILLED)
+            self.assertEqual(row["filled_amount"], 1010)
+            service.shutdown()
+
+
+class BrokerExecutionServiceResilienceTests(unittest.TestCase):
 
     def test_exception_does_not_kill_worker(self) -> None:
         adapter = FakeAdapter()

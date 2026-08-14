@@ -8,7 +8,7 @@ from typing import Any
 import pandas as pd
 from pandas.errors import EmptyDataError
 
-from src.broker_adapter import OrderRequest, PositionSnapshot
+from src.broker_adapter import PositionSnapshot
 from src.qmt_adapter import QMTBrokerAdapter, tushare_to_qmt_code
 from src.utils.config import get_project_root, load_json_config, mkdir_p
 from src.utils.logger import get_logger, setup_logger
@@ -335,129 +335,19 @@ class LiveOrderGateway:
         return paths
 
     def submit(self, preview_path: str | Path, confirm: str, output_prefix: str | Path) -> dict[str, Path]:
-        self.assert_real_order_allowed(confirm)
-        preview_path = Path(preview_path)
-        if not preview_path.is_absolute():
-            preview_path = self.project_root / preview_path
-        preview = pd.read_csv(preview_path, low_memory=False)
-        executable = preview[
-            (preview["validation_status"].astype(str) == "PASS")
-            & (preview["real_order_enabled"].astype(str).str.lower().isin({"true", "1"}))
-        ].copy()
-
-        adapter = self.create_adapter()
-        results = []
-        try:
-            adapter.connect()
-            for _, row in executable.iterrows():
-                side = str(row["side"]).upper()
-                if bool(self.live_config.get("enforce_trading_time", True)) and not self.is_trading_time(side):
-                    results.append(
-                        {
-                            "ts_code": str(row["ts_code"]),
-                            "broker_code": str(row["broker_code"]),
-                            "side": side,
-                            "quantity": int(row["quantity"]),
-                            "accepted": False,
-                            "order_id": "",
-                            "message": "OUTSIDE_TRADING_TIME_AT_SUBMIT",
-                            "raw": {"source": str(preview_path)},
-                        }
-                    )
-                    continue
-                request = OrderRequest(
-                    ts_code=str(row["ts_code"]),
-                    broker_code=str(row["broker_code"]),
-                    side=side,
-                    quantity=int(row["quantity"]),
-                    price_type=str(row["price_type"]),
-                    price=float(row.get("price", 0.0)),
-                    strategy_name=str(row.get("strategy_name", "A_SYSTEM_ABC")),
-                    remark=str(row.get("remark", "")),
-                )
-                result = adapter.place_order(request)
-                results.append(asdict(result))
-        finally:
-            adapter.disconnect()
-
-        output_prefix = Path(output_prefix)
-        if not output_prefix.is_absolute():
-            output_prefix = self.project_root / output_prefix
-        mkdir_p(output_prefix.parent)
-        paths = {"orders": output_prefix.with_name(output_prefix.name + "_submitted_orders.csv")}
-        pd.DataFrame(results).to_csv(paths["orders"], index=False, encoding="utf-8-sig")
-        return paths
+        del preview_path, confirm, output_prefix
+        raise RuntimeError(
+            "独立LiveOrderGateway直接下单入口已退役；"
+            "请由trading_daemon将策略计划写入统一交易意图，"
+            "再经唯一串行QMT执行通道提交。"
+        )
 
     def submit_small_cash_test(self, preview_path: str | Path, output_prefix: str | Path) -> dict[str, Path]:
-        """提交 100 股小资金测试单。
-
-        不要求命令行确认文本，但必须满足专用配置开关，并且只提交预览 PASS、
-        数量不超过 small_cash_test_max_shares、金额不超过 small_cash_test_max_order_amount 的订单。
-        """
-        self.assert_small_cash_test_allowed()
-        preview_path = Path(preview_path)
-        if not preview_path.is_absolute():
-            preview_path = self.project_root / preview_path
-        preview = pd.read_csv(preview_path, low_memory=False)
-        max_shares = int(self.live_config.get("small_cash_test_max_shares", 100))
-        max_amount = float(self.live_config.get("small_cash_test_max_order_amount", 20000))
-        executable = preview[preview["validation_status"].astype(str) == "PASS"].copy()
-
-        adapter = self.create_adapter()
-        results = []
-        try:
-            adapter.connect()
-            for _, row in executable.iterrows():
-                side = str(row["side"]).upper()
-                quantity = int(row["quantity"])
-                amount = float(row.get("estimated_live_amount", 0.0))
-                reject_message = ""
-                if quantity <= 0:
-                    reject_message = "EMPTY_OR_ZERO_QUANTITY_AT_SUBMIT"
-                elif quantity > max_shares:
-                    reject_message = "EXCEED_SMALL_TEST_MAX_SHARES"
-                elif amount > max_amount:
-                    reject_message = "EXCEED_SMALL_TEST_MAX_AMOUNT"
-                elif bool(self.live_config.get("enforce_trading_time", True)) and not self.is_trading_time(side):
-                    reject_message = "OUTSIDE_TRADING_TIME_AT_SUBMIT"
-
-                if reject_message:
-                    results.append(
-                        {
-                            "ts_code": str(row["ts_code"]),
-                            "broker_code": str(row["broker_code"]),
-                            "side": side,
-                            "quantity": quantity,
-                            "accepted": False,
-                            "order_id": "",
-                            "message": reject_message,
-                            "raw": {"source": str(preview_path), "mode": "small_cash_test"},
-                        }
-                    )
-                    continue
-
-                request = OrderRequest(
-                    ts_code=str(row["ts_code"]),
-                    broker_code=str(row["broker_code"]),
-                    side=side,
-                    quantity=quantity,
-                    price_type=str(row["price_type"]),
-                    price=float(row.get("price", 0.0)),
-                    strategy_name=str(row.get("strategy_name", "A_SYSTEM_SMALL_TEST")),
-                    remark=f"SMALL_TEST-{row.get('remark', '')}",
-                )
-                result = adapter.place_order(request)
-                results.append(asdict(result))
-        finally:
-            adapter.disconnect()
-
-        output_prefix = Path(output_prefix)
-        if not output_prefix.is_absolute():
-            output_prefix = self.project_root / output_prefix
-        mkdir_p(output_prefix.parent)
-        paths = {"orders": output_prefix.with_name(output_prefix.name + "_small_test_submitted_orders.csv")}
-        pd.DataFrame(results).to_csv(paths["orders"], index=False, encoding="utf-8-sig")
-        return paths
+        del preview_path, output_prefix
+        raise RuntimeError(
+            "独立小资金直接下单入口已退役；"
+            "测试单也必须进入trading_daemon的统一意图和唯一QMT通道。"
+        )
 
     @staticmethod
     def build_position_map(positions: list[PositionSnapshot]) -> dict[str, dict[str, float | int]]:

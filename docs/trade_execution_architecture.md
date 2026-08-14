@@ -60,6 +60,15 @@ PLANNED → VALIDATED → PREPARED → SUBMITTING → SUBMITTED
 每个阶段单独测试、单独提交。任何阶段不得改变D>L>A>M>E2>C、82.5%目标仓位、85%硬顶、
 策略候选条件或计划平仓日。
 
+### 第三阶段强制边界
+
+- `trading_daemon` 中所有实盘 `OrderRequest` 都必须声明 `strategy_leg`、
+  `business_date`、`purpose`和跨重启稳定的 `source_key`；
+- 同一 `source_key` 重复调用只返回已有意图/委托，不会向券商重复发单；
+- D独立脚本的 `--live-order`、`submit_live_orders.py` 和旧小资金直接下单通道
+  已退役，防止绕过daemon另建QMT连接；
+- 预览和账户检查仍可只读运行，但没有实盘下单权限。
+
 ## 唯一QMT通道约束
 
 `BrokerExecutionService`内部只有一个FIFO工作线程。策略线程、账户心跳、D盘中行情、开仓、
