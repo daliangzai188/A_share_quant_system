@@ -188,6 +188,20 @@ class OpeningRecoveryWindowTest(unittest.TestCase):
         self.assertAlmostEqual(share, 0.001)
         self.assertAlmostEqual(82_500.0 - auction_qty * 10.0, 72_500.0)
 
+    def test_missing_signal_amount_never_sends_full_target_to_auction(self) -> None:
+        auction_qty, auction_cap, share = trading_daemon._pov_auction_seed_quantity(
+            total_target_qty=8200,
+            reference_price=10.0,
+            signal_day_amount=0.0,
+            live_cfg={"pov_auction_share": 0.001},
+            lot_size=100,
+        )
+
+        self.assertEqual(auction_qty, 0)
+        self.assertEqual(auction_cap, 0.0)
+        self.assertEqual(share, 0.0)
+        self.assertEqual(8200 - auction_qty, 8200)
+
     def test_0930_pov_recovery_persists_82_5_target_and_85_hard_cap(self) -> None:
         from src.live_order_gateway import LiveOrderGateway
 

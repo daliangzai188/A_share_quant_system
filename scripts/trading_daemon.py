@@ -8129,9 +8129,9 @@ def _pov_auction_seed_quantity(
     """计算正常09:20竞价种子单，返回(竞价股数、竞价金额容量、参与比例)。
 
     这里只负责“竞价买多少”；82.5%目标减去竞价真实成交额后的缺口由POV负责。
-    数据缺失时不擅自缩成0股，保持上游已经通过账户/85%硬顶计算的目标股数，
-    开盘后仍由实际成交额校准。异常错过整个竞价窗口的场景不调用本函数，而是
-    明确以auction_planned_qty=0把全部实际金额缺口交给POV。
+    信号日成交额缺失时无法可靠计算竞价容量，竞价段按0股fail-closed，完整目标
+    交给开盘后POV；绝不能把82.5%目标股数误当成竞价挂单量。异常错过整个竞价
+    窗口的场景同样以auction_planned_qty=0把全部实际金额缺口交给POV。
     """
 
     target_qty = max(int(total_target_qty or 0), 0)
@@ -8139,7 +8139,7 @@ def _pov_auction_seed_quantity(
     sig_amount = max(float(signal_day_amount or 0.0), 0.0)
     lot = max(int(lot_size or 100), 1)
     if target_qty <= 0 or ref_price <= 0 or sig_amount <= 0:
-        return target_qty, 0.0, 0.0
+        return 0, 0.0, 0.0
     share = _pov_auction_share_for(sig_amount, live_cfg)
     auction_cap = sig_amount * share
     if target_qty * ref_price <= auction_cap:
@@ -9133,23 +9133,33 @@ def job_premarket_buy() -> None:
             # 不需要拆分，也会在开盘后复核实际成交金额；达到82.5%时零下单结束。
             if pov_enabled:
                 ref_p = float(row.get("reference_price", 0.0) or 0.0)
-                if ref_p > 0 and sig_amt_pov > 0:
-                    qty_auction, auction_cap, pov_auction_share = _pov_auction_seed_quantity(
-                        total_target_qty=qty,
-                        reference_price=ref_p,
-                        signal_day_amount=sig_amt_pov,
-                        live_cfg=lt_cfg,
-                        lot_size=int(lt_cfg.get("round_lot_size", 100)),
-                    )
-                    if qty_auction < qty:
-                        smooth_amt = max(total_target_amount - qty_auction * ref_p, 0.0)
-                        logger().warning("✂️ [POV] %s %s 竞价段限%.1f万(信号日成交%.0f万×%.2f%%),"
-                                         "竞价挂%d股；09:30后按实际成交额重算目标缺口（当前预估%.1f万）。",
-                                         ts_code, name_s, auction_cap / 1e4, sig_amt_pov / 1e4,
-                                         pov_auction_share * 100, qty_auction, smooth_amt / 1e4)
-                        qty = qty_auction
-                        pov_planned_qty = max(total_target_qty - qty_auction, 0)
-                        pov_target_amount = smooth_amt
+                qty_auction, auction_cap, pov_auction_share = _pov_auction_seed_quantity(
+                    total_target_qty=qty,
+                    reference_price=ref_p,
+                    signal_day_amount=sig_amt_pov,
+                    live_cfg=lt_cfg,
+                    lot_size=int(lt_cfg.get("round_lot_size", 100)),
+                )
+                if qty_auction < qty:
+                    smooth_amt = max(total_target_amount - qty_auction * ref_p, 0.0)
+                    if ref_p <= 0 or sig_amt_pov <= 0:
+                        logger().error(
+                            "⛔ [POV] %s %s 无法可靠计算集合竞价容量"
+                            "（参考价%.3f、信号日成交额%.0f），竞价挂0股；"
+                            "82.5%%完整目标%.1f万交给09:30后POV按实时成交量执行。",
+                            ts_code, name_s, ref_p, sig_amt_pov,
+                            total_target_amount / 1e4,
+                        )
+                    else:
+                        logger().warning(
+                            "✂️ [POV] %s %s 竞价段限%.1f万(信号日成交%.0f万×%.2f%%),"
+                            "竞价挂%d股；09:30后按实际成交额重算目标缺口（当前预估%.1f万）。",
+                            ts_code, name_s, auction_cap / 1e4, sig_amt_pov / 1e4,
+                            pov_auction_share * 100, qty_auction, smooth_amt / 1e4,
+                        )
+                    qty = qty_auction
+                    pov_planned_qty = max(total_target_qty - qty_auction, 0)
+                    pov_target_amount = smooth_amt
 
             if st_open_forbidden(ts_code, name_s):
                 logger().error("⛔ [ST禁买] %s %s 命中ST/风险警示铁律，拦截09:20盘前买入委托。", ts_code, name_s)
