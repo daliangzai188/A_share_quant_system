@@ -59,3 +59,10 @@ PLANNED → VALIDATED → PREPARED → SUBMITTING → SUBMITTED
 
 每个阶段单独测试、单独提交。任何阶段不得改变D>L>A>M>E2>C、82.5%目标仓位、85%硬顶、
 策略候选条件或计划平仓日。
+
+## 唯一QMT通道约束
+
+`BrokerExecutionService`内部只有一个FIFO工作线程。策略线程、账户心跳、D盘中行情、开仓、
+平仓和看门狗即使同时发起请求，也只能依序进入原始QMT adapter。命令超时只表示调用方没有
+及时得到结果，不表示券商没有受理；下单超时必须进入`RECOVERY_REQUIRED`并通过券商委托查询
+恢复，禁止直接重发。
