@@ -433,7 +433,7 @@ _TRADE_CALENDAR_CACHE: dict[str, Any] = {
     "open_dates": set(),
     "max_date": "",
 }
-_pending_buy_lock = threading.Lock()
+_pending_buy_lock = threading.RLock()
 _premarket_buy_monitor_thread: threading.Thread | None = None
 # positions.json 会被POV、14:55主平仓、看门狗和账户心跳并发读改写。
 # 原子replace只能防半文件，不能防“两个线程各自读旧值后相互覆盖”。
@@ -1780,7 +1780,8 @@ def _execute_orders_inprocess(
             fill_price = fill.avg_price if fill.avg_price > 0 else s["ref_price"]
             if s["side"] == "BUY":
                 if fill.filled_qty > 0:
-                    record_buy(
+                    _record_live_buy(
+                        recovery_context=tag,
                         order_id=s["order_id"],
                         ts_code=s["ts_code"],
                         name=s["name"],
@@ -6566,7 +6567,8 @@ def _d_relay_apply_buy_fill(
     qty = max(int(filled_qty or 0), 0)
     candidate = state["candidate"]
     if qty > 0:
-        record_buy(
+        _record_live_buy(
+            recovery_context="D接力成对POV",
             order_id=f"d-relay-{state['date']}-{order_id}",
             ts_code=str(candidate.get("ts_code", "")),
             name=str(candidate.get("name", "")),
@@ -7809,7 +7811,7 @@ def _e2_auction_buy_worker(e2_rows: list[Any], broker_cfg: dict, today_str: str)
                 if result.accepted:
                     raw_exit_n = row.get("exit_n_days", None)
                     exit_n = int(float(raw_exit_n)) if raw_exit_n is not None and str(raw_exit_n) not in {"", "nan"} else 1
-                    new_pending.append({
+                    pending_order = {
                         "order_id": str(result.order_id or f"e2auction-{today_str}-{ts_code}"),
                         "ts_code": ts_code, "name": name_s,
                         "signal_date": signal_date_s,
@@ -7819,7 +7821,10 @@ def _e2_auction_buy_worker(e2_rows: list[Any], broker_cfg: dict, today_str: str)
                         "entry_min_acceptable_amount": min_acceptable_amount,
                         "entry_hard_cap_amount": hard_cap_amount,
                         "entry_equity_snapshot": equity_snapshot,
-                    })
+                    }
+                    # 券商受理后立即持久化，不把多标的循环结束当作安全边界。
+                    _append_pending_buys([pending_order])
+                    new_pending.append(pending_order)
                     log.info("✅ [E2竞价买入] %s %s %d股 @%.2f 已受理（待09:30确认）", ts_code, name_s, qty, price)
                     _notify("buy_result", "📋 E2竞价动态开仓已挂单",
                             f"{ts_code} {name_s} {qty}股@{price:.2f}（{src}），待09:30确认实际成交额后"
@@ -7829,8 +7834,6 @@ def _e2_auction_buy_worker(e2_rows: list[Any], broker_cfg: dict, today_str: str)
             except Exception as e:
                 log.error("E2竞价买入异常（%s）：%s", row.get("ts_code"), e)
         if new_pending:
-            existing = load_pending_buys()
-            save_pending_buys(existing + new_pending)
             _start_premarket_buy_monitor()
         if pov_items_e2:
             _pov_enqueue(pov_items_e2)
@@ -8319,7 +8322,8 @@ def _pov_finalize_item(it: dict[str, Any], log: Any, reason: str) -> None:
     actual_pct = actual_total / equity_snapshot if equity_snapshot > 0 else 0.0
     if fq > 0:
         avg = float(it["cost_amt"]) / fq
-        record_buy(
+        _record_live_buy(
+            recovery_context="买入POV",
             order_id=f"pov-{today_str}-{ts_code}",
             ts_code=ts_code, name=name_s,
             signal_date=str(it.get("signal_date", "")),
@@ -8792,7 +8796,7 @@ def job_premarket_buy() -> None:
                 # 09:20集合竞价预挂单09:25开始撮合，此处不立即记录持仓，落盘待确认，09:30按实盘成交确认
                 raw_exit_n = row.get("exit_n_days", None)
                 exit_n = int(float(raw_exit_n)) if raw_exit_n is not None and str(raw_exit_n) not in {"", "nan"} else 2
-                pending_buys.append({
+                pending_order = {
                     "order_id": str(result.order_id or f"premarket-{today_str}-{ts_code}"),
                     "ts_code": ts_code,
                     "name": name_s,
@@ -8806,7 +8810,11 @@ def job_premarket_buy() -> None:
                     "entry_min_acceptable_amount": min_acceptable_amount,
                     "entry_hard_cap_amount": hard_cap_amount,
                     "entry_equity_snapshot": equity_snapshot,
-                })
+                }
+                # 券商受理一笔就原子追加一笔。若落盘失败，统一进程恢复会在
+                # 新进程启动交易线程前按SQLite意图和QMT真实状态接管。
+                _append_pending_buys([pending_order])
+                pending_buys.append(pending_order)
                 logger().info("✅ [盘前买入] %s %s %d股 @%.2f 委托已受理（09:20预挂，待09:30确认成交）",
                               ts_code, name_s, qty, price)
             else:
@@ -8816,7 +8824,6 @@ def job_premarket_buy() -> None:
             logger().error("盘前买入异常（%s）：%s", row.get("ts_code"), e)
 
     if pending_buys:
-        save_pending_buys(pending_buys)
         _start_premarket_buy_monitor()
         # 开仓计划通知：09:20预挂成功即推送，让用户开盘前就知道今日买什么，
         # 不必等09:30成交确认。金额按预挂价（涨停价）估算，实际按集合竞价开盘价
@@ -9137,31 +9144,56 @@ def has_position_bought_today() -> bool:
 # ── 盘前买单待确认（09:20挂单→09:30开盘成交确认）────────────────────────────
 
 def save_pending_buys(orders: list[dict[str, Any]]) -> None:
-    """记录09:20盘前已受理买单，等09:30开盘后确认成交。"""
+    """原子记录已受理买单；失败必须进入进程级交易恢复。"""
     try:
         with _pending_buy_lock:
+            if not isinstance(orders, list) or any(not isinstance(row, dict) for row in orders):
+                raise ValueError("pending orders必须是dict列表")
+            order_ids = [str(row.get("order_id", "")).strip() for row in orders]
+            if any(not order_id for order_id in order_ids):
+                raise ValueError("pending order缺少券商委托号")
+            if len(set(order_ids)) != len(order_ids):
+                raise ValueError(f"pending order出现重复券商委托号:{order_ids}")
             mkdir_p(PENDING_BUY_FILE.parent)
-            payload = {"date": today_beijing().strftime("%Y%m%d"), "orders": orders}
-            tmp = PENDING_BUY_FILE.with_suffix(".tmp")
+            payload = {
+                "schema_version": 1,
+                "date": today_beijing().strftime("%Y%m%d"),
+                "orders": orders,
+            }
+            tmp = PENDING_BUY_FILE.with_name(
+                f".{PENDING_BUY_FILE.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+            )
             tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-            tmp.replace(PENDING_BUY_FILE)
+            os.replace(tmp, PENDING_BUY_FILE)
     except Exception as e:
-        logger().error("保存盘前待确认买单失败：%s", e)
+        _critical_execution_state_failure("保存盘前待确认买单", e)
+    finally:
+        if "tmp" in locals():
+            tmp.unlink(missing_ok=True)
 
 
 def load_pending_buys() -> list[dict[str, Any]]:
-    """读取当日盘前待确认买单（非当日的视为过期，忽略）。"""
+    """读取当日已受理买单；损坏/不可读绝不能伪装成无订单。"""
     try:
         with _pending_buy_lock:
             if not PENDING_BUY_FILE.exists():
                 return []
             payload = json.loads(PENDING_BUY_FILE.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("pending文件根节点不是对象")
             if payload.get("date") != today_beijing().strftime("%Y%m%d"):
                 return []
-            return payload.get("orders", [])
+            orders = payload.get("orders", [])
+            if not isinstance(orders, list) or any(not isinstance(row, dict) for row in orders):
+                raise ValueError("pending orders不是dict列表")
+            order_ids = [str(row.get("order_id", "")).strip() for row in orders]
+            if any(not order_id for order_id in order_ids):
+                raise ValueError("pending order缺少券商委托号")
+            if len(set(order_ids)) != len(order_ids):
+                raise ValueError(f"pending order出现重复券商委托号:{order_ids}")
+            return orders
     except Exception as e:
-        logger().error("读取盘前待确认买单失败：%s", e)
-        return []
+        _critical_execution_state_failure("读取盘前待确认买单", e)
 
 
 def clear_pending_buys() -> None:
@@ -9170,21 +9202,40 @@ def clear_pending_buys() -> None:
             if PENDING_BUY_FILE.exists():
                 PENDING_BUY_FILE.unlink()
     except Exception as e:
-        logger().error("清除盘前待确认买单失败：%s", e)
+        _critical_execution_state_failure("清除盘前待确认买单", e)
+
+
+def _append_pending_buys(new_orders: list[dict[str, Any]]) -> None:
+    """在同一文件锁内追加已受理委托，避免竞价/E2/确认线程互相覆盖。"""
+
+    with _pending_buy_lock:
+        existing = load_pending_buys()
+        by_id = {str(row.get("order_id", "")): row for row in existing}
+        for row in new_orders:
+            order_id = str(row.get("order_id", "")).strip()
+            if not order_id:
+                _critical_execution_state_failure(
+                    "追加盘前待确认买单",
+                    ValueError("新增pending order缺少券商委托号"),
+                )
+            previous = by_id.get(order_id)
+            if previous is not None and previous != row:
+                _critical_execution_state_failure(
+                    "追加盘前待确认买单",
+                    ValueError(f"同日券商委托号碰撞且内容不同:{order_id}"),
+                )
+            by_id[order_id] = row
+        save_pending_buys(list(by_id.values()))
 
 
 def _replace_pending_buy_order(old_order_id: str, new_order: dict[str, Any] | None) -> None:
     """替换或移除某笔09:20待确认买单，供集合竞价监控线程使用。"""
     try:
         with _pending_buy_lock:
-            if not PENDING_BUY_FILE.exists():
-                return
-            payload = json.loads(PENDING_BUY_FILE.read_text(encoding="utf-8"))
-            if payload.get("date") != today_beijing().strftime("%Y%m%d"):
-                return
+            orders = load_pending_buys()
             updated: list[dict[str, Any]] = []
             replaced = False
-            for order in payload.get("orders", []):
+            for order in orders:
                 if str(order.get("order_id", "")) == str(old_order_id):
                     replaced = True
                     if new_order is not None:
@@ -9192,18 +9243,17 @@ def _replace_pending_buy_order(old_order_id: str, new_order: dict[str, Any] | No
                 else:
                     updated.append(order)
             if not replaced:
+                # 并发确认已删除旧单时，重复删除是幂等的；但若补挂单已被券商
+                # 受理却找不到旧记录，就不能让新单失去本地追踪。
+                if new_order is not None:
+                    raise RuntimeError(f"补挂已受理但旧pending不存在:{old_order_id}")
                 return
             if updated:
-                tmp = PENDING_BUY_FILE.with_suffix(".tmp")
-                tmp.write_text(
-                    json.dumps({"date": payload.get("date"), "orders": updated}, ensure_ascii=False, indent=2),
-                    encoding="utf-8",
-                )
-                tmp.replace(PENDING_BUY_FILE)
+                save_pending_buys(updated)
             else:
-                PENDING_BUY_FILE.unlink(missing_ok=True)
+                clear_pending_buys()
     except Exception as e:
-        logger().error("更新盘前待确认买单失败：%s", e)
+        _critical_execution_state_failure("更新盘前待确认买单", e)
 
 
 def _limit_up_pct_for_stock(ts_code: str, name: str = "") -> float:
@@ -9327,7 +9377,8 @@ def _premarket_buy_price(
 def _record_premarket_buy_fill(s: dict[str, Any], fill: Any, fallback_price: float) -> None:
     today_str = today_beijing().strftime("%Y%m%d")
     fill_price = fill.avg_price if getattr(fill, "avg_price", 0) > 0 else fallback_price
-    record_buy(
+    _record_live_buy(
+        recovery_context="盘前买入监控",
         order_id=str(s.get("order_id", "")),
         ts_code=str(s.get("ts_code", "")),
         name=str(s.get("name", "")),
@@ -9526,7 +9577,6 @@ def confirm_pending_premarket_buys(confirm_source: str = "09:30") -> None:
     config = load_json_config(PROJECT_ROOT / "config" / "config.json")
     broker_cfg = config.get("broker", {})
     today_str = today_beijing().strftime("%Y%m%d")
-    still_pending: list[dict[str, Any]] = []
     handoff_to_pov = (
         confirm_source != "09:26" or now_beijing().time() >= datetime.time(9, 30)
     )
@@ -9547,7 +9597,6 @@ def confirm_pending_premarket_buys(confirm_source: str = "09:30") -> None:
             )
             if fill.filled_qty < qty and not fill.is_terminal:
                 if not handoff_to_pov:
-                    still_pending.append(s)
                     logger().info(
                         "[盘前买入确认] %s 09:26成交%d/%d股，原单仍有效；保留至09:30再撤残单并移交POV。",
                         ts_code, fill.filled_qty, qty,
@@ -9567,7 +9616,6 @@ def confirm_pending_premarket_buys(confirm_source: str = "09:30") -> None:
                     poll_sec=3,
                 )
                 if not fill.is_terminal:
-                    still_pending.append(s)
                     logger().error(
                         "❌ [盘前买入确认] %s 残单终态仍不明确，保留pending并禁止POV叠加。",
                         ts_code,
@@ -9581,7 +9629,8 @@ def confirm_pending_premarket_buys(confirm_source: str = "09:30") -> None:
                     continue
             fill_price = fill.avg_price if fill.avg_price > 0 else ref_price
             if fill.filled_qty > 0:
-                record_buy(
+                _record_live_buy(
+                    recovery_context=f"盘前买入确认-{confirm_source}",
                     order_id=order_id,
                     ts_code=ts_code,
                     name=str(s.get("name", "")),
@@ -9618,7 +9667,6 @@ def confirm_pending_premarket_buys(confirm_source: str = "09:30") -> None:
                             f"持仓{fill.filled_qty}股 成本{fill_price:.2f} 市值{_fmt_wan(amount)}")
             else:
                 if not fill.is_terminal:
-                    still_pending.append(s)
                     logger().warning(
                         "⚠️ [盘前买入确认] %s %s暂未成交（状态=%s），撤单终态不明确，禁止POV并继续监控。",
                         ts_code, confirm_source, fill.status_text,
@@ -9628,18 +9676,16 @@ def confirm_pending_premarket_buys(confirm_source: str = "09:30") -> None:
                         "[盘前买入确认] %s %s未成交且已终态（状态=%s），清除pending并移交实际金额POV。",
                         ts_code, confirm_source, fill.status_text,
                     )
+            if fill.is_terminal:
+                _replace_pending_buy_order(order_id, None)
         except Exception as e:
-            still_pending.append(s)
             logger().error("❌ [盘前买入确认] %s 异常：%s —— 请手动核对！", s.get("ts_code"), e)
             _notify("buy_result", "❌ 盘前开仓确认异常",
                     f"{s.get('ts_code','')} 盘前买单成交确认出现异常，请回终端核对持仓。",
                     level="critical", call=True)
 
-    if still_pending:
-        save_pending_buys(still_pending)
+    if load_pending_buys():
         _start_premarket_buy_monitor()
-    else:
-        clear_pending_buys()
     logger().info("===== 盘前买单成交确认完成 =====")
 
 
@@ -9802,7 +9848,8 @@ def job_strategy_d() -> None:
         signal_csv = signal_dir / f"intraday_signals_{today_str}.csv"
 
         def _record_d_position(payload: dict[str, Any]) -> None:
-            record_buy(
+            _record_live_buy(
+                recovery_context="D盘中买入",
                 order_id=str(payload["order_id"]),
                 ts_code=str(payload["ts_code"]),
                 name=str(payload.get("name", "")),
@@ -9843,18 +9890,17 @@ def job_strategy_d() -> None:
                         # 券商委托可能已经受理/成交，不能仅重启D子线程。
                         # 结束整个daemon，让新进程先重放意图并投影持仓。
                         reason = f"D委托后本地处理异常:{exc}"
-                        write_broker_health("restarting", error=reason)
-                        write_heartbeat("d_order_recovery_restarting")
-                        _notify_async(
-                            "system_error",
-                            "🔄 D委托状态待恢复，程序自动重启",
-                            f"{reason}。新进程会先根据QMT委托、成交和持仓恢复，"
-                            "不会重复买入。",
-                            level="critical",
-                            call=True,
+                        _request_process_recovery(
+                            reason=reason,
+                            exit_code=EXIT_CODE_D_POSITION_RECOVERY,
+                            heartbeat_status="d_order_recovery_restarting",
+                            title="🔄 D委托状态待恢复，程序自动重启",
+                            body=(
+                                f"{reason}。新进程会先根据QMT委托、成交和持仓恢复，"
+                                "不会重复买入。"
+                            ),
                         )
-                        time.sleep(3.0)
-                        os._exit(EXIT_CODE_D_POSITION_RECOVERY)
+                        return
                     if (
                         retry_count >= 3
                         or now_beijing().time() >= datetime.time(14, 55)
@@ -10408,7 +10454,8 @@ def _e2_place_order_direct(ts_code: str, name: str, planned_qty: int, signal_dat
     fill = _confirm_fill(broker_cfg, order_id_broker, qty, "E2延迟开仓")
     fill_price = fill.avg_price if fill.avg_price > 0 else price
     if fill.filled_qty > 0:
-        record_buy(
+        _record_live_buy(
+            recovery_context="E2延迟开仓",
             order_id=order_id_broker,
             ts_code=ts_code,
             name=name,
@@ -14123,9 +14170,13 @@ _LAST_QMT_ERROR_TEXT = ""
 EXIT_CODE_SOCKET_EXHAUSTED = 87
 EXIT_CODE_QMT_CHANNEL_POISONED = 88
 EXIT_CODE_D_POSITION_RECOVERY = 89
+EXIT_CODE_EXECUTION_STATE_RECOVERY = 90
 _ONCE_PER_STATE: dict[str, float] = {}
 _ONCE_PER_ATTEMPT: dict[str, float] = {}
-_QMT_FATAL_RESTART_EVENT = threading.Event()
+_PROCESS_RECOVERY_EVENT = threading.Event()
+# 兼容现有运维测试/诊断名；所有致命交易状态统一由同一个进程恢复门控制，
+# 避免QMT、D、盘前订单各自同时发起退出和重复通知。
+_QMT_FATAL_RESTART_EVENT = _PROCESS_RECOVERY_EVENT
 
 # Windows 套接字/句柄资源耗尽类错误码。出现这些说明系统资源已经见底，
 # 再怎么重试都不会成功，只会让泄漏更严重——必须停手、告警、等人工重启。
@@ -14143,40 +14194,100 @@ def _is_socket_resource_exhausted(err_text: str) -> bool:
     return any(marker in text for marker in _SOCKET_EXHAUSTED_MARKERS)
 
 
-def _on_qmt_execution_timeout(reason: str, sequence: int) -> None:
-    """QMT C++调用无法安全中断时，用进程重启回收整条通道。"""
+def _request_process_recovery(
+    *,
+    reason: str,
+    exit_code: int,
+    heartbeat_status: str,
+    title: str,
+    body: str,
+    clear_qmt_cache: bool = False,
+) -> bool:
+    """统一请求整进程恢复；同一进程只允许一个恢复发起者。
 
-    if _QMT_FATAL_RESTART_EVENT.is_set():
-        return
-    _QMT_FATAL_RESTART_EVENT.set()
-    message = f"QMT唯一执行通道超时中毒：{reason} sequence={sequence}"
-    logger().critical("🛑 %s。程序将退出，由keeper启动全新进程并按券商真实状态恢复。", message)
-    write_broker_health("restarting", error=message)
-    write_heartbeat("qmt_channel_poisoned_restarting")
-    try:
-        _clear_qmt_last_success(message)
-    except Exception:
-        pass
+    券商已受理后的本地状态失败、D成交回写失败和QMT底层永久卡死都不能
+    在线程内继续。退出后keeper只负责重新拉起；新进程必须先通过交易恢复
+    门禁，再启动开仓/平仓线程。
+    """
+
+    if _PROCESS_RECOVERY_EVENT.is_set():
+        return False
+    _PROCESS_RECOVERY_EVENT.set()
+    logger().critical("🛑 %s。程序将退出，由keeper启动全新进程并按券商真实状态恢复。", reason)
+    write_broker_health("restarting", error=reason)
+    write_heartbeat(heartbeat_status)
+    if clear_qmt_cache:
+        try:
+            _clear_qmt_last_success(reason)
+        except Exception:
+            pass
     _notify_async(
         "system_error",
-        "🔄 QMT执行通道卡死，自动重启中",
-        f"{reason}。未知结果委托不会盲目重发；"
-        "keeper拉起新进程后会先用QMT持仓、委托和成交恢复，再启动交易线程。",
+        title,
+        body,
         level="critical",
         call=True,
     )
 
-    def _terminate_poisoned_process() -> None:
-        # 给心跳/健康状态和通知线程留出短暂落盘时间；不等卡死的
-        # C++线程自行返回，因为那个时间不可知。
+    def _terminate_for_recovery() -> None:
         time.sleep(3.0)
-        os._exit(EXIT_CODE_QMT_CHANNEL_POISONED)
+        os._exit(exit_code)
 
     threading.Thread(
-        target=_terminate_poisoned_process,
+        target=_terminate_for_recovery,
         daemon=True,
-        name="qmt-poisoned-process-exit",
+        name=f"trade-recovery-process-exit-{exit_code}",
     ).start()
+    return True
+
+
+def _critical_execution_state_failure(operation: str, error: BaseException) -> None:
+    """关键交易状态不可持久化/读取时停止本进程继续交易。"""
+
+    reason = f"关键交易状态失败:{operation}:{error}"
+    _request_process_recovery(
+        reason=reason,
+        exit_code=EXIT_CODE_EXECUTION_STATE_RECOVERY,
+        heartbeat_status="execution_state_recovery_restarting",
+        title="🔄 交易状态异常，程序自动恢复",
+        body=(
+            f"{operation}失败。当前进程已停止继续开平仓；keeper拉起新进程后，"
+            "会先按QMT真实持仓、委托、成交和事务账本恢复，避免重复交易。"
+        ),
+    )
+    # SystemExit不属于Exception，能穿透各交易任务的“单笔异常继续”保护；
+    # 主线程会直接以专用退出码结束，工作线程则先结束自身，再由上面的
+    # 统一退出线程终止整个进程。不能在这类错误后继续提交下一笔委托。
+    raise SystemExit(EXIT_CODE_EXECUTION_STATE_RECOVERY) from error
+
+
+def _record_live_buy(*, recovery_context: str, **record_kwargs: Any) -> None:
+    """实盘成交统一投影入口；持仓回写失败必须触发进程级恢复。"""
+
+    try:
+        record_buy(**record_kwargs)
+    except Exception as exc:
+        _critical_execution_state_failure(
+            f"{recovery_context}买入成交投影",
+            exc,
+        )
+
+
+def _on_qmt_execution_timeout(reason: str, sequence: int) -> None:
+    """QMT C++调用无法安全中断时，用进程重启回收整条通道。"""
+
+    message = f"QMT唯一执行通道超时中毒：{reason} sequence={sequence}"
+    _request_process_recovery(
+        reason=message,
+        exit_code=EXIT_CODE_QMT_CHANNEL_POISONED,
+        heartbeat_status="qmt_channel_poisoned_restarting",
+        title="🔄 QMT执行通道卡死，自动重启中",
+        body=(
+            f"{reason}。未知结果委托不会盲目重发；keeper拉起新进程后会先用"
+            "QMT持仓、委托和成交恢复，再启动交易线程。"
+        ),
+        clear_qmt_cache=True,
+    )
 
 
 def _notify_once_per(key: str, interval_sec: float, title: str, body: str, **kwargs: Any) -> bool:
@@ -14280,13 +14391,10 @@ def _strategy_only_market_value(
     与普通未到期仓都必须计入策略市值。
     """
     local_aliases: set[str] = set()
-    try:
-        for lp in load_positions():
-            if str(lp.get("status", "")).lower() not in {"open", "sell_pending"}:
-                continue
-            local_aliases.update(_ts_code_aliases(lp.get("ts_code", "")))
-    except Exception:
-        return 0.0
+    for lp in load_positions():
+        if str(lp.get("status", "")).lower() not in {"open", "sell_pending"}:
+            continue
+        local_aliases.update(_ts_code_aliases(lp.get("ts_code", "")))
     total = 0.0
     for p in (broker_positions or []):
         if int(getattr(p, "volume", 0) or 0) <= 0:
@@ -14304,20 +14412,17 @@ def _broker_has_strategy_position(broker_positions: Any) -> bool:
     "账户只剩一个打新转债"被误判为"有持仓"→影响轮询/盯盘判定。改用策略口径:
     仅当券商持有能匹配本地 open/sell_pending 记录的票才算 True。
     """
-    try:
-        local_aliases: set[str] = set()
-        for lp in load_positions():
-            if str(lp.get("status", "")).lower() in {"open", "sell_pending"}:
-                local_aliases.update(_ts_code_aliases(lp.get("ts_code", "")))
-        if not local_aliases:
-            return False
-        for p in (broker_positions or []):
-            if int(getattr(p, "volume", 0) or 0) <= 0:
-                continue
-            if any(al in local_aliases for al in _ts_code_aliases(getattr(p, "ts_code", ""))):
-                return True
-    except Exception:
+    local_aliases: set[str] = set()
+    for lp in load_positions():
+        if str(lp.get("status", "")).lower() in {"open", "sell_pending"}:
+            local_aliases.update(_ts_code_aliases(lp.get("ts_code", "")))
+    if not local_aliases:
         return False
+    for p in (broker_positions or []):
+        if int(getattr(p, "volume", 0) or 0) <= 0:
+            continue
+        if any(al in local_aliases for al in _ts_code_aliases(getattr(p, "ts_code", ""))):
+            return True
     return False
 
 
@@ -14334,29 +14439,25 @@ def _broker_has_preexisting_strategy_position(
     """
     check_date = as_of_date or today_beijing().strftime("%Y%m%d")
     preexisting_aliases: set[str] = set()
-    try:
-        for position in load_positions():
-            if str(position.get("status", "")).lower() not in {"open", "sell_pending"}:
-                continue
-            buy_date = "".join(
-                char for char in str(position.get("buy_date", "")) if char.isdigit()
-            )[:8]
-            if buy_date == check_date:
-                continue
-            preexisting_aliases.update(_ts_code_aliases(position.get("ts_code", "")))
-        if not preexisting_aliases:
-            return False
-        return any(
-            int(getattr(position, "volume", 0) or 0) > 0
-            and any(
-                alias in preexisting_aliases
-                for alias in _ts_code_aliases(getattr(position, "ts_code", ""))
-            )
-            for position in (broker_positions or [])
-        )
-    except Exception:
-        # 无法完成身份匹配时不把外部持仓误当策略仓；上游计划层仍会按本地旧仓阻断。
+    for position in load_positions():
+        if str(position.get("status", "")).lower() not in {"open", "sell_pending"}:
+            continue
+        buy_date = "".join(
+            char for char in str(position.get("buy_date", "")) if char.isdigit()
+        )[:8]
+        if buy_date == check_date:
+            continue
+        preexisting_aliases.update(_ts_code_aliases(position.get("ts_code", "")))
+    if not preexisting_aliases:
         return False
+    return any(
+        int(getattr(position, "volume", 0) or 0) > 0
+        and any(
+            alias in preexisting_aliases
+            for alias in _ts_code_aliases(getattr(position, "ts_code", ""))
+        )
+        for position in (broker_positions or [])
+    )
 
 
 def _print_account_status(log: Any) -> None:

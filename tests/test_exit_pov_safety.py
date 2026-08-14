@@ -1809,15 +1809,15 @@ class PremarketBuyHandoffTest(unittest.TestCase):
         ) as cancel_mock, patch.object(
             trading_daemon, "record_buy"
         ) as record_mock, patch.object(
-            trading_daemon, "save_pending_buys"
-        ) as save_mock, patch.object(
+            trading_daemon, "_replace_pending_buy_order"
+        ) as replace_mock, patch.object(
             trading_daemon, "_start_premarket_buy_monitor"
         ), patch.object(trading_daemon, "_notify"):
             trading_daemon.confirm_pending_premarket_buys("09:26")
 
         cancel_mock.assert_not_called()
         record_mock.assert_not_called()
-        save_mock.assert_called_once_with([pending])
+        replace_mock.assert_not_called()
 
     def test_0930_cancels_partial_order_before_handing_gap_to_pov(self) -> None:
         pending = self._pending_order()
@@ -1834,14 +1834,14 @@ class PremarketBuyHandoffTest(unittest.TestCase):
         ) as cancel_mock, patch.object(
             trading_daemon, "record_buy"
         ) as record_mock, patch.object(
-            trading_daemon, "clear_pending_buys"
-        ) as clear_mock, patch.object(trading_daemon, "_notify"):
+            trading_daemon, "_replace_pending_buy_order"
+        ) as replace_mock, patch.object(trading_daemon, "_notify"):
             trading_daemon.confirm_pending_premarket_buys("09:30")
 
         self.assertEqual(confirm_mock.call_count, 2)
         cancel_mock.assert_called_once_with({}, "AUCTION-1", "002800.SZ")
         self.assertEqual(record_mock.call_args.kwargs["shares"], 5_000)
-        clear_mock.assert_called_once()
+        replace_mock.assert_called_once_with("AUCTION-1", None)
 
 
 class TransitionLiveOrderGatewayTest(unittest.TestCase):

@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from scripts import trading_daemon as daemon
@@ -187,6 +188,61 @@ class PositionProjectionRecoveryTests(unittest.TestCase):
             with patch.object(daemon, "POSITIONS_FILE", path):
                 with self.assertRaisesRegex(RuntimeError, "读取持仓文件失败"):
                     daemon.load_positions()
+
+    def test_position_identity_failures_never_become_empty_or_zero(self) -> None:
+        broker = [SimpleNamespace(ts_code="000001.SZ", volume=1000, market_value=10200.0)]
+        with patch.object(daemon, "load_positions", side_effect=RuntimeError("ledger corrupt")):
+            with self.assertRaisesRegex(RuntimeError, "ledger corrupt"):
+                daemon._strategy_only_market_value(broker)
+            with self.assertRaisesRegex(RuntimeError, "ledger corrupt"):
+                daemon._broker_has_strategy_position(broker)
+            with self.assertRaisesRegex(RuntimeError, "ledger corrupt"):
+                daemon._broker_has_preexisting_strategy_position(broker)
+
+    def test_pending_buy_file_is_atomic_validated_and_corruption_is_fatal(self) -> None:
+        pending = [{
+            "order_id": "QMT-1",
+            "ts_code": "000001.SZ",
+            "qty": 1000,
+            "strategy_leg": "A",
+        }]
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "pending.json"
+            with patch.object(daemon, "PENDING_BUY_FILE", path):
+                daemon.save_pending_buys(pending)
+                self.assertEqual(daemon.load_pending_buys(), pending)
+                path.write_text("{broken", encoding="utf-8")
+                with patch.object(
+                    daemon,
+                    "_critical_execution_state_failure",
+                    side_effect=RuntimeError("process recovery requested"),
+                ) as recovery:
+                    with self.assertRaisesRegex(RuntimeError, "process recovery requested"):
+                        daemon.load_pending_buys()
+                recovery.assert_called_once()
+
+    def test_live_fill_projection_failure_requests_process_recovery(self) -> None:
+        with (
+            patch.object(daemon, "record_buy", side_effect=OSError("disk unavailable")),
+            patch.object(
+                daemon,
+                "_critical_execution_state_failure",
+                side_effect=RuntimeError("process recovery requested"),
+            ) as recovery,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "process recovery requested"):
+                daemon._record_live_buy(
+                    recovery_context="unit-live-fill",
+                    order_id="QMT-1",
+                    ts_code="000001.SZ",
+                    name="平安银行",
+                    signal_date="20260814",
+                    buy_date="20260817",
+                    shares=1000,
+                    buy_price=10.2,
+                    strategy_leg="A",
+                )
+        self.assertIn("unit-live-fill", recovery.call_args.args[0])
 
 
 if __name__ == "__main__":

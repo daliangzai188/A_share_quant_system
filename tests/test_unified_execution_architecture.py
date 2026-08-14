@@ -57,7 +57,9 @@ class UnifiedExecutionArchitectureTests(unittest.TestCase):
         self.assertNotIn("return _qmt_adapter", functions["_qmt_get"])
         self.assertIn("return _qmt_adapter", functions["_qmt_get_raw"])
         self.assertIn("timeout_callback=_on_qmt_execution_timeout", source)
-        self.assertIn("os._exit(EXIT_CODE_QMT_CHANNEL_POISONED)", source)
+        self.assertIn("_request_process_recovery(", functions["_on_qmt_execution_timeout"])
+        self.assertIn("exit_code=EXIT_CODE_QMT_CHANNEL_POISONED", functions["_on_qmt_execution_timeout"])
+        self.assertIn("os._exit(exit_code)", functions["_request_process_recovery"])
 
     def test_qmt_connect_and_account_verification_create_no_orphan_threads(self) -> None:
         source = (PROJECT_ROOT / "scripts/trading_daemon.py").read_text(encoding="utf-8")
