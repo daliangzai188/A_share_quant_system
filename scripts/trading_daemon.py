@@ -843,7 +843,12 @@ def load_positions() -> list[dict[str, Any]]:
         try:
             if not POSITIONS_FILE.exists():
                 return []
-            return json.loads(POSITIONS_FILE.read_text(encoding="utf-8"))
+            payload = json.loads(POSITIONS_FILE.read_text(encoding="utf-8"))
+            if not isinstance(payload, list) or any(
+                not isinstance(row, dict) for row in payload
+            ):
+                raise ValueError("positions根节点必须是dict列表")
+            return payload
         except Exception as e:
             logger().error("读取持仓文件失败：%s", e)
             # 文件不存在才代表“本地无持仓记录”；已存在但损坏/不可读
@@ -990,7 +995,13 @@ def reconcile_missing_local_positions(broker_positions: Any, source: str) -> int
             if code not in seen_codes:
                 _broker_missing_streak.pop(code, None)
         if changed:
-            save_positions(positions)
+            try:
+                save_positions(positions)
+            except Exception as exc:
+                _critical_execution_state_failure(
+                    f"逐票同步本地持仓({source})",
+                    exc,
+                )
     return changed
 
 
@@ -1039,7 +1050,13 @@ def clear_local_positions_when_broker_empty(source: str) -> int:
             changed += 1
 
         if changed:
-            save_positions(positions)
+            try:
+                save_positions(positions)
+            except Exception as exc:
+                _critical_execution_state_failure(
+                    f"空仓同步本地持仓({source})",
+                    exc,
+                )
         logger().warning(
             "🧹 [幽灵持仓清理] QMT连续2轮确认实盘无持仓，已将本地%d条open/sell_pending持仓标记为closed。来源=%s",
             changed,
@@ -1512,13 +1529,19 @@ def _execute_orders_inprocess(
     allowed_sides: set[str] | None = None,
     allow_t2_close_sell_now: bool = False,
 ) -> bool:
-    """进程内单次 QMT 连接完成验证+下单，消除子进程启动和双次连接延迟。"""
+    """普通开仓执行器；SELL只能走带退出批次/保护底线的唯一平仓状态机。"""
     import pandas as pd
     from dataclasses import asdict
     from src.live_order_gateway import LiveOrderGateway
     from src.broker_adapter import OrderRequest
 
     log = logger()
+    if allowed_sides != {"BUY"}:
+        log.critical(
+            "[%s] 普通计划执行器拒绝SELL/未声明方向；所有平仓必须走唯一退出状态机。",
+            tag,
+        )
+        return False
     config_path = PROJECT_ROOT / "config" / "config.json"
     gateway = LiveOrderGateway(config_path)
 
@@ -1830,15 +1853,20 @@ def _execute_orders_inprocess(
                             f"{s['ts_code']} {s['name']} 卖出后未找到本地持仓记录，请立即核对QMT和positions.json。",
                             level="critical", call=True)
                 elif fill.filled_qty >= held:
-                    mark_position_closed(local_oid, today_str, fill_price)
+                    _mark_live_position_closed(
+                        local_oid, today_str, fill_price, recovery_context=tag
+                    )
                     log.info("✅ [%s] %s 卖出全部成交 %d股 @%.2f，已平仓。",
                              tag, s["ts_code"], fill.filled_qty, fill_price)
                     _notify("sell_success", "✅ 平仓成交",
                             f"{s['ts_code']} {s['name']} 卖出{fill.filled_qty}股 "
                             f"@{fill_price:.2f} 金额{_fmt_wan(fill.filled_qty * fill_price)}")
                 elif fill.filled_qty > 0:
-                    reduce_position_shares(
-                        local_oid, held - fill.filled_qty, fill_price=fill_price
+                    _reduce_live_position_shares(
+                        local_oid,
+                        held - fill.filled_qty,
+                        fill_price=fill_price,
+                        recovery_context=tag,
                     )
                     log.warning("⚠️ [%s] %s 卖出部分成交 %d/%d股 @%.2f，剩余%d股保留持仓待下次卖出。",
                                 tag, s["ts_code"], fill.filled_qty, held, fill_price, held - fill.filled_qty)
@@ -2686,14 +2714,21 @@ def _abc_place_sell_order_direct_locked(
     fill_price = total_amount / total_filled if total_filled > 0 else price
     remaining_after = max(owned_before - total_filled, 0)
     if remaining_after == 0:
-        mark_position_closed(order_id, today_str, fill_price)
+        _mark_live_position_closed(
+            order_id, today_str, fill_price, recovery_context="ABC主平仓"
+        )
         log.info("✅ [ABC平仓] %s %s 全部成交 %d股 @%.2f，已平仓。", ts_code, name, total_filled, fill_price)
         _notify("sell_success", "✅ 平仓成交",
                 f"{ts_code} {name} 卖出{total_filled}股 "
                 f"@{fill_price:.2f} 金额{_fmt_wan(total_filled * fill_price)}")
         return True
     elif total_filled > 0:
-        reduce_position_shares(order_id, remaining_after, fill_price=fill_price)
+        _reduce_live_position_shares(
+            order_id,
+            remaining_after,
+            fill_price=fill_price,
+            recovery_context="ABC主平仓",
+        )
         log.warning("⚠️ [ABC平仓] %s %s 部分成交 %d/%d股 @%.2f，券商预计剩余%d股。",
                     ts_code, name, total_filled, owned_before, fill_price, remaining_after)
         _notify("sell_fail", "⚠️ 平仓部分成交",
@@ -2851,34 +2886,143 @@ _exit_safety_alerted: set[str] = set()
 
 
 def _empty_exit_execution_state() -> dict[str, Any]:
-    return {"version": 1, "batches": {}, "intents": []}
+    return {"version": 1, "state_revision": 0, "batches": {}, "intents": []}
+
+
+def _state_backup_path(path: Path) -> Path:
+    return path.with_name(f"{path.stem}.backup{path.suffix}")
+
+
+def _write_json_state_copy(path: Path, payload: dict[str, Any]) -> None:
+    mkdir_p(path.parent)
+    tmp = path.with_name(
+        f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+    )
+    try:
+        tmp.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _load_redundant_json_state(
+    path: Path,
+    *,
+    label: str,
+    empty_state: dict[str, Any],
+    validator: Any,
+) -> dict[str, Any]:
+    """读取主/备双副本并选择最高revision；备份领先时自动修复主文件。"""
+
+    candidates: list[tuple[int, int, Path, dict[str, Any]]] = []
+    errors: list[str] = []
+    backup = _state_backup_path(path)
+    for priority, candidate in ((1, path), (0, backup)):
+        if not candidate.exists():
+            continue
+        try:
+            payload = json.loads(candidate.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("根节点不是object")
+            validator(payload)
+            revision = max(int(payload.get("state_revision", 0) or 0), 0)
+            candidates.append((revision, priority, candidate, payload))
+        except Exception as exc:
+            errors.append(f"{candidate.name}:{exc}")
+    if not candidates:
+        if not path.exists() and not backup.exists():
+            return dict(empty_state)
+        raise RuntimeError(f"{label}主备副本均不可用:{'；'.join(errors)}")
+    revision, _priority, selected_path, selected = max(
+        candidates,
+        key=lambda item: (item[0], item[1]),
+    )
+    valid_by_path = {
+        candidate_path: (candidate_revision, payload)
+        for candidate_revision, _candidate_priority, candidate_path, payload in candidates
+    }
+    repaired: list[str] = []
+    for candidate_path in (path, backup):
+        current = valid_by_path.get(candidate_path)
+        if current is not None and current[0] == revision and current[1] == selected:
+            continue
+        _write_json_state_copy(candidate_path, selected)
+        repaired.append(candidate_path.name)
+    if repaired:
+        logger().warning(
+            "%s副本缺失、损坏、版本落后或同版本分歧，已按revision=%d修复:%s。",
+            label,
+            revision,
+            ",".join(repaired),
+        )
+    return selected
+
+
+def _save_redundant_json_state(
+    path: Path,
+    state: dict[str, Any],
+    *,
+    label: str,
+    validator: Any,
+) -> None:
+    """先写新版本备份、再写主文件；任一步失败都禁止继续交易。"""
+
+    try:
+        payload = dict(state)
+        payload["state_revision"] = max(
+            int(payload.get("state_revision", 0) or 0), 0
+        ) + 1
+        payload["state_updated_at"] = now_beijing().isoformat()
+        validator(payload)
+        _write_json_state_copy(_state_backup_path(path), payload)
+        _write_json_state_copy(path, payload)
+        state.clear()
+        state.update(payload)
+    except Exception as exc:
+        _critical_execution_state_failure(f"保存{label}", exc)
+
+
+def _validate_exit_execution_state(state: dict[str, Any]) -> None:
+    batches = state.get("batches")
+    intents = state.get("intents")
+    if not isinstance(batches, dict) or not isinstance(intents, list):
+        raise ValueError("缺少batches/intents")
+    tokens: set[str] = set()
+    for intent in intents:
+        if not isinstance(intent, dict):
+            raise ValueError("intent不是object")
+        token = str(intent.get("token", "") or "").strip()
+        if not token or token in tokens:
+            raise ValueError(f"intent token缺失或重复:{token}")
+        tokens.add(token)
 
 
 def _load_exit_execution_state() -> dict[str, Any]:
     """读取退出批次/意图账本；损坏时抛错并阻断卖单，绝不静默清空。"""
     with _exit_execution_state_lock:
-        if not EXIT_EXECUTION_STATE_FILE.exists():
-            return _empty_exit_execution_state()
         try:
-            state = json.loads(EXIT_EXECUTION_STATE_FILE.read_text(encoding="utf-8"))
+            return _load_redundant_json_state(
+                EXIT_EXECUTION_STATE_FILE,
+                label="退出执行状态",
+                empty_state=_empty_exit_execution_state(),
+                validator=_validate_exit_execution_state,
+            )
         except Exception as exc:
-            raise RuntimeError(f"退出执行状态文件读取失败:{exc}") from exc
-        if not isinstance(state, dict):
-            raise RuntimeError("退出执行状态文件根节点不是object")
-        batches = state.get("batches")
-        intents = state.get("intents")
-        if not isinstance(batches, dict) or not isinstance(intents, list):
-            raise RuntimeError("退出执行状态文件缺少batches/intents")
-        return state
+            _critical_execution_state_failure("读取退出执行状态", exc)
 
 
 def _save_exit_execution_state(state: dict[str, Any]) -> None:
     """原子保存退出状态；PREPARED必须先于券商place_order落盘。"""
     with _exit_execution_state_lock:
-        mkdir_p(EXIT_EXECUTION_STATE_FILE.parent)
-        tmp = EXIT_EXECUTION_STATE_FILE.with_suffix(".tmp")
-        tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(EXIT_EXECUTION_STATE_FILE)
+        _save_redundant_json_state(
+            EXIT_EXECUTION_STATE_FILE,
+            state,
+            label="退出执行状态",
+            validator=_validate_exit_execution_state,
+        )
 
 
 def _exit_batch_key(trade_date: str, ts_code: str) -> str:
@@ -3123,6 +3267,19 @@ def _exit_commitments_by_code(
             if oid:
                 by_id[oid] = data
 
+    # 先一次性认领当前账户/日期/股票下所有已绑定委托，不能依赖intent遍历
+    # 顺序。否则“无单号intent在前、已绑定intent在后”时，前者会把后者的
+    # 同代码/同remark/同数量委托也纳入候选，造成歧义或错误归属。
+    claimed_broker_order_ids = {
+        str(intent.get("broker_order_id", "") or "").strip()
+        for intent in state.get("intents", [])
+        if isinstance(intent, dict)
+        and str(intent.get("trade_date", "")).replace("-", "")[:8] == date_key
+        and str(intent.get("account_fingerprint", "")) == account_fingerprint
+        and str(intent.get("ts_code", "")).upper().split(".")[0] == short
+        and str(intent.get("broker_order_id", "") or "").strip()
+    }
+
     filled = active = unknown = 0
     matched_object_ids: set[int] = set()
     for intent in state.get("intents", []):
@@ -3147,6 +3304,16 @@ def _exit_commitments_by_code(
             recovery_candidates: list[dict[str, Any]] = []
             for candidate in order_rows:
                 if id(candidate) in matched_object_ids:
+                    continue
+                candidate_oid = str(
+                    first_present(
+                        candidate,
+                        ["order_id", "m_nOrderID", "order_sysid", "m_strOrderSysID"],
+                        "",
+                    )
+                    or ""
+                ).strip()
+                if candidate_oid and candidate_oid in claimed_broker_order_ids:
                     continue
                 candidate_code = str(
                     first_present(candidate, ["stock_code", "m_strInstrumentID", "ts_code"], "")
@@ -3185,6 +3352,7 @@ def _exit_commitments_by_code(
                     or ""
                 ).strip()
                 if recovered_oid and str(intent.get("token", "")):
+                    claimed_broker_order_ids.add(recovered_oid)
                     _update_exit_order_intent(
                         str(intent.get("token", "")),
                         status=str(intent.get("status", "PREPARED") or "PREPARED"),
@@ -3492,12 +3660,16 @@ def _resolve_exit_intent_by_broker_order_id(
     *,
     filled_qty: int,
     terminal_known: bool = True,
+    business_date: str = "",
 ) -> bool:
-    """按券商单号释放已知终态intent；兼容无intent的升级前旧单。"""
+    """按账户+交易日+券商单号释放终态intent，允许券商跨日复用单号。"""
     oid = str(broker_order_id or "").strip()
     if not oid:
         return False
     account_fingerprint = _exit_account_fingerprint()
+    date_key = str(
+        business_date or today_beijing().strftime("%Y%m%d")
+    ).replace("-", "")[:8]
     with _exit_execution_state_lock:
         state = _load_exit_execution_state()
         matched = False
@@ -3505,6 +3677,8 @@ def _resolve_exit_intent_by_broker_order_id(
             if str(intent.get("broker_order_id", "") or "").strip() != oid:
                 continue
             if str(intent.get("account_fingerprint", "")) != account_fingerprint:
+                continue
+            if str(intent.get("trade_date", "")).replace("-", "")[:8] != date_key:
                 continue
             quantity = max(int(intent.get("quantity", 0) or 0), 0)
             old_filled = min(max(int(intent.get("filled_qty", 0) or 0), 0), quantity)
@@ -3522,17 +3696,25 @@ def _resolve_exit_intent_by_broker_order_id(
         return matched
 
 
-def _exit_intent_by_broker_order_id(broker_order_id: str) -> dict[str, Any] | None:
-    """返回券商单对应的持久化intent副本；找不到时返回None。"""
+def _exit_intent_by_broker_order_id(
+    broker_order_id: str,
+    *,
+    business_date: str = "",
+) -> dict[str, Any] | None:
+    """按账户+交易日+券商单号返回intent；找不到时返回None。"""
     oid = str(broker_order_id or "").strip()
     if not oid:
         return None
     account_fingerprint = _exit_account_fingerprint()
+    date_key = str(
+        business_date or today_beijing().strftime("%Y%m%d")
+    ).replace("-", "")[:8]
     state = _load_exit_execution_state()
     for intent in reversed(state.get("intents", [])):
         if (
             str(intent.get("broker_order_id", "") or "").strip() == oid
             and str(intent.get("account_fingerprint", "")) == account_fingerprint
+            and str(intent.get("trade_date", "")).replace("-", "")[:8] == date_key
         ):
             return dict(intent)
     return None
@@ -3609,7 +3791,10 @@ def _apply_known_exit_fill(
                 target["sell_price"] = _recover_sell_price_from_fills(target)
             else:
                 target["status"] = "open"
-        save_positions(positions)
+        try:
+            save_positions(positions)
+        except Exception as exc:
+            _critical_execution_state_failure("已知卖出成交投影", exc)
         return applied
 
 
@@ -3662,14 +3847,19 @@ def _place_exit_order_with_intent(
         _update_exit_order_intent(token, status="REJECTED", terminal_known=True)
         raise RuntimeError(f"[{phase}] 平仓委托在发送前被时间门禁阻断:{blocked}")
     result = adapter.place_order(request)
-    if bool(getattr(result, "accepted", False)):
-        _update_exit_order_intent(
-            token,
-            status="SUBMITTED",
-            broker_order_id=str(getattr(result, "order_id", "") or ""),
-        )
-    else:
-        _update_exit_order_intent(token, status="REJECTED", terminal_known=True)
+    try:
+        if bool(getattr(result, "accepted", False)):
+            _update_exit_order_intent(
+                token,
+                status="SUBMITTED",
+                broker_order_id=str(getattr(result, "order_id", "") or ""),
+            )
+        else:
+            _update_exit_order_intent(token, status="REJECTED", terminal_known=True)
+    except Exception as exc:
+        # 券商调用已经发生，不能把本地绑定失败当普通单笔异常后继续拆单。
+        # SQLite统一意图仍保留券商事实；整进程恢复后再唯一归属。
+        _critical_execution_state_failure(f"{phase}券商结果绑定", exc)
     return result, token
 
 
@@ -4144,7 +4334,12 @@ def _exit_pov_slice(
                 plan["own_fill_since_sample"] = float(plan.get("own_fill_since_sample", 0.0)) + fq * fp
                 if plan["remain_sh"] == 0:
                     avg = plan["sold_amt"] / max(plan["sold_qty"], 1)
-                    mark_position_closed(pos.get("order_id", ""), today_str, avg)
+                    _mark_live_position_closed(
+                        pos.get("order_id", ""),
+                        today_str,
+                        avg,
+                        recovery_context="卖出POV",
+                    )
                     plan["done"] = True
                     log.warning("✅ [卖出POV] %s %s 分批平仓完成:%d股 均价%.2f",
                                 ts_code, pos.get("name", ""), plan["sold_qty"], avg)
@@ -4152,8 +4347,11 @@ def _exit_pov_slice(
                             f"{ts_code} {pos.get('name','')} 分批卖出{plan['sold_qty']}股 "
                             f"均价{avg:.2f} 市值{_fmt_wan(plan['sold_amt'])}")
                 else:
-                    reduce_position_shares(
-                        pos.get("order_id", ""), int(plan["remain_sh"]), fill_price=fp
+                    _reduce_live_position_shares(
+                        pos.get("order_id", ""),
+                        int(plan["remain_sh"]),
+                        fill_price=fp,
+                        recovery_context="卖出POV",
                     )
             log.info(
                 "[卖出POV] %s 外部流量%.1f万 预算%.1f万 %s 挂%d股@%.2f 成%d股@%.2f 剩%d股",
@@ -4860,13 +5058,19 @@ def _watchdog_reconcile_after_close(broker_cfg: dict, log: Any) -> None:
                 if apply_qty <= 0:
                     continue
                 if apply_qty >= held:
-                    mark_position_closed(pos.get("order_id", ""), today_str, trade_vwap)
+                    _mark_live_position_closed(
+                        pos.get("order_id", ""),
+                        today_str,
+                        trade_vwap,
+                        recovery_context="收盘看门狗成交对账",
+                    )
                 else:
-                    reduce_position_shares(
+                    _reduce_live_position_shares(
                         pos.get("order_id", ""),
                         held - apply_qty,
                         fill_price=trade_vwap,
                         fill_date=today_str,
+                        recovery_context="收盘看门狗成交对账",
                     )
                 remaining_fill -= apply_qty
             log.warning(
@@ -4923,15 +5127,19 @@ def _watchdog_reconcile_after_close(broker_cfg: dict, log: Any) -> None:
                         if apply_qty <= 0:
                             continue
                         if apply_qty >= held:
-                            mark_position_closed(
-                                pos.get("order_id", ""), today_str, reconcile_price
+                            _mark_live_position_closed(
+                                pos.get("order_id", ""),
+                                today_str,
+                                reconcile_price,
+                                recovery_context="收盘安全批次对账",
                             )
                         else:
-                            reduce_position_shares(
+                            _reduce_live_position_shares(
                                 pos.get("order_id", ""),
                                 held - apply_qty,
                                 fill_price=reconcile_price,
                                 fill_date=today_str,
+                                recovery_context="收盘安全批次对账",
                             )
                         still_to_apply -= apply_qty
                     applied_from_batch = correction - still_to_apply
@@ -4956,7 +5164,12 @@ def _watchdog_reconcile_after_close(broker_cfg: dict, log: Any) -> None:
 
         if first_qty == 0 and second_qty == 0:
             for pos in remaining_rows:
-                mark_position_closed(pos.get("order_id", ""), today_str, trade_vwap)
+                _mark_live_position_closed(
+                    pos.get("order_id", ""),
+                    today_str,
+                    trade_vwap,
+                    recovery_context="收盘双空仓确认",
+                )
             log.warning(
                 "✅ [平仓看门狗] %s 两次确认QMT余仓为0；本地%d股已回写平仓，"
                 "系统卖出成交%d股、VWAP %.2f。",
@@ -5796,7 +6009,7 @@ def check_and_close_positions(in_close_window: bool = False) -> None:
             _notify("sell_fail", "❌ 平仓检查无法读取持仓",
                     f"positions.json两次读取失败（{e2}），本轮自动平仓未执行，请立即人工检查持仓！",
                     level="timeSensitive")
-            return
+            _critical_execution_state_failure("平仓检查读取持仓", e2)
 
     if not positions:
         logger().info("平仓检查：无持仓")
@@ -5818,7 +6031,7 @@ def check_and_close_positions(in_close_window: bool = False) -> None:
                     f"config.json两次读取失败（{e2}），无法确认实盘/模拟模式，本轮自动平仓未执行，"
                     f"请立即人工检查持仓！",
                     level="timeSensitive")
-            return
+            _critical_execution_state_failure("平仓检查读取实盘配置", e2)
     qmt_enabled = bool(config.get("broker_adapter_enabled")) and bool(config.get("qmt_enabled"))
 
     for pos in positions:
@@ -5880,7 +6093,13 @@ def check_and_close_positions(in_close_window: bool = False) -> None:
                     for p in positions_fresh:
                         if p["order_id"] == pos["order_id"] and p["status"] == "open":
                             p["status"] = "sell_pending"
-                    save_positions(positions_fresh)
+                    try:
+                        save_positions(positions_fresh)
+                    except Exception as exc:
+                        _critical_execution_state_failure(
+                            "平仓前sell_pending状态投影",
+                            exc,
+                        )
                 logger().warning("市场未开盘，%s %s 标记 sell_pending，开盘后自动处理", ts_code, name)
 
         except Exception as e:
@@ -6133,14 +6352,19 @@ def run_script(name: str, *args: str, timeout: int = TIMEOUT_DATA_STEP) -> bool:
 def _d_relay_pair_load_state() -> dict[str, Any]:
     """读取当日D接力成对POV状态；当日文件损坏时抛错并停止交易。"""
     with _d_relay_pair_state_lock:
-        if not D_RELAY_PAIR_STATE_FILE.exists():
-            return {}
+        def _validate(state: dict[str, Any]) -> None:
+            if state and "date" not in state:
+                raise ValueError("缺少date")
+
         try:
-            state = json.loads(D_RELAY_PAIR_STATE_FILE.read_text(encoding="utf-8"))
+            state = _load_redundant_json_state(
+                D_RELAY_PAIR_STATE_FILE,
+                label="D接力状态",
+                empty_state={},
+                validator=_validate,
+            )
         except Exception as exc:
-            raise RuntimeError(f"D接力状态文件读取失败:{exc}") from exc
-        if not isinstance(state, dict):
-            raise RuntimeError("D接力状态文件根节点不是object")
+            _critical_execution_state_failure("读取D接力状态", exc)
         if str(state.get("date", "")) != today_beijing().strftime("%Y%m%d"):
             return {}
         return state
@@ -6149,10 +6373,16 @@ def _d_relay_pair_load_state() -> dict[str, Any]:
 def _d_relay_pair_save_state(state: dict[str, Any]) -> None:
     """原子保存D接力状态；保存失败必须向上抛出，不能在失忆状态下继续下单。"""
     with _d_relay_pair_state_lock:
-        mkdir_p(D_RELAY_PAIR_STATE_FILE.parent)
-        tmp = D_RELAY_PAIR_STATE_FILE.with_suffix(".tmp")
-        tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(D_RELAY_PAIR_STATE_FILE)
+        def _validate(payload: dict[str, Any]) -> None:
+            if not str(payload.get("date", "") or ""):
+                raise ValueError("缺少date")
+
+        _save_redundant_json_state(
+            D_RELAY_PAIR_STATE_FILE,
+            state,
+            label="D接力状态",
+            validator=_validate,
+        )
 
 
 def _d_relay_pair_active_today() -> bool:
@@ -6360,7 +6590,10 @@ def _handoff_same_stock_d_relay(state: dict[str, Any]) -> None:
             matched += 1
         if matched != 1:
             raise RuntimeError(f"同票接力本地D持仓必须唯一，实际{matched}条")
-        save_positions(positions)
+        try:
+            save_positions(positions)
+        except Exception as exc:
+            _critical_execution_state_failure("D同票接力持仓归属切换", exc)
     state["status"] = "DONE"
     state["done_reason"] = "D与接力候选同票，已直接变更策略归属，未产生卖买委托"
     state["completed_at"] = now_beijing().isoformat()
@@ -6444,13 +6677,19 @@ def _d_relay_apply_sell_fill(
         # remaining是根据“初始股数-累计确认成交”推导的绝对值；即使进程恰在
         # 本地回写后崩溃，重启重放也不会再次多减一次。
         if remaining > 0:
-            reduce_position_shares(
-                str(d.get("local_order_id", "")), remaining,
-                fill_price=fill_price, fill_date=state["date"],
+            _reduce_live_position_shares(
+                str(d.get("local_order_id", "")),
+                remaining,
+                fill_price=fill_price,
+                fill_date=state["date"],
+                recovery_context="D接力卖出",
             )
         else:
-            mark_position_closed(
-                str(d.get("local_order_id", "")), state["date"], fill_price
+            _mark_live_position_closed(
+                str(d.get("local_order_id", "")),
+                state["date"],
+                fill_price,
+                recovery_context="D接力卖出",
             )
         state["confirmed_sell_qty"] = total_confirmed
         state["confirmed_sell_amount"] = float(state.get("confirmed_sell_amount", 0.0) or 0.0) + qty * fill_price
@@ -7452,7 +7691,11 @@ def job_premarket_position_sync() -> None:
                 "✅ [盘前持仓同步] %s %s (D策略) 实盘持仓已消失（集合竞价成交），本地标记已平仓。",
                 ts_code, pos.get("name", ""),
             )
-            mark_position_closed(pos.get("order_id", ""), today_str)
+            _mark_live_position_closed(
+                pos.get("order_id", ""),
+                today_str,
+                recovery_context="竞价平仓同步",
+            )
             _notify("sell_success", "✅ D集合竞价平仓确认",
                     f"{ts_code} {pos.get('name', '')} 实盘持仓已清空，09:26同步标记已平仓。")
             synced_any = True
@@ -7877,34 +8120,45 @@ def _pov_auction_share_for(sig_amt: float, lt: dict) -> float:
 
 POV_STATE_FILE = PROJECT_ROOT / "data" / "state" / "pov_state.json"
 POV_EXEC_LOG = PROJECT_ROOT / "reports" / "pov_execution_log.csv"
-_pov_state_lock = threading.Lock()
+_pov_state_lock = threading.RLock()
 _pov_thread_lock = threading.Lock()
 _pov_thread: threading.Thread | None = None
 
 
 def _pov_load_state() -> dict[str, Any]:
-    try:
-        with _pov_state_lock:
-            if not POV_STATE_FILE.exists():
-                return {}
-            payload = json.loads(POV_STATE_FILE.read_text(encoding="utf-8"))
+    with _pov_state_lock:
+        def _validate(payload: dict[str, Any]) -> None:
+            if payload and not isinstance(payload.get("items", []), list):
+                raise ValueError("items不是list")
+
+        try:
+            payload = _load_redundant_json_state(
+                POV_STATE_FILE,
+                label="买入POV状态",
+                empty_state={},
+                validator=_validate,
+            )
+        except Exception as exc:
+            _critical_execution_state_failure("读取买入POV状态", exc)
         if payload.get("date") != today_beijing().strftime("%Y%m%d"):
             return {}
         return payload
-    except Exception as e:
-        logger().error("读取POV状态失败：%s", e)
-        return {}
 
 
 def _pov_save_state(state: dict[str, Any]) -> None:
-    try:
-        with _pov_state_lock:
-            mkdir_p(POV_STATE_FILE.parent)
-            tmp = POV_STATE_FILE.with_suffix(".tmp")
-            tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-            tmp.replace(POV_STATE_FILE)
-    except Exception as e:
-        logger().error("保存POV状态失败：%s", e)
+    with _pov_state_lock:
+        def _validate(payload: dict[str, Any]) -> None:
+            if not str(payload.get("date", "") or ""):
+                raise ValueError("缺少date")
+            if not isinstance(payload.get("items", []), list):
+                raise ValueError("items不是list")
+
+        _save_redundant_json_state(
+            POV_STATE_FILE,
+            state,
+            label="买入POV状态",
+            validator=_validate,
+        )
 
 
 def _pov_active_today() -> bool:
@@ -14025,6 +14279,7 @@ def _get_qmt_execution_service() -> IntentBrokerExecutionService:
                 # 行情/下单均应在35秒内返回，否则线程已不可信。
                 default_timeout=35.0,
                 timeout_callback=_on_qmt_execution_timeout,
+                recovery_required_callback=_on_broker_result_unknown,
             )
         return _qmt_execution_service
 
@@ -14171,6 +14426,7 @@ EXIT_CODE_SOCKET_EXHAUSTED = 87
 EXIT_CODE_QMT_CHANNEL_POISONED = 88
 EXIT_CODE_D_POSITION_RECOVERY = 89
 EXIT_CODE_EXECUTION_STATE_RECOVERY = 90
+EXIT_CODE_BROKER_RESULT_UNKNOWN = 91
 _ONCE_PER_STATE: dict[str, float] = {}
 _ONCE_PER_ATTEMPT: dict[str, float] = {}
 _PROCESS_RECOVERY_EVENT = threading.Event()
@@ -14273,6 +14529,48 @@ def _record_live_buy(*, recovery_context: str, **record_kwargs: Any) -> None:
         )
 
 
+def _mark_live_position_closed(
+    order_id: str,
+    sell_date: str,
+    sell_price: float = 0.0,
+    *,
+    recovery_context: str,
+) -> None:
+    """实盘全成回写统一入口；本地失败后禁止继续卖下一笔。"""
+
+    try:
+        mark_position_closed(order_id, sell_date, sell_price)
+    except Exception as exc:
+        _critical_execution_state_failure(
+            f"{recovery_context}卖出全成投影",
+            exc,
+        )
+
+
+def _reduce_live_position_shares(
+    order_id: str,
+    remaining_shares: int,
+    fill_price: float = 0.0,
+    fill_date: str = "",
+    *,
+    recovery_context: str,
+) -> None:
+    """实盘部成回写统一入口；本地失败后禁止继续卖下一笔。"""
+
+    try:
+        reduce_position_shares(
+            order_id,
+            remaining_shares,
+            fill_price=fill_price,
+            fill_date=fill_date,
+        )
+    except Exception as exc:
+        _critical_execution_state_failure(
+            f"{recovery_context}卖出部成投影",
+            exc,
+        )
+
+
 def _on_qmt_execution_timeout(reason: str, sequence: int) -> None:
     """QMT C++调用无法安全中断时，用进程重启回收整条通道。"""
 
@@ -14285,6 +14583,23 @@ def _on_qmt_execution_timeout(reason: str, sequence: int) -> None:
         body=(
             f"{reason}。未知结果委托不会盲目重发；keeper拉起新进程后会先用"
             "QMT持仓、委托和成交恢复，再启动交易线程。"
+        ),
+        clear_qmt_cache=True,
+    )
+
+
+def _on_broker_result_unknown(reason: str, sequence: int) -> None:
+    """下单/撤单调用异常且结果未知时，立即切换到券商事实恢复。"""
+
+    message = f"券商交易动作结果未知：{reason} sequence={sequence}"
+    _request_process_recovery(
+        reason=message,
+        exit_code=EXIT_CODE_BROKER_RESULT_UNKNOWN,
+        heartbeat_status="broker_result_recovery_restarting",
+        title="🔄 券商交易结果未知，程序自动恢复",
+        body=(
+            f"{reason}。系统不会盲目重发；keeper拉起新进程后会先核对QMT"
+            "委托、成交、持仓和事务意图，再恢复开平仓线程。"
         ),
         clear_qmt_cache=True,
     )
@@ -15046,6 +15361,28 @@ def _project_recovered_buy_intents(broker_positions: Any) -> int:
     return projected_count
 
 
+def _validate_local_execution_state_for_startup() -> dict[str, int]:
+    """交易门禁放行前完整读取全部权威本地状态。
+
+    券商意图对账PASS只说明SQLite与QMT一致；positions、盘前待确认、退出批次、
+    D接力和买入POV任一文件损坏，同样可能造成重复委托或漏平仓。因此这些状态
+    必须在打印“门禁通过”和启动任何交易线程之前全部可读。
+    """
+
+    positions = load_positions()
+    pending_buys = load_pending_buys()
+    exit_state = _load_exit_execution_state()
+    d_relay_state = _d_relay_pair_load_state()
+    pov_state = _pov_load_state()
+    return {
+        "positions": len(positions),
+        "pending_buys": len(pending_buys),
+        "exit_intents": len(exit_state.get("intents", [])),
+        "d_relay_active": int(bool(d_relay_state)),
+        "pov_items": len(pov_state.get("items", [])),
+    }
+
+
 def wait_for_trade_recovery_gate() -> None:
     """恢复门禁未通过时fail-closed，不启动开仓、平仓或看门狗线程。"""
 
@@ -15065,13 +15402,21 @@ def wait_for_trade_recovery_gate() -> None:
         try:
             outcome = _recover_trade_execution_state_once()
             if outcome.status == "PASS":
+                local_state = _validate_local_execution_state_for_startup()
                 log.info(
                     "✅ 交易恢复门禁通过：待恢复%d笔，已对账%d笔，"
-                    "仍在券商活跃%d笔，recovery_id=%s。",
+                    "仍在券商活跃%d笔，recovery_id=%s；"
+                    "本地状态校验=持仓%d/待确认买单%d/退出意图%d/"
+                    "D接力%d/POV条目%d。",
                     outcome.recoverable_count,
                     outcome.recovered_count,
                     outcome.active_count,
                     outcome.recovery_id,
+                    local_state["positions"],
+                    local_state["pending_buys"],
+                    local_state["exit_intents"],
+                    local_state["d_relay_active"],
+                    local_state["pov_items"],
                 )
                 return
             short_reasons = "；".join(
@@ -15151,13 +15496,17 @@ def main() -> None:
 
     ensure_trade_calendar_fresh()
 
+    resume_d_relay_worker = False
+    resume_pov_worker = False
+
     # D接力成对POV断点恢复：状态文件锁定D、候选和所有确认金额；重启后先恢复
-    # 未知委托终态，再继续“卖一片、买一片”，不会退回旧版整仓竞价卖出。
+    # 未知委托终态。这里只识别恢复任务，不启动执行线程；必须等孤儿成交恢复和
+    # 启动平仓核对都结束，才继续“卖一片、买一片”。
     try:
         if is_trade_day(now_beijing().date()) and _d_relay_pair_active_today():
             if datetime.time(9, 25) <= now_beijing().time() < datetime.time(10, 30):
-                log.warning("检测到未完成的D接力成对POV状态，恢复执行线程。")
-                _start_d_relay_pair_worker()
+                log.warning("检测到未完成的D接力成对POV状态；待全部启动恢复完成后续跑。")
+                resume_d_relay_worker = True
             elif now_beijing().time() >= datetime.time(10, 30):
                 # 进程可能恰在10:30收口前崩溃。重启后先处理未知委托终态，再把
                 # D余仓留到原计划日，不能让ACTIVE状态悬空到收盘。
@@ -15177,13 +15526,13 @@ def main() -> None:
         log.critical("D接力成对POV状态恢复检查异常：%s", e)
         raise RuntimeError("D接力恢复未完成，禁止启动其他交易线程") from e
 
-    # 普通POV平滑执行断点恢复：daemon在09:25~10:30间重启时接续未完成的平滑买入
+    # 普通POV平滑执行断点恢复：同样只登记待恢复任务，不能抢在持仓/平仓恢复前下单。
     try:
         if (is_trade_day(now_beijing().date())
                 and datetime.time(9, 25) <= now_beijing().time() < datetime.time(10, 30)
                 and _pov_active_today()):
-            log.warning("检测到未完成的POV平滑执行状态，恢复执行线程。")
-            _start_pov_worker()
+            log.warning("检测到未完成的POV平滑执行状态；待全部启动恢复完成后续跑。")
+            resume_pov_worker = True
     except Exception as e:
         log.critical("POV状态恢复检查异常：%s", e)
         raise RuntimeError("POV恢复未完成，禁止启动其他交易线程") from e
@@ -15220,6 +15569,12 @@ def main() -> None:
     # 只有在事务意图、D接力/POV断点、孤儿成交和到期持仓全部完成恢复后，
     # 才允许启动任何持续交易线程。这个顺序防止重启瞬间看门狗、止盈和POV
     # 同时抢旧状态，导致重复委托或漏平仓。
+    if resume_d_relay_worker:
+        log.warning("全部启动恢复已完成，现恢复D接力成对POV执行线程。")
+        _start_d_relay_pair_worker()
+    if resume_pov_worker:
+        log.warning("全部启动恢复已完成，现恢复普通买入POV执行线程。")
+        _start_pov_worker()
     threading.Thread(
         target=_daily_calendar_sentinel,
         daemon=True,

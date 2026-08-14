@@ -191,20 +191,26 @@ class IntentBrokerExecutionServiceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "execution_events.sqlite3"
             adapter = ExplodingAdapter()
+            recovery_reasons: list[str] = []
             service = IntentBrokerExecutionService(
                 intent_store=TradeIntentStore(path),
                 account_fingerprint_provider=lambda: "acct-hash",
                 business_date_provider=lambda: "20260817",
                 default_timeout=2,
+                recovery_required_callback=lambda reason, _sequence: recovery_reasons.append(reason),
             )
             proxy = service.proxy(lambda: adapter)
             with self.assertRaisesRegex(RuntimeError, "reply lost"):
                 proxy.place_order(self._request())
             row = TradeIntentStore(path).list_recoverable_intents()[0]
             self.assertEqual(row["status"], STATUS_RECOVERY_REQUIRED)
-            with self.assertRaisesRegex(RuntimeError, "禁止重发"):
+            with self.assertRaisesRegex(RuntimeError, "中毒|禁止重发"):
                 proxy.place_order(self._request())
+            with self.assertRaisesRegex(RuntimeError, "中毒"):
+                proxy.query_account()
             self.assertEqual(adapter.calls, ["place:盘前买入-20260817"])
+            self.assertEqual(len(recovery_reasons), 1)
+            self.assertIn("结果未知", recovery_reasons[0])
             service.shutdown()
 
     def test_fill_and_cancel_update_same_authoritative_intent(self) -> None:

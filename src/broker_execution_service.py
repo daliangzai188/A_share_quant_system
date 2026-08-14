@@ -362,18 +362,39 @@ class IntentBrokerExecutionService(BrokerExecutionService):
         name: str = "qmt-intent-execution",
         default_timeout: float = 120.0,
         timeout_callback: Callable[[str, int], None] | None = None,
+        recovery_required_callback: Callable[[str, int], None] | None = None,
     ) -> None:
         super().__init__(
             name=name,
             default_timeout=default_timeout,
             timeout_callback=timeout_callback,
         )
+        self._recovery_required_callback = recovery_required_callback
         self.intent_store = intent_store
         self.account_fingerprint_provider = account_fingerprint_provider
         self.business_date_provider = business_date_provider
 
     def proxy(self, adapter_provider: AdapterProvider) -> "IntentSerializedBrokerProxy":
         return IntentSerializedBrokerProxy(self, adapter_provider)
+
+    def _notify_recovery_required(self, reason: str) -> None:
+        # 下单/撤单抛异常时，券商侧可能已经受理。此时和超时完全一样，当前
+        # QMT会话的后续结果都不再可信：先毒化唯一执行通道，阻止进程退出前
+        # 队列中的下一笔命令继续执行，再通知宿主做进程级事实恢复。
+        with self._lifecycle_lock:
+            if not self._poisoned:
+                self._poisoned = True
+                self._poison_reason = str(reason)
+                self._poison_sequence = 0
+        callback = self._recovery_required_callback
+        if callback is None:
+            return
+        try:
+            callback(str(reason), 0)
+        except BaseException:
+            # 权威意图已经标成RECOVERY_REQUIRED；回调只负责让宿主进程
+            # 立即重启恢复，回调失败不能掩盖原始券商未知结果异常。
+            pass
 
     def _intent_spec(self, request: OrderRequest) -> TradeIntentSpec:
         account_fingerprint = str(self.account_fingerprint_provider() or "").strip()
@@ -530,33 +551,50 @@ class IntentBrokerExecutionService(BrokerExecutionService):
             try:
                 result = adapter_provider().place_order(request)
             except BaseException as exc:
-                self.intent_store.transition_intent(
-                    intent_id,
-                    STATUS_RECOVERY_REQUIRED,
-                    expected_statuses={STATUS_SUBMITTING},
-                    reason="QMT提交抛异常，结果未知",
-                    error_code=type(exc).__name__,
-                    error_message=str(exc),
-                )
-                raise
-            if bool(result.accepted):
-                order_id = str(result.order_id or "").strip()
-                if not order_id:
+                try:
                     self.intent_store.transition_intent(
                         intent_id,
                         STATUS_RECOVERY_REQUIRED,
                         expected_statuses={STATUS_SUBMITTING},
-                        reason="QMT受理但未返回券商单号",
-                        error_code="MISSING_ORDER_ID",
+                        reason="QMT提交抛异常，结果未知",
+                        error_code=type(exc).__name__,
+                        error_message=str(exc),
                     )
+                finally:
+                    self._notify_recovery_required(
+                        f"券商提交异常且结果未知:intent={intent_id} {type(exc).__name__}:{exc}"
+                    )
+                raise
+            if bool(result.accepted):
+                order_id = str(result.order_id or "").strip()
+                if not order_id:
+                    try:
+                        self.intent_store.transition_intent(
+                            intent_id,
+                            STATUS_RECOVERY_REQUIRED,
+                            expected_statuses={STATUS_SUBMITTING},
+                            reason="QMT受理但未返回券商单号",
+                            error_code="MISSING_ORDER_ID",
+                        )
+                    finally:
+                        self._notify_recovery_required(
+                            f"券商受理但未返回委托号:intent={intent_id}"
+                        )
                     raise RuntimeError("QMT受理委托但未返回order_id，禁止盲目重发")
-                self.intent_store.transition_intent(
-                    intent_id,
-                    STATUS_SUBMITTED,
-                    expected_statuses={STATUS_SUBMITTING},
-                    reason="QMT委托已受理",
-                    broker_order_id=order_id,
-                )
+                try:
+                    self.intent_store.transition_intent(
+                        intent_id,
+                        STATUS_SUBMITTED,
+                        expected_statuses={STATUS_SUBMITTING},
+                        reason="QMT委托已受理",
+                        broker_order_id=order_id,
+                    )
+                except BaseException as exc:
+                    self._notify_recovery_required(
+                        f"券商已受理但事务账本绑定失败:intent={intent_id} order={order_id} "
+                        f"{type(exc).__name__}:{exc}"
+                    )
+                    raise
             else:
                 self.intent_store.transition_intent(
                     intent_id,
@@ -606,19 +644,24 @@ class IntentBrokerExecutionService(BrokerExecutionService):
         try:
             return bool(self.call(adapter_provider, "cancel_order", order_id, timeout=timeout))
         except BaseException as exc:
-            current = self.intent_store.get_by_broker_order_id(
-                order_id,
-                account_fingerprint=account_fingerprint,
-                business_date=business_date,
-            )
-            if current is not None and str(current["status"]) not in TERMINAL_STATUSES:
-                self.intent_store.transition_intent(
-                    str(current["intent_id"]),
-                    STATUS_RECOVERY_REQUIRED,
-                    expected_statuses={str(current["status"])},
-                    reason="撤单调用异常，订单终态未知",
-                    error_code=type(exc).__name__,
-                    error_message=str(exc),
+            try:
+                current = self.intent_store.get_by_broker_order_id(
+                    order_id,
+                    account_fingerprint=account_fingerprint,
+                    business_date=business_date,
+                )
+                if current is not None and str(current["status"]) not in TERMINAL_STATUSES:
+                    self.intent_store.transition_intent(
+                        str(current["intent_id"]),
+                        STATUS_RECOVERY_REQUIRED,
+                        expected_statuses={str(current["status"])},
+                        reason="撤单调用异常，订单终态未知",
+                        error_code=type(exc).__name__,
+                        error_message=str(exc),
+                    )
+            finally:
+                self._notify_recovery_required(
+                    f"撤单调用异常且终态未知:order={order_id} {type(exc).__name__}:{exc}"
                 )
             raise
 

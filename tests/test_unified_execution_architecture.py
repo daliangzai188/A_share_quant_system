@@ -103,6 +103,25 @@ class UnifiedExecutionArchitectureTests(unittest.TestCase):
         for broker_truth in ("query_positions", "query_orders", "query_trades"):
             self.assertIn(broker_truth, recovery_source)
 
+        functions = {
+            node.name: ast.get_source_segment(source, node) or ""
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef)
+        }
+        self.assertIn(
+            "_validate_local_execution_state_for_startup()",
+            functions["wait_for_trade_recovery_gate"],
+        )
+        validator_source = functions["_validate_local_execution_state_for_startup"]
+        for local_state_reader in (
+            "load_positions()",
+            "load_pending_buys()",
+            "_load_exit_execution_state()",
+            "_d_relay_pair_load_state()",
+            "_pov_load_state()",
+        ):
+            self.assertIn(local_state_reader, validator_source)
+
     def test_local_position_and_order_recovery_precedes_runtime_watchdogs(self) -> None:
         source = (PROJECT_ROOT / "scripts/trading_daemon.py").read_text(encoding="utf-8")
         tree = ast.parse(source)
@@ -123,6 +142,9 @@ class UnifiedExecutionArchitectureTests(unittest.TestCase):
                 first_runtime_watchdog,
                 f"{required_recovery}必须在交易看门狗前完成",
             )
+        startup_close = main_source.index("check_and_close_positions()")
+        self.assertLess(startup_close, main_source.index("_start_d_relay_pair_worker()"))
+        self.assertLess(startup_close, main_source.index("_start_pov_worker()"))
 
 
 if __name__ == "__main__":

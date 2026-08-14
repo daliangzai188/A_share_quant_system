@@ -512,6 +512,49 @@ class ActiveSellCoverageTest(unittest.TestCase):
 
 
 class ExitExecutionSafetyStateTest(unittest.TestCase):
+    def test_redundant_state_uses_newest_valid_copy_and_repairs_primary(self) -> None:
+        def validate(payload: dict) -> None:
+            if not isinstance(payload.get("items"), list):
+                raise ValueError("items不是list")
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            primary = Path(tmp_dir) / "pov_state.json"
+            backup = trading_daemon._state_backup_path(primary)
+            primary.write_text(
+                json.dumps({"state_revision": 1, "items": [{"id": "OLD"}]}),
+                encoding="utf-8",
+            )
+            backup.write_text(
+                json.dumps({"state_revision": 2, "items": [{"id": "NEW"}]}),
+                encoding="utf-8",
+            )
+
+            selected = trading_daemon._load_redundant_json_state(
+                primary,
+                label="测试状态",
+                empty_state={"items": []},
+                validator=validate,
+            )
+
+            self.assertEqual(selected["items"], [{"id": "NEW"}])
+            repaired = json.loads(primary.read_text(encoding="utf-8"))
+            self.assertEqual(repaired["state_revision"], 2)
+
+    def test_redundant_state_rejects_two_corrupt_copies(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            primary = Path(tmp_dir) / "exit_state.json"
+            backup = trading_daemon._state_backup_path(primary)
+            primary.write_text("{broken", encoding="utf-8")
+            backup.write_text("[]", encoding="utf-8")
+
+            with self.assertRaisesRegex(RuntimeError, "主备副本均不可用"):
+                trading_daemon._load_redundant_json_state(
+                    primary,
+                    label="测试状态",
+                    empty_state={},
+                    validator=lambda _payload: None,
+                )
+
     def test_1454_large_direct_exit_submits_all_chunks_without_waiting_for_fill(self) -> None:
         frozen_now = datetime.datetime(
             2026, 7, 16, 14, 54, 0, tzinfo=trading_daemon.BEIJING_TZ
@@ -740,6 +783,112 @@ class ExitExecutionSafetyStateTest(unittest.TestCase):
 
         self.assertEqual(commitment, (20_000, 80_000, 0))
         self.assertEqual(state["intents"][0]["broker_order_id"], "QMT-RECOVERED")
+
+    def test_unbound_intent_excludes_orders_claimed_by_later_intents(self) -> None:
+        account_fingerprint = "TEST-ACCOUNT"
+        remark = "ABC平仓-多片恢复-20260716"
+        state = {
+            "version": 1,
+            "batches": {},
+            "intents": [
+                {
+                    "token": "UNBOUND-FIRST",
+                    "trade_date": "20260716",
+                    "ts_code": "002800.SZ",
+                    "account_fingerprint": account_fingerprint,
+                    "quantity": 100_000,
+                    "remark": remark,
+                    "status": "PREPARED",
+                    "broker_order_id": "",
+                    "terminal_known": False,
+                },
+                {
+                    "token": "BOUND-LATER",
+                    "trade_date": "20260716",
+                    "ts_code": "002800.SZ",
+                    "account_fingerprint": account_fingerprint,
+                    "quantity": 100_000,
+                    "remark": remark,
+                    "status": "SUBMITTED",
+                    "broker_order_id": "QMT-CLAIMED",
+                    "terminal_known": False,
+                },
+            ],
+        }
+        orders = [
+            {
+                "stock_code": "002800.SZ",
+                "order_id": order_id,
+                "order_status": 50,
+                "order_type": 24,
+                "order_volume": 100_000,
+                "traded_volume": 0,
+                "order_remark": remark,
+            }
+            for order_id in ("QMT-CLAIMED", "QMT-FREE")
+        ]
+
+        with patch.object(
+            trading_daemon, "_exit_account_fingerprint", return_value=account_fingerprint
+        ), patch.object(
+            trading_daemon, "_load_exit_execution_state", return_value=state
+        ), patch.object(trading_daemon, "_save_exit_execution_state"):
+            commitment = trading_daemon._exit_commitments_by_code(
+                "002800.SZ",
+                trade_date="20260716",
+                orders=orders,
+            )
+
+        self.assertEqual(state["intents"][0]["broker_order_id"], "QMT-FREE")
+        self.assertEqual(commitment, (0, 200_000, 0))
+
+    def test_reused_broker_order_id_is_scoped_by_business_date(self) -> None:
+        account_fingerprint = "TEST-ACCOUNT"
+        state = {
+            "version": 1,
+            "batches": {},
+            "intents": [
+                {
+                    "token": "OLD-DAY",
+                    "trade_date": "20260715",
+                    "account_fingerprint": account_fingerprint,
+                    "broker_order_id": "REUSED-1001",
+                    "quantity": 1_000,
+                    "filled_qty": 0,
+                    "status": "SUBMITTED",
+                    "terminal_known": False,
+                },
+                {
+                    "token": "CURRENT-DAY",
+                    "trade_date": "20260716",
+                    "account_fingerprint": account_fingerprint,
+                    "broker_order_id": "REUSED-1001",
+                    "quantity": 2_000,
+                    "filled_qty": 0,
+                    "status": "SUBMITTED",
+                    "terminal_known": False,
+                },
+            ],
+        }
+
+        with patch.object(
+            trading_daemon, "_exit_account_fingerprint", return_value=account_fingerprint
+        ), patch.object(
+            trading_daemon, "_load_exit_execution_state", return_value=state
+        ), patch.object(trading_daemon, "_save_exit_execution_state"):
+            selected = trading_daemon._exit_intent_by_broker_order_id(
+                "REUSED-1001", business_date="20260716"
+            )
+            resolved = trading_daemon._resolve_exit_intent_by_broker_order_id(
+                "REUSED-1001",
+                filled_qty=2_000,
+                business_date="20260716",
+            )
+
+        self.assertEqual(selected["token"], "CURRENT-DAY")
+        self.assertTrue(resolved)
+        self.assertEqual(state["intents"][0]["status"], "SUBMITTED")
+        self.assertEqual(state["intents"][1]["status"], "RESOLVED")
 
     def test_resolved_intent_cannot_regress_or_lose_filled_quantity(self) -> None:
         account_fingerprint = "TEST-ACCOUNT"
@@ -2302,7 +2451,7 @@ class LargeExitFirstSliceTest(unittest.TestCase):
             terminal_known=True,
         )
         reduce_shares.assert_called_once_with(
-            "LOCAL-1", 900_000, fill_price=9.98
+            "LOCAL-1", 900_000, fill_price=9.98, fill_date=""
         )
 
 
