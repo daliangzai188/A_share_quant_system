@@ -9769,6 +9769,23 @@ def job_strategy_d() -> None:
         signal_dir = PROJECT_ROOT / "reports" / "strategy_d"
         mkdir_p(signal_dir)
         signal_csv = signal_dir / f"intraday_signals_{today_str}.csv"
+
+        def _record_d_position(payload: dict[str, Any]) -> None:
+            record_buy(
+                order_id=str(payload["order_id"]),
+                ts_code=str(payload["ts_code"]),
+                name=str(payload.get("name", "")),
+                signal_date=str(payload.get("signal_date", today_str)),
+                buy_date=str(payload.get("buy_date", today_str)),
+                shares=int(payload["shares"]),
+                buy_price=float(payload["buy_price"]),
+                strategy_leg="D",
+                exit_n_days=2,
+                execution_channel="D盘中买入",
+                planned_order_qty=int(payload.get("planned_order_qty", payload["shares"])),
+                planned_exit_date_override=str(payload.get("planned_exit_date", "")),
+            )
+
         monitor = StrategyDMonitor(
             broker=SharedQMTBrokerProxy(broker_config),
             live_order=live_order,
@@ -9777,13 +9794,55 @@ def job_strategy_d() -> None:
             allowed_segments=configured_allowed_segments(config),
             position_pct=configured_position_pct(config),
             config=config,
+            position_recorder=_record_d_position,
         )
 
         def _run_monitor() -> None:
-            try:
-                monitor.run()
-            except Exception as exc:
-                logger().exception("D监控线程异常退出：%s", exc)
+            retry_count = 0
+            while True:
+                try:
+                    monitor.run()
+                    return
+                except Exception as exc:
+                    retry_count += 1
+                    logger().exception(
+                        "D监控线程第%d次异常：%s", retry_count, exc
+                    )
+                    if monitor.order_placed or monitor.session_orders:
+                        # 券商委托可能已经受理/成交，不能仅重启D子线程。
+                        # 结束整个daemon，让新进程先重放意图并投影持仓。
+                        reason = f"D委托后本地处理异常:{exc}"
+                        write_broker_health("restarting", error=reason)
+                        write_heartbeat("d_order_recovery_restarting")
+                        _notify_async(
+                            "system_error",
+                            "🔄 D委托状态待恢复，程序自动重启",
+                            f"{reason}。新进程会先根据QMT委托、成交和持仓恢复，"
+                            "不会重复买入。",
+                            level="critical",
+                            call=True,
+                        )
+                        time.sleep(3.0)
+                        os._exit(EXIT_CODE_D_POSITION_RECOVERY)
+                    if (
+                        retry_count >= 3
+                        or now_beijing().time() >= datetime.time(14, 55)
+                        or monitor.path_integrity_failed
+                    ):
+                        _notify(
+                            "system_error",
+                            "⛔ D监控已按安全口径停止",
+                            f"尚未下单，但监控连续{retry_count}次异常：{exc}。"
+                            "今日D不再开仓；其他策略和平仓线程继续运行。",
+                            level="critical",
+                            call=True,
+                        )
+                        return
+                    logger().warning(
+                        "D监控将在5秒后用同一内存状态续跑（%d/3）。",
+                        retry_count,
+                    )
+                    time.sleep(5.0)
 
         _d_monitor_thread = threading.Thread(
             target=_run_monitor,
@@ -14032,6 +14091,7 @@ _LAST_QMT_ERROR_TEXT = ""
 # 本退出码用于人工排查（事件查看器/手动前台运行时可见），以及未来若改为非 detached 启动。
 EXIT_CODE_SOCKET_EXHAUSTED = 87
 EXIT_CODE_QMT_CHANNEL_POISONED = 88
+EXIT_CODE_D_POSITION_RECOVERY = 89
 _ONCE_PER_STATE: dict[str, float] = {}
 _QMT_FATAL_RESTART_EVENT = threading.Event()
 

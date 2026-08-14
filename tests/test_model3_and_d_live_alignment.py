@@ -16,6 +16,7 @@ if "dotenv" not in sys.modules:
     dotenv_stub.load_dotenv = lambda *args, **kwargs: False  # type: ignore[attr-defined]
     sys.modules["dotenv"] = dotenv_stub
 
+from scripts import monitor_strategy_d_intraday as d_monitor
 from scripts.monitor_strategy_d_intraday import StockState, StrategyDMonitor
 from scripts.trading_daemon import _model3_l_base_rule_pass_for_log
 from src.combined_live_engine import CombinedLiveEngine
@@ -409,6 +410,72 @@ class StrategyDLiveAlignmentTests(unittest.TestCase):
                 signal_csv=Path("reports/strategy_d/test_sentiment_drift.csv"),
                 config=config,
             )
+
+    def test_live_d_requires_daemon_position_recorder(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "统一持仓记录器"):
+            StrategyDMonitor(
+                broker=object(),
+                live_order=True,
+                logger=logging.getLogger("test_strategy_d_live_recorder"),
+                signal_csv=Path("reports/strategy_d/test_live_recorder.csv"),
+                config={},
+            )
+
+    def test_d_position_recorder_receives_cumulative_broker_fill(self) -> None:
+        payloads: list[dict] = []
+        monitor = StrategyDMonitor(
+            broker=object(),
+            live_order=True,
+            logger=logging.getLogger("test_strategy_d_position_callback"),
+            signal_csv=Path("reports/strategy_d/test_position_callback.csv"),
+            config={},
+            position_recorder=lambda payload: payloads.append(payload),
+        )
+        monitor.session_order_details["QMT-D"] = {
+            "ts_code": "600000.SH",
+            "name": "浦发银行",
+            "shares": 1000,
+            "buy_price": 10.0,
+            "buy_date": "20260817",
+        }
+        with patch.object(d_monitor, "notify"):
+            monitor._record_filled_d_position("QMT-D", 400, 10.0)
+            monitor._record_filled_d_position("QMT-D", 1000, 10.1)
+        self.assertEqual([item["shares"] for item in payloads], [400, 1000])
+        self.assertEqual(payloads[-1]["order_id"], "QMT-D")
+
+    def test_failed_quote_batch_permanently_blocks_d_buy_for_day(self) -> None:
+        class BrokenBroker:
+            def get_full_tick(self, _batch):
+                raise RuntimeError("quote unavailable")
+
+        monitor = self.make_monitor()
+        monitor.broker = BrokenBroker()
+        monitor.universe = ["600000.SH"]
+        with (
+            patch.object(d_monitor, "notify"),
+            patch.object(monitor, "_check_and_fire") as fire,
+        ):
+            monitor.poll_once()
+        self.assertTrue(monitor.path_integrity_failed)
+        self.assertEqual(monitor.scan_round, 1)
+        fire.assert_not_called()
+
+    def test_same_monitor_object_can_resume_with_complete_in_memory_path(self) -> None:
+        monitor = self.make_monitor()
+        monitor.scan_round = 2
+        monitor.states["600000.SH"] = StockState(ts_code="600000.SH")
+        with (
+            patch.object(monitor, "setup"),
+            patch.object(d_monitor, "now_hhmm", return_value=1000),
+            patch.object(
+                d_monitor,
+                "check_strategy_position_occupied",
+                return_value=(True, "existing"),
+            ) as occupied,
+        ):
+            monitor.run()
+        occupied.assert_called_once()
 
 
 if __name__ == "__main__":

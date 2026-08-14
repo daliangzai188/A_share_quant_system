@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 PROJECT_ROOT = Path(__file__).absolute().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -556,7 +556,8 @@ class StrategyDMonitor:
                  monitor_start_hhmm: int = MONITOR_START_HHMM,
                  allowed_segments: set[str] | None = None,
                  position_pct: float = D_POSITION_PCT,
-                 config: dict[str, Any] | None = None) -> None:
+                 config: dict[str, Any] | None = None,
+                 position_recorder: Callable[[dict[str, Any]], None] | None = None) -> None:
         self.broker = broker
         self.live_order = live_order
         self.logger = logger
@@ -565,6 +566,9 @@ class StrategyDMonitor:
         self.allowed_segments = allowed_segments or set(DEFAULT_ALLOWED_SEGMENTS)
         self.position_pct = position_pct
         self.config = config or {}
+        self.position_recorder = position_recorder
+        if self.live_order and self.position_recorder is None:
+            raise RuntimeError("D实盘必须由daemon统一持仓记录器回写，禁止直写positions.json")
         validate_configured_execution_clock(self.config)
         self.min_open_times = configured_min_open_times(self.config)
         self.max_open_times = configured_max_open_times(self.config)
@@ -591,6 +595,9 @@ class StrategyDMonitor:
         self.fill_estimator: FillProbabilityEstimator | None = None
         self.fill_model_ready: bool = False
         self.scan_round = 0
+        self.path_integrity_failed = False
+        self.path_integrity_reason = ""
+        self._path_failure_notified = False
 
         # 本次会话下单记录 {order_id: ts_code}
         self.session_orders: dict[str, str] = {}
@@ -1677,33 +1684,43 @@ class StrategyDMonitor:
         if not detail:
             self.logger.warning("找不到D成交委托明细，无法写入持仓: order_id=%s", order_id)
             return
-        positions = load_position_records()
-        if any(str(pos.get("order_id", "")) == str(order_id) for pos in positions):
-            self.position_opened = True
-            self.logger.info("D持仓账本已存在，跳过重复写入: order_id=%s", order_id)
-            return
         buy_date = str(detail.get("buy_date", today_beijing().strftime("%Y%m%d")))
         shares = int(filled_qty) if filled_qty and filled_qty > 0 else int(detail.get("shares", 0))
         buy_price = float(fill_price) if fill_price and fill_price > 0 else float(detail.get("buy_price", 0.0))
         planned_exit_date = next_trade_day(buy_date, 2)
-        positions.append(
-            {
-                "order_id": str(order_id),
-                "ts_code": str(detail.get("ts_code", "")),
-                "name": str(detail.get("name", "")),
-                "signal_date": buy_date,
-                "buy_date": buy_date,
-                # 默认持到T+2收盘。若当晚A/B/C生成信号（HISTORICAL_SIM_FILLED），次日开盘手动平仓后再执行ABC。
-                "planned_exit_date": planned_exit_date,
-                "shares": shares,
-                "buy_price": buy_price,
-                "strategy_leg": "D",
-                "status": "open",
-                "sell_date": None,
-                "sell_price": None,
-            }
-        )
-        save_position_records(positions)
+        payload = {
+            "order_id": str(order_id),
+            "ts_code": str(detail.get("ts_code", "")),
+            "name": str(detail.get("name", "")),
+            "signal_date": buy_date,
+            "buy_date": buy_date,
+            "planned_exit_date": planned_exit_date,
+            "shares": shares,
+            "buy_price": buy_price,
+            "strategy_leg": "D",
+            "planned_order_qty": int(detail.get("shares", shares) or shares),
+        }
+        if self.position_recorder is not None:
+            # daemon端使用同order_id累计成交幂等更新，并同步事务意图。
+            self.position_recorder(payload)
+        else:
+            # 仅保留给非实盘离线演练；实盘构造器已强制必须提供callback。
+            positions = load_position_records()
+            existing = next(
+                (pos for pos in positions if str(pos.get("order_id", "")) == str(order_id)),
+                None,
+            )
+            if existing is None:
+                positions.append({
+                    **payload,
+                    "status": "open",
+                    "sell_date": None,
+                    "sell_price": None,
+                })
+            elif shares > int(existing.get("shares", 0) or 0):
+                existing["shares"] = shares
+                existing["buy_price"] = buy_price
+            save_position_records(positions)
         self.position_opened = True
         self.logger.warning(
             "D持仓信息已写入持仓账本: 策略=D order_id=%s ts_code=%s %d股 @%.2f 买入日=%s 默认计划平仓日=%s；若次日有A/B/C接力则T+1开盘先卖D",
@@ -1765,14 +1782,38 @@ class StrategyDMonitor:
         if not batches:
             return
         updated_count = 0
+        failures: list[str] = []
         for batch in batches:
             try:
                 quotes = self.broker.get_full_tick(batch)
             except Exception as e:
                 self.logger.warning("get_full_tick 异常: %s", e)
+                failures.append(str(e))
+                continue
+            if not quotes:
+                failures.append(f"空行情批次({len(batch)}只)")
                 continue
             updated_count += len(quotes)
             self._update_states(quotes)
+        if failures:
+            self.path_integrity_failed = True
+            self.path_integrity_reason = (
+                f"第{self.scan_round + 1}轮有{len(failures)}/{len(batches)}个批次未完整返回；"
+                "无法证明全市场09:30起封板/炸板路径完整"
+            )
+            self.logger.error("D完整路径已永久失效：%s", self.path_integrity_reason)
+            if not self._path_failure_notified:
+                self._path_failure_notified = True
+                try:
+                    notify(
+                        "buy_result",
+                        "⛔ D实时路径不完整，今日停止开仓",
+                        f"{self.path_integrity_reason}。为与回测严格对齐，"
+                        "今日D只保留监控日志，不会买入。",
+                        level="critical",
+                    )
+                except Exception:
+                    pass
         self.scan_round += 1
         self.logger.info("完成全市场扫描: round=%d updated=%d states=%d", self.scan_round, updated_count, len(self.states))
         # 历史D只取strong，不含very_strong；实时代理必须同时满足上下界。
@@ -1796,7 +1837,8 @@ class StrategyDMonitor:
                 )
             except Exception as exc:
                 self.logger.warning("情绪转强推送失败：%s", exc)
-        self._check_and_fire()
+        if not self.path_integrity_failed:
+            self._check_and_fire()
 
     def status_line(self) -> str:
         hhmm = now_hhmm()
@@ -1859,7 +1901,12 @@ class StrategyDMonitor:
 
         # 回测使用完整日内路径。午后重启若从当前快照重新计数，会把早盘已封/已炸历史
         # 当成不存在，从而把t_board误判成multi_open。无法重建完整路径时必须fail-closed。
-        if not intraday_history_is_complete(session_start_hhmm):
+        resumable_in_memory_path = (
+            self.scan_round > 0
+            and bool(self.states)
+            and not self.path_integrity_failed
+        )
+        if not intraday_history_is_complete(session_start_hhmm) and not resumable_in_memory_path:
             reason = (
                 f"D监控于{hhmm_to_str(session_start_hhmm)}启动，晚于完整路径截止"
                 f"{hhmm_to_str(D_LATEST_COMPLETE_HISTORY_START_HHMM)}；缺少早盘首次封板/炸板历史，"
@@ -1877,6 +1924,12 @@ class StrategyDMonitor:
             except Exception as exc:
                 self.logger.warning("D午后重启阻断推送失败: %s", exc)
             return
+        if not intraday_history_is_complete(session_start_hhmm):
+            self.logger.warning(
+                "D监控使用同一对象内存续跑：已保留%d轮、%d只状态，"
+                "不使用重启后快照伪造早盘路径。",
+                self.scan_round, len(self.states),
+            )
 
         # ── 串行单仓检测：券商仍有任何旧策略仓就直接退出，不做D ─────────────
         occupied, desc = check_strategy_position_occupied(self.broker if self.live_order else None)

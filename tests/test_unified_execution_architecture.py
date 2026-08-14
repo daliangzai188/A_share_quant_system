@@ -71,6 +71,15 @@ class UnifiedExecutionArchitectureTests(unittest.TestCase):
         self.assertNotIn("threading.Thread", functions["_qmt_query_account_positions"])
         self.assertIn('operation="connect_qmt"', functions["_qmt_get"])
 
+    def test_live_d_uses_daemon_position_transaction_callback(self) -> None:
+        daemon_source = (PROJECT_ROOT / "scripts/trading_daemon.py").read_text(encoding="utf-8")
+        monitor_source = (
+            PROJECT_ROOT / "scripts/monitor_strategy_d_intraday.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("position_recorder=_record_d_position", daemon_source)
+        self.assertIn("if self.live_order and self.position_recorder is None", monitor_source)
+        self.assertIn("self.position_recorder(payload)", monitor_source)
+
     def test_recovery_gate_precedes_every_trading_thread(self) -> None:
         source = (PROJECT_ROOT / "scripts/trading_daemon.py").read_text(encoding="utf-8")
         tree = ast.parse(source)
