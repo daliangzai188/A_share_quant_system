@@ -8613,11 +8613,13 @@ def job_morning() -> None:
     else:
         logger().info("组合状态机未允许E2开仓，跳过。")
 
-    # ⑤ 策略D监控 —— 只有无持仓且无A/C/E2买入计划时才启动
-    if has_combined_action(decisions, "ALLOW_D_INTRADAY_MONITOR"):
+    # ⑤ 策略D监控 —— 只有账户空仓、昨日没有形成今天要执行的其他腿候选、
+    # 且今日没有其他开仓计划时才启动。不能只看一条ALLOW_D而忽略冲突动作。
+    d_allowed, d_gate_reason = d_intraday_monitor_gate(decisions)
+    if d_allowed:
         job_strategy_d()
     else:
-        logger().info("组合状态机未允许D盘中监控，跳过。")
+        logger().info("组合状态机未允许D盘中监控，跳过：%s", d_gate_reason)
 
     logger().info("===== 盘前任务完成 =====")
 
@@ -8681,6 +8683,31 @@ def job_opening_buy(*, recovery_only: bool = False) -> None:
         logger().info("组合状态机要求先卖D，09:30不执行新的买入。")
         return
 
+    # 正常路径在09:20已启动D线程；这里是09:25~09:30整机重启、09:20任务
+    # 未执行时的最后一个合法兜底点。仍须重新通过“空仓+无其他腿计划”总门，
+    # 且当前必须尚未错过09:30完整路径起点。
+    d_allowed, d_gate_reason = d_intraday_monitor_gate(decisions)
+    if d_allowed:
+        current = now_beijing()
+        current_hhmm = current.hour * 100 + current.minute
+        if intraday_history_is_complete(current_hhmm):
+            logger().info(
+                "09:30开盘复核：账户空仓且昨日无其他策略正式候选/今日无其他开仓计划，"
+                "确认D监控从连续竞价起点启动。"
+            )
+            job_strategy_d()
+        else:
+            reason = (
+                f"09:30开盘复核实际执行于{current.strftime('%H:%M:%S')}，已错过D完整路径起点；"
+                "不从迟到快照补造首次封板/炸板历史，今日D禁止开仓。"
+            )
+            logger().error(reason)
+            _notify("buy_result", "⛔ D错过完整路径起点", reason, level="critical")
+    elif has_combined_action(decisions, "ALLOW_D_INTRADAY_MONITOR"):
+        # 决策表若同时出现ALLOW_D和其他买入动作，说明缓存/状态机数据自相矛盾；
+        # fail-closed，不允许D绕过资金让路规则。
+        logger().error("09:30 D启动总门未通过：%s", d_gate_reason)
+
     if is_strategy_l_mode():
         # L 模式只执行 ALLOW_L_BUY。默认配置 live_order_enabled=false 时不会出现该动作，
         # 因此模式1默认运行、模式2未开启实盘时，都不会误触 L 下单。
@@ -8730,7 +8757,7 @@ def job_opening_buy(*, recovery_only: bool = False) -> None:
         logger().info("组合状态机未允许E2开仓，跳过。")
 
     if not attempted_buy:
-        logger().info("09:30无A/C/E2买入计划。")
+        logger().info("09:30无A/C/E2买入计划；D是否扫描已由空仓及全策略候选总门单独判定。")
     elif not accepted_buy and not has_position_bought_today():
         if has_combined_action(decisions, "ALLOW_E2_BUY"):
             logger().warning(
@@ -8781,6 +8808,33 @@ def has_combined_action(decisions, action: str) -> bool:
     if decisions is None or decisions.empty or "action" not in decisions.columns:
         return False
     return decisions["action"].astype(str).eq(action).any()
+
+
+D_INTRADAY_BLOCKING_BUY_ACTIONS = frozenset({
+    "ALLOW_L_BUY",
+    "ALLOW_MODEL3_L_SUPPLEMENT",
+    "ALLOW_MODEL3_L_REPLACE",
+    "ALLOW_ABC_BUY_PREVIEW",
+    "ALLOW_M_BUY",
+    "ALLOW_E2_BUY",
+})
+
+
+def d_intraday_monitor_gate(decisions) -> tuple[bool, str]:
+    """D扫描总门：只允许空仓且今日没有其他策略正式开仓计划。"""
+
+    if not has_combined_action(decisions, "ALLOW_D_INTRADAY_MONITOR"):
+        return False, "组合状态机没有给出ALLOW_D_INTRADAY_MONITOR"
+    conflicting = sorted(
+        action
+        for action in D_INTRADAY_BLOCKING_BUY_ACTIONS
+        if has_combined_action(decisions, action)
+    )
+    if conflicting:
+        return False, f"仍存在其他策略正式开仓计划:{','.join(conflicting)}"
+    if has_open_local_position():
+        return False, "本地持仓账本仍有未平仓策略仓"
+    return True, "账户空仓且昨日无其他策略正式候选/今日无其他开仓计划"
 
 
 def has_open_local_position() -> bool:

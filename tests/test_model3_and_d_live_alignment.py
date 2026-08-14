@@ -24,6 +24,9 @@ from src.strategy_model3_policy import (
     model3_l_replace_guard_pass,
 )
 from src.strategy_d_spec import (
+    D_ORDER_CANCEL_HHMM,
+    D_SIGNAL_START_HHMM,
+    D_TRACKING_START_HHMM,
     historical_candidate_mask,
     intraday_history_is_complete,
 )
@@ -372,10 +375,24 @@ class StrategyDLiveAlignmentTests(unittest.TestCase):
             )
 
     def test_d_late_restart_fails_closed(self) -> None:
+        self.assertEqual(D_TRACKING_START_HHMM, 930)
+        self.assertEqual(D_SIGNAL_START_HHMM, 1400)
+        self.assertEqual(D_ORDER_CANCEL_HHMM, 1455)
         self.assertTrue(intraday_history_is_complete(930))
         self.assertFalse(intraday_history_is_complete(931))
         self.assertFalse(intraday_history_is_complete(936))
         self.assertFalse(intraday_history_is_complete(1324))
+
+    def test_d_execution_clock_config_drift_fails_closed(self) -> None:
+        config = {"strategy_d": {"tracking_start_hhmm": 1400}}
+        with self.assertRaisesRegex(ValueError, "偏离D回测/执行冻结值"):
+            StrategyDMonitor(
+                broker=None,
+                live_order=False,
+                logger=logging.getLogger("test_strategy_d_clock_drift"),
+                signal_csv=Path("reports/strategy_d/test_clock_drift.csv"),
+                config=config,
+            )
 
     def test_d_sentiment_proxy_config_drift_fails_closed(self) -> None:
         config = {

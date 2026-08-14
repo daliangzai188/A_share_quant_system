@@ -62,6 +62,71 @@ class MorningNotificationDeliveryTest(unittest.TestCase):
 
 
 class OpeningRecoveryWindowTest(unittest.TestCase):
+    def test_d_gate_requires_empty_account_and_no_other_open_plan(self) -> None:
+        allowed = pd.DataFrame(
+            [{"action": "ALLOW_D_INTRADAY_MONITOR", "strategy_leg": "D"}]
+        )
+        conflicting = pd.concat(
+            [
+                allowed,
+                pd.DataFrame(
+                    [{"action": "ALLOW_MODEL3_L_REPLACE", "strategy_leg": "L"}]
+                ),
+            ],
+            ignore_index=True,
+        )
+        with patch.object(trading_daemon, "has_open_local_position", return_value=False):
+            self.assertTrue(trading_daemon.d_intraday_monitor_gate(allowed)[0])
+            self.assertFalse(trading_daemon.d_intraday_monitor_gate(conflicting)[0])
+        with patch.object(trading_daemon, "has_open_local_position", return_value=True):
+            self.assertFalse(trading_daemon.d_intraday_monitor_gate(allowed)[0])
+
+    def test_0930_opening_review_starts_allowed_d_monitor(self) -> None:
+        decisions = pd.DataFrame(
+            [{"action": "ALLOW_D_INTRADAY_MONITOR", "strategy_leg": "D"}]
+        )
+        with patch.object(trading_daemon, "now_beijing", return_value=beijing_at(9, 30)), \
+             patch.object(trading_daemon, "check_and_close_positions"), \
+             patch.object(trading_daemon, "confirm_pending_premarket_buys"), \
+             patch.object(trading_daemon, "_d_relay_pair_active_today", return_value=False), \
+             patch.object(trading_daemon, "_pov_active_today", return_value=False), \
+             patch.object(trading_daemon, "has_position_bought_today", return_value=False), \
+             patch.object(trading_daemon, "has_open_local_position", return_value=False), \
+             patch.object(trading_daemon, "load_pending_buys", return_value=[]), \
+             patch.object(
+                 trading_daemon,
+                 "load_combined_decisions",
+                 return_value=(decisions, Path("orders.csv")),
+             ), patch.object(trading_daemon, "is_strategy_l_mode", return_value=False), \
+             patch.object(trading_daemon, "job_strategy_d") as start_d:
+            trading_daemon.job_opening_buy()
+
+        start_d.assert_called_once_with()
+
+    def test_late_opening_review_does_not_backfill_intraday_history(self) -> None:
+        decisions = pd.DataFrame(
+            [{"action": "ALLOW_D_INTRADAY_MONITOR", "strategy_leg": "D"}]
+        )
+        with patch.object(trading_daemon, "now_beijing", return_value=beijing_at(9, 31)), \
+             patch.object(trading_daemon, "check_and_close_positions"), \
+             patch.object(trading_daemon, "confirm_pending_premarket_buys"), \
+             patch.object(trading_daemon, "_d_relay_pair_active_today", return_value=False), \
+             patch.object(trading_daemon, "_pov_active_today", return_value=False), \
+             patch.object(trading_daemon, "has_position_bought_today", return_value=False), \
+             patch.object(trading_daemon, "has_open_local_position", return_value=False), \
+             patch.object(trading_daemon, "load_pending_buys", return_value=[]), \
+             patch.object(
+                 trading_daemon,
+                 "load_combined_decisions",
+                 return_value=(decisions, Path("orders.csv")),
+             ), patch.object(trading_daemon, "is_strategy_l_mode", return_value=False), \
+             patch.object(trading_daemon, "job_strategy_d") as start_d, \
+             patch.object(trading_daemon, "_notify") as notify:
+            trading_daemon.job_opening_buy()
+
+        start_d.assert_not_called()
+        notify.assert_called_once()
+
     def test_startup_between_0930_and_0935_recovers_opening_chain(self) -> None:
         with patch.object(trading_daemon, "now_beijing", return_value=beijing_at(9, 32)), \
              patch.object(trading_daemon, "is_trade_day", return_value=True), \

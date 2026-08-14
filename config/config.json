@@ -374,11 +374,14 @@
       "late"
     ],
     "tail_reseal_hhmm": 1400,
+    "tracking_start_hhmm": 930,
+    "signal_start_hhmm": 1400,
+    "cancel_hhmm": 1455,
     "sentiment_current_sealed_min": 88,
     "sentiment_current_sealed_max": 132,
     "sentiment_proxy_note": "历史只取market_sentiment_level=strong(收盘100~150只，不含very_strong)；盘中沿用既有88/100校准比例，故实时当前封板代理区间为88~132只。该代理仍须用分钟快照持续校准。",
     "backtest_input_path": "data/processed/next_day_premium_trades_2y.csv",
-    "execution_alignment_note": "D实盘与回测共同使用：炸板2~3次(multi_open)，优先炸板2次，再按封单金额/流通市值降序；首次封板时段、14:00后真实回封、成交概率可靠性和strong情绪桶均不可放宽；每天只尝试排序第一名，失败不递补。"
+    "execution_alignment_note": "D实盘与回测共同使用：仅在账户空仓且昨日无其他策略正式候选、今日无其他开仓计划时，09:30起持续记录完整封板/炸板路径，14:00后只有真实回封才允许BUY，14:55停止并撤未成交委托；炸板2~3次(multi_open)，优先炸板2次，再按封单金额/流通市值降序；首次封板时段、成交概率可靠性和strong情绪桶均不可放宽；每天只尝试排序第一名，失败不递补。"
   },
   "strategy_s": {
     "file_role": "策略S深市/创业板动量补充策略配置。S 独立于 ACDE2，只能在组合空闲且通过实盘口径认证后接入真实下单。",

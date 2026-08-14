@@ -52,8 +52,11 @@ from src.strategy_d_spec import (
     D_MAX_OPEN_TIMES,
     D_MIN_FILL_PROBABILITY,
     D_MIN_OPEN_TIMES,
+    D_ORDER_CANCEL_HHMM,
     D_PREFERRED_OPEN_TIMES,
+    D_SIGNAL_START_HHMM,
     D_TAIL_RESEAL_HHMM,
+    D_TRACKING_START_HHMM,
     classify_first_time_bucket_hhmm,
     common_candidate_rejection_reason,
     d_rank_key,
@@ -67,11 +70,11 @@ load_dotenv(PROJECT_ROOT / ".env")
 SENTIMENT_STRONG_MIN = 88    # 默认实时strong代理下界，最终读取config.strategy_d
 SENTIMENT_STRONG_MAX = 132   # 默认实时strong代理上界；历史very_strong不属于D样本
 WATCH_START_HHMM = 935       # 完整路径必须09:30开始；09:35起才允许发WATCH提醒
-SIGNAL_START_HHMM = 1400     # 14:00 开始发出买入信号；必须在此后真实回封
-CANCEL_HHMM = 1455           # 14:55 撤销所有未成交D委托
+SIGNAL_START_HHMM = D_SIGNAL_START_HHMM  # 回测last_time下限；必须在此后真实回封
+CANCEL_HHMM = D_ORDER_CANCEL_HHMM        # 冻结的D实盘撤单边界
 POLL_BATCH_SIZE = 500        # 每次 get_full_tick 的股票数量
 POLL_INTERVAL_SEC = 30       # 每批轮询间隔（秒）
-MONITOR_START_HHMM = 930     # 脚本等待开始扫描的时间（集合竞价结束后）
+MONITOR_START_HHMM = D_TRACKING_START_HHMM  # 完整路径从连续竞价开始跟踪
 D_POSITION_PCT = 0.825       # 默认目标仓位82.5%，优先使用 config.json/strategy_d/position_pct
 D_RETRY_TOP_N = 1            # 严格对齐D原始回测口径：只尝试排序第1名，失败不补偿
 MIN_D_VALID_LIMIT_PRICE = 1.0  # D只做正常A股涨停价；QMT异常行情可能返回0.x，必须本地拦截
@@ -394,6 +397,27 @@ def configured_sentiment_bounds(config: dict[str, Any]) -> tuple[int, int]:
     return minimum, maximum
 
 
+def validate_configured_execution_clock(config: dict[str, Any]) -> None:
+    """D实盘时钟必须与回测事件定义一致，任何漂移都拒绝启动。"""
+
+    strategy_config = load_strategy_d_config(config)
+    expected = {
+        "tracking_start_hhmm": D_TRACKING_START_HHMM,
+        "signal_start_hhmm": D_SIGNAL_START_HHMM,
+        "cancel_hhmm": D_ORDER_CANCEL_HHMM,
+    }
+    for key, frozen_value in expected.items():
+        try:
+            configured_value = int(strategy_config.get(key, frozen_value))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"config.strategy_d.{key}无效") from exc
+        if configured_value != frozen_value:
+            raise ValueError(
+                f"config.strategy_d.{key}={configured_value}偏离D回测/执行冻结值"
+                f"{frozen_value}"
+            )
+
+
 def filter_universe_by_segments(universe: list[str], allowed_segments: set[str]) -> list[str]:
     return [code for code in universe if classify_market_segment(code) in allowed_segments]
 
@@ -541,6 +565,7 @@ class StrategyDMonitor:
         self.allowed_segments = allowed_segments or set(DEFAULT_ALLOWED_SEGMENTS)
         self.position_pct = position_pct
         self.config = config or {}
+        validate_configured_execution_clock(self.config)
         self.min_open_times = configured_min_open_times(self.config)
         self.max_open_times = configured_max_open_times(self.config)
         self.preferred_open_times = configured_preferred_open_times(self.config)
@@ -620,6 +645,12 @@ class StrategyDMonitor:
             self.sentiment_current_max,
             hhmm_to_str(self.tail_reseal_hhmm),
             self.min_fill_probability * 100,
+        )
+        self.logger.info(
+            "D回测对齐时钟: %s开始持续记录完整封板/炸板路径；%s后只有真实回封才允许BUY；%s停止并撤销未成交委托。",
+            hhmm_to_str(MONITOR_START_HHMM),
+            hhmm_to_str(SIGNAL_START_HHMM),
+            hhmm_to_str(CANCEL_HHMM),
         )
         self.logger.info(
             "D选票规则: 每天最多买1只，先优先炸板%d次，再按封单金额÷流通市值降序；"
