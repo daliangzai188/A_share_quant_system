@@ -55,7 +55,11 @@ from src.utils.time_utils import BEIJING_TZ, now_beijing, today_beijing
 from src.execution_completion_tracker import ExecutionCompletionTracker
 from src.broker_execution_service import IntentBrokerExecutionService
 from src.trade_intent_store import TradeIntentStore
-from src.trade_recovery import RecoveryOutcome, TradeRecoveryCoordinator
+from src.trade_recovery import (
+    RecoveryOutcome,
+    TradeRecoveryCoordinator,
+    normalize_broker_positions,
+)
 from src.strategy_equity_ledger import (
     equity_ledger_requires_bootstrap,
     load_equity_ledger,
@@ -216,7 +220,7 @@ def _ts_code_aliases(value: Any) -> set[str]:
     return aliases
 
 
-def reconcile_d_orphan_fills() -> None:
+def reconcile_d_orphan_fills() -> bool:
     """找回孤儿D成交：QMT当日 remark=D_FIRST_BOARD 已成交、但本地无记录的委托，自动回写持仓。
 
     场景（2026-07-23 北方长龙事故）：盘中重启daemon后，旧会话D监控的内存委托明细
@@ -227,7 +231,7 @@ def reconcile_d_orphan_fills() -> None:
     log = logger()
     config = load_json_config(PROJECT_ROOT / "config" / "config.json")
     if not (bool(config.get("broker_adapter_enabled")) and bool(config.get("qmt_enabled"))):
-        return
+        return True
     today_str = today_beijing().strftime("%Y%m%d")
     try:
         with _qmt_lock:
@@ -235,7 +239,7 @@ def reconcile_d_orphan_fills() -> None:
             orders = adapter.query_orders() or []
     except Exception as e:
         log.warning("孤儿D成交恢复：查询当日委托失败（%s），本轮跳过。", e)
-        return
+        return False
 
     def _pick(d: dict, keys: list, default: Any = "") -> Any:
         for k in keys:
@@ -251,6 +255,7 @@ def reconcile_d_orphan_fills() -> None:
         for p in positions
     )
     recovered = 0
+    unresolved = 0
     for o in orders:
         if not isinstance(o, dict):
             o = getattr(o, "__dict__", {}) or {}
@@ -273,24 +278,44 @@ def reconcile_d_orphan_fills() -> None:
             for p in positions
         ):
             continue   # 同票同日已有记录（可能旧会话已回写），不重复
+        if has_today_d:
+            log.critical(
+                "孤儿D成交与已有D持仓不是同一标的：%s order_id=%s；"
+                "无法猜测两笔归属，恢复不通过。",
+                ts_code, oid,
+            )
+            unresolved += 1
+            continue
         price = float(_pick(o, ["traded_price", "m_dTradedPrice", "avg_price", "deal_price"], 0) or 0)
         if price <= 0:
             price = float(_pick(o, ["price", "m_dPrice", "order_price"], 0) or 0)
+        if price <= 0:
+            log.critical(
+                "孤儿D成交缺少成交价和委托价：%s order_id=%s，拒绝写0成本持仓。",
+                ts_code, oid,
+            )
+            unresolved += 1
+            continue
         name = str(_pick(o, ["stock_name", "m_strInstrumentName", "instrument_name"], "")).strip()
         try:
             planned_exit = next_n_trade_days(today_beijing(), 2).strftime("%Y%m%d")
         except Exception:
             planned_exit = today_str
-        positions.append({
-            "order_id": oid, "ts_code": ts_code, "name": name,
-            "signal_date": today_str, "buy_date": today_str,
-            "planned_exit_date": planned_exit,
-            "shares": traded, "buy_price": round(price, 4),
-            "strategy_leg": "D", "status": "open",
-            "sell_date": None, "sell_price": None,
-            "orphan_recovered": True,
-            "note": "daemon重启后从QMT当日委托自动找回的D成交（旧会话内存丢失）",
-        })
+        record_buy(
+            order_id=oid,
+            ts_code=ts_code,
+            name=name,
+            signal_date=today_str,
+            buy_date=today_str,
+            shares=traded,
+            buy_price=round(price, 4),
+            strategy_leg="D",
+            execution_channel="孤儿D成交恢复",
+            planned_order_qty=traded,
+            planned_exit_date_override=planned_exit,
+        )
+        known_ids.add(oid)
+        has_today_d = True
         recovered += 1
         log.warning(
             "🧷 [孤儿D恢复] %s %s %d股@%.2f 已自动回写持仓账本（order_id=%s，计划%s平仓）。",
@@ -301,8 +326,8 @@ def reconcile_d_orphan_fills() -> None:
                 f"已从QMT当日委托自动恢复），按持仓计划日执行普通D平仓；若出现接力候选则走安全竞价部分＋成对POV。",
                 level="timeSensitive")
     if recovered:
-        save_positions(positions)
         log.warning("孤儿D成交恢复完成：共找回 %d 笔，持仓账本已更新。", recovered)
+    return unresolved == 0
 
 
 def st_open_forbidden(ts_code: str, name: Any) -> bool:
@@ -790,7 +815,9 @@ def load_positions() -> list[dict[str, Any]]:
             return json.loads(POSITIONS_FILE.read_text(encoding="utf-8"))
         except Exception as e:
             logger().error("读取持仓文件失败：%s", e)
-            return []
+            # 文件不存在才代表“本地无持仓记录”；已存在但损坏/不可读
+            # 绝不能伪装成空仓，否则会误放行新开仓并让平仓链失明。
+            raise RuntimeError(f"读取持仓文件失败:{e}") from e
 
 
 def save_positions(positions: list[dict[str, Any]]) -> None:
@@ -995,15 +1022,31 @@ def record_buy(order_id: str, ts_code: str, name: str, signal_date: str,
                buy_date: str, shares: int, buy_price: float, strategy_leg: str,
                exit_n_days: int = 2, traded_at: str = "",
                execution_channel: str = "其他买入", planned_order_qty: int = 0,
-               benchmark_open: float = 0.0) -> None:
-    added = False
-    with _positions_file_lock:
-        positions = load_positions()
-        if any(p["order_id"] == order_id for p in positions):
-            return
-        exit_date = next_n_trade_days(
+               benchmark_open: float = 0.0,
+               planned_exit_date_override: str = "",
+               component_order_ids: list[str] | None = None) -> None:
+    """把券商买入累计成交幂等投影为本地策略持仓。
+
+    同order_id的部分成交回报可能多次到达；这里接受的shares始终是
+    “券商累计已成量”，因此只做单调增加，不会重复加仓。
+    """
+    changed = False
+    component_ids = sorted({str(item) for item in (component_order_ids or []) if str(item)})
+    shares = max(int(shares or 0), 0)
+    if shares <= 0:
+        raise ValueError(f"买入持仓回写数量必须大于0:{order_id}")
+    normalized_exit = str(planned_exit_date_override or "").replace("-", "")[:8]
+    if normalized_exit and (len(normalized_exit) != 8 or not normalized_exit.isdigit()):
+        raise ValueError(f"非法计划平仓日:{planned_exit_date_override}")
+    exit_date = (
+        datetime.datetime.strptime(normalized_exit, "%Y%m%d").date()
+        if normalized_exit
+        else next_n_trade_days(
             datetime.datetime.strptime(buy_date, "%Y%m%d").date(), n=exit_n_days
         )
+    )
+    with _positions_file_lock:
+        positions = load_positions()
         # 券商成交回报时间常是Unix秒（国金QMT实测），转成可读北京时间便于审计成交时点；
         # 其他格式（HHMMSS整数、已是字符串）原样保留，不做破坏性解析。
         if traded_at and str(traded_at).isdigit() and int(traded_at) > 1_000_000_000:
@@ -1015,29 +1058,61 @@ def record_buy(order_id: str, ts_code: str, name: str, signal_date: str,
                 pass
         buy_time = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
         planned_exit_time = datetime.datetime.combine(exit_date, SCHED_AFTERNOON_CLOSE).strftime("%Y-%m-%d %H:%M")
-        positions.append({
-            "order_id": order_id,
-            # buy_time=确认回写时刻；traded_at=券商成交回报的真实成交时间（审计成交时点用）
-            "traded_at": traded_at,
-            "ts_code": ts_code,
-            "name": name,
-            "signal_date": signal_date,
-            "buy_date": buy_date,
-            "buy_time": buy_time,
-            "planned_exit_date": exit_date.strftime("%Y%m%d"),
-            "planned_exit_time": planned_exit_time,
-            "shares": shares,
-            "entry_shares": shares,
-            "buy_price": buy_price,
-            "strategy_leg": strategy_leg,
-            "status": "open",
-            "sell_date": None,
-            "sell_price": None,
-            "exit_fills_by_date": {},
-        })
-        save_positions(positions)
-        added = True
-    if added:
+        existing = next(
+            (p for p in positions if str(p.get("order_id", "")) == str(order_id)),
+            None,
+        )
+        if existing is not None:
+            old_shares = max(int(existing.get("entry_shares", existing.get("shares", 0)) or 0), 0)
+            if shares <= old_shares:
+                _mark_buy_intent_position_projected(order_id, buy_date, old_shares)
+                return
+            if str(existing.get("status", "")).lower() not in {"open", "sell_pending"}:
+                raise RuntimeError(
+                    f"已平仓记录出现更大买入累计成交量:{order_id} "
+                    f"{old_shares}->{shares}"
+                )
+            existing["shares"] = shares
+            existing["entry_shares"] = shares
+            existing["buy_price"] = float(buy_price or existing.get("buy_price", 0.0) or 0.0)
+            existing["traded_at"] = traded_at or existing.get("traded_at", "")
+            existing["planned_exit_date"] = exit_date.strftime("%Y%m%d")
+            existing["planned_exit_time"] = planned_exit_time
+            existing["position_updated_at"] = buy_time
+            if component_ids:
+                existing["component_order_ids"] = component_ids
+            changed = True
+        else:
+            positions.append({
+                "order_id": order_id,
+                # buy_time=确认回写时刻；traded_at=券商成交回报的真实成交时间（审计成交时点用）
+                "traded_at": traded_at,
+                "ts_code": ts_code,
+                "name": name,
+                "signal_date": signal_date,
+                "buy_date": buy_date,
+                "buy_time": buy_time,
+                "planned_exit_date": exit_date.strftime("%Y%m%d"),
+                "planned_exit_time": planned_exit_time,
+                "shares": shares,
+                "entry_shares": shares,
+                "buy_price": buy_price,
+                "strategy_leg": strategy_leg,
+                "status": "open",
+                "sell_date": None,
+                "sell_price": None,
+                "exit_fills_by_date": {},
+                **({"component_order_ids": component_ids} if component_ids else {}),
+            })
+            changed = True
+        if changed:
+            save_positions(positions)
+    if changed:
+        _mark_buy_intent_position_projected(order_id, buy_date, shares)
+        if component_ids:
+            _mark_component_buy_intents_position_projected(
+                component_ids, buy_date, shares
+            )
         _track_execution(
             "record_buy_slice",
             event_id=f"买入成交|{order_id}",
@@ -1056,8 +1131,60 @@ def record_buy(order_id: str, ts_code: str, name: str, signal_date: str,
             status="已成交",
             note="持仓成交回写",
         )
-    logger().info("持仓记录：策略=%s %s %s 买入日 %s 计划平仓日 %s",
-                  strategy_leg, ts_code, name, buy_date, exit_date.strftime("%Y%m%d"))
+        logger().info("持仓记录：策略=%s %s %s 累计成交%d股 买入日%s 计划平仓日%s",
+                      strategy_leg, ts_code, name, shares, buy_date, exit_date.strftime("%Y%m%d"))
+
+
+def _mark_buy_intent_position_projected(
+    broker_order_id: str,
+    business_date: str,
+    quantity: int,
+) -> None:
+    """在本地持仓成功原子替换后，再标记事务意图投影进度。"""
+
+    # 单元测试/纯离线工具可能只使用positions.json，没有启动实盘意图库。
+    # 实盘路径在下单前必定已初始化_store。
+    if _trade_intent_store_instance is None:
+        return
+    intent = _trade_intent_store_instance.get_by_broker_order_id(
+        str(broker_order_id),
+        account_fingerprint=_exit_account_fingerprint(),
+        business_date=str(business_date),
+    )
+    if intent is None or str(intent.get("side", "")).upper() != "BUY":
+        return
+    _trade_intent_store_instance.mark_position_projected(
+        str(intent["intent_id"]), max(int(quantity or 0), 0)
+    )
+
+
+def _mark_component_buy_intents_position_projected(
+    broker_order_ids: list[str],
+    business_date: str,
+    aggregate_quantity: int,
+) -> None:
+    """将POV等多张券商买单归并到一条本地持仓后，逐笔确认投影。"""
+
+    if _trade_intent_store_instance is None:
+        return
+    rows: list[dict[str, Any]] = []
+    for order_id in broker_order_ids:
+        row = _trade_intent_store_instance.get_by_broker_order_id(
+            order_id,
+            account_fingerprint=_exit_account_fingerprint(),
+            business_date=str(business_date),
+        )
+        if row is not None and str(row.get("side", "")).upper() == "BUY":
+            rows.append(row)
+    required = sum(max(int(row.get("filled_qty", 0) or 0), 0) for row in rows)
+    if required > max(int(aggregate_quantity or 0), 0):
+        raise RuntimeError(
+            f"组合买入意图成交量{required}超过本地聚合持仓{aggregate_quantity}"
+        )
+    for row in rows:
+        _trade_intent_store_instance.mark_position_projected(
+            str(row["intent_id"]), max(int(row.get("filled_qty", 0) or 0), 0)
+        )
 
 
 def _append_exit_fill_ledger(
@@ -1580,7 +1707,7 @@ def _execute_orders_inprocess(
                     f"{tag}|{today_beijing().strftime('%Y%m%d')}|{side}|"
                     f"{row['ts_code']}|{order_remark}|{qty}"
                 ),
-                metadata={"execution_channel": tag},
+                metadata={"execution_channel": tag, "name": str(row.get("name", ""))},
             )
             result = adapter.place_order(request)
             results.append(asdict(result))
@@ -6422,6 +6549,7 @@ def _d_relay_apply_buy_fill(
             execution_channel="D接力成对POV",
             planned_order_qty=int(pending.get("quantity", qty) or qty),
             benchmark_open=float(pending.get("open_price", 0.0) or 0.0),
+            component_order_ids=[str(order_id)],
         )
         state["confirmed_buy_qty"] = int(state.get("confirmed_buy_qty", 0) or 0) + qty
         state["confirmed_buy_amount"] = float(state.get("confirmed_buy_amount", 0.0) or 0.0) + qty * fill_price
@@ -8169,6 +8297,8 @@ def _pov_finalize_item(it: dict[str, Any], log: Any, reason: str) -> None:
             exit_n_days=int(it.get("exit_n", 2)),
             execution_channel="买入POV",
             planned_order_qty=int(it.get("pov_planned_qty", fq) or fq),
+            planned_exit_date_override=str(it.get("planned_exit_date", "") or ""),
+            component_order_ids=[str(oid) for oid in it.get("order_ids", []) if str(oid)],
         )
         _notify("buy_result", "✅ POV平滑段买入完成",
                 f"策略={it.get('strategy_leg', '')} {ts_code} {name_s} 平滑段成交{fq}股 "
@@ -14601,7 +14731,7 @@ def _recover_trade_execution_state_once() -> RecoveryOutcome:
         # 再读一次委托/仓位，吸收首轮查询期间可能刚到达的成交回报。
         orders = adapter.query_orders()
         positions = adapter.query_positions()
-    return TradeRecoveryCoordinator(_trade_intent_store()).recover(
+    outcome = TradeRecoveryCoordinator(_trade_intent_store()).recover(
         daemon_boot_id=_DAEMON_BOOT_ID,
         account_fingerprint=_exit_account_fingerprint(),
         business_date=today_beijing().strftime("%Y%m%d"),
@@ -14609,6 +14739,101 @@ def _recover_trade_execution_state_once() -> RecoveryOutcome:
         orders=orders or [],
         trades=trades or [],
     )
+    if outcome.status == "PASS":
+        _project_recovered_buy_intents(positions or [])
+    return outcome
+
+
+def _project_recovered_buy_intents(broker_positions: Any) -> int:
+    """将已由QMT确认成交的BUY意图补写到positions.json。
+
+    这是“券商已成交、daemon在record_buy前退出”的通用恢复闭环。
+    只使用意图累计成交量和券商真实持仓交叉确认；数量对不上就抛错，
+    让启动恢复门禁持续阻断，不会猜测归属。
+    """
+    store = _trade_intent_store()
+    account = _exit_account_fingerprint()
+    intents = store.list_buy_intents_requiring_position_projection(
+        account_fingerprint=account
+    )
+    if not intents:
+        return 0
+    broker_by_code = {
+        str(item["ts_code"]): item
+        for item in normalize_broker_positions(broker_positions or [])
+    }
+    projected_count = 0
+    for intent in intents:
+        intent_id = str(intent["intent_id"])
+        order_id = str(intent.get("broker_order_id", "") or "")
+        ts_code = _normalize_ts_code(intent.get("ts_code", ""))
+        filled_qty = max(int(intent.get("filled_qty", 0) or 0), 0)
+        metadata = dict(intent.get("metadata") or {})
+        with _positions_file_lock:
+            local_positions = load_positions()
+        same_order = next(
+            (
+                p for p in local_positions
+                if str(p.get("order_id", "")) == order_id
+                or order_id in {str(item) for item in p.get("component_order_ids", [])}
+            ),
+            None,
+        )
+        already_local = max(
+            int((same_order or {}).get("entry_shares", (same_order or {}).get("shares", 0)) or 0),
+            0,
+        )
+        if already_local >= filled_qty:
+            store.mark_position_projected(intent_id, filled_qty)
+            projected_count += 1
+            continue
+
+        broker_position = broker_by_code.get(ts_code)
+        broker_qty = max(int((broker_position or {}).get("volume", 0) or 0), 0)
+        other_local_qty = sum(
+            max(int(p.get("shares", 0) or 0), 0)
+            for p in local_positions
+            if str(p.get("status", "")).lower() in {"open", "sell_pending"}
+            and _normalize_ts_code(p.get("ts_code", "")) == ts_code
+            and str(p.get("order_id", "")) != order_id
+        )
+        attributable_qty = max(broker_qty - other_local_qty, 0)
+        if attributable_qty < filled_qty:
+            raise RuntimeError(
+                f"已成买入意图无法唯一投影到券商持仓:"
+                f"intent={intent_id} order={order_id} {ts_code} "
+                f"已成={filled_qty} 券商持仓={broker_qty} 其他本地归属={other_local_qty}"
+            )
+        average_price = float(intent.get("avg_fill_price", 0.0) or 0.0)
+        if average_price <= 0:
+            average_price = float((broker_position or {}).get("cost_price", 0.0) or 0.0)
+        if average_price <= 0:
+            raise RuntimeError(
+                f"已成买入意图缺少可验证成交价:intent={intent_id} order={order_id}"
+            )
+        record_buy(
+            order_id=order_id,
+            ts_code=ts_code,
+            name=str(metadata.get("name", "") or ""),
+            signal_date=str(intent.get("signal_date", "") or intent.get("business_date", "")),
+            buy_date=str(intent.get("business_date", "")),
+            shares=filled_qty,
+            buy_price=average_price,
+            strategy_leg=str(intent.get("strategy_leg", "") or "").upper(),
+            exit_n_days=2,
+            traded_at=str(metadata.get("traded_at", "") or ""),
+            execution_channel="启动交易恢复",
+            planned_order_qty=int(intent.get("target_qty", 0) or filled_qty),
+            planned_exit_date_override=str(intent.get("planned_exit_date", "") or ""),
+        )
+        # 必须先成功落positions.json，才允许在事务账本标记“已投影”。
+        store.mark_position_projected(intent_id, filled_qty)
+        projected_count += 1
+        logger().warning(
+            "✅ [交易恢复] 已将券商真实买入成交补写为策略持仓: %s %s %d股 order_id=%s",
+            intent.get("strategy_leg", ""), ts_code, filled_qty, order_id,
+        )
+    return projected_count
 
 
 def wait_for_trade_recovery_gate() -> None:
@@ -14716,34 +14941,6 @@ def main() -> None:
 
     ensure_trade_calendar_fresh()
 
-    # 交易日历晨检（每自然日08:30，确保9点前明确今天是否交易日）
-    threading.Thread(
-        target=_daily_calendar_sentinel,
-        daemon=True,
-        name="calendar-sentinel",
-    ).start()
-
-    # 收盘平仓看门狗：核查券商实际余仓与活跃SELL覆盖，必要时仅补未覆盖量。
-    threading.Thread(
-        target=_close_position_watchdog,
-        daemon=True,
-        name="close-watchdog",
-    ).start()
-
-    # 盘中涨停止盈监控（当日到期持仓涨幅≥7%挂涨停-0.01卖单，14:55未成交撤单）
-    threading.Thread(
-        target=_intraday_takeprofit_monitor,
-        daemon=True,
-        name="intraday-takeprofit",
-    ).start()
-
-    # 卖出端POV分批平仓(大仓位13:00评估跑道分批卖,小资金零介入)
-    threading.Thread(
-        target=_exit_pov_monitor,
-        daemon=True,
-        name="exit-pov",
-    ).start()
-
     # D接力成对POV断点恢复：状态文件锁定D、候选和所有确认金额；重启后先恢复
     # 未知委托终态，再继续“卖一片、买一片”，不会退回旧版整仓竞价卖出。
     try:
@@ -14767,7 +14964,8 @@ def main() -> None:
                 if str(relay_state.get("status", "")).upper() != "BLOCKED":
                     _d_relay_finalize(relay_state, "daemon在10:30后重启，已恢复委托终态并收口")
     except Exception as e:
-        log.error("D接力成对POV状态恢复检查异常：%s", e)
+        log.critical("D接力成对POV状态恢复检查异常：%s", e)
+        raise RuntimeError("D接力恢复未完成，禁止启动其他交易线程") from e
 
     # 普通POV平滑执行断点恢复：daemon在09:25~10:30间重启时接续未完成的平滑买入
     try:
@@ -14777,7 +14975,8 @@ def main() -> None:
             log.warning("检测到未完成的POV平滑执行状态，恢复执行线程。")
             _start_pov_worker()
     except Exception as e:
-        log.error("POV状态恢复检查异常：%s", e)
+        log.critical("POV状态恢复检查异常：%s", e)
+        raise RuntimeError("POV恢复未完成，禁止启动其他交易线程") from e
 
     # ── 启动时恢复孤儿D成交（必须在平仓检查/持仓判定之前）─────────────────────
     # 2026-07-23 事故：盘中重启daemon后,旧会话D已成交委托(北方长龙301357)失忆——
@@ -14785,16 +14984,19 @@ def main() -> None:
     # 此步从QMT当日委托(remark=D_FIRST_BOARD)自动找回已成交、本地无记录的D单,
     # 回写持仓账本;回写后has_open_local_position()=True,D补启动自然不再拉起。
     try:
-        reconcile_d_orphan_fills()
+        if not reconcile_d_orphan_fills():
+            raise RuntimeError("孤儿D成交查询/归属未完成")
     except Exception as e:
-        log.error("孤儿D成交恢复异常：%s", e)
+        log.critical("孤儿D成交恢复异常：%s", e)
+        raise RuntimeError("孤儿D成交恢复未完成，禁止启动交易线程") from e
 
     # ── 启动时立刻执行平仓检查 ────────────────────────────────────────────────
     log.info("启动检查：扫描逾期/待平仓持仓...")
     try:
         check_and_close_positions()
     except Exception as e:
-        log.error("启动平仓检查异常：%s —— 请立即手动检查持仓！", e)
+        log.critical("启动平仓检查异常：%s —— 交易线程不会带病启动！", e)
+        raise RuntimeError("启动平仓检查未完成，禁止启动交易线程") from e
     startup_has_position = has_open_local_position()
 
     # M 净值快照也在启动时做一次：收盘流水线要等到 15:10，而这一笔决定 M 这条腿
@@ -14804,6 +15006,30 @@ def main() -> None:
         snapshot_equity_for_m(today_beijing().strftime("%Y%m%d"))
     except Exception as e:
         log.warning("启动时M净值快照异常：%s", e)
+
+    # 只有在事务意图、D接力/POV断点、孤儿成交和到期持仓全部完成恢复后，
+    # 才允许启动任何持续交易线程。这个顺序防止重启瞬间看门狗、止盈和POV
+    # 同时抢旧状态，导致重复委托或漏平仓。
+    threading.Thread(
+        target=_daily_calendar_sentinel,
+        daemon=True,
+        name="calendar-sentinel",
+    ).start()
+    threading.Thread(
+        target=_close_position_watchdog,
+        daemon=True,
+        name="close-watchdog",
+    ).start()
+    threading.Thread(
+        target=_intraday_takeprofit_monitor,
+        daemon=True,
+        name="intraday-takeprofit",
+    ).start()
+    threading.Thread(
+        target=_exit_pov_monitor,
+        daemon=True,
+        name="exit-pov",
+    ).start()
     if startup_has_position:
         log.info("启动检查：检测到已有持仓，仍会检查/补跑收盘数据与候选信号；仅跳过D/E2盘中补开仓逻辑。")
         threading.Thread(

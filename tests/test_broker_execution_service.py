@@ -280,6 +280,48 @@ class IntentBrokerExecutionServiceTests(unittest.TestCase):
             self.assertEqual(row["filled_amount"], 1010)
             service.shutdown()
 
+    def test_second_non_idempotent_buy_is_rejected_while_first_is_active(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "execution_events.sqlite3"
+            service, adapter = self._service(path)
+            proxy = service.proxy(lambda: adapter)
+            first = proxy.place_order(self._request("A-open-1"))
+            second = proxy.place_order(self._request("A-open-2"))
+            self.assertTrue(first.accepted)
+            self.assertFalse(second.accepted)
+            self.assertIn("ACTIVE_BUY_INTENT_EXISTS", second.message)
+            self.assertEqual(adapter.calls, ["place:盘前买入-20260817"])
+            service.shutdown()
+
+    def test_full_status_without_qty_uses_authoritative_target_qty(self) -> None:
+        class FilledWithoutQtyAdapter(FakeAdapter):
+            def get_order_fill(self, order_id: str) -> OrderFill:
+                return OrderFill(
+                    order_id=order_id,
+                    status_text="全成",
+                    filled_qty=0,
+                    avg_price=10.1,
+                    is_terminal=True,
+                    is_filled=True,
+                )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "execution_events.sqlite3"
+            adapter = FilledWithoutQtyAdapter()
+            service = IntentBrokerExecutionService(
+                intent_store=TradeIntentStore(path),
+                account_fingerprint_provider=lambda: "acct-hash",
+                business_date_provider=lambda: "20260817",
+            )
+            proxy = service.proxy(lambda: adapter)
+            result = proxy.place_order(self._request())
+            proxy.get_order_fill(result.order_id)
+            row = TradeIntentStore(path).get_intent(result.intent_id)
+            self.assertEqual(row["status"], STATUS_FILLED)
+            self.assertEqual(row["filled_qty"], 100)
+            self.assertEqual(row["filled_amount"], 1010)
+            service.shutdown()
+
 
 class BrokerExecutionServiceResilienceTests(unittest.TestCase):
 

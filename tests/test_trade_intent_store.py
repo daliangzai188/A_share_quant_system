@@ -164,6 +164,88 @@ class TradeIntentStoreTests(unittest.TestCase):
             )
             self.assertTrue(path.exists())
 
+    def test_broker_order_id_is_unique_within_account_and_business_date(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = TradeIntentStore(Path(temporary) / "execution_events.sqlite3")
+            first = store.create_intent(intent_spec())
+            first_id = str(first["intent_id"])
+            store.transition_intent(first_id, STATUS_VALIDATED)
+            store.transition_intent(first_id, STATUS_PREPARED)
+            store.transition_intent(first_id, STATUS_SUBMITTING)
+            store.transition_intent(
+                first_id, STATUS_SUBMITTED, broker_order_id="QMT-REUSED"
+            )
+
+            later = intent_spec().__dict__.copy()
+            later.update(
+                business_date="20260818",
+                source_key="combined-plan-row-2",
+                idempotency_key=build_idempotency_key(
+                    account_fingerprint="acct-hash",
+                    business_date="20260818",
+                    strategy_leg="A",
+                    side="BUY",
+                    ts_code="000001.SZ",
+                    purpose="OPEN",
+                    source_key="combined-plan-row-2",
+                ),
+            )
+            second = store.create_intent(TradeIntentSpec(**later))
+            second_id = str(second["intent_id"])
+            store.transition_intent(second_id, STATUS_VALIDATED)
+            store.transition_intent(second_id, STATUS_PREPARED)
+            store.transition_intent(second_id, STATUS_SUBMITTING)
+            store.transition_intent(
+                second_id, STATUS_SUBMITTED, broker_order_id="QMT-REUSED"
+            )
+            self.assertEqual(
+                store.get_by_broker_order_id(
+                    "QMT-REUSED",
+                    account_fingerprint="acct-hash",
+                    business_date="20260817",
+                )["intent_id"],
+                first_id,
+            )
+            self.assertEqual(
+                store.get_by_broker_order_id(
+                    "QMT-REUSED",
+                    account_fingerprint="acct-hash",
+                    business_date="20260818",
+                )["intent_id"],
+                second_id,
+            )
+
+    def test_position_projection_progress_is_monotonic_and_queryable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = TradeIntentStore(Path(temporary) / "execution_events.sqlite3")
+            row = store.create_intent(intent_spec())
+            intent_id = str(row["intent_id"])
+            store.transition_intent(intent_id, STATUS_VALIDATED)
+            store.transition_intent(intent_id, STATUS_PREPARED)
+            store.transition_intent(intent_id, STATUS_SUBMITTING)
+            store.transition_intent(
+                intent_id,
+                STATUS_SUBMITTED,
+                broker_order_id="QMT-PROJECTION",
+            )
+            store.transition_intent(
+                intent_id,
+                STATUS_PARTIALLY_FILLED,
+                filled_qty=400,
+                filled_amount=4000,
+            )
+            pending = store.list_buy_intents_requiring_position_projection(
+                account_fingerprint="acct-hash"
+            )
+            self.assertEqual([item["intent_id"] for item in pending], [intent_id])
+            store.mark_position_projected(intent_id, 400)
+            self.assertEqual(
+                store.list_buy_intents_requiring_position_projection(
+                    account_fingerprint="acct-hash"
+                ),
+                [],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

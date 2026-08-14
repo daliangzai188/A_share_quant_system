@@ -78,6 +78,27 @@ class UnifiedExecutionArchitectureTests(unittest.TestCase):
         for broker_truth in ("query_positions", "query_orders", "query_trades"):
             self.assertIn(broker_truth, recovery_source)
 
+    def test_local_position_and_order_recovery_precedes_runtime_watchdogs(self) -> None:
+        source = (PROJECT_ROOT / "scripts/trading_daemon.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        main = next(
+            node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "main"
+        )
+        main_source = ast.get_source_segment(source, main) or ""
+        first_runtime_watchdog = main_source.index('name="close-watchdog"')
+        for required_recovery in (
+            "_d_relay_pair_active_today()",
+            "_pov_active_today()",
+            "reconcile_d_orphan_fills()",
+            "check_and_close_positions()",
+        ):
+            self.assertLess(
+                main_source.index(required_recovery),
+                first_runtime_watchdog,
+                f"{required_recovery}必须在交易看门狗前完成",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

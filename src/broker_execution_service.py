@@ -438,6 +438,40 @@ class IntentBrokerExecutionService(BrokerExecutionService):
             raise RuntimeError(f"交易意图不在可提交状态:{intent_id} status={status}")
 
         def execute() -> OrderResult:
+            if request.side.upper() == "BUY":
+                conflicts = self.intent_store.list_active_intents(
+                    account_fingerprint=spec.account_fingerprint,
+                    side="BUY",
+                    exclude_intent_id=intent_id,
+                )
+                if conflicts:
+                    conflict = conflicts[0]
+                    self.intent_store.transition_intent(
+                        intent_id,
+                        STATUS_REJECTED,
+                        expected_statuses={STATUS_PREPARED},
+                        reason=(
+                            "已有未终态买入意图占用统一资金通道:"
+                            f"{conflict.get('strategy_leg', '')} "
+                            f"{conflict.get('ts_code', '')} "
+                            f"{conflict.get('status', '')}"
+                        ),
+                        error_code="ACTIVE_BUY_INTENT_EXISTS",
+                    )
+                    return OrderResult(
+                        ts_code=request.ts_code,
+                        broker_code=request.broker_code,
+                        side=request.side,
+                        quantity=request.quantity,
+                        accepted=False,
+                        message=(
+                            "ACTIVE_BUY_INTENT_EXISTS:"
+                            f"{conflict.get('strategy_leg', '')}:"
+                            f"{conflict.get('ts_code', '')}:"
+                            f"{conflict.get('status', '')}"
+                        ),
+                        intent_id=intent_id,
+                    )
             self.intent_store.transition_intent(
                 intent_id,
                 STATUS_SUBMITTING,
@@ -503,7 +537,13 @@ class IntentBrokerExecutionService(BrokerExecutionService):
         *,
         timeout: float | None = None,
     ) -> bool:
-        intent = self.intent_store.get_by_broker_order_id(order_id)
+        account_fingerprint = str(self.account_fingerprint_provider() or "").strip()
+        business_date = str(self.business_date_provider() or "").strip()
+        intent = self.intent_store.get_by_broker_order_id(
+            order_id,
+            account_fingerprint=account_fingerprint,
+            business_date=business_date,
+        )
         if intent is not None and str(intent["status"]) in {
             STATUS_SUBMITTED,
             STATUS_PARTIALLY_FILLED,
@@ -517,7 +557,11 @@ class IntentBrokerExecutionService(BrokerExecutionService):
         try:
             return bool(self.call(adapter_provider, "cancel_order", order_id, timeout=timeout))
         except BaseException as exc:
-            current = self.intent_store.get_by_broker_order_id(order_id)
+            current = self.intent_store.get_by_broker_order_id(
+                order_id,
+                account_fingerprint=account_fingerprint,
+                business_date=business_date,
+            )
             if current is not None and str(current["status"]) not in TERMINAL_STATUSES:
                 self.intent_store.transition_intent(
                     str(current["intent_id"]),
@@ -539,13 +583,21 @@ class IntentBrokerExecutionService(BrokerExecutionService):
         fill: OrderFill = self.call(
             adapter_provider, "get_order_fill", order_id, timeout=timeout
         )
-        intent = self.intent_store.get_by_broker_order_id(order_id)
+        intent = self.intent_store.get_by_broker_order_id(
+            order_id,
+            account_fingerprint=str(self.account_fingerprint_provider() or "").strip(),
+            business_date=str(self.business_date_provider() or "").strip(),
+        )
         if intent is None:
             return fill
         status = str(intent["status"])
         if status in TERMINAL_STATUSES:
             return fill
         qty = max(int(fill.filled_qty or 0), 0)
+        if fill.is_filled and qty <= 0:
+            # QMT偶尔先回“全成”终态，成交数量字段晚一拍。
+            # 终态已明确时用原始委托量恢复，避免产生FILLED+0股。
+            qty = int(intent["target_qty"])
         amount = qty * max(float(fill.avg_price or 0.0), 0.0)
         if fill.is_filled or qty >= int(intent["target_qty"]):
             target = STATUS_FILLED

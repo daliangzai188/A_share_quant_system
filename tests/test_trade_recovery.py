@@ -176,6 +176,65 @@ class TradeRecoveryCoordinatorTests(unittest.TestCase):
             self.assertEqual(result.status, "BLOCKED")
             self.assertIn("2张委托", result.unresolved[0]["reason"])
 
+    def test_full_terminal_without_filled_qty_uses_order_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = TradeIntentStore(Path(temporary) / "events.sqlite3")
+            row = advance_to_prepared(store)
+            row = store.transition_intent(str(row["intent_id"]), STATUS_SUBMITTING)
+            result = TradeRecoveryCoordinator(store).recover(
+                daemon_boot_id="boot-full-without-qty",
+                account_fingerprint="acct",
+                business_date="20260817",
+                positions=[{"stock_code": "000001.SZ", "volume": 1000}],
+                orders=[{
+                    "order_id": "QMT-FULL",
+                    "stock_code": "000001.SZ",
+                    "order_type": 23,
+                    "order_volume": 1000,
+                    "traded_volume": 0,
+                    "traded_price": 10.2,
+                    "order_status": 56,
+                    "order_remark": "PREMARKET-A-000001",
+                }],
+                trades=[],
+            )
+            self.assertEqual(result.status, "PASS")
+            recovered = store.get_intent(str(row["intent_id"]))
+            self.assertEqual(recovered["status"], STATUS_FILLED)
+            self.assertEqual(recovered["filled_qty"], 1000)
+            self.assertAlmostEqual(recovered["filled_amount"], 10200)
+
+    def test_unbound_recovery_never_claims_order_owned_by_another_intent(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = TradeIntentStore(Path(temporary) / "events.sqlite3")
+            owner = advance_to_prepared(store, "owner")
+            owner = store.transition_intent(str(owner["intent_id"]), STATUS_SUBMITTING)
+            store.transition_intent(
+                str(owner["intent_id"]),
+                STATUS_SUBMITTED,
+                broker_order_id="QMT-CLAIMED",
+            )
+            unbound = advance_to_prepared(store, "unbound")
+            result = TradeRecoveryCoordinator(store).recover(
+                daemon_boot_id="boot-claimed",
+                account_fingerprint="acct",
+                business_date="20260817",
+                positions=[],
+                orders=[{
+                    "order_id": "QMT-CLAIMED",
+                    "stock_code": "000001.SZ",
+                    "order_type": 23,
+                    "order_volume": 1000,
+                    "order_status": 50,
+                    "order_remark": "PREMARKET-A-000001",
+                }],
+                trades=[],
+            )
+            self.assertEqual(result.status, "BLOCKED")
+            recovered_unbound = store.get_intent(str(unbound["intent_id"]))
+            self.assertEqual(recovered_unbound["broker_order_id"], "")
+            self.assertEqual(recovered_unbound["status"], STATUS_RECOVERY_REQUIRED)
+
 
 if __name__ == "__main__":
     unittest.main()

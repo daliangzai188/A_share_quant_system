@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 
-TRADE_INTENT_SCHEMA_VERSION = 2
+TRADE_INTENT_SCHEMA_VERSION = 3
 
 STATUS_PLANNED = "PLANNED"
 STATUS_VALIDATED = "VALIDATED"
@@ -259,8 +259,10 @@ class TradeIntentStore:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_trade_intents_broker_order
-                    ON trade_intents(broker_order_id) WHERE broker_order_id <> '';
+                DROP INDEX IF EXISTS idx_trade_intents_broker_order;
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_trade_intents_broker_order_scoped
+                    ON trade_intents(account_fingerprint,business_date,broker_order_id)
+                    WHERE broker_order_id <> '';
                 CREATE INDEX IF NOT EXISTS idx_trade_intents_recovery
                     ON trade_intents(status, business_date);
                 CREATE INDEX IF NOT EXISTS idx_trade_intents_symbol
@@ -437,15 +439,113 @@ class TradeIntentStore:
             ).fetchone()
         return self._row_to_dict(row)
 
-    def get_by_broker_order_id(self, broker_order_id: str) -> dict[str, Any] | None:
+    def get_by_broker_order_id(
+        self,
+        broker_order_id: str,
+        *,
+        account_fingerprint: str = "",
+        business_date: str = "",
+    ) -> dict[str, Any] | None:
         oid = str(broker_order_id or "").strip()
         if not oid:
             return None
+        clauses = ["broker_order_id=?"]
+        params: list[Any] = [oid]
+        if account_fingerprint:
+            clauses.append("account_fingerprint=?")
+            params.append(str(account_fingerprint))
+        if business_date:
+            clauses.append("business_date=?")
+            params.append(str(business_date))
         with self._lock, self._connection() as connection:
             row = connection.execute(
-                "SELECT * FROM trade_intents WHERE broker_order_id=?", (oid,)
+                "SELECT * FROM trade_intents WHERE " + " AND ".join(clauses)
+                + " ORDER BY CASE WHEN status IN "
+                "('PREPARED','SUBMITTING','SUBMITTED','PARTIALLY_FILLED',"
+                "'CANCEL_REQUESTED','RECOVERY_REQUIRED') THEN 0 ELSE 1 END,"
+                "business_date DESC,updated_at DESC LIMIT 1",
+                tuple(params),
             ).fetchone()
         return self._row_to_dict(row)
+
+    def list_active_intents(
+        self,
+        *,
+        account_fingerprint: str,
+        side: str = "",
+        exclude_intent_id: str = "",
+    ) -> list[dict[str, Any]]:
+        """返回仍可能影响券商账户的意图，用于统一资金/委托占用门禁。"""
+
+        placeholders = ",".join("?" for _ in RECOVERABLE_STATUSES)
+        clauses = [f"status IN ({placeholders})", "account_fingerprint=?"]
+        params: list[Any] = [*sorted(RECOVERABLE_STATUSES), str(account_fingerprint)]
+        if side:
+            clauses.append("side=?")
+            params.append(str(side).upper())
+        if exclude_intent_id:
+            clauses.append("intent_id<>?")
+            params.append(str(exclude_intent_id))
+        with self._lock, self._connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM trade_intents WHERE " + " AND ".join(clauses)
+                + " ORDER BY business_date,intent_id",
+                tuple(params),
+            ).fetchall()
+        return [self._row_to_dict(row) or {} for row in rows]
+
+    def list_claimed_broker_order_ids(
+        self,
+        *,
+        account_fingerprint: str,
+        business_date: str,
+    ) -> set[str]:
+        """返回本账户当日已归属到任一意图的券商单号。"""
+
+        with self._lock, self._connection() as connection:
+            rows = connection.execute(
+                "SELECT broker_order_id FROM trade_intents "
+                "WHERE account_fingerprint=? AND business_date=? AND broker_order_id<>''",
+                (str(account_fingerprint), str(business_date)),
+            ).fetchall()
+        return {str(row[0]) for row in rows if str(row[0] or "")}
+
+    def list_buy_intents_requiring_position_projection(
+        self,
+        *,
+        account_fingerprint: str,
+    ) -> list[dict[str, Any]]:
+        """返回有真实成交但尚未完整写入本地持仓投影的买入意图。"""
+
+        with self._lock, self._connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM trade_intents WHERE account_fingerprint=? "
+                "AND side='BUY' AND filled_qty>0 AND broker_order_id<>'' "
+                "ORDER BY business_date,created_at,intent_id",
+                (str(account_fingerprint),),
+            ).fetchall()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            item = self._row_to_dict(row) or {}
+            projected = int((item.get("metadata") or {}).get("position_projected_qty", 0) or 0)
+            if projected < int(item.get("filled_qty", 0) or 0):
+                result.append(item)
+        return result
+
+    def mark_position_projected(self, intent_id: str, quantity: int) -> dict[str, Any]:
+        """在同一事务账本记录持仓投影已覆盖到的累计成交量。"""
+
+        current = self.get_intent(intent_id)
+        if current is None:
+            raise KeyError(f"交易意图不存在:{intent_id}")
+        return self.transition_intent(
+            intent_id,
+            str(current["status"]),
+            expected_statuses={str(current["status"])},
+            expected_version=int(current["version"]),
+            reason="真实买入成交已同步到策略持仓投影",
+            metadata_patch={"position_projected_qty": max(int(quantity or 0), 0)},
+        )
 
     def transition_intent(
         self,

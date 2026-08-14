@@ -249,6 +249,13 @@ class TradeRecoveryCoordinator:
         if filled_qty >= target_qty or status_code == 56 or any(
             marker in status_text for marker in ("已成", "FILLED", "ALL_TRADED")
         ):
+            if filled_qty <= 0:
+                # QMT偶尔先返回“已成”终态、稍后才补齐已成数量字段。终态已明确时
+                # 订单目标量就是已成量，不能写成FILLED+0股导致持仓恢复失明。
+                filled_qty = target_qty
+                average_price = max(float(order.get("avg_price", 0.0) or 0.0), 0.0)
+                if filled_amount <= 0 and average_price > 0:
+                    filled_amount = filled_qty * average_price
             return STATUS_FILLED, min(filled_qty, target_qty), filled_amount
         if status_code in {53, 54} or any(
             marker in status_text for marker in ("已撤", "部撤", "CANCELLED", "CANCELED")
@@ -334,6 +341,10 @@ class TradeRecoveryCoordinator:
         recovered = 0
         active = 0
         unresolved: list[dict[str, Any]] = []
+        claimed_order_ids = self.store.list_claimed_broker_order_ids(
+            account_fingerprint=account_fingerprint,
+            business_date=business_date,
+        )
         for original in intents:
             intent = self.store.get_intent(str(original["intent_id"])) or original
             order_id = str(intent.get("broker_order_id", "") or "")
@@ -342,6 +353,7 @@ class TradeRecoveryCoordinator:
                 matches = [
                     item for item in normalized_orders
                     if self._order_matches_intent(item, intent)
+                    and str(item.get("order_id", "") or "") not in claimed_order_ids
                 ]
                 if len(matches) == 1:
                     order = matches[0]
@@ -355,6 +367,9 @@ class TradeRecoveryCoordinator:
                     )
                     continue
             if order is not None:
+                matched_order_id = str(order.get("order_id", "") or "")
+                if matched_order_id:
+                    claimed_order_ids.add(matched_order_id)
                 recovered_row = self._apply_order_truth(
                     intent,
                     order,
