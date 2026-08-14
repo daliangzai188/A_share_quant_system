@@ -3,7 +3,7 @@
   "status": "PASS_WITH_RISK_ACCEPTANCE",
   "current_executable": true,
   "scenario": "current_with_m_gap_leg",
-  "generated_at": "2026-08-14T08:54:17.727150+00:00",
+  "generated_at": "2026-08-14T10:28:57.376352+00:00",
   "input_start_date": "20240520",
   "input_end_date": "20260514",
   "executed_trade_count": 150,
@@ -17,8 +17,8 @@
   "m_noninferiority_passed": false,
   "m_noninferiority_reason": "回撤劣段=全部、训练半段<20250603、自然年2024",
   "m_live_risk_accepted": true,
-  "m_live_risk_acceptance_note": "2026-08-10用户明确决定恢复M真实新开仓：接受M未通过全部/训练半段/2024回撤非劣门禁及样本外仅3笔的风险；依据为M自身26笔、平均账户收益6.20%、中位数2.09%、单腿复利4.1639倍。该覆盖不等于门禁通过；保留10%回撤保护、82.5%仓位和全部成交/风控门禁，并先用小资金验证。",
-  "config_sha256": "28ea14c808593d8180758cd24d8a768ed01a64fb8ad4b8c2b5fc5bbfb0164530",
+  "m_live_risk_acceptance_note": "2026-08-10用户明确决定恢复M真实新开仓：接受M未通过全部/训练半段/2024回撤非劣门禁及样本外仅3笔的风险；依据为M自身26笔、平均账户收益6.20%、中位数2.09%、单腿复利4.1639倍。该覆盖不等于门禁通过；当前按82.5%正式实盘并保留10%回撤保护及全部成交/风控门禁；容量尚未认证，扩大资金前必须先完成容量验证。",
+  "config_sha256": "5d9b51a2eedc2f49606fd52d904f0c6823fad37d214b7003f04f9c9944a808ce",
   "code_files": [
     "scripts/build_ac_daily_candidates.py",
     "scripts/backtest_strategy_d.py",
@@ -34,7 +34,7 @@
     "src/strategy_d_spec.py",
     "src/strategy_model3_policy.py"
   ],
-  "code_sha256": "8d81b33065f331fc774a500a6200ec6c74f0fab23c1f23b68f9a074a41453951",
+  "code_sha256": "b692f29f338db9f8146b44ab633c4f05a7a8365b867b8286e83711c1fc338f25",
   "input_files": [
     "reports/current_portfolio_alignment/input_manifest.json"
   ],
