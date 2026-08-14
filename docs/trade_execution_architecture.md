@@ -49,6 +49,18 @@ PLANNED → VALIDATED → PREPARED → SUBMITTING → SUBMITTED
 5. 终态不能被滞后快照回退；
 6. PREPARED/SUBMITTING未知结果必须先查券商，不得盲目重发。
 
+## 启动恢复门禁
+
+daemon在QMT账户连接验证后、启动任何交易线程前，必须完成两轮委托/仓位和
+一轮成交快照对账。每次快照以 `POSITION/ORDER/TRADE` 对象写入
+`broker_recovery_objects`，恢复进度写入 `trade_recovery_runs`。
+
+- 券商单号已知：以单号合并委托和成交，恢复全成、部成、撤单或活跃状态；
+- 券商单号未回写：只有代码、方向、数量和remark唯一一致才能认领；
+- 仅看到持仓：持仓不能证明属于哪个策略意图，只作风险提示，不猜测归属；
+- 无法唯一对应：意图进入 `RECOVERY_REQUIRED`，恢复门禁阻断，不启动开仓、
+  平仓、止盈、D监控或看门狗线程，严禁盲目重发。
+
 ## 分阶段迁移
 
 1. 建立统一意图与事务账本，不改变实盘行为；

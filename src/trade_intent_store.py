@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 
-TRADE_INTENT_SCHEMA_VERSION = 1
+TRADE_INTENT_SCHEMA_VERSION = 2
 
 STATUS_PLANNED = "PLANNED"
 STATUS_VALIDATED = "VALIDATED"
@@ -290,6 +290,18 @@ class TradeIntentStore:
                     unresolved_count INTEGER NOT NULL DEFAULT 0,
                     details_json TEXT NOT NULL DEFAULT '{}'
                 );
+                CREATE TABLE IF NOT EXISTS broker_recovery_objects (
+                    recovery_id TEXT NOT NULL,
+                    object_kind TEXT NOT NULL CHECK(object_kind IN ('POSITION','ORDER','TRADE')),
+                    object_key TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    payload_sha256 TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL,
+                    PRIMARY KEY(recovery_id, object_kind, object_key),
+                    FOREIGN KEY(recovery_id) REFERENCES trade_recovery_runs(recovery_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_broker_recovery_objects_kind
+                    ON broker_recovery_objects(object_kind, object_key, recorded_at);
                 """
             )
             connection.execute(
@@ -580,12 +592,85 @@ class TradeIntentStore:
     def start_recovery_run(self, daemon_boot_id: str) -> str:
         recovery_id = uuid.uuid4().hex
         with self._lock, self._connection() as connection:
-            connection.execute(
-                "INSERT INTO trade_recovery_runs("
-                "recovery_id,daemon_boot_id,started_at,status) VALUES(?,?,?,?)",
-                (recovery_id, str(daemon_boot_id), _utc_now(), "RUNNING"),
-            )
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                now = _utc_now()
+                connection.execute(
+                    "UPDATE trade_recovery_runs SET completed_at=?,status='ABORTED',"
+                    "details_json=? WHERE status='RUNNING'",
+                    (
+                        now,
+                        _canonical_json({"reason": "新恢复批次开始时上一批仍未完成"}),
+                    ),
+                )
+                connection.execute(
+                    "INSERT INTO trade_recovery_runs("
+                    "recovery_id,daemon_boot_id,started_at,status) VALUES(?,?,?,?)",
+                    (recovery_id, str(daemon_boot_id), now, "RUNNING"),
+                )
+                connection.execute("COMMIT")
+            except Exception:
+                connection.execute("ROLLBACK")
+                raise
         return recovery_id
+
+    def record_recovery_snapshot(
+        self,
+        recovery_id: str,
+        *,
+        positions: Iterable[Mapping[str, Any]],
+        orders: Iterable[Mapping[str, Any]],
+        trades: Iterable[Mapping[str, Any]],
+    ) -> str:
+        """把券商真实仓位/委托/成交快照与恢复批次同库持久化。"""
+
+        grouped = {
+            "POSITION": [dict(item) for item in positions],
+            "ORDER": [dict(item) for item in orders],
+            "TRADE": [dict(item) for item in trades],
+        }
+        for values in grouped.values():
+            values.sort(key=lambda item: str(item.get("snapshot_key", "")))
+        snapshot_json = _canonical_json(
+            {
+                "positions": grouped["POSITION"],
+                "orders": grouped["ORDER"],
+                "trades": grouped["TRADE"],
+            }
+        )
+        snapshot_sha256 = hashlib.sha256(snapshot_json.encode("utf-8")).hexdigest()
+        now = _utc_now()
+        with self._lock, self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                exists = connection.execute(
+                    "SELECT 1 FROM trade_recovery_runs WHERE recovery_id=?",
+                    (str(recovery_id),),
+                ).fetchone()
+                if exists is None:
+                    raise KeyError(f"恢复批次不存在:{recovery_id}")
+                for kind, values in grouped.items():
+                    for index, value in enumerate(values):
+                        object_key = str(value.get("snapshot_key", "") or f"{index:08d}")
+                        payload_json = _canonical_json(value)
+                        connection.execute(
+                            "INSERT INTO broker_recovery_objects("
+                            "recovery_id,object_kind,object_key,payload_json,payload_sha256,recorded_at"
+                            ") VALUES(?,?,?,?,?,?)",
+                            (
+                                str(recovery_id),
+                                kind,
+                                object_key,
+                                payload_json,
+                                hashlib.sha256(payload_json.encode("utf-8")).hexdigest(),
+                                now,
+                            ),
+                        )
+                connection.execute("COMMIT")
+            except Exception:
+                connection.execute("ROLLBACK")
+                raise
+        return snapshot_sha256
 
     def finish_recovery_run(
         self,
@@ -614,6 +699,18 @@ class TradeIntentStore:
             )
             if cursor.rowcount != 1:
                 raise KeyError(f"恢复批次不存在:{recovery_id}")
+
+    def get_recovery_run(self, recovery_id: str) -> dict[str, Any] | None:
+        with self._lock, self._connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM trade_recovery_runs WHERE recovery_id=?",
+                (str(recovery_id),),
+            ).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        result["details"] = json.loads(str(result.pop("details_json", "{}") or "{}"))
+        return result
 
     def transition_history(self, intent_id: str) -> list[dict[str, Any]]:
         with self._lock, self._connection() as connection:
@@ -656,6 +753,9 @@ class TradeIntentStore:
             schema_row = connection.execute(
                 "SELECT value FROM trade_schema_meta WHERE key='schema_version'"
             ).fetchone()
+            recovery_object_count = int(
+                connection.execute("SELECT COUNT(*) FROM broker_recovery_objects").fetchone()[0]
+            )
         passed = integrity == "ok" and orphan_transitions == 0 and invalid_fills == 0
         return {
             "status": "PASS" if passed else "FAIL",
@@ -667,4 +767,5 @@ class TradeIntentStore:
             "orphan_transition_count": orphan_transitions,
             "invalid_fill_count": invalid_fills,
             "intent_count_by_status": counts,
+            "broker_recovery_object_count": recovery_object_count,
         }

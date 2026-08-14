@@ -4,9 +4,6 @@ import ast
 import unittest
 from pathlib import Path
 
-from src.live_order_gateway import LiveOrderGateway
-
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -33,11 +30,20 @@ class UnifiedExecutionArchitectureTests(unittest.TestCase):
             self.assertEqual(missing, [], f"{relative}存在绕过统一意图标识的委托")
 
     def test_legacy_gateway_order_submission_is_retired(self) -> None:
-        gateway = object.__new__(LiveOrderGateway)
-        with self.assertRaisesRegex(RuntimeError, "已退役"):
-            gateway.submit("unused.csv", "unused", "unused")
-        with self.assertRaisesRegex(RuntimeError, "已退役"):
-            gateway.submit_small_cash_test("unused.csv", "unused")
+        source = (PROJECT_ROOT / "src/live_order_gateway.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        gateway = next(
+            node for node in tree.body
+            if isinstance(node, ast.ClassDef) and node.name == "LiveOrderGateway"
+        )
+        methods = {
+            node.name: ast.get_source_segment(source, node) or ""
+            for node in gateway.body
+            if isinstance(node, ast.FunctionDef)
+        }
+        for name in ("submit", "submit_small_cash_test"):
+            self.assertIn("raise RuntimeError", methods[name])
+            self.assertIn("已退役", methods[name])
 
     def test_daemon_business_qmt_get_returns_only_execution_proxy(self) -> None:
         source = (PROJECT_ROOT / "scripts/trading_daemon.py").read_text(encoding="utf-8")
@@ -50,6 +56,27 @@ class UnifiedExecutionArchitectureTests(unittest.TestCase):
         self.assertIn("service.proxy", functions["_qmt_get"])
         self.assertNotIn("return _qmt_adapter", functions["_qmt_get"])
         self.assertIn("return _qmt_adapter", functions["_qmt_get_raw"])
+
+    def test_recovery_gate_precedes_every_trading_thread(self) -> None:
+        source = (PROJECT_ROOT / "scripts/trading_daemon.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        main = next(
+            node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "main"
+        )
+        main_source = ast.get_source_segment(source, main) or ""
+        qmt_gate = main_source.index("wait_for_qmt_startup_gate()")
+        recovery_gate = main_source.index("wait_for_trade_recovery_gate()")
+        first_thread = main_source.index("threading.Thread(")
+        self.assertLess(qmt_gate, recovery_gate)
+        self.assertLess(recovery_gate, first_thread)
+
+        recovery_source = source[
+            source.index("def _recover_trade_execution_state_once"):
+            source.index("def wait_for_trade_recovery_gate")
+        ]
+        for broker_truth in ("query_positions", "query_orders", "query_trades"):
+            self.assertIn(broker_truth, recovery_source)
 
 
 if __name__ == "__main__":

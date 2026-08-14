@@ -37,6 +37,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from dataclasses import replace
 from decimal import Decimal, ROUND_CEILING, ROUND_HALF_UP
 from pathlib import Path
@@ -54,6 +55,7 @@ from src.utils.time_utils import BEIJING_TZ, now_beijing, today_beijing
 from src.execution_completion_tracker import ExecutionCompletionTracker
 from src.broker_execution_service import IntentBrokerExecutionService
 from src.trade_intent_store import TradeIntentStore
+from src.trade_recovery import RecoveryOutcome, TradeRecoveryCoordinator
 from src.strategy_equity_ledger import (
     equity_ledger_requires_bootstrap,
     load_equity_ledger,
@@ -80,6 +82,7 @@ from src.rolling_signal_store import (
 
 
 _execution_completion_tracker = ExecutionCompletionTracker(PROJECT_ROOT)
+_DAEMON_BOOT_ID = uuid.uuid4().hex
 
 
 def _track_execution(method: str, **values: Any) -> Any:
@@ -14561,6 +14564,96 @@ def wait_for_qmt_startup_gate() -> None:
         time.sleep(wait_sec)
 
 
+def _recover_trade_execution_state_once() -> RecoveryOutcome:
+    """在任何交易线程启动前，用券商真实状态恢复统一交易意图。"""
+
+    config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+    broker_cfg = config.get("broker", {})
+    with _qmt_lock:
+        adapter = _qmt_get(broker_cfg)
+        # 启动期尚未启动任何策略线程；所有查询又都进唯一QMT队列，
+        # 因此此处取到的是一组无本程序并发下单穿插的券商事实快照。
+        positions = adapter.query_positions()
+        orders = adapter.query_orders()
+        trades = adapter.query_trades()
+        # 再读一次委托/仓位，吸收首轮查询期间可能刚到达的成交回报。
+        orders = adapter.query_orders()
+        positions = adapter.query_positions()
+    return TradeRecoveryCoordinator(_trade_intent_store()).recover(
+        daemon_boot_id=_DAEMON_BOOT_ID,
+        account_fingerprint=_exit_account_fingerprint(),
+        business_date=today_beijing().strftime("%Y%m%d"),
+        positions=positions or [],
+        orders=orders or [],
+        trades=trades or [],
+    )
+
+
+def wait_for_trade_recovery_gate() -> None:
+    """恢复门禁未通过时fail-closed，不启动开仓、平仓或看门狗线程。"""
+
+    log = logger()
+    config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+    if not (
+        config.get("broker_adapter_enabled")
+        and config.get("qmt_enabled")
+        and config.get("broker", {}).get("enabled")
+    ):
+        log.info("交易恢复门禁：QMT未启用，无实盘意图需恢复。")
+        return
+
+    round_no = 0
+    while True:
+        round_no += 1
+        try:
+            outcome = _recover_trade_execution_state_once()
+            if outcome.status == "PASS":
+                log.info(
+                    "✅ 交易恢复门禁通过：待恢复%d笔，已对账%d笔，"
+                    "仍在券商活跃%d笔，recovery_id=%s。",
+                    outcome.recoverable_count,
+                    outcome.recovered_count,
+                    outcome.active_count,
+                    outcome.recovery_id,
+                )
+                return
+            short_reasons = "；".join(
+                f"{item.get('ts_code', '')}:{item.get('reason', '')}"
+                for item in outcome.unresolved[:3]
+            )
+            log.critical(
+                "🛑 交易恢复门禁阻断：%d笔意图无唯一券商证据；%s；"
+                "禁止启动任何交易任务。",
+                outcome.unresolved_count,
+                short_reasons,
+            )
+            write_broker_health("trade_recovery_blocked", error=short_reasons)
+            write_heartbeat("trade_recovery_blocked")
+            _notify_once_per(
+                "trade_recovery_blocked",
+                1800,
+                "🛑 交易恢复门禁已阻断",
+                f"{outcome.unresolved_count}笔未终态交易意图无法与QMT真实委托/成交唯一对应。"
+                "系统已停在交易线程启动前，不会盲目重发。请核对控制台恢复日志和QMT委托。",
+                level="critical",
+                call=True,
+            )
+        except Exception as exc:
+            log.exception("交易恢复门禁第%d轮异常：%s", round_no, exc)
+            write_broker_health("trade_recovery_error", error=exc, failure_count=round_no)
+            write_heartbeat("trade_recovery_error")
+            _notify_once_per(
+                "trade_recovery_error",
+                1800,
+                "🛑 交易恢复异常",
+                f"无法完成QMT仓位/委托/成交事务对账：{exc}。"
+                "交易线程未启动，系统将继续重试。",
+                level="critical",
+                call=True,
+            )
+        time.sleep(30)
+
+
 def _should_run_startup_signal_audit(now: datetime.datetime) -> bool:
     """启动时是否自动跑重量信号审计。
 
@@ -14594,6 +14687,10 @@ def main() -> None:
 
     # 启动硬门禁：QMT账户没有验证成功前，不做任何交易/数据/候选/调度动作。
     wait_for_qmt_startup_gate()
+
+    # QMT连接成功不等于可以启动交易。必须先用券商真实仓位、委托、
+    # 成交恢复事务意图；没有唯一证据时停在这里，不让任何定时函数抢跑。
+    wait_for_trade_recovery_gate()
 
     ensure_trade_calendar_fresh()
 
