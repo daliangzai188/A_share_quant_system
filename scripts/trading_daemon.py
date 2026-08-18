@@ -13702,17 +13702,58 @@ def _log_decision_chain_summary(signal_date: str) -> None:
         live_sizing = (
             _live_plan_sizing(final_buy, action_date, signal_date) if final_buy else None
         )
-        candidate_lines = [
-            f"┃ {leg}：{_format_candidate_stock(candidates[leg])}"
-            if leg in candidates
-            else f"┃ {leg}：无候选"
+        selected_leg = str(selected.get("strategy", "")) if selected else ""
+        actual_leg = str(final_buy.get("strategy", "")) if final_buy else ""
+        path_tag = " ◄―本次路径"
+        d_holding = any(
+            str(position.get("strategy_leg", "")).strip().upper() == "D"
+            for position in positions
+        )
+        candidate_text = {
+            leg: (
+                f"成立｜{_format_candidate_stock(candidates[leg])}"
+                if leg in candidates
+                else "不触发｜无正式候选"
+            )
             for leg in ("A", "M", "E", "C")
-        ]
+        }
+
+        # 流程图、逐腿决策链、最终计划必须作为同一条多行日志原子输出；
+        # 周期播报时三块一起出现，不能只剩最终摘要。
+        bottom = "┃━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         lines = [
-            "┃━━━━━━━━━━━━ 当前组合开仓决策 ━━━━━━━━━━━━",
+            "┃━━━━━━━━━━━━ 决策优先级流程图 ━━━━━━━━━━━━",
             f"┃ 信号日：{signal_date}；操作日：{action_date or '未知'}",
-            "┃ 腿序：①D盘中 > ②A > ③M > ④E > ⑤C",
-            *candidate_lines,
+            "┃ 当前唯一腿序：①D盘中 > ②A > ③M > ④E > ⑤C",
+            "┃",
+            "┃ 【0】券商仍有本系统策略仓？",
+            f"┃   ├─ 是 → 不开新仓，确认实际清仓后再等待下一候选{path_tag if blocked else ''}",
+            "┃   └─ 否",
+            "┃        ↓",
+            "┃ 【1】①D在信号日14:00后盘中实时扫描",
+            f"┃   ├─ 已成交 → 写入持仓并回到【0】，阻断其余策略{path_tag if d_holding else ''}",
+            "┃   └─ 未成交/未触发 → 收盘后按下面顺序取第一个正式候选",
+            "┃        ↓",
+            f"┃ 【2】②A有候选？ ─是→ 买A并结束{path_tag if actual_leg == 'A' else ''}",
+            "┃        ↓否",
+            f"┃ 【3】③M有候选？ ─是→ 买M并结束{path_tag if actual_leg == 'M' else ''}",
+            "┃        ↓否",
+            f"┃ 【4】④E有候选？ ─是→ 买E并结束{path_tag if actual_leg == 'E' else ''}",
+            "┃        ↓否",
+            f"┃ 【5】⑤C有候选？ ─是→ 买C并结束{path_tag if actual_leg == 'C' else ''}",
+            f"┃        └─ 否 → 空仓{path_tag if not blocked and not selected_leg else ''}",
+            bottom,
+            "┃",
+            "┃━━━━━━━━━━━━━━ 开仓决策链 ━━━━━━━━━━━━━━",
+            f"┃ ① D盘中：{'已有D策略仓，串行资金门禁生效' if d_holding else '收盘后无次日静态票；到交易日盘中按实时规则扫描'}",
+            f"┃ ② A主策略：{candidate_text['A']}",
+            f"┃ ③ M补位：{candidate_text['M']}",
+            f"┃ ④ E策略：{candidate_text['E']}",
+            f"┃ ⑤ C垫底：{candidate_text['C']}",
+            f"┃ 账户空仓时首选：{_format_strategy_candidate(selected_leg, selected) if selected else '无'}",
+            bottom,
+            "┃",
+            "┃━━━━━━━━━━━━━━ 最终开仓计划 ━━━━━━━━━━━━━━",
         ]
         if blocked:
             lines.append(f"┃ ★ 不开新仓：券商仍有策略持仓｜{hold_line}")
@@ -13720,13 +13761,13 @@ def _log_decision_chain_summary(signal_date: str) -> None:
             lines.append(
                 "┃ ★ 当前不开仓：原计划"
                 f"{_format_strategy_candidate(str(original_final_buy.get('strategy', '?')), original_final_buy)}"
-                "已过执行窗口且未成交"
+                "已过执行窗口且未成交，不追补"
             )
         elif final_buy:
             lines.append(f"┃ ★ 开仓计划：{_format_live_plan_line(final_buy, live_sizing)}")
         else:
             lines.append(f"┃ ★ {day_label}A/M/E/C均无开仓计划")
-        lines.append("┃━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        lines.append(bottom)
         logger().info("\n".join(lines))
 
         global _last_final_plan

@@ -208,7 +208,11 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
             trading_daemon._last_final_plan = previous
 
         self.assertIsNone(current["final_buy"])
-        self.assertIn("A/M/E/C均无开仓计划", str(log.info.call_args.args[0]))
+        message = str(log.info.call_args.args[0])
+        self.assertIn("决策优先级流程图", message)
+        self.assertIn("开仓决策链", message)
+        self.assertIn("最终开仓计划", message)
+        self.assertIn("A/M/E/C均无开仓计划", message)
         log.warning.assert_not_called()
 
 

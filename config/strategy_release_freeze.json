@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
   "status": "FROZEN",
-  "release_id": "portfolio-20260818-current-v4.1",
-  "frozen_at": "2026-08-18T13:03:26.441015+00:00",
-  "baseline_strategy_commit": "1372e8f9a9f58f6eab64bc3cf4d63d99cc157bec",
-  "change_reason": "修复空计划文件导致的开仓决策链播报警告",
+  "release_id": "portfolio-20260818-current-v4.2",
+  "frozen_at": "2026-08-18T13:07:37.462975+00:00",
+  "baseline_strategy_commit": "bfc3243457873905b8e66c8a5f37cba174905af1",
+  "change_reason": "恢复当前五策略开仓流程图与逐腿决策链联合播报",
   "strategy_priority_order": [
     "D",
     "A",
@@ -17,7 +17,7 @@
   "certification_status": "PASS_WITH_RISK_ACCEPTANCE",
   "certification_scenario": "current_d_a_m_e_c",
   "config_sha256": "337df5f059ba403f692adf266ec1c164739187f3583b458340d0fc66c411d480",
-  "code_sha256": "867210b3609f5920c7e03809e3f188d586883771f3afc2c41fb0073f260f0afe",
+  "code_sha256": "b558fd7f7e5453948a77a4de6240e550169400017f65a694d441bacfc652aaef",
   "input_sha256": "3bf70ecac640f91ea41e6efdd03b6441465129f6dcbec53fe393e0f614bdf41f",
   "capacity_certified": false,
   "risk_acceptance_note": "2026-08-18统一完整样本后发现：E_R1门禁前102个候选日，E_CURRENT门禁后82个候选日；被排除20笔平均账户收益+2.297%，后半段门禁降低单腿复利。用户已明确继续保持当前实盘E_CURRENT，因此本项按风险接受保留；这不等于门禁统计通过，不得据此扩大资金。；2026-08-10用户明确决定恢复M真实新开仓：接受M未通过全部/训练半段/2024回撤非劣门禁及样本外仅3笔的风险；依据为M自身26笔、平均账户收益6.20%、中位数2.09%、单腿复利4.1639倍。该覆盖不等于门禁通过；当前按82.5%正式实盘并保留10%回撤保护及全部成交/风控门禁；容量尚未认证，扩大资金前必须先完成容量验证。",
