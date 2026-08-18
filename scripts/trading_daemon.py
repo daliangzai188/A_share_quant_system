@@ -870,13 +870,182 @@ def save_positions(positions: list[dict[str, Any]]) -> None:
             raise RuntimeError(f"保存持仓文件失败:{e}") from e
 
 
-_broker_empty_streak = 0  # 连续"券商空但本地有持仓"的确认计数，见下方两次确认机制
+_ACTIVE_AUTO_STRATEGY_LEGS = frozenset({"A", "C", "D", "E2", "L", "M"})
 
 
-def _note_broker_has_positions() -> None:
-    """券商查询确认有实盘持仓时调用，重置幽灵清理确认计数。"""
-    global _broker_empty_streak
-    _broker_empty_streak = 0
+def _position_exit_ledger_quantity(position: dict[str, Any]) -> int:
+    """返回本地已经明确回写的退出成交量。"""
+
+    total = 0
+    fills = position.get("exit_fills_by_date")
+    if isinstance(fills, dict):
+        for value in fills.values():
+            if not isinstance(value, dict):
+                continue
+            try:
+                total += max(int(value.get("qty", 0) or 0), 0)
+            except (TypeError, ValueError):
+                continue
+    return total
+
+
+def _is_recent_auto_ghost_clear(
+    position: dict[str, Any],
+    *,
+    as_of_date: str = "",
+    max_age_days: int = 3,
+) -> bool:
+    """识别可以继续作为策略身份证据的近期自动误清候选。"""
+
+    if str(position.get("status", "")).lower() != "closed":
+        return False
+    if str(position.get("strategy_leg", "")).upper() not in _ACTIVE_AUTO_STRATEGY_LEGS:
+        return False
+    if bool(position.get("manual_exit_only", False)) or bool(
+        position.get("auto_exit_disabled", False)
+    ):
+        return False
+    if position.get("manual_exit_evidence") or position.get("manual_sell_note"):
+        return False
+    try:
+        shares = max(int(position.get("shares", 0) or 0), 0)
+        sell_price = max(float(position.get("sell_price", 0.0) or 0.0), 0.0)
+    except (TypeError, ValueError):
+        return False
+    if shares <= 0 or sell_price > 0 or _position_exit_ledger_quantity(position) > 0:
+        return False
+    cleared_at = str(position.get("ghost_cleared_at", "") or "")
+    clear_reason = str(position.get("ghost_clear_reason", "") or "")
+    clear_source = str(position.get("ghost_clear_source", "") or "")
+    if not cleared_at or not (
+        "QMT" in clear_reason
+        or "券商连续" in clear_reason
+        or "账户心跳" in clear_source
+        or "逐票同步" in clear_source
+    ):
+        return False
+    try:
+        ghost_date = datetime.datetime.strptime(cleared_at[:10], "%Y-%m-%d").date()
+        check_text = str(as_of_date or today_beijing().strftime("%Y%m%d")).replace("-", "")[:8]
+        check_date = datetime.datetime.strptime(check_text, "%Y%m%d").date()
+    except (TypeError, ValueError):
+        return False
+    age = (check_date - ghost_date).days
+    return 0 <= age <= max(int(max_age_days), 0)
+
+
+def _strategy_identity_aliases(
+    *,
+    include_recent_ghost: bool = False,
+    preexisting_on: str = "",
+) -> set[str]:
+    """返回本系统策略持仓的代码身份集。"""
+
+    check_date = str(preexisting_on or "").replace("-", "")[:8]
+    aliases: set[str] = set()
+    for position in load_positions():
+        status = str(position.get("status", "")).lower()
+        active = status in {"open", "sell_pending"}
+        recent_ghost = include_recent_ghost and _is_recent_auto_ghost_clear(
+            position,
+            as_of_date=check_date,
+        )
+        if not active and not recent_ghost:
+            continue
+        if check_date:
+            buy_date = "".join(
+                char for char in str(position.get("buy_date", "")) if char.isdigit()
+            )[:8]
+            if buy_date == check_date:
+                continue
+        aliases.update(_ts_code_aliases(position.get("ts_code", "")))
+    return aliases
+
+
+def restore_ghost_cleared_strategy_positions(
+    broker_positions: Any,
+    source: str,
+) -> int:
+    """用券商真实股数恢复刚被自动误清的策略仓身份。
+
+    只在「同代码券商股数 - 仍然正常open的本地股数」与近期ghost候选股数
+    完全相等时恢复。任何部分数量、多条归属或人工成交疑点都不猜测。
+    """
+
+    broker_qty: dict[str, int] = {}
+    for raw in broker_positions or []:
+        try:
+            qty = max(int(getattr(raw, "volume", 0) or 0), 0)
+        except (TypeError, ValueError):
+            qty = 0
+        if qty <= 0:
+            continue
+        key = _normalize_ts_code(getattr(raw, "ts_code", ""))
+        if key:
+            broker_qty[key] = broker_qty.get(key, 0) + qty
+    if not broker_qty:
+        return 0
+
+    restored = 0
+    restored_desc: list[str] = []
+    with _positions_file_lock:
+        positions = load_positions()
+        active_qty: dict[str, int] = {}
+        candidates: dict[str, list[dict[str, Any]]] = {}
+        for position in positions:
+            key = _normalize_ts_code(position.get("ts_code", ""))
+            if not key:
+                continue
+            if str(position.get("status", "")).lower() in {"open", "sell_pending"}:
+                try:
+                    active_qty[key] = active_qty.get(key, 0) + max(
+                        int(position.get("shares", 0) or 0), 0
+                    )
+                except (TypeError, ValueError):
+                    continue
+            elif _is_recent_auto_ghost_clear(position):
+                candidates.setdefault(key, []).append(position)
+
+        now_text = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
+        for key, rows in candidates.items():
+            available = max(broker_qty.get(key, 0) - active_qty.get(key, 0), 0)
+            candidate_qty = sum(max(int(row.get("shares", 0) or 0), 0) for row in rows)
+            if available <= 0 or candidate_qty != available:
+                if broker_qty.get(key, 0) > 0:
+                    logger().error(
+                        "🛑 [策略仓恢复] %s 券商未归属%d股与近期误清候选%d股不一致，"
+                        "禁止自动猜测（来源=%s）。",
+                        key, available, candidate_qty, source,
+                    )
+                continue
+            for row in rows:
+                row["status"] = "open"
+                row["sell_date"] = None
+                row["sell_price"] = None
+                row["ghost_restored_at"] = now_text
+                row["ghost_restore_source"] = source
+                row["ghost_restore_reason"] = "券商真实持仓数量与近期自动误清记录完全匹配"
+                restored += 1
+                restored_desc.append(
+                    f"{row.get('strategy_leg', '')} {row.get('ts_code', '')} "
+                    f"{row.get('name', '')} {int(row.get('shares', 0) or 0)}股"
+                )
+        if restored:
+            save_positions(positions)
+
+    if restored:
+        restored_text = "、".join(restored_desc)
+        logger().critical(
+            "✅ [策略仓恢复] 已按券商真实持仓恢复本地策略身份：%s（来源=%s）。",
+            restored_text, source,
+        )
+        _notify(
+            "system_error",
+            "✅ 误清策略仓已自动恢复",
+            f"{restored_text}。系统已恢复原策略归属、旧仓阻断和原计划平仓链路。",
+            level="critical",
+        )
+    return restored
 
 
 _broker_missing_streak: dict[str, int] = {}   # {ts_code: 连续查无此票的次数}
@@ -924,7 +1093,12 @@ def _recover_sell_price_from_fills(pos: dict[str, Any]) -> float:
         return existing_price
     return ledger_price
 
-def reconcile_missing_local_positions(broker_positions: Any, source: str) -> int:
+def reconcile_missing_local_positions(
+    broker_positions: Any,
+    source: str,
+    *,
+    snapshot_complete: bool = False,
+) -> int:
     """逐票同步:本地 open 但券商连续 N 次查无此票 → 标 closed(2026-07-23 用户要求)。
 
     背景(京基智农事故):原 clear_local_positions_when_broker_empty 只在【全账户
@@ -935,7 +1109,8 @@ def reconcile_missing_local_positions(broker_positions: Any, source: str) -> int
 
     安全三重(与全账户清理同等严格):
       ① 调用方必须保证 query_positions() 成功(接口失败/QMT未启用严禁调用);
-      ② 连续 N 次确认才动手,防 QMT 偶发返回不全的抽风(乔治白误清事故教训);
+      ② 只有账户+持仓快照通过结构、code与资产自洽校验后才累计；
+         连续 N 次完整快照均缺票，才按用户手动处理同步；
       ③ 当日买入(buy_date==今日)持仓豁免——QMT 可能尚未同步新成交,不误标。
     券商侧仍在的票即时归零其计数;标 closed 保留原字段并打同步来源标记。
     """
@@ -946,9 +1121,19 @@ def reconcile_missing_local_positions(broker_positions: Any, source: str) -> int
         if not open_like:
             _broker_missing_streak.clear()
             return 0
+        if not snapshot_complete:
+            logger().error(
+                "⚠️ [逐票同步] 本轮券商快照未完成结构/code/资产自洽认证，"
+                "不累计本地持仓缺失次数（来源=%s）。",
+                source,
+            )
+            return 0
         try:
             cfg = load_json_config(PROJECT_ROOT / "config" / "config.json")
-            need = int(cfg.get("live_trade", {}).get("broker_missing_confirm_count", 3))
+            need = max(
+                int(cfg.get("live_trade", {}).get("broker_missing_confirm_count", 3)),
+                3,
+            )
         except Exception:
             need = 3
         # 券商侧全部持仓的别名集合(volume>0)
@@ -959,37 +1144,51 @@ def reconcile_missing_local_positions(broker_positions: Any, source: str) -> int
         today = today_beijing().strftime("%Y%m%d")
         now_str = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
         changed = 0
-        seen_codes: set[str] = set()
-        for pos in positions:
-            if str(pos.get("status", "")).lower() not in {"open", "sell_pending"}:
-                continue
-            code = str(pos.get("ts_code", ""))
-            seen_codes.add(code)
+        rows_by_code: dict[str, list[dict[str, Any]]] = {}
+        for pos in open_like:
+            code = _normalize_ts_code(pos.get("ts_code", ""))
+            if code:
+                rows_by_code.setdefault(code, []).append(pos)
+        seen_codes = set(rows_by_code)
+        for code, rows in rows_by_code.items():
             in_broker = any(al in broker_aliases for al in _ts_code_aliases(code))
             if in_broker:
-                _broker_missing_streak.pop(code, None)   # 券商仍有→归零
+                _broker_missing_streak.pop(code, None)   # 券商重新出现→立即归零
                 continue
-            if str(pos.get("buy_date", "")) == today:
+            if any(str(pos.get("buy_date", "")) == today for pos in rows):
                 continue   # 当日买入豁免:QMT 可能延迟,不误标
+            # 同一股票可能有竞价+POV多条分片。本轮完整快照只能累计一次，
+            # 不能按本地分片条数累计而在一次查询内提前达到3次。
             _broker_missing_streak[code] = _broker_missing_streak.get(code, 0) + 1
             n = _broker_missing_streak[code]
+            name = str(rows[0].get("name", "") or "")
             if n < need:
                 logger().warning(
-                    "⚠️ [逐票同步] %s %s 券商查无此持仓(本地仍 open,第%d/%d次,来源=%s)。"
-                    "暂不同步,防 QMT 抽风;连续%d次确认后标 closed。",
-                    code, pos.get("name", ""), n, need, source, need)
+                    "⚠️ [逐票同步] %s %s 券商完整快照查无此持仓"
+                    "(本地%d条分片仍open,第%d/%d次,来源=%s)。"
+                    "暂不同步；连续%d次完整快照均缺失后才按手动处理标closed。",
+                    code, name, len(rows), n, need, source, need,
+                )
                 continue
-            pos["status"] = "closed"
-            pos["sell_date"] = pos.get("sell_date") or today
-            pos["sell_price"] = _recover_sell_price_from_fills(pos)
-            pos["ghost_cleared_at"] = now_str
-            pos["ghost_clear_source"] = f"逐票同步-{source}"
-            pos["ghost_clear_reason"] = f"券商连续{need}次查无此持仓(手动卖出/已平仓同步)"
+            for pos in rows:
+                pos["status"] = "closed"
+                pos["sell_date"] = pos.get("sell_date") or today
+                pos["sell_price"] = _recover_sell_price_from_fills(pos)
+                pos["ghost_cleared_at"] = now_str
+                pos["ghost_clear_source"] = f"逐票同步-{source}"
+                pos["broker_confirmed_absent"] = True
+                pos["broker_confirmed_absent_at"] = now_str
+                pos["ghost_clear_reason"] = (
+                    f"QMT连续{need}次完整且资产自洽的账户/持仓快照确认无此股票"
+                    "（按手动卖出/已平仓同步）"
+                )
+                changed += 1
             _broker_missing_streak.pop(code, None)
-            changed += 1
             logger().warning(
-                "🧹 [逐票同步] %s %s 券商连续%d次查无此持仓,已标 closed(来源=%s)。"
-                "解除其对开仓的占用/BLOCK。", code, pos.get("name", ""), need, source)
+                "🧹 [逐票同步] %s %s 券商连续%d次完整快照均查无此持仓，"
+                "已将本地%d条分片标closed(来源=%s)，按手动处理解除开仓占用。",
+                code, name, need, len(rows), source,
+            )
         # 清理已消失(已 closed 或不再 open)的 code 的计数,防泄漏
         for code in list(_broker_missing_streak):
             if code not in seen_codes:
@@ -1005,65 +1204,18 @@ def reconcile_missing_local_positions(broker_positions: Any, source: str) -> int
     return changed
 
 
-def clear_local_positions_when_broker_empty(source: str) -> int:
-    """券商接口已明确返回无持仓时，清理本地 open/sell_pending 幽灵持仓。
+def clear_local_positions_when_broker_empty(
+    source: str,
+    *,
+    snapshot_complete: bool = False,
+) -> int:
+    """兼容旧调用名；空账户也统一走逐股票、连续3次完整快照状态机。"""
 
-    只能在 query_positions() 成功且已确认实盘 volume>0 持仓为空后调用。
-    接口失败、QMT未启用、未拿到明确结果时严禁调用，避免误删真实持仓记录。
-
-    两次确认机制：QMT 偶发会在调用成功时返回空持仓（客户端数据未同步/
-    session 切换瞬间），单次空结果就清理曾导致 20260701 乔治白真实持仓
-    被误清、20260701 到期日平仓流程失明漏卖（T+2 被动变 T+3）。
-    因此连续第 2 次（不同轮查询）确认为空才执行清理，第 1 次只告警等复核；
-    任何一次查到券商有持仓即由 _note_broker_has_positions() 归零计数。
-    """
-    global _broker_empty_streak
-    with _positions_file_lock:
-        positions = load_positions()
-        open_like = [
-            p for p in positions
-            if str(p.get("status", "")).lower() in {"open", "sell_pending"}
-        ]
-        if not open_like:
-            _broker_empty_streak = 0
-            return 0
-        _broker_empty_streak += 1
-        if _broker_empty_streak < 2:
-            logger().warning(
-                "⚠️ [幽灵持仓疑似] QMT返回无持仓，但本地有%d条open/sell_pending记录（来源=%s，第1次发现）。"
-                "暂不清理，等待下一轮查询复核（防QMT数据未同步误清真实持仓）。",
-                len(open_like), source,
-            )
-            return 0
-        changed = 0
-        now_str = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
-        for pos in positions:
-            status = str(pos.get("status", "")).lower()
-            if status not in {"open", "sell_pending"}:
-                continue
-            pos["status"] = "closed"
-            pos["sell_date"] = pos.get("sell_date") or today_beijing().strftime("%Y%m%d")
-            pos["sell_price"] = _recover_sell_price_from_fills(pos)
-            pos["ghost_cleared_at"] = now_str
-            pos["ghost_clear_source"] = source
-            pos["ghost_clear_reason"] = "QMT接口查询成功且返回无实盘持仓"
-            changed += 1
-
-        if changed:
-            try:
-                save_positions(positions)
-            except Exception as exc:
-                _critical_execution_state_failure(
-                    f"空仓同步本地持仓({source})",
-                    exc,
-                )
-        logger().warning(
-            "🧹 [幽灵持仓清理] QMT连续2轮确认实盘无持仓，已将本地%d条open/sell_pending持仓标记为closed。来源=%s",
-            changed,
-            source,
-        )
-    _broker_empty_streak = 0
-    return changed
+    return reconcile_missing_local_positions(
+        [],
+        source,
+        snapshot_complete=snapshot_complete,
+    )
 
 
 def record_buy(order_id: str, ts_code: str, name: str, signal_date: str,
@@ -7603,14 +7755,12 @@ def job_premarket_position_sync() -> None:
     9:25集合竞价撮合完成后，券商委托/持仓会更新：
     1. 先确认09:20预挂买单，成交则立刻记录本地持仓；未成交但仍排队则不撤单。
     2. D接力卖单按QMT真实成交股数/均价回写部分持仓与可买资金，不用“代码消失”猜测；
-    3. 历史sell_pending仍按实盘代码是否消失同步；接力候选由09:30专用成对POV接管。
+    3. 其他本地持仓统一按“连续3次完整快照缺少对应code”同步；接力候选由09:30专用成对POV接管。
     """
     logger().info("===== 盘前持仓同步（09:26）=====")
 
     config = load_json_config(PROJECT_ROOT / "config" / "config.json")
     qmt_enabled = bool(config.get("broker_adapter_enabled")) and bool(config.get("qmt_enabled"))
-    today_str = today_beijing().strftime("%Y%m%d")
-
     if not qmt_enabled:
         logger().info("[盘前持仓同步] 模拟盘，跳过实盘查询。")
         logger().info("===== 盘前持仓同步完成 =====")
@@ -7622,13 +7772,11 @@ def job_premarket_position_sync() -> None:
         logger().error("09:26 盘前买单成交确认异常：%s —— 请手动核对！", e)
 
     broker_cfg = config.get("broker", {})
-    relay_managed_code = ""
     try:
         relay_state = _d_relay_pair_load_state()
         if relay_state and str(relay_state.get("status", "")).upper() in {
             "PREPARED", "AUCTION_SUBMITTED", "ACTIVE", "BUY_CREDIT_PENDING"
         }:
-            relay_managed_code = str(relay_state.get("d", {}).get("ts_code", ""))
             if not _d_relay_reconcile_pending_sell(
                 relay_state, broker_cfg, cancel_nonterminal=True
             ):
@@ -7655,50 +7803,19 @@ def job_premarket_position_sync() -> None:
     try:
         with _qmt_lock:
             adapter = _qmt_get(broker_cfg)
-            live_positions = adapter.query_positions()
-        live_codes = {
-            str(p.ts_code)
-            for p in live_positions
-            if getattr(p, "volume", 0) and int(getattr(p, "volume", 0)) > 0
-        }
+            _, live_positions = _qmt_query_account_positions(adapter)
     except Exception as e:
         logger().error("[盘前持仓同步] 查询实盘持仓失败：%s", e)
         logger().info("===== 盘前持仓同步完成 =====")
         return
 
-    local_positions = load_positions()
     synced_any = False
-    if not live_codes:
-        cleared = clear_local_positions_when_broker_empty("盘前持仓同步09:26")
-        synced_any = synced_any or cleared > 0
-        local_positions = load_positions()
-    else:
-        _note_broker_has_positions()
-
-    for pos in local_positions:
-        if pos.get("status") != "open":
-            continue
-        # 只同步 D 策略持仓（D策略在9:23卖出，E2/ABC在14:55卖出不在此处）
-        if str(pos.get("strategy_leg", "")).upper() != "D":
-            continue
-        ts_code = str(pos.get("ts_code", ""))
-        if relay_managed_code and (_ts_code_aliases(ts_code) & _ts_code_aliases(relay_managed_code)):
-            # 部分卖出和全成均已由上面的接力成交回报按真实股数处理；这里不能再按
-            # “代码是否消失”做第二次模糊回写，否则会覆盖部分持仓或重复记账。
-            continue
-        if ts_code and ts_code not in live_codes:
-            logger().info(
-                "✅ [盘前持仓同步] %s %s (D策略) 实盘持仓已消失（集合竞价成交），本地标记已平仓。",
-                ts_code, pos.get("name", ""),
-            )
-            _mark_live_position_closed(
-                pos.get("order_id", ""),
-                today_str,
-                recovery_context="竞价平仓同步",
-            )
-            _notify("sell_success", "✅ D集合竞价平仓确认",
-                    f"{ts_code} {pos.get('name', '')} 实盘持仓已清空，09:26同步标记已平仓。")
-            synced_any = True
+    cleared = reconcile_missing_local_positions(
+        live_positions,
+        "盘前持仓同步09:26",
+        snapshot_complete=True,
+    )
+    synced_any = synced_any or cleared > 0
 
     if not synced_any:
         logger().info("[盘前持仓同步] 无需同步（本地与实盘持仓一致）。")
@@ -14802,6 +14919,10 @@ def _qmt_query_account_positions(adapter: Any, *, timeout_sec: float = 25.0) -> 
 _ASSET_SANITY_ALERT_DAY = ""
 
 
+class BrokerSnapshotInconsistentError(RuntimeError):
+    """券商查询有返回，但同一组账户/持仓快照自相矛盾。"""
+
+
 def _sanitize_account_snapshot(account: Any, positions: Any) -> None:
     """总资产自洽性校验（2026-07-25 事故：非交易日QMT先返回0、后返回1亿）。
 
@@ -14817,35 +14938,79 @@ def _sanitize_account_snapshot(account: Any, positions: Any) -> None:
         total = float(getattr(account, "total_asset", 0.0) or 0.0)
         cash = float(getattr(account, "available_cash", 0.0) or 0.0)
         mv = 0.0
+        broker_aliases: set[str] = set()
         for p in (positions or []):
             try:
+                volume = max(int(getattr(p, "volume", 0) or 0), 0)
+                if volume <= 0:
+                    continue
                 mv += float(getattr(p, "market_value", 0.0) or 0.0)
+                broker_aliases.update(_ts_code_aliases(getattr(p, "ts_code", "")))
             except (TypeError, ValueError):
                 continue
         implied = cash + mv
+
+        # 2026-08-18事故：QMT在08:06/08:07连续两轮瞬时返回空持仓，
+        # 但total_asset仍比cash多出整仓市值。旧逻辑错把total_asset改小，
+        # 随后又把真实策略仓当幽灵仓清掉。如今只要本地有活跃/近期误清策略身份，
+        # 券商快照缺该票，且资产差额又证明“持仓列表可能不完整”，整组快照直接作废。
+        expected_aliases = _strategy_identity_aliases(include_recent_ghost=True)
+        missing_aliases = expected_aliases - broker_aliases
+        unexplained_asset = total - implied
+        if missing_aliases and (
+            (total <= 0 and implied <= 0)
+            or unexplained_asset > max(abs(total) * 0.05, 1_000.0)
+        ):
+            missing_codes = sorted(
+                {
+                    alias.split(".")[0]
+                    for alias in missing_aliases
+                    if alias and alias.split(".")[0].isdigit()
+                }
+            )
+            raise BrokerSnapshotInconsistentError(
+                "QMT持仓快照与策略账本/资产不自洽："
+                f"缺失策略代码={missing_codes or sorted(missing_aliases)} "
+                f"总资产={total:.2f} 可用资金={cash:.2f} 已返回持仓市值={mv:.2f}。"
+                "本轮禁止清理本地持仓或执行新买入。"
+            )
         if implied <= 0:
             return   # 两个字段都不可用，无从校正，保持原值
         # 容差：total 落在 implied 的 [0.5, 2] 倍内视为正常（含日内浮盈亏/冻结资金差异）
         if 0.5 * implied <= total <= 2.0 * implied:
             return
         today = today_beijing().strftime("%Y%m%d")
-        logger().error(
-            "⚠️ [账户资产脏读] QMT返回总资产%.2f万，与可用资金%.2f万+持仓市值%.2f万=%.2f万严重不符；"
-            "已改用%.2f万参与仓位计算（防止仓位上限=0漏开仓或异常放大超买）。",
-            total / 10000, cash / 10000, mv / 10000, implied / 10000, implied / 10000,
+        corrected = total < implied
+        action_text = (
+            f"已改用{implied / 10000:.2f}万"
+            if corrected
+            else "保留券商total_asset，不用较小的cash+mv反向改写"
         )
-        try:
-            setattr(account, "total_asset", implied)
-        except Exception:
-            return
+        logger().error(
+            "⚠️ [账户资产脏读] QMT返回总资产%.2f万，与可用资金%.2f万+"
+            "持仓市值%.2f万=%.2f万严重不符；%s。",
+            total / 10000, cash / 10000, mv / 10000, implied / 10000, action_text,
+        )
+        # 持仓市值已返回、但total_asset短暂为0时，可以用cash+mv保守修正。
+        # 反向的total>cash+mv可能是冻结资金或持仓列表不完整，绝不再擅自把总资产改小。
+        if corrected:
+            try:
+                setattr(account, "total_asset", implied)
+            except Exception:
+                return
         if _ASSET_SANITY_ALERT_DAY != today:
             _ASSET_SANITY_ALERT_DAY = today
             _notify(
-                "system_error", "⚠️ 账户总资产脏读已自动校正",
+                "system_error", "⚠️ 账户资产快照不自洽",
                 f"QMT返回总资产{total / 10000:.2f}万，与可用{cash / 10000:.2f}万+市值{mv / 10000:.2f}万"
-                f"={implied / 10000:.2f}万不符，已改用{implied / 10000:.2f}万。若持续出现请检查QMT终端。",
+                f"={implied / 10000:.2f}万不符，{action_text}。若持续出现请检查QMT终端。",
                 level="timeSensitive",
             )
+    except BrokerSnapshotInconsistentError as exc:
+        # 必须传递给心跳/业务调用者：本轮只记录失败并下轮重试，
+        # 不允许继续把矛盾快照当成空仓、清账或放行新买入。
+        logger().error("❌ 券商快照无效：%s", exc)
+        raise
     except Exception as exc:  # noqa: BLE001
         logger().warning("账户资产自洽性校验异常（不影响主流程）：%s", exc)
 
@@ -15137,11 +15302,9 @@ def _strategy_only_market_value(
     新口径要求旧策略仓实际清空前禁止新开仓，因此今日到期、逾期、sell_pending
     与普通未到期仓都必须计入策略市值。
     """
-    local_aliases: set[str] = set()
-    for lp in load_positions():
-        if str(lp.get("status", "")).lower() not in {"open", "sell_pending"}:
-            continue
-        local_aliases.update(_ts_code_aliases(lp.get("ts_code", "")))
+    # 近期被自动幽灵清理误关、但券商又返回的持仓仍属于策略仓。
+    # 在恢复写盘完成前也要计入市值，不允许短暂降级成外部仓而腾出仓位。
+    local_aliases = _strategy_identity_aliases(include_recent_ghost=True)
     total = 0.0
     for p in (broker_positions or []):
         if int(getattr(p, "volume", 0) or 0) <= 0:
@@ -15159,10 +15322,7 @@ def _broker_has_strategy_position(broker_positions: Any) -> bool:
     "账户只剩一个打新转债"被误判为"有持仓"→影响轮询/盯盘判定。改用策略口径:
     仅当券商持有能匹配本地 open/sell_pending 记录的票才算 True。
     """
-    local_aliases: set[str] = set()
-    for lp in load_positions():
-        if str(lp.get("status", "")).lower() in {"open", "sell_pending"}:
-            local_aliases.update(_ts_code_aliases(lp.get("ts_code", "")))
+    local_aliases = _strategy_identity_aliases(include_recent_ghost=True)
     if not local_aliases:
         return False
     for p in (broker_positions or []):
@@ -15185,16 +15345,12 @@ def _broker_has_preexisting_strategy_position(
     buy_date 早于检查日或缺失的记录都视为旧仓，含今日到期、逾期和待卖状态。
     """
     check_date = as_of_date or today_beijing().strftime("%Y%m%d")
-    preexisting_aliases: set[str] = set()
-    for position in load_positions():
-        if str(position.get("status", "")).lower() not in {"open", "sell_pending"}:
-            continue
-        buy_date = "".join(
-            char for char in str(position.get("buy_date", "")) if char.isdigit()
-        )[:8]
-        if buy_date == check_date:
-            continue
-        preexisting_aliases.update(_ts_code_aliases(position.get("ts_code", "")))
+    # 最终买入门禁不能只信status=open。若QMT瞬时空快照曾将真实仓误标closed，
+    # 近期自动误清记录仍是策略身份证据；只要券商又返回该票，就必须阻断新仓。
+    preexisting_aliases = _strategy_identity_aliases(
+        include_recent_ghost=True,
+        preexisting_on=check_date,
+    )
     if not preexisting_aliases:
         return False
     return any(
@@ -15329,6 +15485,16 @@ def _print_account_status(log: Any) -> None:
                             level="critical", call=True)
                 return
 
+    # 只有账户与持仓查询都通过语义/自洽校验后，才允许用券商真实股数恢复
+    # 近期被自动误清的策略身份。放在QMT锁外执行，避免持仓文件写入和通知
+    # 占用唯一券商通道；恢复仍早于旧仓门禁、展示及平仓线程下一轮读取。
+    try:
+        restore_ghost_cleared_strategy_positions(positions, "账户心跳/重连")
+    except Exception as exc:
+        # 本轮不能确认策略身份就停止本轮账户派生动作；只记录并等待下一轮，
+        # 不让后台线程异常退出，也不把该票降级成外部仓或放行开仓。
+        log.exception("策略仓身份恢复异常，本轮停止并等待下一轮重试：%s", exc)
+        return
     now_str = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
     acct_id = str(account.account_id or "")
     write_broker_health("verified", account_id=acct_id)
@@ -15339,12 +15505,15 @@ def _print_account_status(log: Any) -> None:
     # 只认策略持仓:打新中签转债/股票等外部持仓不算"有持仓"(2026-07-23 用户重申)
     _last_account_has_position = _broker_has_strategy_position(positions)
     if live_positions:
-        _note_broker_has_positions()
         # 逐票同步(2026-07-23):账户非空(如有打新中签转债)时,原全账户清理不触发,
         # 手动卖出的策略持仓会成永久幽灵仓卡住开仓。此处逐票核对券商实际持仓,
         # 连续N次查无的本地持仓自动标 closed(query_positions 已成功,可安全核对)。
         try:
-            reconcile_missing_local_positions(positions, "账户心跳")
+            reconcile_missing_local_positions(
+                positions,
+                "账户心跳",
+                snapshot_complete=True,
+            )
         except Exception as _e:
             log.error("逐票持仓同步异常(不影响交易):%s", _e)
         local_positions = load_positions()
@@ -15522,7 +15691,11 @@ def _print_account_status(log: Any) -> None:
                  masked_acct, total_asset / 10000,
                  "  ".join(pos_parts) if pos_parts else "(无策略持仓)", ext_text)
     else:
-        clear_local_positions_when_broker_empty("账户心跳")
+        reconcile_missing_local_positions(
+            positions,
+            "账户心跳",
+            snapshot_complete=True,
+        )
         log.info("✅ [账户] %s | 账户%s 总资产%.2f万 | 无持仓",
                  now_str, masked_acct, total_asset / 10000)
 
@@ -15688,6 +15861,10 @@ def _recover_trade_execution_state_once() -> RecoveryOutcome:
         # 再读一次委托/仓位，吸收首轮查询期间可能刚到达的成交回报。
         orders = adapter.query_orders()
         positions = adapter.query_positions()
+    # 启动恢复门禁已经拿到两轮明确成功的券商事实快照。先恢复近期自动误清的
+    # 策略仓，再做事务意图对账和持仓投影；这样后续启动平仓检查、止盈预挂、
+    # 旧仓阻断读取到的都是恢复后的权威本地状态。
+    restore_ghost_cleared_strategy_positions(positions, "启动交易恢复")
     outcome = TradeRecoveryCoordinator(_trade_intent_store()).recover(
         daemon_boot_id=_DAEMON_BOOT_ID,
         account_fingerprint=_exit_account_fingerprint(),

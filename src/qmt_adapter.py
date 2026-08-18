@@ -295,10 +295,17 @@ class QMTBrokerAdapter(BrokerAdapter):
             # 旧代码的 ``... or []`` 把接口错误None伪造成空仓，
             # 会进一步误清策略持仓并放行新买入。
             raise RuntimeError("QMT持仓查询返回None（结果未知，不等于空仓）")
+        if isinstance(raw_positions, (str, bytes, dict)):
+            raise RuntimeError(
+                f"QMT持仓查询返回非法类型{type(raw_positions).__name__}"
+                "（结果未知，不等于空仓）"
+            )
         positions = []
         for raw in raw_positions:
             data = object_to_dict(raw)
             code = str(first_present(data, ["stock_code", "code", "ts_code", "m_strInstrumentID"], "")).upper()
+            if not data or not code:
+                raise RuntimeError("QMT持仓查询包含无效记录（结果未知，不等于空仓）")
             positions.append(
                 PositionSnapshot(
                     account_id=self.config.account_id,
@@ -320,7 +327,15 @@ class QMTBrokerAdapter(BrokerAdapter):
         raw_orders = self.trader.query_stock_orders(self.account)
         if raw_orders is None:
             raise RuntimeError("QMT委托查询返回None（结果未知，不等于无委托）")
-        return [object_to_dict(order) for order in raw_orders]
+        if isinstance(raw_orders, (str, bytes, dict)):
+            raise RuntimeError(
+                f"QMT委托查询返回非法类型{type(raw_orders).__name__}"
+                "（结果未知，不等于无委托）"
+            )
+        orders = [object_to_dict(order) for order in raw_orders]
+        if any(not order for order in orders):
+            raise RuntimeError("QMT委托查询包含无效记录（结果未知，不等于无委托）")
+        return orders
 
     def query_trades(self) -> list[dict[str, Any]]:
         if self.trader is None or self.account is None:
@@ -328,7 +343,15 @@ class QMTBrokerAdapter(BrokerAdapter):
         raw_trades = self.trader.query_stock_trades(self.account)
         if raw_trades is None:
             raise RuntimeError("QMT成交查询返回None（结果未知，不等于无成交）")
-        return [object_to_dict(trade) for trade in raw_trades]
+        if isinstance(raw_trades, (str, bytes, dict)):
+            raise RuntimeError(
+                f"QMT成交查询返回非法类型{type(raw_trades).__name__}"
+                "（结果未知，不等于无成交）"
+            )
+        trades = [object_to_dict(trade) for trade in raw_trades]
+        if any(not trade for trade in trades):
+            raise RuntimeError("QMT成交查询包含无效记录（结果未知，不等于无成交）")
+        return trades
 
     def get_full_tick(self, ts_codes: list[str]) -> dict[str, QuoteSnapshot]:
         self._load_xtquant()

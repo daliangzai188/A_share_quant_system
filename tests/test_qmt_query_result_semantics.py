@@ -76,6 +76,18 @@ class QMTQueryResultSemanticsTest(unittest.TestCase):
 
         self.assertEqual(adapter.query_positions(), [])
 
+    def test_malformed_position_container_is_error_not_empty_position(self) -> None:
+        adapter = _adapter(_FakeTrader(positions={}))
+
+        with self.assertRaisesRegex(RuntimeError, "非法类型dict"):
+            adapter.query_positions()
+
+    def test_malformed_position_row_is_error_not_empty_position(self) -> None:
+        adapter = _adapter(_FakeTrader(positions=[None]))
+
+        with self.assertRaisesRegex(RuntimeError, "包含无效记录"):
+            adapter.query_positions()
+
     def test_none_account_result_is_error_not_zero_asset_account(self) -> None:
         adapter = _adapter(_FakeTrader(account=None))
 
