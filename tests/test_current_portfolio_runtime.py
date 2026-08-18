@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import ModuleType
+from unittest.mock import MagicMock, patch
 
 import pandas as pd
 
@@ -15,7 +16,7 @@ if "dotenv" not in sys.modules:
     sys.modules["dotenv"] = stub
 
 from scripts.certify_current_executable_portfolio import resolve_m_release_status
-from scripts import run_strategy_e_signal, run_strategy_m_signal
+from scripts import run_strategy_e_signal, run_strategy_m_signal, trading_daemon
 from src.combined_live_engine import CombinedLiveEngine
 from src.live_certification import validate_live_certification
 
@@ -172,6 +173,43 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
                 },
             )
             self.assertTrue(check.ok, check.reason)
+
+    def test_empty_ac_plan_file_is_treated_as_no_candidate_in_broadcast(self) -> None:
+        log = MagicMock()
+        previous = trading_daemon._last_final_plan
+        try:
+            with (
+                patch.object(
+                    trading_daemon.glob,
+                    "glob",
+                    return_value=["empty_planned_orders.csv"],
+                ),
+                patch.object(
+                    pd,
+                    "read_csv",
+                    side_effect=pd.errors.EmptyDataError("No columns to parse from file"),
+                ),
+                patch.object(
+                    trading_daemon,
+                    "_load_m_signal_for_signal_date",
+                    return_value=None,
+                ),
+                patch.object(
+                    trading_daemon,
+                    "_load_e_signal_for_signal_date",
+                    return_value=None,
+                ),
+                patch.object(trading_daemon, "load_positions", return_value=[]),
+                patch.object(trading_daemon, "logger", return_value=log),
+            ):
+                trading_daemon._log_decision_chain_summary("20260818")
+        finally:
+            current = trading_daemon._last_final_plan
+            trading_daemon._last_final_plan = previous
+
+        self.assertIsNone(current["final_buy"])
+        self.assertIn("A/M/E/C均无开仓计划", str(log.info.call_args.args[0]))
+        log.warning.assert_not_called()
 
 
 if __name__ == "__main__":

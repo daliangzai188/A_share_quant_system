@@ -13624,7 +13624,12 @@ def _log_decision_chain_summary(signal_date: str) -> None:
             )
         )
         if order_files:
-            orders = pd.read_csv(order_files[-1], low_memory=False)
+            try:
+                orders = pd.read_csv(order_files[-1], low_memory=False)
+            except pd.errors.EmptyDataError:
+                # A/C 当日没有候选时，计划文件可能是合法的0字节空文件。
+                # 播报层应把它视为“无候选”，不能让非关键展示任务报错。
+                orders = pd.DataFrame()
             if not orders.empty and "side" in orders.columns:
                 buys = orders[orders["side"].astype(str).str.upper().eq("BUY")]
                 for _, row in buys.iterrows():
