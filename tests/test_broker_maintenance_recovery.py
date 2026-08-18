@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import datetime
+import inspect
 import os
 import sys
 import tempfile
@@ -129,6 +131,158 @@ class BrokerHealthStateTests(unittest.TestCase):
                 ),
             ],
         )
+
+    def test_periodic_health_schedule_uses_even_hours_at_minute_02(self) -> None:
+        timezone = trading_daemon.BEIJING_TZ
+        cases = (
+            (
+                datetime.datetime(2026, 8, 18, 15, 59, tzinfo=timezone),
+                datetime.datetime(2026, 8, 18, 16, 2, tzinfo=timezone),
+            ),
+            (
+                datetime.datetime(2026, 8, 18, 16, 2, 1, tzinfo=timezone),
+                datetime.datetime(2026, 8, 18, 18, 2, tzinfo=timezone),
+            ),
+            (
+                datetime.datetime(2026, 8, 18, 23, 30, tzinfo=timezone),
+                datetime.datetime(2026, 8, 19, 0, 2, tzinfo=timezone),
+            ),
+        )
+
+        for now, expected in cases:
+            with self.subTest(now=now):
+                self.assertEqual(
+                    trading_daemon._next_periodic_health_beacon_at(now),
+                    expected,
+                )
+
+    def test_periodic_health_snapshot_requires_fresh_same_process_facts(self) -> None:
+        timezone = trading_daemon.BEIJING_TZ
+        now = datetime.datetime(2026, 8, 18, 8, 2, tzinfo=timezone)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            heartbeat = root / "daemon_heartbeat.txt"
+            broker_health = root / "broker_health.json"
+            heartbeat.write_text(
+                f"{(now - datetime.timedelta(seconds=10)).isoformat()} pid=123 sleeping\n",
+                encoding="utf-8",
+            )
+            broker_health.write_text(
+                json.dumps(
+                    {
+                        "updated_at": (now - datetime.timedelta(seconds=20)).isoformat(),
+                        "pid": 123,
+                        "status": "verified",
+                        "account": "****03",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            snapshot = trading_daemon._periodic_health_snapshot(
+                now=now,
+                heartbeat_path=heartbeat,
+                broker_health_path=broker_health,
+                current_pid=123,
+            )
+
+            self.assertTrue(snapshot["ok"])
+            self.assertEqual(snapshot["heartbeat_age_sec"], 10)
+            self.assertEqual(snapshot["broker_age_sec"], 20)
+            self.assertEqual(snapshot["account"], "****03")
+
+            broker_health.write_text(
+                json.dumps(
+                    {
+                        "updated_at": (now - datetime.timedelta(seconds=181)).isoformat(),
+                        "pid": 123,
+                        "status": "verified",
+                        "account": "****03",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            stale = trading_daemon._periodic_health_snapshot(
+                now=now,
+                heartbeat_path=heartbeat,
+                broker_health_path=broker_health,
+                current_pid=123,
+                broker_health_fresh_sec=180,
+            )
+
+        self.assertFalse(stale["ok"])
+        self.assertTrue(any("QMT验证已陈旧181秒" in value for value in stale["errors"]))
+
+    def test_periodic_health_publish_is_read_only_and_never_calls_qmt(self) -> None:
+        now = datetime.datetime.now(tz=trading_daemon.BEIJING_TZ)
+        pid = os.getpid()
+        config = {
+            "notify": {
+                "health_beacon": {
+                    "enabled": True,
+                    "heartbeat_fresh_sec": 45,
+                    "broker_health_fresh_sec": 180,
+                    "retry_attempts": 3,
+                    "retry_sec": 30,
+                }
+            }
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            heartbeat = root / "daemon_heartbeat.txt"
+            broker_health = root / "broker_health.json"
+            heartbeat.write_text(
+                f"{now.isoformat()} pid={pid} sleeping\n",
+                encoding="utf-8",
+            )
+            broker_health.write_text(
+                json.dumps(
+                    {
+                        "updated_at": now.isoformat(),
+                        "pid": pid,
+                        "status": "verified",
+                        "account": "****03",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.object(trading_daemon, "HEARTBEAT_FILE", heartbeat), \
+                 patch.object(trading_daemon, "BROKER_HEALTH_FILE", broker_health), \
+                 patch.object(trading_daemon, "_qmt_get") as qmt_get, \
+                 patch.object(
+                     trading_daemon,
+                     "_notify_with_retry_async",
+                 ) as notify_async:
+                snapshot = trading_daemon._publish_periodic_health_beacon(
+                    config,
+                    now=now,
+                )
+
+        self.assertTrue(snapshot["ok"])
+        qmt_get.assert_not_called()
+        notify_async.assert_called_once()
+        self.assertEqual(notify_async.call_args.args[0], "health_beacon")
+        self.assertEqual(notify_async.call_args.args[1], "✅ A_System运行正常")
+
+    def test_periodic_health_code_has_no_trading_or_broker_call_path(self) -> None:
+        source = "\n".join(
+            (
+                inspect.getsource(trading_daemon._periodic_health_snapshot),
+                inspect.getsource(trading_daemon._publish_periodic_health_beacon),
+                inspect.getsource(trading_daemon._periodic_health_beacon_loop),
+            )
+        )
+        for forbidden in (
+            "_qmt_get",
+            "_qmt_lock",
+            "_exit_sell_lock",
+            "load_positions",
+            "run_job",
+            "place_order",
+            "cancel_order",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, source)
 
 
 class RecoveryGateTests(unittest.TestCase):

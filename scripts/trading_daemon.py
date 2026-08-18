@@ -561,6 +561,197 @@ def write_broker_health(
             pass
 
 
+def _periodic_health_snapshot(
+    *,
+    now: datetime.datetime | None = None,
+    heartbeat_path: Path | None = None,
+    broker_health_path: Path | None = None,
+    current_pid: int | None = None,
+    heartbeat_fresh_sec: float = 45.0,
+    broker_health_fresh_sec: float = 180.0,
+) -> dict[str, Any]:
+    """只读汇总daemon与QMT健康事实，绝不调用券商接口或获取交易锁。"""
+    current = now or now_beijing()
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=BEIJING_TZ)
+    heartbeat_file = heartbeat_path or HEARTBEAT_FILE
+    broker_file = broker_health_path or BROKER_HEALTH_FILE
+    expected_pid = int(current_pid if current_pid is not None else os.getpid())
+    errors: list[str] = []
+    heartbeat_age = float("inf")
+    heartbeat_status = "unknown"
+    heartbeat_pid = 0
+    broker_age = float("inf")
+    broker_status = "unknown"
+    broker_pid = 0
+    account = ""
+
+    try:
+        heartbeat_text = heartbeat_file.read_text(encoding="utf-8").strip()
+        heartbeat_parts = heartbeat_text.split()
+        heartbeat_at = datetime.datetime.fromisoformat(heartbeat_parts[0])
+        if heartbeat_at.tzinfo is None:
+            heartbeat_at = heartbeat_at.replace(tzinfo=BEIJING_TZ)
+        heartbeat_pid = int(
+            next(part.split("=", 1)[1] for part in heartbeat_parts if part.startswith("pid="))
+        )
+        heartbeat_status = heartbeat_parts[-1] if heartbeat_parts else "unknown"
+        heartbeat_age = (current - heartbeat_at).total_seconds()
+        if heartbeat_pid != expected_pid:
+            errors.append(f"daemon心跳PID不匹配({heartbeat_pid}!={expected_pid})")
+        if heartbeat_status not in {"running", "sleeping"}:
+            errors.append(f"daemon心跳状态={heartbeat_status}")
+        if heartbeat_age < -5:
+            errors.append(f"daemon心跳时间超前{abs(heartbeat_age):.0f}秒")
+        elif heartbeat_age > max(float(heartbeat_fresh_sec), 1.0):
+            errors.append(f"daemon心跳已陈旧{heartbeat_age:.0f}秒")
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"daemon心跳不可读({type(exc).__name__})")
+
+    try:
+        broker_payload = json.loads(broker_file.read_text(encoding="utf-8"))
+        broker_pid = int(broker_payload.get("pid", 0) or 0)
+        broker_status = str(broker_payload.get("status", "unknown") or "unknown")
+        account = str(broker_payload.get("account", "") or "")
+        updated_text = str(broker_payload.get("updated_at", "") or "").strip()
+        if updated_text:
+            broker_at = datetime.datetime.fromisoformat(updated_text)
+            if broker_at.tzinfo is None:
+                broker_at = broker_at.replace(tzinfo=BEIJING_TZ)
+        else:
+            broker_at = datetime.datetime.fromtimestamp(
+                float(broker_payload.get("updated_ts", 0.0) or 0.0),
+                tz=BEIJING_TZ,
+            )
+        broker_age = (current - broker_at).total_seconds()
+        if broker_pid != expected_pid:
+            errors.append(f"QMT健康PID不匹配({broker_pid}!={expected_pid})")
+        if broker_status != "verified":
+            errors.append(f"QMT接口状态={broker_status}")
+        if broker_age < -5:
+            errors.append(f"QMT验证时间超前{abs(broker_age):.0f}秒")
+        elif broker_age > max(float(broker_health_fresh_sec), 1.0):
+            errors.append(f"QMT验证已陈旧{broker_age:.0f}秒")
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"QMT健康快照不可读({type(exc).__name__})")
+
+    return {
+        "ok": not errors,
+        "checked_at": current,
+        "pid": expected_pid,
+        "heartbeat_age_sec": heartbeat_age,
+        "heartbeat_status": heartbeat_status,
+        "heartbeat_pid": heartbeat_pid,
+        "broker_age_sec": broker_age,
+        "broker_status": broker_status,
+        "broker_pid": broker_pid,
+        "account": account,
+        "errors": errors,
+    }
+
+
+def _next_periodic_health_beacon_at(
+    now: datetime.datetime,
+    *,
+    every_hours: int = 2,
+    minute: int = 2,
+    anchor_hour: int = 0,
+) -> datetime.datetime:
+    """计算下一个健康播报点；默认每天偶数小时的第02分。"""
+    interval = min(max(int(every_hours or 2), 1), 12)
+    target_minute = min(max(int(minute or 0), 0), 59)
+    anchor = min(max(int(anchor_hour or 0), 0), 23)
+    timezone = now.tzinfo or BEIJING_TZ
+    for day_offset in range(2):
+        target_day = now.date() + datetime.timedelta(days=day_offset)
+        for hour in range(24):
+            if (hour - anchor) % interval != 0:
+                continue
+            candidate = datetime.datetime.combine(
+                target_day,
+                datetime.time(hour, target_minute),
+                tzinfo=timezone,
+            )
+            if candidate > now:
+                return candidate
+    return datetime.datetime.combine(
+        now.date() + datetime.timedelta(days=1),
+        datetime.time(anchor, target_minute),
+        tzinfo=timezone,
+    )
+
+
+def _publish_periodic_health_beacon(
+    config: dict[str, Any] | None = None,
+    *,
+    now: datetime.datetime | None = None,
+) -> dict[str, Any]:
+    """异步发送健康播报；本函数及其线程不触碰任何QMT/交易锁。"""
+    runtime_config = config or load_json_config(PROJECT_ROOT / "config" / "config.json")
+    beacon_cfg = runtime_config.get("notify", {}).get("health_beacon", {}) or {}
+    checked_at = now or now_beijing()
+    snapshot = _periodic_health_snapshot(
+        now=checked_at,
+        heartbeat_fresh_sec=float(beacon_cfg.get("heartbeat_fresh_sec", 45) or 45),
+        broker_health_fresh_sec=float(beacon_cfg.get("broker_health_fresh_sec", 180) or 180),
+    )
+    if snapshot["ok"]:
+        title = "✅ A_System运行正常"
+        body = (
+            f"北京时间{checked_at.strftime('%Y-%m-%d %H:%M:%S')}；"
+            f"daemon PID {snapshot['pid']}，调度心跳{snapshot['heartbeat_age_sec']:.0f}秒前；"
+            f"QMT账户{snapshot['account'] or '已脱敏'}接口验证"
+            f"{snapshot['broker_age_sec']:.0f}秒前，状态正常。"
+        )
+        level = "active"
+        logger().info("[定时健康播报] %s", body)
+    else:
+        title = "⚠️ A_System健康检查异常"
+        body = (
+            f"北京时间{checked_at.strftime('%Y-%m-%d %H:%M:%S')}；"
+            + "；".join(snapshot["errors"])
+            + "。健康播报只读检查未通过，请尽快检查Windows守护进程与QMT。"
+        )
+        level = "timeSensitive"
+        logger().warning("[定时健康播报] %s", body)
+    _notify_with_retry_async(
+        "health_beacon",
+        title,
+        body,
+        level=level,
+        attempts=max(int(beacon_cfg.get("retry_attempts", 3) or 3), 1),
+        retry_sec=max(float(beacon_cfg.get("retry_sec", 30) or 30), 0.0),
+    )
+    return snapshot
+
+
+def _periodic_health_beacon_loop() -> None:
+    """独立低优先级墙钟线程：每2小时第02分只读检查并异步推送。"""
+    log = logger()
+    while True:
+        try:
+            config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+            beacon_cfg = config.get("notify", {}).get("health_beacon", {}) or {}
+            if not bool(beacon_cfg.get("enabled", True)):
+                time.sleep(300)
+                continue
+            target = _next_periodic_health_beacon_at(
+                now_beijing(),
+                every_hours=int(beacon_cfg.get("every_hours", 2) or 2),
+                minute=int(beacon_cfg.get("minute", 2) or 2),
+                anchor_hour=int(beacon_cfg.get("anchor_hour", 0) or 0),
+            )
+            while True:
+                remaining = (target - now_beijing()).total_seconds()
+                if remaining <= 0:
+                    break
+                time.sleep(min(max(remaining, 1.0), 60.0))
+            _publish_periodic_health_beacon(config, now=now_beijing())
+        except Exception as exc:  # noqa: BLE001
+            log.warning("定时健康播报线程异常（不影响交易主流程）：%s", exc)
+            time.sleep(60)
+
+
 def post_market_marker_path(date: datetime.date) -> Path:
     return PROJECT_ROOT / "logs" / f"post_market_done_{date.strftime('%Y%m%d')}.marker"
 
@@ -16662,6 +16853,13 @@ def main() -> None:
     # 到这里才代表账户门禁、启动持仓核对、任务线程和补检全部完成。
     # 统一在“程序调度+账户查询”双就绪后通知；不再在QMT刚握手成功时提前通知。
     _publish_system_ready()
+    # 健康播报是完全独立的只读墙钟线程：只读daemon心跳和现有broker_health，
+    # 异步发Bark，不调用QMT、不获取任何交易锁，也不进入核心SCHEDULE。
+    threading.Thread(
+        target=_periodic_health_beacon_loop,
+        daemon=True,
+        name="periodic-health-beacon",
+    ).start()
 
     # ── 主循环 ────────────────────────────────────────────────────────────────
     # 首项按当前墙钟选择；此后严格沿SCHEDULE推进。这样临近任务不会被30秒

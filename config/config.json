@@ -206,8 +206,20 @@
       "position_risk": true,
       "system_error": true,
       "connection": true,
+      "health_beacon": true,
       "reconcile": true,
       "daily_summary": true
+    },
+    "health_beacon": {
+      "enabled": true,
+      "every_hours": 2,
+      "minute": 2,
+      "anchor_hour": 0,
+      "heartbeat_fresh_sec": 45,
+      "broker_health_fresh_sec": 180,
+      "retry_attempts": 3,
+      "retry_sec": 30,
+      "note": "每天00:02、02:02……22:02异步播报；只读daemon心跳与现有QMT健康快照，不调用QMT、不获取交易锁，不参与开仓、平仓、挂撤单、POV、补仓或D巡查。"
     },
     "position_loss_alert_thresholds_pct": [
       -5,
