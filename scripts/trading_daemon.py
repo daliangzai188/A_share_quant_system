@@ -5697,6 +5697,14 @@ def _daily_calendar_sentinel() -> None:
         time.sleep(min(max((nxt - now).total_seconds(), 60), 3600))
 
 
+def _takeprofit_submission_label(submitted_at: datetime.time) -> str:
+    """按真实发单时段描述止盈委托，禁止把盘中补挂写成09:20预挂。"""
+
+    if datetime.time(9, 20) <= submitted_at < datetime.time(9, 25):
+        return "集合竞价预挂"
+    return "连续竞价补挂"
+
+
 def _intraday_takeprofit_monitor() -> None:
     """当日到期持仓的涨停预挂止盈（常驻线程，2026-07-10 用户定稿规则）。
 
@@ -6123,8 +6131,9 @@ def _intraday_takeprofit_monitor() -> None:
                             terminal_known=True,
                         )
                 if result.accepted:
-                    log.warning("⏳ [盘中止盈] %s %s 当日到期，09:20预挂涨停-%.2f止盈卖单 %d股@%.2f（14:45未成交自动撤）",
-                                ts_code, name_s, offset, safe_qty, sell_price)
+                    submission_label = _takeprofit_submission_label(now_beijing().time())
+                    log.warning("⏳ [盘中止盈] %s %s 当日到期，%s涨停-%.2f止盈卖单 %d股@%.2f（14:45未成交自动撤）",
+                                ts_code, name_s, submission_label, offset, safe_qty, sell_price)
                     _notify("sell_success", "📈 止盈卖单已预挂",
                             f"{ts_code} {name_s} 今日到期，已挂{sell_price:.2f}（涨停-{offset:.2f}）止盈卖单，"
                             f"冲板即成交锁定强势；14:45未成交自动撤单，14:55照常收盘平仓。",
@@ -12785,6 +12794,24 @@ def _ordinary_open_plan_expired(
     return True
 
 
+def _local_position_blocks_open_plan_broadcast(
+    positions: list[dict[str, Any]],
+    action_date: str,
+) -> bool:
+    """播报侧串行单仓门禁：任何策略旧仓都必须把可执行开仓计划归零。
+
+    候选仍可单独展示供审计，但不能再把被旧仓阻断的候选计入“开仓计划”。
+    近期被自动误清的持仓也继续按策略仓处理，直至券商恢复对账或三次完整
+    快照确认其确实不存在。
+    """
+
+    return any(
+        str(position.get("status", "")).lower() in {"open", "sell_pending"}
+        or _is_recent_auto_ghost_clear(position, as_of_date=action_date)
+        for position in positions
+    )
+
+
 def _log_final_decision_summary(signal_date: str, action_date_compact: str, buy_orders: Any) -> None:
     """打印【最终结果】：按当前总策略模式判定下一交易日实际开仓计划。
 
@@ -12893,21 +12920,20 @@ def _log_final_decision_summary(signal_date: str, action_date_compact: str, buy_
                     "exit_rule": str(l_sig.get("planned_exit_rule", "T+2_close")),
                 }
 
-        # L 串行单仓守卫（2026-07-23）：播报必须和下单口径(build_model3_plan)一致——
-        # 有任何非L旧策略仓时，串行单仓下不开新仓；今日到期、逾期和
-        # sell_pending 同样阻断，直到券商实际清空。
-        _blocked_by_holding = bool([
-            p for p in load_positions()
-            if str(p.get("status", "")).lower() in {"open", "sell_pending"}
-            and str(p.get("strategy_leg", "")).upper() != "L"
-        ])
+        # 串行单仓守卫：任何策略旧仓（包括L自己的旧仓）都必须阻断新仓。
+        # 候选可以继续展示供审计，但【最终结果】只能统计真正可执行的开仓计划。
+        # 旧实现错误排除了L旧仓，导致“共进股份仍持仓”时把华正新材显示成
+        # “开仓计划1笔”，尽管真正下单门禁已将其阻断。
+        _blocked_by_holding = _local_position_blocks_open_plan_broadcast(
+            load_positions(), action_date_compact
+        )
 
         # ── 按模式决策 ──
         final_buys: list[dict[str, Any]] = []
         note = ""
         if _blocked_by_holding:
             final_buys = []
-            note = "有非L旧策略仓尚未实际清空，取消衔接开仓（含mode1/L补位/替换均阻断）"
+            note = "有旧策略仓尚未实际清空，取消衔接开仓（含mode1/L补位/替换均阻断）"
         elif mode == 1:
             final_buys = mode1_buys
             note = "模式1：按腿序 A>M>E2>C 取第一个有计划的腿（B已删除）"
