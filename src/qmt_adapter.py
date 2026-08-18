@@ -267,7 +267,13 @@ class QMTBrokerAdapter(BrokerAdapter):
         if self.trader is None or self.account is None:
             raise RuntimeError("QMT 尚未连接。")
         raw_asset = self.trader.query_stock_asset(self.account)
+        if raw_asset is None:
+            # xtquant在查询失败/会话短暂不可用时会返回None。
+            # None是“未取到结果”，绝不是余额全为0的有效账户快照。
+            raise RuntimeError("QMT账户查询返回None（结果未知）")
         data = object_to_dict(raw_asset)
+        if not data:
+            raise RuntimeError("QMT账户查询返回空对象（结果未知）")
         return AccountSnapshot(
             account_id=self.config.account_id,
             cash=to_float(first_present(data, ["cash", "m_dCash", "enable_balance", "available_cash"])),
@@ -283,7 +289,12 @@ class QMTBrokerAdapter(BrokerAdapter):
     def query_positions(self) -> list[PositionSnapshot]:
         if self.trader is None or self.account is None:
             raise RuntimeError("QMT 尚未连接。")
-        raw_positions = self.trader.query_stock_positions(self.account) or []
+        raw_positions = self.trader.query_stock_positions(self.account)
+        if raw_positions is None:
+            # 只有QMT明确返回空序列才表示“查询成功且空仓”。
+            # 旧代码的 ``... or []`` 把接口错误None伪造成空仓，
+            # 会进一步误清策略持仓并放行新买入。
+            raise RuntimeError("QMT持仓查询返回None（结果未知，不等于空仓）")
         positions = []
         for raw in raw_positions:
             data = object_to_dict(raw)
@@ -306,17 +317,25 @@ class QMTBrokerAdapter(BrokerAdapter):
     def query_orders(self) -> list[dict[str, Any]]:
         if self.trader is None or self.account is None:
             raise RuntimeError("QMT 尚未连接。")
-        return [object_to_dict(order) for order in (self.trader.query_stock_orders(self.account) or [])]
+        raw_orders = self.trader.query_stock_orders(self.account)
+        if raw_orders is None:
+            raise RuntimeError("QMT委托查询返回None（结果未知，不等于无委托）")
+        return [object_to_dict(order) for order in raw_orders]
 
     def query_trades(self) -> list[dict[str, Any]]:
         if self.trader is None or self.account is None:
             raise RuntimeError("QMT 尚未连接。")
-        return [object_to_dict(trade) for trade in (self.trader.query_stock_trades(self.account) or [])]
+        raw_trades = self.trader.query_stock_trades(self.account)
+        if raw_trades is None:
+            raise RuntimeError("QMT成交查询返回None（结果未知，不等于无成交）")
+        return [object_to_dict(trade) for trade in raw_trades]
 
     def get_full_tick(self, ts_codes: list[str]) -> dict[str, QuoteSnapshot]:
         self._load_xtquant()
         broker_codes = [tushare_to_qmt_code(code) for code in ts_codes]
-        raw_ticks = self.xtdata_module.get_full_tick(broker_codes) or {}
+        raw_ticks = self.xtdata_module.get_full_tick(broker_codes)
+        if raw_ticks is None:
+            raise RuntimeError("QMT行情查询返回None（结果未知，不等于无行情）")
         result: dict[str, QuoteSnapshot] = {}
         for broker_code in broker_codes:
             raw = object_to_dict(raw_ticks.get(broker_code, {}))
