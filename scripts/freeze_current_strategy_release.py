@@ -64,7 +64,7 @@ def build_freeze_payload(
     compound_guard: dict[str, Any] | None = None,
     compound_reduction_accepted: bool = False,
 ) -> dict[str, Any]:
-    model3 = config.get("strategy_model3", {})
+    portfolio = config.get("portfolio_certification", {})
     research_end = _compact_date(str(certification.get("input_end_date", "")))
     oos_start = _compact_date(oos_start_date)
     if oos_start <= research_end:
@@ -77,9 +77,9 @@ def build_freeze_payload(
         raise ValueError("release_id不能为空")
     if len(reason) < 8:
         raise ValueError("change_reason至少8个字符，必须说明为什么允许该版本进入实盘")
-    order = [str(value).upper() for value in model3.get("strategy_priority_order", [])]
+    order = [str(value).upper() for value in portfolio.get("strategy_priority_order", [])]
     if not order:
-        raise ValueError("strategy_model3.strategy_priority_order不能为空")
+        raise ValueError("portfolio_certification.strategy_priority_order不能为空")
     payload = {
         "schema_version": 1,
         "status": "FROZEN",
@@ -159,8 +159,8 @@ def main() -> None:
     args = parser.parse_args()
 
     config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-    model3 = dict(config.get("strategy_model3", {}))
-    raw_freeze_path = str(model3.get("strategy_release_freeze_path", "")).strip()
+    portfolio = dict(config.get("portfolio_certification", {}))
+    raw_freeze_path = str(portfolio.get("strategy_release_freeze_path", "")).strip()
     if not raw_freeze_path:
         raise RuntimeError("未配置strategy_release_freeze_path")
     freeze_path = Path(raw_freeze_path)
@@ -170,11 +170,11 @@ def main() -> None:
         raise FileExistsError(f"冻结清单已存在；如确认发布新版本，请加--replace：{freeze_path}")
 
     # 创建冻结清单前先关闭冻结要求，只核对认证本身，避免首次冻结形成循环依赖。
-    model3_without_freeze = dict(model3)
-    model3_without_freeze["require_strategy_release_freeze"] = False
+    portfolio_without_freeze = dict(portfolio)
+    portfolio_without_freeze["require_strategy_release_freeze"] = False
     check = validate_live_certification(
         PROJECT_ROOT,
-        model3_without_freeze,
+        portfolio_without_freeze,
         full_config=config,
     )
     if not check.ok:

@@ -1,8 +1,8 @@
 """
-采集 L 龙头策略题材参考表。
+采集全局股票题材参考表。
 
 第一阶段先使用 Tushare stock_basic.industry 作为“行业主线”代理。
-这不是完整题材/概念归因，但可以让 L 策略从 unknown 升级到可统计的行业热度。
+这不是完整题材/概念归因，但可供全项目统一使用行业热度代理。
 
 输出：
   data/raw/stock_basic/stock_basic_all.csv

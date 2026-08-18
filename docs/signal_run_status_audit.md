@@ -1,4 +1,4 @@
-# E/L每日信号运行状态审计
+# E每日信号运行状态审计
 
 ## 目标
 
@@ -8,7 +8,7 @@
 1. 脚本已经正常执行，但因已有持仓或没有候选而不产生信号；
 2. 脚本没有运行，或者执行过程中发生错误。
 
-现在为E和L分别增加独立运行状态账本，不向正式信号文件写入空记录，因此不会
+现在为E增加独立运行状态账本，不向正式信号文件写入空记录，因此不会
 改变组合引擎、开仓计划或实盘下单读取口径。
 
 ## 状态定义
@@ -28,15 +28,13 @@
 
 - E正式信号：`reports/strategy_e/e_signals_recent.json`
 - E运行状态：`reports/strategy_e/e_signal_runs_recent.json`
-- L正式信号：`reports/strategy_l/l_signals_recent.json`
-- L运行状态：`reports/strategy_l/l_signal_runs_recent.json`
 
 运行状态按`signal_date`覆盖，同一天重跑后以最后一次结果为准，最多保留最近20个
 交易日。`--dry-run`不会写正式信号，也不会写运行状态。
 
 ## 运行与验证
 
-正常收盘流水线无需增加命令，原有E、L步骤会自动写状态：
+正常收盘流水线无需增加命令，E步骤会自动写状态：
 
 ```powershell
 py -3.11 start_windows.py
@@ -46,13 +44,12 @@ py -3.11 start_windows.py
 
 ```powershell
 py -3.11 scripts\run_strategy_e_signal.py --signal-date 20260803
-py -3.11 scripts\run_strategy_l_signal.py --signal-date 20260803
 ```
 
 验证测试：
 
 ```powershell
-py -3.11 -m unittest tests.test_signal_run_status
+py -3.11 -m unittest tests.test_current_portfolio_runtime
 ```
 
 当日正常无信号时，收盘审计应显示`ℹ️ NO_SIGNAL_OCCUPIED`或

@@ -8,6 +8,7 @@ import pandas as pd
 
 from scripts.research_strategy_d_exit_fetch import load_d_exit_targets
 from scripts.research_strategy_d_exit_pov import (
+    EXPECTED_D_COUNT,
     EXPECTED_PORTFOLIO_MULTIPLE,
     load_trade_metadata,
     run_replay,
@@ -35,8 +36,7 @@ class StrategyDExitResearchTests(unittest.TestCase):
             path = Path(temp_dir) / "portfolio_trades.csv"
             self.portfolio.to_csv(path, index=False)
             targets = load_d_exit_targets(path)
-        # 2026-08-07 A/C改用逐日独立候选后，部分原本单独T+2的D转为接力（旧口径17）。
-        self.assertEqual(len(targets), 14)
+        self.assertEqual(len(targets), EXPECTED_D_COUNT)
         self.assertNotIn("strategy_leg", targets.columns)
         self.assertTrue(targets["key"].str.contains(r"\|", regex=True).all())
 

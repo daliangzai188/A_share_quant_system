@@ -1,41 +1,14 @@
-"""历史选择路径核对：把实盘计划代码放进481个冻结信号日逐笔比对。
+"""核对当前实盘计划选择路径与组合认证逐笔一致。
 
-为什么需要这个脚本
-==================
-认证脚本 `certify_current_executable_portfolio.py` 产出的复利，只有在"实盘会
-选出同样的票"时才有意义。2026-08-07 的教训是：腿序改造只改了下游
-`combined_live_engine` 的挑选顺序，上游各信号脚本的占用门还按旧腿序拦截，
-于是那些日子 M / E 的信号根本不会生成——认证跑 27870x，实盘只能跑 22903x，
-差 17.8%，而两边的代码看起来都"改好了"。
-
-光靠读代码对不出这种差异，手写一个"复刻实盘逻辑"的函数也不行——那证明的是
-写脚本的人对实盘的理解，不是实盘代码。所以本脚本**直接调用实盘函数**：
-
-    上游门   run_strategy_m_signal.higher_priority_leg_has_signal
-             run_strategy_e_signal.has_ac_planned_order
-    下游腿序 combined_live_engine.CombinedLiveEngine.build_model3_plan
-
-把每个信号日的各腿候选写成实盘平时读的那些文件（A/C 操作台 csv、L只读信号 json），
-让实盘代码自己去读、自己做决定，再把它选出的 (腿, 代码) 与认证脚本的选择逐笔
-比对。资金占用、收益计算、回撤统计全部沿用认证脚本本身，本脚本只替换"选哪条腿"
-这一个环节。因此它只能证明冻结历史输入上的选择路径一致，不能证明真实候选生成、
-券商成交、滑点、容量或未来收益。
-
-判定
-====
-逐笔完全一致 且 复利/回撤/胜率完全相等 → 通过（退出码 0）
-任何一笔不一致                        → 打印差异明细并 raise（退出码 1）
-
-运行：
-    python3 scripts/verify_live_engine_matches_certify.py
+本脚本直接调用当前组合引擎的 `build_plan`，并把481个冻结信号日的A/M/E/C
+候选写成实盘会读取的形式。D仍由认证回放按盘中时序先处理。
 """
 from __future__ import annotations
 
-import json
 from pathlib import Path
-import shutil
 import sys
 import tempfile
+import shutil
 from types import ModuleType
 from typing import Any
 
@@ -45,11 +18,10 @@ PROJECT_ROOT = Path(__file__).absolute().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-# 本脚本不下单、不连券商，开发机未装 python-dotenv 时注入无副作用最小桩。
 if "dotenv" not in sys.modules:
-    _stub = ModuleType("dotenv")
-    _stub.load_dotenv = lambda *args, **kwargs: False  # type: ignore[attr-defined]
-    sys.modules["dotenv"] = _stub
+    stub = ModuleType("dotenv")
+    stub.load_dotenv = lambda *args, **kwargs: False  # type: ignore[attr-defined]
+    sys.modules["dotenv"] = stub
 
 import scripts.certify_current_executable_portfolio as certify  # noqa: E402
 from scripts import run_strategy_e_signal as e_signal  # noqa: E402
@@ -58,122 +30,104 @@ from src.combined_live_engine import CombinedLiveEngine  # noqa: E402
 
 
 LIVE_CONFIG = {
-    "trade_mode": "backtest",          # 不触发单笔金额上限，保持与认证同口径
+    "trade_mode": "backtest",
     "position": {"initial_cash": 500_000},
     "live_trade": {"max_single_order_amount": 0},
-    "strategy_l": {"enabled": True, "live_order_enabled": True, "position_pct": 0.825},
-    "strategy_m": {"enabled": True, "live_order_enabled": True, "position_pct": 0.825,
-                   "exit_hold_offset": 2},
-    "strategy_model3": {"enabled": True, "live_order_enabled": True,
-                        "l_participation_enabled": False,
-                        "strategy_priority_order": ["D", "A", "M", "E", "C"],
-                        "selected_rule_name": "verify_no_l"},
+    "active_strategy_profile": {"mode": 1, "mode_name": "D_A_M_E_C"},
+    "strategy_m": {
+        "enabled": True,
+        "live_order_enabled": True,
+        "position_pct": 0.825,
+        "exit_hold_offset": 2,
+    },
 }
 
 
 def make_engine(project_root: Path) -> CombinedLiveEngine:
-    """构造只做计划层判断的引擎实例：不读磁盘持仓、不连券商。"""
-
     engine = object.__new__(CombinedLiveEngine)
     engine.project_root = project_root
     engine.config = dict(LIVE_CONFIG)
-    engine.load_positions = lambda: []          # 认证回放只在空仓日调用本模块
-    engine.active_strategy_mode = lambda: 3
-    engine.active_strategy_name = lambda: "MODEL3"
+    engine.load_positions = lambda: []
+    engine.active_strategy_mode = lambda: 1
+    engine.active_strategy_name = lambda: "D_A_M_E_C"
     engine.is_b_strategy_removed = lambda: True
     engine.load_today_e_signal = lambda _today: None
-    engine.load_today_l_signal = lambda _today: None
     return engine
 
 
-def write_ac_ops(ops_dir: Path, signal_date: str, ac: dict[str, Any] | None) -> pd.DataFrame:
-    """把当天 A/C 候选写成收盘流水线产出的操作台计划单。"""
-
+def write_ac_ops(
+    ops_dir: Path, signal_date: str, ac: dict[str, Any] | None
+) -> pd.DataFrame:
     if ac is None:
         return pd.DataFrame()
-    frame = pd.DataFrame([{
-        "strategy_leg": str(ac["strategy_leg"]),
-        "ts_code": str(ac["ts_code"]),
-        "name": str(ac.get("name", "")),
-        "side": "BUY",
-        "planned_order_date": str(ac["buy_date"]),
-        "reference_price": 10.0,
-        "round_lot_shares": 10_000,
-        "estimated_shares": 10_000,
-    }])
+    frame = pd.DataFrame(
+        [
+            {
+                "strategy_leg": str(ac["strategy_leg"]),
+                "ts_code": str(ac["ts_code"]),
+                "name": str(ac.get("name", "")),
+                "side": "BUY",
+                "planned_order_date": str(ac["buy_date"]),
+                "reference_price": 10.0,
+                "round_lot_shares": 10_000,
+                "estimated_shares": 10_000,
+            }
+        ]
+    )
     frame.to_csv(ops_dir / f"ops_{signal_date}_planned_orders.csv", index=False)
     return frame
 
 
-def write_l_signal(path: Path, signal_date: str, l_row: pd.Series | None,
-                   buy_date: str) -> dict[str, Any] | None:
-    """把当天 L 原始行写成 l_signals_recent.json；是否过基础规则交给实盘引擎判。"""
-
-    if l_row is None:
-        path.write_text(json.dumps({"signals": []}, ensure_ascii=False), encoding="utf-8")
-        return None
-    signal = {k: (v.item() if hasattr(v, "item") else v) for k, v in l_row.to_dict().items()}
-    signal["signal_date"] = signal_date
-    signal["planned_buy_date"] = buy_date
-    signal.setdefault("ts_code", "")
-    signal.setdefault("name", "")
-    signal["limit_close"] = float(pd.to_numeric(l_row.get("limit_close", 10.0), errors="coerce") or 10.0)
-    path.write_text(json.dumps({"signals": [signal]}, ensure_ascii=False, default=str),
-                    encoding="utf-8")
-    return signal
-
-
-def build_live_picker(sources: certify.Sources, workdir: Path, stats: dict[str, int]):
-    """返回一个与 certify.pick_by_priority 同签名、但内部走实盘代码的函数。"""
-
+def build_live_picker(
+    sources: certify.Sources, workdir: Path, stats: dict[str, int]
+):
     ops_dir = workdir / "daily_ops"
     ops_dir.mkdir(parents=True, exist_ok=True)
-    l_path = workdir / "l_signals_recent.json"
     engine = make_engine(PROJECT_ROOT)
 
-    def pick(sources_: certify.Sources, row: pd.Series, row_index: int, *,
-             entry_gate_enabled: bool, l_chain_3_8_enabled: bool, l_enabled: bool,
-             m_enabled: bool,
-             equity: float, peak_equity: float) -> dict[str, Any] | None:
-        if l_enabled:
-            raise RuntimeError("当前实盘逐笔对齐只允许无L认证口径")
+    def pick(
+        sources_: certify.Sources,
+        row: pd.Series,
+        row_index: int,
+        *,
+        entry_gate_enabled: bool,
+        m_enabled: bool,
+        equity: float,
+        peak_equity: float,
+    ) -> dict[str, Any] | None:
+        del row_index
         signal_date = str(row["date"])
         buy_date = certify.nth_trade_date(sources_, signal_date, 1)
-        if not buy_date:
-            return None
-
-        # 每天从干净的文件视图开始，避免昨天的信号泄漏到今天
         for stale in ops_dir.glob("*.csv"):
             stale.unlink()
 
         ac = sources_.ac_daily.get(signal_date)
         ac_frame = write_ac_ops(ops_dir, signal_date, ac)
-        l_row = sources_.l_lookup.get(signal_date)
-        write_l_signal(l_path, signal_date, l_row, buy_date)
-
-        # ── 上游门：调用实盘函数判断信号会不会被生成 ──────────────────
         e_blocked = e_signal.has_ac_planned_order(signal_date, legs=("A",))
-        m_busy, _why = m_signal.higher_priority_leg_has_signal(signal_date)
+        m_busy, _reason = m_signal.higher_priority_leg_has_signal(signal_date)
 
-        # E 候选（过门禁后）
-        e_signal_payload: dict[str, Any] | None = None
+        e_payload: dict[str, Any] | None = None
         if not e_blocked and signal_date in sources_.e.index:
             e_row = certify.source_row(sources_.e, signal_date, "E R1")
-            if not (entry_gate_enabled
-                    and not certify.e_entry_gate_passes(e_row, sources_.e_spec)):
-                e_signal_payload = {
+            if not (
+                entry_gate_enabled
+                and not certify.e_entry_gate_passes(e_row, sources_.e_spec)
+            ):
+                e_payload = {
                     "signal_date": signal_date,
                     "ts_code": str(e_row.get("ts_code", "")),
                     "name": str(e_row.get("name", "")),
                     "limit_close": 10.0,
-                    "exit_offset": int(pd.to_numeric(e_row.get("exit_offset", 2),
-                                                     errors="coerce") or 2),
+                    "exit_offset": int(
+                        pd.to_numeric(e_row.get("exit_offset", 2), errors="coerce") or 2
+                    ),
                 }
 
-        # M 候选（过上游门 + 回撤闸后）
         m_order: dict[str, Any] | None = None
         if m_enabled and not m_busy:
-            m_pick = certify.m_candidate(sources_, signal_date, equity, peak_equity)
+            m_pick = certify.m_candidate(
+                sources_, signal_date, equity, peak_equity
+            )
             if m_pick is not None:
                 m_order = {
                     "strategy_leg": "M",
@@ -186,18 +140,13 @@ def build_live_picker(sources: certify.Sources, workdir: Path, stats: dict[str, 
                     "planned_amount_by_equity": 412_500.0,
                 }
 
-        # ── 下游腿序：交给真实的 build_model3_plan 决定 ────────────────
-        engine.load_latest_abc_orders = lambda: (ops_dir / "x.csv", ac_frame.copy())
-        engine.load_yesterday_e_signal = lambda _today, s=e_signal_payload: s
-        engine.build_m_buy_order_if_any = lambda _today, _codes=None, o=m_order: (
-            dict(o) if o is not None else None
-        )
-        engine.load_yesterday_l_signal = lambda _today, sd=signal_date, bd=buy_date: (
-            json.loads(l_path.read_text(encoding="utf-8"))["signals"][0]
-            if json.loads(l_path.read_text(encoding="utf-8"))["signals"] else None
+        engine.load_latest_abc_orders = lambda: (ops_dir / "ops.csv", ac_frame.copy())
+        engine.load_yesterday_e_signal = lambda _today, payload=e_payload: payload
+        engine.build_m_buy_order_if_any = lambda _today, _codes=None, order=m_order: (
+            dict(order) if order is not None else None
         )
 
-        _state, _decisions, orders = engine.build_model3_plan(buy_date)
+        _state, _decisions, orders = engine.build_mode1_plan(buy_date)
         if orders.empty or "side" not in orders.columns:
             stats["no_plan"] += 1
             return None
@@ -209,21 +158,16 @@ def build_live_picker(sources: certify.Sources, workdir: Path, stats: dict[str, 
         leg = str(chosen.get("strategy_leg", "")).upper()
         code = str(chosen.get("ts_code", ""))
 
-        # ── 把实盘选中的 (腿, 代码) 映射回认证口径的收益 ────────────────
-        if leg == "L":
-            pick_ = certify.l_candidate(sources_, signal_date,
-                                        chain_3_8_enabled=l_chain_3_8_enabled)
-            if pick_ is None:
-                # 实盘会照常下单，但这只票当天买不到/卖不掉。认证口径记为无交易。
-                stats["l_unexecutable"] += 1
-                return None
-            return pick_
         if leg in {"A", "C"}:
             if ac is None or str(ac["ts_code"]) != code:
-                raise RuntimeError(f"{signal_date} 实盘选A/C={code}，认证候选={ac}")
+                raise RuntimeError(
+                    f"{signal_date} 实盘选A/C={code}，认证候选={ac}"
+                )
             return dict(ac)
         if leg == "M":
-            return certify.m_candidate(sources_, signal_date, equity, peak_equity)
+            return certify.m_candidate(
+                sources_, signal_date, equity, peak_equity
+            )
         if leg == "E":
             e_row = certify.source_row(sources_.e, signal_date, "E R1")
             return {
@@ -232,7 +176,8 @@ def build_live_picker(sources: certify.Sources, workdir: Path, stats: dict[str, 
                 "name": str(e_row.get("name", "")),
                 "buy_date": certify.normalize_date(e_row.get("buy_date")),
                 "exit_date": certify.normalize_date(e_row.get("exit_date")),
-                "account_return": certify.to_float(e_row.get("net_return")) * certify.POSITION_PCT,
+                "account_return": certify.to_float(e_row.get("net_return"))
+                * certify.POSITION_PCT,
                 "return_source": f"E_R1:{e_row.get('scenario_rank', '')}",
             }
         raise RuntimeError(f"{signal_date} 实盘返回未知腿 {leg}")
@@ -243,87 +188,63 @@ def build_live_picker(sources: certify.Sources, workdir: Path, stats: dict[str, 
 def main() -> None:
     sources = certify.load_sources()
     workdir = Path(tempfile.mkdtemp(prefix="verify_live_"))
-    stats = {"no_plan": 0, "l_unexecutable": 0}
+    stats = {"no_plan": 0}
     try:
         certified = certify.replay(
-            sources,
-            entry_gate_enabled=True,
-            l_chain_3_8_enabled=False,
-            l_enabled=False,
-            m_enabled=True,
+            sources, entry_gate_enabled=True, m_enabled=True
         )
-
         picker = build_live_picker(sources, workdir, stats)
         original_pick = certify.pick_by_priority
         original_ops = e_signal.DAILY_OPS_DIR
-        original_l = m_signal.L_SIGNAL_PATH
         try:
             certify.pick_by_priority = picker
             e_signal.DAILY_OPS_DIR = workdir / "daily_ops"
-            m_signal.L_SIGNAL_PATH = workdir / "l_signals_recent.json"
             live = certify.replay(
-                sources,
-                entry_gate_enabled=True,
-                l_chain_3_8_enabled=False,
-                l_enabled=False,
-                m_enabled=True,
+                sources, entry_gate_enabled=True, m_enabled=True
             )
         finally:
             certify.pick_by_priority = original_pick
             e_signal.DAILY_OPS_DIR = original_ops
-            m_signal.L_SIGNAL_PATH = original_l
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 
-    a = certify.summarize(certified, "认证脚本 pick_by_priority")
-    b = certify.summarize(live, "计划模块当前无L含M配置 build_model3_plan + 上游门")
-    ex_a = certified[certified["status"] == "EXECUTED"]
-    ex_b = live[live["status"] == "EXECUTED"]
-
-    print("=" * 78)
-    print("历史选择路径核对：实盘计划代码 vs 认证脚本，481信号日逐笔回放")
-    print("=" * 78)
-    for label, s, ex in (("认证脚本", a, ex_a), ("计划模块当前无L含M配置", b, ex_b)):
-        print(f"{label}  {s['executed_trade_count']:>3}笔 | {s['equity_multiple']:>13.6f}x | "
-              f"回撤{s['max_drawdown']:>9.6%} | 胜率{s['win_rate']:>8.4%}")
-        print(f"          {ex['strategy_leg'].value_counts().to_dict()}")
-
-    key_a = list(zip(ex_a["signal_date"].astype(str), ex_a["strategy_leg"].astype(str),
-                     ex_a["ts_code"].astype(str)))
-    key_b = list(zip(ex_b["signal_date"].astype(str), ex_b["strategy_leg"].astype(str),
-                     ex_b["ts_code"].astype(str)))
-
-    print(f"\n实盘侧另计：无计划单 {stats['no_plan']} 天；"
-          f"L 被选中但当天不可成交 {stats['l_unexecutable']} 天")
-
-    problems: list[str] = []
+    a = certify.summarize(certified, "认证脚本")
+    b = certify.summarize(live, "实盘计划模块")
+    ex_a = certified[certified["status"].eq("EXECUTED")]
+    ex_b = live[live["status"].eq("EXECUTED")]
+    key_a = list(
+        zip(
+            ex_a["signal_date"].astype(str),
+            ex_a["strategy_leg"].astype(str),
+            ex_a["ts_code"].astype(str),
+        )
+    )
+    key_b = list(
+        zip(
+            ex_b["signal_date"].astype(str),
+            ex_b["strategy_leg"].astype(str),
+            ex_b["ts_code"].astype(str),
+        )
+    )
     if key_a != key_b:
-        only_a = [k for k in key_a if k not in set(key_b)]
-        only_b = [k for k in key_b if k not in set(key_a)]
-        problems.append(f"逐笔不一致：认证独有 {len(only_a)} 笔，实盘独有 {len(only_b)} 笔")
-        for k in only_a[:15]:
-            problems.append(f"    仅认证有: {k}")
-        for k in only_b[:15]:
-            problems.append(f"    仅实盘有: {k}")
-    for field in ("executed_trade_count", "max_consecutive_losses"):
-        if a[field] != b[field]:
-            problems.append(f"{field} 不一致：认证 {a[field]} vs 实盘 {b[field]}")
-    for field in ("equity_multiple", "max_drawdown", "win_rate", "avg_return"):
-        if abs(float(a[field]) - float(b[field])) > 1e-9:
-            problems.append(f"{field} 不一致：认证 {a[field]!r} vs 实盘 {b[field]!r}")
-
-    print()
-    if problems:
-        print("❌ 未通过：")
-        for line in problems:
-            print("  " + line)
-        raise SystemExit(1)
-
-    print("✅ 通过：计划模块在当前无L、含M配置下逐笔选出与认证脚本完全相同的 "
-          f"{a['executed_trade_count']} 笔，复利 {a['equity_multiple']:.6f}x、"
-          f"回撤 {a['max_drawdown']:.6%}、胜率 {a['win_rate']:.4%} 完全相等。")
-    print("   本结果只证明冻结历史输入上的选择路径一致；未验证真实候选生成、券商成交、"
-          "滑点、容量和未来收益，不得作为实盘收益预期。")
+        raise RuntimeError("实盘计划选择路径与认证逐笔不一致")
+    for field in (
+        "executed_trade_count",
+        "equity_multiple",
+        "max_drawdown",
+        "win_rate",
+        "max_consecutive_losses",
+    ):
+        if abs(float(a[field]) - float(b[field])) > 1e-12:
+            raise RuntimeError(
+                f"{field}不一致：认证={a[field]}，实盘计划={b[field]}"
+            )
+    print("历史选择路径核对通过")
+    print(
+        f"{a['executed_trade_count']}笔 | {a['equity_multiple']:.6f}倍 | "
+        f"回撤{a['max_drawdown']:.4%} | 胜率{a['win_rate']:.4%} | "
+        f"无计划日{stats['no_plan']}"
+    )
 
 
 if __name__ == "__main__":

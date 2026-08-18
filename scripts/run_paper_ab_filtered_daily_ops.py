@@ -4,7 +4,7 @@
 文件作用：
 1. T 日收盘后先生成 A 严格策略候选。
 2. B策略已彻底删除，不参与候选、买入或自动卖出。
-3. A无选中标的时直接尝试C，后续由组合状态机继续判断E、D或L补位。
+3. A无选中标的时直接尝试C，最终由组合状态机按D>A>M>E>C统一裁决。
 4. 输出每日候选、计划委托、人工复核清单、历史成交参考和操作清单。
 
 本脚本只使用本地 CSV 和本地配置，不接实盘，不调用 QMT，不下真实订单。
@@ -659,7 +659,7 @@ def build_checklist(
                     "signal_date": signal_date,
                     "strategy_leg": "NONE",
                     "operation_status": "NO_SELECTED",
-                    "next_action": "A/C均无可用候选，今日不生成该层买入计划；组合状态机继续检查E、D或L。",
+                    "next_action": "A/C均无可用候选，今日不生成该层买入计划；组合状态机继续检查D/M/E。",
                     "a_candidate_count": int(len(a_candidates)),
                     "c_candidate_count": int(len(c_candidates)),
                     "c_rejected_by_filter_count": int(len(c_rejected)),

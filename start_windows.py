@@ -306,7 +306,6 @@ def color_for_line(text: str) -> str:
         "增强因子",
         "A/B/C策略状态",
         "E策略状态",
-        "L策略状态",
         "计划单",
     ]
     warning_words = ["⚠️", "| WARNING |", "WARNING", "仅供参考", "暂不开仓"]
@@ -360,10 +359,6 @@ def should_print_line(text: str) -> bool:
         "准备下单时间",
         "准备平仓时间",
         "E策略",
-        "L/model3状态",
-        "L龙头策略",
-        "L龙头条件",
-        "L/model3结论",
         "组合决策明细",
         "发现组合计划",
         "准备开仓",

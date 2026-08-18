@@ -28,7 +28,7 @@ A_System 目录通过 UTM 共享文件夹（WebDAV）挂载到 Windows VM 的 `Z
 
 ### 运行位置：本地盘运行 + 代码/记录双向同步
 
-**问题背景**：早期 daemon 直接从 `Z:`（WebDAV 共享盘）运行，每个周期都从 `Z:` 读脚本、把 `positions.json`/CSV/日志写回 `Z:`。共享盘一抽风（`WinError 58`），平仓、收盘流水线等关键 I/O 就会被拖住（曾出现 `run_combined_live_plan.py` 卡满 180s、`run_strategy_l_signal.py` 因 `Z:` 建目录报 `WinError 58` 崩溃）。
+**问题背景**：早期 daemon 直接从 `Z:`（WebDAV 共享盘）运行，每个周期都从 `Z:` 读脚本、把 `positions.json`/CSV/日志写回 `Z:`。共享盘一抽风（`WinError 58`），平仓、收盘流水线等关键 I/O 就会被拖住（曾出现组合计划脚本卡满180秒、信号脚本因共享盘建目录失败而崩溃）。
 
 **解决架构**：把「代码」和「运行时状态」分开，各有一个权威方，做**系统级双向同步（不是同一文件双向覆盖）**：
 
@@ -248,7 +248,7 @@ miniQMT 是 x64 程序，必须用 x64 Python 才能加载 xtquant 的 DLL。ARM
 快速停止后立刻启动时，QMT 可能短时间返回 `connect=-1`。修复：Windows 启动脚本等待 15 秒释放旧 session，守护进程启动检查最多重试 5 次，每次间隔 15 秒。
 
 ### Windows 共享盘 WinError 58（根治：本地盘运行）
-UTM WebDAV 共享盘偶发返回 `WinError 58`，导致目录检查、CSV 写入或清洗读取失败，曾拖垮 14:xx 平仓前的组合刷新（`run_combined_live_plan.py` 卡满 180s 被强杀）、并让 `run_strategy_l_signal.py` 在 `Z:\reports\strategy_l` 建目录时崩溃。早期缓解：采集/清洗模块对目录创建、文件存在检查、CSV 读写增加重试。**根治**：daemon 不再直接跑在 `Z:`，而是启动时把代码同步到本地盘、全程本地运行（见上文「运行位置：本地盘运行 + 代码/记录双向同步」）。
+UTM WebDAV 共享盘偶发返回 `WinError 58`，导致目录检查、CSV 写入或清洗读取失败，曾拖垮14:xx平仓前的组合刷新，并让信号脚本在共享盘创建报告目录时崩溃。早期缓解：采集/清洗模块对目录创建、文件存在检查、CSV读写增加重试。**根治**：daemon不再直接跑在`Z:`，而是启动时把代码同步到本地盘、全程本地运行（见上文「运行位置：本地盘运行 + 代码/记录双向同步」）。
 
 ### Tushare 单请求超时（已加固）
 `Z:` / 网络抖动或 Tushare 限流时，单个请求可能长时间卡住，拖满收盘流水线 `collect_all_data.py` 的 600s 预算。修复：`data_source.py` 给每个 Tushare 请求加应用层墙钟超时（`config.json` 的 `data_source.request_timeout_seconds`，默认 60s），超时即中止交给 tenacity 重试，避免单接口卡死拖垮整条流水线。

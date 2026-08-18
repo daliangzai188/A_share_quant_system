@@ -45,7 +45,7 @@ class ReleaseOosMonitorTest(unittest.TestCase):
             "actual_metrics": {"avg_return": 0.005, "max_drawdown": -0.01},
             "by_leg_metrics": [
                 {"segment": "策略D", "sample_count": 1, "avg_return": -0.01},
-                {"segment": "策略L", "sample_count": 2, "avg_return": 0.02},
+                {"segment": "策略M", "sample_count": 2, "avg_return": 0.02},
             ],
             "priority_pair_metrics": [],
             "generated_at": "2026-01-08T10:00:00+00:00",

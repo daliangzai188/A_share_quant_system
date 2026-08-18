@@ -343,7 +343,7 @@ def _infer_strategy_leg(request: OrderRequest) -> str:
     if declared:
         return declared
     text = f"{request.strategy_name}|{request.remark}".upper()
-    for leg in ("E", "D", "L", "M", "A", "C"):
+    for leg in ("E", "D", "M", "A", "C"):
         markers = (f"STRATEGY_{leg}", f"A_SYSTEM_{leg}", f"{leg}策略", f"|{leg}|")
         if any(marker in text for marker in markers):
             return leg

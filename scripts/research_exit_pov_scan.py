@@ -16,9 +16,8 @@
 最多只把总成交额的一半视为可供主动卖单使用的压力容量。价格同时输出成交
 VWAP 代理（中性）与 bar 最低价代理（压力）；它们都不是 Level-2 逐笔成交承诺。
 
-数据限制必须保留在报告中：当前抓取脚本把策略 C 错按 T+2 下载，而策略 C
-实际是 T+3 平仓，因此 C 全部排除；抓取来源是 ABCE2 审计，不包含策略 L，
-因此 L 没有样本，也不能用本报告替代 L 的验证。
+数据限制必须保留在报告中：当前抓取脚本把策略C错按T+2下载，而策略C
+实际是T+3平仓，因此C全部排除。本报告仅验证来源数据实际包含的策略。
 """
 
 from __future__ import annotations
@@ -46,7 +45,6 @@ DEFAULT_DAILY_AMOUNT = ROOT / "data" / "processed" / "daily_amount_lookup.csv"
 
 VALID_LEGS = ("A", "B", "E2")
 INVALID_EXIT_DATE_LEGS = ("C",)
-MISSING_LEGS = ("L",)
 DEFAULT_BACKTEST_SELL_SLIPPAGE = {"A": 0.001, "B": 0.001, "E2": 0.001}
 BASE_SIGNAL_TIMES = tuple(
     f"{hour:02d}{minute:02d}"
@@ -224,16 +222,11 @@ def _build_quality(
     eligible = sorted(common & valid_five)
     missing_tail = sorted(valid_five - one_keys)
     c_keys = sorted(set(five_leg[five_leg["leg"].isin(INVALID_EXIT_DATE_LEGS)]["key"]))
-    l_count = int((five_leg["leg"] == "L").sum())
 
     _append_quality(rows, "join.common_samples", "INFO", len(common), "5m 与尾盘 1m 可连接样本")
     _append_quality(
         rows, "exclude.C_wrong_exit_date", "EXCLUDED", len(c_keys),
         "抓取脚本统一用了 next_trade(signal, 2)，但 C 实盘/回测为 T+3 平仓；当前 C 日期错误，全部排除",
-    )
-    _append_quality(
-        rows, "exclude.L_missing", "EXCLUDED", l_count,
-        "抓取来源 current_live_abce2_detail 不含 L；L 样本为 0，不能据此验证 L",
     )
     _append_quality(
         rows, "exclude.valid_leg_missing_1m", "EXCLUDED" if missing_tail else "PASS", len(missing_tail),
@@ -243,7 +236,7 @@ def _build_quality(
         rows, "eligible.A_B_E2_common", "PASS" if eligible else "FAIL", len(eligible),
         "只包含退出日正确且同时具备完整 5m/1m 的 A、B、E2",
     )
-    for leg in (*VALID_LEGS, *INVALID_EXIT_DATE_LEGS, *MISSING_LEGS):
+    for leg in (*VALID_LEGS, *INVALID_EXIT_DATE_LEGS):
         count = int(sum(1 for key in eligible if five_leg.set_index("key").at[key, "leg"] == leg)) if leg in VALID_LEGS else int((five_leg["leg"] == leg).sum())
         _append_quality(
             rows, f"cohort.{leg}", "PASS" if leg in VALID_LEGS and count > 0 else "EXCLUDED",
@@ -1312,7 +1305,7 @@ def main() -> None:
     ]
     print(quality.to_string(index=False))
     print(
-        f"\n有效样本={len(eligible)}（仅 A/B/E2）；C 因退出日抓错被排除；L 无样本。"
+        f"\n有效样本={len(eligible)}（仅 A/B/E2）；C 因退出日抓错被排除。"
         f"容量压力折扣={args.capacity_haircut:.0%}，场景数={len(scenarios)}。"
     )
     if not current.empty:

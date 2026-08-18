@@ -2,8 +2,8 @@
   "schema_version": 1,
   "status": "PASS_WITH_RISK_ACCEPTANCE",
   "current_executable": true,
-  "scenario": "current_no_l_d_a_m_e_c",
-  "generated_at": "2026-08-18T11:41:30.660941+00:00",
+  "scenario": "current_d_a_m_e_c",
+  "generated_at": "2026-08-18T12:57:19.633285+00:00",
   "input_start_date": "20240520",
   "input_end_date": "20260514",
   "signal_day_count": 481,
@@ -12,7 +12,6 @@
   "c_trade_count": 16,
   "d_trade_count": 17,
   "e_trade_count": 38,
-  "l_trade_count": 0,
   "m_trade_count": 28,
   "strategy_priority_order": [
     "D",
@@ -21,7 +20,6 @@
     "E",
     "C"
   ],
-  "l_participation_enabled": false,
   "equity_multiple": 4445.281570391435,
   "win_rate": 0.6827586206896552,
   "avg_return": 0.06539608469869114,
@@ -49,7 +47,7 @@
   "e_gate_portfolio_noninferiority_reason": "全样本改善且所有分段收益/回撤均非劣",
   "e_gate_risk_accepted": true,
   "e_gate_risk_acceptance_note": "2026-08-18统一完整样本后发现：E_R1门禁前102个候选日，E_CURRENT门禁后82个候选日；被排除20笔平均账户收益+2.297%，后半段门禁降低单腿复利。用户已明确继续保持当前实盘E_CURRENT，因此本项按风险接受保留；这不等于门禁统计通过，不得据此扩大资金。",
-  "config_sha256": "8d601f729f86a8cdd0a32f86c77f4fdb2ee3e6e1e93df73e52702145ac973058",
+  "config_sha256": "337df5f059ba403f692adf266ec1c164739187f3583b458340d0fc66c411d480",
   "code_files": [
     "scripts/build_ac_daily_candidates.py",
     "scripts/backtest_strategy_d.py",
@@ -64,13 +62,12 @@
     "src/strategy_identity.py",
     "src/strategy_equity_ledger.py",
     "src/strategy_m.py",
-    "src/strategy_d_spec.py",
-    "src/strategy_model3_policy.py"
+    "src/strategy_d_spec.py"
   ],
-  "code_sha256": "d076710c176f8c19fb4fd614cb51e822c0cdb2bc6c442193b4bf27d877458668",
+  "code_sha256": "fe340e95389e4a5ad7e1faf35d330d6c16dae1d22c7d41b38d38a860ef30ad60",
   "input_files": [
     "reports/current_portfolio_alignment/input_manifest.json"
   ],
-  "input_sha256": "8484c4041d45021a4fa6c412f58b493dd85f6790e682861e0a44f2f39a63da74",
-  "note": "L已从完整481日逐日组合回放中排除；旧154笔认证永久失效。M在自然年2025存在收益劣段，按用户既有风险接受保留。机械复利和82.5%仓位的资金容量未认证，不代表未来收益。"
+  "input_sha256": "3bf70ecac640f91ea41e6efdd03b6441465129f6dcbec53fe393e0f614bdf41f",
+  "note": "当前正式组合按D>A>M>E>C从完整481日逐日回放。M在自然年2025存在收益劣段，按用户既有风险接受保留。机械复利和82.5%仓位的资金容量未认证，不代表未来收益。"
 }

@@ -1,7 +1,13 @@
 {
   "schema_version": 1,
   "window": "20240520~20260514",
-  "strategy_l_included": false,
+  "strategy_priority_order": [
+    "D",
+    "A",
+    "M",
+    "E",
+    "C"
+  ],
   "file_count": 490,
   "files": [
     {

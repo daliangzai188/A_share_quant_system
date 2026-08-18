@@ -10,7 +10,7 @@
 
 三套版本统一使用：82.5% 仓位、买卖各 0.1% 滑点、0.162% 往返费率、
 T+1 开盘不可成交判断、跌停收盘顺延、单账户资金占用。组合回放固定使用当前
-优先级 ``D > L > A > M > E > C``；D 为盘中腿，按时间顺序先于收盘后信号。
+优先级 ``D > A > M > E > C``；D 为盘中腿，按时间顺序先于收盘后信号。
 
 旧“62 笔/12.0283 倍”只作为不可执行参考展示，不进入正式排名，因为它使用了
 未来成交过滤并允许资金重叠。
@@ -508,43 +508,36 @@ def validate_published_portfolio_regression(
     sources: portfolio.Sources,
     current_candidates: pd.DataFrame,
 ) -> dict[str, Any]:
-    """旧43笔名单输入时必须复现当前发布标尺，证明组合回放没有被改写。"""
+    """完整当前 E 候选必须复现正式五策略发布标尺。"""
 
-    locked = pd.read_csv(LEGACY_CURRENT_LOCK_PATH, dtype={"trade_date": str})
-    locked_dates = set(locked["trade_date"].map(normalize_date))
-    locked_candidates = current_candidates[
-        current_candidates["signal_date"].isin(locked_dates)
-    ].copy()
     detail = replay_full_portfolio(
         sources,
-        locked_candidates,
-        "E_CURRENT_LOCKED43_REGRESSION",
+        current_candidates,
+        "E_CURRENT_PORTFOLIO_REGRESSION",
     )
     actual_count = int(detail["status"].eq("EXECUTED").sum())
     actual_multiple = float(detail["equity_after"].iloc[-1] / INITIAL_EQUITY)
-    legacy_expected_count = 150
-    legacy_expected_multiple = 29388.980133715802
+    expected_count = portfolio.EXPECTED_CURRENT_TRADE_COUNT
+    expected_multiple = portfolio.EXPECTED_CURRENT_MULTIPLE
     passed = bool(
-        actual_count == legacy_expected_count
-        and abs(actual_multiple - legacy_expected_multiple) <= 1e-9
+        actual_count == expected_count
+        and abs(actual_multiple - expected_multiple) <= 1e-9
     )
     if not passed:
         raise RuntimeError(
             "完整组合回归失败："
-            f"交易数{actual_count}/{legacy_expected_count}，"
-            f"复利{actual_multiple}/{legacy_expected_multiple}"
+            f"交易数{actual_count}/{expected_count}，"
+            f"复利{actual_multiple}/{expected_multiple}"
         )
     return {
-        "validation": "旧43候选输入复现当前发布组合",
-        "locked_count": int(len(locked_candidates)),
+        "validation": "完整E_CURRENT候选复现当前五策略发布组合",
+        "locked_count": int(len(current_candidates)),
         "actual_candidate_day_count": int(len(current_candidates)),
-        "locked_coverage_of_daily_candidates": float(
-            len(locked_candidates) / len(current_candidates)
-        ),
-        "same_stock_count": int(len(locked_candidates)),
-        "same_exit_rule_count": int(len(locked_candidates)),
+        "locked_coverage_of_daily_candidates": 1.0,
+        "same_stock_count": int(len(current_candidates)),
+        "same_exit_rule_count": int(len(current_candidates)),
         "same_execution_count": actual_count,
-        "reference_portfolio_multiple": portfolio.EXPECTED_WITH_M_MULTIPLE,
+        "reference_portfolio_multiple": expected_multiple,
         "actual_portfolio_multiple": actual_multiple,
         "passed": passed,
     }
@@ -626,12 +619,9 @@ def pick_current_priority(
     equity: float,
     peak_equity: float,
 ) -> dict[str, Any] | None:
-    """按当前收盘后腿序 L>A>M>E>C 选股；D 在 replay 中先处理。"""
+    """按当前收盘后腿序 A>M>E>C 选股；D 在 replay 中先处理。"""
 
     ac = sources.ac_daily.get(signal_date)
-    l_pick = portfolio.l_candidate(sources, signal_date, chain_3_8_enabled=True)
-    if l_pick is not None:
-        return l_pick
     if ac is not None and str(ac.get("strategy_leg", "")) == "A":
         return dict(ac)
     m_pick = portfolio.m_candidate(sources, signal_date, equity, peak_equity)
@@ -877,7 +867,6 @@ def summarize_variant(
         "portfolio_c_trade_count": int(legs.eq("C").sum()),
         "portfolio_d_trade_count": int(legs.eq("D").sum()),
         "portfolio_e_trade_count": combo_e_stats["trade_count"],
-        "portfolio_l_trade_count": int(legs.eq("L").sum()),
         "portfolio_m_trade_count": int(legs.eq("M").sum()),
         "portfolio_e_unbuyable_count": int(
             combined["status"].eq("E_ORDER_UNBUYABLE").sum()
@@ -1004,8 +993,8 @@ def write_report(
         f"- 窗口：{START_DATE}~{END_DATE}，初始资金{INITIAL_EQUITY:,.0f}元。",
         f"- 仓位：{POSITION_PCT:.1%}；买卖滑点各{BUY_SLIPPAGE_RATE:.1%}；往返费率{ROUND_TRIP_FEE_RATE:.3%}。",
         "- T+1开盘接近涨停且理论滑点价超过全天最高价时判定买不到；退出日收盘跌停则顺延。",
-        "- E单腿严格单账户；完整组合严格按 `D>L>A>M>E>C` 串行，所有版本只替换E。",
-        "- D是盘中开仓腿，先于收盘后L/A/M/E/C；这属于时序，不使用未来信号重排。",
+        "- E单腿严格单账户；完整组合严格按 `D>A>M>E>C` 串行，所有版本只替换E。",
+        "- D是盘中开仓腿，先于收盘后A/M/E/C；这属于时序，不使用未来信号重排。",
         "",
         "## 来源复现验证",
         "",
@@ -1194,7 +1183,7 @@ def main() -> None:
         "schema_version": 1,
         "strategy_family": "E",
         "active_strategy_variant": "E_CURRENT",
-        "priority_order": ["D", "L", "A", "M", "E", "C"],
+        "priority_order": ["D", "A", "M", "E", "C"],
         "sample_window": {"start": START_DATE, "end": END_DATE},
         "samples": {
             variant: {

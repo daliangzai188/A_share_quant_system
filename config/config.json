@@ -4,29 +4,12 @@
   "broker_adapter_enabled": true,
   "qmt_enabled": true,
   "active_strategy_profile": {
-    "file_role": "总策略模式开关。当前保留mode=3框架，但L参与开关已关闭，实际只运行D/A/M/E/C；2=独立L也保持关闭。所有计划仍必须经过LiveOrderGateway风控。",
-    "mode": 3,
-    "mode_name": "MODEL3",
+    "file_role": "当前唯一正式组合。所有计划必须经过LiveOrderGateway风控。",
+    "mode": 1,
+    "mode_name": "D_A_M_E_C",
     "available_modes": {
-      "1": "ACDE",
-      "2": "L",
-      "3": "MODEL3"
+      "1": "D_A_M_E_C"
     }
-  },
-  "strategy_l": {
-    "file_role": "策略L龙头策略配置。默认只作为独立研究/模拟策略；只有 active_strategy_profile.mode=2、enabled=true 且 live_order_enabled=true 后，后续L专用执行链路才允许接入。",
-    "enabled": false,
-    "mode_value": 2,
-    "variant": "L2",
-    "variant_description": "排除retreat_2day+跌停3_8+theme_limit_count=30",
-    "filter_expr": "segment_retreat_state_bucket!=retreat_2day AND segment_limit_down_count_bucket!=3_8 AND theme_limit_count!=30",
-    "run_mode": "standalone",
-    "live_order_enabled": false,
-    "require_live_certification": true,
-    "certification_summary_path": "reports/strategy_l/live_certification/l_live_cert_summary.csv",
-    "buy_time": "T+1_OPEN",
-    "sell_time": "按L研究明细退出规则",
-    "position_pct": 0.825
   },
   "strategy_e": {
     "file_role": "策略E唯一身份配置。正式策略腿只写E；E2仅允许作为旧账本只读别名，读取后立即归一为E。",
@@ -41,7 +24,7 @@
     "full_sample_gate_risk_acceptance_note": "2026-08-18统一完整样本后发现：E_R1门禁前102个候选日，E_CURRENT门禁后82个候选日；被排除20笔平均账户收益+2.297%，后半段门禁降低单腿复利。用户已明确继续保持当前实盘E_CURRENT，因此本项按风险接受保留；这不等于门禁统计通过，不得据此扩大资金。"
   },
   "strategy_m": {
-    "file_role": "策略M补位腿配置。L于2026-08-18停用后当前有效腿序D>A>M>E>C：M只被D持仓/A计划挡住；影子L信号、E和C不得挡住M。",
+    "file_role": "策略M补位腿配置。当前有效腿序D>A>M>E>C：M只被D持仓/A计划挡住，E和C不得挡住M。",
     "enabled": true,
     "live_order_enabled": true,
     "live_noninferiority_override": true,
@@ -49,7 +32,7 @@
     "strategy_version": "M_gap_day_sz_main_weak_min_circ_mv_v1",
     "sentiment_column": "sz_main_market_sentiment_level",
     "sentiment_required": "weak",
-    "sentiment_note": "深市主板情绪弱的日子才做。L停用后的当前冻结组合481个信号日中M实际入选28笔；2026-08-10最初风险接受依据仍是旧路径中的26笔。",
+    "sentiment_note": "深市主板情绪弱的日子才做。当前冻结组合481个信号日中M实际入选28笔；2026-08-10最初风险接受依据仍是旧路径中的26笔。",
     "rank_column": "circ_mv",
     "rank_ascending": true,
     "rank_note": "候选池内取流通市值最小的一只。500次随机对照无超越样本只能写plus-one经验p上界1/501=0.001996，且尚未校正1053次方案搜索，不能写p=0。",
@@ -78,22 +61,20 @@
     },
     "live_enabled_at": "2026-08-10",
     "live_enable_note": "2026-08-10按用户明确决策恢复真实新开仓：M自身26笔、胜率53.85%、平均账户收益6.20%、中位数2.09%、单腿复利4.1639倍；用户同时接受样本外仅3笔及完整组合分段回撤没有全部非劣的风险。恢复不代表统计门禁通过，继续执行10%回撤保护、82.5%仓位和全部成交/风控门禁。",
-    "require_all_legs_idle_note": "2026-08-18 L认证失效停用：M当前只让位给D持仓/A计划，影子L信号不再阻断。上游门见run_strategy_m_signal.higher_priority_leg_has_signal。"
+    "require_all_legs_idle_note": "M当前只让位给D持仓/A计划。上游门见run_strategy_m_signal.higher_priority_leg_has_signal。"
   },
-  "strategy_model3": {
-    "file_role": "model=3框架保留，但L历史认证已因候选池污染失效。l_participation_enabled=false时只运行D/A/M/E/C，不允许L新开仓；已有持仓退出不受影响。",
-    "enabled": true,
-    "mode_value": 3,
-    "run_mode": "live_candidate",
-    "live_order_enabled": true,
-    "l_participation_enabled": false,
-    "l_participation_disabled_at": "2026-08-18",
-    "l_participation_disabled_reason": "旧冻结组合154笔中的48笔L专项审计：完整涨停池L2本体有效0/48、每日第一名同股0/48、退出规则一致36/48；旧认证失效。当前已按无L的D>A>M>E>C重建145笔认证，L继续禁止新开仓。",
+  "portfolio_certification": {
+    "file_role": "当前D>A>M>E>C组合冻结认证、资金口径和发布门禁。",
+    "initial_equity": 500000,
+    "position_pct": 0.825,
+    "input_manifest_path": "reports/current_portfolio_alignment/input_manifest.json",
+    "input_manifest_update_policy": "默认只验证；确认数据版本变化后显式运行--refresh-input-manifest并审查清单差异。",
+    "fee_source": "analysis.commission_rate/stamp_tax_rate/transfer_fee_rate",
     "require_live_certification": true,
     "certification_summary_path": "reports/current_portfolio_alignment/live_certification.json",
     "certification_report_path": "reports/current_portfolio_alignment/portfolio_report.md",
     "certification_required_status": "PASS_WITH_RISK_ACCEPTANCE",
-    "certification_expected_scenario": "current_no_l_d_a_m_e_c",
+    "certification_expected_scenario": "current_d_a_m_e_c",
     "certification_max_age_hours": 168,
     "certification_require_hashes": true,
     "require_strategy_release_freeze": true,
@@ -107,35 +88,12 @@
     ],
     "rolling_live_report_path": "reports/live_performance/rolling_live_status.json",
     "rolling_min_trades_for_decision": 20,
-    "selected_rule_name": "l_disabled_invalid_historical_candidate_pool",
-    "selected_rule_description": "当前有效腿序D>A>M>E>C；L历史认证失效并停止新开仓。M仍按既有风险接受运行，不改变其他腿开仓、平仓、挂撤单、POV或D巡查。",
-    "base_l_rule": {
-      "market_segment": "not_star",
-      "segment_retreat_state_bucket": [
-        "neutral",
-        "warming_2day"
-      ],
-      "market_chain_count_bucket": [
-        "3_8",
-        "8_15",
-        "15_30",
-        "gte_30"
-      ]
-    },
-    "replace_guard": {
-      "market_segment": "chi_next",
-      "theme_limit_count_min": 2,
-      "first_time_detail_bucket_exclude": [
-        "after_1430"
-      ]
-    },
+    "selected_rule_name": "current_d_a_m_e_c",
+    "selected_rule_description": "当前唯一正式腿序D>A>M>E>C。M按既有风险接受运行，不改变开仓、平仓、挂撤单、POV或D巡查。",
     "live_candidate_metrics": {
       "certification_invalidated": false,
-      "invalidated_legacy_scenario": "current_with_m_gap_leg_154_trades_including_48_invalid_l",
       "trade_count": 145,
-      "l_trade_count": 0,
       "m_trade_count": 28,
-      "mode1_trade_count": 117,
       "win_rate": 0.682759,
       "avg_return": 0.065396,
       "median_return": 0.034049,
@@ -145,7 +103,7 @@
       "max_drawdown": -0.235062,
       "max_loss": -0.138583,
       "max_consecutive_losses": 5,
-      "scenario": "current_no_l_d_a_m_e_c",
+      "scenario": "current_d_a_m_e_c",
       "research_with_m": {
         "equity_multiple": 4445.28157,
         "trade_count": 145,
@@ -156,16 +114,8 @@
         "trade_count": 128,
         "max_drawdown": -0.235062
       },
-      "note": "2026-08-18按完整481个信号日重新逐日回放，L完全不参与候选、持仓占用或收益；当前有效顺序D>A>M>E>C，共145笔、复利4445.281570倍。旧154笔/24175.186295倍因包含48笔无效L永久作废。M仍有2025分段劣化，按既有用户风险接受保留；历史复利不代表实盘预期，82.5%仓位的资金容量尚未认证。复现:python3 scripts/certify_current_executable_portfolio.py"
+      "note": "按完整481个信号日逐日回放，当前有效顺序D>A>M>E>C，共145笔、复利4445.281570倍。M仍有2025分段劣化，按既有用户风险接受保留；历史复利不代表实盘预期，82.5%仓位的资金容量尚未认证。复现:python3 scripts/certify_current_executable_portfolio.py"
     }
-  },
-  "portfolio_certification": {
-    "file_role": "当前组合冻结历史认证的统一资金口径；认证脚本不得再写死同名参数。",
-    "initial_equity": 500000,
-    "position_pct": 0.825,
-    "input_manifest_path": "reports/current_portfolio_alignment/input_manifest.json",
-    "input_manifest_update_policy": "默认只验证；确认数据版本变化后显式运行--refresh-input-manifest并审查清单差异。",
-    "fee_source": "analysis.commission_rate/stamp_tax_rate/transfer_fee_rate"
   },
   "live_performance_report": {
     "file_role": "真实成交滚动监控；只读execution_tracking成交汇总，不连接券商、不直接改变策略。",
@@ -325,10 +275,9 @@
       "C",
       "D",
       "E",
-      "L",
       "M"
     ],
-    "exit_pov_note": "卖出端容量型POV:普通D仅在planned_exit_date=今日的T+2普通退出进入尾盘POV；D在T+1有A/C/E接力时改走独立d_relay_paired_pov，不再09:23跌停价整仓卖。13:00仅当仓位市值>累计成交额×1%才建普通退出跑道，小仓位继续14:55主平仓；14:30/14:45再按实测流速复核。普通退出与D接力状态、资金账和线程完全分离。 M腿与A/C/E/L同口径:planned_exit_date当日走容量型POV,不走D的接力分支。",
+    "exit_pov_note": "卖出端容量型POV:普通D仅在planned_exit_date=今日的T+2普通退出进入尾盘POV；D在T+1有A/C/E接力时改走独立d_relay_paired_pov，不再09:23跌停价整仓卖。13:00仅当仓位市值>累计成交额×1%才建普通退出跑道，小仓位继续14:55主平仓；14:30/14:45再按实测流速复核。普通退出与D接力状态、资金账和线程完全分离。M腿与A/C/E同口径:planned_exit_date当日走容量型POV,不走D的接力分支。",
     "exit_pov_participation": 0.25,
     "exit_pov_late_participation": 0.35,
     "exit_pov_late_confirm_timeout_sec": 12,
@@ -337,12 +286,11 @@
       "A",
       "C",
       "E",
-      "L",
       "M"
     ],
     "exit_pov_large_force_min_amount": 9500000,
     "exit_pov_large_force_min_signal_amount": 475000000,
-    "exit_pov_large_force_note": "仅对A/C/E/L中参考市值≥950万且信号日成交额≥4.75亿的千万级仓位固定14:15启动退出跑道；普通D明确排除该绝对金额强制规则，只能由当日实时成交容量不足触发，避免流动性充足时无谓提前卖出。",
+    "exit_pov_large_force_note": "仅对A/C/E/M中参考市值≥950万且信号日成交额≥4.75亿的千万级仓位固定14:15启动退出跑道；普通D明确排除该绝对金额强制规则，只能由当日实时成交容量不足触发，避免流动性充足时无谓提前卖出。",
     "exit_pov_depth_levels": 3,
     "exit_pov_depth_haircut": 0.5,
     "exit_pov_bid_volume_unit": 1,
@@ -474,7 +422,7 @@
     "limit_list_start_date": "20191128",
     "low_amount_threshold": 10000,
     "live_signal_window_trade_days": 3,
-    "live_signal_window_note": "实盘收盘流水线只维护最近N个交易日缓存：1天策略只读当天，L/市场状态需要前2日上下文所以默认3天；回测研究大表不在日常实盘自动更新。",
+    "live_signal_window_note": "实盘收盘流水线只维护最近N个交易日缓存：单日策略只读当天，部分市场状态需要前2日上下文所以默认3天；回测研究大表不在日常实盘自动更新。",
     "daily_merged_path": "data/processed/daily_merged.csv",
     "daily_merged_by_date_dir": "data/processed/daily_merged_by_date",
     "limit_up_merged_path": "data/processed/limit_up_merged.csv",

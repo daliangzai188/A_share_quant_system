@@ -65,10 +65,6 @@ from src.strategy_equity_ledger import (
     load_equity_ledger,
     update_strategy_equity_ledger,
 )
-from src.strategy_model3_policy import (
-    model3_l_base_rule_pass,
-    model3_l_replace_guard_pass,
-)
 from src.strategy_identity import normalize_strategy_leg, normalize_strategy_record
 from src.strategy_d_spec import intraday_history_is_complete
 from src.strategy_d_relay_execution import (
@@ -487,14 +483,6 @@ def active_strategy_mode() -> int:
         return int(config.get("active_strategy_profile", {}).get("mode", 1))
     except Exception:
         return 1
-
-
-def is_strategy_l_mode() -> bool:
-    return active_strategy_mode() == 2
-
-
-def is_strategy_model3_mode() -> bool:
-    return active_strategy_mode() == 3
 
 
 def write_heartbeat(status: str = "running") -> None:
@@ -1065,7 +1053,7 @@ def save_positions(positions: list[dict[str, Any]]) -> None:
             raise RuntimeError(f"保存持仓文件失败:{e}") from e
 
 
-_ACTIVE_AUTO_STRATEGY_LEGS = frozenset({"A", "C", "D", "E", "L", "M"})
+_ACTIVE_AUTO_STRATEGY_LEGS = frozenset({"A", "C", "D", "E", "M"})
 
 
 def _position_exit_ledger_quantity(position: dict[str, Any]) -> int:
@@ -2835,7 +2823,7 @@ def _abc_place_sell_order_direct(
     ts_code: str, name: str, shares: int, order_id: str,
     confirm: str, config: dict, broker_cfg: dict, strategy_leg: str = ""
 ) -> bool:
-    """串行化A/C/D/E/L整段卖出生命周期；RLock允许14:55主任务重入。"""
+    """串行化A/C/D/E/M整段卖出生命周期；RLock允许14:55主任务重入。"""
     resolved_leg = str(strategy_leg or "").upper()
     if not resolved_leg:
         for row in load_positions():
@@ -2862,7 +2850,7 @@ def _abc_place_sell_order_direct_locked(
     ts_code: str, name: str, shares: int, order_id: str,
     confirm: str, config: dict, broker_cfg: dict, strategy_leg: str = ""
 ) -> bool:
-    """A/C/D/E/L按交易阶段有效限价卖实际余仓，不走旧CSV卖出数量。
+    """A/C/D/E/M按交易阶段有效限价卖实际余仓，不走旧CSV卖出数量。
 
     超过交易所单笔股数上限时先拆成多张委托；成交按所有子单聚合，全成回写
     closed，部成只回写真实剩余股数。返回True仅表示本轮已全部成交。
@@ -3121,7 +3109,7 @@ _exit_bypass_day = ""   # 收盘竞价旁路生效日(看门狗14:56岗据此让
 
 # 这里只列“按T+N收盘退出”的策略腿。D接力的计划平仓日仍在T+2，接力日为T+1，
 # 因此不会被下面“planned_exit_date == today”选中，仍由09:23专用流程先卖后买。
-T2_CLOSE_STRATEGY_LEGS = frozenset({"A", "C", "D", "E", "L", "M"})
+T2_CLOSE_STRATEGY_LEGS = frozenset({"A", "C", "D", "E", "M"})
 
 
 def _configured_exit_pov_strategy_legs(live_cfg: dict[str, Any]) -> frozenset[str]:
@@ -3161,9 +3149,9 @@ def _fixed_large_runway_allowed(position: dict[str, Any], live_cfg: dict[str, An
     普通D明确排除：D只能由实时成交容量触发，不能仅因绝对仓位达到950万元
     就提前卖出，以免在流动性充足时无谓偏离T+2收盘收益口径。
     """
-    raw = live_cfg.get("exit_pov_large_force_strategy_legs", ["A", "C", "E", "L"])
+    raw = live_cfg.get("exit_pov_large_force_strategy_legs", ["A", "C", "E", "M"])
     if not isinstance(raw, list):
-        raw = ["A", "C", "E", "L"]
+        raw = ["A", "C", "E", "M"]
     allowed = {str(value).strip().upper() for value in raw}
     return str(position.get("strategy_leg", "")).strip().upper() in allowed
 
@@ -4757,7 +4745,7 @@ def _exit_pov_slice(
 def _exit_pov_monitor() -> None:
     """卖出端POV分批平仓线程：5分钟常规卸载，14:46后1分钟加速。
 
-    普通D与A/C/E/L一样仅在实时容量不足时介入；小仓位零介入并继续由
+    普通D与A/C/E/M一样仅在实时容量不足时介入；小仓位零介入并继续由
     14:55主链路卖出。D接力日不是planned_exit_date，不会进入本线程。
     启动前撤止盈预挂单释放冻结股份。每片均受外部流量、盘口深度、滑点
     和QMT实际可卖量约束，涨停也不再假设买盘无限或直接全量卖出。
@@ -5058,7 +5046,7 @@ def _do_sell(pos: dict[str, Any], qmt_enabled: bool) -> None:
             broker_cfg = config.get("broker", {})
             strategy_leg = str(pos.get("strategy_leg", "")).upper()
             if strategy_leg in T2_CLOSE_STRATEGY_LEGS:
-                # A/C/D/E/L 均存在 T+N 收盘卖出口径：
+                # A/C/D/E/M 均存在 T+N 收盘卖出口径：
                 # planned_orders 文件通常只负责买入计划，平仓时直接按买10/买5挂限价卖出。
                 # 普通D同样必须复用该链路；只有状态机明确给出接力动作时，D才会
                 # 在T+1的09:23提前卖出，不能把普通D误认为已经在早盘平仓。
@@ -6711,7 +6699,7 @@ def check_and_close_positions(in_close_window: bool = False) -> None:
             logger().warning("需要平仓：%s %s  计划平仓日 %s  状态 %s  市场开盘 %s",
                              ts_code, name, planned_exit, status, market_is_open())
 
-            t2_close_leg = strategy_leg in {"A", "C", "D", "E", "L", "M"}
+            t2_close_leg = strategy_leg in T2_CLOSE_STRATEGY_LEGS
             due_today = planned_exit == today_str
             # 不用时间容差：容差会把窗口推到 POV 的 14:53 交接点之前。
             before_close_sell_window = (
@@ -8372,7 +8360,7 @@ def read_cached_combined_decisions():
 def job_preopen_plan() -> None:
     """09:00 提前生成组合状态机计划。
 
-    A/C/E/L/model3 的盘前开仓信息都来自上个交易日收盘后已有数据，D策略除外。
+    A/C/E/M 的盘前开仓信息都来自上个交易日收盘后已有数据，D策略除外。
     因此开仓计划不需要等到09:20才计算；09:00先生成，09:20复核后可以直接挂单。
     """
     logger().info("===== 盘前计划生成（09:00）=====")
@@ -9542,14 +9530,7 @@ def _pov_worker() -> None:
 
 
 def job_premarket_buy() -> None:
-    """09:20 集合竞价预挂：对计划开仓且当前无持仓的标的，优先按涨停价挂限价买单。
-
-    总策略模式说明：
-      mode=1：只执行现有 A/C/M/E 买入计划。
-      mode=2：只执行 L 独立龙头策略买入计划。
-      mode=3：执行 model=3 组合计划，可能是 mode=1 买入，也可能是 L 补位/替换。
-    各模式互斥，避免同一资金被两套策略同时占用。
-    """
+    """09:20集合竞价预挂当前组合计划；有旧仓时不提交新买单。"""
     logger().info("===== 集合竞价买入预挂（09:20）=====")
 
     # 平仓最高优先：逾期持仓（如昨日平仓失败残留）先于一切买入动作清理。
@@ -9691,7 +9672,7 @@ def job_premarket_buy() -> None:
             # 按 min(缩单金额, 竞价额×参与率) 动态定仓再挂涨停价参与竞价。
             # 原因：E标的为冷门小市值，竞价盘常仅几十~几百万（2026-07-09
             # 皇氏实测68万），50万级固定仓位会吃掉大半竞价盘直接顶高开盘价。
-            # E标的从不一字开盘，9:24挂单无排队损失；ABC/L从09:20开始排队。
+            # E标的从不一字开盘，9:24挂单无排队损失；A/C/M从09:20开始排队。
             if str(row.get("strategy_leg", "")).upper() == "E":
                 if not bool(config.get("live_trade", {}).get("e_enabled", True)):
                     logger().warning("E已被 live_trade.e_enabled=false 关闭，跳过E买入计划：%s", row.get("ts_code"))
@@ -9948,18 +9929,6 @@ def job_morning() -> None:
         logger().error("组合状态机决策生成失败，早盘不启动D，也不执行A/C买入预览。")
         return
 
-    if is_strategy_l_mode():
-        # L 独立模式下，09:20 只做状态播报，不启动 ABC/E/D。
-        # 如果 L 买入开关关闭，组合状态机会给出 BLOCK_L_LIVE_ORDER；如果打开且有昨日信号，会给出 ALLOW_L_BUY。
-        if has_combined_action(decisions, "ALLOW_L_BUY"):
-            logger().info("当前总策略模式=2（独立L龙头策略），组合状态机允许L开仓；将于09:20/09:30按L计划执行。")
-        elif has_combined_action(decisions, "PLAN_SELL_L"):
-            logger().info("当前总策略模式=2（独立L龙头策略），存在L到期平仓计划；等待14:55收盘平仓窗口。")
-        else:
-            logger().info("当前总策略模式=2（独立L龙头策略），本轮无L实盘开仓计划；ACDE/D已阻断。")
-        logger().info("===== 盘前任务完成 =====")
-        return
-
     # ② D 待卖持仓最高优先级。09:20只播报，等待09:23集合竞价平仓入口执行。
     if has_combined_action(decisions, "PLAN_SELL_D_FIRST"):
         logger().info("组合状态机要求先卖D；等待09:23集合竞价平仓，不在09:20非交易时段提交委托。")
@@ -10030,7 +9999,7 @@ def job_opening_buy(*, recovery_only: bool = False) -> None:
 
     if recovery_only:
         logger().warning(
-            "开盘恢复确认已完成；当前已过普通开盘补买宽限，不新建A/M/C/L买单，"
+            "开盘恢复确认已完成；当前已过普通开盘补买宽限，不新建A/M/C买单，"
             "后续只允许既有E延迟规则或D盘中兜底重新判断。"
         )
         logger().info("===== 开盘买入恢复任务完成 =====")
@@ -10048,7 +10017,7 @@ def job_opening_buy(*, recovery_only: bool = False) -> None:
         return
 
     # 与09:20共用同一个动作解析器，避免新增策略腿后两个入口名单漂移：
-    # 当前正式腿序为 L > A/C > M > E；一个组合计划只执行最高优先动作一次。
+    # 当前正式腿序为 A > M > E > C；一个组合计划只执行最高优先动作一次。
     open_action = _combined_open_action_for_current_mode(decisions)
 
     # 正常路径在09:20已启动D线程；这里是09:25~09:30整机重启、09:20任务
@@ -10078,7 +10047,7 @@ def job_opening_buy(*, recovery_only: bool = False) -> None:
 
     # 走到这里=今日有买入窗口但09:20预挂链路没有产生持仓、也没有待确认单
     # （预挂失败/未执行/被拒）。属于执行降级：失去集合竞价排队优势；普通
-    # L/A/C/M不再一次性整单追买，而是建立同一套持久化POV任务。
+    # A/C/M不再一次性整单追买，而是建立同一套持久化POV任务。
     # （2026-07-03 德冠新材即此场景：预挂未生效，09:30补买20.33，事后才发现。）
     if open_action:
         if open_action == "ALLOW_E_BUY":
@@ -10100,9 +10069,6 @@ def job_opening_buy(*, recovery_only: bool = False) -> None:
                     level="timeSensitive")
 
     action_reason = {
-        "ALLOW_L_BUY": "L独立模式 09:30开仓",
-        "ALLOW_MODEL3_L_SUPPLEMENT": "L/model3补位 09:30开仓",
-        "ALLOW_MODEL3_L_REPLACE": "L/model3优先 09:30开仓",
         "ALLOW_ABC_BUY_PREVIEW": "A/C 09:30开仓",
         "ALLOW_M_BUY": "M 09:30开仓",
         "ALLOW_E_BUY": "E 09:30开仓",
@@ -10122,7 +10088,7 @@ def job_opening_buy(*, recovery_only: bool = False) -> None:
             )
 
     if not attempted_buy:
-        logger().info("09:30无L/A/C/M/E买入计划；D是否扫描已由空仓及全策略候选总门单独判定。")
+        logger().info("09:30无A/C/M/E买入计划；D是否扫描已由空仓及全策略候选总门单独判定。")
     elif not accepted_buy and not has_position_bought_today():
         if open_action == "ALLOW_E_BUY":
             logger().warning(
@@ -10176,14 +10142,6 @@ def has_combined_action(decisions, action: str) -> bool:
     return decisions["action"].astype(str).eq(action).any()
 
 
-MODE_OPEN_ACTION_PRIORITY = ("ALLOW_L_BUY",)
-MODEL3_OPEN_ACTION_PRIORITY = (
-    "ALLOW_MODEL3_L_SUPPLEMENT",
-    "ALLOW_MODEL3_L_REPLACE",
-    "ALLOW_ABC_BUY_PREVIEW",
-    "ALLOW_M_BUY",
-    "ALLOW_E_BUY",
-)
 MODE1_OPEN_ACTION_PRIORITY = (
     "ALLOW_ABC_BUY_PREVIEW",
     "ALLOW_M_BUY",
@@ -10195,26 +10153,17 @@ def _combined_open_action_for_current_mode(decisions) -> str:
     """返回当前模式唯一可执行的正式开仓动作，供09:20与09:30共同使用。
 
     决策表异常地同时出现多条ALLOW时仍只取腿序最前的一条，避免同一资金被
-    多个执行入口重复消费。模式2只认独立L；模式3按L>A/C>M>E；模式1按
-    A/C>M>E。C与A共用ALLOW_ABC_BUY_PREVIEW动作和同一计划单执行通道。
+    多个执行入口重复消费。当前固定按A>M>E>C；C与A共用
+    ALLOW_ABC_BUY_PREVIEW动作和同一计划单执行通道。
     """
 
-    if is_strategy_l_mode():
-        priority = MODE_OPEN_ACTION_PRIORITY
-    elif is_strategy_model3_mode():
-        priority = MODEL3_OPEN_ACTION_PRIORITY
-    else:
-        priority = MODE1_OPEN_ACTION_PRIORITY
     return next(
-        (action for action in priority if has_combined_action(decisions, action)),
+        (action for action in MODE1_OPEN_ACTION_PRIORITY if has_combined_action(decisions, action)),
         "",
     )
 
 
 OPEN_ACTION_LEG_PRIORITY: dict[str, tuple[str, ...]] = {
-    "ALLOW_L_BUY": ("L",),
-    "ALLOW_MODEL3_L_SUPPLEMENT": ("L",),
-    "ALLOW_MODEL3_L_REPLACE": ("L",),
     "ALLOW_ABC_BUY_PREVIEW": ("A", "C"),
     "ALLOW_M_BUY": ("M",),
     "ALLOW_E_BUY": ("E",),
@@ -10272,9 +10221,6 @@ def _select_unique_buy_order_for_action(
 
 
 D_INTRADAY_BLOCKING_BUY_ACTIONS = frozenset({
-    "ALLOW_L_BUY",
-    "ALLOW_MODEL3_L_SUPPLEMENT",
-    "ALLOW_MODEL3_L_REPLACE",
     "ALLOW_ABC_BUY_PREVIEW",
     "ALLOW_M_BUY",
     "ALLOW_E_BUY",
@@ -10875,7 +10821,7 @@ def _try_cancel_order(broker_cfg: dict, order_id: str, ts_code: str) -> None:
 
 
 def blocks_d_for_opening_plan(decisions) -> bool:
-    """识别 D 是否只是被当日 L/A/C/M/E 开仓计划占用资金挡住。
+    """识别 D 是否只是被当日 A/C/M/E 开仓计划占用资金挡住。
 
     盘中补启动只用于开仓窗口已经过去、且本地无持仓的场景；如果 D 是因为待卖、
     行情时段、风控等原因被挡住，不在这里强行放行。
@@ -10894,7 +10840,7 @@ def blocks_d_for_opening_plan(decisions) -> bool:
         reason_text = " ".join(decisions["reason"].fillna("").astype(str).tolist())
     return any(
         keyword in reason_text
-        for keyword in ("开仓", "同一资金", "A/C", "A/B/C", "E", "M", "L补位", "L优先")
+        for keyword in ("开仓", "同一资金", "A/C", "A/B/C", "E", "M")
     )
 
 
@@ -11358,7 +11304,7 @@ def report_next_trade_factor_readiness(signal_date: str) -> bool:
         ("成交概率打分", processed / "live_limit_up_fill_scored.csv", ["trade_date", "ts_code", "fill_probability", "allow_buy_reliable", "is_fill_score_reliable"], True, False),
         ("市场情绪", processed / "live_market_emotion_features.csv", ["trade_date", "market_segment", "market_chain_count", "segment_emotion_state"], True, False),
         ("题材热度", processed / "live_theme_heat_features.csv", ["trade_date", "ts_code", "theme_name", "theme_heat_rank", "theme_limit_count"], True, False),
-        # 资金流/龙虎榜是纯记录性增强因子，A/C/E/L/D 选股都不以它们为条件（龙虎榜策略已判死）。
+        # 资金流/龙虎榜是纯记录性增强因子，A/C/E/M/D选股都不以它们为条件（龙虎榜策略已判死）。
         # 龙虎榜是交易所晚发布数据，tushare 常整日无数据/无权限（2026-07-23 卡住收盘流水线到18点+）；
         # 故 require_available=False：当日不可用只记录、不阻塞收盘完成与明日计划推送（2026-07-23 修）。
         ("资金流增强", processed / "sector_moneyflow_features.csv", ["trade_date", "ts_code", "sector_moneyflow_score"], False, False),
@@ -11406,14 +11352,8 @@ def report_next_trade_factor_readiness(signal_date: str) -> bool:
         signal_path=PROJECT_ROOT / "reports" / "strategy_e" / "e_signals_recent.json",
         signal_date=signal_date,
     )
-    l_status = _strategy_signal_run_readiness(
-        strategy_leg="L",
-        run_status_path=PROJECT_ROOT / "reports" / "strategy_l" / "l_signal_runs_recent.json",
-        signal_path=PROJECT_ROOT / "reports" / "strategy_l" / "l_signals_recent.json",
-        signal_date=signal_date,
-    )
     logger().info("  %s A/C计划或空计划文件已生成", "✅" if abc_ready else "⚠️")
-    for strategy_leg, status in (("E", e_status), ("L", l_status)):
+    for strategy_leg, status in (("E", e_status),):
         log_method = logger().info if status["ok"] else logger().warning
         log_method(
             "  %s %s信号脚本：%s；%s",
@@ -11426,9 +11366,6 @@ def report_next_trade_factor_readiness(signal_date: str) -> bool:
         critical_missing.append("A/C planned_orders")
     if not e_status["ok"]:
         enhanced_missing.append(f"E signal run={e_status['status']}")
-    if not l_status["ok"]:
-        enhanced_missing.append(f"L signal run={l_status['status']}")
-
     if critical_missing:
         body = f"signal_date={signal_date} next={next_date} 缺关键因子/计划：{', '.join(critical_missing)}。明日09:00计划可能不可用。"
         logger().error("❌ 明日开盘关键因子未齐：%s", body)
@@ -11443,7 +11380,7 @@ def report_next_trade_factor_readiness(signal_date: str) -> bool:
     elif enhanced_missing:
         logger().warning("⚠️ 明日开盘关键因子已齐，增强/备用项缺失：%s", ", ".join(enhanced_missing))
     else:
-        logger().info("✅ 明日开盘因子已齐：ABCE/L/D 所需关键文件均已准备")
+        logger().info("✅ 明日开盘因子已齐：A/C/M/E/D所需关键文件均已准备")
     logger().info("----- 明日开盘因子就绪检查结束 -----")
     return True
 
@@ -11845,7 +11782,7 @@ def startup_catchup_strategy_d() -> None:
     decisions = combined[0] if combined is not None else None
     combined_orders_path = combined[1] if combined is not None else None
     if decisions is None:
-        # 整机宕机跨过09:00时不会存在今日缓存。此时已经错过A/C/L普通开盘
+        # 整机宕机跨过09:00时不会存在今日缓存。此时已经错过A/C/M普通开盘
         # 窗口，再等待“下一轮定时任务”实际要到14:40，D兜底也会整天丢失。
         # 本地盘运行后组合生成不再依赖旧Z:共享盘；这里限一次同步重建，仅生成
         # 计划，不追补过期买单，然后继续走既有E延迟/D兜底判断。
@@ -11892,7 +11829,7 @@ def startup_catchup_strategy_d() -> None:
             _start_e_retry_thread(combined_orders_path, decisions)
         else:
             _reject_late_d_recovery(
-                "今日A/C/M/L普通开盘计划未成交且窗口已过，不追补过期计划；"
+                "今日A/C/M普通开盘计划未成交且窗口已过，不追补过期计划；"
                 "虽然原计划已释放资金，但D也不能从午后快照重建完整路径"
             )
     else:
@@ -12359,8 +12296,6 @@ def _log_post_market_step_brief(script: str, signal_date: str) -> None:
         _log_abc_strategy_brief(signal_date)
     elif script == "run_strategy_e_signal.py":
         _log_e_signal_status(signal_date)
-    elif script == "run_strategy_l_signal.py":
-        _log_l_model3_signal_status(signal_date)
 
 
 def snapshot_equity_for_m(signal_date: str) -> None:
@@ -12516,7 +12451,7 @@ def job_post_market(end_date: str | None = None) -> None:
     cfg = load_json_config(PROJECT_ROOT / "config" / "config.json")
     live_window_days = max(1, int(cfg.get("cleaning", {}).get("live_signal_window_trade_days", 3)))
     # 实盘只维护策略判断所需的最近N个交易日缓存。
-    # 1天策略从窗口里读目标日；L/市场状态需要前两日上下文，所以默认N=3。
+    # 1天策略从窗口里读目标日；市场状态需要前两日上下文，所以默认N=3。
     # 已有 raw 缓存由 collect_all_data.py 自动跳过，缺哪天才补哪天；回测研究大表不在这里更新。
     recent_start_date = prev_n_trade_days(target_date, live_window_days - 1) if live_window_days > 1 else target_date
     recent_start = recent_start_date.strftime("%Y%m%d")
@@ -12534,13 +12469,10 @@ def job_post_market(end_date: str | None = None) -> None:
         ("build_live_enhanced_features.py",    "⑤ 增强因子生成（资金流/龙虎榜/竞价审计）", TIMEOUT_DATA_STEP, "约1分钟"),
         ("run_paper_ab_filtered_daily_ops.py", "⑥ A+B+C 信号生成",                TIMEOUT_SIGNAL_STEP,"约1分钟"),
         ("run_strategy_e_signal.py",          "⑦ E 信号生成（板块中性小市值）", TIMEOUT_SIGNAL_STEP,"约30秒"),
-        ("run_strategy_l_signal.py",           "⑧ L 龙头信号生成（独立模式备用）", TIMEOUT_SIGNAL_STEP,"约30秒"),
-        # M 必须排在 A/C（⑥）和 L（⑧）之后：腿序 D>L>A>M>E>C 里只有这两条腿
-        # （加上已在 positions.json 里的 D 持仓）有资格挡住 M，它要读它们当日的产物。
-        # E（⑦）排在 M 后面，M 不再读它，两者先后已无所谓。
-        ("run_strategy_m_signal.py",           "⑨ M 补位信号（腿序D>L>A>M>E>C 第四档）", TIMEOUT_SIGNAL_STEP,"约20秒"),
-        ("strategy_health_monitor.py",         "⑩ 策略健康度监控（滚动20笔期望分位）", TIMEOUT_DATA_STEP, "约10秒"),
-        ("live_execution_audit.py",            "⑪ 实盘执行对账（逐笔损耗vs回测基准）", TIMEOUT_DATA_STEP, "约5秒"),
+        # M 排在A之后、E/C之前；它读取A/C当日产物并只让位于更高优先腿。
+        ("run_strategy_m_signal.py",           "⑧ M 补位信号（腿序D>A>M>E>C 第三档）", TIMEOUT_SIGNAL_STEP,"约20秒"),
+        ("strategy_health_monitor.py",         "⑨ 策略健康度监控（滚动20笔期望分位）", TIMEOUT_DATA_STEP, "约10秒"),
+        ("live_execution_audit.py",            "⑩ 实盘执行对账（逐笔损耗vs回测基准）", TIMEOUT_DATA_STEP, "约5秒"),
         ("update_execution_completion.py",     "⑫ 真实成交完成率汇总（逐片+一笔一行）", TIMEOUT_DATA_STEP, "约5秒"),
         ("report_rolling_live_performance.py", "⑬ 真实收益/容量/TCA滚动报告（只监控）", TIMEOUT_DATA_STEP, "约5秒"),
         ("update_release_oos_observation.py", "⑭ 全策略影子候选/反事实收益（只观察）", TIMEOUT_DATA_STEP, "约5秒"),
@@ -12574,9 +12506,6 @@ def job_post_market(end_date: str | None = None) -> None:
             "--theme-heat-features-path", live_theme_heat_path,
         ],
         "run_strategy_e_signal.py": ["--signal-date", target_str],
-        # L 信号默认只落文件，不会接入实盘；必须 mode=2 且 strategy_l.live_order_enabled=true
-        # 时，组合状态机才会把昨日 L 信号转换为次日实盘买入计划。
-        "run_strategy_l_signal.py": ["--signal-date", target_str],
         "update_release_oos_observation.py": ["--signal-date", target_str],
     }
     critical_scripts = {
@@ -12589,7 +12518,6 @@ def job_post_market(end_date: str | None = None) -> None:
     signal_retry_scripts = {
         "run_paper_ab_filtered_daily_ops.py",
         "run_strategy_e_signal.py",
-        "run_strategy_l_signal.py",
     }
 
     total_steps = len(steps)
@@ -12861,9 +12789,8 @@ def report_next_day_candidates() -> None:
             logger().warning("【%s】%s  ⚠️  未找到 A/C planned_orders 文件", header_label, action_date_str)
             if require_today:
                 signal_date_str = today_str
-                logger().info("  A/C：今日未生成计划单，继续检查 E/L 是否已有 %s 信号", signal_date_str)
+                logger().info("  A/C：今日未生成计划单，继续检查 E 是否已有 %s 信号", signal_date_str)
                 _log_e_signal_status(signal_date_str)
-                _log_l_model3_signal_status(signal_date_str, action_date_str.replace("-", ""))
                 _log_final_decision_summary(signal_date_str, action_date_str.replace("-", ""), pd.DataFrame())
             logger().info("=" * 60)
             return
@@ -12874,7 +12801,7 @@ def report_next_day_candidates() -> None:
         if latest_file is not None:
             _m = _re.search(r"\d{8}", latest_file.stem)
             signal_date_str = _m.group() if _m else "未知"
-        # 收盘后必须是今天的信号；如果 A/C 今天无文件，也按今天检查 E/L，不能回退到旧 planned_orders。
+        # 收盘后必须是今天的信号；如果 A/C 今天无文件，也按今天检查 E，不能回退到旧 planned_orders。
         data_fresh = (signal_date_str == today_str) or (not require_today)
 
         try:
@@ -12886,7 +12813,6 @@ def report_next_day_candidates() -> None:
             else:
                 logger().warning("  ⚠️  数据未更新！信号来自 %s，今日（%s）收盘流水线未成功运行", signal_date_str, today_str)
             _log_e_signal_status(signal_date_str)
-            _log_l_model3_signal_status(signal_date_str, action_date_str.replace("-", ""))
             _log_final_decision_summary(signal_date_str, action_date_str.replace("-", ""), None)
             logger().info("=" * 60)
             return
@@ -12936,7 +12862,6 @@ def report_next_day_candidates() -> None:
             else:
                 logger().info("  A/C 均无符合条件标的，%s", no_candidate_msg)
             _log_e_signal_status(signal_date_str)
-            _log_l_model3_signal_status(signal_date_str, action_date_str.replace("-", ""))
         else:
             ts_codes = buy_orders["ts_code"].astype(str).tolist()
             daily_date, daily_map = _load_daily_for_codes(ts_codes)
@@ -12986,7 +12911,6 @@ def report_next_day_candidates() -> None:
                     leg, ref_px, shares, amount,
                 )
             _log_e_signal_status(signal_date_str)
-            _log_l_model3_signal_status(signal_date_str, action_date_str.replace("-", ""))
 
         _log_final_decision_summary(signal_date_str, action_date_str.replace("-", ""), buy_orders)
         logger().info("=" * 60)
@@ -13039,7 +12963,7 @@ def _log_e_signal_status(signal_date: str) -> None:
     """播报 E 候选/选中标的/allow_buy_reliable/计划买卖日。
 
     E 信号存于 reports/strategy_e/e_signals_recent.json，与 A/C 的
-    planned_orders.csv、L 的 l_signals_recent.json 都不同。启动播报若不单独
+    planned_orders.csv 不同。启动播报若不单独
     读取，会出现"有 E 信号却完全看不到"的盲区，故在此独立播报。
     """
     try:
@@ -13293,7 +13217,7 @@ def _exit_method_desc(strategy: str, exit_rule: str) -> str:
     - 普通D：T+2小仓位14:55卖；实时容量不足的大仓位先POV、14:55卖余仓。
     - D接力：T+1的09:23只卖竞价安全部分，其余在09:30后资金中性成对POV。
     - T+1开盘卖（含 *_open）：09:30 开盘平仓，买10/买5挂限价。
-    - T+N收盘卖（默认 A/C/D/E/L *_close）：14:55卖出实际余仓。
+    - T+N收盘卖（默认 A/C/D/E/M *_close）：14:55卖出实际余仓。
     口径与 check_and_close_positions / job_premarket_sell 一致。
     """
     s = str(strategy).upper()
@@ -13314,7 +13238,7 @@ def _ordinary_open_plan_expired(
     final_buy: dict[str, Any] | None,
     action_date: str,
 ) -> bool:
-    """判断A/M/C/L普通开盘计划是否已错过且没有任何执行活动。
+    """判断A/M/C普通开盘计划是否已错过且没有任何执行活动。
 
     E有独立延迟入场规则，D是盘中实时策略，均不能套用09:35普通计划失效口径。
     本函数只影响播报，不改变组合计划文件或下单门禁。
@@ -13323,7 +13247,7 @@ def _ordinary_open_plan_expired(
     if not final_buy:
         return False
     leg = str(final_buy.get("strategy", "")).strip().upper().replace("龙头", "")
-    if leg not in {"A", "M", "C", "L"}:
+    if leg not in {"A", "M", "C"}:
         return False
     now = now_beijing()
     today = now.strftime("%Y%m%d")
@@ -13361,22 +13285,10 @@ def _local_position_blocks_open_plan_broadcast(
 
 
 def _log_final_decision_summary(signal_date: str, action_date_compact: str, buy_orders: Any) -> None:
-    """打印【最终结果】：按当前总策略模式判定下一交易日实际开仓计划。
-
-    - 模式1：按腿序 A > M > E > C 取第一个有计划的腿（B已删除）。
-    - 模式2(L)：仅当 strategy_l.live_order_enabled 且 L 信号满足时开仓。
-    - 模式3(MODEL3)：L 只要过基础条件就**无条件优先**于 A/M/E/C
-      （2026-08-07 替换窄门已退出选股路径），mode1 无买入时同样由 L 补位。
-    与 combined_live_engine.build_model3_plan 的判定口径保持一致——播报说买 A、
-    实盘买 L 比不播报更糟，改任一侧都要同步另一侧。
-    """
+    """打印【最终结果】：按D>A>M>E>C判定下一交易日实际开仓计划。"""
     try:
         cfg = load_json_config(PROJECT_ROOT / "config" / "config.json")
-        mode = int(cfg.get("active_strategy_profile", {}).get("mode", 1))
-        l_participation_enabled = bool(
-            cfg.get("strategy_model3", {}).get("l_participation_enabled", True)
-        )
-        mode_name = {1: "ACDE", 2: "L龙头", 3: "MODEL3"}.get(mode, str(mode))
+        mode_name = "D_A_M_E_C"
         readable = f"{action_date_compact[:4]}-{action_date_compact[4:6]}-{action_date_compact[6:]}" \
             if len(action_date_compact) == 8 else action_date_compact
 
@@ -13452,71 +13364,22 @@ def _log_final_decision_summary(signal_date: str, action_date_compact: str, buy_
         else:
             mode1_buys = _c_rows
 
-        # ── L 候选 ──
-        l_sig = _load_l_signal_for_signal_date(signal_date)
-        l_buy: dict[str, Any] | None = None
-        l_base_ok = False
-        if l_sig and str(l_sig.get("planned_buy_date", "")) == action_date_compact:
-            l_base_ok, _ = _model3_l_base_rule_pass_for_log(l_sig)
-            l_price = float(l_sig.get("limit_close", 0.0) or 0.0)
-            l_shares = _planned_shares_by_equity(l_sig.get("position_pct", 0.825), l_price)
-            if l_shares > 0:
-                l_buy = {
-                    "strategy": "L龙头",
-                    "ts_code": str(l_sig.get("ts_code", "")),
-                    "name": str(l_sig.get("name", "")),
-                    "shares": l_shares,
-                    "price": l_price,
-                    "exit_date": str(l_sig.get("planned_exit_date", "")),
-                    "exit_rule": str(l_sig.get("planned_exit_rule", "T+2_close")),
-                }
-
-        # 串行单仓守卫：任何策略旧仓（包括L自己的旧仓）都必须阻断新仓。
+        # 串行单仓守卫：任何策略旧仓都必须阻断新仓。
         # 候选可以继续展示供审计，但【最终结果】只能统计真正可执行的开仓计划。
-        # 旧实现错误排除了L旧仓，导致“共进股份仍持仓”时把华正新材显示成
-        # “开仓计划1笔”，尽管真正下单门禁已将其阻断。
+        # 所有本地策略旧仓都参与阻断，候选展示不能绕过真实下单门禁。
         _blocked_by_holding = _local_position_blocks_open_plan_broadcast(
             load_positions(), action_date_compact
         )
 
-        # ── 按模式决策 ──
+        # ── 按正式腿序决策 ──
         final_buys: list[dict[str, Any]] = []
         note = ""
         if _blocked_by_holding:
             final_buys = []
-            note = "有旧策略仓尚未实际清空，取消衔接开仓（含mode1/L补位/替换均阻断）"
-        elif mode == 1:
+            note = "有旧策略仓尚未实际清空，取消衔接开仓"
+        else:
             final_buys = mode1_buys
-            note = "模式1：按腿序 A>M>E>C 取第一个有计划的腿（B已删除）"
-        elif mode == 2:
-            l_live = bool(cfg.get("strategy_l", {}).get("live_order_enabled", False))
-            if l_buy and l_live:
-                final_buys = [l_buy]
-                note = "模式2：独立L龙头策略开仓"
-            else:
-                note = "模式2：L龙头未满足实盘开仓（live_order_enabled=false 或信号不满足）"
-        else:  # mode == 3
-            m3 = cfg.get("strategy_model3", {})
-            if not l_participation_enabled:
-                final_buys = mode1_buys
-                note = "模式3框架保留，但L认证失效已停用；沿用D/A/M/E/C计划"
-            elif not (bool(m3.get("enabled")) and bool(m3.get("live_order_enabled"))):
-                final_buys = mode1_buys
-                note = "模式3：model3未完全开启，沿用mode1计划"
-            elif mode1_buys:
-                # 2026-08-07：替换窄门已退出选股路径，L 过基础规则即无条件顶掉 mode1
-                if l_buy and l_base_ok:
-                    final_buys = [l_buy]
-                    note = "模式3：L无条件优先（腿序L>A>M>E>C）→ 由L替换mode1买入"
-                else:
-                    final_buys = mode1_buys
-                    note = "模式3：L不参与（无信号或基础规则不通过）→ 保留mode1买入"
-            else:
-                if l_buy and l_base_ok:
-                    final_buys = [l_buy]
-                    note = "模式3：mode1无买入，L通过基础条件 → L补位"
-                else:
-                    note = "模式3：mode1无买入，L也不满足 → 不开仓"
+            note = "按腿序A>M>E>C取第一个有计划的收盘后候选；D由盘中时序优先"
 
         expired_buys = (
             list(final_buys)
@@ -13542,7 +13405,7 @@ def _log_final_decision_summary(signal_date: str, action_date_compact: str, buy_
         out: list[str] = [
             "=" * 60,
             "======================== 最终结果 ========================",
-            f"{_day_lab}({readable})  总策略模式：{mode} ({mode_name})",
+            f"{_day_lab}({readable})  正式组合：{mode_name}",
             f"判定：{note}",
         ]
         if expired_buys:
@@ -13553,7 +13416,7 @@ def _log_final_decision_summary(signal_date: str, action_date_compact: str, buy_
                 "已过执行窗口且未成交；不追买，D也必须具备09:30起完整日内路径才允许开仓"
             )
         elif not final_buys:
-            out.append("开仓计划：❌ 无 —— ACDE 与龙头均无开仓计划（B已删除）")
+            out.append("开仓计划：❌ 无 —— A/M/E/C均无开仓计划")
         else:
             out.append(f"开仓计划：✅ 共 {len(final_buys)} 笔")
             for b in final_buys:
@@ -13735,513 +13598,134 @@ def _build_candidate_choice_lines(
 
 
 def _log_decision_chain_summary(signal_date: str) -> None:
-    """收盘流水线完成后，用一段决策链日志讲清楚明日开仓逻辑。
+    """按当前正式腿序播报下一交易日开仓计划；只做展示，不参与下单。"""
 
-    每行统一以 ┃ 开头：start_windows.py 终端着色按该前缀显示紫色，
-    与其他日志区分；日志文件本身仍是纯文本，不含 ANSI 码。
-    内容：策略优先级顺序 → 每个策略成立/不成立及原因 → 明日开仓计划
-    （基于 signal_date 收盘数据统计的下一交易日计划），已持仓时标注。
-    只做展示，任何异常不影响流水线。
-    """
     try:
         import pandas as pd
-        P = "┃"
 
-        cfg = load_json_config(PROJECT_ROOT / "config" / "config.json")
-        mode = int(cfg.get("active_strategy_profile", {}).get("mode", 1))
-        l_participation_enabled = bool(
-            cfg.get("strategy_model3", {}).get("l_participation_enabled", True)
-        )
         try:
-            sd = datetime.datetime.strptime(signal_date, "%Y%m%d").date()
-            action_date = next_n_trade_days(sd, 1).strftime("%Y%m%d")
+            signal_day = datetime.datetime.strptime(signal_date, "%Y%m%d").date()
+            action_date = next_n_trade_days(signal_day, 1).strftime("%Y%m%d")
         except Exception:
             action_date = ""
-        readable = f"{action_date[:4]}-{action_date[4:6]}-{action_date[6:]}" if len(action_date) == 8 else action_date
-        day_label = "今日" if (action_date and action_date == today_beijing().strftime("%Y%m%d")) else "明日"
-
-        # ── A/C：checklist + 计划单；内部abc命名为兼容旧文件路径保留 ──
-        checklist = _load_ab_checklist(signal_date)
-        ss, top_code, top_name = "", "", ""
-        a_cnt = c_cnt = 0
-        if not checklist.empty:
-            row = checklist.iloc[0]
-            ss = str(row.get("selection_status", ""))
-            top_code = str(row.get("top_ts_code", "") or "")
-            top_name = str(row.get("top_name", "") or "")
-            a_cnt = int(row.get("a_candidate_count", 0) or 0)
-            c_cnt = int(row.get("c_candidate_count", 0) or 0)
-        hit_cond = ss.split(":", 1)[1] if ":" in ss else ""
-
-        abc_buy: dict[str, Any] | None = None
-        try:
-            po_files = sorted(glob.glob(str(PROJECT_ROOT / f"reports/paper_trade/ab_filtered_daily_ops/*_{signal_date}_planned_orders.csv")))
-            if po_files:
-                po = pd.read_csv(po_files[-1], low_memory=False)
-                buys = po[po.get("side", pd.Series(dtype=str)).astype(str).str.upper() == "BUY"] if not po.empty else po
-                for _, r in (buys.iterrows() if not buys.empty else []):
-                    qty = int(float(r.get("round_lot_shares", 0) or 0))
-                    price = float(r.get("reference_price", 0.0) or 0.0)
-                    if qty > 0 and price > 0:
-                        abc_buy = {"strategy": str(r.get("strategy_leg", "") or "ABC"), "ts_code": str(r.get("ts_code", "")),
-                                   "name": str(r.get("name", "")), "shares": qty, "price": price}
-                        break
-        except Exception:
-            pass
-
-        # A/C 两层文案；B只保留删除状态提示，不再参与筛选。
-        if ss.startswith("A_SELECTED"):
-            a_line = f"成立｜候选{a_cnt}，选中 {top_code} {top_name}"
-            b_line = "已删除｜不参与筛选、买入或自动卖出"
-            c_line = "未启用｜A已选中，C不再评估"
-        elif ss.startswith("A_NO_SELECTED_C_SELECTED"):
-            a_line = f"不成立｜候选{a_cnt}，未形成可成交标的"
-            b_line = "已删除｜不参与筛选、买入或自动卖出"
-            c_line = f"成立｜候选{c_cnt}，补位选中 {top_code} {top_name}" + (f"（命中：{hit_cond}）" if hit_cond else "")
-        elif ss.startswith("A_NO_SELECTED_C_RISK_FILTERED"):
-            a_line = f"不成立｜候选{a_cnt}，未形成可成交标的"
-            b_line = "已删除｜不参与筛选、买入或自动卖出"
-            c_line = f"不成立｜C首选命中风险过滤规则被剔除（候选{c_cnt}）"
-        elif ss.startswith("A_NO_SELECTED_C_NO_SELECTED") or ss == "A_NO_SELECTED_B_REMOVED":
-            a_line = f"不成立｜候选{a_cnt}，未形成可成交标的"
-            b_line = "已删除｜不参与筛选、买入或自动卖出"
-            c_line = f"不成立｜候选{c_cnt}，无补位标的"
-        else:
-            a_line = c_line = f"状态={ss or '无checklist'}"
-            b_line = "已删除｜不参与筛选、买入或自动卖出"
-
-        # ABC名义上选中但计划单无有效股数/价格（如影子计划或参考价缺失）时，
-        # 执行层按"无ABC计划"处理，文案必须与实际执行一致，避免自相矛盾。
-        if abc_buy is None and ("SELECTED" in ss and not ss.endswith("NO_SELECTED")):
-            note_shadow = "（但计划单无有效股数/价格，实盘按无ABC计划处理）"
-            if ss.startswith("A_SELECTED"):
-                a_line += note_shadow
-            elif "C_SELECTED" in ss:
-                c_line += note_shadow
-
-        # ── 腿序 D > L > A > M > E > C（2026-08-07 定稿）─────────────────
-        # 本段只做播报，真实开仓由 combined_live_engine.build_model3_plan 决定。
-        # **播报必须与它逐条一致**：用户靠这份推送盯盘，播报说买 A、实盘买 L，
-        # 比不播报更糟。2026-08-07 腿序改造时这里漏改过一轮——播报还在用已退役
-        # 的 L 替换窄门(l_guard_ok)、还让 E/M 给 C 让位，与下单口径相反。
-        #
-        # A 与 C 拆开：A 排第③、C 垫底第⑥，同一份操作台文件不会同时出现两者
-        # （select_candidates 先试 A 池、空了才试 C 池）。
-        _abc_leg = str(abc_buy.get("strategy", "")).strip().upper() if abc_buy else ""
-        a_buy = abc_buy if _abc_leg == "A" else None
-        c_buy = abc_buy if _abc_leg == "C" else None
-        if abc_buy and _abc_leg not in {"A", "C"}:
-            a_buy = abc_buy          # 未知腿按最保守口径归入 A 档，与引擎一致
-
-        # ── E（第⑤档，只让位给 A；C 排在它后面）──
-        e_sig = _load_e_signal_for_signal_date(signal_date)
-        e_buy: dict[str, Any] | None = None
-        if (e_sig and str(e_sig.get("planned_buy_date", "")) == action_date
-                and bool(e_sig.get("allow_buy_reliable", False))):
-            price = float(e_sig.get("limit_close", 0.0) or 0.0)
-            e_buy = {"strategy": "E", "ts_code": str(e_sig.get("ts_code", "")),
-                      "name": str(e_sig.get("name", "")),
-                      "shares": _planned_shares_by_equity(e_sig.get("position_pct", 0.825), price), "price": price}
-        # E在已有持仓时不会生成正式信号，但会把只读第一名写入运行状态。候选汇总
-        # 应展示这只“若空仓本可参与”的影子候选，同时仍让 e_buy 保持 None，绝不
-        # 把展示数据误接成可执行买单。
-        e_candidate_for_display = e_buy
-        if e_candidate_for_display is None:
-            e_run = signal_run_by_signal_date(
-                PROJECT_ROOT / "reports" / "strategy_e" / "e_signal_runs_recent.json",
-                signal_date,
-            )
-            if e_run and int(e_run.get("candidate_count", 0) or 0) > 0:
-                shadow_code = str(e_run.get("candidate_ts_code", "") or "")
-                if shadow_code:
-                    e_candidate_for_display = {
-                        "strategy": "E",
-                        "ts_code": shadow_code,
-                        "name": str(e_run.get("candidate_name", "") or ""),
-                    }
-
-        # ── M（第④档，排在 E 和 C 之前；上游门已保证只在 L/A 无信号时生成）──
-        m_sig_for_plan = _load_m_signal_for_signal_date(signal_date)
-        m_buy: dict[str, Any] | None = None
-        if m_sig_for_plan and str(m_sig_for_plan.get("planned_buy_date", "")) == action_date:
-            m_price = float(m_sig_for_plan.get("limit_close", 0.0) or 0.0)
-            m_buy = {"strategy": "M", "ts_code": str(m_sig_for_plan.get("ts_code", "")),
-                     "name": str(m_sig_for_plan.get("name", "")),
-                     "shares": _planned_shares_by_equity(m_sig_for_plan.get("position_pct", 0.825), m_price),
-                     "price": m_price}
-
-        # ── mode1 按腿序 A > M > E > C 取第一个（与 build_mode1_plan 同序）──
-        mode1_buy = a_buy or m_buy or e_buy or c_buy
-
-        if a_buy:
-            e_line = "让位｜A已有买入计划（腿序A>E），同一资金不重复占用" + (
-                f"（E备选={e_buy['ts_code']} {e_buy['name']}）" if e_buy else "")
-        elif m_buy:
-            e_line = "让位｜M排在E之前且今日有信号" + (
-                f"（E备选={e_buy['ts_code']} {e_buy['name']}）" if e_buy else "")
-        elif e_buy:
-            e_line = f"成立｜A/M无票，E顶上，选中 {e_buy['ts_code']} {e_buy['name']}"
-        elif e_sig:
-            e_line = f"不成立｜信号存在但不满足执行条件（计划买入日={e_sig.get('planned_buy_date','')}≠{action_date} 或不可靠）"
-        else:
-            e_line = "不成立｜无E信号"
-
-        # ── C（第⑥档垫底）──
-        if c_buy:
-            if a_buy or m_buy or e_buy:
-                c_line += "；让位｜C垫底，前面的腿已占用同一资金"
-            else:
-                c_line += f"；成立｜前面各腿均无票，C垫底开仓 {c_buy['ts_code']} {c_buy['name']}"
-
-        # ── L（第②档，无条件优先于 A/M/E/C）──
-        l_sig = _load_l_signal_for_signal_date(signal_date)
-        l_buy: dict[str, Any] | None = None
-        l_base_ok = False
-        base_reason = ""
-        if l_sig:
-            l_base_ok, base_reason = _model3_l_base_rule_pass_for_log(l_sig)
-            if l_base_ok:
-                l_price = float(l_sig.get("limit_close", 0.0) or 0.0)
-                l_buy = {"strategy": "L", "ts_code": str(l_sig.get("ts_code", "")),
-                         "name": str(l_sig.get("name", "")),
-                         "shares": _planned_shares_by_equity(l_sig.get("position_pct", 0.825), l_price), "price": l_price}
-        l_candidate_for_display = l_buy
-        if not l_participation_enabled:
-            l_buy = None
-            l_line = "停用｜L历史认证失效，仅保留影子候选，不参与开仓或阻断其他腿"
-        elif not l_sig:
-            l_line = "不参与｜无L信号"
-        elif not l_base_ok:
-            l_line = f"不参与｜基础规则不通过（{base_reason}）"
-        elif mode1_buy:
-            # 2026-08-07：替换窄门（创业板∧题材涨停≥2∧非尾盘首板）已退出选股路径，
-            # L 只要过基础规则就无条件顶掉 mode1，与 build_model3_plan 一致。
-            l_line = (f"替换｜{l_sig.get('ts_code','')} {l_sig.get('name','')} "
-                      f"无条件优先（腿序L>A>M>E>C），顶掉mode1买入")
-        else:
-            l_line = f"补位｜mode1无买入，L补位 {l_sig.get('ts_code','')} {l_sig.get('name','')}（补位不限板块）"
-
-        # ── D ──
-        # D的展示门与最终选股腿序共用：mode2/3的L也属于正式开仓计划，不能再
-        # 只看mode1而把“无计划→允许D”打印出来。持仓/过期计划会在下方继续覆盖。
-        d_line = _d_candidate_gate_line(
-            mode=mode,
-            day_label=day_label,
-            l_buy=l_buy,
-            mode1_buy=mode1_buy,
+        day_label = (
+            "今日"
+            if action_date and action_date == today_beijing().strftime("%Y%m%d")
+            else "明日"
         )
 
-        # ── 最终计划（与【最终结果】/组合状态机同口径） ──
-        # 串行单仓守卫（2026-07-23）：播报必须和下单口径(build_model3_plan)一致——
-        # 有任何旧策略仓（含L自身、今日到期、逾期、sell_pending）时都不开新仓；
-        # 必须等券商确认实际清仓后再重新生成计划。
-        _open_now = [p for p in load_positions()
-                     if str(p.get("status", "")).lower() in {"open", "sell_pending"}]
-        _blocking_positions = list(_open_now)
-        _blocked_by_holding = bool(_blocking_positions)
-        if _blocked_by_holding:
-            l_line = "不参与｜旧策略仓尚未实际清空，取消衔接开仓（L补位/替换均阻断）"
-            # 2026-08-07 D接力全关：D持仓期间一律阻断新开仓，等自己的T+2收盘平仓
-            # 确认后的下一个信号日才轮到别的腿，不再有09:23成对POV接力。
-            d_line = "阻断普通新仓｜旧仓未实际清空；D接力已全关，D一律走自己的T+2收盘平仓"
+        candidates: dict[str, dict[str, Any]] = {}
+        order_files = sorted(
+            glob.glob(
+                str(
+                    PROJECT_ROOT
+                    / f"reports/paper_trade/ab_filtered_daily_ops/*_{signal_date}_planned_orders.csv"
+                )
+            )
+        )
+        if order_files:
+            orders = pd.read_csv(order_files[-1], low_memory=False)
+            if not orders.empty and "side" in orders.columns:
+                buys = orders[orders["side"].astype(str).str.upper().eq("BUY")]
+                for _, row in buys.iterrows():
+                    leg = str(row.get("strategy_leg", "")).strip().upper()
+                    shares = int(float(row.get("round_lot_shares", 0) or 0))
+                    price = float(row.get("reference_price", 0.0) or 0.0)
+                    if leg in {"A", "C"} and shares > 0 and price > 0:
+                        candidates[leg] = {
+                            "strategy": leg,
+                            "ts_code": str(row.get("ts_code", "")),
+                            "name": str(row.get("name", "")),
+                            "shares": shares,
+                            "price": price,
+                            "exit_rule": "T+2_close",
+                        }
 
-        final_buy: dict[str, Any] | None = None
-        if _blocked_by_holding:
-            final_buy = None   # 旧非L策略仓未实际清空，串行单仓，不开新仓（与下单口径一致）
-        elif mode == 2:
-            final_buy = l_buy
-        elif mode == 3 and l_participation_enabled and l_buy:
-            final_buy = l_buy  # L 无条件优先，不再区分"有无mode1计划"和替换窄门
-        else:
-            final_buy = mode1_buy
+        m_signal = _load_m_signal_for_signal_date(signal_date)
+        if m_signal and str(m_signal.get("planned_buy_date", "")) == action_date:
+            price = float(m_signal.get("limit_close", 0.0) or 0.0)
+            shares = _planned_shares_by_equity(m_signal.get("position_pct", 0.825), price)
+            if shares > 0 and price > 0:
+                candidates["M"] = {
+                    "strategy": "M",
+                    "ts_code": str(m_signal.get("ts_code", "")),
+                    "name": str(m_signal.get("name", "")),
+                    "shares": shares,
+                    "price": price,
+                    "exit_date": str(m_signal.get("planned_exit_date", "")),
+                    "exit_rule": str(m_signal.get("planned_exit_rule", "T+2_close")),
+                }
 
+        e_signal = _load_e_signal_for_signal_date(signal_date)
+        if (
+            e_signal
+            and str(e_signal.get("planned_buy_date", "")) == action_date
+            and bool(e_signal.get("allow_buy_reliable", False))
+        ):
+            price = float(e_signal.get("limit_close", 0.0) or 0.0)
+            shares = _planned_shares_by_equity(e_signal.get("position_pct", 0.825), price)
+            if shares > 0 and price > 0:
+                candidates["E"] = {
+                    "strategy": "E",
+                    "ts_code": str(e_signal.get("ts_code", "")),
+                    "name": str(e_signal.get("name", "")),
+                    "shares": shares,
+                    "price": price,
+                    "exit_date": str(e_signal.get("planned_exit_date", "")),
+                    "exit_rule": str(e_signal.get("planned_exit_rule", "T+2_close")),
+                }
+
+        selected = next(
+            (candidates[leg] for leg in ("A", "M", "E", "C") if leg in candidates),
+            None,
+        )
+        positions = [
+            position
+            for position in load_positions()
+            if str(position.get("status", "")).lower() in {"open", "sell_pending"}
+        ]
+        blocked = _local_position_blocks_open_plan_broadcast(positions, action_date)
+        final_buy = None if blocked else selected
         original_final_buy = final_buy
-        execution_expired = _ordinary_open_plan_expired(final_buy, action_date)
-        execution_override = ""
-        if execution_expired and final_buy:
-            execution_override = (
-                f"原计划{_format_strategy_candidate(str(final_buy.get('strategy','?')).upper(), final_buy)}"
-                "的09:20/09:30窗口已过且未成交，不追补普通开盘单；"
-                "D当前也缺少09:30起完整日内路径，今日不开仓"
-            )
-            d_line = (
-                "不允许｜原普通开盘计划已过期；当前才启动D会缺少早盘首次封板/炸板历史，"
-                "按回测严格对齐口径今日不开D"
-            )
-            leg = str(final_buy.get("strategy", "")).strip().upper().replace("龙头", "")
-            if leg == "A":
-                a_line += "；历史计划｜开仓窗口已过且未成交，当前不追补"
-            elif leg == "C":
-                c_line += "；历史计划｜开仓窗口已过且未成交，当前不追补"
-            elif leg == "L":
-                l_line += "；历史计划｜开仓窗口已过且未成交，当前不追补"
+        execution_expired = bool(
+            final_buy and _ordinary_open_plan_expired(final_buy, action_date)
+        )
+        if execution_expired:
             final_buy = None
 
-        # ── 持仓标注 ──
-        # ★行只保留"（已持仓）"；非D持仓的占用/阻断说明单独成行，
-        # ── M 补位腿播报 ──
-        # M 排腿序第④档（D>L>A>M>E>C），只让位给 D持仓 / L / A；
-        # E 和 C 排在 M 之后，不得让 M 让位。
-        m_cfg = _load_config_section("strategy_m")
-        if _blocked_by_holding:
-            holding_legs = "/".join(sorted({
-                str(p.get("strategy_leg", "?") or "?").upper()
-                for p in _blocking_positions
-            }))
-            m_line = f"不参与｜当前{holding_legs}策略旧仓占用同一资金，M不开仓"
-        elif not bool(m_cfg.get("enabled", False)):
-            m_line = "未启用｜strategy_m.enabled=false"
-        elif l_participation_enabled and l_buy:
-            m_line = f"让位｜L无条件优先（腿序L>M），M不参与"
-        elif a_buy:
-            m_line = f"让位｜{day_label}已有A开仓计划占用同一资金（腿序A>M）"
-        else:
-            m_run = _load_m_signal_run(signal_date)
-            if m_buy:
-                m_line = (f"成立｜L/A均无票，M按腿序在E/C之前选中 {m_buy['ts_code']} "
-                          f"{m_buy['name']}（流通市值"
-                          f"{float(m_sig_for_plan.get('circ_mv',0) or 0)/10000:.1f}亿）")
-            elif m_run and _m_run_has_equity_failure(m_run):
-                ledger = load_equity_ledger(
-                    PROJECT_ROOT / "reports" / "strategy_m" / "m_equity_peak.json"
-                )
-                ledger_ready = (
-                    int(ledger.get("schema_version", 0) or 0) == 2
-                    and ledger.get("ledger_ready") is True
-                )
-                now = now_beijing()
-                action_expired = action_date < now.strftime("%Y%m%d") or (
-                    action_date == now.strftime("%Y%m%d")
-                    and now.time() >= datetime.time(9, 25)
-                )
-                if ledger_ready and action_expired:
-                    m_line = (
-                        "历史状态｜该信号生成时净值账本尚未就绪；当前账本已恢复，"
-                        "但买入窗口已过，不补过期M买单，后续收盘信号正常判断"
-                    )
-                elif ledger_ready:
-                    m_line = (
-                        "⚠️ 恢复异常｜当前净值账本已就绪，但可执行窗口内M信号仍保留旧的"
-                        "净值失败状态；继续fail-closed并检查启动重算日志"
-                    )
-                else:
-                    m_line = f"⚠️ 故障｜{m_run.get('note','') or 'M净值账本不可用'}"
-            elif m_run and str(m_run.get("status", "")).upper() == "ERROR":
-                # 取不到净值属故障，不是"今天正常不触发"，必须显眼
-                m_line = f"⚠️ 故障｜{m_run.get('note','') or 'M运行异常'}"
-            elif m_run:
-                m_line = f"不触发｜{m_run.get('note','') or m_run.get('status','')}"
-            else:
-                m_line = "无记录｜收盘流水线第⑨步未产出M运行状态，请检查"
-        if (
-            execution_expired
-            and original_final_buy
-            and str(original_final_buy.get("strategy", "")).strip().upper() == "M"
-        ):
-            m_line = "历史计划｜开仓窗口已过且未成交，当前不追补M"
-
-        # 无论有无开仓候选都要让读者知道"目前谁在持仓、明日开不开仓"。
-        open_pos = [p for p in load_positions() if str(p.get("status", "")).lower() in {"open", "sell_pending"}]
-        non_d_pos = [p for p in open_pos if str(p.get("strategy_leg", "")).upper() != "D"]
-        pos_note = ""
-        if final_buy and any(str(p.get("ts_code", "")) == final_buy["ts_code"] for p in open_pos):
-            pos_note = "（已持仓）"
-        hold_line = ""
-        if non_d_pos:
-            desc = _describe_holdings(non_d_pos)
-            manual_exit_positions = [p for p in non_d_pos if _position_manual_exit_only(p)]
-            blocking = list(non_d_pos)
-            overdue = [p for p in non_d_pos if str(p.get("planned_exit_date", "99991231")) < action_date]
-            if manual_exit_positions:
-                hold_line = f"目前已持仓：{desc}；等待用户手动卖出，系统不会提交任何卖单，持仓期间不开新仓"
-            elif blocking:
-                hold_line = f"目前已持仓：{desc}；该策略仓实际清空前，{day_label}不开新仓"
-            elif overdue:
-                hold_line = (f"目前已持仓：{desc}；⚠该持仓已逾期（平仓失败残留），"
-                             f"清理并确认券商空仓前禁止新开仓")
-            else:
-                hold_line = (f"目前已持仓：{desc}；{day_label}到期将于14:55收盘平仓，"
-                             "取消早盘衔接买入，确认清仓后再等待下一次候选")
-
-        # 持仓占用说明统一为串行单仓：旧仓无论是否今日到期，只要券商仍有实际持仓，
-        # 所有新开仓都阻断。D策略09:23接力必须先卖出并确认券商为空仓，才会重建买入计划。
-        if _blocked_by_holding and not hold_line:
-            d_desc = _describe_holdings(_blocking_positions)
-            hold_line = (
-                f"目前已持仓：{d_desc}；旧策略仓尚未实际清空，{day_label}不开新仓"
-                "（含L补位/替换均按串行单仓口径挡住；券商确认清仓后再择机开仓）"
-            )
-
-        # ── 候选与让路结果 ──
-        # D是次日盘中实时策略，收盘时没有可提前列出的次日静态候选；其余每腿只列
-        # 自己规则选出的第一名，再按当前模式的真实腿序做跨策略排序。这样既保留
-        # “有哪些候选”，也不会把候选误说成已经生成了可执行买单。
-        d_candidate_reason = (
-            "当前已有D持仓，不再扫描新D"
-            if any(str(p.get("strategy_leg", "")).upper() == "D" for p in _open_now)
-            else "盘中实时扫描，收盘时无次日静态候选"
+        hold_line = _describe_holdings(positions, with_quote=False) if positions else ""
+        live_sizing = (
+            _live_plan_sizing(final_buy, action_date, signal_date) if final_buy else None
         )
-        candidate_rows = [
-            ("D", None, d_candidate_reason),
-            (
-                "L",
-                l_candidate_for_display,
-                "L已停用，仅保留影子候选" if not l_participation_enabled else "无通过基础规则的候选",
-            ),
-            ("A", a_buy, "无入围候选"),
-            (
-                "M",
-                m_buy,
-                "当前持仓已阻断M候选评估" if _blocked_by_holding else "无正式候选",
-            ),
-            ("E", e_candidate_for_display, "无入围候选"),
-            ("C", c_buy, "A已入围，C未继续评估" if a_buy else "无入围候选"),
+        candidate_lines = [
+            f"┃ {leg}：{_format_candidate_stock(candidates[leg])}"
+            if leg in candidates
+            else f"┃ {leg}：无候选"
+            for leg in ("A", "M", "E", "C")
         ]
-        if mode == 2:
-            ranking_legs = ["L"]
-        elif mode == 3 and l_participation_enabled:
-            ranking_legs = ["L", "A", "M", "E", "C"]
-        else:
-            ranking_legs = ["A", "M", "E", "C"]
-        candidate_choice_lines = _build_candidate_choice_lines(
-            candidate_rows,
-            ranking_legs,
-            final_buy,
-            [str(p.get("strategy_leg", "")) for p in _blocking_positions],
-            execution_override,
-        )
-
-        # 今日到期持仓也明确展示“取消衔接”，避免通知继续沿用旧口径。
-        d_due_today = [
-            p for p in open_pos
-            if str(p.get("strategy_leg", "")).upper() != "L"
-            and str(p.get("planned_exit_date", "99991231")) == str(action_date)
-        ]
-        if d_due_today and not hold_line:
-            dd = _describe_holdings(d_due_today)
-            hold_line = (
-                f"目前已持仓：{dd}（{day_label}到期）；该持仓{day_label}14:55收盘平仓，"
-                "取消尾盘旧仓未卖时的早盘衔接开仓，确认清仓后再等待下一次候选"
-            )
-
-        # 整个决策链拼成一条多行日志、单次原子写入：daemon 是多线程
-        # （账户心跳/候选播报/周期播报并发打日志），逐行输出必然被其他
-        # 线程的日志穿插进框内。单条消息由 logging 内部锁保证原子性，
-        # 两个框永远完整闭合，框内不会掺杂其他打印。
-        date_banner = f"{P}━━━ {day_label}{readable} · 基于{signal_date}收盘数据 ━━━"
-        bottom = f"{P}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        # 框0：决策优先级总图（静态规则+当日实际路径标记），与决策链同一条
-        # 原子消息：决策链打印它就打印，不打印就都不打印。
-        m1_has = mode1_buy is not None
-        # 2026-08-07 腿序 D>L>A>M>E>C：L 只要过基础规则就无条件顶掉 mode1，
-        # 替换窄门(l_guard_ok)已退出选股路径，两张图与下单口径必须一致。
-        l_wins = l_participation_enabled and l_buy is not None and l_base_ok
-        t2y = m1_has and l_wins
-        t3y = (not m1_has) and l_wins
-        TAG = " ◄―今日路径"
         lines = [
-            f"{P}━━━━━━━━━━━━ 决策优先级树状图（mode=3） ━━━━━━━━━━━━",
-            f"{P} 当前有效腿序 "
-            + ("D > L > A > M > E > C" if l_participation_enabled else "D > A > M > E > C（L已停用）"),
-            *(
-                [f"{P} 当前恢复路径：{execution_override} ◄―今日路径"]
-                if execution_override else []
-            ),
-            f"{P} D 排最前是时序决定的：D 在信号日盘中14:00后就买了，其余各腿",
-            f"{P} 收盘才出信号、T+1开盘买——让D让路需要预知几小时后的结果。",
-            f"{P} │",
-            f"{P} │ 券商仍有【旧策略仓】？（含今日到期、逾期、待卖）",
-            f"{P} │",
-            f"{P} ├─ 是 ──▶ 不开新仓，确认实际清仓后再等下一候选 ──▶ 结束{TAG if _blocked_by_holding else ''}",
-            f"{P} │",
-            f"{P} └─ 否（券商已确认无旧策略仓；打新和人工仓不计入）",
-            f"{P}      └─▶ ② L "
-            + (
-                f"判断（账户空仓时无条件优先，只需过基础规则）{TAG if (l_wins and not _blocked_by_holding and not execution_expired) else ''}"
-                if l_participation_enabled
-                else "停用（旧认证候选池污染；影子信号不参与资金排序）"
-            ),
-            f"{P}           │ 非科创板 + 板块情绪OK + 全市场连板家数≥3（非个股连板）",
-            f"{P}           │",
-            f"{P}           ├─ 过 ──▶ 买 L 的票（顶掉后面所有腿）──▶ 结束{TAG if (l_wins and not _blocked_by_holding and not execution_expired) else ''}",
-            f"{P}           │",
-            f"{P}           └─ 不过 ──▶ mode1 按腿序取第一个有计划的腿{TAG if (m1_has and not l_wins and not _blocked_by_holding and not execution_expired) else ''}",
-            f"{P}                       │ ③A主 → ④M补位 → ⑤E → ⑥C垫底",
-            f"{P}                       │",
-            f"{P}                       ├─ 有票 ──▶ 买该腿的票 ──▶ 结束{TAG if (m1_has and not l_wins and not _blocked_by_holding and not execution_expired) else ''}",
-            f"{P}                       │",
-            f"{P}                       └─ 六腿全无票 ──▶ 空仓{TAG if (not m1_has and not l_wins and not _blocked_by_holding and not execution_expired) else ''}",
-            f"{P}",
-            f"{P} 注：D（①）不在上面这条链里——它在信号日**盘中**自己扫描买入，",
-            f"{P}     成交后写 positions.json，于是次日一开盘就落到最上面那个",
-            f"{P}     『券商仍有旧策略仓』分支，把其余各腿全部挡住。",
-            f"{P}     D 接力已于 2026-08-07 全关：D 一律走自己的 T+2 收盘平仓，",
-            f"{P}     确认清仓后的下一个信号日才轮到别的腿。",
-            bottom,
-            P,
-            f"{P}━━━━━━━━━━━━ 决策优先级总图（mode=3） ━━━━━━━━━━━━",
-            f"{P} 腿序：① D（盘中先买）> ② L > ③ A > ④ M > ⑤ E > ⑥ C",
-            f"{P} 【0】券商仍有旧策略仓? ─是→ 不开新仓（含今日到期/待卖），确认清仓后再等下一候选{TAG if _blocked_by_holding else ''}",
-            f"{P}   ↓否",
-            f"{P} 【1】② L 审查（账户空仓时无条件优先）: 只需基础规则（非科创板∧情绪OK∧全市场连板家数≥3，不限板块）",
-            f"{P}   ├─过　 → ★买 L 的票（顶掉 A/M/E/C）■{TAG if (l_wins and not _blocked_by_holding and not execution_expired) else ''}",
-            f"{P}   └─不过 → 进【2】{TAG if (not l_wins and not _blocked_by_holding and not execution_expired) else ''}",
-            f"{P} 【2】mode1 按腿序取第一个有计划的腿: ③A主 → ④M补位 → ⑤E → ⑥C垫底",
-            f"{P}   ├─有票 → ★买该腿的票■{TAG if (m1_has and not l_wins and not _blocked_by_holding and not execution_expired) else ''}",
-            f"{P}   └─无票 → ★空仓■{TAG if (not m1_has and not l_wins and not _blocked_by_holding and not execution_expired) else ''}",
-            f"{P} 【注】① D 不走这条链：信号日盘中14:00后自己扫描买入，成交即占用资金，",
-            f"{P}      次日落到【0】把其余腿全挡住。D接力全关，一律T+2收盘平仓。",
-            f"{P} 【注】④ M 的两道自有闸：深市主板情绪weak（481天中仅12%）+ 账户回撤≤10%；",
-            f"{P}      取不到净值时按安全口径暂停并记 ERROR 告警（M已开启，故障必须告警）。",
-            bottom,
-            P,
-            # 框1：开仓决策链（策略顺序 + 各策略成立/不成立及原因）
-            f"{P}━━━━━━━━━━━━━━ 开仓决策链 ━━━━━━━━━━━━━━",
-            date_banner,
-            f"{P} 策略顺序：① D盘中 > ② L > ③ A > ④ M > ⑤ E > ⑥ C（2026-08-07定稿；当前mode={mode}，B已删除）",
-            # 编号 = 腿序 D>L>A>M>E>C，与上方两张图和"策略顺序"行保持同一套。
-            # 2026-08-07 之前这里是 A/B/C/E/D/L/M 的旧展示顺序，同一个框里出现
-            # 两套互相矛盾的编号。
-            f"{P} ① D盘中：{d_line}",
-            f"{P} ② L/model3：{l_line}",
-            f"{P} ③ A主策略：{a_line}",
-            f"{P} ④ M补位：{m_line}",
-            f"{P} ⑤ E：{e_line}",
-            f"{P} ⑥ C垫底：{c_line}",
-            f"{P} ―― B策略：{b_line}",
-            bottom,
-            P,
-            f"{P}━━━━━━━━━━━━━━ 候选让路结果 ━━━━━━━━━━━━━━",
-            date_banner,
-            *(f"{P} {line}" for line in candidate_choice_lines),
-            bottom,
-            P,
-            # 框2：最终开仓计划（开仓计划/无计划 + 持仓状态）
-            f"{P}━━━━━━━━━━━━━━ 最终开仓计划 ━━━━━━━━━━━━━━",
-            date_banner,
+            "┃━━━━━━━━━━━━ 当前组合开仓决策 ━━━━━━━━━━━━",
+            f"┃ 信号日：{signal_date}；操作日：{action_date or '未知'}",
+            "┃ 腿序：①D盘中 > ②A > ③M > ④E > ⑤C",
+            *candidate_lines,
         ]
-        live_sizing = _live_plan_sizing(final_buy, action_date, signal_date) if final_buy else None
-        if execution_expired and original_final_buy:
+        if blocked:
+            lines.append(f"┃ ★ 不开新仓：券商仍有策略持仓｜{hold_line}")
+        elif execution_expired and original_final_buy:
             lines.append(
-                f"{P} ★ 当前不开仓：原计划"
-                f"{_format_strategy_candidate(str(original_final_buy.get('strategy','?')).upper(), original_final_buy)}"
-                "已过执行窗口且未成交；不追补，D也因缺少完整日内路径而停止"
+                "┃ ★ 当前不开仓：原计划"
+                f"{_format_strategy_candidate(str(original_final_buy.get('strategy', '?')), original_final_buy)}"
+                "已过执行窗口且未成交"
             )
         elif final_buy:
-            lines.append(
-                f"{P} ★ 开仓计划：{_format_live_plan_line(final_buy, live_sizing)}{pos_note}"
-            )
+            lines.append(f"┃ ★ 开仓计划：{_format_live_plan_line(final_buy, live_sizing)}")
         else:
-            lines.append(f"{P} ★ {day_label}所有策略均无开仓计划")
-        if hold_line:
-            lines.append(f"{P} ⚠ {hold_line}")
-        lines.append(bottom)
+            lines.append(f"┃ ★ {day_label}A/M/E/C均无开仓计划")
+        lines.append("┃━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         logger().info("\n".join(lines))
-        # 暴露最终计划给推送用(与日志同源,保证推送=真实开仓口径,不重算)
+
         global _last_final_plan
         _last_final_plan = {
-            # 保留原计划供“错过窗口”通知和09:35执行核查引用；execution_expired
-            # 明确告诉展示/通知层它已不是当前可下单计划。
             "final_buy": original_final_buy,
             "live_sizing": live_sizing,
             "day_label": day_label,
@@ -14262,18 +13746,11 @@ _MISSED_OPEN_ALERT_STATE = PROJECT_ROOT / "data" / "state" / "missed_open_alert.
 
 def _d_candidate_gate_line(
     *,
-    mode: int,
     day_label: str,
-    l_buy: dict[str, Any] | None,
     mode1_buy: dict[str, Any] | None,
 ) -> str:
     """决策链里的D候选门；只描述候选占用，持仓/过期状态由调用方覆盖。"""
 
-    if mode in {2, 3} and l_buy:
-        return (
-            f"阻断｜{day_label}已有L正式开仓计划 "
-            f"{l_buy.get('ts_code', '')} {l_buy.get('name', '')} 占用同一资金"
-        )
     if mode1_buy:
         leg = str(mode1_buy.get("strategy", "A/C/M/E/C") or "A/C/M/E/C")
         return (
@@ -14309,7 +13786,7 @@ def _retry_morning_plan_notification_if_needed(source: str) -> None:
 
 
 def _notify_missed_open_window_if_needed(source: str) -> None:
-    """开仓窗口后启动且今日计划未执行时，只告警，不追补过期A/C/L买单。"""
+    """开仓窗口后启动且今日计划未执行时，只告警，不追补过期A/C/M买单。"""
     now = now_beijing()
     if not is_trade_day(now.date()) or not (
         datetime.time(9, 35) <= now.time() < datetime.time(14, 40)
@@ -14340,7 +13817,7 @@ def _notify_missed_open_window_if_needed(source: str) -> None:
     body = (
         f"{source}发现今日原计划为策略{final_buy.get('strategy','')} "
         f"{final_buy.get('ts_code','')} {final_buy.get('name','')}，但09:20/09:30执行窗口内"
-        "未完成开仓且当前无策略持仓/在途买单。系统不会在盘中追补过期A/M/C/L普通开盘买单，避免偏离回测；"
+        "未完成开仓且当前无策略持仓/在途买单。系统不会在盘中追补过期A/M/C普通开盘买单，避免偏离回测；"
         "E只按既有延迟规则处理，若组合状态机允许，D盘中兜底会单独恢复。"
     )
     sent = _notify("buy_result", title, body, level="critical")
@@ -14389,7 +13866,7 @@ def push_open_plan_notification(occasion: str) -> None:
             body = _format_live_plan_line(fb, plan.get("live_sizing")) + "。"
         else:
             title = f"📋 {label}无新开仓计划"
-            body = f"{label}所有策略(A/C/E/L)均无符合条件标的,不开新仓。"
+            body = f"{label}所有策略(A/M/E/C)均无符合条件标的,不开新仓。"
         if hold:
             body += f" ⚠{hold}"
         sent = _notify("buy_result", title, body, level="timeSensitive")
@@ -14651,170 +14128,6 @@ def _load_m_signal_run(signal_date: str) -> dict[str, Any] | None:
     return None
 
 
-def _load_l_signal_for_signal_date(signal_date: str) -> dict[str, Any] | None:
-    try:
-        import json
-
-        path = PROJECT_ROOT / "reports" / "strategy_l" / "l_signals_recent.json"
-        if not path.exists():
-            return None
-        data = json.loads(path.read_text(encoding="utf-8"))
-        signals = data.get("signals", [])
-        if not isinstance(signals, list):
-            return None
-        for signal in reversed(signals):
-            if str(signal.get("signal_date", "")) == str(signal_date):
-                return signal
-    except Exception as exc:
-        logger().debug("读取L信号失败：%s", exc)
-    return None
-
-
-def _load_l_candidate_count(signal_date: str) -> int | None:
-    try:
-        import pandas as pd
-
-        path = PROJECT_ROOT / "reports" / "strategy_l" / f"l_signal_{signal_date}_candidates.csv"
-        if not path.exists():
-            return None
-        return int(len(pd.read_csv(path, low_memory=False)))
-    except Exception as exc:
-        logger().debug("读取L候选数失败：%s", exc)
-        return None
-
-
-def _model3_l_base_rule_pass_for_log(
-    signal: dict[str, Any],
-    config: dict[str, Any] | None = None,
-) -> tuple[bool, str]:
-    """计划播报调用与组合实盘相同的L基础规则，避免日志口径漂移。"""
-
-    live_config = config or load_json_config(PROJECT_ROOT / "config" / "config.json")
-    return model3_l_base_rule_pass(signal, live_config)
-
-
-def _model3_l_replace_guard_pass_for_log(
-    signal: dict[str, Any],
-    config: dict[str, Any] | None = None,
-) -> tuple[bool, str]:
-    """计划播报调用与组合实盘相同的L替换保护规则。"""
-
-    live_config = config or load_json_config(PROJECT_ROOT / "config" / "config.json")
-    return model3_l_replace_guard_pass(signal, live_config)
-
-
-def _log_l_model3_signal_status(signal_date: str, action_date: str | None = None) -> None:
-    """播报 L 龙头信号和 mode=3 切换状态。
-
-    周末/非交易日启动时，组合状态机不会用“今天”直接生成周一买单，
-    但这里仍应把最新收盘信号对应的 L 候选、计划买入日和 model=3
-    基础规则打印出来，避免只看到 ABC/E 而看不到 L。
-    """
-    try:
-        config = load_json_config(PROJECT_ROOT / "config" / "config.json")
-        active_mode = int(config.get("active_strategy_profile", {}).get("mode", 1))
-        model3_config = config.get("strategy_model3", {})
-        l_participation_enabled = bool(
-            model3_config.get("l_participation_enabled", True)
-        )
-        candidate_count = _load_l_candidate_count(signal_date)
-        signal = _load_l_signal_for_signal_date(signal_date)
-        count_text = "未知" if candidate_count is None else str(candidate_count)
-
-        logger().info(
-            "  L/model3状态：active_mode=%s strategy_model3.enabled=%s live_order_enabled=%s l_participation_enabled=%s",
-            active_mode,
-            bool(model3_config.get("enabled", False)),
-            bool(model3_config.get("live_order_enabled", False)),
-            l_participation_enabled,
-        )
-        if signal is None:
-            run_status = _strategy_signal_run_readiness(
-                strategy_leg="L",
-                run_status_path=PROJECT_ROOT / "reports" / "strategy_l" / "l_signal_runs_recent.json",
-                signal_path=PROJECT_ROOT / "reports" / "strategy_l" / "l_signals_recent.json",
-                signal_date=signal_date,
-            )
-            logger().info(
-                "  L龙头策略：信号日期 %s 无L入选信号，运行状态=%s，原因=%s，"
-                "候选数=%s；model=3本轮不会使用L。",
-                signal_date,
-                run_status["status"],
-                run_status["reason"],
-                count_text,
-            )
-            return
-
-        base_ok, base_reason = _model3_l_base_rule_pass_for_log(signal, config)
-        # 2026-08-07 腿序重排：替换窄门已退出选股路径，L 过基础规则即无条件优先。
-        # 窄门结果只保留为参考信息播报，**不再参与任何判定**。
-        guard_ok, guard_reason = _model3_l_replace_guard_pass_for_log(signal, config)
-        planned_buy_date = str(signal.get("planned_buy_date", ""))
-        action_note = ""
-        if action_date:
-            if planned_buy_date == str(action_date):
-                action_note = "；计划买入日与下个交易日一致"
-            else:
-                action_note = f"；计划买入日与当前播报操作日不一致（操作日={action_date}）"
-
-        logger().info(
-            "  L龙头策略：信号日期 %s 候选数=%s，选中 %s %s，题材=%s，计划买入=%s，计划卖出=%s%s",
-            signal_date,
-            count_text,
-            signal.get("ts_code", ""),
-            signal.get("name", ""),
-            signal.get("theme_name", ""),
-            planned_buy_date,
-            signal.get("planned_exit_date", ""),
-            action_note,
-        )
-        logger().info(
-            "  L龙头条件：基础规则=%s（%s）；[已退役]替换窄门=%s（%s，仅供参考不参与判定）",
-            "通过" if base_ok else "不通过",
-            base_reason,
-            "通过" if guard_ok else "不通过",
-            guard_reason,
-        )
-        if active_mode != 3:
-            logger().info("  L/model3结论：当前不是mode=3，L只展示不参与当前组合切换。")
-        elif not l_participation_enabled:
-            logger().info(
-                "  L/model3结论：L历史认证失效，已停止新开仓；候选只供影子审计，"
-                "当前沿用D/A/M/E/C计划。"
-            )
-        elif not bool(model3_config.get("enabled", False)) or not bool(model3_config.get("live_order_enabled", False)):
-            logger().info("  L/model3结论：model3开关未同时开启，沿用mode=1。")
-        elif not base_ok:
-            logger().info("  L/model3结论：L未通过基础规则，沿用mode=1。")
-        elif open_positions := [
-            p for p in load_positions()
-            if str(p.get("status", "")).lower() in {"open", "sell_pending"}
-        ]:
-            held = _describe_holdings(open_positions, with_quote=False)
-            logger().info(
-                "  L/model3结论：L已通过基础规则，但当前有策略持仓（%s）；"
-                "本次只保留L候选供审计，不生成开仓计划。L仅在账户空仓时无条件优先于A/M/E/C。",
-                held,
-            )
-        else:
-            logger().info(
-                "  L/model3结论：L已通过基础规则且账户空仓，%s **无条件优先**于 A/M/E/C —— "
-                "无mode=1买入时补位，有mode=1买入时顶掉它，不再看替换窄门。",
-                planned_buy_date,
-            )
-            logger().info(
-                "  L无条件优先依据（2026-08-07 腿序重排 D>L>A>M>E>C）："
-                "旧「替换窄门=创业板+题材涨停≥2+非尾盘首板」已退役——2026-08-05 该窄门"
-                "误伤利通电子（沪主板+尾盘首板），当日 L 让位给 C 华之杰。481信号日重放："
-                "L 40笔→52笔、E 30笔→19笔，组合 22902.02x→27870.31x、回撤-24.68%→-23.50%。"
-                "（本段L优先依据已在2026-08-18候选池审计后作废；当前L开关必须保持关闭，"
-                "正式标尺为D>A>M>E>C、145笔/4445.281570x/回撤-23.5062%/L=0；见 "
-                "reports/current_portfolio_alignment。只有完整池重建L并重新认证后才允许讨论重启）"
-            )
-    except Exception as exc:
-        logger().warning("  L/model3状态播报失败：%s", exc)
-
-
 def _load_ab_checklist(signal_date: str):
     try:
         import pandas as pd
@@ -14900,7 +14213,6 @@ def report_signal_readiness_summary(signal_date: str) -> None:
             _value_counts_text(daily, "is_fill_score_reliable"),
         )
         _log_abc_filter_funnel(signal_date)
-        _log_l_model3_signal_status(signal_date)
 
         checklist = _load_ab_checklist(signal_date)
         if checklist.empty:
@@ -15095,7 +14407,7 @@ def _log_d_status_for_signal(signal_date: str) -> None:
             logger().info(
                 "  D策略后续过滤链：组合状态机允许 -> 09:30起完整实时路径 -> 首板且昨日未涨停 -> 当前封涨停 -> 炸板2~3次(multi_open) -> 首封不早于10:00 -> 当前封板88~132只(strong代理，不含very_strong) -> 14:00后真实回封 -> 成交概率>=80%且可靠 -> 按实时封单金额/流通市值(fd_amount_to_circ_mv)排序 -> LiveOrderGateway二次风控。"
             )
-            logger().info("  D策略明日判断：若09:20账户空仓且L/A/M/E/C均无正式候选，才允许启动D盘中监控；能否下单取决于盘中实时过滤。")
+            logger().info("  D策略明日判断：若09:20账户空仓且A/M/E/C均无正式候选，才允许启动D盘中监控；能否下单取决于盘中实时过滤。")
         else:
             logger().info("  D策略停止点：组合状态机或实时扫描。当前处于 D 可启动/监控时段，实际是否启动以组合状态机决策明细为准；若已启动，还要看盘中实时基础过滤。")
     except Exception as exc:
@@ -16843,7 +16155,7 @@ def main() -> None:
     ).start()
 
     # 候选播报放后台线程：纯展示，不影响开仓关键路径。
-    # 重量信号审计只在盘前关键窗口自动跑；盘中/夜间启动只播报候选和L/model3状态。
+    # 重量信号审计只在盘前关键窗口自动跑；盘中/夜间启动只播报当前组合候选。
     # 如果收盘数据缺失，先让收盘流水线补齐，流水线完成后会自行播报，避免启动时先打印旧审计。
     def _startup_report() -> None:
         try:
@@ -16857,7 +16169,7 @@ def main() -> None:
             else:
                 log.info(
                     "启动信号审计：当前不在盘前关键窗口，已跳过重量A/C逐层审计；"
-                    "候选与L/model3状态已播报，完整审计会在盘前/收盘流水线按需执行。"
+                    "当前组合候选已播报，完整审计会在盘前/收盘流水线按需执行。"
                 )
         except Exception as exc:
             log.error("启动候选播报异常：%s", exc)

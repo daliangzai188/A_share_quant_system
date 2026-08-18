@@ -21,7 +21,7 @@ class ReleaseOosRobustnessTest(unittest.TestCase):
             "status": "FROZEN",
             "release_id": "release-new",
             "oos_start_date": "20260105",
-            "strategy_priority_order": ["D", "L", "A", "M", "E", "C"],
+            "strategy_priority_order": ["D", "A", "M", "E", "C"],
         }
         (self.root / "config/strategy_release_freeze.json").write_text(json.dumps(release), encoding="utf-8")
         config = {
@@ -40,17 +40,17 @@ class ReleaseOosRobustnessTest(unittest.TestCase):
             challenger_return = [0.03, 0.00, 0.04][day_index]
             rows.extend([
                 {
-                    "release_id": "release-new", "signal_date": date, "strategy_leg": "L",
+                    "release_id": "release-new", "signal_date": date, "strategy_leg": "A",
                     "priority_rank": 2, "candidate_status": "CANDIDATE", "counterfactual_status": "RESOLVED",
                     "account_empty_winner": True, "live_selected": False, "account_net_return": winner_return,
                 },
                 {
-                    "release_id": "release-new", "signal_date": date, "strategy_leg": "A",
+                    "release_id": "release-new", "signal_date": date, "strategy_leg": "C",
                     "priority_rank": 3, "candidate_status": "CANDIDATE", "counterfactual_status": "RESOLVED",
                     "account_empty_winner": False, "live_selected": day_index == 0, "account_net_return": challenger_return,
                 },
             ])
-            for rank, leg in enumerate(["D", "M", "E", "C"], start=1):
+            for rank, leg in enumerate(["D", "M", "E"], start=1):
                 rows.append({
                     "release_id": "release-new", "signal_date": date, "strategy_leg": leg,
                     "priority_rank": rank, "candidate_status": "NO_CANDIDATE", "counterfactual_status": "NOT_APPLICABLE",
@@ -71,12 +71,12 @@ class ReleaseOosRobustnessTest(unittest.TestCase):
         self._write_ledger()
         result = evaluate_release_oos(self.root)
         self.assertEqual(result["status"], "EARLY_OBSERVATION")
-        self.assertEqual(len(result["ledger"]), 18)
+        self.assertEqual(len(result["ledger"]), 15)
         self.assertEqual(int(result["overall"].iloc[1]["sample_count"]), 3)
         self.assertAlmostEqual(float(result["overall"].iloc[1]["avg_return"]), 0.0133333333)
-        self.assertEqual(int(result["pairs"].loc[result["pairs"]["challenger_leg"].eq("A"), "paired_sample_count"].iloc[0]), 3)
+        self.assertEqual(int(result["pairs"].loc[result["pairs"]["challenger_leg"].eq("C"), "paired_sample_count"].iloc[0]), 3)
         self.assertEqual(
-            result["pairs"].loc[result["pairs"]["challenger_leg"].eq("A"), "priority_change_evidence"].iloc[0],
+            result["pairs"].loc[result["pairs"]["challenger_leg"].eq("C"), "priority_change_evidence"].iloc[0],
             "INSUFFICIENT_OR_NO_EDGE",
         )
 

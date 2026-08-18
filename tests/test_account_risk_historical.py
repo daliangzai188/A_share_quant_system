@@ -24,7 +24,7 @@ class AccountRiskHistoricalTest(unittest.TestCase):
         return pd.DataFrame(
             [
                 {"signal_date": "20260102", "exit_date": "20260105", "account_return": -0.20, "strategy_leg": "A", "ts_code": "000001.SZ"},
-                {"signal_date": "20260105", "exit_date": "20260106", "account_return": 0.50, "strategy_leg": "L", "ts_code": "000002.SZ"},
+                {"signal_date": "20260105", "exit_date": "20260106", "account_return": 0.50, "strategy_leg": "M", "ts_code": "000002.SZ"},
                 {"signal_date": "20260106", "exit_date": "20260107", "account_return": 0.40, "strategy_leg": "D", "ts_code": "000003.SZ"},
                 {"signal_date": "20260107", "exit_date": "20260108", "account_return": 0.10, "strategy_leg": "M", "ts_code": "000004.SZ"},
             ]

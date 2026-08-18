@@ -100,9 +100,9 @@ def _markdown_table(frame: pd.DataFrame, percent: set[str] | None = None) -> str
 def _validate_release_binding(
     runtime_config: dict[str, Any], certification: dict[str, Any]
 ) -> dict[str, Any]:
-    model3 = runtime_config.get("strategy_model3", {})
+    portfolio_config = runtime_config.get("portfolio_certification", {})
     check = validate_strategy_release_freeze(
-        PROJECT_ROOT, model3, certification
+        PROJECT_ROOT, portfolio_config, certification
     )
     if not check.ok:
         raise RuntimeError("冻结发布版本校验失败：" + check.reason)
@@ -214,15 +214,10 @@ def generate_report(config_path: Path = DEFAULT_CONFIG_PATH) -> dict[str, Any]:
     certification = _read_json(CERTIFICATION_PATH)
     release = _validate_release_binding(runtime_config, certification)
 
-    model3 = runtime_config.get("strategy_model3", {})
     sources = load_sources()
     detail = replay(
         sources,
         entry_gate_enabled=True,
-        l_chain_3_8_enabled=(
-            "3_8"
-            in model3.get("base_l_rule", {}).get("market_chain_count_bucket", [])
-        ),
         m_enabled=bool(
             runtime_config.get("strategy_m", {}).get("enabled", False)
             and runtime_config.get("strategy_m", {}).get("live_order_enabled", False)

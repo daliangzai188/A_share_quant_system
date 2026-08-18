@@ -2272,7 +2272,7 @@ class StrategyDConditionalExitTest(unittest.TestCase):
             "ts_code": "603118.SH",
             "name": "恢复持仓",
             "shares": 10_000,
-            "strategy_leg": "L",
+            "strategy_leg": "M",
             "status": "open",
             "planned_exit_date": "20260818",
         }
@@ -2291,7 +2291,7 @@ class StrategyDConditionalExitTest(unittest.TestCase):
             "broker": {"enabled": True},
             "live_trade": {
                 "exit_pov_enabled": True,
-                "exit_pov_strategy_legs": ["A", "C", "D", "E", "L", "M"],
+                "exit_pov_strategy_legs": ["A", "C", "D", "E", "M"],
                 "exit_pov_handoff_time": "14:53:00",
                 "exit_pov_trigger_pct": 0.01,
             },
@@ -2374,7 +2374,7 @@ class StrategyDConditionalExitTest(unittest.TestCase):
         due = trading_daemon._exit_pov_due_positions(
             positions,
             "20260803",
-            {"exit_pov_strategy_legs": ["A", "C", "D", "E", "L"]},
+            {"exit_pov_strategy_legs": ["A", "C", "D", "E", "M"]},
         )
 
         self.assertEqual([position["order_id"] for position in due], ["D-ORDINARY"])

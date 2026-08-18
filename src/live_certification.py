@@ -55,7 +55,6 @@ def certification_config_sha256(config: Mapping[str, Any]) -> str:
     payload = {
         "active_strategy_profile": config.get("active_strategy_profile", {}),
         "strategy_m": config.get("strategy_m", {}),
-        "strategy_model3": config.get("strategy_model3", {}),
         "strategy_d": config.get("strategy_d", {}),
         "portfolio_certification": config.get("portfolio_certification", {}),
         "analysis": config.get("analysis", {}),
@@ -131,7 +130,7 @@ def _compact_date(value: Any) -> str:
 
 def validate_strategy_release_freeze(
     project_root: Path,
-    model3_config: Mapping[str, Any],
+    certification_config: Mapping[str, Any],
     certification_payload: Mapping[str, Any],
     *,
     now: dt.datetime | None = None,
@@ -143,7 +142,7 @@ def validate_strategy_release_freeze(
     仅靠重跑认证就悄悄进入实盘。
     """
 
-    raw_path = model3_config.get("strategy_release_freeze_path", "")
+    raw_path = certification_config.get("strategy_release_freeze_path", "")
     path = _resolve_path(project_root, raw_path)
     if not str(raw_path).strip():
         return StrategyReleaseFreezeCheck(False, "未配置策略冻结清单路径", path, {})
@@ -164,7 +163,8 @@ def validate_strategy_release_freeze(
         return StrategyReleaseFreezeCheck(False, "策略发布状态不是FROZEN", path, payload)
 
     expected_order = [
-        str(value).upper() for value in model3_config.get("strategy_priority_order", [])
+        str(value).upper()
+        for value in certification_config.get("strategy_priority_order", [])
     ]
     frozen_order = [str(value).upper() for value in payload.get("strategy_priority_order", [])]
     if not expected_order:
@@ -226,14 +226,14 @@ def validate_strategy_release_freeze(
 
 def validate_live_certification(
     project_root: Path,
-    model3_config: Mapping[str, Any],
+    certification_config: Mapping[str, Any],
     *,
     full_config: Mapping[str, Any] | None = None,
     now: dt.datetime | None = None,
 ) -> LiveCertificationCheck:
-    """核对当前model=3是否有明确通过且场景一致的认证文件。"""
+    """核对当前正式组合是否有明确通过且场景一致的认证文件。"""
 
-    raw_path = model3_config.get("certification_summary_path", "")
+    raw_path = certification_config.get("certification_summary_path", "")
     path = _resolve_path(project_root, raw_path)
     if not str(raw_path).strip():
         return LiveCertificationCheck(False, "未配置认证文件路径", path, {})
@@ -246,7 +246,9 @@ def validate_live_certification(
     if not isinstance(payload, dict):
         return LiveCertificationCheck(False, "认证文件根节点不是对象", path, {})
 
-    required_status = str(model3_config.get("certification_required_status", "PASS")).upper()
+    required_status = str(
+        certification_config.get("certification_required_status", "PASS")
+    ).upper()
     actual_status = str(payload.get("status", "")).upper()
     if actual_status != required_status:
         return LiveCertificationCheck(
@@ -256,7 +258,9 @@ def validate_live_certification(
             payload,
         )
 
-    expected_scenario = str(model3_config.get("certification_expected_scenario", "")).strip()
+    expected_scenario = str(
+        certification_config.get("certification_expected_scenario", "")
+    ).strip()
     actual_scenario = str(payload.get("scenario", "")).strip()
     if not expected_scenario:
         return LiveCertificationCheck(False, "未配置认证期望场景", path, payload)
@@ -270,7 +274,9 @@ def validate_live_certification(
     if payload.get("current_executable") is not True:
         return LiveCertificationCheck(False, "认证文件未明确标记当前可执行场景", path, payload)
 
-    max_age_hours = float(model3_config.get("certification_max_age_hours", 0) or 0)
+    max_age_hours = float(
+        certification_config.get("certification_max_age_hours", 0) or 0
+    )
     if max_age_hours > 0:
         generated_at = _parse_datetime(payload.get("generated_at"))
         if generated_at is None:
@@ -289,7 +295,7 @@ def validate_live_certification(
                 payload,
             )
 
-    if bool(model3_config.get("certification_require_hashes", False)):
+    if bool(certification_config.get("certification_require_hashes", False)):
         if full_config is None:
             return LiveCertificationCheck(False, "认证要求配置哈希但未传入完整配置", path, payload)
         expected_config_hash = str(payload.get("config_sha256", ""))
@@ -308,10 +314,10 @@ def validate_live_certification(
             if actual_hash != expected_hash:
                 return LiveCertificationCheck(False, f"当前{label}文件与认证版本不一致", path, payload)
 
-    if bool(model3_config.get("require_strategy_release_freeze", False)):
+    if bool(certification_config.get("require_strategy_release_freeze", False)):
         freeze = validate_strategy_release_freeze(
             project_root,
-            model3_config,
+            certification_config,
             payload,
             now=now,
         )
@@ -327,7 +333,7 @@ def validate_live_certification(
         True,
         (
             f"认证通过且策略发布已冻结：{actual_scenario}"
-            if bool(model3_config.get("require_strategy_release_freeze", False))
+            if bool(certification_config.get("require_strategy_release_freeze", False))
             else f"认证通过：{actual_scenario}"
         ),
         path,

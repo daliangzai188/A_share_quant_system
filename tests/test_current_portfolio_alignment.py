@@ -3,16 +3,9 @@ from __future__ import annotations
 import unittest
 
 from scripts.certify_current_executable_portfolio import (
-    EXPECTED_BASE_MULTIPLE,
-    EXPECTED_BASE_TRADE_COUNT,
-    EXPECTED_E_ONLY_MULTIPLE,
-    EXPECTED_E_ONLY_TRADE_COUNT,
-    EXPECTED_OPTIMIZED_MULTIPLE,
-    EXPECTED_OPTIMIZED_TRADE_COUNT,
-    EXPECTED_NO_L_CURRENT_MULTIPLE,
-    EXPECTED_NO_L_CURRENT_TRADE_COUNT,
+    EXPECTED_CURRENT_MULTIPLE,
+    EXPECTED_CURRENT_TRADE_COUNT,
     e_entry_gate_validation,
-    l_chain_expansion_validation,
     load_sources,
     replay,
     summarize,
@@ -20,128 +13,79 @@ from scripts.certify_current_executable_portfolio import (
 
 
 class CurrentPortfolioAlignmentTests(unittest.TestCase):
+    """只锁定当前正式组合 D>A>M>E>C，防止退役策略重新混入。"""
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.sources = load_sources()
 
-    def test_locked_current_baseline_is_reproducible(self) -> None:
-        detail = replay(
-            self.sources,
-            entry_gate_enabled=False,
-            l_chain_3_8_enabled=False,
-        )
-        metrics = summarize(detail, "baseline")
-        self.assertEqual(metrics["executed_trade_count"], EXPECTED_BASE_TRADE_COUNT)
-        self.assertAlmostEqual(metrics["equity_multiple"], EXPECTED_BASE_MULTIPLE, places=8)
-
-    def test_current_no_l_portfolio_is_the_only_live_baseline(self) -> None:
+    def test_current_portfolio_is_reproducible(self) -> None:
         detail = replay(
             self.sources,
             entry_gate_enabled=True,
-            l_enabled=False,
             m_enabled=True,
         )
-        metrics = summarize(detail, "current_no_l_d_a_m_e_c")
+        metrics = summarize(detail, "current_d_a_m_e_c")
 
-        self.assertEqual(
-            metrics["executed_trade_count"], EXPECTED_NO_L_CURRENT_TRADE_COUNT
-        )
+        self.assertEqual(metrics["executed_trade_count"], EXPECTED_CURRENT_TRADE_COUNT)
         self.assertAlmostEqual(
-            metrics["equity_multiple"], EXPECTED_NO_L_CURRENT_MULTIPLE, places=8
+            metrics["equity_multiple"], EXPECTED_CURRENT_MULTIPLE, places=8
         )
-        self.assertEqual(metrics["l_trade_count"], 0)
-        self.assertEqual(metrics["m_trade_count"], 28)
-
-    def test_e_gate_complete_sample_risk_is_explicit_and_total_is_locked(self) -> None:
-        base = summarize(
-            replay(
-                self.sources,
-                entry_gate_enabled=False,
-                l_chain_3_8_enabled=False,
-            ),
-            "baseline",
-        )
-        optimized = summarize(
-            replay(
-                self.sources,
-                entry_gate_enabled=True,
-                l_chain_3_8_enabled=False,
-            ),
-            "e_only",
-        )
-
         self.assertEqual(
-            optimized["executed_trade_count"], EXPECTED_E_ONLY_TRADE_COUNT
+            set(detail.loc[detail["status"].eq("EXECUTED"), "strategy_leg"]),
+            {"D", "A", "M", "E", "C"},
         )
-        self.assertAlmostEqual(
-            optimized["equity_multiple"], EXPECTED_E_ONLY_MULTIPLE, places=8
+
+    def test_m_effect_is_measured_on_the_complete_portfolio(self) -> None:
+        without_m = summarize(
+            replay(self.sources, entry_gate_enabled=True, m_enabled=False),
+            "with_e_gate_without_m",
         )
-        self.assertGreater(optimized["equity_multiple"], base["equity_multiple"])
-        # 浮点容差：同一段回撤的两条曲线末位可能差 ~1e-16。
-        self.assertGreaterEqual(
-            optimized["max_drawdown"], base["max_drawdown"] - 1e-12
+        current = summarize(
+            replay(self.sources, entry_gate_enabled=True, m_enabled=True),
+            "current_d_a_m_e_c",
         )
+
+        self.assertEqual(without_m["executed_trade_count"], 128)
+        self.assertAlmostEqual(without_m["equity_multiple"], 2499.601851190941, places=8)
+        self.assertEqual(without_m["m_trade_count"], 0)
+        self.assertEqual(current["m_trade_count"], 28)
+        self.assertGreater(current["equity_multiple"], without_m["equity_multiple"])
+
+    def test_e_gate_complete_sample_risk_is_explicit(self) -> None:
+        without_gate = summarize(
+            replay(self.sources, entry_gate_enabled=False, m_enabled=True),
+            "without_e_gate_with_m",
+        )
+        current = summarize(
+            replay(self.sources, entry_gate_enabled=True, m_enabled=True),
+            "current_d_a_m_e_c",
+        )
+
+        self.assertEqual(without_gate["executed_trade_count"], 152)
+        self.assertGreater(current["equity_multiple"], without_gate["equity_multiple"])
 
         validation = e_entry_gate_validation(self.sources)
         full = validation[validation["split"].eq("全部")].iloc[0]
         self.assertEqual(int(full["base_count"]), 102)
         self.assertEqual(int(full["kept_count"]), 82)
+        # E单腿完整样本中，被门禁删除组反而为正；必须持续暴露该过拟合风险。
         self.assertGreater(float(full["removed_avg_return"]), 0)
         self.assertLess(float(full["optimized_vs_base"]), 0)
 
-    def test_l_chain_3_8_expansion_improves_l_leg_and_total(self) -> None:
-        before = replay(
-            self.sources,
-            entry_gate_enabled=True,
-            l_chain_3_8_enabled=False,
+    def test_current_leg_breakdown_stays_locked(self) -> None:
+        metrics = summarize(
+            replay(self.sources, entry_gate_enabled=True, m_enabled=True),
+            "current_d_a_m_e_c",
         )
-        after = replay(
-            self.sources,
-            entry_gate_enabled=True,
-            l_chain_3_8_enabled=True,
-        )
-        metrics = summarize(after, "optimized")
-
-        self.assertEqual(
-            metrics["executed_trade_count"], EXPECTED_OPTIMIZED_TRADE_COUNT
-        )
-        self.assertAlmostEqual(
-            metrics["equity_multiple"], EXPECTED_OPTIMIZED_MULTIPLE, places=8
-        )
-        validation = l_chain_expansion_validation(before, after)
-        required = validation[
-            validation["split"].isin({"全部", "前半段", "后半段"})
-        ]
-        self.assertTrue((required["total_change"] > 0).all())
-        self.assertTrue((required["l_change"] > 0).all())
-
-    def test_optimized_leg_breakdown_stays_locked(self) -> None:
-        """各腿笔数锁定，防止输入漂移后静默改变分布。
-
-        2026-08-07 更新：A/C 改用逐日独立候选（见 load_ac_daily），不再被
-        baseline.abc_return 这张作废持仓表锁在90天，A/C 笔数相应上升。
-        旧锁定值：A/C被裁口径 a=27 c=9 d=17 d_to_a=2 d_to_c=6 e=30 l=41；
-        仅修A/C口径 a=33 c=13 d=14 d_to_a=1 d_to_c=8 e=30 l=40。
-        再修衔接日D后 a=34 c=16 d=10 d_to_a=0 d_to_c=4 e=30 l=41；
-        D接力全关后 a=34 c=17 d=14 d_to_a=0 d_to_c=0 e=30 l=40；
-        2026-08-07 腿序重排 D>L>A>M>E>C 后为下方数值（L 大幅上升、E 下降）。
-        """
-
-        optimized = summarize(
-            replay(
-                self.sources,
-                entry_gate_enabled=True,
-                l_chain_3_8_enabled=True,
-            ),
-            "optimized",
-        )
-        self.assertEqual(optimized["a_trade_count"], 31)
-        self.assertEqual(optimized["c_trade_count"], 17)
-        self.assertEqual(optimized["d_trade_count"], 14)
-        self.assertEqual(optimized["d_to_a_trade_count"], 0)
-        self.assertEqual(optimized["d_to_c_trade_count"], 0)
-        self.assertEqual(optimized["e_trade_count"], 22)
-        self.assertEqual(optimized["l_trade_count"], 53)
+        self.assertEqual(metrics["d_trade_count"], 17)
+        self.assertEqual(metrics["a_trade_count"], 46)
+        self.assertEqual(metrics["m_trade_count"], 28)
+        self.assertEqual(metrics["e_trade_count"], 38)
+        self.assertEqual(metrics["c_trade_count"], 16)
+        self.assertEqual(metrics["d_to_a_trade_count"], 0)
+        self.assertEqual(metrics["d_to_c_trade_count"], 0)
+        self.assertEqual(metrics["d_to_e_trade_count"], 0)
 
 
 if __name__ == "__main__":
