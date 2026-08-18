@@ -182,6 +182,27 @@ class StrategyEAlignmentTests(unittest.TestCase):
         self.assertEqual(frame.iloc[0]["strategy_leg"], "E")
         self.assertEqual(frame.iloc[0]["strategy_variant"], "E_JULY")
 
+    def test_active_runtime_logs_never_expose_legacy_e2_name(self) -> None:
+        """旧E2只允许用于读取兼容，正式运行日志必须统一显示E。"""
+
+        active_runtime_files = (
+            PROJECT_ROOT / "scripts" / "run_strategy_e_signal.py",
+            PROJECT_ROOT / "scripts" / "trading_daemon.py",
+            PROJECT_ROOT / "src" / "combined_live_engine.py",
+        )
+        forbidden_log_fragments = (
+            "E2不触发",
+            "E2只读候选检查",
+            "[E2信号]",
+            "策略E2",
+            "E2开仓",
+            "E2平仓",
+        )
+        for path in active_runtime_files:
+            source = path.read_text(encoding="utf-8-sig")
+            for fragment in forbidden_log_fragments:
+                self.assertNotIn(fragment, source, f"{path.name}仍包含旧日志文案：{fragment}")
+
     def test_entry_gate_does_not_fallback_to_second_candidate(self) -> None:
         spec = make_test_spec()
         spec["entry_gate"] = {
