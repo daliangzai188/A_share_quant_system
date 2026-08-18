@@ -9,6 +9,8 @@ from scripts.certify_current_executable_portfolio import (
     EXPECTED_E_ONLY_TRADE_COUNT,
     EXPECTED_OPTIMIZED_MULTIPLE,
     EXPECTED_OPTIMIZED_TRADE_COUNT,
+    EXPECTED_NO_L_CURRENT_MULTIPLE,
+    EXPECTED_NO_L_CURRENT_TRADE_COUNT,
     e_entry_gate_validation,
     l_chain_expansion_validation,
     load_sources,
@@ -31,6 +33,24 @@ class CurrentPortfolioAlignmentTests(unittest.TestCase):
         metrics = summarize(detail, "baseline")
         self.assertEqual(metrics["executed_trade_count"], EXPECTED_BASE_TRADE_COUNT)
         self.assertAlmostEqual(metrics["equity_multiple"], EXPECTED_BASE_MULTIPLE, places=8)
+
+    def test_current_no_l_portfolio_is_the_only_live_baseline(self) -> None:
+        detail = replay(
+            self.sources,
+            entry_gate_enabled=True,
+            l_enabled=False,
+            m_enabled=True,
+        )
+        metrics = summarize(detail, "current_no_l_d_a_m_e_c")
+
+        self.assertEqual(
+            metrics["executed_trade_count"], EXPECTED_NO_L_CURRENT_TRADE_COUNT
+        )
+        self.assertAlmostEqual(
+            metrics["equity_multiple"], EXPECTED_NO_L_CURRENT_MULTIPLE, places=8
+        )
+        self.assertEqual(metrics["l_trade_count"], 0)
+        self.assertEqual(metrics["m_trade_count"], 28)
 
     def test_e_gate_complete_sample_risk_is_explicit_and_total_is_locked(self) -> None:
         base = summarize(

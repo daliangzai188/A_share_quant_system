@@ -162,6 +162,21 @@ def normalize_bool(series: pd.Series) -> pd.Series:
     return series.fillna(False).astype(str).str.lower().isin({"true", "1", "yes"})
 
 
+def parse_hhmmss_to_minutes(value: Any) -> float:
+    """把Tushare的HHMMSS时间转换为分钟，禁止把093839当成93839分钟。"""
+
+    try:
+        digits = str(int(float(value))).zfill(6)
+        hour = int(digits[:2])
+        minute = int(digits[2:4])
+        second = int(digits[4:6])
+    except (TypeError, ValueError):
+        return float("nan")
+    if hour > 23 or minute > 59 or second > 59:
+        return float("nan")
+    return hour * 60.0 + minute + second / 60.0
+
+
 def merge_theme_features(data: pd.DataFrame) -> pd.DataFrame:
     if not THEME_FEATURE_PATH.exists():
         return data
@@ -271,7 +286,7 @@ def load_l_candidates(signal_date: str) -> tuple[pd.DataFrame, list[str]]:
     data["is_st"] = normalize_bool(data["is_st"])
     for column in ["theme_leader_rank", "theme_heat_rank", "theme_height_rank", "theme_limit_count", "limit_times", "fd_amount_to_circ_mv", "limit_close"]:
         data[column] = pd.to_numeric(data[column], errors="coerce")
-    data["first_time_minutes"] = pd.to_numeric(data["first_time"], errors="coerce").fillna(999999)
+    data["first_time_minutes"] = data["first_time"].map(parse_hhmmss_to_minutes).fillna(999999)
     data["first_time_detail_bucket"] = pd.cut(
         data["first_time_minutes"],
         bins=[-float("inf"), 570, 600, 660, 810, 870, float("inf")],

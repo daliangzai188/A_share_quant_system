@@ -15,7 +15,7 @@
              run_strategy_e_signal.has_ac_planned_order
     下游腿序 combined_live_engine.CombinedLiveEngine.build_model3_plan
 
-把每个信号日的各腿候选写成实盘平时读的那些文件（A/C 操作台 csv、L 信号 json），
+把每个信号日的各腿候选写成实盘平时读的那些文件（A/C 操作台 csv、L只读信号 json），
 让实盘代码自己去读、自己做决定，再把它选出的 (腿, 代码) 与认证脚本的选择逐笔
 比对。资金占用、收益计算、回撤统计全部沿用认证脚本本身，本脚本只替换"选哪条腿"
 这一个环节。因此它只能证明冻结历史输入上的选择路径一致，不能证明真实候选生成、
@@ -65,7 +65,9 @@ LIVE_CONFIG = {
     "strategy_m": {"enabled": True, "live_order_enabled": True, "position_pct": 0.825,
                    "exit_hold_offset": 2},
     "strategy_model3": {"enabled": True, "live_order_enabled": True,
-                        "selected_rule_name": "verify"},
+                        "l_participation_enabled": False,
+                        "strategy_priority_order": ["D", "A", "M", "E", "C"],
+                        "selected_rule_name": "verify_no_l"},
 }
 
 
@@ -130,8 +132,11 @@ def build_live_picker(sources: certify.Sources, workdir: Path, stats: dict[str, 
     engine = make_engine(PROJECT_ROOT)
 
     def pick(sources_: certify.Sources, row: pd.Series, row_index: int, *,
-             entry_gate_enabled: bool, l_chain_3_8_enabled: bool, m_enabled: bool,
+             entry_gate_enabled: bool, l_chain_3_8_enabled: bool, l_enabled: bool,
+             m_enabled: bool,
              equity: float, peak_equity: float) -> dict[str, Any] | None:
+        if l_enabled:
+            raise RuntimeError("当前实盘逐笔对齐只允许无L认证口径")
         signal_date = str(row["date"])
         buy_date = certify.nth_trade_date(sources_, signal_date, 1)
         if not buy_date:
@@ -240,8 +245,13 @@ def main() -> None:
     workdir = Path(tempfile.mkdtemp(prefix="verify_live_"))
     stats = {"no_plan": 0, "l_unexecutable": 0}
     try:
-        certified = certify.replay(sources, entry_gate_enabled=True,
-                                  l_chain_3_8_enabled=True, m_enabled=True)
+        certified = certify.replay(
+            sources,
+            entry_gate_enabled=True,
+            l_chain_3_8_enabled=False,
+            l_enabled=False,
+            m_enabled=True,
+        )
 
         picker = build_live_picker(sources, workdir, stats)
         original_pick = certify.pick_by_priority
@@ -251,8 +261,13 @@ def main() -> None:
             certify.pick_by_priority = picker
             e_signal.DAILY_OPS_DIR = workdir / "daily_ops"
             m_signal.L_SIGNAL_PATH = workdir / "l_signals_recent.json"
-            live = certify.replay(sources, entry_gate_enabled=True,
-                                  l_chain_3_8_enabled=True, m_enabled=True)
+            live = certify.replay(
+                sources,
+                entry_gate_enabled=True,
+                l_chain_3_8_enabled=False,
+                l_enabled=False,
+                m_enabled=True,
+            )
         finally:
             certify.pick_by_priority = original_pick
             e_signal.DAILY_OPS_DIR = original_ops
@@ -261,14 +276,14 @@ def main() -> None:
         shutil.rmtree(workdir, ignore_errors=True)
 
     a = certify.summarize(certified, "认证脚本 pick_by_priority")
-    b = certify.summarize(live, "计划模块当前含M配置 build_model3_plan + 上游门")
+    b = certify.summarize(live, "计划模块当前无L含M配置 build_model3_plan + 上游门")
     ex_a = certified[certified["status"] == "EXECUTED"]
     ex_b = live[live["status"] == "EXECUTED"]
 
     print("=" * 78)
     print("历史选择路径核对：实盘计划代码 vs 认证脚本，481信号日逐笔回放")
     print("=" * 78)
-    for label, s, ex in (("认证脚本", a, ex_a), ("计划模块当前含M配置", b, ex_b)):
+    for label, s, ex in (("认证脚本", a, ex_a), ("计划模块当前无L含M配置", b, ex_b)):
         print(f"{label}  {s['executed_trade_count']:>3}笔 | {s['equity_multiple']:>13.6f}x | "
               f"回撤{s['max_drawdown']:>9.6%} | 胜率{s['win_rate']:>8.4%}")
         print(f"          {ex['strategy_leg'].value_counts().to_dict()}")
@@ -304,7 +319,7 @@ def main() -> None:
             print("  " + line)
         raise SystemExit(1)
 
-    print("✅ 通过：计划模块在当前含M配置下逐笔选出与认证脚本完全相同的 "
+    print("✅ 通过：计划模块在当前无L、含M配置下逐笔选出与认证脚本完全相同的 "
           f"{a['executed_trade_count']} 笔，复利 {a['equity_multiple']:.6f}x、"
           f"回撤 {a['max_drawdown']:.6%}、胜率 {a['win_rate']:.4%} 完全相等。")
     print("   本结果只证明冻结历史输入上的选择路径一致；未验证真实候选生成、券商成交、"

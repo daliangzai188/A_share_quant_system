@@ -13373,6 +13373,9 @@ def _log_final_decision_summary(signal_date: str, action_date_compact: str, buy_
     try:
         cfg = load_json_config(PROJECT_ROOT / "config" / "config.json")
         mode = int(cfg.get("active_strategy_profile", {}).get("mode", 1))
+        l_participation_enabled = bool(
+            cfg.get("strategy_model3", {}).get("l_participation_enabled", True)
+        )
         mode_name = {1: "ACDE", 2: "L龙头", 3: "MODEL3"}.get(mode, str(mode))
         readable = f"{action_date_compact[:4]}-{action_date_compact[4:6]}-{action_date_compact[6:]}" \
             if len(action_date_compact) == 8 else action_date_compact
@@ -13494,7 +13497,10 @@ def _log_final_decision_summary(signal_date: str, action_date_compact: str, buy_
                 note = "模式2：L龙头未满足实盘开仓（live_order_enabled=false 或信号不满足）"
         else:  # mode == 3
             m3 = cfg.get("strategy_model3", {})
-            if not (bool(m3.get("enabled")) and bool(m3.get("live_order_enabled"))):
+            if not l_participation_enabled:
+                final_buys = mode1_buys
+                note = "模式3框架保留，但L认证失效已停用；沿用D/A/M/E/C计划"
+            elif not (bool(m3.get("enabled")) and bool(m3.get("live_order_enabled"))):
                 final_buys = mode1_buys
                 note = "模式3：model3未完全开启，沿用mode1计划"
             elif mode1_buys:
@@ -13743,6 +13749,9 @@ def _log_decision_chain_summary(signal_date: str) -> None:
 
         cfg = load_json_config(PROJECT_ROOT / "config" / "config.json")
         mode = int(cfg.get("active_strategy_profile", {}).get("mode", 1))
+        l_participation_enabled = bool(
+            cfg.get("strategy_model3", {}).get("l_participation_enabled", True)
+        )
         try:
             sd = datetime.datetime.strptime(signal_date, "%Y%m%d").date()
             action_date = next_n_trade_days(sd, 1).strftime("%Y%m%d")
@@ -13896,7 +13905,11 @@ def _log_decision_chain_summary(signal_date: str) -> None:
                 l_buy = {"strategy": "L", "ts_code": str(l_sig.get("ts_code", "")),
                          "name": str(l_sig.get("name", "")),
                          "shares": _planned_shares_by_equity(l_sig.get("position_pct", 0.825), l_price), "price": l_price}
-        if not l_sig:
+        l_candidate_for_display = l_buy
+        if not l_participation_enabled:
+            l_buy = None
+            l_line = "停用｜L历史认证失效，仅保留影子候选，不参与开仓或阻断其他腿"
+        elif not l_sig:
             l_line = "不参与｜无L信号"
         elif not l_base_ok:
             l_line = f"不参与｜基础规则不通过（{base_reason}）"
@@ -13937,7 +13950,7 @@ def _log_decision_chain_summary(signal_date: str) -> None:
             final_buy = None   # 旧非L策略仓未实际清空，串行单仓，不开新仓（与下单口径一致）
         elif mode == 2:
             final_buy = l_buy
-        elif mode == 3 and l_buy:
+        elif mode == 3 and l_participation_enabled and l_buy:
             final_buy = l_buy  # L 无条件优先，不再区分"有无mode1计划"和替换窄门
         else:
             final_buy = mode1_buy
@@ -13978,7 +13991,7 @@ def _log_decision_chain_summary(signal_date: str) -> None:
             m_line = f"不参与｜当前{holding_legs}策略旧仓占用同一资金，M不开仓"
         elif not bool(m_cfg.get("enabled", False)):
             m_line = "未启用｜strategy_m.enabled=false"
-        elif l_buy:
+        elif l_participation_enabled and l_buy:
             m_line = f"让位｜L无条件优先（腿序L>M），M不参与"
         elif a_buy:
             m_line = f"让位｜{day_label}已有A开仓计划占用同一资金（腿序A>M）"
@@ -14070,7 +14083,11 @@ def _log_decision_chain_summary(signal_date: str) -> None:
         )
         candidate_rows = [
             ("D", None, d_candidate_reason),
-            ("L", l_buy, "无通过基础规则的候选"),
+            (
+                "L",
+                l_candidate_for_display,
+                "L已停用，仅保留影子候选" if not l_participation_enabled else "无通过基础规则的候选",
+            ),
             ("A", a_buy, "无入围候选"),
             (
                 "M",
@@ -14082,7 +14099,7 @@ def _log_decision_chain_summary(signal_date: str) -> None:
         ]
         if mode == 2:
             ranking_legs = ["L"]
-        elif mode == 3:
+        elif mode == 3 and l_participation_enabled:
             ranking_legs = ["L", "A", "M", "E", "C"]
         else:
             ranking_legs = ["A", "M", "E", "C"]
@@ -14118,13 +14135,14 @@ def _log_decision_chain_summary(signal_date: str) -> None:
         m1_has = mode1_buy is not None
         # 2026-08-07 腿序 D>L>A>M>E>C：L 只要过基础规则就无条件顶掉 mode1，
         # 替换窄门(l_guard_ok)已退出选股路径，两张图与下单口径必须一致。
-        l_wins = l_buy is not None and l_base_ok
+        l_wins = l_participation_enabled and l_buy is not None and l_base_ok
         t2y = m1_has and l_wins
         t3y = (not m1_has) and l_wins
         TAG = " ◄―今日路径"
         lines = [
             f"{P}━━━━━━━━━━━━ 决策优先级树状图（mode=3） ━━━━━━━━━━━━",
-            f"{P} 腿序 D > L > A > M > E > C（2026-08-07 定稿）",
+            f"{P} 当前有效腿序 "
+            + ("D > L > A > M > E > C" if l_participation_enabled else "D > A > M > E > C（L已停用）"),
             *(
                 [f"{P} 当前恢复路径：{execution_override} ◄―今日路径"]
                 if execution_override else []
@@ -14137,7 +14155,12 @@ def _log_decision_chain_summary(signal_date: str) -> None:
             f"{P} ├─ 是 ──▶ 不开新仓，确认实际清仓后再等下一候选 ──▶ 结束{TAG if _blocked_by_holding else ''}",
             f"{P} │",
             f"{P} └─ 否（券商已确认无旧策略仓；打新和人工仓不计入）",
-            f"{P}      └─▶ ② L 判断（账户空仓时无条件优先，只需过基础规则）{TAG if (l_wins and not _blocked_by_holding and not execution_expired) else ''}",
+            f"{P}      └─▶ ② L "
+            + (
+                f"判断（账户空仓时无条件优先，只需过基础规则）{TAG if (l_wins and not _blocked_by_holding and not execution_expired) else ''}"
+                if l_participation_enabled
+                else "停用（旧认证候选池污染；影子信号不参与资金排序）"
+            ),
             f"{P}           │ 非科创板 + 板块情绪OK + 全市场连板家数≥3（非个股连板）",
             f"{P}           │",
             f"{P}           ├─ 过 ──▶ 买 L 的票（顶掉后面所有腿）──▶ 结束{TAG if (l_wins and not _blocked_by_holding and not execution_expired) else ''}",
@@ -14691,15 +14714,19 @@ def _log_l_model3_signal_status(signal_date: str, action_date: str | None = None
         config = load_json_config(PROJECT_ROOT / "config" / "config.json")
         active_mode = int(config.get("active_strategy_profile", {}).get("mode", 1))
         model3_config = config.get("strategy_model3", {})
+        l_participation_enabled = bool(
+            model3_config.get("l_participation_enabled", True)
+        )
         candidate_count = _load_l_candidate_count(signal_date)
         signal = _load_l_signal_for_signal_date(signal_date)
         count_text = "未知" if candidate_count is None else str(candidate_count)
 
         logger().info(
-            "  L/model3状态：active_mode=%s strategy_model3.enabled=%s live_order_enabled=%s",
+            "  L/model3状态：active_mode=%s strategy_model3.enabled=%s live_order_enabled=%s l_participation_enabled=%s",
             active_mode,
             bool(model3_config.get("enabled", False)),
             bool(model3_config.get("live_order_enabled", False)),
+            l_participation_enabled,
         )
         if signal is None:
             run_status = _strategy_signal_run_readiness(
@@ -14750,6 +14777,11 @@ def _log_l_model3_signal_status(signal_date: str, action_date: str | None = None
         )
         if active_mode != 3:
             logger().info("  L/model3结论：当前不是mode=3，L只展示不参与当前组合切换。")
+        elif not l_participation_enabled:
+            logger().info(
+                "  L/model3结论：L历史认证失效，已停止新开仓；候选只供影子审计，"
+                "当前沿用D/A/M/E/C计划。"
+            )
         elif not bool(model3_config.get("enabled", False)) or not bool(model3_config.get("live_order_enabled", False)):
             logger().info("  L/model3结论：model3开关未同时开启，沿用mode=1。")
         elif not base_ok:
@@ -14775,9 +14807,9 @@ def _log_l_model3_signal_status(signal_date: str, action_date: str | None = None
                 "旧「替换窄门=创业板+题材涨停≥2+非尾盘首板」已退役——2026-08-05 该窄门"
                 "误伤利通电子（沪主板+尾盘首板），当日 L 让位给 C 华之杰。481信号日重放："
                 "L 40笔→52笔、E 30笔→19笔，组合 22902.02x→27870.31x、回撤-24.68%→-23.50%。"
-                "（当前实盘标尺：150笔/29388.98x/回撤-23.56%/胜率68.67%；M按用户明确风险接受"
-                "恢复真实新开仓，但分段回撤非劣门禁仍未通过且容量未认证；见 "
-                "reports/current_portfolio_alignment；旧8302x/15326.89x 均为历史档案，勿再引用）"
+                "（本段L优先依据已在2026-08-18候选池审计后作废；当前L开关必须保持关闭，"
+                "正式标尺为D>A>M>E>C、145笔/4445.281570x/回撤-23.5062%/L=0；见 "
+                "reports/current_portfolio_alignment。只有完整池重建L并重新认证后才允许讨论重启）"
             )
     except Exception as exc:
         logger().warning("  L/model3状态播报失败：%s", exc)

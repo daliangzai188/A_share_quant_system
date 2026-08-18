@@ -1,12 +1,13 @@
 """策略M每日收盘后信号生成脚本。
 
-M 是补位腿，在腿序 **D > L > A > M > E > C**（2026-08-07 定稿）里排第四。
+M 是补位腿。L于2026-08-18因历史候选池污染停用后，当前有效腿序为
+**D > A > M > E > C**，M排第三。
 只有排在它**前面**的腿才有资格挡住它，三个条件必须同时成立：
 
   1. 账户没有任何未平仓头寸（这一条同时覆盖 D —— D 在信号日盘中买入，
      成交后会出现在 positions.json，因此 D 天然优先于 M）；
-  2. L 当日无正式信号；
-  3. A/C daily ops 当日未生成 **strategy_leg=A** 的计划委托。
+  2. A/C daily ops 当日未生成 **strategy_leg=A** 的计划委托；
+  3. 影子L信号只用于研究，不参与阻断。
 
   ⚠️ **E 和 C 排在 M 后面，不得挡住 M 出信号。** 2026-08-07 之前这里还要求
      "E 无信号 + A/C 都无计划"，M 事实上仍是"五腿全空才兜底"，而认证口径已把
@@ -18,8 +19,8 @@ M 是补位腿，在腿序 **D > L > A > M > E > C**（2026-08-07 定稿）里�
   4. 当日"深市主板情绪 = weak"（策略条件）；
   5. 账户当前回撤未超过阈值（风控条件，默认 10%）。
 
-触发时机：每日收盘流水线第 ⑨ 步。必须排在 A/C（⑥）和 L（⑧）之后运行，
-才能读到这两者当日的产物；E（⑦）的先后已无所谓，M 不再读它。
+触发时机：每日收盘流水线第 ⑨ 步。必须排在 A/C（⑥）之后运行；
+E（⑦）与影子L（⑧）的先后不影响M判断。
 
 ⚠️ 本脚本只生成信号文件，不提交任何委托。是否真实下单由
    config.json/strategy_m.live_order_enabled 与组合引擎共同决定。
@@ -96,12 +97,18 @@ def load_day_pool(signal_date: str) -> pd.DataFrame:
     return merged.drop_duplicates(["trade_date", "ts_code"], keep="last").reset_index(drop=True)
 
 
+def l_participates_in_current_combo() -> bool:
+    """L认证失效停用后，影子L信号不得继续挡住M。"""
+
+    model3 = load_config().get("strategy_model3", {})
+    return bool(model3.get("l_participation_enabled", True))
+
+
 def higher_priority_leg_has_signal(signal_date: str) -> tuple[bool, str]:
     """按腿序排在 M **前面** 的腿，当日是否已有信号或计划。
 
-    腿序 D>L>A>M>E>C（2026-08-07 定稿）：M 之前只有 D、L、A。
+    当前有效腿序D>A>M>E>C：M之前只有D、A；L停用后只保留影子信号。
       · D  由 has_existing_open_position 覆盖（D 建仓即写 positions.json）
-      · L  查 l_signals_recent.json
       · A  查 A/C 操作台里 strategy_leg=A 的计划委托
     **E 和 C 排在 M 后面，不得挡住 M 出信号。**
 
@@ -113,10 +120,12 @@ def higher_priority_leg_has_signal(signal_date: str) -> tuple[bool, str]:
 
     if has_ac_planned_order(signal_date, legs=("A",)):
         return True, "A当日已生成计划委托（腿序A>M）"
-    l_signal = signal_by_signal_date(L_SIGNAL_PATH, signal_date)
-    if l_signal:
-        return True, f"L当日已有信号（{l_signal.get('ts_code','')}，腿序L>M）"
-    return False, "排在M前面的L、A当日均无信号"
+    if l_participates_in_current_combo():
+        l_signal = signal_by_signal_date(L_SIGNAL_PATH, signal_date)
+        if l_signal:
+            return True, f"L当日已有信号（{l_signal.get('ts_code','')}，腿序L>M）"
+        return False, "排在M前面的L、A当日均无信号"
+    return False, "L实盘参与已关闭且A当日无计划，进入M补位判断"
 
 
 def load_equity_peak() -> dict[str, Any]:

@@ -1,7 +1,8 @@
 {
   "schema_version": 1,
   "window": "20240520~20260514",
-  "file_count": 491,
+  "strategy_l_included": false,
+  "file_count": 490,
   "files": [
     {
       "path": "reports/strategy_expansion/abcd_expansion_selected_e2_equity_curve.csv",
@@ -37,11 +38,6 @@
       "path": "reports/strategy_m/m_backtest_trades.csv",
       "size": 11310,
       "sha256": "5b2edf242ba3662a515b186c9492b182e9f95eaecbe2768d58b31bd47e95f83c"
-    },
-    {
-      "path": "reports/strategy_l/leader_strategy_trades.csv",
-      "size": 2714701,
-      "sha256": "281061cd97c80ba21d2c7908c32ccb83de68b2a594db686452e5714d3b4e7bd4"
     },
     {
       "path": "config/strategy_e_r1_scenarios.json",

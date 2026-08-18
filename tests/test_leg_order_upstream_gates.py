@@ -118,11 +118,25 @@ class MUpstreamGateTests(unittest.TestCase):
 
     def test_l的信号挡住m(self) -> None:
         with patch.object(m_signal, "has_ac_planned_order", return_value=False), \
+             patch.object(m_signal, "load_config", return_value={
+                 "strategy_model3": {"l_participation_enabled": True}
+             }), \
              patch.object(m_signal, "signal_by_signal_date",
                           return_value={"ts_code": "300750.SZ"}):
             busy, why = m_signal.higher_priority_leg_has_signal("20260803")
         self.assertTrue(busy)
         self.assertIn("L", why)
+
+    def test_l停用后影子信号不挡m(self) -> None:
+        with patch.object(m_signal, "has_ac_planned_order", return_value=False), \
+             patch.object(m_signal, "load_config", return_value={
+                 "strategy_model3": {"l_participation_enabled": False}
+             }), \
+             patch.object(m_signal, "signal_by_signal_date",
+                          return_value={"ts_code": "300750.SZ"}):
+            busy, why = m_signal.higher_priority_leg_has_signal("20260803")
+        self.assertFalse(busy)
+        self.assertIn("L实盘参与已关闭", why)
 
 
 class MEquityPeakTests(unittest.TestCase):
@@ -285,7 +299,7 @@ class LegOrderDeclarationTests(unittest.TestCase):
         root = Path(__file__).absolute().parents[1]
         summary = pd.read_csv(root / "reports/current_portfolio_alignment/portfolio_summary.csv")
         current = summary[summary["is_current_executable"].astype(bool)].iloc[0]
-        with_m = summary[summary["scenario"] == "current_with_m_gap_leg"].iloc[0]
+        with_m = summary[summary["scenario"] == "current_no_l_d_a_m_e_c"].iloc[0]
 
         metrics = json.loads((root / "config" / "config.json").read_text(encoding="utf-8"))[
             "strategy_model3"
@@ -293,6 +307,7 @@ class LegOrderDeclarationTests(unittest.TestCase):
 
         self.assertEqual(metrics["scenario"], str(current["scenario"]))
         self.assertEqual(metrics["trade_count"], int(current["executed_trade_count"]))
+        self.assertEqual(metrics["l_trade_count"], 0)
         self.assertEqual(metrics["max_consecutive_losses"], int(current["max_consecutive_losses"]))
         for key, col in (
             ("win_rate", "win_rate"),
@@ -321,7 +336,7 @@ class LegOrderDeclarationTests(unittest.TestCase):
             m_cfg["require_all_legs_idle"],
             "M 已提到 E/C 之前，require_all_legs_idle 必须为 false",
         )
-        self.assertIn("D>L>A>M>E>C", m_cfg["file_role"])
+        self.assertIn("D>A>M>E>C", m_cfg["file_role"])
 
 
 if __name__ == "__main__":
@@ -388,7 +403,7 @@ class BroadcastMatchesOrderingTests(unittest.TestCase):
         decision_body = src[decision_start:decision_end]
         self.assertLess(
             decision_body.index("if _blocked_by_holding:"),
-            decision_body.index('elif l_buy:'),
+            decision_body.index("elif l_participation_enabled and l_buy:"),
         )
 
         d_start = src.index("def _log_d_status_for_signal")

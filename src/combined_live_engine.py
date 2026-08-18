@@ -39,7 +39,7 @@ D 排第一不是优化结果，是时序决定的——D 在信号日**盘中**
 
     D   monitor_strategy_d_intraday.py 盘中自己判；本模块只负责在有 D 持仓时
         阻断其余各腿（build_mode1_plan 的 open_d_positions 分支）
-    L   build_model3_plan：mode=1 无买入计划时补位，有买入计划时**无条件替换**
+    L   build_model3_plan：当前l_participation_enabled=false，候选只读；不补位、不替换
     A   build_mode1_plan 空仓分支 ①，取 abc_orders 里 strategy_leg=A 的行
     M   build_mode1_plan 空仓分支 ②（2026-08-07 由"五腿全空才兜底"提前到 E 之前）
     E  build_mode1_plan 空仓分支 ③
@@ -48,7 +48,8 @@ D 排第一不是优化结果，是时序决定的——D 在信号日**盘中**
          A 的最高优先级，与认证脚本 pick_by_priority 不一致，本次拆开收口）
 
 对应的回测口径见certify_current_executable_portfolio.pick_by_priority。改任何一侧
-都要重跑认证：当前实盘核对150笔/29388.980134x/-23.56%，并核对M风险接受认证状态。
+都要重跑认证：当前实盘核对145笔/4445.281570x/-23.5062%、L=0，
+并核对M风险接受认证状态。
 
 复现：python scripts/certify_current_executable_portfolio.py
 """
@@ -514,6 +515,24 @@ class CombinedLiveEngine:
                 source="positions.json",
             )
             decisions = pd.concat([mode1_decisions, pd.DataFrame([extra.__dict__])], ignore_index=True)
+            return mode1_state, decisions, mode1_orders
+        # L历史认证在2026-08-18完整候选池专项审计中失效：冻结组合154笔中的
+        # 48笔L有0笔能按当前L2定义从当日完整涨停池重新选出，且12笔退出日与
+        # 当前T+2规则不一致。在新的完整池认证通过前，只关闭L参与，不改变
+        # D/A/M/E/C的mode=1计划，也不影响上方已有L持仓的到期卖出。
+        if not bool(model3_config.get("l_participation_enabled", True)):
+            extra = CombinedLiveDecision(
+                action="BLOCK_MODEL3_L_INVALIDATED",
+                strategy_leg="L",
+                reason=(
+                    "L历史认证因候选池污染失效，已关闭L新开仓；"
+                    "沿用mode=1的D/A/M/E/C计划。"
+                ),
+                source="config.strategy_model3.l_participation_enabled",
+            )
+            decisions = pd.concat(
+                [mode1_decisions, pd.DataFrame([extra.__dict__])], ignore_index=True
+            )
             return mode1_state, decisions, mode1_orders
         if not bool(model3_config.get("enabled", False)) or not bool(model3_config.get("live_order_enabled", False)):
             extra = CombinedLiveDecision(
@@ -1173,7 +1192,7 @@ class CombinedLiveEngine:
             # 而T+2的D要打」这个口径不对称；同折扣口径下接力只值 +7.8%。
             # 换来的是：执行链路从「09:23卖安全部分→09:30分片卖→确认释放→
             # 分片买→累计买入额不得超过累计卖出额」简化为一条直线，胜率反而更高。
-            # 代价：两年里有 7 天候选被 D 的持仓挡掉，已计入标尺（当前 150笔/29387.05x）。
+            # 代价：两年里有7天候选被D持仓挡掉；该结论已经纳入当前无L的145笔标尺。
             #
             # 因此这里不再生成 PLAN_SELL_D_FIRST（daemon 靠它填 force_d_sell_codes
             # 触发 09:23 接力）与 PLAN_D_RELAY_PAIRED_BUY 影子计划；上游一断，

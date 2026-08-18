@@ -1,4 +1,4 @@
-"""认证当前A/C/D/E/L组合的可执行逐日资金曲线。
+"""认证当前D/A/M/E/C组合的可执行逐日资金曲线。
 
 本脚本把此前散落的一次性计算固化成可重复基线，并比较E门禁与L扩容前后：
 
@@ -7,12 +7,12 @@
 3. 普通首仓按82.5%，旧策略仓未释放前不做尾盘衔接；
 4. **D接力全关**：D一律T+2收盘平仓，确认清仓后的下一个信号日才轮到别的腿
    （2026-08-07；旧口径"D为A/C/E走09:23先卖后买接力、不为L接力"已作废）；
-5. **L无条件优先**：只过model=3基础条件，替换窄门已退出选股路径（2026-08-07）；
+5. **L当前停用**：完整候选池审计推翻旧48笔L，当前回放不得读取L候选或计算L收益；
 6. E入场门禁在每日第一名确定后执行，被排除时不回补第二名；
-7. model=3的L基础环境新增全市场连板数3~8档，历史与实盘调用同一规则；
+7. 旧L研究分支仅供复现作废历史，不能进入当前认证、发布锚点或实盘许可；
 8. 所有收益按同一账户、同一时间顺序连乘，禁止把各腿复利直接相乘。
 
-腿序 **D > L > A > M > E > C**（2026-08-07 定稿），见 pick_by_priority。
+当前有效腿序 **D > A > M > E > C**（2026-08-18 定稿），见 pick_by_priority。
 D 不在 pick_by_priority 里：它在信号日盘中就买了，位置由时序锁死，见 replay。
 
 ⚠️ **本脚本是实盘的对照基准，两侧必须同时正确。** 实盘一侧分两层，缺一层就是空转：
@@ -199,10 +199,14 @@ EXPECTED_OPTIMIZED_MULTIPLE = 6886.943639188233
 # 旧值 151 / 27870.30777624288 已作废，仅作历史对照。
 # 2026-08-18 策略身份统一后，E 输入改为完整逐日候选：E_R1门禁前102天、
 # E_CURRENT门禁后82天。旧50/43行是历史已成交/锁定子集，不能再冒充完整候选池。
-# 当前完整样本标尺为154笔/24175.186295倍；旧150笔/29388.980134倍只保留在
+# 已作废的L历史分支标尺为154笔/24175.186295倍；旧150笔/29388.980134倍只保留在
 # compare_strategy_e_variants 的锁定43行回归测试中。
 EXPECTED_WITH_M_TRADE_COUNT = 154
 EXPECTED_WITH_M_MULTIPLE = 24175.18629495031
+# 2026-08-18 L候选池审计后建立的当前唯一有效回归锚点。上面的L相关常量只用于
+# 复现已作废历史分支，不能再作为当前实盘认证结果。
+EXPECTED_NO_L_CURRENT_TRADE_COUNT = 145
+EXPECTED_NO_L_CURRENT_MULTIPLE = 4445.281570391435
 
 
 @dataclass(frozen=True)
@@ -499,11 +503,12 @@ def pick_by_priority(
     *,
     entry_gate_enabled: bool,
     l_chain_3_8_enabled: bool,
+    l_enabled: bool,
     m_enabled: bool,
     equity: float,
     peak_equity: float,
 ) -> dict[str, Any] | None:
-    """按腿序 L > A > M > E > C 选出当天唯一候选（D 不在此处，见 replay）。
+    """按当前有效腿序选出当天唯一候选（D 不在此处，见 replay）。
 
     2026-08-07 腿序改造：替换掉原来的"mode1(A/C→E) + choose_l 补位/替换窄门
     + M 末尾兜底"三段式。那套结构里 M、E、L 的相对顺序由同一个替换机制耦合，
@@ -518,10 +523,14 @@ def pick_by_priority(
     signal_date = str(row["date"])
     ac = sources.ac_daily.get(signal_date)
 
-    # ① L：只过基础规则，无条件优先
-    l_pick = l_candidate(sources, signal_date, chain_3_8_enabled=l_chain_3_8_enabled)
-    if l_pick is not None:
-        return l_pick
+    # L历史认证失效后必须从组合候选链中完全移除；保留显式开关只是为了复现
+    # 已冻结的旧研究口径，当前实盘配置固定为False。
+    if l_enabled:
+        l_pick = l_candidate(
+            sources, signal_date, chain_3_8_enabled=l_chain_3_8_enabled
+        )
+        if l_pick is not None:
+            return l_pick
 
     # ② A
     if ac is not None and str(ac.get("strategy_leg", "")) == "A":
@@ -655,6 +664,7 @@ def replay(
     *,
     entry_gate_enabled: bool,
     l_chain_3_8_enabled: bool = False,
+    l_enabled: bool = True,
     m_enabled: bool = False,
     block_d_on_handoff: bool = True,
 ) -> pd.DataFrame:
@@ -738,6 +748,7 @@ def replay(
                 row_index,
                 entry_gate_enabled=entry_gate_enabled,
                 l_chain_3_8_enabled=l_chain_3_8_enabled,
+                l_enabled=l_enabled,
                 m_enabled=m_enabled,
                 equity=equity,
                 peak_equity=peak_equity,
@@ -800,6 +811,8 @@ def replay(
     detail["drawdown"] = detail["equity_after"] / detail["peak_equity"] - 1.0
     detail["entry_gate_enabled"] = entry_gate_enabled
     detail["l_chain_3_8_enabled"] = l_chain_3_8_enabled
+    detail["l_enabled"] = l_enabled
+    detail["m_enabled"] = m_enabled
     return detail
 
 
@@ -1051,6 +1064,44 @@ def segment_comparison(
                 "total_change": after_equity / before_equity - 1.0 if before_equity else 0.0,
                 f"{before_label}_max_drawdown": drawdown(before_window),
                 f"{after_label}_max_drawdown": drawdown(after_window),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def period_metrics(detail: pd.DataFrame) -> pd.DataFrame:
+    """按冻结全段、前后半段和自然年汇总当前组合，避免只看总复利。"""
+
+    rows: list[dict[str, Any]] = []
+    for label, low, high in SEGMENTS:
+        trades = detail[
+            detail["status"].astype(str).eq("EXECUTED")
+            & detail["signal_date"].astype(str).between(low, high)
+        ].copy()
+        returns = pd.to_numeric(trades["account_return"], errors="raise")
+        wins = returns[returns > 0]
+        losses = returns[returns < 0]
+        curve = (1.0 + returns).cumprod()
+        rows.append(
+            {
+                "split": label,
+                "trade_count": int(len(returns)),
+                "win_rate": float((returns > 0).mean()) if len(returns) else 0.0,
+                "avg_return": float(returns.mean()) if len(returns) else 0.0,
+                "median_return": float(returns.median()) if len(returns) else 0.0,
+                "equity_multiple": float(curve.iloc[-1]) if len(curve) else 1.0,
+                "fixed_initial_notional_multiple": float(1.0 + returns.sum()),
+                "max_drawdown": (
+                    float((curve / curve.cummax() - 1.0).min()) if len(curve) else 0.0
+                ),
+                "max_profit": float(returns.max()) if len(returns) else 0.0,
+                "max_loss": float(returns.min()) if len(returns) else 0.0,
+                "profit_loss_ratio": (
+                    float(wins.mean() / abs(losses.mean()))
+                    if len(wins) and len(losses)
+                    else 0.0
+                ),
+                "max_consecutive_losses": max_consecutive_losses(returns),
             }
         )
     return pd.DataFrame(rows)
@@ -1317,7 +1368,7 @@ def lock_or_verify_input_manifest(
     temporary.replace(path)
 
 
-def write_input_manifest(*, refresh: bool = False) -> Path:
+def write_input_manifest(*, refresh: bool = False, include_l: bool = True) -> Path:
     """默认核对锁定清单；只有显式refresh才允许接受新的输入版本。"""
 
     direct = [
@@ -1328,10 +1379,11 @@ def write_input_manifest(*, refresh: bool = False) -> Path:
         NO_B_RESELECTION_PATH,
         AC_DAILY_PATH,
         M_POOL_PATH,
-        L_SOURCE_PATH,
         E_SPEC_PATH,
         TRADE_CALENDAR_PATH,
     ]
+    if include_l:
+        direct.append(L_SOURCE_PATH)
     daily = sorted(
         path
         for path in DAILY_PRICE_DIR.glob("????????.csv")
@@ -1355,6 +1407,7 @@ def write_input_manifest(*, refresh: bool = False) -> Path:
     manifest = {
         "schema_version": 1,
         "window": "20240520~20260514",
+        "strategy_l_included": include_l,
         "file_count": len(rows),
         "files": rows,
     }
@@ -1363,8 +1416,361 @@ def write_input_manifest(*, refresh: bool = False) -> Path:
     return path
 
 
+def write_no_l_report(
+    summary: pd.DataFrame,
+    current_periods: pd.DataFrame,
+    e_validation: pd.DataFrame,
+    e_portfolio_comparison: pd.DataFrame,
+    m_portfolio_comparison: pd.DataFrame,
+    *,
+    current_scenario: str,
+    certification_status: str,
+    e_gate_validation_passed: bool,
+    e_gate_risk_accepted: bool,
+    m_noninferior: bool,
+    m_noninferior_reason: str,
+    m_risk_accepted: bool,
+) -> None:
+    """写出L停用后的唯一正式组合报告，旧154笔口径不得再混入。"""
+
+    current = summary[summary["scenario"].eq(current_scenario)].iloc[0]
+    without_m = summary[summary["scenario"].eq("no_l_with_e_gate_without_m")].iloc[0]
+    lines = [
+        "# 当前可执行组合认证（L停用）",
+        "",
+        "## 正式结论",
+        "",
+        "- **当前唯一有效腿序：D > A > M > E > C；L不参与候选、排序、持仓占用或收益。**",
+        f"- 当前冻结窗口为481个信号日，共{int(current['executed_trade_count'])}笔；"
+        f"A={int(current['a_trade_count'])}、C={int(current['c_trade_count'])}、"
+        f"D={int(current['d_trade_count'])}、E={int(current['e_trade_count'])}、"
+        f"M={int(current['m_trade_count'])}、L={int(current['l_trade_count'])}。",
+        f"- 胜率{current['win_rate']:.2%}，平均账户收益{current['avg_return']:.2%}，"
+        f"中位数{current['median_return']:.2%}，逐笔复利{current['equity_multiple']:.6f}倍，"
+        f"最大回撤{current['max_drawdown']:.2%}。",
+        f"- 不含M的同口径参考为{int(without_m['executed_trade_count'])}笔、"
+        f"{without_m['equity_multiple']:.6f}倍、最大回撤{without_m['max_drawdown']:.2%}。",
+        "- 旧154笔/24175.186295倍含48笔无效L候选，已永久作废，不能与本报告拼接或继续作为发布锚点。",
+        f"- 认证状态：`{certification_status}`。M非劣门禁："
+        f"{'通过' if m_noninferior else '未通过（' + m_noninferior_reason + '）'}；"
+        f"{'已按既有用户风险接受保留' if (not m_noninferior and m_risk_accepted) else '未使用风险豁免'}。",
+        "- 该复利是假定每笔账户净值按82.5%仓位连续放大的机械历史结果，资金容量未认证，不能作为实盘收益预期。",
+        "",
+        "## 四个同口径场景",
+        "",
+        markdown_table(summary),
+        "",
+        "## 当前145笔分段与分年结果",
+        "",
+        markdown_table(current_periods),
+        "",
+        "## E门禁：完整无L组合分段对照",
+        "",
+        markdown_table(e_portfolio_comparison),
+        "",
+        *verdict_lines(
+            e_portfolio_comparison,
+            "E入场门禁（无L组合）",
+            "gate_off",
+            "gate_on",
+            risk_accepted=(not e_gate_validation_passed and e_gate_risk_accepted),
+        ),
+        "## M：完整无L组合分段对照",
+        "",
+        markdown_table(m_portfolio_comparison),
+        "",
+        *verdict_lines(
+            m_portfolio_comparison,
+            "M补位腿（无L组合）",
+            "m_off",
+            "m_on",
+            risk_accepted=(not m_noninferior and m_risk_accepted),
+        ),
+        "## E每日候选门禁样本",
+        "",
+        markdown_table(e_validation),
+        "",
+        "## 口径锁定",
+        "",
+        "- 信号日范围：20240520～20260514；同一账户严格按退出日释放资金。",
+        "- D为盘中腿，按真实时序优先；其余按A>M>E>C选择当天唯一候选。",
+        "- L源文件没有纳入本次输入清单，因此以后L研究文件变化不会污染当前无L认证。",
+        "- A/C显式扣双边佣金、过户费及卖出印花税；普通腿仓位82.5%；D保留80%成交压力折扣。",
+        "- 输出`portfolio_trades.csv`是当前145笔唯一正式样本；旧L结果只保留在专项审计目录。",
+    ]
+    (OUTPUT_DIR / "portfolio_report.md").write_text(
+        "\n".join(lines), encoding="utf-8"
+    )
+
+
+def certify_current_without_l(*, refresh_input_manifest: bool = False) -> None:
+    """按当前D>A>M>E>C从481个信号日重新认证，完全排除L。"""
+
+    write_certification(
+        {
+            "schema_version": 1,
+            "status": "RUNNING",
+            "current_executable": False,
+            "scenario": "current_no_l_d_a_m_e_c",
+            "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+            "note": "正在从481个信号日重建无L组合；完成前按fail-closed处理。",
+        }
+    )
+    sources = load_sources()
+    no_l_without_e_without_m = replay(
+        sources,
+        entry_gate_enabled=False,
+        l_enabled=False,
+        m_enabled=False,
+    )
+    no_l_with_e_without_m = replay(
+        sources,
+        entry_gate_enabled=True,
+        l_enabled=False,
+        m_enabled=False,
+    )
+    no_l_without_e_with_m = replay(
+        sources,
+        entry_gate_enabled=False,
+        l_enabled=False,
+        m_enabled=True,
+    )
+    current_daily = replay(
+        sources,
+        entry_gate_enabled=True,
+        l_enabled=False,
+        m_enabled=True,
+    )
+    current_scenario = "current_no_l_d_a_m_e_c"
+    summary = pd.DataFrame(
+        [
+            summarize(no_l_without_e_without_m, "no_l_without_e_gate_without_m"),
+            summarize(no_l_with_e_without_m, "no_l_with_e_gate_without_m"),
+            summarize(no_l_without_e_with_m, "no_l_without_e_gate_with_m"),
+            summarize(current_daily, current_scenario),
+        ]
+    )
+    summary["is_current_executable"] = summary["scenario"].eq(current_scenario)
+    current_summary = summary[summary["scenario"].eq(current_scenario)].iloc[0]
+
+    # 这是停L后的首个冻结回归锚点。任何输入、顺序或成交口径漂移都必须显式审查，
+    # 不能靠重跑悄悄生成另一组更好数字。
+    if int(current_summary["executed_trade_count"]) != EXPECTED_NO_L_CURRENT_TRADE_COUNT:
+        raise RuntimeError(
+            f"无L组合样本数不是冻结值{EXPECTED_NO_L_CURRENT_TRADE_COUNT}，拒绝发布"
+        )
+    if (
+        abs(float(current_summary["equity_multiple"]) - EXPECTED_NO_L_CURRENT_MULTIPLE)
+        > 1e-9
+    ):
+        raise RuntimeError(
+            f"无L组合复利偏离冻结值{EXPECTED_NO_L_CURRENT_MULTIPLE}，拒绝发布"
+        )
+    if int(current_summary["l_trade_count"]) != 0:
+        raise RuntimeError("无L认证仍出现L交易，拒绝发布")
+
+    runtime_config = json.loads(RUNTIME_CONFIG_PATH.read_text(encoding="utf-8"))
+    model3_config = runtime_config.get("strategy_model3", {})
+    if bool(model3_config.get("l_participation_enabled", True)):
+        raise RuntimeError("无L认证要求l_participation_enabled=false")
+    if [str(value).upper() for value in model3_config.get("strategy_priority_order", [])] != [
+        "D", "A", "M", "E", "C"
+    ]:
+        raise RuntimeError("当前配置腿序不是D>A>M>E>C，拒绝发布")
+
+    e_validation = e_entry_gate_validation(sources)
+    required_e_splits = e_validation[e_validation["split"].ne("全部")]
+    e_gate_validation_passed = not bool(
+        (required_e_splits["removed_avg_return"] >= 0).any()
+        or (required_e_splits["optimized_vs_base"] <= 0).any()
+    )
+    e_config = runtime_config.get("strategy_e", {})
+    e_gate_risk_accepted = bool(e_config.get("full_sample_gate_risk_accepted", False))
+    if not e_gate_validation_passed and not e_gate_risk_accepted:
+        raise RuntimeError("E候选门禁验证未通过且未明确接受风险，拒绝发布")
+
+    e_portfolio_comparison = segment_comparison(
+        no_l_without_e_with_m,
+        current_daily,
+        before_label="gate_off",
+        after_label="gate_on",
+    )
+    e_portfolio_noninferior, e_portfolio_reason = noninferiority_passes(
+        e_portfolio_comparison, "gate_off", "gate_on"
+    )
+    if not e_portfolio_noninferior and not e_gate_risk_accepted:
+        raise RuntimeError(f"E无L组合非劣门禁未通过：{e_portfolio_reason}")
+
+    m_portfolio_comparison = segment_comparison(
+        no_l_with_e_without_m,
+        current_daily,
+        before_label="m_off",
+        after_label="m_on",
+    )
+    m_noninferior, m_noninferior_reason = noninferiority_passes(
+        m_portfolio_comparison, "m_off", "m_on"
+    )
+    m_config = runtime_config.get("strategy_m", {})
+    m_live_enabled = bool(m_config.get("enabled", False)) and bool(
+        m_config.get("live_order_enabled", False)
+    )
+    m_risk_accepted = bool(m_config.get("live_noninferiority_override", False))
+    certification_status = resolve_m_release_status(
+        m_live_enabled=m_live_enabled,
+        m_noninferior=m_noninferior,
+        risk_accepted=m_risk_accepted,
+        noninferiority_reason=m_noninferior_reason,
+    )
+    if (not e_gate_validation_passed or not e_portfolio_noninferior) and e_gate_risk_accepted:
+        certification_status = "PASS_WITH_RISK_ACCEPTANCE"
+
+    no_l_without_e_with_m.to_csv(
+        OUTPUT_DIR / "portfolio_daily_before_gate.csv", index=False, encoding="utf-8-sig"
+    )
+    current_daily.to_csv(
+        OUTPUT_DIR / "portfolio_daily_after_e_gate.csv", index=False, encoding="utf-8-sig"
+    )
+    current_daily.to_csv(
+        OUTPUT_DIR / "portfolio_daily.csv", index=False, encoding="utf-8-sig"
+    )
+    current_trades = current_daily[current_daily["status"].astype(str).eq("EXECUTED")]
+    current_trades.to_csv(
+        OUTPUT_DIR / "portfolio_trades.csv", index=False, encoding="utf-8-sig"
+    )
+    current_periods = period_metrics(current_daily)
+    current_periods.to_csv(
+        OUTPUT_DIR / "portfolio_period_metrics.csv", index=False, encoding="utf-8-sig"
+    )
+    summary.to_csv(OUTPUT_DIR / "portfolio_summary.csv", index=False, encoding="utf-8-sig")
+    e_validation.to_csv(
+        OUTPUT_DIR / "e_entry_gate_validation.csv", index=False, encoding="utf-8-sig"
+    )
+    e_portfolio_comparison.to_csv(
+        OUTPUT_DIR / "e_gate_portfolio_validation.csv", index=False, encoding="utf-8-sig"
+    )
+    m_portfolio_comparison.to_csv(
+        OUTPUT_DIR / "m_leg_portfolio_validation.csv", index=False, encoding="utf-8-sig"
+    )
+    l_invalidation = pd.DataFrame(
+        [
+            {
+                "status": "INVALIDATED_AND_DISABLED",
+                "current_l_participation_enabled": False,
+                "current_l_trade_count": 0,
+                "invalid_legacy_trade_count": 48,
+                "reason": "旧154笔组合中的48笔L不是由完整涨停池按当前L定义产生",
+            }
+        ]
+    )
+    l_invalidation.to_csv(
+        OUTPUT_DIR / "l_chain_expansion_validation.csv", index=False, encoding="utf-8-sig"
+    )
+    l_invalidation.to_csv(
+        OUTPUT_DIR / "l_participation_invalidation.csv", index=False, encoding="utf-8-sig"
+    )
+    write_no_l_report(
+        summary,
+        current_periods,
+        e_validation,
+        e_portfolio_comparison,
+        m_portfolio_comparison,
+        current_scenario=current_scenario,
+        certification_status=certification_status,
+        e_gate_validation_passed=e_gate_validation_passed,
+        e_gate_risk_accepted=e_gate_risk_accepted,
+        m_noninferior=m_noninferior,
+        m_noninferior_reason=m_noninferior_reason,
+        m_risk_accepted=m_risk_accepted,
+    )
+
+    manifest_path = write_input_manifest(
+        refresh=refresh_input_manifest,
+        include_l=False,
+    )
+    input_files = [manifest_path.relative_to(PROJECT_ROOT).as_posix()]
+    certification = {
+        "schema_version": 1,
+        "status": certification_status,
+        "current_executable": True,
+        "scenario": current_scenario,
+        "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "input_start_date": str(current_daily["signal_date"].min()),
+        "input_end_date": str(current_daily["signal_date"].max()),
+        "signal_day_count": int(current_summary["signal_day_count"]),
+        "executed_trade_count": int(current_summary["executed_trade_count"]),
+        "a_trade_count": int(current_summary["a_trade_count"]),
+        "c_trade_count": int(current_summary["c_trade_count"]),
+        "d_trade_count": int(current_summary["d_trade_count"]),
+        "e_trade_count": int(current_summary["e_trade_count"]),
+        "l_trade_count": 0,
+        "m_trade_count": int(current_summary["m_trade_count"]),
+        "strategy_priority_order": ["D", "A", "M", "E", "C"],
+        "l_participation_enabled": False,
+        "equity_multiple": float(current_summary["equity_multiple"]),
+        "win_rate": float(current_summary["win_rate"]),
+        "avg_return": float(current_summary["avg_return"]),
+        "median_return": float(current_summary["median_return"]),
+        "max_drawdown": float(current_summary["max_drawdown"]),
+        "max_profit": float(current_summary["max_profit"]),
+        "max_loss": float(current_summary["max_loss"]),
+        "profit_loss_ratio": float(current_summary["profit_loss_ratio"]),
+        "max_consecutive_losses": int(current_summary["max_consecutive_losses"]),
+        "fixed_initial_notional_multiple": float(
+            current_summary["fixed_initial_notional_multiple"]
+        ),
+        "theoretical_ending_equity": float(current_summary["theoretical_ending_equity"]),
+        "theoretical_next_order_amount": float(
+            current_summary["theoretical_next_order_amount"]
+        ),
+        "capacity_certified": False,
+        "m_live_enabled": m_live_enabled,
+        "m_noninferiority_passed": m_noninferior,
+        "m_noninferiority_reason": m_noninferior_reason,
+        "m_live_risk_accepted": m_risk_accepted,
+        "m_live_risk_acceptance_note": m_config.get(
+            "live_noninferiority_override_note", ""
+        ),
+        "e_strategy_leg": "E",
+        "e_strategy_variant": str(e_config.get("strategy_variant", "E_CURRENT")),
+        "e_complete_sample_candidate_count_before_gate": 102,
+        "e_complete_sample_candidate_count_after_gate": 82,
+        "e_gate_candidate_validation_passed": e_gate_validation_passed,
+        "e_gate_portfolio_noninferiority_passed": e_portfolio_noninferior,
+        "e_gate_portfolio_noninferiority_reason": e_portfolio_reason,
+        "e_gate_risk_accepted": e_gate_risk_accepted,
+        "e_gate_risk_acceptance_note": e_config.get(
+            "full_sample_gate_risk_acceptance_note", ""
+        ),
+        "config_sha256": certification_config_sha256(runtime_config),
+        "code_files": CODE_CERTIFICATION_FILES,
+        "code_sha256": certification_files_sha256(PROJECT_ROOT, CODE_CERTIFICATION_FILES),
+        "input_files": input_files,
+        "input_sha256": certification_files_sha256(PROJECT_ROOT, input_files),
+        "note": (
+            "L已从完整481日逐日组合回放中排除；旧154笔认证永久失效。"
+            "M在自然年2025存在收益劣段，按用户既有风险接受保留。"
+            "机械复利和82.5%仓位的资金容量未认证，不代表未来收益。"
+        ),
+    }
+    write_certification(certification)
+    print("当前无L可执行组合认证完成")
+    print(summary.to_string(index=False))
+    print("\nE无L组合分段验证")
+    print(e_portfolio_comparison.to_string(index=False))
+    print("\nM无L组合分段验证")
+    print(m_portfolio_comparison.to_string(index=False))
+
+
 def main(*, refresh_input_manifest: bool = False) -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    runtime_config_at_start = json.loads(RUNTIME_CONFIG_PATH.read_text(encoding="utf-8"))
+    if not bool(
+        runtime_config_at_start.get("strategy_model3", {}).get(
+            "l_participation_enabled", True
+        )
+    ):
+        certify_current_without_l(refresh_input_manifest=refresh_input_manifest)
+        return
     write_certification(
         {
             "schema_version": 1,

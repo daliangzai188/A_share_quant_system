@@ -1,29 +1,31 @@
 {
   "schema_version": 1,
   "status": "ACTIVE",
-  "policy_id": "compound-floor-20260818-e-cross-architecture-v4",
-  "supersedes_policy_id": "compound-floor-20260818-e-cross-platform-v3",
-  "correction_reason": "完整E样本的股票、日期、门禁、退出、净收益、交易数、复利和回撤均未变化；仅把清单路径统一为正斜杠，并把不参与交易计算的派生展示特征固定为15位有效数字，消除Windows ARM与Mac末位浮点舍入差异。",
-  "legacy_anchor": {
-    "release_id": "model3-20260811-dlam-e2c-v1.2-shadow",
-    "input_sha256": "d0c7b8a41d3f909db1ee90b94cc1704d4b176fc76180823eaf062aaf1680e2d1",
-    "equity_multiple": 29388.980133715802,
-    "input_defect": "E只使用43行锁定成交子集，不是E_CURRENT完整逐日候选池，因此不可继续作为同口径发布锚点。"
+  "policy_id": "compound-floor-20260818-no-l-v5",
+  "supersedes_policy_id": "compound-floor-20260818-e-cross-architecture-v4",
+  "correction_reason": "旧复利锚点包含48笔由错误候选池产生的L交易，已不具备可比性；本锚点按当前有效D>A>M>E>C从481个信号日重新逐日回放建立，不是对旧24175倍进行人为下调。",
+  "invalidated_legacy_anchor": {
+    "release_id": "model3-20260818-e-identity-v2.6",
+    "scenario": "current_with_m_gap_leg",
+    "trade_count": 154,
+    "l_trade_count": 48,
+    "equity_multiple": 24175.18629495031,
+    "input_defect": "48笔L并非由完整涨停池按当前L定义产生，且12笔退出规则不一致；禁止用于发布、比较或实盘许可。"
   },
   "anchor": {
-    "release_id": "model3-20260818-e-identity-v2.0",
-    "scenario": "current_with_m_gap_leg",
+    "release_id": "model3-20260818-no-l-v3.0",
+    "scenario": "current_no_l_d_a_m_e_c",
     "input_start_date": "20240520",
     "input_end_date": "20260514",
-    "input_sha256": "2538a691251d8db079ab773140b38f27bd1e83d3900c117317524652fe8acf52",
+    "input_sha256": "8484c4041d45021a4fa6c412f58b493dd85f6790e682861e0a44f2f39a63da74",
     "initial_equity": 500000.0,
     "position_pct": 0.825,
-    "equity_multiple": 24175.18629495031
+    "equity_multiple": 4445.281570391435
   },
   "hard_floor_ratio": 0.7,
-  "hard_floor_multiple": 16922.630406465217,
+  "hard_floor_multiple": 3111.6970992740045,
   "automatic_release_ratio": 1.0,
-  "automatic_release_multiple": 24175.18629495031,
+  "automatic_release_multiple": 4445.281570391435,
   "accepted_certification_statuses": [
     "PASS",
     "PASS_WITH_RISK_ACCEPTANCE"
@@ -35,5 +37,5 @@
     "same_initial_equity": true,
     "same_position_pct": true
   },
-  "note": "本锚点是2026-08-18完整候选样本的跨架构格式修正版，复利24175.186295倍和硬底线均未下调。以后任何策略优化必须先按相同历史输入、初始资金和仓位口径完成组合认证。候选复利低于锚点70%时无条件拒绝；处于70%至100%之间时只能人工审查并显式接受；达到或超过锚点时才通过复利非劣门禁。历史倍数不代表未来收益或实盘容量。"
+  "note": "该锚点只适用于L停用后的D>A>M>E>C同口径。机械复利不代表实盘预期；82.5%仓位的资金容量仍未认证。"
 }
