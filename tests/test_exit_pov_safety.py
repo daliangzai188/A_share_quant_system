@@ -2241,6 +2241,112 @@ class StrategyDConditionalExitTest(unittest.TestCase):
             )
         )
 
+    def test_exit_pov_handoff_time_is_driven_by_validated_config(self) -> None:
+        config_path = trading_daemon.PROJECT_ROOT / "config" / "config.json"
+        live_cfg = json.loads(config_path.read_text(encoding="utf-8"))["live_trade"]
+
+        self.assertEqual(
+            trading_daemon._configured_exit_pov_handoff_time(live_cfg),
+            datetime.time(14, 53),
+        )
+        self.assertEqual(
+            trading_daemon._configured_exit_pov_handoff_time(
+                {"exit_pov_handoff_time": "14:51:30"}
+            ),
+            datetime.time(14, 51, 30),
+        )
+        for invalid in ("", "not-a-time", "14:40:00", "14:55:00", "14:53:00+08:00"):
+            self.assertEqual(
+                trading_daemon._configured_exit_pov_handoff_time(
+                    {"exit_pov_handoff_time": invalid}
+                ),
+                trading_daemon.SCHED_EXIT_POV_HANDOFF,
+            )
+
+    def test_no_due_position_at_1300_is_rescanned_after_account_recovery(self) -> None:
+        frozen_now = datetime.datetime(
+            2026, 8, 18, 13, 0, 5, tzinfo=trading_daemon.BEIJING_TZ
+        )
+        recovered_due = {
+            "order_id": "RECOVERED-DUE",
+            "ts_code": "603118.SH",
+            "name": "恢复持仓",
+            "shares": 10_000,
+            "strategy_leg": "L",
+            "status": "open",
+            "planned_exit_date": "20260818",
+        }
+        quote = QuoteSnapshot(
+            ts_code="603118.SH",
+            broker_code="603118.SH",
+            last_price=10.0,
+            amount=100_000_000.0,
+        )
+        adapter = SimpleNamespace(
+            get_full_tick=lambda _codes: {"603118.SH": quote}
+        )
+        config = {
+            "broker_adapter_enabled": True,
+            "qmt_enabled": True,
+            "broker": {"enabled": True},
+            "live_trade": {
+                "exit_pov_enabled": True,
+                "exit_pov_strategy_legs": ["A", "C", "D", "E", "L", "M"],
+                "exit_pov_handoff_time": "14:53:00",
+                "exit_pov_trigger_pct": 0.01,
+            },
+        }
+
+        with patch.object(trading_daemon, "now_beijing", return_value=frozen_now), \
+             patch.object(trading_daemon, "today_beijing", return_value=frozen_now.date()), \
+             patch.object(trading_daemon, "is_trade_day", return_value=True), \
+             patch.object(trading_daemon, "load_json_config", return_value=config), \
+             patch.object(
+                 trading_daemon,
+                 "load_positions",
+                 side_effect=[[], [recovered_due]],
+             ) as load_positions, \
+             patch.object(trading_daemon, "_qmt_get", return_value=adapter), \
+             patch.object(
+                 trading_daemon.time,
+                 "sleep",
+                 side_effect=[None, _StopWatchdog()],
+             ):
+            with self.assertRaises(_StopWatchdog):
+                trading_daemon._exit_pov_monitor()
+
+        self.assertEqual(load_positions.call_count, 2)
+
+    def test_exit_pov_slice_stops_at_configured_handoff(self) -> None:
+        frozen_now = datetime.datetime(
+            2026, 8, 18, 14, 52, 1, tzinfo=trading_daemon.BEIJING_TZ
+        )
+        plan = {
+            "pos": {
+                "order_id": "LOCAL-HANDOFF",
+                "ts_code": "603118.SH",
+                "shares": 10_000,
+            },
+            "remain_sh": 10_000,
+            "slice_no": 0,
+        }
+        config = {
+            "live_trade": {"exit_pov_handoff_time": "14:52:00"}
+        }
+
+        with patch.object(trading_daemon, "now_beijing", return_value=frozen_now), \
+             patch.object(trading_daemon, "today_beijing", return_value=frozen_now.date()), \
+             patch.object(trading_daemon, "load_json_config", return_value=config), \
+             patch.object(trading_daemon, "_qmt_get") as qmt_get:
+            trading_daemon._exit_pov_slice(
+                plan,
+                {},
+                0.25,
+                _NoopLog(),
+            )
+
+        qmt_get.assert_not_called()
+
     def test_only_t2_due_d_enters_pov_pool_and_relay_d_stays_out(self) -> None:
         positions = [
             {

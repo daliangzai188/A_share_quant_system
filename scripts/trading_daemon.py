@@ -18,7 +18,7 @@ A_System 量化策略常驻守护进程。
     13:00  卖出容量检查 —— 普通D等收盘退出腿仅在仓位超过实时容量门槛时启动POV
     14:30/14:45 —— 按实际成交流速复核容量，小仓位继续等待14:55
     14:55  收盘平仓 —— 连续竞价合法价格笼子下限；14:56:20撤余单，14:57:05仅按安全账本真实余量进收盘竞价
-    14:40  撤买单 —— 提前撤销所有未成交买单，不占用14:53后的平仓QMT通道
+    14:40  撤买单 —— 提前撤销所有未成交买单，不占用POV交接后的平仓QMT通道
     15:10  收盘  —— 数据流水线 + 信号生成
 
 持仓状态：data/processed/positions.json
@@ -398,9 +398,9 @@ SCHED_AFTERNOON_CLOSE = datetime.time(14, 55)
 # 15分钟）。目的：平仓时点独占QMT通道，绝不被撤单挡路；
 # 且排队一天未成交的开仓买单（一字板排队）尾盘炸板成交=高位接盘，早撤无损失。
 SCHED_CANCEL_BUY_ORDERS = datetime.time(14, 40)
-# 平仓静默窗：14:53起止盈线程休眠、14:54:30~14:58账户心跳跳过，
-# 确保POV交权、14:55主平仓及14:56:20撤单/竞价兜底时QMT通道零竞争。
-SCHED_TAKEPROFIT_QUIET = datetime.time(14, 53)
+# 平仓静默窗起点由 live_trade.exit_pov_handoff_time 统一驱动；
+# 14:54:30~14:58账户心跳另行跳过，确保交权、14:55主平仓及
+# 14:56:20撤单/竞价兜底时QMT通道零竞争。
 SCHED_EXIT_LARGE_FORCE_START = datetime.time(14, 15)
 # 连续竞价主平仓余单的最晚撤单起点。提前于14:57留出多轮状态复核；此后
 # 14:57前禁止再新发连续竞价平仓单，避免旧价格笼子委托带入收盘集合竞价。
@@ -2817,16 +2817,17 @@ def _abc_place_sell_order_direct_locked(
     )
     confirmation_budget_sec = 60 + max(len(submitted) - 1, 0) * 5 + 10
     now_for_confirm = now_beijing()
+    handoff_time = _configured_exit_pov_handoff_time(config.get("live_trade", {}))
     handoff_at = datetime.datetime.combine(
-        now_for_confirm.date(), SCHED_EXIT_POV_HANDOFF, tzinfo=BEIJING_TZ
+        now_for_confirm.date(), handoff_time, tzinfo=BEIJING_TZ
     )
     seconds_to_handoff = (handoff_at - now_for_confirm).total_seconds()
     if (
         now_for_confirm.time() >= SCHED_AFTERNOON_CLOSE
         or seconds_to_handoff <= confirmation_budget_sec
     ):
-        # 不仅14:55主任务：任何在理论确认耗时内可能跨过14:53交权
-        # 点的调用（例如14:54启动补检），都只做“核仓→安全预算→
+        # 不仅14:55主任务：任何在理论确认耗时内可能跨过配置交权点
+        # 的调用（例如14:54启动补检），都只做“核仓→安全预算→
         # 拆单快速提交”。绝不在全局卖出锁内逐张等待，否则会饿死
         # 14:56:20撤单交接。成交回写交给看门狗逐轮即时确认，15:00:30
         # 双快照只保留作最终兜底。
@@ -2943,6 +2944,24 @@ def _configured_exit_pov_strategy_legs(live_cfg: dict[str, Any]) -> frozenset[st
         return T2_CLOSE_STRATEGY_LEGS
     normalized = {str(value).strip().upper() for value in raw}
     return frozenset(normalized & T2_CLOSE_STRATEGY_LEGS)
+
+
+def _configured_exit_pov_handoff_time(live_cfg: dict[str, Any]) -> datetime.time:
+    """读取卖出POV交接时刻；非法配置回退到锁定的14:53安全值。
+
+    交接必须晚于14:40撤买单且早于14:55主平仓。这样配置可以成为唯一
+    事实源，同时不会因拼写错误把POV延伸到主平仓窗口或提前抢占撤单通道。
+    """
+    raw = str(live_cfg.get("exit_pov_handoff_time", "") or "").strip()
+    try:
+        parsed = datetime.time.fromisoformat(raw)
+    except (TypeError, ValueError):
+        return SCHED_EXIT_POV_HANDOFF
+    if parsed.tzinfo is not None:
+        return SCHED_EXIT_POV_HANDOFF
+    if not SCHED_CANCEL_BUY_ORDERS < parsed < SCHED_AFTERNOON_CLOSE:
+        return SCHED_EXIT_POV_HANDOFF
+    return parsed
 
 
 def _fixed_large_runway_allowed(position: dict[str, Any], live_cfg: dict[str, Any]) -> bool:
@@ -4299,12 +4318,13 @@ def _exit_pov_slice(
     today_str = today_beijing().strftime("%Y%m%d")
     plan["slice_no"] = int(plan.get("slice_no", 0) or 0) + 1
     try:
+        config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+        lt = config.get("live_trade", {})
+        handoff_time = _configured_exit_pov_handoff_time(lt)
         with _exit_sell_lock:
-            if now_beijing().time() >= SCHED_EXIT_POV_HANDOFF:
+            if now_beijing().time() >= handoff_time:
                 return
-            config = load_json_config(PROJECT_ROOT / "config" / "config.json")
             _assert_exit_live_allowed(config)
-            lt = config.get("live_trade", {})
             late_phase = cadence_sec <= 60
             depth_levels = int(lt.get("exit_pov_depth_levels", 3))
             depth_haircut = float(lt.get("exit_pov_depth_haircut", 0.50))
@@ -4479,10 +4499,10 @@ def _exit_pov_slice(
             )
             if fill.filled_qty < qty and not fill.is_terminal:
                 _try_cancel_order(broker_cfg, oid, ts_code)
-                # 尾段必须在14:53前交权，终态确认不再固定等待20秒。
+                # 尾段必须在配置时刻前交权，终态确认不再固定等待20秒。
                 seconds_left = max(
                     2.0,
-                    (datetime.datetime.combine(sampled_at.date(), SCHED_EXIT_POV_HANDOFF,
+                    (datetime.datetime.combine(sampled_at.date(), handoff_time,
                                                tzinfo=BEIJING_TZ) - now_beijing()).total_seconds() - 2.0,
                 )
                 fill = _confirm_fill(
@@ -4559,8 +4579,10 @@ def _exit_pov_monitor() -> None:
             today_str = today_beijing().strftime("%Y%m%d")
             if (not is_trade_day(now.date())) or done_day == today_str:
                 time.sleep(300); continue
-            if t >= SCHED_EXIT_POV_HANDOFF:
-                config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+            config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+            lt = config.get("live_trade", {})
+            handoff_time = _configured_exit_pov_handoff_time(lt)
+            if t >= handoff_time:
                 if config.get("broker_adapter_enabled") and config.get("qmt_enabled"):
                     with _exit_sell_lock:
                         _cancel_active_exit_pov_orders(config.get("broker", {}), wait_sec=20)
@@ -4568,15 +4590,24 @@ def _exit_pov_monitor() -> None:
                 time.sleep(300); continue
             if t < datetime.time(13, 0, 5):
                 time.sleep(min(120, max(5, (now.replace(hour=13, minute=0, second=5) - now).total_seconds()))); continue
-            config = load_json_config(PROJECT_ROOT / "config" / "config.json")
-            lt = config.get("live_trade", {})
             qmt_on = (config.get("broker_adapter_enabled") and config.get("qmt_enabled")
                       and config.get("broker", {}).get("enabled"))
             if not bool(lt.get("exit_pov_enabled", True)) or not qmt_on:
                 done_day = today_str; continue
             due = _exit_pov_due_positions(load_positions(), today_str, lt)
             if not due:
-                done_day = today_str; continue
+                # 13:00账户/本地恢复可能暂时还没有识别出到期仓。不能把当天
+                # 永久标记完成；交接前持续重扫，恢复出来的仓位仍须参加容量
+                # 门禁与14:30/14:45流速复查。
+                handoff_at = datetime.datetime.combine(
+                    now.date(), handoff_time, tzinfo=BEIJING_TZ
+                )
+                retry_after = min(
+                    30.0,
+                    max(1.0, (handoff_at - now_beijing()).total_seconds()),
+                )
+                time.sleep(retry_after)
+                continue
             part = float(lt.get("exit_pov_participation", 0.25))
             late_part = float(lt.get("exit_pov_late_participation", 0.35))
             late_timeout = int(lt.get("exit_pov_late_confirm_timeout_sec", 20))
@@ -4654,13 +4685,17 @@ def _exit_pov_monitor() -> None:
                 _notify("sell_result", "🏃 大仓位分批平仓启动",
                         "；".join(f"{p['pos'].get('ts_code','')} {p['pos'].get('name','')} 分批卖出" for p in plans)
                         + f"。常规片=5分钟成交×{part:.0%};14:46后切1分钟×{late_part:.0%},"
-                          "14:53前停止新片并完成交接,剩余由14:55主平仓单处理。")
+                          f"{handoff_time.strftime('%H:%M:%S')}前停止新片并完成交接,"
+                          "剩余由14:55主平仓单处理。")
             # ── 13:00~14:40按5分钟；14:45复查；14:46~14:52按1分钟 ──
             checked_1430 = False
             checked_1445 = False
             cum_1430: dict[str, float] = {}
             planned_ids = {str(p["pos"].get("order_id", "")) for p in plans}
-            while now_beijing().time() < datetime.time(14, 52, 20):
+            slice_stop_at = datetime.datetime.combine(
+                now.date(), handoff_time, tzinfo=BEIJING_TZ
+            ) - datetime.timedelta(seconds=40)
+            while now_beijing() < slice_stop_at:
                 # 14:30按“最近实际流速×剩余分钟”重算跑道。旧版再次比较累计额×1%
                 # 永远无法新增触发（累计额只增），这里改为真正能识别午后缩量的容量条件。
                 if not checked_1430 and now_beijing().time() >= datetime.time(14, 30):
@@ -4780,22 +4815,26 @@ def _exit_pov_monitor() -> None:
                 sl = (nxt - now2).total_seconds()
                 if sl > 0:
                     time.sleep(sl)
-            # 14:53前强制撤净所有POV活单，再把控制权交给14:55主平仓。
+            # 配置交接点前强制撤净所有POV活单，再把控制权交给14:55主平仓。
             with _exit_sell_lock:
                 _cancel_active_exit_pov_orders(broker_cfg, wait_sec=25)
             leftover = [p for p in plans if not p["done"]]
             if leftover:
+                handoff_label = handoff_time.strftime("%H:%M:%S")
                 for plan in leftover:
                     _record_exit_pov_slice(
                         plan,
                         remaining_qty=int(plan.get("remain_sh", 0) or 0),
-                        status="14:53交接",
+                        status=f"{handoff_label}交接",
                         note="卖出POV停止新片，剩余股数交给14:55主平仓链路",
                     )
-                log.warning("[卖出POV] 14:53交接:%d只未卖完(剩余%s),交14:55主平仓链路；"
-                            "14:56:20起撤未成主单，14:57:05仅按真实残仓集合竞价兜底。",
-                            len(leftover),
-                            "、".join(f"{p['pos'].get('ts_code','')}{p['remain_sh']}股" for p in leftover))
+                log.warning(
+                    "[卖出POV] %s交接:%d只未卖完(剩余%s),交14:55主平仓链路；"
+                    "14:56:20起撤未成主单，14:57:05仅按真实残仓集合竞价兜底。",
+                    handoff_label,
+                    len(leftover),
+                    "、".join(f"{p['pos'].get('ts_code','')}{p['remain_sh']}股" for p in leftover),
+                )
             done_day = today_str
         except Exception as e:
             log.error("卖出POV线程异常:%s", e)
@@ -5990,13 +6029,14 @@ def _intraday_takeprofit_monitor() -> None:
     while True:
         try:
             now = now_beijing(); t = now.time()
+            config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+            lt = config.get("live_trade", {})
+            takeprofit_quiet_time = _configured_exit_pov_handoff_time(lt)
             # 09:20起挂单：让止盈卖单参与集合竞价——开盘即涨停的极端日
             # 在09:25直接按开盘价(=涨停价)成交，消灭9:25~9:30静默期的
             # 炸板空窗；9:20后竞价不可撤单对本单无碍（本就挂到14:45）。
-            if not is_trade_day(now.date()) or t < datetime.time(9, 20) or t >= SCHED_TAKEPROFIT_QUIET:
+            if not is_trade_day(now.date()) or t < datetime.time(9, 20) or t >= takeprofit_quiet_time:
                 time.sleep(60 if datetime.time(9, 0) <= t < datetime.time(9, 20) else 120); continue
-            config = load_json_config(PROJECT_ROOT / "config" / "config.json")
-            lt = config.get("live_trade", {})
             if not lt.get("intraday_takeprofit_enabled", True):
                 time.sleep(300); continue
             offset = float(lt.get("intraday_takeprofit_offset", 0.01))
@@ -11765,7 +11805,7 @@ def job_afternoon() -> None:
     try:
         config = load_json_config(PROJECT_ROOT / "config" / "config.json")
         if config.get("broker_adapter_enabled") and config.get("qmt_enabled"):
-            # 14:53线程已做一次；这里幂等再清场，覆盖daemon重启或线程异常。
+            # POV配置交接线程已做一次；这里幂等再清场，覆盖daemon重启或线程异常。
             # 撤单函数自行持有卖出生命周期锁；不能把整批持仓提交/成交确认
             # 包进全局锁，否则第一只慢单会饿死14:56:20交接和后续标的。
             handoff_clean = _cancel_active_exit_pov_orders(
