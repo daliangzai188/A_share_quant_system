@@ -10,7 +10,7 @@
     {"path": "data/processed/positions.json", "kind": "json", "required": true},
     {"path": "data/processed/exit_execution_state.json", "kind": "json", "required": true},
     {"path": "data/processed/pending_premarket_buy.json", "kind": "json", "required": false},
-    {"path": "data/processed/e2_capacity_history.json", "kind": "json", "required": false},
+    {"path": "data/processed/e_capacity_history.json", "kind": "json", "required": false},
     {"path": "data/state/pov_state.json", "kind": "json", "required": false},
     {"path": "data/state/due_positions_ledger.json", "kind": "json", "required": false},
     {"path": "data/state/d_relay_pair_state.json", "kind": "json", "required": false},
@@ -20,7 +20,8 @@
     {"path": "reports/execution_tracking/sell_execution_slices.csv", "kind": "csv", "required": true},
     {"path": "reports/execution_tracking/trade_completion_summary.csv", "kind": "csv", "required": true},
     {"path": "reports/strategy_m/m_equity_peak.json", "kind": "json", "required": true},
-    {"path": "reports/strategy_e2/e2_signals_recent.json", "kind": "json", "required": false},
+    {"path": "reports/strategy_e/e_signals_recent.json", "kind": "json", "required": false},
+    {"path": "reports/strategy_e/e_signal_runs_recent.json", "kind": "json", "required": false},
     {"path": "reports/strategy_l/l_signals_recent.json", "kind": "json", "required": false},
     {"path": "reports/strategy_m/m_signal_runs_recent.json", "kind": "json", "required": false}
   ],

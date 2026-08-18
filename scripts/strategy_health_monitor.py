@@ -2,8 +2,8 @@
 """策略健康度监控(收盘流水线末步,2026-07-17 用户拍板落地)。
 
 监控各腿"信号口径收益"的滚动20笔期望/胜率,对照历史滚动分布分位:
-  <P10 → YELLOW 预警;<P5 → RED 告警(建议降仓/停腿,e2_enabled开关现成)。
-数据源 = 历史审计(199笔,至20260513) + 每日信号文件增量(E2 candidates 首行 +
+  <P10 → YELLOW 预警;<P5 → RED 告警(建议降仓/停腿,e_enabled开关现成)。
+数据源 = 历史审计(199笔,至20260513) + 每日信号文件增量(E candidates 首行 +
 ABC planned_orders BUY行),两段用同一收益口径(T+1开盘买/T+1+exit_n收盘卖,
 含0.15%费用近似)。级别变化即推送;每周一推例行摘要。
 不判死策略,只报警——降仓/停腿由用户决策。
@@ -29,7 +29,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 OUT_DIR = PROJECT_ROOT / "reports" / "strategy_health"
 STATE_FILE = OUT_DIR / "state.json"
 HISTORY_FILE = OUT_DIR / "strategy_health_history.csv"
-AUDIT = PROJECT_ROOT / "reports" / "current_live_abce2_audit" / "current_live_abce2_detail.csv"
+AUDIT = PROJECT_ROOT / "reports" / "current_live_abce_audit" / "current_live_abce_detail.csv"
 FEE = 0.0015
 ROLL = 20
 MIN_SAMPLE = 40
@@ -76,7 +76,7 @@ def signal_return(ts_code: str, sig: str, exit_n: int = 1) -> float | None:
 def collect_signals() -> dict[str, list]:
     """返回 {leg_group: [(sig_date, ts_code, exit_n, net_or_None), ...]},按信号日排序。"""
     seen: set = set()
-    seqs: dict[str, list] = {"E2": [], "ABC": []}
+    seqs: dict[str, list] = {"E": [], "ABC": []}
     # ── 历史段:审计明细(net直接用审计值,与实盘配置口径完全一致) ──
     if AUDIT.exists():
         a = pd.read_csv(AUDIT)
@@ -88,13 +88,13 @@ def collect_signals() -> dict[str, list]:
             if key in seen:
                 continue
             seen.add(key)
-            net = float(r.e2_stock_net_return if leg == "E2" else r.account_return / 0.8)
-            group = "E2" if leg == "E2" else "ABC"
+            net = float(r.e_stock_net_return if leg == "E" else r.account_return / 0.8)
+            group = "E" if leg == "E" else "ABC"
             seqs[group].append((sig, str(r.ts_code), 1, net))
     # ── 增量段:每日信号文件(审计截止日之后) ──
     audit_max = max((s for grp in seqs.values() for s, *_ in grp), default="00000000")
-    for p in sorted(glob.glob(str(PROJECT_ROOT / "reports" / "strategy_e2" / "e2_signal_*_candidates.csv"))):
-        m = re.search(r"e2_signal_(\d{8})_candidates", p)
+    for p in sorted(glob.glob(str(PROJECT_ROOT / "reports" / "strategy_e" / "e_signal_*_candidates.csv"))):
+        m = re.search(r"e_signal_(\d{8})_candidates", p)
         if not m or m.group(1) <= audit_max:
             continue
         sig = m.group(1)
@@ -105,11 +105,11 @@ def collect_signals() -> dict[str, list]:
         if d.empty:
             continue
         ts = str(d.iloc[0]["ts_code"])  # 实盘口径=第一候选
-        key = ("E2", sig, ts)
+        key = ("E", sig, ts)
         if key in seen:
             continue
         seen.add(key)
-        seqs["E2"].append((sig, ts, 1, signal_return(ts, sig, 1)))
+        seqs["E"].append((sig, ts, 1, signal_return(ts, sig, 1)))
     for p in sorted(glob.glob(str(PROJECT_ROOT / "reports" / "paper_trade" / "ab_filtered_daily_ops" / "*_planned_orders.csv"))):
         try:
             d = pd.read_csv(p, encoding="utf-8-sig")
@@ -188,7 +188,7 @@ def main() -> None:
             )
             if lvl != prev:
                 # 文案口径(2026-07-18 因果回测定稿):预警≠降仓信号≠坏消息。
-                # E2 152笔零前视回测:YELLOW/RED状态下一笔期望+7.11%/+5.79%
+                # E 152笔零前视回测:YELLOW/RED状态下一笔期望+7.11%/+5.79%
                 # (GREEN仅+0.74%,深回撤后均值回归=右尾利润藏身处);预警时降仓
                 # 两年复利2.2x→1.5x,全停→1.2x。预警的唯一用途=触发结构性核查
                 # (制度变化/玩法拥挤/规则失效——机器无法从20笔数据识别,需人工

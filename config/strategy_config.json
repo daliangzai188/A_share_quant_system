@@ -33,7 +33,7 @@
     "exclude_market_segments": [
       "star"
     ],
-    "exclude_market_segments_note": "2026-07-28 已确认科创板和北交所交易权限全部开通，北交所权限锁保持放开（exclude_bj=false），实盘候选数据已能识别bj。exclude_market_segments保留star：这是A/C认证策略自身的板块规则（strategy_name=a_clean_plus_exclude_star，认证交易中科创板0笔），不是账户权限拦截；D/E2继续按各自认证口径使用科创板。",
+    "exclude_market_segments_note": "2026-07-28 已确认科创板和北交所交易权限全部开通，北交所权限锁保持放开（exclude_bj=false），实盘候选数据已能识别bj。exclude_market_segments保留star：这是A/C认证策略自身的板块规则（strategy_name=a_clean_plus_exclude_star，认证交易中科创板0笔），不是账户权限拦截；D/E继续按各自认证口径使用科创板。",
     "exclude_bj": false,
     "exclude_chi_next": false,
     "exclude_sh_main": false,

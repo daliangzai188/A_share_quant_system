@@ -5,14 +5,14 @@
 认证脚本 `certify_current_executable_portfolio.py` 产出的复利，只有在"实盘会
 选出同样的票"时才有意义。2026-08-07 的教训是：腿序改造只改了下游
 `combined_live_engine` 的挑选顺序，上游各信号脚本的占用门还按旧腿序拦截，
-于是那些日子 M / E2 的信号根本不会生成——认证跑 27870x，实盘只能跑 22903x，
+于是那些日子 M / E 的信号根本不会生成——认证跑 27870x，实盘只能跑 22903x，
 差 17.8%，而两边的代码看起来都"改好了"。
 
 光靠读代码对不出这种差异，手写一个"复刻实盘逻辑"的函数也不行——那证明的是
 写脚本的人对实盘的理解，不是实盘代码。所以本脚本**直接调用实盘函数**：
 
     上游门   run_strategy_m_signal.higher_priority_leg_has_signal
-             run_strategy_e2_signal.has_ac_planned_order
+             run_strategy_e_signal.has_ac_planned_order
     下游腿序 combined_live_engine.CombinedLiveEngine.build_model3_plan
 
 把每个信号日的各腿候选写成实盘平时读的那些文件（A/C 操作台 csv、L 信号 json），
@@ -52,7 +52,7 @@ if "dotenv" not in sys.modules:
     sys.modules["dotenv"] = _stub
 
 import scripts.certify_current_executable_portfolio as certify  # noqa: E402
-from scripts import run_strategy_e2_signal as e2_signal  # noqa: E402
+from scripts import run_strategy_e_signal as e_signal  # noqa: E402
 from scripts import run_strategy_m_signal as m_signal  # noqa: E402
 from src.combined_live_engine import CombinedLiveEngine  # noqa: E402
 
@@ -79,7 +79,7 @@ def make_engine(project_root: Path) -> CombinedLiveEngine:
     engine.active_strategy_mode = lambda: 3
     engine.active_strategy_name = lambda: "MODEL3"
     engine.is_b_strategy_removed = lambda: True
-    engine.load_today_e2_signal = lambda _today: None
+    engine.load_today_e_signal = lambda _today: None
     engine.load_today_l_signal = lambda _today: None
     return engine
 
@@ -147,21 +147,21 @@ def build_live_picker(sources: certify.Sources, workdir: Path, stats: dict[str, 
         write_l_signal(l_path, signal_date, l_row, buy_date)
 
         # ── 上游门：调用实盘函数判断信号会不会被生成 ──────────────────
-        e2_blocked = e2_signal.has_ac_planned_order(signal_date, legs=("A",))
+        e_blocked = e_signal.has_ac_planned_order(signal_date, legs=("A",))
         m_busy, _why = m_signal.higher_priority_leg_has_signal(signal_date)
 
-        # E2 候选（过门禁后）
-        e2_signal_payload: dict[str, Any] | None = None
-        if not e2_blocked and signal_date in sources_.e2.index:
-            e2_row = certify.source_row(sources_.e2, signal_date, "E2 R1")
+        # E 候选（过门禁后）
+        e_signal_payload: dict[str, Any] | None = None
+        if not e_blocked and signal_date in sources_.e.index:
+            e_row = certify.source_row(sources_.e, signal_date, "E R1")
             if not (entry_gate_enabled
-                    and not certify.e2_entry_gate_passes(e2_row, sources_.e2_spec)):
-                e2_signal_payload = {
+                    and not certify.e_entry_gate_passes(e_row, sources_.e_spec)):
+                e_signal_payload = {
                     "signal_date": signal_date,
-                    "ts_code": str(e2_row.get("ts_code", "")),
-                    "name": str(e2_row.get("name", "")),
+                    "ts_code": str(e_row.get("ts_code", "")),
+                    "name": str(e_row.get("name", "")),
                     "limit_close": 10.0,
-                    "exit_offset": int(pd.to_numeric(e2_row.get("exit_offset", 2),
+                    "exit_offset": int(pd.to_numeric(e_row.get("exit_offset", 2),
                                                      errors="coerce") or 2),
                 }
 
@@ -183,7 +183,7 @@ def build_live_picker(sources: certify.Sources, workdir: Path, stats: dict[str, 
 
         # ── 下游腿序：交给真实的 build_model3_plan 决定 ────────────────
         engine.load_latest_abc_orders = lambda: (ops_dir / "x.csv", ac_frame.copy())
-        engine.load_yesterday_e2_signal = lambda _today, s=e2_signal_payload: s
+        engine.load_yesterday_e_signal = lambda _today, s=e_signal_payload: s
         engine.build_m_buy_order_if_any = lambda _today, _codes=None, o=m_order: (
             dict(o) if o is not None else None
         )
@@ -219,16 +219,16 @@ def build_live_picker(sources: certify.Sources, workdir: Path, stats: dict[str, 
             return dict(ac)
         if leg == "M":
             return certify.m_candidate(sources_, signal_date, equity, peak_equity)
-        if leg == "E2":
-            e2_row = certify.source_row(sources_.e2, signal_date, "E2 R1")
+        if leg == "E":
+            e_row = certify.source_row(sources_.e, signal_date, "E R1")
             return {
-                "strategy_leg": "E2",
-                "ts_code": str(e2_row.get("ts_code", "")),
-                "name": str(e2_row.get("name", "")),
-                "buy_date": certify.normalize_date(e2_row.get("buy_date")),
-                "exit_date": certify.normalize_date(e2_row.get("exit_date")),
-                "account_return": certify.to_float(e2_row.get("net_return")) * certify.POSITION_PCT,
-                "return_source": f"E2_R1:{e2_row.get('scenario_rank', '')}",
+                "strategy_leg": "E",
+                "ts_code": str(e_row.get("ts_code", "")),
+                "name": str(e_row.get("name", "")),
+                "buy_date": certify.normalize_date(e_row.get("buy_date")),
+                "exit_date": certify.normalize_date(e_row.get("exit_date")),
+                "account_return": certify.to_float(e_row.get("net_return")) * certify.POSITION_PCT,
+                "return_source": f"E_R1:{e_row.get('scenario_rank', '')}",
             }
         raise RuntimeError(f"{signal_date} 实盘返回未知腿 {leg}")
 
@@ -245,17 +245,17 @@ def main() -> None:
 
         picker = build_live_picker(sources, workdir, stats)
         original_pick = certify.pick_by_priority
-        original_ops = e2_signal.DAILY_OPS_DIR
+        original_ops = e_signal.DAILY_OPS_DIR
         original_l = m_signal.L_SIGNAL_PATH
         try:
             certify.pick_by_priority = picker
-            e2_signal.DAILY_OPS_DIR = workdir / "daily_ops"
+            e_signal.DAILY_OPS_DIR = workdir / "daily_ops"
             m_signal.L_SIGNAL_PATH = workdir / "l_signals_recent.json"
             live = certify.replay(sources, entry_gate_enabled=True,
                                   l_chain_3_8_enabled=True, m_enabled=True)
         finally:
             certify.pick_by_priority = original_pick
-            e2_signal.DAILY_OPS_DIR = original_ops
+            e_signal.DAILY_OPS_DIR = original_ops
             m_signal.L_SIGNAL_PATH = original_l
     finally:
         shutil.rmtree(workdir, ignore_errors=True)

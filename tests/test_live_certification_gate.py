@@ -7,6 +7,8 @@ from pathlib import Path
 import datetime as dt
 
 from src.live_certification import (
+    certification_file_size,
+    certification_file_sha256,
     certification_config_sha256,
     certification_files_sha256,
     validate_live_certification,
@@ -24,7 +26,7 @@ class LiveCertificationGateTests(unittest.TestCase):
             "status": "FROZEN",
             "release_id": "model3-20260811-v1",
             "frozen_at": "2026-08-11T00:00:00+00:00",
-            "strategy_priority_order": ["D", "L", "A", "M", "E2", "C"],
+            "strategy_priority_order": ["D", "L", "A", "M", "E", "C"],
             "research_input_end_date": certification["input_end_date"],
             "oos_start_date": oos_start,
             "certification_status": certification["status"],
@@ -49,6 +51,22 @@ class LiveCertificationGateTests(unittest.TestCase):
                 m_noninferior=False,
                 risk_accepted=False,
                 noninferiority_reason="2024回撤变差",
+            )
+
+    def test_text_hash_is_stable_across_windows_and_unix_newlines(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            unix_path = root / "unix.csv"
+            windows_path = root / "windows.csv"
+            unix_path.write_bytes(b"a,b\n1,2\n")
+            windows_path.write_bytes(b"a,b\r\n1,2\r\n")
+            self.assertEqual(
+                certification_file_sha256(unix_path),
+                certification_file_sha256(windows_path),
+            )
+            self.assertEqual(
+                certification_file_size(unix_path),
+                certification_file_size(windows_path),
             )
 
     def test_validator_accepts_configured_risk_acceptance_status(self) -> None:
@@ -196,7 +214,7 @@ class LiveCertificationGateTests(unittest.TestCase):
             }
             model3 = {
                 "strategy_release_freeze_path": "freeze.json",
-                "strategy_priority_order": ["D", "L", "A", "M", "E2", "C"],
+                "strategy_priority_order": ["D", "L", "A", "M", "E", "C"],
             }
             (root / "freeze.json").write_text(
                 json.dumps(self._freeze_payload(certification)), encoding="utf-8"
@@ -240,7 +258,7 @@ class LiveCertificationGateTests(unittest.TestCase):
                 "certification_expected_scenario": "current",
                 "require_strategy_release_freeze": True,
                 "strategy_release_freeze_path": "missing-freeze.json",
-                "strategy_priority_order": ["D", "L", "A", "M", "E2", "C"],
+                "strategy_priority_order": ["D", "L", "A", "M", "E", "C"],
             }
             (root / "cert.json").write_text(
                 json.dumps(

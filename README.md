@@ -2,9 +2,9 @@
 
 本项目用于构建一套完整的 A股量化交易系统，目标是先完成数据采集、数据清洗、因子统计、策略回测和模拟交易，后续再接入 QMT / miniQMT 等券商接口进行半自动或实盘交易。
 
-> 当前阶段：策略 B 已于 2026-07-22 删除；当前交易链为 A+C+D+E2，并由 mode=3 按既有规则判断 L 补位/替换。
-> 删除 B 前的 A+B、A+B+C、ABCDE2/model=3 回测指标只保留历史审计价值，不能代表当前 A/C 组合；重新发布验证尚未完成。
-> D 策略（首板打板）和 E2（板块中性小市值）继续按资金占用规则运行；历史组合倍数不作为删除 B 后的收益承诺。
+> 当前阶段：策略 B 已删除；当前腿序为 `D>L>A>M>E>C`，策略E当前版本为`E_CURRENT`。
+> E的正式完整样本为门禁前102个候选日、门禁后82个候选日；旧50/43行只作历史子集回归。
+> 当前完整组合认证为154笔/24175.186295倍/最大回撤-23.5585%；这是机械历史回放，不是收益承诺，容量尚未认证。
 > L 龙头策略已接入总策略模式开关；当前为 `mode=3`，只在认证规则允许时补位或替换。详见 `docs/strategy_l.md`。
 > model=3 自动切换已完成离线模拟实盘口径认证，并按用户确认切换为当前实盘状态机；mode=3 会在 mode=1 与 L 之间自动选择，但所有计划单仍必须经过 LiveOrderGateway 风控。详见 `docs/strategy_model3.md`。
 > 实盘接入：QMT / miniQMT 已完成只读连接与守护进程联调，真实下单仍必须先走小资金验证。所有时间以北京时间（Asia/Shanghai）为准。
@@ -426,7 +426,7 @@ a_strict_plus_c_hold3
 ④ score_limit_up_fill_probability.py    涨停成交概率打分
 ⑤ analyze_next_day_premium.py           次日溢价因子
 ⑥ run_paper_ab_filtered_daily_ops.py    A/C 信号生成（B已删除）
-⑦ run_strategy_e2_signal.py             E2 信号生成（板块中性小市值，A/C/D空闲时才触发）
+⑦ run_strategy_e_signal.py             E 信号生成（板块中性小市值，A/C/D空闲时才触发）
 ```
 
 其中 ①、②、④ 是关键步骤。关键步骤第一次失败会自动等待 10 秒重试一次；仍失败则停止本次收盘流水线，不生成计划单，避免继续使用旧信号。
@@ -536,13 +536,13 @@ D 策略在每个交易日 13:30 由守护进程以**非阻塞子进程**启动�
 | 纯 A+B+C | 110x | — |
 | A+B+C+D（仅 NO_CANDIDATE 日）| 235x | 22 笔 |
 | A+B+C+D（扩展，当前落地版） | **303x** | **36 笔** |
-| A+B+C+D+E2（板块中性小市值） | **3640x** | **62 笔** |
+| A+B+C+D+E（板块中性小市值） | **3640x** | **62 笔** |
 
 详细设计见 `docs/strategy_d.md`。
 
-### 策略 E2（板块中性小市值）集成
+### 策略 E（板块中性小市值）集成
 
-E2 策略在 A/C/D 均未占用资金、且不存在仅人工退出的历史 B 仓时触发，每日收盘后运行信号脚本。
+E 策略在 A/C/D 均未占用资金、且不存在仅人工退出的历史 B 仓时触发，每日收盘后运行信号脚本。
 
 **触发条件：**
 - 板块今日处于中性回撤状态（`segment_retreat_state_bucket = neutral`）
@@ -554,14 +554,14 @@ E2 策略在 A/C/D 均未占用资金、且不存在仅人工退出的历史 B �
 
 **每日运行：**
 ```bash
-python scripts/run_strategy_e2_signal.py
+python scripts/run_strategy_e_signal.py
 ```
 
 输出：
-- `reports/strategy_e2/e2_signal_YYYYMMDD.json` — 今日信号
-- `reports/strategy_e2/e2_signal_YYYYMMDD_candidates.csv` — 所有候选
+- `reports/strategy_e/e_signal_YYYYMMDD.json` — 今日信号
+- `reports/strategy_e/e_signal_YYYYMMDD_candidates.csv` — 所有候选
 
-详细设计见 `docs/strategy_e2.md`。
+详细设计见 `docs/strategy_e.md`。
 
 ### 备用 cron 脚本
 

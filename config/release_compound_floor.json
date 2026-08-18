@@ -1,21 +1,29 @@
 {
   "schema_version": 1,
   "status": "ACTIVE",
-  "policy_id": "compound-floor-20260811-v1",
-  "anchor": {
+  "policy_id": "compound-floor-20260818-e-cross-architecture-v4",
+  "supersedes_policy_id": "compound-floor-20260818-e-cross-platform-v3",
+  "correction_reason": "完整E样本的股票、日期、门禁、退出、净收益、交易数、复利和回撤均未变化；仅把清单路径统一为正斜杠，并把不参与交易计算的派生展示特征固定为15位有效数字，消除Windows ARM与Mac末位浮点舍入差异。",
+  "legacy_anchor": {
     "release_id": "model3-20260811-dlam-e2c-v1.2-shadow",
+    "input_sha256": "d0c7b8a41d3f909db1ee90b94cc1704d4b176fc76180823eaf062aaf1680e2d1",
+    "equity_multiple": 29388.980133715802,
+    "input_defect": "E只使用43行锁定成交子集，不是E_CURRENT完整逐日候选池，因此不可继续作为同口径发布锚点。"
+  },
+  "anchor": {
+    "release_id": "model3-20260818-e-identity-v2.0",
     "scenario": "current_with_m_gap_leg",
     "input_start_date": "20240520",
     "input_end_date": "20260514",
-    "input_sha256": "d0c7b8a41d3f909db1ee90b94cc1704d4b176fc76180823eaf062aaf1680e2d1",
+    "input_sha256": "2538a691251d8db079ab773140b38f27bd1e83d3900c117317524652fe8acf52",
     "initial_equity": 500000.0,
     "position_pct": 0.825,
-    "equity_multiple": 29388.980133715802
+    "equity_multiple": 24175.18629495031
   },
   "hard_floor_ratio": 0.7,
-  "hard_floor_multiple": 20572.28609360106,
+  "hard_floor_multiple": 16922.630406465217,
   "automatic_release_ratio": 1.0,
-  "automatic_release_multiple": 29388.980133715802,
+  "automatic_release_multiple": 24175.18629495031,
   "accepted_certification_statuses": [
     "PASS",
     "PASS_WITH_RISK_ACCEPTANCE"
@@ -27,5 +35,5 @@
     "same_initial_equity": true,
     "same_position_pct": true
   },
-  "note": "以后任何策略优化必须先按相同历史输入、初始资金和仓位口径完成组合认证。候选复利低于锚点70%时无条件拒绝；处于70%至100%之间时只能人工审查并显式接受，不能自动发布；达到或超过锚点时才通过复利非劣门禁。该历史倍数不代表未来收益或实盘容量。"
+  "note": "本锚点是2026-08-18完整候选样本的跨架构格式修正版，复利24175.186295倍和硬底线均未下调。以后任何策略优化必须先按相同历史输入、初始资金和仓位口径完成组合认证。候选复利低于锚点70%时无条件拒绝；处于70%至100%之间时只能人工审查并显式接受；达到或超过锚点时才通过复利非劣门禁。历史倍数不代表未来收益或实盘容量。"
 }

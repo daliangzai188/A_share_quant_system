@@ -2,10 +2,10 @@
 
 背景（2026-08-07）
 ==================
-腿序 D>L>A>M>E2>C 落地时踩过一个坑：只改了下游 combined_live_engine 的挑选
+腿序 D>L>A>M>E>C 落地时踩过一个坑：只改了下游 combined_live_engine 的挑选
 顺序，没改上游各信号脚本的占用门。上游门按旧腿序写（"A/C 有计划就挡"、
-"E2 有信号就挡 M"），于是那些日子里 M / E2 的信号**根本不会生成**，下游排得
-再靠前也是空转——实盘真实跑出来是 L>A>C>E2>M，481信号日回放 22903.30x，
+"E 有信号就挡 M"），于是那些日子里 M / E 的信号**根本不会生成**，下游排得
+再靠前也是空转——实盘真实跑出来是 L>A>C>E>M，481信号日回放 22903.30x，
 比认证口径 27870.31x 低 17.8%。
 
 所以腿序正确 = 上游门 ∧ 下游腿序，两侧都对才算数。本文件锁上游门那一侧；
@@ -32,7 +32,7 @@ if "dotenv" not in sys.modules:
     dotenv_stub.load_dotenv = lambda *args, **kwargs: False  # type: ignore[attr-defined]
     sys.modules["dotenv"] = dotenv_stub
 
-from scripts import run_strategy_e2_signal as e2_signal
+from scripts import run_strategy_e_signal as e_signal
 from scripts import run_strategy_m_signal as m_signal
 from scripts.trading_daemon import _build_candidate_choice_lines
 
@@ -57,26 +57,26 @@ class AcPlannedOrderLegSplitTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             ops = Path(tmp)
             write_ops(ops, "20260803", "C")
-            with patch.object(e2_signal, "DAILY_OPS_DIR", ops):
-                # C 的计划不能挡住只关心 A 的调用方（E2、M）
-                self.assertFalse(e2_signal.has_ac_planned_order("20260803", legs=("A",)))
+            with patch.object(e_signal, "DAILY_OPS_DIR", ops):
+                # C 的计划不能挡住只关心 A 的调用方（E、M）
+                self.assertFalse(e_signal.has_ac_planned_order("20260803", legs=("A",)))
                 # 显式关心 C 时才认
-                self.assertTrue(e2_signal.has_ac_planned_order("20260803", legs=("A", "C")))
+                self.assertTrue(e_signal.has_ac_planned_order("20260803", legs=("A", "C")))
 
     def test_a的计划照常挡住(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             ops = Path(tmp)
             write_ops(ops, "20260803", "A")
-            with patch.object(e2_signal, "DAILY_OPS_DIR", ops):
-                self.assertTrue(e2_signal.has_ac_planned_order("20260803", legs=("A",)))
+            with patch.object(e_signal, "DAILY_OPS_DIR", ops):
+                self.assertTrue(e_signal.has_ac_planned_order("20260803", legs=("A",)))
 
     def test_旧b计划不占用资金(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             ops = Path(tmp)
             write_ops(ops, "20260803", "B")
-            with patch.object(e2_signal, "DAILY_OPS_DIR", ops):
-                self.assertFalse(e2_signal.has_ac_planned_order("20260803", legs=("A", "C")))
-                self.assertFalse(e2_signal.has_ac_planned_order("20260803", legs=("A", "B", "C")))
+            with patch.object(e_signal, "DAILY_OPS_DIR", ops):
+                self.assertFalse(e_signal.has_ac_planned_order("20260803", legs=("A", "C")))
+                self.assertFalse(e_signal.has_ac_planned_order("20260803", legs=("A", "B", "C")))
 
     def test_无腿标记的历史文件按最保守口径当作占用(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -84,24 +84,24 @@ class AcPlannedOrderLegSplitTests(unittest.TestCase):
             pd.DataFrame([{"ts_code": "600000.SH", "side": "BUY"}]).to_csv(
                 ops / "ops_20260803_planned_orders.csv", index=False
             )
-            with patch.object(e2_signal, "DAILY_OPS_DIR", ops):
-                self.assertTrue(e2_signal.has_ac_planned_order("20260803", legs=("A",)))
+            with patch.object(e_signal, "DAILY_OPS_DIR", ops):
+                self.assertTrue(e_signal.has_ac_planned_order("20260803", legs=("A",)))
 
 
 class MUpstreamGateTests(unittest.TestCase):
-    """M 排在 E2/C 之前：只有 L 和 A 有资格挡住 M 的信号。"""
+    """M 排在 E/C 之前：只有 L 和 A 有资格挡住 M 的信号。"""
 
-    def test_e2有信号不挡m(self) -> None:
+    def test_e有信号不挡m(self) -> None:
         with patch.object(m_signal, "has_ac_planned_order", return_value=False), \
              patch.object(m_signal, "signal_by_signal_date", return_value=None):
             busy, why = m_signal.higher_priority_leg_has_signal("20260803")
-        self.assertFalse(busy, f"E2/C 不得挡住 M：{why}")
+        self.assertFalse(busy, f"E/C 不得挡住 M：{why}")
 
     def test_c的计划不挡m(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             ops = Path(tmp)
             write_ops(ops, "20260803", "C")
-            with patch.object(e2_signal, "DAILY_OPS_DIR", ops), \
+            with patch.object(e_signal, "DAILY_OPS_DIR", ops), \
                  patch.object(m_signal, "signal_by_signal_date", return_value=None):
                 busy, why = m_signal.higher_priority_leg_has_signal("20260803")
         self.assertFalse(busy, f"C 排在 M 之后，不得挡住 M：{why}")
@@ -110,7 +110,7 @@ class MUpstreamGateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             ops = Path(tmp)
             write_ops(ops, "20260803", "A")
-            with patch.object(e2_signal, "DAILY_OPS_DIR", ops), \
+            with patch.object(e_signal, "DAILY_OPS_DIR", ops), \
                  patch.object(m_signal, "signal_by_signal_date", return_value=None):
                 busy, why = m_signal.higher_priority_leg_has_signal("20260803")
         self.assertTrue(busy)
@@ -253,7 +253,7 @@ class RetiredRuleFunctionsTests(unittest.TestCase):
         import scripts.certify_current_executable_portfolio as certify
 
         for name in (
-            "mode1_candidate",          # 旧 A/C→E2 两段式
+            "mode1_candidate",          # 旧 A/C→E 两段式
             "choose_l",                 # 旧 L 补位/替换两段式
             "l_replace_guard_passes",   # 旧 L 替换窄门
             "d_relay_candidate",        # 旧 D 接力
@@ -319,9 +319,9 @@ class LegOrderDeclarationTests(unittest.TestCase):
         m_cfg = cfg["strategy_m"]
         self.assertFalse(
             m_cfg["require_all_legs_idle"],
-            "M 已提到 E2/C 之前，require_all_legs_idle 必须为 false",
+            "M 已提到 E/C 之前，require_all_legs_idle 必须为 false",
         )
-        self.assertIn("D>L>A>M>E2>C", m_cfg["file_role"])
+        self.assertIn("D>L>A>M>E>C", m_cfg["file_role"])
 
 
 if __name__ == "__main__":
@@ -332,7 +332,7 @@ class BroadcastMatchesOrderingTests(unittest.TestCase):
     """daemon 播报层的腿序必须与下单口径一致。
 
     播报不下单，但用户靠它盯盘——播报说买 A、实盘买 L，比不播报更糟。
-    2026-08-07 腿序改造时这一层漏改过：树状图画着 A>C>E2、最终计划仍用已退役的
+    2026-08-07 腿序改造时这一层漏改过：树状图画着 A>C>E、最终计划仍用已退役的
     L 替换窄门(l_guard_ok)，与 build_model3_plan 相反。
     """
 
@@ -354,19 +354,19 @@ class BroadcastMatchesOrderingTests(unittest.TestCase):
 
     def test_树状图与总图画的是新腿序(self) -> None:
         src = self._daemon_source()
-        for stale in ("A > C > E2", "A主 > C补位 > E2兜底", "L 替换窄门{TAG"):
+        for stale in ("A > C > E", "A主 > C补位 > E兜底", "L 替换窄门{TAG"):
             self.assertNotIn(stale, src, f"播报里仍有旧腿序文案: {stale}")
-        self.assertIn("腿序 D > L > A > M > E2 > C", src)
-        self.assertIn("③A主 → ④M补位 → ⑤E2 → ⑥C垫底", src)
+        self.assertIn("腿序 D > L > A > M > E > C", src)
+        self.assertIn("③A主 → ④M补位 → ⑤E → ⑥C垫底", src)
         # 开仓决策链的逐腿编号必须与腿序同一套，不能出现两套矛盾编号
         for expect in ("① D盘中：", "② L/model3：", "③ A主策略：",
-                       "④ M补位：", "⑤ E2：", "⑥ C垫底："):
+                       "④ M补位：", "⑤ E：", "⑥ C垫底："):
             self.assertIn(expect, src, f"决策链编号未按腿序: {expect}")
         self.assertNotIn("⑦ M兜底补位：", src)
 
-    def test_最终计划按腿序A_M_E2_C取第一个(self) -> None:
+    def test_最终计划按腿序A_M_E_C取第一个(self) -> None:
         src = self._daemon_source()
-        self.assertIn("mode1_buy = a_buy or m_buy or e2_buy or c_buy", src)
+        self.assertIn("mode1_buy = a_buy or m_buy or e_buy or c_buy", src)
 
     def test_旧仓分支才是持仓日的今日路径(self) -> None:
         src = self._daemon_source()
@@ -401,7 +401,7 @@ class BroadcastMatchesOrderingTests(unittest.TestCase):
         l_end = src.index("def _load_ab_checklist", l_start)
         l_body = src[l_start:l_end]
         self.assertIn("本次只保留L候选供审计，不生成开仓计划", l_body)
-        self.assertIn("L仅在账户空仓时无条件优先于A/M/E2/C", l_body)
+        self.assertIn("L仅在账户空仓时无条件优先于A/M/E/C", l_body)
 
     def test_候选让路汇总在D持仓时明确全部不开仓(self) -> None:
         lines = _build_candidate_choice_lines(
@@ -410,10 +410,10 @@ class BroadcastMatchesOrderingTests(unittest.TestCase):
                 ("L", {"ts_code": "600664.SH", "name": "哈药股份"}, ""),
                 ("A", {"ts_code": "301051.SZ", "name": "信濠光电"}, ""),
                 ("M", None, "当前持仓已阻断M候选评估"),
-                ("E2", None, "无入围候选"),
+                ("E", None, "无入围候选"),
                 ("C", None, "A已入围，C未继续评估"),
             ],
-            ["L", "A", "M", "E2", "C"],
+            ["L", "A", "M", "E", "C"],
             None,
             ["D"],
         )

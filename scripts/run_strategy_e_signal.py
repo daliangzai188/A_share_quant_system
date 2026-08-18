@@ -1,10 +1,10 @@
 """
-策略E2每日收盘后信号生成脚本。
+策略E每日收盘后信号生成脚本。
 
 策略条件（无前视、单账户R1、入场门禁对齐版）：
   - 40条R1规则各选信号日第一名，合并成可执行候选宇宙
   - 在候选宇宙里取板块neutral且流通市值最小的一只
-  - 每日第一名若在13:30~14:30首次涨停，当日E2空仓，不回补第二名
+  - 每日第一名若在13:30~14:30首次涨停，当日E空仓，不回补第二名
   - T+1开盘买入；按命中规则在T+2或T+3收盘卖出
   - 仅在 A/C/D 均未占用资金时触发；B已删除
   - 关键字段、成交可靠性或完整数据任一不满足时拒绝生成信号
@@ -13,20 +13,20 @@
   每日 15:30 后运行（A/C daily ops 和 D 盘中监控均已完成后）
 
 输出：
-  reports/strategy_e2/e2_signals_recent.json    最近10个交易日E2信号（滚动覆盖）
-  reports/strategy_e2/e2_signal_YYYYMMDD_candidates.csv  所有符合条件的候选
+  reports/strategy_e/e_signals_recent.json    最近10个交易日E信号（滚动覆盖）
+  reports/strategy_e/e_signal_YYYYMMDD_candidates.csv  所有符合条件的候选
 
 segment_retreat_state_bucket 计算逻辑（来自 src/strategy_optimizer.py）：
   current <= 3                    → weak_below_3
   current < prev1 < prev2         → retreat_2day
   current < prev1 and current<=5  → retreat_weak
   current > prev1 > prev2         → warming_2day
-  其他                             → neutral  ← E2 的目标状态
+  其他                             → neutral  ← E 的目标状态
 
 用法：
-  python scripts/run_strategy_e2_signal.py
-  python scripts/run_strategy_e2_signal.py --signal-date 20260616
-  python scripts/run_strategy_e2_signal.py --signal-date 20260616 --dry-run
+  python scripts/run_strategy_e_signal.py
+  python scripts/run_strategy_e_signal.py --signal-date 20260616
+  python scripts/run_strategy_e_signal.py --signal-date 20260616 --dry-run
 """
 from __future__ import annotations
 
@@ -53,12 +53,13 @@ from src.rolling_signal_store import (
     save_recent_signal,
     save_recent_signal_run,
 )
-from src.strategy_e2 import (
-    E2_VERSION,
-    build_live_e2_candidates,
-    load_e2_spec,
+from src.strategy_e import (
+    E_VERSION,
+    build_live_e_candidates,
+    load_e_spec,
     resolve_exit_offset,
 )
+from src.strategy_identity import ACTIVE_E_VARIANT, STRATEGY_E_LEG, normalize_strategy_record
 
 LIMIT_DIR = PROJECT_ROOT / "data" / "raw" / "limit_list"
 DAILY_DIR = PROJECT_ROOT / "data" / "raw" / "daily"
@@ -68,15 +69,15 @@ HIST_SCORED_PATH = PROJECT_ROOT / "data" / "processed" / "limit_up_fill_scored.c
 SCORED_PATH = LIVE_SCORED_PATH if LIVE_SCORED_PATH.exists() else HIST_SCORED_PATH
 POSITIONS_PATH = PROJECT_ROOT / "data" / "processed" / "positions.json"
 DAILY_OPS_DIR = PROJECT_ROOT / "reports" / "paper_trade" / "ab_filtered_daily_ops"
-OUTPUT_DIR = PROJECT_ROOT / "reports" / "strategy_e2"
-ROLLING_SIGNAL_PATH = OUTPUT_DIR / "e2_signals_recent.json"
-RUN_STATUS_PATH = OUTPUT_DIR / "e2_signal_runs_recent.json"
+OUTPUT_DIR = PROJECT_ROOT / "reports" / "strategy_e"
+ROLLING_SIGNAL_PATH = OUTPUT_DIR / "e_signals_recent.json"
+RUN_STATUS_PATH = OUTPUT_DIR / "e_signal_runs_recent.json"
 STRATEGY_D_SIGNAL_DIR = PROJECT_ROOT / "reports" / "strategy_d"
 
 POSITION_PCT = 0.825
-E2_MIN_CIRC_MV = 0       # 不设下限
-E2_MAX_CIRC_MV = float("inf")
-E2_RESEARCH_AUDIT = {
+E_MIN_CIRC_MV = 0       # 不设下限
+E_MAX_CIRC_MV = float("inf")
+E_RESEARCH_AUDIT = {
     "window": "20240520~20260514",
     "rule": "R1_no_lookahead_single_account_entry_gate_v4",
     "pre_gate_trade_count": 50,
@@ -86,7 +87,7 @@ E2_RESEARCH_AUDIT = {
     "aligned_leg_equity_multiple": 10.221003,
     "aligned_leg_max_drawdown": -0.113253,
     "position_pct": POSITION_PCT,
-    "source_report": "reports/strategy_e2_rerun/e2_r1_alignment_report.md",
+    "source_report": "reports/strategy_e_rerun/e_r1_alignment_report.md",
     "old_62_trade_reference_is_live_realisable": False,
     "entry_gate": "排除每日第一名first_time_detail_bucket=1330_1430，且不回补第二名。",
     "overfit_warning": "40条R1规则及新增时间门禁仍来自有限历史样本；虽已通过前后半段和分年方向验证，历史结果不代表未来收益。",
@@ -208,7 +209,11 @@ def load_open_positions() -> list[dict[str, Any]]:
         return []
     try:
         data = json.loads(POSITIONS_PATH.read_text(encoding="utf-8"))
-        return [p for p in (data if isinstance(data, list) else []) if str(p.get("status","")) == "open"]
+        return [
+            normalize_strategy_record(p)
+            for p in (data if isinstance(data, list) else [])
+            if str(p.get("status", "")) == "open"
+        ]
     except Exception:
         return []
 
@@ -218,8 +223,8 @@ def has_ac_planned_order(signal_date: str, legs: tuple[str, ...]) -> bool:
 
     `legs` 必须由调用方按腿序显式声明——**只有排在自己前面的腿才有资格挡住
     本腿的信号**。2026-08-07 之前这里不分 A 和 C，谁调用都是"A 或 C 有计划
-    就挡"，于是 C 事实上挡住了排在它前面的 E2 和 M：腿序声明是
-    D>L>A>M>E2>C，实盘跑出来却是 L>A>C>E2>M，481信号日回放差 17.8%
+    就挡"，于是 C 事实上挡住了排在它前面的 E 和 M：腿序声明是
+    D>L>A>M>E>C，实盘跑出来却是 L>A>C>E>M，481信号日回放差 17.8%
     （27870.31x → 22903.30x）。
 
     旧 B 计划只能人工退出、不占用新开仓资金，一律排除。
@@ -256,7 +261,7 @@ def has_d_position_today(signal_date: str, open_positions: list[dict[str, Any]])
 
 
 def load_d_intraday_status(signal_date: str) -> dict[str, Any]:
-    """读取D盘中信号结果；D失败不占用资金，允许E2继续判断。"""
+    """读取D盘中信号结果；D失败不占用资金，允许E继续判断。"""
     path = STRATEGY_D_SIGNAL_DIR / f"intraday_signals_{signal_date}.csv"
     result: dict[str, Any] = {
         "path": str(path),
@@ -315,28 +320,30 @@ def has_existing_open_position(open_positions: list[dict[str, Any]]) -> bool:
     return len(open_positions) > 0
 
 
-# ── E2 候选筛选 ───────────────────────────────────────────────────────────────
+# ── E 候选筛选 ───────────────────────────────────────────────────────────────
 
-def load_e2_candidates(signal_date: str) -> pd.DataFrame:
-    """调用E2唯一规则源，构造无前视、单账户R1候选。
+def load_e_candidates(signal_date: str) -> pd.DataFrame:
+    """调用E唯一规则源，构造无前视、单账户R1候选。
 
     这里不保留旧版完整涨停池兜底。规则数据不完整时必须抛错并停腿，否则实盘
     会在不知情的情况下退化为历史负期望的另一套策略。
     """
 
-    return build_live_e2_candidates(PROJECT_ROOT, signal_date)
+    return build_live_e_candidates(PROJECT_ROOT, signal_date)
 
 
 # ── 信号输出 ──────────────────────────────────────────────────────────────────
 
 def build_signal(signal_date: str, candidate: pd.Series, segment_states: dict[str, str]) -> dict[str, Any]:
     seg = str(candidate.get("market_segment", ""))
-    spec = load_e2_spec(PROJECT_ROOT)
+    spec = load_e_spec(PROJECT_ROOT)
     exit_rule = str(candidate.get("exit_rule", ""))
     exit_offset = resolve_exit_offset(spec, exit_rule)
     return {
-        "strategy_leg": "E2",
-        "strategy_version": E2_VERSION,
+        "strategy_leg": STRATEGY_E_LEG,
+        "strategy_family": STRATEGY_E_LEG,
+        "strategy_variant": ACTIVE_E_VARIANT,
+        "strategy_version": E_VERSION,
         "signal_date": signal_date,
         "ts_code": str(candidate.get("ts_code", "")),
         "name": str(candidate.get("name", candidate.get("ts_code", ""))),
@@ -360,7 +367,7 @@ def build_signal(signal_date: str, candidate: pd.Series, segment_states: dict[st
         "planned_exit_date": next_trade_day(signal_date, exit_offset),
         "planned_exit_rule": f"T+{exit_offset}_close",
         "position_pct": POSITION_PCT,
-        "research_audit": E2_RESEARCH_AUDIT,
+        "research_audit": E_RESEARCH_AUDIT,
         "status": "pending",
         "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
@@ -370,26 +377,26 @@ def save_signal(signal: dict[str, Any], dry_run: bool) -> Path:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     if not dry_run:
         migrate_existing_signals()
-        save_recent_signal(ROLLING_SIGNAL_PATH, signal, strategy_leg="E2", max_trade_days=10)
+        save_recent_signal(ROLLING_SIGNAL_PATH, signal, strategy_leg="E", max_trade_days=10)
     return ROLLING_SIGNAL_PATH
 
 
 def migrate_existing_signals() -> None:
-    """迁移并清理旧的每日E2信号JSON；无新信号的交易日也会执行。"""
+    """迁移并清理旧的每日E信号JSON；无新信号的交易日也会执行。"""
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     migrate_legacy_daily_signal_files(
         OUTPUT_DIR,
-        "e2_signal_????????.json",
+        "e_signal_????????.json",
         ROLLING_SIGNAL_PATH,
-        strategy_leg="E2",
+        strategy_leg="E",
         max_trade_days=10,
     )
-    cleanup_legacy_daily_signal_files(OUTPUT_DIR, "e2_signal_????????.json")
+    cleanup_legacy_daily_signal_files(OUTPUT_DIR, "e_signal_????????.json")
 
 
 def save_candidates(signal_date: str, candidates: pd.DataFrame, dry_run: bool) -> Path:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    path = OUTPUT_DIR / f"e2_signal_{signal_date}_candidates.csv"
+    path = OUTPUT_DIR / f"e_signal_{signal_date}_candidates.csv"
     cols = [c for c in ["ts_code", "name", "market_segment", "segment_retreat_state_bucket",
                          "scenario_rank", "exit_rule", "scenario",
                          "limit_data_quality", "limit_data_source", "strategy_compatible",
@@ -411,7 +418,7 @@ def save_run_status(
     signal: dict[str, Any] | None = None,
     candidate: pd.Series | None = None,
 ) -> None:
-    """记录E2当日是否正常完成；不向正式信号文件写入空信号。"""
+    """记录E当日是否正常完成；不向正式信号文件写入空信号。"""
 
     if dry_run:
         return
@@ -431,45 +438,45 @@ def save_run_status(
     save_recent_signal_run(
         RUN_STATUS_PATH,
         run,
-        strategy_leg="E2",
+        strategy_leg="E",
         max_trade_days=20,
     )
 
 
-def inspect_blocked_e2_candidates(
+def inspect_blocked_e_candidates(
     signal_date: str,
     *,
     dry_run: bool,
 ) -> tuple[int | None, str, pd.Series | None]:
     """持仓已阻断开仓时，继续做一次只读候选检查。
 
-    这里只回答“如果账户空仓，今天E2有没有候选”，不会调用``build_signal``，
+    这里只回答“如果账户空仓，今天E有没有候选”，不会调用``build_signal``，
     不会写正式信号JSON，更不会提交委托。这样既保留单仓阻断，又消除“候选池未知”
     的审计盲区。
     """
 
     try:
-        candidates = load_e2_candidates(signal_date)
+        candidates = load_e_candidates(signal_date)
         save_candidates(signal_date, candidates, dry_run)
     except Exception as exc:
-        return None, f"E2只读候选检查失败，暂时无法判断是否有候选：{exc}", None
+        return None, f"E只读候选检查失败，暂时无法判断是否有候选：{exc}", None
 
     candidate_count = int(len(candidates))
     if candidate_count == 0:
-        return 0, "E2只读候选检查为0只，即使账户空仓也不会触发", None
+        return 0, "E只读候选检查为0只，即使账户空仓也不会触发", None
 
     selected = candidates.iloc[0]
     code = str(selected.get("ts_code", ""))
     name = str(selected.get("name", code))
     return (
         candidate_count,
-        f"E2只读候选检查有{candidate_count}只，第一名={code} {name}；"
+        f"E只读候选检查有{candidate_count}只，第一名={code} {name}；"
         "但因当前持仓阻断，不生成正式信号",
         selected,
     )
 
 
-def finish_occupied_without_e2_signal(
+def finish_occupied_without_e_signal(
     signal_date: str,
     blocker_reason: str,
     *,
@@ -477,12 +484,12 @@ def finish_occupied_without_e2_signal(
 ) -> None:
     """保存“资金被占用”终态，同时把候选是否存在写清楚。"""
 
-    candidate_count, candidate_reason, candidate = inspect_blocked_e2_candidates(
+    candidate_count, candidate_reason, candidate = inspect_blocked_e_candidates(
         signal_date,
         dry_run=dry_run,
     )
     reason = f"{blocker_reason}；{candidate_reason}"
-    print(f"[E2信号] {reason}")
+    print(f"[E信号] {reason}")
     save_run_status(
         signal_date,
         NO_SIGNAL_OCCUPIED,
@@ -510,9 +517,9 @@ def resolve_signal_date() -> str:
 
 
 def run_signal_generation(signal_date: str, *, dry_run: bool) -> None:
-    """执行一次E2信号生成，并为每个正常退出分支写明终态。"""
+    """执行一次E信号生成，并为每个正常退出分支写明终态。"""
 
-    print(f"[E2信号] 信号日期: {signal_date}")
+    print(f"[E信号] 信号日期: {signal_date}")
     if not dry_run:
         migrate_existing_signals()
 
@@ -522,73 +529,73 @@ def run_signal_generation(signal_date: str, *, dry_run: bool) -> None:
     if has_existing_open_position(open_positions):
         occupied = [(p.get("strategy_leg","?"), p.get("ts_code","?"), p.get("planned_exit_date","?"))
                     for p in open_positions]
-        finish_occupied_without_e2_signal(
+        finish_occupied_without_e_signal(
             signal_date,
-            f"账户有未平仓头寸，E2不触发；持仓={occupied}",
+            f"账户有未平仓头寸，E不触发；持仓={occupied}",
             dry_run=dry_run,
         )
         return
 
-    # 腿序 D>L>A>M>E2>C：排在 E2 前面的是 D、L、A、M，后面只有 C。
-    # C 有计划时 E2 必须照常出信号，由 combined_live_engine 按腿序在两者间挑；
-    # 2026-08-07 之前这里连 C 一起挡，等于把 C 顶到了 E2 前面。
+    # 腿序 D>L>A>M>E>C：排在 E 前面的是 D、L、A、M，后面只有 C。
+    # C 有计划时 E 必须照常出信号，由 combined_live_engine 按腿序在两者间挑；
+    # 2026-08-07 之前这里连 C 一起挡，等于把 C 顶到了 E 前面。
     #
-    # 为什么不给 L 和 M 也加门（它们确实排在 E2 前面）：
-    #   收盘流水线顺序是 ⑥A/C → ⑦E2 → ⑧L → ⑨M，E2 跑的时候 L 和 M 当日的信号
+    # 为什么不给 L 和 M 也加门（它们确实排在 E 前面）：
+    #   收盘流水线顺序是 ⑥A/C → ⑦E → ⑧L → ⑨M，E 跑的时候 L 和 M 当日的信号
     #   还不存在，加了只会读到**昨天**的信号，判断必错。
-    #   也不需要加：E2 信号多生成不影响结果——唯一的下单路径是
+    #   也不需要加：E 信号多生成不影响结果——唯一的下单路径是
     #   combined_live_engine.build_mode1_plan 第③档，它按腿序挑，L/M 有信号时
-    #   E2 自然让位；daemon 里另外三处读 e2_signals_recent.json 的地方
-    #   （_load_e2_signal_for_signal_date / _log_e2_signal_status /
+    #   E 自然让位；daemon 里另外三处读 e_signals_recent.json 的地方
+    #   （_load_e_signal_for_signal_date / _log_e_signal_status /
     #   _strategy_signal_run_readiness）都只做播报和就绪度检查，不下单。
-    #   ⚠️ 若将来把 E2 调到 L 或 M 之前，或改动流水线步骤顺序，必须重看这里。
+    #   ⚠️ 若将来把 E 调到 L 或 M 之前，或改动流水线步骤顺序，必须重看这里。
     if has_ac_planned_order(signal_date, legs=("A",)):
-        finish_occupied_without_e2_signal(
+        finish_occupied_without_e_signal(
             signal_date,
-            "A今日已生成计划委托（腿序A>E2），E2不触发",
+            "A今日已生成计划委托（腿序A>E），E不触发",
             dry_run=dry_run,
         )
         return
 
     if has_d_position_today(signal_date, open_positions):
-        finish_occupied_without_e2_signal(
+        finish_occupied_without_e_signal(
             signal_date,
-            "D策略今日已建仓，E2不触发",
+            "D策略今日已建仓，E不触发",
             dry_run=dry_run,
         )
         return
 
     d_status = load_d_intraday_status(signal_date)
     if d_status["has_filled"]:
-        finish_occupied_without_e2_signal(
+        finish_occupied_without_e_signal(
             signal_date,
-            f"D盘中信号已成交或部分成交，E2不触发；{d_status['summary']}",
+            f"D盘中信号已成交或部分成交，E不触发；{d_status['summary']}",
             dry_run=dry_run,
         )
         return
     if d_status["has_failed"]:
-        print(f"[E2信号] D盘中第1名开仓失败，未占用资金，释放给E2继续判断。{d_status['summary']}")
+        print(f"[E信号] D盘中第1名开仓失败，未占用资金，释放给E继续判断。{d_status['summary']}")
 
-    print("[E2信号] ABCD 今日均空闲，开始筛选 E2 候选。")
+    print("[E信号] ABCD 今日均空闲，开始筛选 E 候选。")
 
     # ── 2. 旧算法只保留作日志对照；正式neutral取值来自统一R1特征链 ───────────
     segment_states = compute_segment_retreat_states(signal_date)
-    print(f"[E2信号] 今日各板块状态（旧算法，仅对照）: {segment_states}")
+    print(f"[E信号] 今日各板块状态（旧算法，仅对照）: {segment_states}")
 
     # ── 3. 正式R1候选；任一关键数据失败都fail-closed ─────────────────────────
     try:
-        candidates = load_e2_candidates(signal_date)
+        candidates = load_e_candidates(signal_date)
     except Exception as exc:
         reason = f"R1候选构造失败：{exc}"
-        print(f"[E2信号] {reason}")
-        print("[E2信号] 禁止退回旧口径，今日E2不生成实盘信号。")
+        print(f"[E信号] {reason}")
+        print("[E信号] 禁止退回旧口径，今日E不生成实盘信号。")
         save_run_status(signal_date, ERROR, reason, dry_run=dry_run)
         return
     cand_path = save_candidates(signal_date, candidates, dry_run)
 
     if candidates.empty:
-        reason = "R1每日第一名未通过neutral/成交可靠性/13:30~14:30入场门禁，E2不触发且不回补第二名"
-        print(f"[E2信号] {reason}。")
+        reason = "R1每日第一名未通过neutral/成交可靠性/13:30~14:30入场门禁，E不触发且不回补第二名"
+        print(f"[E信号] {reason}。")
         save_run_status(
             signal_date,
             NO_CANDIDATE,
@@ -598,7 +605,7 @@ def run_signal_generation(signal_date: str, *, dry_run: bool) -> None:
         )
         return
 
-    print(f"[E2信号] 符合条件候选: {len(candidates)} 只")
+    print(f"[E信号] 符合条件候选: {len(candidates)} 只")
 
     # ── 4. 选最小流通市值 ─────────────────────────────────────────────────────
     selected = candidates.iloc[0]
@@ -607,7 +614,7 @@ def run_signal_generation(signal_date: str, *, dry_run: bool) -> None:
     # ── 5. 打印操作提示 ───────────────────────────────────────────────────────
     print()
     print("=" * 60)
-    print("  策略E2 信号")
+    print("  策略E 信号")
     print("=" * 60)
     print(f"  股票:       {signal['ts_code']}  {signal['name']}")
     print(f"  板块:       {signal['market_segment']}  ({signal['segment_retreat_state_bucket']})")
@@ -631,17 +638,17 @@ def run_signal_generation(signal_date: str, *, dry_run: bool) -> None:
     save_run_status(
         signal_date,
         SIGNAL_READY,
-        f"E2已生成唯一入选信号：{signal['ts_code']} {signal['name']}",
+        f"E已生成唯一入选信号：{signal['ts_code']} {signal['name']}",
         dry_run=dry_run,
         candidate_count=len(candidates),
         signal=signal,
     )
 
-    print("\n[E2信号] 完成。")
+    print("\n[E信号] 完成。")
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="策略E2每日收盘后信号生成")
+    parser = argparse.ArgumentParser(description="策略E每日收盘后信号生成")
     parser.add_argument("--signal-date", default=None, help="信号日期 YYYYMMDD，不传则自动推断")
     parser.add_argument("--dry-run", action="store_true", help="仅打印，不写文件")
     args = parser.parse_args()
@@ -653,7 +660,7 @@ def main() -> None:
         save_run_status(
             signal_date,
             ERROR,
-            f"E2信号脚本异常退出：{type(exc).__name__}: {exc}",
+            f"E信号脚本异常退出：{type(exc).__name__}: {exc}",
             dry_run=args.dry_run,
         )
         raise

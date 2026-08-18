@@ -293,7 +293,7 @@ class OpeningRecoveryWindowTest(unittest.TestCase):
     def test_open_action_resolver_keeps_leg_priority_when_decisions_conflict(self) -> None:
         decisions = pd.DataFrame(
             [
-                {"action": "ALLOW_E2_BUY", "strategy_leg": "E2"},
+                {"action": "ALLOW_E_BUY", "strategy_leg": "E"},
                 {"action": "ALLOW_M_BUY", "strategy_leg": "M"},
                 {"action": "ALLOW_MODEL3_L_REPLACE", "strategy_leg": "L"},
             ]
@@ -505,11 +505,11 @@ class OpeningRecoveryWindowTest(unittest.TestCase):
         self.assertIn("账户空仓时让路排序：C策略 600881.SH 亚泰集团", lines)
         self.assertIn("实际选择：不开仓｜原C计划窗口已过且未成交，当前不追补", lines)
 
-    def test_e2_is_not_mistaken_for_expired_ordinary_open_plan(self) -> None:
+    def test_e_is_not_mistaken_for_expired_ordinary_open_plan(self) -> None:
         with patch.object(trading_daemon, "now_beijing", return_value=beijing_at(11, 19)):
             self.assertFalse(
                 trading_daemon._ordinary_open_plan_expired(
-                    {"strategy": "E2", "ts_code": "000001.SZ"}, "20260813"
+                    {"strategy": "E", "ts_code": "000001.SZ"}, "20260813"
                 )
             )
 

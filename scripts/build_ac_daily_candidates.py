@@ -3,7 +3,7 @@
 为什么需要它：certify 旧口径用 `baseline.abc_return != 0` 当 A/C 的门槛，
 而 baseline 是 A/B/C 三腿单独回放的产物，带着那次回放自己的持仓序列
 （A/C 明细481天里108天是 POSITION_OCCUPIED_SKIP，当年被已删除的B等占掉，
-连 ts_code 都没落盘）。今天的组合含 D/E2/L/M，那张持仓表早已作废，却仍在
+连 ts_code 都没落盘）。今天的组合含 D/E/L/M，那张持仓表早已作废，却仍在
 把 A/C 锁死在90天。实盘从不受此限制——三个实盘文件都不读 baseline。
 
 输出：reports/ac_daily_candidates/ac_daily_candidates.csv（被 .gitignore 挡，

@@ -98,7 +98,7 @@ def model3_l_replace_guard_pass(
     signal: Mapping[str, Any],
     config: Mapping[str, Any],
 ) -> tuple[bool, str]:
-    """判断L能否替换已经存在的A/C/E2计划。"""
+    """判断L能否替换已经存在的A/C/E计划。"""
 
     model3 = _model3_config(config)
     guard = _mapping_or_default(

@@ -30,7 +30,7 @@ from scripts.research_strategy_d_relay_tushare_fetch import (
 @unittest.skipIf(
     EXPECTED_RELAY_COUNT == 0,
     "D接力已于2026-08-07全关（见 combined_live_engine 顶部「腿序与接力口径」），"
-    "组合中不再产生 D→A/C/E2，本研究工具无研究对象。若将来重开接力，"
+    "组合中不再产生 D→A/C/E，本研究工具无研究对象。若将来重开接力，"
     "把 research_strategy_d_relay_fetch.EXPECTED_RELAY_COUNT 改回实际笔数，"
     "本测试类会自动恢复。",
 )

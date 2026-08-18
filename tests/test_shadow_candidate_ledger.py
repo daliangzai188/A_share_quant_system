@@ -21,7 +21,7 @@ class ShadowCandidateLedgerTest(unittest.TestCase):
             "status": "FROZEN",
             "release_id": "test-release",
             "oos_start_date": "20260105",
-            "strategy_priority_order": ["D", "L", "A", "M", "E2", "C"],
+            "strategy_priority_order": ["D", "L", "A", "M", "E", "C"],
         }
         (self.root / "config" / "strategy_release_freeze.json").write_text(
             json.dumps(release), encoding="utf-8"
@@ -72,8 +72,8 @@ class ShadowCandidateLedgerTest(unittest.TestCase):
         self._csv("reports/strategy_l/l_signal_20260105_candidates.csv", [{
             "ts_code": "000002.SZ", "name": "L股",
         }])
-        self._csv("reports/strategy_e2/e2_signal_20260105_candidates.csv", [{
-            "ts_code": "000005.SZ", "name": "E2股",
+        self._csv("reports/strategy_e/e_signal_20260105_candidates.csv", [{
+            "ts_code": "000005.SZ", "name": "E股",
         }])
         self._csv("reports/strategy_d/intraday_signals_20260105.csv", [{
             "signal_type": "BUY", "ts_code": "000001.SZ", "name": "D股",
@@ -106,7 +106,7 @@ class ShadowCandidateLedgerTest(unittest.TestCase):
         self._install_candidates()
         release = load_release(self.root)
         rows = collect_signal_date(self.root, release, "20260105")
-        self.assertEqual([row["strategy_leg"] for row in rows], ["D", "L", "A", "M", "E2", "C"])
+        self.assertEqual([row["strategy_leg"] for row in rows], ["D", "L", "A", "M", "E", "C"])
         self.assertTrue(all(row["candidate_status"] == "CANDIDATE" for row in rows))
         self.assertEqual([row["strategy_leg"] for row in rows if row["account_empty_winner"]], ["D"])
         self.assertTrue(rows[0]["live_selected"])

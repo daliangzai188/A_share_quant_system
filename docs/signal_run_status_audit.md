@@ -1,4 +1,4 @@
-# E2/L每日信号运行状态审计
+# E/L每日信号运行状态审计
 
 ## 目标
 
@@ -8,7 +8,7 @@
 1. 脚本已经正常执行，但因已有持仓或没有候选而不产生信号；
 2. 脚本没有运行，或者执行过程中发生错误。
 
-现在为E2和L分别增加独立运行状态账本，不向正式信号文件写入空记录，因此不会
+现在为E和L分别增加独立运行状态账本，不向正式信号文件写入空记录，因此不会
 改变组合引擎、开仓计划或实盘下单读取口径。
 
 ## 状态定义
@@ -16,7 +16,7 @@
 | 状态 | 含义 | 审计显示 |
 |---|---|---|
 | `SIGNAL_READY` | 脚本正常完成且已生成正式信号 | ✅ |
-| `NO_SIGNAL_OCCUPIED` | E2因已有策略仓或A/C/D已占用资金而正常不触发 | ℹ️ |
+| `NO_SIGNAL_OCCUPIED` | E因已有策略仓或A/C/D已占用资金而正常不触发 | ℹ️ |
 | `NO_CANDIDATE` | 脚本正常完成，但所有候选均未通过过滤 | ℹ️ |
 | `ERROR` | 数据、规则或脚本执行失败 | ⚠️ |
 | `NOT_RUN` | 当日没有运行状态，也没有升级前正式信号 | ⚠️ |
@@ -26,8 +26,8 @@
 
 ## 文件
 
-- E2正式信号：`reports/strategy_e2/e2_signals_recent.json`
-- E2运行状态：`reports/strategy_e2/e2_signal_runs_recent.json`
+- E正式信号：`reports/strategy_e/e_signals_recent.json`
+- E运行状态：`reports/strategy_e/e_signal_runs_recent.json`
 - L正式信号：`reports/strategy_l/l_signals_recent.json`
 - L运行状态：`reports/strategy_l/l_signal_runs_recent.json`
 
@@ -36,7 +36,7 @@
 
 ## 运行与验证
 
-正常收盘流水线无需增加命令，原有E2、L步骤会自动写状态：
+正常收盘流水线无需增加命令，原有E、L步骤会自动写状态：
 
 ```powershell
 py -3.11 start_windows.py
@@ -45,7 +45,7 @@ py -3.11 start_windows.py
 也可以盘后单独验证：
 
 ```powershell
-py -3.11 scripts\run_strategy_e2_signal.py --signal-date 20260803
+py -3.11 scripts\run_strategy_e_signal.py --signal-date 20260803
 py -3.11 scripts\run_strategy_l_signal.py --signal-date 20260803
 ```
 
@@ -58,13 +58,13 @@ py -3.11 -m unittest tests.test_signal_run_status
 当日正常无信号时，收盘审计应显示`ℹ️ NO_SIGNAL_OCCUPIED`或
 `ℹ️ NO_CANDIDATE`，不再进入“增强/备用项缺失”警告汇总。
 
-## E2持仓阻断时的候选说明
+## E持仓阻断时的候选说明
 
-E2发现已有策略仓后仍保持禁止生成正式信号，但会继续做一次只读候选检查：
+E发现已有策略仓后仍保持禁止生成正式信号，但会继续做一次只读候选检查：
 
 - 候选为0：显示“即使账户空仓也不会触发”；
 - 候选大于0：显示候选数量和第一名，并明确“因当前持仓阻断，不生成正式信号”；
 - 候选检查失败：显示“暂时无法判断”，不会把未知误写成0。
 
-只读检查不会调用正式信号构建、不会写入`e2_signals_recent.json`，也不会改变
+只读检查不会调用正式信号构建、不会写入`e_signals_recent.json`，也不会改变
 组合状态机或提交委托。

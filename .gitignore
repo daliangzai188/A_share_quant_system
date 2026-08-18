@@ -29,7 +29,10 @@ reports/**/*.xlsx
 reports/**/*.md
 data/state/open_plan_push.json
 reports/strategy_health/state.json
+reports/strategy_e/e_signals_recent.json
+# 旧名称只读兼容；不得再作为正式输出。
 reports/strategy_e2/e2_signals_recent.json
+reports/strategy_e_samples/sample_manifest.json
 reports/strategy_l/l_signals_recent.json
 !reports/**/.gitkeep
 
@@ -76,6 +79,10 @@ reports/live_trade/qmt_live_readiness.md
 # Syncthing
 .stfolder/
 .sync-conflict-*
+*.sync-conflict-*
+
+# 跨设备修复包仅用于临时传输，不纳入版本控制
+windows_e_cert_fix_*.zip
 
 # 策略信号运行状态账本（每日流水线自动重写，无版本控制价值）
 reports/**/*signal_runs_recent.json

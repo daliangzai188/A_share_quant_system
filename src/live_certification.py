@@ -68,7 +68,7 @@ def certification_config_sha256(config: Mapping[str, Any]) -> str:
 
 
 def certification_files_sha256(project_root: Path, files: list[str]) -> str:
-    """按相对路径和内容生成稳定摘要；缺文件直接失败。"""
+    """按相对路径和内容生成跨Windows/Mac稳定摘要；缺文件直接失败。"""
 
     digest = hashlib.sha256()
     for value in sorted(str(item) for item in files):
@@ -77,11 +77,35 @@ def certification_files_sha256(project_root: Path, files: list[str]) -> str:
             raise FileNotFoundError(path)
         digest.update(value.encode("utf-8"))
         digest.update(b"\0")
-        with path.open("rb") as handle:
-            while chunk := handle.read(1024 * 1024):
-                digest.update(chunk)
+        digest.update(_certification_file_bytes(path))
         digest.update(b"\0")
     return digest.hexdigest()
+
+
+_TEXT_HASH_SUFFIXES = frozenset(
+    {".csv", ".json", ".md", ".py", ".txt", ".toml", ".yaml", ".yml"}
+)
+
+
+def _certification_file_bytes(path: Path) -> bytes:
+    """文本文件统一换行符后再哈希，避免同一内容在Windows被误判漂移。"""
+
+    payload = path.read_bytes()
+    if path.suffix.lower() in _TEXT_HASH_SUFFIXES:
+        payload = payload.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    return payload
+
+
+def certification_file_sha256(path: Path) -> str:
+    """返回单个认证输入的跨平台稳定摘要。"""
+
+    return hashlib.sha256(_certification_file_bytes(path)).hexdigest()
+
+
+def certification_file_size(path: Path) -> int:
+    """返回认证口径下的稳定字节数；文本文件不计Windows额外回车符。"""
+
+    return len(_certification_file_bytes(path))
 
 
 def _parse_datetime(value: Any) -> dt.datetime | None:

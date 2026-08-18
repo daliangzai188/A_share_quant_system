@@ -96,8 +96,26 @@ def build_freeze_payload(
         "code_sha256": str(certification.get("code_sha256", "")),
         "input_sha256": str(certification.get("input_sha256", "")),
         "capacity_certified": bool(certification.get("capacity_certified", False)),
-        "risk_acceptance_note": str(
-            certification.get("m_live_risk_acceptance_note", "")
+        "risk_acceptance_note": "；".join(
+            note
+            for note in (
+                str(certification.get("e_gate_risk_acceptance_note", "")).strip(),
+                str(certification.get("m_live_risk_acceptance_note", "")).strip(),
+            )
+            if note
+        ),
+        "e_strategy_leg": str(certification.get("e_strategy_leg", "E")),
+        "e_strategy_variant": str(
+            certification.get("e_strategy_variant", "E_CURRENT")
+        ),
+        "e_complete_sample_candidate_count_before_gate": int(
+            certification.get("e_complete_sample_candidate_count_before_gate", 0)
+        ),
+        "e_complete_sample_candidate_count_after_gate": int(
+            certification.get("e_complete_sample_candidate_count_after_gate", 0)
+        ),
+        "e_gate_noninferiority_passed": bool(
+            certification.get("e_gate_noninferiority_passed", False)
         ),
         "note": (
             "冻结仅证明该版本与认证输入、代码、配置一致；样本外结果从oos_start_date起累计，"

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""策略 E2 的唯一规则源。
+"""策略 E 的唯一规则源。
 
 本模块只使用信号日收盘时已经存在的数据生成候选，不读取次日开盘、退出价格、
 实际成交结果或收益字段。实盘信号脚本与历史对齐脚本都必须调用这里，避免再次
@@ -15,10 +15,10 @@ from typing import Any
 import pandas as pd
 
 
-E2_VERSION = "E2_R1_NO_LOOKAHEAD_SINGLE_ACCOUNT_ENTRY_GATE_V4"
-DEFAULT_SCENARIO_PATH = Path("config/strategy_e2_r1_scenarios.json")
+E_VERSION = "E_R1_NO_LOOKAHEAD_SINGLE_ACCOUNT_ENTRY_GATE_V4"
+DEFAULT_SCENARIO_PATH = Path("config/strategy_e_r1_scenarios.json")
 
-# 这些字段都属于买入日以后才能知道的结果，禁止出现在E2选股条件或排序规则中。
+# 这些字段都属于买入日以后才能知道的结果，禁止出现在E选股条件或排序规则中。
 FORBIDDEN_SELECTION_COLUMNS = {
     "net_return",
     "dynamic_net_return",
@@ -35,7 +35,7 @@ FORBIDDEN_SELECTION_COLUMNS = {
     "d3_close",
 }
 
-# 实盘构造候选时必须完整存在的基础风控字段。任一缺失都拒绝生成E2信号。
+# 实盘构造候选时必须完整存在的基础风控字段。任一缺失都拒绝生成E信号。
 LIVE_BASE_REQUIRED_FIELDS = {
     "trade_date",
     "ts_code",
@@ -60,7 +60,7 @@ def parse_scenario_name(scenario_name: str, scenario_rank: int) -> dict[str, Any
 
     prefix = "large_universe_sort_"
     if not scenario_name.startswith(prefix) or "|sort=" not in scenario_name or "|exit=" not in scenario_name:
-        raise ValueError(f"E2 scenario格式非法：{scenario_name}")
+        raise ValueError(f"E scenario格式非法：{scenario_name}")
 
     condition_text, remainder = scenario_name[len(prefix):].split("|sort=", 1)
     sort_rule, exit_token = remainder.split("|exit=", 1)
@@ -73,7 +73,7 @@ def parse_scenario_name(scenario_name: str, scenario_rank: int) -> dict[str, Any
     conditions: dict[str, str] = {}
     for item in filter(None, condition_text.split(";")):
         if "=" not in item:
-            raise ValueError(f"E2 scenario条件格式非法：{item}")
+            raise ValueError(f"E scenario条件格式非法：{item}")
         column, value = item.split("=", 1)
         conditions[column] = value
 
@@ -86,12 +86,12 @@ def parse_scenario_name(scenario_name: str, scenario_rank: int) -> dict[str, Any
     }
 
 
-def load_e2_spec(project_root: Path, scenario_path: Path | None = None) -> dict[str, Any]:
-    """加载并校验E2锁定规则，发现前视字段时立即拒绝运行。"""
+def load_e_spec(project_root: Path, scenario_path: Path | None = None) -> dict[str, Any]:
+    """加载并校验E锁定规则，发现前视字段时立即拒绝运行。"""
 
     path = scenario_path or project_root / DEFAULT_SCENARIO_PATH
     if not path.exists():
-        raise FileNotFoundError(f"缺少E2 R1规则文件：{path}")
+        raise FileNotFoundError(f"缺少E R1规则文件：{path}")
     spec = json.loads(path.read_text(encoding="utf-8"))
 
     if "scenarios" not in spec:
@@ -99,7 +99,7 @@ def load_e2_spec(project_root: Path, scenario_path: Path | None = None) -> dict[
         spec["scenarios"] = [parse_scenario_name(name, rank) for rank, name in enumerate(names, start=1)]
 
     if not spec["scenarios"]:
-        raise ValueError("E2 R1规则为空，拒绝生成实盘信号。")
+        raise ValueError("E R1规则为空，拒绝生成实盘信号。")
 
     sort_rules = spec.get("sort_rules", {})
     exit_rules = spec.get("exit_rules", {})
@@ -108,24 +108,24 @@ def load_e2_spec(project_root: Path, scenario_path: Path | None = None) -> dict[
     for scenario in spec["scenarios"]:
         rank = int(scenario["scenario_rank"])
         if rank in seen_ranks:
-            raise ValueError(f"E2 scenario_rank重复：{rank}")
+            raise ValueError(f"E scenario_rank重复：{rank}")
         seen_ranks.add(rank)
         used_columns.update(str(column) for column in scenario.get("conditions", {}))
 
         sort_rule = str(scenario.get("sort_rule", ""))
         if sort_rule not in sort_rules:
-            raise ValueError(f"E2缺少排序规则定义：{sort_rule}")
+            raise ValueError(f"E缺少排序规则定义：{sort_rule}")
         columns = list(sort_rules[sort_rule].get("columns", []))
         ascending = list(sort_rules[sort_rule].get("ascending", []))
         if not columns or len(columns) != len(ascending):
-            raise ValueError(f"E2排序规则列数不一致：{sort_rule}")
+            raise ValueError(f"E排序规则列数不一致：{sort_rule}")
         used_columns.update(str(column) for column in columns)
 
         exit_rule = str(scenario.get("exit_rule", ""))
         if exit_rule not in exit_rules:
-            raise ValueError(f"E2缺少退出规则定义：{exit_rule}")
+            raise ValueError(f"E缺少退出规则定义：{exit_rule}")
         if int(exit_rules[exit_rule].get("hold_offset", 0)) not in {2, 3}:
-            raise ValueError(f"E2只允许T+2或T+3退出：{exit_rule}")
+            raise ValueError(f"E只允许T+2或T+3退出：{exit_rule}")
 
     # 入场门禁必须放在“每日第一名已经确定”之后执行。若允许第一名被过滤后
     # 自动改买第二名，历史验证中的“删掉这一笔”就会被实盘偷换成另一只股票，
@@ -133,19 +133,19 @@ def load_e2_spec(project_root: Path, scenario_path: Path | None = None) -> dict[
     entry_gate = spec.get("entry_gate", {})
     exclude_values = entry_gate.get("exclude_values", {})
     if not isinstance(exclude_values, dict):
-        raise ValueError("E2 entry_gate.exclude_values必须是字段到排除值列表的映射")
+        raise ValueError("E entry_gate.exclude_values必须是字段到排除值列表的映射")
     if entry_gate and not bool(entry_gate.get("apply_after_daily_first_pick", False)):
-        raise ValueError("E2入场门禁必须在每日第一名确定后执行")
+        raise ValueError("E入场门禁必须在每日第一名确定后执行")
     if bool(entry_gate.get("fallback_to_second_candidate", False)):
-        raise ValueError("E2入场门禁禁止回补当日第二名")
+        raise ValueError("E入场门禁禁止回补当日第二名")
     for column, values in exclude_values.items():
         if not isinstance(values, list) or not values:
-            raise ValueError(f"E2入场门禁排除值非法：{column}")
+            raise ValueError(f"E入场门禁排除值非法：{column}")
         used_columns.add(str(column))
 
     forbidden = sorted(used_columns & FORBIDDEN_SELECTION_COLUMNS)
     if forbidden:
-        raise ValueError(f"E2规则包含前视结果字段，拒绝运行：{forbidden}")
+        raise ValueError(f"E规则包含前视结果字段，拒绝运行：{forbidden}")
     return spec
 
 
@@ -230,7 +230,7 @@ def build_r1_universe_from_pool(
     if audit_readiness:
         broken = audit_signal_data_readiness(day_rows, spec)
         if broken:
-            raise RuntimeError("E2 R1信号日关键字段不可用：" + "、".join(broken))
+            raise RuntimeError("E R1信号日关键字段不可用：" + "、".join(broken))
     day_rows = apply_live_base_filters(day_rows, spec)
     if day_rows.empty:
         return pd.DataFrame()
@@ -275,7 +275,7 @@ def build_r1_universe_from_pool(
     )
 
 
-def select_e2_candidates(universe: pd.DataFrame) -> pd.DataFrame:
+def select_e_candidates(universe: pd.DataFrame) -> pd.DataFrame:
     """在R1候选并集中取板块neutral，再按流通市值升序排列。"""
 
     if universe.empty:
@@ -287,8 +287,8 @@ def select_e2_candidates(universe: pd.DataFrame) -> pd.DataFrame:
     return result.sort_values(sort_columns).reset_index(drop=True)
 
 
-def apply_e2_entry_gate(daily_picks: pd.DataFrame, spec: dict[str, Any]) -> pd.DataFrame:
-    """对已经确定的每日第一名执行E2入场门禁。
+def apply_e_entry_gate(daily_picks: pd.DataFrame, spec: dict[str, Any]) -> pd.DataFrame:
+    """对已经确定的每日第一名执行E入场门禁。
 
     门禁只允许读取信号日已经存在的字段。调用方必须先选出每日第一名，再调用
     本函数；被排除后当日直接空仓，不允许回补第二名。这个顺序同时用于历史
@@ -302,23 +302,23 @@ def apply_e2_entry_gate(daily_picks: pd.DataFrame, spec: dict[str, Any]) -> pd.D
     keep = pd.Series(True, index=result.index, dtype="bool")
     for column, values in exclude_values.items():
         if column not in result.columns:
-            raise RuntimeError(f"E2入场门禁字段缺失：{column}")
+            raise RuntimeError(f"E入场门禁字段缺失：{column}")
         excluded = {str(value) for value in values}
         keep &= ~result[column].fillna("").astype(str).isin(excluded)
     return result.loc[keep].copy().reset_index(drop=True)
 
 
-def select_e2_daily_picks(universe: pd.DataFrame, spec: dict[str, Any]) -> pd.DataFrame:
+def select_e_daily_picks(universe: pd.DataFrame, spec: dict[str, Any]) -> pd.DataFrame:
     """先按原R1规则取每日第一名，再执行无回补入场门禁。"""
 
-    ranked = select_e2_candidates(universe)
+    ranked = select_e_candidates(universe)
     if ranked.empty:
         return ranked
     if "trade_date" in ranked.columns:
         daily_first = ranked.groupby("trade_date", as_index=False).head(1).copy()
     else:
         daily_first = ranked.head(1).copy()
-    return apply_e2_entry_gate(daily_first, spec)
+    return apply_e_entry_gate(daily_first, spec)
 
 
 def resolve_exit_offset(spec: dict[str, Any], exit_rule: str) -> int:
@@ -326,10 +326,10 @@ def resolve_exit_offset(spec: dict[str, Any], exit_rule: str) -> int:
 
     rule = spec.get("exit_rules", {}).get(str(exit_rule))
     if not rule:
-        raise ValueError(f"E2未知退出规则：{exit_rule}")
+        raise ValueError(f"E未知退出规则：{exit_rule}")
     offset = int(rule.get("hold_offset", 0))
     if offset not in {2, 3}:
-        raise ValueError(f"E2非法退出偏移：{offset}")
+        raise ValueError(f"E非法退出偏移：{offset}")
     return offset
 
 
@@ -439,10 +439,10 @@ def load_bucketed_signal_pool(project_root: Path, signal_date: str, lookback_day
 
     # optimizer根据输入文件名是否以live_开头决定走逐日分片路径，所以临时文件
     # 固定以live_开头；TemporaryDirectory保证异常退出后也能自动清理。
-    with tempfile.TemporaryDirectory(prefix="e2_r1_") as temp_dir:
+    with tempfile.TemporaryDirectory(prefix="e_r1_") as temp_dir:
         temp_root = Path(temp_dir)
-        input_path = temp_root / "live_e2_r1_pool.csv"
-        emotion_path = temp_root / "live_e2_r1_emotion.csv"
+        input_path = temp_root / "live_e_r1_pool.csv"
+        emotion_path = temp_root / "live_e_r1_emotion.csv"
         merged.to_csv(input_path, index=False, encoding="utf-8-sig")
 
         from src.strategy_optimizer import StrategyConditionOptimizer
@@ -458,19 +458,19 @@ def load_bucketed_signal_pool(project_root: Path, signal_date: str, lookback_day
         return optimizer.load_trades(require_complete_exit=False)
 
 
-def build_live_e2_candidates(project_root: Path, signal_date: str) -> pd.DataFrame:
+def build_live_e_candidates(project_root: Path, signal_date: str) -> pd.DataFrame:
     """实盘入口：数据准备、R1并集、neutral过滤全部走同一条规则链。"""
 
-    spec = load_e2_spec(project_root)
+    spec = load_e_spec(project_root)
     pool = load_bucketed_signal_pool(project_root, signal_date)
     universe = build_r1_universe_from_pool(pool, spec, signal_date=signal_date, audit_readiness=True)
-    ranked = select_e2_candidates(universe)
+    ranked = select_e_candidates(universe)
     if ranked.empty:
         return ranked
 
     # 实盘候选文件仍可保留同日完整排序，便于审计；但只有原第一名通过门禁时
     # 才返回。第一名被排除时返回空表，绝不顺延买第二名。
     first_pick = ranked.head(1).copy()
-    if apply_e2_entry_gate(first_pick, spec).empty:
+    if apply_e_entry_gate(first_pick, spec).empty:
         return ranked.iloc[0:0].copy()
     return ranked

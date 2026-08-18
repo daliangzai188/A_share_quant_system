@@ -4,11 +4,11 @@
   "broker_adapter_enabled": true,
   "qmt_enabled": true,
   "active_strategy_profile": {
-    "file_role": "总策略模式开关。1=独立ACDE2实盘状态机（B已删除）；2=独立L龙头策略；3=model3自动切换实盘状态机。当前用户已确认切换到mode=3；仍必须经过LiveOrderGateway风控。",
+    "file_role": "总策略模式开关。1=独立ACDE实盘状态机（B已删除）；2=独立L龙头策略；3=model3自动切换实盘状态机。当前用户已确认切换到mode=3；仍必须经过LiveOrderGateway风控。",
     "mode": 3,
     "mode_name": "MODEL3",
     "available_modes": {
-      "1": "ACDE2",
+      "1": "ACDE",
       "2": "L",
       "3": "MODEL3"
     }
@@ -28,8 +28,20 @@
     "sell_time": "按L研究明细退出规则",
     "position_pct": 0.825
   },
+  "strategy_e": {
+    "file_role": "策略E唯一身份配置。正式策略腿只写E；E2仅允许作为旧账本只读别名，读取后立即归一为E。",
+    "strategy_leg": "E",
+    "strategy_variant": "E_CURRENT",
+    "legacy_read_aliases": ["E2"],
+    "live_order_enabled": true,
+    "complete_sample_path": "reports/strategy_e_samples/e_current_daily_candidates_full.csv",
+    "pre_gate_sample_path": "reports/strategy_e_samples/e_r1_daily_candidates_full.csv",
+    "full_sample_gate_noninferiority_passed": false,
+    "full_sample_gate_risk_accepted": true,
+    "full_sample_gate_risk_acceptance_note": "2026-08-18统一完整样本后发现：E_R1门禁前102个候选日，E_CURRENT门禁后82个候选日；被排除20笔平均账户收益+2.297%，后半段门禁降低单腿复利。用户已明确继续保持当前实盘E_CURRENT，因此本项按风险接受保留；这不等于门禁统计通过，不得据此扩大资金。"
+  },
   "strategy_m": {
-    "file_role": "策略M补位腿配置。腿序 D>L>A>M>E2>C（2026-08-07 定稿）：M 只被排在它前面的 D持仓 / L信号 / A计划挡住；E2 和 C 排在 M 之后，不得挡住 M 出信号。旧描述『只在A/C/D/E2/L全部无候选时触发』已随腿序重排作废。",
+    "file_role": "策略M补位腿配置。腿序 D>L>A>M>E>C（2026-08-07 定稿）：M 只被排在它前面的 D持仓 / L信号 / A计划挡住；E 和 C 排在 M 之后，不得挡住 M 出信号。旧描述『只在A/C/D/E/L全部无候选时触发』已随腿序重排作废。",
     "enabled": true,
     "live_order_enabled": true,
     "live_noninferiority_override": true,
@@ -53,8 +65,8 @@
     "research_audit": {
       "window": "20240520~20260514",
       "m_trade_count": 26,
-      "portfolio_without_m": 7677.946823,
-      "portfolio_with_m_dd_guard": 29388.980134,
+      "portfolio_without_m": 6886.943639,
+      "portfolio_with_m_dd_guard": 24175.186295,
       "portfolio_max_drawdown_without_m": -0.235124,
       "portfolio_max_drawdown_with_m_dd_guard": -0.235585,
       "downside_if_m_expectation_zero": 7058.074525,
@@ -88,13 +100,13 @@
       "L",
       "A",
       "M",
-      "E2",
+      "E",
       "C"
     ],
     "rolling_live_report_path": "reports/live_performance/rolling_live_status.json",
     "rolling_min_trades_for_decision": 20,
     "selected_rule_name": "expand_chain_3_8_l_unconditional_priority_with_m_risk_acceptance",
-    "selected_rule_description": "当前实盘腿序D>L>A>M>E2>C；L通过基础环境条件后无条件优先。M按用户明确风险接受恢复真实买单，但不伪称已通过分段回撤非劣门禁。",
+    "selected_rule_description": "当前实盘腿序D>L>A>M>E>C；L通过基础环境条件后无条件优先。M按用户明确风险接受恢复真实买单，但不伪称已通过分段回撤非劣门禁。",
     "base_l_rule": {
       "market_segment": "not_star",
       "segment_retreat_state_bucket": [
@@ -116,31 +128,31 @@
       ]
     },
     "live_candidate_metrics": {
-      "trade_count": 150,
-      "l_trade_count": 47,
+      "trade_count": 154,
+      "l_trade_count": 48,
       "m_trade_count": 26,
-      "mode1_trade_count": 77,
-      "win_rate": 0.686667,
-      "avg_return": 0.078625,
-      "median_return": 0.047037,
-      "equity_multiple": 29388.980134,
-      "fixed_initial_notional_multiple": 12.793823,
+      "mode1_trade_count": 80,
+      "win_rate": 0.675325,
+      "avg_return": 0.075199,
+      "median_return": 0.037443,
+      "equity_multiple": 24175.186295,
+      "fixed_initial_notional_multiple": 12.580718,
       "capacity_certified": false,
       "max_drawdown": -0.235585,
       "max_loss": -0.163694,
       "max_consecutive_losses": 5,
       "scenario": "current_with_m_gap_leg",
       "research_with_m": {
-        "equity_multiple": 29388.980134,
-        "trade_count": 150,
+        "equity_multiple": 24175.186295,
+        "trade_count": 154,
         "max_drawdown": -0.235585
       },
       "without_m_reference": {
-        "equity_multiple": 7677.946823,
-        "trade_count": 135,
+        "equity_multiple": 6886.943639,
+        "trade_count": 137,
         "max_drawdown": -0.235124
       },
-      "note": "2026-08-10按用户明确风险接受恢复M；M分段回撤非劣门禁仍未通过，不得写成验证通过。A/C收益显式扣analysis中的双边佣金/过户费和卖出印花税。当前发布标尺为含M的150笔；当前按82.5%正式实盘，容量尚未认证，扩大资金前必须先完成容量验证。复现:python3 scripts/certify_current_executable_portfolio.py"
+      "note": "2026-08-18策略E统一为E_CURRENT并改用完整候选样本；当前发布标尺为154笔/24175.186295倍。E门禁与M的非劣验证未通过部分均按用户明确风险接受保留，不得写成验证通过。A/C收益显式扣analysis中的双边佣金/过户费和卖出印花税。当前按82.5%正式实盘，容量尚未认证，扩大资金前必须先完成容量验证。复现:python3 scripts/certify_current_executable_portfolio.py"
     }
   },
   "portfolio_certification": {
@@ -157,7 +169,7 @@
       "A",
       "C",
       "D",
-      "E2",
+      "E",
       "L",
       "M"
     ],
@@ -252,11 +264,11 @@
     "entry_actual_amount_rebalance_note": "以09:20开仓前QMT总资产快照为基准：82.5%是累计实际成交额目标，80%是最低验收线，85%是累计实际成交额及最坏委托金额绝对硬顶。集合竞价确认后，09:30-10:30复用现有POV按实际成交金额缺口动态补足；现价超过开盘价2%、涨停、现金不足或不足一手时不追，10:30仍低于80%则高优先告警。",
     "max_single_order_amount": 0,
     "transition_use_full_available_cash": false,
-    "transition_use_full_available_cash_note": "已停用普通衔接：旧策略仓未清空时禁止普通新买单。唯一例外是D→A/C/E2接力专用成对POV：09:23只卖竞价安全部分，09:30后卖D一片并确认实际释放金额后才买候选一片；累计买入额不得超过累计D卖出额，因此不会动用原有空闲现金。打新中签、债券和人工仓不算策略仓。",
+    "transition_use_full_available_cash_note": "已停用普通衔接：旧策略仓未清空时禁止普通新买单。唯一例外是D→A/C/E接力专用成对POV：09:23只卖竞价安全部分，09:30后卖D一片并确认实际释放金额后才买候选一片；累计买入额不得超过累计D卖出额，因此不会动用原有空闲现金。打新中签、债券和人工仓不算策略仓。",
     "total_liquidity_cap_pct": 0.02,
     "total_liquidity_cap_note": "开仓硬顶=信号日成交额×2%(2026-07-16全链重放定稿):80笔买卖两端真实分钟价重放,1000万起单轮1%=3.13x/2%=3.68x/3%=3.78x/5%=3.80x,2%拿到大头且卖出跑道用满率仅29%(下午容量≈sig×7%)缓冲厚;16万/100万各档硬顶取值无差。数据缺失fail-closed拒开仓",
     "same_stock_skip_enabled": true,
-    "same_stock_skip_note": "同票集中度纵深防线(2026-07-16):普通新候选与昨日及更早未清仓同票时直接放弃；唯一例外是状态机明确锁定的D→A/C/E2同票接力，此时不新增风险敞口，直接变更策略归属和计划退出日，不做卖出再买回。⚠️当日买入的持仓=POV拆单在途，按buy_date区分，绝不拦截。",
+    "same_stock_skip_note": "同票集中度纵深防线(2026-07-16):普通新候选与昨日及更早未清仓同票时直接放弃；唯一例外是状态机明确锁定的D→A/C/E同票接力，此时不新增风险敞口，直接变更策略归属和计划退出日，不做卖出再买回。⚠️当日买入的持仓=POV拆单在途，按buy_date区分，绝不拦截。",
     "capacity_wall_alert_enabled": true,
     "capacity_wall_alert_threshold": 17000000,
     "capacity_wall_alert_note": "容量墙里程碑:总资产约≥1700万(82.5%仓≈中位票2%容量1400万)时每周推送提醒，启动扩容研究(docs/capital_roadmap_2026.md)。历史80%口径对应1750万。",
@@ -279,7 +291,7 @@
     "pov_first_slice_share": 0.18,
     "pov_chase_cap": 0.02,
     "d_relay_paired_pov_enabled": true,
-    "d_relay_paired_pov_note": "D→A/C/E2实盘接力专用：候选在09:00计划中锁定；09:23按虚拟匹配量只卖安全部分，盘口不完整则卖0股；09:30-10:30每5分钟先消化已释放资金，再按D卖盘深度/成交流量与候选成交流量同步拆片。新仓累计买入额永不超过D累计确认卖出额，不使用账户原有空闲现金；目标82.5%、单票85%硬顶、QMT真实可用余额、+2%追价线同时生效。同票接力直接变更策略归属，不做无意义卖出再买回。",
+    "d_relay_paired_pov_note": "D→A/C/E实盘接力专用：候选在09:00计划中锁定；09:23按虚拟匹配量只卖安全部分，盘口不完整则卖0股；09:30-10:30每5分钟先消化已释放资金，再按D卖盘深度/成交流量与候选成交流量同步拆片。新仓累计买入额永不超过D累计确认卖出额，不使用账户原有空闲现金；目标82.5%、单票85%硬顶、QMT真实可用余额、+2%追价线同时生效。同票接力直接变更策略归属，不做无意义卖出再买回。",
     "d_relay_auction_max_participation": 0.025,
     "d_relay_auction_max_unmatched_sell_ratio": 0.05,
     "d_relay_auction_book_volume_unit": 1,
@@ -297,11 +309,11 @@
       "A",
       "C",
       "D",
-      "E2",
+      "E",
       "L",
       "M"
     ],
-    "exit_pov_note": "卖出端容量型POV:普通D仅在planned_exit_date=今日的T+2普通退出进入尾盘POV；D在T+1有A/C/E2接力时改走独立d_relay_paired_pov，不再09:23跌停价整仓卖。13:00仅当仓位市值>累计成交额×1%才建普通退出跑道，小仓位继续14:55主平仓；14:30/14:45再按实测流速复核。普通退出与D接力状态、资金账和线程完全分离。 M腿与A/C/E2/L同口径:planned_exit_date当日走容量型POV,不走D的接力分支。",
+    "exit_pov_note": "卖出端容量型POV:普通D仅在planned_exit_date=今日的T+2普通退出进入尾盘POV；D在T+1有A/C/E接力时改走独立d_relay_paired_pov，不再09:23跌停价整仓卖。13:00仅当仓位市值>累计成交额×1%才建普通退出跑道，小仓位继续14:55主平仓；14:30/14:45再按实测流速复核。普通退出与D接力状态、资金账和线程完全分离。 M腿与A/C/E/L同口径:planned_exit_date当日走容量型POV,不走D的接力分支。",
     "exit_pov_participation": 0.25,
     "exit_pov_late_participation": 0.35,
     "exit_pov_late_confirm_timeout_sec": 12,
@@ -309,13 +321,13 @@
     "exit_pov_large_force_strategy_legs": [
       "A",
       "C",
-      "E2",
+      "E",
       "L",
       "M"
     ],
     "exit_pov_large_force_min_amount": 9500000,
     "exit_pov_large_force_min_signal_amount": 475000000,
-    "exit_pov_large_force_note": "仅对A/C/E2/L中参考市值≥950万且信号日成交额≥4.75亿的千万级仓位固定14:15启动退出跑道；普通D明确排除该绝对金额强制规则，只能由当日实时成交容量不足触发，避免流动性充足时无谓提前卖出。",
+    "exit_pov_large_force_note": "仅对A/C/E/L中参考市值≥950万且信号日成交额≥4.75亿的千万级仓位固定14:15启动退出跑道；普通D明确排除该绝对金额强制规则，只能由当日实时成交容量不足触发，避免流动性充足时无谓提前卖出。",
     "exit_pov_depth_levels": 3,
     "exit_pov_depth_haircut": 0.5,
     "exit_pov_bid_volume_unit": 1,
@@ -332,14 +344,14 @@
     "exit_auction_capacity_pct": 0.008,
     "exit_auction_bypass_ratio": 0.2,
     "max_single_order_amount_note": "0=取消固定金额上限：仅在无旧策略仓时由max_total_position_pct 82.5%接管，同时受max_position_pct 85%单票硬顶；旧策略仓未实际清空时禁止新开仓 | >0=单笔固定限额(元)",
-    "e2_auction_participation_ratio": 0.1,
-    "e2_auction_fallback_amount": 50000,
+    "e_auction_participation_ratio": 0.1,
+    "e_auction_fallback_amount": 50000,
     "intraday_takeprofit_enabled": true,
     "intraday_takeprofit_offset": 0.01,
-    "e2_enabled": true,
-    "e2_capacity_alert_clamp_ratio": 0.5,
-    "e2_capacity_alert_window": 5,
-    "e2_capacity_alert_min_hits": 3,
+    "e_enabled": true,
+    "e_capacity_alert_clamp_ratio": 0.5,
+    "e_capacity_alert_window": 5,
+    "e_capacity_alert_min_hits": 3,
     "limit_price_tolerance": 0.001,
     "enforce_trading_time": true,
     "reject_limit_up_buy": true,
@@ -384,7 +396,7 @@
     "execution_alignment_note": "D实盘与回测共同使用：仅在账户空仓且昨日无其他策略正式候选、今日无其他开仓计划时，09:30起持续记录完整封板/炸板路径，14:00后只有真实回封才允许BUY，14:55停止并撤未成交委托；炸板2~3次(multi_open)，优先炸板2次，再按封单金额/流通市值降序；首次封板时段、成交概率可靠性和strong情绪桶均不可放宽；每天只尝试排序第一名，失败不递补。"
   },
   "strategy_s": {
-    "file_role": "策略S深市/创业板动量补充策略配置。S 独立于 ACDE2，只能在组合空闲且通过实盘口径认证后接入真实下单。",
+    "file_role": "策略S深市/创业板动量补充策略配置。S 独立于 ACDE，只能在组合空闲且通过实盘口径认证后接入真实下单。",
     "enabled": true,
     "live_order_enabled": false,
     "require_live_certification": true,

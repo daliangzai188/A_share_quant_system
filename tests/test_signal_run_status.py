@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from scripts import run_strategy_e2_signal as e2_signal
+from scripts import run_strategy_e_signal as e_signal
 from scripts import run_strategy_l_signal as l_signal
 from scripts.trading_daemon import _strategy_signal_run_readiness
 from src.rolling_signal_store import (
@@ -29,25 +29,25 @@ class SignalRunStoreTests(unittest.TestCase):
             save_recent_signal_run(
                 path,
                 {"signal_date": "20260801", "status": ERROR, "reason": "首次失败"},
-                strategy_leg="E2",
+                strategy_leg="E",
                 max_trade_days=2,
             )
             save_recent_signal_run(
                 path,
                 {"signal_date": "20260801", "status": NO_CANDIDATE, "reason": "重跑正常"},
-                strategy_leg="E2",
+                strategy_leg="E",
                 max_trade_days=2,
             )
             save_recent_signal_run(
                 path,
                 {"signal_date": "20260802", "status": NO_SIGNAL_OCCUPIED, "reason": "已有持仓"},
-                strategy_leg="E2",
+                strategy_leg="E",
                 max_trade_days=2,
             )
             save_recent_signal_run(
                 path,
                 {"signal_date": "20260803", "status": SIGNAL_READY, "reason": "已生成"},
-                strategy_leg="E2",
+                strategy_leg="E",
                 max_trade_days=2,
             )
 
@@ -92,16 +92,16 @@ class SignalRunReadinessTests(unittest.TestCase):
     def test_missing_run_and_error_are_warnings(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            missing = self.assess(root, "E2", "20260803")
+            missing = self.assess(root, "E", "20260803")
             self.assertFalse(missing["ok"])
             self.assertEqual(missing["status"], "NOT_RUN")
 
             save_recent_signal_run(
                 root / "runs.json",
                 {"signal_date": "20260803", "status": ERROR, "reason": "数据失败"},
-                strategy_leg="E2",
+                strategy_leg="E",
             )
-            failed = self.assess(root, "E2", "20260803")
+            failed = self.assess(root, "E", "20260803")
             self.assertFalse(failed["ok"])
             self.assertEqual(failed["status"], ERROR)
 
@@ -111,33 +111,33 @@ class SignalRunReadinessTests(unittest.TestCase):
             save_recent_signal_run(
                 root / "runs.json",
                 {"signal_date": "20260803", "status": SIGNAL_READY, "reason": "已生成"},
-                strategy_leg="E2",
+                strategy_leg="E",
             )
-            inconsistent = self.assess(root, "E2", "20260803")
+            inconsistent = self.assess(root, "E", "20260803")
             self.assertFalse(inconsistent["ok"])
             self.assertEqual(inconsistent["status"], ERROR)
 
             save_recent_signal(
                 root / "signals.json",
                 {"signal_date": "20260803", "ts_code": "000001.SZ"},
-                strategy_leg="E2",
+                strategy_leg="E",
             )
-            ready = self.assess(root, "E2", "20260803")
+            ready = self.assess(root, "E", "20260803")
             self.assertTrue(ready["ok"])
             self.assertEqual(ready["icon"], "✅")
 
 
 class SignalGeneratorStatusTests(unittest.TestCase):
-    def test_e2_occupied_and_empty_shadow_candidates_are_explained(self) -> None:
+    def test_e_occupied_and_empty_shadow_candidates_are_explained(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            status_path = Path(temp_dir) / "e2_runs.json"
+            status_path = Path(temp_dir) / "e_runs.json"
             with (
-                patch.object(e2_signal, "RUN_STATUS_PATH", status_path),
-                patch.object(e2_signal, "migrate_existing_signals"),
-                patch.object(e2_signal, "load_e2_candidates", return_value=pd.DataFrame()),
-                patch.object(e2_signal, "save_candidates"),
+                patch.object(e_signal, "RUN_STATUS_PATH", status_path),
+                patch.object(e_signal, "migrate_existing_signals"),
+                patch.object(e_signal, "load_e_candidates", return_value=pd.DataFrame()),
+                patch.object(e_signal, "save_candidates"),
                 patch.object(
-                    e2_signal,
+                    e_signal,
                     "load_open_positions",
                     return_value=[
                         {
@@ -149,7 +149,7 @@ class SignalGeneratorStatusTests(unittest.TestCase):
                     ],
                 ),
             ):
-                e2_signal.run_signal_generation("20260803", dry_run=False)
+                e_signal.run_signal_generation("20260803", dry_run=False)
 
             run = signal_run_by_signal_date(status_path, "20260803")
             self.assertEqual(run["status"], NO_SIGNAL_OCCUPIED)
@@ -157,20 +157,20 @@ class SignalGeneratorStatusTests(unittest.TestCase):
             self.assertEqual(run["candidate_count"], 0)
             self.assertIn("即使账户空仓也不会触发", run["reason"])
 
-    def test_e2_occupied_records_available_shadow_candidate_without_signal(self) -> None:
+    def test_e_occupied_records_available_shadow_candidate_without_signal(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            status_path = Path(temp_dir) / "e2_runs.json"
+            status_path = Path(temp_dir) / "e_runs.json"
             candidates = pd.DataFrame(
                 [{"ts_code": "000001.SZ", "name": "平安银行", "circ_mv": 100.0}]
             )
             with (
-                patch.object(e2_signal, "RUN_STATUS_PATH", status_path),
-                patch.object(e2_signal, "migrate_existing_signals"),
-                patch.object(e2_signal, "load_e2_candidates", return_value=candidates),
-                patch.object(e2_signal, "save_candidates"),
-                patch.object(e2_signal, "save_signal") as save_signal_mock,
+                patch.object(e_signal, "RUN_STATUS_PATH", status_path),
+                patch.object(e_signal, "migrate_existing_signals"),
+                patch.object(e_signal, "load_e_candidates", return_value=candidates),
+                patch.object(e_signal, "save_candidates"),
+                patch.object(e_signal, "save_signal") as save_signal_mock,
                 patch.object(
-                    e2_signal,
+                    e_signal,
                     "load_open_positions",
                     return_value=[
                         {
@@ -182,7 +182,7 @@ class SignalGeneratorStatusTests(unittest.TestCase):
                     ],
                 ),
             ):
-                e2_signal.run_signal_generation("20260803", dry_run=False)
+                e_signal.run_signal_generation("20260803", dry_run=False)
 
             run = signal_run_by_signal_date(status_path, "20260803")
             self.assertEqual(run["status"], NO_SIGNAL_OCCUPIED)
@@ -192,23 +192,23 @@ class SignalGeneratorStatusTests(unittest.TestCase):
             self.assertIn("但因当前持仓阻断", run["reason"])
             save_signal_mock.assert_not_called()
 
-    def test_e2_candidate_failure_writes_error(self) -> None:
+    def test_e_candidate_failure_writes_error(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            status_path = Path(temp_dir) / "e2_runs.json"
+            status_path = Path(temp_dir) / "e_runs.json"
             with (
-                patch.object(e2_signal, "RUN_STATUS_PATH", status_path),
-                patch.object(e2_signal, "migrate_existing_signals"),
-                patch.object(e2_signal, "load_open_positions", return_value=[]),
-                patch.object(e2_signal, "has_ac_planned_order", return_value=False),
+                patch.object(e_signal, "RUN_STATUS_PATH", status_path),
+                patch.object(e_signal, "migrate_existing_signals"),
+                patch.object(e_signal, "load_open_positions", return_value=[]),
+                patch.object(e_signal, "has_ac_planned_order", return_value=False),
                 patch.object(
-                    e2_signal,
+                    e_signal,
                     "load_d_intraday_status",
                     return_value={"has_filled": False, "has_failed": False, "summary": ""},
                 ),
-                patch.object(e2_signal, "compute_segment_retreat_states", return_value={}),
-                patch.object(e2_signal, "load_e2_candidates", side_effect=ValueError("关键字段缺失")),
+                patch.object(e_signal, "compute_segment_retreat_states", return_value={}),
+                patch.object(e_signal, "load_e_candidates", side_effect=ValueError("关键字段缺失")),
             ):
-                e2_signal.run_signal_generation("20260803", dry_run=False)
+                e_signal.run_signal_generation("20260803", dry_run=False)
 
             run = signal_run_by_signal_date(status_path, "20260803")
             self.assertEqual(run["status"], ERROR)

@@ -14,10 +14,11 @@ from typing import Any, Iterable
 
 import pandas as pd
 
+from src.strategy_identity import normalize_strategy_frame, normalize_strategy_leg
 from src.strategy_m import build_m_candidate, load_m_spec, resolve_exit_offset
 
 
-LEGS = ("D", "L", "A", "M", "E2", "C")
+LEGS = ("D", "L", "A", "M", "E", "C")
 SCHEMA_VERSION = 1
 METHODOLOGY_VERSION = "released_shadow_t1_open_fixed_exit_v1"
 LEDGER_COLUMNS = [
@@ -113,7 +114,8 @@ def _run_for_date(path: Path, signal_date: str) -> dict[str, Any]:
 
 
 def _base_row(release: dict[str, Any], signal_date: str, leg: str, now: str) -> dict[str, Any]:
-    priority = list(release.get("strategy_priority_order", LEGS))
+    priority = [normalize_strategy_leg(value) for value in release.get("strategy_priority_order", LEGS)]
+    leg = normalize_strategy_leg(leg)
     rank = priority.index(leg) + 1 if leg in priority else len(priority) + 1
     return {
         "schema_version": SCHEMA_VERSION,
@@ -354,7 +356,7 @@ def collect_signal_date(root: Path, release: dict[str, Any], signal_date: str) -
         _collect_standard_leg(root, release, signal_date, "L", now, open_dates),
         _collect_ac(root, release, signal_date, "A", now, open_dates),
         _collect_m(root, release, signal_date, now, open_dates),
-        _collect_standard_leg(root, release, signal_date, "E2", now, open_dates),
+        _collect_standard_leg(root, release, signal_date, "E", now, open_dates),
         _collect_ac(root, release, signal_date, "C", now, open_dates),
     ]
     eligible = [row for row in rows if row["candidate_status"] == "CANDIDATE"]
@@ -498,10 +500,10 @@ def upsert_ledger(root: Path, new_rows: Iterable[dict[str, Any]]) -> pd.DataFram
         if not old.empty:
             old["release_id"] = old["release_id"].fillna("").astype(str)
             old["signal_date"] = old["signal_date"].map(_date)
-            old["strategy_leg"] = old["strategy_leg"].fillna("").astype(str)
+            old = normalize_strategy_frame(old)
             incoming["release_id"] = incoming["release_id"].fillna("").astype(str)
             incoming["signal_date"] = incoming["signal_date"].map(_date)
-            incoming["strategy_leg"] = incoming["strategy_leg"].fillna("").astype(str)
+            incoming = normalize_strategy_frame(incoming)
             # 已形成明确候选结论的首次观察不可被后续文件修订覆盖，避免用未来
             # 结果回写当日候选；只有MISSING/NOT_OBSERVED可在同日数据补齐后更新。
             final_statuses = {"CANDIDATE", "NO_CANDIDATE", "REJECTED"}
@@ -514,7 +516,7 @@ def upsert_ledger(root: Path, new_rows: Iterable[dict[str, Any]]) -> pd.DataFram
             combined = incoming
         combined["release_id"] = combined["release_id"].fillna("").astype(str)
         combined["signal_date"] = combined["signal_date"].map(_date)
-        combined["strategy_leg"] = combined["strategy_leg"].fillna("").astype(str)
+        combined = normalize_strategy_frame(combined)
         result = combined.drop_duplicates(key, keep="last")
     for column in LEDGER_COLUMNS:
         if column not in result:

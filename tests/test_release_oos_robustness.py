@@ -21,7 +21,7 @@ class ReleaseOosRobustnessTest(unittest.TestCase):
             "status": "FROZEN",
             "release_id": "release-new",
             "oos_start_date": "20260105",
-            "strategy_priority_order": ["D", "L", "A", "M", "E2", "C"],
+            "strategy_priority_order": ["D", "L", "A", "M", "E", "C"],
         }
         (self.root / "config/strategy_release_freeze.json").write_text(json.dumps(release), encoding="utf-8")
         config = {
@@ -50,7 +50,7 @@ class ReleaseOosRobustnessTest(unittest.TestCase):
                     "account_empty_winner": False, "live_selected": day_index == 0, "account_net_return": challenger_return,
                 },
             ])
-            for rank, leg in enumerate(["D", "M", "E2", "C"], start=1):
+            for rank, leg in enumerate(["D", "M", "E", "C"], start=1):
                 rows.append({
                     "release_id": "release-new", "signal_date": date, "strategy_leg": leg,
                     "priority_rank": rank, "candidate_status": "NO_CANDIDATE", "counterfactual_status": "NOT_APPLICABLE",

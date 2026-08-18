@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from src.execution_event_store import ExecutionEventStore
+from src.strategy_identity import normalize_strategy_leg, normalize_strategy_record
 
 
 PLAN_FIELDS = [
@@ -115,7 +116,7 @@ def _now_text() -> str:
 def make_trade_key(entry_date: Any, ts_code: Any, strategy_leg: Any, signal_date: Any) -> str:
     """生成跨竞价仓/POV子仓稳定一致的交易主键。"""
     return "|".join(
-        [_date(entry_date), _code(ts_code), _text(strategy_leg).upper(), _date(signal_date)]
+        [_date(entry_date), _code(ts_code), normalize_strategy_leg(strategy_leg), _date(signal_date)]
     )
 
 
@@ -265,7 +266,7 @@ class ExecutionCompletionTracker:
             "entry_date": _date(entry_date),
             "ts_code": _code(ts_code),
             "name": _text(name),
-            "strategy_leg": _text(strategy_leg).upper(),
+            "strategy_leg": normalize_strategy_leg(strategy_leg),
             "signal_date": _date(signal_date),
             "entry_target_qty": _int(target_qty),
             "entry_target_amount": round(_float(target_amount), 4),
@@ -331,7 +332,7 @@ class ExecutionCompletionTracker:
             "time": _text(values.get("time")),
             "ts_code": _code(values.get("ts_code")),
             "name": _text(values.get("name")),
-            "strategy_leg": _text(values.get("strategy_leg")).upper(),
+            "strategy_leg": normalize_strategy_leg(values.get("strategy_leg")),
             "signal_date": _date(values.get("signal_date")),
             "channel": channel,
             "slice_no": slice_no,
@@ -383,7 +384,7 @@ class ExecutionCompletionTracker:
             "time": _text(values.get("time")),
             "ts_code": _code(values.get("ts_code")),
             "name": _text(values.get("name")),
-            "strategy_leg": _text(values.get("strategy_leg")).upper(),
+            "strategy_leg": normalize_strategy_leg(values.get("strategy_leg")),
             "signal_date": _date(values.get("signal_date")),
             "channel": channel,
             "slice_no": slice_no,
@@ -672,7 +673,8 @@ class ExecutionCompletionTracker:
                     "entry_date": _date(plan.get("entry_date")) or _date(seed.get("buy_date", seed.get("entry_date"))),
                     "ts_code": _code(plan.get("ts_code")) or _code(seed.get("ts_code")),
                     "name": _text(plan.get("name")) or _text(seed.get("name")),
-                    "strategy_leg": _text(plan.get("strategy_leg")).upper() or _text(seed.get("strategy_leg")).upper(),
+                    "strategy_leg": normalize_strategy_leg(plan.get("strategy_leg"))
+                    or normalize_strategy_leg(seed.get("strategy_leg")),
                     "signal_date": _date(plan.get("signal_date")) or _date(seed.get("signal_date")),
                     "planned_exit_date": planned_exit_date,
                     "entry_plan_source": entry_plan_source,
@@ -726,7 +728,7 @@ class ExecutionCompletionTracker:
             return self.summary_path
 
     def backfill_existing(self) -> Path:
-        """把已有持仓、E2容量、旧买入POV日志和退出安全账本兼容回填。"""
+        """把已有持仓、E容量、旧买入POV日志和退出安全账本兼容回填。"""
         # 清理旧版本或异常中断留下的无身份事件，避免空日期/空策略串成伪交易。
         _write_csv(
             self.buy_path,
@@ -738,7 +740,7 @@ class ExecutionCompletionTracker:
             SELL_FIELDS,
             (row for row in _read_csv(self.sell_path) if _valid_trade_key(row.get("trade_key"))),
         )
-        positions = self._load_positions()
+        positions = [normalize_strategy_record(row) for row in self._load_positions()]
         existing_plans = {
             _text(row.get("trade_key")): row for row in _read_csv(self.plan_path)
             if _text(row.get("trade_key"))
@@ -751,20 +753,26 @@ class ExecutionCompletionTracker:
             grouped.setdefault(key, []).append(pos)
 
         capacity_records: list[dict[str, Any]] = []
-        capacity_path = self.root / "data" / "processed" / "e2_capacity_history.json"
+        capacity_path = self.root / "data" / "processed" / "e_capacity_history.json"
+        legacy_capacity_path = self.root / "data" / "processed" / "e2_capacity_history.json"
+        if not capacity_path.exists() and legacy_capacity_path.exists():
+            capacity_path = legacy_capacity_path
         try:
             payload = json.loads(capacity_path.read_text(encoding="utf-8"))
             capacity_records = [row for row in payload.get("records", []) if isinstance(row, dict)]
         except (OSError, json.JSONDecodeError, AttributeError):
             pass
 
-        e2_reference: dict[tuple[str, str], float] = {}
-        e2_signal_path = self.root / "reports" / "strategy_e2" / "e2_signals_recent.json"
+        e_reference: dict[tuple[str, str], float] = {}
+        e_signal_path = self.root / "reports" / "strategy_e" / "e_signals_recent.json"
+        legacy_e_signal_path = self.root / "reports" / "strategy_e2" / "e2_signals_recent.json"
+        if not e_signal_path.exists() and legacy_e_signal_path.exists():
+            e_signal_path = legacy_e_signal_path
         try:
-            payload = json.loads(e2_signal_path.read_text(encoding="utf-8"))
+            payload = json.loads(e_signal_path.read_text(encoding="utf-8"))
             for signal in payload.get("signals", []):
                 if isinstance(signal, dict):
-                    e2_reference[(_date(signal.get("signal_date")), _code(signal.get("ts_code")))] = _float(signal.get("limit_close"))
+                    e_reference[(_date(signal.get("signal_date")), _code(signal.get("ts_code")))] = _float(signal.get("limit_close"))
         except (OSError, json.JSONDecodeError, AttributeError):
             pass
 
@@ -793,7 +801,7 @@ class ExecutionCompletionTracker:
             )
             cap = capacity_by_key.get((_date(seed.get("buy_date")), _code(seed.get("ts_code"))), {})
             target_amount = _float(cap.get("planned_amt")) or entry_amount
-            ref = e2_reference.get((_date(seed.get("signal_date")), _code(seed.get("ts_code"))), 0.0)
+            ref = e_reference.get((_date(seed.get("signal_date")), _code(seed.get("ts_code"))), 0.0)
             if ref <= 0:
                 ref = _float(seed.get("buy_price"))
             target_qty = int(target_amount / ref / 100) * 100 if ref > 0 else entry_qty

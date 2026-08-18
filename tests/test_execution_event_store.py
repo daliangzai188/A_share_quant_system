@@ -167,7 +167,7 @@ class ExecutionEventStoreTests(unittest.TestCase):
             ExecutionEventStore(tracker.event_store_path).append_event(
                 event_uid="BUY|HISTORICAL-REMOVED",
                 event_type="BUY",
-                trade_key="20260701|000002.SZ|E2|20260630",
+                trade_key="20260701|000002.SZ|E|20260630",
                 payload={"status": "历史记录"},
             )
             retained = tracker.mirror_existing_events()

@@ -124,7 +124,7 @@ class LivePerformanceTests(unittest.TestCase):
                     "overnight_residual_qty": 0,
                 },
                 {
-                    "strategy_leg": "E2",
+                    "strategy_leg": "E",
                     "entry_plan_source": "BACKFILLED",
                     "entry_target_qty": 5000,
                     "entry_filled_qty": 5000,
@@ -142,7 +142,7 @@ class LivePerformanceTests(unittest.TestCase):
             ]
         )
         config = {
-            "active_legs": ["A", "E2"],
+            "active_legs": ["A", "E"],
             "capacity_review": {
                 "minimum_trustworthy_plans": 2,
                 "full_fill_threshold": 0.98,

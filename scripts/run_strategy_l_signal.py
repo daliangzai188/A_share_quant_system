@@ -132,7 +132,7 @@ def bucket_segment_limit_down_count(value: Any) -> str:
 def classify_segment_retreat_state(current: Any, prev1: Any, prev2: Any) -> str:
     """segment_retreat_state_bucket 的实盘计算口径。
 
-    必须和 E2/历史特征口径一致：
+    必须和 E/历史特征口径一致：
       current <= 3                    -> weak_below_3
       current < prev1 < prev2         -> retreat_2day
       current < prev1 and current<=5  -> retreat_weak

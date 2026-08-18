@@ -69,6 +69,7 @@ from src.strategy_model3_policy import (
     model3_l_base_rule_pass,
     model3_l_replace_guard_pass,
 )
+from src.strategy_identity import normalize_strategy_leg, normalize_strategy_record
 from src.strategy_d_spec import intraday_history_is_complete
 from src.strategy_d_relay_execution import (
     calculate_auction_safe_sell_quantity,
@@ -415,7 +416,8 @@ else:
     PYTHON = str(_venv_python) if _venv_python.exists() else _sys.executable
 POSITIONS_FILE = PROJECT_ROOT / "data" / "processed" / "positions.json"
 PENDING_BUY_FILE = PROJECT_ROOT / "data" / "processed" / "pending_premarket_buy.json"
-E2_CAPACITY_FILE = PROJECT_ROOT / "data" / "processed" / "e2_capacity_history.json"
+E_CAPACITY_FILE = PROJECT_ROOT / "data" / "processed" / "e_capacity_history.json"
+LEGACY_E_CAPACITY_FILE = PROJECT_ROOT / "data" / "processed" / "e2_capacity_history.json"
 # 卖出批次与PREPARED intent必须持久化：若进程恰在“券商已受理、QMT尚未
 # 回显”窗口崩溃，重启后仅靠query_orders会误以为没有旧单并重复卖出。
 EXIT_EXECUTION_STATE_FILE = (
@@ -848,7 +850,7 @@ def load_positions() -> list[dict[str, Any]]:
                 not isinstance(row, dict) for row in payload
             ):
                 raise ValueError("positions根节点必须是dict列表")
-            return payload
+            return [normalize_strategy_record(row) for row in payload]
         except Exception as e:
             logger().error("读取持仓文件失败：%s", e)
             # 文件不存在才代表“本地无持仓记录”；已存在但损坏/不可读
@@ -861,7 +863,8 @@ def save_positions(positions: list[dict[str, Any]]) -> None:
         try:
             mkdir_p(POSITIONS_FILE.parent)
             tmp = POSITIONS_FILE.with_suffix(".tmp")
-            tmp.write_text(json.dumps(positions, ensure_ascii=False, indent=2), encoding="utf-8")
+            normalized = [normalize_strategy_record(row) for row in positions]
+            tmp.write_text(json.dumps(normalized, ensure_ascii=False, indent=2), encoding="utf-8")
             tmp.replace(POSITIONS_FILE)  # 原子替换，防止写一半损坏
         except Exception as e:
             logger().error("保存持仓文件失败：%s", e)
@@ -870,7 +873,7 @@ def save_positions(positions: list[dict[str, Any]]) -> None:
             raise RuntimeError(f"保存持仓文件失败:{e}") from e
 
 
-_ACTIVE_AUTO_STRATEGY_LEGS = frozenset({"A", "C", "D", "E2", "L", "M"})
+_ACTIVE_AUTO_STRATEGY_LEGS = frozenset({"A", "C", "D", "E", "L", "M"})
 
 
 def _position_exit_ledger_quantity(position: dict[str, Any]) -> int:
@@ -1470,14 +1473,14 @@ def reduce_position_shares(
 
 def find_open_position_by_code(ts_code: str, strategy_leg: str | None = None) -> dict[str, Any] | None:
     """按 ts_code（可选 strategy_leg）查找一条未平持仓，用于卖出后回写。"""
-    leg = (strategy_leg or "").upper()
+    leg = normalize_strategy_leg(strategy_leg)
     target_aliases = _ts_code_aliases(ts_code)
     for p in load_positions():
         if str(p.get("status", "")).lower() not in {"open", "sell_pending"}:
             continue
         if not (_ts_code_aliases(p.get("ts_code", "")) & target_aliases):
             continue
-        if leg and str(p.get("strategy_leg", "")).upper() != leg:
+        if leg and normalize_strategy_leg(p.get("strategy_leg")) != leg:
             continue
         return p
     return None
@@ -1735,7 +1738,7 @@ def _execute_orders_inprocess(
                 action_text.eq("PLAN_SELL_T2_CLOSE")
                 | action_text.eq("PLAN_SELL_D_T2_CLOSE")
                 | action_text.eq("PLAN_SELL_L_T2_CLOSE")
-                | risk_text.str.contains("E2_SELL_T2_CLOSE", na=False)
+                | risk_text.str.contains("E_SELL_T2_CLOSE", na=False)
                 | risk_text.str.contains("L_SELL_T2_CLOSE", na=False)
             )
         )
@@ -1870,7 +1873,7 @@ def _execute_orders_inprocess(
             order_price_type = str(row["price_type"])
             order_price = float(row.get("price", 0.0))
             order_remark = str(row.get("remark", ""))
-            # 卖出（E2平仓）改用买10/买5挂限价，确保成交、避免被动过夜
+            # 卖出（E平仓）改用买10/买5挂限价，确保成交、避免被动过夜
             if side == "SELL":
                 sell_price, sell_label = _pick_sell_limit_price(quote_map.get(str(row["ts_code"])))
                 if sell_price > 0:
@@ -2634,7 +2637,7 @@ def _abc_place_sell_order_direct(
     ts_code: str, name: str, shares: int, order_id: str,
     confirm: str, config: dict, broker_cfg: dict, strategy_leg: str = ""
 ) -> bool:
-    """串行化A/C/D/E2/L整段卖出生命周期；RLock允许14:55主任务重入。"""
+    """串行化A/C/D/E/L整段卖出生命周期；RLock允许14:55主任务重入。"""
     resolved_leg = str(strategy_leg or "").upper()
     if not resolved_leg:
         for row in load_positions():
@@ -2661,7 +2664,7 @@ def _abc_place_sell_order_direct_locked(
     ts_code: str, name: str, shares: int, order_id: str,
     confirm: str, config: dict, broker_cfg: dict, strategy_leg: str = ""
 ) -> bool:
-    """A/C/D/E2/L按交易阶段有效限价卖实际余仓，不走旧CSV卖出数量。
+    """A/C/D/E/L按交易阶段有效限价卖实际余仓，不走旧CSV卖出数量。
 
     超过交易所单笔股数上限时先拆成多张委托；成交按所有子单聚合，全成回写
     closed，部成只回写真实剩余股数。返回True仅表示本轮已全部成交。
@@ -2909,7 +2912,7 @@ _exit_bypass_day = ""   # 收盘竞价旁路生效日(看门狗14:56岗据此让
 
 # 这里只列“按T+N收盘退出”的策略腿。D接力的计划平仓日仍在T+2，接力日为T+1，
 # 因此不会被下面“planned_exit_date == today”选中，仍由09:23专用流程先卖后买。
-T2_CLOSE_STRATEGY_LEGS = frozenset({"A", "C", "D", "E2", "L", "M"})
+T2_CLOSE_STRATEGY_LEGS = frozenset({"A", "C", "D", "E", "L", "M"})
 
 
 def _configured_exit_pov_strategy_legs(live_cfg: dict[str, Any]) -> frozenset[str]:
@@ -2931,9 +2934,9 @@ def _fixed_large_runway_allowed(position: dict[str, Any], live_cfg: dict[str, An
     普通D明确排除：D只能由实时成交容量触发，不能仅因绝对仓位达到950万元
     就提前卖出，以免在流动性充足时无谓偏离T+2收盘收益口径。
     """
-    raw = live_cfg.get("exit_pov_large_force_strategy_legs", ["A", "C", "E2", "L"])
+    raw = live_cfg.get("exit_pov_large_force_strategy_legs", ["A", "C", "E", "L"])
     if not isinstance(raw, list):
-        raw = ["A", "C", "E2", "L"]
+        raw = ["A", "C", "E", "L"]
     allowed = {str(value).strip().upper() for value in raw}
     return str(position.get("strategy_leg", "")).strip().upper() in allowed
 
@@ -4526,7 +4529,7 @@ def _exit_pov_slice(
 def _exit_pov_monitor() -> None:
     """卖出端POV分批平仓线程：5分钟常规卸载，14:46后1分钟加速。
 
-    普通D与A/C/E2/L一样仅在实时容量不足时介入；小仓位零介入并继续由
+    普通D与A/C/E/L一样仅在实时容量不足时介入；小仓位零介入并继续由
     14:55主链路卖出。D接力日不是planned_exit_date，不会进入本线程。
     启动前撤止盈预挂单释放冻结股份。每片均受外部流量、盘口深度、滑点
     和QMT实际可卖量约束，涨停也不再假设买盘无限或直接全量卖出。
@@ -4808,11 +4811,11 @@ def _do_sell(pos: dict[str, Any], qmt_enabled: bool) -> None:
             broker_cfg = config.get("broker", {})
             strategy_leg = str(pos.get("strategy_leg", "")).upper()
             if strategy_leg in T2_CLOSE_STRATEGY_LEGS:
-                # A/C/D/E2/L 均存在 T+N 收盘卖出口径：
+                # A/C/D/E/L 均存在 T+N 收盘卖出口径：
                 # planned_orders 文件通常只负责买入计划，平仓时直接按买10/买5挂限价卖出。
                 # 普通D同样必须复用该链路；只有状态机明确给出接力动作时，D才会
                 # 在T+1的09:23提前卖出，不能把普通D误认为已经在早盘平仓。
-                # E2也必须走这里：早晨combined SELL保留的是分批前原始股数，POV部成后
+                # E也必须走这里：早晨combined SELL保留的是分批前原始股数，POV部成后
                 # 再执行会超卖并触发SELL_VOLUME_NOT_AVAILABLE。直接链路每次从QMT校准余量。
                 _abc_place_sell_order_direct(
                     ts_code, name, shares, order_id, confirm, config, broker_cfg
@@ -5714,7 +5717,7 @@ def _intraday_takeprofit_monitor() -> None:
     - 冲板/秒板/炸板前触及 → 自动成交在涨停-0.01（锁定强势卖出）；
     - 14:45 仍未成交 → 撤单（礼让式重试3次），14:55 收盘平仓主流程接管；
     - 非当日到期持仓不做任何操作。
-    回测口径不变（成交集=触及涨停-0.01，E2 62笔 8.8x→9.1x）。
+    回测口径不变（成交集=触及涨停-0.01，E 62笔 8.8x→9.1x）。
 
     负载设计：一天只有两个动作点（09:30挂、14:45撤）+ 每5分钟一次
     礼让式成交检查（成交须及时回写，否则账户心跳会与本地账目失联）。
@@ -6165,12 +6168,12 @@ def check_and_close_positions(in_close_window: bool = False) -> None:
         try:
             time.sleep(1)
             positions = load_positions()
-        except Exception as e2:
-            logger().error("平仓检查：读取持仓两次失败 %s / %s", e, e2)
+        except Exception as retry_error:
+            logger().error("平仓检查：读取持仓两次失败 %s / %s", e, retry_error)
             _notify("sell_fail", "❌ 平仓检查无法读取持仓",
-                    f"positions.json两次读取失败（{e2}），本轮自动平仓未执行，请立即人工检查持仓！",
+                    f"positions.json两次读取失败（{retry_error}），本轮自动平仓未执行，请立即人工检查持仓！",
                     level="timeSensitive")
-            _critical_execution_state_failure("平仓检查读取持仓", e2)
+            _critical_execution_state_failure("平仓检查读取持仓", retry_error)
 
     if not positions:
         logger().info("平仓检查：无持仓")
@@ -6186,13 +6189,13 @@ def check_and_close_positions(in_close_window: bool = False) -> None:
         try:
             time.sleep(1)
             config = load_json_config(PROJECT_ROOT / "config" / "config.json")
-        except Exception as e2:
-            logger().error("平仓检查：读取config两次失败 %s / %s，无法确认实盘模式，本轮平仓停手。", e, e2)
+        except Exception as retry_error:
+            logger().error("平仓检查：读取config两次失败 %s / %s，无法确认实盘模式，本轮平仓停手。", e, retry_error)
             _notify("sell_fail", "❌ 平仓检查无法读取配置",
-                    f"config.json两次读取失败（{e2}），无法确认实盘/模拟模式，本轮自动平仓未执行，"
+                    f"config.json两次读取失败（{retry_error}），无法确认实盘/模拟模式，本轮自动平仓未执行，"
                     f"请立即人工检查持仓！",
                     level="timeSensitive")
-            _critical_execution_state_failure("平仓检查读取实盘配置", e2)
+            _critical_execution_state_failure("平仓检查读取实盘配置", retry_error)
     qmt_enabled = bool(config.get("broker_adapter_enabled")) and bool(config.get("qmt_enabled"))
 
     for pos in positions:
@@ -6223,7 +6226,7 @@ def check_and_close_positions(in_close_window: bool = False) -> None:
             logger().warning("需要平仓：%s %s  计划平仓日 %s  状态 %s  市场开盘 %s",
                              ts_code, name, planned_exit, status, market_is_open())
 
-            t2_close_leg = strategy_leg in {"A", "C", "D", "E2", "L", "M"}
+            t2_close_leg = strategy_leg in {"A", "C", "D", "E", "L", "M"}
             due_today = planned_exit == today_str
             # 不用时间容差：容差会把窗口推到 POV 的 14:53 交接点之前。
             before_close_sell_window = (
@@ -6617,7 +6620,7 @@ def _d_relay_prepare_state(
     broker_total: int,
     broker_can_use: int,
 ) -> dict[str, Any]:
-    """建立一次D→A/C/E2资金中性接力任务，不覆盖同日已有任务。"""
+    """建立一次D→A/C/E资金中性接力任务，不覆盖同日已有任务。"""
     old = _d_relay_pair_load_state()
     if old:
         old_d = str(old.get("d", {}).get("ts_code", ""))
@@ -7498,10 +7501,10 @@ def job_premarket_sell() -> None:
     """09:23 集合竞价：D接力只卖安全部分；历史sell_pending仍按原应急路径。
 
     D 默认平仓口径是 T+2 收盘卖，不在 09:23 提前卖。
-    只有组合状态机给出 PLAN_SELL_D_FIRST（次日有 A/C/E2 接力，需要 D 让路）时，
+    只有组合状态机给出 PLAN_SELL_D_FIRST（次日有 A/C/E 接力，需要 D 让路）时，
     才建立资金中性接力任务：竞价安全部分先卖，09:30后卖D一片、确认成交资金后
     再买候选一片。禁止再用跌停价整仓D直接冲击开盘集合竞价。
-    E2/ABC/D默认T+2收盘卖由 14:55 job_afternoon/check_and_close_positions 执行。
+    E/ABC/D默认T+2收盘卖由 14:55 job_afternoon/check_and_close_positions 执行。
     """
     logger().info("===== 集合竞价平仓挂单（09:23）=====")
     # 平仓检查冗余点②：09:20被挤掉时由此兜底（见 job_premarket_buy 处注释）
@@ -7557,7 +7560,7 @@ def job_premarket_sell() -> None:
             planned_exit = pos.get("planned_exit_date", "99991231")
             strategy_leg = str(pos.get("strategy_leg", "")).upper()
 
-            # 只处理 D 策略：E2/ABC 回测用收盘价，不在集合竞价提前卖出
+            # 只处理 D 策略：E/ABC 回测用收盘价，不在集合竞价提前卖出
             if strategy_leg != "D":
                 logger().info(
                     "09:23 %s %s 策略=%s，回测用收盘价平仓，跳过集合竞价，等待14:55收盘平仓。",
@@ -7567,7 +7570,7 @@ def job_premarket_sell() -> None:
 
             force_relay_sell = ts_code in force_d_sell_codes
 
-            # 只处理历史 sell_pending，或因A/C/E2接力需要T+1开盘先卖的D持仓。
+            # 只处理历史 sell_pending，或因A/C/E接力需要T+1开盘先卖的D持仓。
             # D 默认 T+2 到期日也必须等 14:55 收盘平仓，不在09:23提前卖。
             if pos.get("status") != "sell_pending" and not force_relay_sell:
                 if planned_exit <= today_str:
@@ -7580,7 +7583,7 @@ def job_premarket_sell() -> None:
                 continue
             if force_relay_sell and planned_exit > today_str:
                 logger().warning(
-                    "09:23 D接力准备：%s %s 默认计划平仓日%s，但今日有A/C/E2接力候选；只卖竞价安全部分，其余09:30后成对POV。",
+                    "09:23 D接力准备：%s %s 默认计划平仓日%s，但今日有A/C/E接力候选；只卖竞价安全部分，其余09:30后成对POV。",
                     ts_code, name, planned_exit,
                 )
 
@@ -7879,7 +7882,7 @@ def read_cached_combined_decisions():
 def job_preopen_plan() -> None:
     """09:00 提前生成组合状态机计划。
 
-    A/C/E2/L/model3 的盘前开仓信息都来自上个交易日收盘后已有数据，D策略除外。
+    A/C/E/L/model3 的盘前开仓信息都来自上个交易日收盘后已有数据，D策略除外。
     因此开仓计划不需要等到09:20才计算；09:00先生成，09:20复核后可以直接挂单。
     """
     logger().info("===== 盘前计划生成（09:00）=====")
@@ -7919,20 +7922,21 @@ def job_morning_plan_push() -> None:
         logger().warning("早盘开仓计划推送异常(不影响交易)：%s", e)
 
 
-def _record_e2_capacity_and_alert(records: list[dict[str, Any]], live_cfg: dict) -> None:
-    """E2 容量档案与关停预警。必须在 09:24 关键窗口结束后调用（含共享盘IO与推送）。
+def _record_e_capacity_and_alert(records: list[dict[str, Any]], live_cfg: dict) -> None:
+    """E 容量档案与关停预警。必须在 09:24 关键窗口结束后调用（含共享盘IO与推送）。
 
-    E2 仓位 = min(缩单额, 竞价额×参与率)：账户资金增长后若频繁被竞价盘钳制，
-    E2 的绝对收益不再随资金增长，而隔夜持仓风险与运维成本不变。
+    E 仓位 = min(缩单额, 竞价额×参与率)：账户资金增长后若频繁被竞价盘钳制，
+    E 的绝对收益不再随资金增长，而隔夜持仓风险与运维成本不变。
     钳制比 = 实际可用仓位/计划仓位；竞价额兜底(fallback)的记录不计入容量证据。
-    最近 window 笔竞价记录中钳制 ≥ min_hits 次 → 强提醒建议关闭 E2。
+    最近 window 笔竞价记录中钳制 ≥ min_hits 次 → 强提醒建议关闭 E。
     """
     log = logger()
-    alert_ratio = float(live_cfg.get("e2_capacity_alert_clamp_ratio", 0.5))
-    window = int(live_cfg.get("e2_capacity_alert_window", 5))
-    min_hits = int(live_cfg.get("e2_capacity_alert_min_hits", 3))
+    alert_ratio = float(live_cfg.get("e_capacity_alert_clamp_ratio", 0.5))
+    window = int(live_cfg.get("e_capacity_alert_window", 5))
+    min_hits = int(live_cfg.get("e_capacity_alert_min_hits", 3))
     try:
-        payload = json.loads(E2_CAPACITY_FILE.read_text(encoding="utf-8")) if E2_CAPACITY_FILE.exists() else {}
+        source_path = E_CAPACITY_FILE if E_CAPACITY_FILE.exists() else LEGACY_E_CAPACITY_FILE
+        payload = json.loads(source_path.read_text(encoding="utf-8")) if source_path.exists() else {}
     except Exception:
         payload = {}
     history = payload.get("records", [])
@@ -7942,10 +7946,10 @@ def _record_e2_capacity_and_alert(records: list[dict[str, Any]], live_cfg: dict)
         history.append(rec)
         if rec.get("source") == "auction" and rec["clamp_ratio"] < alert_ratio:
             _notify_async(
-                "buy_result", "📉 E2容量提示：仓位被竞价盘钳制",
+                "buy_result", "📉 E容量提示：仓位被竞价盘钳制",
                 f"{rec.get('ts_code','')} {rec.get('name','')} 计划{planned / 1e4:.2f}万，"
                 f"竞价容量只允许{float(rec.get('cap', 0)) / 1e4:.2f}万（{rec['clamp_ratio']:.0%}）。"
-                f"资金规模已接近E2标的的竞价容量上限。",
+                f"资金规模已接近E标的的竞价容量上限。",
             )
     history = history[-30:]
     auction_recent = [r for r in history if r.get("source") == "auction"][-window:]
@@ -7960,31 +7964,31 @@ def _record_e2_capacity_and_alert(records: list[dict[str, Any]], live_cfg: dict)
             for r in hits[-3:]
         )
         _notify(
-            "buy_result", "⚠️ E2容量预警：建议评估关闭E2",
-            f"最近{len(auction_recent)}笔E2竞价开仓中有{len(hits)}笔被竞价盘钳制"
+            "buy_result", "⚠️ E容量预警：建议评估关闭E",
+            f"最近{len(auction_recent)}笔E竞价开仓中有{len(hits)}笔被竞价盘钳制"
             f"（被钳制笔平均只能用计划资金的{avg_clamp:.0%}）。明细：{detail}。"
-            f"若竞价额普遍几十万级则是资金超容量（E2绝对收益不再随资金增长，隔夜风险不变），"
-            f"如决定停用：config的 live_trade.e2_enabled 改为 false（信号照常生成，只停止下单）；"
+            f"若竞价额普遍几十万级则是资金超容量（E绝对收益不再随资金增长，隔夜风险不变），"
+            f"如决定停用：config的 live_trade.e_enabled 改为 false（信号照常生成，只停止下单）；"
             f"若竞价额只是近期偶发偏小，可以先观察。",
             level="timeSensitive",
         )
-        log.warning("E2容量预警已推送：最近%d笔中%d笔钳制（阈值%.0f%%）。", len(auction_recent), len(hits), alert_ratio * 100)
+        log.warning("E容量预警已推送：最近%d笔中%d笔钳制（阈值%.0f%%）。", len(auction_recent), len(hits), alert_ratio * 100)
     payload["records"] = history
     try:
-        mkdir_p(E2_CAPACITY_FILE.parent)
-        tmp = E2_CAPACITY_FILE.with_suffix(".tmp")
+        mkdir_p(E_CAPACITY_FILE.parent)
+        tmp = E_CAPACITY_FILE.with_suffix(".tmp")
         tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(E2_CAPACITY_FILE)
+        tmp.replace(E_CAPACITY_FILE)
     except Exception as e:
-        log.error("E2容量档案写入失败：%s", e)
+        log.error("E容量档案写入失败：%s", e)
 
 
-def _e2_auction_buy_worker(e2_rows: list[Any], broker_cfg: dict, today_str: str) -> None:
-    """E2 竞价动态买入：09:24 读实时竞价撮合量，按参与率上限定仓后挂涨停价。
+def _e_auction_buy_worker(e_rows: list[Any], broker_cfg: dict, today_str: str) -> None:
+    """E 竞价动态买入：09:24 读实时竞价撮合量，按参与率上限定仓后挂涨停价。
 
-    仓位 = min(资金缩单后金额, 实时竞价成交额 × e2_auction_participation_ratio)。
-    竞价额读不到（QMT竞价时段字段可能无效）时用 e2_auction_fallback_amount 兜底。
-    E2 标的从不一字开盘，09:24 挂单无排队损失；挂单后并入 pending_buys，
+    仓位 = min(资金缩单后金额, 实时竞价成交额 × e_auction_participation_ratio)。
+    竞价额读不到（QMT竞价时段字段可能无效）时用 e_auction_fallback_amount 兜底。
+    E 标的从不一字开盘，09:24 挂单无排队损失；挂单后并入 pending_buys，
     由既有的 09:30 确认链路和盘前监控线程统一收尾。
     """
     from src.broker_adapter import OrderRequest
@@ -7995,11 +7999,11 @@ def _e2_auction_buy_worker(e2_rows: list[Any], broker_cfg: dict, today_str: str)
         # 只剩两次短锁QMT调用(读tick+下单),把慢IO挡在时间窗之外。
         cfg = load_json_config(PROJECT_ROOT / "config" / "config.json")
         lt = cfg.get("live_trade", {})
-        if not bool(lt.get("e2_enabled", True)):
-            log.warning("E2已被 live_trade.e2_enabled=false 关闭，今日%d只E2候选不挂单。", len(e2_rows))
+        if not bool(lt.get("e_enabled", True)):
+            log.warning("E已被 live_trade.e_enabled=false 关闭，今日%d只E候选不挂单。", len(e_rows))
             return
-        ratio = float(lt.get("e2_auction_participation_ratio", 0.10))
-        fallback_amt = float(lt.get("e2_auction_fallback_amount", 50000))
+        ratio = float(lt.get("e_auction_participation_ratio", 0.10))
+        fallback_amt = float(lt.get("e_auction_fallback_amount", 50000))
         capacity_records: list[dict[str, Any]] = []
         target = now_beijing().replace(hour=9, minute=24, second=0, microsecond=0)
         wait = (target - now_beijing()).total_seconds()
@@ -8008,22 +8012,22 @@ def _e2_auction_buy_worker(e2_rows: list[Any], broker_cfg: dict, today_str: str)
         # 窗口预算监控:9:25撮合前必须完成挂单;超时由09:30补买路径兜底,
         # 这里只负责让日志能看出迟到。
         if now_beijing().time() >= datetime.time(9, 25, 0):
-            log.warning("E2竞价买入线程晚于09:25启动执行（可能被IO/锁延误），仍尝试挂单；若错过竞价将由09:30补买兜底。")
-        # 09:20检查后到09:24仍可能发生人工成交或状态变化，提交E2买单前再次读取
+            log.warning("E竞价买入线程晚于09:25启动执行（可能被IO/锁延误），仍尝试挂单；若错过竞价将由09:30补买兜底。")
+        # 09:20检查后到09:24仍可能发生人工成交或状态变化，提交E买单前再次读取
         # 券商持仓。只拦昨日及更早的策略仓，不拦当日本次开仓的部分成交。
         with _qmt_lock:
             adapter = _qmt_get(broker_cfg)
             positions_live = adapter.query_positions()
         if _broker_has_preexisting_strategy_position(positions_live):
-            log.warning("🚫 [E2竞价买入] 券商仍有本系统旧策略仓，取消衔接开仓；E2本轮不挂单。")
+            log.warning("🚫 [E竞价买入] 券商仍有本系统旧策略仓，取消衔接开仓；E本轮不挂单。")
             return
-        pov_enabled_e2 = bool(lt.get("pov_enabled", True))
-        actual_amount_rebalance_e2 = bool(
+        pov_enabled_e = bool(lt.get("pov_enabled", True))
+        actual_amount_rebalance_e = bool(
             lt.get("entry_actual_amount_rebalance_enabled", True)
         )
-        pov_items_e2: list[dict[str, Any]] = []
+        pov_items_e: list[dict[str, Any]] = []
         new_pending: list[dict[str, Any]] = []
-        for row in e2_rows:
+        for row in e_rows:
             try:
                 ts_code = str(row["ts_code"]); name_s = str(row.get("name", ""))
                 total_target_qty = int(row.get("round_lot_shares", 0) or 0)
@@ -8043,7 +8047,7 @@ def _e2_auction_buy_worker(e2_rows: list[Any], broker_cfg: dict, today_str: str)
                 )
                 if planned_amt <= 0 or total_target_qty <= 0:
                     log.warning(
-                        "E2竞价买入：%s 82.5%%目标不可执行或不足一手，跳过竞价与POV。",
+                        "E竞价买入：%s 82.5%%目标不可执行或不足一手，跳过竞价与POV。",
                         ts_code,
                     )
                     continue
@@ -8074,41 +8078,41 @@ def _e2_auction_buy_worker(e2_rows: list[Any], broker_cfg: dict, today_str: str)
                     _track_execution(
                         "register_entry_plan",
                         entry_date=today_str, ts_code=ts_code, name=name_s,
-                        strategy_leg="E2", signal_date=signal_date_s,
+                        strategy_leg="E", signal_date=signal_date_s,
                         target_qty=total_target_qty, target_amount=planned_amt,
                         reference_price=reference_price, auction_planned_qty=0,
-                        pov_planned_qty=total_target_qty if pov_enabled_e2 else 0,
-                        pov_target_amount=planned_amt if pov_enabled_e2 else 0,
+                        pov_planned_qty=total_target_qty if pov_enabled_e else 0,
+                        pov_target_amount=planned_amt if pov_enabled_e else 0,
                         status="价格不可得",
                     )
-                    log.warning("E2竞价买入：%s 无法取得涨停价，跳过。", ts_code)
+                    log.warning("E竞价买入：%s 无法取得涨停价，跳过。", ts_code)
                     continue
-                # E2竞价容量仍保持原逻辑，但提交股数同时按涨停委托价受85%最坏
+                # E竞价容量仍保持原逻辑，但提交股数同时按涨停委托价受85%最坏
                 # 委托金额硬顶约束；最终82.5%仓位由开盘后实际成交额校准。
                 qty = min(
                     _floor_buy_quantity_by_amount(cap, price, 100),
                     _floor_buy_quantity_by_amount(hard_cap_amount, price, 100),
                 )
-                pov_target_amount = max(planned_amt - cap, 0.0) if pov_enabled_e2 else 0.0
+                pov_target_amount = max(planned_amt - cap, 0.0) if pov_enabled_e else 0.0
                 pov_planned_qty = (
                     int(pov_target_amount // reference_price // 100) * 100
-                    if pov_enabled_e2 and reference_price > 0 else 0
+                    if pov_enabled_e and reference_price > 0 else 0
                 )
                 if st_open_forbidden(ts_code, name_s):
-                    log.error("⛔ [ST禁买] %s %s 命中ST/风险警示铁律，拦截E2竞价买入委托。", ts_code, name_s)
+                    log.error("⛔ [ST禁买] %s %s 命中ST/风险警示铁律，拦截E竞价买入委托。", ts_code, name_s)
                     _notify("buy_result", "⛔ ST股禁买拦截",
-                            f"{ts_code} {name_s} 为ST/风险警示股，全局铁律禁止开仓，已拦截E2竞价买入。",
+                            f"{ts_code} {name_s} 为ST/风险警示股，全局铁律禁止开仓，已拦截E竞价买入。",
                             level="timeSensitive")
                     continue
 
-                if pov_enabled_e2 and actual_amount_rebalance_e2:
+                if pov_enabled_e and actual_amount_rebalance_e:
                     raw_exit_pov = row.get("exit_n_days", None)
                     exit_n_pov = int(float(raw_exit_pov)) if raw_exit_pov is not None and str(raw_exit_pov) not in {"", "nan"} else 1
                     baseline_qty, baseline_cost = _broker_position_quantity_and_cost(
                         positions_live, ts_code
                     )
-                    pov_items_e2.append({
-                        "ts_code": ts_code, "name": name_s, "strategy_leg": "E2",
+                    pov_items_e.append({
+                        "ts_code": ts_code, "name": name_s, "strategy_leg": "E",
                         "signal_date": signal_date_s,
                         "broker_code": str(row.get("broker_code", ts_code)),
                         "strategy_name": str(row.get("strategy_name", "A_SYSTEM_ABC")),
@@ -8133,7 +8137,7 @@ def _e2_auction_buy_worker(e2_rows: list[Any], broker_cfg: dict, today_str: str)
                 _track_execution(
                     "register_entry_plan",
                     entry_date=today_str, ts_code=ts_code, name=name_s,
-                    strategy_leg="E2", signal_date=signal_date_s,
+                    strategy_leg="E", signal_date=signal_date_s,
                     target_qty=total_target_qty, target_amount=planned_amt,
                     reference_price=reference_price, auction_planned_qty=qty,
                     pov_planned_qty=pov_planned_qty,
@@ -8141,38 +8145,38 @@ def _e2_auction_buy_worker(e2_rows: list[Any], broker_cfg: dict, today_str: str)
                     status="待竞价确认并按实际成交额POV校准",
                 )
                 if qty <= 0:
-                    if pov_enabled_e2 and actual_amount_rebalance_e2:
+                    if pov_enabled_e and actual_amount_rebalance_e:
                         _track_execution(
                             "register_entry_plan",
                             entry_date=today_str, ts_code=ts_code, name=name_s,
-                            strategy_leg="E2", signal_date=signal_date_s,
+                            strategy_leg="E", signal_date=signal_date_s,
                             target_qty=total_target_qty, target_amount=planned_amt,
                             reference_price=reference_price, auction_planned_qty=0,
                             pov_planned_qty=total_target_qty,
                             pov_target_amount=planned_amt,
                             status="全部转买入POV",
                         )
-                        log.warning("E2竞价买入：%s 竞价段不足一手（%s），82.5%%目标%.1f万全额转POV平滑段。",
+                        log.warning("E竞价买入：%s 竞价段不足一手（%s），82.5%%目标%.1f万全额转POV平滑段。",
                                     ts_code, src, planned_amt / 1e4)
                     else:
-                        log.warning("E2竞价买入：%s 动态仓位不足一手（%s，计划%.0f元），放弃本笔。", ts_code, src, planned_amt)
-                        _notify("buy_result", "⚠️ E2流动性不足放弃开仓",
+                        log.warning("E竞价买入：%s 动态仓位不足一手（%s，计划%.0f元），放弃本笔。", ts_code, src, planned_amt)
+                        _notify("buy_result", "⚠️ E流动性不足放弃开仓",
                                 f"{ts_code} {name_s} 竞价盘过小（{src}），动态仓位不足一手，今日放弃。", level="timeSensitive")
                     continue
-                log.warning("⏳ [E2竞价买入] %s %s %d股 %s=%.2f元（动态仓位：%s → %.1f万）",
+                log.warning("⏳ [E竞价买入] %s %s %d股 %s=%.2f元（动态仓位：%s → %.1f万）",
                             ts_code, name_s, qty, price_label, price, src, qty * price / 1e4)
                 request = OrderRequest(
                     ts_code=ts_code, broker_code=str(row.get("broker_code", ts_code)),
                     side="BUY", quantity=qty, price_type="FIXED_PRICE", price=price,
                     strategy_name=str(row.get("strategy_name", "A_SYSTEM_ABC")),
-                    remark=f"E2竞价动态-{today_str}",
-                    strategy_leg="E2",
+                    remark=f"E竞价动态-{today_str}",
+                    strategy_leg="E",
                     business_date=today_str,
                     signal_date=signal_date_s,
                     planned_exit_date=str(row.get("planned_exit_date", "")),
                     purpose="OPEN",
-                    source_key=f"E2_AUCTION|{today_str}|{ts_code}",
-                    metadata={"execution_channel": "E2竞价动态", "name": name_s},
+                    source_key=f"E_AUCTION|{today_str}|{ts_code}",
+                    metadata={"execution_channel": "E竞价动态", "name": name_s},
                 )
                 with _qmt_lock:
                     adapter = _qmt_get(broker_cfg)
@@ -8181,10 +8185,10 @@ def _e2_auction_buy_worker(e2_rows: list[Any], broker_cfg: dict, today_str: str)
                     raw_exit_n = row.get("exit_n_days", None)
                     exit_n = int(float(raw_exit_n)) if raw_exit_n is not None and str(raw_exit_n) not in {"", "nan"} else 1
                     pending_order = {
-                        "order_id": str(result.order_id or f"e2auction-{today_str}-{ts_code}"),
+                        "order_id": str(result.order_id or f"eauction-{today_str}-{ts_code}"),
                         "ts_code": ts_code, "name": name_s,
                         "signal_date": signal_date_s,
-                        "strategy_leg": "E2", "qty": qty, "ref_price": price, "exit_n": exit_n,
+                        "strategy_leg": "E", "qty": qty, "ref_price": price, "exit_n": exit_n,
                         "entry_target_qty": total_target_qty,
                         "entry_target_amount": planned_amt,
                         "entry_min_acceptable_amount": min_acceptable_amount,
@@ -8194,25 +8198,25 @@ def _e2_auction_buy_worker(e2_rows: list[Any], broker_cfg: dict, today_str: str)
                     # 券商受理后立即持久化，不把多标的循环结束当作安全边界。
                     _append_pending_buys([pending_order])
                     new_pending.append(pending_order)
-                    log.info("✅ [E2竞价买入] %s %s %d股 @%.2f 已受理（待09:30确认）", ts_code, name_s, qty, price)
-                    _notify("buy_result", "📋 E2竞价动态开仓已挂单",
+                    log.info("✅ [E竞价买入] %s %s %d股 @%.2f 已受理（待09:30确认）", ts_code, name_s, qty, price)
+                    _notify("buy_result", "📋 E竞价动态开仓已挂单",
                             f"{ts_code} {name_s} {qty}股@{price:.2f}（{src}），待09:30确认实际成交额后"
                             "按82.5%目标、85%硬顶由POV校准。", level="timeSensitive")
                 else:
-                    log.error("❌ [E2竞价买入] %s 提交失败：%s", ts_code, result.message)
+                    log.error("❌ [E竞价买入] %s 提交失败：%s", ts_code, result.message)
             except Exception as e:
-                log.error("E2竞价买入异常（%s）：%s", row.get("ts_code"), e)
+                log.error("E竞价买入异常（%s）：%s", row.get("ts_code"), e)
         if new_pending:
             _start_premarket_buy_monitor()
-        if pov_items_e2:
-            _pov_enqueue(pov_items_e2)
+        if pov_items_e:
+            _pov_enqueue(pov_items_e)
         if capacity_records:
             try:
-                _record_e2_capacity_and_alert(capacity_records, lt)
+                _record_e_capacity_and_alert(capacity_records, lt)
             except Exception as e:
-                log.error("E2容量预警统计异常（不影响交易）：%s", e)
+                log.error("E容量预警统计异常（不影响交易）：%s", e)
     except Exception as e:
-        log.error("E2竞价动态买入线程异常：%s", e)
+        log.error("E竞价动态买入线程异常：%s", e)
 
 
 # ── POV 贪心前置开仓执行引擎 ──────────────────────────────────────────────
@@ -9051,7 +9055,7 @@ def job_premarket_buy() -> None:
     """09:20 集合竞价预挂：对计划开仓且当前无持仓的标的，优先按涨停价挂限价买单。
 
     总策略模式说明：
-      mode=1：只执行现有 A/C/M/E2 买入计划。
+      mode=1：只执行现有 A/C/M/E 买入计划。
       mode=2：只执行 L 独立龙头策略买入计划。
       mode=3：执行 model=3 组合计划，可能是 mode=1 买入，也可能是 L 补位/替换。
     各模式互斥，避免同一资金被两套策略同时占用。
@@ -9190,19 +9194,19 @@ def job_premarket_buy() -> None:
     pov_items: list[dict[str, Any]] = []
 
     pending_buys: list[dict[str, Any]] = []
-    e2_rows: list[Any] = []
+    e_rows: list[Any] = []
     for _, row in buy_orders.iterrows():
         try:
-            # E2 专属通道：不在09:20挂单，推迟到09:24读实时竞价撮合量后
+            # E 专属通道：不在09:20挂单，推迟到09:24读实时竞价撮合量后
             # 按 min(缩单金额, 竞价额×参与率) 动态定仓再挂涨停价参与竞价。
-            # 原因：E2标的为冷门小市值，竞价盘常仅几十~几百万（2026-07-09
+            # 原因：E标的为冷门小市值，竞价盘常仅几十~几百万（2026-07-09
             # 皇氏实测68万），50万级固定仓位会吃掉大半竞价盘直接顶高开盘价。
-            # E2标的从不一字开盘，9:24挂单无排队损失；ABC/L从09:20开始排队。
-            if str(row.get("strategy_leg", "")).upper() == "E2":
-                if not bool(config.get("live_trade", {}).get("e2_enabled", True)):
-                    logger().warning("E2已被 live_trade.e2_enabled=false 关闭，跳过E2买入计划：%s", row.get("ts_code"))
+            # E标的从不一字开盘，9:24挂单无排队损失；ABC/L从09:20开始排队。
+            if str(row.get("strategy_leg", "")).upper() == "E":
+                if not bool(config.get("live_trade", {}).get("e_enabled", True)):
+                    logger().warning("E已被 live_trade.e_enabled=false 关闭，跳过E买入计划：%s", row.get("ts_code"))
                     continue
-                e2_rows.append(row.copy())
+                e_rows.append(row.copy())
                 continue
             ts_code  = str(row["ts_code"])
             name_s   = str(row.get("name", ""))
@@ -9424,18 +9428,18 @@ def job_premarket_buy() -> None:
                 "；".join(plan_parts) + "。09:20集合竞价预挂完成，实际按开盘价成交（通常低于预挂价），"
                 "09:30确认实际成交额后，低于82.5%目标的缺口由现有POV在85%绝对硬顶内校准。",
                 level="timeSensitive")
-    if e2_rows:
+    if e_rows:
         threading.Thread(
-            target=_e2_auction_buy_worker,
-            args=(e2_rows, broker_cfg, today_str),
+            target=_e_auction_buy_worker,
+            args=(e_rows, broker_cfg, today_str),
             daemon=True,
-            name="e2-auction-buy",
+            name="e-auction-buy",
         ).start()
-        logger().info("E2竞价动态买入线程已启动：09:24读实时竞价量后定仓挂单（%d只候选）。", len(e2_rows))
+        logger().info("E竞价动态买入线程已启动：09:24读实时竞价量后定仓挂单（%d只候选）。", len(e_rows))
     if pov_items:
         _pov_enqueue(pov_items)
-    logger().info("===== 盘前买入挂单完成（受理%d笔，待开盘确认；E2延迟至09:24=%d笔；POV平滑段=%d笔）=====",
-                  len(pending_buys), len(e2_rows), len(pov_items))
+    logger().info("===== 盘前买入挂单完成（受理%d笔，待开盘确认；E延迟至09:24=%d笔；POV平滑段=%d笔）=====",
+                  len(pending_buys), len(e_rows), len(pov_items))
 
 
 def job_morning() -> None:
@@ -9455,14 +9459,14 @@ def job_morning() -> None:
         return
 
     if is_strategy_l_mode():
-        # L 独立模式下，09:20 只做状态播报，不启动 ABC/E2/D。
+        # L 独立模式下，09:20 只做状态播报，不启动 ABC/E/D。
         # 如果 L 买入开关关闭，组合状态机会给出 BLOCK_L_LIVE_ORDER；如果打开且有昨日信号，会给出 ALLOW_L_BUY。
         if has_combined_action(decisions, "ALLOW_L_BUY"):
             logger().info("当前总策略模式=2（独立L龙头策略），组合状态机允许L开仓；将于09:20/09:30按L计划执行。")
         elif has_combined_action(decisions, "PLAN_SELL_L"):
             logger().info("当前总策略模式=2（独立L龙头策略），存在L到期平仓计划；等待14:55收盘平仓窗口。")
         else:
-            logger().info("当前总策略模式=2（独立L龙头策略），本轮无L实盘开仓计划；ACDE2/D已阻断。")
+            logger().info("当前总策略模式=2（独立L龙头策略），本轮无L实盘开仓计划；ACDE/D已阻断。")
         logger().info("===== 盘前任务完成 =====")
         return
 
@@ -9477,11 +9481,11 @@ def job_morning() -> None:
     else:
         logger().info("组合状态机未允许A/C买入，跳过。")
 
-    # ④ E2 T+1 开仓 —— 09:20复核后启动延迟线程，09:24按竞价容量提交。
-    if has_combined_action(decisions, "ALLOW_E2_BUY"):
-        logger().info("组合状态机允许E2开仓；09:20复核后启动09:24竞价容量买入，09:30确认成交/必要时补单。")
+    # ④ E T+1 开仓 —— 09:20复核后启动延迟线程，09:24按竞价容量提交。
+    if has_combined_action(decisions, "ALLOW_E_BUY"):
+        logger().info("组合状态机允许E开仓；09:20复核后启动09:24竞价容量买入，09:30确认成交/必要时补单。")
     else:
-        logger().info("组合状态机未允许E2开仓，跳过。")
+        logger().info("组合状态机未允许E开仓，跳过。")
 
     # ⑤ 策略D监控 —— 只有账户空仓、昨日没有形成今天要执行的其他腿候选、
     # 且今日没有其他开仓计划时才启动。不能只看一条ALLOW_D而忽略冲突动作。
@@ -9537,7 +9541,7 @@ def job_opening_buy(*, recovery_only: bool = False) -> None:
     if recovery_only:
         logger().warning(
             "开盘恢复确认已完成；当前已过普通开盘补买宽限，不新建A/M/C/L买单，"
-            "后续只允许既有E2延迟规则或D盘中兜底重新判断。"
+            "后续只允许既有E延迟规则或D盘中兜底重新判断。"
         )
         logger().info("===== 开盘买入恢复任务完成 =====")
         return
@@ -9554,7 +9558,7 @@ def job_opening_buy(*, recovery_only: bool = False) -> None:
         return
 
     # 与09:20共用同一个动作解析器，避免新增策略腿后两个入口名单漂移：
-    # 当前正式腿序为 L > A/C > M > E2；一个组合计划只执行最高优先动作一次。
+    # 当前正式腿序为 L > A/C > M > E；一个组合计划只执行最高优先动作一次。
     open_action = _combined_open_action_for_current_mode(decisions)
 
     # 正常路径在09:20已启动D线程；这里是09:25~09:30整机重启、09:20任务
@@ -9587,14 +9591,14 @@ def job_opening_buy(*, recovery_only: bool = False) -> None:
     # L/A/C/M不再一次性整单追买，而是建立同一套持久化POV任务。
     # （2026-07-03 德冠新材即此场景：预挂未生效，09:30补买20.33，事后才发现。）
     if open_action:
-        if open_action == "ALLOW_E2_BUY":
+        if open_action == "ALLOW_E_BUY":
             logger().warning(
-                "⚠️ E2开仓执行降级：09:20/09:24竞价链未生效，转专用延迟重试。"
+                "⚠️ E开仓执行降级：09:20/09:24竞价链未生效，转专用延迟重试。"
             )
             _notify(
                 "buy_result",
-                "⚠️ E2开仓执行降级",
-                "E2竞价链未生效；09:30起转专用延迟重试，继续遵守竞价容量口径和"
+                "⚠️ E开仓执行降级",
+                "E竞价链未生效；09:30起转专用延迟重试，继续遵守竞价容量口径和"
                 "相对开盘涨幅不超过2%的追价保护。",
                 level="timeSensitive",
             )
@@ -9611,14 +9615,14 @@ def job_opening_buy(*, recovery_only: bool = False) -> None:
         "ALLOW_MODEL3_L_REPLACE": "L/model3优先 09:30开仓",
         "ALLOW_ABC_BUY_PREVIEW": "A/C 09:30开仓",
         "ALLOW_M_BUY": "M 09:30开仓",
-        "ALLOW_E2_BUY": "E2 09:30开仓",
+        "ALLOW_E_BUY": "E 09:30开仓",
     }
     attempted_buy = bool(open_action)
     accepted_buy = False
     if open_action:
         action_label = action_reason.get(open_action, f"{open_action} 09:30开仓")
-        if open_action == "ALLOW_E2_BUY":
-            # E2保留按竞价容量与开盘涨幅≤2%的专用延迟重试，不能混入普通POV。
+        if open_action == "ALLOW_E_BUY":
+            # E保留按竞价容量与开盘涨幅≤2%的专用延迟重试，不能混入普通POV。
             accepted_buy = False
         else:
             accepted_buy = _enqueue_opening_pov_from_plan(
@@ -9628,13 +9632,13 @@ def job_opening_buy(*, recovery_only: bool = False) -> None:
             )
 
     if not attempted_buy:
-        logger().info("09:30无L/A/C/M/E2买入计划；D是否扫描已由空仓及全策略候选总门单独判定。")
+        logger().info("09:30无L/A/C/M/E买入计划；D是否扫描已由空仓及全策略候选总门单独判定。")
     elif not accepted_buy and not has_position_bought_today():
-        if open_action == "ALLOW_E2_BUY":
+        if open_action == "ALLOW_E_BUY":
             logger().warning(
-                "09:30 E2开仓未提交成功，启动延迟重试（9:31-13:30，相对开盘涨幅≤2%%）。"
+                "09:30 E开仓未提交成功，启动延迟重试（9:31-13:30，相对开盘涨幅≤2%%）。"
             )
-            _start_e2_retry_thread(combined_orders_path, decisions)
+            _start_e_retry_thread(combined_orders_path, decisions)
         else:
             # 任一正式候选执行失败后都不得切换D；D只在全策略无正式候选时扫描。
             logger().warning(
@@ -9682,18 +9686,18 @@ def has_combined_action(decisions, action: str) -> bool:
     return decisions["action"].astype(str).eq(action).any()
 
 
-MODE2_OPEN_ACTION_PRIORITY = ("ALLOW_L_BUY",)
+MODE_OPEN_ACTION_PRIORITY = ("ALLOW_L_BUY",)
 MODEL3_OPEN_ACTION_PRIORITY = (
     "ALLOW_MODEL3_L_SUPPLEMENT",
     "ALLOW_MODEL3_L_REPLACE",
     "ALLOW_ABC_BUY_PREVIEW",
     "ALLOW_M_BUY",
-    "ALLOW_E2_BUY",
+    "ALLOW_E_BUY",
 )
 MODE1_OPEN_ACTION_PRIORITY = (
     "ALLOW_ABC_BUY_PREVIEW",
     "ALLOW_M_BUY",
-    "ALLOW_E2_BUY",
+    "ALLOW_E_BUY",
 )
 
 
@@ -9701,12 +9705,12 @@ def _combined_open_action_for_current_mode(decisions) -> str:
     """返回当前模式唯一可执行的正式开仓动作，供09:20与09:30共同使用。
 
     决策表异常地同时出现多条ALLOW时仍只取腿序最前的一条，避免同一资金被
-    多个执行入口重复消费。模式2只认独立L；模式3按L>A/C>M>E2；模式1按
-    A/C>M>E2。C与A共用ALLOW_ABC_BUY_PREVIEW动作和同一计划单执行通道。
+    多个执行入口重复消费。模式2只认独立L；模式3按L>A/C>M>E；模式1按
+    A/C>M>E。C与A共用ALLOW_ABC_BUY_PREVIEW动作和同一计划单执行通道。
     """
 
     if is_strategy_l_mode():
-        priority = MODE2_OPEN_ACTION_PRIORITY
+        priority = MODE_OPEN_ACTION_PRIORITY
     elif is_strategy_model3_mode():
         priority = MODEL3_OPEN_ACTION_PRIORITY
     else:
@@ -9723,7 +9727,7 @@ OPEN_ACTION_LEG_PRIORITY: dict[str, tuple[str, ...]] = {
     "ALLOW_MODEL3_L_REPLACE": ("L",),
     "ALLOW_ABC_BUY_PREVIEW": ("A", "C"),
     "ALLOW_M_BUY": ("M",),
-    "ALLOW_E2_BUY": ("E2",),
+    "ALLOW_E_BUY": ("E",),
 }
 
 
@@ -9783,7 +9787,7 @@ D_INTRADAY_BLOCKING_BUY_ACTIONS = frozenset({
     "ALLOW_MODEL3_L_REPLACE",
     "ALLOW_ABC_BUY_PREVIEW",
     "ALLOW_M_BUY",
-    "ALLOW_E2_BUY",
+    "ALLOW_E_BUY",
 })
 
 
@@ -9887,7 +9891,7 @@ def clear_pending_buys() -> None:
 
 
 def _append_pending_buys(new_orders: list[dict[str, Any]]) -> None:
-    """在同一文件锁内追加已受理委托，避免竞价/E2/确认线程互相覆盖。"""
+    """在同一文件锁内追加已受理委托，避免竞价/E/确认线程互相覆盖。"""
 
     with _pending_buy_lock:
         existing = load_pending_buys()
@@ -10381,7 +10385,7 @@ def _try_cancel_order(broker_cfg: dict, order_id: str, ts_code: str) -> None:
 
 
 def blocks_d_for_opening_plan(decisions) -> bool:
-    """识别 D 是否只是被当日 L/A/C/M/E2 开仓计划占用资金挡住。
+    """识别 D 是否只是被当日 L/A/C/M/E 开仓计划占用资金挡住。
 
     盘中补启动只用于开仓窗口已经过去、且本地无持仓的场景；如果 D 是因为待卖、
     行情时段、风控等原因被挡住，不在这里强行放行。
@@ -10400,7 +10404,7 @@ def blocks_d_for_opening_plan(decisions) -> bool:
         reason_text = " ".join(decisions["reason"].fillna("").astype(str).tolist())
     return any(
         keyword in reason_text
-        for keyword in ("开仓", "同一资金", "A/C", "A/B/C", "E2", "M", "L补位", "L优先")
+        for keyword in ("开仓", "同一资金", "A/C", "A/B/C", "E", "M", "L补位", "L优先")
     )
 
 
@@ -10864,7 +10868,7 @@ def report_next_trade_factor_readiness(signal_date: str) -> bool:
         ("成交概率打分", processed / "live_limit_up_fill_scored.csv", ["trade_date", "ts_code", "fill_probability", "allow_buy_reliable", "is_fill_score_reliable"], True, False),
         ("市场情绪", processed / "live_market_emotion_features.csv", ["trade_date", "market_segment", "market_chain_count", "segment_emotion_state"], True, False),
         ("题材热度", processed / "live_theme_heat_features.csv", ["trade_date", "ts_code", "theme_name", "theme_heat_rank", "theme_limit_count"], True, False),
-        # 资金流/龙虎榜是纯记录性增强因子，A/C/E2/L/D 选股都不以它们为条件（龙虎榜策略已判死）。
+        # 资金流/龙虎榜是纯记录性增强因子，A/C/E/L/D 选股都不以它们为条件（龙虎榜策略已判死）。
         # 龙虎榜是交易所晚发布数据，tushare 常整日无数据/无权限（2026-07-23 卡住收盘流水线到18点+）；
         # 故 require_available=False：当日不可用只记录、不阻塞收盘完成与明日计划推送（2026-07-23 修）。
         ("资金流增强", processed / "sector_moneyflow_features.csv", ["trade_date", "ts_code", "sector_moneyflow_score"], False, False),
@@ -10906,10 +10910,10 @@ def report_next_trade_factor_readiness(signal_date: str) -> bool:
                 enhanced_missing.append(name)
 
     abc_ready = _has_signal_for_date(signal_dt)
-    e2_status = _strategy_signal_run_readiness(
-        strategy_leg="E2",
-        run_status_path=PROJECT_ROOT / "reports" / "strategy_e2" / "e2_signal_runs_recent.json",
-        signal_path=PROJECT_ROOT / "reports" / "strategy_e2" / "e2_signals_recent.json",
+    e_status = _strategy_signal_run_readiness(
+        strategy_leg="E",
+        run_status_path=PROJECT_ROOT / "reports" / "strategy_e" / "e_signal_runs_recent.json",
+        signal_path=PROJECT_ROOT / "reports" / "strategy_e" / "e_signals_recent.json",
         signal_date=signal_date,
     )
     l_status = _strategy_signal_run_readiness(
@@ -10919,7 +10923,7 @@ def report_next_trade_factor_readiness(signal_date: str) -> bool:
         signal_date=signal_date,
     )
     logger().info("  %s A/C计划或空计划文件已生成", "✅" if abc_ready else "⚠️")
-    for strategy_leg, status in (("E2", e2_status), ("L", l_status)):
+    for strategy_leg, status in (("E", e_status), ("L", l_status)):
         log_method = logger().info if status["ok"] else logger().warning
         log_method(
             "  %s %s信号脚本：%s；%s",
@@ -10930,8 +10934,8 @@ def report_next_trade_factor_readiness(signal_date: str) -> bool:
         )
     if not abc_ready:
         critical_missing.append("A/C planned_orders")
-    if not e2_status["ok"]:
-        enhanced_missing.append(f"E2 signal run={e2_status['status']}")
+    if not e_status["ok"]:
+        enhanced_missing.append(f"E signal run={e_status['status']}")
     if not l_status["ok"]:
         enhanced_missing.append(f"L signal run={l_status['status']}")
 
@@ -10949,7 +10953,7 @@ def report_next_trade_factor_readiness(signal_date: str) -> bool:
     elif enhanced_missing:
         logger().warning("⚠️ 明日开盘关键因子已齐，增强/备用项缺失：%s", ", ".join(enhanced_missing))
     else:
-        logger().info("✅ 明日开盘因子已齐：ABCE2/L/D 所需关键文件均已准备")
+        logger().info("✅ 明日开盘因子已齐：ABCE/L/D 所需关键文件均已准备")
     logger().info("----- 明日开盘因子就绪检查结束 -----")
     return True
 
@@ -10980,24 +10984,24 @@ def _processed_data_ready_for_date(target_date: datetime.date) -> bool:
     return all(_date_in_csv(path, target_date, "trade_date") for path in required_paths)
 
 
-_e2_retry_thread: threading.Thread | None = None
+_e_retry_thread: threading.Thread | None = None
 
 
-def _e2_retry_running() -> bool:
-    global _e2_retry_thread
-    return _e2_retry_thread is not None and _e2_retry_thread.is_alive()
+def _e_retry_running() -> bool:
+    global _e_retry_thread
+    return _e_retry_thread is not None and _e_retry_thread.is_alive()
 
 
-def _get_e2_buy_ts_codes(decisions) -> list[str]:
-    """从组合决策中提取 ALLOW_E2_BUY 行对应的标的代码。"""
+def _get_e_buy_ts_codes(decisions) -> list[str]:
+    """从组合决策中提取 ALLOW_E_BUY 行对应的标的代码。"""
     if decisions is None or decisions.empty or "action" not in decisions.columns:
         return []
-    rows = decisions[decisions["action"].astype(str) == "ALLOW_E2_BUY"]
+    rows = decisions[decisions["action"].astype(str) == "ALLOW_E_BUY"]
     codes = rows["ts_code"].dropna().astype(str).str.strip().tolist()
     return [c for c in codes if c and c.lower() != "nan"]
 
 
-def _e2_open_price_ok(ts_code: str, tolerance: float = 0.02) -> bool:
+def _e_open_price_ok(ts_code: str, tolerance: float = 0.02) -> bool:
     """当前价相比今日开盘价的涨幅是否在 tolerance 以内。"""
     try:
         config = load_json_config(PROJECT_ROOT / "config" / "config.json")
@@ -11007,46 +11011,46 @@ def _e2_open_price_ok(ts_code: str, tolerance: float = 0.02) -> bool:
             quote_map = adapter.get_full_tick([ts_code])
         quote = quote_map.get(ts_code)
         if quote is None:
-            logger().warning("E2延迟开仓：无法获取 %s 行情数据，跳过价格检查", ts_code)
+            logger().warning("E延迟开仓：无法获取 %s 行情数据，跳过价格检查", ts_code)
             return False
         open_price = float(getattr(quote, "open_price", 0.0) or 0.0)
         last_price = float(getattr(quote, "last_price", 0.0) or 0.0)
         if open_price <= 0:
-            logger().warning("E2延迟开仓：%s 开盘价异常（%.2f），跳过", ts_code, open_price)
+            logger().warning("E延迟开仓：%s 开盘价异常（%.2f），跳过", ts_code, open_price)
             return False
         pct = (last_price - open_price) / open_price
         ok = pct <= tolerance
         logger().info(
-            "E2延迟开仓价格检查：%s 开盘%.2f 当前%.2f 涨幅%+.2f%% —— %s",
+            "E延迟开仓价格检查：%s 开盘%.2f 当前%.2f 涨幅%+.2f%% —— %s",
             ts_code, open_price, last_price, pct * 100,
             f"允许（≤{tolerance * 100:.0f}%%）" if ok else f"拒绝（>{tolerance * 100:.0f}%%）",
         )
         return ok
     except Exception as e:
-        logger().error("E2延迟开仓价格检查异常：%s", e)
+        logger().error("E延迟开仓价格检查异常：%s", e)
         return False
 
 
-def _e2_place_order_direct(ts_code: str, name: str, planned_qty: int, signal_date: str,
+def _e_place_order_direct(ts_code: str, name: str, planned_qty: int, signal_date: str,
                             strategy_leg: str, exit_n_days: int,
                             config: dict, broker_cfg: dict, confirm: str) -> bool:
     """按ask5/ask1/last_price挂FIXED_PRICE限价买单，不走CSV→validate流水线。
 
     返回 True 仅表示已真实成交并记账；False 表示本次未成交/未提交。
-    终态废单会在调用方通过 _last_e2_terminal_reject 判断后停止重试。
+    终态废单会在调用方通过 _last_e_terminal_reject 判断后停止重试。
     """
     from src.broker_adapter import OrderRequest
     from src.live_order_gateway import LiveOrderGateway
 
     today_str = today_beijing().strftime("%Y%m%d")
     log = logger()
-    _e2_place_order_direct.last_terminal_reject = False  # type: ignore[attr-defined]
+    _e_place_order_direct.last_terminal_reject = False  # type: ignore[attr-defined]
 
     gateway = LiveOrderGateway(PROJECT_ROOT / "config" / "config.json")
     try:
         gateway.assert_real_order_allowed(confirm)
     except RuntimeError as e:
-        log.error("❌ [E2延迟开仓] 下单条件不满足：%s", e)
+        log.error("❌ [E延迟开仓] 下单条件不满足：%s", e)
         return False
 
     with _qmt_lock:
@@ -11056,7 +11060,7 @@ def _e2_place_order_direct(ts_code: str, name: str, planned_qty: int, signal_dat
         quote_map = adapter.get_full_tick([ts_code])
 
     if _broker_has_preexisting_strategy_position(positions_live):
-        log.warning("🚫 [E2延迟开仓] 券商仍有本系统旧策略仓，取消本次延迟买入。")
+        log.warning("🚫 [E延迟开仓] 券商仍有本系统旧策略仓，取消本次延迟买入。")
         return False
 
     quote = quote_map.get(ts_code)
@@ -11072,7 +11076,7 @@ def _e2_place_order_direct(ts_code: str, name: str, planned_qty: int, signal_dat
         price = round(float(quote.last_price), 2)
         price_label = "最新价（五档不可用）"
     else:
-        log.warning("E2延迟开仓：%s 无法获取价格，跳过本次。", ts_code)
+        log.warning("E延迟开仓：%s 无法获取价格，跳过本次。", ts_code)
         return False
 
     # 按账户可用资金计算可买股数，上限为计划股数
@@ -11096,11 +11100,11 @@ def _e2_place_order_direct(ts_code: str, name: str, planned_qty: int, signal_dat
     qty = max(0, min(planned_qty, max_qty_by_cash))
 
     if qty <= 0:
-        log.warning("E2延迟开仓：%s 可用资金%.0f元不足以购买（价格%.2f），跳过。",
+        log.warning("E延迟开仓：%s 可用资金%.0f元不足以购买（价格%.2f），跳过。",
                     ts_code, available_cash, price)
         return False
 
-    log.warning("⏳ [E2延迟开仓] %s %s  %d股  %s=%.2f元  可用%.0f元",
+    log.warning("⏳ [E延迟开仓] %s %s  %d股  %s=%.2f元  可用%.0f元",
                 ts_code, name, qty, price_label, price, available_cash)
 
     request = OrderRequest(
@@ -11111,18 +11115,18 @@ def _e2_place_order_direct(ts_code: str, name: str, planned_qty: int, signal_dat
         price_type="FIXED_PRICE",
         price=price,
         strategy_name="A_SYSTEM_ABC",
-        remark=f"E2延迟开仓-{price_label}-{today_str}",
-        strategy_leg=str(strategy_leg or "E2").upper(),
+        remark=f"E延迟开仓-{price_label}-{today_str}",
+        strategy_leg=str(strategy_leg or "E").upper(),
         business_date=today_str,
         signal_date=signal_date,
         purpose="OPEN",
-        source_key=f"E2_DELAYED|{today_str}|{ts_code}",
-        metadata={"execution_channel": "E2延迟开仓", "name": name},
+        source_key=f"E_DELAYED|{today_str}|{ts_code}",
+        metadata={"execution_channel": "E延迟开仓", "name": name},
     )
     if st_open_forbidden(ts_code, name):
-        log.error("⛔ [ST禁买] %s %s 命中ST/风险警示铁律，拦截E2延迟开仓委托。", ts_code, name)
+        log.error("⛔ [ST禁买] %s %s 命中ST/风险警示铁律，拦截E延迟开仓委托。", ts_code, name)
         _notify("buy_result", "⛔ ST股禁买拦截",
-                f"{ts_code} {name} 为ST/风险警示股，全局铁律禁止开仓，已拦截E2延迟开仓。",
+                f"{ts_code} {name} 为ST/风险警示股，全局铁律禁止开仓，已拦截E延迟开仓。",
                 level="timeSensitive")
         return None
     with _qmt_lock:
@@ -11130,16 +11134,16 @@ def _e2_place_order_direct(ts_code: str, name: str, planned_qty: int, signal_dat
         result = adapter.place_order(request)
 
     if not result.accepted:
-        log.error("❌ [E2延迟开仓] %s %s 提交失败：%s", ts_code, name, result.message)
+        log.error("❌ [E延迟开仓] %s %s 提交失败：%s", ts_code, name, result.message)
         return False
 
-    log.info("✅ [E2延迟开仓] %s %s %d股 @%.2f 委托已受理（待成交确认）", ts_code, name, qty, price)
-    order_id_broker = str(result.order_id or f"e2retry-{today_str}-{ts_code}")
-    fill = _confirm_fill(broker_cfg, order_id_broker, qty, "E2延迟开仓")
+    log.info("✅ [E延迟开仓] %s %s %d股 @%.2f 委托已受理（待成交确认）", ts_code, name, qty, price)
+    order_id_broker = str(result.order_id or f"eretry-{today_str}-{ts_code}")
+    fill = _confirm_fill(broker_cfg, order_id_broker, qty, "E延迟开仓")
     fill_price = fill.avg_price if fill.avg_price > 0 else price
     if fill.filled_qty > 0:
         _record_live_buy(
-            recovery_context="E2延迟开仓",
+            recovery_context="E延迟开仓",
             order_id=order_id_broker,
             ts_code=ts_code,
             name=name,
@@ -11155,29 +11159,29 @@ def _e2_place_order_direct(ts_code: str, name: str, planned_qty: int, signal_dat
         if fill.filled_qty < qty:
             planned_amount = qty * price
             unfilled_amount = max(planned_amount - amount, 0.0)
-            log.warning("⚠️ [E2延迟开仓] %s 部分成交 %d/%d股 @%.2f，按实际成交记录持仓。",
+            log.warning("⚠️ [E延迟开仓] %s 部分成交 %d/%d股 @%.2f，按实际成交记录持仓。",
                         ts_code, fill.filled_qty, qty, fill_price)
-            _notify("buy_result", "⚠️ E2开仓部分成交",
+            _notify("buy_result", "⚠️ E开仓部分成交",
                     f"策略={strategy_leg} {ts_code} {name} 成交{fill.filled_qty}/{qty}股 "
                     f"@{fill_price:.2f}。总委托金额{_fmt_wan(planned_amount)}，"
                     f"已成交金额{_fmt_wan(amount)}，未成交金额{_fmt_wan(unfilled_amount)}")
         else:
-            log.info("✅ [E2延迟开仓] 持仓信息：策略=%s %s %s 持仓%d股 成本%.2f 市值%s",
+            log.info("✅ [E延迟开仓] 持仓信息：策略=%s %s %s 持仓%d股 成本%.2f 市值%s",
                      strategy_leg, ts_code, name, fill.filled_qty, fill_price, _fmt_wan(amount))
-            _notify("buy_result", "✅ E2持仓信息",
+            _notify("buy_result", "✅ E持仓信息",
                     f"策略={strategy_leg} {ts_code} {name} "
                     f"持仓{fill.filled_qty}股 成本{fill_price:.2f} 市值{_fmt_wan(amount)}")
         return True
     else:
         detail = _format_order_fill_detail(fill)
-        log.error("❌ [E2延迟开仓] %s %s 未成交（%s），不记录持仓，避免幽灵持仓。",
+        log.error("❌ [E延迟开仓] %s %s 未成交（%s），不记录持仓，避免幽灵持仓。",
                   ts_code, name, detail)
         if fill.is_terminal:
-            _e2_place_order_direct.last_terminal_reject = True  # type: ignore[attr-defined]
+            _e_place_order_direct.last_terminal_reject = True  # type: ignore[attr-defined]
         return False
 
 
-def _e2_delayed_buy_loop(combined_orders_path, decisions) -> None:
+def _e_delayed_buy_loop(combined_orders_path, decisions) -> None:
     """后台线程：9:31-13:30 内每60秒检查价格条件，满足则用ask5/last_price挂FIXED_PRICE单。
 
     价格条件：当前价（或最新价）≤ 今日开盘价 × 1.02。
@@ -11185,23 +11189,23 @@ def _e2_delayed_buy_loop(combined_orders_path, decisions) -> None:
     超出条件或超过截止时间时放弃并补启动D监控。
     """
     log = logger()
-    ts_codes = _get_e2_buy_ts_codes(decisions)
+    ts_codes = _get_e_buy_ts_codes(decisions)
     if not ts_codes:
-        log.warning("E2延迟开仓：无法获取标的代码，直接补启动D监控。")
+        log.warning("E延迟开仓：无法获取标的代码，直接补启动D监控。")
         if not has_open_local_position() and not _strategy_d_monitor_running():
             job_strategy_d()
         return
 
     # 从decisions中提取买入元信息（stock details）
     import pandas as pd
-    rows = decisions[decisions["action"].astype(str) == "ALLOW_E2_BUY"] if not decisions.empty else pd.DataFrame()
+    rows = decisions[decisions["action"].astype(str) == "ALLOW_E_BUY"] if not decisions.empty else pd.DataFrame()
 
     config = load_json_config(PROJECT_ROOT / "config" / "config.json")
     broker_cfg = config.get("broker", {})
     confirm = config.get("live_trade", {}).get("real_order_confirm_text", "A_SYSTEM_REAL_ORDER_CONFIRMED")
     qmt_enabled = bool(config.get("broker_adapter_enabled")) and bool(config.get("qmt_enabled"))
 
-    log.info("E2延迟开仓线程启动：标的 %s，每60秒检查一次，截止13:30。", ts_codes)
+    log.info("E延迟开仓线程启动：标的 %s，每60秒检查一次，截止13:30。", ts_codes)
     RETRY_INTERVAL_S = 60
     CUTOFF = datetime.time(13, 30)
     TOLERANCE = 0.02
@@ -11211,29 +11215,29 @@ def _e2_delayed_buy_loop(combined_orders_path, decisions) -> None:
         now = now_beijing()
 
         if has_position_bought_today():
-            log.info("E2延迟开仓：今日买入已成交，退出重试线程。")
+            log.info("E延迟开仓：今日买入已成交，退出重试线程。")
             return
 
         if now.time() >= CUTOFF:
-            log.warning("E2延迟开仓：已过13:30截止时间，放弃开仓，补启动D监控。")
+            log.warning("E延迟开仓：已过13:30截止时间，放弃开仓，补启动D监控。")
             if not _strategy_d_monitor_running():
                 job_strategy_d()
             return
 
         if not market_is_open():
-            log.info("E2延迟开仓：当前不在连续竞价时段，等待下一轮检查，不提交委托。")
+            log.info("E延迟开仓：当前不在连续竞价时段，等待下一轮检查，不提交委托。")
             continue
 
-        if not all(_e2_open_price_ok(code, TOLERANCE) for code in ts_codes):
-            log.warning("E2延迟开仓：%s 涨幅已超开盘价2%%，放弃开仓，补启动D监控。", ts_codes)
+        if not all(_e_open_price_ok(code, TOLERANCE) for code in ts_codes):
+            log.warning("E延迟开仓：%s 涨幅已超开盘价2%%，放弃开仓，补启动D监控。", ts_codes)
             if not _strategy_d_monitor_running():
                 job_strategy_d()
             return
 
-        log.info("E2延迟开仓 %s：价格满足条件，尝试提交...", now.strftime("%H:%M:%S"))
+        log.info("E延迟开仓 %s：价格满足条件，尝试提交...", now.strftime("%H:%M:%S"))
 
         if not qmt_enabled:
-            log.info("[E2延迟开仓] 模拟盘，跳过实盘下单。")
+            log.info("[E延迟开仓] 模拟盘，跳过实盘下单。")
             return
 
         placed_any = False
@@ -11242,12 +11246,12 @@ def _e2_delayed_buy_loop(combined_orders_path, decisions) -> None:
             code = str(row.get("ts_code", ""))
             if code not in ts_codes:
                 continue
-            ok = _e2_place_order_direct(
+            ok = _e_place_order_direct(
                 ts_code=code,
                 name=str(row.get("name", "")),
                 planned_qty=int(row.get("quantity", 0)),
                 signal_date=str(row.get("signal_date", today_beijing().strftime("%Y%m%d"))),
-                strategy_leg=str(row.get("strategy_leg", "E2")),
+                strategy_leg=str(row.get("strategy_leg", "E")),
                 exit_n_days=1,
                 config=config,
                 broker_cfg=broker_cfg,
@@ -11255,35 +11259,35 @@ def _e2_delayed_buy_loop(combined_orders_path, decisions) -> None:
             )
             if ok:
                 placed_any = True
-            if bool(getattr(_e2_place_order_direct, "last_terminal_reject", False)):
+            if bool(getattr(_e_place_order_direct, "last_terminal_reject", False)):
                 terminal_reject_any = True
 
         if placed_any:
-            log.info("E2延迟开仓：提交成功，退出重试线程。")
+            log.info("E延迟开仓：提交成功，退出重试线程。")
             return
         if terminal_reject_any:
             log.warning(
-                "E2延迟开仓：券商已返回终态废单/终态未成交，停止重复提交同一计划，释放资金占用并补启动D监控。"
+                "E延迟开仓：券商已返回终态废单/终态未成交，停止重复提交同一计划，释放资金占用并补启动D监控。"
             )
             if not _strategy_d_monitor_running():
                 job_strategy_d()
             return
-        log.warning("E2延迟开仓：本次提交未成功，%d秒后重试。", RETRY_INTERVAL_S)
+        log.warning("E延迟开仓：本次提交未成功，%d秒后重试。", RETRY_INTERVAL_S)
 
 
-def _start_e2_retry_thread(combined_orders_path, decisions) -> None:
-    global _e2_retry_thread
-    if _e2_retry_running():
-        logger().info("E2延迟开仓线程已在运行，跳过重复启动。")
+def _start_e_retry_thread(combined_orders_path, decisions) -> None:
+    global _e_retry_thread
+    if _e_retry_running():
+        logger().info("E延迟开仓线程已在运行，跳过重复启动。")
         return
-    _e2_retry_thread = threading.Thread(
-        target=_e2_delayed_buy_loop,
+    _e_retry_thread = threading.Thread(
+        target=_e_delayed_buy_loop,
         args=(combined_orders_path, decisions),
         daemon=True,
-        name="e2-retry",
+        name="e-retry",
     )
-    _e2_retry_thread.start()
-    logger().info("E2延迟开仓线程已启动（后台daemon线程，每60秒检查，最晚13:30放弃）。")
+    _e_retry_thread.start()
+    logger().info("E延迟开仓线程已启动（后台daemon线程，每60秒检查，最晚13:30放弃）。")
 
 
 def startup_catchup_strategy_d() -> None:
@@ -11294,7 +11298,7 @@ def startup_catchup_strategy_d() -> None:
     只读取组合状态机，如果它明确允许 D 且仍能取得完整日内路径，才补启动监控；
     09:30后首次启动会缺少早盘封板/炸板历史，按回测一致口径直接阻断，不再启动
     一个注定自行退出的D子进程。
-    对于 E2 开仓：若 9:30 后市场仍开盘（14:00 前），允许延迟重试（涨幅≤2%%）。
+    对于 E 开仓：若 9:30 后市场仍开盘（14:00 前），允许延迟重试（涨幅≤2%%）。
     """
     now = now_beijing()
     if not is_trade_day(now.date()):
@@ -11323,7 +11327,7 @@ def startup_catchup_strategy_d() -> None:
         and load_pending_buys()
     ):
         # 只恢复09:20已提交委托的成交/撤残单/POV归属，绝不因重启在9:35后
-        # 新建普通开盘买单。恢复后若确实零成交，再继续下方E2/D兜底判断。
+        # 新建普通开盘买单。恢复后若确实零成交，再继续下方E/D兜底判断。
         logger().warning("启动补检：发现09:20遗留待确认买单，先恢复真实成交与终态，不追补新普通买单。")
         job_opening_buy(recovery_only=True)
         if has_position_bought_today() or has_open_local_position() or _pov_active_today():
@@ -11336,7 +11340,7 @@ def startup_catchup_strategy_d() -> None:
             _start_d_relay_pair_worker()
         return
     if _pov_active_today():
-        logger().info("启动补检：今日实际成交额POV仍在执行/待恢复，不启动E2延迟买入或D兜底，避免重复开仓。")
+        logger().info("启动补检：今日实际成交额POV仍在执行/待恢复，不启动E延迟买入或D兜底，避免重复开仓。")
         _start_pov_worker()
         return
     if _strategy_d_monitor_running():
@@ -11354,7 +11358,7 @@ def startup_catchup_strategy_d() -> None:
         # 整机宕机跨过09:00时不会存在今日缓存。此时已经错过A/C/L普通开盘
         # 窗口，再等待“下一轮定时任务”实际要到14:40，D兜底也会整天丢失。
         # 本地盘运行后组合生成不再依赖旧Z:共享盘；这里限一次同步重建，仅生成
-        # 计划，不追补过期买单，然后继续走既有E2延迟/D兜底判断。
+        # 计划，不追补过期买单，然后继续走既有E延迟/D兜底判断。
         logger().warning(
             "启动补检：今日组合状态机缓存缺失/读取失败，限一次重建今日计划；"
             "不会追补已过期的普通开盘买单。"
@@ -11363,7 +11367,7 @@ def startup_catchup_strategy_d() -> None:
         decisions = combined[0] if combined is not None else None
         combined_orders_path = combined[1] if combined is not None else None
         if decisions is None:
-            logger().error("启动补检：今日组合状态机重建仍失败，无法安全判断E2/D兜底。")
+            logger().error("启动补检：今日组合状态机重建仍失败，无法安全判断E/D兜底。")
             _notify(
                 "buy_result",
                 "🛑 启动后无法恢复今日开仓状态机",
@@ -11391,11 +11395,11 @@ def startup_catchup_strategy_d() -> None:
         else:
             _reject_late_d_recovery("组合状态机原本允许D盘中扫描")
     elif now.time() >= datetime.time(9, 30) and blocks_d_for_opening_plan(decisions) and not has_open_local_position():
-        if has_combined_action(decisions, "ALLOW_E2_BUY") and now.time() < datetime.time(13, 30) and not _e2_retry_running():
+        if has_combined_action(decisions, "ALLOW_E_BUY") and now.time() < datetime.time(13, 30) and not _e_retry_running():
             logger().warning(
-                "启动补检：E2未开仓且当前时间在13:30前，启动延迟开仓重试（涨幅≤2%%）。"
+                "启动补检：E未开仓且当前时间在13:30前，启动延迟开仓重试（涨幅≤2%%）。"
             )
-            _start_e2_retry_thread(combined_orders_path, decisions)
+            _start_e_retry_thread(combined_orders_path, decisions)
         else:
             _reject_late_d_recovery(
                 "今日A/C/M/L普通开盘计划未成交且窗口已过，不追补过期计划；"
@@ -11442,7 +11446,7 @@ def job_afternoon() -> None:
         logger().info("14:55 未检测到到期平仓计划，流水线无需暂停。")
 
     # ① 平仓最高优先：任何情况下先执行，绝不被组合状态机刷新/取数/超时阻塞。
-    #    E2 SELL 依赖的 combined_planned_orders 今日文件已在 09:00/09:20/09:26 生成
+    #    E SELL 依赖的 combined_planned_orders 今日文件已在 09:00/09:20/09:26 生成
     #    （SELL 行仅按 planned_exit_date<=today 产生，与盘中这次刷新无关），
     #    且平仓价在执行时实时取买10/买5，不从文件读死，因此先平仓完全安全。
     try:
@@ -11568,7 +11572,7 @@ def job_cancel_unfilled_buy_orders() -> None:
     # （2026-07-14 事故：撤买单把可转债申购单当自家买单撤，order_id=0报错）。
     # "盘前买入"=09:20预挂单(一字板整日排队未成时必须在此撤掉,否则尾盘炸板
     # 会变成回测口径外的买入);"POV平滑"=POV片单(片内90秒自撤,此处兜底残单)。
-    OWN_BUY_PREFIXES = ("A_SYSTEM", "E2竞价动态", "盘前买入", "POV平滑")
+    OWN_BUY_PREFIXES = ("A_SYSTEM", "E竞价动态", "盘前买入", "POV平滑")
     _remark_names = ["order_remark", "m_strRemark", "remark"]
 
     cancelled = failed = skipped = kept_sell = kept_foreign = 0
@@ -11809,8 +11813,8 @@ def _log_post_market_step_brief(script: str, signal_date: str) -> None:
         _log_enhanced_feature_brief(signal_date)
     elif script == "run_paper_ab_filtered_daily_ops.py":
         _log_abc_strategy_brief(signal_date)
-    elif script == "run_strategy_e2_signal.py":
-        _log_e2_signal_status(signal_date)
+    elif script == "run_strategy_e_signal.py":
+        _log_e_signal_status(signal_date)
     elif script == "run_strategy_l_signal.py":
         _log_l_model3_signal_status(signal_date)
 
@@ -11985,12 +11989,12 @@ def job_post_market(end_date: str | None = None) -> None:
         ("score_limit_up_fill_probability.py", "④ 涨停成交概率打分",               TIMEOUT_DATA_STEP,  "约1分钟"),
         ("build_live_enhanced_features.py",    "⑤ 增强因子生成（资金流/龙虎榜/竞价审计）", TIMEOUT_DATA_STEP, "约1分钟"),
         ("run_paper_ab_filtered_daily_ops.py", "⑥ A+B+C 信号生成",                TIMEOUT_SIGNAL_STEP,"约1分钟"),
-        ("run_strategy_e2_signal.py",          "⑦ E2 信号生成（板块中性小市值）", TIMEOUT_SIGNAL_STEP,"约30秒"),
+        ("run_strategy_e_signal.py",          "⑦ E 信号生成（板块中性小市值）", TIMEOUT_SIGNAL_STEP,"约30秒"),
         ("run_strategy_l_signal.py",           "⑧ L 龙头信号生成（独立模式备用）", TIMEOUT_SIGNAL_STEP,"约30秒"),
-        # M 必须排在 A/C（⑥）和 L（⑧）之后：腿序 D>L>A>M>E2>C 里只有这两条腿
+        # M 必须排在 A/C（⑥）和 L（⑧）之后：腿序 D>L>A>M>E>C 里只有这两条腿
         # （加上已在 positions.json 里的 D 持仓）有资格挡住 M，它要读它们当日的产物。
-        # E2（⑦）排在 M 后面，M 不再读它，两者先后已无所谓。
-        ("run_strategy_m_signal.py",           "⑨ M 补位信号（腿序D>L>A>M>E2>C 第四档）", TIMEOUT_SIGNAL_STEP,"约20秒"),
+        # E（⑦）排在 M 后面，M 不再读它，两者先后已无所谓。
+        ("run_strategy_m_signal.py",           "⑨ M 补位信号（腿序D>L>A>M>E>C 第四档）", TIMEOUT_SIGNAL_STEP,"约20秒"),
         ("strategy_health_monitor.py",         "⑩ 策略健康度监控（滚动20笔期望分位）", TIMEOUT_DATA_STEP, "约10秒"),
         ("live_execution_audit.py",            "⑪ 实盘执行对账（逐笔损耗vs回测基准）", TIMEOUT_DATA_STEP, "约5秒"),
         ("update_execution_completion.py",     "⑫ 真实成交完成率汇总（逐片+一笔一行）", TIMEOUT_DATA_STEP, "约5秒"),
@@ -12025,7 +12029,7 @@ def job_post_market(end_date: str | None = None) -> None:
             "--market-emotion-features-path", live_market_emotion_path,
             "--theme-heat-features-path", live_theme_heat_path,
         ],
-        "run_strategy_e2_signal.py": ["--signal-date", target_str],
+        "run_strategy_e_signal.py": ["--signal-date", target_str],
         # L 信号默认只落文件，不会接入实盘；必须 mode=2 且 strategy_l.live_order_enabled=true
         # 时，组合状态机才会把昨日 L 信号转换为次日实盘买入计划。
         "run_strategy_l_signal.py": ["--signal-date", target_str],
@@ -12040,7 +12044,7 @@ def job_post_market(end_date: str | None = None) -> None:
     # A/C 在慢 IO 夜晚易被单步超时误杀；此时 raw/清洗数据已缓存，重试仅剩加载+选股，命中率高。
     signal_retry_scripts = {
         "run_paper_ab_filtered_daily_ops.py",
-        "run_strategy_e2_signal.py",
+        "run_strategy_e_signal.py",
         "run_strategy_l_signal.py",
     }
 
@@ -12313,8 +12317,8 @@ def report_next_day_candidates() -> None:
             logger().warning("【%s】%s  ⚠️  未找到 A/C planned_orders 文件", header_label, action_date_str)
             if require_today:
                 signal_date_str = today_str
-                logger().info("  A/C：今日未生成计划单，继续检查 E2/L 是否已有 %s 信号", signal_date_str)
-                _log_e2_signal_status(signal_date_str)
+                logger().info("  A/C：今日未生成计划单，继续检查 E/L 是否已有 %s 信号", signal_date_str)
+                _log_e_signal_status(signal_date_str)
                 _log_l_model3_signal_status(signal_date_str, action_date_str.replace("-", ""))
                 _log_final_decision_summary(signal_date_str, action_date_str.replace("-", ""), pd.DataFrame())
             logger().info("=" * 60)
@@ -12326,7 +12330,7 @@ def report_next_day_candidates() -> None:
         if latest_file is not None:
             _m = _re.search(r"\d{8}", latest_file.stem)
             signal_date_str = _m.group() if _m else "未知"
-        # 收盘后必须是今天的信号；如果 A/C 今天无文件，也按今天检查 E2/L，不能回退到旧 planned_orders。
+        # 收盘后必须是今天的信号；如果 A/C 今天无文件，也按今天检查 E/L，不能回退到旧 planned_orders。
         data_fresh = (signal_date_str == today_str) or (not require_today)
 
         try:
@@ -12337,7 +12341,7 @@ def report_next_day_candidates() -> None:
                 logger().info("  A/C 均无符合条件标的，%s", no_candidate_msg)
             else:
                 logger().warning("  ⚠️  数据未更新！信号来自 %s，今日（%s）收盘流水线未成功运行", signal_date_str, today_str)
-            _log_e2_signal_status(signal_date_str)
+            _log_e_signal_status(signal_date_str)
             _log_l_model3_signal_status(signal_date_str, action_date_str.replace("-", ""))
             _log_final_decision_summary(signal_date_str, action_date_str.replace("-", ""), None)
             logger().info("=" * 60)
@@ -12387,7 +12391,7 @@ def report_next_day_candidates() -> None:
                     logger().info("  下一步：%s", row.get("next_action", ""))
             else:
                 logger().info("  A/C 均无符合条件标的，%s", no_candidate_msg)
-            _log_e2_signal_status(signal_date_str)
+            _log_e_signal_status(signal_date_str)
             _log_l_model3_signal_status(signal_date_str, action_date_str.replace("-", ""))
         else:
             ts_codes = buy_orders["ts_code"].astype(str).tolist()
@@ -12437,7 +12441,7 @@ def report_next_day_candidates() -> None:
                     "     计划：策略 %s  参考价 %.2f元  %d股  预估 %.0f元",
                     leg, ref_px, shares, amount,
                 )
-            _log_e2_signal_status(signal_date_str)
+            _log_e_signal_status(signal_date_str)
             _log_l_model3_signal_status(signal_date_str, action_date_str.replace("-", ""))
 
         _log_final_decision_summary(signal_date_str, action_date_str.replace("-", ""), buy_orders)
@@ -12446,12 +12450,12 @@ def report_next_day_candidates() -> None:
         logger().error("播报候选异常：%s", e)
 
 
-def _load_e2_signal_for_signal_date(signal_date: str) -> dict[str, Any] | None:
-    """读取 e2_signals_recent.json 中对应 signal_date 的入选信号。"""
+def _load_e_signal_for_signal_date(signal_date: str) -> dict[str, Any] | None:
+    """读取 e_signals_recent.json 中对应 signal_date 的入选信号。"""
     try:
         import json
 
-        path = PROJECT_ROOT / "reports" / "strategy_e2" / "e2_signals_recent.json"
+        path = PROJECT_ROOT / "reports" / "strategy_e" / "e_signals_recent.json"
         if not path.exists():
             return None
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -12462,51 +12466,51 @@ def _load_e2_signal_for_signal_date(signal_date: str) -> dict[str, Any] | None:
             if str(signal.get("signal_date", "")) == str(signal_date):
                 return signal
     except Exception as exc:
-        logger().debug("读取E2信号失败：%s", exc)
+        logger().debug("读取E信号失败：%s", exc)
     return None
 
 
-def _load_e2_candidate_count(signal_date: str) -> int | None:
-    """读取 E2 候选池规模（通过筛选的可买候选数，按 circ_mv 升序取首位为选中）。"""
+def _load_e_candidate_count(signal_date: str) -> int | None:
+    """读取 E 候选池规模（通过筛选的可买候选数，按 circ_mv 升序取首位为选中）。"""
     try:
         import pandas as pd
 
         # 同一天可能重跑，运行状态账本记录最后一次结果，优先级高于候选CSV。
         run = signal_run_by_signal_date(
-            PROJECT_ROOT / "reports" / "strategy_e2" / "e2_signal_runs_recent.json",
+            PROJECT_ROOT / "reports" / "strategy_e" / "e_signal_runs_recent.json",
             signal_date,
         )
         if run is not None and run.get("candidate_count") is not None:
             return int(run["candidate_count"])
-        path = PROJECT_ROOT / "reports" / "strategy_e2" / f"e2_signal_{signal_date}_candidates.csv"
+        path = PROJECT_ROOT / "reports" / "strategy_e" / f"e_signal_{signal_date}_candidates.csv"
         if not path.exists():
             return None
         return int(len(pd.read_csv(path, low_memory=False)))
     except Exception as exc:
-        logger().debug("读取E2候选数失败：%s", exc)
+        logger().debug("读取E候选数失败：%s", exc)
         return None
 
 
-def _log_e2_signal_status(signal_date: str) -> None:
-    """播报 E2 候选/选中标的/allow_buy_reliable/计划买卖日。
+def _log_e_signal_status(signal_date: str) -> None:
+    """播报 E 候选/选中标的/allow_buy_reliable/计划买卖日。
 
-    E2 信号存于 reports/strategy_e2/e2_signals_recent.json，与 A/C 的
+    E 信号存于 reports/strategy_e/e_signals_recent.json，与 A/C 的
     planned_orders.csv、L 的 l_signals_recent.json 都不同。启动播报若不单独
-    读取，会出现"有 E2 信号却完全看不到"的盲区，故在此独立播报。
+    读取，会出现"有 E 信号却完全看不到"的盲区，故在此独立播报。
     """
     try:
-        candidate_count = _load_e2_candidate_count(signal_date)
+        candidate_count = _load_e_candidate_count(signal_date)
         count_text = "未知" if candidate_count is None else str(candidate_count)
-        signal = _load_e2_signal_for_signal_date(signal_date)
+        signal = _load_e_signal_for_signal_date(signal_date)
         if signal is None:
             run_status = _strategy_signal_run_readiness(
-                strategy_leg="E2",
-                run_status_path=PROJECT_ROOT / "reports" / "strategy_e2" / "e2_signal_runs_recent.json",
-                signal_path=PROJECT_ROOT / "reports" / "strategy_e2" / "e2_signals_recent.json",
+                strategy_leg="E",
+                run_status_path=PROJECT_ROOT / "reports" / "strategy_e" / "e_signal_runs_recent.json",
+                signal_path=PROJECT_ROOT / "reports" / "strategy_e" / "e_signals_recent.json",
                 signal_date=signal_date,
             )
             logger().info(
-                "  E2策略：信号日期 %s 未生成E2正式信号，运行状态=%s，候选池=%s，原因=%s",
+                "  E策略：信号日期 %s 未生成E正式信号，运行状态=%s，候选池=%s，原因=%s",
                 signal_date,
                 run_status["status"],
                 count_text,
@@ -12514,7 +12518,7 @@ def _log_e2_signal_status(signal_date: str) -> None:
             )
             return
         logger().info(
-            "  E2策略：信号日期 %s 候选池=%s，选中 %s %s，板块=%s，"
+            "  E策略：信号日期 %s 候选池=%s，选中 %s %s，板块=%s，"
             "allow_buy_reliable=%s，仓位=%s，计划买入=%s(%s)，计划卖出=%s(%s)，状态=%s",
             signal_date,
             count_text,
@@ -12530,7 +12534,7 @@ def _log_e2_signal_status(signal_date: str) -> None:
             signal.get("status", ""),
         )
     except Exception as exc:
-        logger().error("播报E2状态异常：%s", exc)
+        logger().error("播报E状态异常：%s", exc)
 
 
 def _planned_equity_base() -> float:
@@ -12745,7 +12749,7 @@ def _exit_method_desc(strategy: str, exit_rule: str) -> str:
     - 普通D：T+2小仓位14:55卖；实时容量不足的大仓位先POV、14:55卖余仓。
     - D接力：T+1的09:23只卖竞价安全部分，其余在09:30后资金中性成对POV。
     - T+1开盘卖（含 *_open）：09:30 开盘平仓，买10/买5挂限价。
-    - T+N收盘卖（默认 A/C/D/E2/L *_close）：14:55卖出实际余仓。
+    - T+N收盘卖（默认 A/C/D/E/L *_close）：14:55卖出实际余仓。
     口径与 check_and_close_positions / job_premarket_sell 一致。
     """
     s = str(strategy).upper()
@@ -12768,7 +12772,7 @@ def _ordinary_open_plan_expired(
 ) -> bool:
     """判断A/M/C/L普通开盘计划是否已错过且没有任何执行活动。
 
-    E2有独立延迟入场规则，D是盘中实时策略，均不能套用09:35普通计划失效口径。
+    E有独立延迟入场规则，D是盘中实时策略，均不能套用09:35普通计划失效口径。
     本函数只影响播报，不改变组合计划文件或下单门禁。
     """
 
@@ -12815,9 +12819,9 @@ def _local_position_blocks_open_plan_broadcast(
 def _log_final_decision_summary(signal_date: str, action_date_compact: str, buy_orders: Any) -> None:
     """打印【最终结果】：按当前总策略模式判定下一交易日实际开仓计划。
 
-    - 模式1：按腿序 A > M > E2 > C 取第一个有计划的腿（B已删除）。
+    - 模式1：按腿序 A > M > E > C 取第一个有计划的腿（B已删除）。
     - 模式2(L)：仅当 strategy_l.live_order_enabled 且 L 信号满足时开仓。
-    - 模式3(MODEL3)：L 只要过基础条件就**无条件优先**于 A/M/E2/C
+    - 模式3(MODEL3)：L 只要过基础条件就**无条件优先**于 A/M/E/C
       （2026-08-07 替换窄门已退出选股路径），mode1 无买入时同样由 L 补位。
     与 combined_live_engine.build_model3_plan 的判定口径保持一致——播报说买 A、
     实盘买 L 比不播报更糟，改任一侧都要同步另一侧。
@@ -12825,11 +12829,11 @@ def _log_final_decision_summary(signal_date: str, action_date_compact: str, buy_
     try:
         cfg = load_json_config(PROJECT_ROOT / "config" / "config.json")
         mode = int(cfg.get("active_strategy_profile", {}).get("mode", 1))
-        mode_name = {1: "ACDE2", 2: "L龙头", 3: "MODEL3"}.get(mode, str(mode))
+        mode_name = {1: "ACDE", 2: "L龙头", 3: "MODEL3"}.get(mode, str(mode))
         readable = f"{action_date_compact[:4]}-{action_date_compact[4:6]}-{action_date_compact[6:]}" \
             if len(action_date_compact) == 8 else action_date_compact
 
-        # ── mode1 候选：A/C 计划单优先，否则 E2；内部abc变量名为兼容旧接口保留 ──
+        # ── mode1 候选：A/C 计划单优先，否则 E；内部abc变量名为兼容旧接口保留 ──
         abc_rows: list[dict[str, Any]] = []
         if buy_orders is not None and not buy_orders.empty:
             for _, r in buy_orders.iterrows():
@@ -12839,7 +12843,7 @@ def _log_final_decision_summary(signal_date: str, action_date_compact: str, buy_
                     # PLAN_ONLY 占位计划（如C策略0股@0.00仅模拟观察）不算实盘买入。
                     # 必须与 combined_live_engine.build_abc_buy_decisions 的
                     # qty>0 & ref_price>0 过滤口径一致，否则【最终结果】会把
-                    # 模拟观察计划当成mode1买入展示，与实际执行（E2顶上）不符。
+                    # 模拟观察计划当成mode1买入展示，与实际执行（E顶上）不符。
                     continue
                 exit_n = int(r.get("exit_n_days", 2) or 2)
                 try:
@@ -12856,25 +12860,25 @@ def _log_final_decision_summary(signal_date: str, action_date_compact: str, buy_
                     "exit_date": exit_date,
                     "exit_rule": "T+2收盘",
                 })
-        e2_sig = _load_e2_signal_for_signal_date(signal_date)
-        e2_buy: dict[str, Any] | None = None
+        e_sig = _load_e_signal_for_signal_date(signal_date)
+        e_buy: dict[str, Any] | None = None
         _has_a_plan = any(
             str(r.get("strategy", "")).strip().upper() != "C" for r in abc_rows
         )
-        if (not _has_a_plan and e2_sig
-                and str(e2_sig.get("planned_buy_date", "")) == action_date_compact
-                and bool(e2_sig.get("allow_buy_reliable", False))):
-            price = float(e2_sig.get("limit_close", 0.0) or 0.0)
-            e2_buy = {
-                "strategy": "E2",
-                "ts_code": str(e2_sig.get("ts_code", "")),
-                "name": str(e2_sig.get("name", "")),
-                "shares": _planned_shares_by_equity(e2_sig.get("position_pct", 0.825), price),
+        if (not _has_a_plan and e_sig
+                and str(e_sig.get("planned_buy_date", "")) == action_date_compact
+                and bool(e_sig.get("allow_buy_reliable", False))):
+            price = float(e_sig.get("limit_close", 0.0) or 0.0)
+            e_buy = {
+                "strategy": "E",
+                "ts_code": str(e_sig.get("ts_code", "")),
+                "name": str(e_sig.get("name", "")),
+                "shares": _planned_shares_by_equity(e_sig.get("position_pct", 0.825), price),
                 "price": price,
-                "exit_date": str(e2_sig.get("planned_exit_date", "")),
-                "exit_rule": str(e2_sig.get("planned_exit_rule", "T+2_close")),
+                "exit_date": str(e_sig.get("planned_exit_date", "")),
+                "exit_rule": str(e_sig.get("planned_exit_rule", "T+2_close")),
             }
-        # 腿序 A > M > E2 > C（2026-08-07）：A 与 C 拆开，C 垫底；M 排在 E2 之前。
+        # 腿序 A > M > E > C（2026-08-07）：A 与 C 拆开，C 垫底；M 排在 E 之前。
         _a_rows = [r for r in abc_rows if str(r.get("strategy", "")).strip().upper() != "C"]
         _c_rows = [r for r in abc_rows if str(r.get("strategy", "")).strip().upper() == "C"]
         m_sig = _load_m_signal_for_signal_date(signal_date)
@@ -12896,8 +12900,8 @@ def _log_final_decision_summary(signal_date: str, action_date_compact: str, buy_
             mode1_buys = _a_rows
         elif m_buy:
             mode1_buys = [m_buy]
-        elif e2_buy:
-            mode1_buys = [e2_buy]
+        elif e_buy:
+            mode1_buys = [e_buy]
         else:
             mode1_buys = _c_rows
 
@@ -12936,7 +12940,7 @@ def _log_final_decision_summary(signal_date: str, action_date_compact: str, buy_
             note = "有旧策略仓尚未实际清空，取消衔接开仓（含mode1/L补位/替换均阻断）"
         elif mode == 1:
             final_buys = mode1_buys
-            note = "模式1：按腿序 A>M>E2>C 取第一个有计划的腿（B已删除）"
+            note = "模式1：按腿序 A>M>E>C 取第一个有计划的腿（B已删除）"
         elif mode == 2:
             l_live = bool(cfg.get("strategy_l", {}).get("live_order_enabled", False))
             if l_buy and l_live:
@@ -12953,7 +12957,7 @@ def _log_final_decision_summary(signal_date: str, action_date_compact: str, buy_
                 # 2026-08-07：替换窄门已退出选股路径，L 过基础规则即无条件顶掉 mode1
                 if l_buy and l_base_ok:
                     final_buys = [l_buy]
-                    note = "模式3：L无条件优先（腿序L>A>M>E2>C）→ 由L替换mode1买入"
+                    note = "模式3：L无条件优先（腿序L>A>M>E>C）→ 由L替换mode1买入"
                 else:
                     final_buys = mode1_buys
                     note = "模式3：L不参与（无信号或基础规则不通过）→ 保留mode1买入"
@@ -12999,7 +13003,7 @@ def _log_final_decision_summary(signal_date: str, action_date_compact: str, buy_
                 "已过执行窗口且未成交；不追买，D也必须具备09:30起完整日内路径才允许开仓"
             )
         elif not final_buys:
-            out.append("开仓计划：❌ 无 —— ACDE2 与龙头均无开仓计划（B已删除）")
+            out.append("开仓计划：❌ 无 —— ACDE 与龙头均无开仓计划（B已删除）")
         else:
             out.append(f"开仓计划：✅ 共 {len(final_buys)} 笔")
             for b in final_buys:
@@ -13262,11 +13266,11 @@ def _log_decision_chain_summary(signal_date: str) -> None:
             elif "C_SELECTED" in ss:
                 c_line += note_shadow
 
-        # ── 腿序 D > L > A > M > E2 > C（2026-08-07 定稿）─────────────────
+        # ── 腿序 D > L > A > M > E > C（2026-08-07 定稿）─────────────────
         # 本段只做播报，真实开仓由 combined_live_engine.build_model3_plan 决定。
         # **播报必须与它逐条一致**：用户靠这份推送盯盘，播报说买 A、实盘买 L，
         # 比不播报更糟。2026-08-07 腿序改造时这里漏改过一轮——播报还在用已退役
-        # 的 L 替换窄门(l_guard_ok)、还让 E2/M 给 C 让位，与下单口径相反。
+        # 的 L 替换窄门(l_guard_ok)、还让 E/M 给 C 让位，与下单口径相反。
         #
         # A 与 C 拆开：A 排第③、C 垫底第⑥，同一份操作台文件不会同时出现两者
         # （select_candidates 先试 A 池、空了才试 C 池）。
@@ -13276,34 +13280,34 @@ def _log_decision_chain_summary(signal_date: str) -> None:
         if abc_buy and _abc_leg not in {"A", "C"}:
             a_buy = abc_buy          # 未知腿按最保守口径归入 A 档，与引擎一致
 
-        # ── E2（第⑤档，只让位给 A；C 排在它后面）──
-        e2_sig = _load_e2_signal_for_signal_date(signal_date)
-        e2_buy: dict[str, Any] | None = None
-        if (e2_sig and str(e2_sig.get("planned_buy_date", "")) == action_date
-                and bool(e2_sig.get("allow_buy_reliable", False))):
-            price = float(e2_sig.get("limit_close", 0.0) or 0.0)
-            e2_buy = {"strategy": "E2", "ts_code": str(e2_sig.get("ts_code", "")),
-                      "name": str(e2_sig.get("name", "")),
-                      "shares": _planned_shares_by_equity(e2_sig.get("position_pct", 0.825), price), "price": price}
-        # E2在已有持仓时不会生成正式信号，但会把只读第一名写入运行状态。候选汇总
-        # 应展示这只“若空仓本可参与”的影子候选，同时仍让 e2_buy 保持 None，绝不
+        # ── E（第⑤档，只让位给 A；C 排在它后面）──
+        e_sig = _load_e_signal_for_signal_date(signal_date)
+        e_buy: dict[str, Any] | None = None
+        if (e_sig and str(e_sig.get("planned_buy_date", "")) == action_date
+                and bool(e_sig.get("allow_buy_reliable", False))):
+            price = float(e_sig.get("limit_close", 0.0) or 0.0)
+            e_buy = {"strategy": "E", "ts_code": str(e_sig.get("ts_code", "")),
+                      "name": str(e_sig.get("name", "")),
+                      "shares": _planned_shares_by_equity(e_sig.get("position_pct", 0.825), price), "price": price}
+        # E在已有持仓时不会生成正式信号，但会把只读第一名写入运行状态。候选汇总
+        # 应展示这只“若空仓本可参与”的影子候选，同时仍让 e_buy 保持 None，绝不
         # 把展示数据误接成可执行买单。
-        e2_candidate_for_display = e2_buy
-        if e2_candidate_for_display is None:
-            e2_run = signal_run_by_signal_date(
-                PROJECT_ROOT / "reports" / "strategy_e2" / "e2_signal_runs_recent.json",
+        e_candidate_for_display = e_buy
+        if e_candidate_for_display is None:
+            e_run = signal_run_by_signal_date(
+                PROJECT_ROOT / "reports" / "strategy_e" / "e_signal_runs_recent.json",
                 signal_date,
             )
-            if e2_run and int(e2_run.get("candidate_count", 0) or 0) > 0:
-                shadow_code = str(e2_run.get("candidate_ts_code", "") or "")
+            if e_run and int(e_run.get("candidate_count", 0) or 0) > 0:
+                shadow_code = str(e_run.get("candidate_ts_code", "") or "")
                 if shadow_code:
-                    e2_candidate_for_display = {
-                        "strategy": "E2",
+                    e_candidate_for_display = {
+                        "strategy": "E",
                         "ts_code": shadow_code,
-                        "name": str(e2_run.get("candidate_name", "") or ""),
+                        "name": str(e_run.get("candidate_name", "") or ""),
                     }
 
-        # ── M（第④档，排在 E2 和 C 之前；上游门已保证只在 L/A 无信号时生成）──
+        # ── M（第④档，排在 E 和 C 之前；上游门已保证只在 L/A 无信号时生成）──
         m_sig_for_plan = _load_m_signal_for_signal_date(signal_date)
         m_buy: dict[str, Any] | None = None
         if m_sig_for_plan and str(m_sig_for_plan.get("planned_buy_date", "")) == action_date:
@@ -13313,30 +13317,30 @@ def _log_decision_chain_summary(signal_date: str) -> None:
                      "shares": _planned_shares_by_equity(m_sig_for_plan.get("position_pct", 0.825), m_price),
                      "price": m_price}
 
-        # ── mode1 按腿序 A > M > E2 > C 取第一个（与 build_mode1_plan 同序）──
-        mode1_buy = a_buy or m_buy or e2_buy or c_buy
+        # ── mode1 按腿序 A > M > E > C 取第一个（与 build_mode1_plan 同序）──
+        mode1_buy = a_buy or m_buy or e_buy or c_buy
 
         if a_buy:
-            e2_line = "让位｜A已有买入计划（腿序A>E2），同一资金不重复占用" + (
-                f"（E2备选={e2_buy['ts_code']} {e2_buy['name']}）" if e2_buy else "")
+            e_line = "让位｜A已有买入计划（腿序A>E），同一资金不重复占用" + (
+                f"（E备选={e_buy['ts_code']} {e_buy['name']}）" if e_buy else "")
         elif m_buy:
-            e2_line = "让位｜M排在E2之前且今日有信号" + (
-                f"（E2备选={e2_buy['ts_code']} {e2_buy['name']}）" if e2_buy else "")
-        elif e2_buy:
-            e2_line = f"成立｜A/M无票，E2顶上，选中 {e2_buy['ts_code']} {e2_buy['name']}"
-        elif e2_sig:
-            e2_line = f"不成立｜信号存在但不满足执行条件（计划买入日={e2_sig.get('planned_buy_date','')}≠{action_date} 或不可靠）"
+            e_line = "让位｜M排在E之前且今日有信号" + (
+                f"（E备选={e_buy['ts_code']} {e_buy['name']}）" if e_buy else "")
+        elif e_buy:
+            e_line = f"成立｜A/M无票，E顶上，选中 {e_buy['ts_code']} {e_buy['name']}"
+        elif e_sig:
+            e_line = f"不成立｜信号存在但不满足执行条件（计划买入日={e_sig.get('planned_buy_date','')}≠{action_date} 或不可靠）"
         else:
-            e2_line = "不成立｜无E2信号"
+            e_line = "不成立｜无E信号"
 
         # ── C（第⑥档垫底）──
         if c_buy:
-            if a_buy or m_buy or e2_buy:
+            if a_buy or m_buy or e_buy:
                 c_line += "；让位｜C垫底，前面的腿已占用同一资金"
             else:
                 c_line += f"；成立｜前面各腿均无票，C垫底开仓 {c_buy['ts_code']} {c_buy['name']}"
 
-        # ── L（第②档，无条件优先于 A/M/E2/C）──
+        # ── L（第②档，无条件优先于 A/M/E/C）──
         l_sig = _load_l_signal_for_signal_date(signal_date)
         l_buy: dict[str, Any] | None = None
         l_base_ok = False
@@ -13356,7 +13360,7 @@ def _log_decision_chain_summary(signal_date: str) -> None:
             # 2026-08-07：替换窄门（创业板∧题材涨停≥2∧非尾盘首板）已退出选股路径，
             # L 只要过基础规则就无条件顶掉 mode1，与 build_model3_plan 一致。
             l_line = (f"替换｜{l_sig.get('ts_code','')} {l_sig.get('name','')} "
-                      f"无条件优先（腿序L>A>M>E2>C），顶掉mode1买入")
+                      f"无条件优先（腿序L>A>M>E>C），顶掉mode1买入")
         else:
             l_line = f"补位｜mode1无买入，L补位 {l_sig.get('ts_code','')} {l_sig.get('name','')}（补位不限板块）"
 
@@ -13419,8 +13423,8 @@ def _log_decision_chain_summary(signal_date: str) -> None:
         # ── 持仓标注 ──
         # ★行只保留"（已持仓）"；非D持仓的占用/阻断说明单独成行，
         # ── M 补位腿播报 ──
-        # M 排腿序第④档（D>L>A>M>E2>C），只让位给 D持仓 / L / A；
-        # E2 和 C 排在 M 之后，不得让 M 让位。
+        # M 排腿序第④档（D>L>A>M>E>C），只让位给 D持仓 / L / A；
+        # E 和 C 排在 M 之后，不得让 M 让位。
         m_cfg = _load_config_section("strategy_m")
         if _blocked_by_holding:
             holding_legs = "/".join(sorted({
@@ -13437,7 +13441,7 @@ def _log_decision_chain_summary(signal_date: str) -> None:
         else:
             m_run = _load_m_signal_run(signal_date)
             if m_buy:
-                m_line = (f"成立｜L/A均无票，M按腿序在E2/C之前选中 {m_buy['ts_code']} "
+                m_line = (f"成立｜L/A均无票，M按腿序在E/C之前选中 {m_buy['ts_code']} "
                           f"{m_buy['name']}（流通市值"
                           f"{float(m_sig_for_plan.get('circ_mv',0) or 0)/10000:.1f}亿）")
             elif m_run and _m_run_has_equity_failure(m_run):
@@ -13529,15 +13533,15 @@ def _log_decision_chain_summary(signal_date: str) -> None:
                 m_buy,
                 "当前持仓已阻断M候选评估" if _blocked_by_holding else "无正式候选",
             ),
-            ("E2", e2_candidate_for_display, "无入围候选"),
+            ("E", e_candidate_for_display, "无入围候选"),
             ("C", c_buy, "A已入围，C未继续评估" if a_buy else "无入围候选"),
         ]
         if mode == 2:
             ranking_legs = ["L"]
         elif mode == 3:
-            ranking_legs = ["L", "A", "M", "E2", "C"]
+            ranking_legs = ["L", "A", "M", "E", "C"]
         else:
-            ranking_legs = ["A", "M", "E2", "C"]
+            ranking_legs = ["A", "M", "E", "C"]
         candidate_choice_lines = _build_candidate_choice_lines(
             candidate_rows,
             ranking_legs,
@@ -13568,7 +13572,7 @@ def _log_decision_chain_summary(signal_date: str) -> None:
         # 框0：决策优先级总图（静态规则+当日实际路径标记），与决策链同一条
         # 原子消息：决策链打印它就打印，不打印就都不打印。
         m1_has = mode1_buy is not None
-        # 2026-08-07 腿序 D>L>A>M>E2>C：L 只要过基础规则就无条件顶掉 mode1，
+        # 2026-08-07 腿序 D>L>A>M>E>C：L 只要过基础规则就无条件顶掉 mode1，
         # 替换窄门(l_guard_ok)已退出选股路径，两张图与下单口径必须一致。
         l_wins = l_buy is not None and l_base_ok
         t2y = m1_has and l_wins
@@ -13576,7 +13580,7 @@ def _log_decision_chain_summary(signal_date: str) -> None:
         TAG = " ◄―今日路径"
         lines = [
             f"{P}━━━━━━━━━━━━ 决策优先级树状图（mode=3） ━━━━━━━━━━━━",
-            f"{P} 腿序 D > L > A > M > E2 > C（2026-08-07 定稿）",
+            f"{P} 腿序 D > L > A > M > E > C（2026-08-07 定稿）",
             *(
                 [f"{P} 当前恢复路径：{execution_override} ◄―今日路径"]
                 if execution_override else []
@@ -13595,7 +13599,7 @@ def _log_decision_chain_summary(signal_date: str) -> None:
             f"{P}           ├─ 过 ──▶ 买 L 的票（顶掉后面所有腿）──▶ 结束{TAG if (l_wins and not _blocked_by_holding and not execution_expired) else ''}",
             f"{P}           │",
             f"{P}           └─ 不过 ──▶ mode1 按腿序取第一个有计划的腿{TAG if (m1_has and not l_wins and not _blocked_by_holding and not execution_expired) else ''}",
-            f"{P}                       │ ③A主 → ④M补位 → ⑤E2 → ⑥C垫底",
+            f"{P}                       │ ③A主 → ④M补位 → ⑤E → ⑥C垫底",
             f"{P}                       │",
             f"{P}                       ├─ 有票 ──▶ 买该腿的票 ──▶ 结束{TAG if (m1_has and not l_wins and not _blocked_by_holding and not execution_expired) else ''}",
             f"{P}                       │",
@@ -13609,13 +13613,13 @@ def _log_decision_chain_summary(signal_date: str) -> None:
             bottom,
             P,
             f"{P}━━━━━━━━━━━━ 决策优先级总图（mode=3） ━━━━━━━━━━━━",
-            f"{P} 腿序：① D（盘中先买）> ② L > ③ A > ④ M > ⑤ E2 > ⑥ C",
+            f"{P} 腿序：① D（盘中先买）> ② L > ③ A > ④ M > ⑤ E > ⑥ C",
             f"{P} 【0】券商仍有旧策略仓? ─是→ 不开新仓（含今日到期/待卖），确认清仓后再等下一候选{TAG if _blocked_by_holding else ''}",
             f"{P}   ↓否",
             f"{P} 【1】② L 审查（账户空仓时无条件优先）: 只需基础规则（非科创板∧情绪OK∧全市场连板家数≥3，不限板块）",
-            f"{P}   ├─过　 → ★买 L 的票（顶掉 A/M/E2/C）■{TAG if (l_wins and not _blocked_by_holding and not execution_expired) else ''}",
+            f"{P}   ├─过　 → ★买 L 的票（顶掉 A/M/E/C）■{TAG if (l_wins and not _blocked_by_holding and not execution_expired) else ''}",
             f"{P}   └─不过 → 进【2】{TAG if (not l_wins and not _blocked_by_holding and not execution_expired) else ''}",
-            f"{P} 【2】mode1 按腿序取第一个有计划的腿: ③A主 → ④M补位 → ⑤E2 → ⑥C垫底",
+            f"{P} 【2】mode1 按腿序取第一个有计划的腿: ③A主 → ④M补位 → ⑤E → ⑥C垫底",
             f"{P}   ├─有票 → ★买该腿的票■{TAG if (m1_has and not l_wins and not _blocked_by_holding and not execution_expired) else ''}",
             f"{P}   └─无票 → ★空仓■{TAG if (not m1_has and not l_wins and not _blocked_by_holding and not execution_expired) else ''}",
             f"{P} 【注】① D 不走这条链：信号日盘中14:00后自己扫描买入，成交即占用资金，",
@@ -13627,15 +13631,15 @@ def _log_decision_chain_summary(signal_date: str) -> None:
             # 框1：开仓决策链（策略顺序 + 各策略成立/不成立及原因）
             f"{P}━━━━━━━━━━━━━━ 开仓决策链 ━━━━━━━━━━━━━━",
             date_banner,
-            f"{P} 策略顺序：① D盘中 > ② L > ③ A > ④ M > ⑤ E2 > ⑥ C（2026-08-07定稿；当前mode={mode}，B已删除）",
-            # 编号 = 腿序 D>L>A>M>E2>C，与上方两张图和"策略顺序"行保持同一套。
-            # 2026-08-07 之前这里是 A/B/C/E2/D/L/M 的旧展示顺序，同一个框里出现
+            f"{P} 策略顺序：① D盘中 > ② L > ③ A > ④ M > ⑤ E > ⑥ C（2026-08-07定稿；当前mode={mode}，B已删除）",
+            # 编号 = 腿序 D>L>A>M>E>C，与上方两张图和"策略顺序"行保持同一套。
+            # 2026-08-07 之前这里是 A/B/C/E/D/L/M 的旧展示顺序，同一个框里出现
             # 两套互相矛盾的编号。
             f"{P} ① D盘中：{d_line}",
             f"{P} ② L/model3：{l_line}",
             f"{P} ③ A主策略：{a_line}",
             f"{P} ④ M补位：{m_line}",
-            f"{P} ⑤ E2：{e2_line}",
+            f"{P} ⑤ E：{e_line}",
             f"{P} ⑥ C垫底：{c_line}",
             f"{P} ―― B策略：{b_line}",
             bottom,
@@ -13704,7 +13708,7 @@ def _d_candidate_gate_line(
             f"{l_buy.get('ts_code', '')} {l_buy.get('name', '')} 占用同一资金"
         )
     if mode1_buy:
-        leg = str(mode1_buy.get("strategy", "A/C/M/E2/C") or "A/C/M/E2/C")
+        leg = str(mode1_buy.get("strategy", "A/C/M/E/C") or "A/C/M/E/C")
         return (
             f"阻断｜{day_label}已有{leg}正式开仓计划 "
             f"{mode1_buy.get('ts_code', '')} {mode1_buy.get('name', '')} 占用同一资金"
@@ -13770,7 +13774,7 @@ def _notify_missed_open_window_if_needed(source: str) -> None:
         f"{source}发现今日原计划为策略{final_buy.get('strategy','')} "
         f"{final_buy.get('ts_code','')} {final_buy.get('name','')}，但09:20/09:30执行窗口内"
         "未完成开仓且当前无策略持仓/在途买单。系统不会在盘中追补过期A/M/C/L普通开盘买单，避免偏离回测；"
-        "E2只按既有延迟规则处理，若组合状态机允许，D盘中兜底会单独恢复。"
+        "E只按既有延迟规则处理，若组合状态机允许，D盘中兜底会单独恢复。"
     )
     sent = _notify("buy_result", title, body, level="critical")
     if sent:
@@ -13818,7 +13822,7 @@ def push_open_plan_notification(occasion: str) -> None:
             body = _format_live_plan_line(fb, plan.get("live_sizing")) + "。"
         else:
             title = f"📋 {label}无新开仓计划"
-            body = f"{label}所有策略(A/C/E2/L)均无符合条件标的,不开新仓。"
+            body = f"{label}所有策略(A/C/E/L)均无符合条件标的,不开新仓。"
         if hold:
             body += f" ⚠{hold}"
         sent = _notify("buy_result", title, body, level="timeSensitive")
@@ -14137,7 +14141,7 @@ def _log_l_model3_signal_status(signal_date: str, action_date: str | None = None
 
     周末/非交易日启动时，组合状态机不会用“今天”直接生成周一买单，
     但这里仍应把最新收盘信号对应的 L 候选、计划买入日和 model=3
-    基础规则打印出来，避免只看到 ABC/E2 而看不到 L。
+    基础规则打印出来，避免只看到 ABC/E 而看不到 L。
     """
     try:
         config = load_json_config(PROJECT_ROOT / "config" / "config.json")
@@ -14213,20 +14217,20 @@ def _log_l_model3_signal_status(signal_date: str, action_date: str | None = None
             held = _describe_holdings(open_positions, with_quote=False)
             logger().info(
                 "  L/model3结论：L已通过基础规则，但当前有策略持仓（%s）；"
-                "本次只保留L候选供审计，不生成开仓计划。L仅在账户空仓时无条件优先于A/M/E2/C。",
+                "本次只保留L候选供审计，不生成开仓计划。L仅在账户空仓时无条件优先于A/M/E/C。",
                 held,
             )
         else:
             logger().info(
-                "  L/model3结论：L已通过基础规则且账户空仓，%s **无条件优先**于 A/M/E2/C —— "
+                "  L/model3结论：L已通过基础规则且账户空仓，%s **无条件优先**于 A/M/E/C —— "
                 "无mode=1买入时补位，有mode=1买入时顶掉它，不再看替换窄门。",
                 planned_buy_date,
             )
             logger().info(
-                "  L无条件优先依据（2026-08-07 腿序重排 D>L>A>M>E2>C）："
+                "  L无条件优先依据（2026-08-07 腿序重排 D>L>A>M>E>C）："
                 "旧「替换窄门=创业板+题材涨停≥2+非尾盘首板」已退役——2026-08-05 该窄门"
                 "误伤利通电子（沪主板+尾盘首板），当日 L 让位给 C 华之杰。481信号日重放："
-                "L 40笔→52笔、E2 30笔→19笔，组合 22902.02x→27870.31x、回撤-24.68%→-23.50%。"
+                "L 40笔→52笔、E 30笔→19笔，组合 22902.02x→27870.31x、回撤-24.68%→-23.50%。"
                 "（当前实盘标尺：150笔/29388.98x/回撤-23.56%/胜率68.67%；M按用户明确风险接受"
                 "恢复真实新开仓，但分段回撤非劣门禁仍未通过且容量未认证；见 "
                 "reports/current_portfolio_alignment；旧8302x/15326.89x 均为历史档案，勿再引用）"
@@ -14515,7 +14519,7 @@ def _log_d_status_for_signal(signal_date: str) -> None:
             logger().info(
                 "  D策略后续过滤链：组合状态机允许 -> 09:30起完整实时路径 -> 首板且昨日未涨停 -> 当前封涨停 -> 炸板2~3次(multi_open) -> 首封不早于10:00 -> 当前封板88~132只(strong代理，不含very_strong) -> 14:00后真实回封 -> 成交概率>=80%且可靠 -> 按实时封单金额/流通市值(fd_amount_to_circ_mv)排序 -> LiveOrderGateway二次风控。"
             )
-            logger().info("  D策略明日判断：若09:20账户空仓且L/A/M/E2/C均无正式候选，才允许启动D盘中监控；能否下单取决于盘中实时过滤。")
+            logger().info("  D策略明日判断：若09:20账户空仓且L/A/M/E/C均无正式候选，才允许启动D盘中监控；能否下单取决于盘中实时过滤。")
         else:
             logger().info("  D策略停止点：组合状态机或实时扫描。当前处于 D 可启动/监控时段，实际是否启动以组合状态机决策明细为准；若已启动，还要看盘中实时基础过滤。")
     except Exception as exc:
@@ -15322,7 +15326,7 @@ def _strategy_only_market_value(
     识别规则:QMT持仓代码能匹配本地策略持仓(open/sell_pending)=策略仓;
     其余(申购中签/人工/理财)=外部持仓,不计入仓位口径,防止其市值挤占
     total_position_cap 的策略额度。本地持仓文件只由策略成交写入(record_buy),
-    因此"在本地"是策略身份的唯一判据，覆盖 ACDE2L 全部当前腿；历史B腿只用于退役识别。
+    因此"在本地"是策略身份的唯一判据，覆盖 ACDEL 全部当前腿；历史B腿只用于退役识别。
 
     exclude_due_today/as_of_date 仅为兼容旧调用签名保留，现已不再排除到期仓。
     新口径要求旧策略仓实际清空前禁止新开仓，因此今日到期、逾期、sell_pending
@@ -16233,7 +16237,7 @@ def main() -> None:
         name="exit-pov",
     ).start()
     if startup_has_position:
-        log.info("启动检查：检测到已有持仓，仍会检查/补跑收盘数据与候选信号；仅跳过D/E2盘中补开仓逻辑。")
+        log.info("启动检查：检测到已有持仓，仍会检查/补跑收盘数据与候选信号；仅跳过D/E盘中补开仓逻辑。")
         threading.Thread(
             target=_print_account_status,
             args=(log,),
@@ -16300,7 +16304,7 @@ def main() -> None:
         except Exception as e:
             log.error("启动补检D策略异常：%s", e)
     else:
-        log.info("启动补检：已有持仓，跳过D监控/E2延迟开仓补启动。")
+        log.info("启动补检：已有持仓，跳过D监控/E延迟开仓补启动。")
 
     # 到这里才代表账户门禁、启动持仓核对、任务线程和补检全部完成。
     # 统一在“程序调度+账户查询”双就绪后通知；不再在QMT刚握手成功时提前通知。

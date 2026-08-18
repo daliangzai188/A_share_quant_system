@@ -4,7 +4,7 @@
 文件作用：
 1. T 日收盘后先生成 A 严格策略候选。
 2. B策略已彻底删除，不参与候选、买入或自动卖出。
-3. A无选中标的时直接尝试C，后续由组合状态机继续判断E2、D或L补位。
+3. A无选中标的时直接尝试C，后续由组合状态机继续判断E、D或L补位。
 4. 输出每日候选、计划委托、人工复核清单、历史成交参考和操作清单。
 
 本脚本只使用本地 CSV 和本地配置，不接实盘，不调用 QMT，不下真实订单。
@@ -23,7 +23,7 @@ PROJECT_ROOT = Path(__file__).absolute().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts.run_strategy_e2_signal import next_trade_day
+from scripts.run_strategy_e_signal import next_trade_day
 from scripts.run_paper_ab_filtered_observation_window import (
     reject_strategy_risk_mask,
 )
@@ -561,7 +561,7 @@ def estimate_planned_order(
     planned_order_date = str(selected.get("historical_reference_next_trade_date", "") or "")
     live_order_enabled = False
     if live_plan_mode:
-        # 实盘计划模式：信号日当晚没有次日开盘价，参考价用信号日涨停收盘价（与E2口径一致）。
+        # 实盘计划模式：信号日当晚没有次日开盘价，参考价用信号日涨停收盘价（与E口径一致）。
         # selected 行经过策略过滤后不含价格列，由调用方从 all_candidates 按
         # ts_code+signal_date 反查 limit_close 传入 reference_price_fallback。
         # 实际下单时 resize_buy_orders_for_live_account 会按实时行情和账户资金重算股数，
@@ -570,7 +570,7 @@ def estimate_planned_order(
             reference_price = to_float(selected.get("limit_close", selected.get("close", 0.0)))
         if reference_price <= 0:
             reference_price = float(reference_price_fallback or 0.0)
-        # 单笔限额与 E2/执行层同一口径，种子金额不超过 live_trade.max_single_order_amount。
+        # 单笔限额与 E/执行层同一口径，种子金额不超过 live_trade.max_single_order_amount。
         # 注意 config 参数是策略配置（无 trade_mode/live_trade），限额必须读运行时配置。
         rt_cfg = runtime_config or {}
         if str(rt_cfg.get("trade_mode", "")).lower() == "live":
@@ -579,7 +579,7 @@ def estimate_planned_order(
             if max_single > 0:
                 planned_amount = min(planned_amount, max_single)
         # 计划执行日=信号日的下一交易日；组合状态机按 planned_order_date==today 校验，
-        # 防止收盘流水线失败后第二天误执行陈旧计划（E2 的 planned_buy_date 同款保护）。
+        # 防止收盘流水线失败后第二天误执行陈旧计划（E 的 planned_buy_date 同款保护）。
         planned_order_date = next_trade_day(signal_date, 1)
         live_order_enabled = True
     round_lot = int(paper_trade.get("round_lot_size", 100))
@@ -659,7 +659,7 @@ def build_checklist(
                     "signal_date": signal_date,
                     "strategy_leg": "NONE",
                     "operation_status": "NO_SELECTED",
-                    "next_action": "A/C均无可用候选，今日不生成该层买入计划；组合状态机继续检查E2、D或L。",
+                    "next_action": "A/C均无可用候选，今日不生成该层买入计划；组合状态机继续检查E、D或L。",
                     "a_candidate_count": int(len(a_candidates)),
                     "c_candidate_count": int(len(c_candidates)),
                     "c_rejected_by_filter_count": int(len(c_rejected)),
@@ -963,19 +963,19 @@ def main() -> None:
         print(f"- {name}: {path}")
     print(checklist.to_string(index=False))
 
-    _print_e2_status(signal_date, planned_orders)
+    _print_e_status(signal_date, planned_orders)
 
 
-def _print_e2_status(signal_date: str, planned_orders: pd.DataFrame) -> None:
-    """在每日操作台末尾打印 E2 策略状态预览。"""
+def _print_e_status(signal_date: str, planned_orders: pd.DataFrame) -> None:
+    """在每日操作台末尾打印 E 策略状态预览。"""
     print()
     print("─" * 50)
-    print("  策略 E2 状态预览（板块中性小市值）")
+    print("  策略 E 状态预览（板块中性小市值）")
     print("─" * 50)
 
     # 检查 A/C 是否生成了计划委托
     if not planned_orders.empty:
-        print("  A/C 今日已生成计划委托 → E2 不触发（资金被 A/C 占用）")
+        print("  A/C 今日已生成计划委托 → E 不触发（资金被 A/C 占用）")
         print("─" * 50)
         return
 
@@ -993,15 +993,15 @@ def _print_e2_status(signal_date: str, planned_orders: pd.DataFrame) -> None:
     if open_positions:
         occupied = [(p.get("strategy_leg", "?"), p.get("ts_code", "?"), p.get("planned_exit_date", "?"))
                     for p in open_positions]
-        print(f"  账户有未平仓头寸 → E2 不触发。持仓: {occupied}")
+        print(f"  账户有未平仓头寸 → E 不触发。持仓: {occupied}")
         print("─" * 50)
         return
 
-    print("  A/C 今日无委托，账户无持仓 → E2 可能触发")
+    print("  A/C 今日无委托，账户无持仓 → E 可能触发")
     print(f"  请收盘后运行（15:30+）：")
-    print(f"    python scripts/run_strategy_e2_signal.py --signal-date {signal_date}")
-    print("  E2 条件：segment_retreat_state_bucket=neutral + 非ST + 成交可靠 → 选流通市值最小1只")
-    print("  E2 执行：T+1开盘买入 82.5%目标仓位，T+2收盘卖出")
+    print(f"    python scripts/run_strategy_e_signal.py --signal-date {signal_date}")
+    print("  E 条件：segment_retreat_state_bucket=neutral + 非ST + 成交可靠 → 选流通市值最小1只")
+    print("  E 执行：T+1开盘买入 82.5%目标仓位，T+2收盘卖出")
     print("─" * 50)
 
 

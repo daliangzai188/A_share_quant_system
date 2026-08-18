@@ -1,6 +1,6 @@
 """策略M每日收盘后信号生成脚本。
 
-M 是补位腿，在腿序 **D > L > A > M > E2 > C**（2026-08-07 定稿）里排第四。
+M 是补位腿，在腿序 **D > L > A > M > E > C**（2026-08-07 定稿）里排第四。
 只有排在它**前面**的腿才有资格挡住它，三个条件必须同时成立：
 
   1. 账户没有任何未平仓头寸（这一条同时覆盖 D —— D 在信号日盘中买入，
@@ -8,9 +8,9 @@ M 是补位腿，在腿序 **D > L > A > M > E2 > C**（2026-08-07 定稿）里�
   2. L 当日无正式信号；
   3. A/C daily ops 当日未生成 **strategy_leg=A** 的计划委托。
 
-  ⚠️ **E2 和 C 排在 M 后面，不得挡住 M 出信号。** 2026-08-07 之前这里还要求
-     "E2 无信号 + A/C 都无计划"，M 事实上仍是"五腿全空才兜底"，而认证口径已把
-     M 提到 E2/C 之前 —— 下游 combined_live_engine 排得再靠前也是空转。
+  ⚠️ **E 和 C 排在 M 后面，不得挡住 M 出信号。** 2026-08-07 之前这里还要求
+     "E 无信号 + A/C 都无计划"，M 事实上仍是"五腿全空才兜底"，而认证口径已把
+     M 提到 E/C 之前 —— 下游 combined_live_engine 排得再靠前也是空转。
      481信号日回放：认证口径 27870.31x，上游门未同步时实盘只跑出 22903.30x。
 
 再叠加两道自有闸门：
@@ -19,7 +19,7 @@ M 是补位腿，在腿序 **D > L > A > M > E2 > C**（2026-08-07 定稿）里�
   5. 账户当前回撤未超过阈值（风控条件，默认 10%）。
 
 触发时机：每日收盘流水线第 ⑨ 步。必须排在 A/C（⑥）和 L（⑧）之后运行，
-才能读到这两者当日的产物；E2（⑦）的先后已无所谓，M 不再读它。
+才能读到这两者当日的产物；E（⑦）的先后已无所谓，M 不再读它。
 
 ⚠️ 本脚本只生成信号文件，不提交任何委托。是否真实下单由
    config.json/strategy_m.live_order_enabled 与组合引擎共同决定。
@@ -42,7 +42,7 @@ PROJECT_ROOT = Path(__file__).absolute().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts.run_strategy_e2_signal import (  # noqa: E402  复用同一套占用判据
+from scripts.run_strategy_e_signal import (  # noqa: E402  复用同一套占用判据
     has_ac_planned_order,
     has_existing_open_position,
     load_open_positions,
@@ -99,14 +99,14 @@ def load_day_pool(signal_date: str) -> pd.DataFrame:
 def higher_priority_leg_has_signal(signal_date: str) -> tuple[bool, str]:
     """按腿序排在 M **前面** 的腿，当日是否已有信号或计划。
 
-    腿序 D>L>A>M>E2>C（2026-08-07 定稿）：M 之前只有 D、L、A。
+    腿序 D>L>A>M>E>C（2026-08-07 定稿）：M 之前只有 D、L、A。
       · D  由 has_existing_open_position 覆盖（D 建仓即写 positions.json）
       · L  查 l_signals_recent.json
       · A  查 A/C 操作台里 strategy_leg=A 的计划委托
-    **E2 和 C 排在 M 后面，不得挡住 M 出信号。**
+    **E 和 C 排在 M 后面，不得挡住 M 出信号。**
 
-    2026-08-07 之前这里把 E2 和 C（经不分腿的 has_abc_planned_order）也算作
-    占用，导致 M 事实上仍是"五腿全空才兜底"，而认证口径已把 M 提到 E2/C 之前。
+    2026-08-07 之前这里把 E 和 C（经不分腿的 has_abc_planned_order）也算作
+    占用，导致 M 事实上仍是"五腿全空才兜底"，而认证口径已把 M 提到 E/C 之前。
     下游 combined_live_engine 排得再靠前也没用——那些日子 M 根本没有信号。
     481信号日回放：认证口径 27870.31x，上游门未同步时实盘只能跑出 22903.30x。
     """

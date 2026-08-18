@@ -83,7 +83,7 @@ class LiveBroadcastAccuracyTests(unittest.TestCase):
 
         with (
             patch.object(daemon, "load_json_config", return_value=config),
-            patch.object(daemon, "_load_e2_signal_for_signal_date", return_value=None),
+            patch.object(daemon, "_load_e_signal_for_signal_date", return_value=None),
             patch.object(daemon, "_load_m_signal_for_signal_date", return_value=None),
             patch.object(daemon, "_load_l_signal_for_signal_date", return_value=l_candidate),
             patch.object(daemon, "_model3_l_base_rule_pass_for_log", return_value=(True, "通过")),

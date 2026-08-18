@@ -14,17 +14,18 @@ if "dotenv" not in sys.modules:
     sys.modules["dotenv"] = dotenv_stub
 
 from src.combined_live_engine import CombinedLiveEngine
-from src.strategy_e2 import (
-    E2_VERSION,
+from src.strategy_e import (
+    E_VERSION,
     FORBIDDEN_SELECTION_COLUMNS,
-    apply_e2_entry_gate,
+    apply_e_entry_gate,
     build_r1_universe_from_pool,
-    load_e2_spec,
+    load_e_spec,
     parse_scenario_name,
     required_signal_fields,
-    select_e2_candidates,
-    select_e2_daily_picks,
+    select_e_candidates,
+    select_e_daily_picks,
 )
+from src.strategy_identity import normalize_strategy_frame, normalize_strategy_leg
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -104,9 +105,9 @@ def make_pool() -> pd.DataFrame:
     )
 
 
-class StrategyE2AlignmentTests(unittest.TestCase):
+class StrategyEAlignmentTests(unittest.TestCase):
     def test_production_spec_has_40_rules_and_no_future_columns(self) -> None:
-        spec = load_e2_spec(PROJECT_ROOT)
+        spec = load_e_spec(PROJECT_ROOT)
         self.assertEqual(len(spec["scenarios"]), 40)
         self.assertTrue({"fixed_t2_close", "fixed_hold3_close"}.issubset(spec["exit_rules"]))
         self.assertFalse(required_signal_fields(spec) & FORBIDDEN_SELECTION_COLUMNS)
@@ -114,7 +115,7 @@ class StrategyE2AlignmentTests(unittest.TestCase):
             spec["entry_gate"]["exclude_values"]["first_time_detail_bucket"],
             ["1330_1430"],
         )
-        self.assertIn("ENTRY_GATE_V4", E2_VERSION)
+        self.assertIn("ENTRY_GATE_V4", E_VERSION)
 
     def test_scenario_parser_restores_conditions_sort_and_exit(self) -> None:
         parsed = parse_scenario_name(
@@ -129,12 +130,12 @@ class StrategyE2AlignmentTests(unittest.TestCase):
 
     def test_selection_ignores_future_profit_and_execution_results(self) -> None:
         spec = make_test_spec()
-        original = select_e2_candidates(build_r1_universe_from_pool(make_pool(), spec)).iloc[0]
+        original = select_e_candidates(build_r1_universe_from_pool(make_pool(), spec)).iloc[0]
 
         changed = make_pool()
         changed["net_return"] = [-9.0, 9.0]
         changed["buy_executed"] = [True, False]
-        after = select_e2_candidates(build_r1_universe_from_pool(changed, spec)).iloc[0]
+        after = select_e_candidates(build_r1_universe_from_pool(changed, spec)).iloc[0]
 
         self.assertEqual(original["ts_code"], after["ts_code"])
         self.assertEqual(original["scenario_rank"], after["scenario_rank"])
@@ -144,30 +145,42 @@ class StrategyE2AlignmentTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "is_fill_score_reliable"):
             build_r1_universe_from_pool(pool, make_test_spec())
 
-    def test_locked_50_trade_metric_remains_pre_gate_audit_reference(self) -> None:
-        path = PROJECT_ROOT / "reports" / "strategy_e2_rerun" / "e2_r1_alignment_trades.csv"
+    def test_complete_102_day_sample_is_canonical_pre_gate_reference(self) -> None:
+        path = PROJECT_ROOT / "reports" / "strategy_e_samples" / "e_r1_daily_candidates_full.csv"
         trades = pd.read_csv(path, dtype={"trade_date": str}, low_memory=False)
         returns = pd.to_numeric(trades["net_return"], errors="raise") * 0.825
         equity = (1 + returns).cumprod()
         drawdown = equity / equity.cummax() - 1
 
-        self.assertEqual(len(trades), 50)
-        self.assertEqual(trades["trade_date"].nunique(), 50)
-        self.assertAlmostEqual(float(equity.iloc[-1]), 8.4569765437, places=8)
-        self.assertAlmostEqual(float(drawdown.min()), -0.1841821264, places=8)
+        self.assertEqual(len(trades), 102)
+        self.assertEqual(trades["trade_date"].nunique(), 102)
+        self.assertTrue(trades["strategy_leg"].eq("E").all())
+        self.assertTrue(trades["strategy_variant"].eq("E_R1").all())
+        self.assertAlmostEqual(float(equity.iloc[-1]), 14.2402504740, places=8)
+        self.assertAlmostEqual(float(drawdown.min()), -0.2546037202, places=8)
 
-    def test_entry_gate_43_trade_metric_is_82_5_percent_10_221x(self) -> None:
-        path = PROJECT_ROOT / "reports" / "strategy_e2_rerun" / "e2_r1_alignment_trades.csv"
+    def test_entry_gate_complete_sample_has_82_candidate_days(self) -> None:
+        path = PROJECT_ROOT / "reports" / "strategy_e_samples" / "e_r1_daily_candidates_full.csv"
         trades = pd.read_csv(path, dtype={"trade_date": str}, low_memory=False)
-        spec = load_e2_spec(PROJECT_ROOT)
-        eligible = apply_e2_entry_gate(trades, spec)
+        spec = load_e_spec(PROJECT_ROOT)
+        eligible = apply_e_entry_gate(trades, spec)
         returns = pd.to_numeric(eligible["net_return"], errors="raise") * 0.825
         equity = (1 + returns).cumprod()
         drawdown = equity / equity.cummax() - 1
 
-        self.assertEqual(len(eligible), 43)
-        self.assertAlmostEqual(float(equity.iloc[-1]), 10.2210028037, places=8)
-        self.assertAlmostEqual(float(drawdown.min()), -0.1132530336, places=8)
+        self.assertEqual(len(eligible), 82)
+        self.assertAlmostEqual(float(equity.iloc[-1]), 9.6457121227, places=8)
+        self.assertAlmostEqual(float(drawdown.min()), -0.2766138433, places=8)
+
+    def test_legacy_e2_identity_is_read_as_e_with_explicit_variant(self) -> None:
+        self.assertEqual(normalize_strategy_leg("E2"), "E")
+        frame = normalize_strategy_frame(
+            pd.DataFrame(
+                [{"strategy_leg": "E2", "signal_date": "20260727"}]
+            )
+        )
+        self.assertEqual(frame.iloc[0]["strategy_leg"], "E")
+        self.assertEqual(frame.iloc[0]["strategy_variant"], "E_JULY")
 
     def test_entry_gate_does_not_fallback_to_second_candidate(self) -> None:
         spec = make_test_spec()
@@ -197,7 +210,7 @@ class StrategyE2AlignmentTests(unittest.TestCase):
             ]
         )
 
-        picks = select_e2_daily_picks(universe, spec)
+        picks = select_e_daily_picks(universe, spec)
         self.assertTrue(picks.empty)
 
     def test_live_order_uses_scenario_exit_offset(self) -> None:
@@ -214,7 +227,7 @@ class StrategyE2AlignmentTests(unittest.TestCase):
             "limit_close": 10.0,
             "exit_offset": 3,
         }
-        order = engine.build_e2_buy_order(signal, "20260803")
+        order = engine.build_e_buy_order(signal, "20260803")
         self.assertEqual(order["exit_n_days"], 2)
 
 

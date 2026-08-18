@@ -305,7 +305,7 @@ def color_for_line(text: str) -> str:
         "动态特征",
         "增强因子",
         "A/B/C策略状态",
-        "E2策略状态",
+        "E策略状态",
         "L策略状态",
         "计划单",
     ]
@@ -359,7 +359,7 @@ def should_print_line(text: str) -> bool:
         "开不出仓",
         "准备下单时间",
         "准备平仓时间",
-        "E2策略",
+        "E策略",
         "L/model3状态",
         "L龙头策略",
         "L龙头条件",

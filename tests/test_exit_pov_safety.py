@@ -2237,7 +2237,7 @@ class StrategyDConditionalExitTest(unittest.TestCase):
         )
         self.assertTrue(
             trading_daemon._fixed_large_runway_allowed(
-                {"strategy_leg": "E2"}, live_cfg
+                {"strategy_leg": "E"}, live_cfg
             )
         )
 
@@ -2268,7 +2268,7 @@ class StrategyDConditionalExitTest(unittest.TestCase):
         due = trading_daemon._exit_pov_due_positions(
             positions,
             "20260803",
-            {"exit_pov_strategy_legs": ["A", "C", "D", "E2", "L"]},
+            {"exit_pov_strategy_legs": ["A", "C", "D", "E", "L"]},
         )
 
         self.assertEqual([position["order_id"] for position in due], ["D-ORDINARY"])

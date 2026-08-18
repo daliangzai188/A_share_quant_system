@@ -19,14 +19,14 @@
       "sha256": "8a9a148aaeadf8f4bb05e4c04f6c73ea35cf1a923f5ce0c976c0dcc6616ebc0f"
     },
     {
-      "path": "reports/strategy_e2_rerun/e2_r1_alignment_trades.csv",
-      "size": 82987,
-      "sha256": "5fb113e37518cd0cdc3ee72063d2a81e238ac95f8a75f76ad7af038e12295ac8"
+      "path": "reports/strategy_e_samples/e_r1_daily_candidates_full.csv",
+      "size": 164317,
+      "sha256": "37d31a10f507655fb176d9f12a33543d5fa70989f6cb480cd30a1a05886cdb10"
     },
     {
       "path": "config/strategy_no_b_historical_reselection.csv",
-      "size": 2358,
-      "sha256": "8c13109151ec974025a5bd545dc36f67317ac79b2495d0a05ebfd9ca486e28bc"
+      "size": 2343,
+      "sha256": "6e4019a14f2bf7d1ad4ccbad2a9921c35d2d72cb36245940014842d84d2b0517"
     },
     {
       "path": "reports/ac_daily_candidates/ac_daily_candidates.csv",
@@ -44,9 +44,9 @@
       "sha256": "281061cd97c80ba21d2c7908c32ccb83de68b2a594db686452e5714d3b4e7bd4"
     },
     {
-      "path": "config/strategy_e2_r1_scenarios.json",
-      "size": 10706,
-      "sha256": "4455d99ab8edfd0bfabad6af28852f006291d70fc67c170c6acb681e148bc7c9"
+      "path": "config/strategy_e_r1_scenarios.json",
+      "size": 10705,
+      "sha256": "f7785c7d4904b0bd02e86fedacead16ea2bce78d84673d8f91aaa8198724e00f"
     },
     {
       "path": "data/raw/trade_calendar.csv",

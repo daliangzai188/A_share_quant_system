@@ -11,8 +11,10 @@ from typing import Any, Iterable, Mapping
 
 import pandas as pd
 
+from src.strategy_identity import normalize_strategy_frame, normalize_strategy_leg
 
-ACTIVE_LEGS = {"A", "C", "D", "E2", "L", "M"}
+
+ACTIVE_LEGS = {"A", "C", "D", "E", "L", "M"}
 
 
 def _text(value: Any) -> str:
@@ -51,7 +53,7 @@ def _number(value: Any) -> float:
 
 def _trade_key(entry_date: Any, ts_code: Any, strategy_leg: Any, signal_date: Any) -> str:
     return "|".join(
-        [_date(entry_date), _code(ts_code), _text(strategy_leg).upper(), _date(signal_date)]
+        [_date(entry_date), _code(ts_code), normalize_strategy_leg(strategy_leg), _date(signal_date)]
     )
 
 
@@ -142,11 +144,10 @@ def _active_frame(raw: pd.DataFrame, config: Mapping[str, Any]) -> pd.DataFrame:
     if missing:
         raise ValueError("成交缺口审计缺少字段：" + "、".join(missing))
     active_legs = {
-        str(value).upper()
+        normalize_strategy_leg(value)
         for value in config.get("active_legs", sorted(ACTIVE_LEGS))
     }
-    frame = raw.copy()
-    frame["strategy_leg"] = frame["strategy_leg"].fillna("").astype(str).str.upper()
+    frame = normalize_strategy_frame(raw)
     frame = frame[frame["strategy_leg"].isin(active_legs)].copy()
     for column in (
         "entry_filled_qty",
@@ -312,7 +313,7 @@ def analyze_execution_data_quality(
                 "exit_date": exit_date,
                 "ts_code": _code(row.get("ts_code")),
                 "name": _text(row.get("name")),
-                "strategy_leg": _text(row.get("strategy_leg")).upper(),
+                "strategy_leg": normalize_strategy_leg(row.get("strategy_leg")),
                 "entry_plan_source": plan_source,
                 "execution_status": status,
                 "entry_filled_qty": entry_qty,

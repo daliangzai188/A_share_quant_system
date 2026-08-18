@@ -9,8 +9,10 @@ from typing import Any, Mapping
 
 import pandas as pd
 
+from src.strategy_identity import normalize_strategy_frame, normalize_strategy_leg
 
-ACTIVE_LEGS = {"A", "C", "D", "E2", "L", "M"}
+
+ACTIVE_LEGS = {"A", "C", "D", "E", "L", "M"}
 
 
 def _numeric(frame: pd.DataFrame, column: str) -> pd.Series:
@@ -73,11 +75,10 @@ def completed_live_trades(
     if missing:
         raise ValueError("真实成交汇总缺少字段：" + "、".join(missing))
     active_legs = {
-        str(value).upper()
+        normalize_strategy_leg(value)
         for value in config.get("active_legs", sorted(ACTIVE_LEGS))
     }
-    frame = raw.copy()
-    frame["strategy_leg"] = frame["strategy_leg"].fillna("").astype(str).str.upper()
+    frame = normalize_strategy_frame(raw)
     frame = frame[frame["strategy_leg"].isin(active_legs)].copy()
     for column in (
         "entry_filled_qty",
@@ -304,10 +305,10 @@ def execution_capacity_metrics(
     if missing:
         raise ValueError("容量/TCA汇总缺少字段：" + "、".join(missing))
     active_legs = {
-        str(value).upper() for value in config.get("active_legs", sorted(ACTIVE_LEGS))
+        normalize_strategy_leg(value)
+        for value in config.get("active_legs", sorted(ACTIVE_LEGS))
     }
-    frame = raw.copy()
-    frame["strategy_leg"] = frame["strategy_leg"].fillna("").astype(str).str.upper()
+    frame = normalize_strategy_frame(raw)
     frame = frame[frame["strategy_leg"].isin(active_legs)].copy()
     frame["entry_plan_source"] = _plan_source(frame)
     review = dict(config.get("capacity_review", {}))
