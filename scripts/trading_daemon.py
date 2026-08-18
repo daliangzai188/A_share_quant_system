@@ -406,6 +406,7 @@ SCHED_EXIT_LARGE_FORCE_START = datetime.time(14, 15)
 # 14:57前禁止再新发连续竞价平仓单，避免旧价格笼子委托带入收盘集合竞价。
 SCHED_CLOSE_AUCTION_HANDOFF = datetime.time(14, 56, 20)
 SCHED_POST_MARKET = datetime.time(15, 10)
+EXIT_CLOSE_SUBMIT_CLOCK_GUARD_DEFAULT_SEC = 2.0
 import sys as _sys
 import platform as _platform
 if _platform.system() == "Windows":
@@ -1204,6 +1205,12 @@ def reconcile_missing_local_positions(
                     f"逐票同步本地持仓({source})",
                     exc,
                 )
+    if changed:
+        _track_execution("rebuild_summary")
+        # 逐票同步可能正是尾盘卖出后最先确认“券商已无持仓”的路径。
+        # 本地到期仓已经关闭时必须立刻解除交易优先暂停，不能继续每15秒
+        # 打印“等待平仓”直到守护进程重启。
+        _maybe_resume_pipeline_after_trade()
     return changed
 
 
@@ -2821,19 +2828,29 @@ def _abc_place_sell_order_direct_locked(
         # 不仅14:55主任务：任何在理论确认耗时内可能跨过14:53交权
         # 点的调用（例如14:54启动补检），都只做“核仓→安全预算→
         # 拆单快速提交”。绝不在全局卖出锁内逐张等待，否则会饿死
-        # 14:56:20撤单交接。成交回写交给看门狗和15:00:30安全账本对账。
-        _watchdog_pending.append(
+        # 14:56:20撤单交接。成交回写交给看门狗逐轮即时确认，15:00:30
+        # 双快照只保留作最终兜底。
+        current_position = next(
             (
-                {
-                    "order_id": order_id,
-                    "ts_code": ts_code,
-                    "name": name,
-                    "shares": owned_before,
-                    "status": "open",
-                    "planned_exit_date": today_str,
-                },
-                [(broker_order_id, expected_qty) for broker_order_id, expected_qty, _ in submitted],
-            )
+                row for row in load_positions()
+                if str(row.get("order_id", "")) == str(order_id)
+            ),
+            None,
+        ) or {
+            "order_id": order_id,
+            "ts_code": ts_code,
+            "name": name,
+            "shares": owned_before,
+            "status": "open",
+            "planned_exit_date": today_str,
+            "strategy_leg": str(strategy_leg or "").upper(),
+        }
+        _queue_watchdog_pending(
+            current_position,
+            [
+                (broker_order_id, expected_qty)
+                for broker_order_id, expected_qty, _ in submitted
+            ],
         )
         log.warning(
             "[ABC平仓] %s %d股已快速提交；成交确认移交收盘看门狗，"
@@ -4835,7 +4852,190 @@ def _do_sell(pos: dict[str, Any], qmt_enabled: bool) -> None:
                 level="critical", call=True)
 
 
-_watchdog_pending: list = []   # (position, [(order_id, expected_qty)]) 待15:00:30确认
+_watchdog_pending: list = []   # (position, [(order_id, expected_qty)]) 尾盘持续确认
+_watchdog_pending_lock = threading.RLock()
+
+
+def _queue_watchdog_pending(
+    position: dict[str, Any],
+    order_ids: list[tuple[str, int]],
+) -> None:
+    """登记已受理的尾盘卖单，供看门狗持续确认并幂等回写。"""
+
+    normalized = [
+        (str(order_id or "").strip(), max(int(quantity or 0), 0))
+        for order_id, quantity in order_ids
+        if str(order_id or "").strip() and int(quantity or 0) > 0
+    ]
+    if not normalized:
+        return
+    signature = tuple(normalized)
+    with _watchdog_pending_lock:
+        for _existing_position, existing_orders in _watchdog_pending:
+            if tuple(existing_orders) == signature:
+                return
+        _watchdog_pending.append((dict(position), normalized))
+
+
+def _remove_watchdog_pending(
+    position: dict[str, Any],
+    order_ids: list[tuple[str, int]],
+) -> None:
+    """按券商单号移除一组已终态的尾盘确认任务。"""
+
+    signature = tuple(order_ids)
+    with _watchdog_pending_lock:
+        for item in list(_watchdog_pending):
+            if tuple(item[1]) == signature:
+                _watchdog_pending.remove(item)
+                return
+
+
+def _reconcile_watchdog_pending_once(
+    broker_cfg: dict,
+    log: Any,
+    *,
+    source: str,
+) -> int:
+    """单轮查询尾盘卖单真实成交并立即投影本地持仓。
+
+    14:55主单过去只登记到 ``_watchdog_pending``，直到15:00:30才确认，导致
+    券商已经空仓时本地仍显示open、误发sell_fail并阻塞收盘流水线。现在看门狗
+    每轮都读取券商成交回报；全成、部成和撤单均按broker_order_id幂等处理。
+    """
+
+    with _watchdog_pending_lock:
+        pending_snapshot = list(_watchdog_pending)
+    if not pending_snapshot:
+        return 0
+
+    today_str = today_beijing().strftime("%Y%m%d")
+    applied_total = 0
+    closed_positions: list[tuple[str, str, int, float]] = []
+    for position, order_ids in pending_snapshot:
+        all_terminal = True
+        group_seen_qty = 0
+        group_seen_amount = 0.0
+        group_applied = 0
+        query_succeeded = False
+        for broker_order_id, expected_qty in order_ids:
+            try:
+                with _qmt_lock:
+                    adapter = _qmt_get(broker_cfg)
+                    fill = adapter.get_order_fill(broker_order_id)
+                query_succeeded = True
+            except Exception as exc:
+                all_terminal = False
+                log.warning(
+                    "[%s] 尾盘成交确认查询失败 order_id=%s：%s",
+                    source,
+                    broker_order_id,
+                    exc,
+                )
+                continue
+
+            filled_qty = min(
+                max(int(getattr(fill, "filled_qty", 0) or 0), 0),
+                max(int(expected_qty or 0), 0),
+            )
+            # QMT偶尔先返回“全部成交”而成交数量字段晚一拍；终态56可安全按
+            # 本系统原始委托量认定，统一执行器也使用同一口径。
+            if bool(getattr(fill, "is_filled", False)) and filled_qty <= 0:
+                filled_qty = max(int(expected_qty or 0), 0)
+            fill_price = max(float(getattr(fill, "avg_price", 0.0) or 0.0), 0.0)
+            intent = _exit_intent_by_broker_order_id(broker_order_id)
+            if fill_price <= 0:
+                fill_price = max(float((intent or {}).get("price", 0.0) or 0.0), 0.0)
+            local_order_id = str(
+                (intent or {}).get("local_order_id", "")
+                or position.get("order_id", "")
+            )
+            current_row = next(
+                (
+                    row for row in load_positions()
+                    if str(row.get("order_id", "")) == local_order_id
+                ),
+                None,
+            )
+            if filled_qty > 0 and current_row is not None:
+                group_applied += _apply_known_exit_fill(
+                    local_order_id,
+                    broker_order_id=broker_order_id,
+                    current_shares=max(int(current_row.get("shares", 0) or 0), 0),
+                    filled_qty=filled_qty,
+                    fill_price=fill_price,
+                    fill_date=today_str,
+                )
+            is_terminal = bool(getattr(fill, "is_terminal", False))
+            if is_terminal:
+                _resolve_exit_intent_by_broker_order_id(
+                    broker_order_id,
+                    filled_qty=filled_qty,
+                    terminal_known=True,
+                )
+            else:
+                all_terminal = False
+            if filled_qty > 0:
+                group_seen_qty += filled_qty
+                group_seen_amount += filled_qty * fill_price
+
+        applied_total += group_applied
+        local_order_id = str(position.get("order_id", ""))
+        latest = next(
+            (
+                row for row in load_positions()
+                if str(row.get("order_id", "")) == local_order_id
+            ),
+            None,
+        )
+        is_closed = latest is None or (
+            str(latest.get("status", "")).lower() == "closed"
+            or max(int(latest.get("shares", 0) or 0), 0) == 0
+        )
+        if all_terminal and query_succeeded:
+            _remove_watchdog_pending(position, order_ids)
+        if group_applied > 0:
+            average_price = (
+                group_seen_amount / group_seen_qty if group_seen_qty > 0 else 0.0
+            )
+            if is_closed:
+                closed_positions.append(
+                    (
+                        str(position.get("ts_code", "")),
+                        str(position.get("name", "")),
+                        group_seen_qty,
+                        average_price,
+                    )
+                )
+                log.warning(
+                    "✅ [%s] %s 券商确认全部成交%d股，均价%.2f；"
+                    "本地持仓已立即关闭。",
+                    source,
+                    position.get("ts_code", ""),
+                    group_seen_qty,
+                    average_price,
+                )
+            else:
+                log.warning(
+                    "[%s] %s 券商确认新增成交并回写%d股，本地仍余%d股。",
+                    source,
+                    position.get("ts_code", ""),
+                    group_applied,
+                    max(int((latest or {}).get("shares", 0) or 0), 0),
+                )
+
+    for ts_code, name, quantity, average_price in closed_positions:
+        _notify(
+            "sell_success",
+            "✅ 平仓成交已确认",
+            f"{ts_code} {name} 已确认卖出{quantity}股，成交均价{average_price:.2f}；"
+            "本地持仓和收盘流水线状态已同步。",
+            level="timeSensitive",
+        )
+    # 即使成交已由另一条完整快照路径先行投影，本轮也要复核并解除可能遗留的
+    # 交易优先暂停；_maybe_resume内部只有“确实无到期仓”才会恢复，调用安全。
+    _maybe_resume_pipeline_after_trade()
+    return applied_total
 
 
 def _active_sell_outstanding_by_code(orders: Any) -> dict[str, int]:
@@ -5008,7 +5208,13 @@ def _strategy_exit_order_vwap_by_code(orders: Any) -> dict[str, tuple[int, float
     }
 
 
-def _watchdog_rescue_sell(pos: dict, log: Any, max_qty: int | None = None) -> list[tuple[str, int]]:
+def _watchdog_rescue_sell(
+    pos: dict,
+    log: Any,
+    max_qty: int | None = None,
+    *,
+    rescue_wave: str = "",
+) -> list[tuple[str, int]]:
     """补挂安全账本确认的未覆盖策略余量，集合竞价只作最后兜底。"""
     if _position_manual_exit_only(pos):
         log.warning(
@@ -5076,6 +5282,7 @@ def _watchdog_rescue_sell(pos: dict, log: Any, max_qty: int | None = None) -> li
                     return []
                 chunks = _split_sell_order_quantities(ts_code, requested)
                 accepted: list[tuple[str, int]] = []
+                wave_key = str(rescue_wave or "unspecified").replace(":", "")
                 for chunk_no, chunk in enumerate(chunks, start=1):
                     request = OrderRequest(
                         ts_code=ts_code,
@@ -5096,7 +5303,8 @@ def _watchdog_rescue_sell(pos: dict, log: Any, max_qty: int | None = None) -> li
                         purpose="CLOSE",
                         source_key=(
                             f"EXIT_WATCHDOG|{today_beijing().strftime('%Y%m%d')}|"
-                            f"{pos.get('order_id', '')}|{ts_code}|{chunk_no}/{len(chunks)}"
+                            f"{pos.get('order_id', '')}|{ts_code}|{wave_key}|"
+                            f"{chunk_no}/{len(chunks)}"
                         ),
                         metadata={"execution_channel": "平仓看门狗", "name": pos.get("name", "")},
                     )
@@ -5383,6 +5591,22 @@ def _close_position_watchdog() -> None:
             now = now_beijing(); t = now.time()
             today_str = today_beijing().strftime("%Y%m%d")
             if is_trade_day(now.date()) and t < datetime.time(15, 1):
+                # 14:55主单和后续补挂一经券商返回成交，立即按真实成交量回写；
+                # 不能等到15:00:30，更不能让已经空仓的本地open状态持续阻塞流水线。
+                with _watchdog_pending_lock:
+                    has_pending_confirmation = bool(_watchdog_pending)
+                if (
+                    has_pending_confirmation
+                    and datetime.time(14, 55) <= t < datetime.time(15, 1)
+                ):
+                    pending_cfg = load_json_config(
+                        PROJECT_ROOT / "config" / "config.json"
+                    )
+                    _reconcile_watchdog_pending_once(
+                        pending_cfg.get("broker", {}),
+                        log,
+                        source="尾盘成交即时确认",
+                    )
                 auction_handoff_key = f"{today_str}-auction-handoff"
                 if (
                     auction_handoff_key not in fired
@@ -5527,11 +5751,20 @@ def _close_position_watchdog() -> None:
                         log.error("🛑 [平仓看门狗] %s 核查：%s，启动余量补挂！", chk, codes)
                         rescued = []
                         for pos, uncovered in missing:
-                            oids = _watchdog_rescue_sell(pos, log, max_qty=uncovered)
+                            oids = _watchdog_rescue_sell(
+                                pos,
+                                log,
+                                max_qty=uncovered,
+                                rescue_wave=chk.strftime("%H%M%S"),
+                            )
                             if oids:
                                 rescued.append((pos, oids))
                         if rescued:
-                            _watchdog_pending.extend(rescued)
+                            for rescued_position, rescued_orders in rescued:
+                                _queue_watchdog_pending(
+                                    rescued_position,
+                                    rescued_orders,
+                                )
                             _notify("sell_result", "🚑 平仓看门狗已自动补挂",
                                     f"{chk.strftime('%H:%M:%S')}发现{codes}未被活跃卖单覆盖，"
                                     f"已按当前交易阶段的合法限价补挂；成交不作保证，请留意成交确认。",
@@ -5542,8 +5775,29 @@ def _close_position_watchdog() -> None:
                                     f"请立即人工核对并手动平仓（15:00收盘前最后机会）！",
                                     level="critical", call=True)
                     else:
-                        log.info("[平仓看门狗] %s 核查通过：%d笔到期持仓的活跃SELL余量均覆盖实际持仓。",
-                                 chk, len(due))
+                        due_codes = {
+                            str(pos.get("ts_code", "")).upper().split(".")[0]
+                            for pos in due
+                            if str(pos.get("ts_code", ""))
+                        }
+                        zero_broker_codes = sorted(
+                            code for code in due_codes
+                            if max(int(broker_volume.get(code, 0) or 0), 0) == 0
+                        )
+                        if zero_broker_codes:
+                            log.info(
+                                "[平仓看门狗] %s 券商持仓快照已不含%s；"
+                                "本轮不重复卖出，等待成交回报即时回写/收盘双快照确认。",
+                                chk,
+                                "、".join(zero_broker_codes),
+                            )
+                        else:
+                            log.info(
+                                "[平仓看门狗] %s 核查通过：%d笔到期持仓的"
+                                "券商真实余仓均有活跃SELL完整覆盖。",
+                                chk,
+                                len(due),
+                            )
                     # 查询、归属核算和补单尝试均已完成后才记为fired。QMT忙/异常
                     # 会保留同一checkpoint重试机会，尤其不能丢掉14:57:05首岗。
                     fired.add(key)
@@ -5626,7 +5880,7 @@ def _close_position_watchdog() -> None:
                     except Exception as e:
                         log.error("[平仓看门狗] 补挂单确认异常：%s", e)
                     if processed and all_terminal:
-                        _watchdog_pending.remove((pos, oids))
+                        _remove_watchdog_pending(pos, oids)
             if (
                 is_trade_day(now.date())
                 and t >= datetime.time(15, 0, 30)
@@ -6249,6 +6503,11 @@ def check_and_close_positions(in_close_window: bool = False) -> None:
             if market_is_open() or pending or (overdue_past and sellable_now):
                 if overdue_past:
                     logger().warning("⚠️ 逾期持仓第一时间清理：%s %s 计划平仓日%s已过，立即挂单卖出。", ts_code, name, planned_exit)
+                elif t2_close_leg and due_today:
+                    # 中央卖出入口再做一次钟差保护，覆盖14:55定时任务以及
+                    # 守护进程恰在14:55边界重启后触发的启动平仓检查。这样
+                    # 任何调用路径都不能绕过“本机14:55+保护秒数”硬门禁。
+                    _wait_for_exit_close_submit_clock_guard(config)
                 _do_sell(pos, qmt_enabled)
             else:
                 # 市场未开盘，标记 sell_pending，等开盘时处理
@@ -11436,8 +11695,62 @@ def _sleep_until_beijing(target: datetime.time, *, max_wait: float = 300.0) -> N
         time.sleep(min(wait, remaining_budget, 0.2))
 
 
+def _exit_close_submit_clock_guard_seconds(config: dict[str, Any]) -> float:
+    """读取14:55主平仓的跨时钟保护秒数，异常配置按2秒安全值处理。"""
+
+    try:
+        configured = float(
+            config.get("broker", {}).get(
+                "exit_close_submit_clock_guard_seconds",
+                EXIT_CLOSE_SUBMIT_CLOCK_GUARD_DEFAULT_SEC,
+            )
+        )
+    except (TypeError, ValueError, AttributeError):
+        configured = EXIT_CLOSE_SUBMIT_CLOCK_GUARD_DEFAULT_SEC
+    return min(max(configured, 0.0), 10.0)
+
+
+def _wait_for_exit_close_submit_clock_guard(config: dict[str, Any]) -> float:
+    """等到本机北京时间14:55再加保护秒数，吸收券商/交易所钟差。
+
+    2026-08-18券商App把本机14:55:00提交显示为14:54:59成交。策略虽然仍在
+    同一秒边界附近，但实盘审计不能出现“早于14:55”。因此默认额外等待2秒，
+    并持续复核墙钟；任务如果本来就迟到则立即返回。
+    """
+
+    guard_seconds = _exit_close_submit_clock_guard_seconds(config)
+    if guard_seconds <= 0:
+        return 0.0
+    started = now_beijing()
+    target = datetime.datetime.combine(
+        started.date(),
+        SCHED_AFTERNOON_CLOSE,
+        tzinfo=BEIJING_TZ,
+    ) + datetime.timedelta(seconds=guard_seconds)
+    while True:
+        remaining = (target - now_beijing()).total_seconds()
+        if remaining <= 0:
+            break
+        time.sleep(min(remaining, 0.05))
+    waited = max((now_beijing() - started).total_seconds(), 0.0)
+    if waited > 0:
+        logger().info(
+            "14:55主平仓时钟保护：已等待%.3f秒，跨过本机14:55后保护%.1f秒再提交。",
+            waited,
+            guard_seconds,
+        )
+    return waited
+
+
 def job_afternoon() -> None:
-    logger().info("===== 盘中任务（14:55 收盘平仓 → 14:40 撤未成交买单）=====")
+    # 调度器负责在14:55整唤醒；这里再加券商钟差保护。必须放在任何卖单查询/
+    # 提交之前，避免Windows比券商服务器快约1秒时，券商回报落在14:54:59。
+    try:
+        guard_config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+    except Exception:
+        guard_config = {}
+    _wait_for_exit_close_submit_clock_guard(guard_config)
+    logger().info("===== 盘中任务（14:40已撤未成交买单；14:55主平仓）=====")
     # 本调用就是 14:55 收盘平仓任务，不靠墙钟判断（否则告警链路会整个静默）
     close_plan_exists = _has_due_close_plan_now(assume_close_window=True)
     if close_plan_exists:
@@ -11492,8 +11805,8 @@ def job_afternoon() -> None:
                     "14:56/14:57/14:59看门狗将继续按券商真实余仓兜底。"
                 )
                 _notify(
-                    "sell_fail",
-                    "⚠️ 14:55平仓仍在处理中",
+                    "sell_result",
+                    "⏳ 14:55平仓委托已进入确认",
                     "主平仓任务结束时本地仍有到期余仓/待确认卖单。系统已保持交易优先暂停，"
                     "14:56、14:57和14:59看门狗会继续按QMT真实余仓补挂并在收盘后对账；"
                     "请留意后续成交或失败通知。",
@@ -11618,7 +11931,7 @@ def job_cancel_unfilled_buy_orders() -> None:
         try:
             _notify(
                 "sell_result",
-                "14:56撤未成交买单" if failed == 0 else "⚠️ 14:40撤买单部分失败",
+                "14:40撤未成交买单" if failed == 0 else "⚠️ 14:40撤买单部分失败",
                 f"撤买单={cancelled}笔 失败={failed}笔 保留卖单={kept_sell}笔 终态跳过={skipped}笔",
                 level="timeSensitive" if failed == 0 else "critical",
             )

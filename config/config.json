@@ -335,6 +335,8 @@
     "exit_pov_late_max_slippage_bps": 35,
     "exit_pov_max_slice_position_pct": 0.1,
     "exit_pov_handoff_time": "14:53:00",
+    "exit_close_submit_clock_guard_seconds": 2.0,
+    "exit_close_submit_clock_guard_note": "14:55主平仓在本机北京时间跨过14:55后再额外等待2秒提交，吸收Windows与券商/交易所约1秒钟差；不改变策略的14:55收盘退出口径。",
     "exit_pov_amount_unit": "CNY",
     "exit_pov_trigger_pct": 0.01,
     "exit_pov_trigger_note": "13:00初始大仓门禁；14:30不再重复比较累计额，而改用13:00~14:30实际流速预测剩余跑道，解决累计额单调增加导致旧复查永远不新增触发的问题。",

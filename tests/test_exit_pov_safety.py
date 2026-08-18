@@ -2507,6 +2507,8 @@ class CloseWindowIdentityTest(unittest.TestCase):
         resume.assert_not_called()
         close.assert_called_once_with(in_close_window=True)
         notify.assert_called_once()
+        self.assertEqual(notify.call_args.args[0], "sell_result")
+        self.assertIn("进入确认", notify.call_args.args[1])
 
     def test_临近任务不再被30秒护栏跳过(self) -> None:
         now = datetime.datetime(2026, 8, 12, 8, 49, 45, tzinfo=trading_daemon.BEIJING_TZ)
@@ -2560,6 +2562,193 @@ class CloseWindowIdentityTest(unittest.TestCase):
         self.assertNotIn("确保成交", desc)
         self.assertIn("仍可能无法成交", desc)
         self.assertIn("继续核查余仓并告警", desc)
+
+
+class TailExitStateMachineRegressionTest(unittest.TestCase):
+    def test_主平仓全成回报立即关闭本地持仓并恢复流水线(self) -> None:
+        position = {
+            "order_id": "LOCAL-1",
+            "ts_code": "603118.SH",
+            "name": "共进股份",
+            "shares": 11_800,
+            "entry_shares": 11_800,
+            "status": "open",
+            "planned_exit_date": "20260818",
+            "exit_fills_by_date": {},
+        }
+        store = _MemoryPositionStore([position])
+        pending = [(copy.deepcopy(position), [("QMT-CLOSE-1", 11_800)])]
+        fill = OrderFill(
+            order_id="QMT-CLOSE-1",
+            status_code=56,
+            status_text="FILLED",
+            filled_qty=11_800,
+            avg_price=19.38,
+            is_terminal=True,
+            is_filled=True,
+            traded_at="14:54:59",
+        )
+        adapter = SimpleNamespace(get_order_fill=lambda _order_id: fill)
+        frozen_date = datetime.date(2026, 8, 18)
+        fake_log = SimpleNamespace(warning=lambda *args, **kwargs: None)
+
+        with patch.object(trading_daemon, "load_positions", side_effect=store.load), patch.object(
+            trading_daemon, "save_positions", side_effect=store.save
+        ), patch.object(trading_daemon, "today_beijing", return_value=frozen_date), patch.object(
+            trading_daemon, "_qmt_get", return_value=adapter
+        ), patch.object(
+            trading_daemon,
+            "_exit_intent_by_broker_order_id",
+            return_value={"local_order_id": "LOCAL-1", "price": 18.91},
+        ), patch.object(
+            trading_daemon, "_resolve_exit_intent_by_broker_order_id", return_value=True
+        ), patch.object(
+            trading_daemon, "_watchdog_pending", pending
+        ), patch.object(
+            trading_daemon, "_maybe_resume_pipeline_after_trade"
+        ) as resume, patch.object(
+            trading_daemon, "_notify"
+        ) as notify:
+            applied = trading_daemon._reconcile_watchdog_pending_once(
+                {}, fake_log, source="尾盘成交即时确认"
+            )
+
+        self.assertEqual(applied, 11_800)
+        self.assertEqual(store.positions[0]["status"], "closed")
+        self.assertEqual(store.positions[0]["shares"], 0)
+        self.assertAlmostEqual(store.positions[0]["sell_price"], 19.38)
+        self.assertEqual(pending, [])
+        resume.assert_called_once()
+        notify.assert_called_once()
+        self.assertEqual(notify.call_args.args[0], "sell_success")
+
+    def test_三次完整空仓快照关闭本地仓后立即解除流水线暂停(self) -> None:
+        position = {
+            "order_id": "LOCAL-GHOST-1",
+            "ts_code": "603118.SH",
+            "name": "共进股份",
+            "buy_date": "20260817",
+            "shares": 11_800,
+            "status": "open",
+            "planned_exit_date": "20260818",
+        }
+        store = _MemoryPositionStore([position])
+        frozen_now = datetime.datetime(
+            2026, 8, 18, 14, 58, 21, tzinfo=trading_daemon.BEIJING_TZ
+        )
+        trading_daemon._broker_missing_streak.clear()
+        with patch.object(trading_daemon, "load_positions", side_effect=store.load), patch.object(
+            trading_daemon, "save_positions", side_effect=store.save
+        ), patch.object(
+            trading_daemon,
+            "load_json_config",
+            return_value={"live_trade": {"broker_missing_confirm_count": 3}},
+        ), patch.object(
+            trading_daemon, "now_beijing", return_value=frozen_now
+        ), patch.object(
+            trading_daemon, "today_beijing", return_value=frozen_now.date()
+        ), patch.object(
+            trading_daemon, "_track_execution"
+        ), patch.object(
+            trading_daemon, "_maybe_resume_pipeline_after_trade"
+        ) as resume:
+            for index in range(3):
+                trading_daemon.reconcile_missing_local_positions(
+                    [], f"事故回归第{index + 1}轮", snapshot_complete=True
+                )
+
+        self.assertEqual(store.positions[0]["status"], "closed")
+        resume.assert_called_once()
+
+    def test_不同看门狗轮次必须生成不同幂等键(self) -> None:
+        position = {
+            "order_id": "LOCAL-1",
+            "ts_code": "002800.SZ",
+            "name": "天顺股份",
+            "shares": 1_000,
+            "strategy_leg": "C",
+            "status": "open",
+            "planned_exit_date": "20260818",
+        }
+        broker_position = SimpleNamespace(
+            ts_code="002800.SZ", volume=1_000, can_use_volume=1_000
+        )
+
+        class _Adapter:
+            def query_positions(self) -> list[object]:
+                return [broker_position]
+
+            def query_orders(self) -> list[object]:
+                return []
+
+            def get_full_tick(self, _codes: list[str]) -> dict[str, object]:
+                return {"002800.SZ": object()}
+
+        source_keys: list[str] = []
+
+        def _place(_adapter: object, request: object, **_kwargs: object) -> tuple[object, str]:
+            source_keys.append(str(getattr(request, "source_key")))
+            return SimpleNamespace(accepted=True, order_id=f"QMT-{len(source_keys)}"), "I"
+
+        fake_log = SimpleNamespace(
+            warning=lambda *args, **kwargs: None,
+            error=lambda *args, **kwargs: None,
+        )
+        frozen_now = datetime.datetime(
+            2026, 8, 18, 14, 56, 0, tzinfo=trading_daemon.BEIJING_TZ
+        )
+        with patch.object(trading_daemon, "load_json_config", return_value={"broker": {}}), patch.object(
+            trading_daemon, "_qmt_get", return_value=_Adapter()
+        ), patch.object(
+            trading_daemon, "_safe_new_exit_order_quantity", return_value=1_000
+        ), patch.object(
+            trading_daemon, "_pick_sell_limit_price", return_value=(9.98, "价格笼子下限")
+        ), patch.object(
+            trading_daemon, "_place_exit_order_with_intent", side_effect=_place
+        ), patch.object(
+            trading_daemon, "now_beijing", return_value=frozen_now
+        ), patch.object(
+            trading_daemon, "today_beijing", return_value=frozen_now.date()
+        ):
+            first = trading_daemon._watchdog_rescue_sell(
+                position, fake_log, rescue_wave="145600"
+            )
+            second = trading_daemon._watchdog_rescue_sell(
+                position, fake_log, rescue_wave="145705"
+            )
+
+        self.assertTrue(first)
+        self.assertTrue(second)
+        self.assertEqual(len(source_keys), 2)
+        self.assertNotEqual(source_keys[0], source_keys[1])
+        self.assertIn("|145600|", source_keys[0])
+        self.assertIn("|145705|", source_keys[1])
+
+    def test_1455提交默认额外等待两秒吸收券商钟差(self) -> None:
+        tz = trading_daemon.BEIJING_TZ
+        times = [
+            datetime.datetime(2026, 8, 18, 14, 55, 0, 500_000, tzinfo=tz),
+            datetime.datetime(2026, 8, 18, 14, 55, 0, 500_000, tzinfo=tz),
+            datetime.datetime(2026, 8, 18, 14, 55, 2, tzinfo=tz),
+            datetime.datetime(2026, 8, 18, 14, 55, 2, tzinfo=tz),
+        ]
+        config = {"broker": {"exit_close_submit_clock_guard_seconds": 2.0}}
+        with patch.object(trading_daemon, "now_beijing", side_effect=times), patch.object(
+            trading_daemon.time, "sleep"
+        ) as sleep:
+            waited = trading_daemon._wait_for_exit_close_submit_clock_guard(config)
+
+        self.assertAlmostEqual(waited, 1.5)
+        sleep.assert_called_once()
+        self.assertEqual(
+            trading_daemon._exit_close_submit_clock_guard_seconds(config), 2.0
+        )
+        import inspect
+
+        self.assertIn(
+            "_wait_for_exit_close_submit_clock_guard(config)",
+            inspect.getsource(trading_daemon.check_and_close_positions),
+        )
 
 
 if __name__ == "__main__":
