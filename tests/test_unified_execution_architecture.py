@@ -102,6 +102,11 @@ class UnifiedExecutionArchitectureTests(unittest.TestCase):
         ]
         for broker_truth in ("query_positions", "query_orders", "query_trades"):
             self.assertIn(broker_truth, recovery_source)
+        self.assertIn(
+            "_qmt_query_account_positions(adapter)",
+            recovery_source,
+            "启动恢复最后一轮持仓必须带账户资产走完整快照认证",
+        )
 
         functions = {
             node.name: ast.get_source_segment(source, node) or ""

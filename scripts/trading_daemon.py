@@ -15860,7 +15860,9 @@ def _recover_trade_execution_state_once() -> RecoveryOutcome:
         trades = adapter.query_trades()
         # 再读一次委托/仓位，吸收首轮查询期间可能刚到达的成交回报。
         orders = adapter.query_orders()
-        positions = adapter.query_positions()
+        # 最终持仓不能孤立查询；必须连同账户资产走统一结构/code/资产自洽认证。
+        # 否则启动恢复恰逢QMT假空仓时，仍可能绕开心跳侧的完整快照门禁。
+        _, positions = _qmt_query_account_positions(adapter)
     # 启动恢复门禁已经拿到两轮明确成功的券商事实快照。先恢复近期自动误清的
     # 策略仓，再做事务意图对账和持仓投影；这样后续启动平仓检查、止盈预挂、
     # 旧仓阻断读取到的都是恢复后的权威本地状态。
