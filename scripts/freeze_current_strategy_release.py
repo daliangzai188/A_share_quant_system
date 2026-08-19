@@ -101,6 +101,7 @@ def build_freeze_payload(
             for note in (
                 str(certification.get("e_gate_risk_acceptance_note", "")).strip(),
                 str(certification.get("m_live_risk_acceptance_note", "")).strip(),
+                str(certification.get("n_research_risk_acceptance_note", "")).strip(),
             )
             if note
         ),

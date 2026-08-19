@@ -21,7 +21,7 @@ class ReleaseOosRobustnessTest(unittest.TestCase):
             "status": "FROZEN",
             "release_id": "release-new",
             "oos_start_date": "20260105",
-            "strategy_priority_order": ["D", "A", "M", "E", "C"],
+            "strategy_priority_order": ["D", "A", "M", "E", "C", "N"],
         }
         (self.root / "config/strategy_release_freeze.json").write_text(json.dumps(release), encoding="utf-8")
         config = {
@@ -50,7 +50,7 @@ class ReleaseOosRobustnessTest(unittest.TestCase):
                     "account_empty_winner": False, "live_selected": day_index == 0, "account_net_return": challenger_return,
                 },
             ])
-            for rank, leg in enumerate(["D", "M", "E"], start=1):
+            for rank, leg in enumerate(["D", "M", "E", "N"], start=1):
                 rows.append({
                     "release_id": "release-new", "signal_date": date, "strategy_leg": leg,
                     "priority_rank": rank, "candidate_status": "NO_CANDIDATE", "counterfactual_status": "NOT_APPLICABLE",
@@ -71,7 +71,7 @@ class ReleaseOosRobustnessTest(unittest.TestCase):
         self._write_ledger()
         result = evaluate_release_oos(self.root)
         self.assertEqual(result["status"], "EARLY_OBSERVATION")
-        self.assertEqual(len(result["ledger"]), 15)
+        self.assertEqual(len(result["ledger"]), 18)
         self.assertEqual(int(result["overall"].iloc[1]["sample_count"]), 3)
         self.assertAlmostEqual(float(result["overall"].iloc[1]["avg_return"]), 0.0133333333)
         self.assertEqual(int(result["pairs"].loc[result["pairs"]["challenger_leg"].eq("C"), "paired_sample_count"].iloc[0]), 3)

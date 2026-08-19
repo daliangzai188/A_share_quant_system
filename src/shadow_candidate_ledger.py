@@ -18,7 +18,7 @@ from src.strategy_identity import normalize_strategy_frame, normalize_strategy_l
 from src.strategy_m import build_m_candidate, load_m_spec, resolve_exit_offset
 
 
-LEGS = ("D", "A", "M", "E", "C")
+LEGS = ("D", "A", "M", "E", "C", "N")
 SCHEMA_VERSION = 1
 METHODOLOGY_VERSION = "released_shadow_t1_open_fixed_exit_v1"
 LEDGER_COLUMNS = [
@@ -357,6 +357,7 @@ def collect_signal_date(root: Path, release: dict[str, Any], signal_date: str) -
         _collect_m(root, release, signal_date, now, open_dates),
         _collect_standard_leg(root, release, signal_date, "E", now, open_dates),
         _collect_ac(root, release, signal_date, "C", now, open_dates),
+        _collect_standard_leg(root, release, signal_date, "N", now, open_dates),
     ]
     eligible = [row for row in rows if row["candidate_status"] == "CANDIDATE"]
     if eligible:

@@ -1,4 +1,4 @@
-"""认证当前D/A/M/E/C组合的可执行逐日资金曲线。
+"""认证当前D/A/M/E/C/N组合的可执行逐日资金曲线。
 
 本脚本把此前散落的一次性计算固化成可重复基线，并比较E门禁与M启用前后：
 
@@ -10,7 +10,7 @@
 5. E入场门禁在每日第一名确定后执行，被排除时不回补第二名；
 6. 所有收益按同一账户、同一时间顺序连乘，禁止把各腿复利直接相乘。
 
-当前有效腿序 **D > A > M > E > C**（2026-08-18 定稿），见 pick_by_priority。
+当前有效腿序 **D > A > M > E > C > N**（2026-08-19 定稿），见 pick_by_priority。
 D 不在 pick_by_priority 里：它在信号日盘中就买了，位置由时序锁死，见 replay。
 
 ⚠️ **本脚本是实盘的对照基准，两侧必须同时正确。** 实盘一侧分两层，缺一层就是空转：
@@ -94,6 +94,7 @@ AC_DAILY_PATH = (
 M_POOL_PATH = (
     PROJECT_ROOT / "reports" / "strategy_m" / "m_backtest_trades.csv"
 )
+N_POOL_PATH = PROJECT_ROOT / "reports" / "strategy_n" / "n_backtest_candidates.csv"
 E_SPEC_PATH = PROJECT_ROOT / "config" / "strategy_e_r1_scenarios.json"
 TRADE_CALENDAR_PATH = PROJECT_ROOT / "data" / "raw" / "trade_calendar.csv"
 DAILY_PRICE_DIR = PROJECT_ROOT / "data" / "raw" / "daily"
@@ -107,6 +108,8 @@ CODE_CERTIFICATION_FILES = [
     "scripts/monitor_strategy_d_intraday.py",
     "scripts/run_strategy_e_signal.py",
     "scripts/run_strategy_m_signal.py",
+    "scripts/run_strategy_n_signal.py",
+    "scripts/build_strategy_n_backtest_pool.py",
     "scripts/trading_daemon.py",
     "src/combined_live_engine.py",
     "src/live_certification.py",
@@ -114,6 +117,7 @@ CODE_CERTIFICATION_FILES = [
     "src/strategy_identity.py",
     "src/strategy_equity_ledger.py",
     "src/strategy_m.py",
+    "src/strategy_n.py",
     "src/strategy_d_spec.py",
 ]
 
@@ -159,8 +163,8 @@ EPSILON = 1e-12
 #   BASE 133 / 5140.7613530121025    E_ONLY 132 / 5755.436166596083
 #   OPTIMIZED 135 / 8350.331871673612 WITH_M 151 / 24911.38506562485
 # 当前正式组合的冻结回归锚点；任何输入、顺序或成交口径漂移都必须显式审查。
-EXPECTED_CURRENT_TRADE_COUNT = 145
-EXPECTED_CURRENT_MULTIPLE = 2992.901871880808
+EXPECTED_CURRENT_TRADE_COUNT = 155
+EXPECTED_CURRENT_MULTIPLE = 7108.624210380326
 EXPECTED_D_DAILY_CANDIDATE_COUNT = 45
 
 
@@ -174,6 +178,7 @@ class Sources:
     e: pd.DataFrame
     no_b_reselection: pd.DataFrame
     m_pool: pd.DataFrame | None
+    n_pool: pd.DataFrame
     ac_daily: dict[str, dict[str, Any]]
     e_spec: dict[str, Any]
     trade_dates: list[str]
@@ -205,6 +210,7 @@ def load_sources() -> Sources:
         NO_B_RESELECTION_PATH,
         TRADE_CALENDAR_PATH,
         RUNTIME_CONFIG_PATH,
+        N_POOL_PATH,
     ]
     missing = [str(path) for path in required if not path.exists()]
     if missing:
@@ -284,6 +290,16 @@ def load_sources() -> Sources:
             raise ValueError("M候选账本存在重复信号日")
         m_pool = m_pool.set_index("trade_date")
 
+    n_pool = pd.read_csv(N_POOL_PATH, dtype={"trade_date": str}, low_memory=False)
+    n_pool["trade_date"] = n_pool["trade_date"].map(normalize_date)
+    if len(n_pool) != 46 or n_pool["trade_date"].duplicated().any():
+        raise ValueError("N完整候选账本必须恰好46个唯一信号日")
+    if not n_pool["sample_scope"].astype(str).eq("COMPLETE_DAILY_CANDIDATES").all():
+        raise ValueError("N认证只允许完整逐日候选样本")
+    if not n_pool["execution_status"].astype(str).eq("OK").all():
+        raise ValueError("N候选账本含不可执行候选")
+    n_pool = n_pool.set_index("trade_date")
+
     calendar = pd.read_csv(TRADE_CALENDAR_PATH, dtype={"cal_date": str})
     trade_dates = sorted(
         calendar.loc[
@@ -304,6 +320,7 @@ def load_sources() -> Sources:
         e=e,
         no_b_reselection=no_b,
         m_pool=m_pool,
+        n_pool=n_pool,
         ac_daily=load_ac_daily(),
         e_spec=load_e_spec(PROJECT_ROOT),
         trade_dates=trade_dates,
@@ -348,7 +365,7 @@ def load_ac_daily() -> dict[str, dict[str, Any]]:
     旧口径用 `baseline.abc_return != 0` 当 A/C 的门槛，而 baseline 是
     A/B/C 三腿**单独回放**的产物，带着那次回放自己的持仓序列：A/C 明细481天里
     有108天是 `POSITION_OCCUPIED_SKIP`（当年被已删除的B等占掉），连 ts_code
-    都没落盘。今天的组合含 D/A/M/E/C，持仓情况完全不同，那张持仓表早已作废，
+    都没落盘。今天的组合含 D/A/M/E/C/N，持仓情况完全不同，那张持仓表早已作废，
     却仍在挡 A/C —— A/C 可用天数被锁死在90天。
 
     实盘从不受此限制：run_paper_ab_filtered_daily_ops / combined_live_engine /
@@ -397,6 +414,7 @@ def pick_by_priority(
     *,
     entry_gate_enabled: bool,
     m_enabled: bool,
+    n_enabled: bool,
     equity: float,
     peak_equity: float,
 ) -> dict[str, Any] | None:
@@ -440,6 +458,12 @@ def pick_by_priority(
     # ④ C
     if ac is not None and str(ac.get("strategy_leg", "")) == "C":
         return dict(ac)
+
+    # ⑤ N：只在前四个收盘后策略腿均空时补位
+    if n_enabled:
+        n_pick = n_candidate(sources, signal_date)
+        if n_pick is not None:
+            return n_pick
 
     return None
 
@@ -515,7 +539,7 @@ def m_candidate(
     equity: float,
     peak_equity: float,
 ) -> dict[str, Any] | None:
-    """M兜底腿：只在五腿全空时调用，再过一道回撤保护。
+    """M补位腿：只在D/A均未占用时调用，再过一道回撤保护。
 
     与实盘 src/strategy_m.py 同口径：选股已在
     scripts/build_strategy_m_backtest_pool.py 固化，这里只判断回撤闸门。
@@ -537,18 +561,42 @@ def m_candidate(
     }
 
 
+def n_candidate(sources: Sources, signal_date: str) -> dict[str, Any] | None:
+    """N最低优先级腿；候选已由src.strategy_n唯一规则源逐日固化。"""
+
+    if signal_date not in sources.n_pool.index:
+        return None
+    row = source_row(sources.n_pool, signal_date, "N完整候选池")
+    stock_return = to_float(row.get("stock_return_before_fees"), float("nan"))
+    if pd.isna(stock_return):
+        raise ValueError(f"{signal_date} N候选缺少收益结果")
+    account_return = (
+        stock_return - AC_BUY_FEE_RATE - (1.0 + stock_return) * AC_SELL_FEE_RATE
+    ) * POSITION_PCT
+    return {
+        "strategy_leg": "N",
+        "ts_code": str(row.get("ts_code", "")),
+        "name": str(row.get("name", "")),
+        "buy_date": normalize_date(row.get("buy_date")),
+        "exit_date": normalize_date(row.get("exit_date")),
+        "account_return": account_return,
+        "return_source": "N低高度退潮第一名;T+1开/T+2收;显式费用",
+    }
+
+
 def replay(
     sources: Sources,
     *,
     entry_gate_enabled: bool,
     m_enabled: bool = False,
+    n_enabled: bool = True,
     block_d_on_handoff: bool = True,
 ) -> pd.DataFrame:
     """严格按释放日串行重放481个信号日。
 
     block_d_on_handoff：衔接日按旧仓能否提前释放资金决定D是否可开（2026-08-07）。
 
-    A/C/E/M 是 T日收盘后出信号、T+1开盘买，旧仓 T日收盘已卖完，不冲突。
+    A/C/E/M/N 是 T日收盘后出信号、T+1开盘买，旧仓 T日收盘已卖完，不冲突。
     D 不同——它是 T日**盘中**买入（trading_daemon:9326/12498 写死 14:00起BUY、
     14:56停止），旧仓何时释放资金决定它买不买得到：
 
@@ -627,6 +675,7 @@ def replay(
                 row_index,
                 entry_gate_enabled=entry_gate_enabled,
                 m_enabled=m_enabled,
+                n_enabled=n_enabled,
                 equity=equity,
                 peak_equity=peak_equity,
             )
@@ -688,6 +737,7 @@ def replay(
     detail["drawdown"] = detail["equity_after"] / detail["peak_equity"] - 1.0
     detail["entry_gate_enabled"] = entry_gate_enabled
     detail["m_enabled"] = m_enabled
+    detail["n_enabled"] = n_enabled
     return detail
 
 
@@ -726,6 +776,7 @@ def summarize(detail: pd.DataFrame, scenario: str) -> dict[str, Any]:
         "d_to_e_trade_count": int(legs.eq("D→E").sum()),
         "e_trade_count": int(legs.eq("E").sum()),
         "m_trade_count": int(legs.eq("M").sum()),
+        "n_trade_count": int(legs.eq("N").sum()),
         "win_rate": float((returns > 0).mean()),
         "avg_return": float(returns.mean()),
         "median_return": float(returns.median()),
@@ -1072,6 +1123,7 @@ def write_input_manifest(*, refresh: bool = False) -> Path:
         NO_B_RESELECTION_PATH,
         AC_DAILY_PATH,
         M_POOL_PATH,
+        N_POOL_PATH,
         E_SPEC_PATH,
         TRADE_CALENDAR_PATH,
     ]
@@ -1098,7 +1150,7 @@ def write_input_manifest(*, refresh: bool = False) -> Path:
     manifest = {
         "schema_version": 1,
         "window": "20240520~20260514",
-        "strategy_priority_order": ["D", "A", "M", "E", "C"],
+        "strategy_priority_order": ["D", "A", "M", "E", "C", "N"],
         "file_count": len(rows),
         "files": rows,
     }
@@ -1113,6 +1165,7 @@ def write_current_report(
     e_validation: pd.DataFrame,
     e_portfolio_comparison: pd.DataFrame,
     m_portfolio_comparison: pd.DataFrame,
+    n_portfolio_comparison: pd.DataFrame,
     *,
     current_scenario: str,
     certification_status: str,
@@ -1131,11 +1184,11 @@ def write_current_report(
         "",
         "## 正式结论",
         "",
-        "- **当前唯一有效腿序：D > A > M > E > C。**",
+        "- **当前唯一有效腿序：D > A > M > E > C > N。**",
         f"- 当前冻结窗口为481个信号日，共{int(current['executed_trade_count'])}笔；"
         f"A={int(current['a_trade_count'])}、C={int(current['c_trade_count'])}、"
         f"D={int(current['d_trade_count'])}、E={int(current['e_trade_count'])}、"
-        f"M={int(current['m_trade_count'])}。",
+        f"M={int(current['m_trade_count'])}、N={int(current['n_trade_count'])}。",
         f"- 胜率{current['win_rate']:.2%}，平均账户收益{current['avg_return']:.2%}，"
         f"中位数{current['median_return']:.2%}，逐笔复利{current['equity_multiple']:.6f}倍，"
         f"最大回撤{current['max_drawdown']:.2%}。",
@@ -1146,11 +1199,11 @@ def write_current_report(
         f"{'已按既有用户风险接受保留' if (not m_noninferior and m_risk_accepted) else '未使用风险豁免'}。",
         "- 该复利是假定每笔账户净值按82.5%仓位连续放大的机械历史结果，资金容量未认证，不能作为实盘收益预期。",
         "",
-        "## 四个同口径场景",
+        "## 五个同口径场景",
         "",
         markdown_table(summary),
         "",
-        "## 当前145笔分段与分年结果",
+        "## 当前155笔分段与分年结果",
         "",
         markdown_table(current_periods),
         "",
@@ -1176,6 +1229,10 @@ def write_current_report(
             "m_on",
             risk_accepted=(not m_noninferior and m_risk_accepted),
         ),
+        "## N：完整组合分段对照",
+        "",
+        markdown_table(n_portfolio_comparison),
+        "",
         "## E每日候选门禁样本",
         "",
         markdown_table(e_validation),
@@ -1183,9 +1240,9 @@ def write_current_report(
         "## 口径锁定",
         "",
         "- 信号日范围：20240520～20260514；同一账户严格按退出日释放资金。",
-        "- D为盘中腿，按真实时序优先；其余按A>M>E>C选择当天唯一候选。",
+        "- D为盘中腿，按真实时序优先；其余按A>M>E>C>N选择当天唯一候选。",
         "- A/C显式扣双边佣金、过户费及卖出印花税；普通腿仓位82.5%；D保留80%成交压力折扣。",
-        "- 输出`portfolio_trades.csv`是当前145笔唯一正式组合样本。",
+        "- 输出`portfolio_trades.csv`是当前155笔唯一正式组合样本。",
     ]
     (OUTPUT_DIR / "portfolio_report.md").write_text(
         "\n".join(lines), encoding="utf-8"
@@ -1193,14 +1250,14 @@ def write_current_report(
 
 
 def certify_current(*, refresh_input_manifest: bool = False) -> None:
-    """按当前D>A>M>E>C从481个信号日重新认证。"""
+    """按当前D>A>M>E>C>N从481个信号日重新认证。"""
 
     write_certification(
         {
             "schema_version": 1,
             "status": "RUNNING",
             "current_executable": False,
-            "scenario": "current_d_a_m_e_c",
+            "scenario": "current_d_a_m_e_c_n",
             "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
             "note": "正在从481个信号日重建当前组合；完成前按fail-closed处理。",
         }
@@ -1226,12 +1283,19 @@ def certify_current(*, refresh_input_manifest: bool = False) -> None:
         entry_gate_enabled=True,
         m_enabled=True,
     )
-    current_scenario = "current_d_a_m_e_c"
+    without_n = replay(
+        sources,
+        entry_gate_enabled=True,
+        m_enabled=True,
+        n_enabled=False,
+    )
+    current_scenario = "current_d_a_m_e_c_n"
     summary = pd.DataFrame(
         [
             summarize(without_e_without_m, "without_e_gate_without_m"),
             summarize(with_e_without_m, "with_e_gate_without_m"),
             summarize(without_e_with_m, "without_e_gate_with_m"),
+            summarize(without_n, "current_without_n"),
             summarize(current_daily, current_scenario),
         ]
     )
@@ -1253,9 +1317,9 @@ def certify_current(*, refresh_input_manifest: bool = False) -> None:
     runtime_config = json.loads(RUNTIME_CONFIG_PATH.read_text(encoding="utf-8"))
     portfolio_config = runtime_config.get("portfolio_certification", {})
     if [str(value).upper() for value in portfolio_config.get("strategy_priority_order", [])] != [
-        "D", "A", "M", "E", "C"
+        "D", "A", "M", "E", "C", "N"
     ]:
-        raise RuntimeError("当前配置腿序不是D>A>M>E>C，拒绝发布")
+        raise RuntimeError("当前配置腿序不是D>A>M>E>C>N，拒绝发布")
 
     e_validation = e_entry_gate_validation(sources)
     required_e_splits = e_validation[e_validation["split"].ne("全部")]
@@ -1303,6 +1367,24 @@ def certify_current(*, refresh_input_manifest: bool = False) -> None:
     if (not e_gate_validation_passed or not e_portfolio_noninferior) and e_gate_risk_accepted:
         certification_status = "PASS_WITH_RISK_ACCEPTANCE"
 
+    n_config = runtime_config.get("strategy_n", {})
+    n_live_enabled = bool(n_config.get("enabled", False)) and bool(
+        n_config.get("live_order_enabled", False)
+    )
+    n_risk_accepted = bool(n_config.get("live_research_risk_accepted", False))
+    if not n_live_enabled:
+        raise RuntimeError("N当前未同时开启enabled/live_order_enabled，拒绝发布新组合")
+    if not n_risk_accepted:
+        raise RuntimeError("N小样本研究风险尚未显式接受，拒绝发布")
+    certification_status = "PASS_WITH_RISK_ACCEPTANCE"
+
+    n_portfolio_comparison = segment_comparison(
+        without_n,
+        current_daily,
+        before_label="n_off",
+        after_label="n_on",
+    )
+
     without_e_with_m.to_csv(
         OUTPUT_DIR / "portfolio_daily_before_gate.csv", index=False, encoding="utf-8-sig"
     )
@@ -1330,12 +1412,16 @@ def certify_current(*, refresh_input_manifest: bool = False) -> None:
     m_portfolio_comparison.to_csv(
         OUTPUT_DIR / "m_leg_portfolio_validation.csv", index=False, encoding="utf-8-sig"
     )
+    n_portfolio_comparison.to_csv(
+        OUTPUT_DIR / "n_leg_portfolio_validation.csv", index=False, encoding="utf-8-sig"
+    )
     write_current_report(
         summary,
         current_periods,
         e_validation,
         e_portfolio_comparison,
         m_portfolio_comparison,
+        n_portfolio_comparison,
         current_scenario=current_scenario,
         certification_status=certification_status,
         e_gate_validation_passed=e_gate_validation_passed,
@@ -1362,7 +1448,8 @@ def certify_current(*, refresh_input_manifest: bool = False) -> None:
         "d_trade_count": int(current_summary["d_trade_count"]),
         "e_trade_count": int(current_summary["e_trade_count"]),
         "m_trade_count": int(current_summary["m_trade_count"]),
-        "strategy_priority_order": ["D", "A", "M", "E", "C"],
+        "n_trade_count": int(current_summary["n_trade_count"]),
+        "strategy_priority_order": ["D", "A", "M", "E", "C", "N"],
         "equity_multiple": float(current_summary["equity_multiple"]),
         "win_rate": float(current_summary["win_rate"]),
         "avg_return": float(current_summary["avg_return"]),
@@ -1387,6 +1474,11 @@ def certify_current(*, refresh_input_manifest: bool = False) -> None:
         "m_live_risk_acceptance_note": m_config.get(
             "live_noninferiority_override_note", ""
         ),
+        "n_live_enabled": n_live_enabled,
+        "n_research_risk_accepted": n_risk_accepted,
+        "n_research_risk_acceptance_note": n_config.get(
+            "live_research_risk_acceptance_note", ""
+        ),
         "e_strategy_leg": "E",
         "e_strategy_variant": str(e_config.get("strategy_variant", "E_CURRENT")),
         "e_complete_sample_candidate_count_before_gate": 102,
@@ -1404,7 +1496,7 @@ def certify_current(*, refresh_input_manifest: bool = False) -> None:
         "input_files": input_files,
         "input_sha256": certification_files_sha256(PROJECT_ROOT, input_files),
         "note": (
-            "当前正式组合按D>A>M>E>C从完整481日逐日回放。"
+            "当前正式组合按D>A>M>E>C>N从完整481日逐日回放。"
             "M在自然年2025存在收益劣段，按用户既有风险接受保留。"
             "机械复利和82.5%仓位的资金容量未认证，不代表未来收益。"
         ),
@@ -1416,6 +1508,8 @@ def certify_current(*, refresh_input_manifest: bool = False) -> None:
     print(e_portfolio_comparison.to_string(index=False))
     print("\nM组合分段验证")
     print(m_portfolio_comparison.to_string(index=False))
+    print("\nN组合分段验证")
+    print(n_portfolio_comparison.to_string(index=False))
 
 
 def main(*, refresh_input_manifest: bool = False) -> None:

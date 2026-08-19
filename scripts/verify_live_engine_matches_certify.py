@@ -1,6 +1,6 @@
 """核对当前实盘计划选择路径与组合认证逐笔一致。
 
-本脚本直接调用当前组合引擎的 `build_plan`，并把481个冻结信号日的A/M/E/C
+本脚本直接调用当前组合引擎的 `build_plan`，并把481个冻结信号日的A/M/E/C/N
 候选写成实盘会读取的形式。D仍由认证回放按盘中时序先处理。
 """
 from __future__ import annotations
@@ -33,8 +33,14 @@ LIVE_CONFIG = {
     "trade_mode": "backtest",
     "position": {"initial_cash": 500_000},
     "live_trade": {"max_single_order_amount": 0},
-    "active_strategy_profile": {"mode": 1, "mode_name": "D_A_M_E_C"},
+    "active_strategy_profile": {"mode": 1, "mode_name": "D_A_M_E_C_N"},
     "strategy_m": {
+        "enabled": True,
+        "live_order_enabled": True,
+        "position_pct": 0.825,
+        "exit_hold_offset": 2,
+    },
+    "strategy_n": {
         "enabled": True,
         "live_order_enabled": True,
         "position_pct": 0.825,
@@ -49,7 +55,7 @@ def make_engine(project_root: Path) -> CombinedLiveEngine:
     engine.config = dict(LIVE_CONFIG)
     engine.load_positions = lambda: []
     engine.active_strategy_mode = lambda: 1
-    engine.active_strategy_name = lambda: "D_A_M_E_C"
+    engine.active_strategy_name = lambda: "D_A_M_E_C_N"
     engine.is_b_strategy_removed = lambda: True
     engine.load_today_e_signal = lambda _today: None
     return engine
@@ -92,6 +98,7 @@ def build_live_picker(
         *,
         entry_gate_enabled: bool,
         m_enabled: bool,
+        n_enabled: bool,
         equity: float,
         peak_equity: float,
     ) -> dict[str, Any] | None:
@@ -140,9 +147,26 @@ def build_live_picker(
                     "planned_amount_by_equity": 412_500.0,
                 }
 
+        n_order: dict[str, Any] | None = None
+        n_pick = certify.n_candidate(sources_, signal_date) if n_enabled else None
+        if n_pick is not None:
+            n_order = {
+                "strategy_leg": "N",
+                "ts_code": str(n_pick["ts_code"]),
+                "name": str(n_pick.get("name", "")),
+                "side": "BUY",
+                "planned_order_date": buy_date,
+                "planned_action": "PLAN_BUY_T1_OPEN",
+                "round_lot_shares": 10_000,
+                "planned_amount_by_equity": 412_500.0,
+            }
+
         engine.load_latest_abc_orders = lambda: (ops_dir / "ops.csv", ac_frame.copy())
         engine.load_yesterday_e_signal = lambda _today, payload=e_payload: payload
         engine.build_m_buy_order_if_any = lambda _today, _codes=None, order=m_order: (
+            dict(order) if order is not None else None
+        )
+        engine.build_n_buy_order_if_any = lambda _today, _codes=None, order=n_order: (
             dict(order) if order is not None else None
         )
 
@@ -180,6 +204,13 @@ def build_live_picker(
                 * certify.POSITION_PCT,
                 "return_source": f"E_R1:{e_row.get('scenario_rank', '')}",
             }
+        if leg == "N":
+            selected_n = certify.n_candidate(sources_, signal_date)
+            if selected_n is None or str(selected_n["ts_code"]) != code:
+                raise RuntimeError(
+                    f"{signal_date} 实盘选N={code}，认证候选={selected_n}"
+                )
+            return selected_n
         raise RuntimeError(f"{signal_date} 实盘返回未知腿 {leg}")
 
     return pick

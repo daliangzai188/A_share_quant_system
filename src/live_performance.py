@@ -12,7 +12,7 @@ import pandas as pd
 from src.strategy_identity import normalize_strategy_frame, normalize_strategy_leg
 
 
-ACTIVE_LEGS = {"A", "C", "D", "E", "M"}
+ACTIVE_LEGS = {"A", "C", "D", "E", "M", "N"}
 
 
 def _numeric(frame: pd.DataFrame, column: str) -> pd.Series:

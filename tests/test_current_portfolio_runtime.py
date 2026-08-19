@@ -27,6 +27,7 @@ def make_engine(
     ac_leg: str | None = None,
     with_m: bool = False,
     with_e: bool = False,
+    with_n: bool = False,
 ) -> CombinedLiveEngine:
     engine = object.__new__(CombinedLiveEngine)
     engine.project_root = Path(__file__).resolve().parents[1]
@@ -34,8 +35,9 @@ def make_engine(
         "trade_mode": "backtest",
         "position": {"initial_cash": 500_000},
         "live_trade": {"max_single_order_amount": 0},
-        "active_strategy_profile": {"mode": 1, "mode_name": "D_A_M_E_C"},
+        "active_strategy_profile": {"mode": 1, "mode_name": "D_A_M_E_C_N"},
         "strategy_m": {"enabled": True, "live_order_enabled": True},
+        "strategy_n": {"enabled": True, "live_order_enabled": True, "position_pct": 0.825},
     }
     engine.load_positions = lambda: list(positions or [])
     if ac_leg:
@@ -77,22 +79,60 @@ def make_engine(
         }
         if with_m else None
     )
+    engine.build_n_buy_order_if_any = lambda _today, _codes=None: (
+        {
+            "strategy_leg": "N", "side": "BUY", "ts_code": "000004.SZ",
+            "name": "测试N", "planned_order_date": "20260803",
+            "round_lot_shares": 10_000, "planned_amount_by_equity": 412_500.0,
+        }
+        if with_n else None
+    )
     engine.active_strategy_mode = lambda: 1
-    engine.active_strategy_name = lambda: "D_A_M_E_C"
+    engine.active_strategy_name = lambda: "D_A_M_E_C_N"
     engine.is_b_strategy_removed = lambda: True
     return engine
 
 
 class CurrentPortfolioRuntimeTests(unittest.TestCase):
-    def test_current_priority_is_a_then_m_then_e_then_c(self) -> None:
-        for ac_leg, with_m, with_e, expected in (
-            ("A", True, True, "A"),
-            (None, True, True, "M"),
-            (None, False, True, "E"),
-            ("C", False, False, "C"),
+    def test_n_live_order_uses_t1_open_t2_close_and_825pct(self) -> None:
+        engine = object.__new__(CombinedLiveEngine)
+        engine.config = {
+            "trade_mode": "backtest",
+            "position": {"initial_cash": 500_000},
+            "live_trade": {"max_single_order_amount": 0},
+            "strategy_n": {
+                "enabled": True,
+                "live_order_enabled": True,
+                "position_pct": 0.825,
+                "exit_hold_offset": 2,
+            },
+        }
+        engine.load_yesterday_n_signal = lambda _today: {
+            "signal_date": "20260818",
+            "planned_buy_date": "20260819",
+            "ts_code": "300001.SZ",
+            "name": "测试N",
+            "limit_close": 10.0,
+        }
+        order = CombinedLiveEngine.build_n_buy_order_if_any(engine, "20260819")
+        self.assertIsNotNone(order)
+        assert order is not None
+        self.assertEqual(order["strategy_leg"], "N")
+        self.assertEqual(order["planned_action"], "PLAN_BUY_T1_OPEN")
+        self.assertEqual(order["round_lot_shares"], 41_200)
+        self.assertEqual(order["exit_n_days"], 1)
+        self.assertAlmostEqual(order["planned_amount_by_equity"], 412_000.0)
+
+    def test_current_priority_is_a_then_m_then_e_then_c_then_n(self) -> None:
+        for ac_leg, with_m, with_e, with_n, expected in (
+            ("A", True, True, True, "A"),
+            (None, True, True, True, "M"),
+            (None, False, True, True, "E"),
+            ("C", False, False, True, "C"),
+            (None, False, False, True, "N"),
         ):
             with self.subTest(expected=expected):
-                engine = make_engine(ac_leg=ac_leg, with_m=with_m, with_e=with_e)
+                engine = make_engine(ac_leg=ac_leg, with_m=with_m, with_e=with_e, with_n=with_n)
                 _state, _decisions, orders = engine.build_mode1_plan("20260803")
                 buys = orders[orders["side"].astype(str).str.upper().eq("BUY")]
                 self.assertEqual(str(buys.iloc[0]["strategy_leg"]), expected)
@@ -160,7 +200,7 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
                 json.dumps({
                     "status": "PASS_WITH_RISK_ACCEPTANCE",
                     "current_executable": True,
-                    "scenario": "current_d_a_m_e_c",
+                    "scenario": "current_d_a_m_e_c_n",
                 }),
                 encoding="utf-8",
             )
@@ -169,7 +209,7 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
                 {
                     "certification_summary_path": "cert.json",
                     "certification_required_status": "PASS_WITH_RISK_ACCEPTANCE",
-                    "certification_expected_scenario": "current_d_a_m_e_c",
+                    "certification_expected_scenario": "current_d_a_m_e_c_n",
                 },
             )
             self.assertTrue(check.ok, check.reason)
@@ -199,6 +239,11 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
                     "_load_e_signal_for_signal_date",
                     return_value=None,
                 ),
+                patch.object(
+                    trading_daemon,
+                    "_load_n_signal_for_signal_date",
+                    return_value=None,
+                ),
                 patch.object(trading_daemon, "load_positions", return_value=[]),
                 patch.object(trading_daemon, "logger", return_value=log),
             ):
@@ -212,7 +257,7 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
         self.assertIn("决策优先级流程图", message)
         self.assertIn("开仓决策链", message)
         self.assertIn("最终开仓计划", message)
-        self.assertIn("A/M/E/C均无开仓计划", message)
+        self.assertIn("A/M/E/C/N均无开仓计划", message)
         log.warning.assert_not_called()
 
 

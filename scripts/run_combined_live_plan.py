@@ -1,5 +1,5 @@
 """
-A+B+C+D 组合实盘计划生成。
+D>A>M>E>C>N 组合实盘计划生成。
 
 只生成组合状态机报告，不提交真实委托。
 """
@@ -17,7 +17,7 @@ from src.combined_live_engine import CombinedLiveEngine
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="生成 A+B+C+D 组合实盘计划。")
+    parser = argparse.ArgumentParser(description="生成 D>A>M>E>C>N 组合实盘计划。")
     parser.add_argument("--config", default="config/config.json", help="运行时配置文件。")
     return parser.parse_args()
 
@@ -26,7 +26,7 @@ def main() -> None:
     args = parse_args()
     engine = CombinedLiveEngine(args.config)
     paths = engine.write_plan()
-    print("A+B+C+D 组合实盘计划已生成：")
+    print("D>A>M>E>C>N 组合实盘计划已生成：")
     for name, path in paths.items():
         print(f"- {name}: {path}")
 

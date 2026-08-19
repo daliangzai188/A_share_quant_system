@@ -22,7 +22,9 @@
     {"path": "reports/strategy_m/m_equity_peak.json", "kind": "json", "required": true},
     {"path": "reports/strategy_e/e_signals_recent.json", "kind": "json", "required": false},
     {"path": "reports/strategy_e/e_signal_runs_recent.json", "kind": "json", "required": false},
-    {"path": "reports/strategy_m/m_signal_runs_recent.json", "kind": "json", "required": false}
+    {"path": "reports/strategy_m/m_signal_runs_recent.json", "kind": "json", "required": false},
+    {"path": "reports/strategy_n/n_signals_recent.json", "kind": "json", "required": false},
+    {"path": "reports/strategy_n/n_signal_runs_recent.json", "kind": "json", "required": false}
   ],
   "note": "普通文件逐文件原子读取，SQLite使用在线backup API；快照能保证每个文件自身完整，但运行中跨文件不是同一事务时点。正式灾备演练应恢复到项目目录之外的全新隔离目录。"
 }

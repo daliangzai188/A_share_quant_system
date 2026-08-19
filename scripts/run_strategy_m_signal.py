@@ -1,6 +1,6 @@
 """策略M每日收盘后信号生成脚本。
 
-M 是补位腿。当前有效腿序为 **D > A > M > E > C**，M排第三。
+M 是补位腿。当前有效腿序为 **D > A > M > E > C > N**，M排第三。
 只有排在它**前面**的腿才有资格挡住它，三个条件必须同时成立：
 
   1. 账户没有任何未平仓头寸（这一条同时覆盖 D —— D 在信号日盘中买入，
@@ -93,7 +93,7 @@ def load_day_pool(signal_date: str) -> pd.DataFrame:
 def higher_priority_leg_has_signal(signal_date: str) -> tuple[bool, str]:
     """按腿序排在 M **前面** 的腿，当日是否已有信号或计划。
 
-    当前有效腿序D>A>M>E>C：M之前只有D、A。
+    当前有效腿序D>A>M>E>C>N：M之前只有D、A。
       · D  由 has_existing_open_position 覆盖（D 建仓即写 positions.json）
       · A  查 A/C 操作台里 strategy_leg=A 的计划委托
     **E 和 C 排在 M 后面，不得挡住 M 出信号。**

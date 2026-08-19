@@ -135,7 +135,7 @@ class StrategyMConfigTests(unittest.TestCase):
         self.assertGreater(m["drawdown_guard_pct"], 0, "启用实盘时回撤保护不得关闭")
         self.assertLessEqual(m["drawdown_guard_pct"], 0.2)
         self.assertAlmostEqual(m["position_pct"], 0.825)
-        # 当前腿序D>A>M>E>C：M排在E/C之前。
+        # 当前腿序D>A>M>E>C>N：M排在E/C/N之前。
         # 旧断言 assertTrue(require_all_legs_idle)（"M 必须保持兜底腿定位"）随之作废。
         # 现在锁的是反向：这个开关必须为 false，否则上游门会把 M 打回兜底位，
         # 下游 combined_live_engine 排第②就成了空转（实测差 17.8%）。
