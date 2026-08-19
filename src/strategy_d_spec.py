@@ -25,6 +25,9 @@ D_TRACKING_START_HHMM = 930
 D_SIGNAL_START_HHMM = D_TAIL_RESEAL_HHMM
 D_ORDER_CANCEL_HHMM = 1455
 D_LATEST_COMPLETE_HISTORY_START_HHMM = D_TRACKING_START_HHMM
+# D扫描正常每30秒完成一轮。75秒覆盖一次keeper检测+进程/QMT短重连，
+# 但不允许把数分钟甚至午后长时间断档误当成连续路径。
+D_CHECKPOINT_MAX_AGE_SECONDS = 75
 
 
 def classify_first_time_bucket_hhmm(value: int) -> str:
@@ -144,7 +147,7 @@ def live_sentiment_is_historical_strong(
 
 
 def intraday_history_is_complete(session_start_hhmm: int) -> bool:
-    """D必须从09:35前开始跟踪，午后快照不能伪造完整炸板路径。"""
+    """D必须最晚从09:30开始跟踪，午后快照不能伪造完整炸板路径。"""
 
     return int(session_start_hhmm) <= D_LATEST_COMPLETE_HISTORY_START_HHMM
 

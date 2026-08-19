@@ -66,7 +66,18 @@ from src.strategy_equity_ledger import (
     update_strategy_equity_ledger,
 )
 from src.strategy_identity import normalize_strategy_leg, normalize_strategy_record
-from src.strategy_d_spec import intraday_history_is_complete
+from src.strategy_d_checkpoint import (
+    StrategyDCheckpointCheck,
+    inspect_strategy_d_checkpoint,
+    strategy_d_checkpoint_path,
+    strategy_d_machine_fingerprint,
+    strategy_d_runtime_fingerprint,
+)
+from src.strategy_d_spec import (
+    D_CHECKPOINT_MAX_AGE_SECONDS,
+    D_TRACKING_START_HHMM,
+    intraday_history_is_complete,
+)
 from src.strategy_d_relay_execution import (
     calculate_auction_safe_sell_quantity,
     calculate_relay_buy_quantity,
@@ -84,6 +95,52 @@ from src.rolling_signal_store import (
 
 _execution_completion_tracker = ExecutionCompletionTracker(PROJECT_ROOT)
 _DAEMON_BOOT_ID = uuid.uuid4().hex
+
+
+def _strategy_d_checkpoint_recovery_check(
+    now: datetime.datetime,
+    config: dict[str, Any] | None = None,
+) -> StrategyDCheckpointCheck:
+    """启动D线程前做轻量预检；逐票宇宙由监控器setup后再做最终校验。"""
+
+    runtime_config = config or load_json_config(
+        PROJECT_ROOT / "config" / "config.json"
+    )
+    path = strategy_d_checkpoint_path(
+        PROJECT_ROOT, now.strftime("%Y%m%d")
+    )
+    try:
+        configured_max_age = int(
+            runtime_config.get("strategy_d", {}).get(
+                "checkpoint_max_age_sec", D_CHECKPOINT_MAX_AGE_SECONDS
+            )
+        )
+        if configured_max_age != D_CHECKPOINT_MAX_AGE_SECONDS:
+            return StrategyDCheckpointCheck(
+                False,
+                "D检查点最大时效偏离认证值",
+                path,
+                {},
+            )
+        runtime_fingerprint = strategy_d_runtime_fingerprint(
+            PROJECT_ROOT, runtime_config
+        )
+        return inspect_strategy_d_checkpoint(
+            path,
+            trade_date=now.strftime("%Y%m%d"),
+            now=now,
+            max_age_seconds=D_CHECKPOINT_MAX_AGE_SECONDS,
+            expected_tracking_start_hhmm=D_TRACKING_START_HHMM,
+            expected_machine_fingerprint=strategy_d_machine_fingerprint(),
+            expected_runtime_fingerprint=runtime_fingerprint,
+        )
+    except Exception as exc:
+        return StrategyDCheckpointCheck(
+            False,
+            f"D检查点预检异常:{exc}",
+            path,
+            {},
+        )
 
 
 def _track_execution(method: str, **values: Any) -> Any:
@@ -10060,16 +10117,24 @@ def job_opening_buy(*, recovery_only: bool = False) -> None:
     if d_allowed:
         current = now_beijing()
         current_hhmm = current.hour * 100 + current.minute
-        if intraday_history_is_complete(current_hhmm):
+        checkpoint_check = _strategy_d_checkpoint_recovery_check(current)
+        if intraday_history_is_complete(current_hhmm) or checkpoint_check.ok:
+            recovery_text = (
+                "从连续竞价起点启动"
+                if intraday_history_is_complete(current_hhmm)
+                else f"从严格校验通过的原子路径恢复({checkpoint_check.reason})"
+            )
             logger().info(
                 "09:30开盘复核：账户空仓且昨日无其他策略正式候选/今日无其他开仓计划，"
-                "确认D监控从连续竞价起点启动。"
+                "确认D监控%s。",
+                recovery_text,
             )
             job_strategy_d()
         else:
             reason = (
                 f"09:30开盘复核实际执行于{current.strftime('%H:%M:%S')}，已错过D完整路径起点；"
-                "不从迟到快照补造首次封板/炸板历史，今日D禁止开仓。"
+                "不从迟到快照补造首次封板/炸板历史，"
+                f"检查点不可恢复({checkpoint_check.reason})，今日D禁止开仓。"
             )
             logger().error(reason)
             _notify("buy_result", "⛔ D错过完整路径起点", reason, level="critical")
@@ -11851,18 +11916,28 @@ def startup_catchup_strategy_d() -> None:
         logger().info("启动补检：今日有D持仓待卖出(优先处理)，不再启动新的D买入监控。")
         return
     d_history_complete = intraday_history_is_complete(now.hour * 100 + now.minute)
+    d_checkpoint_check = _strategy_d_checkpoint_recovery_check(now)
 
     def _reject_late_d_recovery(prefix: str) -> None:
         reason = (
             f"{prefix}；daemon于{now.strftime('%H:%M')}才恢复，缺少09:30起的完整首次封板/"
-            "炸板路径，按D回测严格对齐口径今日不开D。"
+            "炸板内存路径，"
+            f"且原子检查点不可恢复({d_checkpoint_check.reason})，"
+            "按D回测严格对齐口径今日不开D。"
         )
         logger().error("启动补检：%s", reason)
         _notify("buy_result", "⛔ D因晚启动停止开仓", reason, level="critical")
 
     if has_combined_action(decisions, "ALLOW_D_INTRADAY_MONITOR"):
-        if d_history_complete:
-            logger().info("启动补检：组合状态机判定今日可开D，启动D盘中兜底扫描。")
+        if d_history_complete or d_checkpoint_check.ok:
+            if d_checkpoint_check.ok and not d_history_complete:
+                logger().warning(
+                    "启动补检：组合状态机判定今日可开D，原子路径检查点预检通过：%s；"
+                    "启动D监控并执行逐票宇宙最终校验。",
+                    d_checkpoint_check.reason,
+                )
+            else:
+                logger().info("启动补检：组合状态机判定今日可开D，启动D盘中兜底扫描。")
             job_strategy_d()
         else:
             _reject_late_d_recovery("组合状态机原本允许D盘中扫描")

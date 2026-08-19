@@ -119,6 +119,7 @@ CODE_CERTIFICATION_FILES = [
     "src/strategy_m.py",
     "src/strategy_n.py",
     "src/strategy_d_spec.py",
+    "src/strategy_d_checkpoint.py",
 ]
 
 _RUNTIME_CONFIG = json.loads(RUNTIME_CONFIG_PATH.read_text(encoding="utf-8"))

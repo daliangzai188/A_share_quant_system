@@ -3,7 +3,7 @@
   "status": "PASS_WITH_RISK_ACCEPTANCE",
   "current_executable": true,
   "scenario": "current_d_a_m_e_c_n",
-  "generated_at": "2026-08-19T08:23:36.842953+00:00",
+  "generated_at": "2026-08-19T08:56:48.597206+00:00",
   "input_start_date": "20240520",
   "input_end_date": "20260514",
   "signal_day_count": 481,
@@ -52,7 +52,7 @@
   "e_gate_portfolio_noninferiority_reason": "全样本改善且所有分段收益/回撤均非劣",
   "e_gate_risk_accepted": true,
   "e_gate_risk_acceptance_note": "2026-08-18统一完整样本后发现：E_R1门禁前102个候选日，E_CURRENT门禁后82个候选日；被排除20笔平均账户收益+2.297%，后半段门禁降低单腿复利。用户已明确继续保持当前实盘E_CURRENT，因此本项按风险接受保留；这不等于门禁统计通过，不得据此扩大资金。",
-  "config_sha256": "b50c4df043ae73da7a974d65e15b84c459ede5e6e22af9ae49fab8bcdae45b31",
+  "config_sha256": "56f4e09497b2d17bc587c95e390d394ff8d537d87ccb0158769f5877b701a1f8",
   "code_files": [
     "scripts/build_ac_daily_candidates.py",
     "scripts/backtest_strategy_d.py",
@@ -70,9 +70,10 @@
     "src/strategy_equity_ledger.py",
     "src/strategy_m.py",
     "src/strategy_n.py",
-    "src/strategy_d_spec.py"
+    "src/strategy_d_spec.py",
+    "src/strategy_d_checkpoint.py"
   ],
-  "code_sha256": "03ad40bcb63edae4c4bd4663bf21d42ae4d1ab2e024a401fd45e7dabd85df800",
+  "code_sha256": "427f36eecdf59c88aa93558d4f48f281d14256a124b38465b102409dc58588d2",
   "input_files": [
     "reports/current_portfolio_alignment/input_manifest.json"
   ],

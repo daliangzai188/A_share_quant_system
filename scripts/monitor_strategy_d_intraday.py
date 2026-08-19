@@ -25,9 +25,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, fields
 from datetime import datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
@@ -46,7 +47,21 @@ from src.utils.time_utils import now_beijing, today_beijing
 from src.notify import notify
 from src.data_cleaner import DataCleaner
 from src.fill_model import FillProbabilityEstimator
+from src.strategy_d_checkpoint import (
+    D_CHECKPOINT_STATUS_CLOSED,
+    D_CHECKPOINT_STATUS_READY,
+    D_CHECKPOINT_STATUS_SCAN_IN_PROGRESS,
+    inspect_strategy_d_checkpoint,
+    invalidate_strategy_d_checkpoint,
+    strategy_d_checkpoint_path,
+    strategy_d_machine_fingerprint,
+    strategy_d_market_context_sha256,
+    strategy_d_runtime_fingerprint,
+    strategy_d_universe_sha256,
+    write_strategy_d_checkpoint,
+)
 from src.strategy_d_spec import (
+    D_CHECKPOINT_MAX_AGE_SECONDS,
     D_FIRST_TIME_BUCKETS,
     D_LATEST_COMPLETE_HISTORY_START_HHMM,
     D_MAX_OPEN_TIMES,
@@ -397,6 +412,26 @@ def configured_sentiment_bounds(config: dict[str, Any]) -> tuple[int, int]:
     return minimum, maximum
 
 
+def configured_checkpoint_max_age_sec(config: dict[str, Any]) -> int:
+    """D重启只允许恢复一轮扫描附近的短断点，禁止放宽成长时间缺口。"""
+
+    strategy_config = load_strategy_d_config(config)
+    try:
+        value = int(
+            strategy_config.get(
+                "checkpoint_max_age_sec", D_CHECKPOINT_MAX_AGE_SECONDS
+            )
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("config.strategy_d.checkpoint_max_age_sec无效") from exc
+    if value != D_CHECKPOINT_MAX_AGE_SECONDS:
+        raise ValueError(
+            "config.strategy_d.checkpoint_max_age_sec="
+            f"{value}偏离D执行冻结值{D_CHECKPOINT_MAX_AGE_SECONDS}"
+        )
+    return value
+
+
 def validate_configured_execution_clock(config: dict[str, Any]) -> None:
     """D实盘时钟必须与回测事件定义一致，任何漂移都拒绝启动。"""
 
@@ -576,6 +611,7 @@ class StrategyDMonitor:
         self.min_fill_probability = configured_min_fill_probability(self.config)
         self.first_time_buckets = configured_first_time_buckets(self.config)
         self.tail_reseal_hhmm = configured_tail_reseal_hhmm(self.config)
+        self.checkpoint_max_age_sec = configured_checkpoint_max_age_sec(self.config)
         (
             self.sentiment_current_min,
             self.sentiment_current_max,
@@ -598,6 +634,18 @@ class StrategyDMonitor:
         self.path_integrity_failed = False
         self.path_integrity_reason = ""
         self._path_failure_notified = False
+        self.checkpoint_path = strategy_d_checkpoint_path(
+            PROJECT_ROOT, today_beijing().strftime("%Y%m%d")
+        )
+        self.checkpoint_machine_fingerprint = strategy_d_machine_fingerprint()
+        self.checkpoint_runtime_fingerprint = ""
+        self.universe_sha256 = ""
+        self.market_context_sha256 = ""
+        self.original_session_start_hhmm = 0
+        self.first_complete_scan_at = ""
+        self.last_complete_scan_at = ""
+        self.last_scan_updated_count = 0
+        self._restored_from_checkpoint = False
 
         # 本次会话下单记录 {order_id: ts_code}
         self.session_orders: dict[str, str] = {}
@@ -624,6 +672,17 @@ class StrategyDMonitor:
             segment = classify_market_segment(code)
             segment_counts[segment] = segment_counts.get(segment, 0) + 1
         self.segment_stock_counts = segment_counts
+        self.universe_sha256 = strategy_d_universe_sha256(self.universe)
+        self.market_context_sha256 = strategy_d_market_context_sha256(
+            self.universe,
+            self.yesterday_limit_codes,
+            self.name_map,
+            self.circ_mv_map,
+        )
+        if not self.checkpoint_runtime_fingerprint:
+            self.checkpoint_runtime_fingerprint = strategy_d_runtime_fingerprint(
+                PROJECT_ROOT, self.config
+            )
         try:
             self.fill_estimator = FillProbabilityEstimator(
                 PROJECT_ROOT / "config" / "config.json"
@@ -660,6 +719,11 @@ class StrategyDMonitor:
             hhmm_to_str(CANCEL_HHMM),
         )
         self.logger.info(
+            "D重启恢复: 每轮完整扫描原子保存逐票路径；检查点最长%d秒，"
+            "跨设备/跨交易日/代码配置变化/扫描缺批一律拒绝恢复。",
+            self.checkpoint_max_age_sec,
+        )
+        self.logger.info(
             "D选票规则: 每天最多买1只，先优先炸板%d次，再按封单金额÷流通市值降序；"
             "只买排第1的那只，买不进当天就放弃、不用第2名递补。",
             self.preferred_open_times,
@@ -674,6 +738,150 @@ class StrategyDMonitor:
     def _batches(self) -> list[list[str]]:
         return [self.universe[i: i + POLL_BATCH_SIZE]
                 for i in range(0, len(self.universe), POLL_BATCH_SIZE)]
+
+    # ── 盘中路径检查点 ────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _json_safe(value: Any) -> Any:
+        if isinstance(value, float):
+            return value if math.isfinite(value) else 0.0
+        if isinstance(value, dict):
+            return {
+                str(key): StrategyDMonitor._json_safe(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, (list, tuple)):
+            return [StrategyDMonitor._json_safe(item) for item in value]
+        return value
+
+    def _invalidate_checkpoint(self, status: str, reason: str) -> bool:
+        try:
+            invalidate_strategy_d_checkpoint(
+                self.checkpoint_path,
+                trade_date=today_beijing().strftime("%Y%m%d"),
+                status=status,
+                reason=reason,
+                recorded_at=now_beijing(),
+                machine_fingerprint=self.checkpoint_machine_fingerprint,
+                runtime_fingerprint=self.checkpoint_runtime_fingerprint,
+            )
+            return True
+        except Exception as exc:
+            self.logger.error("D路径检查点失效标记写入失败：%s", exc)
+            return False
+
+    def _save_ready_checkpoint(self) -> bool:
+        now = now_beijing()
+        if not self.first_complete_scan_at:
+            self.first_complete_scan_at = now.isoformat()
+        self.last_complete_scan_at = now.isoformat()
+        resume_allowed = bool(
+            not self.path_integrity_failed
+            and not self.order_placed
+            and not self.session_orders
+            and not self.position_opened
+            and not self.waiting_order_only
+        )
+        # 未曾封板且当前也未封板的股票，其路径状态等价于默认值；股票宇宙摘要和
+        # 完整扫描覆盖数已证明它们被观察过，无需每30秒重复写入数千条零状态。
+        # 恢复时先按同一宇宙重建默认状态，再覆盖下面的非默认路径状态。
+        path_states = {
+            code: self._json_safe(asdict(state))
+            for code, state in self.states.items()
+            if (
+                state.ever_sealed
+                or state.was_sealed
+                or state.open_times_today > 0
+                or state.watch_alerted
+                or state.buy_signaled
+                or bool(state.order_id)
+                or state.invalid_price_ticks > 0
+            )
+        }
+        payload = {
+            "status": D_CHECKPOINT_STATUS_READY,
+            "resume_allowed": resume_allowed,
+            "trade_date": today_beijing().strftime("%Y%m%d"),
+            "recorded_at": now.isoformat(),
+            "tracking_start_hhmm": D_TRACKING_START_HHMM,
+            "original_session_start_hhmm": self.original_session_start_hhmm,
+            "first_complete_scan_at": self.first_complete_scan_at,
+            "last_complete_scan_at": self.last_complete_scan_at,
+            "scan_round": self.scan_round,
+            "last_scan_updated_count": self.last_scan_updated_count,
+            "universe_size": len(self.universe),
+            "universe_sha256": self.universe_sha256,
+            "market_context_sha256": self.market_context_sha256,
+            "state_count": len(path_states),
+            "states": path_states,
+            "path_integrity_failed": self.path_integrity_failed,
+            "path_integrity_reason": self.path_integrity_reason,
+            "machine_fingerprint": self.checkpoint_machine_fingerprint,
+            "runtime_fingerprint": self.checkpoint_runtime_fingerprint,
+            "signal_records": self._json_safe(self.signal_records),
+            "strong_notified": self._strong_notified,
+            "limit_price_fallback_logged": self.limit_price_fallback_logged,
+            "order_placed": self.order_placed,
+            "order_locked_ts_code": self.order_locked_ts_code,
+            "session_orders": self._json_safe(self.session_orders),
+        }
+        try:
+            write_strategy_d_checkpoint(self.checkpoint_path, payload)
+            return True
+        except Exception as exc:
+            self.logger.error("D完整路径检查点保存失败，本轮状态不可用于重启恢复：%s", exc)
+            self.checkpoint_path.unlink(missing_ok=True)
+            return False
+
+    def _restore_ready_checkpoint(self) -> tuple[bool, str]:
+        check = inspect_strategy_d_checkpoint(
+            self.checkpoint_path,
+            trade_date=today_beijing().strftime("%Y%m%d"),
+            now=now_beijing(),
+            max_age_seconds=self.checkpoint_max_age_sec,
+            expected_tracking_start_hhmm=D_TRACKING_START_HHMM,
+            expected_machine_fingerprint=self.checkpoint_machine_fingerprint,
+            expected_runtime_fingerprint=self.checkpoint_runtime_fingerprint,
+            expected_universe_sha256=self.universe_sha256,
+            expected_universe_size=len(self.universe),
+            expected_market_context_sha256=self.market_context_sha256,
+        )
+        if not check.ok:
+            return False, check.reason
+        payload = check.payload
+        valid_field_names = {item.name for item in fields(StockState)}
+        restored_states: dict[str, StockState] = {
+            code: StockState(
+                ts_code=code,
+                name=self.name_map.get(code, ""),
+                market_segment=classify_market_segment(code),
+                circ_mv=float(self.circ_mv_map.get(code, 0.0) or 0.0),
+            )
+            for code in self.universe
+        }
+        try:
+            for ts_code, raw_state in payload["states"].items():
+                if set(raw_state).difference(valid_field_names):
+                    raise ValueError(f"{ts_code}包含未知状态字段")
+                if str(ts_code) not in restored_states:
+                    raise ValueError(f"{ts_code}不在当前股票宇宙")
+                restored_states[str(ts_code)] = StockState(**raw_state)
+        except Exception as exc:
+            return False, f"D逐票状态无法恢复:{exc}"
+        self.states = restored_states
+        self.scan_round = int(payload["scan_round"])
+        self.original_session_start_hhmm = int(payload["original_session_start_hhmm"])
+        self.first_complete_scan_at = str(payload["first_complete_scan_at"])
+        self.last_complete_scan_at = str(payload["last_complete_scan_at"])
+        self.last_scan_updated_count = int(payload["last_scan_updated_count"])
+        records = payload.get("signal_records", [])
+        self.signal_records = list(records) if isinstance(records, list) else []
+        self._strong_notified = bool(payload.get("strong_notified", False))
+        self.limit_price_fallback_logged = bool(
+            payload.get("limit_price_fallback_logged", False)
+        )
+        self._restored_from_checkpoint = True
+        return True, check.reason
 
     # ── 状态更新 ──────────────────────────────────────────────────────────────
 
@@ -1781,6 +1989,14 @@ class StrategyDMonitor:
         batches = self._batches()
         if not batches:
             return
+        # 先原子摧毁上一轮READY检查点。若进程在本轮扫描中途退出，新进程只能看到
+        # SCAN_IN_PROGRESS，绝不会拿上一轮状态跨过一段未知行情继续计数。
+        if not self._invalidate_checkpoint(
+            D_CHECKPOINT_STATUS_SCAN_IN_PROGRESS,
+            f"第{self.scan_round + 1}轮全市场扫描进行中",
+        ):
+            self.path_integrity_failed = True
+            self.path_integrity_reason = "无法使上一轮D检查点失效，不能证明重启恢复路径唯一"
         updated_count = 0
         failures: list[str] = []
         for batch in batches:
@@ -1792,6 +2008,17 @@ class StrategyDMonitor:
                 continue
             if not quotes:
                 failures.append(f"空行情批次({len(batch)}只)")
+                continue
+            requested_codes = {str(code) for code in batch}
+            returned_codes = {str(code) for code in quotes}
+            missing_codes = requested_codes.difference(returned_codes)
+            unexpected_codes = returned_codes.difference(requested_codes)
+            if missing_codes or unexpected_codes:
+                failures.append(
+                    "行情批次成分不完整"
+                    f"(请求{len(requested_codes)}/返回{len(returned_codes)}/"
+                    f"缺失{len(missing_codes)}/意外{len(unexpected_codes)})"
+                )
                 continue
             updated_count += len(quotes)
             self._update_states(quotes)
@@ -1815,6 +2042,7 @@ class StrategyDMonitor:
                 except Exception:
                     pass
         self.scan_round += 1
+        self.last_scan_updated_count = updated_count
         self.logger.info("完成全市场扫描: round=%d updated=%d states=%d", self.scan_round, updated_count, len(self.states))
         # 历史D只取strong，不含very_strong；实时代理必须同时满足上下界。
         sealed = self.sealed_ever_count
@@ -1839,6 +2067,15 @@ class StrategyDMonitor:
                 self.logger.warning("情绪转强推送失败：%s", exc)
         if not self.path_integrity_failed:
             self._check_and_fire()
+            if not self._save_ready_checkpoint():
+                self.logger.warning(
+                    "D本轮扫描仍可在当前进程内继续，但进程重启时将因无有效检查点安全停开。"
+                )
+        else:
+            self._invalidate_checkpoint(
+                D_CHECKPOINT_STATUS_CLOSED,
+                self.path_integrity_reason or "D全市场路径已失效",
+            )
 
     def status_line(self) -> str:
         hhmm = now_hhmm()
@@ -1897,19 +2134,26 @@ class StrategyDMonitor:
 
     def run(self) -> None:
         session_start_hhmm = now_hhmm()
-        self.setup()
-
-        # 回测使用完整日内路径。午后重启若从当前快照重新计数，会把早盘已封/已炸历史
-        # 当成不存在，从而把t_board误判成multi_open。无法重建完整路径时必须fail-closed。
+        if self.original_session_start_hhmm <= 0:
+            self.original_session_start_hhmm = session_start_hhmm
         resumable_in_memory_path = (
             self.scan_round > 0
             and bool(self.states)
             and not self.path_integrity_failed
         )
+        self.setup()
+
+        # 回测使用完整日内路径。午后重启若从当前快照重新计数，会把早盘已封/已炸历史
+        # 当成不存在，从而把t_board误判成multi_open。无法重建完整路径时必须fail-closed。
+        checkpoint_reason = ""
+        if not intraday_history_is_complete(session_start_hhmm) and not resumable_in_memory_path:
+            restored, checkpoint_reason = self._restore_ready_checkpoint()
+            resumable_in_memory_path = restored
         if not intraday_history_is_complete(session_start_hhmm) and not resumable_in_memory_path:
             reason = (
                 f"D监控于{hhmm_to_str(session_start_hhmm)}启动，晚于完整路径截止"
                 f"{hhmm_to_str(D_LATEST_COMPLETE_HISTORY_START_HHMM)}；缺少早盘首次封板/炸板历史，"
+                f"且检查点不可恢复({checkpoint_reason or '无检查点'})，"
                 "按回测严格对齐口径今日禁止D开仓"
             )
             self.logger.error(reason)
@@ -1925,11 +2169,20 @@ class StrategyDMonitor:
                 self.logger.warning("D午后重启阻断推送失败: %s", exc)
             return
         if not intraday_history_is_complete(session_start_hhmm):
-            self.logger.warning(
-                "D监控使用同一对象内存续跑：已保留%d轮、%d只状态，"
-                "不使用重启后快照伪造早盘路径。",
-                self.scan_round, len(self.states),
-            )
+            if self._restored_from_checkpoint:
+                self.logger.warning(
+                    "D监控已安全恢复原子检查点：已保留%d轮、%d只逐票状态；%s。"
+                    "下一轮将从这些状态继续识别真实封板/炸板转换。",
+                    self.scan_round,
+                    len(self.states),
+                    checkpoint_reason,
+                )
+            else:
+                self.logger.warning(
+                    "D监控使用同一对象内存续跑：已保留%d轮、%d只状态，"
+                    "不使用重启后快照伪造早盘路径。",
+                    self.scan_round, len(self.states),
+                )
 
         # ── 串行单仓检测：券商仍有任何旧策略仓就直接退出，不做D ─────────────
         occupied, desc = check_strategy_position_occupied(self.broker if self.live_order else None)
@@ -1970,6 +2223,10 @@ class StrategyDMonitor:
             print("\n用户中断，执行撤单流程...")
 
         self.cancel_all_d_orders()
+        self._invalidate_checkpoint(
+            D_CHECKPOINT_STATUS_CLOSED,
+            "D当日监控已到撤单边界并正常结束",
+        )
         self._print_summary()
 
     def _print_summary(self) -> None:
