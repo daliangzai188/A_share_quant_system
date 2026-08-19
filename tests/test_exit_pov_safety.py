@@ -1236,6 +1236,31 @@ class ExitWatchdogLifecycleTest(unittest.TestCase):
 
         self.assertEqual(handoff.call_count, 2)
 
+    def test_restart_after_1457_without_due_position_does_not_alert_or_block(self) -> None:
+        frozen_now = datetime.datetime(
+            2026, 7, 16, 14, 58, 10, tzinfo=trading_daemon.BEIJING_TZ
+        )
+
+        with patch.object(
+            trading_daemon, "now_beijing", return_value=frozen_now
+        ), patch.object(
+            trading_daemon, "today_beijing", return_value=frozen_now
+        ), patch.object(
+            trading_daemon, "is_trade_day", return_value=True
+        ), patch.object(
+            trading_daemon, "load_positions", return_value=[]
+        ), patch.object(
+            trading_daemon, "logger", return_value=_NoopLog()
+        ), patch.object(
+            trading_daemon, "_notify"
+        ) as notify, patch.object(
+            trading_daemon.time, "sleep", side_effect=_StopWatchdog
+        ):
+            with self.assertRaises(_StopWatchdog):
+                trading_daemon._close_position_watchdog()
+
+        notify.assert_not_called()
+
 
 class LocalExitAccountingTest(unittest.TestCase):
     @staticmethod

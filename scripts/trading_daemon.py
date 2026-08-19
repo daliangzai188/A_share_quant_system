@@ -5784,6 +5784,26 @@ def _watchdog_reconcile_after_close(broker_cfg: dict, log: Any) -> None:
         )
 
 
+def _due_positions_for_close_handoff(
+    today_str: str,
+    positions: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """返回今天必须参与收盘交接的本系统持仓。
+
+    看门狗线程可能在14:57后随daemon一起重启。此时进程内的``fired``标记
+    必然为空，不能把“没有内存标记”直接解释成“撤单失败”。只有仍存在到期
+    open/sell_pending持仓时，才需要恢复撤单交接状态并可能发送人工告警。
+    """
+    source = load_positions() if positions is None else positions
+    return [
+        position
+        for position in source
+        if str(position.get("status", "")).lower() in {"open", "sell_pending"}
+        and str(position.get("planned_exit_date", "99991231")) <= today_str
+        and not _position_manual_exit_only(position)
+    ]
+
+
 def _close_position_watchdog() -> None:
     """14:56/14:57:05/14:57:40/14:59 按实际持仓与活跃SELL核查补差额。
 
@@ -5826,16 +5846,24 @@ def _close_position_watchdog() -> None:
                         source="尾盘成交即时确认",
                     )
                 auction_handoff_key = f"{today_str}-auction-handoff"
+                due_for_handoff = _due_positions_for_close_handoff(today_str)
+                if (
+                    auction_handoff_key not in fired
+                    and t >= datetime.time(14, 57)
+                    and not due_for_handoff
+                ):
+                    # daemon在14:57后重启时fired为空属于正常内存状态。若本地已经
+                    # 没有到期仓，则既没有旧平仓单需要撤，也没有余仓需要补挂；
+                    # 直接恢复“交接完成”，避免空仓误报并避免看门狗每秒空转阻断。
+                    fired.add(auction_handoff_key)
+                    log.info(
+                        "[收盘竞价交接] 14:57后启动检查：当前无到期持仓，"
+                        "已按安全空状态恢复交接完成标记。"
+                    )
                 if (
                     auction_handoff_key not in fired
                     and SCHED_CLOSE_AUCTION_HANDOFF <= t < datetime.time(14, 57)
                 ):
-                    due_for_handoff = [
-                        p for p in load_positions()
-                        if str(p.get("status", "")).lower() in {"open", "sell_pending"}
-                        and str(p.get("planned_exit_date", "99991231")) <= today_str
-                        and not _position_manual_exit_only(p)
-                    ]
                     if due_for_handoff:
                         handoff_cfg = load_json_config(PROJECT_ROOT / "config" / "config.json")
                         seconds_to_auction = (

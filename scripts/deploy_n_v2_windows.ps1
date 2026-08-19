@@ -24,7 +24,7 @@ $TradeCountReady = Select-String `
     -Quiet
 $ReleaseReady = Select-String `
     -Path $FreezePath `
-    -SimpleMatch '"release_id": "portfolio-20260819-n-v2-live-v7.0"' `
+    -SimpleMatch '"release_id": "portfolio-20260819-n-v2-live-v7.1"' `
     -Quiet
 
 if (-not ($VersionReady -and $TradeCountReady -and $ReleaseReady)) {

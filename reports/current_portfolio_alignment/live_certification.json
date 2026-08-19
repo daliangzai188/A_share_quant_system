@@ -3,7 +3,7 @@
   "status": "PASS_WITH_RISK_ACCEPTANCE",
   "current_executable": true,
   "scenario": "current_d_a_m_e_c_n",
-  "generated_at": "2026-08-19T07:49:59.513860+00:00",
+  "generated_at": "2026-08-19T08:23:36.842953+00:00",
   "input_start_date": "20240520",
   "input_end_date": "20260514",
   "signal_day_count": 481,
@@ -72,7 +72,7 @@
     "src/strategy_n.py",
     "src/strategy_d_spec.py"
   ],
-  "code_sha256": "c66a48457f9aadee5eec902e29425e9c04c5635be0934d46f4b6504c9b5b5bf3",
+  "code_sha256": "03ad40bcb63edae4c4bd4663bf21d42ae4d1ab2e024a401fd45e7dabd85df800",
   "input_files": [
     "reports/current_portfolio_alignment/input_manifest.json"
   ],
