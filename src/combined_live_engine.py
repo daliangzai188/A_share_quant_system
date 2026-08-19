@@ -45,7 +45,7 @@ D 排第一不是优化结果，是时序决定的——D 在信号日**盘中**
          A 的最高优先级，与认证脚本 pick_by_priority 不一致，本次拆开收口）
 
 对应的回测口径见certify_current_executable_portfolio.pick_by_priority。改任何一侧
-都要重跑认证：当前实盘核对145笔/4445.281570x/-23.5062%，
+都要重跑认证：当前实盘核对145笔/2992.901872x/-23.5062%，
 并核对M风险接受认证状态。
 
 复现：python scripts/certify_current_executable_portfolio.py

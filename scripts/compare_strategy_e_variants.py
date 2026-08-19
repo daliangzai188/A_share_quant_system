@@ -690,10 +690,10 @@ def replay_full_portfolio(
             and not portfolio.hit_limit_up(signal_date, occupied_code)
         )
         occupied_until = occupied_leg = occupied_code = ""
-        if (
-            abs(portfolio.to_float(baseline_row.get("d_return"))) > portfolio.EPSILON
-            and not blocking_handoff
-        ):
+        # D 是盘中独立扫描腿。是否触发必须取完整逐日 D 候选表，不能再用
+        # 旧 A/B/C 组合回放里的 d_return 标记；该标记已经提前删除了被旧组合
+        # 占仓的 D 日期，会把所有 E 版本的完整组合复利共同高估。
+        if signal_date in sources.strategy_d.index and not blocking_handoff:
             selected = portfolio.d_t2_candidate(sources, signal_date)
         else:
             selected = pick_current_priority(
@@ -1001,7 +1001,7 @@ def write_report(
         markdown_table(validation),
         "",
         "旧 E 的151行锁定回放、R1的50行锁定明细和当前门禁后的43行锁定明细，均逐票、",
-        "逐买卖日、逐收益复现；把输入重新缩回旧43候选时，完整组合也精确复现当前发布标尺。",
+        "逐买卖日、逐收益复现；当前82个完整候选日放回五策略后也精确复现发布标尺。",
         "正式回放使用完整逐日候选，不再把50/43行历史成交名单误当成完整候选池。",
         "",
         "## E单腿分年",

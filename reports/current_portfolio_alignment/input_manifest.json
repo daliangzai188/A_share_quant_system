@@ -21,9 +21,9 @@
       "sha256": "30ebac139d6f716755ad15657578f8921b2604ae90d722e6811af5c20e3031f0"
     },
     {
-      "path": "reports/strategy_d/d_trades.csv",
-      "size": 6736,
-      "sha256": "8a9a148aaeadf8f4bb05e4c04f6c73ea35cf1a923f5ce0c976c0dcc6616ebc0f"
+      "path": "reports/strategy_d/d_daily_candidates.csv",
+      "size": 43236,
+      "sha256": "8439f55d0c60f7cef70f15f237c8d88c696efcc7238a7add3aa9ce7fd3fcb384"
     },
     {
       "path": "reports/strategy_e_samples/e_r1_daily_candidates_full.csv",

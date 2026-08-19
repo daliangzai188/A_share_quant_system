@@ -20,7 +20,8 @@
 输出：
   reports/strategy_d/
     backtest_summary.csv     - 总体指标对比（A+B+C vs A+B+C+D）
-    d_trades.csv             - D策略逐笔明细
+    d_daily_candidates.csv   - D完整逐日第一名候选；不受任何旧组合占仓状态裁剪
+    d_trades.csv             - 旧A/B/C占仓路径下的D逐笔审计明细，不得再作为当前组合候选门
     equity_curve.csv         - 逐日净值曲线
     yearly_comparison.csv    - 年度对比
 
@@ -179,6 +180,33 @@ def pick_d_candidate(day_candidates: pd.DataFrame) -> pd.Series | None:
         ["_d_rank_key"],
         ascending=[False],
     ).iloc[0]
+
+
+def build_daily_candidate_ledger(d_candidates: pd.DataFrame) -> pd.DataFrame:
+    """逐日锁定D第一名，不读取也不裁剪任何组合持仓状态。
+
+    D实盘每天盘中独立扫描，是否能下单由当时真实账户持仓决定。因此组合认证必须
+    先拥有完整的逐日D第一名，再由统一串行回放判断当天是否占仓；不能反过来用
+    旧A/B/C回放的``POSITION_OCCUPIED_SKIP``提前删除D候选。
+    """
+
+    rows: list[dict[str, object]] = []
+    for signal_date, day_rows in d_candidates.groupby("trade_date", sort=True):
+        picked = pick_d_candidate(day_rows)
+        if picked is None:
+            continue
+        record = picked.to_dict()
+        record["signal_date"] = str(signal_date)
+        record["daily_candidate_count"] = int(len(day_rows))
+        rows.append(record)
+    if not rows:
+        return pd.DataFrame()
+    return (
+        pd.DataFrame(rows)
+        .sort_values("signal_date")
+        .drop_duplicates("signal_date", keep="last")
+        .reset_index(drop=True)
+    )
 
 
 def safe_float(value: object, default: float = 0.0) -> float:
@@ -453,6 +481,16 @@ def main() -> None:
     abc_dates = set(abc_detail["signal_date"])
     d_in_window = d_candidates[d_candidates["trade_date"].isin(abc_dates)]
     print(f"  与A+B+C回测窗口重叠: {len(d_in_window)} 条，{d_in_window['trade_date'].nunique()} 天")
+
+    # 先固化完整逐日D第一名。该账本不读取旧A/B/C占仓状态，是当前组合认证唯一
+    # 允许使用的D候选来源。
+    d_daily_candidates = build_daily_candidate_ledger(d_in_window)
+    if d_daily_candidates.empty:
+        raise RuntimeError("D完整逐日候选账本为空，拒绝继续回测")
+    d_daily_candidates.to_csv(
+        OUTPUT_DIR / "d_daily_candidates.csv", index=False, encoding="utf-8-sig"
+    )
+    print(f"  D完整逐日第一名: {len(d_daily_candidates)} 天（未按旧组合占仓裁剪）")
 
     print(f"\n运行模拟（打板成功率={args.fill_rate:.0%}）...")
     df_abc, df_abcd, d_log = run_simulation(

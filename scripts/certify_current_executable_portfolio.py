@@ -76,7 +76,7 @@ ABC_PATH = (
     / "backup_strategy_c"
     / "current_config_c_exit_refine_exit5_20240520_20260514_481d_best_abc_detail.csv"
 )
-D_PATH = PROJECT_ROOT / "reports" / "strategy_d" / "d_trades.csv"
+D_PATH = PROJECT_ROOT / "reports" / "strategy_d" / "d_daily_candidates.csv"
 E_PATH = (
     PROJECT_ROOT
     / "reports"
@@ -160,7 +160,8 @@ EPSILON = 1e-12
 #   OPTIMIZED 135 / 8350.331871673612 WITH_M 151 / 24911.38506562485
 # 当前正式组合的冻结回归锚点；任何输入、顺序或成交口径漂移都必须显式审查。
 EXPECTED_CURRENT_TRADE_COUNT = 145
-EXPECTED_CURRENT_MULTIPLE = 4445.281570391435
+EXPECTED_CURRENT_MULTIPLE = 2992.901871880808
+EXPECTED_D_DAILY_CANDIDATE_COUNT = 45
 
 
 @dataclass(frozen=True)
@@ -230,6 +231,17 @@ def load_sources() -> Sources:
 
     strategy_d = pd.read_csv(D_PATH, dtype={"signal_date": str}, low_memory=False)
     strategy_d["signal_date"] = strategy_d["signal_date"].map(normalize_date)
+    if strategy_d["signal_date"].eq("").any() or strategy_d["signal_date"].duplicated().any():
+        raise ValueError("D完整逐日候选账本日期为空或重复")
+    if len(strategy_d) != EXPECTED_D_DAILY_CANDIDATE_COUNT:
+        raise ValueError(
+            "D完整逐日候选账本必须恰好"
+            f"{EXPECTED_D_DAILY_CANDIDATE_COUNT}个唯一信号日，当前{len(strategy_d)}"
+        )
+    required_d_columns = {"ts_code", "limit_close", "exit_close"}
+    missing_d_columns = sorted(required_d_columns.difference(strategy_d.columns))
+    if missing_d_columns:
+        raise ValueError("D完整逐日候选账本缺少字段：" + ",".join(missing_d_columns))
     strategy_d = strategy_d.drop_duplicates("signal_date", keep="last").set_index(
         "signal_date"
     )
@@ -595,7 +607,10 @@ def replay(
         occupied_until = occupied_leg = occupied_code = ""
         # D在信号日盘中发生，早于收盘后其余各腿的计划——D 的位置由时序锁死，
         # 不是可优化项（"看到别的腿有票就不做D"需要预知几小时后的收盘结果）。
-        if abs(to_float(row.get("d_return"))) > EPSILON and not blocking_handoff:
+        # D必须直接读取完整逐日候选账本。旧写法用baseline.d_return作门，而该字段
+        # 来自曾被旧A/B/C POSITION_OCCUPIED_SKIP裁剪的D交易表，会漏掉当前组合
+        # 账户实际空闲日的D信号，造成组合资金曲线偏乐观。
+        if signal_date in sources.strategy_d.index and not blocking_handoff:
             # 2026-08-07 接力全关：D 一律走自己的 T+2 收盘平仓，平仓当天不开新仓，
             # 下一个信号日才轮到别的腿。与实盘 combined_live_engine 同口径
             # （见该文件顶部「腿序与接力口径」）。

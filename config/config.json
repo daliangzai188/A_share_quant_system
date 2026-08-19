@@ -48,8 +48,8 @@
     "research_audit": {
       "window": "20240520~20260514",
       "m_trade_count": 28,
-      "portfolio_without_m": 2499.601851,
-      "portfolio_with_m_dd_guard": 4445.28157,
+      "portfolio_without_m": 1682.922204,
+      "portfolio_with_m_dd_guard": 2992.901872,
       "portfolio_max_drawdown_without_m": -0.235062,
       "portfolio_max_drawdown_with_m_dd_guard": -0.235062,
       "m_noninferiority_issue": "含M全样本复利提高77.84%，但自然年2025比不含M低10.46%，因此仍按风险接受而不是统计通过。",
@@ -94,27 +94,27 @@
       "certification_invalidated": false,
       "trade_count": 145,
       "m_trade_count": 28,
-      "win_rate": 0.682759,
-      "avg_return": 0.065396,
-      "median_return": 0.034049,
-      "equity_multiple": 4445.28157,
-      "fixed_initial_notional_multiple": 10.482432,
+      "win_rate": 0.655172,
+      "avg_return": 0.062532,
+      "median_return": 0.032892,
+      "equity_multiple": 2992.901872,
+      "fixed_initial_notional_multiple": 10.067125,
       "capacity_certified": false,
       "max_drawdown": -0.235062,
       "max_loss": -0.138583,
       "max_consecutive_losses": 5,
       "scenario": "current_d_a_m_e_c",
       "research_with_m": {
-        "equity_multiple": 4445.28157,
+        "equity_multiple": 2992.901872,
         "trade_count": 145,
         "max_drawdown": -0.235062
       },
       "without_m_reference": {
-        "equity_multiple": 2499.601851,
+        "equity_multiple": 1682.922204,
         "trade_count": 128,
         "max_drawdown": -0.235062
       },
-      "note": "按完整481个信号日逐日回放，当前有效顺序D>A>M>E>C，共145笔、复利4445.281570倍。M仍有2025分段劣化，按既有用户风险接受保留；历史复利不代表实盘预期，82.5%仓位的资金容量尚未认证。复现:python3 scripts/certify_current_executable_portfolio.py"
+      "note": "按完整481个信号日逐日回放，D直接使用45个完整逐日第一名候选、再由统一账户时间线判断占仓；当前有效顺序D>A>M>E>C，共145笔、复利2992.901872倍。旧4445.281570倍误用了已被旧A/B/C占仓路径提前裁剪的D候选，不再作为发布标尺。M仍有2025分段劣化，按既有用户风险接受保留；历史复利不代表实盘预期，82.5%仓位的资金容量尚未认证。复现:python3 scripts/certify_current_executable_portfolio.py"
     }
   },
   "live_performance_report": {

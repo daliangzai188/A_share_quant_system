@@ -65,14 +65,14 @@ PORTFOLIO_TRADES_PATH = (
     / "current_portfolio_alignment"
     / "portfolio_trades.csv"
 )
-D_TRADES_PATH = PROJECT_ROOT / "reports" / "strategy_d" / "d_trades.csv"
+D_TRADES_PATH = PROJECT_ROOT / "reports" / "strategy_d" / "d_daily_candidates.csv"
 OUTPUT_DIR = PROJECT_ROOT / "reports" / "strategy_d" / "exit_pov"
-# 2026-08-18当前D>A>M>E>C发布标尺；容量仍未认证。
+# 2026-08-19按D完整逐日候选纠正后的D>A>M>E>C发布标尺；容量仍未认证。
 EXPECTED_D_COUNT = 17
 EXPECTED_PORTFOLIO_COUNT = 145
-EXPECTED_PORTFOLIO_MULTIPLE = 4445.281570391435
+EXPECTED_PORTFOLIO_MULTIPLE = 2992.901871880808
 EXPECTED_PORTFOLIO_DRAWDOWN = -0.2350622889485845
-EXPECTED_D_MULTIPLE = 2.6806440750778164
+EXPECTED_D_MULTIPLE = 2.0562709470700513
 EPSILON = 1e-9
 
 
@@ -168,17 +168,13 @@ def load_trade_metadata() -> tuple[pd.DataFrame, pd.DataFrame]:
     )
     historical_d["signal_date"] = historical_d["signal_date"].map(normalize_date)
     historical_d = historical_d.drop_duplicates("signal_date", keep="last")
-    fields = historical_d[
-        ["signal_date", "limit_close", "exit_close", "exit_rule"]
-    ].copy()
+    fields = historical_d[["signal_date", "limit_close", "exit_close"]].copy()
     fields["limit_close"] = pd.to_numeric(fields["limit_close"], errors="coerce")
     fields["exit_close"] = pd.to_numeric(fields["exit_close"], errors="coerce")
     ordinary = ordinary.merge(fields, on="signal_date", how="left", validate="one_to_one")
 
-    # d_trades 的 exit_close 只在"当年那次回放判定为普通D"的行上落盘：判成
-    # T+1_open 接力的行不需要T+2退出价，字段是空的。A/C 候选修正后（见 certify
-    # 的 load_ac_daily）部分日子的接力关系变了，这些行缺 exit_close。
-    # certify 的 d_t2_candidate 遇到同样情况直接读日线回补，这里保持一致口径。
+    # 完整逐日D候选原则上已经带T+2退出价；若旧数据迁移或停牌顺延造成字段缺失，
+    # 与正式认证的d_t2_candidate保持一致，按组合记录的实际退出日读日线回补。
     missing_exit = ordinary["exit_close"].isna() | ordinary["exit_close"].le(0)
     if missing_exit.any():
         ordinary.loc[missing_exit, "exit_close"] = [

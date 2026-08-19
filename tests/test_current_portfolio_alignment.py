@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from scripts.certify_current_executable_portfolio import (
+    EXPECTED_D_DAILY_CANDIDATE_COUNT,
     EXPECTED_CURRENT_MULTIPLE,
     EXPECTED_CURRENT_TRADE_COUNT,
     e_entry_gate_validation,
@@ -47,7 +48,7 @@ class CurrentPortfolioAlignmentTests(unittest.TestCase):
         )
 
         self.assertEqual(without_m["executed_trade_count"], 128)
-        self.assertAlmostEqual(without_m["equity_multiple"], 2499.601851190941, places=8)
+        self.assertAlmostEqual(without_m["equity_multiple"], 1682.9222043469645, places=8)
         self.assertEqual(without_m["m_trade_count"], 0)
         self.assertEqual(current["m_trade_count"], 28)
         self.assertGreater(current["equity_multiple"], without_m["equity_multiple"])
@@ -79,13 +80,20 @@ class CurrentPortfolioAlignmentTests(unittest.TestCase):
             "current_d_a_m_e_c",
         )
         self.assertEqual(metrics["d_trade_count"], 17)
-        self.assertEqual(metrics["a_trade_count"], 46)
+        self.assertEqual(metrics["a_trade_count"], 44)
         self.assertEqual(metrics["m_trade_count"], 28)
         self.assertEqual(metrics["e_trade_count"], 38)
-        self.assertEqual(metrics["c_trade_count"], 16)
+        self.assertEqual(metrics["c_trade_count"], 18)
         self.assertEqual(metrics["d_to_a_trade_count"], 0)
         self.assertEqual(metrics["d_to_c_trade_count"], 0)
         self.assertEqual(metrics["d_to_e_trade_count"], 0)
+
+    def test_d_source_is_the_complete_daily_candidate_ledger(self) -> None:
+        self.assertEqual(len(self.sources.strategy_d), EXPECTED_D_DAILY_CANDIDATE_COUNT)
+        self.assertEqual(self.sources.strategy_d.index.nunique(), 45)
+        self.assertIn("20241129", self.sources.strategy_d.index)
+        self.assertIn("20241212", self.sources.strategy_d.index)
+        self.assertIn("20250414", self.sources.strategy_d.index)
 
 
 if __name__ == "__main__":
