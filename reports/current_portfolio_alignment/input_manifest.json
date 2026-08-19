@@ -48,8 +48,8 @@
     },
     {
       "path": "reports/strategy_n/n_backtest_candidates.csv",
-      "size": 9046,
-      "sha256": "84b6b9df1797ec9d8e6a2c658e78429a3e05318605651b9b05efec1a5575bc1c"
+      "size": 26529,
+      "sha256": "cd03573cb02f525dbb722aafea64c0b05ee45c8670a4b1b13ae4dede43919dca"
     },
     {
       "path": "config/strategy_e_r1_scenarios.json",

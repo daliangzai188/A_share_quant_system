@@ -17,11 +17,13 @@ from src.strategy_n import load_n_spec, select_n_daily_picks  # noqa: E402
 
 START_DATE = "20240520"
 END_DATE = "20260514"
-EXPECTED_CANDIDATE_DAYS = 46
-EXPECTED_PORTFOLIO_N_TRADES = 16
+EXPECTED_CANDIDATE_DAYS = 106
+EXPECTED_PORTFOLIO_N_TRADES = 35
 OUTPUT_DIR = PROJECT_ROOT / "reports" / "strategy_n"
 OUTPUT_PATH = OUTPUT_DIR / "n_backtest_candidates.csv"
-LOCKED_EXECUTED_PATH = PROJECT_ROOT / "reports" / "strategy_n_expansion" / "selected_n_trades.csv"
+LOCKED_EXECUTED_PATH = (
+    PROJECT_ROOT / "reports" / "strategy_n_v2_research" / "locked_portfolio_trades.csv"
+)
 
 
 def main() -> None:
@@ -46,6 +48,10 @@ def main() -> None:
             "market_segment": str(getattr(row, "market_segment", "")),
             "segment_limit_max_height_bucket": str(row.segment_limit_max_height_bucket),
             "segment_retreat_state_bucket": str(row.segment_retreat_state_bucket),
+            "market_chain_count_bucket": str(getattr(row, "market_chain_count_bucket", "")),
+            "market_emotion_state_bucket": str(getattr(row, "market_emotion_state_bucket", "")),
+            "n_branch": str(getattr(row, "n_branch", "")),
+            "n_rule_id": str(getattr(row, "n_rule_id", "")),
             "first_time": str(getattr(row, "first_time", "")),
             "first_time_minutes": float(row.first_time_minutes),
             "circ_mv": float(row.circ_mv),
@@ -68,8 +74,9 @@ def main() -> None:
         dtype={"signal_date": str, "ts_code": str},
         low_memory=False,
     )
+    locked = locked[locked["strategy_leg"].astype(str).eq("N")].copy()
     if len(locked) != EXPECTED_PORTFOLIO_N_TRADES:
-        raise RuntimeError("N研究组合入选明细不是16笔")
+        raise RuntimeError("N双分支研究组合入选明细不是35笔")
     compare = locked[["signal_date", "ts_code"]].merge(
         result[["trade_date", "ts_code"]],
         left_on="signal_date",
@@ -78,7 +85,7 @@ def main() -> None:
         suffixes=("_expected", "_actual"),
     )
     if not compare["ts_code_expected"].eq(compare["ts_code_actual"]).all():
-        raise RuntimeError("N唯一规则源与研究组合16笔逐票不一致：\n" + compare.to_string(index=False))
+        raise RuntimeError("N唯一规则源与研究组合35笔逐票不一致：\n" + compare.to_string(index=False))
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     result.to_csv(OUTPUT_PATH, index=False, encoding="utf-8-sig")

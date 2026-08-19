@@ -5,11 +5,12 @@ N只在D/A/M/E/C均未占用资金后参与组合选择，正式腿序为
 每日信号和实盘组合必须共同调用这里，禁止各自复制条件。
 
 锁定规则：
-1. ``segment_limit_max_height_bucket == "1"``；
-2. ``segment_retreat_state_bucket`` 属于 ``retreat_weak/retreat_2day``；
-3. 通过成交可靠性、异常封单、策略兼容和成交概率>=60%的共同底线；
-4. 每日按首次涨停分钟升序、流通市值升序、代码升序取第一名；
-5. 第一名次日不可买时当日放弃，不回补第二名；T+1开盘买、T+2收盘卖。
+1. 第一分支：``segment_limit_max_height_bucket == "1"``且退潮状态为
+   ``retreat_weak/retreat_2day``，按首次涨停分钟、流通市值、代码升序取第一名；
+2. 仅在第一分支当日无候选时，第二分支要求全市场连板数``3_8``且市场情绪
+   ``mixed``，按成交额降序、流通市值升序、代码升序取第一名；
+3. 两分支都通过成交可靠性、异常封单、策略兼容和成交概率>=60%的共同底线；
+4. 第一名次日不可买时当日放弃，不回补第二名；T+1开盘买、T+2收盘卖。
 """
 from __future__ import annotations
 
@@ -18,7 +19,7 @@ from typing import Any, Mapping
 import pandas as pd
 
 
-N_VERSION = "N_low_height_retreat_first_time_v1"
+N_VERSION = "N_two_branch_retreat_plus_mixed_amount_v2"
 
 DEFAULT_SPEC: dict[str, Any] = {
     "enabled": False,
@@ -29,6 +30,14 @@ DEFAULT_SPEC: dict[str, Any] = {
     "retreat_values": ["retreat_weak", "retreat_2day"],
     "rank_columns": ["first_time_minutes", "circ_mv", "ts_code"],
     "rank_ascending": [True, True, True],
+    "supplement_enabled": False,
+    "supplement_filter_columns": [
+        "market_chain_count_bucket",
+        "market_emotion_state_bucket",
+    ],
+    "supplement_filter_values": [["3_8"], ["mixed"]],
+    "supplement_rank_columns": ["amount", "circ_mv", "ts_code"],
+    "supplement_rank_ascending": [False, True, True],
     "min_fill_probability": 0.60,
     "exit_hold_offset": 2,
     "position_pct": 0.825,
@@ -59,6 +68,9 @@ def load_n_spec(config: Mapping[str, Any]) -> dict[str, Any]:
         str(spec["retreat_column"]),
         *[str(value) for value in spec["rank_columns"]],
     ]
+    if bool(spec.get("supplement_enabled", False)):
+        columns.extend(str(value) for value in spec["supplement_filter_columns"])
+        columns.extend(str(value) for value in spec["supplement_rank_columns"])
     forbidden = sorted(
         column for column in columns
         if column in FORBIDDEN_SELECTION_FIELDS
@@ -68,6 +80,10 @@ def load_n_spec(config: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError(f"N规则含未来字段：{forbidden}")
     if len(spec["rank_columns"]) != len(spec["rank_ascending"]):
         raise ValueError("N排序字段与方向数量不一致")
+    if len(spec["supplement_filter_columns"]) != len(spec["supplement_filter_values"]):
+        raise ValueError("N补充分支筛选字段与取值数量不一致")
+    if len(spec["supplement_rank_columns"]) != len(spec["supplement_rank_ascending"]):
+        raise ValueError("N补充分支排序字段与方向数量不一致")
     if bool(spec.get("fallback_to_second_candidate", False)):
         raise ValueError("N禁止第一名不可买后回补第二名")
     if int(spec.get("exit_hold_offset", 0)) != 2:
@@ -76,12 +92,16 @@ def load_n_spec(config: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def required_signal_fields(spec: Mapping[str, Any]) -> set[str]:
-    return {
+    fields = {
         "trade_date", "ts_code", "name", "limit_close", "market_segment",
         "allow_buy_reliable", "is_fill_score_reliable", "is_fd_amount_abnormal",
         "strategy_compatible", "fill_probability", str(spec["height_column"]),
         str(spec["retreat_column"]), *[str(value) for value in spec["rank_columns"]],
     }
+    if bool(spec.get("supplement_enabled", False)):
+        fields.update(str(value) for value in spec["supplement_filter_columns"])
+        fields.update(str(value) for value in spec["supplement_rank_columns"])
+    return fields
 
 
 def _bool_series(frame: pd.DataFrame, column: str, default: bool) -> pd.Series:
@@ -138,34 +158,89 @@ def select_n_daily_picks(
             raise RuntimeError("N信号日关键字段不可用：" + "、".join(broken))
 
     rows = apply_n_base_filters(rows, spec)
+    if rows.empty:
+        return rows
+
+    def rank_branch(
+        branch_rows: pd.DataFrame,
+        *,
+        rank_columns: list[str],
+        rank_ascending: list[bool],
+        branch: str,
+        rule_id: str,
+    ) -> pd.DataFrame:
+        if branch_rows.empty:
+            return branch_rows
+        ranked = branch_rows.copy()
+        for column in rank_columns:
+            if column != "ts_code":
+                ranked[column] = pd.to_numeric(ranked[column], errors="coerce")
+        ranked = ranked.dropna(
+            subset=[column for column in rank_columns if column != "ts_code"]
+        )
+        if ranked.empty:
+            return ranked
+        group_prefix = ["trade_date"] if signal_date is None else []
+        ranked = ranked.sort_values(
+            group_prefix + rank_columns,
+            ascending=([True] if group_prefix else []) + rank_ascending,
+            na_position="last",
+        )
+        ranked = (
+            ranked.groupby("trade_date", as_index=False).head(1)
+            if signal_date is None
+            else ranked.head(1)
+        )
+        ranked = ranked.copy()
+        ranked["n_branch"] = branch
+        ranked["n_rule_id"] = rule_id
+        return ranked
+
     height_values = {str(value) for value in spec["height_values"]}
     retreat_values = {str(value) for value in spec["retreat_values"]}
-    rows = rows[
+    current_rows = rows[
         rows[str(spec["height_column"])].astype(str).isin(height_values)
         & rows[str(spec["retreat_column"])].astype(str).isin(retreat_values)
     ].copy()
-    if rows.empty:
-        return rows
-
-    rank_columns = [str(value) for value in spec["rank_columns"]]
-    for column in rank_columns:
-        if column != "ts_code":
-            rows[column] = pd.to_numeric(rows[column], errors="coerce")
-    rows = rows.dropna(subset=[column for column in rank_columns if column != "ts_code"])
-    if rows.empty:
-        return rows
-
-    group_prefix = ["trade_date"] if signal_date is None else []
-    ordered = rows.sort_values(
-        group_prefix + rank_columns,
-        ascending=([True] if group_prefix else []) + [bool(v) for v in spec["rank_ascending"]],
-        na_position="last",
+    current = rank_branch(
+        current_rows,
+        rank_columns=[str(value) for value in spec["rank_columns"]],
+        rank_ascending=[bool(value) for value in spec["rank_ascending"]],
+        branch="CURRENT",
+        rule_id="LOW_HEIGHT_RETREAT_FIRST_TIME",
     )
-    if signal_date is None:
-        ordered = ordered.groupby("trade_date", as_index=False).head(1)
-    else:
-        ordered = ordered.head(1)
-    return ordered.reset_index(drop=True)
+
+    if not bool(spec.get("supplement_enabled", False)):
+        return current.reset_index(drop=True)
+
+    supplement_rows = rows.copy()
+    for column, accepted in zip(
+        spec["supplement_filter_columns"],
+        spec["supplement_filter_values"],
+    ):
+        values = {str(value) for value in accepted}
+        supplement_rows = supplement_rows[
+            supplement_rows[str(column)].astype(str).isin(values)
+        ]
+    supplement = rank_branch(
+        supplement_rows,
+        rank_columns=[str(value) for value in spec["supplement_rank_columns"]],
+        rank_ascending=[bool(value) for value in spec["supplement_rank_ascending"]],
+        branch="SUPPLEMENT",
+        rule_id="CHAIN_3_8_MIXED_AMOUNT_DESC",
+    )
+
+    # 当前N永远是第一分支；补充分支只能填当前分支完全无候选的日期。
+    combined = pd.concat([current, supplement], ignore_index=True)
+    if combined.empty:
+        return combined
+    combined["_branch_priority"] = combined["n_branch"].map(
+        {"CURRENT": 0, "SUPPLEMENT": 1}
+    ).fillna(9)
+    combined = combined.sort_values(
+        ["trade_date", "_branch_priority"], ascending=[True, True]
+    ).drop_duplicates("trade_date", keep="first")
+    return combined.drop(columns=["_branch_priority"]).reset_index(drop=True)
 
 
 def resolve_exit_offset(spec: Mapping[str, Any]) -> int:

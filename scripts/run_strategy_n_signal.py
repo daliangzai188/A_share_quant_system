@@ -1,7 +1,8 @@
-"""策略N每日收盘信号生成；不直接提交委托。
+"""策略N双分支每日收盘信号生成；不直接提交委托。
 
 N是正式组合最低优先级腿。脚本会先用与E相同的80日bucket特征链计算N第一名，
-再检查账户持仓以及A/M/E/C上游计划；被占用时只保存候选审计，不生成正式信号。
+第一分支无候选时才检查3_8连板/mixed情绪补充分支，再检查账户持仓以及
+A/M/E/C上游计划；被占用时只保存候选审计，不生成正式信号。
 """
 from __future__ import annotations
 
@@ -80,6 +81,8 @@ def save_candidates(signal_date: str, candidates: pd.DataFrame, dry_run: bool) -
         value for value in (
             "trade_date", "ts_code", "name", "market_segment",
             "segment_limit_max_height_bucket", "segment_retreat_state_bucket",
+            "market_chain_count_bucket", "market_emotion_state_bucket",
+            "n_branch", "n_rule_id",
             "first_time", "first_time_minutes", "circ_mv", "limit_close",
             "fill_probability", "allow_buy_reliable", "is_fill_score_reliable",
             "is_fd_amount_abnormal", "strategy_compatible",
@@ -126,6 +129,10 @@ def build_signal(signal_date: str, row: pd.Series, spec: dict[str, Any]) -> dict
         "market_segment": str(row.get("market_segment", "")),
         "segment_limit_max_height_bucket": str(row.get("segment_limit_max_height_bucket", "")),
         "segment_retreat_state_bucket": str(row.get("segment_retreat_state_bucket", "")),
+        "market_chain_count_bucket": str(row.get("market_chain_count_bucket", "")),
+        "market_emotion_state_bucket": str(row.get("market_emotion_state_bucket", "")),
+        "n_branch": str(row.get("n_branch", "")),
+        "n_rule_id": str(row.get("n_rule_id", "")),
         "first_time": str(row.get("first_time", "")),
         "first_time_minutes": float(pd.to_numeric(row.get("first_time_minutes"), errors="coerce")),
         "circ_mv": float(pd.to_numeric(row.get("circ_mv"), errors="coerce")),
@@ -170,7 +177,7 @@ def main() -> None:
         return
 
     if candidates.empty:
-        reason = "低高度退潮条件无候选"
+        reason = "N第一分支与补充分支均无候选"
         print(f"[N信号] 不触发：{reason}")
         record_run(signal_date, NO_CANDIDATE, reason, dry_run=args.dry_run, candidate_count=0)
         return
@@ -186,6 +193,7 @@ def main() -> None:
     signal = build_signal(signal_date, candidates.iloc[0], spec)
     print(
         f"[N信号] ✅ 命中 {signal['ts_code']} {signal['name']}；"
+        f"分支={signal['n_branch']}；"
         f"{signal['planned_buy_date']}开盘买，{signal['planned_exit_date']}收盘卖"
     )
     if not bool(spec.get("live_order_enabled", False)):
@@ -195,7 +203,7 @@ def main() -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     save_recent_signal(SIGNAL_PATH, signal, strategy_leg="N", max_trade_days=10)
     record_run(
-        signal_date, SIGNAL_READY, "低高度退潮第一名通过全部条件",
+        signal_date, SIGNAL_READY, f"N分支{signal['n_branch']}第一名通过全部条件",
         dry_run=False, candidate_count=1, signal=signal,
     )
     print(f"[N信号] 已写入 {SIGNAL_PATH}")

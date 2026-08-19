@@ -163,9 +163,10 @@ EPSILON = 1e-12
 #   BASE 133 / 5140.7613530121025    E_ONLY 132 / 5755.436166596083
 #   OPTIMIZED 135 / 8350.331871673612 WITH_M 151 / 24911.38506562485
 # 当前正式组合的冻结回归锚点；任何输入、顺序或成交口径漂移都必须显式审查。
-EXPECTED_CURRENT_TRADE_COUNT = 155
-EXPECTED_CURRENT_MULTIPLE = 7108.624210380326
+EXPECTED_CURRENT_TRADE_COUNT = 174
+EXPECTED_CURRENT_MULTIPLE = 9508.426795072035
 EXPECTED_D_DAILY_CANDIDATE_COUNT = 45
+EXPECTED_N_DAILY_CANDIDATE_COUNT = 106
 
 
 @dataclass(frozen=True)
@@ -292,8 +293,14 @@ def load_sources() -> Sources:
 
     n_pool = pd.read_csv(N_POOL_PATH, dtype={"trade_date": str}, low_memory=False)
     n_pool["trade_date"] = n_pool["trade_date"].map(normalize_date)
-    if len(n_pool) != 46 or n_pool["trade_date"].duplicated().any():
-        raise ValueError("N完整候选账本必须恰好46个唯一信号日")
+    if (
+        len(n_pool) != EXPECTED_N_DAILY_CANDIDATE_COUNT
+        or n_pool["trade_date"].duplicated().any()
+    ):
+        raise ValueError(
+            "N完整候选账本必须恰好"
+            f"{EXPECTED_N_DAILY_CANDIDATE_COUNT}个唯一信号日"
+        )
     if not n_pool["sample_scope"].astype(str).eq("COMPLETE_DAILY_CANDIDATES").all():
         raise ValueError("N认证只允许完整逐日候选样本")
     if not n_pool["execution_status"].astype(str).eq("OK").all():
@@ -580,7 +587,10 @@ def n_candidate(sources: Sources, signal_date: str) -> dict[str, Any] | None:
         "buy_date": normalize_date(row.get("buy_date")),
         "exit_date": normalize_date(row.get("exit_date")),
         "account_return": account_return,
-        "return_source": "N低高度退潮第一名;T+1开/T+2收;显式费用",
+        "return_source": (
+            f"N双分支:{row.get('n_branch', '')}:{row.get('n_rule_id', '')};"
+            "T+1开/T+2收;显式费用"
+        ),
     }
 
 
@@ -1203,7 +1213,7 @@ def write_current_report(
         "",
         markdown_table(summary),
         "",
-        "## 当前155笔分段与分年结果",
+        f"## 当前{int(current['executed_trade_count'])}笔分段与分年结果",
         "",
         markdown_table(current_periods),
         "",
@@ -1242,7 +1252,7 @@ def write_current_report(
         "- 信号日范围：20240520～20260514；同一账户严格按退出日释放资金。",
         "- D为盘中腿，按真实时序优先；其余按A>M>E>C>N选择当天唯一候选。",
         "- A/C显式扣双边佣金、过户费及卖出印花税；普通腿仓位82.5%；D保留80%成交压力折扣。",
-        "- 输出`portfolio_trades.csv`是当前155笔唯一正式组合样本。",
+        f"- 输出`portfolio_trades.csv`是当前{int(current['executed_trade_count'])}笔唯一正式组合样本。",
     ]
     (OUTPUT_DIR / "portfolio_report.md").write_text(
         "\n".join(lines), encoding="utf-8"
@@ -1376,6 +1386,27 @@ def certify_current(*, refresh_input_manifest: bool = False) -> None:
         raise RuntimeError("N当前未同时开启enabled/live_order_enabled，拒绝发布新组合")
     if not n_risk_accepted:
         raise RuntimeError("N小样本研究风险尚未显式接受，拒绝发布")
+    if not bool(n_config.get("supplement_enabled", False)):
+        raise RuntimeError("N双分支挑战者未开启supplement_enabled，拒绝发布")
+    if [str(value) for value in n_config.get("supplement_filter_columns", [])] != [
+        "market_chain_count_bucket",
+        "market_emotion_state_bucket",
+    ]:
+        raise RuntimeError("N补充分支筛选字段漂移，拒绝发布")
+    if n_config.get("supplement_filter_values") != [["3_8"], ["mixed"]]:
+        raise RuntimeError("N补充分支筛选值漂移，拒绝发布")
+    if [str(value) for value in n_config.get("supplement_rank_columns", [])] != [
+        "amount",
+        "circ_mv",
+        "ts_code",
+    ]:
+        raise RuntimeError("N补充分支排序字段漂移，拒绝发布")
+    if [bool(value) for value in n_config.get("supplement_rank_ascending", [])] != [
+        False,
+        True,
+        True,
+    ]:
+        raise RuntimeError("N补充分支排序方向漂移，拒绝发布")
     certification_status = "PASS_WITH_RISK_ACCEPTANCE"
 
     n_portfolio_comparison = segment_comparison(

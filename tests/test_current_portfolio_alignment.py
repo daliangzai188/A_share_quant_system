@@ -47,10 +47,10 @@ class CurrentPortfolioAlignmentTests(unittest.TestCase):
             "current_d_a_m_e_c_n",
         )
 
-        self.assertEqual(without_m["executed_trade_count"], 140)
-        self.assertAlmostEqual(without_m["equity_multiple"], 4773.383815606874, places=8)
+        self.assertEqual(without_m["executed_trade_count"], 167)
+        self.assertAlmostEqual(without_m["equity_multiple"], 8309.818311569792, places=8)
         self.assertEqual(without_m["m_trade_count"], 0)
-        self.assertEqual(current["m_trade_count"], 27)
+        self.assertEqual(current["m_trade_count"], 28)
         self.assertGreater(current["equity_multiple"], without_m["equity_multiple"])
 
     def test_e_gate_complete_sample_risk_is_explicit(self) -> None:
@@ -63,7 +63,7 @@ class CurrentPortfolioAlignmentTests(unittest.TestCase):
             "current_d_a_m_e_c_n",
         )
 
-        self.assertEqual(without_gate["executed_trade_count"], 162)
+        self.assertEqual(without_gate["executed_trade_count"], 179)
         self.assertGreater(current["equity_multiple"], without_gate["equity_multiple"])
 
         validation = e_entry_gate_validation(self.sources)
@@ -79,12 +79,12 @@ class CurrentPortfolioAlignmentTests(unittest.TestCase):
             replay(self.sources, entry_gate_enabled=True, m_enabled=True),
             "current_d_a_m_e_c_n",
         )
-        self.assertEqual(metrics["d_trade_count"], 17)
-        self.assertEqual(metrics["a_trade_count"], 45)
-        self.assertEqual(metrics["m_trade_count"], 27)
-        self.assertEqual(metrics["e_trade_count"], 34)
+        self.assertEqual(metrics["d_trade_count"], 18)
+        self.assertEqual(metrics["a_trade_count"], 44)
+        self.assertEqual(metrics["m_trade_count"], 28)
+        self.assertEqual(metrics["e_trade_count"], 33)
         self.assertEqual(metrics["c_trade_count"], 16)
-        self.assertEqual(metrics["n_trade_count"], 16)
+        self.assertEqual(metrics["n_trade_count"], 35)
         self.assertEqual(metrics["d_to_a_trade_count"], 0)
         self.assertEqual(metrics["d_to_c_trade_count"], 0)
         self.assertEqual(metrics["d_to_e_trade_count"], 0)

@@ -20,7 +20,8 @@ def row(**overrides):
         "is_fd_amount_abnormal": False, "strategy_compatible": True,
         "fill_probability": 0.8, "segment_limit_max_height_bucket": "1",
         "segment_retreat_state_bucket": "retreat_weak",
-        "first_time_minutes": 600, "circ_mv": 10000,
+        "market_chain_count_bucket": "8_15", "market_emotion_state_bucket": "retreat",
+        "first_time_minutes": 600, "amount": 100000, "circ_mv": 10000,
     }
     value.update(overrides)
     return value
@@ -52,14 +53,53 @@ class StrategyNTests(unittest.TestCase):
             select_n_daily_picks(frame, self.spec, signal_date="20260818").empty
         )
 
+    def test_current_branch_has_priority_over_supplement(self) -> None:
+        frame = pd.DataFrame([
+            row(ts_code="300001.SZ"),
+            row(
+                ts_code="300002.SZ",
+                segment_limit_max_height_bucket="2",
+                segment_retreat_state_bucket="neutral",
+                market_chain_count_bucket="3_8",
+                market_emotion_state_bucket="mixed",
+                amount=999999,
+            ),
+        ])
+        pick = select_n_daily_picks(frame, self.spec, signal_date="20260818")
+        self.assertEqual(str(pick.iloc[0]["ts_code"]), "300001.SZ")
+        self.assertEqual(str(pick.iloc[0]["n_branch"]), "CURRENT")
+
+    def test_supplement_uses_amount_desc_when_current_is_empty(self) -> None:
+        frame = pd.DataFrame([
+            row(
+                ts_code="300001.SZ",
+                segment_limit_max_height_bucket="2",
+                segment_retreat_state_bucket="neutral",
+                market_chain_count_bucket="3_8",
+                market_emotion_state_bucket="mixed",
+                amount=100000,
+            ),
+            row(
+                ts_code="300002.SZ",
+                segment_limit_max_height_bucket="2",
+                segment_retreat_state_bucket="neutral",
+                market_chain_count_bucket="3_8",
+                market_emotion_state_bucket="mixed",
+                amount=200000,
+            ),
+        ])
+        pick = select_n_daily_picks(frame, self.spec, signal_date="20260818")
+        self.assertEqual(str(pick.iloc[0]["ts_code"]), "300002.SZ")
+        self.assertEqual(str(pick.iloc[0]["n_branch"]), "SUPPLEMENT")
+
     def test_locked_historical_candidate_ledger_is_exact(self) -> None:
         locked = pd.read_csv(
             ROOT / "reports" / "strategy_n" / "n_backtest_candidates.csv",
             dtype={"trade_date": str},
             low_memory=False,
         )
-        self.assertEqual(len(locked), 46)
-        self.assertEqual(locked["trade_date"].nunique(), 46)
+        self.assertEqual(len(locked), 106)
+        self.assertEqual(locked["trade_date"].nunique(), 106)
         self.assertTrue(locked["execution_status"].eq("OK").all())
         self.assertTrue(locked["sample_scope"].eq("COMPLETE_DAILY_CANDIDATES").all())
 

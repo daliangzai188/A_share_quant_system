@@ -1,0 +1,47 @@
+{
+  "baseline_commit": "16cabfe",
+  "priority": "D>A>M>E>C>N",
+  "old_trade_count": 155,
+  "new_trade_count": 174,
+  "retained_trade_count": 142,
+  "lost_trade_count": 13,
+  "added_trade_count": 32,
+  "net_trade_change": 19,
+  "old_leg_counts": {
+    "A": 45,
+    "C": 16,
+    "D": 17,
+    "E": 34,
+    "M": 27,
+    "N": 16
+  },
+  "new_leg_counts": {
+    "A": 44,
+    "C": 16,
+    "D": 18,
+    "E": 33,
+    "M": 28,
+    "N": 35
+  },
+  "lost_leg_counts": {
+    "A": 3,
+    "E": 2,
+    "M": 6,
+    "N": 2
+  },
+  "added_leg_counts": {
+    "A": 2,
+    "D": 1,
+    "E": 1,
+    "M": 7,
+    "N": 21
+  },
+  "old_equity_multiple": 7108.62421038031,
+  "new_equity_multiple": 9508.426795072,
+  "lost_trade_multiple": 1.148013763521943,
+  "added_trade_multiple": 1.5355720751483515,
+  "added_over_lost_multiple_ratio": 1.3375903006924192,
+  "reconstructed_new_multiple": 9508.42679507201,
+  "max_retained_return_diff": 0.0,
+  "identity": "old_multiple * added_multiple / lost_multiple == new_multiple"
+}
