@@ -1,11 +1,11 @@
-"""验证当前N v3，或在其上研究一个额外补充分支；绝不修改实盘配置。
+"""验证当前已配置N，或在其上研究一个额外补充分支；绝不修改实盘配置。
 
 研究口径：
 1. 固定当前组合 ``D>A>M>E>C>N`` 和当前N第一分支；
 2. 只有当前N当天没有候选时，才允许研究规则提供N补充候选；
 3. 所有候选只使用信号日字段，T+1开盘买、T+2收盘卖；
 4. 训练段生成有限的一/二条件规则，验证段锁定唯一挑战者，测试段最后揭盲；
-5. ``--verify-only`` 输出当前v3与不含N的训练/验证/测试对照；
+5. ``--verify-only`` 输出当前配置与不含N的训练/验证/测试对照；
 6. 完整搜索只写指定的新研究目录，不会生成实盘信号或覆盖旧v2报告。
 """
 from __future__ import annotations
@@ -50,6 +50,16 @@ RANKERS: dict[str, tuple[list[str], list[bool]]] = {
     "open_times_desc": (["open_times", "circ_mv", "ts_code"], [False, True, True]),
     "volume_ratio_desc": (["volume_ratio", "circ_mv", "ts_code"], [False, True, True]),
 }
+
+
+def available_rankers(pool: pd.DataFrame) -> tuple[str, ...]:
+    """只返回严格 as-of 研究池中字段完整的排序器。"""
+
+    return tuple(
+        name
+        for name, (columns, _ascending) in RANKERS.items()
+        if all(column in pool.columns for column in columns)
+    )
 
 
 @dataclass(frozen=True)
@@ -479,7 +489,7 @@ def main(*, output_dir: Path | None = None, verify_only: bool = False) -> None:
             })
         split_report = pd.DataFrame(split_rows)
         split_report.to_csv(
-            OUTPUT_DIR / "current_v3_split_validation.csv",
+            OUTPUT_DIR / "current_v4_split_validation.csv",
             index=False,
             encoding="utf-8-sig",
         )
@@ -509,7 +519,7 @@ def main(*, output_dir: Path | None = None, verify_only: bool = False) -> None:
                 split_report.loc[split_report["split"].eq("TEST_OOS"), "noninferior_passed"].iloc[0]
             ),
         }
-        (OUTPUT_DIR / "current_v3_verification.json").write_text(
+        (OUTPUT_DIR / "current_v4_verification.json").write_text(
             json.dumps(verification, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
@@ -541,7 +551,14 @@ def main(*, output_dir: Path | None = None, verify_only: bool = False) -> None:
     )
 
     atoms = atomic_conditions(train_pool)
-    atomic_rules = [Rule((atom,), ranker, "ATOMIC_TRAIN") for atom in atoms for ranker in RANKERS]
+    usable_rankers = available_rankers(pool)
+    if not usable_rankers:
+        raise RuntimeError("严格as-of研究池没有可用排序器")
+    atomic_rules = [
+        Rule((atom,), ranker, "ATOMIC_TRAIN")
+        for atom in atoms
+        for ranker in usable_rankers
+    ]
     atomic_rows: list[dict[str, Any]] = []
     atomic_lookup: dict[str, Rule] = {}
     for index, rule in enumerate(atomic_rules, start=1):
@@ -582,7 +599,10 @@ def main(*, output_dir: Path | None = None, verify_only: bool = False) -> None:
             if left[0] == right[0]:
                 continue
             conditions = tuple(sorted((left, right)))
-            pair_rules.extend(Rule(conditions, ranker, "PAIR_FROM_TRAIN") for ranker in RANKERS)
+            pair_rules.extend(
+                Rule(conditions, ranker, "PAIR_FROM_TRAIN")
+                for ranker in usable_rankers
+            )
 
     candidate_lookup: dict[str, Rule] = {
         str(rule_id): atomic_lookup[str(rule_id)]
@@ -802,8 +822,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="策略N补充分支训练/验证/测试研究")
     parser.add_argument(
         "--output-dir",
-        default="reports/strategy_n_v3_research",
-        help="输出目录；默认写v3目录，禁止覆盖旧v2锁定报告。",
+        default="reports/strategy_n_supplement_research",
+        help="输出目录；默认写独立补充分支研究目录，禁止覆盖冻结报告。",
     )
     parser.add_argument(
         "--verify-only",

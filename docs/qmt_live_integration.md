@@ -115,13 +115,13 @@ QMT_SESSION_ID=1001
 
 启动守护进程：
 ```powershell
-cd Z:\
+cd C:\A_System
 py -3.11 start_windows.py
 ```
 
 停止守护进程：
 ```powershell
-cd Z:\
+cd C:\A_System
 py -3.11 stop_windows.py
 ```
 
@@ -137,7 +137,7 @@ Ctrl+C 断开日志显示，守护进程继续在后台运行。
 `start_windows.py` 会在发现旧守护进程时先强制停止旧 PID，并等待 15 秒释放 QMT session，再启动新进程。不要连续快速重复启动；如需重启，优先按下面顺序：
 
 ```powershell
-cd Z:\
+cd C:\A_System
 py -3.11 stop_windows.py
 py -3.11 start_windows.py
 ```

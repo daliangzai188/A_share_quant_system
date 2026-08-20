@@ -46,8 +46,8 @@ D 排第一不是优化结果，是时序决定的——D 在信号日**盘中**
     N   build_mode1_plan 空仓分支 ⑤，只消费N正式滚动信号
 
 对应的回测口径见certify_current_executable_portfolio.pick_by_priority。改任何一侧
-都要重跑认证：当前v3实盘核对173笔/5813.315346x/-22.3862%，
-并核对M/N风险接受认证状态及N=32笔的逐日资金占用路径。
+都要重跑认证：当前N v4实盘核对166笔/5971.386963x/-22.3862%，
+并核对M/N风险接受认证状态及N=24笔的逐日资金占用路径。
 
 复现：python scripts/certify_current_executable_portfolio.py
 """

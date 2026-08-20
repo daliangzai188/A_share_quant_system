@@ -7,10 +7,12 @@ N只在D/A/M/E/C均未占用资金后参与组合选择，正式腿序为
 锁定规则：
 1. 第一分支：``segment_limit_max_height_bucket == "1"``且退潮状态为
    ``retreat_weak/retreat_2day``，按首次涨停分钟、流通市值、代码升序取第一名；
+   第一名仅在量比桶为``4_8/lt_1``时保留，失败整日放弃且不转补充分支；
 2. 仅在第一分支当日无候选时，第二分支要求全市场连板数``3_8``且市场情绪
    ``mixed``，按成交额降序、流通市值升序、代码升序取第一名；
 3. 两分支都通过成交可靠性、异常封单、策略兼容和成交概率>=60%的共同底线；
-4. 第一名次日不可买时当日放弃，不回补第二名；T+1开盘买、T+2收盘卖。
+4. 排名后门禁失败或第一名次日不可买时当日放弃，不回补第二名；
+   T+1开盘买、T+2收盘卖。
 """
 from __future__ import annotations
 
@@ -22,7 +24,7 @@ from typing import Any, Mapping
 import pandas as pd
 
 
-N_VERSION = "N_two_branch_retreat_plus_mixed_amount_v3"
+N_VERSION = "N_two_branch_retreat_plus_mixed_amount_volume_gate_v4"
 
 DEFAULT_SPEC: dict[str, Any] = {
     "enabled": False,
@@ -38,6 +40,9 @@ DEFAULT_SPEC: dict[str, Any] = {
     "retreat_values": ["retreat_weak", "retreat_2day"],
     "rank_columns": ["first_time_minutes", "circ_mv", "ts_code"],
     "rank_ascending": [True, True, True],
+    "current_post_filter_column": "volume_ratio_bucket",
+    "current_post_filter_values": ["4_8", "lt_1"],
+    "current_post_filter_fail_action": "SKIP_DAY",
     "supplement_enabled": False,
     "supplement_filter_columns": [
         "market_chain_count_bucket",
@@ -74,6 +79,7 @@ def load_n_spec(config: Mapping[str, Any]) -> dict[str, Any]:
     columns = [
         str(spec["height_column"]),
         str(spec["retreat_column"]),
+        str(spec["current_post_filter_column"]),
         *[str(value) for value in spec["rank_columns"]],
     ]
     if bool(spec.get("supplement_enabled", False)):
@@ -94,6 +100,10 @@ def load_n_spec(config: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("N补充分支排序字段与方向数量不一致")
     if bool(spec.get("fallback_to_second_candidate", False)):
         raise ValueError("N禁止第一名不可买后回补第二名")
+    if str(spec.get("current_post_filter_fail_action", "")) != "SKIP_DAY":
+        raise ValueError("N第一分支后门禁失败后必须整日放弃")
+    if not [str(value) for value in spec.get("current_post_filter_values", [])]:
+        raise ValueError("N第一分支后门禁取值不能为空")
     if int(spec.get("exit_hold_offset", 0)) != 2:
         raise ValueError("N当前锁定为T+2收盘退出")
     return spec
@@ -105,6 +115,7 @@ def required_signal_fields(spec: Mapping[str, Any]) -> set[str]:
         "allow_buy_reliable", "is_fill_score_reliable", "is_fd_amount_abnormal",
         "strategy_compatible", "fill_probability", str(spec["height_column"]),
         str(spec["retreat_column"]), *[str(value) for value in spec["rank_columns"]],
+        str(spec["current_post_filter_column"]),
     }
     if bool(spec.get("supplement_enabled", False)):
         fields.update(str(value) for value in spec["supplement_filter_columns"])
@@ -260,13 +271,21 @@ def select_n_daily_picks(
         rows[str(spec["height_column"])].astype(str).isin(height_values)
         & rows[str(spec["retreat_column"])].astype(str).isin(retreat_values)
     ].copy()
-    current = rank_branch(
+    current_ranked = rank_branch(
         current_rows,
         rank_columns=[str(value) for value in spec["rank_columns"]],
         rank_ascending=[bool(value) for value in spec["rank_ascending"]],
         branch="CURRENT",
         rule_id="LOW_HEIGHT_RETREAT_FIRST_TIME",
     )
+    # v4只对第一分支的每日第一名做量比后门禁。门禁必须发生在排名之后，
+    # 否则会偷偷换成第二名；失败日也不能转入补充分支。
+    current_candidate_dates = set(current_ranked["trade_date"].astype(str))
+    post_filter_column = str(spec["current_post_filter_column"])
+    post_filter_values = {str(value) for value in spec["current_post_filter_values"]}
+    current = current_ranked[
+        current_ranked[post_filter_column].astype(str).isin(post_filter_values)
+    ].copy()
 
     if not bool(spec.get("supplement_enabled", False)):
         return current.reset_index(drop=True)
@@ -287,6 +306,10 @@ def select_n_daily_picks(
         branch="SUPPLEMENT",
         rule_id="CHAIN_3_8_MIXED_AMOUNT_DESC",
     )
+    if current_candidate_dates and not supplement.empty:
+        supplement = supplement[
+            ~supplement["trade_date"].astype(str).isin(current_candidate_dates)
+        ].copy()
 
     # 当前N永远是第一分支；补充分支只能填当前分支完全无候选的日期。
     combined = pd.concat([current, supplement], ignore_index=True)

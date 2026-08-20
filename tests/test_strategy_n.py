@@ -8,6 +8,7 @@ import unittest
 
 import pandas as pd
 
+from scripts.research_strategy_n_v2 import available_rankers
 from src.strategy_n import load_n_spec, n_live_entry_block_reason, select_n_daily_picks
 
 
@@ -24,6 +25,7 @@ def row(**overrides):
         "segment_retreat_state_bucket": "retreat_weak",
         "market_chain_count_bucket": "8_15", "market_emotion_state_bucket": "retreat",
         "first_time_minutes": 600, "amount": 100000, "circ_mv": 10000,
+        "volume_ratio_bucket": "4_8",
     }
     value.update(overrides)
     return value
@@ -94,6 +96,30 @@ class StrategyNTests(unittest.TestCase):
         self.assertEqual(str(pick.iloc[0]["ts_code"]), "300002.SZ")
         self.assertEqual(str(pick.iloc[0]["n_branch"]), "SUPPLEMENT")
 
+    def test_current_post_filter_failure_skips_day_without_supplement_fallback(self) -> None:
+        frame = pd.DataFrame([
+            row(ts_code="300001.SZ", volume_ratio_bucket="2_4"),
+            row(
+                ts_code="300002.SZ",
+                segment_limit_max_height_bucket="2",
+                segment_retreat_state_bucket="neutral",
+                market_chain_count_bucket="3_8",
+                market_emotion_state_bucket="mixed",
+                amount=999999,
+            ),
+        ])
+        pick = select_n_daily_picks(frame, self.spec, signal_date="20260818")
+        self.assertTrue(pick.empty)
+
+    def test_current_post_filter_accepts_locked_volume_buckets(self) -> None:
+        frame = pd.DataFrame([
+            row(ts_code="300001.SZ", volume_ratio_bucket="lt_1"),
+            row(ts_code="300002.SZ", volume_ratio_bucket="2_4", first_time_minutes=500),
+        ])
+        pick = select_n_daily_picks(frame, self.spec, signal_date="20260818")
+        # 排名第一的300002未过门禁，不能回补300001。
+        self.assertTrue(pick.empty)
+
     def test_legacy_v2_candidate_ledger_is_preserved(self) -> None:
         locked = pd.read_csv(
             ROOT / "reports" / "strategy_n" / "n_backtest_candidates.csv",
@@ -124,6 +150,28 @@ class StrategyNTests(unittest.TestCase):
             })
         )
         self.assertGreater(int(corrected["execution_status"].eq("OK").sum()), 0)
+
+    def test_current_v4_candidate_ledger_enforces_volume_post_filter(self) -> None:
+        current = pd.read_csv(
+            ROOT / "reports" / "strategy_n_v4" / "n_backtest_candidates.csv",
+            dtype={"trade_date": str},
+            low_memory=False,
+        )
+        audit = self.config["strategy_n"]["execution_v4_audit"]
+        self.assertEqual(len(current), int(audit["candidate_count"]))
+        self.assertEqual(
+            int(current["execution_status"].eq("OK").sum()),
+            int(audit["executable_candidate_count"]),
+        )
+        self.assertTrue(
+            current["fill_probability_method"].eq("asof_turnover_space_proxy_v2").all()
+        )
+        first_branch = current[current["n_branch"].eq("CURRENT")]
+        self.assertGreater(len(first_branch), 0)
+        self.assertEqual(
+            set(first_branch["volume_ratio_bucket"].astype(str)),
+            {"4_8", "lt_1"},
+        )
 
     def test_n_entry_pause_and_health_gate_only_block_new_entries(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -156,6 +204,16 @@ class StrategyNTests(unittest.TestCase):
 
             base["strategy_n"]["entry_pause"] = True
             self.assertIn("entry_pause=true", n_live_entry_block_reason(root, base, now=now))
+
+    def test_research_only_generates_rankers_available_in_asof_pool(self) -> None:
+        pool = pd.DataFrame({
+            "amount": [1.0],
+            "circ_mv": [1.0],
+            "ts_code": ["300001.SZ"],
+        })
+        rankers = available_rankers(pool)
+        self.assertIn("amount_desc", rankers)
+        self.assertNotIn("segment_leader_rank_asc", rankers)
 
 
 if __name__ == "__main__":

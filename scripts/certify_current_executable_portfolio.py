@@ -113,7 +113,7 @@ _ANALYSIS_CONFIG = _RUNTIME_CONFIG.get("analysis", {})
 N_POOL_PATH = PROJECT_ROOT / _CERTIFICATION_CONFIG.get(
     "n_backtest_pool_path",
     _RUNTIME_CONFIG.get("strategy_n", {}).get(
-        "backtest_pool_path", "reports/strategy_n_v3/n_backtest_candidates.csv"
+        "backtest_pool_path", "reports/strategy_n_v4/n_backtest_candidates.csv"
     ),
 )
 
@@ -126,6 +126,8 @@ CODE_CERTIFICATION_FILES = [
     "scripts/run_strategy_m_signal.py",
     "scripts/run_strategy_n_signal.py",
     "scripts/build_strategy_n_backtest_pool.py",
+    "scripts/research_strategy_n_v4.py",
+    "scripts/validate_n_v4_live_release.py",
     "scripts/score_limit_up_fill_probability.py",
     "scripts/strategy_health_monitor.py",
     "scripts/trading_daemon.py",
@@ -184,11 +186,11 @@ EPSILON = 1e-12
 #   BASE 133 / 5140.7613530121025    E_ONLY 132 / 5755.436166596083
 #   OPTIMIZED 135 / 8350.331871673612 WITH_M 151 / 24911.38506562485
 # 当前正式组合的冻结回归锚点；任何输入、顺序或成交口径漂移都必须显式审查。
-EXPECTED_CURRENT_TRADE_COUNT = 173
-EXPECTED_CURRENT_MULTIPLE = 5813.315346397396
+EXPECTED_CURRENT_TRADE_COUNT = 166
+EXPECTED_CURRENT_MULTIPLE = 5971.3869634435405
 EXPECTED_D_DAILY_CANDIDATE_COUNT = 45
 EXPECTED_N_DAILY_CANDIDATE_COUNT = int(
-    _RUNTIME_CONFIG.get("strategy_n", {}).get("execution_v3_audit", {}).get(
+    _RUNTIME_CONFIG.get("strategy_n", {}).get("execution_v4_audit", {}).get(
         "candidate_count", 105
     )
 )
@@ -1491,7 +1493,7 @@ def certify_current(*, refresh_input_manifest: bool = False) -> None:
         certification_status = "PASS_WITH_RISK_ACCEPTANCE"
 
     n_config = runtime_config.get("strategy_n", {})
-    n_v3_audit = n_config.get("execution_v3_audit", {})
+    n_audit = n_config.get("execution_v4_audit", {})
     n_live_enabled = bool(n_config.get("enabled", False)) and bool(
         n_config.get("live_order_enabled", False)
     )
@@ -1500,14 +1502,37 @@ def certify_current(*, refresh_input_manifest: bool = False) -> None:
         raise RuntimeError("N当前未同时开启enabled/live_order_enabled，拒绝发布新组合")
     if not n_risk_accepted:
         raise RuntimeError("N小样本研究风险尚未显式接受，拒绝发布")
-    if str(n_v3_audit.get("historical_fill_method", "")) != "asof_turnover_space_proxy_v2":
+    if str(n_audit.get("historical_fill_method", "")) != "asof_turnover_space_proxy_v2":
         raise RuntimeError("N修复版未使用严格as-of历史成交空间口径，拒绝发布")
-    if int(n_v3_audit.get("portfolio_trade_count", 0)) != int(current_summary["executed_trade_count"]):
+    if int(n_audit.get("portfolio_trade_count", 0)) != int(current_summary["executed_trade_count"]):
         raise RuntimeError("N修复审计的组合笔数与当前回放不一致，拒绝发布")
-    if int(n_v3_audit.get("portfolio_n_trade_count", 0)) != int(current_summary["n_trade_count"]):
+    if int(n_audit.get("portfolio_n_trade_count", 0)) != int(current_summary["n_trade_count"]):
         raise RuntimeError("N修复审计的N笔数与当前回放不一致，拒绝发布")
-    if abs(float(n_v3_audit.get("portfolio_equity_multiple", 0.0)) - float(current_summary["equity_multiple"])) > 1e-9:
+    if abs(float(n_audit.get("portfolio_equity_multiple", 0.0)) - float(current_summary["equity_multiple"])) > 1e-9:
         raise RuntimeError("N修复审计复利与当前回放不一致，拒绝发布")
+    n_trades = current_daily[
+        current_daily["status"].astype(str).eq("EXECUTED")
+        & current_daily["strategy_leg"].astype(str).eq("N")
+    ].copy()
+    n_returns = pd.to_numeric(n_trades["account_return"], errors="raise")
+    n_standalone_multiple = float((1.0 + n_returns).prod())
+    n_win_rate = float(n_returns.gt(0).mean()) if len(n_returns) else 0.0
+    if abs(n_standalone_multiple - float(n_audit.get("n_standalone_multiple", 0.0))) > 1e-9:
+        raise RuntimeError("N单腿复利与v4审计不一致，拒绝发布")
+    if abs(n_win_rate - float(n_audit.get("n_win_rate", 0.0))) > 1e-12:
+        raise RuntimeError("N单腿胜率与v4审计不一致，拒绝发布")
+    if n_standalone_multiple <= float(n_audit.get("target_n_standalone_multiple_gt", 2.0)):
+        raise RuntimeError("N单腿复利没有严格大于2倍，拒绝发布")
+    if n_win_rate <= float(n_audit.get("target_n_win_rate_gt", 0.60)):
+        raise RuntimeError("N单腿胜率没有严格大于60%，拒绝发布")
+    if str(n_config.get("current_post_filter_column", "")) != "volume_ratio_bucket":
+        raise RuntimeError("N第一分支后门禁字段漂移，拒绝发布")
+    if [str(value) for value in n_config.get("current_post_filter_values", [])] != [
+        "4_8", "lt_1"
+    ]:
+        raise RuntimeError("N第一分支量比桶后门禁漂移，拒绝发布")
+    if str(n_config.get("current_post_filter_fail_action", "")) != "SKIP_DAY":
+        raise RuntimeError("N第一分支后门禁失败动作不是SKIP_DAY，拒绝发布")
     if not bool(n_config.get("supplement_enabled", False)):
         raise RuntimeError("N双分支挑战者未开启supplement_enabled，拒绝发布")
     if [str(value) for value in n_config.get("supplement_filter_columns", [])] != [
@@ -1632,14 +1657,16 @@ def certify_current(*, refresh_input_manifest: bool = False) -> None:
         "n_research_risk_acceptance_note": n_config.get(
             "live_research_risk_acceptance_note", ""
         ),
+        "n_standalone_multiple": n_standalone_multiple,
+        "n_win_rate": n_win_rate,
         "n_test_oos_noninferiority_passed": bool(
-            n_v3_audit.get("test_oos_gate_passed", False)
+            n_audit.get("test_oos_gate_passed", False)
         ),
         "n_test_oos_portfolio_ratio_to_without_n": float(
-            n_v3_audit.get("test_oos_portfolio_ratio_to_without_n", 0.0)
+            n_audit.get("test_oos_portfolio_ratio_to_without_n", 0.0)
         ),
         "n_test_oos_standalone_multiple": float(
-            n_v3_audit.get("test_oos_n_multiple", 0.0)
+            n_audit.get("test_oos_n_multiple", 0.0)
         ),
         "e_strategy_leg": "E",
         "e_strategy_variant": str(e_config.get("strategy_variant", "E_CURRENT")),

@@ -1,4 +1,4 @@
-"""用N唯一规则源重建完整历史候选账本并验证已研究组合入选明细。"""
+"""用N v4唯一规则源重建完整历史候选账本并对照旧v2入选明细。"""
 from __future__ import annotations
 
 import json
@@ -17,8 +17,8 @@ from src.strategy_n import load_n_spec, select_n_daily_picks  # noqa: E402
 
 START_DATE = "20240520"
 END_DATE = "20260514"
-EXPECTED_PORTFOLIO_N_TRADES = 35
-OUTPUT_DIR = PROJECT_ROOT / "reports" / "strategy_n_v3"
+EXPECTED_LEGACY_V2_PORTFOLIO_N_TRADES = 35
+OUTPUT_DIR = PROJECT_ROOT / "reports" / "strategy_n_v4"
 OUTPUT_PATH = OUTPUT_DIR / "n_backtest_candidates.csv"
 LOCKED_EXECUTED_PATH = (
     PROJECT_ROOT / "reports" / "strategy_n_v2_research" / "locked_portfolio_trades.csv"
@@ -33,8 +33,12 @@ def main() -> None:
     takeprofit_offset = float(live_config.get("intraday_takeprofit_offset", 0.01))
     pool = load_historical_bucketed_pool(START_DATE, END_DATE, 80)
     picks = select_n_daily_picks(pool, spec)
-    if picks["trade_date"].duplicated().any() or len(picks) < 80:
-        raise RuntimeError(f"N修复版候选日异常：唯一日={picks['trade_date'].nunique()}，总行数={len(picks)}")
+    expected_count = int(config["strategy_n"]["execution_v4_audit"]["candidate_count"])
+    if picks["trade_date"].duplicated().any() or len(picks) != expected_count:
+        raise RuntimeError(
+            f"N v4候选日异常：预期={expected_count}，"
+            f"唯一日={picks['trade_date'].nunique()}，总行数={len(picks)}"
+        )
 
     rows: list[dict[str, object]] = []
     for row in picks.itertuples(index=False):
@@ -55,6 +59,7 @@ def main() -> None:
             "segment_retreat_state_bucket": str(row.segment_retreat_state_bucket),
             "market_chain_count_bucket": str(getattr(row, "market_chain_count_bucket", "")),
             "market_emotion_state_bucket": str(getattr(row, "market_emotion_state_bucket", "")),
+            "volume_ratio_bucket": str(getattr(row, "volume_ratio_bucket", "")),
             "n_branch": str(getattr(row, "n_branch", "")),
             "n_rule_id": str(getattr(row, "n_rule_id", "")),
             "first_time": str(getattr(row, "first_time", "")),
@@ -81,7 +86,7 @@ def main() -> None:
         low_memory=False,
     )
     locked = locked[locked["strategy_leg"].astype(str).eq("N")].copy()
-    if len(locked) != EXPECTED_PORTFOLIO_N_TRADES:
+    if len(locked) != EXPECTED_LEGACY_V2_PORTFOLIO_N_TRADES:
         raise RuntimeError("N双分支研究组合入选明细不是35笔")
     compare = locked[["signal_date", "ts_code"]].merge(
         result[["trade_date", "ts_code"]],
