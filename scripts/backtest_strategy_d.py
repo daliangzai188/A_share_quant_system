@@ -14,7 +14,7 @@
        a. 检查今天有无D候选（盘中机会）→ 有则打板
        b. 若D没打板 → 今晚A/B/C流水线生成信号，明天开盘执行A/B/C
 
-本脚本负责冻结D候选和D单腿T+2收益。当前完整组合的真实串行占仓、D>A>M>E>C>N
+本脚本负责冻结D候选和D单腿T+2收益。当前完整组合的真实串行占仓、D>A>E>C>N
 时序与认证，以 scripts/certify_current_executable_portfolio.py 为唯一发布来源。
 
 输出：

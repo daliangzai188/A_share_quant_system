@@ -1,6 +1,6 @@
 """核对当前实盘计划选择路径与组合认证逐笔一致。
 
-本脚本直接调用当前组合引擎的 `build_plan`，并把481个冻结信号日的A/M/E/C/N
+本脚本直接调用当前组合引擎的 `build_plan`，并把481个冻结信号日的A/E/C/N
 候选写成实盘会读取的形式。D仍由认证回放按盘中时序先处理。
 """
 from __future__ import annotations
@@ -25,7 +25,6 @@ if "dotenv" not in sys.modules:
 
 import scripts.certify_current_executable_portfolio as certify  # noqa: E402
 from scripts import run_strategy_e_signal as e_signal  # noqa: E402
-from scripts import run_strategy_m_signal as m_signal  # noqa: E402
 from src.combined_live_engine import CombinedLiveEngine  # noqa: E402
 
 
@@ -33,13 +32,7 @@ LIVE_CONFIG = {
     "trade_mode": "backtest",
     "position": {"initial_cash": 500_000},
     "live_trade": {"max_single_order_amount": 0},
-    "active_strategy_profile": {"mode": 1, "mode_name": "D_A_M_E_C_N"},
-    "strategy_m": {
-        "enabled": True,
-        "live_order_enabled": True,
-        "position_pct": 0.825,
-        "exit_hold_offset": 2,
-    },
+    "active_strategy_profile": {"mode": 1, "mode_name": "D_A_E_C_N"},
     "strategy_n": {
         "enabled": True,
         "live_order_enabled": True,
@@ -55,7 +48,7 @@ def make_engine(project_root: Path) -> CombinedLiveEngine:
     engine.config = dict(LIVE_CONFIG)
     engine.load_positions = lambda: []
     engine.active_strategy_mode = lambda: 1
-    engine.active_strategy_name = lambda: "D_A_M_E_C_N"
+    engine.active_strategy_name = lambda: "D_A_E_C_N"
     engine.is_b_strategy_removed = lambda: True
     engine.load_today_e_signal = lambda _today: None
     return engine
@@ -97,10 +90,7 @@ def build_live_picker(
         row_index: int,
         *,
         entry_gate_enabled: bool,
-        m_enabled: bool,
         n_enabled: bool,
-        equity: float,
-        peak_equity: float,
     ) -> dict[str, Any] | None:
         del row_index
         signal_date = str(row["date"])
@@ -111,7 +101,6 @@ def build_live_picker(
         ac = sources_.ac_daily.get(signal_date)
         ac_frame = write_ac_ops(ops_dir, signal_date, ac)
         e_blocked = e_signal.has_ac_planned_order(signal_date, legs=("A",))
-        m_busy, _reason = m_signal.higher_priority_leg_has_signal(signal_date)
 
         e_payload: dict[str, Any] | None = None
         if not e_blocked and signal_date in sources_.e.index:
@@ -130,23 +119,6 @@ def build_live_picker(
                     ),
                 }
 
-        m_order: dict[str, Any] | None = None
-        if m_enabled and not m_busy:
-            m_pick = certify.m_candidate(
-                sources_, signal_date, equity, peak_equity
-            )
-            if m_pick is not None:
-                m_order = {
-                    "strategy_leg": "M",
-                    "ts_code": str(m_pick["ts_code"]),
-                    "name": str(m_pick.get("name", "")),
-                    "side": "BUY",
-                    "planned_order_date": buy_date,
-                    "planned_action": "PLAN_BUY_T1_OPEN",
-                    "round_lot_shares": 10_000,
-                    "planned_amount_by_equity": 412_500.0,
-                }
-
         n_order: dict[str, Any] | None = None
         n_pick = certify.n_candidate(sources_, signal_date) if n_enabled else None
         if n_pick is not None:
@@ -163,9 +135,6 @@ def build_live_picker(
 
         engine.load_latest_abc_orders = lambda: (ops_dir / "ops.csv", ac_frame.copy())
         engine.load_yesterday_e_signal = lambda _today, payload=e_payload: payload
-        engine.build_m_buy_order_if_any = lambda _today, _codes=None, order=m_order: (
-            dict(order) if order is not None else None
-        )
         engine.build_n_buy_order_if_any = lambda _today, _codes=None, order=n_order: (
             dict(order) if order is not None else None
         )
@@ -188,10 +157,6 @@ def build_live_picker(
                     f"{signal_date} 实盘选A/C={code}，认证候选={ac}"
                 )
             return dict(ac)
-        if leg == "M":
-            return certify.m_candidate(
-                sources_, signal_date, equity, peak_equity
-            )
         if leg == "E":
             e_row = certify.source_row(sources_.e, signal_date, "E R1")
             return {
@@ -221,18 +186,14 @@ def main() -> None:
     workdir = Path(tempfile.mkdtemp(prefix="verify_live_"))
     stats = {"no_plan": 0}
     try:
-        certified = certify.replay(
-            sources, entry_gate_enabled=True, m_enabled=True
-        )
+        certified = certify.replay(sources, entry_gate_enabled=True)
         picker = build_live_picker(sources, workdir, stats)
         original_pick = certify.pick_by_priority
         original_ops = e_signal.DAILY_OPS_DIR
         try:
             certify.pick_by_priority = picker
             e_signal.DAILY_OPS_DIR = workdir / "daily_ops"
-            live = certify.replay(
-                sources, entry_gate_enabled=True, m_enabled=True
-            )
+            live = certify.replay(sources, entry_gate_enabled=True)
         finally:
             certify.pick_by_priority = original_pick
             e_signal.DAILY_OPS_DIR = original_ops

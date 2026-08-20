@@ -15,10 +15,9 @@ from typing import Any, Iterable
 import pandas as pd
 
 from src.strategy_identity import normalize_strategy_frame, normalize_strategy_leg
-from src.strategy_m import build_m_candidate, load_m_spec, resolve_exit_offset
 
 
-LEGS = ("D", "A", "M", "E", "C", "N")
+LEGS = ("D", "A", "E", "C", "N")
 SCHEMA_VERSION = 1
 METHODOLOGY_VERSION = "released_shadow_t1_open_fixed_exit_v1"
 LEDGER_COLUMNS = [
@@ -227,57 +226,6 @@ def _collect_standard_leg(root: Path, release: dict[str, Any], signal_date: str,
     return row
 
 
-def _load_m_pool(root: Path, signal_date: str) -> tuple[pd.DataFrame, Path | None]:
-    frames: list[pd.DataFrame] = []
-    used: Path | None = None
-    for path in (
-        root / "data" / "processed" / "live_limit_up_fill_scored.csv",
-        root / "data" / "processed" / "limit_up_fill_scored.csv",
-    ):
-        frame = _read_csv(path)
-        if frame.empty or "trade_date" not in frame:
-            continue
-        matched = frame[frame["trade_date"].map(_date).eq(signal_date)]
-        if not matched.empty:
-            frames.append(matched)
-            used = path
-    if not frames:
-        return pd.DataFrame(), used
-    pool = pd.concat(frames, ignore_index=True, sort=False)
-    return pool.drop_duplicates(["trade_date", "ts_code"], keep="last"), used
-
-
-def _collect_m(root: Path, release: dict[str, Any], signal_date: str, now: str,
-               open_dates: list[str]) -> dict[str, Any]:
-    row = _base_row(release, signal_date, "M", now)
-    config = _read_json(root / "config" / "config.json", {})
-    spec = load_m_spec(config)
-    pool, source = _load_m_pool(root, signal_date)
-    row["source_path"] = str(source or "")
-    if pool.empty:
-        row.update({"candidate_reason": "当日涨停打分池尚未就绪", "source_status": "MISSING_POOL"})
-        return row
-    picked, reason = build_m_candidate(pool, spec)
-    row.update({"source_status": "SHADOW_RULE_EVALUATED", "candidate_reason": reason})
-    if picked.empty:
-        row["candidate_status"] = "NO_CANDIDATE"
-        return row
-    selected = picked.iloc[0]
-    offset = resolve_exit_offset(spec)
-    row.update({
-        "candidate_status": "CANDIDATE",
-        "ts_code": str(selected.get("ts_code", "")),
-        "name": str(selected.get("name", "")),
-        "planned_buy_date": offset_trade_date(open_dates, signal_date, 1),
-        "planned_exit_date": offset_trade_date(open_dates, signal_date, offset),
-        "entry_rule": "T+1_OPEN",
-        "exit_rule": f"T+{offset}_CLOSE",
-        "position_pct": _float(spec.get("position_pct"), 0.825),
-        "counterfactual_status": "WAITING_ENTRY_DATA",
-    })
-    return row
-
-
 def _collect_d(root: Path, release: dict[str, Any], signal_date: str, now: str,
                open_dates: list[str]) -> dict[str, Any]:
     row = _base_row(release, signal_date, "D", now)
@@ -354,7 +302,6 @@ def collect_signal_date(root: Path, release: dict[str, Any], signal_date: str) -
     rows = [
         _collect_d(root, release, signal_date, now, open_dates),
         _collect_ac(root, release, signal_date, "A", now, open_dates),
-        _collect_m(root, release, signal_date, now, open_dates),
         _collect_standard_leg(root, release, signal_date, "E", now, open_dates),
         _collect_ac(root, release, signal_date, "C", now, open_dates),
         _collect_standard_leg(root, release, signal_date, "N", now, open_dates),

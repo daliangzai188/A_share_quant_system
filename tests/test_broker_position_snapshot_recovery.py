@@ -41,7 +41,7 @@ def _ghost_position(*, shares: int = 11_800) -> dict:
         "shares": shares,
         "entry_shares": shares,
         "buy_price": 19.26,
-        "strategy_leg": "M",
+        "strategy_leg": "N",
         "status": "closed",
         "sell_date": "20260818",
         "sell_price": 0.0,

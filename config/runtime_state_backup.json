@@ -19,10 +19,9 @@
     {"path": "reports/execution_tracking/buy_execution_slices.csv", "kind": "csv", "required": true},
     {"path": "reports/execution_tracking/sell_execution_slices.csv", "kind": "csv", "required": true},
     {"path": "reports/execution_tracking/trade_completion_summary.csv", "kind": "csv", "required": true},
-    {"path": "reports/strategy_m/m_equity_peak.json", "kind": "json", "required": true},
+    {"path": "reports/account_risk_shadow/equity_ledger.json", "kind": "json", "required": true},
     {"path": "reports/strategy_e/e_signals_recent.json", "kind": "json", "required": false},
     {"path": "reports/strategy_e/e_signal_runs_recent.json", "kind": "json", "required": false},
-    {"path": "reports/strategy_m/m_signal_runs_recent.json", "kind": "json", "required": false},
     {"path": "reports/strategy_n/n_signals_recent.json", "kind": "json", "required": false},
     {"path": "reports/strategy_n/n_signal_runs_recent.json", "kind": "json", "required": false}
   ],

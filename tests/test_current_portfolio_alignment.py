@@ -16,19 +16,15 @@ from scripts.certify_current_executable_portfolio import (
 
 
 class CurrentPortfolioAlignmentTests(unittest.TestCase):
-    """只锁定当前正式组合 D>A>M>E>C>N，防止退役策略重新混入。"""
+    """锁定五腿身份回放D>A>E>C>N；严格发布认证仍单独fail-closed。"""
 
     @classmethod
     def setUpClass(cls) -> None:
         cls.sources = load_sources()
 
     def test_current_portfolio_is_reproducible(self) -> None:
-        detail = replay(
-            self.sources,
-            entry_gate_enabled=True,
-            m_enabled=True,
-        )
-        metrics = summarize(detail, "current_d_a_m_e_c_n")
+        detail = replay(self.sources, entry_gate_enabled=True)
+        metrics = summarize(detail, "current_d_a_e_c_n")
 
         self.assertEqual(metrics["executed_trade_count"], EXPECTED_CURRENT_TRADE_COUNT)
         self.assertAlmostEqual(
@@ -36,36 +32,34 @@ class CurrentPortfolioAlignmentTests(unittest.TestCase):
         )
         self.assertEqual(
             set(detail.loc[detail["status"].eq("EXECUTED"), "strategy_leg"]),
-            {"D", "A", "M", "E", "C", "N"},
+            {"D", "A", "E", "C", "N"},
         )
 
-    def test_m_effect_is_measured_on_the_complete_portfolio(self) -> None:
-        without_m = summarize(
-            replay(self.sources, entry_gate_enabled=True, m_enabled=False),
-            "with_e_gate_without_m",
+    def test_n_effect_is_measured_on_the_complete_portfolio(self) -> None:
+        without_n = summarize(
+            replay(self.sources, entry_gate_enabled=True, n_enabled=False),
+            "current_without_n",
         )
         current = summarize(
-            replay(self.sources, entry_gate_enabled=True, m_enabled=True),
-            "current_d_a_m_e_c_n",
+            replay(self.sources, entry_gate_enabled=True),
+            "current_d_a_e_c_n",
         )
 
-        self.assertEqual(without_m["executed_trade_count"], 157)
-        self.assertAlmostEqual(without_m["equity_multiple"], 4100.04329082521, places=8)
-        self.assertEqual(without_m["m_trade_count"], 0)
-        self.assertEqual(current["m_trade_count"], 29)
-        self.assertGreater(current["equity_multiple"], without_m["equity_multiple"])
+        self.assertEqual(without_n["n_trade_count"], 0)
+        self.assertEqual(current["n_trade_count"], 37)
+        self.assertGreater(current["equity_multiple"], without_n["equity_multiple"])
 
     def test_e_gate_complete_sample_risk_is_explicit(self) -> None:
         without_gate = summarize(
-            replay(self.sources, entry_gate_enabled=False, m_enabled=True),
-            "without_e_gate_with_m",
+            replay(self.sources, entry_gate_enabled=False),
+            "without_e_gate",
         )
         current = summarize(
-            replay(self.sources, entry_gate_enabled=True, m_enabled=True),
-            "current_d_a_m_e_c_n",
+            replay(self.sources, entry_gate_enabled=True),
+            "current_d_a_e_c_n",
         )
 
-        self.assertEqual(without_gate["executed_trade_count"], 172)
+        self.assertEqual(without_gate["executed_trade_count"], 164)
         self.assertGreater(current["equity_multiple"], without_gate["equity_multiple"])
 
         validation = e_entry_gate_validation(self.sources)
@@ -77,17 +71,16 @@ class CurrentPortfolioAlignmentTests(unittest.TestCase):
         self.assertLess(float(full["optimized_vs_base"]), 0)
 
     def test_current_leg_breakdown_stays_locked(self) -> None:
-        detail = replay(self.sources, entry_gate_enabled=True, m_enabled=True)
+        detail = replay(self.sources, entry_gate_enabled=True)
         metrics = summarize(
             detail,
-            "current_d_a_m_e_c_n",
+            "current_d_a_e_c_n",
         )
-        self.assertEqual(metrics["d_trade_count"], 18)
+        self.assertEqual(metrics["d_trade_count"], 17)
         self.assertEqual(metrics["a_trade_count"], 43)
-        self.assertEqual(metrics["m_trade_count"], 29)
-        self.assertEqual(metrics["e_trade_count"], 34)
+        self.assertEqual(metrics["e_trade_count"], 42)
         self.assertEqual(metrics["c_trade_count"], 18)
-        self.assertEqual(metrics["n_trade_count"], 24)
+        self.assertEqual(metrics["n_trade_count"], 37)
         self.assertEqual(metrics["d_to_a_trade_count"], 0)
         self.assertEqual(metrics["d_to_c_trade_count"], 0)
         self.assertEqual(metrics["d_to_e_trade_count"], 0)

@@ -2,7 +2,8 @@
 
 N是正式组合最低优先级腿。脚本会先用与E相同的80日bucket特征链计算N第一名，
 第一分支无候选时才检查3_8连板/mixed情绪补充分支，再检查账户持仓以及
-A/M/E/C上游计划；被占用时只保存候选审计，不生成正式信号。
+A/E/C上游计划；被占用时只保存候选审计，不生成正式信号。M已退役，历史M信号
+不得继续占用N的候选权。
 """
 from __future__ import annotations
 
@@ -59,7 +60,7 @@ def _higher_signal_exists(signal_date: str, leg: str) -> bool:
 
 
 def higher_priority_blocker(signal_date: str) -> str:
-    """返回D/A/M/E/C中已经占用当日候选权的首个原因。"""
+    """返回D/A/E/C中已经占用当日候选权的首个原因。"""
 
     positions = load_open_positions()
     if has_existing_open_position(positions):
@@ -67,8 +68,6 @@ def higher_priority_blocker(signal_date: str) -> str:
         return f"账户有未平仓头寸{held}"
     if has_ac_planned_order(signal_date, legs=("A",)):
         return "A当日已有计划"
-    if _higher_signal_exists(signal_date, "M"):
-        return "M当日已有正式信号"
     if _higher_signal_exists(signal_date, "E"):
         return "E当日已有正式信号"
     if has_ac_planned_order(signal_date, legs=("C",)):

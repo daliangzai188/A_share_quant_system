@@ -1,7 +1,7 @@
 """验证当前已配置N，或在其上研究一个额外补充分支；绝不修改实盘配置。
 
 研究口径：
-1. 固定当前组合 ``D>A>M>E>C>N`` 和当前N第一分支；
+1. 固定当前组合 ``D>A>E>C>N`` 和当前N第一分支；
 2. 只有当前N当天没有候选时，才允许研究规则提供N补充候选；
 3. 所有候选只使用信号日字段，T+1开盘买、T+2收盘卖；
 4. 训练段生成有限的一/二条件规则，验证段锁定唯一挑战者，测试段最后揭盲；
@@ -783,7 +783,7 @@ def main(*, output_dir: Path | None = None, verify_only: bool = False) -> None:
     payload = {
         "research_only": True,
         "live_changed": False,
-        "priority": "D>A>M>E>C>N",
+        "priority": "D>A>E>C>N",
         "baseline": baseline_full,
         "locked_rule": {
             "rule_id": locked_rule.rule_id,

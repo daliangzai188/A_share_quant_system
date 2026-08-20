@@ -54,7 +54,6 @@ def certification_config_sha256(config: Mapping[str, Any]) -> str:
     }
     payload = {
         "active_strategy_profile": config.get("active_strategy_profile", {}),
-        "strategy_m": config.get("strategy_m", {}),
         "strategy_n": config.get("strategy_n", {}),
         "strategy_d": config.get("strategy_d", {}),
         "portfolio_certification": config.get("portfolio_certification", {}),

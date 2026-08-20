@@ -16,8 +16,9 @@ class ValidateNV4LiveReleaseTest(unittest.TestCase):
             (root / "config" / "config.json").read_text(encoding="utf-8")
         )
 
-    def test_current_config_passes_n_v4_semantic_gate(self) -> None:
-        self.assertEqual(n_v4_live_config_errors(self.config), [])
+    def test_five_leg_release_is_pending_strict_certification(self) -> None:
+        errors = n_v4_live_config_errors(self.config)
+        self.assertIn("当前五腿组合尚未取得有效严格发布认证", errors)
 
     def test_pause_or_disable_blocks_release(self) -> None:
         for field, value in (
@@ -32,8 +33,8 @@ class ValidateNV4LiveReleaseTest(unittest.TestCase):
 
     def test_trade_count_drift_blocks_release(self) -> None:
         config = copy.deepcopy(self.config)
-        config["portfolio_certification"]["live_candidate_metrics"]["trade_count"] = 165
-        self.assertIn("正式组合交易笔数不是166", n_v4_live_config_errors(config))
+        config["portfolio_certification"]["live_candidate_metrics"]["trade_count"] = 153
+        self.assertIn("严格研究组合交易笔数不是154", n_v4_live_config_errors(config))
 
     def test_windows_deploy_locks_native_exit_code_before_logging(self) -> None:
         root = Path(__file__).resolve().parents[1]

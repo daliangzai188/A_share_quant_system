@@ -91,7 +91,7 @@ class LivePerformanceTests(unittest.TestCase):
     def test_rolling_metrics_exposes_actual_pnl_and_loss_streak(self) -> None:
         trades = pd.DataFrame(
             {
-                "strategy_leg": ["A", "A", "M"],
+                "strategy_leg": ["A", "A", "N"],
                 "net_return": [0.10, -0.05, -0.02],
                 "net_pnl": [100.0, -50.0, -20.0],
                 "entry_fill_amount": [1000.0, 1000.0, 1000.0],
@@ -103,8 +103,8 @@ class LivePerformanceTests(unittest.TestCase):
         self.assertEqual(int(overall["sample_count"]), 3)
         self.assertEqual(int(overall["max_consecutive_losses"]), 2)
         self.assertAlmostEqual(float(overall["total_net_pnl"]), 30.0)
-        m_row = metrics[metrics["segment"].eq("策略M")].iloc[0]
-        self.assertAlmostEqual(float(m_row["hypothetical_max_drawdown"]), -0.02)
+        n_row = metrics[metrics["segment"].eq("策略N")].iloc[0]
+        self.assertAlmostEqual(float(n_row["hypothetical_max_drawdown"]), -0.02)
 
     def test_capacity_uses_only_frozen_plans_and_exposes_tca_quality(self) -> None:
         raw = pd.DataFrame(

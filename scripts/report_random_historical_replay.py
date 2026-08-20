@@ -218,10 +218,6 @@ def generate_report(config_path: Path = DEFAULT_CONFIG_PATH) -> dict[str, Any]:
     detail = replay(
         sources,
         entry_gate_enabled=True,
-        m_enabled=bool(
-            runtime_config.get("strategy_m", {}).get("enabled", False)
-            and runtime_config.get("strategy_m", {}).get("live_order_enabled", False)
-        ),
     )
     replay_metrics = summarize(detail, "random_replay_source_validation")
     expected_count = int(certification.get("executed_trade_count", 0))

@@ -107,7 +107,7 @@ def main() -> None:
 
     summary: dict[str, Any] = {
         "baseline_commit": args.baseline_commit,
-        "priority": "D>A>M>E>C>N",
+        "priority": "D>A>E>C>N",
         "old_trade_count": int(len(old)),
         "new_trade_count": int(len(new)),
         "retained_trade_count": int(len(retained_keys)),

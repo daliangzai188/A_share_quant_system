@@ -109,7 +109,7 @@ a_strict_plus_c_hold3
 4. C 条件：`market_chain_count_bucket=15_30` 且 `segment_limit_up_count_bucket=40_80`。
 5. C 使用自己的风险过滤：`封单/流通市值偏高`、`LOSS_OVERLAY_WATCH`，以及按板高分档的炸板次数限制。
 6. C 卖出口径仍为 T+3 收盘；A按自己的既有退出口径执行。
-7. D、M、E按当前组合资金占用规则继续参与。
+7. D、E、N按当前组合资金占用规则继续参与。
 8. 仅人工退出的历史 B 仓存在时，所有新开仓均阻断。
 
 当前发布验证状态：
@@ -234,7 +234,7 @@ cd /Users/user/Desktop/A_System
 .venv/bin/python -B scripts/run_strategy_release_validation.py
 ```
 
-当前该命令应明确拒绝运行，因为旧验证器仍是 A+B 历史口径。只有完成 A/C/D/E/M 全链路逐日回放、重新定义样本外窗口和门槛后，才能建立新的发布验证。
+当前该命令应明确拒绝运行，因为旧验证器仍是 A+B 历史口径。只有完成 A/C/D/E/N 全链路逐日回放、重新定义样本外窗口和门槛后，才能建立新的发布验证。
 
 ### 3. 什么时候重新找最新策略
 

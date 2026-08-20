@@ -14,7 +14,7 @@ import pandas as pd
 from src.strategy_identity import normalize_strategy_frame, normalize_strategy_leg
 
 
-ACTIVE_LEGS = {"A", "C", "D", "E", "M", "N"}
+ACTIVE_LEGS = {"A", "C", "D", "E", "N"}
 
 
 def _text(value: Any) -> str:

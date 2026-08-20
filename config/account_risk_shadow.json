@@ -12,6 +12,6 @@
   "minimum_complete_trades_for_activation_review": 20,
   "state_path": "reports/account_risk_shadow/state.json",
   "latest_status_path": "reports/account_risk_shadow/latest_status.json",
-  "bootstrap_equity_path": "reports/strategy_m/m_equity_peak.json",
-  "note": "本配置只做账户级风险总闸的影子观测。v2固定候选已通过150笔历史、全部固定分段和2000个随机连续窗口复核：关闭单笔3%日亏触发，观察18%账户回撤或连续2亏，假设暂停5个交易日；历史复利24567.55倍，为当前基准83.59%，但真正OOS仍为0笔。即使触发也只记录假设动作，不得拦截当前实盘。"
+  "bootstrap_equity_path": "reports/account_risk_shadow/equity_ledger.json",
+  "note": "本配置只做账户级风险总闸的影子观测，永不拦截实盘。原阈值研究绑定的旧组合已经失效，相关研究输出已清除；当前仅保留真实权益连续账本和影子状态。必须基于D>A>E>C>N严格组合重新完成历史稳健性、前向样本和容量验证后，才允许讨论新策略阈值或激活。"
 }

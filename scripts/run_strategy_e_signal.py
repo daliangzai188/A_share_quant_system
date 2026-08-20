@@ -223,8 +223,8 @@ def has_ac_planned_order(signal_date: str, legs: tuple[str, ...]) -> bool:
 
     `legs` 必须由调用方按腿序显式声明——**只有排在自己前面的腿才有资格挡住
     本腿的信号**。2026-08-07 之前这里不分 A 和 C，谁调用都是"A 或 C 有计划
-    就挡"，于是 C 事实上挡住了排在它前面的 E 和 M。当前固定腿序为
-    D>A>M>E>C>N，上游门与下游排序必须保持同一口径。
+    就挡"，于是 C 事实上挡住了排在它前面的 E。M已退役，当前固定腿序为
+    D>A>E>C>N，上游门与下游排序必须保持同一口径。
 
     旧 B 计划只能人工退出、不占用新开仓资金，一律排除。
     """
@@ -535,19 +535,10 @@ def run_signal_generation(signal_date: str, *, dry_run: bool) -> None:
         )
         return
 
-    # 腿序 D>A>M>E>C>N：排在 E 前面的是 D、A、M，后面是 C、N。
+    # 腿序 D>A>E>C>N：排在 E 前面的是 D、A，后面是 C、N；M已退役。
     # C 有计划时 E 必须照常出信号，由 combined_live_engine 按腿序在两者间挑；
     # 2026-08-07 之前这里连 C 一起挡，等于把 C 顶到了 E 前面。
     #
-    # 为什么不给 M 也加门（它排在 E 前面）：
-    #   收盘流水线里E早于M生成，E运行时M当日信号还不存在，加了只会读到
-    #   **昨天**的信号，判断必错。
-    #   也不需要加：E 信号多生成不影响结果——唯一的下单路径是
-    #   combined_live_engine.build_mode1_plan按腿序挑，M有信号时
-    #   E 自然让位；daemon 里另外三处读 e_signals_recent.json 的地方
-    #   （_load_e_signal_for_signal_date / _log_e_signal_status /
-    #   _strategy_signal_run_readiness）都只做播报和就绪度检查，不下单。
-    #   ⚠️ 若将来把 E 调到 M 之前，或改动流水线步骤顺序，必须重看这里。
     if has_ac_planned_order(signal_date, legs=("A",)):
         finish_occupied_without_e_signal(
             signal_date,

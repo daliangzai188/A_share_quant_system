@@ -1,33 +1,8 @@
 {
   "schema_version": 1,
-  "status": "ACTIVE",
-  "policy_id": "compound-floor-20260820-n-v4-volume-gate-v11",
-  "supersedes_policy_id": "compound-floor-20260820-n-v3-causal-v10",
-  "correction_reason": "N v4显式改变第一分支候选后门禁，候选账本输入摘要与v3不同，旧策略输入哈希不能伪装成同输入比较。新锚点使用完整v4因果认证5971.386963倍，比v3锚点5813.315346倍高2.72%；这不是调低门槛，v3锚点和失真v2锚点继续保留历史审计。",
-  "anchor": {
-    "release_id": "portfolio-20260820-n-v4-volume-gate-v9.0",
-    "scenario": "current_d_a_m_e_c_n",
-    "input_start_date": "20240520",
-    "input_end_date": "20260514",
-    "input_sha256": "2933c8df1b34f5bd9e6d4453a42845aa0dc25d97bd3067bc04c8d150803f3837",
-    "initial_equity": 500000.0,
-    "position_pct": 0.825,
-    "equity_multiple": 5971.3869634435405
-  },
-  "hard_floor_ratio": 0.7,
-  "hard_floor_multiple": 4179.970874410478,
-  "automatic_release_ratio": 1.0,
-  "automatic_release_multiple": 5971.3869634435405,
-  "accepted_certification_statuses": [
-    "PASS",
-    "PASS_WITH_RISK_ACCEPTANCE"
-  ],
-  "comparison_requirements": {
-    "same_scenario": true,
-    "same_input_window": true,
-    "same_input_sha256": true,
-    "same_initial_equity": true,
-    "same_position_pct": true
-  },
-  "note": "该锚点只适用于D>A>M>E>C>N的N v4因果执行口径。机械复利不代表实盘预期；N测试段自身复利1.028251、胜率62.5%，但组合相对不含N仍仅0.930732且容量未认证，扩大资金前必须继续前向验证。"
+  "status": "INACTIVE_PENDING_CERTIFICATION",
+  "policy_id": "compound-floor-pending-d-a-e-c-n",
+  "invalidated_at": "2026-08-20",
+  "invalidated_reason": "当前D>A>E>C>N组合尚未建立同输入、同费用、同仓位的有效复利锚点；旧组合锚点不可继续用于发布比较。",
+  "note": "该非ACTIVE状态会让复利门禁失败并阻止冻结发布。完成D>A>E>C>N严格认证后，必须显式建立新的ACTIVE锚点。"
 }

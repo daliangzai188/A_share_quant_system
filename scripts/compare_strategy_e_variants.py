@@ -10,7 +10,7 @@
 
 三套版本统一使用：82.5% 仓位、买卖各 0.1% 滑点、0.162% 往返费率、
 T+1 开盘不可成交判断、跌停收盘顺延、单账户资金占用。组合回放固定使用当前
-优先级 ``D > A > M > E > C``；D 为盘中腿，按时间顺序先于收盘后信号。
+优先级 ``D > A > E > C``；D 为盘中腿，按时间顺序先于收盘后信号。
 
 旧“62 笔/12.0283 倍”只作为不可执行参考展示，不进入正式排名，因为它使用了
 未来成交过滤并允许资金重叠。
@@ -616,17 +616,12 @@ def pick_current_priority(
     sources: portfolio.Sources,
     signal_date: str,
     e_candidates: dict[str, dict[str, Any]],
-    equity: float,
-    peak_equity: float,
 ) -> dict[str, Any] | None:
-    """按当前收盘后腿序 A>M>E>C 选股；D 在 replay 中先处理。"""
+    """按当前收盘后腿序 A>E>C 选股；D 在 replay 中先处理。"""
 
     ac = sources.ac_daily.get(signal_date)
     if ac is not None and str(ac.get("strategy_leg", "")) == "A":
         return dict(ac)
-    m_pick = portfolio.m_candidate(sources, signal_date, equity, peak_equity)
-    if m_pick is not None:
-        return m_pick
     e_pick = e_candidates.get(signal_date)
     if e_pick is not None:
         return {
@@ -700,8 +695,6 @@ def replay_full_portfolio(
                 sources,
                 signal_date,
                 e_candidates,
-                equity,
-                peak_equity,
             )
 
         if selected is None:
@@ -867,7 +860,6 @@ def summarize_variant(
         "portfolio_c_trade_count": int(legs.eq("C").sum()),
         "portfolio_d_trade_count": int(legs.eq("D").sum()),
         "portfolio_e_trade_count": combo_e_stats["trade_count"],
-        "portfolio_m_trade_count": int(legs.eq("M").sum()),
         "portfolio_e_unbuyable_count": int(
             combined["status"].eq("E_ORDER_UNBUYABLE").sum()
         ),
@@ -993,8 +985,8 @@ def write_report(
         f"- 窗口：{START_DATE}~{END_DATE}，初始资金{INITIAL_EQUITY:,.0f}元。",
         f"- 仓位：{POSITION_PCT:.1%}；买卖滑点各{BUY_SLIPPAGE_RATE:.1%}；往返费率{ROUND_TRIP_FEE_RATE:.3%}。",
         "- T+1开盘接近涨停且理论滑点价超过全天最高价时判定买不到；退出日收盘跌停则顺延。",
-        "- E单腿严格单账户；完整组合严格按 `D>A>M>E>C` 串行，所有版本只替换E。",
-        "- D是盘中开仓腿，先于收盘后A/M/E/C；这属于时序，不使用未来信号重排。",
+        "- E单腿严格单账户；完整组合严格按 `D>A>E>C` 串行，所有版本只替换E。",
+        "- D是盘中开仓腿，先于收盘后A/E/C；这属于时序，不使用未来信号重排。",
         "",
         "## 来源复现验证",
         "",
@@ -1183,7 +1175,7 @@ def main() -> None:
         "schema_version": 1,
         "strategy_family": "E",
         "active_strategy_variant": "E_CURRENT",
-        "priority_order": ["D", "A", "M", "E", "C"],
+        "priority_order": ["D", "A", "E", "C"],
         "sample_window": {"start": START_DATE, "end": END_DATE},
         "samples": {
             variant: {
