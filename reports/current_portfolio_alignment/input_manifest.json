@@ -47,9 +47,9 @@
       "sha256": "5b2edf242ba3662a515b186c9492b182e9f95eaecbe2768d58b31bd47e95f83c"
     },
     {
-      "path": "reports/strategy_n/n_backtest_candidates.csv",
-      "size": 26529,
-      "sha256": "cd03573cb02f525dbb722aafea64c0b05ee45c8670a4b1b13ae4dede43919dca"
+      "path": "reports/strategy_n_v3/n_backtest_candidates.csv",
+      "size": 33939,
+      "sha256": "750931bb2f6c95cd1ce827bf2423bac3b0b36f027e5268d5a1f6a36403a4d6a9"
     },
     {
       "path": "config/strategy_e_r1_scenarios.json",

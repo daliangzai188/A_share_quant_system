@@ -47,8 +47,8 @@ class CurrentPortfolioAlignmentTests(unittest.TestCase):
             "current_d_a_m_e_c_n",
         )
 
-        self.assertEqual(without_m["executed_trade_count"], 167)
-        self.assertAlmostEqual(without_m["equity_multiple"], 8309.818311569792, places=8)
+        self.assertEqual(without_m["executed_trade_count"], 166)
+        self.assertAlmostEqual(without_m["equity_multiple"], 5450.7701476449965, places=8)
         self.assertEqual(without_m["m_trade_count"], 0)
         self.assertEqual(current["m_trade_count"], 28)
         self.assertGreater(current["equity_multiple"], without_m["equity_multiple"])
@@ -63,7 +63,7 @@ class CurrentPortfolioAlignmentTests(unittest.TestCase):
             "current_d_a_m_e_c_n",
         )
 
-        self.assertEqual(without_gate["executed_trade_count"], 179)
+        self.assertEqual(without_gate["executed_trade_count"], 178)
         self.assertGreater(current["equity_multiple"], without_gate["equity_multiple"])
 
         validation = e_entry_gate_validation(self.sources)
@@ -80,11 +80,11 @@ class CurrentPortfolioAlignmentTests(unittest.TestCase):
             "current_d_a_m_e_c_n",
         )
         self.assertEqual(metrics["d_trade_count"], 18)
-        self.assertEqual(metrics["a_trade_count"], 44)
+        self.assertEqual(metrics["a_trade_count"], 45)
         self.assertEqual(metrics["m_trade_count"], 28)
-        self.assertEqual(metrics["e_trade_count"], 33)
+        self.assertEqual(metrics["e_trade_count"], 34)
         self.assertEqual(metrics["c_trade_count"], 16)
-        self.assertEqual(metrics["n_trade_count"], 35)
+        self.assertEqual(metrics["n_trade_count"], 32)
         self.assertEqual(metrics["d_to_a_trade_count"], 0)
         self.assertEqual(metrics["d_to_c_trade_count"], 0)
         self.assertEqual(metrics["d_to_e_trade_count"], 0)

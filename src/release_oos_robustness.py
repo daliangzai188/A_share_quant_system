@@ -177,7 +177,10 @@ def _live_report_config(root: Path) -> dict[str, Any]:
     config = _read_json(root / "config" / "config.json", {})
     report = dict(config.get("live_performance_report", {}))
     analysis = config.get("analysis", {})
-    for key in ("commission_rate", "stamp_tax_rate", "transfer_fee_rate"):
+    for key in (
+        "commission_rate", "stamp_tax_rate", "stamp_tax_schedule",
+        "transfer_fee_rate", "minimum_commission",
+    ):
         report.setdefault(key, analysis.get(key))
     return report
 

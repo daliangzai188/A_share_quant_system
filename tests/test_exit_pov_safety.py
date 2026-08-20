@@ -7,6 +7,7 @@ import copy
 import json
 import os
 import tempfile
+import threading
 from pathlib import Path
 from unittest.mock import patch
 from types import SimpleNamespace
@@ -616,7 +617,7 @@ class ExitExecutionSafetyStateTest(unittest.TestCase):
             trading_daemon, "_watchdog_pending", pending
         ):
             gateway_cls.return_value = SimpleNamespace(
-                assert_real_order_allowed=lambda _confirm: None
+                assert_real_order_allowed=lambda _confirm, *, side: None
             )
             completed = trading_daemon._abc_place_sell_order_direct_locked(
                 "688001.SH",
@@ -2328,6 +2329,17 @@ class StrategyDConditionalExitTest(unittest.TestCase):
                 "exit_pov_trigger_pct": 0.01,
             },
         }
+        main_sleep_count = 0
+
+        def stop_main_monitor_after_rescan(_seconds: float) -> None:
+            nonlocal main_sleep_count
+            # 整套测试中可能仍有守护线程收尾；它们不能消耗本测试主线程的
+            # 有限side_effect队列，避免全量discover时出现顺序依赖。
+            if threading.current_thread() is not threading.main_thread():
+                return
+            main_sleep_count += 1
+            if main_sleep_count >= 2:
+                raise _StopWatchdog()
 
         with patch.object(trading_daemon, "now_beijing", return_value=frozen_now), \
              patch.object(trading_daemon, "today_beijing", return_value=frozen_now.date()), \
@@ -2342,7 +2354,7 @@ class StrategyDConditionalExitTest(unittest.TestCase):
              patch.object(
                  trading_daemon.time,
                  "sleep",
-                 side_effect=[None, _StopWatchdog()],
+                 side_effect=stop_main_monitor_after_rescan,
              ):
             with self.assertRaises(_StopWatchdog):
                 trading_daemon._exit_pov_monitor()
@@ -2630,7 +2642,8 @@ class CloseWindowIdentityTest(unittest.TestCase):
             return True
 
         fake_thread = SimpleNamespace(start=lambda: None)
-        with patch.object(trading_daemon, "_has_due_close_plan_now", side_effect=_due), \
+        with patch.object(trading_daemon, "_wait_for_exit_close_submit_clock_guard", return_value=0.0), \
+             patch.object(trading_daemon, "_has_due_close_plan_now", side_effect=_due), \
              patch.object(trading_daemon, "_pause_pipeline_for_trade") as pause, \
              patch.object(trading_daemon, "_resume_pipeline_after_trade") as resume, \
              patch.object(trading_daemon, "load_json_config", return_value={}), \

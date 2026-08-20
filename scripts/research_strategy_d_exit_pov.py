@@ -6,7 +6,7 @@
 * 只研究当前组合中18笔普通D（T+2收盘退出）；
 * D接力已经全关，不存在T+1集合竞价让路卖出；
 * 每个POV信号只能使用当时已经完成的bar，不使用未来收盘价决定是否卖；
-* POV均价替换D原收盘价后，重新计算D腿复利、174笔总复利和最大回撤；
+* POV均价替换D原收盘价后，重新计算D腿复利、173笔总复利和最大回撤；
 * 未全部成交的场景不得把残仓按收盘价伪装成成交，直接判定不可认证。
 
 先在Windows盘后采集数据，再运行：
@@ -67,11 +67,11 @@ PORTFOLIO_TRADES_PATH = (
 )
 D_TRADES_PATH = PROJECT_ROOT / "reports" / "strategy_d" / "d_daily_candidates.csv"
 OUTPUT_DIR = PROJECT_ROOT / "reports" / "strategy_d" / "exit_pov"
-# 2026-08-19按N双分支逐日资金占用重放后的D>A>M>E>C>N发布标尺；容量仍未认证。
+# 2026-08-20按N v3因果执行口径重放后的D>A>M>E>C>N发布标尺；容量仍未认证。
 EXPECTED_D_COUNT = 18
-EXPECTED_PORTFOLIO_COUNT = 174
-EXPECTED_PORTFOLIO_MULTIPLE = 9508.426795072035
-EXPECTED_PORTFOLIO_DRAWDOWN = -0.22480568875722184
+EXPECTED_PORTFOLIO_COUNT = 173
+EXPECTED_PORTFOLIO_MULTIPLE = 5813.315346397396
+EXPECTED_PORTFOLIO_DRAWDOWN = -0.2238623307083658
 EXPECTED_D_MULTIPLE = 2.9157517119286513
 EPSILON = 1e-9
 
@@ -129,7 +129,7 @@ def compound(returns: pd.Series) -> float:
 
 
 def load_trade_metadata() -> tuple[pd.DataFrame, pd.DataFrame]:
-    """加载174笔当前组合及18笔普通D的买入价、原退出价。"""
+    """加载173笔当前组合及18笔普通D的买入价、原退出价。"""
 
     portfolio = pd.read_csv(
         PORTFOLIO_TRADES_PATH,

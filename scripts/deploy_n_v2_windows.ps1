@@ -16,7 +16,7 @@ Write-DeployLog "CHECK_START"
 
 $VersionReady = Select-String `
     -Path $ConfigPath `
-    -SimpleMatch '"strategy_version": "N_two_branch_retreat_plus_mixed_amount_v2"' `
+    -SimpleMatch '"strategy_version": "N_two_branch_retreat_plus_mixed_amount_v3"' `
     -Quiet
 $TradeCountReady = Select-String `
     -Path $ConfigPath `

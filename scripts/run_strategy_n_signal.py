@@ -38,6 +38,7 @@ from src.strategy_e import load_bucketed_signal_pool  # noqa: E402
 from src.strategy_n import (  # noqa: E402
     N_VERSION,
     load_n_spec,
+    n_live_entry_block_reason,
     resolve_exit_offset,
     select_n_daily_picks,
 )
@@ -180,6 +181,20 @@ def main() -> None:
         reason = "N第一分支与补充分支均无候选"
         print(f"[N信号] 不触发：{reason}")
         record_run(signal_date, NO_CANDIDATE, reason, dry_run=args.dry_run, candidate_count=0)
+        return
+
+    risk_blocker = n_live_entry_block_reason(PROJECT_ROOT, config)
+    if risk_blocker:
+        row = candidates.iloc[0]
+        reason = f"N新增开仓门禁阻断：{risk_blocker}"
+        print(f"[N信号] {reason}；候选={row.get('ts_code','')} {row.get('name','')}")
+        record_run(
+            signal_date,
+            NO_SIGNAL_OCCUPIED,
+            reason,
+            dry_run=args.dry_run,
+            candidate_count=1,
+        )
         return
 
     blocker = higher_priority_blocker(signal_date)

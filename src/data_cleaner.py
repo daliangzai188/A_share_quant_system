@@ -8,6 +8,7 @@ from typing import Iterable
 
 import pandas as pd
 
+from src.market_rules import market_segment, price_limit_pct
 from src.utils.config import get_project_root, load_json_config, mkdir_p
 from src.utils.logger import get_logger
 
@@ -392,31 +393,12 @@ class DataCleaner:
     def classify_market_segment(ts_code: object) -> str:
         if pd.isna(ts_code):
             return "unknown"
-        code = str(ts_code).upper()
-        prefix = code.split(".")[0]
-        if code.endswith(".BJ") or prefix.startswith(("4", "8", "9")):
-            return "bj"
-        if prefix.startswith(("688", "689")):
-            return "star"
-        if prefix.startswith(("300", "301")):
-            return "chi_next"
-        if code.endswith(".SH") and prefix.startswith("6"):
-            return "sh_main"
-        if code.endswith(".SZ") and prefix.startswith(("000", "001", "002", "003")):
-            return "sz_main"
-        return "other"
+        return market_segment(ts_code)
 
     @classmethod
     def classify_limit_pct(cls, ts_code: object, name: object | None = None) -> float:
-        stock_name = "" if name is None or pd.isna(name) else str(name).upper()
-        if cls.is_st_or_delisting_name(stock_name):
-            return 0.05
-        segment = cls.classify_market_segment(ts_code)
-        if segment == "bj":
-            return 0.30
-        if segment in {"chi_next", "star"}:
-            return 0.20
-        return 0.10
+        stock_name = "" if name is None or pd.isna(name) else str(name)
+        return float(price_limit_pct(ts_code, name=stock_name) or 0.10)
 
     @staticmethod
     def classify_limit_pct_bucket(value: object) -> str:

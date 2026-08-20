@@ -16,6 +16,10 @@ from src.utils.logger import setup_logger
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="构建涨停板成交概率模型的历史换手率查询表。")
     parser.add_argument("--config", default="config/config.json", help="配置文件路径。")
+    parser.add_argument(
+        "--as-of-date",
+        help="只使用严格早于该日的数据建表，YYYYMMDD；实盘收盘重建时应传信号日。",
+    )
     return parser.parse_args()
 
 
@@ -30,7 +34,7 @@ def main() -> None:
     )
 
     builder = FillRateTableBuilder(config_path=args.config)
-    outputs = builder.build()
+    outputs = builder.build(as_of_date=args.as_of_date)
 
     print("换手率成交概率基础表生成完成：")
     for name, path in outputs.items():

@@ -40,7 +40,7 @@ from src.strategy_e import (  # noqa: E402
 from src.strategy_optimizer import StrategyConditionOptimizer  # noqa: E402
 
 
-HIST_POOL_PATH = PROJECT_ROOT / "data" / "processed" / "limit_up_fill_scored.csv"
+HIST_POOL_PATH = PROJECT_ROOT / "data" / "processed" / "limit_up_fill_scored_asof.csv"
 LOCKED_TRADES_PATH = PROJECT_ROOT / "reports" / "strategy_e_samples" / "e_r1_daily_candidates_full.csv"
 OUTPUT_DIR = PROJECT_ROOT / "reports" / "strategy_e_alignment"
 POSITION_PCT = 0.825
@@ -53,7 +53,16 @@ EXPECTED_MAX_DRAWDOWN = -0.2766138432983575
 def load_historical_bucketed_pool(start_date: str, end_date: str, lookback_dates: int) -> pd.DataFrame:
     """用实盘同一特征链生成历史bucket，并为板块shift保留足够前置窗口。"""
 
+    if not HIST_POOL_PATH.exists():
+        raise FileNotFoundError(
+            "历史研究禁止读取全样本成交打分表；请先运行 "
+            "python scripts/score_limit_up_fill_probability.py --historical-asof "
+            "--output-path data/processed/limit_up_fill_scored_asof.csv"
+        )
     raw = pd.read_csv(HIST_POOL_PATH, low_memory=False)
+    method = raw.get("fill_probability_method", pd.Series(dtype=str)).astype(str)
+    if method.empty or not method.eq("asof_turnover_space_proxy_v2").all():
+        raise RuntimeError("历史成交打分表缺少严格as-of方法标识，禁止用于研究/回测")
     raw["trade_date"] = raw["trade_date"].astype(str).str.replace(r"\.0$", "", regex=True)
     available = sorted(raw.loc[raw["trade_date"] <= end_date, "trade_date"].unique())
     start_index = available.index(start_date) if start_date in available else 0

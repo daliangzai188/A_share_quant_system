@@ -10,6 +10,7 @@ from typing import Any, Mapping
 import pandas as pd
 
 from src.strategy_identity import normalize_strategy_frame, normalize_strategy_leg
+from src.trading_fees import DEFAULT_STAMP_TAX_SCHEDULE, stamp_tax_rate_for_date
 
 
 ACTIVE_LEGS = {"A", "C", "D", "E", "M", "N"}
@@ -110,17 +111,29 @@ def completed_live_trades(
     if trades.empty:
         return trades, quality
 
-    commission = float(config.get("commission_rate", 0.0003))
-    stamp_tax = float(config.get("stamp_tax_rate", 0.001))
-    transfer_fee = float(config.get("transfer_fee_rate", 0.00001))
-    minimum_commission = float(config.get("minimum_commission", 5.0))
+    commission = float(config.get("commission_rate") or 0.0003)
+    transfer_fee = float(config.get("transfer_fee_rate") or 0.00001)
+    minimum_commission = float(config.get("minimum_commission") or 5.0)
+    configured_schedule = config.get("stamp_tax_schedule")
+    if configured_schedule:
+        stamp_schedule = configured_schedule
+        stamp_rates = trades["exit_date"].map(
+            lambda value: stamp_tax_rate_for_date(value, stamp_schedule)
+        )
+    elif "stamp_tax_rate" in config and config.get("stamp_tax_rate") is not None:
+        # 兼容显式指定固定费率的独立审计场景；生产配置使用日期化schedule。
+        stamp_rates = pd.Series(float(config["stamp_tax_rate"]), index=trades.index)
+    else:
+        stamp_rates = trades["exit_date"].map(
+            lambda value: stamp_tax_rate_for_date(value, DEFAULT_STAMP_TAX_SCHEDULE)
+        )
     buy_commission = (trades["entry_fill_amount"] * commission).clip(lower=minimum_commission)
     sell_commission = (trades["exit_fill_amount"] * commission).clip(lower=minimum_commission)
     trades["estimated_fees"] = (
         buy_commission
         + sell_commission
         + (trades["entry_fill_amount"] + trades["exit_fill_amount"]) * transfer_fee
-        + trades["exit_fill_amount"] * stamp_tax
+        + trades["exit_fill_amount"] * stamp_rates
     )
     trades["net_pnl"] = (
         trades["exit_fill_amount"] - trades["entry_fill_amount"] - trades["estimated_fees"]

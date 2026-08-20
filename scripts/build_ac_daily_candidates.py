@@ -24,6 +24,7 @@
 from __future__ import annotations
 
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 import pandas as pd
@@ -32,6 +33,14 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from src.paper_candidate_generator import PaperCandidateGenerator  # noqa: E402
+from src.adjusted_returns import linked_forward_adjusted_return  # noqa: E402
+from src.market_rules import (  # noqa: E402
+    fixed_close_sell_executable,
+    fixed_open_buy_executable,
+    limit_up_price,
+    listing_trade_day_number,
+    price_limit_pct,
+)
 from src.utils.config import load_json_config  # noqa: E402
 from scripts.run_paper_ab_filtered_daily_ops import (  # noqa: E402
     condition_strategy_config,
@@ -54,6 +63,16 @@ DATES = sorted(cal[ccol].tolist())
 DIDX = {d: i for i, d in enumerate(DATES)}
 _dc: dict[str, pd.DataFrame] = {}
 
+STOCK_BASIC_PATH = ROOT / "data" / "raw" / "stock_basic" / "stock_basic_all.csv"
+if STOCK_BASIC_PATH.exists():
+    _stock_basic = pd.read_csv(
+        STOCK_BASIC_PATH,
+        dtype={"ts_code": str, "list_date": str, "name": str},
+        low_memory=False,
+    ).drop_duplicates("ts_code", keep="last").set_index("ts_code")
+else:
+    _stock_basic = pd.DataFrame()
+
 
 def day(d: str):
     if d not in _dc:
@@ -62,47 +81,160 @@ def day(d: str):
     return None if _dc[d].empty else _dc[d]
 
 
-def limit_cap(code: str, pre: float) -> float:
-    pct = 0.20 if code[:3] in {"300", "301", "688"} else 0.10
-    return round(pre * (1 + pct), 2)
+def stock_meta(code: str, name: str = "") -> tuple[str, str]:
+    resolved_name = str(name or "")
+    list_date = ""
+    if not _stock_basic.empty and code in _stock_basic.index:
+        row = _stock_basic.loc[code]
+        if not resolved_name:
+            resolved_name = str(row.get("name", "") or "")
+        list_date = str(row.get("list_date", "") or "").replace(".0", "")
+    return resolved_name, list_date
 
 
-def trade_return(sig: str, code: str, hold: int):
-    """返回 (状态, 买日, 卖日, 个股净收益)。hold=2 → T+2收盘；hold=3 → T+3收盘。"""
+def limit_cap(code: str, pre: float, *, name: str = "", trade_date: str = "") -> float | None:
+    resolved_name, list_date = stock_meta(code, name)
+    listing_day = listing_trade_day_number(list_date, trade_date, DATES)
+    pct = price_limit_pct(
+        code,
+        name=resolved_name,
+        trade_date=trade_date,
+        listing_day_number=listing_day,
+    )
+    return limit_up_price(pre, pct)
+
+
+@dataclass(frozen=True)
+class TradeReturnResult:
+    status: str
+    buy_date: str
+    exit_date: str
+    stock_return: float | None
+    exit_rule: str = ""
+
+
+def trade_return_details(
+    sig: str,
+    code: str,
+    hold: int,
+    *,
+    name: str = "",
+    use_intraday_takeprofit: bool = False,
+    takeprofit_offset: float = 0.01,
+    sell_delay_max: int = 4,
+) -> TradeReturnResult:
+    """按固定开盘买/固定收盘卖规则计算可执行的前复权收益。"""
+
     i = DIDX.get(sig)
     if i is None or i + hold >= len(DATES):
-        return "NO_CALENDAR", "", "", None
+        return TradeReturnResult("NO_CALENDAR", "", "", None)
     d1 = DATES[i + 1]
     f1 = day(d1)
     if f1 is None or code not in f1.index:
-        return "NO_PRICE", "", "", None
+        return TradeReturnResult("NO_PRICE", "", "", None)
     r1 = f1.loc[code]
-    o = float(r1["open"])
-    pre = float(r1.get("pre_close", 0) or 0)
-    if o <= 0:
-        return "BAD_PRICE", "", "", None
-    if pre > 0:
-        cap = limit_cap(code, pre)
-        if o >= cap - 1e-6 and float(r1["low"]) >= cap - 1e-6:
-            return "LIMIT_UP_UNBUYABLE", d1, "", None
-    buy = o * 1.001
-    # 卖出日跌停顺延
-    for k in range(hold, hold + 4):
+    open_price = float(r1["open"])
+    pre_close = float(r1.get("pre_close", 0) or 0)
+    if open_price <= 0:
+        return TradeReturnResult("BAD_PRICE", "", "", None)
+
+    resolved_name, list_date = stock_meta(code, name)
+    listing_day = listing_trade_day_number(list_date, d1, DATES)
+    buy_limit_pct = price_limit_pct(
+        code,
+        name=resolved_name,
+        trade_date=d1,
+        listing_day_number=listing_day,
+    )
+    if pre_close > 0 and not fixed_open_buy_executable(
+        pre_close=pre_close,
+        open_price=open_price,
+        limit_pct=buy_limit_pct,
+    ):
+        return TradeReturnResult("LIMIT_UP_UNBUYABLE", d1, "", None)
+
+    buy_price = open_price * 1.001
+    for k in range(hold, hold + max(int(sell_delay_max), 1)):
         if i + k >= len(DATES):
             break
-        dk = DATES[i + k]
-        fk = day(dk)
-        if fk is None or code not in fk.index:
+        exit_date = DATES[i + k]
+        frame = day(exit_date)
+        if frame is None or code not in frame.index:
             continue
-        rk = fk.loc[code]
-        pk = float(rk.get("pre_close", 0) or 0)
-        if pk > 0:
-            pct = 0.20 if code[:3] in {"300", "301", "688"} else 0.10
-            floor = round(pk * (1 - pct), 2)
-            if float(rk["high"]) <= floor + 1e-6:
-                continue          # 跌停卖不出，顺延
-        return "OK", d1, dk, float(rk["close"]) * 0.999 / buy - 1.0
-    return "SELL_UNRESOLVED", d1, "", None
+        exit_row = frame.loc[code]
+        exit_pre_close = float(exit_row.get("pre_close", 0) or 0)
+        exit_close = float(exit_row.get("close", 0) or 0)
+        exit_high = float(exit_row.get("high", 0) or 0)
+        exit_listing_day = listing_trade_day_number(list_date, exit_date, DATES)
+        exit_limit_pct = price_limit_pct(
+            code,
+            name=resolved_name,
+            trade_date=exit_date,
+            listing_day_number=exit_listing_day,
+        )
+
+        sell_price: float | None = None
+        exit_rule = ""
+        cap = limit_up_price(exit_pre_close, exit_limit_pct) if exit_pre_close > 0 else None
+        if (
+            use_intraday_takeprofit
+            # 实盘止盈监控只在原计划退出日运行。若计划日跌停/停牌导致延期，
+            # 后续交易日按延期卖出的固定收盘口径处理，不能回测出实盘不存在的止盈。
+            and k == hold
+            and cap is not None
+            and exit_high >= cap - float(takeprofit_offset) - 1e-9
+        ):
+            sell_price = cap - float(takeprofit_offset)
+            exit_rule = "INTRADAY_LIMIT_UP_MINUS_OFFSET"
+        elif exit_pre_close > 0 and fixed_close_sell_executable(
+            pre_close=exit_pre_close,
+            close_price=exit_close,
+            limit_pct=exit_limit_pct,
+        ):
+            sell_price = exit_close * 0.999
+            exit_rule = "FIXED_CLOSE"
+        elif exit_pre_close <= 0 and exit_close > 0:
+            sell_price = exit_close * 0.999
+            exit_rule = "FIXED_CLOSE_NO_LIMIT_REFERENCE"
+
+        if sell_price is None or sell_price <= 0:
+            continue
+        try:
+            stock_return = linked_forward_adjusted_return(
+                ts_code=code,
+                buy_date=d1,
+                buy_price=buy_price,
+                sell_date=exit_date,
+                sell_price=sell_price,
+                trade_dates=DATES,
+                daily_loader=day,
+            )
+        except ValueError:
+            return TradeReturnResult("NO_ADJUSTED_PRICE", d1, exit_date, None, exit_rule)
+        return TradeReturnResult("OK", d1, exit_date, stock_return, exit_rule)
+    return TradeReturnResult("SELL_UNRESOLVED", d1, "", None)
+
+
+def trade_return(
+    sig: str,
+    code: str,
+    hold: int,
+    *,
+    name: str = "",
+    use_intraday_takeprofit: bool = False,
+    takeprofit_offset: float = 0.01,
+):
+    """兼容旧调用，返回 ``(状态, 买日, 卖日, 前复权个股收益)``。"""
+
+    result = trade_return_details(
+        sig,
+        code,
+        hold,
+        name=name,
+        use_intraday_takeprofit=use_intraday_takeprofit,
+        takeprofit_offset=takeprofit_offset,
+    )
+    return result.status, result.buy_date, result.exit_date, result.stock_return
 
 
 def main() -> None:
@@ -156,7 +288,7 @@ def main() -> None:
             continue
         code = str(pick["ts_code"])
         hold = 2 if leg == "A" else 3
-        st, bd, ed, ret = trade_return(d, code, hold)
+        st, bd, ed, ret = trade_return(d, code, hold, name=str(pick.get("name", "")))
         rows.append({"signal_date": d, "leg": leg, "ts_code": code, "name": pick.get("name", ""),
                      "status": st, "buy_date": bd, "exit_date": ed, "stock_return": ret})
 

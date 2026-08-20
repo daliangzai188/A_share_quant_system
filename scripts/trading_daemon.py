@@ -1944,7 +1944,7 @@ def _execute_orders_inprocess(
     gateway = LiveOrderGateway(config_path)
 
     try:
-        gateway.assert_real_order_allowed(confirm)
+        gateway.assert_real_order_allowed(confirm, side="BUY")
     except RuntimeError as e:
         log.error("❌ [%s] 下单条件不满足：%s", tag, e)
         return False
@@ -2925,7 +2925,7 @@ def _abc_place_sell_order_direct_locked(
 
     gateway = LiveOrderGateway(PROJECT_ROOT / "config" / "config.json")
     try:
-        gateway.assert_real_order_allowed(confirm)
+        gateway.assert_real_order_allowed(confirm, side="SELL")
     except RuntimeError as e:
         log.error("❌ [ABC平仓] 下单条件不满足：%s", e)
         _notify("sell_fail", "❌ ABC平仓条件不满足",
@@ -4336,7 +4336,7 @@ def _assert_exit_live_allowed(config: dict) -> None:
     confirm = config.get("live_trade", {}).get(
         "real_order_confirm_text", "A_SYSTEM_REAL_ORDER_CONFIRMED"
     )
-    gateway.assert_real_order_allowed(confirm)
+    gateway.assert_real_order_allowed(confirm, side="SELL")
     if not bool(config.get("live_trade", {}).get("allow_sell", False)):
         raise RuntimeError("live_trade.allow_sell=false，禁止POV卖出")
 
@@ -7691,7 +7691,9 @@ def _d_relay_submit_buy(
     confirm = str(config.get("live_trade", {}).get(
         "real_order_confirm_text", "A_SYSTEM_REAL_ORDER_CONFIRMED"
     ))
-    LiveOrderGateway(PROJECT_ROOT / "config" / "config.json").assert_real_order_allowed(confirm)
+    LiveOrderGateway(PROJECT_ROOT / "config" / "config.json").assert_real_order_allowed(
+        confirm, side="BUY"
+    )
     if not bool(config.get("live_trade", {}).get("allow_buy", False)):
         raise RuntimeError("live_trade.allow_buy=false，禁止D接力买入")
 
@@ -8962,7 +8964,7 @@ def _enqueue_opening_pov_from_plan(
         )
         try:
             LiveOrderGateway(PROJECT_ROOT / "config" / "config.json").assert_real_order_allowed(
-                confirm
+                confirm, side="BUY"
             )
         except RuntimeError as exc:
             log.error("09:30 %s失败：实盘门禁未通过：%s", reason, exc)
@@ -9551,7 +9553,9 @@ def _pov_worker() -> None:
         try:
             from src.live_order_gateway import LiveOrderGateway
             LiveOrderGateway(PROJECT_ROOT / "config" / "config.json").assert_real_order_allowed(
-                str(lt.get("real_order_confirm_text", "A_SYSTEM_REAL_ORDER_CONFIRMED")))
+                str(lt.get("real_order_confirm_text", "A_SYSTEM_REAL_ORDER_CONFIRMED")),
+                side="BUY",
+            )
         except RuntimeError as e:
             log.error("❌ [POV] 实盘下单条件不满足,平滑段执行线程退出：%s", e)
             return
@@ -9701,7 +9705,7 @@ def job_premarket_buy() -> None:
     from src.live_order_gateway import LiveOrderGateway
     gateway = LiveOrderGateway(PROJECT_ROOT / "config" / "config.json")
     try:
-        gateway.assert_real_order_allowed(confirm)
+        gateway.assert_real_order_allowed(confirm, side="BUY")
     except RuntimeError as e:
         logger().error("❌ [盘前买入] 下单条件不满足：%s", e)
         return
@@ -11585,7 +11589,7 @@ def _e_place_order_direct(ts_code: str, name: str, planned_qty: int, signal_date
 
     gateway = LiveOrderGateway(PROJECT_ROOT / "config" / "config.json")
     try:
-        gateway.assert_real_order_allowed(confirm)
+        gateway.assert_real_order_allowed(confirm, side="BUY")
     except RuntimeError as e:
         log.error("❌ [E延迟开仓] 下单条件不满足：%s", e)
         return False

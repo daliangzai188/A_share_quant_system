@@ -14,16 +14,24 @@ N只在D/A/M/E/C均未占用资金后参与组合选择，正式腿序为
 """
 from __future__ import annotations
 
+import datetime as dt
+import json
+from pathlib import Path
 from typing import Any, Mapping
 
 import pandas as pd
 
 
-N_VERSION = "N_two_branch_retreat_plus_mixed_amount_v2"
+N_VERSION = "N_two_branch_retreat_plus_mixed_amount_v3"
 
 DEFAULT_SPEC: dict[str, Any] = {
     "enabled": False,
     "live_order_enabled": False,
+    "entry_pause": False,
+    "health_gate_enabled": False,
+    "health_gate_block_levels": ["RED"],
+    "health_gate_status_path": "reports/strategy_health/state.json",
+    "health_gate_max_age_hours": 72,
     "height_column": "segment_limit_max_height_bucket",
     "height_values": ["1"],
     "retreat_column": "segment_retreat_state_bucket",
@@ -102,6 +110,56 @@ def required_signal_fields(spec: Mapping[str, Any]) -> set[str]:
         fields.update(str(value) for value in spec["supplement_filter_columns"])
         fields.update(str(value) for value in spec["supplement_rank_columns"])
     return fields
+
+
+def n_live_entry_block_reason(
+    project_root: Path,
+    config: Mapping[str, Any],
+    *,
+    now: dt.datetime | None = None,
+) -> str:
+    """返回N新增BUY阻断原因；只管开仓，绝不参与已有持仓SELL。"""
+
+    spec = load_n_spec(config)
+    if bool(spec.get("entry_pause", False)):
+        return "strategy_n.entry_pause=true，仅暂停N新增开仓"
+    if not bool(spec.get("health_gate_enabled", False)):
+        return ""
+    raw_path = str(spec.get("health_gate_status_path", "")).strip()
+    if not raw_path:
+        return "N健康门禁已启用但未配置状态文件"
+    path = Path(raw_path)
+    if not path.is_absolute():
+        path = project_root / path
+    if not path.exists():
+        # 尚无完整真实N交易时允许继续前向采样；候选CSV不得代替真实成交。
+        return ""
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return f"N健康状态不可读：{exc}"
+    details = state.get("_details", {}).get("N", {}) if isinstance(state, dict) else {}
+    if not isinstance(details, dict) or not details:
+        return ""
+    level = str(details.get("level", state.get("N", ""))).upper()
+    blocked_levels = {str(value).upper() for value in spec.get("health_gate_block_levels", ["RED"])}
+    if level in blocked_levels:
+        return f"N真实成交健康等级={level}，暂停新增开仓"
+    timestamp = str(details.get("updated_at", ""))
+    if timestamp:
+        try:
+            updated = dt.datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+            if updated.tzinfo is None:
+                updated = updated.replace(tzinfo=dt.timezone.utc)
+            current = now or dt.datetime.now(dt.timezone.utc)
+            if current.tzinfo is None:
+                current = current.replace(tzinfo=dt.timezone.utc)
+            age_hours = (current.astimezone(dt.timezone.utc) - updated.astimezone(dt.timezone.utc)).total_seconds() / 3600
+            if age_hours > float(spec.get("health_gate_max_age_hours", 72)):
+                return f"N健康状态已过期{age_hours:.1f}小时，暂停新增开仓"
+        except ValueError:
+            return "N健康状态时间格式错误，暂停新增开仓"
+    return ""
 
 
 def _bool_series(frame: pd.DataFrame, column: str, default: bool) -> pd.Series:

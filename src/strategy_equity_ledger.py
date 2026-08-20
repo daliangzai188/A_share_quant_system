@@ -51,7 +51,10 @@ def equity_ledger_requires_bootstrap(path: Path) -> bool:
 def _report_config(config: Mapping[str, Any]) -> dict[str, Any]:
     result = dict(config.get("live_performance_report", {}))
     analysis = config.get("analysis", {})
-    for key in ("commission_rate", "stamp_tax_rate", "transfer_fee_rate"):
+    for key in (
+        "commission_rate", "stamp_tax_rate", "stamp_tax_schedule",
+        "transfer_fee_rate", "minimum_commission",
+    ):
         result.setdefault(key, analysis.get(key))
     result.setdefault("active_legs", sorted(ACTIVE_LEGS))
     return result

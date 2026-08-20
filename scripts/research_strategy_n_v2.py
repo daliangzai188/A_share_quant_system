@@ -1,16 +1,17 @@
-"""在当前正式N之上研究一个可选的补充分支，绝不修改实盘配置。
+"""验证当前N v3，或在其上研究一个额外补充分支；绝不修改实盘配置。
 
 研究口径：
 1. 固定当前组合 ``D>A>M>E>C>N`` 和当前N第一分支；
 2. 只有当前N当天没有候选时，才允许研究规则提供N补充候选；
 3. 所有候选只使用信号日字段，T+1开盘买、T+2收盘卖；
 4. 训练段生成有限的一/二条件规则，验证段锁定唯一挑战者，测试段最后揭盲；
-5. 研究时挑战者必须优于冻结的N单分支7108.62倍，且真正增加N样本或提高N胜率；
-6. 本脚本只写 ``reports/strategy_n_v2_research``，不会生成实盘信号。
+5. ``--verify-only`` 输出当前v3与不含N的训练/验证/测试对照；
+6. 完整搜索只写指定的新研究目录，不会生成实盘信号或覆盖旧v2报告。
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
+import argparse
 import json
 import math
 from pathlib import Path
@@ -295,6 +296,7 @@ def period_metrics(detail: pd.DataFrame, start: str, end: str) -> dict[str, Any]
             "extra_multiple": float((1.0 + extra["account_return"]).prod()) if len(extra) else 1.0,
             "extra_win_rate": float((extra["account_return"] > 0).mean()) if len(extra) else 0.0,
             "n_total_win_rate": float((n_trades["account_return"] > 0).mean()) if len(n_trades) else 0.0,
+            "n_total_multiple": float((1.0 + n_trades["account_return"]).prod()) if len(n_trades) else 1.0,
         }
     )
     return result
@@ -415,7 +417,10 @@ def bootstrap_mean(returns: pd.Series, *, samples: int = 20_000) -> dict[str, fl
     }
 
 
-def main() -> None:
+def main(*, output_dir: Path | None = None, verify_only: bool = False) -> None:
+    global OUTPUT_DIR
+    if output_dir is not None:
+        OUTPUT_DIR = output_dir
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     sources = cert.load_sources()
     baseline = cert.replay(
@@ -437,6 +442,85 @@ def main() -> None:
     reproduced_full = period_metrics(reproduced, legacy.START_DATE, legacy.END_DATE)
     if abs(reproduced_full["equity_multiple"] - baseline_full["equity_multiple"]) > 1e-9:
         raise RuntimeError("研究回放未能逐笔复现当前N组合，禁止搜索")
+    if verify_only:
+        without_n = cert.replay(
+            sources,
+            entry_gate_enabled=True,
+            m_enabled=True,
+            n_enabled=False,
+            block_d_on_handoff=True,
+        )
+        split_rows: list[dict[str, Any]] = []
+        for split, start, end in (
+            ("TRAIN", "20240520", "20250723"),
+            ("VALIDATION", "20250724", "20251212"),
+            ("TEST_OOS", "20251215", "20260514"),
+        ):
+            reference = period_metrics(without_n, start, end)
+            selected = period_metrics(baseline, start, end)
+            split_rows.append({
+                "split": split,
+                "start_date": start,
+                "end_date": end,
+                "without_n_trade_count": reference["trade_count"],
+                "with_n_trade_count": selected["trade_count"],
+                "n_trade_count": selected["n_trade_count"],
+                "n_win_rate": selected["n_total_win_rate"],
+                "n_standalone_multiple": selected["n_total_multiple"],
+                "without_n_multiple": reference["equity_multiple"],
+                "with_n_multiple": selected["equity_multiple"],
+                "ratio_to_without_n": selected["equity_multiple"] / reference["equity_multiple"],
+                "without_n_max_drawdown": reference["max_drawdown"],
+                "with_n_max_drawdown": selected["max_drawdown"],
+                "noninferior_passed": bool(
+                    selected["equity_multiple"] >= reference["equity_multiple"]
+                    and selected["max_drawdown"] >= reference["max_drawdown"]
+                ),
+            })
+        split_report = pd.DataFrame(split_rows)
+        split_report.to_csv(
+            OUTPUT_DIR / "current_v3_split_validation.csv",
+            index=False,
+            encoding="utf-8-sig",
+        )
+        n_trades = baseline[
+            baseline["status"].eq("EXECUTED") & baseline["strategy_leg"].eq("N")
+        ].copy()
+        n_returns = pd.to_numeric(n_trades["account_return"], errors="raise")
+        verification = {
+            "status": "REPRODUCED",
+            "strategy_version": cert._RUNTIME_CONFIG.get("strategy_n", {}).get("strategy_version"),
+            "candidate_pool_path": str(cert.N_POOL_PATH.relative_to(ROOT)),
+            "candidate_count": int(len(sources.n_pool)),
+            "asof_signal_pool_row_count": int(len(pool)),
+            "historical_fill_method": "asof_turnover_space_proxy_v2",
+            "portfolio_trade_count": baseline_full["trade_count"],
+            "portfolio_n_trade_count": baseline_full["n_trade_count"],
+            "portfolio_equity_multiple": baseline_full["equity_multiple"],
+            "portfolio_max_drawdown": baseline_full["max_drawdown"],
+            "n_standalone_multiple": float((1.0 + n_returns).prod()),
+            "n_win_rate": float(n_returns.gt(0).mean()),
+            "n_avg_account_return": float(n_returns.mean()),
+            "n_median_account_return": float(n_returns.median()),
+            "n_max_loss": float(n_returns.min()),
+            "n_max_profit": float(n_returns.max()),
+            "n_max_consecutive_losses": legacy.max_consecutive_losses(n_returns),
+            "test_oos_gate_passed": bool(
+                split_report.loc[split_report["split"].eq("TEST_OOS"), "noninferior_passed"].iloc[0]
+            ),
+        }
+        (OUTPUT_DIR / "current_v3_verification.json").write_text(
+            json.dumps(verification, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        print(
+            "N研究链可复现："
+            f"组合{baseline_full['trade_count']}笔/N {baseline_full['n_trade_count']}笔/"
+            f"{baseline_full['equity_multiple']:.6f}倍；"
+            f"as-of候选池{len(pool)}行；测试段非劣门禁="
+            f"{verification['test_oos_gate_passed']}"
+        )
+        return
 
     dates = sources.baseline["date"].astype(str).tolist()
     train_count = int(len(dates) * 0.60)
@@ -715,4 +799,19 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="策略N补充分支训练/验证/测试研究")
+    parser.add_argument(
+        "--output-dir",
+        default="reports/strategy_n_v3_research",
+        help="输出目录；默认写v3目录，禁止覆盖旧v2锁定报告。",
+    )
+    parser.add_argument(
+        "--verify-only",
+        action="store_true",
+        help="只验证当前组合、研究回放和严格as-of候选池可复现，不执行搜索。",
+    )
+    args = parser.parse_args()
+    output = Path(args.output_dir)
+    if not output.is_absolute():
+        output = ROOT / output
+    main(output_dir=output, verify_only=args.verify_only)

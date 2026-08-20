@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """策略健康度监控(收盘流水线末步,2026-07-17 用户拍板落地)。
 
-监控各腿"信号口径收益"的滚动20笔期望/胜率,对照历史滚动分布分位:
+监控E/ABC的信号口径收益及N的真实完整成交收益:
   <P10 → YELLOW 预警;<P5 → RED 告警(建议降仓/停腿,e_enabled开关现成)。
-数据源 = 历史审计(199笔,至20260513) + 每日信号文件增量(E candidates 首行 +
-ABC planned_orders BUY行),两段用同一收益口径(T+1开盘买/T+1+exit_n收盘卖,
-含0.15%费用近似)。级别变化即推送;每周一推例行摘要。
+E/ABC数据源 = 历史审计 + 每日信号增量；N只读取execution_tracking中买卖数量
+完整的券商真实成交并按日期化费用计算，候选、计划、未平仓和部分成交不得进入。
+级别变化即推送;每周一推例行摘要。
 不判死策略,只报警——降仓/停腿由用户决策。
 输出: reports/strategy_health/strategy_health_history.csv + state.json
 """
@@ -26,13 +26,40 @@ from pathlib import Path
 import pandas as pd
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from src.live_performance import completed_live_trades  # noqa: E402
+from src.utils.config import load_json_config  # noqa: E402
+
 OUT_DIR = PROJECT_ROOT / "reports" / "strategy_health"
 STATE_FILE = OUT_DIR / "state.json"
 HISTORY_FILE = OUT_DIR / "strategy_health_history.csv"
 AUDIT = PROJECT_ROOT / "reports" / "current_live_abce_audit" / "current_live_abce_detail.csv"
+TRADE_COMPLETION = (
+    PROJECT_ROOT / "reports" / "execution_tracking" / "trade_completion_summary.csv"
+)
 FEE = 0.0015
 ROLL = 20
 MIN_SAMPLE = 40
+
+# ── N腿专属绝对判据 ────────────────────────────────────────────────────
+# N 2026-08-20 才进样本外，实盘笔数长期不够 MIN_SAMPLE=40，套分位判据只会
+# 永远 INSUFFICIENT、等于没监控。所以 N 用绝对阈值：基线取自v3因果认证组合里
+# N 的32笔（旧35笔含前视成交打分/未前复权口径，已失效）。
+# v3历史：连亏3笔 / 单笔-9.0586% / 滚动10笔P10=-0.9164%、最差-1.4566% /
+# 自身回撤-20.6996%。RED在历史最差之外，避免上线即误报；这仍只是小样本监控。
+N_ROLL = 10
+N_RULES = {
+    "yellow_consecutive_losses": 3,
+    "red_consecutive_losses": 5,
+    "yellow_single_loss": -0.0906,
+    "red_single_loss": -0.1200,
+    "yellow_roll_mean": -0.009164,  # v3基线P10
+    "red_roll_mean": -0.014566,     # v3基线最差
+    "yellow_drawdown": -0.2070,
+    "red_drawdown": -0.2700,
+}
 
 cal = sorted(set(
     r["cal_date"] for r in csv.DictReader(
@@ -73,10 +100,40 @@ def signal_return(ts_code: str, sig: str, exit_n: int = 1) -> float | None:
     return c / o - 1 - FEE
 
 
+def completed_n_sequence(
+    raw: pd.DataFrame,
+    config: dict,
+) -> list[tuple[str, str, int, float]]:
+    """把真实完成汇总转换为N健康序列；未平仓/部分成交由统一清洗器剔除。"""
+
+    report_config = dict(config.get("live_performance_report", {}))
+    analysis = config.get("analysis", {})
+    for field in (
+        "commission_rate", "stamp_tax_rate", "stamp_tax_schedule",
+        "transfer_fee_rate", "minimum_commission",
+    ):
+        report_config.setdefault(field, analysis.get(field))
+    completed, _quality = completed_live_trades(raw, report_config)
+    completed = completed[completed["strategy_leg"].astype(str).eq("N")].copy()
+    completed = completed.drop_duplicates("trade_key", keep="last")
+    result: list[tuple[str, str, int, float]] = []
+    for _, trade in completed.iterrows():
+        sig = str(trade.get("signal_date", "")).replace(".0", "")
+        if not sig.isdigit():
+            sig = str(trade.get("entry_date", "")).replace("-", "")[:8]
+        result.append((
+            sig,
+            str(trade.get("ts_code", "")),
+            1,
+            float(trade["net_return"]),
+        ))
+    return sorted(result, key=lambda item: item[0])
+
+
 def collect_signals() -> dict[str, list]:
     """返回 {leg_group: [(sig_date, ts_code, exit_n, net_or_None), ...]},按信号日排序。"""
     seen: set = set()
-    seqs: dict[str, list] = {"E": [], "ABC": []}
+    seqs: dict[str, list] = {"E": [], "ABC": [], "N": []}
     # ── 历史段:审计明细(net直接用审计值,与实盘配置口径完全一致) ──
     if AUDIT.exists():
         a = pd.read_csv(AUDIT)
@@ -132,6 +189,24 @@ def collect_signals() -> dict[str, list]:
             except Exception:
                 exit_n = 1
             seqs["ABC"].append((sig, ts, exit_n, signal_return(ts, sig, exit_n)))
+    # ── N：只统计已完成且买卖数量完整的券商真实成交。候选、信号、计划单、
+    #     未平仓和部分成交一律不得冒充真实收益。 ──
+    if TRADE_COMPLETION.exists():
+        try:
+            raw = pd.read_csv(
+                TRADE_COMPLETION,
+                dtype={"trade_key": str, "ts_code": str, "signal_date": str},
+                low_memory=False,
+            )
+            config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+            for sig, ts, exit_n, net_return in completed_n_sequence(raw, config):
+                key = ("N", sig, ts)
+                if key in seen:
+                    continue
+                seen.add(key)
+                seqs["N"].append((sig, ts, exit_n, net_return))
+        except Exception as exc:
+            print(f"[N真实成交读取失败] {exc}")
     for g in seqs:
         seqs[g].sort(key=lambda x: x[0])
     return seqs
@@ -155,6 +230,58 @@ def evaluate(seq: list) -> dict:
                 level=level, last_sig=seq[-1][0], all_mean=float(s.mean()))
 
 
+def evaluate_n(seq: list) -> dict:
+    """N腿绝对判据：连亏、单笔、滚动均值、自身回撤，任一触及即升级。
+
+    与 evaluate() 的分位判据并存而不是替换——N 的实盘样本要很久才够 40 笔，
+    在那之前分位判据什么都判不出来。四项里任一 RED 即 RED，否则任一 YELLOW 即 YELLOW。
+    """
+    nets = [x[3] for x in seq if x[3] is not None]
+    n = len(nets)
+    if n == 0:
+        return dict(n=0, level="INSUFFICIENT")
+    s = pd.Series(nets)
+
+    streak = 0
+    for v in reversed(nets):
+        if v < 0:
+            streak += 1
+        else:
+            break
+    worst_single = float(s.min())
+    roll_mean = float(s.tail(N_ROLL).mean()) if n >= N_ROLL else None
+    equity = (1 + s * 0.825).cumprod()
+    drawdown = float((equity / equity.cummax() - 1).min())
+
+    hits = []
+    level = "GREEN"
+
+    def mark(cond_red, cond_yellow, label):
+        nonlocal level
+        if cond_red:
+            level = "RED"
+            hits.append(f"{label}(RED)")
+        elif cond_yellow and level != "RED":
+            level = "YELLOW"
+            hits.append(f"{label}(YELLOW)")
+
+    mark(streak >= N_RULES["red_consecutive_losses"],
+         streak >= N_RULES["yellow_consecutive_losses"], f"连亏{streak}笔")
+    mark(worst_single < N_RULES["red_single_loss"],
+         worst_single < N_RULES["yellow_single_loss"], f"单笔{worst_single * 100:+.1f}%")
+    if roll_mean is not None:
+        mark(roll_mean < N_RULES["red_roll_mean"],
+             roll_mean < N_RULES["yellow_roll_mean"], f"滚动{N_ROLL}笔{roll_mean * 100:+.2f}%")
+    mark(drawdown < N_RULES["red_drawdown"],
+         drawdown < N_RULES["yellow_drawdown"], f"回撤{drawdown * 100:.1f}%")
+
+    return dict(n=n, roll_mean=roll_mean if roll_mean is not None else float("nan"),
+                roll_win=float((s > 0).mean()), p10=N_RULES["yellow_roll_mean"],
+                p5=N_RULES["red_roll_mean"], level=level, last_sig=seq[-1][0],
+                all_mean=float(s.mean()), streak=streak, drawdown=drawdown,
+                hits=";".join(hits) if hits else "")
+
+
 def bark(title: str, body: str, critical: bool = False) -> None:
     try:
         sys.path.insert(0, str(PROJECT_ROOT))
@@ -173,14 +300,38 @@ def main() -> None:
     rows, msgs, worst = [], [], "GREEN"
     rank = {"GREEN": 0, "INSUFFICIENT": 0, "YELLOW": 1, "RED": 2}
     for group, seq in seqs.items():
-        r = evaluate(seq)
+        r = evaluate_n(seq) if group == "N" else evaluate(seq)
         rows.append(dict(date=today, leg=group, **{k: (round(v, 5) if isinstance(v, float) else v) for k, v in r.items()}))
         lvl = r["level"]
         if rank.get(lvl, 0) > rank.get(worst, 0):
             worst = lvl
         prev = str(state.get(group, "GREEN"))
         if lvl == "INSUFFICIENT":
-            msgs.append(f"{group}:样本{r['n']}笔不足{MIN_SAMPLE},暂不判级")
+            floor = 1 if group == "N" else MIN_SAMPLE
+            msgs.append(f"{group}:样本{r['n']}笔不足{floor},暂不判级")
+        elif group == "N":
+            # N 单独走绝对判据，文案也必须单独写：下面 E/ABC 那套"不要降仓"来自
+            # E 152笔零前视因果回测支持均值回归；N v3虽修复为32笔因果执行口径，
+            # 但冻结TEST_OOS仍低于不含N，且真实oos起点2026-08-20，不能照搬。
+            msgs.append(
+                f"N:{lvl} 实盘{r['n']}笔 触发[{r['hits']}] "
+                f"(连亏{r['streak']}笔/自身回撤{r['drawdown'] * 100:.1f}%/均值{r['all_mean'] * 100:+.2f}%)"
+            )
+            if lvl != prev:
+                if rank[lvl] < rank.get(prev, 0):
+                    bark(f"🟢 策略体检:N 回到正常区({prev}→{lvl})",
+                         msgs[-1] + "。指标回到阈值内,无需操作。")
+                elif lvl == "YELLOW":
+                    bark(f"🟡 策略体检:N 触及预警阈值",
+                         msgs[-1] + "。N是样本内搜索出的规则、2026-08-20才进样本外,"
+                         "没有'均值回归'的回测依据支持继续持有。"
+                         "动作=核查规则是否已失效,先不动仓。")
+                else:
+                    bark(f"🔴 策略体检:N 触及停腿阈值",
+                         msgs[-1] + "。已超出N自身历史最差区间。"
+                         "建议只暂停N新增开仓(config.strategy_n.entry_pause=true),"
+                         "不得关闭已有持仓SELL链路。暂停N不影响其余五腿。",
+                         critical=True)
         else:
             msgs.append(
                 f"{group}:{lvl} 滚动{ROLL}笔期望{r['roll_mean'] * 100:+.2f}%/胜率{r['roll_win'] * 100:.0f}%"
@@ -211,6 +362,15 @@ def main() -> None:
                               "做结构性核查(制度变化/玩法拥挤/规则失效),核查通过则满仓拿住。")
                 bark(title, msgs[-1] + advice, critical=(lvl == "RED"))
         state[group] = lvl
+        state.setdefault("_details", {})[group] = {
+            "level": lvl,
+            "sample_count": int(r.get("n", 0)),
+            "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "source": (
+                "reports/execution_tracking/trade_completion_summary.csv"
+                if group == "N" else "historical_audit_plus_signal_increment"
+            ),
+        }
     # 每周一例行摘要(不论级别)
     if datetime.date.today().weekday() == 0 and state.get("_last_weekly") != today:
         bark("📊 策略体检周报", "；".join(msgs)

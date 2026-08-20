@@ -46,7 +46,8 @@ def _ghost_position(*, shares: int = 11_800) -> dict:
         "sell_date": "20260818",
         "sell_price": 0.0,
         "exit_fills_by_date": {},
-        "ghost_cleared_at": daemon.now_beijing().strftime("%Y-%m-%d 08:07:28"),
+        # 固定事故日，避免测试随着日历推进后把“未来清理时间”误判为非近期。
+        "ghost_cleared_at": "2026-08-18 08:07:28",
         "ghost_clear_source": "账户心跳",
         "ghost_clear_reason": "QMT接口查询成功且返回无实盘持仓",
     }

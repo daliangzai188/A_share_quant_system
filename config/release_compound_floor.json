@@ -1,23 +1,23 @@
 {
   "schema_version": 1,
   "status": "ACTIVE",
-  "policy_id": "compound-floor-20260819-n-v2-live-v9",
-  "supersedes_policy_id": "compound-floor-20260819-n-live-v8",
-  "correction_reason": "用户明确接受N双分支测试段失败风险并接入正式组合；新锚点已经逐日串行计入补充N对其他策略的占用，旧7108.624210倍标尺降级为N单分支历史参考。",
+  "policy_id": "compound-floor-20260820-n-v3-causal-v10",
+  "supersedes_policy_id": "compound-floor-20260819-n-v2-live-v9",
+  "correction_reason": "旧9508.426795倍锚点使用了含未来成交打分、未前复权收益及不完整涨跌停/费用口径，无法与修复后的因果回放直接比较。本次只用同一策略规则的v3修复认证替换失真的技术锚点，不是滚动调低有效策略门槛；旧锚点保留在历史报告中。",
   "anchor": {
-    "release_id": "portfolio-20260819-n-v2-live-v7.0",
+    "release_id": "portfolio-20260820-n-v3-causal-fix-v8.0",
     "scenario": "current_d_a_m_e_c_n",
     "input_start_date": "20240520",
     "input_end_date": "20260514",
-    "input_sha256": "a692bcafeca4a789d57a34543ebce911a9af1bf9f98ddb8f7983d3cd4a2b4814",
+    "input_sha256": "e72e7aeac877400131b9d877b1f0fee9804219d3246d6439927db24a3015a103",
     "initial_equity": 500000.0,
     "position_pct": 0.825,
-    "equity_multiple": 9508.426795072035
+    "equity_multiple": 5813.315346397396
   },
   "hard_floor_ratio": 0.7,
-  "hard_floor_multiple": 6655.898756550424,
+  "hard_floor_multiple": 4069.3207424781772,
   "automatic_release_ratio": 1.0,
-  "automatic_release_multiple": 9508.426795072035,
+  "automatic_release_multiple": 5813.315346397396,
   "accepted_certification_statuses": [
     "PASS",
     "PASS_WITH_RISK_ACCEPTANCE"
@@ -29,5 +29,5 @@
     "same_initial_equity": true,
     "same_position_pct": true
   },
-  "note": "该锚点只适用于D>A>M>E>C>N同口径；N位于最低优先级，原低高度退潮分支优先，只有其无候选时才允许3_8连板/mixed情绪/成交额降序补充分支。机械复利不代表实盘预期；测试段补充分支复利低于1且容量未认证，扩大资金前必须继续前向验证。"
+  "note": "该锚点只适用于D>A>M>E>C>N的v3因果执行口径。机械复利不代表实盘预期；N测试段自身复利0.950722、组合相对不含N为0.860556且容量未认证，扩大资金前必须继续前向验证。"
 }

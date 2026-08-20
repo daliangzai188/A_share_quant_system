@@ -41,6 +41,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 import datetime as dt
+from functools import lru_cache
 import hashlib
 import json
 from pathlib import Path
@@ -54,6 +55,12 @@ PROJECT_ROOT = Path(__file__).absolute().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.market_rules import (  # noqa: E402
+    limit_up_price,
+    listing_trade_day_number,
+    price_limit_pct,
+)
+from src.trading_fees import account_return_after_fees  # noqa: E402
 from src.strategy_e import load_e_spec  # noqa: E402
 from src.live_certification import (  # noqa: E402
     certification_file_size,
@@ -94,12 +101,21 @@ AC_DAILY_PATH = (
 M_POOL_PATH = (
     PROJECT_ROOT / "reports" / "strategy_m" / "m_backtest_trades.csv"
 )
-N_POOL_PATH = PROJECT_ROOT / "reports" / "strategy_n" / "n_backtest_candidates.csv"
 E_SPEC_PATH = PROJECT_ROOT / "config" / "strategy_e_r1_scenarios.json"
 TRADE_CALENDAR_PATH = PROJECT_ROOT / "data" / "raw" / "trade_calendar.csv"
 DAILY_PRICE_DIR = PROJECT_ROOT / "data" / "raw" / "daily"
+STOCK_BASIC_PATH = PROJECT_ROOT / "data" / "raw" / "stock_basic" / "stock_basic_all.csv"
 OUTPUT_DIR = PROJECT_ROOT / "reports" / "current_portfolio_alignment"
 RUNTIME_CONFIG_PATH = PROJECT_ROOT / "config" / "config.json"
+_RUNTIME_CONFIG = json.loads(RUNTIME_CONFIG_PATH.read_text(encoding="utf-8"))
+_CERTIFICATION_CONFIG = _RUNTIME_CONFIG.get("portfolio_certification", {})
+_ANALYSIS_CONFIG = _RUNTIME_CONFIG.get("analysis", {})
+N_POOL_PATH = PROJECT_ROOT / _CERTIFICATION_CONFIG.get(
+    "n_backtest_pool_path",
+    _RUNTIME_CONFIG.get("strategy_n", {}).get(
+        "backtest_pool_path", "reports/strategy_n_v3/n_backtest_candidates.csv"
+    ),
+)
 
 CODE_CERTIFICATION_FILES = [
     "scripts/build_ac_daily_candidates.py",
@@ -110,21 +126,25 @@ CODE_CERTIFICATION_FILES = [
     "scripts/run_strategy_m_signal.py",
     "scripts/run_strategy_n_signal.py",
     "scripts/build_strategy_n_backtest_pool.py",
+    "scripts/score_limit_up_fill_probability.py",
+    "scripts/strategy_health_monitor.py",
     "scripts/trading_daemon.py",
     "src/combined_live_engine.py",
     "src/live_certification.py",
+    "src/live_order_gateway.py",
+    "src/live_performance.py",
+    "src/fill_model.py",
     "src/strategy_e.py",
     "src/strategy_identity.py",
     "src/strategy_equity_ledger.py",
     "src/strategy_m.py",
     "src/strategy_n.py",
+    "src/market_rules.py",
+    "src/adjusted_returns.py",
+    "src/trading_fees.py",
     "src/strategy_d_spec.py",
     "src/strategy_d_checkpoint.py",
 ]
-
-_RUNTIME_CONFIG = json.loads(RUNTIME_CONFIG_PATH.read_text(encoding="utf-8"))
-_CERTIFICATION_CONFIG = _RUNTIME_CONFIG.get("portfolio_certification", {})
-_ANALYSIS_CONFIG = _RUNTIME_CONFIG.get("analysis", {})
 
 INITIAL_EQUITY = float(_CERTIFICATION_CONFIG.get("initial_equity", 500_000.0))
 POSITION_PCT = float(_CERTIFICATION_CONFIG.get("position_pct", 0.825))
@@ -164,10 +184,14 @@ EPSILON = 1e-12
 #   BASE 133 / 5140.7613530121025    E_ONLY 132 / 5755.436166596083
 #   OPTIMIZED 135 / 8350.331871673612 WITH_M 151 / 24911.38506562485
 # 当前正式组合的冻结回归锚点；任何输入、顺序或成交口径漂移都必须显式审查。
-EXPECTED_CURRENT_TRADE_COUNT = 174
-EXPECTED_CURRENT_MULTIPLE = 9508.426795072035
+EXPECTED_CURRENT_TRADE_COUNT = 173
+EXPECTED_CURRENT_MULTIPLE = 5813.315346397396
 EXPECTED_D_DAILY_CANDIDATE_COUNT = 45
-EXPECTED_N_DAILY_CANDIDATE_COUNT = 106
+EXPECTED_N_DAILY_CANDIDATE_COUNT = int(
+    _RUNTIME_CONFIG.get("strategy_n", {}).get("execution_v3_audit", {}).get(
+        "candidate_count", 105
+    )
+)
 
 
 @dataclass(frozen=True)
@@ -304,8 +328,18 @@ def load_sources() -> Sources:
         )
     if not n_pool["sample_scope"].astype(str).eq("COMPLETE_DAILY_CANDIDATES").all():
         raise ValueError("N认证只允许完整逐日候选样本")
-    if not n_pool["execution_status"].astype(str).eq("OK").all():
-        raise ValueError("N候选账本含不可执行候选")
+    allowed_n_statuses = {
+        "OK", "LIMIT_UP_UNBUYABLE", "SELL_UNRESOLVED", "NO_PRICE",
+        "NO_ADJUSTED_PRICE", "NO_CALENDAR", "BAD_PRICE",
+    }
+    unknown_statuses = sorted(
+        set(n_pool["execution_status"].astype(str)) - allowed_n_statuses
+    )
+    if unknown_statuses:
+        raise ValueError(f"N候选账本含未知执行状态：{unknown_statuses}")
+    method = n_pool.get("fill_probability_method", pd.Series(index=n_pool.index, dtype=str)).astype(str)
+    if method.empty or not method.eq("asof_turnover_space_proxy_v2").all():
+        raise ValueError("N候选账本不是严格as-of成交空间打分产物")
     n_pool = n_pool.set_index("trade_date")
 
     calendar = pd.read_csv(TRADE_CALENDAR_PATH, dtype={"cal_date": str})
@@ -490,7 +524,33 @@ def daily_close(trade_date: str, ts_code: str) -> float:
     return close
 
 
-def hit_limit_up(trade_date: str, ts_code: str) -> bool:
+@lru_cache(maxsize=1)
+def stock_basic_lookup() -> dict[str, tuple[str, str]]:
+    if not STOCK_BASIC_PATH.exists():
+        return {}
+    frame = pd.read_csv(
+        STOCK_BASIC_PATH,
+        dtype={"ts_code": str, "name": str, "list_date": str},
+        low_memory=False,
+    ).drop_duplicates("ts_code", keep="last")
+    return {
+        str(row.ts_code): (
+            str(getattr(row, "name", "") or ""),
+            str(getattr(row, "list_date", "") or "").replace(".0", ""),
+        )
+        for row in frame.itertuples(index=False)
+    }
+
+
+@lru_cache(maxsize=1)
+def all_open_trade_dates() -> tuple[str, ...]:
+    calendar = pd.read_csv(TRADE_CALENDAR_PATH, dtype=str, low_memory=False)
+    if "is_open" in calendar.columns:
+        calendar = calendar[calendar["is_open"].astype(str).isin({"1", "1.0", "True"})]
+    return tuple(sorted(calendar["cal_date"].astype(str)))
+
+
+def hit_limit_up(trade_date: str, ts_code: str, name: str = "") -> bool:
     """当日是否冲到涨停（判断09:20预挂止盈单能否盘中成交）。
 
     实盘止盈单挂在"涨停价 - intraday_takeprofit_offset(0.01元)"，冲板即成交
@@ -512,9 +572,16 @@ def hit_limit_up(trade_date: str, ts_code: str) -> bool:
     high = to_float(row.get("high"))
     if pre_close <= 0 or high <= 0:
         return False
-    limit_pct = 0.20 if ts_code[:3] in {"300", "301", "688"} else 0.10
-    cap = round(pre_close * (1.0 + limit_pct), 2)
-    return high >= cap - TAKEPROFIT_OFFSET - 1e-9
+    resolved_name, list_date = stock_basic_lookup().get(ts_code, ("", ""))
+    resolved_name = str(name or resolved_name)
+    listing_day = listing_trade_day_number(list_date, trade_date, all_open_trade_dates())
+    cap = limit_up_price(pre_close, price_limit_pct(
+        ts_code,
+        name=resolved_name,
+        trade_date=trade_date,
+        listing_day_number=listing_day,
+    ))
+    return bool(cap is not None and high >= cap - TAKEPROFIT_OFFSET - 1e-9)
 
 
 def d_t2_candidate(sources: Sources, signal_date: str) -> dict[str, Any]:
@@ -575,22 +642,41 @@ def n_candidate(sources: Sources, signal_date: str) -> dict[str, Any] | None:
     if signal_date not in sources.n_pool.index:
         return None
     row = source_row(sources.n_pool, signal_date, "N完整候选池")
+    execution_status = str(row.get("execution_status", ""))
+    if execution_status != "OK":
+        return {
+            "strategy_leg": "N",
+            "ts_code": str(row.get("ts_code", "")),
+            "name": str(row.get("name", "")),
+            "buy_date": normalize_date(row.get("buy_date")),
+            "exit_date": "",
+            "account_return": 0.0,
+            "execution_status": execution_status,
+            "return_source": f"N未成交:{execution_status}",
+        }
     stock_return = to_float(row.get("stock_return_before_fees"), float("nan"))
     if pd.isna(stock_return):
         raise ValueError(f"{signal_date} N候选缺少收益结果")
-    account_return = (
-        stock_return - AC_BUY_FEE_RATE - (1.0 + stock_return) * AC_SELL_FEE_RATE
-    ) * POSITION_PCT
+    exit_date = normalize_date(row.get("exit_date"))
+    account_return = account_return_after_fees(
+        stock_return_before_fees=stock_return,
+        exit_date=exit_date,
+        position_pct=POSITION_PCT,
+        commission_rate=float(_ANALYSIS_CONFIG.get("commission_rate", 0.0003)),
+        transfer_fee_rate=float(_ANALYSIS_CONFIG.get("transfer_fee_rate", 0.00001)),
+        stamp_tax_schedule=_ANALYSIS_CONFIG.get("stamp_tax_schedule"),
+    )
     return {
         "strategy_leg": "N",
         "ts_code": str(row.get("ts_code", "")),
         "name": str(row.get("name", "")),
         "buy_date": normalize_date(row.get("buy_date")),
-        "exit_date": normalize_date(row.get("exit_date")),
+        "exit_date": exit_date,
         "account_return": account_return,
+        "execution_status": execution_status,
         "return_source": (
             f"N双分支:{row.get('n_branch', '')}:{row.get('n_rule_id', '')};"
-            "T+1开/T+2收;显式费用"
+            f"{row.get('exit_rule', 'T+2收盘')};前复权;日期化显式费用"
         ),
     }
 
@@ -629,6 +715,7 @@ def replay(
     occupied_until = ""
     occupied_leg = ""
     occupied_code = ""
+    occupied_name = ""
     rows: list[dict[str, Any]] = []
 
     for row_index, row in sources.baseline.iterrows():
@@ -661,9 +748,9 @@ def replay(
             block_d_on_handoff
             and bool(occupied_until)
             and signal_date == occupied_until
-            and not hit_limit_up(signal_date, occupied_code)
+            and not hit_limit_up(signal_date, occupied_code, occupied_name)
         )
-        occupied_until = occupied_leg = occupied_code = ""
+        occupied_until = occupied_leg = occupied_code = occupied_name = ""
         # D在信号日盘中发生，早于收盘后其余各腿的计划——D 的位置由时序锁死，
         # 不是可优化项（"看到别的腿有票就不做D"需要预知几小时后的收盘结果）。
         # D必须直接读取完整逐日候选账本。旧写法用baseline.d_return作门，而该字段
@@ -712,6 +799,30 @@ def replay(
             )
             continue
 
+        if (
+            str(selected.get("strategy_leg", "")).upper() == "N"
+            and str(selected.get("execution_status", "OK")) != "OK"
+        ):
+            rows.append(
+                {
+                    "signal_date": signal_date,
+                    "status": "N_NOT_FILLED",
+                    "strategy_leg": "N",
+                    "ts_code": str(selected.get("ts_code", "")),
+                    "name": str(selected.get("name", "")),
+                    "buy_date": str(selected.get("buy_date", "")),
+                    "exit_date": "",
+                    "account_return": 0.0,
+                    "equity_before": equity_before,
+                    "equity_after": equity,
+                    "blocked_by_leg": "",
+                    "blocked_by_code": "",
+                    "blocked_until": "",
+                    "return_source": str(selected.get("return_source", "")),
+                }
+            )
+            continue
+
         exit_date = normalize_date(selected.get("exit_date"))
         account_return = to_float(selected.get("account_return"))
         if not exit_date:
@@ -724,6 +835,7 @@ def replay(
         occupied_until = exit_date
         occupied_leg = str(selected.get("strategy_leg", ""))
         occupied_code = str(selected.get("ts_code", ""))
+        occupied_name = str(selected.get("name", ""))
         rows.append(
             {
                 "signal_date": signal_date,
@@ -1379,6 +1491,7 @@ def certify_current(*, refresh_input_manifest: bool = False) -> None:
         certification_status = "PASS_WITH_RISK_ACCEPTANCE"
 
     n_config = runtime_config.get("strategy_n", {})
+    n_v3_audit = n_config.get("execution_v3_audit", {})
     n_live_enabled = bool(n_config.get("enabled", False)) and bool(
         n_config.get("live_order_enabled", False)
     )
@@ -1387,6 +1500,14 @@ def certify_current(*, refresh_input_manifest: bool = False) -> None:
         raise RuntimeError("N当前未同时开启enabled/live_order_enabled，拒绝发布新组合")
     if not n_risk_accepted:
         raise RuntimeError("N小样本研究风险尚未显式接受，拒绝发布")
+    if str(n_v3_audit.get("historical_fill_method", "")) != "asof_turnover_space_proxy_v2":
+        raise RuntimeError("N修复版未使用严格as-of历史成交空间口径，拒绝发布")
+    if int(n_v3_audit.get("portfolio_trade_count", 0)) != int(current_summary["executed_trade_count"]):
+        raise RuntimeError("N修复审计的组合笔数与当前回放不一致，拒绝发布")
+    if int(n_v3_audit.get("portfolio_n_trade_count", 0)) != int(current_summary["n_trade_count"]):
+        raise RuntimeError("N修复审计的N笔数与当前回放不一致，拒绝发布")
+    if abs(float(n_v3_audit.get("portfolio_equity_multiple", 0.0)) - float(current_summary["equity_multiple"])) > 1e-9:
+        raise RuntimeError("N修复审计复利与当前回放不一致，拒绝发布")
     if not bool(n_config.get("supplement_enabled", False)):
         raise RuntimeError("N双分支挑战者未开启supplement_enabled，拒绝发布")
     if [str(value) for value in n_config.get("supplement_filter_columns", [])] != [
@@ -1510,6 +1631,15 @@ def certify_current(*, refresh_input_manifest: bool = False) -> None:
         "n_research_risk_accepted": n_risk_accepted,
         "n_research_risk_acceptance_note": n_config.get(
             "live_research_risk_acceptance_note", ""
+        ),
+        "n_test_oos_noninferiority_passed": bool(
+            n_v3_audit.get("test_oos_gate_passed", False)
+        ),
+        "n_test_oos_portfolio_ratio_to_without_n": float(
+            n_v3_audit.get("test_oos_portfolio_ratio_to_without_n", 0.0)
+        ),
+        "n_test_oos_standalone_multiple": float(
+            n_v3_audit.get("test_oos_n_multiple", 0.0)
         ),
         "e_strategy_leg": "E",
         "e_strategy_variant": str(e_config.get("strategy_variant", "E_CURRENT")),

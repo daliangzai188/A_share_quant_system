@@ -1,0 +1,20 @@
+{
+  "status": "REPRODUCED",
+  "strategy_version": "N_two_branch_retreat_plus_mixed_amount_v3",
+  "candidate_pool_path": "reports/strategy_n_v3/n_backtest_candidates.csv",
+  "candidate_count": 105,
+  "asof_signal_pool_row_count": 27340,
+  "historical_fill_method": "asof_turnover_space_proxy_v2",
+  "portfolio_trade_count": 173,
+  "portfolio_n_trade_count": 32,
+  "portfolio_equity_multiple": 5813.315346397397,
+  "portfolio_max_drawdown": -0.22386233070836592,
+  "n_standalone_multiple": 1.432724104965743,
+  "n_win_rate": 0.59375,
+  "n_avg_account_return": 0.013235154903705134,
+  "n_median_account_return": 0.011044133343760237,
+  "n_max_loss": -0.09058551402713132,
+  "n_max_profit": 0.14688568661216844,
+  "n_max_consecutive_losses": 3,
+  "test_oos_gate_passed": false
+}

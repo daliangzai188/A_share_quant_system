@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import datetime as dt
+import tempfile
 from pathlib import Path
 import unittest
 
 import pandas as pd
 
-from src.strategy_n import load_n_spec, select_n_daily_picks
+from src.strategy_n import load_n_spec, n_live_entry_block_reason, select_n_daily_picks
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -92,7 +94,7 @@ class StrategyNTests(unittest.TestCase):
         self.assertEqual(str(pick.iloc[0]["ts_code"]), "300002.SZ")
         self.assertEqual(str(pick.iloc[0]["n_branch"]), "SUPPLEMENT")
 
-    def test_locked_historical_candidate_ledger_is_exact(self) -> None:
+    def test_legacy_v2_candidate_ledger_is_preserved(self) -> None:
         locked = pd.read_csv(
             ROOT / "reports" / "strategy_n" / "n_backtest_candidates.csv",
             dtype={"trade_date": str},
@@ -102,6 +104,58 @@ class StrategyNTests(unittest.TestCase):
         self.assertEqual(locked["trade_date"].nunique(), 106)
         self.assertTrue(locked["execution_status"].eq("OK").all())
         self.assertTrue(locked["sample_scope"].eq("COMPLETE_DAILY_CANDIDATES").all())
+
+    def test_corrected_v3_candidate_ledger_uses_asof_and_real_fill_status(self) -> None:
+        corrected = pd.read_csv(
+            ROOT / "reports" / "strategy_n_v3" / "n_backtest_candidates.csv",
+            dtype={"trade_date": str},
+            low_memory=False,
+        )
+        expected = int(self.config["strategy_n"]["execution_v3_audit"]["candidate_count"])
+        self.assertEqual(len(corrected), expected)
+        self.assertEqual(corrected["trade_date"].nunique(), expected)
+        self.assertTrue(
+            corrected["fill_probability_method"].eq("asof_turnover_space_proxy_v2").all()
+        )
+        self.assertTrue(
+            set(corrected["execution_status"]).issubset({
+                "OK", "LIMIT_UP_UNBUYABLE", "SELL_UNRESOLVED", "NO_PRICE",
+                "NO_CALENDAR", "BAD_PRICE", "NO_ADJUSTED_PRICE",
+            })
+        )
+        self.assertGreater(int(corrected["execution_status"].eq("OK").sum()), 0)
+
+    def test_n_entry_pause_and_health_gate_only_block_new_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            status = root / "health.json"
+            base = {"strategy_n": dict(self.config["strategy_n"])}
+            base["strategy_n"].update({
+                "health_gate_enabled": True,
+                "health_gate_status_path": str(status),
+                "health_gate_max_age_hours": 72,
+            })
+            # 没有真实完整交易状态时允许继续收集样本。
+            self.assertEqual(n_live_entry_block_reason(root, base), "")
+
+            now = dt.datetime(2026, 8, 20, 4, 0, tzinfo=dt.timezone.utc)
+            status.write_text(json.dumps({
+                "N": "RED",
+                "_details": {"N": {"level": "RED", "updated_at": now.isoformat()}},
+            }), encoding="utf-8")
+            self.assertIn("健康等级=RED", n_live_entry_block_reason(root, base, now=now))
+
+            status.write_text(json.dumps({
+                "N": "GREEN",
+                "_details": {"N": {
+                    "level": "GREEN",
+                    "updated_at": (now - dt.timedelta(hours=73)).isoformat(),
+                }},
+            }), encoding="utf-8")
+            self.assertIn("已过期", n_live_entry_block_reason(root, base, now=now))
+
+            base["strategy_n"]["entry_pause"] = True
+            self.assertIn("entry_pause=true", n_live_entry_block_reason(root, base, now=now))
 
 
 if __name__ == "__main__":

@@ -70,6 +70,24 @@ class LivePerformanceTests(unittest.TestCase):
         self.assertTrue(trades.empty)
         self.assertEqual(quality["incomplete_trade_rows"], 1)
 
+    def test_stamp_tax_uses_historical_effective_date(self) -> None:
+        rows = []
+        for key, exit_date in (("old", "20230827"), ("new", "20230828")):
+            rows.append({
+                "trade_key": key,
+                "entry_date": "20230825",
+                "exit_date": exit_date,
+                "ts_code": "000001.SZ",
+                "strategy_leg": "A",
+                "entry_filled_qty": 10000,
+                "entry_fill_amount": 100000.0,
+                "exit_filled_qty": 10000,
+                "exit_fill_amount": 100000.0,
+            })
+        trades, _ = completed_live_trades(pd.DataFrame(rows), {})
+        fees = trades.set_index("trade_key")["estimated_fees"]
+        self.assertAlmostEqual(float(fees["old"] - fees["new"]), 50.0, places=6)
+
     def test_rolling_metrics_exposes_actual_pnl_and_loss_streak(self) -> None:
         trades = pd.DataFrame(
             {

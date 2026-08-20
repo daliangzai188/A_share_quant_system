@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from src.utils.config import get_project_root, load_json_config, mkdir_p
@@ -42,8 +43,11 @@ class FillRateTableBuilder:
         self.min_group_samples = int(fill_config.get("min_group_samples", 30))
         self.default_fill_quantile = float(fill_config.get("default_fill_quantile", 0.25))
 
-    def build(self) -> dict[str, Path]:
+    def build(self, *, as_of_date: str | None = None) -> dict[str, Path]:
         data = self.load_model_data()
+        if as_of_date:
+            cutoff = str(as_of_date).replace("-", "")[:8]
+            data = data[data["trade_date"].astype(str) < cutoff].copy()
         if data.empty:
             raise RuntimeError("成交概率模型输入为空，请先运行 clean_collected_data.py。")
 
@@ -280,6 +284,164 @@ class FillProbabilityEstimator:
         mkdir_p(output_path.parent)
         output.to_csv(output_path, index=False, encoding="utf-8-sig")
         self.logger.info("涨停池成交概率打标表已生成: %s, 行数: %s", output_path, len(output))
+        return output_path
+
+    def score_limit_up_table_asof(
+        self,
+        input_path: str | Path,
+        output_path: str | Path,
+        planned_buy_amount: float,
+        market_sentiment_path: str | Path | None = None,
+    ) -> Path:
+        """用严格早于每个信号日的历史样本给整张历史表打分。
+
+        同一交易日的所有股票先打分、后进入历史窗口，因此不会发生同日互相泄露；
+        在文件尾部追加未来数据也不会改变任何既有日期的分数。
+        """
+
+        input_path = self.project_root / input_path if not Path(input_path).is_absolute() else Path(input_path)
+        output_path = self.project_root / output_path if not Path(output_path).is_absolute() else Path(output_path)
+        data = pd.read_csv(input_path, dtype={"trade_date": str, "ts_code": str}, low_memory=False)
+        if data.empty:
+            raise RuntimeError(f"涨停合并表为空: {input_path}")
+        required_market_columns = {
+            "market_sentiment_level", "limit_up_count", "segment_market_sentiment_level"
+        }
+        if not required_market_columns.issubset(data.columns):
+            sentiment_config_path = market_sentiment_path or self.config.get("fill_model", {}).get(
+                "input_market_sentiment_path", "data/processed/market_sentiment.csv"
+            )
+            sentiment_path = (
+                self.project_root / sentiment_config_path
+                if not Path(sentiment_config_path).is_absolute()
+                else Path(sentiment_config_path)
+            )
+            market = pd.read_csv(sentiment_path, dtype={"trade_date": str})
+            columns = [
+                column for column in market.columns
+                if column != "trade_date" and column not in data.columns
+            ]
+            data = data.merge(
+                market[["trade_date", *columns]],
+                on="trade_date",
+                how="left",
+                validate="many_to_one",
+            )
+        data = FillRateTableBuilder.add_segment_market_fields(data)
+        data["trade_date"] = data["trade_date"].astype(str).str.replace(r"\.0$", "", regex=True)
+        data["limit_times_bucket"] = data["limit_times"].map(
+            FillRateTableBuilder.classify_limit_times_bucket
+        )
+        data = data.sort_values(["trade_date", "ts_code"]).reset_index(drop=True)
+
+        exact_history: dict[tuple[str, ...], list[float]] = {}
+        fallback_history: dict[tuple[str, ...], list[float]] = {}
+        score_rows: list[dict[str, Any]] = []
+        latest_training_date = ""
+
+        for trade_date, day_rows in data.groupby("trade_date", sort=True):
+            for _, row in day_rows.iterrows():
+                exact_key = tuple(str(row.get(column, "unknown")) for column in FillRateTableBuilder.GROUP_COLUMNS)
+                fallback_key = tuple(str(row.get(column, "unknown")) for column in FillRateTableBuilder.FALLBACK_COLUMNS)
+                exact_values = exact_history.get(exact_key, [])
+                fallback_values = fallback_history.get(fallback_key, [])
+
+                if len(exact_values) >= self.min_group_samples:
+                    history = exact_values
+                    source = "exact_asof"
+                elif fallback_values:
+                    history = fallback_values
+                    source = "fallback_asof" if not exact_values else "fallback_due_to_low_sample_asof"
+                elif exact_values:
+                    history = exact_values
+                    source = "exact_low_sample_asof"
+                else:
+                    history = []
+                    source = "none"
+
+                sample_count = len(history)
+                suggested = float(np.quantile(history, 0.25)) if history else 0.0
+                circ_mv = pd.to_numeric(row.get("circ_mv"), errors="coerce")
+                queue_amount = self.resolve_queue_amount(row)
+                planned = pd.to_numeric(row.get("planned_buy_amount"), errors="coerce")
+                if pd.isna(planned) or float(planned) <= 0:
+                    planned = float(planned_buy_amount)
+                score_error = None
+                if pd.isna(circ_mv) or float(circ_mv) <= 0:
+                    score_error = "missing_circ_mv"
+                elif pd.isna(queue_amount):
+                    score_error = "missing_queue_amount"
+                elif float(planned) <= 0:
+                    score_error = "invalid_planned_buy_amount"
+
+                estimated = (
+                    self.estimate_turnover_amount(float(circ_mv), suggested)
+                    if score_error is None else 0.0
+                )
+                available = max(estimated - float(queue_amount), 0.0) if score_error is None else 0.0
+                fill_space_ratio = available / float(planned) if score_error is None else 0.0
+                proxy = min(max(fill_space_ratio, 0.0), 1.0)
+                abnormal_raw = row.get("is_fd_amount_abnormal", False)
+                abnormal = str(abnormal_raw).strip().lower() in {"1", "true", "yes"}
+                reliable = bool(
+                    score_error is None
+                    and source != "none"
+                    and sample_count >= self.min_group_samples
+                    and not abnormal
+                )
+                score_rows.append({
+                    "trade_date": str(trade_date),
+                    "ts_code": str(row.get("ts_code", "")),
+                    "limit_times_fill_model": row.get("limit_times"),
+                    "limit_times_bucket_fill_model": row.get("limit_times_bucket"),
+                    "matched_source": source,
+                    "sample_count": sample_count,
+                    "is_sample_enough": sample_count >= self.min_group_samples,
+                    "suggested_turnover_rate": suggested,
+                    "current_queue_amount": queue_amount,
+                    "planned_buy_amount": float(planned),
+                    "estimated_turnover_amount": estimated,
+                    "available_fill_amount": available,
+                    "fill_space_ratio": fill_space_ratio,
+                    # 兼容现有策略字段；明确标注为成交空间代理而非校准概率。
+                    "fill_probability": proxy,
+                    "fill_probability_method": "asof_turnover_space_proxy_v2",
+                    "position_scale": self.suggest_position_scale(proxy),
+                    "allow_buy": proxy >= self.min_fill_probability,
+                    "min_fill_probability": self.min_fill_probability,
+                    "score_error": score_error,
+                    "is_fill_score_reliable": reliable,
+                    "allow_buy_reliable": reliable and proxy >= self.min_fill_probability,
+                    "model_training_end_date": latest_training_date,
+                    "as_of_date": str(trade_date),
+                })
+
+            # 当日全部打分完成后，才允许把当日换手率加入后续日期训练集。
+            for _, row in day_rows.iterrows():
+                turnover = pd.to_numeric(row.get("turnover_rate"), errors="coerce")
+                if pd.isna(turnover) or float(turnover) < 0:
+                    continue
+                exact_key = tuple(str(row.get(column, "unknown")) for column in FillRateTableBuilder.GROUP_COLUMNS)
+                fallback_key = tuple(str(row.get(column, "unknown")) for column in FillRateTableBuilder.FALLBACK_COLUMNS)
+                exact_history.setdefault(exact_key, []).append(float(turnover))
+                fallback_history.setdefault(fallback_key, []).append(float(turnover))
+            latest_training_date = str(trade_date)
+
+        scores = pd.DataFrame(score_rows)
+        overlapping = [
+            column for column in scores.columns
+            if column in data.columns and column not in {"trade_date", "ts_code"}
+        ]
+        base = data.drop(columns=overlapping, errors="ignore")
+        output = base.merge(
+            scores,
+            on=["trade_date", "ts_code"],
+            how="left",
+            validate="one_to_one",
+        )
+        mkdir_p(output_path.parent)
+        output.to_csv(output_path, index=False, encoding="utf-8-sig")
+        self.logger.info("严格时序成交空间打分表已生成: %s, 行数: %s", output_path, len(output))
         return output_path
 
     def estimate(
