@@ -5,7 +5,12 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.factors import NextDayPremiumAnalyzer
+from src.strict_asof import (
+    PointInTimeContract,
+    add_audit_columns,
+    validate_strict_research_frame,
+    write_audit_json,
+)
 from src.utils.config import get_project_root, load_json_config, mkdir_p
 from src.utils.logger import get_logger
 
@@ -31,6 +36,7 @@ class ExitRuleTradeBuilder:
         self.config = load_json_config(config_path)
         self.logger = get_logger("exit_rule_builder")
         analysis_config = self.config.get("analysis", {})
+        self.analysis_config = analysis_config
         self.daily_merged_path = self.project_root / analysis_config.get(
             "input_daily_merged_path", "data/processed/daily_merged.csv"
         )
@@ -39,6 +45,10 @@ class ExitRuleTradeBuilder:
         )
         self.output_trades_path = self.project_root / analysis_config.get(
             "output_exit_rule_trades_path", "data/processed/exit_rule_trade_samples.csv"
+        )
+        self.output_strict_asof_audit_path = self.project_root / analysis_config.get(
+            "output_exit_rule_strict_asof_audit_path",
+            "reports/strict_asof/exit_rule_samples_audit.json",
         )
         self.commission_rate = float(analysis_config.get("commission_rate", 0.0003))
         self.stamp_tax_rate = float(analysis_config.get("stamp_tax_rate", 0.001))
@@ -52,6 +62,18 @@ class ExitRuleTradeBuilder:
             dtype={"trade_date": str, "ts_code": str},
             low_memory=False,
         )
+        audit = validate_strict_research_frame(
+            signals,
+            contract=PointInTimeContract(dataset_name="exit_rule_fill_source"),
+            selection_columns=[
+                "allow_buy_reliable",
+                "is_fill_score_reliable",
+                "fill_probability",
+            ],
+            section_config=self.analysis_config,
+            context="ExitRuleTradeBuilder.build",
+            project_root=self.project_root,
+        )
         signals = signals[signals["allow_buy_reliable"] == True].copy()  # noqa: E712
         samples = signals.merge(daily, on=["trade_date", "ts_code"], how="left", validate="one_to_one")
         samples = samples[samples["buy_open"].notna()].copy()
@@ -59,8 +81,10 @@ class ExitRuleTradeBuilder:
         rules = self.build_exit_rules()
         frames = [self.apply_exit_rule(samples, rule) for rule in rules]
         result = pd.concat(frames, ignore_index=True)
+        result = add_audit_columns(result, audit)
         mkdir_p(self.output_trades_path.parent)
         result.to_csv(self.output_trades_path, index=False, encoding="utf-8-sig")
+        write_audit_json(self.output_strict_asof_audit_path, audit)
         self.logger.info("卖出规则交易样本已生成: %s, 行数: %s", self.output_trades_path, len(result))
         return self.output_trades_path
 

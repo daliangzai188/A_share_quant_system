@@ -6,6 +6,13 @@ from pathlib import Path
 import pandas as pd
 
 from src.factors import FactorAnalyzer, NextDayPremiumAnalyzer
+from src.strict_asof import (
+    PointInTimeContract,
+    add_audit_columns,
+    assert_selection_columns_strict,
+    validate_strict_research_frame,
+    write_audit_json,
+)
 from src.utils.config import get_project_root, load_json_config, mkdir_p
 from src.utils.logger import get_logger
 
@@ -23,6 +30,7 @@ class StrategyConditionOptimizer:
         self.logger = get_logger("strategy_optimizer")
         self.optimization_config_key = optimization_config_key
         optimization_config = self.config.get(optimization_config_key, {})
+        self.optimization_config = optimization_config
 
         self.input_trades_path = self.project_root / optimization_config.get(
             "input_trades_path", "data/processed/next_day_premium_trades.csv"
@@ -43,6 +51,10 @@ class StrategyConditionOptimizer:
         )
         self.output_yearly_path = self.project_root / optimization_config.get(
             "output_yearly_path", "reports/strategy_optimization_yearly.csv"
+        )
+        self.output_strict_asof_audit_path = self.project_root / optimization_config.get(
+            "output_strict_asof_audit_path",
+            f"reports/strict_asof/{optimization_config_key}_audit.json",
         )
         self.optional_auction_features_path = self.project_root / optimization_config.get(
             "optional_auction_features_path", "data/processed/auction_features.csv"
@@ -142,18 +154,56 @@ class StrategyConditionOptimizer:
             ],
             ascending=[False, False, False, False, False],
         )
+        report = add_audit_columns(report, self.strict_asof_audit)
+        yearly_report = add_audit_columns(yearly_report, self.strict_asof_audit)
 
         mkdir_p(self.output_report_path.parent)
         mkdir_p(self.output_yearly_path.parent)
         report.to_csv(self.output_report_path, index=False, encoding="utf-8-sig")
         yearly_report.to_csv(self.output_yearly_path, index=False, encoding="utf-8-sig")
+        write_audit_json(self.output_strict_asof_audit_path, self.strict_asof_audit)
 
         self.logger.info("策略组合优化报告已生成: %s, 行数: %s", self.output_report_path, len(report))
         self.logger.info("策略组合年度报告已生成: %s, 行数: %s", self.output_yearly_path, len(yearly_report))
-        return {"report": self.output_report_path, "yearly": self.output_yearly_path}
+        return {
+            "report": self.output_report_path,
+            "yearly": self.output_yearly_path,
+            "strict_asof_audit": self.output_strict_asof_audit_path,
+        }
 
     def load_trades(self, require_complete_exit: bool = True) -> pd.DataFrame:
         trades = pd.read_csv(self.input_trades_path, dtype={"trade_date": str, "ts_code": str}, low_memory=False)
+        selection_columns = [
+            "allow_buy_reliable",
+            "is_fill_score_reliable",
+            "is_fd_amount_abnormal",
+            *self.factor_columns,
+            *self.required_factor_columns,
+            *self.candidate_sort_columns,
+            *self.universe_filters.keys(),
+            "fill_probability",
+            "sample_count",
+            "amount",
+            "turnover_rate",
+        ]
+        if require_complete_exit:
+            self.strict_asof_audit = validate_strict_research_frame(
+                trades,
+                contract=PointInTimeContract(
+                    dataset_name=f"strategy_optimizer:{self.optimization_config_key}"
+                ),
+                selection_columns=selection_columns,
+                section_config=self.optimization_config,
+                context="StrategyConditionOptimizer.load_trades",
+                project_root=self.project_root,
+            )
+        else:
+            # 当日信号生成不计算历史收益，不能要求结果列完整；但无论模拟还是
+            # 实盘，过滤和排序字段仍禁止引用未来价格/已实现收益。
+            assert_selection_columns_strict(
+                selection_columns,
+                context="StrategyConditionOptimizer.load_trades(live_signal)",
+            )
         trades = self.add_historical_features(trades)
         trades = self.add_leader_and_theme_features(trades)
         trades = self.add_optional_external_features(trades)

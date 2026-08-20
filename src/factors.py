@@ -4,6 +4,12 @@ from pathlib import Path
 
 import pandas as pd
 
+from src.strict_asof import (
+    PointInTimeContract,
+    add_audit_columns,
+    validate_strict_research_frame,
+    write_audit_json,
+)
 from src.utils.config import get_project_root, load_json_config, mkdir_p
 from src.utils.logger import get_logger
 
@@ -24,6 +30,7 @@ class NextDayPremiumAnalyzer:
         self.logger = get_logger("next_day_premium")
 
         analysis_config = self.config.get("analysis", {})
+        self.analysis_config = analysis_config
         self.daily_merged_path = self.project_root / analysis_config.get(
             "input_daily_merged_path", "data/processed/daily_merged.csv"
         )
@@ -39,6 +46,9 @@ class NextDayPremiumAnalyzer:
         self.output_group_path = self.project_root / analysis_config.get(
             "output_next_day_group_path", "reports/next_day_premium_by_group.csv"
         )
+        self.output_strict_asof_audit_path = self.project_root / analysis_config.get(
+            "output_strict_asof_audit_path", "reports/strict_asof/next_day_premium_audit.json"
+        )
         self.commission_rate = float(analysis_config.get("commission_rate", 0.0003))
         self.stamp_tax_rate = float(analysis_config.get("stamp_tax_rate", 0.001))
         self.transfer_fee_rate = float(analysis_config.get("transfer_fee_rate", 0.00001))
@@ -53,6 +63,9 @@ class NextDayPremiumAnalyzer:
         confirmed = trades[trades["exit_close"].notna()].copy()
         summary = self.summarize(confirmed, group_name="overall")
         groups = self.build_group_report(confirmed)
+        trades = add_audit_columns(trades, self.strict_asof_audit)
+        summary = add_audit_columns(summary, self.strict_asof_audit)
+        groups = add_audit_columns(groups, self.strict_asof_audit)
 
         mkdir_p(self.output_trades_path.parent)
         mkdir_p(self.output_summary_path.parent)
@@ -61,6 +74,7 @@ class NextDayPremiumAnalyzer:
         trades.to_csv(self.output_trades_path, index=False, encoding="utf-8-sig")
         summary.to_csv(self.output_summary_path, index=False, encoding="utf-8-sig")
         groups.to_csv(self.output_group_path, index=False, encoding="utf-8-sig")
+        write_audit_json(self.output_strict_asof_audit_path, self.strict_asof_audit)
 
         self.logger.info("次日溢价交易样本已生成: %s, 行数: %s", self.output_trades_path, len(trades))
         self.logger.info("次日溢价汇总报告已生成: %s", self.output_summary_path)
@@ -69,6 +83,7 @@ class NextDayPremiumAnalyzer:
             "trades": self.output_trades_path,
             "summary": self.output_summary_path,
             "group_report": self.output_group_path,
+            "strict_asof_audit": self.output_strict_asof_audit_path,
         }
 
     def build_trade_samples(self) -> pd.DataFrame:
@@ -81,6 +96,18 @@ class NextDayPremiumAnalyzer:
             self.limit_up_fill_scored_path,
             dtype={"trade_date": str, "ts_code": str},
             low_memory=False,
+        )
+        self.strict_asof_audit = validate_strict_research_frame(
+            limit_up,
+            contract=PointInTimeContract(dataset_name="next_day_premium_fill_source"),
+            selection_columns=[
+                "allow_buy_reliable",
+                "is_fill_score_reliable",
+                "fill_probability",
+            ],
+            section_config=self.analysis_config,
+            context="NextDayPremiumAnalyzer.build_trade_samples",
+            project_root=self.project_root,
         )
         limit_up = limit_up[limit_up["allow_buy_reliable"] == True].copy()  # noqa: E712
         limit_up = limit_up.sort_values(["ts_code", "trade_date"]).reset_index(drop=True)
@@ -222,6 +249,7 @@ class FactorAnalyzer:
         self.config = load_json_config(config_path)
         self.logger = get_logger("factor_analyzer")
         analysis_config = self.config.get("analysis", {})
+        self.analysis_config = analysis_config
         self.input_trades_path = self.project_root / analysis_config.get(
             "output_next_day_trades_path", "data/processed/next_day_premium_trades.csv"
         )
@@ -234,6 +262,14 @@ class FactorAnalyzer:
         if trades.empty:
             raise RuntimeError("次日溢价交易样本为空，请先运行 analyze_next_day_premium.py。")
 
+        audit = validate_strict_research_frame(
+            trades,
+            contract=PointInTimeContract(dataset_name="factor_analysis_trade_samples"),
+            selection_columns=self.FACTOR_COLUMNS,
+            section_config=self.analysis_config,
+            context="FactorAnalyzer.analyze",
+            project_root=self.project_root,
+        )
         trades = self.add_factor_buckets(trades)
         reports = []
         for factor in self.FACTOR_COLUMNS:
@@ -242,6 +278,7 @@ class FactorAnalyzer:
 
         report = pd.DataFrame(reports)
         report = report.sort_values(["factor", "sample_count", "avg_return"], ascending=[True, False, False])
+        report = add_audit_columns(report, audit)
         mkdir_p(self.output_factor_report_path.parent)
         report.to_csv(self.output_factor_report_path, index=False, encoding="utf-8-sig")
         self.logger.info("因子统计报告已生成: %s, 行数: %s", self.output_factor_report_path, len(report))
@@ -604,6 +641,7 @@ class FactorComboAnalyzer:
         self.config = load_json_config(config_path)
         self.logger = get_logger("factor_combo_analyzer")
         analysis_config = self.config.get("analysis", {})
+        self.analysis_config = analysis_config
         self.input_trades_path = self.project_root / analysis_config.get(
             "output_next_day_trades_path", "data/processed/next_day_premium_trades.csv"
         )
@@ -613,6 +651,18 @@ class FactorComboAnalyzer:
 
     def analyze(self) -> Path:
         trades = pd.read_csv(self.input_trades_path, dtype={"trade_date": str, "ts_code": str}, low_memory=False)
+        audit = validate_strict_research_frame(
+            trades,
+            contract=PointInTimeContract(dataset_name="factor_combo_trade_samples"),
+            selection_columns=[
+                column
+                for combo in self.DEFAULT_COMBOS
+                for column in combo.get("conditions", {})
+            ],
+            section_config=self.analysis_config,
+            context="FactorComboAnalyzer.analyze",
+            project_root=self.project_root,
+        )
         trades = FactorAnalyzer(config_path="config/config.json").add_factor_buckets(trades)
         rows = []
         for combo in self.DEFAULT_COMBOS:
@@ -634,6 +684,7 @@ class FactorComboAnalyzer:
         report = pd.DataFrame(rows)
         report = self.add_stability_flags(report)
         report = report.sort_values(["combo_name_sort", "period"]).drop(columns=["combo_name_sort"])
+        report = add_audit_columns(report, audit)
         mkdir_p(self.output_combo_report_path.parent)
         report.to_csv(self.output_combo_report_path, index=False, encoding="utf-8-sig")
         self.logger.info("组合因子报告已生成: %s, 行数: %s", self.output_combo_report_path, len(report))

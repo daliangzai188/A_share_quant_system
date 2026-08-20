@@ -5,6 +5,12 @@ from pathlib import Path
 import pandas as pd
 
 from src.factors import NextDayPremiumAnalyzer
+from src.strict_asof import (
+    PointInTimeContract,
+    add_audit_columns,
+    validate_strict_research_frame,
+    write_audit_json,
+)
 from src.utils.config import get_project_root, load_json_config, mkdir_p
 from src.utils.logger import get_logger
 
@@ -17,6 +23,7 @@ class SimpleCandidateBacktester:
         self.config = load_json_config(config_path)
         self.logger = get_logger("backtest")
         backtest_config = self.config.get("backtest", {})
+        self.backtest_config = backtest_config
         self.input_candidate_pool_path = self.project_root / backtest_config.get(
             "input_candidate_pool_path", "data/processed/candidate_pool.csv"
         )
@@ -32,6 +39,9 @@ class SimpleCandidateBacktester:
         self.output_yearly_path = self.project_root / backtest_config.get(
             "output_yearly_path", "reports/backtest_yearly.csv"
         )
+        self.output_strict_asof_audit_path = self.project_root / backtest_config.get(
+            "output_strict_asof_audit_path", "reports/strict_asof/backtest_audit.json"
+        )
         self.initial_cash = float(backtest_config.get("initial_cash", 1000000))
         self.max_holding_count = int(backtest_config.get("max_holding_count", 5))
         self.max_position_pct_per_stock = float(backtest_config.get("max_position_pct_per_stock", 0.1))
@@ -42,11 +52,29 @@ class SimpleCandidateBacktester:
             dtype={"trade_date": str, "ts_code": str, "next_trade_date": str, "exit_trade_date": str},
             low_memory=False,
         )
+        audit = validate_strict_research_frame(
+            candidates,
+            contract=PointInTimeContract(dataset_name="simple_candidate_backtest_pool"),
+            selection_columns=[
+                "allow_buy_reliable",
+                "amount_bucket",
+                "rule_count",
+                "fill_probability",
+                "sample_count",
+            ],
+            section_config=self.backtest_config,
+            context="SimpleCandidateBacktester.run",
+            project_root=self.project_root,
+        )
         selected = self.select_daily_candidates(candidates)
         trades = self.build_trade_results(selected)
         equity_curve = self.build_equity_curve(trades)
         summary = self.build_summary(trades, equity_curve)
         yearly = self.build_yearly_report(trades)
+        trades = add_audit_columns(trades, audit)
+        equity_curve = add_audit_columns(equity_curve, audit)
+        summary = add_audit_columns(summary, audit)
+        yearly = add_audit_columns(yearly, audit)
 
         for path in [
             self.output_trades_path,
@@ -60,6 +88,7 @@ class SimpleCandidateBacktester:
         equity_curve.to_csv(self.output_equity_curve_path, index=False, encoding="utf-8-sig")
         summary.to_csv(self.output_summary_path, index=False, encoding="utf-8-sig")
         yearly.to_csv(self.output_yearly_path, index=False, encoding="utf-8-sig")
+        write_audit_json(self.output_strict_asof_audit_path, audit)
 
         self.logger.info("回测交易明细已生成: %s, 行数: %s", self.output_trades_path, len(trades))
         self.logger.info("回测资金曲线已生成: %s, 行数: %s", self.output_equity_curve_path, len(equity_curve))
@@ -70,6 +99,7 @@ class SimpleCandidateBacktester:
             "equity_curve": self.output_equity_curve_path,
             "summary": self.output_summary_path,
             "yearly": self.output_yearly_path,
+            "strict_asof_audit": self.output_strict_asof_audit_path,
         }
 
     def select_daily_candidates(self, candidates: pd.DataFrame) -> pd.DataFrame:

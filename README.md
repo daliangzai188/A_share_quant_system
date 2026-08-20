@@ -565,3 +565,9 @@ python scripts/run_strategy_e_signal.py
 ### 备用 cron 脚本
 
 `run_daily.sh`：手动触发或 cron 备用，执行同样的六步流水线。若守护进程正常运行，此脚本不需要单独配置 cron。
+
+## 严格 as-of 研究门禁
+
+所有共享策略研究入口已默认启用 `A_SYSTEM_STRICT_ASOF_V1`。历史研究使用独立的 `*_asof.csv` 数据链；开发段结果固定标记为不可发布，正式结论只接受冻结规则后的 `LOCKED_OOS` 或逐折训练在先的 `WALK_FORWARD`。
+
+标准、运行顺序和失败条件见 [docs/strict_asof_standard.md](docs/strict_asof_standard.md)。

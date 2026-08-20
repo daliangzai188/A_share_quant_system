@@ -1,5 +1,14 @@
 {
   "project_name": "A股量化交易系统",
+  "strict_asof": {
+    "enabled": true,
+    "standard_id": "A_SYSTEM_STRICT_ASOF_V1",
+    "default_mode": "STRICT",
+    "default_research_protocol": "STRICT_DISCOVERY",
+    "formal_protocols": ["LOCKED_OOS", "WALK_FORWARD"],
+    "fill_probability_method": "asof_turnover_space_proxy_v2",
+    "policy_note": "所有策略收益研究必须使用严格point-in-time数据；STRICT_DISCOVERY只能开发规则，不能认证或发布。正式结论只接受冻结规则LOCKED_OOS或逐折训练在先WALK_FORWARD。"
+  },
   "trade_mode": "live",
   "broker_adapter_enabled": true,
   "qmt_enabled": true,
@@ -136,6 +145,7 @@
     "certification_expected_scenario": "current_d_a_e_c_n",
     "certification_max_age_hours": 168,
     "certification_require_hashes": true,
+    "certification_require_strict_asof": true,
     "require_strategy_release_freeze": true,
     "strategy_release_freeze_path": "config/strategy_release_freeze.json",
     "strategy_priority_order": [
@@ -493,10 +503,14 @@
     "ignore_abnormal_fd_amount": true
   },
   "analysis": {
+    "asof_mode": "STRICT",
+    "research_protocol": "STRICT_DISCOVERY",
     "input_daily_merged_path": "data/processed/daily_merged.csv",
-    "input_limit_up_fill_scored_path": "data/processed/limit_up_fill_scored.csv",
-    "output_next_day_trades_path": "data/processed/next_day_premium_trades.csv",
-    "output_exit_rule_trades_path": "data/processed/exit_rule_trade_samples.csv",
+    "input_limit_up_fill_scored_path": "data/processed/limit_up_fill_scored_asof.csv",
+    "output_next_day_trades_path": "data/processed/next_day_premium_trades_asof.csv",
+    "output_strict_asof_audit_path": "reports/strict_asof/next_day_premium_audit.json",
+    "output_exit_rule_trades_path": "data/processed/exit_rule_trade_samples_asof.csv",
+    "output_exit_rule_strict_asof_audit_path": "reports/strict_asof/exit_rule_samples_audit.json",
     "output_next_day_summary_path": "reports/next_day_premium_summary.csv",
     "output_next_day_group_path": "reports/next_day_premium_by_group.csv",
     "output_factor_report_path": "reports/factor_analysis_report.csv",
@@ -517,8 +531,11 @@
     "theme_heat_features_path": "data/processed/theme_heat_features.csv"
   },
   "candidate_pool": {
-    "input_trades_path": "data/processed/next_day_premium_trades.csv",
-    "output_candidate_pool_path": "data/processed/candidate_pool.csv",
+    "asof_mode": "STRICT",
+    "research_protocol": "STRICT_DISCOVERY",
+    "input_trades_path": "data/processed/next_day_premium_trades_asof.csv",
+    "output_candidate_pool_path": "data/processed/candidate_pool_asof.csv",
+    "output_strict_asof_audit_path": "reports/strict_asof/candidate_pool_audit.json",
     "min_fill_probability": 0.6,
     "rules": [
       {
@@ -529,7 +546,9 @@
             "strong"
           ],
           "fd_ratio_bucket": [
-            "lt_0_5pct"
+            "lt_0_1pct",
+            "0_1pct_0_3pct",
+            "0_3pct_0_5pct"
           ]
         }
       },
@@ -547,26 +566,34 @@
             "midday"
           ],
           "fd_ratio_bucket": [
-            "lt_0_5pct"
+            "lt_0_1pct",
+            "0_1pct_0_3pct",
+            "0_3pct_0_5pct"
           ]
         }
       }
     ]
   },
   "backtest": {
-    "input_candidate_pool_path": "data/processed/candidate_pool.csv",
+    "asof_mode": "STRICT",
+    "research_protocol": "STRICT_DISCOVERY",
+    "input_candidate_pool_path": "data/processed/candidate_pool_asof.csv",
     "output_trades_path": "reports/backtest_trades.csv",
     "output_equity_curve_path": "reports/backtest_equity_curve.csv",
     "output_summary_path": "reports/backtest_summary.csv",
     "output_yearly_path": "reports/backtest_yearly.csv",
+    "output_strict_asof_audit_path": "reports/strict_asof/backtest_audit.json",
     "initial_cash": 1000000,
     "max_holding_count": 5,
     "max_position_pct_per_stock": 0.1
   },
   "optimization": {
-    "input_trades_path": "data/processed/next_day_premium_trades.csv",
+    "asof_mode": "STRICT",
+    "research_protocol": "STRICT_DISCOVERY",
+    "input_trades_path": "data/processed/next_day_premium_trades_asof.csv",
     "output_report_path": "reports/strategy_optimization_report.csv",
     "output_yearly_path": "reports/strategy_optimization_yearly.csv",
+    "output_strict_asof_audit_path": "reports/strict_asof/strategy_optimization_audit.json",
     "optional_auction_features_path": "data/processed/auction_features.csv",
     "optional_open_5m_features_path": "data/processed/open_5m_features.csv",
     "optional_sector_moneyflow_features_path": "data/processed/sector_moneyflow_features.csv",
@@ -624,7 +651,9 @@
     "target_annual_return": 1.0
   },
   "exit_rule_optimization": {
-    "input_trades_path": "data/processed/exit_rule_trade_samples.csv",
+    "asof_mode": "STRICT",
+    "research_protocol": "STRICT_DISCOVERY",
+    "input_trades_path": "data/processed/exit_rule_trade_samples_asof.csv",
     "output_report_path": "reports/exit_rule_optimization_report.csv",
     "output_yearly_path": "reports/exit_rule_optimization_yearly.csv",
     "optional_auction_features_path": "data/processed/auction_features.csv",
@@ -684,9 +713,12 @@
     "initial_cash": 1000000
   },
   "trade_replay": {
+    "asof_mode": "STRICT",
+    "research_protocol": "STRICT_DISCOVERY",
     "output_trade_report_path": "reports/trade_replay_report.csv",
     "output_summary_path": "reports/trade_replay_summary.csv",
     "output_yearly_path": "reports/trade_replay_yearly.csv",
+    "output_strict_asof_audit_path": "reports/strict_asof/trade_replay_audit.json",
     "base_conditions": {
       "open_times_bucket": "gte_4",
       "volume_ratio_bucket": "2_4",

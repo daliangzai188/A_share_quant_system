@@ -7,6 +7,12 @@ import pandas as pd
 
 from src.factors import NextDayPremiumAnalyzer
 from src.strategy_optimizer import StrategyConditionOptimizer
+from src.strict_asof import (
+    PointInTimeContract,
+    add_audit_columns,
+    validate_strict_research_frame,
+    write_audit_json,
+)
 from src.utils.config import get_project_root, load_json_config, mkdir_p
 from src.utils.logger import get_logger
 
@@ -25,6 +31,7 @@ class ConservativeTradeReplay:
 
     def __init__(self, config_path: str | Path = "config/config.json") -> None:
         self.project_root = get_project_root()
+        self.config_path = config_path
         self.config = load_json_config(config_path)
         self.logger = get_logger("trade_replay")
         self.replay_config = self.config.get("trade_replay", {})
@@ -40,6 +47,9 @@ class ConservativeTradeReplay:
         )
         self.output_yearly_path = self.project_root / self.replay_config.get(
             "output_yearly_path", "reports/trade_replay_yearly.csv"
+        )
+        self.output_strict_asof_audit_path = self.project_root / self.replay_config.get(
+            "output_strict_asof_audit_path", "reports/strict_asof/trade_replay_audit.json"
         )
         self.initial_cash = float(self.replay_config.get("initial_cash", 1000000))
         self.position_pct = float(self.replay_config.get("position_pct", 0.8))
@@ -66,11 +76,15 @@ class ConservativeTradeReplay:
         trades = pd.concat(frames, ignore_index=True)
         summary = self.build_summary(trades)
         yearly = self.build_yearly_report(trades)
+        trades = add_audit_columns(trades, self.strict_asof_audit)
+        summary = add_audit_columns(summary, self.strict_asof_audit)
+        yearly = add_audit_columns(yearly, self.strict_asof_audit)
 
         mkdir_p(self.output_trade_report_path.parent)
         trades.to_csv(self.output_trade_report_path, index=False, encoding="utf-8-sig")
         summary.to_csv(self.output_summary_path, index=False, encoding="utf-8-sig")
         yearly.to_csv(self.output_yearly_path, index=False, encoding="utf-8-sig")
+        write_audit_json(self.output_strict_asof_audit_path, self.strict_asof_audit)
 
         self.logger.info("保守成交回放明细已生成: %s, 行数: %s", self.output_trade_report_path, len(trades))
         self.logger.info("保守成交回放汇总已生成: %s", self.output_summary_path)
@@ -79,11 +93,29 @@ class ConservativeTradeReplay:
             "trade_report": self.output_trade_report_path,
             "summary": self.output_summary_path,
             "yearly": self.output_yearly_path,
+            "strict_asof_audit": self.output_strict_asof_audit_path,
         }
 
     def load_strategy_signals(self) -> pd.DataFrame:
-        optimizer = StrategyConditionOptimizer(config_path="config/config.json")
+        optimizer = StrategyConditionOptimizer(config_path=self.config_path)
         trades = optimizer.load_trades()
+        selection_columns = [
+            *self.replay_config.get("base_conditions", {}).keys(),
+            *self.replay_config.get("base_exclusions", {}).keys(),
+            *self.replay_config.get("post_selection_exclusions", {}).keys(),
+            "fill_probability",
+            "sample_count",
+            "amount",
+            "turnover_rate",
+        ]
+        self.strict_asof_audit = validate_strict_research_frame(
+            trades,
+            contract=PointInTimeContract(dataset_name="conservative_trade_replay_signals"),
+            selection_columns=selection_columns,
+            section_config=self.replay_config,
+            context="ConservativeTradeReplay.load_strategy_signals",
+            project_root=self.project_root,
+        )
         for column, value in self.replay_config.get("base_conditions", {}).items():
             trades = trades[trades[column].astype(str) == str(value)].copy()
         for column, values in self.replay_config.get("base_exclusions", {}).items():

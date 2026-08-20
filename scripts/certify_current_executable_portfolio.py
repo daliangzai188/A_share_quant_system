@@ -61,6 +61,7 @@ from src.market_rules import (  # noqa: E402
 )
 from src.trading_fees import account_return_after_fees  # noqa: E402
 from src.strategy_e import load_e_spec  # noqa: E402
+from src.strict_asof import STRICT_ASOF_STANDARD_ID, STRICT_DISCOVERY  # noqa: E402
 from src.live_certification import (  # noqa: E402
     certification_file_size,
     certification_file_sha256,
@@ -131,6 +132,7 @@ CODE_CERTIFICATION_FILES = [
     "src/live_order_gateway.py",
     "src/live_performance.py",
     "src/fill_model.py",
+    "src/strict_asof.py",
     "src/strategy_e.py",
     "src/strategy_identity.py",
     "src/strategy_equity_ledger.py",
@@ -848,6 +850,10 @@ def summarize(detail: pd.DataFrame, scenario: str) -> dict[str, Any]:
         "theoretical_ending_equity": float(INITIAL_EQUITY * multiple),
         "theoretical_next_order_amount": float(INITIAL_EQUITY * multiple * POSITION_PCT),
         "capacity_certified": False,
+        "strict_asof_standard_id": STRICT_ASOF_STANDARD_ID,
+        "strict_asof_passed": False,
+        "research_protocol": STRICT_DISCOVERY,
+        "release_eligible": False,
         "total_compound_return": multiple - 1.0,
         "max_drawdown": float(detail["drawdown"].min()),
         "max_profit": float(returns.max()),
@@ -1396,6 +1402,10 @@ def certify_current(*, refresh_input_manifest: bool = False) -> None:
             current_summary["theoretical_next_order_amount"]
         ),
         "capacity_certified": False,
+        "strict_asof_standard_id": STRICT_ASOF_STANDARD_ID,
+        "strict_asof_passed": False,
+        "research_protocol": STRICT_DISCOVERY,
+        "release_eligible": False,
         "n_live_enabled": bool(n_config.get("enabled", False))
         and bool(n_config.get("live_order_enabled", False)),
         "e_strategy_leg": "E",

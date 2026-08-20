@@ -1,0 +1,39 @@
+{
+  "standard_id": "A_SYSTEM_STRICT_ASOF_V1",
+  "asof_mode": "STRICT",
+  "research_protocol": "STRICT_DISCOVERY",
+  "strict_asof_passed": true,
+  "release_eligible": false,
+  "result_scope": "DISCOVERY_ONLY",
+  "dataset_audit": {
+    "standard_id": "A_SYSTEM_STRICT_ASOF_V1",
+    "dataset_name": "candidate_pool_trade_samples",
+    "row_count": 51238,
+    "signal_date_count": 1079,
+    "first_signal_date": "20220110",
+    "last_signal_date": "20260626",
+    "duplicate_key_count": 0,
+    "invalid_signal_date_count": 0,
+    "invalid_as_of_date_count": 0,
+    "as_of_after_signal_count": 0,
+    "as_of_mismatch_count": 0,
+    "reliable_method_bad_count": 0,
+    "reliable_training_end_missing_count": 0,
+    "reliable_training_not_prior_count": 0,
+    "availability_date_invalid_count": 0,
+    "availability_after_signal_count": 0,
+    "passed": true,
+    "issues": []
+  },
+  "selection_columns": [
+    "allow_buy_reliable",
+    "is_fill_score_reliable",
+    "fill_probability",
+    "market_sentiment_level",
+    "fd_ratio_bucket",
+    "board_type",
+    "first_time_bucket",
+    "rule_count",
+    "sample_count"
+  ]
+}

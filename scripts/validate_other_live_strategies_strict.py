@@ -46,6 +46,7 @@ from src.market_rules import (  # noqa: E402
 )
 from src.paper_candidate_generator import PaperCandidateGenerator  # noqa: E402
 from src.strategy_d_spec import historical_candidate_mask  # noqa: E402
+from src.strict_asof import PointInTimeContract, audit_point_in_time_frame  # noqa: E402
 from src.strategy_e import (  # noqa: E402
     apply_e_entry_gate,
     build_r1_universe_from_pool,
@@ -83,43 +84,18 @@ def date_text(series: pd.Series) -> pd.Series:
     return series.astype(str).str.replace(r"\.0$", "", regex=True)
 
 
-def truthy(series: pd.Series) -> pd.Series:
-    return series.astype(str).str.lower().isin({"true", "1", "yes"})
-
-
 def source_audit() -> tuple[pd.DataFrame, dict[str, Any]]:
     source = pd.read_csv(STRICT_SOURCE, low_memory=False)
     for column in ("trade_date", "as_of_date", "model_training_end_date"):
         source[column] = date_text(source[column])
-    reliable = truthy(source["is_fill_score_reliable"])
-    audit = {
-        "path": str(STRICT_SOURCE.relative_to(ROOT)),
-        "row_count": int(len(source)),
-        "trade_date_count": int(source["trade_date"].nunique()),
-        "first_date": str(source["trade_date"].min()),
-        "last_date": str(source["trade_date"].max()),
-        "duplicate_key_count": int(source.duplicated(["trade_date", "ts_code"]).sum()),
-        "as_of_date_mismatch_count": int(source["as_of_date"].ne(source["trade_date"]).sum()),
-        "reliable_method_bad_count": int(
-            source.loc[reliable, "fill_probability_method"].ne(EXPECTED_FILL_METHOD).sum()
+    audit = audit_point_in_time_frame(
+        source,
+        PointInTimeContract(
+            dataset_name="strict_live_strategy_fill_source",
+            expected_method=EXPECTED_FILL_METHOD,
         ),
-        "reliable_training_not_prior_count": int(
-            source.loc[reliable, "model_training_end_date"]
-            .ge(source.loc[reliable, "trade_date"])
-            .sum()
-        ),
-    }
-    audit["passed"] = not any(
-        audit[key]
-        for key in (
-            "duplicate_key_count",
-            "as_of_date_mismatch_count",
-            "reliable_method_bad_count",
-            "reliable_training_not_prior_count",
-        )
-    )
-    if not audit["passed"]:
-        raise RuntimeError(f"严格as-of源审计失败：{audit}")
+    ).to_dict()
+    audit["path"] = str(STRICT_SOURCE.relative_to(ROOT))
     return source, audit
 
 

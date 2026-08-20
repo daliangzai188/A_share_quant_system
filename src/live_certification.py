@@ -13,6 +13,8 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
+from src.strict_asof import LOCKED_OOS, STRICT_ASOF_STANDARD_ID, WALK_FORWARD
+
 
 @dataclass(frozen=True)
 class LiveCertificationCheck:
@@ -57,6 +59,7 @@ def certification_config_sha256(config: Mapping[str, Any]) -> str:
         "strategy_n": config.get("strategy_n", {}),
         "strategy_d": config.get("strategy_d", {}),
         "portfolio_certification": config.get("portfolio_certification", {}),
+        "strict_asof": config.get("strict_asof", {}),
         "analysis": config.get("analysis", {}),
         "live_trade": selected_live_trade,
     }
@@ -273,6 +276,45 @@ def validate_live_certification(
         )
     if payload.get("current_executable") is not True:
         return LiveCertificationCheck(False, "认证文件未明确标记当前可执行场景", path, payload)
+
+    if bool(certification_config.get("certification_require_strict_asof", False)):
+        certified_standard = str(payload.get("strict_asof_standard_id", "")).strip()
+        certified_protocol = str(payload.get("research_protocol", "")).upper()
+        if certified_standard != STRICT_ASOF_STANDARD_ID:
+            return LiveCertificationCheck(False, "认证缺少当前严格as-of标准标识", path, payload)
+        if payload.get("strict_asof_passed") is not True:
+            return LiveCertificationCheck(False, "认证未通过严格as-of数据门禁", path, payload)
+        if certified_protocol not in {LOCKED_OOS, WALK_FORWARD}:
+            return LiveCertificationCheck(
+                False,
+                "认证不是冻结样本外或walk-forward协议，开发段收益不得发布",
+                path,
+                payload,
+            )
+        if payload.get("release_eligible") is not True:
+            return LiveCertificationCheck(False, "严格as-of认证未标记可发布", path, payload)
+        raw_audit_path = str(payload.get("strict_asof_audit_path", "")).strip()
+        expected_audit_hash = str(payload.get("strict_asof_audit_sha256", "")).strip()
+        if not raw_audit_path or not expected_audit_hash:
+            return LiveCertificationCheck(False, "认证缺少严格as-of审计文件或哈希", path, payload)
+        audit_path = _resolve_path(project_root, raw_audit_path)
+        if not audit_path.exists() or not audit_path.is_file():
+            return LiveCertificationCheck(False, f"严格as-of审计文件不存在：{audit_path}", path, payload)
+        if certification_file_sha256(audit_path) != expected_audit_hash:
+            return LiveCertificationCheck(False, "严格as-of审计文件哈希不一致", path, payload)
+        try:
+            audit_payload = json.loads(audit_path.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError) as exc:
+            return LiveCertificationCheck(False, f"严格as-of审计文件不可读：{exc}", path, payload)
+        if (
+            not isinstance(audit_payload, dict)
+            or audit_payload.get("standard_id") != STRICT_ASOF_STANDARD_ID
+            or audit_payload.get("strict_asof_passed") is not True
+            or str(audit_payload.get("research_protocol", "")).upper()
+            not in {LOCKED_OOS, WALK_FORWARD}
+            or audit_payload.get("release_eligible") is not True
+        ):
+            return LiveCertificationCheck(False, "严格as-of审计内容不具备发布资格", path, payload)
 
     max_age_hours = float(
         certification_config.get("certification_max_age_hours", 0) or 0
