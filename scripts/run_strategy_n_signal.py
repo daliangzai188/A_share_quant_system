@@ -101,6 +101,7 @@ def record_run(
     *,
     dry_run: bool,
     candidate_count: int | None = None,
+    candidate: pd.Series | None = None,
     signal: dict[str, Any] | None = None,
 ) -> None:
     if dry_run:
@@ -113,6 +114,9 @@ def record_run(
     }
     if candidate_count is not None:
         row["candidate_count"] = int(candidate_count)
+    if candidate is not None:
+        row["candidate_ts_code"] = str(candidate.get("ts_code", ""))
+        row["candidate_name"] = str(candidate.get("name", ""))
     if signal:
         row.update({"ts_code": signal["ts_code"], "name": signal["name"]})
     save_recent_signal_run(RUN_STATUS_PATH, row, strategy_leg="N", max_trade_days=20)
@@ -193,6 +197,7 @@ def main() -> None:
             reason,
             dry_run=args.dry_run,
             candidate_count=1,
+            candidate=row,
         )
         return
 
@@ -201,7 +206,14 @@ def main() -> None:
         reason = f"{blocker}，N仅保留只读候选，不生成正式信号"
         row = candidates.iloc[0]
         print(f"[N信号] {reason}；候选={row.get('ts_code','')} {row.get('name','')}")
-        record_run(signal_date, NO_SIGNAL_OCCUPIED, reason, dry_run=args.dry_run, candidate_count=1)
+        record_run(
+            signal_date,
+            NO_SIGNAL_OCCUPIED,
+            reason,
+            dry_run=args.dry_run,
+            candidate_count=1,
+            candidate=row,
+        )
         return
 
     signal = build_signal(signal_date, candidates.iloc[0], spec)

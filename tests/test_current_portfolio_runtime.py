@@ -216,6 +216,188 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
         self.assertIn("A/E/C/N均无开仓计划", message)
         log.warning.assert_not_called()
 
+    def test_e_readonly_candidate_is_shown_when_position_blocks_formal_signal(self) -> None:
+        log = MagicMock()
+        previous = trading_daemon._last_final_plan
+
+        def run_status(path: Path, _signal_date: str) -> dict:
+            if "strategy_e" in str(path):
+                return {
+                    "signal_date": "20260820",
+                    "status": "NO_SIGNAL_OCCUPIED",
+                    "reason": "账户有未平仓头寸；当前持仓阻断，不生成正式信号",
+                    "candidate_count": 1,
+                    "candidate_ts_code": "688433.SH",
+                    "candidate_name": "华曙高科",
+                }
+            return {
+                "signal_date": "20260820",
+                "status": "NO_SIGNAL_OCCUPIED",
+                "reason": "账户有未平仓头寸，N仅保留只读候选",
+                "candidate_count": 1,
+            }
+
+        def csv_candidate(strategy: str, _signal_date: str) -> dict | None:
+            if strategy == "N":
+                return {
+                    "strategy": "N",
+                    "ts_code": "002491.SZ",
+                    "name": "通鼎互联",
+                }
+            return None
+
+        try:
+            with (
+                patch.object(
+                    trading_daemon.glob,
+                    "glob",
+                    return_value=["empty_planned_orders.csv"],
+                ),
+                patch.object(
+                    pd,
+                    "read_csv",
+                    side_effect=pd.errors.EmptyDataError("No columns to parse from file"),
+                ),
+                patch.object(
+                    trading_daemon,
+                    "_load_e_signal_for_signal_date",
+                    return_value=None,
+                ),
+                patch.object(
+                    trading_daemon,
+                    "_load_n_signal_for_signal_date",
+                    return_value=None,
+                ),
+                patch.object(
+                    trading_daemon,
+                    "signal_run_by_signal_date",
+                    side_effect=run_status,
+                ),
+                patch.object(
+                    trading_daemon,
+                    "_load_candidate_csv_for_broadcast",
+                    side_effect=csv_candidate,
+                ),
+                patch.object(
+                    trading_daemon,
+                    "load_positions",
+                    return_value=[{
+                        "strategy_leg": "N",
+                        "status": "open",
+                        "ts_code": "301211.SZ",
+                        "name": "亨迪药业",
+                        "shares": 15_700,
+                        "planned_exit_date": "20260821",
+                    }],
+                ),
+                patch.object(trading_daemon, "logger", return_value=log),
+            ):
+                trading_daemon._log_decision_chain_summary("20260820")
+        finally:
+            current = trading_daemon._last_final_plan
+            trading_daemon._last_final_plan = previous
+
+        self.assertIsNone(current["final_buy"])
+        message = str(log.info.call_args.args[0])
+        self.assertIn(
+            "③ E策略：不触发（当前有持仓）｜候选 688433.SH 华曙高科",
+            message,
+        )
+        self.assertIn(
+            "⑤ N最低优先级：不触发（当前有持仓）｜候选 002491.SZ 通鼎互联",
+            message,
+        )
+        self.assertIn("账户空仓时首选：E策略 688433.SH 华曙高科", message)
+        log.warning.assert_not_called()
+
+    def test_all_static_legs_show_candidate_when_current_position_blocks(self) -> None:
+        log = MagicMock()
+        orders = pd.DataFrame([
+            {
+                "strategy_leg": "A",
+                "side": "BUY",
+                "ts_code": "000001.SZ",
+                "name": "测试A",
+                "round_lot_shares": 1000,
+                "reference_price": 10.0,
+            }
+        ])
+        e_signal = {
+            "planned_buy_date": "20260821",
+            "allow_buy_reliable": True,
+            "limit_close": 10.0,
+            "position_pct": 0.825,
+            "ts_code": "300001.SZ",
+            "name": "测试E",
+        }
+        n_signal = {
+            "planned_buy_date": "20260821",
+            "limit_close": 10.0,
+            "position_pct": 0.825,
+            "ts_code": "002001.SZ",
+            "name": "测试N",
+        }
+
+        def readonly_candidate(strategy: str, _signal_date: str) -> tuple[dict | None, str]:
+            if strategy == "C":
+                return {
+                    "strategy": "C",
+                    "ts_code": "600001.SH",
+                    "name": "测试C",
+                }, "上游策略占用"
+            return None, ""
+
+        previous = trading_daemon._last_final_plan
+        try:
+            with (
+                patch.object(trading_daemon.glob, "glob", return_value=["orders.csv"]),
+                patch.object(pd, "read_csv", return_value=orders),
+                patch.object(
+                    trading_daemon,
+                    "_load_e_signal_for_signal_date",
+                    return_value=e_signal,
+                ),
+                patch.object(
+                    trading_daemon,
+                    "_load_n_signal_for_signal_date",
+                    return_value=n_signal,
+                ),
+                patch.object(
+                    trading_daemon,
+                    "_load_readonly_candidate_for_broadcast",
+                    side_effect=readonly_candidate,
+                ),
+                patch.object(
+                    trading_daemon,
+                    "load_positions",
+                    return_value=[{
+                        "strategy_leg": "N",
+                        "status": "open",
+                        "ts_code": "301211.SZ",
+                        "shares": 15_700,
+                        "planned_exit_date": "20260821",
+                    }],
+                ),
+                patch.object(trading_daemon, "logger", return_value=log),
+            ):
+                trading_daemon._log_decision_chain_summary("20260820")
+        finally:
+            trading_daemon._last_final_plan = previous
+
+        message = str(log.info.call_args.args[0])
+        for expected in (
+            "② A主策略：不触发（当前有持仓）｜候选 000001.SZ 测试A",
+            "③ E策略：不触发（当前有持仓）｜候选 300001.SZ 测试E",
+            "④ C垫底：不触发（当前有持仓）｜候选 600001.SH 测试C",
+            "⑤ N最低优先级：不触发（当前有持仓）｜候选 002001.SZ 测试N",
+        ):
+            self.assertIn(expected, message)
+        self.assertIn(
+            "① D盘中：不触发｜无候选",
+            message,
+        )
+        log.warning.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

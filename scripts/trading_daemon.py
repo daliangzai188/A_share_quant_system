@@ -13646,6 +13646,111 @@ def _format_strategy_candidate(strategy: str, candidate: dict[str, Any]) -> str:
     return f"{strategy}策略 {_format_candidate_stock(candidate)}"
 
 
+def _load_candidate_csv_for_broadcast(
+    strategy: str,
+    signal_date: str,
+) -> dict[str, Any] | None:
+    """从单腿审计 CSV 读取当日第一名，只用于展示。"""
+
+    import pandas as pd
+
+    leg = str(strategy).strip().upper()
+    if leg in {"A", "C"}:
+        paths = sorted(
+            (
+                PROJECT_ROOT
+                / "reports"
+                / "paper_trade"
+                / "ab_filtered_daily_ops"
+            ).glob(f"*_{signal_date}_{leg.lower()}_candidates.csv")
+        )
+    elif leg in {"E", "N"}:
+        paths = [
+            PROJECT_ROOT
+            / "reports"
+            / f"strategy_{leg.lower()}"
+            / f"{leg.lower()}_signal_{signal_date}_candidates.csv"
+        ]
+    else:
+        return None
+
+    for path in reversed(paths):
+        if not path.exists():
+            continue
+        try:
+            frame = pd.read_csv(path, low_memory=False)
+        except (pd.errors.EmptyDataError, OSError):
+            continue
+        if frame.empty:
+            continue
+        if "candidate_rank" in frame.columns:
+            frame = frame.assign(
+                _candidate_rank=pd.to_numeric(
+                    frame["candidate_rank"], errors="coerce"
+                ).fillna(10**9)
+            ).sort_values("_candidate_rank", kind="stable")
+        row = frame.iloc[0]
+        code = str(row.get("ts_code", "") or "").strip()
+        name = str(row.get("name", "") or "").strip()
+        if code:
+            return {"strategy": leg, "ts_code": code, "name": name}
+    return None
+
+
+def _load_readonly_candidate_for_broadcast(
+    strategy: str,
+    signal_date: str,
+) -> tuple[dict[str, Any] | None, str]:
+    """读取未转成正式开仓计划的单腿第一名及阻断原因。
+
+    A/C 候选来自独立候选 CSV；E/N 必须先确认运行状态为
+    ``NO_SIGNAL_OCCUPIED`` 且候选数大于0，再使用状态账本或候选 CSV。
+    所有返回值只参与播报，禁止进入正式候选排序或下单。
+    """
+
+    leg = str(strategy).strip().upper()
+    if leg in {"A", "C"}:
+        candidate = _load_candidate_csv_for_broadcast(leg, signal_date)
+        return candidate, "未生成正式计划" if candidate is not None else ""
+    if leg not in {"E", "N"}:
+        return None, ""
+
+    run = signal_run_by_signal_date(
+        PROJECT_ROOT
+        / "reports"
+        / f"strategy_{leg.lower()}"
+        / f"{leg.lower()}_signal_runs_recent.json",
+        signal_date,
+    )
+    if run is None or str(run.get("status", "")).strip().upper() != NO_SIGNAL_OCCUPIED:
+        return None, ""
+    try:
+        candidate_count = int(run.get("candidate_count", 0) or 0)
+    except (TypeError, ValueError):
+        return None, ""
+    if candidate_count <= 0:
+        return None, ""
+
+    code = str(run.get("candidate_ts_code", "") or "").strip()
+    name = str(run.get("candidate_name", "") or "").strip()
+    candidate = (
+        {"strategy": leg, "ts_code": code, "name": name}
+        if code
+        else _load_candidate_csv_for_broadcast(leg, signal_date)
+    )
+    if candidate is None:
+        return None, ""
+
+    reason = str(run.get("reason", "") or "")
+    if "账户有未平仓头寸" in reason or "当前持仓阻断" in reason:
+        reason_label = "信号生成时有持仓"
+    elif "已有计划" in reason or "占用" in reason:
+        reason_label = "上游策略占用"
+    else:
+        reason_label = "未生成正式信号"
+    return candidate, reason_label
+
+
 def _build_candidate_choice_lines(
     candidate_rows: list[tuple[str, dict[str, Any] | None, str]],
     ranking_legs: list[str],
@@ -13773,6 +13878,29 @@ def _log_decision_chain_summary(signal_date: str) -> None:
                     "exit_rule": str(n_signal.get("planned_exit_rule", "T+2_close")),
                 }
 
+        readonly_candidates: dict[str, dict[str, Any]] = {}
+        readonly_reasons: dict[str, str] = {}
+        for leg in ("A", "E", "C", "N"):
+            if leg in candidates:
+                continue
+            readonly_candidate, readonly_reason = (
+                _load_readonly_candidate_for_broadcast(leg, signal_date)
+            )
+            if readonly_candidate is not None:
+                readonly_candidates[leg] = readonly_candidate
+                readonly_reasons[leg] = readonly_reason
+
+        broadcast_candidates = dict(readonly_candidates)
+        broadcast_candidates.update(candidates)
+        broadcast_selected = next(
+            (
+                broadcast_candidates[leg]
+                for leg in ("A", "E", "C", "N")
+                if leg in broadcast_candidates
+            ),
+            None,
+        )
+
         selected = next(
             (candidates[leg] for leg in ("A", "E", "C", "N") if leg in candidates),
             None,
@@ -13802,14 +13930,27 @@ def _log_decision_chain_summary(signal_date: str) -> None:
             str(position.get("strategy_leg", "")).strip().upper() == "D"
             for position in positions
         )
-        candidate_text = {
-            leg: (
-                f"成立｜{_format_candidate_stock(candidates[leg])}"
-                if leg in candidates
-                else "不触发｜无正式候选"
+        candidate_text: dict[str, str] = {}
+        for leg in ("A", "E", "C", "N"):
+            candidate = broadcast_candidates.get(leg)
+            if candidate is None:
+                candidate_text[leg] = "不触发｜无候选"
+                continue
+            if blocked:
+                status_text = "不触发（当前有持仓）"
+            elif execution_expired and leg == selected_leg:
+                status_text = "不触发（已过执行窗口）"
+            elif leg == actual_leg:
+                status_text = "成立"
+            elif leg in readonly_candidates:
+                status_text = (
+                    f"不触发（{readonly_reasons.get(leg) or '未生成正式计划'}）"
+                )
+            else:
+                status_text = "不触发（上游策略占用）"
+            candidate_text[leg] = (
+                f"{status_text}｜候选 {_format_candidate_stock(candidate)}"
             )
-            for leg in ("A", "E", "C", "N")
-        }
 
         # 流程图、逐腿决策链、最终计划必须作为同一条多行日志原子输出；
         # 周期播报时三块一起出现，不能只剩最终摘要。
@@ -13838,12 +13979,20 @@ def _log_decision_chain_summary(signal_date: str) -> None:
             bottom,
             "┃",
             "┃━━━━━━━━━━━━━━ 开仓决策链 ━━━━━━━━━━━━━━",
-            f"┃ ① D盘中：{'已有D策略仓，串行资金门禁生效' if d_holding else '收盘后无次日静态票；到交易日盘中按实时规则扫描'}",
+            f"┃ ① D盘中：{'已有D策略仓，串行资金门禁生效' if d_holding else '不触发｜无候选'}",
             f"┃ ② A主策略：{candidate_text['A']}",
             f"┃ ③ E策略：{candidate_text['E']}",
             f"┃ ④ C垫底：{candidate_text['C']}",
             f"┃ ⑤ N最低优先级：{candidate_text['N']}",
-            f"┃ 账户空仓时首选：{_format_strategy_candidate(selected_leg, selected) if selected else '无'}",
+            "┃ 账户空仓时首选："
+            + (
+                _format_strategy_candidate(
+                    str(broadcast_selected.get("strategy", "")),
+                    broadcast_selected,
+                )
+                if broadcast_selected
+                else "无"
+            ),
             bottom,
             "┃",
             "┃━━━━━━━━━━━━━━ 最终开仓计划 ━━━━━━━━━━━━━━",
