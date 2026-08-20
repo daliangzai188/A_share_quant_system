@@ -3,7 +3,7 @@
   "status": "FROZEN",
   "release_id": "portfolio-20260820-n-v4-volume-gate-live-v9.1",
   "frozen_at": "2026-08-20T05:56:31.356053+00:00",
-  "baseline_strategy_commit": "3f3a3019b2731a159e9dce805c994e081f34ff95",
+  "baseline_strategy_commit": "c667c8f44bdf03433416c9651652c0064387fbde",
   "change_reason": "用户确认N v4完整组合按既定82.5%仓位进入正式实盘，保留样本外风险与容量门禁",
   "strategy_priority_order": [
     "D",
