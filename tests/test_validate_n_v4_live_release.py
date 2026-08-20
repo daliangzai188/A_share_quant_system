@@ -35,6 +35,20 @@ class ValidateNV4LiveReleaseTest(unittest.TestCase):
         config["portfolio_certification"]["live_candidate_metrics"]["trade_count"] = 165
         self.assertIn("正式组合交易笔数不是166", n_v4_live_config_errors(config))
 
+    def test_windows_deploy_locks_native_exit_code_before_logging(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        script = (root / "scripts" / "deploy_n_v4_windows.ps1").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            "$NativeOutput = & py -3.11 @CommandArguments 2>&1", script
+        )
+        self.assertIn("$NativeExitCode = $LASTEXITCODE", script)
+        self.assertIn("$null -eq $NativeExitCode", script)
+        self.assertNotIn("2>&1 | Tee-Object", script)
+        self.assertIn("param([switch]$PreflightOnly)", script)
+        self.assertIn('Write-DeployLog "DEPLOY_PREFLIGHT_COMPLETE"', script)
+
 
 if __name__ == "__main__":
     unittest.main()
