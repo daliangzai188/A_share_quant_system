@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "status": "FUTURE_PAPER_OOS_ONLY_NOT_LIVE_RELEASE",
+  "frozen_at_data_end": "20260820",
+  "research_config_sha256": "ea240b2da7fe169ecbe0945c019a15f52aa0afe37a71fa4e0deb0108387f1937",
+  "dataset_manifest_sha256": "78e682db21f55952857852196814372b906484718372035589829829329c96d7",
+  "untouched_oos_begins_after_freeze": true,
+  "candidates": [
+    {
+      "strategy_leg": "D",
+      "variant_id": "",
+      "status": "REJECTED_BY_OUTER_OOS_OR_COMBINATION_MARGIN",
+      "frozen_rule": null,
+      "selection_score": -0.10748729828939761,
+      "training_gate_candidate_before_outer_rejection": "D_STRONG_AFTERNOON_LATE"
+    },
+    {
+      "strategy_leg": "A",
+      "variant_id": "A_LOWHEAT_CHAIN8_15_FDLOW",
+      "status": "FROZEN_FOR_FUTURE_PAPER_OOS_ONLY",
+      "frozen_rule": {
+        "id": "A_LOWHEAT_CHAIN8_15_FDLOW",
+        "leg": "A",
+        "selector": "generic",
+        "entry_model": "t1_open",
+        "hold": 2,
+        "conditions": {
+          "segment_limit_up_count_bucket": [
+            "lt_5"
+          ],
+          "market_chain_count_bucket": [
+            "8_15"
+          ],
+          "fd_ratio_bucket": [
+            "0_3pct_0_5pct"
+          ]
+        },
+        "excludes": {
+          "amount_ratio_bucket": [
+            "0_8_1_2"
+          ],
+          "market_segment": [
+            "star"
+          ]
+        },
+        "rank_columns": [
+          "turnover_rate",
+          "amount",
+          "ts_code"
+        ],
+        "rank_ascending": [
+          false,
+          false,
+          true
+        ]
+      },
+      "selection_score": -0.1126764008825995,
+      "training_gate_candidate_before_outer_rejection": "A_LOWHEAT_CHAIN8_15_FDLOW"
+    },
+    {
+      "strategy_leg": "E",
+      "variant_id": "",
+      "status": "NO_VARIANT_PASSED_TRAINING_GATE",
+      "frozen_rule": null,
+      "selection_score": null,
+      "training_gate_candidate_before_outer_rejection": ""
+    },
+    {
+      "strategy_leg": "C",
+      "variant_id": "",
+      "status": "NO_VARIANT_PASSED_TRAINING_GATE",
+      "frozen_rule": null,
+      "selection_score": null,
+      "training_gate_candidate_before_outer_rejection": ""
+    },
+    {
+      "strategy_leg": "N",
+      "variant_id": "",
+      "status": "REJECTED_BY_OUTER_OOS_OR_COMBINATION_MARGIN",
+      "frozen_rule": null,
+      "selection_score": -0.19799309428612916,
+      "training_gate_candidate_before_outer_rejection": "N_HEIGHT1_RETREAT_VOL_CURRENT_ONLY"
+    }
+  ]
+}

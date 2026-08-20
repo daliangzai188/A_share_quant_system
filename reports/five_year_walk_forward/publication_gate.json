@@ -1,0 +1,10 @@
+{
+  "status": "NOT_LIVE_RELEASEABLE",
+  "strict_asof_passed": true,
+  "nested_outer_test_passed": true,
+  "untouched_oos_passed": false,
+  "capacity_certified": false,
+  "real_forward_samples_after_freeze": 0,
+  "live_files_modified": false,
+  "reason": "缺少冻结后的真实前向样本和容量认证；回溯walk-forward不能冒充untouched OOS。"
+}

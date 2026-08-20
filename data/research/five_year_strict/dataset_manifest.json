@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "purpose": "isolated_five_year_nested_walk_forward_research",
+  "live_paths_modified": false,
+  "start_date_requested": "20190101",
+  "end_date_requested": "latest_complete_raw_date",
+  "planned_buy_amount": 412500.0,
+  "base_tables": {
+    "available_date_count": 1852,
+    "first_date": "20190102",
+    "last_date": "20260820",
+    "daily_rows": 8772327,
+    "limit_rows": 101020,
+    "skipped_daily_dates": []
+  },
+  "strict_features": {
+    "strict_fill_rows": 101020,
+    "strict_reliable_rows": 91001,
+    "strict_allow_rows": 75612,
+    "feature_pool_rows": 75612,
+    "strict_asof_audit": {
+      "standard_id": "A_SYSTEM_STRICT_ASOF_V1",
+      "dataset_name": "five_year_research_fill_source",
+      "row_count": 101020,
+      "signal_date_count": 1632,
+      "first_signal_date": "20191128",
+      "last_signal_date": "20260820",
+      "duplicate_key_count": 0,
+      "invalid_signal_date_count": 0,
+      "invalid_as_of_date_count": 0,
+      "as_of_after_signal_count": 0,
+      "as_of_mismatch_count": 0,
+      "reliable_method_bad_count": 0,
+      "reliable_training_end_missing_count": 0,
+      "reliable_training_not_prior_count": 0,
+      "availability_date_invalid_count": 0,
+      "availability_after_signal_count": 0,
+      "passed": true,
+      "issues": []
+    }
+  },
+  "validation": {
+    "first_signal_date": "20200103",
+    "last_signal_date": "20260820",
+    "duplicate_key_count": 0,
+    "column_count": 184
+  },
+  "files": {
+    "compact_daily": {
+      "path": "data/research/five_year_strict/daily_factor_history.csv",
+      "size_bytes": 382529594,
+      "sha256": "880318164861cb23dcd8ef3b00620d668fe494515835494e30afc757bc6d0865"
+    },
+    "limit_up_merged": {
+      "path": "data/research/five_year_strict/limit_up_merged.csv",
+      "size_bytes": 29319140,
+      "sha256": "35d4454c20ab860fa94ca24135a4f5ac3a9c0ce8545f36d0fe61c2ca2c93e68d"
+    },
+    "market_sentiment": {
+      "path": "data/research/five_year_strict/market_sentiment.csv",
+      "size_bytes": 482378,
+      "sha256": "4ba851e3c7469b2a93a2b6cdfe8b6336d33ef57c10c30e27faa642dfdb0355c3"
+    },
+    "market_emotion": {
+      "path": "data/research/five_year_strict/market_emotion_features.csv",
+      "size_bytes": 2740121,
+      "sha256": "44363fba97bec5ceb40250289f9f8f6a75bc18357671fd33801958fa6be460ab"
+    },
+    "theme_heat": {
+      "path": "data/research/five_year_strict/theme_heat_features.csv",
+      "size_bytes": 11235577,
+      "sha256": "01a4a937975fd333980b2d067db96ef7c4a9907f66efc3d999f80c9600c44d81"
+    },
+    "strict_fill": {
+      "path": "data/research/five_year_strict/limit_up_fill_scored_asof.csv",
+      "size_bytes": 74930529,
+      "sha256": "35d8256a345815b5c39498ed2b574b998598d1e005008fb2d7578e964b0ef7ed"
+    },
+    "feature_pool": {
+      "path": "data/research/five_year_strict/strict_feature_pool.csv",
+      "size_bytes": 102307564,
+      "sha256": "f1d4b1ee83b991a169ba8530a135b2ba4ff43ef7ae32dd6759de7a64555fc482"
+    },
+    "strict_audit": {
+      "path": "data/research/five_year_strict/strict_asof_audit.json",
+      "size_bytes": 610,
+      "sha256": "ed5565272580a516901589255d755dad1ff5fbe9b089fe4b135aa758561c4e7e"
+    }
+  }
+}

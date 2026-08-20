@@ -1,0 +1,223 @@
+{
+  "schema_version": 1,
+  "mode": "research_only",
+  "live_release_allowed": false,
+  "research_disclosure": "回溯式逐年walk-forward不是untouched OOS。当前因子桶和策略家族已受既有研究经验影响，研究结果只能用于淘汰明显不稳规则并冻结未来模拟盘候选，不能直接发布实盘。",
+  "data": {
+    "start_date": "20190101",
+    "outer_oos_years": [2022, 2023, 2024, 2025, 2026],
+    "research_root": "data/research/five_year_strict",
+    "report_root": "reports/five_year_walk_forward",
+    "planned_buy_amount": 412500
+  },
+  "selection_gate": {
+    "minimum_train_trades": 12,
+    "minimum_inner_validation_trades": 2,
+    "minimum_train_years_with_trades": 2,
+    "minimum_positive_train_year_ratio": 0.5,
+    "minimum_train_equity_multiple": 1.0,
+    "minimum_inner_validation_equity_multiple": 0.9,
+    "maximum_train_drawdown": -0.35
+  },
+  "publication_gate": {
+    "minimum_oos_trades": 30,
+    "minimum_positive_oos_years": 3,
+    "minimum_win_rate_wilson_95_lower": 0.5,
+    "minimum_average_return_bootstrap_95_lower": 0.0,
+    "maximum_oos_drawdown": -0.25,
+    "combination_drawdown_tolerance_pp": 0.02,
+    "require_combination_equity_non_decreasing": true,
+    "require_real_forward_samples_after_freeze": true,
+    "require_capacity_certification": true
+  },
+  "variants": [
+    {
+      "id": "D_CURRENT_BASELINE",
+      "leg": "D",
+      "selector": "generic",
+      "eligible_for_optimization": false,
+      "entry_model": "d_limit",
+      "hold": 2,
+      "conditions": {"limit_times": ["1"], "market_sentiment_level": ["strong"], "board_type": ["multi_open"], "open_times_bucket": ["2_3"], "first_time_bucket": ["midday", "afternoon", "late"]},
+      "numeric_min": {"last_time": 140000, "fill_probability": 0.8},
+      "numeric_max": {"open_times": 3},
+      "rank_columns": ["d_open_times_preference", "fd_amount_to_circ_mv", "ts_code"],
+      "rank_ascending": [false, false, false]
+    },
+    {
+      "id": "D_STRONG_OPEN2_3_TAIL",
+      "leg": "D",
+      "selector": "generic",
+      "entry_model": "d_limit",
+      "hold": 2,
+      "conditions": {"limit_times": ["1"], "market_sentiment_level": ["strong"], "board_type": ["multi_open"], "open_times_bucket": ["2_3"], "first_time_bucket": ["midday", "afternoon", "late"]},
+      "numeric_min": {"last_time": 140000, "fill_probability": 0.8},
+      "numeric_max": {"open_times": 3},
+      "rank_columns": ["d_open_times_preference", "fd_amount_to_circ_mv", "ts_code"],
+      "rank_ascending": [false, false, false]
+    },
+    {
+      "id": "D_STRONG_OPEN2_ONLY_TAIL",
+      "leg": "D",
+      "selector": "generic",
+      "entry_model": "d_limit",
+      "hold": 2,
+      "conditions": {"limit_times": ["1"], "market_sentiment_level": ["strong"], "board_type": ["multi_open"], "open_times": ["2"], "first_time_bucket": ["midday", "afternoon", "late"]},
+      "numeric_min": {"last_time": 140000, "fill_probability": 0.8},
+      "rank_columns": ["fd_amount_to_circ_mv", "ts_code"],
+      "rank_ascending": [false, true]
+    },
+    {
+      "id": "D_STRONG_AFTERNOON_LATE",
+      "leg": "D",
+      "selector": "generic",
+      "entry_model": "d_limit",
+      "hold": 2,
+      "conditions": {"limit_times": ["1"], "market_sentiment_level": ["strong"], "board_type": ["multi_open"], "open_times_bucket": ["2_3"], "first_time_bucket": ["afternoon", "late"]},
+      "numeric_min": {"last_time": 140000, "fill_probability": 0.8},
+      "numeric_max": {"open_times": 3},
+      "rank_columns": ["fd_amount_to_circ_mv", "ts_code"],
+      "rank_ascending": [false, true]
+    },
+    {
+      "id": "D_STRONG_LATE_ONLY",
+      "leg": "D",
+      "selector": "generic",
+      "entry_model": "d_limit",
+      "hold": 2,
+      "conditions": {"limit_times": ["1"], "market_sentiment_level": ["strong"], "board_type": ["multi_open"], "open_times_bucket": ["2_3"], "first_time_bucket": ["late"]},
+      "numeric_min": {"last_time": 143000, "fill_probability": 0.8},
+      "numeric_max": {"open_times": 3},
+      "rank_columns": ["fd_amount_to_circ_mv", "ts_code"],
+      "rank_ascending": [false, true]
+    },
+
+    {"id": "A_CURRENT_BASELINE", "leg": "A", "selector": "current_a", "eligible_for_optimization": false, "entry_model": "t1_open", "hold": 2},
+    {
+      "id": "A_LOWHEAT_CHAIN8_15_FDMID_TURNOVER",
+      "leg": "A", "selector": "generic", "entry_model": "t1_open", "hold": 2,
+      "conditions": {"segment_limit_up_count_bucket": ["lt_5"], "market_chain_count_bucket": ["8_15"], "fd_ratio_bucket": ["0_5pct_1pct"]},
+      "excludes": {"amount_ratio_bucket": ["0_8_1_2"], "market_segment": ["star"]},
+      "rank_columns": ["turnover_rate", "amount", "ts_code"], "rank_ascending": [false, false, true]
+    },
+    {
+      "id": "A_LOWHEAT_CHAIN8_15_FDMID_EARLY",
+      "leg": "A", "selector": "generic", "entry_model": "t1_open", "hold": 2,
+      "conditions": {"segment_limit_up_count_bucket": ["lt_5"], "market_chain_count_bucket": ["8_15"], "fd_ratio_bucket": ["0_5pct_1pct"], "first_time_detail_bucket": ["before_1000", "1000_1100", "1100_1330", "after_1430"]},
+      "excludes": {"amount_ratio_bucket": ["0_8_1_2"], "market_segment": ["star"]},
+      "rank_columns": ["turnover_rate", "amount", "ts_code"], "rank_ascending": [false, false, true]
+    },
+    {
+      "id": "A_LOWHEAT_CHAIN3_8_FDMID",
+      "leg": "A", "selector": "generic", "entry_model": "t1_open", "hold": 2,
+      "conditions": {"segment_limit_up_count_bucket": ["lt_5"], "market_chain_count_bucket": ["3_8"], "fd_ratio_bucket": ["0_5pct_1pct"]},
+      "excludes": {"amount_ratio_bucket": ["0_8_1_2"], "market_segment": ["star"]},
+      "rank_columns": ["turnover_rate", "amount", "ts_code"], "rank_ascending": [false, false, true]
+    },
+    {
+      "id": "A_LOWHEAT_CHAIN8_15_FDLOW",
+      "leg": "A", "selector": "generic", "entry_model": "t1_open", "hold": 2,
+      "conditions": {"segment_limit_up_count_bucket": ["lt_5"], "market_chain_count_bucket": ["8_15"], "fd_ratio_bucket": ["0_3pct_0_5pct"]},
+      "excludes": {"amount_ratio_bucket": ["0_8_1_2"], "market_segment": ["star"]},
+      "rank_columns": ["turnover_rate", "amount", "ts_code"], "rank_ascending": [false, false, true]
+    },
+    {
+      "id": "A_LOWHEAT_CHAIN8_15_FDMID_CIRCMV",
+      "leg": "A", "selector": "generic", "entry_model": "t1_open", "hold": 2,
+      "conditions": {"segment_limit_up_count_bucket": ["lt_5"], "market_chain_count_bucket": ["8_15"], "fd_ratio_bucket": ["0_5pct_1pct"]},
+      "excludes": {"amount_ratio_bucket": ["0_8_1_2"], "market_segment": ["star"]},
+      "rank_columns": ["circ_mv", "ts_code"], "rank_ascending": [true, true]
+    },
+
+    {"id": "E_CURRENT_BASELINE", "leg": "E", "selector": "current_e", "eligible_for_optimization": false, "entry_model": "t1_open", "hold": 2},
+    {
+      "id": "E_NEUTRAL_LOWHEAT_CHAIN8_15_T2",
+      "leg": "E", "selector": "generic", "entry_model": "t1_open", "hold": 2,
+      "conditions": {"segment_retreat_state_bucket": ["neutral"], "segment_limit_up_count_bucket": ["lt_5"], "market_chain_count_bucket": ["8_15"], "fd_ratio_bucket": ["0_5pct_1pct"]},
+      "excludes": {"amount_ratio_bucket": ["0_8_1_2"]},
+      "rank_columns": ["circ_mv", "ts_code"], "rank_ascending": [true, true],
+      "post_gate_excludes": {"first_time_detail_bucket": ["1330_1430"]}
+    },
+    {
+      "id": "E_NEUTRAL_LOWHEAT_CHAIN8_15_T3",
+      "leg": "E", "selector": "generic", "entry_model": "t1_open", "hold": 3,
+      "conditions": {"segment_retreat_state_bucket": ["neutral"], "segment_limit_up_count_bucket": ["lt_5"], "market_chain_count_bucket": ["8_15"], "fd_ratio_bucket": ["0_5pct_1pct"]},
+      "excludes": {"amount_ratio_bucket": ["0_8_1_2"]},
+      "rank_columns": ["circ_mv", "ts_code"], "rank_ascending": [true, true],
+      "post_gate_excludes": {"first_time_detail_bucket": ["1330_1430"]}
+    },
+    {
+      "id": "E_NEUTRAL_CHAIN3_8_MIXED_T2",
+      "leg": "E", "selector": "generic", "entry_model": "t1_open", "hold": 2,
+      "conditions": {"segment_retreat_state_bucket": ["neutral"], "market_chain_count_bucket": ["3_8"], "market_emotion_state_bucket": ["mixed"]},
+      "excludes": {"amount_ratio_bucket": ["0_8_1_2"]},
+      "rank_columns": ["amount", "circ_mv", "ts_code"], "rank_ascending": [false, true, true],
+      "post_gate_excludes": {"first_time_detail_bucket": ["1330_1430"]}
+    },
+    {
+      "id": "E_NEUTRAL_CHAIN8_15_TURNOVER_T2",
+      "leg": "E", "selector": "generic", "entry_model": "t1_open", "hold": 2,
+      "conditions": {"segment_retreat_state_bucket": ["neutral"], "market_chain_count_bucket": ["8_15"], "fd_ratio_bucket": ["0_5pct_1pct"]},
+      "excludes": {"amount_ratio_bucket": ["0_8_1_2"]},
+      "rank_columns": ["turnover_rate", "ts_code"], "rank_ascending": [false, true],
+      "post_gate_excludes": {"first_time_detail_bucket": ["1330_1430"]}
+    },
+
+    {"id": "C_CURRENT_BASELINE", "leg": "C", "selector": "current_c", "eligible_for_optimization": false, "entry_model": "t1_open", "hold": 3},
+    {
+      "id": "C_CHAIN15_30_SEG40_80_T3",
+      "leg": "C", "selector": "generic", "entry_model": "t1_open", "hold": 3,
+      "conditions": {"market_chain_count_bucket": ["15_30"], "segment_limit_up_count_bucket": ["40_80"]},
+      "excludes": {"amount_ratio_bucket": ["0_8_1_2"], "market_segment": ["star"]},
+      "rank_columns": ["turnover_rate", "amount", "ts_code"], "rank_ascending": [false, false, true]
+    },
+    {
+      "id": "C_CHAIN15_30_SEG20_40_T3",
+      "leg": "C", "selector": "generic", "entry_model": "t1_open", "hold": 3,
+      "conditions": {"market_chain_count_bucket": ["15_30"], "segment_limit_up_count_bucket": ["20_40"]},
+      "excludes": {"amount_ratio_bucket": ["0_8_1_2"], "market_segment": ["star"]},
+      "rank_columns": ["turnover_rate", "amount", "ts_code"], "rank_ascending": [false, false, true]
+    },
+    {
+      "id": "C_CHAIN8_15_SEG20_40_T3",
+      "leg": "C", "selector": "generic", "entry_model": "t1_open", "hold": 3,
+      "conditions": {"market_chain_count_bucket": ["8_15"], "segment_limit_up_count_bucket": ["20_40"]},
+      "excludes": {"amount_ratio_bucket": ["0_8_1_2"], "market_segment": ["star"]},
+      "rank_columns": ["turnover_rate", "amount", "ts_code"], "rank_ascending": [false, false, true]
+    },
+    {
+      "id": "C_CHAIN15_30_SEG40_80_T2",
+      "leg": "C", "selector": "generic", "entry_model": "t1_open", "hold": 2,
+      "conditions": {"market_chain_count_bucket": ["15_30"], "segment_limit_up_count_bucket": ["40_80"]},
+      "excludes": {"amount_ratio_bucket": ["0_8_1_2"], "market_segment": ["star"]},
+      "rank_columns": ["circ_mv", "ts_code"], "rank_ascending": [true, true]
+    },
+
+    {"id": "N_CURRENT_BASELINE", "leg": "N", "selector": "current_n", "eligible_for_optimization": false, "entry_model": "t1_open", "hold": 2},
+    {
+      "id": "N_HEIGHT1_RETREAT_VOL_CURRENT_ONLY",
+      "leg": "N", "selector": "n", "entry_model": "t1_open", "hold": 2,
+      "n_overrides": {"supplement_enabled": false, "height_values": ["1"], "retreat_values": ["retreat_weak", "retreat_2day"], "current_post_filter_values": ["4_8", "lt_1"], "min_fill_probability": 0.6}
+    },
+    {
+      "id": "N_HEIGHT1_RETREAT_VOL_WITH_SUPPLEMENT",
+      "leg": "N", "selector": "n", "entry_model": "t1_open", "hold": 2,
+      "n_overrides": {"supplement_enabled": true, "height_values": ["1"], "retreat_values": ["retreat_weak", "retreat_2day"], "current_post_filter_values": ["4_8", "lt_1"], "min_fill_probability": 0.6}
+    },
+    {
+      "id": "N_HEIGHT1_RETREAT_VOL_LT1_ONLY",
+      "leg": "N", "selector": "n", "entry_model": "t1_open", "hold": 2,
+      "n_overrides": {"supplement_enabled": false, "height_values": ["1"], "retreat_values": ["retreat_weak", "retreat_2day"], "current_post_filter_values": ["lt_1"], "min_fill_probability": 0.6}
+    },
+    {
+      "id": "N_HEIGHT1_RETREAT_VOL4_8_ONLY",
+      "leg": "N", "selector": "n", "entry_model": "t1_open", "hold": 2,
+      "n_overrides": {"supplement_enabled": false, "height_values": ["1"], "retreat_values": ["retreat_weak", "retreat_2day"], "current_post_filter_values": ["4_8"], "min_fill_probability": 0.6}
+    },
+    {
+      "id": "N_HEIGHT1_RETREAT_ALL_LOWVOL",
+      "leg": "N", "selector": "n", "entry_model": "t1_open", "hold": 2,
+      "n_overrides": {"supplement_enabled": false, "height_values": ["1"], "retreat_values": ["retreat_weak", "retreat_2day"], "current_post_filter_values": ["lt_1", "1_2", "2_4", "4_8"], "min_fill_probability": 0.6}
+    }
+  ]
+}
