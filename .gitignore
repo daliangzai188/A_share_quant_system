@@ -30,6 +30,7 @@ reports/**/*.md
 data/state/open_plan_push.json
 reports/strategy_health/state.json
 reports/strategy_e/e_signals_recent.json
+reports/strategy_n/n_signals_recent.json
 # 旧名称只读兼容；不得再作为正式输出。
 reports/strategy_e2/e2_signals_recent.json
 reports/strategy_e_samples/sample_manifest.json
