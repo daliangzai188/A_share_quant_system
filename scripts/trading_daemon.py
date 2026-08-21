@@ -12385,6 +12385,140 @@ def _log_abc_strategy_brief(signal_date: str) -> None:
         logger().warning("A/C策略摘要失败：%s", exc)
 
 
+def _read_close_candidate_artifact(strategy: str, signal_date: str) -> dict[str, Any]:
+    """只读当天已有候选产物，不触发重算，也不参与组合排序或下单。"""
+
+    import pandas as pd
+
+    leg = str(strategy).strip().upper()
+    if leg in {"A", "C"}:
+        paths = sorted(
+            (
+                PROJECT_ROOT
+                / "reports"
+                / "paper_trade"
+                / "ab_filtered_daily_ops"
+            ).glob(f"*_{signal_date}_{leg.lower()}_candidates.csv")
+        )
+        path = paths[-1] if paths else None
+    elif leg == "E":
+        path = (
+            PROJECT_ROOT
+            / "reports"
+            / "strategy_e"
+            / f"e_signal_{signal_date}_candidates.csv"
+        )
+    elif leg == "D":
+        path = (
+            PROJECT_ROOT
+            / "reports"
+            / "strategy_d"
+            / f"intraday_signals_{signal_date}.csv"
+        )
+    else:
+        raise ValueError(f"不支持的策略腿：{strategy}")
+
+    result: dict[str, Any] = {
+        "strategy": leg,
+        "artifact_exists": bool(path and path.exists()),
+        "calculated": False,
+        "candidate_count": None,
+        "first_candidate": None,
+        "source": str(path) if path else "",
+        "detail": "",
+    }
+    if path is None or not path.exists():
+        result["detail"] = (
+            "未发现当日盘中信号文件，不能据此断言D无候选"
+            if leg == "D"
+            else "未发现当日候选产物，候选状态未知"
+        )
+        return result
+
+    try:
+        frame = pd.read_csv(path, low_memory=False)
+    except pd.errors.EmptyDataError:
+        frame = pd.DataFrame()
+    except Exception as exc:
+        result["detail"] = f"候选产物读取失败：{type(exc).__name__}: {exc}"
+        return result
+
+    result["calculated"] = True
+    if leg == "D":
+        if "signal_type" not in frame.columns:
+            candidates = pd.DataFrame()
+        else:
+            candidates = frame[
+                frame["signal_type"].astype(str).str.upper().eq("BUY")
+            ].copy()
+        watch_count = (
+            int(frame["signal_type"].astype(str).str.upper().eq("WATCH").sum())
+            if "signal_type" in frame.columns
+            else 0
+        )
+        result["detail"] = f"盘中BUY记录={len(candidates)}，WATCH记录={watch_count}"
+    else:
+        candidates = frame.copy()
+
+    if not candidates.empty and "candidate_rank" in candidates.columns:
+        candidates = candidates.assign(
+            _candidate_rank=pd.to_numeric(
+                candidates["candidate_rank"], errors="coerce"
+            ).fillna(10**9)
+        ).sort_values("_candidate_rank", kind="stable")
+
+    result["candidate_count"] = int(len(candidates))
+    if not candidates.empty:
+        row = candidates.iloc[0]
+        code = str(row.get("ts_code", "") or "").strip()
+        name = str(row.get("name", "") or "").strip()
+        result["first_candidate"] = " ".join(
+            part for part in (code, name) if part
+        ) or "候选信息缺失"
+    return result
+
+
+def _log_close_pipeline_candidate_summary(signal_date: str) -> None:
+    """汇总ACDE已有产物；本函数严格只读，不改变任何策略执行结果。"""
+
+    try:
+        summaries = {
+            leg: _read_close_candidate_artifact(leg, signal_date)
+            for leg in ("D", "A", "E", "C")
+        }
+        labels = {
+            "D": "① D盘中",
+            "A": "② A主策略",
+            "E": "③ E策略",
+            "C": "④ C垫底",
+        }
+        lines = [
+            "┃━━━━━━━━━━ 收盘流水线候选产物统计 ━━━━━━━━━━",
+            f"┃ 信号日：{signal_date}",
+            "┃ 口径：只读取当日产物；不重算、不改变D>A>E>C、不参与下单",
+        ]
+        for leg in ("D", "A", "E", "C"):
+            item = summaries[leg]
+            count = item["candidate_count"]
+            if not item["calculated"]:
+                content = f"未完成统计｜{item['detail']}"
+            elif count == 0:
+                content = "已计算｜候选0只"
+                if item["detail"]:
+                    content += f"｜{item['detail']}"
+            else:
+                content = (
+                    f"已计算｜候选{count}只｜第一名 {item['first_candidate']}"
+                )
+                if item["detail"]:
+                    content += f"｜{item['detail']}"
+            lines.append(f"┃ {labels[leg]}：{content}")
+        lines.append("┃━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        logger().info("\n".join(lines))
+    except Exception as exc:
+        logger().warning("收盘流水线候选产物统计失败（不影响信号和下单）：%s", exc)
+
+
 def _log_post_market_step_brief(script: str, signal_date: str) -> None:
     if script == "collect_all_data.py":
         _log_collection_brief(signal_date)
@@ -12579,6 +12713,10 @@ def job_post_market(end_date: str | None = None) -> None:
                 logger().error("❌ %s 异常：%s，本次收盘流水线停止；不生成计划单，避免使用旧信号", desc, e)
                 return False
             logger().error("%s 异常：%s，继续后续步骤", desc, e)
+
+    # 所有策略步骤结束后只读当日产物，明确区分“候选0只”和“产物未生成/未知”。
+    # D是盘中策略，这里只统计其已有BUY/WATCH记录，不在收盘时补跑D。
+    _log_close_pipeline_candidate_summary(target_str)
 
     # 关键检查：今日数据是否真的从 Tushare 入库了
     if not _date_in_scored(target_date):

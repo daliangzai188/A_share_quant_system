@@ -146,6 +146,81 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
             self.assertIsNone(trading_daemon._load_e_candidate_count("20260821"))
         read_csv.assert_not_called()
 
+    def test_close_pipeline_candidate_summary_reads_artifacts_only(self) -> None:
+        """候选统计只读ACDE既有产物，并正确识别空CSV和D的BUY记录。"""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ac_dir = root / "reports" / "paper_trade" / "ab_filtered_daily_ops"
+            e_dir = root / "reports" / "strategy_e"
+            d_dir = root / "reports" / "strategy_d"
+            ac_dir.mkdir(parents=True)
+            e_dir.mkdir(parents=True)
+            d_dir.mkdir(parents=True)
+
+            pd.DataFrame([
+                {"candidate_rank": 2, "ts_code": "300002.SZ", "name": "A第二名"},
+                {"candidate_rank": 1, "ts_code": "300001.SZ", "name": "A第一名"},
+            ]).to_csv(ac_dir / "profile_20260821_a_candidates.csv", index=False)
+            (ac_dir / "profile_20260821_c_candidates.csv").write_text(
+                "", encoding="utf-8"
+            )
+            pd.DataFrame(columns=["ts_code", "name"]).to_csv(
+                e_dir / "e_signal_20260821_candidates.csv", index=False
+            )
+            pd.DataFrame([
+                {"signal_type": "WATCH", "ts_code": "600001.SH", "name": "D观察"},
+                {"signal_type": "BUY", "ts_code": "600002.SH", "name": "D候选"},
+            ]).to_csv(d_dir / "intraday_signals_20260821.csv", index=False)
+
+            with patch.object(trading_daemon, "PROJECT_ROOT", root):
+                a_item = trading_daemon._read_close_candidate_artifact("A", "20260821")
+                c_item = trading_daemon._read_close_candidate_artifact("C", "20260821")
+                e_item = trading_daemon._read_close_candidate_artifact("E", "20260821")
+                d_item = trading_daemon._read_close_candidate_artifact("D", "20260821")
+
+        self.assertEqual(a_item["candidate_count"], 2)
+        self.assertEqual(a_item["first_candidate"], "300001.SZ A第一名")
+        self.assertTrue(c_item["calculated"])
+        self.assertEqual(c_item["candidate_count"], 0)
+        self.assertTrue(e_item["calculated"])
+        self.assertEqual(e_item["candidate_count"], 0)
+        self.assertEqual(d_item["candidate_count"], 1)
+        self.assertEqual(d_item["first_candidate"], "600002.SH D候选")
+        self.assertIn("WATCH记录=1", d_item["detail"])
+
+    def test_close_pipeline_summary_does_not_call_missing_artifact_no_candidate(self) -> None:
+        """D产物缺失只能记为未知，不能误报为D确实没有候选。"""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ac_dir = root / "reports" / "paper_trade" / "ab_filtered_daily_ops"
+            e_dir = root / "reports" / "strategy_e"
+            ac_dir.mkdir(parents=True)
+            e_dir.mkdir(parents=True)
+            pd.DataFrame([
+                {"candidate_rank": 1, "ts_code": "300016.SZ", "name": "北陆药业"},
+            ]).to_csv(ac_dir / "profile_20260821_a_candidates.csv", index=False)
+            (ac_dir / "profile_20260821_c_candidates.csv").write_text(
+                "", encoding="utf-8"
+            )
+            pd.DataFrame(columns=["ts_code", "name"]).to_csv(
+                e_dir / "e_signal_20260821_candidates.csv", index=False
+            )
+            log = MagicMock()
+            with (
+                patch.object(trading_daemon, "PROJECT_ROOT", root),
+                patch.object(trading_daemon, "logger", return_value=log),
+            ):
+                trading_daemon._log_close_pipeline_candidate_summary("20260821")
+
+        message = str(log.info.call_args.args[0])
+        self.assertIn("① D盘中：未完成统计", message)
+        self.assertIn("不能据此断言D无候选", message)
+        self.assertIn("② A主策略：已计算｜候选1只｜第一名 300016.SZ 北陆药业", message)
+        self.assertIn("③ E策略：已计算｜候选0只", message)
+        self.assertIn("④ C垫底：已计算｜候选0只", message)
+
     def test_d_shared_proxy_checks_release_certification_before_buy(self) -> None:
         proxy = trading_daemon.SharedQMTBrokerProxy({"adapter": "qmt"})
         with (
