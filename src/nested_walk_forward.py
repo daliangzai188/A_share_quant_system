@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""五腿嵌套 walk-forward 研究引擎。
+"""四腿嵌套 walk-forward 研究引擎。
 
 选择规则只读取外层测试年之前的交易。外层测试结果永远不参与当年版本选择；
 所有输出均为研究产物，不修改实盘策略或发布状态。
@@ -36,20 +36,18 @@ from src.strategy_e import (
     resolve_exit_offset as resolve_e_exit_offset,
     select_e_daily_picks,
 )
-from src.strategy_n import load_n_spec, select_n_daily_picks
 from src.strict_asof import assert_selection_columns_strict
 from src.trading_fees import account_return_after_fees
 from src.utils.config import get_project_root, load_json_config, mkdir_p
 
 
-LEGS = ("D", "A", "E", "C", "N")
-DAILY_PRIORITY = ("A", "E", "C", "N")
+LEGS = ("D", "A", "E", "C")
+DAILY_PRIORITY = ("A", "E", "C")
 BASELINE_VARIANT = {
     "D": "D_CURRENT_BASELINE",
     "A": "A_CURRENT_BASELINE",
     "E": "E_CURRENT_BASELINE",
     "C": "C_CURRENT_BASELINE",
-    "N": "N_CURRENT_BASELINE",
 }
 EXPECTED_FILL_METHOD = "asof_turnover_space_proxy_v2"
 
@@ -581,14 +579,6 @@ class NestedWalkForwardResearch:
                 picks["_resolved_hold"] = picks["exit_rule"].map(
                     lambda value: resolve_e_exit_offset(spec, str(value))
                 )
-        elif selector in {"current_n", "n"}:
-            spec = load_n_spec(self.runtime_config)
-            if selector == "n":
-                spec.update(variant.get("n_overrides", {}))
-                spec = load_n_spec(spec)
-            picks = select_n_daily_picks(
-                self.apply_common_filters(pool), spec, audit_readiness=True
-            )
         else:
             raise ValueError(f"未知selector：{selector}")
         if picks.empty:

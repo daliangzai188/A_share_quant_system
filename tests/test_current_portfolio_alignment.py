@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import unittest
 
-import pandas as pd
-
 from scripts.certify_current_executable_portfolio import (
     EXPECTED_D_DAILY_CANDIDATE_COUNT,
     EXPECTED_CURRENT_MULTIPLE,
@@ -16,7 +14,7 @@ from scripts.certify_current_executable_portfolio import (
 
 
 class CurrentPortfolioAlignmentTests(unittest.TestCase):
-    """锁定五腿身份回放D>A>E>C>N；严格发布认证仍单独fail-closed。"""
+    """锁定四腿身份回放D>A>E>C；严格发布认证仍单独fail-closed。"""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -24,7 +22,7 @@ class CurrentPortfolioAlignmentTests(unittest.TestCase):
 
     def test_current_portfolio_is_reproducible(self) -> None:
         detail = replay(self.sources, entry_gate_enabled=True)
-        metrics = summarize(detail, "current_d_a_e_c_n")
+        metrics = summarize(detail, "current_d_a_e_c")
 
         self.assertEqual(metrics["executed_trade_count"], EXPECTED_CURRENT_TRADE_COUNT)
         self.assertAlmostEqual(
@@ -32,22 +30,8 @@ class CurrentPortfolioAlignmentTests(unittest.TestCase):
         )
         self.assertEqual(
             set(detail.loc[detail["status"].eq("EXECUTED"), "strategy_leg"]),
-            {"D", "A", "E", "C", "N"},
+            {"D", "A", "E", "C"},
         )
-
-    def test_n_effect_is_measured_on_the_complete_portfolio(self) -> None:
-        without_n = summarize(
-            replay(self.sources, entry_gate_enabled=True, n_enabled=False),
-            "current_without_n",
-        )
-        current = summarize(
-            replay(self.sources, entry_gate_enabled=True),
-            "current_d_a_e_c_n",
-        )
-
-        self.assertEqual(without_n["n_trade_count"], 0)
-        self.assertEqual(current["n_trade_count"], 37)
-        self.assertGreater(current["equity_multiple"], without_n["equity_multiple"])
 
     def test_e_gate_complete_sample_risk_is_explicit(self) -> None:
         without_gate = summarize(
@@ -56,10 +40,10 @@ class CurrentPortfolioAlignmentTests(unittest.TestCase):
         )
         current = summarize(
             replay(self.sources, entry_gate_enabled=True),
-            "current_d_a_e_c_n",
+            "current_d_a_e_c",
         )
 
-        self.assertEqual(without_gate["executed_trade_count"], 164)
+        self.assertEqual(without_gate["executed_trade_count"], 136)
         self.assertGreater(current["equity_multiple"], without_gate["equity_multiple"])
 
         validation = e_entry_gate_validation(self.sources)
@@ -74,27 +58,16 @@ class CurrentPortfolioAlignmentTests(unittest.TestCase):
         detail = replay(self.sources, entry_gate_enabled=True)
         metrics = summarize(
             detail,
-            "current_d_a_e_c_n",
+            "current_d_a_e_c",
         )
-        self.assertEqual(metrics["d_trade_count"], 17)
-        self.assertEqual(metrics["a_trade_count"], 43)
-        self.assertEqual(metrics["e_trade_count"], 42)
+        self.assertEqual(metrics["d_trade_count"], 18)
+        self.assertEqual(metrics["a_trade_count"], 45)
+        self.assertEqual(metrics["e_trade_count"], 47)
         self.assertEqual(metrics["c_trade_count"], 18)
-        self.assertEqual(metrics["n_trade_count"], 37)
         self.assertEqual(metrics["d_to_a_trade_count"], 0)
         self.assertEqual(metrics["d_to_c_trade_count"], 0)
         self.assertEqual(metrics["d_to_e_trade_count"], 0)
 
-        n_returns = pd.to_numeric(
-            detail.loc[
-                detail["status"].eq("EXECUTED")
-                & detail["strategy_leg"].eq("N"),
-                "account_return",
-            ],
-            errors="raise",
-        )
-        self.assertGreater(float((1.0 + n_returns).prod()), 2.0)
-        self.assertGreater(float(n_returns.gt(0).mean()), 0.60)
 
     def test_d_source_is_the_complete_daily_candidate_ledger(self) -> None:
         self.assertEqual(len(self.sources.strategy_d), EXPECTED_D_DAILY_CANDIDATE_COUNT)

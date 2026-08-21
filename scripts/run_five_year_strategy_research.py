@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""重建五年严格as-of底座并运行五腿嵌套walk-forward研究。"""
+"""重建五年严格as-of底座并运行四腿嵌套walk-forward研究。"""
 
 import argparse
 from pathlib import Path
@@ -20,7 +20,7 @@ def parser() -> argparse.ArgumentParser:
         description="五年严格as-of数据重建与嵌套walk-forward研究（永不修改实盘）"
     )
     result.add_argument("--build-data", action="store_true", help="重建独立五年研究底座")
-    result.add_argument("--optimize", action="store_true", help="运行D/A/E/C/N嵌套walk-forward")
+    result.add_argument("--optimize", action="store_true", help="运行D/A/E/C嵌套walk-forward")
     result.add_argument("--all", action="store_true", help="依次执行数据重建与优化")
     result.add_argument("--start-date", default="20190101")
     result.add_argument("--end-date", default=None)

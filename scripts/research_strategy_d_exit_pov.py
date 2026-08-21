@@ -3,10 +3,10 @@
 
 研究边界：
 
-* 只研究当前五腿身份回放中17笔普通D（T+2收盘退出）；
+* 只研究当前四腿身份回放中18笔普通D（T+2收盘退出）；
 * D接力已经全关，不存在T+1集合竞价让路卖出；
 * 每个POV信号只能使用当时已经完成的bar，不使用未来收盘价决定是否卖；
-* POV均价替换D原收盘价后，重新计算D腿复利、157笔总复利和最大回撤；
+* POV均价替换D原收盘价后，重新计算D腿复利、128笔总复利和最大回撤；
 * 未全部成交的场景不得把残仓按收盘价伪装成成交，直接判定不可认证。
 
 先在Windows盘后采集数据，再运行：
@@ -67,20 +67,20 @@ PORTFOLIO_TRADES_PATH = (
 )
 D_TRADES_PATH = PROJECT_ROOT / "reports" / "strategy_d" / "d_daily_candidates.csv"
 OUTPUT_DIR = PROJECT_ROOT / "reports" / "strategy_d" / "exit_pov"
-# 当前D>A>E>C>N发布标尺必须重新严格认证；容量仍未认证。
-EXPECTED_D_COUNT = 17
-EXPECTED_PORTFOLIO_COUNT = 157
-EXPECTED_PORTFOLIO_MULTIPLE = 4100.04329082521
-EXPECTED_PORTFOLIO_DRAWDOWN = -0.22386233070836592
-# N v4减少占仓后，统一账户路径释放了不同D信号日；D规则未变，但组合实际入选的
-# 17笔D集合发生变化，因此容量研究必须锁定当前五腿身份回放中的这17笔。
-EXPECTED_D_MULTIPLE = 1.963738073448967
+# 当前D>A>E>C发布标尺必须重新严格认证；容量仍未认证。
+EXPECTED_D_COUNT = 18
+EXPECTED_PORTFOLIO_COUNT = 128
+EXPECTED_PORTFOLIO_MULTIPLE = 1727.906227926422
+EXPECTED_PORTFOLIO_DRAWDOWN = -0.23413141247525604
+# 组合结构调整后，统一账户路径释放了不同D信号日；D规则未变，但组合实际入选的
+# 18笔D集合发生变化，因此容量研究必须锁定当前四腿身份回放中的这18笔。
+EXPECTED_D_MULTIPLE = 1.947326246670935
 EPSILON = 1e-9
 
 
 @dataclass(frozen=True)
 class DExitVariant:
-    """预先定义的少量可解释变体，避免在17笔样本上无限调参。"""
+    """预先定义的少量可解释变体，避免在18笔样本上无限调参。"""
 
     name: str
     description: str
@@ -131,7 +131,7 @@ def compound(returns: pd.Series) -> float:
 
 
 def load_trade_metadata() -> tuple[pd.DataFrame, pd.DataFrame]:
-    """加载157笔五腿身份回放及17笔普通D的买入价、原退出价。"""
+    """加载128笔四腿身份回放及18笔普通D的买入价、原退出价。"""
 
     portfolio = pd.read_csv(
         PORTFOLIO_TRADES_PATH,
@@ -510,7 +510,7 @@ def write_report(summary: pd.DataFrame, gates: pd.DataFrame) -> None:
             else "- 当前没有变体同时通过全部门禁，禁止直接修改D实盘退出。"
         ),
         "- 历史分钟K只有成交量和OHLC，不等同于Level-2真实买盘；压力价结果必须同时查看。",
-        "- 样本仅17笔，结果用于筛除明显不合格方案，不能承诺未来收益。",
+        "- 样本仅18笔，结果用于筛除明显不合格方案，不能承诺未来收益。",
     ]
     (OUTPUT_DIR / "d_exit_pov_report.md").write_text("\n".join(lines), encoding="utf-8")
 

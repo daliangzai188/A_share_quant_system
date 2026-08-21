@@ -25,7 +25,6 @@ def make_engine(
     positions: list[dict] | None = None,
     ac_leg: str | None = None,
     with_e: bool = False,
-    with_n: bool = False,
 ) -> CombinedLiveEngine:
     engine = object.__new__(CombinedLiveEngine)
     engine.project_root = Path(__file__).resolve().parents[1]
@@ -33,8 +32,7 @@ def make_engine(
         "trade_mode": "backtest",
         "position": {"initial_cash": 500_000},
         "live_trade": {"max_single_order_amount": 0},
-        "active_strategy_profile": {"mode": 1, "mode_name": "D_A_E_C_N"},
-        "strategy_n": {"enabled": True, "live_order_enabled": True, "position_pct": 0.825},
+        "active_strategy_profile": {"mode": 1, "mode_name": "D_A_E_C"},
     }
     engine.load_positions = lambda: list(positions or [])
     if ac_leg:
@@ -64,59 +62,21 @@ def make_engine(
         if with_e else None
     )
     engine.load_today_e_signal = lambda _today: None
-    engine.build_n_buy_order_if_any = lambda _today, _codes=None: (
-        {
-            "strategy_leg": "N", "side": "BUY", "ts_code": "000004.SZ",
-            "name": "测试N", "planned_order_date": "20260803",
-            "round_lot_shares": 10_000, "planned_amount_by_equity": 412_500.0,
-        }
-        if with_n else None
-    )
     engine.active_strategy_mode = lambda: 1
-    engine.active_strategy_name = lambda: "D_A_E_C_N"
+    engine.active_strategy_name = lambda: "D_A_E_C"
     engine.is_b_strategy_removed = lambda: True
     return engine
 
 
 class CurrentPortfolioRuntimeTests(unittest.TestCase):
-    def test_n_live_order_uses_t1_open_t2_close_and_825pct(self) -> None:
-        engine = object.__new__(CombinedLiveEngine)
-        engine.config = {
-            "trade_mode": "backtest",
-            "position": {"initial_cash": 500_000},
-            "live_trade": {"max_single_order_amount": 0},
-            "strategy_n": {
-                "enabled": True,
-                "live_order_enabled": True,
-                "position_pct": 0.825,
-                "exit_hold_offset": 2,
-            },
-        }
-        engine.load_yesterday_n_signal = lambda _today: {
-            "signal_date": "20260818",
-            "planned_buy_date": "20260819",
-            "ts_code": "300001.SZ",
-            "name": "测试N",
-            "limit_close": 10.0,
-        }
-        order = CombinedLiveEngine.build_n_buy_order_if_any(engine, "20260819")
-        self.assertIsNotNone(order)
-        assert order is not None
-        self.assertEqual(order["strategy_leg"], "N")
-        self.assertEqual(order["planned_action"], "PLAN_BUY_T1_OPEN")
-        self.assertEqual(order["round_lot_shares"], 41_200)
-        self.assertEqual(order["exit_n_days"], 1)
-        self.assertAlmostEqual(order["planned_amount_by_equity"], 412_000.0)
-
-    def test_current_priority_is_a_then_e_then_c_then_n(self) -> None:
-        for ac_leg, with_e, with_n, expected in (
-            ("A", True, True, "A"),
-            (None, True, True, "E"),
-            ("C", False, True, "C"),
-            (None, False, True, "N"),
+    def test_current_priority_is_a_then_e_then_c(self) -> None:
+        for ac_leg, with_e, expected in (
+            ("A", True, "A"),
+            (None, True, "E"),
+            ("C", False, "C"),
         ):
             with self.subTest(expected=expected):
-                engine = make_engine(ac_leg=ac_leg, with_e=with_e, with_n=with_n)
+                engine = make_engine(ac_leg=ac_leg, with_e=with_e)
                 _state, _decisions, orders = engine.build_mode1_plan("20260803")
                 buys = orders[orders["side"].astype(str).str.upper().eq("BUY")]
                 self.assertEqual(str(buys.iloc[0]["strategy_leg"]), expected)
@@ -161,7 +121,7 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
                 json.dumps({
                     "status": "PASS_WITH_RISK_ACCEPTANCE",
                     "current_executable": True,
-                    "scenario": "current_d_a_e_c_n",
+                    "scenario": "current_d_a_e_c",
                 }),
                 encoding="utf-8",
             )
@@ -170,7 +130,7 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
                 {
                     "certification_summary_path": "cert.json",
                     "certification_required_status": "PASS_WITH_RISK_ACCEPTANCE",
-                    "certification_expected_scenario": "current_d_a_e_c_n",
+                    "certification_expected_scenario": "current_d_a_e_c",
                 },
             )
             self.assertTrue(check.ok, check.reason)
@@ -195,11 +155,6 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
                     "_load_e_signal_for_signal_date",
                     return_value=None,
                 ),
-                patch.object(
-                    trading_daemon,
-                    "_load_n_signal_for_signal_date",
-                    return_value=None,
-                ),
                 patch.object(trading_daemon, "load_positions", return_value=[]),
                 patch.object(trading_daemon, "logger", return_value=log),
             ):
@@ -213,7 +168,7 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
         self.assertIn("决策优先级流程图", message)
         self.assertIn("开仓决策链", message)
         self.assertIn("最终开仓计划", message)
-        self.assertIn("A/E/C/N均无开仓计划", message)
+        self.assertIn("A/E/C均无开仓计划", message)
         log.warning.assert_not_called()
 
     def test_e_readonly_candidate_is_shown_when_position_blocks_formal_signal(self) -> None:
@@ -229,20 +184,6 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
                     "candidate_count": 1,
                     "candidate_ts_code": "688433.SH",
                     "candidate_name": "华曙高科",
-                }
-            return {
-                "signal_date": "20260820",
-                "status": "NO_SIGNAL_OCCUPIED",
-                "reason": "账户有未平仓头寸，N仅保留只读候选",
-                "candidate_count": 1,
-            }
-
-        def csv_candidate(strategy: str, _signal_date: str) -> dict | None:
-            if strategy == "N":
-                return {
-                    "strategy": "N",
-                    "ts_code": "002491.SZ",
-                    "name": "通鼎互联",
                 }
             return None
 
@@ -265,24 +206,19 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
                 ),
                 patch.object(
                     trading_daemon,
-                    "_load_n_signal_for_signal_date",
-                    return_value=None,
-                ),
-                patch.object(
-                    trading_daemon,
                     "signal_run_by_signal_date",
                     side_effect=run_status,
                 ),
                 patch.object(
                     trading_daemon,
                     "_load_candidate_csv_for_broadcast",
-                    side_effect=csv_candidate,
+                    return_value=None,
                 ),
                 patch.object(
                     trading_daemon,
                     "load_positions",
                     return_value=[{
-                        "strategy_leg": "N",
+                        "strategy_leg": "E",
                         "status": "open",
                         "ts_code": "301211.SZ",
                         "name": "亨迪药业",
@@ -304,10 +240,9 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
             message,
         )
         self.assertIn(
-            "⑤ N最低优先级：不触发（当前有持仓）｜候选 002491.SZ 通鼎互联",
+            "账户空仓时首选：E策略 688433.SH 华曙高科",
             message,
         )
-        self.assertIn("账户空仓时首选：E策略 688433.SH 华曙高科", message)
         log.warning.assert_not_called()
 
     def test_all_static_legs_show_candidate_when_current_position_blocks(self) -> None:
@@ -330,14 +265,6 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
             "ts_code": "300001.SZ",
             "name": "测试E",
         }
-        n_signal = {
-            "planned_buy_date": "20260821",
-            "limit_close": 10.0,
-            "position_pct": 0.825,
-            "ts_code": "002001.SZ",
-            "name": "测试N",
-        }
-
         def readonly_candidate(strategy: str, _signal_date: str) -> tuple[dict | None, str]:
             if strategy == "C":
                 return {
@@ -359,11 +286,6 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
                 ),
                 patch.object(
                     trading_daemon,
-                    "_load_n_signal_for_signal_date",
-                    return_value=n_signal,
-                ),
-                patch.object(
-                    trading_daemon,
                     "_load_readonly_candidate_for_broadcast",
                     side_effect=readonly_candidate,
                 ),
@@ -371,7 +293,7 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
                     trading_daemon,
                     "load_positions",
                     return_value=[{
-                        "strategy_leg": "N",
+                        "strategy_leg": "E",
                         "status": "open",
                         "ts_code": "301211.SZ",
                         "shares": 15_700,
@@ -389,7 +311,6 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
             "② A主策略：不触发（当前有持仓）｜候选 000001.SZ 测试A",
             "③ E策略：不触发（当前有持仓）｜候选 300001.SZ 测试E",
             "④ C垫底：不触发（当前有持仓）｜候选 600001.SH 测试C",
-            "⑤ N最低优先级：不触发（当前有持仓）｜候选 002001.SZ 测试N",
         ):
             self.assertIn(expected, message)
         self.assertIn(

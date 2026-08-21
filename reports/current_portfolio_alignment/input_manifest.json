@@ -5,10 +5,9 @@
     "D",
     "A",
     "E",
-    "C",
-    "N"
+    "C"
   ],
-  "file_count": 490,
+  "file_count": 489,
   "files": [
     {
       "path": "reports/strategy_expansion/abcd_expansion_selected_e2_equity_curve.csv",
@@ -39,11 +38,6 @@
       "path": "reports/ac_daily_candidates/ac_daily_candidates.csv",
       "size": 18856,
       "sha256": "5db905834eb826d64544deea4f5629cf204ea04959e2e74f355aad97072392f0"
-    },
-    {
-      "path": "reports/strategy_n_v4/n_backtest_candidates.csv",
-      "size": 25593,
-      "sha256": "9930fcdcb4cd3903dc6c9eac06bf0199ca5b8f485d081419821d40762fc6279b"
     },
     {
       "path": "config/strategy_e_r1_scenarios.json",

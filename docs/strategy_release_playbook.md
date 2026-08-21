@@ -234,7 +234,7 @@ cd /Users/user/Desktop/A_System
 .venv/bin/python -B scripts/run_strategy_release_validation.py
 ```
 
-当前该命令应明确拒绝运行，因为旧验证器仍是 A+B 历史口径。只有完成 A/C/D/E/N 全链路逐日回放、重新定义样本外窗口和门槛后，才能建立新的发布验证。
+当前该命令应明确拒绝运行，因为旧验证器仍是 A+B 历史口径。只有完成 A/C/D/E 全链路逐日回放、重新定义样本外窗口和门槛后，才能建立新的发布验证。
 
 ### 3. 什么时候重新找最新策略
 

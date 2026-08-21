@@ -18,7 +18,7 @@ class FiveYearNestedWalkForwardTests(unittest.TestCase):
         )
         self.assertEqual(config["mode"], "research_only")
         self.assertFalse(config["live_release_allowed"])
-        for leg in ("D", "A", "E", "C", "N"):
+        for leg in ("D", "A", "E", "C"):
             baseline = [
                 item
                 for item in config["variants"]

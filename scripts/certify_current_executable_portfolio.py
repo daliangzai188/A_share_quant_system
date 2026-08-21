@@ -1,4 +1,4 @@
-"""认证当前D/A/E/C/N组合的可执行逐日资金曲线。
+"""认证当前D/A/E/C组合的可执行逐日资金曲线。
 
 本脚本把此前散落的一次性计算固化成可重复基线，并比较E门禁与M启用前后：
 
@@ -10,7 +10,7 @@
 5. E入场门禁在每日第一名确定后执行，被排除时不回补第二名；
 6. 所有收益按同一账户、同一时间顺序连乘，禁止把各腿复利直接相乘。
 
-当前有效腿序 **D > A > E > C > N**，见 pick_by_priority。
+当前有效腿序 **D > A > E > C**，见 pick_by_priority。
 D 不在 pick_by_priority 里：它在信号日盘中就买了，位置由时序锁死，见 replay。
 
 ⚠️ **本脚本是实盘的对照基准，两侧必须同时正确。** 实盘一侧分两层，缺一层就是空转：
@@ -59,7 +59,6 @@ from src.market_rules import (  # noqa: E402
     listing_trade_day_number,
     price_limit_pct,
 )
-from src.trading_fees import account_return_after_fees  # noqa: E402
 from src.strategy_e import load_e_spec  # noqa: E402
 from src.strict_asof import STRICT_ASOF_STANDARD_ID, STRICT_DISCOVERY  # noqa: E402
 from src.live_certification import (  # noqa: E402
@@ -107,23 +106,12 @@ RUNTIME_CONFIG_PATH = PROJECT_ROOT / "config" / "config.json"
 _RUNTIME_CONFIG = json.loads(RUNTIME_CONFIG_PATH.read_text(encoding="utf-8"))
 _CERTIFICATION_CONFIG = _RUNTIME_CONFIG.get("portfolio_certification", {})
 _ANALYSIS_CONFIG = _RUNTIME_CONFIG.get("analysis", {})
-N_POOL_PATH = PROJECT_ROOT / _CERTIFICATION_CONFIG.get(
-    "n_backtest_pool_path",
-    _RUNTIME_CONFIG.get("strategy_n", {}).get(
-        "backtest_pool_path", "reports/strategy_n_v4/n_backtest_candidates.csv"
-    ),
-)
-
 CODE_CERTIFICATION_FILES = [
     "scripts/build_ac_daily_candidates.py",
     "scripts/backtest_strategy_d.py",
     "scripts/certify_current_executable_portfolio.py",
     "scripts/monitor_strategy_d_intraday.py",
     "scripts/run_strategy_e_signal.py",
-    "scripts/run_strategy_n_signal.py",
-    "scripts/build_strategy_n_backtest_pool.py",
-    "scripts/research_strategy_n_v4.py",
-    "scripts/validate_n_v4_live_release.py",
     "scripts/score_limit_up_fill_probability.py",
     "scripts/strategy_health_monitor.py",
     "scripts/trading_daemon.py",
@@ -136,7 +124,6 @@ CODE_CERTIFICATION_FILES = [
     "src/strategy_e.py",
     "src/strategy_identity.py",
     "src/strategy_equity_ledger.py",
-    "src/strategy_n.py",
     "src/market_rules.py",
     "src/adjusted_returns.py",
     "src/trading_fees.py",
@@ -179,14 +166,9 @@ EPSILON = 1e-12
 #   BASE 133 / 5140.7613530121025    E_ONLY 132 / 5755.436166596083
 #   OPTIMIZED 135 / 8350.331871673612 WITH_M 151 / 24911.38506562485
 # 当前正式组合的冻结回归锚点；任何输入、顺序或成交口径漂移都必须显式审查。
-EXPECTED_CURRENT_TRADE_COUNT = 157
-EXPECTED_CURRENT_MULTIPLE = 4100.04329082521
+EXPECTED_CURRENT_TRADE_COUNT = 128
+EXPECTED_CURRENT_MULTIPLE = 1727.906227926422
 EXPECTED_D_DAILY_CANDIDATE_COUNT = 45
-EXPECTED_N_DAILY_CANDIDATE_COUNT = int(
-    _RUNTIME_CONFIG.get("strategy_n", {}).get("execution_v4_audit", {}).get(
-        "candidate_count", 105
-    )
-)
 
 
 @dataclass(frozen=True)
@@ -198,7 +180,6 @@ class Sources:
     strategy_d: pd.DataFrame
     e: pd.DataFrame
     no_b_reselection: pd.DataFrame
-    n_pool: pd.DataFrame
     ac_daily: dict[str, dict[str, Any]]
     e_spec: dict[str, Any]
     trade_dates: list[str]
@@ -230,7 +211,6 @@ def load_sources() -> Sources:
         NO_B_RESELECTION_PATH,
         TRADE_CALENDAR_PATH,
         RUNTIME_CONFIG_PATH,
-        N_POOL_PATH,
     ]
     missing = [str(path) for path in required if not path.exists()]
     if missing:
@@ -302,32 +282,6 @@ def load_sources() -> Sources:
     if set(no_b.index) != old_b_dates:
         raise ValueError("无B重选账本没有逐日覆盖全部历史B日")
 
-    n_pool = pd.read_csv(N_POOL_PATH, dtype={"trade_date": str}, low_memory=False)
-    n_pool["trade_date"] = n_pool["trade_date"].map(normalize_date)
-    if (
-        len(n_pool) != EXPECTED_N_DAILY_CANDIDATE_COUNT
-        or n_pool["trade_date"].duplicated().any()
-    ):
-        raise ValueError(
-            "N完整候选账本必须恰好"
-            f"{EXPECTED_N_DAILY_CANDIDATE_COUNT}个唯一信号日"
-        )
-    if not n_pool["sample_scope"].astype(str).eq("COMPLETE_DAILY_CANDIDATES").all():
-        raise ValueError("N认证只允许完整逐日候选样本")
-    allowed_n_statuses = {
-        "OK", "LIMIT_UP_UNBUYABLE", "SELL_UNRESOLVED", "NO_PRICE",
-        "NO_ADJUSTED_PRICE", "NO_CALENDAR", "BAD_PRICE",
-    }
-    unknown_statuses = sorted(
-        set(n_pool["execution_status"].astype(str)) - allowed_n_statuses
-    )
-    if unknown_statuses:
-        raise ValueError(f"N候选账本含未知执行状态：{unknown_statuses}")
-    method = n_pool.get("fill_probability_method", pd.Series(index=n_pool.index, dtype=str)).astype(str)
-    if method.empty or not method.eq("asof_turnover_space_proxy_v2").all():
-        raise ValueError("N候选账本不是严格as-of成交空间打分产物")
-    n_pool = n_pool.set_index("trade_date")
-
     calendar = pd.read_csv(TRADE_CALENDAR_PATH, dtype={"cal_date": str})
     trade_dates = sorted(
         calendar.loc[
@@ -347,7 +301,6 @@ def load_sources() -> Sources:
         strategy_d=strategy_d,
         e=e,
         no_b_reselection=no_b,
-        n_pool=n_pool,
         ac_daily=load_ac_daily(),
         e_spec=load_e_spec(PROJECT_ROOT),
         trade_dates=trade_dates,
@@ -392,7 +345,7 @@ def load_ac_daily() -> dict[str, dict[str, Any]]:
     旧口径用 `baseline.abc_return != 0` 当 A/C 的门槛，而 baseline 是
     A/B/C 三腿**单独回放**的产物，带着那次回放自己的持仓序列：A/C 明细481天里
     有108天是 `POSITION_OCCUPIED_SKIP`（当年被已删除的B等占掉），连 ts_code
-    都没落盘。今天的组合含 D/A/E/C/N，持仓情况完全不同，那张持仓表早已作废，
+    都没落盘。今天的组合含 D/A/E/C，持仓情况完全不同，那张持仓表早已作废，
     却仍在挡 A/C —— A/C 可用天数被锁死在90天。
 
     实盘从不受此限制：run_paper_ab_filtered_daily_ops / combined_live_engine /
@@ -440,7 +393,6 @@ def pick_by_priority(
     row_index: int,
     *,
     entry_gate_enabled: bool,
-    n_enabled: bool,
 ) -> dict[str, Any] | None:
     """按当前有效腿序选出当天唯一候选（D 不在此处，见 replay）。
 
@@ -476,12 +428,6 @@ def pick_by_priority(
     # ③ C
     if ac is not None and str(ac.get("strategy_leg", "")) == "C":
         return dict(ac)
-
-    # ④ N：只在前三个收盘后策略腿均空时补位
-    if n_enabled:
-        n_pick = n_candidate(sources, signal_date)
-        if n_pick is not None:
-            return n_pick
 
     return None
 
@@ -584,63 +530,17 @@ def d_t2_candidate(sources: Sources, signal_date: str) -> dict[str, Any]:
     }
 
 
-def n_candidate(sources: Sources, signal_date: str) -> dict[str, Any] | None:
-    """N最低优先级腿；候选已由src.strategy_n唯一规则源逐日固化。"""
-
-    if signal_date not in sources.n_pool.index:
-        return None
-    row = source_row(sources.n_pool, signal_date, "N完整候选池")
-    execution_status = str(row.get("execution_status", ""))
-    if execution_status != "OK":
-        return {
-            "strategy_leg": "N",
-            "ts_code": str(row.get("ts_code", "")),
-            "name": str(row.get("name", "")),
-            "buy_date": normalize_date(row.get("buy_date")),
-            "exit_date": "",
-            "account_return": 0.0,
-            "execution_status": execution_status,
-            "return_source": f"N未成交:{execution_status}",
-        }
-    stock_return = to_float(row.get("stock_return_before_fees"), float("nan"))
-    if pd.isna(stock_return):
-        raise ValueError(f"{signal_date} N候选缺少收益结果")
-    exit_date = normalize_date(row.get("exit_date"))
-    account_return = account_return_after_fees(
-        stock_return_before_fees=stock_return,
-        exit_date=exit_date,
-        position_pct=POSITION_PCT,
-        commission_rate=float(_ANALYSIS_CONFIG.get("commission_rate", 0.0003)),
-        transfer_fee_rate=float(_ANALYSIS_CONFIG.get("transfer_fee_rate", 0.00001)),
-        stamp_tax_schedule=_ANALYSIS_CONFIG.get("stamp_tax_schedule"),
-    )
-    return {
-        "strategy_leg": "N",
-        "ts_code": str(row.get("ts_code", "")),
-        "name": str(row.get("name", "")),
-        "buy_date": normalize_date(row.get("buy_date")),
-        "exit_date": exit_date,
-        "account_return": account_return,
-        "execution_status": execution_status,
-        "return_source": (
-            f"N双分支:{row.get('n_branch', '')}:{row.get('n_rule_id', '')};"
-            f"{row.get('exit_rule', 'T+2收盘')};前复权;日期化显式费用"
-        ),
-    }
-
-
 def replay(
     sources: Sources,
     *,
     entry_gate_enabled: bool,
-    n_enabled: bool = True,
     block_d_on_handoff: bool = True,
 ) -> pd.DataFrame:
     """严格按释放日串行重放481个信号日。
 
     block_d_on_handoff：衔接日按旧仓能否提前释放资金决定D是否可开（2026-08-07）。
 
-    A/C/E/N 是 T日收盘后出信号、T+1开盘买，旧仓 T日收盘已卖完，不冲突。
+    A/C/E 是 T日收盘后出信号、T+1开盘买，旧仓 T日收盘已卖完，不冲突。
     D 不同——它是 T日**盘中**买入（trading_daemon:9326/12498 写死 14:00起BUY、
     14:56停止），旧仓何时释放资金决定它买不买得到：
 
@@ -719,7 +619,6 @@ def replay(
                 row,
                 row_index,
                 entry_gate_enabled=entry_gate_enabled,
-                n_enabled=n_enabled,
             )
 
         if selected is None:
@@ -739,30 +638,6 @@ def replay(
                     "blocked_by_code": "",
                     "blocked_until": "",
                     "return_source": "",
-                }
-            )
-            continue
-
-        if (
-            str(selected.get("strategy_leg", "")).upper() == "N"
-            and str(selected.get("execution_status", "OK")) != "OK"
-        ):
-            rows.append(
-                {
-                    "signal_date": signal_date,
-                    "status": "N_NOT_FILLED",
-                    "strategy_leg": "N",
-                    "ts_code": str(selected.get("ts_code", "")),
-                    "name": str(selected.get("name", "")),
-                    "buy_date": str(selected.get("buy_date", "")),
-                    "exit_date": "",
-                    "account_return": 0.0,
-                    "equity_before": equity_before,
-                    "equity_after": equity,
-                    "blocked_by_leg": "",
-                    "blocked_by_code": "",
-                    "blocked_until": "",
-                    "return_source": str(selected.get("return_source", "")),
                 }
             )
             continue
@@ -803,7 +678,6 @@ def replay(
     detail["peak_equity"] = detail["equity_after"].cummax()
     detail["drawdown"] = detail["equity_after"] / detail["peak_equity"] - 1.0
     detail["entry_gate_enabled"] = entry_gate_enabled
-    detail["n_enabled"] = n_enabled
     return detail
 
 
@@ -841,7 +715,6 @@ def summarize(detail: pd.DataFrame, scenario: str) -> dict[str, Any]:
         "d_to_c_trade_count": int(legs.eq("D→C").sum()),
         "d_to_e_trade_count": int(legs.eq("D→E").sum()),
         "e_trade_count": int(legs.eq("E").sum()),
-        "n_trade_count": int(legs.eq("N").sum()),
         "win_rate": float((returns > 0).mean()),
         "avg_return": float(returns.mean()),
         "median_return": float(returns.median()),
@@ -1175,7 +1048,6 @@ def write_input_manifest(*, refresh: bool = False) -> Path:
         E_PATH,
         NO_B_RESELECTION_PATH,
         AC_DAILY_PATH,
-        N_POOL_PATH,
         E_SPEC_PATH,
         TRADE_CALENDAR_PATH,
     ]
@@ -1202,7 +1074,7 @@ def write_input_manifest(*, refresh: bool = False) -> Path:
     manifest = {
         "schema_version": 1,
         "window": "20240520~20260514",
-        "strategy_priority_order": ["D", "A", "E", "C", "N"],
+        "strategy_priority_order": ["D", "A", "E", "C"],
         "file_count": len(rows),
         "files": rows,
     }
@@ -1216,24 +1088,22 @@ def write_current_report(
     current_periods: pd.DataFrame,
     e_validation: pd.DataFrame,
     e_portfolio_comparison: pd.DataFrame,
-    n_portfolio_comparison: pd.DataFrame,
     *,
     current_scenario: str,
     certification_status: str,
 ) -> None:
-    """写出当前五腿组合报告；严格发布认证完成前只作研究审计。"""
+    """写出当前四腿组合报告；严格发布认证完成前只作研究审计。"""
 
     current = summary[summary["scenario"].eq(current_scenario)].iloc[0]
     lines = [
-        "# 当前五腿组合回放",
+        "# 当前四腿组合回放",
         "",
         "## 结论",
         "",
-        "- **当前腿序：D > A > E > C > N。**",
+        "- **当前腿序：D > A > E > C。**",
         f"- 冻结窗口481个信号日，共{int(current['executed_trade_count'])}笔；"
         f"A={int(current['a_trade_count'])}、C={int(current['c_trade_count'])}、"
-        f"D={int(current['d_trade_count'])}、E={int(current['e_trade_count'])}、"
-        f"N={int(current['n_trade_count'])}。",
+        f"D={int(current['d_trade_count'])}、E={int(current['e_trade_count'])}。",
         f"- 胜率{current['win_rate']:.2%}，平均账户收益{current['avg_return']:.2%}，"
         f"中位数{current['median_return']:.2%}，逐笔复利{current['equity_multiple']:.6f}倍，"
         f"最大回撤{current['max_drawdown']:.2%}。",
@@ -1253,10 +1123,6 @@ def write_current_report(
         "",
         markdown_table(e_portfolio_comparison),
         "",
-        "## N边际组合对照",
-        "",
-        markdown_table(n_portfolio_comparison),
-        "",
         "## E每日候选门禁样本",
         "",
         markdown_table(e_validation),
@@ -1264,16 +1130,16 @@ def write_current_report(
         "## 口径",
         "",
         "- 信号日范围：20240520～20260514；同一账户严格按退出日释放资金。",
-        "- D为盘中腿，按真实时序优先；其余按A>E>C>N选择当天唯一候选。",
+        "- D为盘中腿，按真实时序优先；其余按A>E>C选择当天唯一候选。",
         "- A/C显式扣双边佣金、过户费及卖出印花税；普通腿仓位82.5%；D保留80%成交压力折扣。",
     ]
     (OUTPUT_DIR / "portfolio_report.md").write_text(
         "\n".join(lines), encoding="utf-8"
     )
 def certify_current(*, refresh_input_manifest: bool = False) -> None:
-    """重放D>A>E>C>N；严格as-of新认证完成前始终fail-closed。"""
+    """重放D>A>E>C；严格as-of新认证完成前始终fail-closed。"""
 
-    current_scenario = "current_d_a_e_c_n"
+    current_scenario = "current_d_a_e_c"
     write_certification(
         {
             "schema_version": 1,
@@ -1281,17 +1147,15 @@ def certify_current(*, refresh_input_manifest: bool = False) -> None:
             "current_executable": False,
             "scenario": current_scenario,
             "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
-            "note": "正在重建五腿历史身份回放；完成严格发布认证前禁止新BUY。",
+            "note": "正在重建四腿历史身份回放；完成严格发布认证前禁止新BUY。",
         }
     )
     sources = load_sources()
     without_e = replay(sources, entry_gate_enabled=False)
     current_daily = replay(sources, entry_gate_enabled=True)
-    without_n = replay(sources, entry_gate_enabled=True, n_enabled=False)
     summary = pd.DataFrame(
         [
             summarize(without_e, "without_e_gate"),
-            summarize(without_n, "current_without_n"),
             summarize(current_daily, current_scenario),
         ]
     )
@@ -1300,11 +1164,11 @@ def certify_current(*, refresh_input_manifest: bool = False) -> None:
 
     if int(current_summary["executed_trade_count"]) != EXPECTED_CURRENT_TRADE_COUNT:
         raise RuntimeError(
-            f"五腿身份回放样本数不是锁定值{EXPECTED_CURRENT_TRADE_COUNT}，拒绝认证"
+            f"四腿身份回放样本数不是锁定值{EXPECTED_CURRENT_TRADE_COUNT}，拒绝认证"
         )
     if abs(float(current_summary["equity_multiple"]) - EXPECTED_CURRENT_MULTIPLE) > 1e-9:
         raise RuntimeError(
-            f"五腿身份回放复利偏离锁定值{EXPECTED_CURRENT_MULTIPLE}，拒绝认证"
+            f"四腿身份回放复利偏离锁定值{EXPECTED_CURRENT_MULTIPLE}，拒绝认证"
         )
 
     runtime_config = json.loads(RUNTIME_CONFIG_PATH.read_text(encoding="utf-8"))
@@ -1313,8 +1177,8 @@ def certify_current(*, refresh_input_manifest: bool = False) -> None:
         str(value).upper()
         for value in portfolio_config.get("strategy_priority_order", [])
     ]
-    if priority != ["D", "A", "E", "C", "N"]:
-        raise RuntimeError("当前配置腿序不是D>A>E>C>N，拒绝认证")
+    if priority != ["D", "A", "E", "C"]:
+        raise RuntimeError("当前配置腿序不是D>A>E>C，拒绝认证")
 
     e_validation = e_entry_gate_validation(sources)
     e_portfolio_comparison = segment_comparison(
@@ -1322,12 +1186,6 @@ def certify_current(*, refresh_input_manifest: bool = False) -> None:
         current_daily,
         before_label="gate_off",
         after_label="gate_on",
-    )
-    n_portfolio_comparison = segment_comparison(
-        without_n,
-        current_daily,
-        before_label="n_off",
-        after_label="n_on",
     )
     certification_status = "FAIL_STRICT_RELEASE_REQUIRED"
 
@@ -1352,15 +1210,11 @@ def certify_current(*, refresh_input_manifest: bool = False) -> None:
     e_portfolio_comparison.to_csv(
         OUTPUT_DIR / "e_gate_portfolio_validation.csv", index=False, encoding="utf-8-sig"
     )
-    n_portfolio_comparison.to_csv(
-        OUTPUT_DIR / "n_leg_portfolio_validation.csv", index=False, encoding="utf-8-sig"
-    )
     write_current_report(
         summary,
         current_periods,
         e_validation,
         e_portfolio_comparison,
-        n_portfolio_comparison,
         current_scenario=current_scenario,
         certification_status=certification_status,
     )
@@ -1368,7 +1222,6 @@ def certify_current(*, refresh_input_manifest: bool = False) -> None:
     manifest_path = write_input_manifest(refresh=refresh_input_manifest)
     input_files = [manifest_path.relative_to(PROJECT_ROOT).as_posix()]
     e_config = runtime_config.get("strategy_e", {})
-    n_config = runtime_config.get("strategy_n", {})
     certification = {
         "schema_version": 1,
         "status": certification_status,
@@ -1383,8 +1236,7 @@ def certify_current(*, refresh_input_manifest: bool = False) -> None:
         "c_trade_count": int(current_summary["c_trade_count"]),
         "d_trade_count": int(current_summary["d_trade_count"]),
         "e_trade_count": int(current_summary["e_trade_count"]),
-        "n_trade_count": int(current_summary["n_trade_count"]),
-        "strategy_priority_order": ["D", "A", "E", "C", "N"],
+        "strategy_priority_order": ["D", "A", "E", "C"],
         "equity_multiple": float(current_summary["equity_multiple"]),
         "win_rate": float(current_summary["win_rate"]),
         "avg_return": float(current_summary["avg_return"]),
@@ -1406,8 +1258,6 @@ def certify_current(*, refresh_input_manifest: bool = False) -> None:
         "strict_asof_passed": False,
         "research_protocol": STRICT_DISCOVERY,
         "release_eligible": False,
-        "n_live_enabled": bool(n_config.get("enabled", False))
-        and bool(n_config.get("live_order_enabled", False)),
         "e_strategy_leg": "E",
         "e_strategy_variant": str(e_config.get("strategy_variant", "E_CURRENT")),
         "config_sha256": certification_config_sha256(runtime_config),
@@ -1416,12 +1266,12 @@ def certify_current(*, refresh_input_manifest: bool = False) -> None:
         "input_files": input_files,
         "input_sha256": certification_files_sha256(PROJECT_ROOT, input_files),
         "note": (
-            "该结果是D>A>E>C>N旧来源身份回放，不是严格as-of发布认证。"
+            "该结果是D>A>E>C旧来源身份回放，不是严格as-of发布认证。"
             "新BUY保持fail-closed；完成严格统计、容量和发布冻结后才能改为可执行。"
         ),
     }
     write_certification(certification)
-    print("五腿历史身份回放完成；严格发布认证仍未通过，新BUY保持关闭。")
+    print("四腿历史身份回放完成；严格发布认证仍未通过，新BUY保持关闭。")
     print(summary.to_string(index=False))
 def main(*, refresh_input_manifest: bool = False) -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)

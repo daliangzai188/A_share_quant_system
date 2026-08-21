@@ -1,0 +1,886 @@
+{
+  "schema_version": 1,
+  "status": "NOT_LIVE_RELEASEABLE",
+  "validation_scope": "D_A_E_C_strict_asof_nested_outer_oos_untouched_capacity_release",
+  "legs": {
+    "D": {
+      "status": "NOT_LIVE_RELEASEABLE",
+      "decision": "RETIRE_BY_OUTER_OOS_COMPOUND_RULE",
+      "fixed_rule_combo_discovery_metrics": {
+        "trade_count": 19,
+        "win_count": 13,
+        "win_rate": 0.6842105263157895,
+        "win_rate_wilson_95_lower": 0.46010407675327475,
+        "win_rate_wilson_95_upper": 0.8463562091220773,
+        "avg_account_return": 0.05161963630538977,
+        "avg_return_bootstrap_95_lower": 0.014248670862219776,
+        "avg_return_bootstrap_95_upper": 0.10566609149632185,
+        "median_account_return": 0.0204900008310096,
+        "equity_multiple": 2.403088740070731,
+        "max_drawdown": -0.04552024637901175,
+        "max_profit": 0.4527951871228668,
+        "max_loss": -0.0272055497560975,
+        "profit_loss_ratio": 5.559475793680516,
+        "max_consecutive_losses": 3
+      },
+      "fixed_rule_all_candidate_discovery_metrics": {
+        "strategy_leg": "D",
+        "sample_scope": "strict_all_candidates",
+        "trade_count": 44,
+        "win_rate": 0.5909090909090909,
+        "avg_account_return": 0.03120605931693007,
+        "median_account_return": 0.015775025655142046,
+        "equity_multiple": 3.327954079110045,
+        "max_drawdown": -0.24846114402633546,
+        "max_profit": 0.4527951871228668,
+        "max_loss": -0.07417800648559235,
+        "profit_loss_ratio": 2.435589253085233,
+        "max_consecutive_losses": 5,
+        "win_rate_wilson_95_lower": 0.444097537410319,
+        "win_rate_wilson_95_upper": 0.7231214437245027,
+        "avg_return_bootstrap_95_lower": 0.007276155414381439,
+        "avg_return_bootstrap_95_upper": 0.060545160309133414
+      },
+      "nested_outer_oos_metrics": {
+        "strategy_leg": "D",
+        "trade_count": 44,
+        "win_rate": 0.3863636363636363,
+        "avg_account_return": -0.0021869051638844,
+        "median_account_return": -0.0102066091202843,
+        "equity_multiple": 0.8648838566982691,
+        "max_drawdown": -0.2001397176728317,
+        "max_profit": 0.1366547521141839,
+        "max_loss": -0.0742155467666976,
+        "profit_loss_ratio": 1.413596324937152,
+        "max_consecutive_losses": 4,
+        "win_rate_wilson_95_lower": 0.2572120275052556,
+        "win_rate_wilson_95_upper": 0.5337642460762172,
+        "avg_return_bootstrap_95_lower": -0.0156986781046803,
+        "avg_return_bootstrap_95_upper": 0.0118752214217263,
+        "years_with_trades": 3,
+        "positive_years": 0,
+        "positive_year_ratio": 0.0,
+        "minimum_year_equity_multiple": 0.8845907394091485,
+        "median_year_log_multiple": -0.0160716547333876,
+        "statistical_gate_passed": false,
+        "statistical_gate_reasons": "POSITIVE_OOS_YEARS;WIN_RATE_CONFIDENCE;AVG_RETURN_CONFIDENCE",
+        "combination_compound_non_decreasing_passed": false,
+        "research_decision": "RETIRE_FROM_RESEARCH_COMBINATION",
+        "live_release_allowed": false
+      },
+      "nested_combination_marginal": {
+        "strategy_leg": "D",
+        "with_leg_equity_multiple": 2.125449475473114,
+        "without_leg_equity_multiple": 2.279719561175807,
+        "with_minus_without_equity_multiple": -0.1542700857026933,
+        "with_leg_max_drawdown": -0.3704460499495108,
+        "without_leg_max_drawdown": -0.309263770534127,
+        "with_minus_without_drawdown": -0.0611822794153837,
+        "compound_non_decreasing_passed": false
+      },
+      "forward_freeze_status": "REJECTED_BY_OUTER_OOS_OR_COMBINATION_MARGIN",
+      "capacity": {
+        "capacity_certified": false,
+        "minute_orderbook_verified": false,
+        "real_fill_verified": false
+      },
+      "gates": [
+        {
+          "gate": "strict_asof_source",
+          "passed": true,
+          "actual": true,
+          "required": "必须通过",
+          "evidence": "reports/strict_live_strategy_audit/strict_audit_summary.json"
+        },
+        {
+          "gate": "fixed_combo_discovery_multiple_gt_1",
+          "passed": true,
+          "actual": 2.403088740070731,
+          "required": "> 1.0x",
+          "evidence": "reports/strict_live_strategy_audit/strict_portfolio_daily.csv"
+        },
+        {
+          "gate": "fixed_combo_discovery_wilson_lower_gt_50pct",
+          "passed": false,
+          "actual": 0.46010407675327475,
+          "required": "> 0.50",
+          "evidence": "reports/strict_live_strategy_audit/strict_portfolio_daily.csv"
+        },
+        {
+          "gate": "fixed_combo_discovery_mean_bootstrap_lower_gt_0",
+          "passed": true,
+          "actual": 0.014248670862219776,
+          "required": "> 0",
+          "evidence": "reports/strict_live_strategy_audit/strict_portfolio_daily.csv"
+        },
+        {
+          "gate": "existing_strategy_release_gate",
+          "passed": false,
+          "actual": false,
+          "required": "必须通过",
+          "evidence": "reports/strict_live_strategy_audit/strict_release_gates.csv"
+        },
+        {
+          "gate": "nested_outer_oos_min_30_trades",
+          "passed": true,
+          "actual": 44,
+          "required": ">= 30",
+          "evidence": "reports/five_year_walk_forward/leg_oos_metrics.csv"
+        },
+        {
+          "gate": "nested_outer_oos_positive_years_at_least_3",
+          "passed": false,
+          "actual": 0,
+          "required": ">= 3",
+          "evidence": "reports/five_year_walk_forward/leg_oos_metrics.csv"
+        },
+        {
+          "gate": "nested_outer_oos_wilson_lower_gt_50pct",
+          "passed": false,
+          "actual": 0.2572120275052556,
+          "required": "> 0.50",
+          "evidence": "reports/five_year_walk_forward/leg_oos_metrics.csv"
+        },
+        {
+          "gate": "nested_outer_oos_mean_bootstrap_lower_gt_0",
+          "passed": false,
+          "actual": -0.0156986781046803,
+          "required": "> 0",
+          "evidence": "reports/five_year_walk_forward/leg_oos_metrics.csv"
+        },
+        {
+          "gate": "nested_outer_oos_drawdown_not_worse_than_25pct",
+          "passed": true,
+          "actual": -0.2001397176728317,
+          "required": ">= -0.25",
+          "evidence": "reports/five_year_walk_forward/leg_oos_metrics.csv"
+        },
+        {
+          "gate": "nested_combination_compound_non_decreasing",
+          "passed": false,
+          "actual": false,
+          "required": "含腿复利不得低于删腿",
+          "evidence": "reports/five_year_walk_forward/leg_marginal_impact.csv"
+        },
+        {
+          "gate": "frozen_for_future_paper_oos",
+          "passed": false,
+          "actual": "REJECTED_BY_OUTER_OOS_OR_COMBINATION_MARGIN",
+          "required": "FROZEN_FOR_FUTURE_PAPER_OOS_ONLY",
+          "evidence": "reports/five_year_walk_forward/forward_freeze_candidates.json"
+        },
+        {
+          "gate": "untouched_oos_after_freeze",
+          "passed": false,
+          "actual": 0,
+          "required": "冻结后真实前向样本且门禁通过",
+          "evidence": "reports/five_year_walk_forward/publication_gate.json"
+        },
+        {
+          "gate": "capacity_minute_and_real_fill_certified",
+          "passed": false,
+          "actual": {
+            "capacity_certified": false,
+            "minute_orderbook_verified": false,
+            "real_fill_verified": false
+          },
+          "required": "三项均为true",
+          "evidence": "reports/five_year_walk_forward/capacity_proxy.csv"
+        },
+        {
+          "gate": "formal_live_certification",
+          "passed": false,
+          "actual": {
+            "status": "FAIL_STRICT_RELEASE_REQUIRED",
+            "current_executable": false
+          },
+          "required": "认证通过且current_executable=true",
+          "evidence": "reports/current_portfolio_alignment/live_certification.json"
+        },
+        {
+          "gate": "formal_release_frozen",
+          "passed": false,
+          "actual": "UNFROZEN_PENDING_CERTIFICATION",
+          "required": "FROZEN",
+          "evidence": "config/strategy_release_freeze.json"
+        }
+      ],
+      "failed_gates": [
+        "fixed_combo_discovery_wilson_lower_gt_50pct",
+        "existing_strategy_release_gate",
+        "nested_outer_oos_positive_years_at_least_3",
+        "nested_outer_oos_wilson_lower_gt_50pct",
+        "nested_outer_oos_mean_bootstrap_lower_gt_0",
+        "nested_combination_compound_non_decreasing",
+        "frozen_for_future_paper_oos",
+        "untouched_oos_after_freeze",
+        "capacity_minute_and_real_fill_certified",
+        "formal_live_certification",
+        "formal_release_frozen"
+      ]
+    },
+    "A": {
+      "status": "NOT_LIVE_RELEASEABLE",
+      "decision": "PAPER_OOS_ONLY_NOT_LIVE",
+      "fixed_rule_combo_discovery_metrics": {
+        "trade_count": 43,
+        "win_count": 29,
+        "win_rate": 0.6744186046511628,
+        "win_rate_wilson_95_lower": 0.5251621096752948,
+        "win_rate_wilson_95_upper": 0.7950670287343129,
+        "avg_account_return": 0.0545179638747731,
+        "avg_return_bootstrap_95_lower": 0.022681215442119155,
+        "avg_return_bootstrap_95_upper": 0.09127339358927089,
+        "median_account_return": 0.0373470775427617,
+        "equity_multiple": 7.786484716688394,
+        "max_drawdown": -0.15875355151127402,
+        "max_profit": 0.4892913885103991,
+        "max_loss": -0.1184947743881116,
+        "profit_loss_ratio": 2.3908012364590183,
+        "max_consecutive_losses": 3
+      },
+      "fixed_rule_all_candidate_discovery_metrics": {
+        "strategy_leg": "A",
+        "sample_scope": "strict_all_candidates",
+        "trade_count": 63,
+        "win_rate": 0.6031746031746031,
+        "avg_account_return": 0.03557318039300631,
+        "median_account_return": 0.02150756108281972,
+        "equity_multiple": 6.662161173577591,
+        "max_drawdown": -0.26701919856480183,
+        "max_profit": 0.4892913885103991,
+        "max_loss": -0.14545836493637937,
+        "profit_loss_ratio": 1.8784457387971154,
+        "max_consecutive_losses": 4,
+        "win_rate_wilson_95_lower": 0.47980918511657444,
+        "win_rate_wilson_95_upper": 0.7146808848095354,
+        "avg_return_bootstrap_95_lower": 0.01059765098315239,
+        "avg_return_bootstrap_95_upper": 0.06308785357867279
+      },
+      "nested_outer_oos_metrics": {
+        "strategy_leg": "A",
+        "trade_count": 48,
+        "win_rate": 0.5416666666666666,
+        "avg_account_return": 0.0187596896160638,
+        "median_account_return": 0.0042092253882851,
+        "equity_multiple": 2.1036550239357803,
+        "max_drawdown": -0.2866594842435278,
+        "max_profit": 0.2348857134178322,
+        "max_loss": -0.146880477403846,
+        "profit_loss_ratio": 1.5770202805539852,
+        "max_consecutive_losses": 5,
+        "win_rate_wilson_95_lower": 0.4029107454564979,
+        "win_rate_wilson_95_upper": 0.6742475770713254,
+        "avg_return_bootstrap_95_lower": -0.0041218113251185,
+        "avg_return_bootstrap_95_upper": 0.0421174968446604,
+        "years_with_trades": 5,
+        "positive_years": 2,
+        "positive_year_ratio": 0.4,
+        "minimum_year_equity_multiple": 0.7933063116784415,
+        "median_year_log_multiple": -0.0771221438384112,
+        "statistical_gate_passed": false,
+        "statistical_gate_reasons": "POSITIVE_OOS_YEARS;WIN_RATE_CONFIDENCE;AVG_RETURN_CONFIDENCE;OOS_DRAWDOWN",
+        "combination_compound_non_decreasing_passed": true,
+        "research_decision": "KEEP_FOR_FORWARD_PAPER_OOS",
+        "live_release_allowed": false
+      },
+      "nested_combination_marginal": {
+        "strategy_leg": "A",
+        "with_leg_equity_multiple": 2.125449475473114,
+        "without_leg_equity_multiple": 0.9209617576370924,
+        "with_minus_without_equity_multiple": 1.2044877178360216,
+        "with_leg_max_drawdown": -0.3704460499495108,
+        "without_leg_max_drawdown": -0.3335010198967348,
+        "with_minus_without_drawdown": -0.0369450300527759,
+        "compound_non_decreasing_passed": true
+      },
+      "forward_freeze_status": "FROZEN_FOR_FUTURE_PAPER_OOS_ONLY",
+      "capacity": {
+        "capacity_certified": false,
+        "minute_orderbook_verified": false,
+        "real_fill_verified": false
+      },
+      "gates": [
+        {
+          "gate": "strict_asof_source",
+          "passed": true,
+          "actual": true,
+          "required": "必须通过",
+          "evidence": "reports/strict_live_strategy_audit/strict_audit_summary.json"
+        },
+        {
+          "gate": "fixed_combo_discovery_multiple_gt_1",
+          "passed": true,
+          "actual": 7.786484716688394,
+          "required": "> 1.0x",
+          "evidence": "reports/strict_live_strategy_audit/strict_portfolio_daily.csv"
+        },
+        {
+          "gate": "fixed_combo_discovery_wilson_lower_gt_50pct",
+          "passed": true,
+          "actual": 0.5251621096752948,
+          "required": "> 0.50",
+          "evidence": "reports/strict_live_strategy_audit/strict_portfolio_daily.csv"
+        },
+        {
+          "gate": "fixed_combo_discovery_mean_bootstrap_lower_gt_0",
+          "passed": true,
+          "actual": 0.022681215442119155,
+          "required": "> 0",
+          "evidence": "reports/strict_live_strategy_audit/strict_portfolio_daily.csv"
+        },
+        {
+          "gate": "existing_strategy_release_gate",
+          "passed": false,
+          "actual": false,
+          "required": "必须通过",
+          "evidence": "reports/strict_live_strategy_audit/strict_release_gates.csv"
+        },
+        {
+          "gate": "nested_outer_oos_min_30_trades",
+          "passed": true,
+          "actual": 48,
+          "required": ">= 30",
+          "evidence": "reports/five_year_walk_forward/leg_oos_metrics.csv"
+        },
+        {
+          "gate": "nested_outer_oos_positive_years_at_least_3",
+          "passed": false,
+          "actual": 2,
+          "required": ">= 3",
+          "evidence": "reports/five_year_walk_forward/leg_oos_metrics.csv"
+        },
+        {
+          "gate": "nested_outer_oos_wilson_lower_gt_50pct",
+          "passed": false,
+          "actual": 0.4029107454564979,
+          "required": "> 0.50",
+          "evidence": "reports/five_year_walk_forward/leg_oos_metrics.csv"
+        },
+        {
+          "gate": "nested_outer_oos_mean_bootstrap_lower_gt_0",
+          "passed": false,
+          "actual": -0.0041218113251185,
+          "required": "> 0",
+          "evidence": "reports/five_year_walk_forward/leg_oos_metrics.csv"
+        },
+        {
+          "gate": "nested_outer_oos_drawdown_not_worse_than_25pct",
+          "passed": false,
+          "actual": -0.2866594842435278,
+          "required": ">= -0.25",
+          "evidence": "reports/five_year_walk_forward/leg_oos_metrics.csv"
+        },
+        {
+          "gate": "nested_combination_compound_non_decreasing",
+          "passed": true,
+          "actual": true,
+          "required": "含腿复利不得低于删腿",
+          "evidence": "reports/five_year_walk_forward/leg_marginal_impact.csv"
+        },
+        {
+          "gate": "frozen_for_future_paper_oos",
+          "passed": true,
+          "actual": "FROZEN_FOR_FUTURE_PAPER_OOS_ONLY",
+          "required": "FROZEN_FOR_FUTURE_PAPER_OOS_ONLY",
+          "evidence": "reports/five_year_walk_forward/forward_freeze_candidates.json"
+        },
+        {
+          "gate": "untouched_oos_after_freeze",
+          "passed": false,
+          "actual": 0,
+          "required": "冻结后真实前向样本且门禁通过",
+          "evidence": "reports/five_year_walk_forward/publication_gate.json"
+        },
+        {
+          "gate": "capacity_minute_and_real_fill_certified",
+          "passed": false,
+          "actual": {
+            "capacity_certified": false,
+            "minute_orderbook_verified": false,
+            "real_fill_verified": false
+          },
+          "required": "三项均为true",
+          "evidence": "reports/five_year_walk_forward/capacity_proxy.csv"
+        },
+        {
+          "gate": "formal_live_certification",
+          "passed": false,
+          "actual": {
+            "status": "FAIL_STRICT_RELEASE_REQUIRED",
+            "current_executable": false
+          },
+          "required": "认证通过且current_executable=true",
+          "evidence": "reports/current_portfolio_alignment/live_certification.json"
+        },
+        {
+          "gate": "formal_release_frozen",
+          "passed": false,
+          "actual": "UNFROZEN_PENDING_CERTIFICATION",
+          "required": "FROZEN",
+          "evidence": "config/strategy_release_freeze.json"
+        }
+      ],
+      "failed_gates": [
+        "existing_strategy_release_gate",
+        "nested_outer_oos_positive_years_at_least_3",
+        "nested_outer_oos_wilson_lower_gt_50pct",
+        "nested_outer_oos_mean_bootstrap_lower_gt_0",
+        "nested_outer_oos_drawdown_not_worse_than_25pct",
+        "untouched_oos_after_freeze",
+        "capacity_minute_and_real_fill_certified",
+        "formal_live_certification",
+        "formal_release_frozen"
+      ]
+    },
+    "E": {
+      "status": "NOT_LIVE_RELEASEABLE",
+      "decision": "NOT_LIVE_NO_FORWARD_CANDIDATE",
+      "fixed_rule_combo_discovery_metrics": {
+        "trade_count": 45,
+        "win_count": 29,
+        "win_rate": 0.6444444444444445,
+        "win_rate_wilson_95_lower": 0.4983581419637687,
+        "win_rate_wilson_95_upper": 0.7678091739578413,
+        "avg_account_return": 0.04121805839068269,
+        "avg_return_bootstrap_95_lower": 0.02071000320940841,
+        "avg_return_bootstrap_95_upper": 0.06325524079685584,
+        "median_account_return": 0.0191803425107502,
+        "equity_multiple": 5.536000787020529,
+        "max_drawdown": -0.1112933631564017,
+        "max_profit": 0.2549186208898245,
+        "max_loss": -0.0695610590698588,
+        "profit_loss_ratio": 2.7708704581362222,
+        "max_consecutive_losses": 5
+      },
+      "fixed_rule_all_candidate_discovery_metrics": {
+        "strategy_leg": "E",
+        "sample_scope": "strict_all_candidates",
+        "trade_count": 81,
+        "win_rate": 0.6049382716049383,
+        "avg_account_return": 0.026093755971618685,
+        "median_account_return": 0.01137279255913596,
+        "equity_multiple": 6.4551075960307625,
+        "max_drawdown": -0.27541237346795033,
+        "max_profit": 0.25491862088982453,
+        "max_loss": -0.17629142067722955,
+        "profit_loss_ratio": 1.6728471590354475,
+        "max_consecutive_losses": 4,
+        "win_rate_wilson_95_lower": 0.49605477323606173,
+        "win_rate_wilson_95_upper": 0.7043189619200981,
+        "avg_return_bootstrap_95_lower": 0.009541836930960664,
+        "avg_return_bootstrap_95_upper": 0.043310962715896566
+      },
+      "nested_outer_oos_metrics": {
+        "strategy_leg": "E",
+        "trade_count": 23,
+        "win_rate": 0.4782608695652174,
+        "avg_account_return": 0.0031002658822337,
+        "median_account_return": -0.00072245850425,
+        "equity_multiple": 1.033121639681631,
+        "max_drawdown": -0.2070159398987195,
+        "max_profit": 0.1376787717666948,
+        "max_loss": -0.0925190919230768,
+        "profit_loss_ratio": 1.2503086481412051,
+        "max_consecutive_losses": 5,
+        "win_rate_wilson_95_lower": 0.2923715741664665,
+        "win_rate_wilson_95_upper": 0.6703726266357259,
+        "avg_return_bootstrap_95_lower": -0.0207916234959733,
+        "avg_return_bootstrap_95_upper": 0.0277059170417889,
+        "years_with_trades": 3,
+        "positive_years": 1,
+        "positive_year_ratio": 0.3333333333333333,
+        "minimum_year_equity_multiple": 0.8223135141101292,
+        "median_year_log_multiple": -0.0870219959825808,
+        "statistical_gate_passed": false,
+        "statistical_gate_reasons": "OOS_SAMPLE;POSITIVE_OOS_YEARS;WIN_RATE_CONFIDENCE;AVG_RETURN_CONFIDENCE",
+        "combination_compound_non_decreasing_passed": true,
+        "research_decision": "KEEP_FOR_FORWARD_PAPER_OOS",
+        "live_release_allowed": false
+      },
+      "nested_combination_marginal": {
+        "strategy_leg": "E",
+        "with_leg_equity_multiple": 2.125449475473114,
+        "without_leg_equity_multiple": 1.6860581320171522,
+        "with_minus_without_equity_multiple": 0.4393913434559617,
+        "with_leg_max_drawdown": -0.3704460499495108,
+        "without_leg_max_drawdown": -0.4158215535744389,
+        "with_minus_without_drawdown": 0.0453755036249281,
+        "compound_non_decreasing_passed": true
+      },
+      "forward_freeze_status": "NO_VARIANT_PASSED_TRAINING_GATE",
+      "capacity": {
+        "capacity_certified": false,
+        "minute_orderbook_verified": false,
+        "real_fill_verified": false
+      },
+      "gates": [
+        {
+          "gate": "strict_asof_source",
+          "passed": true,
+          "actual": true,
+          "required": "必须通过",
+          "evidence": "reports/strict_live_strategy_audit/strict_audit_summary.json"
+        },
+        {
+          "gate": "fixed_combo_discovery_multiple_gt_1",
+          "passed": true,
+          "actual": 5.536000787020529,
+          "required": "> 1.0x",
+          "evidence": "reports/strict_live_strategy_audit/strict_portfolio_daily.csv"
+        },
+        {
+          "gate": "fixed_combo_discovery_wilson_lower_gt_50pct",
+          "passed": false,
+          "actual": 0.4983581419637687,
+          "required": "> 0.50",
+          "evidence": "reports/strict_live_strategy_audit/strict_portfolio_daily.csv"
+        },
+        {
+          "gate": "fixed_combo_discovery_mean_bootstrap_lower_gt_0",
+          "passed": true,
+          "actual": 0.02071000320940841,
+          "required": "> 0",
+          "evidence": "reports/strict_live_strategy_audit/strict_portfolio_daily.csv"
+        },
+        {
+          "gate": "existing_strategy_release_gate",
+          "passed": false,
+          "actual": false,
+          "required": "必须通过",
+          "evidence": "reports/strict_live_strategy_audit/strict_release_gates.csv"
+        },
+        {
+          "gate": "nested_outer_oos_min_30_trades",
+          "passed": false,
+          "actual": 23,
+          "required": ">= 30",
+          "evidence": "reports/five_year_walk_forward/leg_oos_metrics.csv"
+        },
+        {
+          "gate": "nested_outer_oos_positive_years_at_least_3",
+          "passed": false,
+          "actual": 1,
+          "required": ">= 3",
+          "evidence": "reports/five_year_walk_forward/leg_oos_metrics.csv"
+        },
+        {
+          "gate": "nested_outer_oos_wilson_lower_gt_50pct",
+          "passed": false,
+          "actual": 0.2923715741664665,
+          "required": "> 0.50",
+          "evidence": "reports/five_year_walk_forward/leg_oos_metrics.csv"
+        },
+        {
+          "gate": "nested_outer_oos_mean_bootstrap_lower_gt_0",
+          "passed": false,
+          "actual": -0.0207916234959733,
+          "required": "> 0",
+          "evidence": "reports/five_year_walk_forward/leg_oos_metrics.csv"
+        },
+        {
+          "gate": "nested_outer_oos_drawdown_not_worse_than_25pct",
+          "passed": true,
+          "actual": -0.2070159398987195,
+          "required": ">= -0.25",
+          "evidence": "reports/five_year_walk_forward/leg_oos_metrics.csv"
+        },
+        {
+          "gate": "nested_combination_compound_non_decreasing",
+          "passed": true,
+          "actual": true,
+          "required": "含腿复利不得低于删腿",
+          "evidence": "reports/five_year_walk_forward/leg_marginal_impact.csv"
+        },
+        {
+          "gate": "frozen_for_future_paper_oos",
+          "passed": false,
+          "actual": "NO_VARIANT_PASSED_TRAINING_GATE",
+          "required": "FROZEN_FOR_FUTURE_PAPER_OOS_ONLY",
+          "evidence": "reports/five_year_walk_forward/forward_freeze_candidates.json"
+        },
+        {
+          "gate": "untouched_oos_after_freeze",
+          "passed": false,
+          "actual": 0,
+          "required": "冻结后真实前向样本且门禁通过",
+          "evidence": "reports/five_year_walk_forward/publication_gate.json"
+        },
+        {
+          "gate": "capacity_minute_and_real_fill_certified",
+          "passed": false,
+          "actual": {
+            "capacity_certified": false,
+            "minute_orderbook_verified": false,
+            "real_fill_verified": false
+          },
+          "required": "三项均为true",
+          "evidence": "reports/five_year_walk_forward/capacity_proxy.csv"
+        },
+        {
+          "gate": "formal_live_certification",
+          "passed": false,
+          "actual": {
+            "status": "FAIL_STRICT_RELEASE_REQUIRED",
+            "current_executable": false
+          },
+          "required": "认证通过且current_executable=true",
+          "evidence": "reports/current_portfolio_alignment/live_certification.json"
+        },
+        {
+          "gate": "formal_release_frozen",
+          "passed": false,
+          "actual": "UNFROZEN_PENDING_CERTIFICATION",
+          "required": "FROZEN",
+          "evidence": "config/strategy_release_freeze.json"
+        }
+      ],
+      "failed_gates": [
+        "fixed_combo_discovery_wilson_lower_gt_50pct",
+        "existing_strategy_release_gate",
+        "nested_outer_oos_min_30_trades",
+        "nested_outer_oos_positive_years_at_least_3",
+        "nested_outer_oos_wilson_lower_gt_50pct",
+        "nested_outer_oos_mean_bootstrap_lower_gt_0",
+        "frozen_for_future_paper_oos",
+        "untouched_oos_after_freeze",
+        "capacity_minute_and_real_fill_certified",
+        "formal_live_certification",
+        "formal_release_frozen"
+      ]
+    },
+    "C": {
+      "status": "NOT_LIVE_RELEASEABLE",
+      "decision": "RETIRE_BY_OUTER_OOS_COMPOUND_RULE",
+      "fixed_rule_combo_discovery_metrics": {
+        "trade_count": 17,
+        "win_count": 13,
+        "win_rate": 0.7647058823529411,
+        "win_rate_wilson_95_lower": 0.5273820188043501,
+        "win_rate_wilson_95_upper": 0.9044495567791988,
+        "avg_account_return": 0.07116684954400648,
+        "avg_return_bootstrap_95_lower": 0.020473959373527945,
+        "avg_return_bootstrap_95_upper": 0.12292970196009712,
+        "median_account_return": 0.0311427936420559,
+        "equity_multiple": 2.9477383348607864,
+        "max_drawdown": -0.13823939725321066,
+        "max_profit": 0.2332795938039768,
+        "max_loss": -0.1382393972532107,
+        "profit_loss_ratio": 1.9426461509023558,
+        "max_consecutive_losses": 1
+      },
+      "fixed_rule_all_candidate_discovery_metrics": {
+        "strategy_leg": "C",
+        "sample_scope": "strict_all_candidates",
+        "trade_count": 39,
+        "win_rate": 0.5641025641025641,
+        "avg_account_return": 0.03247955463081739,
+        "median_account_return": 0.005453001507974747,
+        "equity_multiple": 2.9878242510393473,
+        "max_drawdown": -0.3076072798231114,
+        "max_profit": 0.23327959380397686,
+        "max_loss": -0.13823939725321072,
+        "profit_loss_ratio": 2.085125491811109,
+        "max_consecutive_losses": 4,
+        "win_rate_wilson_95_lower": 0.40975691648669477,
+        "win_rate_wilson_95_upper": 0.7069524612431037,
+        "avg_return_bootstrap_95_lower": 0.004651108618190433,
+        "avg_return_bootstrap_95_upper": 0.06205668864814048
+      },
+      "nested_outer_oos_metrics": {
+        "strategy_leg": "C",
+        "trade_count": 53,
+        "win_rate": 0.3396226415094339,
+        "avg_account_return": -0.0096317405869134,
+        "median_account_return": -0.0185298719699415,
+        "equity_multiple": 0.5231588037275827,
+        "max_drawdown": -0.6129402618175557,
+        "max_profit": 0.1700395816722182,
+        "max_loss": -0.2000065545420349,
+        "profit_loss_ratio": 1.3624890692504268,
+        "max_consecutive_losses": 9,
+        "win_rate_wilson_95_lower": 0.2268703910132417,
+        "win_rate_wilson_95_upper": 0.4740521336245169,
+        "avg_return_bootstrap_95_lower": -0.0279316165294158,
+        "avg_return_bootstrap_95_upper": 0.0092395502787974,
+        "years_with_trades": 1,
+        "positive_years": 0,
+        "positive_year_ratio": 0.0,
+        "minimum_year_equity_multiple": 0.5231588037275827,
+        "median_year_log_multiple": -0.6478702209920154,
+        "statistical_gate_passed": false,
+        "statistical_gate_reasons": "POSITIVE_OOS_YEARS;WIN_RATE_CONFIDENCE;AVG_RETURN_CONFIDENCE;OOS_DRAWDOWN",
+        "combination_compound_non_decreasing_passed": false,
+        "research_decision": "RETIRE_FROM_RESEARCH_COMBINATION",
+        "live_release_allowed": false
+      },
+      "nested_combination_marginal": {
+        "strategy_leg": "C",
+        "with_leg_equity_multiple": 2.125449475473114,
+        "without_leg_equity_multiple": 2.13910768132626,
+        "with_minus_without_equity_multiple": -0.013658205853146,
+        "with_leg_max_drawdown": -0.3704460499495108,
+        "without_leg_max_drawdown": -0.3704460499495107,
+        "with_minus_without_drawdown": -1.1102230246251563e-16,
+        "compound_non_decreasing_passed": false
+      },
+      "forward_freeze_status": "NO_VARIANT_PASSED_TRAINING_GATE",
+      "capacity": {
+        "capacity_certified": false,
+        "minute_orderbook_verified": false,
+        "real_fill_verified": false
+      },
+      "gates": [
+        {
+          "gate": "strict_asof_source",
+          "passed": true,
+          "actual": true,
+          "required": "必须通过",
+          "evidence": "reports/strict_live_strategy_audit/strict_audit_summary.json"
+        },
+        {
+          "gate": "fixed_combo_discovery_multiple_gt_1",
+          "passed": true,
+          "actual": 2.9477383348607864,
+          "required": "> 1.0x",
+          "evidence": "reports/strict_live_strategy_audit/strict_portfolio_daily.csv"
+        },
+        {
+          "gate": "fixed_combo_discovery_wilson_lower_gt_50pct",
+          "passed": true,
+          "actual": 0.5273820188043501,
+          "required": "> 0.50",
+          "evidence": "reports/strict_live_strategy_audit/strict_portfolio_daily.csv"
+        },
+        {
+          "gate": "fixed_combo_discovery_mean_bootstrap_lower_gt_0",
+          "passed": true,
+          "actual": 0.020473959373527945,
+          "required": "> 0",
+          "evidence": "reports/strict_live_strategy_audit/strict_portfolio_daily.csv"
+        },
+        {
+          "gate": "existing_strategy_release_gate",
+          "passed": false,
+          "actual": false,
+          "required": "必须通过",
+          "evidence": "reports/strict_live_strategy_audit/strict_release_gates.csv"
+        },
+        {
+          "gate": "nested_outer_oos_min_30_trades",
+          "passed": true,
+          "actual": 53,
+          "required": ">= 30",
+          "evidence": "reports/five_year_walk_forward/leg_oos_metrics.csv"
+        },
+        {
+          "gate": "nested_outer_oos_positive_years_at_least_3",
+          "passed": false,
+          "actual": 0,
+          "required": ">= 3",
+          "evidence": "reports/five_year_walk_forward/leg_oos_metrics.csv"
+        },
+        {
+          "gate": "nested_outer_oos_wilson_lower_gt_50pct",
+          "passed": false,
+          "actual": 0.2268703910132417,
+          "required": "> 0.50",
+          "evidence": "reports/five_year_walk_forward/leg_oos_metrics.csv"
+        },
+        {
+          "gate": "nested_outer_oos_mean_bootstrap_lower_gt_0",
+          "passed": false,
+          "actual": -0.0279316165294158,
+          "required": "> 0",
+          "evidence": "reports/five_year_walk_forward/leg_oos_metrics.csv"
+        },
+        {
+          "gate": "nested_outer_oos_drawdown_not_worse_than_25pct",
+          "passed": false,
+          "actual": -0.6129402618175557,
+          "required": ">= -0.25",
+          "evidence": "reports/five_year_walk_forward/leg_oos_metrics.csv"
+        },
+        {
+          "gate": "nested_combination_compound_non_decreasing",
+          "passed": false,
+          "actual": false,
+          "required": "含腿复利不得低于删腿",
+          "evidence": "reports/five_year_walk_forward/leg_marginal_impact.csv"
+        },
+        {
+          "gate": "frozen_for_future_paper_oos",
+          "passed": false,
+          "actual": "NO_VARIANT_PASSED_TRAINING_GATE",
+          "required": "FROZEN_FOR_FUTURE_PAPER_OOS_ONLY",
+          "evidence": "reports/five_year_walk_forward/forward_freeze_candidates.json"
+        },
+        {
+          "gate": "untouched_oos_after_freeze",
+          "passed": false,
+          "actual": 0,
+          "required": "冻结后真实前向样本且门禁通过",
+          "evidence": "reports/five_year_walk_forward/publication_gate.json"
+        },
+        {
+          "gate": "capacity_minute_and_real_fill_certified",
+          "passed": false,
+          "actual": {
+            "capacity_certified": false,
+            "minute_orderbook_verified": false,
+            "real_fill_verified": false
+          },
+          "required": "三项均为true",
+          "evidence": "reports/five_year_walk_forward/capacity_proxy.csv"
+        },
+        {
+          "gate": "formal_live_certification",
+          "passed": false,
+          "actual": {
+            "status": "FAIL_STRICT_RELEASE_REQUIRED",
+            "current_executable": false
+          },
+          "required": "认证通过且current_executable=true",
+          "evidence": "reports/current_portfolio_alignment/live_certification.json"
+        },
+        {
+          "gate": "formal_release_frozen",
+          "passed": false,
+          "actual": "UNFROZEN_PENDING_CERTIFICATION",
+          "required": "FROZEN",
+          "evidence": "config/strategy_release_freeze.json"
+        }
+      ],
+      "failed_gates": [
+        "existing_strategy_release_gate",
+        "nested_outer_oos_positive_years_at_least_3",
+        "nested_outer_oos_wilson_lower_gt_50pct",
+        "nested_outer_oos_mean_bootstrap_lower_gt_0",
+        "nested_outer_oos_drawdown_not_worse_than_25pct",
+        "nested_combination_compound_non_decreasing",
+        "frozen_for_future_paper_oos",
+        "untouched_oos_after_freeze",
+        "capacity_minute_and_real_fill_certified",
+        "formal_live_certification",
+        "formal_release_frozen"
+      ]
+    }
+  },
+  "source_sha256": {
+    "reports/strict_live_strategy_audit/strict_audit_summary.json": "863244ec304bcc99f35d9e6e5166db5fe1bc227aa1b68045e81f21fc39f2853b",
+    "reports/strict_live_strategy_audit/strict_portfolio_daily.csv": "88c8772e4beb4247c31ed381df05d91f9fd043961dd98f37aeb32c2a64272718",
+    "reports/strict_live_strategy_audit/strict_release_gates.csv": "b425ed5ea4426a2fa8e7324b65223ce0f8dc5158d2ca0af2cbb87227b91560c4",
+    "reports/five_year_walk_forward/leg_oos_metrics.csv": "c9ec699b628d9e1b62cbf48f6093aace7dcdfaae3a988af0df0ba1399573bce9",
+    "reports/five_year_walk_forward/leg_marginal_impact.csv": "f541a894611a2da3057d0c44bc2435b7fd019994b91056ca3c518ec7451442f5",
+    "reports/five_year_walk_forward/capacity_proxy.csv": "d984150eac5b5998068f6ef5fe871450316c160c757e514579eb6c0d1aeda6d5",
+    "reports/five_year_walk_forward/forward_freeze_candidates.json": "3755c154e3c5040d9f2dc32d1af91570e8d59b4d153181d2aab4af329a981693",
+    "reports/five_year_walk_forward/publication_gate.json": "92d14c776712d11f6726019c60b7943925833349d8b4cbaa3913e620880c0c04",
+    "reports/current_portfolio_alignment/live_certification.json": "5d2fb37885dc32ea55abd475787caab0aeb8f38c10e3c4b0fcb1b8d5bb7ab801",
+    "config/strategy_release_freeze.json": "6d73dcb0d49bcc35c7a083c7227483a1946bf2bfbfc7afc0924dd310d6ae2e33"
+  },
+  "safety": {
+    "live_files_modified": false,
+    "broker_connected": false,
+    "orders_generated": false
+  }
+}

@@ -191,33 +191,6 @@
       "conditions": {"market_chain_count_bucket": ["15_30"], "segment_limit_up_count_bucket": ["40_80"]},
       "excludes": {"amount_ratio_bucket": ["0_8_1_2"], "market_segment": ["star"]},
       "rank_columns": ["circ_mv", "ts_code"], "rank_ascending": [true, true]
-    },
-
-    {"id": "N_CURRENT_BASELINE", "leg": "N", "selector": "current_n", "eligible_for_optimization": false, "entry_model": "t1_open", "hold": 2},
-    {
-      "id": "N_HEIGHT1_RETREAT_VOL_CURRENT_ONLY",
-      "leg": "N", "selector": "n", "entry_model": "t1_open", "hold": 2,
-      "n_overrides": {"supplement_enabled": false, "height_values": ["1"], "retreat_values": ["retreat_weak", "retreat_2day"], "current_post_filter_values": ["4_8", "lt_1"], "min_fill_probability": 0.6}
-    },
-    {
-      "id": "N_HEIGHT1_RETREAT_VOL_WITH_SUPPLEMENT",
-      "leg": "N", "selector": "n", "entry_model": "t1_open", "hold": 2,
-      "n_overrides": {"supplement_enabled": true, "height_values": ["1"], "retreat_values": ["retreat_weak", "retreat_2day"], "current_post_filter_values": ["4_8", "lt_1"], "min_fill_probability": 0.6}
-    },
-    {
-      "id": "N_HEIGHT1_RETREAT_VOL_LT1_ONLY",
-      "leg": "N", "selector": "n", "entry_model": "t1_open", "hold": 2,
-      "n_overrides": {"supplement_enabled": false, "height_values": ["1"], "retreat_values": ["retreat_weak", "retreat_2day"], "current_post_filter_values": ["lt_1"], "min_fill_probability": 0.6}
-    },
-    {
-      "id": "N_HEIGHT1_RETREAT_VOL4_8_ONLY",
-      "leg": "N", "selector": "n", "entry_model": "t1_open", "hold": 2,
-      "n_overrides": {"supplement_enabled": false, "height_values": ["1"], "retreat_values": ["retreat_weak", "retreat_2day"], "current_post_filter_values": ["4_8"], "min_fill_probability": 0.6}
-    },
-    {
-      "id": "N_HEIGHT1_RETREAT_ALL_LOWVOL",
-      "leg": "N", "selector": "n", "entry_model": "t1_open", "hold": 2,
-      "n_overrides": {"supplement_enabled": false, "height_values": ["1"], "retreat_values": ["retreat_weak", "retreat_2day"], "current_post_filter_values": ["lt_1", "1_2", "2_4", "4_8"], "min_fill_probability": 0.6}
     }
   ]
 }

@@ -21,7 +21,7 @@ class ShadowCandidateLedgerTest(unittest.TestCase):
             "status": "FROZEN",
             "release_id": "test-release",
             "oos_start_date": "20260105",
-            "strategy_priority_order": ["D", "A", "E", "C", "N"],
+            "strategy_priority_order": ["D", "A", "E", "C"],
         }
         (self.root / "config" / "strategy_release_freeze.json").write_text(
             json.dumps(release), encoding="utf-8"
@@ -63,9 +63,6 @@ class ShadowCandidateLedgerTest(unittest.TestCase):
         self._csv("reports/strategy_e/e_signal_20260105_candidates.csv", [{
             "ts_code": "000005.SZ", "name": "E股",
         }])
-        self._csv("reports/strategy_n/n_signal_20260105_candidates.csv", [{
-            "ts_code": "000007.SZ", "name": "N股",
-        }])
         self._csv("reports/strategy_d/intraday_signals_20260105.csv", [{
             "signal_type": "BUY", "ts_code": "000001.SZ", "name": "D股",
             "upper_limit": 11.0, "source": "测试", "filled_qty": 1000,
@@ -87,11 +84,11 @@ class ShadowCandidateLedgerTest(unittest.TestCase):
             } for code in codes]
             self._csv(f"data/processed/daily_merged_by_date/{date}.csv", rows)
 
-    def test_collects_all_five_legs_and_keeps_priority_counterfactual(self) -> None:
+    def test_collects_all_four_legs_and_keeps_priority_counterfactual(self) -> None:
         self._install_candidates()
         release = load_release(self.root)
         rows = collect_signal_date(self.root, release, "20260105")
-        self.assertEqual([row["strategy_leg"] for row in rows], ["D", "A", "E", "C", "N"])
+        self.assertEqual([row["strategy_leg"] for row in rows], ["D", "A", "E", "C"])
         self.assertTrue(all(row["candidate_status"] == "CANDIDATE" for row in rows))
         self.assertEqual([row["strategy_leg"] for row in rows if row["account_empty_winner"]], ["D"])
         self.assertTrue(rows[0]["live_selected"])
@@ -103,8 +100,8 @@ class ShadowCandidateLedgerTest(unittest.TestCase):
         rows = collect_signal_date(self.root, release, "20260105")
         first = upsert_ledger(self.root, rows)
         second = upsert_ledger(self.root, rows)
-        self.assertEqual(len(first), 5)
-        self.assertEqual(len(second), 5)
+        self.assertEqual(len(first), 4)
+        self.assertEqual(len(second), 4)
         self.assertTrue(second["counterfactual_status"].eq("RESOLVED").all())
         self.assertTrue(second["account_net_return"].astype(float).notna().all())
         self.assertGreater(

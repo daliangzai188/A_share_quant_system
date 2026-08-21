@@ -2250,8 +2250,6 @@ class StrategyDConditionalExitTest(unittest.TestCase):
         live_cfg = config["live_trade"]
 
         self.assertIn("D", live_cfg["exit_pov_strategy_legs"])
-        self.assertIn("N", live_cfg["exit_pov_strategy_legs"])
-        self.assertIn("N", trading_daemon.T2_CLOSE_STRATEGY_LEGS)
         self.assertEqual(float(live_cfg["exit_pov_trigger_pct"]), 0.01)
         self.assertIn(
             "D",
@@ -2266,11 +2264,6 @@ class StrategyDConditionalExitTest(unittest.TestCase):
         self.assertTrue(
             trading_daemon._fixed_large_runway_allowed(
                 {"strategy_leg": "E"}, live_cfg
-            )
-        )
-        self.assertTrue(
-            trading_daemon._fixed_large_runway_allowed(
-                {"strategy_leg": "N"}, live_cfg
             )
         )
 
@@ -2305,7 +2298,7 @@ class StrategyDConditionalExitTest(unittest.TestCase):
             "ts_code": "603118.SH",
             "name": "恢复持仓",
             "shares": 10_000,
-            "strategy_leg": "N",
+            "strategy_leg": "E",
             "status": "open",
             "planned_exit_date": "20260818",
         }
@@ -2324,7 +2317,7 @@ class StrategyDConditionalExitTest(unittest.TestCase):
             "broker": {"enabled": True},
             "live_trade": {
                 "exit_pov_enabled": True,
-                "exit_pov_strategy_legs": ["A", "C", "D", "E", "N"],
+                "exit_pov_strategy_legs": ["A", "C", "D", "E"],
                 "exit_pov_handoff_time": "14:53:00",
                 "exit_pov_trigger_pct": 0.01,
             },
@@ -2418,7 +2411,7 @@ class StrategyDConditionalExitTest(unittest.TestCase):
         due = trading_daemon._exit_pov_due_positions(
             positions,
             "20260803",
-            {"exit_pov_strategy_legs": ["A", "C", "D", "E", "N"]},
+            {"exit_pov_strategy_legs": ["A", "C", "D", "E"]},
         )
 
         self.assertEqual([position["order_id"] for position in due], ["D-ORDINARY"])

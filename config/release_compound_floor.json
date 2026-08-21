@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "status": "INACTIVE_PENDING_CERTIFICATION",
-  "policy_id": "compound-floor-pending-d-a-e-c-n",
-  "invalidated_at": "2026-08-20",
-  "invalidated_reason": "当前D>A>E>C>N组合尚未建立同输入、同费用、同仓位的有效复利锚点；旧组合锚点不可继续用于发布比较。",
-  "note": "该非ACTIVE状态会让复利门禁失败并阻止冻结发布。完成D>A>E>C>N严格认证后，必须显式建立新的ACTIVE锚点。"
+  "policy_id": "compound-floor-pending-d-a-e-c",
+  "invalidated_at": "2026-08-21",
+  "invalidated_reason": "当前D>A>E>C组合尚未建立同输入、同费用、同仓位的有效复利锚点；旧组合锚点不可继续用于发布比较。",
+  "note": "该非ACTIVE状态会让复利门禁失败并阻止冻结发布。完成D>A>E>C严格认证后，必须显式建立新的ACTIVE锚点。"
 }

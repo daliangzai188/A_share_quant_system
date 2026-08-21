@@ -13,5 +13,5 @@
   "state_path": "reports/account_risk_shadow/state.json",
   "latest_status_path": "reports/account_risk_shadow/latest_status.json",
   "bootstrap_equity_path": "reports/account_risk_shadow/equity_ledger.json",
-  "note": "本配置只做账户级风险总闸的影子观测，永不拦截实盘。原阈值研究绑定的旧组合已经失效，相关研究输出已清除；当前仅保留真实权益连续账本和影子状态。必须基于D>A>E>C>N严格组合重新完成历史稳健性、前向样本和容量验证后，才允许讨论新策略阈值或激活。"
+  "note": "本配置只做账户级风险总闸的影子观测，永不拦截实盘。原阈值研究绑定的旧组合已经失效，相关研究输出已清除；当前仅保留真实权益连续账本和影子状态。必须基于D>A>E>C严格组合重新完成历史稳健性、前向样本和容量验证后，才允许讨论新策略阈值或激活。"
 }

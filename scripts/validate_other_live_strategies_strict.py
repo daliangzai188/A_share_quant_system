@@ -1,11 +1,11 @@
-"""按严格as-of口径检查D/A/E/C/N。
+"""按严格as-of口径检查D/A/E/C。
 
 本脚本只写研究报告，不修改实盘开关、发布冻结或券商状态。核心约束：
 
 1. 历史成交概率只读逐日as-of评分，训练截止日必须早于信号日；
-2. A/C/E/N按T+1开盘买，D按信号日涨停价买；统一处理前复权、涨跌停、
+2. A/C/E按T+1开盘买，D按信号日涨停价买；统一处理前复权、涨跌停、
    卖出延期、双边滑点和日期化费用；
-3. 按D>A>E>C>N顺序做单账户串行回放；
+3. 按D>A>E>C顺序做单账户串行回放；
 4. 对每条腿做“有该腿/删除该腿”组合边际比较；
 5. 同时报告Wilson胜率区间、bootstrap平均收益区间、样本外状态和容量缺口。
 
@@ -65,7 +65,6 @@ STRICT_SOURCE = ROOT / "data" / "processed" / "limit_up_fill_scored_asof.csv"
 OLD_AC = ROOT / "reports" / "ac_daily_candidates" / "ac_daily_candidates.csv"
 OLD_D = ROOT / "reports" / "strategy_d" / "d_daily_candidates.csv"
 OLD_E = ROOT / "reports" / "strategy_e_samples" / "e_r1_daily_candidates_full.csv"
-N_POOL = ROOT / "reports" / "strategy_n_v4" / "n_backtest_candidates.csv"
 STRATEGY_CONFIG = ROOT / "config" / "strategy_config.json"
 POSITIONS = ROOT / "data" / "processed" / "positions.json"
 OUT = ROOT / "reports" / "strict_live_strategy_audit"
@@ -396,31 +395,6 @@ def build_e() -> tuple[pd.DataFrame, pd.DataFrame]:
     return add_fixed_open_outcomes(pre_gate, spec), add_fixed_open_outcomes(post_gate, spec)
 
 
-def build_n() -> pd.DataFrame:
-    frame = pd.read_csv(N_POOL, dtype=str, low_memory=False)
-    if not frame["fill_probability_method"].eq(EXPECTED_FILL_METHOD).all():
-        raise RuntimeError("N候选池不是严格as-of成交评分")
-    rows: list[dict[str, Any]] = []
-    for row in frame.itertuples(index=False):
-        status = str(row.execution_status)
-        value = None
-        if status == "OK":
-            value = account_return(float(row.stock_return_before_fees), str(row.exit_date))
-        rows.append(
-            {
-                "signal_date": str(row.trade_date),
-                "strategy_leg": "N",
-                "ts_code": str(row.ts_code),
-                "name": str(row.name),
-                "status": status,
-                "buy_date": str(row.buy_date),
-                "exit_date": str(row.exit_date).replace("nan", ""),
-                "account_return": value,
-            }
-        )
-    return pd.DataFrame(rows).sort_values("signal_date").reset_index(drop=True)
-
-
 def candidate_map(frame: pd.DataFrame) -> dict[str, dict[str, Any]]:
     valid = frame[frame["status"].astype(str).eq("OK")].copy()
     return {
@@ -440,7 +414,7 @@ def replay(
     equity = 1.0
     occupied_until = occupied_leg = occupied_code = occupied_name = ""
     rows: list[dict[str, Any]] = []
-    priority = ("A", "E", "C", "N")
+    priority = ("A", "E", "C")
     for signal_date in baseline_dates():
         if occupied_until and signal_date < occupied_until:
             rows.append(
@@ -538,7 +512,7 @@ def identity_comparison(
 
 
 def local_live_counts() -> dict[str, int]:
-    result = {leg: 0 for leg in ("D", "A", "E", "C", "N")}
+    result = {leg: 0 for leg in ("D", "A", "E", "C")}
     if not POSITIONS.exists():
         return result
     payload = json.loads(POSITIONS.read_text(encoding="utf-8-sig"))
@@ -568,11 +542,10 @@ def main() -> None:
     ac = build_ac(STRICT_SOURCE)
     strategy_d = build_d(source, data)
     e_pre, strategy_e = build_e()
-    strategy_n = build_n()
 
     strategy_a = ac[ac["strategy_leg"].eq("A")].copy()
     strategy_c = ac[ac["strategy_leg"].eq("C")].copy()
-    legs = {"D": strategy_d, "A": strategy_a, "E": strategy_e, "C": strategy_c, "N": strategy_n}
+    legs = {"D": strategy_d, "A": strategy_a, "E": strategy_e, "C": strategy_c}
     for leg, frame in legs.items():
         frame.to_csv(OUT / f"strict_{leg.lower()}_candidates.csv", index=False, encoding="utf-8-sig")
     e_pre.to_csv(OUT / "strict_e_pre_gate_candidates.csv", index=False, encoding="utf-8-sig")
@@ -688,14 +661,12 @@ def main() -> None:
         "A": {"untouched_oos": False, "existing_release_gate": "INVALIDATED_BY_B_REMOVAL"},
         "E": {"untouched_oos": False, "existing_release_gate": "ALIGNMENT_FAIL_AND_GATE_NONINFERIOR_FAIL"},
         "C": {"untouched_oos": False, "existing_release_gate": "INVALIDATED_BY_B_REMOVAL"},
-        "N": {"untouched_oos": False, "existing_release_gate": "TEST_OOS_NONINFERIOR_FAIL"},
     }
     verdicts = {
         "D": "DO_NOT_LIVE_CURRENT_VERSION",
         "A": "PAUSE_PENDING_STRICT_RELEASE",
         "E": "DO_NOT_LIVE_CURRENT_VERSION",
         "C": "PAUSE_PENDING_STRICT_RELEASE",
-        "N": "DO_NOT_LIVE_CURRENT_VERSION",
     }
     gate_rows: list[dict[str, Any]] = []
     for leg in legs:
@@ -727,8 +698,6 @@ def main() -> None:
                 and float(current_gate_row["max_drawdown"])
                 >= float(pre_gate_row["max_drawdown"])
             )
-        if leg == "N":
-            gates["known_test_oos_noninferiority_passed"] = False
         for gate, passed in gates.items():
             gate_rows.append(
                 {
@@ -748,11 +717,11 @@ def main() -> None:
         "source_audit": audit,
         "methodology": {
             "selection": "固定当前规则，不重新调参；历史成交评分逐日as-of",
-            "execution": "A/C/E/N为T+1开盘，D为信号日涨停价；涨停买不到、跌停卖出延期",
+            "execution": "A/C/E为T+1开盘，D为信号日涨停价；涨停买不到、跌停卖出延期",
             "returns": "前复权链接、买卖各0.1%滑点（D买入为涨停价）、日期化费用",
             "position": POSITION_PCT,
             "d_fill_stress": D_FILL_STRESS,
-            "portfolio": "D>A>E>C>N；单账户串行占仓",
+            "portfolio": "D>A>E>C；单账户串行占仓",
         },
         "strict_leg_metrics": metric_rows,
         "strict_combo": full_metrics,
@@ -761,17 +730,16 @@ def main() -> None:
         "release_verdicts": verdicts,
         "local_open_position_counts": live_counts,
         "live_execution_gate_audit": {
-            "A_C_E_N": "真实BUY入口调用LiveOrderGateway；认证失效会拒绝新增BUY",
+            "A_C_E": "真实BUY入口调用LiveOrderGateway；认证失效会拒绝新增BUY",
             "D": (
                 "monitor_strategy_d_intraday.StrategyDMonitor通过SharedQMTBrokerProxy下单；"
                 "该代理在BUY唯一落点调用同一LiveOrderGateway认证门禁"
             ),
             "sell": "LiveOrderGateway仅对BUY检查发布认证，已有持仓SELL不受认证失效影响",
         },
-        "global_buy_gate_note": "A/C/D/E/N所有真实BUY路径均受同一发布认证门禁约束",
+        "global_buy_gate_note": "A/C/D/E所有真实BUY路径均受同一发布认证门禁约束",
         "causal_limits": [
             "D/A/C/E规则都在同一2024~2026窗口研究或精修，没有未查看的真正样本外发布段。",
-            "N所谓TEST_OOS已被v4研究查看且非劣门禁失败，不能再当未触碰样本。",
             "机械复利没有资金增长后的盘口容量约束，不是可实现资金预测。",
             "组合删除腿对照固定其它规则与腿序，可用于边际判断，但仍继承各腿规则发现偏差。",
         ],
@@ -781,15 +749,15 @@ def main() -> None:
     )
 
     lines = [
-        "# D/A/E/C/N严格实盘资格审计",
+        "# D/A/E/C严格实盘资格审计",
         "",
         "> 结论：当前没有一条其它策略满足完整严格发布标准。"
-        "A/C暂停新增实盘并重建发布验证；D/E/N当前版本不允许新增实盘。",
+        "A/C暂停新增实盘并重建发布验证；D/E当前版本不允许新增实盘。",
         "",
         "## 严格单腿结果",
         "",
     ]
-    for leg in ("D", "A", "E", "C", "N"):
+    for leg in ("D", "A", "E", "C"):
         lines.append(f"- {leg}：{markdown_metric(all_scope.loc[leg].to_dict())}；判定 `{verdicts[leg]}`。")
     lines.extend(
         [
@@ -804,7 +772,6 @@ def main() -> None:
             f"- E门禁前旧样本与严格样本有{int(identity_by_leg.loc['E_PRE_GATE', 'changed_or_missing_count'])}日换票、消失或新增；"
             "现有逐票对齐验证失败。",
             "- A/C发布配置仍明确标记为B删除后认证失效；没有新的有效发布证书。",
-            "- N测试段组合相对不含N仅0.930732，最大回撤也更差；所谓测试段已被v4研究查看。",
             f"- E严格门禁前为{float(e_gate.loc[e_gate['variant'].eq('E_PRE_GATE'), 'equity_multiple'].iloc[0]):.6f}倍、"
             f"回撤{float(e_gate.loc[e_gate['variant'].eq('E_PRE_GATE'), 'max_drawdown'].iloc[0]):.2%}；"
             f"当前门禁后降至{float(e_gate.loc[e_gate['variant'].eq('E_CURRENT_GATE'), 'equity_multiple'].iloc[0]):.6f}倍、"
@@ -821,7 +788,7 @@ def main() -> None:
             "",
         ]
     )
-    for leg in ("D", "A", "E", "C", "N"):
+    for leg in ("D", "A", "E", "C"):
         row = full_marginal.loc[leg]
         lines.append(
             f"- {leg}：全段含该腿相对删除该腿复利变化"
@@ -830,13 +797,13 @@ def main() -> None:
             f"{float(row['with_leg_max_drawdown']):.2%}。"
         )
     lines.extend(["", "## 发布判定", ""])
-    for leg in ("D", "A", "E", "C", "N"):
+    for leg in ("D", "A", "E", "C"):
         failed = gate_frame[(gate_frame["strategy_leg"].eq(leg)) & ~gate_frame["passed"]]["gate"].tolist()
         lines.append(f"- {leg} `{verdicts[leg]}`：不通过 {', '.join(failed)}。")
     lines.extend(
         [
             "",
-            "当前发布认证已经失效，A/C/D/E/N新BUY均会fail-closed。"
+            "当前发布认证已经失效，A/C/D/E新BUY均会fail-closed。"
             "本报告不阻断已有持仓的SELL、撤单和成交回写。",
             "",
         ]

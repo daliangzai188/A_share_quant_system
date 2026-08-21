@@ -21,7 +21,7 @@ class StrategyEquityLedgerTests(unittest.TestCase):
                 "stamp_tax_rate": 0.001,
                 "transfer_fee_rate": 0.00001,
             },
-            "live_performance_report": {"minimum_commission": 5.0, "active_legs": ["A", "N"]},
+            "live_performance_report": {"minimum_commission": 5.0, "active_legs": ["A", "C"]},
         }
 
     def test_bootstrap_once_then_only_realized_trade_pnl_moves_equity(self) -> None:
@@ -103,7 +103,7 @@ class StrategyEquityLedgerTests(unittest.TestCase):
                         "entry_date": "20260802",
                         "exit_date": "20260803",
                         "ts_code": "000001.SZ",
-                        "strategy_leg": "N",
+                        "strategy_leg": "C",
                         "entry_filled_qty": 1000,
                         "entry_fill_amount": 10000,
                         "exit_filled_qty": 1000,

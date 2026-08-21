@@ -2,7 +2,7 @@
   "schema_version": 1,
   "status": "FUTURE_PAPER_OOS_ONLY_NOT_LIVE_RELEASE",
   "frozen_at_data_end": "20260820",
-  "research_config_sha256": "ea240b2da7fe169ecbe0945c019a15f52aa0afe37a71fa4e0deb0108387f1937",
+  "research_config_sha256": "6449f4806015224ac5eb9853ad6c76a81fd283052a4765042bbee1eb20ff7eac",
   "dataset_manifest_sha256": "78e682db21f55952857852196814372b906484718372035589829829329c96d7",
   "untouched_oos_begins_after_freeze": true,
   "candidates": [
@@ -72,14 +72,6 @@
       "frozen_rule": null,
       "selection_score": null,
       "training_gate_candidate_before_outer_rejection": ""
-    },
-    {
-      "strategy_leg": "N",
-      "variant_id": "",
-      "status": "REJECTED_BY_OUTER_OOS_OR_COMBINATION_MARGIN",
-      "frozen_rule": null,
-      "selection_score": -0.19799309428612916,
-      "training_gate_candidate_before_outer_rejection": "N_HEIGHT1_RETREAT_VOL_CURRENT_ONLY"
     }
   ]
 }

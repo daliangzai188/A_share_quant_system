@@ -17,7 +17,7 @@ import pandas as pd
 from src.strategy_identity import normalize_strategy_frame, normalize_strategy_leg
 
 
-LEGS = ("D", "A", "E", "C", "N")
+LEGS = ("D", "A", "E", "C")
 SCHEMA_VERSION = 1
 METHODOLOGY_VERSION = "released_shadow_t1_open_fixed_exit_v1"
 LEDGER_COLUMNS = [
@@ -304,7 +304,6 @@ def collect_signal_date(root: Path, release: dict[str, Any], signal_date: str) -
         _collect_ac(root, release, signal_date, "A", now, open_dates),
         _collect_standard_leg(root, release, signal_date, "E", now, open_dates),
         _collect_ac(root, release, signal_date, "C", now, open_dates),
-        _collect_standard_leg(root, release, signal_date, "N", now, open_dates),
     ]
     eligible = [row for row in rows if row["candidate_status"] == "CANDIDATE"]
     if eligible:
