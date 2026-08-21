@@ -1,72 +1,56 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
 import unittest
 
 from scripts.certify_current_executable_portfolio import (
     EXPECTED_D_DAILY_CANDIDATE_COUNT,
-    EXPECTED_CURRENT_MULTIPLE,
-    EXPECTED_CURRENT_TRADE_COUNT,
-    e_entry_gate_validation,
     load_sources,
-    replay,
-    summarize,
 )
 
 
+ROOT = Path(__file__).resolve().parents[1]
+
+
 class CurrentPortfolioAlignmentTests(unittest.TestCase):
-    """锁定四腿身份回放D>A>E>C；严格发布认证仍单独fail-closed。"""
+    """旧身份回放只作历史归档；当前可复现性由严格证书测试锁定。"""
 
     @classmethod
     def setUpClass(cls) -> None:
         cls.sources = load_sources()
-
-    def test_current_portfolio_is_reproducible(self) -> None:
-        detail = replay(self.sources, entry_gate_enabled=True)
-        metrics = summarize(detail, "current_d_a_e_c")
-
-        self.assertEqual(metrics["executed_trade_count"], EXPECTED_CURRENT_TRADE_COUNT)
-        self.assertAlmostEqual(
-            metrics["equity_multiple"], EXPECTED_CURRENT_MULTIPLE, places=8
-        )
-        self.assertEqual(
-            set(detail.loc[detail["status"].eq("EXECUTED"), "strategy_leg"]),
-            {"D", "A", "E", "C"},
+        cls.legacy = json.loads(
+            (
+                ROOT
+                / "reports/current_portfolio_alignment/legacy_identity_alignment.json"
+            ).read_text(encoding="utf-8")
         )
 
-    def test_e_gate_complete_sample_risk_is_explicit(self) -> None:
-        without_gate = summarize(
-            replay(self.sources, entry_gate_enabled=False),
-            "without_e_gate",
-        )
-        current = summarize(
-            replay(self.sources, entry_gate_enabled=True),
-            "current_d_a_e_c",
-        )
+    def test_legacy_alignment_cannot_be_current_or_strict(self) -> None:
+        self.assertEqual(self.legacy["input_start_date"], "20240520")
+        self.assertEqual(self.legacy["input_end_date"], "20260514")
+        self.assertFalse(self.legacy["current_executable"])
+        self.assertFalse(self.legacy["strict_asof_passed"])
+        self.assertFalse(self.legacy["release_eligible"])
 
-        self.assertEqual(without_gate["executed_trade_count"], 136)
-        self.assertGreater(current["equity_multiple"], without_gate["equity_multiple"])
-
-        validation = e_entry_gate_validation(self.sources)
-        full = validation[validation["split"].eq("全部")].iloc[0]
-        self.assertEqual(int(full["base_count"]), 102)
-        self.assertEqual(int(full["kept_count"]), 82)
-        # E单腿完整样本中，被门禁删除组反而为正；必须持续暴露该过拟合风险。
-        self.assertGreater(float(full["removed_avg_return"]), 0)
-        self.assertLess(float(full["optimized_vs_base"]), 0)
-
-    def test_current_leg_breakdown_stays_locked(self) -> None:
-        detail = replay(self.sources, entry_gate_enabled=True)
-        metrics = summarize(
-            detail,
-            "current_d_a_e_c",
+    def test_current_certificate_uses_new_anchor(self) -> None:
+        current = json.loads(
+            (
+                ROOT / "reports/current_portfolio_alignment/live_certification.json"
+            ).read_text(encoding="utf-8")
         )
-        self.assertEqual(metrics["d_trade_count"], 18)
-        self.assertEqual(metrics["a_trade_count"], 45)
-        self.assertEqual(metrics["e_trade_count"], 47)
-        self.assertEqual(metrics["c_trade_count"], 18)
-        self.assertEqual(metrics["d_to_a_trade_count"], 0)
-        self.assertEqual(metrics["d_to_c_trade_count"], 0)
-        self.assertEqual(metrics["d_to_e_trade_count"], 0)
+        self.assertEqual(current["input_start_date"], "20240630")
+        self.assertEqual(current["input_end_date"], "20260630")
+        self.assertTrue(current["strict_asof_passed"])
+        self.assertFalse(current["release_eligible"])
+
+    def test_legacy_leg_breakdown_stays_archived(self) -> None:
+        self.assertEqual(self.legacy["executed_trade_count"], 128)
+        self.assertAlmostEqual(self.legacy["equity_multiple"], 1727.906227926422)
+        self.assertEqual(self.legacy["d_trade_count"], 18)
+        self.assertEqual(self.legacy["a_trade_count"], 45)
+        self.assertEqual(self.legacy["e_trade_count"], 47)
+        self.assertEqual(self.legacy["c_trade_count"], 18)
 
 
     def test_d_source_is_the_complete_daily_candidate_ledger(self) -> None:

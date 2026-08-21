@@ -1,6 +1,6 @@
 {
-  "_comment": "E R1候选宇宙规则。每条规则在信号日候选池中只选第一名，合并去重后再取板块neutral且流通市值最小的一只；选出每日第一名后再执行entry_gate，禁止因门禁淘汰第一名后偷换成当日第二名。实盘和回测必须共同读取本文件。",
-  "_warning": "40条R1规则来自20240520~20260514同窗口样本内Top40，存在二次筛选和过拟合风险。旧62笔12.028倍包含前视成交过滤及资金重复占用，不能作为实盘可实现收益；50笔8.456977倍仅是门禁优化前基准。当前entry_gate只使用信号日首次涨停时间，训练半段、测试半段及2024/2025/2026三个自然年中被排除组均为负收益，但历史结果仍不代表未来收益。",
+  "_comment": "E R1候选宇宙规则。每条规则在信号日候选池中只选第一名，合并去重后先保留板块neutral，再按final_ranking的信号日换手率降序取一只；选出每日第一名后再执行entry_gate，禁止因门禁淘汰第一名后偷换成当日第二名。实盘和回测必须共同读取本文件。",
+  "_warning": "40条原始R1规则来自20240520~20260514历史样本内Top40，该旧窗口只是规则来源，不再是当前比较锚点。当前正式严格锚点为20240630~20260630，final_ranking仍是同窗口样本内搜索，存在多重比较和过拟合风险。旧62笔12.028倍包含前视成交过滤及资金重复占用，不能作为实盘可实现收益。历史结果不代表未来收益。",
   "universe_prefilters": {
     "exclude_st_or_delisting": true,
     "exclude_amount_ratio_bucket": ["0_8_1_2"]
@@ -12,6 +12,23 @@
     "apply_after_daily_first_pick": true,
     "fallback_to_second_candidate": false,
     "reason": "13:30~14:30首次涨停组7笔在前25笔训练段均值-4.067%、后25笔测试段均值-0.729%，且2024/2025/2026三个自然年组均值均为负；门禁字段在信号日收盘前已确定，不使用次日价格、成交结果或收益。"
+  },
+  "final_ranking": {
+    "columns": [
+      "turnover_rate"
+    ],
+    "ascending": [
+      false
+    ],
+    "tie_breaker_columns": [
+      "scenario_rank",
+      "ts_code"
+    ],
+    "tie_breaker_ascending": [
+      true,
+      true
+    ],
+    "description": "R1规则逐日第一名并集先过滤segment_retreat_state_bucket=neutral，再按信号日换手率降序取每日第一名；该变体在2024-06-30至2026-06-30正式严格锚点逐腿替换中同时提高E单腿和ACDE总复利。"
   },
   "sort_rules": {
     "default": {"columns": ["fill_probability", "sample_count", "amount", "turnover_rate"], "ascending": [false, false, false, false]},
@@ -83,5 +100,27 @@
     "entry_gate_equity_multiple": 10.221003,
     "entry_gate_max_drawdown": -0.113253,
     "entry_gate_win_rate": 0.72093
+  },
+  "strict_2y_ranking_optimization": {
+    "audit_date": "2026-08-21",
+    "window": "20240630~20260630",
+    "research_protocol": "STRICT_DISCOVERY",
+    "baseline_rank": "circ_mv:asc",
+    "selected_rank": "turnover_rate:desc",
+    "metric_scope": "STRICT_ASOF_E_STANDALONE_SINGLE_ACCOUNT",
+    "baseline_leg_trade_count": 76,
+    "baseline_leg_equity_multiple": 4.664899006158658,
+    "selected_leg_trade_count": 76,
+    "selected_leg_equity_multiple": 10.83416173854884,
+    "baseline_candidate_pool_trade_count": 90,
+    "baseline_candidate_pool_equity_multiple": 5.948529191736531,
+    "selected_candidate_pool_trade_count": 91,
+    "selected_candidate_pool_equity_multiple": 15.490272044579283,
+    "baseline_combo_trade_count": 133,
+    "baseline_combo_equity_multiple": 300.31246148623836,
+    "selected_combo_trade_count_when_only_e_replaced": 132,
+    "selected_combo_equity_multiple_when_only_e_replaced": 314.32522439492567,
+    "release_eligible": false,
+    "note": "同窗口样本内排序搜索，存在多重比较和过拟合风险；只证明通过本轮单腿与逐腿组合双复利门槛，不等于样本外或实盘认证。"
   }
 }

@@ -10,7 +10,8 @@
     "E",
     "C"
   ],
-  "research_input_end_date": "20260514",
+  "research_input_start_date": "20240630",
+  "research_input_end_date": "20260630",
   "oos_start_date": "20260820",
   "certification_status": "NOT_CERTIFIED",
   "certification_scenario": "current_d_a_e_c",

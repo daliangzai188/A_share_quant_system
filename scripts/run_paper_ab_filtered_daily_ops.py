@@ -80,6 +80,20 @@ def condition_strategy_config(
     config = copy.deepcopy(base_config)
     config["strategy_name"] = strategy_name
     config.setdefault("candidate_filters", {})["conditions"] = [dict(condition) for condition in conditions]
+    # 当前所有传入自定义 conditions 的调用方都是 C。A 的排序优化不能被 C
+    # 隐式继承；C 未通过本轮双复利门槛时，必须读取 c_strategy.ranking 冻结原排序。
+    c_ranking = (
+        base_config.get("paper_ab_filtered_strategy", {})
+        .get("c_strategy", {})
+        .get("ranking")
+    )
+    if isinstance(c_ranking, dict) and c_ranking:
+        ranking = copy.deepcopy(c_ranking)
+        if "score_rules" not in ranking:
+            ranking["score_rules"] = copy.deepcopy(
+                base_config.get("ranking", {}).get("score_rules", [])
+            )
+        config["ranking"] = ranking
     return config
 
 
@@ -970,7 +984,7 @@ def _print_e_status(signal_date: str, planned_orders: pd.DataFrame) -> None:
     """在每日操作台末尾打印 E 策略状态预览。"""
     print()
     print("─" * 50)
-    print("  策略 E 状态预览（板块中性小市值）")
+    print("  策略 E 状态预览（板块neutral + 换手率降序）")
     print("─" * 50)
 
     # 检查 A/C 是否生成了计划委托
@@ -1000,8 +1014,8 @@ def _print_e_status(signal_date: str, planned_orders: pd.DataFrame) -> None:
     print("  A/C 今日无委托，账户无持仓 → E 可能触发")
     print(f"  请收盘后运行（15:30+）：")
     print(f"    python scripts/run_strategy_e_signal.py --signal-date {signal_date}")
-    print("  E 条件：segment_retreat_state_bucket=neutral + 非ST + 成交可靠 → 选流通市值最小1只")
-    print("  E 执行：T+1开盘买入 82.5%目标仓位，T+2收盘卖出")
+    print("  E 条件：segment_retreat_state_bucket=neutral + 非ST + 成交可靠 → 按信号日换手率降序选1只")
+    print("  E 执行：T+1开盘买入 82.5%目标仓位，按命中R1规则在T+2或T+3收盘卖出")
     print("─" * 50)
 
 

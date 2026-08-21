@@ -1,9 +1,9 @@
 {
   "file_role": "A/C两条实盘腿的选股规则源。⚠️本文件确实驱动实盘：守护进程trading_daemon.py 与 run_paper_ab_filtered_daily_ops.py 都从这里加载A/C的入选条件。顶层enabled/live_trading_enabled/broker_adapter_enabled/qmt_enabled 是研究期遗留的占位开关，实盘总闸在 config/config.json，不要据此判断本文件是否生效。",
-  "strategy_name": "a_clean_plus_exclude_star_prev0_3_bj_risk_filter",
+  "strategy_name": "a_strict_profit_score_height_rank",
   "enabled": false,
-  "description": "A-clean+ 风险过滤版。基于模拟盘前 WARN 来源分析，在去科创板基础上，额外排除北交所且前一日涨幅0-3%的候选组合。最近2年日线保守成交口径下，较上一版复利、胜率、回撤和最大单笔亏损均改善。",
-  "version": "2026-06-04",
+  "description": "A严格策略。固定原入选池、T+2退出和执行规则，仅把第二排序键由换手率改为连板高度；在2024-06-30至2026-06-30正式严格锚点逐腿替换中，A单腿复利和ACDE总复利同时提高。",
+  "version": "2026-08-21",
   "trade_mode": "paper",
   "live_trading_enabled": false,
   "broker_adapter_enabled": false,
@@ -12,8 +12,8 @@
     "source": "local_csv_reports",
     "price_adjustment": "forward_adjusted",
     "signal_window": {
-      "start_date": "20240520",
-      "end_date": "20260518"
+      "start_date": "20240630",
+      "end_date": "20260630"
     },
     "audit_report_prefix": "reports/a_clean_exclude_star_prev0_3_bj_best_audit",
     "optimization_summary": "reports/a_clean_exclude_star_warn_filter_prev0_3_bj_quick_t2_summary.csv",
@@ -94,10 +94,10 @@
     ]
   },
   "ranking": {
-    "sort_rule": "profit_source_oos_resilient",
+    "sort_rule": "strict_profit_source_then_limit_height",
     "columns": [
       "profit_source_score",
-      "turnover_rate"
+      "limit_times"
     ],
     "ascending": [
       false,
@@ -189,22 +189,25 @@
     "paper_trade_verified": false
   },
   "risk_metrics_from_latest_audit": {
-    "audit_date": "2026-06-04",
-    "equity_multiple": 45.006686,
-    "final_equity": 22503343.166107,
-    "executed_trade_count": 59,
-    "win_rate": 0.728814,
-    "avg_account_return": 0.073452,
-    "median_account_return": 0.045451,
-    "max_drawdown": -0.110076,
-    "max_profit": 0.501944,
-    "max_loss": -0.10726,
-    "max_consecutive_losses": 2,
-    "negative_month_count": 0,
+    "audit_date": "2026-08-21",
+    "metric_scope": "STRICT_ASOF_A_STANDALONE_SINGLE_ACCOUNT",
+    "window": "20240630~20260630",
+    "equity_multiple": 12.023750012345724,
+    "executed_trade_count": 58,
+    "win_rate": 0.6551724137931034,
+    "avg_account_return": 0.049057624943009456,
+    "median_account_return": 0.03177413240652642,
+    "max_drawdown": -0.19374531590159605,
+    "max_profit": 0.4892913885103991,
+    "max_loss": -0.11849477438811166,
+    "profit_loss_ratio": 2.1307262201056556,
+    "max_consecutive_losses": 3,
+    "candidate_pool_trade_count": 69,
+    "candidate_pool_equity_multiple": 9.698459418277993,
     "st_trade_count": 0,
-    "limit_down_blocked_trade_count": 0,
-    "avg_buy_slippage": 0.002153,
-    "avg_sell_slippage": 0.002525
+    "position_pct": 0.825,
+    "research_protocol": "STRICT_DISCOVERY",
+    "release_eligible": false
   },
   "pre_paper_trade_requirements": {
     "file_role": "A/C复核与准入要求。B已删除；must_review_each_trade=false 后仅 risk_flags 非空标的生成复核单，复核不阻塞实盘执行链。",
@@ -348,6 +351,19 @@
           "description": "所属市场分段涨停数量在40到80之间，代表局部分段有较强涨停热度。"
         }
       ],
+      "ranking": {
+        "sort_rule": "profit_source_oos_resilient_c_frozen",
+        "columns": [
+          "profit_source_score",
+          "turnover_rate"
+        ],
+        "ascending": [
+          false,
+          false
+        ],
+        "score_rules_source": "顶层ranking.score_rules",
+        "description": "C未通过本轮双复利门槛，冻结原profit_source_score+turnover_rate排序，禁止继承A的新limit_times第二排序键。"
+      },
       "risk_reject_rules_source": "c_strategy_local_rules_after_b_removal",
       "risk_reject_rules": [
         {
@@ -427,24 +443,28 @@
         "description": "C补位策略使用T+3收盘卖出。最近2年精修结果显示该规则相对C的T+2口径提升组合收益且未扩大组合最大回撤。"
       },
       "latest_2y_audit": {
-        "audit_date": "2026-06-06",
-        "window": "20240520-20260514",
-        "a_plus_b_equity_multiple": 58.490196,
-        "a_plus_b_trade_count": 77,
-        "a_plus_b_max_drawdown": -0.136368,
-        "a_plus_b_plus_c_equity_multiple": 110.221672,
-        "a_plus_b_plus_c_trade_count": 90,
-        "c_trade_count": 18,
-        "a_plus_b_plus_c_win_rate": 0.722222,
-        "a_plus_b_plus_c_max_drawdown": -0.164756,
-        "c_buy_rejected_count": 2,
-        "c_sell_unresolved_count": 0,
-        "c_limit_down_blocked_trade_count": 0,
-        "c_limit_up_queue_buy_rejected_count": 2,
-        "c_limit_down_queue_blocked_count": 0,
-        "c_sort_rule": "profit_source_oos_resilient",
+        "audit_date": "2026-08-21",
+        "metric_scope": "STRICT_ASOF_C_STANDALONE_SINGLE_ACCOUNT",
+        "window": "20240630-20260630",
+        "c_trade_count": 35,
+        "c_equity_multiple": 3.1108307989904436,
+        "c_win_rate": 0.5714285714285714,
+        "c_avg_account_return": 0.03744983562750105,
+        "c_median_account_return": 0.008314087929306298,
+        "c_max_drawdown": -0.22080340403677012,
+        "c_max_profit": 0.23327959380397686,
+        "c_max_loss": -0.14417251000998996,
+        "c_profit_loss_ratio": 2.168651564015697,
+        "c_max_consecutive_losses": 4,
+        "candidate_pool_trade_count": 46,
+        "candidate_pool_equity_multiple": 2.424302608408242,
+        "c_sort_rule": "profit_source_oos_resilient_c_frozen",
         "c_exit_rule": "fixed_hold3_close",
-        "source_report": "reports/paper_trade/backup_strategy_c/current_config_c_exit_refine_exit5_20240520_20260514_481d_summary.csv",
+        "source_report": "reports/current_portfolio_alignment/strict_asof_audit.json",
+        "legacy_source_window": "20240520-20260514",
+        "legacy_source_report": "reports/paper_trade/backup_strategy_c/current_config_c_exit_refine_exit5_20240520_20260514_481d_summary.csv",
+        "research_protocol": "STRICT_DISCOVERY",
+        "release_eligible": false,
         "minute_data_verified": false,
         "minute_data_required_for_c_acceptance": false,
         "order_book_verified": false
@@ -500,6 +520,6 @@
       "加载方": "scripts/run_paper_ab_filtered_daily_ops.py 的 configured_c_conditions()"
     },
     "⚠️易错点": "A要求market_chain_count_bucket=8_15、C要求15_30，两者互斥。C不读candidate_filters，改那一段不会影响C。2026-08-05核对实盘选股时曾因此误判。",
-    "C回测校验": "18笔全部持有3个交易日；买价=买入日开盘×1.001，卖价=卖出日收盘×0.999；C腿连乘1.8530x，单笔均值+3.81%（80%仓位口径）。用原始日线独立复算一致。"
+    "C回测校验": "2024-06-30至2026-06-30严格as-of口径：C独立单账户35笔，82.5%仓位机械复利3.110831倍，平均账户收益+3.7450%，最大回撤-22.0803%；未做占仓去重的候选池为46笔、2.424303倍，仅作诊断。C未通过本轮双复利门槛，规则保持不变。"
   }
 }

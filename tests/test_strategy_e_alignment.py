@@ -115,7 +115,24 @@ class StrategyEAlignmentTests(unittest.TestCase):
             spec["entry_gate"]["exclude_values"]["first_time_detail_bucket"],
             ["1330_1430"],
         )
-        self.assertIn("ENTRY_GATE_V4", E_VERSION)
+        self.assertEqual(spec["final_ranking"]["columns"], ["turnover_rate"])
+        self.assertEqual(spec["final_ranking"]["ascending"], [False])
+        self.assertIn("ENTRY_GATE_V5_TURNOVER_RANK", E_VERSION)
+        audit = spec["strict_2y_ranking_optimization"]
+        self.assertEqual(
+            audit["metric_scope"], "STRICT_ASOF_E_STANDALONE_SINGLE_ACCOUNT"
+        )
+        self.assertEqual(audit["selected_leg_trade_count"], 76)
+        self.assertAlmostEqual(
+            audit["selected_leg_equity_multiple"], 10.83416173854884
+        )
+        self.assertEqual(audit["selected_candidate_pool_trade_count"], 91)
+
+    def test_final_ranking_uses_signal_day_turnover_rate(self) -> None:
+        universe = build_r1_universe_from_pool(make_pool(), make_test_spec())
+        spec = {"final_ranking": {"columns": ["turnover_rate"], "ascending": [False]}}
+        selected = select_e_candidates(universe, spec).iloc[0]
+        self.assertEqual(selected["ts_code"], "300002.SZ")
 
     def test_scenario_parser_restores_conditions_sort_and_exit(self) -> None:
         parsed = parse_scenario_name(

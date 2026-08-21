@@ -9,6 +9,7 @@ from scripts.certify_strict_asof_portfolio import (
     EXPECTED_LEG_COUNTS,
     EXPECTED_TRADE_COUNT,
 )
+from scripts import validate_other_live_strategies_strict as strict
 from src.mechanical_compound import MECHANICAL_COMPOUND_STANDARD_ID
 from src.strict_asof import STRICT_ASOF_STANDARD_ID, STRICT_DISCOVERY
 
@@ -29,6 +30,14 @@ class StrictPortfolioCertificationPolicyTests(unittest.TestCase):
         self.assertEqual(payload["research_protocol"], STRICT_DISCOVERY)
         self.assertFalse(payload["release_eligible"])
         self.assertFalse(payload["current_executable"])
+        self.assertEqual(payload["input_start_date"], "20240630")
+        self.assertEqual(payload["input_end_date"], "20260630")
+        self.assertEqual((strict.START, strict.END), ("20240630", "20260630"))
+        report = (
+            ROOT / "reports/current_portfolio_alignment/strict_asof_portfolio_report.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("20240630～20260630", report)
+        self.assertIn("STRICT_DISCOVERY", report)
         self.assertEqual(payload["executed_trade_count"], EXPECTED_TRADE_COUNT)
         self.assertAlmostEqual(payload["equity_multiple"], EXPECTED_EQUITY_MULTIPLE)
         actual = {
@@ -38,6 +47,18 @@ class StrictPortfolioCertificationPolicyTests(unittest.TestCase):
             "C": payload["c_trade_count"],
         }
         self.assertEqual(actual, EXPECTED_LEG_COUNTS)
+
+        audit = json.loads(
+            (ROOT / payload["strict_asof_audit_path"]).read_text(encoding="utf-8")
+        )
+        standalone = audit["strict_leg_standalone_metrics"]
+        self.assertEqual(standalone["A"]["trade_count"], 58)
+        self.assertAlmostEqual(standalone["A"]["equity_multiple"], 12.023750012345724)
+        self.assertEqual(standalone["E"]["trade_count"], 76)
+        self.assertAlmostEqual(standalone["E"]["equity_multiple"], 10.83416173854884)
+        candidate = audit["strict_leg_candidate_metrics"]
+        self.assertEqual(candidate["A"]["trade_count"], 69)
+        self.assertEqual(candidate["E"]["trade_count"], 91)
 
     def test_legacy_identity_script_cannot_overwrite_official_certificate(self) -> None:
         source = (ROOT / "scripts/certify_current_executable_portfolio.py").read_text(

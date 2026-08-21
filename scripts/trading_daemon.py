@@ -9758,8 +9758,9 @@ def job_premarket_buy() -> None:
         try:
             # E 专属通道：不在09:20挂单，推迟到09:24读实时竞价撮合量后
             # 按 min(缩单金额, 竞价额×参与率) 动态定仓再挂涨停价参与竞价。
-            # 原因：E标的为冷门小市值，竞价盘常仅几十~几百万（2026-07-09
-            # 皇氏实测68万），50万级固定仓位会吃掉大半竞价盘直接顶高开盘价。
+            # 原因：E虽已改为信号日换手率降序，但R1候选仍可能出现竞价流动性薄的
+            # 标的；历史上曾出现竞价额仅几十万元。继续按实时竞价额限参与率，
+            # 不能因为最终排序变化就假定大额固定仓位可无冲击成交。
             # E标的从不一字开盘，9:24挂单无排队损失；A/C/M从09:20开始排队。
             if str(row.get("strategy_leg", "")).upper() == "E":
                 if not bool(config.get("live_trade", {}).get("e_enabled", True)):
@@ -12491,8 +12492,8 @@ def job_post_market(end_date: str | None = None) -> None:
         ("build_dynamic_features.py",          "③ 市场情绪 / 题材热度",            TIMEOUT_DATA_STEP,  "约1分钟"),
         ("score_limit_up_fill_probability.py", "④ 涨停成交概率打分",               TIMEOUT_DATA_STEP,  "约1分钟"),
         ("build_live_enhanced_features.py",    "⑤ 增强因子生成（资金流/龙虎榜/竞价审计）", TIMEOUT_DATA_STEP, "约1分钟"),
-        ("run_paper_ab_filtered_daily_ops.py", "⑥ A+B+C 信号生成",                TIMEOUT_SIGNAL_STEP,"约1分钟"),
-        ("run_strategy_e_signal.py",          "⑦ E 信号生成（板块中性小市值）", TIMEOUT_SIGNAL_STEP,"约30秒"),
+        ("run_paper_ab_filtered_daily_ops.py", "⑥ A/C 信号生成（B已删除）",       TIMEOUT_SIGNAL_STEP,"约1分钟"),
+        ("run_strategy_e_signal.py",          "⑦ E 信号生成（板块neutral+换手率降序）", TIMEOUT_SIGNAL_STEP,"约30秒"),
         ("strategy_health_monitor.py",         "⑧ 策略健康度监控（滚动20笔期望分位）", TIMEOUT_DATA_STEP, "约10秒"),
         ("live_execution_audit.py",            "⑨ 实盘执行对账（逐笔损耗vs回测基准）", TIMEOUT_DATA_STEP, "约5秒"),
         ("update_execution_completion.py",     "⑩ 真实成交完成率汇总（逐片+一笔一行）", TIMEOUT_DATA_STEP, "约5秒"),
@@ -12961,7 +12962,7 @@ def _load_e_signal_for_signal_date(signal_date: str) -> dict[str, Any] | None:
 
 
 def _load_e_candidate_count(signal_date: str) -> int | None:
-    """读取 E 候选池规模（通过筛选的可买候选数，按 circ_mv 升序取首位为选中）。"""
+    """读取E候选池规模；最终首位由换手率降序及稳定并列键确定。"""
     try:
         import pandas as pd
 

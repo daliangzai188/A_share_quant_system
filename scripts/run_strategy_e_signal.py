@@ -3,7 +3,7 @@
 
 策略条件（无前视、单账户R1、入场门禁对齐版）：
   - 40条R1规则各选信号日第一名，合并成可执行候选宇宙
-  - 在候选宇宙里取板块neutral且流通市值最小的一只
+  - 在候选宇宙里保留板块neutral，按信号日换手率降序取一只
   - 每日第一名若在13:30~14:30首次涨停，当日E空仓，不回补第二名
   - T+1开盘买入；按命中规则在T+2或T+3收盘卖出
   - 仅在 A/C/D 均未占用资金时触发；B已删除
@@ -78,19 +78,30 @@ POSITION_PCT = 0.825
 E_MIN_CIRC_MV = 0       # 不设下限
 E_MAX_CIRC_MV = float("inf")
 E_RESEARCH_AUDIT = {
-    "window": "20240520~20260514",
-    "rule": "R1_no_lookahead_single_account_entry_gate_v4",
-    "pre_gate_trade_count": 50,
-    "aligned_trade_count": 43,
-    "aligned_avg_account_return": 0.058852,
-    "aligned_win_rate": 0.72093,
-    "aligned_leg_equity_multiple": 10.221003,
-    "aligned_leg_max_drawdown": -0.113253,
+    "window": "20240630~20260630",
+    "rule": "R1_no_lookahead_single_account_entry_gate_v5_turnover_rank",
+    # 候选池计数只说明有多少个历史信号可评估；独立策略指标必须再执行
+    # 单账户占仓约束，上一笔退出前不得复用同一笔资金。
+    "candidate_pool_before_gate_trade_count": 112,
+    "candidate_pool_after_gate_trade_count": 91,
+    "standalone_trade_count": 76,
+    "standalone_avg_account_return": 0.03603595325965961,
+    "standalone_median_account_return": 0.0172393380151361,
+    "standalone_win_rate": 0.6447368421052632,
+    "standalone_equity_multiple": 10.83416173854884,
+    "standalone_max_drawdown": -0.24746103236951644,
+    "aligned_max_profit": 0.5231929254879739,
+    "aligned_max_loss": -0.17629142067722955,
+    "standalone_profit_loss_ratio": 1.7756009375180655,
+    "standalone_max_consecutive_losses": 3,
+    "candidate_pool_equity_multiple": 15.490272044579283,
     "position_pct": POSITION_PCT,
-    "source_report": "reports/strategy_e_rerun/e_r1_alignment_report.md",
+    "source_report": "reports/current_portfolio_alignment/strict_asof_audit.json",
     "old_62_trade_reference_is_live_realisable": False,
     "entry_gate": "排除每日第一名first_time_detail_bucket=1330_1430，且不回补第二名。",
-    "overfit_warning": "40条R1规则及新增时间门禁仍来自有限历史样本；虽已通过前后半段和分年方向验证，历史结果不代表未来收益。",
+    "research_protocol": "STRICT_DISCOVERY",
+    "release_eligible": False,
+    "overfit_warning": "换手率最终排序来自同窗口多候选搜索，存在多重比较和过拟合风险；严格as-of只证明未使用决策时点后数据，历史结果不代表未来收益。",
 }
 
 
@@ -357,6 +368,8 @@ def build_signal(signal_date: str, candidate: pd.Series, segment_states: dict[st
         "limit_data_source": str(candidate.get("limit_data_source", "")),
         "strategy_compatible": bool(str(candidate.get("strategy_compatible", "")).lower() in ("true", "1")),
         "circ_mv": float(candidate.get("circ_mv", 0)),
+        "turnover_rate": float(candidate.get("turnover_rate", 0)),
+        "final_ranking_rule": "turnover_rate_desc_then_scenario_rank_ts_code_asc",
         "limit_close": float(candidate.get("limit_close", 0)),
         "fill_probability": float(candidate.get("fill_probability", 0)),
         "allow_buy_reliable": bool(str(candidate.get("allow_buy_reliable", "")).lower() in ("true", "1")),
@@ -597,7 +610,7 @@ def run_signal_generation(signal_date: str, *, dry_run: bool) -> None:
 
     print(f"[E信号] 符合条件候选: {len(candidates)} 只")
 
-    # ── 4. 选最小流通市值 ─────────────────────────────────────────────────────
+    # ── 4. final_ranking 已按换手率降序、scenario_rank/ts_code升序稳定选首位 ──
     selected = candidates.iloc[0]
     signal = build_signal(signal_date, selected, segment_states)
 
@@ -609,6 +622,7 @@ def run_signal_generation(signal_date: str, *, dry_run: bool) -> None:
     print(f"  股票:       {signal['ts_code']}  {signal['name']}")
     print(f"  板块:       {signal['market_segment']}  ({signal['segment_retreat_state_bucket']})")
     print(f"  流通市值:   {signal['circ_mv']/10000:.1f} 亿")
+    print(f"  信号日换手: {signal['turnover_rate']:.2f}%（最终排序主键：降序）")
     print(f"  成交概率:   {signal['fill_probability']:.1%}")
     print(f"  R1规则:     rank={signal['r1_scenario_rank']}  退出={signal['exit_rule']}")
     print(f"  买入计划:   {signal['planned_buy_date']} 开盘价买入  目标仓位{signal['position_pct']:.1%}")

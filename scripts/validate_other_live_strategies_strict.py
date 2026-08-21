@@ -69,8 +69,10 @@ from src.trading_fees import account_return_after_fees  # noqa: E402
 from src.utils.config import load_json_config  # noqa: E402
 
 
-START = "20240520"
-END = "20260514"
+# 当前正式两年锚点窗口。2024-06-30 为非交易日，实际首个可用信号日自然是
+# 2024-07-01；仍保留用户锁定的自然日边界，禁止静默改写为相邻交易日。
+START = "20240630"
+END = "20260630"
 STRICT_SOURCE = ROOT / "data" / "processed" / "limit_up_fill_scored_asof.csv"
 OLD_AC = ROOT / "reports" / "ac_daily_candidates" / "ac_daily_candidates.csv"
 OLD_D = ROOT / "reports" / "strategy_d" / "d_daily_candidates.csv"
@@ -188,8 +190,14 @@ def account_return(stock_return: float, exit_date: str, position_pct: float = PO
     )
 
 
-def build_ac(source_path: Path) -> pd.DataFrame:
-    config = load_json_config(STRATEGY_CONFIG)
+def build_ac(
+    source_path: Path,
+    *,
+    config_override: dict[str, Any] | None = None,
+) -> pd.DataFrame:
+    """重建A/C严格候选；config_override仅用于冻结基线复现。"""
+
+    config = config_override or load_json_config(STRATEGY_CONFIG)
 
     def generator(conditions: list[dict[str, Any]] | None, label: str) -> PaperCandidateGenerator:
         selected = condition_strategy_config(config, conditions, label) if conditions else config
@@ -396,9 +404,11 @@ def add_fixed_open_outcomes(picks: pd.DataFrame, spec: dict[str, Any]) -> pd.Dat
 
 def build_e() -> tuple[pd.DataFrame, pd.DataFrame]:
     spec = load_e_spec(ROOT)
-    pool = load_historical_bucketed_pool("20240523", "20260512", 80)
+    # E 必须与组合正式窗口共用同一自然日边界。历史加载器会自行补足前置
+    # lookback，退出行情则由原始日线日历按 T+2/T+3 及跌停延期规则读取。
+    pool = load_historical_bucketed_pool(START, END, 80)
     universe = build_r1_universe_from_pool(pool, spec, audit_readiness=True)
-    ranked = select_e_candidates(universe)
+    ranked = select_e_candidates(universe, spec)
     pre_gate = ranked.groupby("trade_date", as_index=False).head(1).copy()
     post_gate = select_e_daily_picks(universe, spec)
     return add_fixed_open_outcomes(pre_gate, spec), add_fixed_open_outcomes(post_gate, spec)

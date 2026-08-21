@@ -15,7 +15,7 @@ from typing import Any
 import pandas as pd
 
 
-E_VERSION = "E_R1_NO_LOOKAHEAD_SINGLE_ACCOUNT_ENTRY_GATE_V4"
+E_VERSION = "E_R1_NO_LOOKAHEAD_SINGLE_ACCOUNT_ENTRY_GATE_V5_TURNOVER_RANK"
 DEFAULT_SCENARIO_PATH = Path("config/strategy_e_r1_scenarios.json")
 
 # 这些字段都属于买入日以后才能知道的结果，禁止出现在E选股条件或排序规则中。
@@ -143,6 +143,21 @@ def load_e_spec(project_root: Path, scenario_path: Path | None = None) -> dict[s
             raise ValueError(f"E入场门禁排除值非法：{column}")
         used_columns.add(str(column))
 
+    final_ranking = spec.get("final_ranking", {})
+    if final_ranking:
+        columns = [str(column) for column in final_ranking.get("columns", [])]
+        ascending = list(final_ranking.get("ascending", []))
+        tie_columns = [
+            str(column) for column in final_ranking.get("tie_breaker_columns", [])
+        ]
+        tie_ascending = list(final_ranking.get("tie_breaker_ascending", []))
+        if not columns or len(columns) != len(ascending):
+            raise ValueError("E最终排序字段与方向数量不一致")
+        if len(tie_columns) != len(tie_ascending):
+            raise ValueError("E最终排序的稳定并列字段与方向数量不一致")
+        used_columns.update(columns)
+        used_columns.update(tie_columns)
+
     forbidden = sorted(used_columns & FORBIDDEN_SELECTION_COLUMNS)
     if forbidden:
         raise ValueError(f"E规则包含前视结果字段，拒绝运行：{forbidden}")
@@ -162,9 +177,20 @@ def required_signal_fields(spec: dict[str, Any]) -> set[str]:
         str(column)
         for column in spec.get("entry_gate", {}).get("exclude_values", {})
     )
+    fields.update(
+        str(column)
+        for column in spec.get("final_ranking", {}).get("columns", [])
+    )
+    fields.update(
+        str(column)
+        for column in spec.get("final_ranking", {}).get("tie_breaker_columns", [])
+    )
     # universe_prefilters里的键是配置动作名，不是数据列，单独移除。
     fields.discard("exclude_st_or_delisting")
     fields.discard("exclude_amount_ratio_bucket")
+    # scenario_rank 是逐条R1规则命中后由 build_r1_universe_from_pool 写入的
+    # 确定性派生序号，不是原始信号池字段，不能在构造候选并集前要求其存在。
+    fields.discard("scenario_rank")
     return fields
 
 
@@ -275,16 +301,50 @@ def build_r1_universe_from_pool(
     )
 
 
-def select_e_candidates(universe: pd.DataFrame) -> pd.DataFrame:
-    """在R1候选并集中取板块neutral，再按流通市值升序排列。"""
+def select_e_candidates(
+    universe: pd.DataFrame,
+    spec: dict[str, Any] | None = None,
+) -> pd.DataFrame:
+    """在R1候选并集中取板块neutral，再按配置的信号日字段排序。"""
 
     if universe.empty:
         return pd.DataFrame()
     result = universe[universe["segment_retreat_state_bucket"].astype(str).eq("neutral")].copy()
-    result["circ_mv"] = pd.to_numeric(result["circ_mv"], errors="coerce")
-    result = result[result["circ_mv"].notna()].copy()
-    sort_columns = [column for column in ["trade_date", "circ_mv", "scenario_rank", "ts_code"] if column in result]
-    return result.sort_values(sort_columns).reset_index(drop=True)
+    ranking = (spec or {}).get("final_ranking", {})
+    columns = [str(column) for column in ranking.get("columns", ["circ_mv"])]
+    ascending = [bool(value) for value in ranking.get("ascending", [True])]
+    tie_columns = [
+        str(column)
+        for column in ranking.get("tie_breaker_columns", ["scenario_rank", "ts_code"])
+    ]
+    tie_ascending = [
+        bool(value)
+        for value in ranking.get("tie_breaker_ascending", [True, True])
+    ]
+    if len(columns) != len(ascending) or len(tie_columns) != len(tie_ascending):
+        raise ValueError("E最终排序字段与方向数量不一致")
+    missing = [column for column in [*columns, *tie_columns] if column not in result.columns]
+    if missing:
+        raise RuntimeError(f"E最终排序字段缺失：{missing}")
+    for column in columns:
+        result[column] = pd.to_numeric(result[column], errors="coerce")
+    result = result[result[columns].notna().all(axis=1)].copy()
+    ordered_columns: list[str] = []
+    ordered_ascending: list[bool] = []
+    for column, direction in [
+        ("trade_date", True),
+        *zip(columns, ascending),
+        *zip(tie_columns, tie_ascending),
+    ]:
+        if column in ordered_columns:
+            continue
+        ordered_columns.append(column)
+        ordered_ascending.append(bool(direction))
+    return result.sort_values(
+        ordered_columns,
+        ascending=ordered_ascending,
+        na_position="last",
+    ).reset_index(drop=True)
 
 
 def apply_e_entry_gate(daily_picks: pd.DataFrame, spec: dict[str, Any]) -> pd.DataFrame:
@@ -311,7 +371,7 @@ def apply_e_entry_gate(daily_picks: pd.DataFrame, spec: dict[str, Any]) -> pd.Da
 def select_e_daily_picks(universe: pd.DataFrame, spec: dict[str, Any]) -> pd.DataFrame:
     """先按原R1规则取每日第一名，再执行无回补入场门禁。"""
 
-    ranked = select_e_candidates(universe)
+    ranked = select_e_candidates(universe, spec)
     if ranked.empty:
         return ranked
     if "trade_date" in ranked.columns:
@@ -464,7 +524,7 @@ def build_live_e_candidates(project_root: Path, signal_date: str) -> pd.DataFram
     spec = load_e_spec(project_root)
     pool = load_bucketed_signal_pool(project_root, signal_date)
     universe = build_r1_universe_from_pool(pool, spec, signal_date=signal_date, audit_readiness=True)
-    ranked = select_e_candidates(universe)
+    ranked = select_e_candidates(universe, spec)
     if ranked.empty:
         return ranked
 

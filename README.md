@@ -3,8 +3,8 @@
 本项目用于构建一套完整的 A股量化交易系统，目标是先完成数据采集、数据清洗、因子统计、策略回测和模拟交易，后续再接入 QMT / miniQMT 等券商接口进行半自动或实盘交易。
 
 > 当前阶段：当前腿序为 `D>A>E>C`，策略E当前版本为`E_CURRENT`。
-> E的正式完整样本为门禁前102个候选日、门禁后82个候选日；旧50/43行只作历史子集回归。
-> 组合结构变更后旧证书已经失效；当前四腿研究回放须重新认证，严格发布门禁通过前新BUY保持关闭。机械复利不是收益承诺，容量尚未认证。
+> 当前严格锚点为`20240630~20260630`；E为门禁前112笔候选、门禁后91笔候选、独立单账户实际执行76笔，旧50/43行只作历史子集回归。
+> 当前四腿严格研究回放为132笔、327.726719倍，但协议仍为`STRICT_DISCOVERY`；严格发布门禁通过前新BUY保持关闭。机械复利不是收益承诺，容量尚未认证。
 > 当前实盘固定使用单一组合配置，不再提供多模式策略切换；所有计划单仍必须经过 LiveOrderGateway 风控。
 > 实盘接入：QMT / miniQMT 已完成只读连接与守护进程联调，真实下单仍必须先走小资金验证。所有时间以北京时间（Asia/Shanghai）为准。
 > 策略 B 删除范围、自动卖出硬拦截和部署检查见 `docs/strategy_b_removal_20260722.md`。
@@ -425,7 +425,7 @@ a_strict_plus_c_hold3
 ④ score_limit_up_fill_probability.py    涨停成交概率打分
 ⑤ analyze_next_day_premium.py           次日溢价因子
 ⑥ run_paper_ab_filtered_daily_ops.py    A/C 信号生成（B已删除）
-⑦ run_strategy_e_signal.py             E 信号生成（板块中性小市值，A/C/D空闲时才触发）
+⑦ run_strategy_e_signal.py             E 信号生成（板块neutral+换手率降序，A/C/D空闲时才触发）
 ```
 
 其中 ①、②、④ 是关键步骤。关键步骤第一次失败会自动等待 10 秒重试一次；仍失败则停止本次收盘流水线，不生成计划单，避免继续使用旧信号。
@@ -535,21 +535,23 @@ D 策略在每个交易日 13:30 由守护进程以**非阻塞子进程**启动�
 | 纯 A+B+C | 110x | — |
 | A+B+C+D（仅 NO_CANDIDATE 日）| 235x | 22 笔 |
 | A+B+C+D（扩展，当前落地版） | **303x** | **36 笔** |
-| A+B+C+D+E（板块中性小市值） | **3640x** | **62 笔** |
+| A+B+C+D+历史E小市值版（旧口径） | **3640x** | **62 笔** |
 
 详细设计见 `docs/strategy_d.md`。
 
-### 策略 E（板块中性小市值）集成
+### 策略 E（板块neutral+换手率排序）集成
 
 E 策略在 A/C/D 均未占用资金、且不存在仅人工退出的历史 B 仓时触发，每日收盘后运行信号脚本。
 
 **触发条件：**
 - 板块今日处于中性回撤状态（`segment_retreat_state_bucket = neutral`）
 - 候选股：非 ST、成交概率可靠（`allow_buy_reliable=True`、`is_fill_score_reliable=True`）
-- 选取流通市值最小（`circ_mv` 升序取第一）
+- 40条R1规则各取信号日第一名后合并去重
+- 最终按信号日`turnover_rate`降序取第一；并列时按`scenario_rank`、`ts_code`升序
+- 第一名落入13:30～14:30首次涨停门禁时当日空仓，不回补第二名
 
 **买卖时机：**
-- T+1 开盘买入（80% 仓位），T+2 收盘卖出
+- T+1 开盘买入（82.5%目标仓位），按命中R1规则在T+2或T+3收盘卖出
 
 **每日运行：**
 ```bash
@@ -557,7 +559,7 @@ python scripts/run_strategy_e_signal.py
 ```
 
 输出：
-- `reports/strategy_e/e_signal_YYYYMMDD.json` — 今日信号
+- `reports/strategy_e/e_signals_recent.json` — 最近10个交易日的E信号
 - `reports/strategy_e/e_signal_YYYYMMDD_candidates.csv` — 所有候选
 
 详细设计见 `docs/strategy_e.md`。
@@ -571,3 +573,6 @@ python scripts/run_strategy_e_signal.py
 所有共享策略研究入口已默认启用 `A_SYSTEM_STRICT_ASOF_V1`。历史研究使用独立的 `*_asof.csv` 数据链；开发段结果固定标记为不可发布，正式结论只接受冻结规则后的 `LOCKED_OOS` 或逐折训练在先的 `WALK_FORWARD`。
 
 标准、运行顺序和失败条件见 [docs/strict_asof_standard.md](docs/strict_asof_standard.md)。
+
+当前两年锚点、A/E双复利门槛和复现命令见
+[docs/acde_anchor_20240630_20260630.md](docs/acde_anchor_20240630_20260630.md)。

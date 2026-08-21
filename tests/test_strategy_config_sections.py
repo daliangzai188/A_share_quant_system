@@ -59,6 +59,38 @@ class StrategyConfigSectionTests(unittest.TestCase):
         c_strategy = self.config["paper_ab_filtered_strategy"]["c_strategy"]
         self.assertTrue(c_strategy["only_when_a_no_candidate"])
 
+    def test_current_strict_anchor_and_c_ranking_are_locked(self) -> None:
+        """A/C当前数据窗口必须使用新锚点，且A排序变化不能串到C。"""
+        self.assertEqual(
+            self.config["data_scope"]["signal_window"],
+            {"start_date": "20240630", "end_date": "20260630"},
+        )
+        c_ranking = self.config["paper_ab_filtered_strategy"]["c_strategy"]["ranking"]
+        self.assertEqual(
+            c_ranking["columns"], ["profit_source_score", "turnover_rate"]
+        )
+        self.assertEqual(c_ranking["ascending"], [False, False])
+
+    def test_a_and_c_audit_metrics_are_standalone_single_account(self) -> None:
+        """候选池连乘不能再冒充A/C独立策略复利。"""
+        a_audit = self.config["risk_metrics_from_latest_audit"]
+        self.assertEqual(
+            a_audit["metric_scope"], "STRICT_ASOF_A_STANDALONE_SINGLE_ACCOUNT"
+        )
+        self.assertEqual(a_audit["executed_trade_count"], 58)
+        self.assertAlmostEqual(a_audit["equity_multiple"], 12.023750012345724)
+        self.assertEqual(a_audit["candidate_pool_trade_count"], 69)
+
+        c_audit = self.config["paper_ab_filtered_strategy"]["c_strategy"][
+            "latest_2y_audit"
+        ]
+        self.assertEqual(
+            c_audit["metric_scope"], "STRICT_ASOF_C_STANDALONE_SINGLE_ACCOUNT"
+        )
+        self.assertEqual(c_audit["c_trade_count"], 35)
+        self.assertAlmostEqual(c_audit["c_equity_multiple"], 3.1108307989904436)
+        self.assertEqual(c_audit["candidate_pool_trade_count"], 46)
+
     def test_a_and_c_chain_count_are_mutually_exclusive(self) -> None:
         """A 要 8_15、C 要 15_30，互斥。这个关系变了说明有人改错了段。"""
         a_values = {

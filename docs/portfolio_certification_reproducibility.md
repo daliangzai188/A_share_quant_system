@@ -1,5 +1,10 @@
 # 当前组合严格as-of机械复利复现规则
 
+当前锚点为`20240630~20260630`。新窗口优化前底座为133笔、
+300.31246148623836倍；A/E通过独立腿和组合复利双门槛后，当前严格
+研究标尺为132笔、327.72671897548867倍。旧305.348870倍和五年
+343.5434倍都不得进入当前比较。
+
 正式收益证书只能由 `scripts/certify_strict_asof_portfolio.py` 生成。旧脚本
 `scripts/certify_current_executable_portfolio.py` 只写
 `legacy_identity_alignment.json`，用于核对实盘选股身份，不能覆盖正式证书、
@@ -19,6 +24,26 @@ python3 scripts/certify_strict_asof_portfolio.py
 ```
 
 默认行为只核对锁定清单。任一输入缺失或内容变化都会失败，并把实盘认证状态先改为非PASS，禁止新的买入计划。
+
+## 重现本轮排序搜索
+
+```bash
+python3 scripts/optimize_strict_acde_from_official_baseline.py
+```
+
+优化器显式重建A原`profit_source_score+turnover_rate`排序和E原
+`circ_mv:asc`排序，因此不会因为当前A/E已应用新规则而丢失本轮底座。
+预期日志必须显示：
+
+- 底座133笔、300.31246148623836倍；
+- D/C为`KEEP_CURRENT`；
+- A/E为`DUAL_GATE_PASSED`；
+- A独立单账户由58笔、10.103128倍提高到58笔、12.023750倍；
+- E独立单账户由76笔、4.664899倍提高到76笔、10.834162倍；
+- A/E同时应用后132笔、327.72671897548867倍。
+
+候选池连乘和独立单账户复利在摘要中分栏保存。独立腿门槛只读取执行自身占仓约束后的
+`official_baseline_legs`及`best_by_leg.*.leg_metrics`，不得用候选池数字替代。
 
 ## 确认更新数据版本
 
