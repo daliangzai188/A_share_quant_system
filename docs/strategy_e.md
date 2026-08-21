@@ -136,6 +136,12 @@ python scripts/verify_strategy_e_alignment.py
 - 证书状态仍为`FAIL_STRICT_RELEASE_REQUIRED`；
 - 机械复利只用于同口径回归，不代表收益预期或真实容量。
 
+当A、D或现有持仓阻断E正式信号时，E仍执行一次不下单、不写正式信号的只读候选
+检查。日志和`e_signal_runs_recent.json`必须分别记录`priority_blocker`、
+`candidate_check_status`、`counterfactual_e_status`及候选数：只有状态为
+`CALCULATED`且候选数为0，才可说明“即使没有上游阻断，E也不会触发”；计算失败时
+必须显示结果未知，禁止回退读取陈旧候选CSV。
+
 > 当前按`D>A>E>C`从484个信号日重新回放，D使用完整逐日候选。
 > 旧组合标尺与旧输入哈希全部失效。E的同窗口搜索风险继续如实披露。
 

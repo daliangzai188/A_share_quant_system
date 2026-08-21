@@ -15,7 +15,7 @@ if "dotenv" not in sys.modules:
     stub.load_dotenv = lambda *args, **kwargs: False  # type: ignore[attr-defined]
     sys.modules["dotenv"] = stub
 
-from scripts import trading_daemon
+from scripts import run_strategy_e_signal, trading_daemon
 from src.combined_live_engine import CombinedLiveEngine
 from src.live_certification import validate_live_certification
 
@@ -80,6 +80,71 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
                 _state, _decisions, orders = engine.build_mode1_plan("20260803")
                 buys = orders[orders["side"].astype(str).str.upper().eq("BUY")]
                 self.assertEqual(str(buys.iloc[0]["strategy_leg"]), expected)
+
+    def test_blocked_e_run_records_priority_and_counterfactual_candidate_result(self) -> None:
+        """A阻断正式信号后，E候选仍应独立计算并写入可审计字段。"""
+
+        with (
+            patch.object(
+                run_strategy_e_signal,
+                "inspect_blocked_e_candidates",
+                return_value=(0, "E只读候选检查为0只，即使账户空仓也不会触发", None),
+            ),
+            patch.object(run_strategy_e_signal, "save_run_status") as save_status,
+        ):
+            run_strategy_e_signal.finish_occupied_without_e_signal(
+                "20260821",
+                "A今日已生成计划委托（腿序A>E），E不触发",
+                dry_run=False,
+            )
+
+        kwargs = save_status.call_args.kwargs
+        self.assertEqual(kwargs["candidate_count"], 0)
+        self.assertEqual(kwargs["candidate_check_status"], "CALCULATED")
+        self.assertEqual(kwargs["counterfactual_e_status"], "NO_CANDIDATE")
+        self.assertIn("A今日已生成计划委托", kwargs["priority_blocker"])
+
+    def test_e_status_log_distinguishes_a_block_from_no_candidate(self) -> None:
+        """播报必须明确：A阻断存在，但E候选也确实已单独算成0只。"""
+
+        run = {
+            "signal_date": "20260821",
+            "status": "NO_SIGNAL_OCCUPIED",
+            "reason": "A今日已生成计划委托；E只读候选检查为0只",
+            "priority_blocker": "A今日已生成计划委托（腿序A>E），E不触发",
+            "candidate_check_status": "CALCULATED",
+            "counterfactual_e_status": "NO_CANDIDATE",
+            "candidate_count": 0,
+        }
+        log = MagicMock()
+        with (
+            patch.object(trading_daemon, "_load_e_signal_for_signal_date", return_value=None),
+            patch.object(trading_daemon, "_json_signal_has_date", return_value=False),
+            patch.object(trading_daemon, "signal_run_by_signal_date", return_value=run),
+            patch.object(trading_daemon, "logger", return_value=log),
+        ):
+            trading_daemon._log_e_signal_status("20260821")
+
+        template, *args = log.info.call_args.args
+        message = template % tuple(args)
+        self.assertIn("优先级结论=A今日已生成计划委托", message)
+        self.assertIn("E候选检查=已独立计算，结果=无候选（0只）", message)
+        self.assertIn("即使没有上游策略占用，E也不会触发", message)
+
+    def test_e_candidate_count_does_not_fallback_to_stale_csv_after_failed_run(self) -> None:
+        """当日状态存在但候选检查失败时，不能从旧CSV伪造候选数。"""
+
+        run = {
+            "signal_date": "20260821",
+            "status": "NO_SIGNAL_OCCUPIED",
+            "candidate_check_status": "FAILED",
+        }
+        with (
+            patch.object(trading_daemon, "signal_run_by_signal_date", return_value=run),
+            patch.object(pd, "read_csv") as read_csv,
+        ):
+            self.assertIsNone(trading_daemon._load_e_candidate_count("20260821"))
+        read_csv.assert_not_called()
 
     def test_d_shared_proxy_checks_release_certification_before_buy(self) -> None:
         proxy = trading_daemon.SharedQMTBrokerProxy({"adapter": "qmt"})

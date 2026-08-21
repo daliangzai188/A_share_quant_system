@@ -7,7 +7,7 @@
   "release_eligible": false,
   "result_scope": "DISCOVERY_ONLY",
   "compound_standard_id": "A_SYSTEM_MECHANICAL_COMPOUND_V1",
-  "generated_at": "2026-08-21T11:50:21.985047+00:00",
+  "generated_at": "2026-08-21T12:04:48.625246+00:00",
   "window": "20240630~20260630",
   "source_audit": {
     "standard_id": "A_SYSTEM_STRICT_ASOF_V1",

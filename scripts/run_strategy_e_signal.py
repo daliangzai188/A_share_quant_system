@@ -429,8 +429,16 @@ def save_run_status(
     candidate_count: int | None = None,
     signal: dict[str, Any] | None = None,
     candidate: pd.Series | None = None,
+    candidate_check_status: str | None = None,
+    candidate_check_reason: str | None = None,
+    priority_blocker: str | None = None,
+    counterfactual_e_status: str | None = None,
 ) -> None:
-    """记录E当日是否正常完成；不向正式信号文件写入空信号。"""
+    """记录E当日是否正常完成；不向正式信号文件写入空信号。
+
+    ``NO_SIGNAL_OCCUPIED``时，candidate_count表示“假设没有上游策略/持仓阻断”
+    的只读候选数，不是正式E信号数。额外字段用于区分优先级阻断和候选计算结果。
+    """
 
     if dry_run:
         return
@@ -441,12 +449,25 @@ def save_run_status(
     }
     if candidate_count is not None:
         run["candidate_count"] = int(candidate_count)
+        run["candidate_count_scope"] = (
+            "COUNTERFACTUAL_IF_NO_PRIORITY_BLOCKER"
+            if status == NO_SIGNAL_OCCUPIED
+            else "FORMAL_E_CANDIDATE_POOL"
+        )
     if signal is not None:
         run["ts_code"] = str(signal.get("ts_code", ""))
         run["name"] = str(signal.get("name", ""))
     if candidate is not None:
         run["candidate_ts_code"] = str(candidate.get("ts_code", ""))
         run["candidate_name"] = str(candidate.get("name", ""))
+    if candidate_check_status is not None:
+        run["candidate_check_status"] = str(candidate_check_status)
+    if candidate_check_reason is not None:
+        run["candidate_check_reason"] = str(candidate_check_reason)
+    if priority_blocker is not None:
+        run["priority_blocker"] = str(priority_blocker)
+    if counterfactual_e_status is not None:
+        run["counterfactual_e_status"] = str(counterfactual_e_status)
     save_recent_signal_run(
         RUN_STATUS_PATH,
         run,
@@ -500,6 +521,15 @@ def finish_occupied_without_e_signal(
         signal_date,
         dry_run=dry_run,
     )
+    if candidate_count is None:
+        candidate_check_status = "FAILED"
+        counterfactual_e_status = "UNKNOWN"
+    elif candidate_count == 0:
+        candidate_check_status = "CALCULATED"
+        counterfactual_e_status = "NO_CANDIDATE"
+    else:
+        candidate_check_status = "CALCULATED"
+        counterfactual_e_status = "CANDIDATE_AVAILABLE"
     reason = f"{blocker_reason}；{candidate_reason}"
     print(f"[E信号] {reason}")
     save_run_status(
@@ -509,6 +539,10 @@ def finish_occupied_without_e_signal(
         dry_run=dry_run,
         candidate_count=candidate_count,
         candidate=candidate,
+        candidate_check_status=candidate_check_status,
+        candidate_check_reason=candidate_reason,
+        priority_blocker=blocker_reason,
+        counterfactual_e_status=counterfactual_e_status,
     )
 
 

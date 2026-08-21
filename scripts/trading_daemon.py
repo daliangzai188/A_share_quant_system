@@ -12971,7 +12971,11 @@ def _load_e_candidate_count(signal_date: str) -> int | None:
             PROJECT_ROOT / "reports" / "strategy_e" / "e_signal_runs_recent.json",
             signal_date,
         )
-        if run is not None and run.get("candidate_count") is not None:
+        if run is not None:
+            # 当天已有运行状态但candidate_count缺失，表示候选检查失败或未完成。
+            # 此时禁止回退读取可能来自更早一次运行的CSV，否则会把陈旧候选写进日志。
+            if run.get("candidate_count") is None:
+                return None
             return int(run["candidate_count"])
         path = PROJECT_ROOT / "reports" / "strategy_e" / f"e_signal_{signal_date}_candidates.csv"
         if not path.exists():
@@ -12994,12 +12998,54 @@ def _log_e_signal_status(signal_date: str) -> None:
         count_text = "未知" if candidate_count is None else str(candidate_count)
         signal = _load_e_signal_for_signal_date(signal_date)
         if signal is None:
+            run = signal_run_by_signal_date(
+                PROJECT_ROOT / "reports" / "strategy_e" / "e_signal_runs_recent.json",
+                signal_date,
+            )
             run_status = _strategy_signal_run_readiness(
                 strategy_leg="E",
                 run_status_path=PROJECT_ROOT / "reports" / "strategy_e" / "e_signal_runs_recent.json",
                 signal_path=PROJECT_ROOT / "reports" / "strategy_e" / "e_signals_recent.json",
                 signal_date=signal_date,
             )
+            if run is not None and run_status["status"] == NO_SIGNAL_OCCUPIED:
+                blocker = str(
+                    run.get("priority_blocker")
+                    or str(run_status["reason"]).split("；", 1)[0]
+                    or "上游优先级或持仓阻断"
+                )
+                check_status = str(run.get("candidate_check_status", "")).upper()
+                # 兼容升级前已完成只读检查的记录：有candidate_count即视为已计算。
+                if not check_status and run.get("candidate_count") is not None:
+                    check_status = "CALCULATED"
+                check_reason = str(run.get("candidate_check_reason", "") or "")
+                if check_status == "CALCULATED" and candidate_count == 0:
+                    candidate_result = (
+                        "已独立计算，结果=无候选（0只）；"
+                        "结论=即使没有上游策略占用，E也不会触发"
+                    )
+                elif check_status == "CALCULATED" and candidate_count is not None:
+                    code = str(run.get("candidate_ts_code", "") or "").strip()
+                    name = str(run.get("candidate_name", "") or "").strip()
+                    first = f"，第一名={code} {name}" if code else ""
+                    candidate_result = (
+                        f"已独立计算，结果=有候选（{candidate_count}只{first}）；"
+                        "结论=本日仅因上游优先级/持仓阻断而未生成E正式信号"
+                    )
+                elif check_status == "FAILED":
+                    candidate_result = (
+                        "计算失败，结果=未知；不能判断账户空闲时E是否会触发"
+                        + (f"；错误={check_reason}" if check_reason else "")
+                    )
+                else:
+                    candidate_result = "未计算，结果=未知"
+                logger().info(
+                    "  E策略：信号日期 %s，正式信号=未生成；优先级结论=%s；E候选检查=%s",
+                    signal_date,
+                    blocker,
+                    candidate_result,
+                )
+                return
             logger().info(
                 "  E策略：信号日期 %s 未生成E正式信号，运行状态=%s，候选池=%s，原因=%s",
                 signal_date,

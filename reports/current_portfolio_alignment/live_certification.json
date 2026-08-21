@@ -4,7 +4,7 @@
   "current_executable": false,
   "scenario": "current_d_a_e_c",
   "metric_scope": "STRICT_ASOF_MECHANICAL_COMPOUND",
-  "generated_at": "2026-08-21T11:50:21.986812+00:00",
+  "generated_at": "2026-08-21T12:04:48.627185+00:00",
   "input_start_date": "20240630",
   "input_end_date": "20260630",
   "signal_day_count": 484,
@@ -38,7 +38,7 @@
   "research_protocol": "STRICT_DISCOVERY",
   "release_eligible": false,
   "strict_asof_audit_path": "reports/current_portfolio_alignment/strict_asof_audit.json",
-  "strict_asof_audit_sha256": "41801685e3d4de9c9e5f5372d30b04faef6b6be66069107d753428cd7c2b14f9",
+  "strict_asof_audit_sha256": "d3f67ca6cf6bd368982aeb5d4e42cfd53a1f62edde6b047b923802f5bc8aff1d",
   "config_sha256": "fb119edf5344fb36084c8694c5052c300125c8fbb6091df71701a05502357792",
   "code_files": [
     "scripts/certify_strict_asof_portfolio.py",
@@ -61,7 +61,7 @@
     "src/strict_asof.py",
     "src/trading_fees.py"
   ],
-  "code_sha256": "148a37600f5f28f3d75c4f841cf1cf4075b04ea390180b239001a42a466fbd07",
+  "code_sha256": "7cdd152869fe9c614aa1b10d7a6e24fb822061aaef1bedb1e4147fa6336c1145",
   "input_files": [
     "reports/current_portfolio_alignment/strict_asof_input_manifest.json"
   ],
