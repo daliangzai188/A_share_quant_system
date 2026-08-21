@@ -7,7 +7,12 @@
     "default_research_protocol": "STRICT_DISCOVERY",
     "formal_protocols": ["LOCKED_OOS", "WALK_FORWARD"],
     "fill_probability_method": "asof_turnover_space_proxy_v2",
-    "policy_note": "所有策略收益研究必须使用严格point-in-time数据；STRICT_DISCOVERY只能开发规则，不能认证或发布。正式结论只接受冻结规则LOCKED_OOS或逐折训练在先WALK_FORWARD。"
+    "require_for_all_strategy_return_research": true,
+    "require_mechanical_compound": true,
+    "mechanical_compound_standard_id": "A_SYSTEM_MECHANICAL_COMPOUND_V1",
+    "official_portfolio_certifier": "scripts/certify_strict_asof_portfolio.py",
+    "legacy_alignment_is_non_official": true,
+    "policy_note": "所有策略收益研究必须使用严格point-in-time数据和单账户逐笔机械复利；STRICT_DISCOVERY只能开发规则，不能认证或发布。正式结论只接受冻结规则LOCKED_OOS或逐折训练在先WALK_FORWARD。B/L/M/N式旧来源或结果回看不得进入正式收益。"
   },
   "trade_mode": "live",
   "broker_adapter_enabled": true,
@@ -61,11 +66,16 @@
     "selected_rule_description": "当前生产腿序D>A>E>C；D按盘中真实时序优先，收盘后静态腿依次为A、E、C。",
     "live_candidate_metrics": {
       "certification_invalidated": true,
-      "certification_invalidation_reason": "组合身份已变更为D>A>E>C；旧组合证书、冻结哈希和复利锚点全部失效。",
-      "strict_rebuild_required": true,
+      "certification_invalidation_reason": "严格as-of机械复利已重建，但当前仅属STRICT_DISCOVERY，尚无可发布的冻结OOS/walk-forward证书。",
+      "strict_rebuild_required": false,
       "capacity_certified": false,
-      "scenario": "current_d_a_e_c_pending_strict_rebuild",
-      "note": "当前四腿严格回放只能作为研究审计；完成同输入、同费用、同仓位的发布认证前不得授权新BUY。"
+      "scenario": "current_d_a_e_c_strict_asof_discovery",
+      "strict_asof_trade_count": 124,
+      "strict_asof_equity_multiple": 305.34886961792137,
+      "strict_asof_win_rate": 0.6774193548387096,
+      "strict_asof_max_drawdown": -0.23348354557106366,
+      "compound_standard_id": "A_SYSTEM_MECHANICAL_COMPOUND_V1",
+      "note": "当前正式统计为124笔、305.348870倍的严格as-of单账户机械复利；旧来源128笔、1727.906倍仅作身份诊断。STRICT_DISCOVERY不能授权新BUY。"
     }
   },
   "live_performance_report": {

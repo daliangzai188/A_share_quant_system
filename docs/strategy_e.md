@@ -53,7 +53,8 @@
 | `scripts/run_strategy_e_signal.py` | 检查账户空闲状态，调用唯一规则源并生成次日实盘信号 |
 | `src/combined_live_engine.py` | 把E信号转成组合计划单，并按信号退出偏移登记T+2/T+3到期日 |
 | `scripts/verify_strategy_e_alignment.py` | 同时复核门禁前102日和门禁后82日逐票一致 |
-| `scripts/certify_current_executable_portfolio.py` | 把E放回当前D/A/E/C逐日资金曲线，验证单账户身份；严格发布认证须另行通过 |
+| `scripts/certify_current_executable_portfolio.py` | 只核对E与当前D/A/E/C实盘选择身份，不生成正式收益 |
+| `scripts/certify_strict_asof_portfolio.py` | 用严格as-of候选和统一机械复利生成当前组合唯一正式统计证书 |
 
 ## 四、选股与退出流程
 

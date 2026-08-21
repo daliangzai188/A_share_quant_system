@@ -177,7 +177,7 @@ def main() -> None:
                 "max_consecutive_losses": max_consecutive_losses(returns),
                 "future_selection_field_count": len(future_fields),
                 "sample_scope": "COMPLETE_DAILY_CANDIDATES",
-                "single_account_validation_source": "certify_current_executable_portfolio.py",
+                "single_account_validation_source": "certify_strict_asof_portfolio.py",
                 "alignment_passed": bool(
                     len(locked) == EXPECTED_PRE_GATE_TRADE_COUNT
                     and len(eligible_locked) == EXPECTED_ENTRY_GATE_TRADE_COUNT

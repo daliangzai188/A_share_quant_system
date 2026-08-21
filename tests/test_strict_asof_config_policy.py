@@ -4,6 +4,7 @@ import json
 import unittest
 from pathlib import Path
 
+from src.mechanical_compound import MECHANICAL_COMPOUND_STANDARD_ID
 from src.strict_asof import STRICT_ASOF_STANDARD_ID
 
 
@@ -19,6 +20,16 @@ class StrictAsOfConfigPolicyTests(unittest.TestCase):
         policy = self.config["strict_asof"]
         self.assertTrue(policy["enabled"])
         self.assertEqual(policy["standard_id"], STRICT_ASOF_STANDARD_ID)
+        self.assertTrue(policy["require_for_all_strategy_return_research"])
+        self.assertTrue(policy["require_mechanical_compound"])
+        self.assertEqual(
+            policy["mechanical_compound_standard_id"],
+            MECHANICAL_COMPOUND_STANDARD_ID,
+        )
+        self.assertEqual(
+            policy["official_portfolio_certifier"],
+            "scripts/certify_strict_asof_portfolio.py",
+        )
 
     def test_all_shared_research_entrypoints_fail_closed_to_strict(self) -> None:
         for section_name in (

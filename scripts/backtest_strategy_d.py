@@ -15,7 +15,8 @@
        b. 若D没打板 → 今晚A/B/C流水线生成信号，明天开盘执行A/B/C
 
 本脚本负责冻结D候选和D单腿T+2收益。当前完整组合的真实串行占仓、D>A>E>C
-时序与认证，以 scripts/certify_current_executable_portfolio.py 为唯一发布来源。
+时序身份以 scripts/certify_current_executable_portfolio.py 核对；正式收益与发布
+只认 scripts/certify_strict_asof_portfolio.py。
 
 输出：
   reports/strategy_d/
@@ -232,7 +233,8 @@ def run_simulation(
       - POSITION_OCCUPIED_SKIP：旧仓位占用资金，D不触发
 
     返回的ABC叠加曲线只用于旧报告审计；当前组合发布必须运行
-    certify_current_executable_portfolio.py的严格串行回放。
+    certify_current_executable_portfolio.py的身份串行回放；正式指标另由
+    certify_strict_asof_portfolio.py严格重建。
 
     Returns:
         df_abc: 逐日ABC资金曲线

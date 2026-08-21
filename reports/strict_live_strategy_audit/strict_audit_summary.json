@@ -1,4 +1,11 @@
 {
+  "standard_id": "A_SYSTEM_STRICT_ASOF_V1",
+  "asof_mode": "STRICT",
+  "strict_asof_passed": true,
+  "research_protocol": "STRICT_DISCOVERY",
+  "release_eligible": false,
+  "result_scope": "DISCOVERY_ONLY",
+  "compound_standard_id": "A_SYSTEM_MECHANICAL_COMPOUND_V1",
   "audit_date": "2026-08-20",
   "window": "20240520~20260514",
   "source_audit": {
@@ -237,7 +244,7 @@
       "avg_account_return": -0.006948836442982755,
       "median_account_return": -0.013907223441420745,
       "equity_multiple": 0.8517753193029305,
-      "max_drawdown": -0.24472482382945948,
+      "max_drawdown": -0.27142429766619847,
       "max_profit": 0.21608992584586462,
       "max_loss": -0.13823939725321072,
       "profit_loss_ratio": 0.9137051907887668,
@@ -263,6 +270,7 @@
     "win_rate_wilson_95_upper": 0.7532960085618925,
     "avg_return_bootstrap_95_lower": 0.034790506952766954,
     "avg_return_bootstrap_95_upper": 0.06979703925076684,
+    "compound_standard_id": "A_SYSTEM_MECHANICAL_COMPOUND_V1",
     "leg_counts": {
       "A": 43,
       "C": 17,

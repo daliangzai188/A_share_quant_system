@@ -2,6 +2,8 @@
 
 标准编号：`A_SYSTEM_STRICT_ASOF_V1`
 
+机械复利编号：`A_SYSTEM_MECHANICAL_COMPOUND_V1`
+
 本标准的目标是让策略在历史日期 `T` 做决定时，只能看到当时真实可获得的数据。门禁失败时停止回测，不生成可比较的收益结论。
 
 ## 1. 两类“回视”都要阻断
@@ -39,7 +41,25 @@ limit_up_fill_scored_asof.csv
 
 旧的非 as-of 文件保留用于历史核对，不再是共享研究入口，也不能进入正式发布认证。
 
-## 3. 新策略研究要求
+正式组合统计只能由 `scripts/certify_strict_asof_portfolio.py` 写入
+`reports/current_portfolio_alignment/live_certification.json`。旧来源身份脚本只写
+`legacy_identity_alignment.json`；B、L、M、N曾出现的旧来源、算错或结果回看口径
+不得再进入正式收益。
+
+## 3. 机械逐笔复利要求
+
+组合复利只允许对已经按真实单账户时序选出的实际成交，依次计算：
+
+```text
+equity_t = equity_(t-1) × (1 + account_return_t)
+```
+
+`account_return_t`必须已经计入仓位、滑点、佣金、过户费和对应日期的印花税。
+候选收益、未成交/被占仓跳过的交易、固定本金累计收益、各腿独立复利相乘都不能
+作为组合复利。公共实现是 `src/mechanical_compound.py`；缺失收益、乱序成交、
+同日重复成交和小于等于-100%的非法收益必须直接失败。
+
+## 4. 新策略研究要求
 
 新策略必须复用 `src/strict_asof.py` 的门禁，优先通过 `StrategyConditionOptimizer`、`SimpleCandidateBacktester` 或 `ConservativeTradeReplay` 运行。自定义研究脚本必须在任何收益计算之前调用：
 
@@ -51,7 +71,7 @@ limit_up_fill_scored_asof.csv
 
 没有审计文件、审计哈希不一致、协议仍是开发段，实盘认证门禁都会拒绝新增 BUY。SELL 不受该门禁影响。
 
-## 4. Windows 运行顺序
+## 5. Windows 运行顺序
 
 ```powershell
 py -3.11 scripts\score_limit_up_fill_probability.py --historical-asof
@@ -59,11 +79,12 @@ py -3.11 scripts\validate_strict_asof_dataset.py
 py -3.11 scripts\analyze_next_day_premium.py
 py -3.11 scripts\generate_candidate_pool.py
 py -3.11 scripts\run_backtest.py
+py -3.11 scripts\certify_strict_asof_portfolio.py
 ```
 
 审计产物在 `reports/strict_asof/`。共享配置当前是 `STRICT_DISCOVERY`，因此上述回测只能用于开发，不能直接恢复或扩大实盘。
 
-## 5. 判断通过的最低条件
+## 6. 判断通过的最低条件
 
 - `duplicate_key_count == 0`
 - `invalid_signal_date_count == 0`

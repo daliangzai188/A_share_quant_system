@@ -44,9 +44,19 @@ from src.market_rules import (  # noqa: E402
     listing_trade_day_number,
     price_limit_pct,
 )
+from src.mechanical_compound import (  # noqa: E402
+    MECHANICAL_COMPOUND_STANDARD_ID,
+    mechanical_compound,
+    mechanical_compound_frame,
+)
 from src.paper_candidate_generator import PaperCandidateGenerator  # noqa: E402
 from src.strategy_d_spec import historical_candidate_mask  # noqa: E402
-from src.strict_asof import PointInTimeContract, audit_point_in_time_frame  # noqa: E402
+from src.strict_asof import (  # noqa: E402
+    PointInTimeContract,
+    STRICT_ASOF_STANDARD_ID,
+    STRICT_DISCOVERY,
+    audit_point_in_time_frame,
+)
 from src.strategy_e import (  # noqa: E402
     apply_e_entry_gate,
     build_r1_universe_from_pool,
@@ -137,8 +147,7 @@ def return_metrics(returns: pd.Series, *, seed_offset: int = 0) -> dict[str, Any
             "avg_return_bootstrap_95_upper": 0.0,
         }
     wins = int((values > 0).sum())
-    curve = np.cumprod(1 + values)
-    drawdown = curve / np.maximum.accumulate(curve) - 1
+    compound = mechanical_compound(values)
     positive = values[values > 0]
     negative = values[values < 0]
     rng = np.random.default_rng(BOOTSTRAP_SEED + seed_offset)
@@ -151,8 +160,8 @@ def return_metrics(returns: pd.Series, *, seed_offset: int = 0) -> dict[str, Any
         "win_rate": float(wins / len(values)),
         "avg_account_return": float(values.mean()),
         "median_account_return": float(np.median(values)),
-        "equity_multiple": float(curve[-1]),
-        "max_drawdown": float(drawdown.min()),
+        "equity_multiple": compound.equity_multiple,
+        "max_drawdown": compound.max_drawdown,
         "max_profit": float(values.max()),
         "max_loss": float(values.min()),
         "profit_loss_ratio": (
@@ -404,8 +413,18 @@ def candidate_map(frame: pd.DataFrame) -> dict[str, dict[str, Any]]:
 
 
 def baseline_dates() -> list[str]:
-    frame = pd.read_csv(cert.BASELINE_PATH, dtype={"date": str}, low_memory=False)
-    return date_text(frame["date"]).tolist()
+    calendar = pd.read_csv(
+        ROOT / "data" / "raw" / "trade_calendar.csv",
+        dtype={"cal_date": str},
+        low_memory=False,
+    )
+    if "is_open" in calendar.columns:
+        calendar = calendar[
+            calendar["is_open"].astype(str).isin({"1", "1.0", "True", "true"})
+        ]
+    return sorted(
+        calendar.loc[calendar["cal_date"].between(START, END), "cal_date"].astype(str)
+    )
 
 
 def replay(
@@ -478,8 +497,16 @@ def replay(
 
 def combo_metrics(detail: pd.DataFrame, low: str = START, high: str = END) -> dict[str, Any]:
     sample = detail[detail["signal_date"].between(low, high)].copy()
-    trades = sample[sample["status"].eq("EXECUTED")]
+    trades = sample[sample["status"].eq("EXECUTED")].copy()
     result = return_metrics(trades["account_return"], seed_offset=99)
+    compound = mechanical_compound_frame(trades)
+    if (
+        result["trade_count"] != compound.trade_count
+        or abs(result["equity_multiple"] - compound.equity_multiple) > 1e-12
+        or abs(result["max_drawdown"] - compound.max_drawdown) > 1e-12
+    ):
+        raise RuntimeError("严格组合指标与机械逐笔复利公共实现不一致")
+    result["compound_standard_id"] = compound.standard_id
     result["leg_counts"] = trades["strategy_leg"].value_counts().sort_index().to_dict()
     return result
 
@@ -712,6 +739,13 @@ def main() -> None:
     gate_frame.to_csv(OUT / "strict_release_gates.csv", index=False, encoding="utf-8-sig")
 
     result = {
+        "standard_id": STRICT_ASOF_STANDARD_ID,
+        "asof_mode": "STRICT",
+        "strict_asof_passed": bool(audit["passed"]),
+        "research_protocol": STRICT_DISCOVERY,
+        "release_eligible": False,
+        "result_scope": "DISCOVERY_ONLY",
+        "compound_standard_id": MECHANICAL_COMPOUND_STANDARD_ID,
         "audit_date": "2026-08-20",
         "window": f"{START}~{END}",
         "source_audit": audit,

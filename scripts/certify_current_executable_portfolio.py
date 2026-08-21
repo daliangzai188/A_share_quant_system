@@ -1,6 +1,6 @@
-"""认证当前D/A/E/C组合的可执行逐日资金曲线。
+"""核对当前D/A/E/C旧来源身份回放，不生成正式收益认证。
 
-本脚本把此前散落的一次性计算固化成可重复基线，并比较E门禁与M启用前后：
+本脚本把此前散落的一次性计算固化成可重复身份基线，并比较E门禁前后：
 
 1. B已删除；历史B日只保留按当前A→C重选后真实存在的A/C候选；
 2. E使用无前视、单账户R1明细，旧E候选和旧收益不得混入；
@@ -13,7 +13,7 @@
 当前有效腿序 **D > A > E > C**，见 pick_by_priority。
 D 不在 pick_by_priority 里：它在信号日盘中就买了，位置由时序锁死，见 replay。
 
-⚠️ **本脚本是实盘的对照基准，两侧必须同时正确。** 实盘一侧分两层，缺一层就是空转：
+⚠️ **本脚本只验证实盘选择身份，两侧必须同时正确。** 实盘一侧分两层，缺一层就是空转：
       上游门（信号生不生成）run_strategy_e_signal.has_ac_planned_order
       下游腿序（生成了怎么挑）combined_live_engine.build_plan
 
@@ -27,7 +27,7 @@ D 不在 pick_by_priority 里：它在信号日盘中就买了，位置由时序
     python scripts/certify_current_executable_portfolio.py
 
 输出：
-    reports/current_portfolio_alignment/live_certification.json
+    reports/current_portfolio_alignment/legacy_identity_alignment.json
     reports/current_portfolio_alignment/input_manifest.json
     reports/current_portfolio_alignment/portfolio_summary.csv
     reports/current_portfolio_alignment/portfolio_trades.csv
@@ -102,6 +102,7 @@ TRADE_CALENDAR_PATH = PROJECT_ROOT / "data" / "raw" / "trade_calendar.csv"
 DAILY_PRICE_DIR = PROJECT_ROOT / "data" / "raw" / "daily"
 STOCK_BASIC_PATH = PROJECT_ROOT / "data" / "raw" / "stock_basic" / "stock_basic_all.csv"
 OUTPUT_DIR = PROJECT_ROOT / "reports" / "current_portfolio_alignment"
+LEGACY_IDENTITY_ALIGNMENT_PATH = OUTPUT_DIR / "legacy_identity_alignment.json"
 RUNTIME_CONFIG_PATH = PROJECT_ROOT / "config" / "config.json"
 _RUNTIME_CONFIG = json.loads(RUNTIME_CONFIG_PATH.read_text(encoding="utf-8"))
 _CERTIFICATION_CONFIG = _RUNTIME_CONFIG.get("portfolio_certification", {})
@@ -975,9 +976,9 @@ def noninferiority_passes(
 
 
 def write_certification(payload: dict[str, Any]) -> None:
-    """原子写认证状态，避免进程中断后留下半个JSON或沿用旧PASS。"""
+    """原子写旧来源身份状态；绝不覆盖严格as-of正式证书。"""
 
-    path = OUTPUT_DIR / "live_certification.json"
+    path = LEGACY_IDENTITY_ALIGNMENT_PATH
     temporary = path.with_suffix(".json.tmp")
     temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     temporary.replace(path)
@@ -1279,7 +1280,7 @@ def main(*, refresh_input_manifest: bool = False) -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="认证当前可执行组合")
+    parser = argparse.ArgumentParser(description="核对当前组合旧来源身份，不生成正式认证")
     parser.add_argument(
         "--refresh-input-manifest",
         action="store_true",

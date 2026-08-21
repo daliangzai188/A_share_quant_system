@@ -867,7 +867,7 @@
     }
   },
   "source_sha256": {
-    "reports/strict_live_strategy_audit/strict_audit_summary.json": "863244ec304bcc99f35d9e6e5166db5fe1bc227aa1b68045e81f21fc39f2853b",
+    "reports/strict_live_strategy_audit/strict_audit_summary.json": "50541706cf1fa5246d28d494fbeb8b5ed1df54322f138cf6829898c45e96d673",
     "reports/strict_live_strategy_audit/strict_portfolio_daily.csv": "88c8772e4beb4247c31ed381df05d91f9fd043961dd98f37aeb32c2a64272718",
     "reports/strict_live_strategy_audit/strict_release_gates.csv": "b425ed5ea4426a2fa8e7324b65223ce0f8dc5158d2ca0af2cbb87227b91560c4",
     "reports/five_year_walk_forward/leg_oos_metrics.csv": "c9ec699b628d9e1b62cbf48f6093aace7dcdfaae3a988af0df0ba1399573bce9",
@@ -875,7 +875,7 @@
     "reports/five_year_walk_forward/capacity_proxy.csv": "d984150eac5b5998068f6ef5fe871450316c160c757e514579eb6c0d1aeda6d5",
     "reports/five_year_walk_forward/forward_freeze_candidates.json": "3755c154e3c5040d9f2dc32d1af91570e8d59b4d153181d2aab4af329a981693",
     "reports/five_year_walk_forward/publication_gate.json": "92d14c776712d11f6726019c60b7943925833349d8b4cbaa3913e620880c0c04",
-    "reports/current_portfolio_alignment/live_certification.json": "5d2fb37885dc32ea55abd475787caab0aeb8f38c10e3c4b0fcb1b8d5bb7ab801",
+    "reports/current_portfolio_alignment/live_certification.json": "86f8058bc9dd2abc22638e4a92ad1b24f53df99323c26c88f345b9457e8fb5a4",
     "config/strategy_release_freeze.json": "6d73dcb0d49bcc35c7a083c7227483a1946bf2bfbfc7afc0924dd310d6ae2e33"
   },
   "safety": {

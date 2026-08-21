@@ -340,7 +340,8 @@ D_ELIGIBLE_STATUSES = {"NO_CANDIDATE", "HISTORICAL_SIM_FILLED", "BUY_REJECTED"}
    只取第一名且失败不递补。
 4. D全部按T+2收盘退出，仓位82.5%，成交压力折扣80%，往返费用及滑点0.15%。
 5. 本脚本中的旧A/B/C叠加曲线只保留审计用途；当前组合收益和串行占仓只能以
-   `scripts/certify_current_executable_portfolio.py`为发布标尺。
+   `scripts/certify_current_executable_portfolio.py`只作身份核对；发布标尺只认
+   `scripts/certify_strict_asof_portfolio.py`。
 
 输出：
 ```
@@ -367,7 +368,8 @@ cd /Users/user/Desktop/A_System
 | `scripts/backtest_strategy_d.py` | 冻结D候选、T+2收益及验证闸门 |
 | `scripts/monitor_strategy_d_intraday.py` | 09:30全日路径、WATCH/BUY、成交概率和撤单 |
 | `scripts/trading_daemon.py` | 组合状态允许时启动D线程，复用主QMT连接 |
-| `scripts/certify_current_executable_portfolio.py` | 严格串行组合回放和代码/输入指纹认证 |
+| `scripts/certify_current_executable_portfolio.py` | 旧来源串行身份核对，不生成正式收益认证 |
+| `scripts/certify_strict_asof_portfolio.py` | 严格as-of单账户机械复利和代码/输入指纹认证 |
 | `src/broker_adapter.py`、`src/qmt_adapter.py` | 委托、成交确认和撤单接口 |
 
 ---

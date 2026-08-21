@@ -42,11 +42,13 @@ A 与 C 的条件互斥
         （2026-08-07 之前 A 和 C 是同一份 abc_orders 一起判的，等于 C 也享受了
          A 的最高优先级，与认证脚本 pick_by_priority 不一致，本次拆开收口）
 
-对应的回测口径见certify_current_executable_portfolio.pick_by_priority。改任何一侧
-都要重跑认证。旧组合认证已经失效；新组合未重新冻结认证前，
+实盘身份对照见certify_current_executable_portfolio.pick_by_priority；正式收益口径
+只认certify_strict_asof_portfolio。改任何一侧都要同时重跑身份核对和严格认证。
+当前严格结果仍是开发段；新组合未重新冻结发布前，
 新BUY必须由LiveOrderGateway fail-closed，已有持仓SELL不得受影响。
 
-复现：python scripts/certify_current_executable_portfolio.py
+身份复现：python scripts/certify_current_executable_portfolio.py
+正式统计：python scripts/certify_strict_asof_portfolio.py
 """
 from __future__ import annotations
 

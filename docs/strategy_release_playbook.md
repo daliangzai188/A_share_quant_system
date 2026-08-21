@@ -29,7 +29,7 @@ docs/strategy_release_playbook.md
 
 ```text
 1. 完成训练/测试/样本外、成交、回撤和容量复核
-2. python scripts/certify_current_executable_portfolio.py
+2. python scripts/certify_strict_asof_portfolio.py
 3. python scripts/freeze_current_strategy_release.py \
      --release-id <唯一版本号> \
      --change-reason <至少8个字符的发布原因> \
@@ -109,7 +109,7 @@ a_strict_plus_c_hold3
 4. C 条件：`market_chain_count_bucket=15_30` 且 `segment_limit_up_count_bucket=40_80`。
 5. C 使用自己的风险过滤：`封单/流通市值偏高`、`LOSS_OVERLAY_WATCH`，以及按板高分档的炸板次数限制。
 6. C 卖出口径仍为 T+3 收盘；A按自己的既有退出口径执行。
-7. D、E、N按当前组合资金占用规则继续参与。
+7. D、E按当前组合资金占用规则继续参与；M、N已退役。
 8. 仅人工退出的历史 B 仓存在时，所有新开仓均阻断。
 
 当前发布验证状态：

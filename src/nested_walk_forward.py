@@ -29,6 +29,7 @@ from src.market_rules import (
     listing_trade_day_number,
     price_limit_pct,
 )
+from src.mechanical_compound import mechanical_compound
 from src.paper_candidate_generator import PaperCandidateGenerator
 from src.strategy_e import (
     build_r1_universe_from_pool,
@@ -113,8 +114,7 @@ def return_metrics(
             "avg_return_bootstrap_95_lower": 0.0,
             "avg_return_bootstrap_95_upper": 0.0,
         }
-    curve = np.cumprod(1 + values)
-    drawdown = curve / np.maximum.accumulate(curve) - 1
+    compound = mechanical_compound(values)
     positive = values[values > 0]
     negative = values[values < 0]
     wins = int((values > 0).sum())
@@ -133,8 +133,8 @@ def return_metrics(
         "win_rate": float(wins / len(values)),
         "avg_account_return": float(values.mean()),
         "median_account_return": float(np.median(values)),
-        "equity_multiple": float(curve[-1]),
-        "max_drawdown": float(drawdown.min()),
+        "equity_multiple": compound.equity_multiple,
+        "max_drawdown": compound.max_drawdown,
         "max_profit": float(values.max()),
         "max_loss": float(values.min()),
         "profit_loss_ratio": (
