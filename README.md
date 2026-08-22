@@ -581,9 +581,9 @@ python scripts/run_strategy_e_signal.py
 
 标准、运行顺序和失败条件见 [docs/strict_asof_standard.md](docs/strict_asof_standard.md)。
 
+当前系统如何从数据、候选、组合资金走到交易执行，以及每年6月30日/12月31日如何
+使用最近24个月更新策略、更早6个月旁路验证、未来6个月真实前向交易，统一见
+[docs/core_framework.md](docs/core_framework.md)。
+
 当前两年锚点、A/E双复利门槛和复现命令见
 [docs/acde_anchor_20240630_20260630.md](docs/acde_anchor_20240630_20260630.md)。
-
-每年6月30日/12月31日的策略更新周期、最近24个月决策窗口、更早6个月旁路验证、
-未来6个月真实前向交易和永久版本账本口径见
-[docs/strategy_update_framework.md](docs/strategy_update_framework.md)。
