@@ -608,15 +608,20 @@ reports/strategy_d/relay_capacity/d_relay_capacity_report.md
 买卖未匹配量。实盘若以后接入分流，仍须读取当日09:23真实虚拟盘口；读不到就取消
 大资金接力，不能用09:30历史代理替代实时门禁。
 
-当前Token实测约1次/小时，剩余5笔共8个唯一股票日期。可选择提高Tushare分钟权限，
-或盘后让下面命令隔夜断点续传；每次成功后都会立即保存，程序中断可重新运行：
+2026-08-22已购买A股历史分钟权限，``000002.SZ``单日241根探针通过。采集按
+500次/分钟上限使用0.15秒保守间隔，触发限频时等待65秒；每次成功后都会立即
+保存独立分片，程序中断可重新运行：
 
 ```powershell
 cd C:\A_System
 py -3.11 scripts\research_strategy_d_relay_tushare_fetch.py --dry-run
-py -3.11 scripts\research_strategy_d_relay_tushare_fetch.py --request-interval 3605
+py -3.11 scripts\research_strategy_d_relay_tushare_fetch.py --request-interval 0.15
 py -3.11 scripts\research_strategy_d_relay_capacity.py
 ```
+
+D完整触板母池的一分钟价格路径已完成6,848/6,848目标，总计1,650,368根，
+每目标均为241根且分钟键无重复。该结果只提高盘中价格路径分辨率，不含历史
+买一队列，不改变正式D成交认证和复利基线。
 
 最近3笔的初步容量结果（最终匹配量×5%再打50%代理折扣，即2.5%上限）显示：D仓位
 25万元和50万元均为3/3整仓容量内；D仓位100万元为2/3容量内，另1笔需要成对POV。

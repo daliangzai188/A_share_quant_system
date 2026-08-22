@@ -23,8 +23,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from scripts.collect_strategy_d_intraday_tushare_1m import (  # noqa: E402
-    DEFAULT_REQUEST_INTERVAL_SECONDS,
     build_cluster_jobs,
+    load_collection_policy,
     load_open_dates,
     load_targets,
 )
@@ -70,6 +70,7 @@ def build_audit(*, l2_manifest_path: Path = L2_MANIFEST_PATH) -> dict[str, Any]:
     all_open_dates = load_open_dates()
     window_open_dates = [date for date in all_open_dates if WINDOW_START <= date <= WINDOW_END]
     jobs = build_cluster_jobs(targets, all_open_dates)
+    collection_policy = load_collection_policy()
     tushare_status = read_csv(
         TUSHARE_STATUS_PATH,
         dtype={"target_key": str, "trade_date": str, "ts_code": str},
@@ -132,9 +133,11 @@ def build_audit(*, l2_manifest_path: Path = L2_MANIFEST_PATH) -> dict[str, Any]:
                 "complete_target_count": tushare_complete,
                 "target_count": int(len(targets)),
                 "clustered_request_count": int(len(jobs)),
-                "request_interval_seconds": DEFAULT_REQUEST_INTERVAL_SECONDS,
+                "access_tier": collection_policy.access_tier,
+                "request_limit_per_minute": collection_policy.request_limit_per_minute,
+                "request_interval_seconds": collection_policy.request_interval_seconds,
                 "estimated_hours_at_current_rate": round(
-                    len(jobs) * DEFAULT_REQUEST_INTERVAL_SECONDS / 3600, 2
+                    len(jobs) * collection_policy.request_interval_seconds / 3600, 2
                 ),
                 "role": "PRICE_PATH_CROSS_CHECK_NO_QUEUE",
                 "certification_eligible": False,

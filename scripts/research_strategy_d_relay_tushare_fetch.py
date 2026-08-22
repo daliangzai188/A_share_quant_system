@@ -10,14 +10,14 @@ Tushare的09:30 bar在单一价格时，成交量可作为09:25最终开盘集�
 它不是09:23实时虚拟盘口，也不含买卖未匹配量；报告和后续容量回放必须保留该限制，
 不能把代理数据冒充tick。
 
-本脚本只访问行情接口，不读取账户、不连接QMT、不下单。Tushare分钟接口限频较低，
-当前项目Token实测约每小时只能调用1次，因此默认间隔3605秒，并按股票+日期缓存，
-支持中断后续跑；权限提升后可显式缩短，但不得低于60秒。
+本脚本只访问行情接口，不读取账户、不连接QMT、不下单。项目已于2026-08-22
+购买A股历史分钟权限，按500次/分钟上限使用0.15秒保守间隔，并按股票+日期缓存，
+支持中断后续跑；触发供应商限频时统一等待65秒再重试。
 
 运行：
 
     py -3.11 scripts\research_strategy_d_relay_tushare_fetch.py --dry-run
-    py -3.11 scripts\research_strategy_d_relay_tushare_fetch.py --request-interval 3605
+    py -3.11 scripts\research_strategy_d_relay_tushare_fetch.py --request-interval 0.15
 """
 from __future__ import annotations
 
@@ -48,6 +48,8 @@ from scripts.research_strategy_d_relay_fetch import (  # noqa: E402
 REPORT_PATH = OUTPUT_DIR / "d_relay_tushare_fetch_report.csv"
 AUCTION_PROXY_PATH = OUTPUT_DIR / "d_relay_auction_proxy.csv"
 MINUTE_FIELDS = "ts_code,trade_time,open,close,high,low,vol,amount"
+PAID_MINIMUM_REQUEST_INTERVAL = 60.0 / 500
+RATE_LIMIT_BACKOFF_SECONDS = 65.0
 
 
 def minute_window(relay_date: str) -> tuple[str, str]:
@@ -187,8 +189,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--request-interval",
         type=float,
-        default=3605.0,
-        help="Tushare真实请求间隔秒数；当前Token默认3605秒",
+        default=0.15,
+        help="Tushare真实请求间隔秒数；付费历史分钟档默认0.15秒",
     )
     return parser.parse_args()
 
@@ -215,15 +217,18 @@ def fetch_with_rate_retry(
         except Exception as exc:  # noqa: BLE001
             if "频率超限" not in str(exc) or attempt == 1:
                 raise
-            print(f"{ts_code}触发Tushare分钟限频，等待{request_interval:.0f}秒后重试一次")
-            time.sleep(request_interval)
+            print(f"{ts_code}触发Tushare分钟限频，等待{RATE_LIMIT_BACKOFF_SECONDS:.0f}秒后重试一次")
+            time.sleep(RATE_LIMIT_BACKOFF_SECONDS)
     return pd.DataFrame()
 
 
 def main() -> None:
     args = parse_args()
-    if args.request_interval < 60:
-        raise ValueError("stk_mins当前权限按分钟限频，请求间隔不得小于60秒")
+    if args.request_interval < PAID_MINIMUM_REQUEST_INTERVAL:
+        raise ValueError(
+            "stk_mins请求间隔超过500次/分钟上限："
+            f"minimum={PAID_MINIMUM_REQUEST_INTERVAL}"
+        )
     targets = load_relay_targets()
     jobs: list[dict[str, str]] = []
     for target in targets.itertuples(index=False):

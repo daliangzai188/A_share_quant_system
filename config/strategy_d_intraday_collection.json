@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "file_role": "策略D历史分钟价格路径采集权限与限频配置；不授权正式策略修改或排队成交认证。",
+  "tushare_stock_minute": {
+    "access_tier": "PAID_A_SHARE_HISTORY_MINUTE",
+    "permission_purchased_on": "2026-08-22",
+    "request_limit_per_minute": 500,
+    "request_interval_seconds": 0.15,
+    "max_attempts_per_job": 3,
+    "rate_limit_backoff_seconds": 65,
+    "transient_backoff_seconds": 3,
+    "verified_probe": {
+      "ts_code": "000002.SZ",
+      "trade_date": "20240926",
+      "bar_count": 241,
+      "verified_at": "2026-08-22T14:05:28+08:00"
+    }
+  },
+  "formal_rule_modified": false,
+  "queue_depth_available": false,
+  "certification_eligible": false
+}

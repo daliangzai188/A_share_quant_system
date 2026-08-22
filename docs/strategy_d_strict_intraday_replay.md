@@ -41,7 +41,7 @@ BLOCKED_HISTORICAL_FULL_MARKET_L2_REQUIRED
 | 数据层 | 当前覆盖 | 能解决的问题 | 能否正式认证 |
 |---|---:|---|---|
 | BaoStock 5分钟 | 6,848/6,848目标已终态 | 近似筛查明显炸板/回封路径 | 否 |
-| Tushare 1分钟 | 真实接口可返回241根/日；完整目标0/6,848 | 缩小bar内路径歧义 | 否 |
+| Tushare 1分钟 | 6,848/6,848目标完整，共1,650,368根 | 缩小bar内路径歧义 | 否 |
 | QMT历史1分钟抽样 | 6个日期分位目标中仅最近2个有241根 | 证明本机近期分钟覆盖 | 否 |
 | QMT历史tick抽样 | 0/6 | 无 | 否 |
 | QMT历史盘口字段抽样 | 0/6 | 无 | 否 |
@@ -61,9 +61,19 @@ QMT探针只调用只读``xtdata``行情接口，没有读取账户、持仓、�
 
 Tushare历史分钟接口一次只支持单一股票、单次最多8,000行；采集器已把同一
 股票最多33个连续交易日跨度合并成一个请求，将6,848个股票日目标压缩为5,270
-个请求。当前项目Token于2026-08-22真实返回``1次/小时``限频，按3605秒间隔
-仍需约5,277.32小时，且一分钟K本身没有队列，因此不作为当前完整方案。
+个请求。2026-08-22购买A股历史分钟权限后，``000002.SZ``在2024-09-26的
+权限探针完整返回241根；采集配置按500次/分钟上限使用0.15秒保守间隔，限频
+时等待65秒重试。每个请求先原子写入独立分片，全部结束后才合并总表，避免
+5,270次重写大文件；若长区间响应漏掉冻结目标日，采集器只对该日自动降级为
+精确单日补取；分片机制启用前的权限探针也会从完整总表恢复成独立分片，保证
+总表可由5,270个请求分片重建。即使全量完成，一分钟K仍没有历史队列，不能
+认证正式成交。
 [Tushare历史分钟接口说明](https://tushare.pro/document/1?doc_id=234)
+
+本次全量结果经总表审计：6,848个``trade_date+ts_code``目标均为241根，分钟键
+重复数为0，日期范围``20240926~20260630``，唯一来源为
+``TUSHARE_STK_MINS_1M_UNADJUSTED``。机器报告保存在
+``reports/strategy_d_intraday_research/tushare_1m_collection.json``。
 
 ## 四、为什么必须是全市场L2
 
@@ -147,7 +157,7 @@ fill_probability, fill_reliable
 | ``src/strategy_d_strict_intraday.py`` | ``strict_l2_manifest_gate`` | 检查全窗口、全交易所、全市场L2日文件完整性 |
 | 同上 | ``replay_synchronized_d_scans`` | 重建首次封板、炸板、回封、当前封板情绪和同日D排序 |
 | 同上 | ``replay_price_time_queue`` | 重建价格时间优先队列、部分成交和14:55撤余单 |
-| ``scripts/collect_strategy_d_intraday_tushare_1m.py`` | ``build_cluster_jobs`` / ``main`` | 33交易日聚合请求、断点状态、分钟价格路径回填 |
+| ``scripts/collect_strategy_d_intraday_tushare_1m.py`` | ``load_collection_policy`` / ``fetch_job_with_retry`` / ``consolidate_minute_parts`` / ``main`` | 付费权限限速、33交易日聚合、缺日单日补取、退避重试、原子分片、断点状态和总表合并 |
 | ``scripts/probe_strategy_d_intraday_qmt_depth.py`` | ``fetch_period`` / ``report_paths`` / ``main`` | 只读探测QMT 1分钟、tick和历史盘口字段；不同批次报告互不覆盖 |
 | ``scripts/audit_strategy_d_l2_purchase_readiness.py`` | ``build_audit`` | 汇总当前权限、官方候选来源和付款前样本门槛 |
 | ``scripts/audit_strategy_d_strict_intraday_sources.py`` | ``build_audit`` | 汇总各层覆盖并生成正式认证闸门 |
@@ -166,19 +176,29 @@ python3 scripts/collect_strategy_d_intraday_tushare_1m.py --dry-run
 ```text
 target_count=6848
 clustered_request_count=5270
-request_interval_seconds=3605
-estimated_hours_at_current_rate=5277.32
+access_tier=PAID_A_SHARE_HISTORY_MINUTE
+request_limit_per_minute=500
+request_interval_seconds=0.15
+estimated_hours_at_current_rate=0.22
+complete_target_count=6848
+pending_target_count=0
+path_layer_complete=true
 queue_depth_layer_complete=false
 ```
+
+``0.22小时``只是纯间隔理论值；真实耗时还取决于网络返回、CSV状态落盘、退避和
+供应商服务状态，不能把理论值当完成承诺。
 
 ### 7.2 小批采集验证
 
 ```bash
-python3 scripts/collect_strategy_d_intraday_tushare_1m.py --limit-jobs 1
+PYTHONPATH="$PWD/.venv/lib/python3.9/site-packages" \
+python3 scripts/collect_strategy_d_intraday_tushare_1m.py --limit-jobs 5
 ```
 
-脚本每个job后都会原子保存目标状态。当前Token若仍在一小时限频窗内，会记录
-``RETRYABLE_ERROR``，下次运行继续请求，不会把失败目标写成已完成。
+脚本每个job先原子保存独立分钟分片，再保存目标状态。限频和瞬时网络错误按配置
+重试；无权限或参数错误立即留证，不会被快速重试掩盖。中断后重复运行只补未完成
+目标；只需重建总表时运行``--consolidate-only``，不会请求网络。
 
 ### 7.3 数据源总审计
 

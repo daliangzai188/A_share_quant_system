@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-22T13:13:00.711813+08:00",
+  "generated_at": "2026-08-22T14:59:15.205698+08:00",
   "research_protocol": "STRICT_DISCOVERY",
   "strategy": "D",
   "window": "20240630~20260630",
@@ -29,11 +29,13 @@
       "certification_eligible": false
     },
     "tushare_1m": {
-      "complete_target_count": 0,
+      "complete_target_count": 6848,
       "target_count": 6848,
       "clustered_request_count": 5270,
-      "request_interval_seconds": 3605.0,
-      "estimated_hours_at_current_rate": 5277.32,
+      "access_tier": "PAID_A_SHARE_HISTORY_MINUTE",
+      "request_limit_per_minute": 500,
+      "request_interval_seconds": 0.15,
+      "estimated_hours_at_current_rate": 0.22,
       "role": "PRICE_PATH_CROSS_CHECK_NO_QUEUE",
       "certification_eligible": false
     },
@@ -140,7 +142,6 @@
     "status": "BLOCKED_HISTORICAL_FULL_MARKET_L2_REQUIRED"
   },
   "blockers": [
-    "Tushare一分钟路径仅完成0/6848个冻结目标",
     "缺少整个24个月窗口、沪深京全市场、09:30~14:55完整逐笔委托/成交/盘口文件",
     "QMT抽样未返回两年历史tick或买一队列字段",
     "现有6,848母池只覆盖最终收盘strong的56日，不能单独倒推出所有交易日信号时点情绪"
