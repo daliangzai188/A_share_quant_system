@@ -1,0 +1,175 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-08-22T10:45:45.257994+07:00",
+  "research_protocol": "STRICT_DISCOVERY",
+  "strategy": "D",
+  "release_eligible": false,
+  "formal_rule_modified": false,
+  "decision_window": {
+    "start": "20240630",
+    "end": "20260630",
+    "role": "only_rule_discovery_and_update_decision_window"
+  },
+  "prior_six_months": {
+    "start": "20231230",
+    "end": "20240629",
+    "role": "read_only_side_validation_not_decision_gate"
+  },
+  "source_audit": {
+    "feature_pool_path": "data/research/five_year_strict/strict_feature_pool.csv",
+    "feature_pool_sha256": "f1d4b1ee83b991a169ba8530a135b2ba4ff43ef7ae32dd6759de7a64555fc482",
+    "strict_asof_audit_passed": true,
+    "strict_asof_standard_id": "A_SYSTEM_STRICT_ASOF_V1",
+    "loaded_row_count": 75612,
+    "duplicate_key_count": 0
+  },
+  "frozen_portfolio_standard": {
+    "priority": "D>A>E>C",
+    "position_pct": 0.825,
+    "d_fill_stress": 0.8,
+    "fees_slippage_limit_rules_t1_unchanged": true,
+    "current_combo_trade_count": 132,
+    "current_combo_equity_multiple": 327.72671897548867,
+    "current_combo_leg_counts": {
+      "D": 22,
+      "A": 44,
+      "E": 49,
+      "C": 17
+    }
+  },
+  "static_closing_survivor_pool": {
+    "row_count": 206,
+    "signal_day_count": 53
+  },
+  "failed_touch_upper_bound_audit": {
+    "strong_day_count": 53,
+    "first_board_daily_high_touched": 6092,
+    "touched_but_not_limit_close": 1569,
+    "days_with_failed_close_touch": 53,
+    "median_failed_close_touch_per_day": 27.0,
+    "max_failed_close_touch_per_day": 55,
+    "interpretation": "只证明收盘涨停池遗漏了大量失败路径；日线不能判断其中多少满足炸板2~3次且14:00后真实回封，不能直接记作D失败交易。"
+  },
+  "best_structural_candidate": {
+    "rule": "first_before_1400",
+    "description": "首次封板早于14:00，正式买点仍要求14:00后真实回封",
+    "d_trade_count": 38,
+    "d_equity_multiple": 3.090294700884963,
+    "d_max_drawdown": -0.22120998477503406,
+    "combo_trade_count": 131,
+    "combo_equity_multiple": 403.40703823517373,
+    "combo_max_drawdown": -0.22970534744710858,
+    "dual_gate_passed_in_closing_survivors": true,
+    "changed_daily_pick_count": 18,
+    "changed_executed_trade_count": 15,
+    "outlier_robustness": {
+      "current": {
+        "trade_count": 39,
+        "best_return": 0.4527951871228668,
+        "worst_return": -0.07417800648559235,
+        "multiple_without_best_trade": 1.3946383781769096,
+        "multiple_without_worst_trade": 2.1884594855012227,
+        "winsorized_5_95_multiple": 1.5817316123131058
+      },
+      "first_before_1400": {
+        "trade_count": 38,
+        "best_return": 0.4527951871228668,
+        "worst_return": -0.07417800648559235,
+        "multiple_without_best_trade": 2.127137209894685,
+        "multiple_without_worst_trade": 3.3378929454400263,
+        "winsorized_5_95_multiple": 2.4771572107971744
+      }
+    }
+  },
+  "current_daily_first_candidate_tail": {
+    "scope": "candidate_pool_diagnostic_not_standalone_compound",
+    "candidate_count": 53,
+    "explosion_count_gte_10pct": 5,
+    "big_loss_count_lte_minus_5pct": 7,
+    "largest_profits": [
+      {
+        "signal_date": "20241101",
+        "ts_code": "920726.BJ",
+        "name": "朱老六",
+        "account_return": 0.4527951871228668
+      },
+      {
+        "signal_date": "20240927",
+        "ts_code": "300033.SZ",
+        "name": "同花顺",
+        "account_return": 0.2884775816944691
+      },
+      {
+        "signal_date": "20260408",
+        "ts_code": "688693.SH",
+        "name": "锴威特",
+        "account_return": 0.1382973329857442
+      },
+      {
+        "signal_date": "20241108",
+        "ts_code": "688010.SH",
+        "name": "福光股份",
+        "account_return": 0.1295330895879496
+      },
+      {
+        "signal_date": "20250217",
+        "ts_code": "603583.SH",
+        "name": "捷昌驱动",
+        "account_return": 0.1192250593907576
+      }
+    ],
+    "largest_losses": [
+      {
+        "signal_date": "20250306",
+        "ts_code": "301428.SZ",
+        "name": "世纪恒通",
+        "account_return": -0.07417800648559235
+      },
+      {
+        "signal_date": "20260522",
+        "ts_code": "002272.SZ",
+        "name": "川润股份",
+        "account_return": -0.07234699681846155
+      },
+      {
+        "signal_date": "20260622",
+        "ts_code": "002057.SZ",
+        "name": "中钢天源",
+        "account_return": -0.06806943089550226
+      },
+      {
+        "signal_date": "20250414",
+        "ts_code": "600238.SH",
+        "name": "海南椰岛",
+        "account_return": -0.05993714452861443
+      },
+      {
+        "signal_date": "20250421",
+        "ts_code": "300139.SZ",
+        "name": "晓程科技",
+        "account_return": -0.059510320951981215
+      },
+      {
+        "signal_date": "20260123",
+        "ts_code": "600879.SH",
+        "name": "航天电子",
+        "account_return": -0.05396074091958043
+      },
+      {
+        "signal_date": "20241212",
+        "ts_code": "605388.SH",
+        "name": "均瑶健康",
+        "account_return": -0.05281766517365853
+      }
+    ]
+  },
+  "formal_decision": "KEEP_CURRENT_PENDING_COMPLETE_INTRADAY_EVENT_POOL",
+  "formal_decision_reason": "当前历史D母池来自收盘涨停幸存者，缺少触板后失败收盘及真实盘中回封路径；双复利只能解释收盘幸存者内部差异，不能认证真实盘中策略收益。",
+  "next_required_research": "建立覆盖全部首板触板股票（含失败收盘）的分钟/逐笔事件账本，按第一次可交易回封、排队成交和14:55撤单重放，再重新执行D独立腿与ACDE双门槛。",
+  "limitations": [
+    "最近24个月内发现并比较多个候选，属于样本内STRICT_DISCOVERY。",
+    "更早6个月实际独立D样本极少，只能披露，不能提供统计确认。",
+    "市场连板数和题材主线等收盘特征只能解释幸存者，未做14:00时点重建前不能直接进入盘中选股。",
+    "机械复利不代表资金容量、真实排队成交或未来收益。"
+  ]
+}
