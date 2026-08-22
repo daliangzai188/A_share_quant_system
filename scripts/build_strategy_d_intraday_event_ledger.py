@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """建立策略D完整首板触板母池和历史分钟事件账本。
 
-该脚本从当前两年窗口内全部历史strong交易日出发，纳入所有允许板块、非ST、
-昨日未涨停且当日最高价触及涨停的股票，包括收盘未封住的失败样本。它不会从
-收盘涨停池反推母样本，因此不继承D旧回测最关键的幸存者偏差。
+该脚本从当前两年窗口内全部484个交易日出发，纳入所有允许板块、非ST、昨日
+未涨停且当日最高价触及涨停的股票，包括收盘未封住的失败样本。收盘strong
+只作为事后标签保留，绝不再作为母池入口，因此不会漏掉盘中强转弱、失败回封
+和最终非strong日的爆亏路径。
 
 分钟数据可通过``--minute-bars``传入统一CSV。没有分钟数据时仍会生成完整母池、
 采集目标和明确的缺失覆盖报告；绝不使用日线的最终first_time/last_time伪造盘中路径。
 
 运行：
 
-    # 第一步：生成6848只次完整采集目标
+    # 第一步：生成40336只次全窗口采集目标
     python3 scripts/build_strategy_d_intraday_event_ledger.py --targets-only
 
     # 第二步：有一分钟数据后重建事件账本
@@ -61,8 +62,11 @@ START = "20240630"
 END = "20260630"
 ALLOWED_SEGMENTS = {"sh_main", "sz_main", "chi_next", "star", "bj"}
 EXPECTED_STRONG_DAY_COUNT = 56
-EXPECTED_MOTHER_POOL_COUNT = 6848
-EXPECTED_FAILED_CLOSE_COUNT = 1710
+EXPECTED_WINDOW_OPEN_DAY_COUNT = 484
+EXPECTED_MOTHER_POOL_COUNT = 40336
+EXPECTED_FAILED_CLOSE_COUNT = 13035
+EXPECTED_LEGACY_STRONG_SUBPOOL_COUNT = 6848
+EXPECTED_LEGACY_STRONG_FAILED_CLOSE_COUNT = 1710
 EXPECTED_STATIC_D_POOL_COUNT = 206
 
 MARKET_SENTIMENT_PATH = ROOT / "data/research/five_year_strict/market_sentiment.csv"
@@ -70,17 +74,20 @@ STRICT_FEATURE_POOL_PATH = ROOT / "data/research/five_year_strict/strict_feature
 TRADE_CALENDAR_PATH = ROOT / "data/raw/trade_calendar.csv"
 STOCK_BASIC_PATH = ROOT / "data/raw/stock_basic/stock_basic_all.csv"
 STOCK_NAMECHANGE_PATH = ROOT / "data/raw/stock_namechange/stock_namechange.csv"
+HISTORICAL_IDENTITY_OVERRIDES_PATH = (
+    ROOT / "config/strategy_d_historical_identity_overrides.json"
+)
 STK_LIMIT_DIR = ROOT / "data/raw/stk_limit_history"
 DAILY_DIR = ROOT / "data/raw/daily"
 LIMIT_LIST_DIR = ROOT / "data/raw/limit_list"
 DATA_DIR = ROOT / "data/research/strategy_d_intraday"
 REPORT_DIR = ROOT / "reports/strategy_d_intraday_research"
-MOTHER_POOL_PATH = DATA_DIR / "mother_pool.csv"
-TARGET_MANIFEST_PATH = DATA_DIR / "minute_target_manifest.csv"
-EVENT_LEDGER_PATH = DATA_DIR / "event_ledger.csv"
-EVENT_DETAIL_PATH = DATA_DIR / "event_detail.csv"
-COVERAGE_PATH = DATA_DIR / "minute_coverage.csv"
-SUMMARY_PATH = REPORT_DIR / "summary.json"
+MOTHER_POOL_PATH = DATA_DIR / "mother_pool_full_window.csv"
+TARGET_MANIFEST_PATH = DATA_DIR / "minute_target_manifest_full_window.csv"
+EVENT_LEDGER_PATH = DATA_DIR / "event_ledger_full_window.csv"
+EVENT_DETAIL_PATH = DATA_DIR / "event_detail_full_window.csv"
+COVERAGE_PATH = DATA_DIR / "minute_coverage_full_window.csv"
+SUMMARY_PATH = REPORT_DIR / "full_window_summary.json"
 
 
 def date_text(series: pd.Series) -> pd.Series:
@@ -140,16 +147,49 @@ def load_historical_names() -> dict[str, list[dict[str, str]]]:
     return result
 
 
+def load_historical_identity_overrides() -> dict[str, list[dict[str, str]]]:
+    """加载经双接口核对的极少数历史代码迁移身份例外。"""
+
+    payload = json.loads(
+        HISTORICAL_IDENTITY_OVERRIDES_PATH.read_text(encoding="utf-8-sig")
+    )
+    rows = payload.get("overrides", [])
+    result: dict[str, list[dict[str, str]]] = {}
+    for item in rows:
+        required = {"ts_code", "name", "start_date", "end_date", "evidence"}
+        missing = sorted(required - set(item))
+        if missing:
+            raise ValueError(f"D历史身份例外缺少字段：{missing}")
+        code = str(item["ts_code"])
+        start_date = str(item["start_date"])
+        end_date = str(item["end_date"])
+        if not code or not str(item["name"]) or start_date > end_date:
+            raise ValueError(f"D历史身份例外无效：{item}")
+        result.setdefault(code, []).append(
+            {
+                "name": str(item["name"]),
+                "start_date": start_date,
+                "end_date": end_date,
+                "source": str(item["evidence"]),
+            }
+        )
+    return result
+
+
 def historical_name(
     code: str,
     date: str,
     intervals: dict[str, list[dict[str, str]]],
     current_metadata: dict[str, dict[str, str]],
+    overrides: dict[str, list[dict[str, str]]] | None = None,
 ) -> tuple[str, str]:
     for item in intervals.get(code, []):
         end = item["end_date"] or "99991231"
         if item["start_date"] <= date <= end:
             return item["name"], "TUSHARE_NAMECHANGE_ASOF"
+    for item in (overrides or {}).get(code, []):
+        if item["start_date"] <= date <= item["end_date"]:
+            return item["name"], item["source"]
     return str(current_metadata.get(code, {}).get("name", "")), "CURRENT_NAME_FALLBACK"
 
 
@@ -188,22 +228,26 @@ def historical_st_status(
     return is_st_name(name), "CURRENT_NAME_FALLBACK"
 
 
-def historical_strong_days() -> pd.DataFrame:
+def historical_window_days() -> pd.DataFrame:
+    """加载正式窗口全部交易日，收盘情绪只能作为标签，不能裁剪母池。"""
+
+    calendar_dates = [date for date in load_calendar() if START < date <= END]
+    if len(calendar_dates) != EXPECTED_WINDOW_OPEN_DAY_COUNT:
+        raise RuntimeError(
+            "D全窗口交易日漂移："
+            f"expected={EXPECTED_WINDOW_OPEN_DAY_COUNT} actual={len(calendar_dates)}"
+        )
     sentiment = pd.read_csv(
         MARKET_SENTIMENT_PATH, dtype={"trade_date": str}, low_memory=False
     )
     sentiment["trade_date"] = date_text(sentiment["trade_date"])
-    compatible = (
+    sentiment["strategy_compatible"] = (
         sentiment["strategy_compatible"]
         .astype(str)
         .str.lower()
         .isin({"true", "1", "yes"})
     )
-    result = sentiment[
-        sentiment["trade_date"].between(START, END)
-        & sentiment["market_sentiment_level"].astype(str).eq("strong")
-        & compatible
-    ][
+    result = sentiment[sentiment["trade_date"].isin(calendar_dates)][
         [
             "trade_date",
             "market_sentiment_level",
@@ -212,14 +256,37 @@ def historical_strong_days() -> pd.DataFrame:
             "limit_up_max_height",
             "limit_data_source",
             "limit_data_quality",
+            "strategy_compatible",
         ]
     ].copy()
     result = result.sort_values("trade_date").reset_index(drop=True)
-    if len(result) != EXPECTED_STRONG_DAY_COUNT:
+    if result["trade_date"].duplicated().any():
+        raise RuntimeError("D全窗口收盘情绪存在重复交易日")
+    missing_dates = sorted(set(calendar_dates) - set(result["trade_date"]))
+    if len(result) != EXPECTED_WINDOW_OPEN_DAY_COUNT or missing_dates:
         raise RuntimeError(
-            f"D盘中母池strong日漂移：expected={EXPECTED_STRONG_DAY_COUNT} actual={len(result)}"
+            "D全窗口收盘情绪不完整："
+            f"expected={EXPECTED_WINDOW_OPEN_DAY_COUNT} actual={len(result)} "
+            f"missing={missing_dates[:5]}"
+        )
+    result["is_current_final_close_strong_day"] = (
+        result["market_sentiment_level"].astype(str).eq("strong")
+        & result["strategy_compatible"].astype(bool)
+    )
+    strong_count = int(result["is_current_final_close_strong_day"].sum())
+    if strong_count != EXPECTED_STRONG_DAY_COUNT:
+        raise RuntimeError(
+            "D旧strong日子集漂移："
+            f"expected={EXPECTED_STRONG_DAY_COUNT} actual={strong_count}"
         )
     return result
+
+
+def historical_strong_days() -> pd.DataFrame:
+    """保留旧56日子集入口，仅用于回归核对，不再用于建立全窗口母池。"""
+
+    window = historical_window_days()
+    return window[window["is_current_final_close_strong_day"]].reset_index(drop=True)
 
 
 def current_static_d_pool() -> pd.DataFrame:
@@ -276,17 +343,18 @@ def current_static_d_pool() -> pd.DataFrame:
 
 
 def build_mother_pool() -> pd.DataFrame:
-    """从全部strong日的日线最高价建立完整首板触板母池。"""
+    """从484日全窗口日线最高价建立无收盘幸存者偏差的首板触板母池。"""
 
     calendar = load_calendar()
     date_index = {date: index for index, date in enumerate(calendar)}
     metadata = load_stock_metadata()
     name_intervals = load_historical_names()
-    strong = historical_strong_days()
-    strong_map = strong.set_index("trade_date").to_dict("index")
+    identity_overrides = load_historical_identity_overrides()
+    window = historical_window_days()
+    market_map = window.set_index("trade_date").to_dict("index")
     rows: list[dict[str, Any]] = []
 
-    for date in strong["trade_date"]:
+    for date in window["trade_date"]:
         index = date_index.get(date)
         daily_path = DAILY_DIR / f"{date}.csv"
         if index is None or index == 0 or not daily_path.exists():
@@ -314,13 +382,13 @@ def build_mother_pool() -> pd.DataFrame:
             )
         )
         daily = pd.read_csv(daily_path, dtype={"ts_code": str}, low_memory=False)
-        market = strong_map[date]
+        market = market_map[date]
         close_limit_names = limit_list_names(date)
         for row in daily.itertuples(index=False):
             code = str(row.ts_code)
             meta = metadata.get(code, {})
             name, name_source = historical_name(
-                code, date, name_intervals, metadata
+                code, date, name_intervals, metadata, identity_overrides
             )
             segment = market_segment(code)
             if (
@@ -384,6 +452,12 @@ def build_mother_pool() -> pd.DataFrame:
                     "historical_limit_up_max_height": int(
                         market["limit_up_max_height"]
                     ),
+                    "historical_strategy_compatible": bool(
+                        market["strategy_compatible"]
+                    ),
+                    "historical_is_current_final_close_strong_day": bool(
+                        market["is_current_final_close_strong_day"]
+                    ),
                     "sentiment_is_final_close_value": True,
                 }
             )
@@ -405,6 +479,21 @@ def build_mother_pool() -> pd.DataFrame:
             "D完整首板触板母池漂移："
             f"rows expected={EXPECTED_MOTHER_POOL_COUNT} actual={len(mother)}；"
             f"failed expected={EXPECTED_FAILED_CLOSE_COUNT} actual={failed}"
+        )
+    legacy_strong = mother[
+        mother["historical_is_current_final_close_strong_day"].astype(bool)
+    ]
+    legacy_failed = int(legacy_strong["failed_to_close_at_limit"].sum())
+    if (
+        len(legacy_strong) != EXPECTED_LEGACY_STRONG_SUBPOOL_COUNT
+        or legacy_failed != EXPECTED_LEGACY_STRONG_FAILED_CLOSE_COUNT
+    ):
+        raise RuntimeError(
+            "D旧56日母池回归失败："
+            f"rows expected={EXPECTED_LEGACY_STRONG_SUBPOOL_COUNT} "
+            f"actual={len(legacy_strong)}；"
+            f"failed expected={EXPECTED_LEGACY_STRONG_FAILED_CLOSE_COUNT} "
+            f"actual={legacy_failed}"
         )
     static_count = int(mother["in_current_static_d_pool"].sum())
     if static_count != EXPECTED_STATIC_D_POOL_COUNT:
@@ -618,6 +707,23 @@ def summary_payload(
         .eq("APPROXIMATE_5M_PATH_NO_QUEUE_DEPTH")
         .sum()
     ) if not coverage.empty else 0
+    target_keys = mother["trade_date"].astype(str) + "|" + mother["ts_code"].astype(str)
+    segment_counts = {
+        str(key): int(value)
+        for key, value in mother["market_segment"]
+        .value_counts()
+        .sort_index()
+        .to_dict()
+        .items()
+    }
+    sentiment_counts = {
+        str(key): int(value)
+        for key, value in mother["historical_market_sentiment"]
+        .value_counts()
+        .sort_index()
+        .to_dict()
+        .items()
+    }
     return {
         "schema_version": 2,
         "generated_at": pd.Timestamp.now(tz="Asia/Ho_Chi_Minh").isoformat(),
@@ -627,8 +733,19 @@ def summary_payload(
         "formal_rule_modified": False,
         "release_eligible": False,
         "targets_only": targets_only,
+        "research_objective": (
+            "覆盖盘中打板的爆发与爆亏路径，挖掘可执行的回封、炸板、情绪、"
+            "量价、板块和成交特征；候选仍须通过D独立复利与ACDE逐腿替换双门禁"
+        ),
         "mother_pool": {
-            "historical_strong_day_count": EXPECTED_STRONG_DAY_COUNT,
+            "window_open_day_count": EXPECTED_WINDOW_OPEN_DAY_COUNT,
+            "days_with_touch_target_count": int(mother["trade_date"].nunique()),
+            "historical_strong_day_count": int(
+                mother.loc[
+                    mother["historical_is_current_final_close_strong_day"].astype(bool),
+                    "trade_date",
+                ].nunique()
+            ),
             "first_board_touch_count": int(len(mother)),
             "closed_at_limit_count": int(mother["closed_at_limit"].sum()),
             "failed_to_close_at_limit_count": int(
@@ -637,9 +754,34 @@ def summary_payload(
             "current_static_d_survivor_count": int(
                 mother["in_current_static_d_pool"].sum()
             ),
-            "all_strong_days_have_failed_close_touch": bool(
-                mother.groupby("trade_date")["failed_to_close_at_limit"].any().all()
+            "legacy_strong_subpool_count": int(
+                mother["historical_is_current_final_close_strong_day"].sum()
             ),
+            "additional_target_count_vs_legacy": int(
+                len(mother)
+                - mother["historical_is_current_final_close_strong_day"].sum()
+            ),
+            "daily_target_median": float(
+                mother.groupby("trade_date").size().median()
+            ),
+            "daily_target_max": int(mother.groupby("trade_date").size().max()),
+            "daily_target_max_date": str(
+                mother.groupby("trade_date").size().idxmax()
+            ),
+            "market_segment_counts": segment_counts,
+            "final_close_sentiment_label_counts": sentiment_counts,
+        },
+        "data_quality": {
+            "duplicate_target_key_count": int(target_keys.duplicated().sum()),
+            "missing_name_count": int(mother["name_metadata_missing"].sum()),
+            "nonpositive_official_limit_price_count": int(
+                pd.to_numeric(mother["limit_price"], errors="coerce")
+                .fillna(0)
+                .le(0)
+                .sum()
+            ),
+            "legacy_strong_subpool_regression_passed": True,
+            "current_static_d_pool_regression_passed": True,
         },
         "minute_data": {
             "path": str(minute_path.relative_to(ROOT)) if minute_path and minute_path.is_absolute() and ROOT in minute_path.parents else str(minute_path or ""),
@@ -689,7 +831,7 @@ def summary_payload(
             ),
         },
         "limitations": [
-            "历史市场strong门使用最终收盘情绪；精确复现实盘还需全市场盘中ever_sealed路径。",
+            "母池覆盖全部484日；历史收盘情绪只作标签，精确复现实盘仍需用分钟路径重建盘中ever_sealed情绪。",
             "OHLCV没有回封时买一封单和队列前方数量，始终封板期间不能证明排队成交。",
             "一分钟OHLCV仍无法确定同一分钟内多次触板、炸板和回封的先后顺序；五分钟歧义更大。",
             "跨数据源分钟最高价未确认官方涨停价的目标单独标记不一致，禁止用于路径认证。",
@@ -725,11 +867,11 @@ def main() -> int:
     )
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
-    LOGGER.info("从全部历史strong日构建D完整首板触板母池")
+    LOGGER.info("从484日全窗口构建D完整首板触板母池")
     mother = build_mother_pool()
     write_mother_and_targets(mother)
     LOGGER.info(
-        "D母池完成：strong=%d日，触板=%d，失败收盘=%d，当前收盘静态池=%d",
+        "D母池完成：覆盖=%d日，触板=%d，失败收盘=%d，当前收盘静态池=%d",
         mother["trade_date"].nunique(),
         len(mother),
         int(mother["failed_to_close_at_limit"].sum()),

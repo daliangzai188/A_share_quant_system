@@ -2,11 +2,11 @@
 """断点回填D完整触板母池的Tushare历史1分钟K。
 
 这只是盘中价格路径层，不是排队成交认证。``stk_mins``没有历史买一队列，
-所以即使6,848个目标全部得到241根一分钟K，也不能把始终封板的委托记为成交。
+所以即使40,336个目标全部得到241根一分钟K，也不能把始终封板的委托记为成交。
 
-为降低低频接口请求量，本脚本把同一股票、最多33个连续交易日跨度内的目标
-合并为一次请求（33*241=7,953，小于接口单次8,000行上限），返回后只保留
-目标交易日。每个请求完成后立即保存状态，支持中断续跑。项目于2026-08-22
+为平衡调用次数和无关行下载量，本脚本按交易日横截面聚合，单次最多33只
+股票（33*241=7,953，严格小于接口8,000行上限）。聚合返回缺某只时，
+只对该股该日精确补取。每25个job原子保存状态，支持中断续跑。项目于2026-08-22
 购买并实测通过A股历史分钟权限；采集速率由独立研究配置锁定，并在触发限频时
 机械退避，不能把价格路径数据冒充完整L2队列数据。
 
@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+import hashlib
 import json
 import logging
 from pathlib import Path
@@ -39,17 +40,18 @@ from src.strategy_d_intraday_ledger import normalize_minute_bars  # noqa: E402
 from src.utils.config import load_json_config  # noqa: E402
 
 
-TARGET_PATH = ROOT / "data/research/strategy_d_intraday/minute_target_manifest.csv"
+TARGET_PATH = ROOT / "data/research/strategy_d_intraday/minute_target_manifest_full_window.csv"
 CALENDAR_PATH = ROOT / "data/raw/trade_calendar.csv"
 COLLECTION_CONFIG_PATH = ROOT / "config/strategy_d_intraday_collection.json"
+KNOWN_GAPS_PATH = ROOT / "config/strategy_d_intraday_known_data_gaps.json"
 OUTPUT_PATH = ROOT / "data/research/strategy_d_intraday/minute_1m_tushare.csv"
 PARTS_DIR = ROOT / "data/research/strategy_d_intraday/minute_1m_tushare_parts"
 STATUS_PATH = ROOT / "data/research/strategy_d_intraday/tushare_1m_status.csv"
 JOB_STATUS_PATH = ROOT / "data/research/strategy_d_intraday/tushare_1m_job_status.csv"
 SUMMARY_PATH = ROOT / "reports/strategy_d_intraday_research/tushare_1m_collection.json"
-EXPECTED_TARGET_COUNT = 6848
-MAX_OPEN_DAYS_PER_REQUEST = 33
-MIN_COMPLETE_BAR_COUNT = 230
+EXPECTED_TARGET_COUNT = 40336
+MAX_OPEN_DAYS_PER_REQUEST = 5
+MIN_COMPLETE_BAR_COUNT = 241
 DEFAULT_REQUEST_INTERVAL_SECONDS = 0.15
 FIELDS = "ts_code,trade_time,open,close,high,low,vol,amount"
 LOGGER = logging.getLogger("collect_strategy_d_intraday_tushare_1m")
@@ -63,6 +65,9 @@ class CollectionPolicy:
     max_attempts_per_job: int
     rate_limit_backoff_seconds: float
     transient_backoff_seconds: float
+    request_mode: str
+    max_codes_per_request: int
+    checkpoint_every_jobs: int
 
     @property
     def minimum_request_interval_seconds(self) -> float:
@@ -81,6 +86,9 @@ def load_collection_policy(path: Path = COLLECTION_CONFIG_PATH) -> CollectionPol
         max_attempts_per_job=int(section.get("max_attempts_per_job", 0)),
         rate_limit_backoff_seconds=float(section.get("rate_limit_backoff_seconds", 0)),
         transient_backoff_seconds=float(section.get("transient_backoff_seconds", 0)),
+        request_mode=str(section.get("request_mode", "")).strip(),
+        max_codes_per_request=int(section.get("max_codes_per_request", 0)),
+        checkpoint_every_jobs=int(section.get("checkpoint_every_jobs", 0)),
     )
     if policy.access_tier != "PAID_A_SHARE_HISTORY_MINUTE":
         raise ValueError("D一分钟采集必须显式配置PAID_A_SHARE_HISTORY_MINUTE权限档位")
@@ -98,6 +106,12 @@ def load_collection_policy(path: Path = COLLECTION_CONFIG_PATH) -> CollectionPol
         raise ValueError("rate_limit_backoff_seconds不得小于60秒")
     if policy.transient_backoff_seconds < 0:
         raise ValueError("transient_backoff_seconds不得小于0秒")
+    if policy.request_mode != "CROSS_SECTION_BY_TRADE_DATE":
+        raise ValueError("D全窗口采集必须使用CROSS_SECTION_BY_TRADE_DATE")
+    if not 1 <= policy.max_codes_per_request <= 33:
+        raise ValueError("max_codes_per_request必须为1~33，防止单次超过8000行")
+    if policy.checkpoint_every_jobs <= 0:
+        raise ValueError("checkpoint_every_jobs必须为正整数")
     return policy
 
 
@@ -118,6 +132,50 @@ def load_targets(path: Path = TARGET_PATH) -> pd.DataFrame:
             f"D一分钟目标漂移：expected={EXPECTED_TARGET_COUNT} actual={len(frame)}"
         )
     return frame.sort_values(["ts_code", "trade_date"]).reset_index(drop=True)
+
+
+def load_known_data_gaps(
+    targets: pd.DataFrame,
+    path: Path = KNOWN_GAPS_PATH,
+) -> pd.DataFrame:
+    """加载精确数据商缺口；只用于报告和fail-closed重放，不伪装完成。"""
+
+    columns = [
+        "target_key",
+        "trade_date",
+        "ts_code",
+        "name",
+        "market",
+        "source",
+        "status",
+        "handling",
+        "evidence",
+    ]
+    if not path.exists():
+        return pd.DataFrame(columns=columns)
+    payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    rows = payload.get("gaps", [])
+    gaps = pd.DataFrame(rows)
+    required = set(columns)
+    missing = sorted(required - set(gaps.columns))
+    if missing:
+        raise ValueError(f"D一分钟已知缺口缺少字段：{missing}")
+    gaps = gaps[columns].copy()
+    if gaps["target_key"].duplicated().any():
+        raise ValueError("D一分钟已知缺口target_key重复")
+    expected_keys = set(targets["target_key"].astype(str))
+    unknown = sorted(set(gaps["target_key"].astype(str)) - expected_keys)
+    if unknown:
+        raise ValueError(f"D一分钟已知缺口不在冻结目标中：{unknown}")
+    rebuilt_keys = gaps["trade_date"].astype(str) + "|" + gaps["ts_code"].astype(str)
+    if not rebuilt_keys.eq(gaps["target_key"].astype(str)).all():
+        raise ValueError("D一分钟已知缺口的日期/代码与target_key不一致")
+    allowed_status = {"CONFIRMED_TUSHARE_VENDOR_DATE_MARKET_GAP"}
+    if not set(gaps["status"].astype(str)).issubset(allowed_status):
+        raise ValueError("D一分钟已知缺口状态未经认证")
+    if not gaps["handling"].astype(str).eq("FAIL_CLOSED_KEEP_IN_DENOMINATOR").all():
+        raise ValueError("D一分钟已知缺口必须fail-closed且保留在分母")
+    return gaps.sort_values("target_key").reset_index(drop=True)
 
 
 def load_open_dates(path: Path = CALENDAR_PATH) -> list[str]:
@@ -174,7 +232,62 @@ def _job_row(ts_code: str, dates: list[str], date_index: dict[str, int]) -> dict
         "open_day_span": int(span),
         "target_count": int(len(dates)),
         "target_dates": ";".join(dates),
+        "target_keys": ";".join(f"{date}|{ts_code}" for date in dates),
+        "theoretical_return_rows": int(span * 241),
     }
+
+
+def build_cross_section_jobs(
+    targets: pd.DataFrame,
+    *,
+    max_codes_per_request: int = 33,
+) -> pd.DataFrame:
+    """同一交易日最多33股一次请求，严格控制在8,000行以内。"""
+
+    if not 1 <= max_codes_per_request <= 33:
+        raise ValueError("max_codes_per_request必须为1~33")
+    rows: list[dict[str, Any]] = []
+    for trade_date, group in targets.groupby("trade_date", sort=True):
+        codes = sorted(set(group["ts_code"].astype(str)))
+        for offset in range(0, len(codes), max_codes_per_request):
+            chunk = codes[offset : offset + max_codes_per_request]
+            target_keys = [f"{trade_date}|{code}" for code in chunk]
+            digest = hashlib.sha256(";".join(target_keys).encode("utf-8")).hexdigest()[:12]
+            chunk_index = offset // max_codes_per_request + 1
+            rows.append(
+                {
+                    "job_key": (
+                        f"CROSS_SECTION|{trade_date}|{chunk_index:04d}|{digest}"
+                    ),
+                    "ts_code": ",".join(chunk),
+                    "start_date": str(trade_date),
+                    "end_date": str(trade_date),
+                    "open_day_span": 1,
+                    "target_count": len(chunk),
+                    "target_dates": str(trade_date),
+                    "target_keys": ";".join(target_keys),
+                    "theoretical_return_rows": len(chunk) * 241,
+                    "part_filename": (
+                        f"cross_{trade_date}_{chunk_index:04d}_{digest}.csv"
+                    ),
+                }
+            )
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows).sort_values(["start_date", "job_key"]).reset_index(drop=True)
+
+
+def job_target_pairs(job: Any) -> list[tuple[str, str]]:
+    raw_keys = str(getattr(job, "target_keys", "") or "")
+    if raw_keys:
+        pairs = []
+        for key in raw_keys.split(";"):
+            trade_date, ts_code = key.split("|", 1)
+            pairs.append((trade_date, ts_code))
+        return pairs
+    dates = str(job.target_dates).split(";")
+    codes = str(job.ts_code).split(",")
+    return [(date, code) for date in dates for code in codes]
 
 
 def normalize_tushare_bars(raw: pd.DataFrame | None, *, target_dates: set[str]) -> pd.DataFrame:
@@ -210,7 +323,9 @@ def atomic_write_csv(frame: pd.DataFrame, path: Path) -> None:
 def job_part_path(job: Any, parts_dir: Path = PARTS_DIR) -> Path:
     """生成同时兼容macOS和Windows的稳定分片名。"""
 
-    filename = f"{job.ts_code}_{job.start_date}_{job.end_date}.csv"
+    filename = str(getattr(job, "part_filename", "") or "")
+    if not filename:
+        filename = f"{job.ts_code}_{job.start_date}_{job.end_date}.csv"
     return parts_dir / filename
 
 
@@ -268,13 +383,23 @@ def recover_missing_parts_from_output(
         return 0
     recovered = 0
     for job in missing_jobs:
-        target_dates = set(str(job.target_dates).split(";"))
-        part = existing[
-            existing["ts_code"].astype(str).eq(str(job.ts_code))
-            & existing["trade_date"].astype(str).isin(target_dates)
-        ].copy()
-        counts = part.groupby("trade_date").size() if not part.empty else pd.Series(dtype=int)
-        if not all(int(counts.get(date, 0)) >= MIN_COMPLETE_BAR_COUNT for date in target_dates):
+        target_pairs = job_target_pairs(job)
+        target_keys = {f"{date}|{code}" for date, code in target_pairs}
+        existing_keys = (
+            existing["trade_date"].astype(str)
+            + "|"
+            + existing["ts_code"].astype(str)
+        )
+        part = existing[existing_keys.isin(target_keys)].copy()
+        counts = (
+            part.groupby(["trade_date", "ts_code"]).size()
+            if not part.empty
+            else pd.Series(dtype=int)
+        )
+        if not all(
+            int(counts.get((date, code), 0)) >= MIN_COMPLETE_BAR_COUNT
+            for date, code in target_pairs
+        ):
             continue
         atomic_write_csv(
             part.sort_values(["trade_date", "ts_code", "hhmm"]),
@@ -290,6 +415,22 @@ def load_csv(path: Path, *, dtype: dict[str, Any] | None = None) -> pd.DataFrame
     return pd.read_csv(path, dtype=dtype, low_memory=False)
 
 
+def csv_data_row_count(path: Path) -> int:
+    """不加载873MB分钟总表，流式计算数据行数供覆盖报告核对。"""
+
+    if not path.exists() or path.stat().st_size == 0:
+        return 0
+    line_count = 0
+    last_byte = b""
+    with path.open("rb") as handle:
+        while chunk := handle.read(8 * 1024 * 1024):
+            line_count += chunk.count(b"\n")
+            last_byte = chunk[-1:]
+    if last_byte and last_byte != b"\n":
+        line_count += 1
+    return max(line_count - 1, 0)
+
+
 def upsert_rows(existing: pd.DataFrame, additions: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
     if additions.empty:
         return existing
@@ -300,21 +441,28 @@ def upsert_rows(existing: pd.DataFrame, additions: pd.DataFrame, keys: list[str]
 def fetch_job(source: Any, job: Any) -> pd.DataFrame:
     start = f"{job.start_date[:4]}-{job.start_date[4:6]}-{job.start_date[6:]} 09:30:00"
     end = f"{job.end_date[:4]}-{job.end_date[4:6]}-{job.end_date[6:]} 15:00:00"
-    target_dates = set(str(job.target_dates).split(";"))
+    target_pairs = job_target_pairs(job)
+    target_dates = {date for date, _code in target_pairs}
+    expected_keys = {f"{date}|{code}" for date, code in target_pairs}
     raw = source.get_stock_minute_bars(
         str(job.ts_code), start, end, freq="1min", fields=FIELDS
     )
     bars = normalize_tushare_bars(raw, target_dates=target_dates)
-    returned_dates = set(bars["trade_date"].astype(str)) if not bars.empty else set()
+    returned_keys = (
+        set(bars["trade_date"].astype(str) + "|" + bars["ts_code"].astype(str))
+        if not bars.empty
+        else set()
+    )
     # stk_mins长区间即使理论行数低于8,000，仍可能漏掉区间首日。聚合请求后
     # 只对缺失的冻结目标日做精确单日补取，禁止把供应商截断误记成永久空表。
-    for trade_date in sorted(target_dates - returned_dates):
+    for target_key in sorted(expected_keys - returned_keys):
+        trade_date, ts_code = target_key.split("|", 1)
         exact_start = (
             f"{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:]} 09:30:00"
         )
         exact_end = f"{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:]} 15:00:00"
         exact_raw = source.get_stock_minute_bars(
-            str(job.ts_code), exact_start, exact_end, freq="1min", fields=FIELDS
+            ts_code, exact_start, exact_end, freq="1min", fields=FIELDS
         )
         exact = normalize_tushare_bars(exact_raw, target_dates={trade_date})
         bars = upsert_rows(bars, exact, ["trade_date", "ts_code", "hhmm"])
@@ -373,12 +521,19 @@ def fetch_job_with_retry(
             )
             sleep_fn(delay)
     return pd.DataFrame(), last_error, policy.max_attempts_per_job
-
-
 def target_status_rows(job: Any, bars: pd.DataFrame, error: str = "") -> pd.DataFrame:
     rows = []
-    for trade_date in str(job.target_dates).split(";"):
-        count = int(bars["trade_date"].astype(str).eq(trade_date).sum()) if not bars.empty else 0
+    for trade_date, ts_code in job_target_pairs(job):
+        count = (
+            int(
+                (
+                    bars["trade_date"].astype(str).eq(trade_date)
+                    & bars["ts_code"].astype(str).eq(ts_code)
+                ).sum()
+            )
+            if not bars.empty
+            else 0
+        )
         if error:
             status = "RETRYABLE_ERROR"
         elif count >= MIN_COMPLETE_BAR_COUNT:
@@ -389,9 +544,9 @@ def target_status_rows(job: Any, bars: pd.DataFrame, error: str = "") -> pd.Data
             status = "EMPTY"
         rows.append(
             {
-                "target_key": f"{trade_date}|{job.ts_code}",
+                "target_key": f"{trade_date}|{ts_code}",
                 "trade_date": trade_date,
-                "ts_code": str(job.ts_code),
+                "ts_code": ts_code,
                 "job_key": str(job.job_key),
                 "status": status,
                 "bar_count": count,
@@ -409,6 +564,8 @@ def write_summary(
     *,
     request_interval: float = DEFAULT_REQUEST_INTERVAL_SECONDS,
     policy: CollectionPolicy | None = None,
+    known_gaps: pd.DataFrame | None = None,
+    merged_bar_count: int | None = None,
 ) -> dict[str, Any]:
     counts = (
         {str(k): int(v) for k, v in status["status"].value_counts().items()}
@@ -416,6 +573,33 @@ def write_summary(
         else {}
     )
     complete = int(counts.get("COMPLETE_1M_NO_QUEUE_DEPTH", 0))
+    complete_keys = (
+        set(
+            status.loc[
+                status["status"].astype(str).eq("COMPLETE_1M_NO_QUEUE_DEPTH"),
+                "target_key",
+            ].astype(str)
+        )
+        if not status.empty and {"target_key", "status"}.issubset(status.columns)
+        else set()
+    )
+    gaps = known_gaps if known_gaps is not None else pd.DataFrame()
+    known_gap_keys = set(gaps.get("target_key", pd.Series(dtype=str)).astype(str))
+    unresolved_known_gap_keys = known_gap_keys - complete_keys
+    unresolved_non_known_gap_count = max(
+        len(targets) - complete - len(unresolved_known_gap_keys), 0
+    )
+    prior = {}
+    if SUMMARY_PATH.exists():
+        try:
+            prior = json.loads(SUMMARY_PATH.read_text(encoding="utf-8-sig"))
+        except (json.JSONDecodeError, OSError):
+            prior = {}
+    actual_bar_count = (
+        int(merged_bar_count)
+        if merged_bar_count is not None
+        else int(prior.get("merged_bar_count", 0) or 0)
+    )
     payload = {
         "schema_version": 1,
         "generated_at": pd.Timestamp.now(tz="Asia/Shanghai").isoformat(),
@@ -429,19 +613,50 @@ def write_summary(
             int(policy.request_limit_per_minute) if policy else 0
         ),
         "request_interval_seconds": float(request_interval),
+        "request_mode": policy.request_mode if policy else "UNKNOWN",
+        "max_codes_per_request": (
+            int(policy.max_codes_per_request) if policy else 0
+        ),
+        "checkpoint_every_jobs": (
+            int(policy.checkpoint_every_jobs) if policy else 1
+        ),
         "estimated_hours_at_current_rate": round(
             len(jobs) * float(request_interval) / 3600, 2
         ),
+        "target_bar_count": int(len(targets) * 241),
+        "theoretical_download_row_count": int(
+            jobs["theoretical_return_rows"].sum()
+        ),
+        "download_row_amplification": round(
+            float(jobs["theoretical_return_rows"].sum())
+            / max(len(targets) * 241, 1),
+            2,
+        ),
         "complete_target_count": complete,
         "pending_target_count": int(len(targets) - complete),
+        "known_vendor_gap_target_count": int(len(unresolved_known_gap_keys)),
+        "unresolved_non_known_gap_target_count": int(unresolved_non_known_gap_count),
+        "price_path_coverage_rate": round(complete / max(len(targets), 1), 8),
+        "merged_bar_count": actual_bar_count,
         "status_counts": counts,
         "path_layer_complete": bool(complete == len(targets)),
+        "research_replay_fail_closed_ready": bool(
+            complete + len(unresolved_known_gap_keys) == len(targets)
+            and unresolved_non_known_gap_count == 0
+        ),
         "queue_depth_layer_complete": False,
         "certification_eligible": False,
+        "known_vendor_gaps": (
+            gaps[gaps["target_key"].astype(str).isin(unresolved_known_gap_keys)]
+            .to_dict("records")
+            if not gaps.empty
+            else []
+        ),
         "limitations": [
             "一分钟OHLCV仍无法确定同一分钟内多次炸板和回封的先后顺序。",
             "stk_mins不含历史买一排队顺序，始终封板委托不能证明成交。",
-            "当前6,848目标只覆盖现行D最终strong日，不能单独还原所有交易日盘中情绪。",
+            "40,336目标覆盖484日全窗口；盘中市场情绪仍须按同分钟全市场封板状态重建。",
+            "2024-11-28北交所4个目标为Tushare数据商单日市场缺口；留在母样本分母且重放时按缺数无信号处理，禁止删除或插值。",
         ],
     }
     SUMMARY_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -459,6 +674,11 @@ def parse_args() -> argparse.Namespace:
         "--consolidate-only",
         action="store_true",
         help="不请求网络，只把已落盘分片合并为总分钟文件。",
+    )
+    parser.add_argument(
+        "--recover-missing-parts",
+        action="store_true",
+        help="合并前从旧总表恢复缺失分片；仅迁移旧采集格式时人工启用。",
     )
     parser.add_argument(
         "--request-interval",
@@ -485,39 +705,66 @@ def main() -> int:
         )
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     targets = load_targets(args.targets)
-    jobs = build_cluster_jobs(targets, load_open_dates(args.calendar))
+    known_gaps = load_known_data_gaps(targets)
+    # 仍加载并校验交易日历，防止目标日期漂移；实际请求按同日多股横截面批量。
+    open_dates = set(load_open_dates(args.calendar))
+    unknown_dates = sorted(set(targets["trade_date"].astype(str)) - open_dates)
+    if unknown_dates:
+        raise ValueError(f"D一分钟目标日期不在交易日历：{unknown_dates[:5]}")
+    jobs = build_cross_section_jobs(
+        targets,
+        max_codes_per_request=policy.max_codes_per_request,
+    )
     status = load_csv(
         STATUS_PATH,
         dtype={"target_key": str, "trade_date": str, "ts_code": str, "job_key": str},
     )
+    existing_merged_bar_count = csv_data_row_count(OUTPUT_PATH)
     completed_keys = set(
         status.loc[
             status.get("status", pd.Series(dtype=str)).astype(str).eq("COMPLETE_1M_NO_QUEUE_DEPTH"),
             "target_key",
         ].astype(str)
     ) if not status.empty else set()
-    pending_jobs = jobs[
-        jobs.apply(
-            lambda row: any(
-                f"{date}|{row.ts_code}" not in completed_keys
-                for date in str(row.target_dates).split(";")
-            ),
-            axis=1,
-        )
+    pending_targets = targets[
+        ~targets["target_key"].astype(str).isin(completed_keys)
     ].copy()
+    pending_jobs = build_cross_section_jobs(
+        pending_targets,
+        max_codes_per_request=policy.max_codes_per_request,
+    )
     payload = write_summary(
-        targets, jobs, status, request_interval=request_interval, policy=policy
+        targets,
+        jobs,
+        status,
+        request_interval=request_interval,
+        policy=policy,
+        known_gaps=known_gaps,
+        merged_bar_count=existing_merged_bar_count,
     )
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     print(f"待请求job：{len(pending_jobs)}/{len(jobs)}")
     if args.dry_run:
         return 0
     if args.consolidate_only:
-        recovered = recover_missing_parts_from_output(jobs)
+        recovered = (
+            recover_missing_parts_from_output(jobs)
+            if args.recover_missing_parts
+            else 0
+        )
         if recovered:
             print(f"已从总表恢复旧分片：{recovered}个")
         consolidated = consolidate_minute_parts()
         print(f"已合并一分钟总表：{len(consolidated)}行")
+        write_summary(
+            targets,
+            jobs,
+            status,
+            request_interval=request_interval,
+            policy=policy,
+            known_gaps=known_gaps,
+            merged_bar_count=len(consolidated),
+        )
         return 0
     if args.limit_jobs > 0:
         pending_jobs = pending_jobs.head(args.limit_jobs)
@@ -528,58 +775,103 @@ def main() -> int:
 
     source = TushareDataSource(ROOT / "config/config.json")
     job_status = load_csv(JOB_STATUS_PATH, dtype={"job_key": str})
-    for index, job in enumerate(pending_jobs.itertuples(index=False), start=1):
-        fetched, error, attempt_count = fetch_job_with_retry(
-            source,
-            job,
-            policy=policy,
-        )
-        if error:
-            LOGGER.error("%s失败：%s", job.job_key, error)
-        if not fetched.empty:
-            atomic_write_csv(fetched, job_part_path(job))
-        additions = target_status_rows(job, fetched, error)
-        # 同一聚合请求里可能同时包含已完成和待补目标；失败或空返回不得把
-        # 之前完整的目标降级成ERROR/EMPTY。
-        additions = additions[~additions["target_key"].astype(str).isin(completed_keys)]
-        status = upsert_rows(status, additions, ["target_key"])
-        completed_keys.update(
-            additions.loc[
-                additions["status"].eq("COMPLETE_1M_NO_QUEUE_DEPTH"), "target_key"
-            ].astype(str)
-        )
-        atomic_write_csv(status.sort_values(["trade_date", "ts_code"]), STATUS_PATH)
-        job_row = pd.DataFrame(
-            [{
-                "job_key": job.job_key,
-                "ts_code": job.ts_code,
-                "start_date": job.start_date,
-                "end_date": job.end_date,
-                "target_count": job.target_count,
-                "returned_target_bar_count": int(len(fetched)),
-                "attempt_count": int(attempt_count),
-                "status": "ERROR" if error else "DONE",
-                "error_message": error[:500],
-                "updated_at": pd.Timestamp.now(tz="Asia/Shanghai").isoformat(),
-            }]
-        )
-        job_status = upsert_rows(job_status, job_row, ["job_key"])
-        atomic_write_csv(job_status.sort_values("job_key"), JOB_STATUS_PATH)
-        write_summary(
-            targets, jobs, status, request_interval=request_interval, policy=policy
-        )
-        LOGGER.info("进度 %d/%d：%s bars=%d", index, len(pending_jobs), job.job_key, len(fetched))
-        if index < len(pending_jobs):
-            time.sleep(request_interval)
-    recovered = recover_missing_parts_from_output(jobs)
-    if recovered:
-        LOGGER.info("已从总表恢复旧分片：jobs=%d", recovered)
+    processed = 0
+    try:
+        for index, job in enumerate(pending_jobs.itertuples(index=False), start=1):
+            fetched, error, attempt_count = fetch_job_with_retry(
+                source, job, policy=policy
+            )
+            processed = index
+            if error:
+                LOGGER.error("%s失败：%s", job.job_key, error)
+            if not fetched.empty:
+                atomic_write_csv(fetched, job_part_path(job))
+            additions = target_status_rows(job, fetched, error)
+            # 同一聚合请求里可能同时包含已完成和待补目标；失败或空返回不得把
+            # 之前完整的目标降级成ERROR/EMPTY。
+            additions = additions[
+                ~additions["target_key"].astype(str).isin(completed_keys)
+            ]
+            status = upsert_rows(status, additions, ["target_key"])
+            completed_keys.update(
+                additions.loc[
+                    additions["status"].eq("COMPLETE_1M_NO_QUEUE_DEPTH"),
+                    "target_key",
+                ].astype(str)
+            )
+            job_row = pd.DataFrame(
+                [{
+                    "job_key": job.job_key,
+                    "ts_code": job.ts_code,
+                    "start_date": job.start_date,
+                    "end_date": job.end_date,
+                    "target_count": job.target_count,
+                    "returned_target_bar_count": int(len(fetched)),
+                    "attempt_count": int(attempt_count),
+                    "status": "ERROR" if error else "DONE",
+                    "error_message": error[:500],
+                    "updated_at": pd.Timestamp.now(tz="Asia/Shanghai").isoformat(),
+                }]
+            )
+            job_status = upsert_rows(job_status, job_row, ["job_key"])
+            checkpoint = (
+                index % policy.checkpoint_every_jobs == 0
+                or index == len(pending_jobs)
+            )
+            if checkpoint:
+                atomic_write_csv(
+                    status.sort_values(["trade_date", "ts_code"]), STATUS_PATH
+                )
+                atomic_write_csv(job_status.sort_values("job_key"), JOB_STATUS_PATH)
+                write_summary(
+                    targets,
+                    jobs,
+                    status,
+                    request_interval=request_interval,
+                    policy=policy,
+                    known_gaps=known_gaps,
+                    merged_bar_count=existing_merged_bar_count,
+                )
+                LOGGER.info(
+                    "采集进度 %d/%d：complete=%d last=%s bars=%d",
+                    index,
+                    len(pending_jobs),
+                    len(completed_keys),
+                    job.job_key,
+                    len(fetched),
+                )
+            if index < len(pending_jobs):
+                time.sleep(request_interval)
+    finally:
+        if processed:
+            atomic_write_csv(
+                status.sort_values(["trade_date", "ts_code"]), STATUS_PATH
+            )
+            atomic_write_csv(job_status.sort_values("job_key"), JOB_STATUS_PATH)
+            write_summary(
+                targets,
+                jobs,
+                status,
+                request_interval=request_interval,
+                policy=policy,
+                known_gaps=known_gaps,
+                merged_bar_count=existing_merged_bar_count,
+            )
+    if args.limit_jobs > 0:
+        LOGGER.info("小批采集完成，不执行全量分片合并")
+        return 0
     consolidated = consolidate_minute_parts()
     LOGGER.info("一分钟分片合并完成：bars=%d", len(consolidated))
     print(
         json.dumps(
             write_summary(
-                targets, jobs, status, request_interval=request_interval, policy=policy
+                targets,
+                jobs,
+                status,
+                request_interval=request_interval,
+                policy=policy,
+                known_gaps=known_gaps,
+                merged_bar_count=len(consolidated),
             ),
             ensure_ascii=False,
             indent=2,

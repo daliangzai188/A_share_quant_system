@@ -23,7 +23,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from scripts.collect_strategy_d_intraday_tushare_1m import (  # noqa: E402
-    build_cluster_jobs,
+    build_cross_section_jobs,
     load_collection_policy,
     load_open_dates,
     load_targets,
@@ -41,6 +41,7 @@ WINDOW_START = "20240630"
 WINDOW_END = "20260630"
 L2_MANIFEST_PATH = ROOT / "data/research/strategy_d_intraday/strict_l2_daily_manifest.csv"
 TUSHARE_STATUS_PATH = ROOT / "data/research/strategy_d_intraday/tushare_1m_status.csv"
+TUSHARE_REPORT_PATH = ROOT / "reports/strategy_d_intraday_research/tushare_1m_collection.json"
 BAOSTOCK_REPORT_PATH = ROOT / "reports/strategy_d_intraday_research/baostock_5m_collection.json"
 QMT_REPORT_PATH = ROOT / "reports/strategy_d_intraday_research/qmt_depth_probe.json"
 OUTPUT_PATH = ROOT / "reports/strategy_d_intraday_research/strict_source_audit.json"
@@ -69,8 +70,11 @@ def build_audit(*, l2_manifest_path: Path = L2_MANIFEST_PATH) -> dict[str, Any]:
     targets = load_targets()
     all_open_dates = load_open_dates()
     window_open_dates = [date for date in all_open_dates if WINDOW_START <= date <= WINDOW_END]
-    jobs = build_cluster_jobs(targets, all_open_dates)
     collection_policy = load_collection_policy()
+    jobs = build_cross_section_jobs(
+        targets,
+        max_codes_per_request=collection_policy.max_codes_per_request,
+    )
     tushare_status = read_csv(
         TUSHARE_STATUS_PATH,
         dtype={"target_key": str, "trade_date": str, "ts_code": str},
@@ -86,6 +90,7 @@ def build_audit(*, l2_manifest_path: Path = L2_MANIFEST_PATH) -> dict[str, Any]:
     )
     qmt = read_json(QMT_REPORT_PATH)
     baostock = read_json(BAOSTOCK_REPORT_PATH)
+    tushare_report = read_json(TUSHARE_REPORT_PATH)
     tushare_complete = count_complete_tushare_targets(tushare_status)
     qmt_tick = int(qmt.get("tick_available_count", 0) or 0)
     qmt_book = int(qmt.get("historical_book_available_count", 0) or 0)
@@ -94,16 +99,16 @@ def build_audit(*, l2_manifest_path: Path = L2_MANIFEST_PATH) -> dict[str, Any]:
     if not strict_passed:
         if tushare_complete < len(targets):
             blockers.append(
-                f"Tushare一分钟路径仅完成{tushare_complete}/{len(targets)}个冻结目标"
+                f"Tushare一分钟路径完成{tushare_complete}/{len(targets)}个冻结目标；"
+                f"其中{int(tushare_report.get('known_vendor_gap_target_count', 0) or 0)}个"
+                "为已核实供应商缺口，重放必须fail-closed"
             )
         blockers.append(
             "缺少整个24个月窗口、沪深京全市场、09:30~14:55完整逐笔委托/成交/盘口文件"
         )
         if qmt_tick == 0 or qmt_book == 0:
             blockers.append("QMT抽样未返回两年历史tick或买一队列字段")
-        blockers.append(
-            "现有6,848母池只覆盖最终收盘strong的56日，不能单独倒推出所有交易日信号时点情绪"
-        )
+        blockers.append("分钟OHLCV无法认证始终封板委托的FIFO排队成交")
     return {
         "schema_version": 1,
         "generated_at": pd.Timestamp.now(tz="Asia/Shanghai").isoformat(),
@@ -132,6 +137,15 @@ def build_audit(*, l2_manifest_path: Path = L2_MANIFEST_PATH) -> dict[str, Any]:
             "tushare_1m": {
                 "complete_target_count": tushare_complete,
                 "target_count": int(len(targets)),
+                "known_vendor_gap_target_count": int(
+                    tushare_report.get("known_vendor_gap_target_count", 0) or 0
+                ),
+                "unresolved_non_known_gap_target_count": int(
+                    tushare_report.get("unresolved_non_known_gap_target_count", 0) or 0
+                ),
+                "research_replay_fail_closed_ready": bool(
+                    tushare_report.get("research_replay_fail_closed_ready", False)
+                ),
                 "clustered_request_count": int(len(jobs)),
                 "access_tier": collection_policy.access_tier,
                 "request_limit_per_minute": collection_policy.request_limit_per_minute,
@@ -183,7 +197,8 @@ def build_audit(*, l2_manifest_path: Path = L2_MANIFEST_PATH) -> dict[str, Any]:
         },
         "blockers": blockers,
         "next_authorized_action": (
-            "导入已有合规历史L2数据并运行逐日重放"
+            "先运行40,336只次全窗口一分钟fail-closed重放与爆发/爆亏特征研究；"
+            "只有候选同时提高D独立复利和ACDE逐腿替换复利后，才评估历史L2最终认证"
             if not strict_passed
             else "按冻结D规则先复现当前D，再运行候选变体和ACDE双门槛"
         ),

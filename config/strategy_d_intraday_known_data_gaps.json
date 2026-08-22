@@ -1,36 +1,10 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-22T17:28:54.901933+08:00",
   "strategy": "D",
-  "source": "TUSHARE_STK_MINS_1M_UNADJUSTED",
-  "formal_rule_modified": false,
-  "target_count": 40336,
-  "clustered_request_count": 1446,
-  "access_tier": "PAID_A_SHARE_HISTORY_MINUTE",
-  "request_limit_per_minute": 500,
-  "request_interval_seconds": 0.15,
-  "request_mode": "CROSS_SECTION_BY_TRADE_DATE",
-  "max_codes_per_request": 33,
-  "checkpoint_every_jobs": 25,
-  "estimated_hours_at_current_rate": 0.06,
-  "target_bar_count": 9720976,
-  "theoretical_download_row_count": 9720976,
-  "download_row_amplification": 1.0,
-  "complete_target_count": 40332,
-  "pending_target_count": 4,
-  "known_vendor_gap_target_count": 4,
-  "unresolved_non_known_gap_target_count": 0,
-  "price_path_coverage_rate": 0.99990083,
-  "merged_bar_count": 9720012,
-  "status_counts": {
-    "COMPLETE_1M_NO_QUEUE_DEPTH": 40332,
-    "EMPTY": 4
-  },
-  "path_layer_complete": false,
-  "research_replay_fail_closed_ready": true,
-  "queue_depth_layer_complete": false,
-  "certification_eligible": false,
-  "known_vendor_gaps": [
+  "window": "20240630~20260630",
+  "purpose": "精确记录付费Tushare历史一分钟中已复核的供应商日期市场缺口；不伪装完整，不从母样本分母删除，不允许用日线或插值伪造241根分钟K。",
+  "checked_at": "2026-08-22",
+  "gaps": [
     {
       "target_key": "20241128|920149.BJ",
       "trade_date": "20241128",
@@ -75,11 +49,5 @@
       "handling": "FAIL_CLOSED_KEEP_IN_DENOMINATOR",
       "evidence": "当日现代码920802.BJ与旧代码832802.BJ均返0行；相邻20241127/20241129各返241行；同日其他北交所股也返0行。"
     }
-  ],
-  "limitations": [
-    "一分钟OHLCV仍无法确定同一分钟内多次炸板和回封的先后顺序。",
-    "stk_mins不含历史买一排队顺序，始终封板委托不能证明成交。",
-    "40,336目标覆盖484日全窗口；盘中市场情绪仍须按同分钟全市场封板状态重建。",
-    "2024-11-28北交所4个目标为Tushare数据商单日市场缺口；留在母样本分母且重放时按缺数无信号处理，禁止删除或插值。"
   ]
 }

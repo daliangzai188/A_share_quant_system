@@ -1,0 +1,85 @@
+{
+  "schema_version": 2,
+  "generated_at": "2026-08-22T15:46:25.996408+07:00",
+  "research_protocol": "STRICT_DISCOVERY",
+  "strategy": "D",
+  "window": "20240630~20260630",
+  "formal_rule_modified": false,
+  "release_eligible": false,
+  "targets_only": true,
+  "research_objective": "覆盖盘中打板的爆发与爆亏路径，挖掘可执行的回封、炸板、情绪、量价、板块和成交特征；候选仍须通过D独立复利与ACDE逐腿替换双门禁",
+  "mother_pool": {
+    "window_open_day_count": 484,
+    "days_with_touch_target_count": 484,
+    "historical_strong_day_count": 56,
+    "first_board_touch_count": 40336,
+    "closed_at_limit_count": 27301,
+    "failed_to_close_at_limit_count": 13035,
+    "current_static_d_survivor_count": 206,
+    "legacy_strong_subpool_count": 6848,
+    "additional_target_count_vs_legacy": 33488,
+    "daily_target_median": 72.0,
+    "daily_target_max": 1927,
+    "daily_target_max_date": "20241008",
+    "market_segment_counts": {
+      "bj": 749,
+      "chi_next": 4224,
+      "sh_main": 16889,
+      "star": 1435,
+      "sz_main": 17039
+    },
+    "final_close_sentiment_label_counts": {
+      "neutral": 21615,
+      "strong": 6848,
+      "very_strong": 5516,
+      "weak": 6357
+    }
+  },
+  "data_quality": {
+    "duplicate_target_key_count": 0,
+    "missing_name_count": 0,
+    "nonpositive_official_limit_price_count": 0,
+    "legacy_strong_subpool_regression_passed": true,
+    "current_static_d_pool_regression_passed": true
+  },
+  "minute_data": {
+    "path": "",
+    "source": "MISSING",
+    "status_counts": {},
+    "one_minute_path_ready_count": 0,
+    "approximate_five_minute_path_ready_count": 0,
+    "target_count": 40336,
+    "one_minute_coverage_complete": false,
+    "queue_depth_coverage_complete": false
+  },
+  "path_replay": {
+    "first_eligible_reseal_signal_count": 0,
+    "failed_close_signal_count": 0,
+    "confirmed_fill_by_price_count": 0,
+    "queue_fill_unknown_no_depth_count": 0,
+    "ambiguous_path_count": 0,
+    "ambiguous_signal_count": 0,
+    "unambiguous_signal_count": 0,
+    "first_before_1400_signal_count": 0,
+    "current_static_pool_signal_overlap_count": 0,
+    "open_times_at_signal_counts": {},
+    "first_eligible_signal_definition": "09:30起连续跟踪；首次封板桶合规；炸板2~3次；14:00起且14:55撤单前第一次回封",
+    "queue_fill_definition": "信号后且14:55撤单前价格低于涨停价才确认涨停限价单可成交；始终封板因缺少队列深度而标记未知"
+  },
+  "certification": {
+    "complete_mother_pool_passed": true,
+    "complete_one_minute_path_passed": false,
+    "historical_queue_depth_passed": false,
+    "daily_live_ranking_reconstructable": false,
+    "d_standalone_replay_certifiable": false,
+    "acde_one_leg_replacement_certifiable": false,
+    "status": "TARGET_MANIFEST_READY"
+  },
+  "limitations": [
+    "母池覆盖全部484日；历史收盘情绪只作标签，精确复现实盘仍需用分钟路径重建盘中ever_sealed情绪。",
+    "OHLCV没有回封时买一封单和队列前方数量，始终封板期间不能证明排队成交。",
+    "一分钟OHLCV仍无法确定同一分钟内多次触板、炸板和回封的先后顺序；五分钟歧义更大。",
+    "跨数据源分钟最高价未确认官方涨停价的目标单独标记不一致，禁止用于路径认证。",
+    "在历史队列深度和同日候选盘中排名补齐前，不得用本账本修改正式D规则或计算认证组合复利。"
+  ]
+}

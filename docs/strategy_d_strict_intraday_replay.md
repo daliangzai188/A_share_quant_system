@@ -43,7 +43,7 @@ BLOCKED_HISTORICAL_FULL_MARKET_L2_REQUIRED
 | 数据层 | 当前覆盖 | 能解决的问题 | 能否正式认证 |
 |---|---:|---|---|
 | BaoStock 5分钟 | 6,848/6,848目标已终态 | 近似筛查明显炸板/回封路径 | 否 |
-| Tushare 1分钟 | 6,848/6,848目标完整，共1,650,368根 | 缩小bar内路径歧义 | 否 |
+| Tushare 1分钟 | 40,332/40,336目标完整，共9,720,012根；4只供应商缺口 | 缩小bar内路径歧义 | 否 |
 | Tushare官方涨跌停价 | 484/484交易日完整 | 生成全窗口首板触板母池 | 是（母池层） |
 | QMT历史1分钟抽样 | 6个日期分位目标中仅最近2个有241根 | 证明本机近期分钟覆盖 | 否 |
 | QMT历史tick抽样 | 0/6 | 无 | 否 |
@@ -62,25 +62,22 @@ QMT探针只调用只读``xtdata``行情接口，没有读取账户、持仓、�
 ``reports/strategy_d_intraday_research/qmt_depth_probe.json``。沪深京同日独立结果保存在
 ``reports/strategy_d_intraday_research/qmt_three_market_probe.json``。
 
-Tushare历史分钟接口一次只支持单一股票、单次最多8,000行；采集器已把同一
-股票最多33个连续交易日跨度合并成一个请求，将6,848个股票日目标压缩为5,270
-个请求。2026-08-22购买A股历史分钟权限后，``000002.SZ``在2024-09-26的
-权限探针完整返回241根；采集配置按500次/分钟上限使用0.15秒保守间隔，限频
-时等待65秒重试。每个请求先原子写入独立分片，全部结束后才合并总表，避免
-5,270次重写大文件；若长区间响应漏掉冻结目标日，采集器只对该日自动降级为
-精确单日补取；分片机制启用前的权限探针也会从完整总表恢复成独立分片，保证
-总表可由5,270个请求分片重建。即使全量完成，一分钟K仍没有历史队列，不能
-认证正式成交。
+Tushare历史分钟单次最多8,000行；实测SDK支持逗号分隔多股返回。采集器因此按
+交易日横截面聚合，每job最多33只（7,953行），将40,336个股票日目标压缩为
+1,446个job，理论下载行数与目标槽位均为9,720,976，放大倍数1.00。聚合响应
+漏某只时，只对该股该日精确补取。采集配置按500次/分钟上限使用0.15秒
+保守间隔，限频时等待65秒重试；每25个job原子保存状态。
 [Tushare历史分钟接口说明](https://tushare.pro/document/1?doc_id=234)
 
-本次全量结果经总表审计：6,848个``trade_date+ts_code``目标均为241根，分钟键
-重复数为0，日期范围``20240926~20260630``，唯一来源为
-``TUSHARE_STK_MINS_1M_UNADJUSTED``。机器报告保存在
+全量结果为40,332个完整目标、9,720,012根，覆盖率99.990083%；分钟键无重复。
+剩4只是2024-11-28北交所供应商缺口，没有其他未知缺口。它们留在母样本分母内并
+严格fail-closed；因此``path_layer_complete=false``，但
+``research_replay_fail_closed_ready=true``。机器报告保存在
 ``reports/strategy_d_intraday_research/tushare_1m_collection.json``。
 
 上述6,848只次只是56个最终收盘strong日的第一阶段目标，并非484日全窗口。
-官方``stk_limit``已补齐其余428日；日级预扫描得到全窗口40,336只次目标，
-下一项将生成正式目标清单并用已购一分钟权限补齐新增33,488只次。
+官方``stk_limit``已补齐其余428日；全窗口40,336只次正式目标清单已经生成，
+旧6,848只次逐键完整保留；全窗口分钟采集已达到40,332完整+4供应商缺口失败关闭。
 
 第一阶段一分钟事件账本进一步按``14:00<=第一次可交易回封<14:55``重放，得到370个
 路径信号：263个可由信号后板下成交确认限价单成交，107个始终封板且缺队列
@@ -170,7 +167,7 @@ fill_probability, fill_reliable
 | 同上 | ``replay_synchronized_d_scans`` | 重建首次封板、炸板、回封、当前封板情绪和同日D排序 |
 | 同上 | ``replay_price_time_queue`` | 重建价格时间优先队列、部分成交和14:55撤余单 |
 | 同上 | ``normalize_event_time`` | 保留``HH:MM:SS.mmm``毫秒，避免破坏逐笔先后顺序 |
-| ``scripts/collect_strategy_d_intraday_tushare_1m.py`` | ``load_collection_policy`` / ``fetch_job_with_retry`` / ``consolidate_minute_parts`` / ``main`` | 付费权限限速、33交易日聚合、缺日单日补取、退避重试、原子分片、断点状态和总表合并 |
+| ``scripts/collect_strategy_d_intraday_tushare_1m.py`` | ``load_collection_policy`` / ``build_cross_section_jobs`` / ``fetch_job_with_retry`` / ``write_summary`` | 付费权限限速、同日最多33股横截面聚合、缺股精确补取、断点状态、已知缺口fail-closed和总表合并 |
 | ``scripts/collect_strategy_d_stk_limit_history.py`` | ``load_window_open_dates`` / ``normalize_stk_limit`` / ``collect_missing`` | 补齐484日官方涨跌停价、内容校验、原子保存和断点续跑 |
 | ``scripts/probe_strategy_d_intraday_qmt_depth.py`` | ``fetch_period`` / ``report_paths`` / ``main`` | 只读探测QMT 1分钟、tick和历史盘口字段；不同批次报告互不覆盖 |
 | ``scripts/audit_strategy_d_l2_purchase_readiness.py`` | ``build_audit`` | 汇总当前权限、官方候选来源和付款前样本门槛 |
@@ -181,29 +178,32 @@ fill_probability, fill_reliable
 
 ## 七、运行与验证
 
-### 7.1 第一阶段Tushare分钟数据验收
+### 7.1 全窗口Tushare分钟数据验收
 
 ```bash
 python3 scripts/collect_strategy_d_intraday_tushare_1m.py --dry-run
 ```
 
-现有56个收盘strong日的第一阶段结果必须看到：
+当前必须看到：
 
 ```text
-target_count=6848
-clustered_request_count=5270
+target_count=40336
+clustered_request_count=1446
 access_tier=PAID_A_SHARE_HISTORY_MINUTE
 request_limit_per_minute=500
 request_interval_seconds=0.15
-estimated_hours_at_current_rate=0.22
-complete_target_count=6848
-pending_target_count=0
-path_layer_complete=true
+complete_target_count=40332
+pending_target_count=4
+known_vendor_gap_target_count=4
+unresolved_non_known_gap_target_count=0
+merged_bar_count=9720012
+research_replay_fail_closed_ready=true
+path_layer_complete=false
 queue_depth_layer_complete=false
 ```
 
-``0.22小时``只是纯间隔理论值；真实耗时还取决于网络返回、CSV状态落盘、退避和
-供应商服务状态，不能把理论值当完成承诺。
+``path_layer_complete=false``是对数据完整性的如实表达；不等于停止研究。下一步账本重放保留
+全40,336分母，对4只缺数目标不产生信号。
 
 ### 7.2 小批采集验证
 
@@ -245,8 +245,8 @@ python3 -m pytest -q \
 
 ## 八、当前下一步与最终数据闸门
 
-当前不再购买或申请L2。下一步是生成484日全窗口40,336只次首板触板目标，
-并用已经购买的Tushare一分钟权限断点补齐新增33,488只次。分钟研究中，价格
+当前不再购买或申请L2。484日全窗口40,336只次首板触板目标已经生成，
+40,332只一分钟完整且余4只供应商缺口已明确fail-closed。下一项是全窗口机械重放：分钟研究中，价格
 跌破涨停价可以确认限价委托成交；始终封板且没有队列证据的样本一律按保守
 不成交。只有分钟候选先同时改善D独立腿和ACDE逐腿替换研究结果，才重新评估
 下述L2样本与报价。

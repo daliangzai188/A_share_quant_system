@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "strategy": "D",
+  "purpose": "补齐因代码迁移而同时缺失于当前stock_basic和namechange的历史信号日身份；仅允许写入经两个Tushare历史接口交叉确认的精确日期。",
+  "overrides": [
+    {
+      "trade_date_checked": "20241010",
+      "ts_code": "300114.SZ",
+      "name": "中航电测",
+      "start_date": "20241010",
+      "end_date": "20241010",
+      "evidence": "TUSHARE_LIMIT_LIST_D_Z_AND_BAK_BASIC_ASOF",
+      "checked_at": "2026-08-22",
+      "notes": "limit_list_d(limit_type=Z)与bak_basic(trade_date=20241010)均返回中航电测；不外推到其他日期。"
+    }
+  ]
+}

@@ -8,11 +8,15 @@ import pandas as pd
 from scripts.collect_strategy_d_intraday_tushare_1m import (
     CollectionPolicy,
     build_cluster_jobs,
+    build_cross_section_jobs,
     consolidate_minute_parts,
     fetch_job,
     fetch_job_with_retry,
+    job_target_pairs,
+    load_known_data_gaps,
     normalize_tushare_bars,
     recover_missing_parts_from_output,
+    target_status_rows,
 )
 from src.strategy_d_strict_intraday import (
     REQUIRED_EXCHANGES,
@@ -147,11 +151,48 @@ def test_cluster_jobs_stay_under_8000_rows_and_group_sparse_targets() -> None:
             "trade_date": [open_dates[0], open_dates[10], open_dates[32], open_dates[33]],
         }
     )
-    jobs = build_cluster_jobs(targets, open_dates)
+    jobs = build_cluster_jobs(targets, open_dates, max_open_days=33)
     assert len(jobs) == 2
     assert jobs.iloc[0]["target_count"] == 3
     assert jobs["open_day_span"].max() <= 33
     assert jobs["open_day_span"].max() * 241 <= 8000
+
+
+def test_cross_section_jobs_batch_33_codes_without_losing_targets() -> None:
+    targets = pd.DataFrame(
+        {
+            "trade_date": ["20250102"] * 70,
+            "ts_code": [f"{index:06d}.SZ" for index in range(70)],
+        }
+    )
+
+    jobs = build_cross_section_jobs(targets, max_codes_per_request=33)
+    pairs = [pair for job in jobs.itertuples(index=False) for pair in job_target_pairs(job)]
+
+    assert len(jobs) == 3
+    assert jobs["target_count"].max() == 33
+    assert jobs["theoretical_return_rows"].max() == 33 * 241
+    assert len(pairs) == 70
+    assert len(set(pairs)) == 70
+
+
+def test_known_vendor_gaps_are_exact_targets_and_fail_closed() -> None:
+    targets = pd.DataFrame(
+        {
+            "target_key": [
+                "20241128|920149.BJ",
+                "20241128|920199.BJ",
+                "20241128|920765.BJ",
+                "20241128|920802.BJ",
+            ]
+        }
+    )
+
+    gaps = load_known_data_gaps(targets)
+
+    assert len(gaps) == 4
+    assert set(gaps["target_key"]) == set(targets["target_key"])
+    assert gaps["handling"].eq("FAIL_CLOSED_KEEP_IN_DENOMINATOR").all()
 
 
 def test_tushare_normalization_keeps_only_target_dates() -> None:
@@ -214,6 +255,49 @@ def test_cluster_fetch_repairs_missing_target_with_exact_day_request() -> None:
     assert len(source.calls) == 2
 
 
+def test_cross_section_fetch_repairs_one_missing_code_and_writes_two_statuses() -> None:
+    def raw(code: str) -> pd.DataFrame:
+        return pd.DataFrame(
+            {
+                "ts_code": [code],
+                "trade_time": ["2025-01-02 09:30:00"],
+                "open": [10],
+                "high": [10],
+                "low": [10],
+                "close": [10],
+                "vol": [100],
+                "amount": [1000],
+            }
+        )
+
+    class Source:
+        calls: list[str] = []
+
+        def get_stock_minute_bars(
+            self, ts_code: str, *_args: object, **_kwargs: object
+        ) -> pd.DataFrame:
+            self.calls.append(ts_code)
+            if "," in ts_code:
+                return raw("000001.SZ")
+            return raw(ts_code)
+
+    job = SimpleNamespace(
+        job_key="CROSS_SECTION|20250102|0001|test",
+        ts_code="000001.SZ,000002.SZ",
+        start_date="20250102",
+        end_date="20250102",
+        target_dates="20250102",
+        target_keys="20250102|000001.SZ;20250102|000002.SZ",
+    )
+    source = Source()
+    result = fetch_job(source, job)
+    statuses = target_status_rows(job, result)
+
+    assert set(result["ts_code"]) == {"000001.SZ", "000002.SZ"}
+    assert source.calls == ["000001.SZ,000002.SZ", "000002.SZ"]
+    assert len(statuses) == 2
+
+
 def paid_policy() -> CollectionPolicy:
     return CollectionPolicy(
         access_tier="PAID_A_SHARE_HISTORY_MINUTE",
@@ -222,6 +306,9 @@ def paid_policy() -> CollectionPolicy:
         max_attempts_per_job=3,
         rate_limit_backoff_seconds=65,
         transient_backoff_seconds=3,
+        request_mode="CROSS_SECTION_BY_TRADE_DATE",
+        max_codes_per_request=33,
+        checkpoint_every_jobs=25,
     )
 
 
@@ -361,10 +448,10 @@ def test_complete_legacy_output_can_restore_missing_job_part(tmp_path: Path) -> 
     parts_dir = tmp_path / "parts"
     bars = pd.DataFrame(
         {
-            "trade_date": ["20250102"] * 230,
-            "ts_code": ["000002.SZ"] * 230,
-            "hhmm": [f"{index:04d}" for index in range(230)],
-            "close": [10.0] * 230,
+            "trade_date": ["20250102"] * 241,
+            "ts_code": ["000002.SZ"] * 241,
+            "hhmm": [f"{index:04d}" for index in range(241)],
+            "close": [10.0] * 241,
         }
     )
     bars.to_csv(output, index=False)
