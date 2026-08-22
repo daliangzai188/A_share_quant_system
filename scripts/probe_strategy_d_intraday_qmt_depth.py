@@ -17,6 +17,7 @@ import argparse
 import json
 import logging
 from pathlib import Path
+import re
 from typing import Any
 
 import pandas as pd
@@ -25,8 +26,7 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[1]
 TARGET_PATH = ROOT / "data/research/strategy_d_intraday/minute_target_manifest.csv"
 REPORT_DIR = ROOT / "reports/strategy_d_intraday_research"
-DETAIL_PATH = REPORT_DIR / "qmt_depth_probe.csv"
-SUMMARY_PATH = REPORT_DIR / "qmt_depth_probe.json"
+DEFAULT_REPORT_STEM = "qmt_depth_probe"
 EXPECTED_TARGET_COUNT = 6848
 LOGGER = logging.getLogger("probe_strategy_d_intraday_qmt_depth")
 ONE_MINUTE_FIELDS = ["open", "high", "low", "close", "volume", "amount"]
@@ -98,6 +98,16 @@ def explicit_probe_targets(frame: pd.DataFrame, values: list[str]) -> pd.DataFra
     return result.sort_values(["trade_date", "ts_code"]).reset_index(drop=True)
 
 
+def report_paths(report_stem: str) -> tuple[Path, Path]:
+    """生成探针报告路径，并阻止参数逃逸出研究报告目录。"""
+    if not re.fullmatch(r"[a-z0-9_]+", report_stem):
+        raise ValueError("--report-stem只允许小写字母、数字和下划线")
+    return (
+        REPORT_DIR / f"{report_stem}.csv",
+        REPORT_DIR / f"{report_stem}.json",
+    )
+
+
 def frame_metadata(frame: Any) -> dict[str, Any]:
     if frame is None or not isinstance(frame, pd.DataFrame) or frame.empty:
         return {
@@ -166,12 +176,18 @@ def parse_args() -> argparse.Namespace:
         help="显式目标YYYYMMDD|000001.SZ，可重复传入。",
     )
     parser.add_argument("--skip-tick", action="store_true")
+    parser.add_argument(
+        "--report-stem",
+        default=DEFAULT_REPORT_STEM,
+        help="报告文件名（不含扩展名）；用于保留不同批次的独立探针证据。",
+    )
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
+    detail_path, summary_path = report_paths(args.report_stem)
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
@@ -241,7 +257,7 @@ def main() -> int:
         )
     detail = pd.DataFrame(rows)
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
-    detail.to_csv(DETAIL_PATH, index=False, encoding="utf-8-sig")
+    detail.to_csv(detail_path, index=False, encoding="utf-8-sig")
     summary = {
         "schema_version": 1,
         "generated_at": pd.Timestamp.now(tz="Asia/Shanghai").isoformat(),
@@ -266,11 +282,11 @@ def main() -> int:
             ]
         ].to_dict("records"),
     }
-    SUMMARY_PATH.write_text(
+    summary_path.write_text(
         json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
     print(json.dumps(summary, ensure_ascii=False, indent=2))
-    LOGGER.info("QMT探针报告：%s", SUMMARY_PATH)
+    LOGGER.info("QMT探针报告：%s", summary_path)
     return 0
 
 

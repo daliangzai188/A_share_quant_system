@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-08-22T13:26:52.241349+08:00",
+  "strategy": "D",
+  "probe_only": true,
+  "read_only_xtdata": true,
+  "account_accessed": false,
+  "order_api_accessed": false,
+  "target_count": 3,
+  "one_minute_available_count": 3,
+  "tick_available_count": 0,
+  "historical_book_available_count": 0,
+  "date_results": [
+    {
+      "trade_date": "20260629",
+      "ts_code": "000017.SZ",
+      "minute_row_count": 241,
+      "tick_row_count": 0,
+      "tick_book_fields": "[]"
+    },
+    {
+      "trade_date": "20260629",
+      "ts_code": "600113.SH",
+      "minute_row_count": 241,
+      "tick_row_count": 0,
+      "tick_book_fields": "[]"
+    },
+    {
+      "trade_date": "20260629",
+      "ts_code": "920367.BJ",
+      "minute_row_count": 241,
+      "tick_row_count": 0,
+      "tick_book_fields": "[]"
+    }
+  ]
+}

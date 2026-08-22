@@ -45,6 +45,7 @@ BLOCKED_HISTORICAL_FULL_MARKET_L2_REQUIRED
 | QMT历史1分钟抽样 | 6个日期分位目标中仅最近2个有241根 | 证明本机近期分钟覆盖 | 否 |
 | QMT历史tick抽样 | 0/6 | 无 | 否 |
 | QMT历史盘口字段抽样 | 0/6 | 无 | 否 |
+| QMT沪深京同日抽样 | 3/3有241根1分钟；tick和盘口均0/3 | 证明北交所也只有分钟层可用 | 否 |
 | 全市场严格L2日文件 | 0/1,452个交易所日文件 | 情绪、排序、队列、撤单 | 当前缺失 |
 
 窗口共有484个交易日。正式D包含沪、深、京市场，因此严格日文件门槛为：
@@ -55,7 +56,8 @@ BLOCKED_HISTORICAL_FULL_MARKET_L2_REQUIRED
 
 QMT探针只调用只读``xtdata``行情接口，没有读取账户、持仓、委托，也没有调用
 任何下单或撤单接口。实测结果保存在
-``reports/strategy_d_intraday_research/qmt_depth_probe.json``。
+``reports/strategy_d_intraday_research/qmt_depth_probe.json``。沪深京同日独立结果保存在
+``reports/strategy_d_intraday_research/qmt_three_market_probe.json``。
 
 Tushare历史分钟接口一次只支持单一股票、单次最多8,000行；采集器已把同一
 股票最多33个连续交易日跨度合并成一个请求，将6,848个股票日目标压缩为5,270
@@ -146,7 +148,8 @@ fill_probability, fill_reliable
 | 同上 | ``replay_synchronized_d_scans`` | 重建首次封板、炸板、回封、当前封板情绪和同日D排序 |
 | 同上 | ``replay_price_time_queue`` | 重建价格时间优先队列、部分成交和14:55撤余单 |
 | ``scripts/collect_strategy_d_intraday_tushare_1m.py`` | ``build_cluster_jobs`` / ``main`` | 33交易日聚合请求、断点状态、分钟价格路径回填 |
-| ``scripts/probe_strategy_d_intraday_qmt_depth.py`` | ``fetch_period`` / ``main`` | 只读探测QMT 1分钟、tick和历史盘口字段 |
+| ``scripts/probe_strategy_d_intraday_qmt_depth.py`` | ``fetch_period`` / ``report_paths`` / ``main`` | 只读探测QMT 1分钟、tick和历史盘口字段；不同批次报告互不覆盖 |
+| ``scripts/audit_strategy_d_l2_purchase_readiness.py`` | ``build_audit`` | 汇总当前权限、官方候选来源和付款前样本门槛 |
 | ``scripts/audit_strategy_d_strict_intraday_sources.py`` | ``build_audit`` | 汇总各层覆盖并生成正式认证闸门 |
 | ``tests/test_strategy_d_strict_intraday.py`` | 全文件 | 队列、部成撤单、同步情绪、排名和缺数fail-closed测试 |
 
@@ -206,14 +209,21 @@ python3 -m pytest -q \
 
 ## 八、下一步需要的数据权限
 
-上交所官方历史Level-2产品明确包含快照、逐笔委托/成交和分钟K；公开价格页显示
-上交所历史Level-2为12万元/年，且这只解决上海市场，不能自动补齐深交所和北交所。
+上交所官方历史Level-2产品明确包含快照类、竞价逐笔类和K线数据；公开价格页
+显示上交所历史Level-2为12万元/年，且这只解决上海市场，不能自动补齐深交所
+和北交所。24个月横跨三个自然年，最终计年方式和含税总价必须书面询价，不能
+自行按网页年价推断。
 [上交所Level-2产品说明](https://www.sseinfo.com/services/assortment/level2/)
 [上交所产品服务价格](https://www.sseinfo.com/services/cpfwjg/)
 
 掘金量化文档提供历史L2 tick、逐笔成交、逐笔委托和委托队列接口，但实际历史
 跨度、交易所覆盖和券商版本权限必须用现有账号逐项验证，不能只凭接口名称假设
 两年数据可取。[掘金量化历史L2接口](https://www.myquant.cn/docs/python/python_other_api)
+
+深交所官方历史增强行情明确包含逐笔委托、逐笔成交、3秒快照和证券委托队列；
+北交所股票历史逐笔产品及价格尚未从官方公开页面确认。完整权限审计、联系方式、
+样本门槛和询价模板见
+``docs/strategy_d_l2_permission_purchase_audit.md``。
 
 本专项没有购买数据、没有联系供应商，也没有启用任何实盘接口。下一步必须先
 确认已有数据权限或选定合规数据来源，再导入统一契约；在此之前不运行D/ACDE

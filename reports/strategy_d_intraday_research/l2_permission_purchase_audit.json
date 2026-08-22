@@ -1,0 +1,165 @@
+{
+  "schema_version": 1,
+  "strategy": "D",
+  "research_only": true,
+  "formal_rule_modified": false,
+  "window": {
+    "formal_anchor": "20240630~20260630",
+    "first_required_trading_day": "20240701",
+    "last_required_trading_day": "20260630",
+    "open_day_count": 484,
+    "required_exchanges": [
+      "SSE",
+      "SZSE",
+      "BSE"
+    ],
+    "expected_exchange_day_file_count": 1452
+  },
+  "current_permissions": {
+    "sufficient_for_strict_d_replay": false,
+    "status": "PURCHASE_OR_TRIAL_PERMISSION_REQUIRED",
+    "qmt_three_market_read_only_probe": {
+      "report": "reports/strategy_d_intraday_research/qmt_three_market_probe.json",
+      "probe_date": "20260629",
+      "target_count": 3,
+      "one_minute_available_count": 3,
+      "tick_available_count": 0,
+      "historical_book_available_count": 0,
+      "strict_depth_available": false,
+      "read_only_xtdata": true,
+      "account_accessed": false,
+      "order_api_accessed": false
+    },
+    "local_historical_l2_files": {
+      "complete_exchange_day_file_count": 0,
+      "expected_exchange_day_file_count": 1452
+    },
+    "myquant_local_inventory": {
+      "mac_python_sdk_installed": false,
+      "windows_python_sdk_installed": false,
+      "windows_client_found": false,
+      "token_or_entitlement_probed": false,
+      "conclusion": "当前没有可供探测的掘金SDK、客户端或已知历史L2授权"
+    }
+  },
+  "official_provider_findings": {
+    "sse": {
+      "market_scope": "上海市场",
+      "status": "OFFICIAL_PRODUCT_CANDIDATE_NEEDS_SAMPLE",
+      "public_evidence": [
+        "历史Level-2含快照类、竞价逐笔类及K线数据",
+        "Level-2快照提供十档和最优价前50笔委托队列",
+        "公开价目为人民币12万元/年；本窗口总价和计年方式须书面报价"
+      ],
+      "price_publicly_confirmed": "CNY_120000_PER_YEAR",
+      "urls": [
+        "https://www.sseinfo.com/services/assortment/historical/",
+        "https://www.sseinfo.com/services/assortment/level2/",
+        "https://www.sseinfo.com/services/cpfwjg/"
+      ]
+    },
+    "szse": {
+      "market_scope": "深圳主板和创业板",
+      "status": "OFFICIAL_PRODUCT_CANDIDATE_NEEDS_QUOTE_AND_SAMPLE",
+      "public_evidence": [
+        "历史增强行情从2008年起提供并支持本地落盘",
+        "数据类型含逐笔委托、逐笔成交、3秒快照和证券委托队列",
+        "公开页面未给出本项目两年窗口的确定总价"
+      ],
+      "price_publicly_confirmed": "NOT_FOUND_REQUEST_WRITTEN_QUOTE",
+      "contact": {
+        "email": "szsi_marketdata@szse.cn",
+        "phone": "0755-81902456"
+      },
+      "urls": [
+        "https://www.szsi.cn/cpfw/fwsq/hq/yw-2.htm",
+        "https://www.szsi.cn/cpfw/fwsq/hq/lxfs.htm"
+      ]
+    },
+    "bse": {
+      "market_scope": "北交所股票",
+      "status": "EXACT_HISTORICAL_L2_PRODUCT_NOT_PUBLICLY_CONFIRMED",
+      "public_evidence": [
+        "官方公开授权指南当前可确认的是Level-1许可",
+        "未从官方公开页确认两年股票逐笔委托、逐笔成交和队列历史产品及价格",
+        "必须由中证股转科技或合规供应商书面确认，不能默认沪深产品覆盖北交所"
+      ],
+      "price_publicly_confirmed": "NOT_FOUND_REQUEST_WRITTEN_CONFIRMATION",
+      "contact": {
+        "email": "hangqing@neeq.com.cn",
+        "phone": "400-626-3333"
+      },
+      "urls": [
+        "https://www.bse.cn/application/guide.html",
+        "https://www.neeq.com.cn/services/invest_service.html"
+      ]
+    },
+    "myquant": {
+      "market_scope": "以商务书面授权和样本为准",
+      "status": "API_EXISTS_BUT_LOCAL_ENTITLEMENT_ABSENT",
+      "public_evidence": [
+        "文档存在历史L2 tick、逐笔成交、逐笔委托和委托队列接口",
+        "L2数据事件文档标注仅特定券商版本可用",
+        "接口存在不能证明当前账号覆盖两年、沪深京或允许全量导出"
+      ],
+      "price_publicly_confirmed": "NOT_FOUND_REQUEST_WRITTEN_QUOTE",
+      "urls": [
+        "https://www.myquant.cn/docs/python/python_other_api",
+        "https://www.myquant.cn/docs/python/python_data_event",
+        "https://myquant.cn/docs/python/47"
+      ]
+    }
+  },
+  "prepayment_sample_gate": {
+    "decision": "DO_NOT_PAY_UNTIL_ALL_REQUIRED_MARKETS_PASS",
+    "required_dates": [
+      "20240701",
+      "20250630",
+      "20260629"
+    ],
+    "required_markets_each_date": [
+      "SSE",
+      "SZSE",
+      "BSE"
+    ],
+    "required_data": [
+      "全市场同步快照，覆盖09:30前至至少14:55",
+      "逐笔委托新增与撤单",
+      "逐笔成交，保留买卖委托编号或可验证关联关系",
+      "交易所/频道原始sequence，能证明缺包检测和日内顺序",
+      "最优价委托总笔数、前50笔队列量及买一总量",
+      "未复权原始价格、数量单位为股、时间至少精确到秒"
+    ],
+    "automatic_acceptance": [
+      "样本可映射到仓库统一事件契约",
+      "三市场逐笔序列无重复且可检查断档",
+      "能重建涨停触板、开板、第一次可交易回封和14:55撤余单",
+      "能按同一时刻重建全市场封板情绪及同日D排序"
+    ]
+  },
+  "contract_acceptance": [
+    "覆盖2024-07-01至2026-06-30全部484个交易日，不按现有候选裁剪",
+    "覆盖沪市主板、科创板、深市主板、创业板和北交所全部股票，含窗口内退市证券",
+    "允许内部策略研究、严格回测和本地长期存储",
+    "提供全量批量下载或日文件，不接受只能逐票限频查询且无法在合理时间取完",
+    "书面列明历史留存起止日、市场、字段、单位、复权口径、缺失日和补发机制",
+    "书面列明含税总价、授权主体、使用期限、交付方式及后续增量费用"
+  ],
+  "purchase_decision": {
+    "permission_missing": true,
+    "buy_now": false,
+    "reason": "单买上海或未经验收的接口仍不能通过沪深京全市场严格门禁",
+    "recommended_sequence": [
+      "先向现有国金/QMT或掘金商务申请历史L2试用并提交三市场样本",
+      "若试用不满足，再分别向上证信息、深证信息和中证股转科技询价",
+      "三市场样本全部通过自动验收后再比较总价并购买"
+    ]
+  },
+  "certification_impact": {
+    "current_d_reproduction_allowed": false,
+    "d_standalone_compound_comparison_allowed": false,
+    "acde_one_leg_replacement_allowed": false,
+    "formal_d_change_allowed": false
+  },
+  "next_authorized_action": "取得供应商三市场样本后导入统一契约并运行样本验收；当前不付款、不改策略"
+}
