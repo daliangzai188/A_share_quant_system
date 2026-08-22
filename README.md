@@ -583,3 +583,7 @@ python scripts/run_strategy_e_signal.py
 
 当前两年锚点、A/E双复利门槛和复现命令见
 [docs/acde_anchor_20240630_20260630.md](docs/acde_anchor_20240630_20260630.md)。
+
+每年6月30日/12月31日的策略更新周期、最近24个月决策窗口、更早6个月旁路验证、
+未来6个月真实前向交易和永久版本账本口径见
+[docs/strategy_update_framework.md](docs/strategy_update_framework.md)。
