@@ -1,0 +1,178 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-08-22T17:48:32.507321+07:00",
+  "protocol": "STRICT_DISCOVERY",
+  "window": "20240630~20260630",
+  "formal_strategy_modified": false,
+  "release_eligible": false,
+  "scope": {
+    "D1": "NOT_RESEARCHED_HERE_REQUIRES_0924_ASOF_AUCTION_HISTORY",
+    "D2": "COMPLETED",
+    "D3": "NOT_RESEARCHED_HERE_REQUIRES_ALL_7_TO_9_PERCENT_FAILURE_DENOMINATOR",
+    "D4": "COMPLETED",
+    "D5": "COMPLETED",
+    "D6": "FROZEN_FORMAL_BASELINE_AND_FALLBACK"
+  },
+  "input_audit": {
+    "ledger_path": "data/research/strategy_d_intraday/event_ledger_full_window.csv",
+    "ledger_sha256": "685b109d886268175b1bf4754ef57d53ec004fef89cf2fb7f026a939e4256b94",
+    "target_count": 40336,
+    "duplicate_key_count": 0,
+    "minute_status_counts": {
+      "READY_1M_PATH_NO_QUEUE_DEPTH": 40328,
+      "MISMATCH_DAILY_TOUCH_NOT_CONFIRMED": 4,
+      "MISSING_MINUTE_DATA": 4
+    },
+    "source": "TUSHARE_STK_MINS_1M_UNADJUSTED",
+    "minute_path": "data/research/strategy_d_intraday/minute_1m_tushare.csv",
+    "minute_sha256": "a8d989bbac73d79ee53ee3882f3f9ab51c823b47462e5f1247ed5ee8be83c9ae",
+    "ready_path_count": 40328,
+    "first_seal_event_count": 36928,
+    "first_break_event_count": 19860,
+    "skipped_or_mismatch_count": 3075,
+    "strict_source_audit_passed": true
+  },
+  "frozen_baseline": {
+    "d6": {
+      "trade_count": 39,
+      "win_rate": 0.5384615384615384,
+      "avg_account_return": 0.021664985780859743,
+      "median_account_return": 0.010782646179660961,
+      "equity_multiple": 2.0261239235922566,
+      "max_drawdown": -0.31648360601037373,
+      "max_profit": 0.4527951871228668,
+      "max_loss": -0.07417800648559235,
+      "profit_loss_ratio": 1.9354592229027174,
+      "max_consecutive_losses": 4,
+      "win_rate_wilson_95_lower": 0.3856944827051576,
+      "win_rate_wilson_95_upper": 0.6843311439327215,
+      "avg_return_bootstrap_95_lower": -0.0028667490643349606,
+      "avg_return_bootstrap_95_upper": 0.05231501152171357
+    },
+    "acde": {
+      "trade_count": 132,
+      "win_rate": 0.6818181818181818,
+      "avg_account_return": 0.049119684470091414,
+      "median_account_return": 0.0230432370814819,
+      "equity_multiple": 327.72671897548867,
+      "max_drawdown": -0.22970534744710858,
+      "max_profit": 0.4892913885103991,
+      "max_loss": -0.13823939725321072,
+      "profit_loss_ratio": 2.3906519156419375,
+      "max_consecutive_losses": 4,
+      "win_rate_wilson_95_lower": 0.5981823406757425,
+      "win_rate_wilson_95_upper": 0.7551707550338544,
+      "avg_return_bootstrap_95_lower": 0.03298811211742279,
+      "avg_return_bootstrap_95_upper": 0.0666500873659635,
+      "compound_standard_id": "A_SYSTEM_MECHANICAL_COMPOUND_V1",
+      "leg_counts": {
+        "A": 44,
+        "C": 17,
+        "D": 22,
+        "E": 49
+      }
+    },
+    "expected_d6": {
+      "trade_count": 39,
+      "equity_multiple": 2.0261239235922566
+    },
+    "expected_acde": {
+      "trade_count": 132,
+      "equity_multiple": 327.72671897548867,
+      "leg_counts": {
+        "D": 22,
+        "A": 44,
+        "E": 49,
+        "C": 17
+      }
+    },
+    "priority": "D>A>E>C",
+    "position_pct": 0.825,
+    "d_fill_stress": 0.8,
+    "fees_slippage_limit_rules_t1_unchanged": true
+  },
+  "gate": {
+    "minimum_dx_trade_count": 20,
+    "dx_independent_multiple_must_exceed": 1.0,
+    "merged_d_multiple_must_exceed": 2.0261239235922566,
+    "acde_multiple_must_exceed": 327.72671897548867,
+    "unresolved_exit_count_must_equal": 0,
+    "selection_never_uses_fill_or_future_return": true
+  },
+  "style_results": {
+    "D2": {
+      "rule_count": 14,
+      "triple_gate_pass_count": 0,
+      "best_rule_by_acde": "d2_amount_ge_5pct",
+      "best_rule_acde_multiple": 10.982287488942484,
+      "best_passed_rule": "",
+      "retained_for_final_subset_search": false
+    },
+    "D4": {
+      "rule_count": 22,
+      "triple_gate_pass_count": 0,
+      "best_rule_by_acde": "d4_market_ever_61_120",
+      "best_rule_acde_multiple": 19.77829801892873,
+      "best_passed_rule": "",
+      "retained_for_final_subset_search": false
+    },
+    "D5": {
+      "rule_count": 27,
+      "triple_gate_pass_count": 0,
+      "best_rule_by_acde": "d5_depth_close_1_2",
+      "best_rule_acde_multiple": 7.860310433623992,
+      "best_passed_rule": "",
+      "retained_for_final_subset_search": false
+    }
+  },
+  "final_subset": {
+    "selected_rules": [],
+    "d_metrics": {
+      "trade_count": 39,
+      "win_rate": 0.5384615384615384,
+      "avg_account_return": 0.021664985780859743,
+      "median_account_return": 0.010782646179660961,
+      "equity_multiple": 2.0261239235922566,
+      "max_drawdown": -0.31648360601037373,
+      "max_profit": 0.4527951871228668,
+      "max_loss": -0.07417800648559235,
+      "profit_loss_ratio": 1.9354592229027174,
+      "max_consecutive_losses": 4,
+      "win_rate_wilson_95_lower": 0.3856944827051576,
+      "win_rate_wilson_95_upper": 0.6843311439327215,
+      "avg_return_bootstrap_95_lower": -0.0028667490643349606,
+      "avg_return_bootstrap_95_upper": 0.05231501152171357
+    },
+    "acde_metrics": {
+      "trade_count": 132,
+      "win_rate": 0.6818181818181818,
+      "avg_account_return": 0.049119684470091414,
+      "median_account_return": 0.0230432370814819,
+      "equity_multiple": 327.72671897548867,
+      "max_drawdown": -0.22970534744710858,
+      "max_profit": 0.4892913885103991,
+      "max_loss": -0.13823939725321072,
+      "profit_loss_ratio": 2.3906519156419375,
+      "max_consecutive_losses": 4,
+      "win_rate_wilson_95_lower": 0.5981823406757425,
+      "win_rate_wilson_95_upper": 0.7551707550338544,
+      "avg_return_bootstrap_95_lower": 0.03298811211742279,
+      "avg_return_bootstrap_95_upper": 0.0666500873659635,
+      "compound_standard_id": "A_SYSTEM_MECHANICAL_COMPOUND_V1",
+      "leg_counts": {
+        "A": 44,
+        "C": 17,
+        "D": 22,
+        "E": 49
+      }
+    },
+    "formal_decision": "KEEP_D6_ONLY_NO_OTHER_SCHOOL_PASSED_FINAL_MUTUAL_OCCUPANCY_GATES"
+  },
+  "formal_decision": "KEEP_D6_ONLY_NO_OTHER_SCHOOL_PASSED_FINAL_MUTUAL_OCCUPANCY_GATES",
+  "limitations": [
+    "D2/D4始终封板时缺少历史队列深度，主结果保守记为未成交，乐观上界单列。",
+    "一分钟OHLC不能还原同一分钟内先触板还是先下探，排队确认只使用信号后的后续分钟。",
+    "D5固定折价单只在信号后分钟最低价穿透时确认成交，成交价保守按委托价而非更优价。",
+    "当前24个月内多规则搜索存在过拟合风险，结果仅属研究候选，不直接发布实盘。"
+  ]
+}
