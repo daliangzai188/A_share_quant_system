@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-08-22T11:28:08.668958+07:00",
+  "strategy": "D",
+  "source": "BAOSTOCK_5M_UNADJUSTED_APPROXIMATE",
+  "formal_rule_modified": false,
+  "certification_eligible": false,
+  "target_count": 6848,
+  "attempted_this_run": 6828,
+  "terminal_target_count": 6848,
+  "pending_target_count": 0,
+  "status_counts": {
+    "OK": 6685,
+    "UNSUPPORTED_BJ": 163
+  },
+  "output_bar_count": 320880,
+  "limitations": [
+    "5分钟OHLCV无法确定同一bar内触板、炸板、回封的先后顺序。",
+    "没有历史tick/买一队列深度，不能认证始终封板期间的排队成交。",
+    "BaoStock不覆盖北交所，北交所目标必须由其他数据源补齐。"
+  ]
+}

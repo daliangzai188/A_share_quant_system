@@ -1,0 +1,65 @@
+{
+  "schema_version": 2,
+  "generated_at": "2026-08-22T11:36:06.962288+07:00",
+  "research_protocol": "STRICT_DISCOVERY",
+  "strategy": "D",
+  "window": "20240630~20260630",
+  "formal_rule_modified": false,
+  "release_eligible": false,
+  "targets_only": false,
+  "mother_pool": {
+    "historical_strong_day_count": 56,
+    "first_board_touch_count": 6848,
+    "closed_at_limit_count": 5138,
+    "failed_to_close_at_limit_count": 1710,
+    "current_static_d_survivor_count": 206,
+    "all_strong_days_have_failed_close_touch": true
+  },
+  "minute_data": {
+    "path": "data/research/strategy_d_intraday/minute_5m_baostock.csv",
+    "source": "BAOSTOCK_5M_UNADJUSTED_APPROXIMATE",
+    "status_counts": {
+      "APPROXIMATE_5M_PATH_NO_QUEUE_DEPTH": 6603,
+      "MISSING_MINUTE_DATA": 163,
+      "MISMATCH_DAILY_TOUCH_NOT_CONFIRMED": 82
+    },
+    "one_minute_path_ready_count": 0,
+    "approximate_five_minute_path_ready_count": 6603,
+    "target_count": 6848,
+    "one_minute_coverage_complete": false,
+    "queue_depth_coverage_complete": false
+  },
+  "path_replay": {
+    "first_eligible_reseal_signal_count": 171,
+    "failed_close_signal_count": 13,
+    "confirmed_fill_by_price_count": 79,
+    "queue_fill_unknown_no_depth_count": 92,
+    "ambiguous_path_count": 6418,
+    "ambiguous_signal_count": 171,
+    "unambiguous_signal_count": 0,
+    "first_before_1400_signal_count": 163,
+    "current_static_pool_signal_overlap_count": 28,
+    "open_times_at_signal_counts": {
+      "2": 148,
+      "3": 23
+    },
+    "first_eligible_signal_definition": "09:30起连续跟踪；首次封板桶合规；炸板2~3次；14:00后第一次回封",
+    "queue_fill_definition": "信号后且14:55撤单前价格低于涨停价才确认涨停限价单可成交；始终封板因缺少队列深度而标记未知"
+  },
+  "certification": {
+    "complete_mother_pool_passed": true,
+    "complete_one_minute_path_passed": false,
+    "historical_queue_depth_passed": false,
+    "daily_live_ranking_reconstructable": false,
+    "d_standalone_replay_certifiable": false,
+    "acde_one_leg_replacement_certifiable": false,
+    "status": "BLOCKED_BY_MINUTE_AND_QUEUE_DEPTH"
+  },
+  "limitations": [
+    "历史市场strong门使用最终收盘情绪；精确复现实盘还需全市场盘中ever_sealed路径。",
+    "OHLCV没有回封时买一封单和队列前方数量，始终封板期间不能证明排队成交。",
+    "五分钟K无法确定同一bar内触板、炸板和回封先后，只能作近似覆盖预检。",
+    "跨数据源分钟最高价未确认官方涨停价的目标单独标记不一致，禁止用于路径认证。",
+    "在一分钟路径和历史队列深度补齐前，不得用本账本修改正式D规则或计算认证组合复利。"
+  ]
+}
