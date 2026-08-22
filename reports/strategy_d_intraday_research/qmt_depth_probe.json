@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-08-22T12:47:29.451441+08:00",
+  "strategy": "D",
+  "probe_only": true,
+  "read_only_xtdata": true,
+  "account_accessed": false,
+  "order_api_accessed": false,
+  "target_count": 6,
+  "one_minute_available_count": 2,
+  "tick_available_count": 0,
+  "historical_book_available_count": 0,
+  "date_results": [
+    {
+      "trade_date": "20240926",
+      "ts_code": "000002.SZ",
+      "minute_row_count": 0,
+      "tick_row_count": 0,
+      "tick_book_fields": "[]"
+    },
+    {
+      "trade_date": "20241129",
+      "ts_code": "000409.SZ",
+      "minute_row_count": 0,
+      "tick_row_count": 0,
+      "tick_book_fields": "[]"
+    },
+    {
+      "trade_date": "20250217",
+      "ts_code": "000056.SZ",
+      "minute_row_count": 0,
+      "tick_row_count": 0,
+      "tick_book_fields": "[]"
+    },
+    {
+      "trade_date": "20250721",
+      "ts_code": "000010.SZ",
+      "minute_row_count": 0,
+      "tick_row_count": 0,
+      "tick_book_fields": "[]"
+    },
+    {
+      "trade_date": "20260507",
+      "ts_code": "000070.SZ",
+      "minute_row_count": 241,
+      "tick_row_count": 0,
+      "tick_book_fields": "[]"
+    },
+    {
+      "trade_date": "20260630",
+      "ts_code": "000012.SZ",
+      "minute_row_count": 241,
+      "tick_row_count": 0,
+      "tick_book_fields": "[]"
+    }
+  ]
+}

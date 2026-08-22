@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-08-22T13:06:14.396135+08:00",
+  "strategy": "D",
+  "source": "TUSHARE_STK_MINS_1M_UNADJUSTED",
+  "formal_rule_modified": false,
+  "target_count": 6848,
+  "clustered_request_count": 5270,
+  "request_interval_seconds": 3605.0,
+  "estimated_hours_at_current_rate": 5277.32,
+  "complete_target_count": 0,
+  "pending_target_count": 6848,
+  "status_counts": {
+    "RETRYABLE_ERROR": 1
+  },
+  "path_layer_complete": false,
+  "queue_depth_layer_complete": false,
+  "certification_eligible": false,
+  "limitations": [
+    "一分钟OHLCV仍无法确定同一分钟内多次炸板和回封的先后顺序。",
+    "stk_mins不含历史买一排队顺序，始终封板委托不能证明成交。",
+    "当前6,848目标只覆盖现行D最终strong日，不能单独还原所有交易日盘中情绪。"
+  ]
+}

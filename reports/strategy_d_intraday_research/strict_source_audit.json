@@ -1,0 +1,149 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-08-22T13:13:00.711813+08:00",
+  "research_protocol": "STRICT_DISCOVERY",
+  "strategy": "D",
+  "window": "20240630~20260630",
+  "formal_rule_modified": false,
+  "current_formal_baselines_frozen": {
+    "d_standalone_trade_count": 39,
+    "d_standalone_compound": 2.0261239235922566,
+    "acde_trade_count": 132,
+    "acde_compound": 327.72671897548867,
+    "leg_counts": {
+      "D": 22,
+      "A": 44,
+      "E": 49,
+      "C": 17
+    },
+    "priority": "D>A>E>C",
+    "position_ratio": 0.825
+  },
+  "frozen_touch_target_count": 6848,
+  "window_open_day_count": 484,
+  "source_layers": {
+    "baostock_5m": {
+      "terminal_target_count": 6848,
+      "target_count": 6848,
+      "role": "APPROXIMATE_PATH_ONLY",
+      "certification_eligible": false
+    },
+    "tushare_1m": {
+      "complete_target_count": 0,
+      "target_count": 6848,
+      "clustered_request_count": 5270,
+      "request_interval_seconds": 3605.0,
+      "estimated_hours_at_current_rate": 5277.32,
+      "role": "PRICE_PATH_CROSS_CHECK_NO_QUEUE",
+      "certification_eligible": false
+    },
+    "qmt_probe": {
+      "sample_target_count": 6,
+      "one_minute_available_count": 2,
+      "tick_available_count": 0,
+      "historical_book_available_count": 0,
+      "read_only_xtdata": true,
+      "certification_eligible": false
+    },
+    "strict_full_market_l2": {
+      "manifest_path": "data/research/strategy_d_intraday/strict_l2_daily_manifest.csv",
+      "passed": false,
+      "expected_file_count": 1452,
+      "complete_file_count": 0,
+      "missing_file_count": 1452,
+      "missing_examples": [
+        "20240701|BSE",
+        "20240701|SSE",
+        "20240701|SZSE",
+        "20240702|BSE",
+        "20240702|SSE",
+        "20240702|SZSE",
+        "20240703|BSE",
+        "20240703|SSE",
+        "20240703|SZSE",
+        "20240704|BSE",
+        "20240704|SSE",
+        "20240704|SZSE",
+        "20240705|BSE",
+        "20240705|SSE",
+        "20240705|SZSE",
+        "20240708|BSE",
+        "20240708|SSE",
+        "20240708|SZSE",
+        "20240709|BSE",
+        "20240709|SSE"
+      ],
+      "invalid_file_count": 0,
+      "invalid_examples": [],
+      "required_exchanges": [
+        "SSE",
+        "SZSE",
+        "BSE"
+      ],
+      "role": "FORMAL_QUEUE_SENTIMENT_RANKING_CERTIFICATION",
+      "certification_eligible": false
+    }
+  },
+  "standard_l2_contract": {
+    "event_required_columns": [
+      "event_time",
+      "event_type",
+      "order_id",
+      "price",
+      "sequence",
+      "side",
+      "trade_date",
+      "ts_code",
+      "volume"
+    ],
+    "synchronized_d_scan_required_columns": [
+      "bid_volume_1",
+      "circ_mv",
+      "event_time",
+      "fill_probability",
+      "fill_reliable",
+      "historical_st",
+      "last_price",
+      "limit_price",
+      "market_segment",
+      "previous_day_limit_up",
+      "scan_id",
+      "trade_date",
+      "ts_code"
+    ],
+    "daily_manifest_required_columns": [
+      "coverage_end_hhmm",
+      "coverage_start_hhmm",
+      "exchange",
+      "full_market",
+      "includes_orders",
+      "includes_snapshots",
+      "includes_trades",
+      "sequence_complete",
+      "status",
+      "trade_date",
+      "volume_unit"
+    ],
+    "required_scope": "每个交易日SSE/SZSE/BSE全市场，不是只给最终候选；09:30前开始，至少覆盖到14:55",
+    "required_units": "价格=元，数量=股(SHARE)，时间至少到秒且保留原始sequence",
+    "required_semantics": "逐笔委托新增/撤单、逐笔成交、盘口快照；供应方声明序列完整"
+  },
+  "certification": {
+    "first_eligible_reseal_reconstructable": false,
+    "signal_time_sentiment_reconstructable": false,
+    "same_day_ranking_reconstructable": false,
+    "queue_fill_and_1455_cancel_reconstructable": false,
+    "current_d_reproduction_allowed": false,
+    "d_standalone_compound_comparison_allowed": false,
+    "acde_one_leg_replacement_allowed": false,
+    "release_eligible": false,
+    "status": "BLOCKED_HISTORICAL_FULL_MARKET_L2_REQUIRED"
+  },
+  "blockers": [
+    "Tushare一分钟路径仅完成0/6848个冻结目标",
+    "缺少整个24个月窗口、沪深京全市场、09:30~14:55完整逐笔委托/成交/盘口文件",
+    "QMT抽样未返回两年历史tick或买一队列字段",
+    "现有6,848母池只覆盖最终收盘strong的56日，不能单独倒推出所有交易日信号时点情绪"
+  ],
+  "next_authorized_action": "导入已有合规历史L2数据并运行逐日重放"
+}

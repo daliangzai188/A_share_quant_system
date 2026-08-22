@@ -372,6 +372,9 @@ cd /Users/user/Desktop/A_System
 | `scripts/monitor_strategy_d_intraday.py` | 09:30全日路径、WATCH/BUY、成交概率和撤单 |
 | `scripts/build_strategy_d_intraday_event_ledger.py` | 建立包含失败收盘的完整首板触板母池，机械重放第一可交易回封、保守排队成交和14:55撤单 |
 | `scripts/collect_strategy_d_intraday_baostock.py` | 断点回填沪深不复权5分钟K，仅作盘中路径近似预检 |
+| `scripts/collect_strategy_d_intraday_tushare_1m.py` | 聚合并断点回填历史1分钟价格路径；不含买一队列，不具备正式认证资格 |
+| `scripts/probe_strategy_d_intraday_qmt_depth.py` | 只读探测QMT历史1分钟、tick和盘口字段覆盖，不访问账户/订单 |
+| `scripts/audit_strategy_d_strict_intraday_sources.py` | 审计全市场L2覆盖并控制D/ACDE严格重放门禁 |
 | `scripts/trading_daemon.py` | 组合状态允许时启动D线程，复用主QMT连接 |
 | `scripts/certify_current_executable_portfolio.py` | 旧来源串行身份核对，不生成正式收益认证 |
 | `scripts/certify_strict_asof_portfolio.py` | 严格as-of单账户机械复利和代码/输入指纹认证 |
@@ -391,6 +394,7 @@ cd /Users/user/Desktop/A_System
 | 成交概率门 | ✅ 与回测同模型实时复算，≥80%且可靠；失败即阻断 |
 | 情绪口径 | ⚠️ 历史为收盘100～150只，盘中用当前封板88～132只代理，需持续校准 |
 | 完整触板母池 | ✅ 56个D强势日共6,848只次，其中1,710只次收盘失败；详见[Strategy D Intraday Event Ledger](strategy_d_intraday_event_ledger.md) |
+| 历史逐笔队列严格重放 | ⛔ 重放器与闸门已落地，但0/1,452个沪深京交易所日文件齐备，正式D保持冻结；详见[策略D逐笔队列严格重放](strategy_d_strict_intraday_replay.md) |
 | 历史排队认证 | ❌ 5分钟OHLCV无历史买一队列深度，始终封板不能确认成交，正式D不改 |
 
 ---
