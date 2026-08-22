@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-08-22T18:48:27.069320+07:00",
+  "strategy_school": "D3_HALF_WAY_7_TO_9_PERCENT",
+  "source": "TUSHARE_STK_MINS_1M_UNADJUSTED",
+  "formal_strategy_modified": false,
+  "target_count": 111775,
+  "request_job_count": 3628,
+  "complete_target_count": 111689,
+  "empty_vendor_target_count": 86,
+  "pending_target_count": 0,
+  "status_counts": {
+    "COMPLETE_1M_NO_QUEUE_DEPTH": 111689,
+    "EMPTY": 86
+  },
+  "coverage_rate": 0.9992305971818385,
+  "request_interval_seconds": 0.15,
+  "max_codes_per_request": 33,
+  "estimated_request_minutes": 9.069999999999999,
+  "parts_dir": "data/research/strategy_d3_halfway/minute_1m_tushare_new_parts",
+  "path_layer_complete_or_fail_closed": true,
+  "release_eligible": false,
+  "limitations": [
+    "一分钟路径只负责信号和价格成交重放，不含盘口队列。",
+    "EMPTY目标保留在母样本分母并按无信号fail-closed，不删除、不插值。"
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-08-22T17:54:04.185328+07:00",
+  "protocol": "STRICT_DISCOVERY",
+  "window": "20240630~20260630",
+  "strategy_school": "D3_HALF_WAY_7_TO_9_PERCENT",
+  "formal_strategy_modified": false,
+  "mother_count": 152098,
+  "touch_limit_count_reusing_existing_minute": 40323,
+  "failed_to_touch_limit_count_new_minute_targets": 111775,
+  "failed_denominator_rate": 0.7348880327157491,
+  "duplicate_key_count": 0,
+  "daily_high_role": "COLLECTION_DENOMINATOR_ONLY_NOT_SIGNAL_OR_RANKING_FIELD",
+  "all_target_path": "data/research/strategy_d3_halfway/minute_target_manifest_all.csv",
+  "new_target_path": "data/research/strategy_d3_halfway/minute_target_manifest_new_non_touch.csv",
+  "release_eligible": false
+}
