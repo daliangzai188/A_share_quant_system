@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-08-22T18:42:53.612538+07:00",
+  "protocol": "STRICT_DISCOVERY",
+  "strategy_school": "D1_CALL_AUCTION_GRABBING_0915_0925",
+  "formal_strategy_modified": false,
+  "local_feature_path": "data/processed/auction_features.csv",
+  "local_row_count": 725,
+  "local_trade_day_count": 10,
+  "local_available_row_count": 0,
+  "local_unavailable_row_count": 725,
+  "local_file_is_placeholder_only": true,
+  "permission_probes": [
+    {
+      "api_name": "stk_auction",
+      "code": 40203,
+      "message": "抱歉，您没有接口(stk_auction)访问权限，权限的具体详情访问：https://tushare.pro/document/1?doc_id=108。",
+      "row_count": 0,
+      "fields": [],
+      "access_granted": false
+    },
+    {
+      "api_name": "stk_auction_o",
+      "code": 40203,
+      "message": "抱歉，您没有接口(stk_auction_o)访问权限，权限的具体详情访问：https://tushare.pro/document/1?doc_id=108。",
+      "row_count": 0,
+      "fields": [],
+      "access_granted": false
+    }
+  ],
+  "strict_asof_two_year_research_ready": false,
+  "formal_decision": "REJECT_D1_NO_0924_ASOF_AUCTION_HISTORY_KEEP_OUT_OF_FORMAL_D",
+  "why_0930_minute_is_not_substitute": "09:30分钟bar最多代理09:25最终成交价量；D1在09:24前下单时不能知道最终匹配结果，用它筛选会形成未来函数。",
+  "required_fields_before_research": [
+    "09:24及以前逐时点虚拟开盘价",
+    "09:24及以前虚拟匹配量/金额",
+    "买卖未匹配量或可复现竞价量比的原始字段",
+    "覆盖完整2024-06-30~2026-06-30候选分母"
+  ],
+  "release_eligible": false
+}
