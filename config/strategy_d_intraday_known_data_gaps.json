@@ -2,7 +2,7 @@
   "schema_version": 1,
   "strategy": "D",
   "window": "20240630~20260630",
-  "purpose": "精确记录付费Tushare历史一分钟中已复核的供应商日期市场缺口；不伪装完整，不从母样本分母删除，不允许用日线或插值伪造241根分钟K。",
+  "purpose": "精确记录付费Tushare历史一分钟中已复核的供应商日期市场缺口和分钟/官方日线价格不一致；不伪装完整，不从母样本分母删除，不允许用日线或插值伪造分钟路径。",
   "checked_at": "2026-08-22",
   "gaps": [
     {
@@ -48,6 +48,52 @@
       "status": "CONFIRMED_TUSHARE_VENDOR_DATE_MARKET_GAP",
       "handling": "FAIL_CLOSED_KEEP_IN_DENOMINATOR",
       "evidence": "当日现代码920802.BJ与旧代码832802.BJ均返0行；相邻20241127/20241129各返241行；同日其他北交所股也返0行。"
+    }
+  ],
+  "price_mismatches": [
+    {
+      "target_key": "20241025|920641.BJ",
+      "trade_date": "20241025",
+      "ts_code": "920641.BJ",
+      "name": "格利尔",
+      "market": "BSE",
+      "source": "TUSHARE_STK_MINS_VS_STK_LIMIT_AND_DAILY",
+      "status": "CONFIRMED_TUSHARE_MINUTE_DAILY_PRICE_MISMATCH",
+      "handling": "FAIL_CLOSED_KEEP_IN_DENOMINATOR",
+      "evidence": "241根分钟K齐全，但分钟最高16.15低于官方涨停价/日线最高16.19，且分钟收盘13.75与日线收盘13.61不一致。"
+    },
+    {
+      "target_key": "20241122|920926.BJ",
+      "trade_date": "20241122",
+      "ts_code": "920926.BJ",
+      "name": "鸿智科技",
+      "market": "BSE",
+      "source": "TUSHARE_STK_MINS_VS_STK_LIMIT_AND_DAILY",
+      "status": "CONFIRMED_TUSHARE_MINUTE_DAILY_PRICE_MISMATCH",
+      "handling": "FAIL_CLOSED_KEEP_IN_DENOMINATOR",
+      "evidence": "241根分钟K齐全，但分钟最高29.31低于官方涨停价/日线最高29.32，且分钟收盘24.00与日线收盘24.25不一致。"
+    },
+    {
+      "target_key": "20250310|920367.BJ",
+      "trade_date": "20250310",
+      "ts_code": "920367.BJ",
+      "name": "新赣江",
+      "market": "BSE",
+      "source": "TUSHARE_STK_MINS_VS_STK_LIMIT_AND_DAILY",
+      "status": "CONFIRMED_TUSHARE_MINUTE_DAILY_PRICE_MISMATCH",
+      "handling": "FAIL_CLOSED_KEEP_IN_DENOMINATOR",
+      "evidence": "241根分钟K齐全，但分钟最高37.46低于官方涨停价/日线最高37.81，且分钟收盘33.65与日线收盘33.47不一致。"
+    },
+    {
+      "target_key": "20251103|920304.BJ",
+      "trade_date": "20251103",
+      "ts_code": "920304.BJ",
+      "name": "迪尔化工",
+      "market": "BSE",
+      "source": "TUSHARE_STK_MINS_VS_STK_LIMIT_AND_DAILY",
+      "status": "CONFIRMED_TUSHARE_MINUTE_DAILY_PRICE_MISMATCH",
+      "handling": "FAIL_CLOSED_KEEP_IN_DENOMINATOR",
+      "evidence": "241根分钟K齐全，但分钟最高17.28低于官方涨停价/日线最高17.29，且分钟收盘16.12与日线收盘16.06不一致。"
     }
   ]
 }

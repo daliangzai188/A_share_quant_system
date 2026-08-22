@@ -1,0 +1,297 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-08-22T17:07:49.803612+07:00",
+  "research_protocol": "STRICT_DISCOVERY",
+  "strategy": "D",
+  "window": "20240630~20260630",
+  "research_objective": "全面识别盘中打板爆发点和爆亏路径；仅信号时点字段可形成候选，并以D独立复利与ACDE逐腿替换双门禁决定是否修改正式D",
+  "formal_rule_modified": false,
+  "release_eligible": false,
+  "input_audit": {
+    "ledger_path": "data/research/strategy_d_intraday/event_ledger_full_window.csv",
+    "ledger_sha256": "685b109d886268175b1bf4754ef57d53ec004fef89cf2fb7f026a939e4256b94",
+    "target_count": 40336,
+    "duplicate_key_count": 0,
+    "minute_status_counts": {
+      "READY_1M_PATH_NO_QUEUE_DEPTH": 40328,
+      "MISMATCH_DAILY_TOUCH_NOT_CONFIRMED": 4,
+      "MISSING_MINUTE_DATA": 4
+    },
+    "source": "TUSHARE_STK_MINS_1M_UNADJUSTED",
+    "minute_path": "data/research/strategy_d_intraday/minute_1m_tushare.csv",
+    "minute_sha256": "a8d989bbac73d79ee53ee3882f3f9ab51c823b47462e5f1247ed5ee8be83c9ae",
+    "known_empty_vendor_gap_count": 4,
+    "known_price_mismatch_count": 4,
+    "all_eight_data_issues_fail_closed_keep_denominator": true,
+    "strict_source_audit_passed": true
+  },
+  "path_population": {
+    "mother_pool_count": 40336,
+    "signal_count": 2167,
+    "signal_day_count": 442,
+    "price_confirmed_fill_count": 1710,
+    "queue_unknown_count": 457,
+    "failed_close_signal_count": 407,
+    "unresolved_exit_count": 4,
+    "explosion_count_gte_10pct": 169,
+    "big_loss_count_lte_minus_5pct": 367
+  },
+  "outcome_diagnostics": {
+    "scope_warning": "事件总体允许同日多信号，只用于爆发/爆亏特征诊断，不是D独立复利。",
+    "all_resolved_path_signals": {
+      "sample_count": 2163,
+      "trading_day_count": 442,
+      "win_rate": 0.42903374942209893,
+      "avg_account_return": 0.000811892852580973,
+      "median_account_return": -0.0081383680557545,
+      "diagnostic_event_multiple": 0.07072147391153685,
+      "max_drawdown": -0.9999557083805918,
+      "profit_loss_ratio": 1.3776660068818392,
+      "max_profit": 0.4530211584033707,
+      "max_loss": -0.2031795406570681,
+      "max_consecutive_losses": 28,
+      "explosion_rate_gte_10pct": 0.07813222376329172,
+      "big_loss_rate_lte_minus_5pct": 0.16967175219602404,
+      "failed_close_rate": 0.18723994452149792,
+      "price_confirmed_fill_rate": 0.7887193712436431
+    },
+    "price_confirmed_fill_after_daily_order_unknown": {
+      "sample_count": 1706,
+      "trading_day_count": 399,
+      "win_rate": 0.41207502930832357,
+      "avg_account_return": -0.0013031290128240167,
+      "median_account_return": -0.010798993847001299,
+      "diagnostic_event_multiple": 0.0036021624994945225,
+      "max_drawdown": -0.9999666710232673,
+      "profit_loss_ratio": 1.3492293399517776,
+      "max_profit": 0.4529701129211538,
+      "max_loss": -0.2031795406570681,
+      "max_consecutive_losses": 18,
+      "explosion_rate_gte_10pct": 0.0738569753810082,
+      "big_loss_rate_lte_minus_5pct": 0.17702227432590856,
+      "failed_close_rate": 0.23153575615474795,
+      "price_confirmed_fill_rate": 1.0
+    },
+    "queue_unknown_after_signal": {
+      "sample_count": 457,
+      "trading_day_count": 270,
+      "win_rate": 0.4923413566739606,
+      "avg_account_return": 0.008707357409213164,
+      "median_account_return": -0.0008338939172737,
+      "diagnostic_event_multiple": 19.63306039676462,
+      "max_drawdown": -0.6802261408270058,
+      "profit_loss_ratio": 1.4886611402307501,
+      "max_profit": 0.4530211584033707,
+      "max_loss": -0.1523525620350246,
+      "max_consecutive_losses": 14,
+      "explosion_rate_gte_10pct": 0.09409190371991247,
+      "big_loss_rate_lte_minus_5pct": 0.1422319474835886,
+      "failed_close_rate": 0.02188183807439825,
+      "price_confirmed_fill_rate": 0.0
+    },
+    "failed_close_after_signal": {
+      "sample_count": 405,
+      "trading_day_count": 202,
+      "win_rate": 0.2814814814814815,
+      "avg_account_return": -0.01765999595780547,
+      "median_account_return": -0.0239275536017928,
+      "diagnostic_event_multiple": 0.00040654119507164873,
+      "max_drawdown": -0.9997640232793333,
+      "profit_loss_ratio": 1.0497874556493876,
+      "max_profit": 0.2877539667175889,
+      "max_loss": -0.1762669073000001,
+      "max_consecutive_losses": 30,
+      "explosion_rate_gte_10pct": 0.03209876543209877,
+      "big_loss_rate_lte_minus_5pct": 0.2271604938271605,
+      "failed_close_rate": 1.0,
+      "price_confirmed_fill_rate": 0.9753086419753086
+    },
+    "top_explosion_dates": [
+      {
+        "trade_date": "20240930",
+        "signal_count": 354,
+        "explosion_count": 45,
+        "big_loss_count": 36,
+        "mean_account_return": 0.009445395715153536
+      },
+      {
+        "trade_date": "20240926",
+        "signal_count": 19,
+        "explosion_count": 13,
+        "big_loss_count": 0,
+        "mean_account_return": 0.10764662319238451
+      },
+      {
+        "trade_date": "20240927",
+        "signal_count": 19,
+        "explosion_count": 12,
+        "big_loss_count": 0,
+        "mean_account_return": 0.16916698993359028
+      },
+      {
+        "trade_date": "20241119",
+        "signal_count": 9,
+        "explosion_count": 5,
+        "big_loss_count": 0,
+        "mean_account_return": 0.08922215369932132
+      },
+      {
+        "trade_date": "20241017",
+        "signal_count": 7,
+        "explosion_count": 4,
+        "big_loss_count": 0,
+        "mean_account_return": 0.16022963655505423
+      },
+      {
+        "trade_date": "20241106",
+        "signal_count": 19,
+        "explosion_count": 3,
+        "big_loss_count": 2,
+        "mean_account_return": 0.02893643812110557
+      },
+      {
+        "trade_date": "20251128",
+        "signal_count": 3,
+        "explosion_count": 2,
+        "big_loss_count": 0,
+        "mean_account_return": 0.06558733898670487
+      },
+      {
+        "trade_date": "20241115",
+        "signal_count": 6,
+        "explosion_count": 2,
+        "big_loss_count": 0,
+        "mean_account_return": 0.06176765660147208
+      },
+      {
+        "trade_date": "20260105",
+        "signal_count": 4,
+        "explosion_count": 2,
+        "big_loss_count": 0,
+        "mean_account_return": 0.05097780883566832
+      },
+      {
+        "trade_date": "20260511",
+        "signal_count": 11,
+        "explosion_count": 2,
+        "big_loss_count": 0,
+        "mean_account_return": 0.04168053425883459
+      }
+    ]
+  },
+  "field_governance": {
+    "signal_time_allowed_fields": [
+      "consecutive_limit_close_bars_at_signal",
+      "eligible_signal_hhmm",
+      "first_seal_hhmm",
+      "first_to_signal_minutes",
+      "intraday_first_board_active_sealed_count",
+      "intraday_first_board_ever_sealed_count",
+      "intraday_first_board_seal_rate",
+      "last_break_to_signal_minutes",
+      "limit_close_bar_share_before_signal",
+      "market_segment",
+      "open_times_at_signal",
+      "pre_signal_intraday_range_pct",
+      "pre_signal_min_return_from_preclose",
+      "pre_signal_vwap_return_from_preclose",
+      "prior_path_signal_count",
+      "same_minute_path_signal_count",
+      "same_segment_active_sealed_count",
+      "same_segment_ever_sealed_count",
+      "same_segment_seal_rate",
+      "signal_cumulative_amount_vs_prev_day",
+      "signal_cumulative_volume_vs_prev_day",
+      "signal_open_gap_pct",
+      "signal_recent_10m_amount_vs_prev_day",
+      "signal_recent_5m_amount_vs_prev_day"
+    ],
+    "future_or_non_asof_forbidden_fields": [
+      "account_return",
+      "closed_at_limit",
+      "confirmed_fill_by_price",
+      "daily_amount",
+      "daily_close",
+      "daily_volume",
+      "execution_status",
+      "exit_date",
+      "failed_to_close_at_limit",
+      "fill_hhmm",
+      "historical_is_current_final_close_strong_day",
+      "historical_limit_up_count",
+      "historical_market_sentiment",
+      "historical_opened_limit_count",
+      "industry_current_proxy",
+      "queue_fill_status",
+      "signal_day_amount_completion_fraction",
+      "stock_return_before_fees"
+    ],
+    "industry_note": "当前stock_basic行业只作板块诊断，未取得历史as-of行业映射，不进入候选规则。",
+    "final_close_note": "最终封板/失败和收盘情绪只作结果标签，禁止选股。"
+  },
+  "execution_model": {
+    "daily_selection": "规则过滤后取当日最早可交易回封；同一分钟优先炸板2次、近5分钟量比、代码",
+    "conservative_primary": "先选唯一候选；14:55前价格穿透涨停价才成交，未知队列记未成交",
+    "optimistic_upper_bound": "同一已选候选的未知队列也假设成交",
+    "no_future_fill_used_for_selection": true
+  },
+  "frozen_formal_baseline": {
+    "d": {
+      "trade_count": 39,
+      "win_rate": 0.5384615384615384,
+      "avg_account_return": 0.021664985780859743,
+      "median_account_return": 0.010782646179660961,
+      "equity_multiple": 2.0261239235922566,
+      "max_drawdown": -0.31648360601037373,
+      "max_profit": 0.4527951871228668,
+      "max_loss": -0.07417800648559235,
+      "profit_loss_ratio": 1.9354592229027174,
+      "max_consecutive_losses": 4,
+      "win_rate_wilson_95_lower": 0.3856944827051576,
+      "win_rate_wilson_95_upper": 0.6843311439327215,
+      "avg_return_bootstrap_95_lower": -0.0028667490643349606,
+      "avg_return_bootstrap_95_upper": 0.05231501152171357
+    },
+    "acde": {
+      "trade_count": 132,
+      "win_rate": 0.6818181818181818,
+      "avg_account_return": 0.049119684470091414,
+      "median_account_return": 0.0230432370814819,
+      "equity_multiple": 327.72671897548867,
+      "max_drawdown": -0.22970534744710858,
+      "max_profit": 0.4892913885103991,
+      "max_loss": -0.13823939725321072,
+      "profit_loss_ratio": 2.3906519156419375,
+      "max_consecutive_losses": 4,
+      "win_rate_wilson_95_lower": 0.5981823406757425,
+      "win_rate_wilson_95_upper": 0.7551707550338544,
+      "avg_return_bootstrap_95_lower": 0.03298811211742279,
+      "avg_return_bootstrap_95_upper": 0.0666500873659635,
+      "compound_standard_id": "A_SYSTEM_MECHANICAL_COMPOUND_V1",
+      "leg_counts": {
+        "A": 44,
+        "C": 17,
+        "D": 22,
+        "E": 49
+      }
+    },
+    "priority": "D>A>E>C",
+    "position_pct": 0.825,
+    "fees_slippage_limit_rules_t1_unchanged": true
+  },
+  "candidate_search": {
+    "rule_count": 47,
+    "dual_gate_pass_count": 0,
+    "selected_rule": "",
+    "formal_decision": "KEEP_CURRENT_D_NO_CANDIDATE_PASSED_BOTH_COMPOUND_GATES",
+    "formal_rule_modified": false,
+    "multiple_testing_risk": "全部候选属于当前24个月样本内STRICT_DISCOVERY，已同时报告前后12个月稳定性。"
+  },
+  "formal_decision": "KEEP_CURRENT_D_NO_CANDIDATE_PASSED_BOTH_COMPOUND_GATES",
+  "limitations": [
+    "一分钟bar采用收盘封板状态机械重建，同一分钟内逐笔先后仍不可见。",
+    "457个始终封板信号缺历史队列深度；主门禁已保守记为未成交，乐观上界单列。",
+    "当前行业分类不是历史as-of板块映射，只作诊断，不参与任何候选。",
+    "机械复利是同口径研究标尺，不代表真实容量或未来收益。"
+  ]
+}

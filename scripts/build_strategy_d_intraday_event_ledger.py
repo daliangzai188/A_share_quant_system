@@ -28,6 +28,7 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Iterator
 import json
 import logging
 from pathlib import Path
@@ -88,6 +89,8 @@ EVENT_LEDGER_PATH = DATA_DIR / "event_ledger_full_window.csv"
 EVENT_DETAIL_PATH = DATA_DIR / "event_detail_full_window.csv"
 COVERAGE_PATH = DATA_DIR / "minute_coverage_full_window.csv"
 SUMMARY_PATH = REPORT_DIR / "full_window_summary.json"
+KNOWN_DATA_GAPS_PATH = ROOT / "config/strategy_d_intraday_known_data_gaps.json"
+MINUTE_CHUNK_SIZE = 250_000
 
 
 def date_text(series: pd.Series) -> pd.Series:
@@ -544,6 +547,215 @@ def load_minute_source(path: Path | None) -> pd.DataFrame:
     return pd.concat(normalized_parts, ignore_index=True)
 
 
+def iter_minute_groups(
+    path: Path,
+    *,
+    chunksize: int = MINUTE_CHUNK_SIZE,
+) -> Iterator[tuple[tuple[str, str], pd.DataFrame]]:
+    """按股票日流式读取大体量分钟CSV，跨chunk保留未结束分组。
+
+    付费全窗口文件接近千万行，禁止一次性读入后再复制四万多个group。
+    采集器冻结输出按``trade_date, ts_code``连续排列；这里仍用seen集合检查
+    同一股票日是否在文件后部再次出现，避免静默接受非连续或重复分组。
+    """
+
+    if not path.exists():
+        raise FileNotFoundError(f"D分钟文件不存在：{path}")
+    if chunksize <= 0:
+        raise ValueError("chunksize必须为正整数")
+    carry = pd.DataFrame()
+    yielded: set[tuple[str, str]] = set()
+    dtype = {
+        "trade_date": str,
+        "ts_code": str,
+        "trade_time": str,
+        "bar_time": str,
+    }
+    for chunk in pd.read_csv(
+        path,
+        dtype=dtype,
+        low_memory=False,
+        chunksize=chunksize,
+    ):
+        required = {"trade_date", "ts_code"}
+        missing = sorted(required - set(chunk.columns))
+        if missing:
+            raise ValueError(f"D分钟文件缺少字段：{missing}")
+        chunk["trade_date"] = date_text(chunk["trade_date"])
+        chunk["ts_code"] = chunk["ts_code"].astype(str)
+        if not carry.empty:
+            chunk = pd.concat([carry, chunk], ignore_index=True)
+            carry = pd.DataFrame()
+        keys = list(zip(chunk["trade_date"], chunk["ts_code"]))
+        if not keys:
+            continue
+        last_key = keys[-1]
+        last_mask = chunk["trade_date"].eq(last_key[0]) & chunk["ts_code"].eq(
+            last_key[1]
+        )
+        complete = chunk.loc[~last_mask].copy()
+        carry = chunk.loc[last_mask].copy()
+        for (date, code), group in complete.groupby(
+            ["trade_date", "ts_code"], sort=False
+        ):
+            key = (str(date), str(code))
+            if key in yielded:
+                raise RuntimeError(f"D分钟股票日分组不连续或重复：{key}")
+            yielded.add(key)
+            yield key, group
+    if not carry.empty:
+        date = str(carry.iloc[0]["trade_date"])
+        code = str(carry.iloc[0]["ts_code"])
+        key = (date, code)
+        if key in yielded:
+            raise RuntimeError(f"D分钟股票日分组不连续或重复：{key}")
+        yield key, carry
+
+
+def load_known_data_gap_keys(mother: pd.DataFrame) -> set[tuple[str, str]]:
+    """读取经人工复核的数据商缺口，并验证其仍属于冻结母池。"""
+
+    if not KNOWN_DATA_GAPS_PATH.exists():
+        return set()
+    payload = json.loads(KNOWN_DATA_GAPS_PATH.read_text(encoding="utf-8-sig"))
+    rows = payload.get("gaps", [])
+    required = {"target_key", "trade_date", "ts_code", "status", "handling"}
+    mother_keys = {
+        (str(row.trade_date), str(row.ts_code))
+        for row in mother.itertuples(index=False)
+    }
+    result: set[tuple[str, str]] = set()
+    for row in rows:
+        missing = sorted(required - set(row))
+        if missing:
+            raise ValueError(f"D一分钟已知缺口缺少字段：{missing}")
+        key = (str(row["trade_date"]), str(row["ts_code"]))
+        if str(row["target_key"]) != "|".join(key):
+            raise ValueError(f"D一分钟已知缺口target_key不一致：{row}")
+        if key not in mother_keys:
+            raise ValueError(f"D一分钟已知缺口不在冻结母池：{key}")
+        if row["status"] != "CONFIRMED_TUSHARE_VENDOR_DATE_MARKET_GAP":
+            raise ValueError(f"D一分钟已知缺口未经认证：{key}")
+        if row["handling"] != "FAIL_CLOSED_KEEP_IN_DENOMINATOR":
+            raise ValueError(f"D一分钟已知缺口未按fail-closed处理：{key}")
+        if key in result:
+            raise ValueError(f"D一分钟已知缺口重复：{key}")
+        result.add(key)
+    return result
+
+
+def load_known_price_mismatch_keys(mother: pd.DataFrame) -> set[tuple[str, str]]:
+    """读取分钟K与官方涨停价/日线无法互证的精确股票日。"""
+
+    if not KNOWN_DATA_GAPS_PATH.exists():
+        return set()
+    payload = json.loads(KNOWN_DATA_GAPS_PATH.read_text(encoding="utf-8-sig"))
+    rows = payload.get("price_mismatches", [])
+    mother_keys = {
+        (str(row.trade_date), str(row.ts_code))
+        for row in mother.itertuples(index=False)
+    }
+    result: set[tuple[str, str]] = set()
+    for row in rows:
+        key = (str(row.get("trade_date", "")), str(row.get("ts_code", "")))
+        if str(row.get("target_key", "")) != "|".join(key):
+            raise ValueError(f"D一分钟价格不一致target_key错误：{row}")
+        if key not in mother_keys:
+            raise ValueError(f"D一分钟价格不一致不在冻结母池：{key}")
+        if row.get("status") != "CONFIRMED_TUSHARE_MINUTE_DAILY_PRICE_MISMATCH":
+            raise ValueError(f"D一分钟价格不一致未经认证：{key}")
+        if row.get("handling") != "FAIL_CLOSED_KEEP_IN_DENOMINATOR":
+            raise ValueError(f"D一分钟价格不一致未按fail-closed处理：{key}")
+        if key in result:
+            raise ValueError(f"D一分钟价格不一致重复：{key}")
+        result.add(key)
+    return result
+
+
+def replay_one_target(
+    mother_row: Any,
+    group: pd.DataFrame,
+    *,
+    data_source: str,
+    daily_data: Any,
+    outcome_cache: dict[tuple[str, str], dict[str, Any]],
+) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
+    """重放一个股票日；空group机械落为无信号，不做任何插值。"""
+
+    date = str(mother_row.trade_date)
+    code = str(mother_row.ts_code)
+    key = (date, code)
+    replay = replay_intraday_path(group, limit_price=float(mother_row.limit_price))
+    consistency = daily_consistency_status(
+        group,
+        limit_price=float(mother_row.limit_price),
+        daily_high=float(mother_row.daily_high),
+        daily_close=float(mother_row.daily_close),
+    )
+    if not group.empty and not consistency["minute_confirms_daily_touch"]:
+        replay["minute_status"] = "MISMATCH_DAILY_TOUCH_NOT_CONFIRMED"
+        replay["path_complete"] = False
+    events = replay.pop("events", [])
+    path_signal = bool(replay["signal_rule_current"])
+    if path_signal:
+        if key not in outcome_cache:
+            row = pd.Series(
+                {
+                    "signal_date": date,
+                    "ts_code": code,
+                    "name": str(mother_row.name),
+                    "limit_close": float(mother_row.limit_price),
+                }
+            )
+            outcome_cache[key] = strict.d_execution(row, daily_data)
+        outcome = outcome_cache[key]
+    else:
+        outcome = {
+            "status": "NO_PATH_SIGNAL",
+            "buy_date": "",
+            "exit_date": "",
+            "stock_return_before_fees": None,
+            "account_return": None,
+        }
+    queue_status = str(replay["queue_fill_status"])
+    confirmed_fill = queue_status == "CONFIRMED_FILL_PRICE_TRADED_BELOW_LIMIT"
+    ledger_row = {
+        **mother_row._asdict(),
+        "minute_data_source": data_source,
+        **replay,
+        **consistency,
+        "queue_depth_available": False,
+        "confirmed_fill_by_price": confirmed_fill,
+        "execution_status": outcome.get("status", ""),
+        "exit_date": outcome.get("exit_date", ""),
+        "stock_return_before_fees": outcome.get("stock_return_before_fees"),
+        "account_return": outcome.get("account_return"),
+        "events_json": json.dumps(events, ensure_ascii=False, separators=(",", ":")),
+    }
+    details = [
+        {
+            **row,
+            "minute_data_source": data_source,
+            "bar_minutes": replay["bar_minutes"],
+        }
+        for row in event_rows({"events": events}, trade_date=date, ts_code=code)
+    ]
+    coverage_row = {
+        "trade_date": date,
+        "ts_code": code,
+        "minute_data_source": data_source,
+        "minute_status": replay["minute_status"],
+        "bar_minutes": replay["bar_minutes"],
+        "bar_count": replay["bar_count"],
+        "first_hhmm": replay["first_hhmm"],
+        "last_hhmm": replay["last_hhmm"],
+        "path_complete": replay["path_complete"],
+        "queue_depth_available": False,
+        **consistency,
+    }
+    return ledger_row, details, coverage_row
+
+
 def replay_ledger(
     mother: pd.DataFrame,
     bars: pd.DataFrame,
@@ -560,90 +772,116 @@ def replay_ledger(
     daily_data = strict.daily_data()
     outcome_cache: dict[tuple[str, str], dict[str, Any]] = {}
     for mother_row in mother.itertuples(index=False):
-        date = str(mother_row.trade_date)
-        code = str(mother_row.ts_code)
-        key = (date, code)
-        group = groups.get(key, pd.DataFrame())
-        replay = replay_intraday_path(group, limit_price=float(mother_row.limit_price))
-        consistency = daily_consistency_status(
-            group,
-            limit_price=float(mother_row.limit_price),
-            daily_high=float(mother_row.daily_high),
-            daily_close=float(mother_row.daily_close),
+        key = (str(mother_row.trade_date), str(mother_row.ts_code))
+        ledger_row, details, coverage_row = replay_one_target(
+            mother_row,
+            groups.get(key, pd.DataFrame()),
+            data_source=data_source,
+            daily_data=daily_data,
+            outcome_cache=outcome_cache,
         )
-        if not group.empty and not consistency["minute_confirms_daily_touch"]:
-            replay["minute_status"] = "MISMATCH_DAILY_TOUCH_NOT_CONFIRMED"
-            replay["path_complete"] = False
-        events = replay.pop("events", [])
-        path_signal = bool(replay["signal_rule_current"])
-        if path_signal:
-            if key not in outcome_cache:
-                row = pd.Series(
-                    {
-                        "signal_date": date,
-                        "ts_code": code,
-                        "name": str(mother_row.name),
-                        "limit_close": float(mother_row.limit_price),
-                    }
-                )
-                outcome_cache[key] = strict.d_execution(row, daily_data)
-            outcome = outcome_cache[key]
-        else:
-            outcome = {
-                "status": "NO_PATH_SIGNAL",
-                "buy_date": "",
-                "exit_date": "",
-                "stock_return_before_fees": None,
-                "account_return": None,
-            }
-        queue_status = str(replay["queue_fill_status"])
-        confirmed_fill = queue_status == "CONFIRMED_FILL_PRICE_TRADED_BELOW_LIMIT"
-        ledger_rows.append(
-            {
-                **mother_row._asdict(),
-                "minute_data_source": data_source,
-                **replay,
-                **consistency,
-                "queue_depth_available": False,
-                "confirmed_fill_by_price": confirmed_fill,
-                "execution_status": outcome.get("status", ""),
-                "exit_date": outcome.get("exit_date", ""),
-                "stock_return_before_fees": outcome.get("stock_return_before_fees"),
-                "account_return": outcome.get("account_return"),
-                "events_json": json.dumps(events, ensure_ascii=False, separators=(",", ":")),
-            }
-        )
-        detail_rows.extend(
-            [
-                {
-                    **row,
-                    "minute_data_source": data_source,
-                    "bar_minutes": replay["bar_minutes"],
-                }
-                for row in event_rows(
-                    {"events": events}, trade_date=date, ts_code=code
-                )
-            ]
-        )
-        coverage_rows.append(
-            {
-                "trade_date": date,
-                "ts_code": code,
-                "minute_data_source": data_source,
-                "minute_status": replay["minute_status"],
-                "bar_minutes": replay["bar_minutes"],
-                "bar_count": replay["bar_count"],
-                "first_hhmm": replay["first_hhmm"],
-                "last_hhmm": replay["last_hhmm"],
-                "path_complete": replay["path_complete"],
-                "queue_depth_available": False,
-                **consistency,
-            }
-        )
+        ledger_rows.append(ledger_row)
+        detail_rows.extend(details)
+        coverage_rows.append(coverage_row)
     return (
         pd.DataFrame(ledger_rows),
         pd.DataFrame(detail_rows),
         pd.DataFrame(coverage_rows),
+    )
+
+
+def replay_ledger_streaming(
+    mother: pd.DataFrame,
+    minute_path: Path,
+    *,
+    data_source: str,
+    known_gap_keys: set[tuple[str, str]],
+    known_mismatch_keys: set[tuple[str, str]] | None = None,
+    chunksize: int = MINUTE_CHUNK_SIZE,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """低内存重放完整窗口，并对非备案缺口、额外目标fail-fast。"""
+
+    known_mismatch_keys = known_mismatch_keys or set()
+    mother_rows = {
+        (str(row.trade_date), str(row.ts_code)): row
+        for row in mother.itertuples(index=False)
+    }
+    if len(mother_rows) != len(mother):
+        raise RuntimeError("D全窗口母池存在重复股票日")
+    if not known_gap_keys.issubset(mother_rows):
+        raise RuntimeError("D一分钟已知缺口不属于当前母池")
+    if not known_mismatch_keys.issubset(mother_rows):
+        raise RuntimeError("D一分钟已知价格不一致不属于当前母池")
+    ledger_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    coverage_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    detail_rows: list[dict[str, Any]] = []
+    daily_data = strict.daily_data()
+    outcome_cache: dict[tuple[str, str], dict[str, Any]] = {}
+    for sequence, (key, group) in enumerate(
+        iter_minute_groups(minute_path, chunksize=chunksize), start=1
+    ):
+        if key not in mother_rows:
+            raise RuntimeError(f"D分钟文件出现母池外股票日：{key}")
+        if key in ledger_by_key:
+            raise RuntimeError(f"D分钟文件重复股票日：{key}")
+        ledger_row, details, coverage_row = replay_one_target(
+            mother_rows[key],
+            group,
+            data_source=data_source,
+            daily_data=daily_data,
+            outcome_cache=outcome_cache,
+        )
+        ledger_by_key[key] = ledger_row
+        coverage_by_key[key] = coverage_row
+        detail_rows.extend(details)
+        status = str(coverage_row["minute_status"])
+        if status == "READY_1M_PATH_NO_QUEUE_DEPTH" and key in known_mismatch_keys:
+            raise RuntimeError(f"D已备案价格不一致现已正常，必须重新复核备案：{key}")
+        if status != "READY_1M_PATH_NO_QUEUE_DEPTH" and key not in known_mismatch_keys:
+            raise RuntimeError(f"D分钟出现未备案路径异常：key={key} status={status}")
+        if sequence % 5_000 == 0:
+            LOGGER.info("D分钟流式重放进度：%d/%d", sequence, len(mother_rows))
+
+    observed_keys = set(ledger_by_key)
+    missing_keys = set(mother_rows) - observed_keys
+    unexpected_missing = sorted(missing_keys - known_gap_keys)
+    unexpected_present = sorted(known_gap_keys & observed_keys)
+    if unexpected_missing:
+        raise RuntimeError(
+            f"D分钟存在未备案缺口：count={len(unexpected_missing)} "
+            f"examples={unexpected_missing[:10]}"
+        )
+    if unexpected_present:
+        raise RuntimeError(
+            "D分钟已知缺口已有数据，必须先重新复核并更新备案："
+            f"{unexpected_present}"
+        )
+    missing_mismatch_rows = sorted(known_mismatch_keys - observed_keys)
+    if missing_mismatch_rows:
+        raise RuntimeError(
+            "D已备案价格不一致变成空数据，必须重新复核备案："
+            f"{missing_mismatch_rows}"
+        )
+    for key in sorted(known_gap_keys):
+        ledger_row, details, coverage_row = replay_one_target(
+            mother_rows[key],
+            pd.DataFrame(),
+            data_source=data_source,
+            daily_data=daily_data,
+            outcome_cache=outcome_cache,
+        )
+        ledger_by_key[key] = ledger_row
+        coverage_by_key[key] = coverage_row
+        detail_rows.extend(details)
+
+    ordered_keys = [
+        (str(row.trade_date), str(row.ts_code))
+        for row in mother.itertuples(index=False)
+    ]
+    return (
+        pd.DataFrame([ledger_by_key[key] for key in ordered_keys]),
+        pd.DataFrame(detail_rows),
+        pd.DataFrame([coverage_by_key[key] for key in ordered_keys]),
     )
 
 
@@ -655,7 +893,11 @@ def summary_payload(
     minute_path: Path | None,
     data_source: str,
     targets_only: bool,
+    known_gap_keys: set[tuple[str, str]] | None = None,
+    known_mismatch_keys: set[tuple[str, str]] | None = None,
 ) -> dict[str, Any]:
+    known_gap_keys = known_gap_keys or set()
+    known_mismatch_keys = known_mismatch_keys or set()
     if ledger.empty:
         minute_status_counts: dict[str, int] = {}
         signal_count = confirmed_fill_count = queue_unknown_count = 0
@@ -707,6 +949,51 @@ def summary_payload(
         .eq("APPROXIMATE_5M_PATH_NO_QUEUE_DEPTH")
         .sum()
     ) if not coverage.empty else 0
+    coverage_by_key = {
+        (str(row.trade_date), str(row.ts_code)): row
+        for row in coverage.itertuples(index=False)
+    }
+    ledger_by_key = {
+        (str(row.trade_date), str(row.ts_code)): row
+        for row in ledger.itertuples(index=False)
+    }
+    known_gap_fail_closed_count = 0
+    for key in known_gap_keys:
+        coverage_row = coverage_by_key.get(key)
+        ledger_row = ledger_by_key.get(key)
+        if (
+            coverage_row is not None
+            and ledger_row is not None
+            and str(coverage_row.minute_status) == "MISSING_MINUTE_DATA"
+            and int(coverage_row.bar_count) == 0
+            and not bool(ledger_row.signal_rule_current)
+            and str(ledger_row.execution_status) == "NO_PATH_SIGNAL"
+        ):
+            known_gap_fail_closed_count += 1
+    known_mismatch_fail_closed_count = 0
+    for key in known_mismatch_keys:
+        coverage_row = coverage_by_key.get(key)
+        ledger_row = ledger_by_key.get(key)
+        if (
+            coverage_row is not None
+            and ledger_row is not None
+            and str(coverage_row.minute_status)
+            == "MISMATCH_DAILY_TOUCH_NOT_CONFIRMED"
+            and not bool(ledger_row.signal_rule_current)
+            and str(ledger_row.execution_status) == "NO_PATH_SIGNAL"
+        ):
+            known_mismatch_fail_closed_count += 1
+    replay_fail_closed_ready = bool(
+        not targets_only
+        and len(coverage) == len(mother)
+        and len(ledger) == len(mother)
+        and one_minute_ready
+        + known_gap_fail_closed_count
+        + known_mismatch_fail_closed_count
+        == len(mother)
+        and known_gap_fail_closed_count == len(known_gap_keys)
+        and known_mismatch_fail_closed_count == len(known_mismatch_keys)
+    )
     target_keys = mother["trade_date"].astype(str) + "|" + mother["ts_code"].astype(str)
     segment_counts = {
         str(key): int(value)
@@ -791,6 +1078,17 @@ def summary_payload(
             "approximate_five_minute_path_ready_count": approximate_5m_ready,
             "target_count": int(len(mother)),
             "one_minute_coverage_complete": one_minute_ready == len(mother),
+            "known_vendor_gap_count": int(len(known_gap_keys)),
+            "known_vendor_gap_keys": ["|".join(key) for key in sorted(known_gap_keys)],
+            "known_vendor_gap_fail_closed_count": known_gap_fail_closed_count,
+            "known_price_mismatch_count": int(len(known_mismatch_keys)),
+            "known_price_mismatch_keys": [
+                "|".join(key) for key in sorted(known_mismatch_keys)
+            ],
+            "known_price_mismatch_fail_closed_count": (
+                known_mismatch_fail_closed_count
+            ),
+            "full_window_replay_fail_closed_ready": replay_fail_closed_ready,
             "queue_depth_coverage_complete": False,
         },
         "path_replay": {
@@ -816,6 +1114,7 @@ def summary_payload(
         "certification": {
             "complete_mother_pool_passed": True,
             "complete_one_minute_path_passed": one_minute_ready == len(mother),
+            "full_window_replay_fail_closed_passed": replay_fail_closed_ready,
             "historical_queue_depth_passed": False,
             "daily_live_ranking_reconstructable": False,
             "d_standalone_replay_certifiable": False,
@@ -824,9 +1123,13 @@ def summary_payload(
                 "TARGET_MANIFEST_READY"
                 if targets_only
                 else (
-                    "BLOCKED_BY_QUEUE_DEPTH_AND_LIVE_RANKING"
-                    if one_minute_ready == len(mother)
-                    else "BLOCKED_BY_MINUTE_AND_QUEUE_DEPTH"
+                    "READY_FOR_FULL_WINDOW_FEATURE_RESEARCH_FAIL_CLOSED"
+                    if replay_fail_closed_ready
+                    else (
+                        "BLOCKED_BY_QUEUE_DEPTH_AND_LIVE_RANKING"
+                        if one_minute_ready == len(mother)
+                        else "BLOCKED_BY_MINUTE_AND_QUEUE_DEPTH"
+                    )
                 )
             ),
         },
@@ -835,7 +1138,8 @@ def summary_payload(
             "OHLCV没有回封时买一封单和队列前方数量，始终封板期间不能证明排队成交。",
             "一分钟OHLCV仍无法确定同一分钟内多次触板、炸板和回封的先后顺序；五分钟歧义更大。",
             "跨数据源分钟最高价未确认官方涨停价的目标单独标记不一致，禁止用于路径认证。",
-            "在历史队列深度和同日候选盘中排名补齐前，不得用本账本修改正式D规则或计算认证组合复利。",
+            "4条已复核Tushare北交所日期市场缺口保留在分母并机械记为无信号；不插值、不删除。",
+            "本账本自身不直接输出复利；须由全窗口特征与双门禁脚本先按信号时点字段选当日唯一候选，再用价格穿透/未知未成交的保守口径比较D和ACDE。",
         ],
     }
 
@@ -881,15 +1185,27 @@ def main() -> int:
     if args.targets_only:
         ledger = pd.DataFrame()
         coverage = pd.DataFrame()
+        known_gap_keys = load_known_data_gap_keys(mother)
+        known_mismatch_keys = load_known_price_mismatch_keys(mother)
     else:
         minute_path = args.minute_bars
         if minute_path is not None and not minute_path.is_absolute():
             minute_path = ROOT / minute_path
         LOGGER.info("加载分钟数据：%s", minute_path or "缺失")
-        bars = load_minute_source(minute_path)
-        ledger, details, coverage = replay_ledger(
-            mother, bars, data_source=args.data_source
-        )
+        known_gap_keys = load_known_data_gap_keys(mother)
+        known_mismatch_keys = load_known_price_mismatch_keys(mother)
+        if minute_path is None:
+            ledger, details, coverage = replay_ledger(
+                mother, pd.DataFrame(), data_source=args.data_source
+            )
+        else:
+            ledger, details, coverage = replay_ledger_streaming(
+                mother,
+                minute_path,
+                data_source=args.data_source,
+                known_gap_keys=known_gap_keys,
+                known_mismatch_keys=known_mismatch_keys,
+            )
         ledger.to_csv(EVENT_LEDGER_PATH, index=False, encoding="utf-8-sig")
         details.to_csv(EVENT_DETAIL_PATH, index=False, encoding="utf-8-sig")
         coverage.to_csv(COVERAGE_PATH, index=False, encoding="utf-8-sig")
@@ -910,6 +1226,8 @@ def main() -> int:
         minute_path=minute_path,
         data_source=args.data_source,
         targets_only=args.targets_only,
+        known_gap_keys=known_gap_keys,
+        known_mismatch_keys=known_mismatch_keys,
     )
     SUMMARY_PATH.write_text(
         json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
