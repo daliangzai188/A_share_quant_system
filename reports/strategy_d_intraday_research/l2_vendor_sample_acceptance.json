@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "status": "BLOCKED_NO_VENDOR_SAMPLE_MANIFEST",
+  "passed": false,
+  "manifest": "/Users/user/Desktop/A_System/data/research/strategy_d_l2_vendor_sample/manifest.json",
+  "expected_sample_count": 9,
+  "passed_sample_count": 0,
+  "missing_sample_count": 9,
+  "missing_samples": [
+    "20240701|BSE",
+    "20240701|SSE",
+    "20240701|SZSE",
+    "20250630|BSE",
+    "20250630|SSE",
+    "20250630|SZSE",
+    "20260629|BSE",
+    "20260629|SSE",
+    "20260629|SZSE"
+  ],
+  "invalid_sample_count": 0,
+  "samples": [],
+  "formal_rule_modified": false
+}

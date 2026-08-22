@@ -162,9 +162,12 @@ fill_probability, fill_reliable
 | ``src/strategy_d_strict_intraday.py`` | ``strict_l2_manifest_gate`` | 检查全窗口、全交易所、全市场L2日文件完整性 |
 | 同上 | ``replay_synchronized_d_scans`` | 重建首次封板、炸板、回封、当前封板情绪和同日D排序 |
 | 同上 | ``replay_price_time_queue`` | 重建价格时间优先队列、部分成交和14:55撤余单 |
+| 同上 | ``normalize_event_time`` | 保留``HH:MM:SS.mmm``毫秒，避免破坏逐笔先后顺序 |
 | ``scripts/collect_strategy_d_intraday_tushare_1m.py`` | ``load_collection_policy`` / ``fetch_job_with_retry`` / ``consolidate_minute_parts`` / ``main`` | 付费权限限速、33交易日聚合、缺日单日补取、退避重试、原子分片、断点状态和总表合并 |
 | ``scripts/probe_strategy_d_intraday_qmt_depth.py`` | ``fetch_period`` / ``report_paths`` / ``main`` | 只读探测QMT 1分钟、tick和历史盘口字段；不同批次报告互不覆盖 |
 | ``scripts/audit_strategy_d_l2_purchase_readiness.py`` | ``build_audit`` | 汇总当前权限、官方候选来源和付款前样本门槛 |
+| ``src/strategy_d_l2_sample_acceptance.py`` | ``validate_sample_package`` | 读取真实供应商样本，校验逐笔序列、委托关联、全市场同步扫描和前50队列 |
+| ``scripts/validate_strategy_d_l2_vendor_sample.py`` | ``main`` | 生成付款前样本内容验收报告；九份样本任一缺失即fail-closed |
 | ``scripts/audit_strategy_d_strict_intraday_sources.py`` | ``build_audit`` | 汇总各层覆盖并生成正式认证闸门 |
 | ``tests/test_strategy_d_strict_intraday.py`` | 全文件 | 队列、部成撤单、同步情绪、排名和缺数fail-closed测试 |
 
@@ -234,16 +237,17 @@ python3 -m pytest -q \
 
 ## 八、下一步需要的数据权限
 
-上交所官方历史Level-2产品明确包含快照类、竞价逐笔类和K线数据；公开价格页
-显示上交所历史Level-2为12万元/年，且这只解决上海市场，不能自动补齐深交所
-和北交所。24个月横跨三个自然年，最终计年方式和含税总价必须书面询价，不能
-自行按网页年价推断。
-[上交所Level-2产品说明](https://www.sseinfo.com/services/assortment/level2/)
+上证信息官方历史产品表列有集合竞价、快照、逐笔成交和K线，但没有公开列出
+逐笔委托，所以不能据此认定可重建FIFO。公开价格页的24万元/年非展示自用许可
+及6万元/年VDE技术服务属于实时Level-2，并非本项目历史数据报价；原文“历史
+Level-2公开价12万元/年”的口径已撤销。
+[上交所历史数据](https://www.sseinfo.com/services/assortment/historical/)
 [上交所产品服务价格](https://www.sseinfo.com/services/cpfwjg/)
 
-掘金量化文档提供历史L2 tick、逐笔成交、逐笔委托和委托队列接口，但实际历史
-跨度、交易所覆盖和券商版本权限必须用现有账号逐项验证，不能只凭接口名称假设
-两年数据可取。[掘金量化历史L2接口](https://www.myquant.cn/docs/python/python_other_api)
+掘金量化文档提供SSE、SZSE从2016-01-04至今的历史十档、逐笔成交、逐笔委托
+和委托队列接口，时间跨度符合本项目；但L2只支持券商内网环境，公开接口表也
+没有列BSE。当前优先申请兼容券商沪深试用，并单独确认北交所来源。
+[掘金量化L2数据说明](https://www.myquant.cn/docs2/tools/L2%E6%95%B0%E6%8D%AE.html)
 
 深交所官方历史增强行情明确包含逐笔委托、逐笔成交、3秒快照和证券委托队列；
 北交所股票历史逐笔产品及价格尚未从官方公开页面确认。完整权限审计、联系方式、
@@ -251,5 +255,7 @@ python3 -m pytest -q \
 ``docs/strategy_d_l2_permission_purchase_audit.md``。
 
 本专项没有购买数据、没有联系供应商，也没有启用任何实盘接口。下一步必须先
-确认已有数据权限或选定合规数据来源，再导入统一契约；在此之前不运行D/ACDE
-收益比较，也不修改``src/strategy_d_spec.py``或正式配置。
+取得沪深京九份真实样本并运行
+``python3 scripts/validate_strategy_d_l2_vendor_sample.py``；当前结果为``0/9``、
+``BLOCKED_NO_VENDOR_SAMPLE_MANIFEST``。在此之前不运行D/ACDE收益比较，也不修改
+``src/strategy_d_spec.py``或正式配置。

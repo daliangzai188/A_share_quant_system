@@ -30,6 +30,9 @@ class StrategyDL2PurchaseReadinessTest(unittest.TestCase):
         self.assertTrue(audit["purchase_decision"]["permission_missing"])
         self.assertFalse(audit["purchase_decision"]["buy_now"])
         self.assertFalse(audit["certification_impact"]["formal_d_change_allowed"])
+        self.assertFalse(
+            audit["current_permissions"]["vendor_sample_content_gate"]["passed"]
+        )
 
     def test_all_three_markets_are_required_before_payment(self) -> None:
         audit = build_audit()
@@ -45,6 +48,15 @@ class StrategyDL2PurchaseReadinessTest(unittest.TestCase):
         self.assertEqual(
             audit["official_provider_findings"]["bse"]["status"],
             "EXACT_HISTORICAL_L2_PRODUCT_NOT_PUBLICLY_CONFIRMED",
+        )
+        self.assertFalse(
+            audit["official_provider_findings"]["sse"][
+                "historical_price_publicly_confirmed"
+            ]
+        )
+        self.assertIn(
+            "SSE_SZSE",
+            audit["official_provider_findings"]["myquant"]["status"],
         )
 
 

@@ -111,7 +111,11 @@ def normalize_event_time(value: object) -> int:
 
     if pd.isna(value):
         return 0
-    text = str(value).strip().replace(".0", "")
+    text = str(value).strip()
+    # CSV把纯数字时间读成浮点时只去掉末尾``.0``；不能全局替换，否则
+    # ``09:30:00.001``会被破坏，历史L2的毫秒顺序也会随之失真。
+    if ":" not in text and text.endswith(".0"):
+        text = text[:-2]
     if not text:
         return 0
     if ":" in text:

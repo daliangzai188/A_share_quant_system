@@ -20,6 +20,9 @@ DEFAULT_QMT_REPORT = (
 DEFAULT_STRICT_AUDIT = (
     ROOT / "reports/strategy_d_intraday_research/strict_source_audit.json"
 )
+DEFAULT_SAMPLE_ACCEPTANCE = (
+    ROOT / "reports/strategy_d_intraday_research/l2_vendor_sample_acceptance.json"
+)
 DEFAULT_OUTPUT = (
     ROOT / "reports/strategy_d_intraday_research/l2_permission_purchase_audit.json"
 )
@@ -35,9 +38,11 @@ def build_audit(
     *,
     qmt_report_path: Path = DEFAULT_QMT_REPORT,
     strict_audit_path: Path = DEFAULT_STRICT_AUDIT,
+    sample_acceptance_path: Path = DEFAULT_SAMPLE_ACCEPTANCE,
 ) -> dict[str, Any]:
     qmt = load_json(qmt_report_path)
     strict = load_json(strict_audit_path)
+    sample_acceptance = load_json(sample_acceptance_path)
     strict_layer = strict.get("source_layers", {}).get("strict_full_market_l2", {})
     qmt_has_strict_depth = bool(
         qmt.get("target_count") == 3
@@ -46,7 +51,7 @@ def build_audit(
     )
 
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "strategy": "D",
         "research_only": True,
         "formal_rule_modified": False,
@@ -94,17 +99,34 @@ def build_audit(
                 "token_or_entitlement_probed": False,
                 "conclusion": "当前没有可供探测的掘金SDK、客户端或已知历史L2授权",
             },
+            "vendor_sample_content_gate": {
+                "report": str(sample_acceptance_path.relative_to(ROOT)),
+                "status": sample_acceptance.get(
+                    "status", "BLOCKED_NO_VENDOR_SAMPLE_MANIFEST"
+                ),
+                "passed": bool(sample_acceptance.get("passed", False)),
+                "passed_sample_count": int(
+                    sample_acceptance.get("passed_sample_count", 0)
+                ),
+                "expected_sample_count": int(
+                    sample_acceptance.get("expected_sample_count", 9)
+                ),
+            },
         },
         "official_provider_findings": {
             "sse": {
                 "market_scope": "上海市场",
                 "status": "OFFICIAL_PRODUCT_CANDIDATE_NEEDS_SAMPLE",
                 "public_evidence": [
-                    "历史Level-2含快照类、竞价逐笔类及K线数据",
-                    "Level-2快照提供十档和最优价前50笔委托队列",
-                    "公开价目为人民币12万元/年；本窗口总价和计年方式须书面报价",
+                    "历史Level-2公开产品表列有集合竞价、快照、逐笔成交及K线",
+                    "历史产品公开表未列逐笔委托，不能据此认定可重建FIFO",
+                    "实时Level-2非展示自用公开价为每数据中心24万元/年，VDE技术服务6万元/年；这不是历史数据报价",
                 ],
-                "price_publicly_confirmed": "CNY_120000_PER_YEAR",
+                "historical_price_publicly_confirmed": False,
+                "live_price_not_applicable_to_historical_purchase": {
+                    "non_display_self_use_cny_per_year_per_data_center": 240000,
+                    "vde_technical_service_cny_per_year_per_vde": 60000,
+                },
                 "urls": [
                     "https://www.sseinfo.com/services/assortment/historical/",
                     "https://www.sseinfo.com/services/assortment/level2/",
@@ -148,18 +170,17 @@ def build_audit(
                 ],
             },
             "myquant": {
-                "market_scope": "以商务书面授权和样本为准",
-                "status": "API_EXISTS_BUT_LOCAL_ENTITLEMENT_ABSENT",
+                "market_scope": "官方历史L2接口表当前明确列出SSE和SZSE，未列BSE",
+                "status": "SSE_SZSE_HISTORICAL_API_DOCUMENTED_BROKER_TRIAL_REQUIRED",
                 "public_evidence": [
-                    "文档存在历史L2 tick、逐笔成交、逐笔委托和委托队列接口",
-                    "L2数据事件文档标注仅特定券商版本可用",
-                    "接口存在不能证明当前账号覆盖两年、沪深京或允许全量导出",
+                    "文档存在历史十档、逐笔成交、逐笔委托和委托队列接口",
+                    "文档标注历史SSE/SZSE逐笔数据从2016-01-04至今",
+                    "L2仅支持券商内网环境，单次逐笔/队列请求只支持一天",
+                    "公开接口表未列BSE，不能把沪深权限当成沪深京全覆盖",
                 ],
                 "price_publicly_confirmed": "NOT_FOUND_REQUEST_WRITTEN_QUOTE",
                 "urls": [
-                    "https://www.myquant.cn/docs/python/python_other_api",
-                    "https://www.myquant.cn/docs/python/python_data_event",
-                    "https://myquant.cn/docs/python/47",
+                    "https://www.myquant.cn/docs2/tools/L2%E6%95%B0%E6%8D%AE.html",
                 ],
             },
         },
@@ -176,11 +197,13 @@ def build_audit(
                 "未复权原始价格、数量单位为股、时间至少精确到秒",
             ],
             "automatic_acceptance": [
-                "样本可映射到仓库统一事件契约",
-                "三市场逐笔序列无重复且可检查断档",
-                "能重建涨停触板、开板、第一次可交易回封和14:55撤余单",
-                "能按同一时刻重建全市场封板情绪及同日D排序",
+                "真实CSV内容可映射到仓库样本契约，不只采信清单布尔声明",
+                "按(channel_no, sequence)检查重复和时间倒序",
+                "逐笔撤单必须引用已知新增委托，成交必须关联买卖委托编号",
+                "同步scan_id股票宇宙一致，覆盖09:30和14:55并含买一前50队列",
             ],
+            "validator_command": "python3 scripts/validate_strategy_d_l2_vendor_sample.py",
+            "manifest_template": "config/strategy_d_l2_vendor_sample_manifest.example.json",
         },
         "contract_acceptance": [
             "覆盖2024-07-01至2026-06-30全部484个交易日，不按现有候选裁剪",
@@ -195,8 +218,9 @@ def build_audit(
             "buy_now": False,
             "reason": "单买上海或未经验收的接口仍不能通过沪深京全市场严格门禁",
             "recommended_sequence": [
-                "先向现有国金/QMT或掘金商务申请历史L2试用并提交三市场样本",
-                "若试用不满足，再分别向上证信息、深证信息和中证股转科技询价",
+                "先申请掘金兼容券商环境试用，验证SSE/SZSE历史委托、成交和队列",
+                "同时单独书面确认BSE历史逐笔来源；未确认前不得宣称三市场齐备",
+                "若券商试用不满足，再分别向上证信息、深证信息和中证股转科技询价",
                 "三市场样本全部通过自动验收后再比较总价并购买",
             ],
         },
@@ -206,7 +230,7 @@ def build_audit(
             "acde_one_leg_replacement_allowed": False,
             "formal_d_change_allowed": False,
         },
-        "next_authorized_action": "取得供应商三市场样本后导入统一契约并运行样本验收；当前不付款、不改策略",
+        "next_authorized_action": "申请掘金兼容券商SSE/SZSE试用样本并单独确认BSE；提交外部申请前需用户确认，当前不付款、不改策略",
     }
 
 
@@ -223,6 +247,7 @@ def main() -> int:
     audit = build_audit(
         qmt_report_path=args.qmt_report,
         strict_audit_path=args.strict_audit,
+        sample_acceptance_path=DEFAULT_SAMPLE_ACCEPTANCE,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(

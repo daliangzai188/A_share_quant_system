@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "provider": "请填写供应商名称",
+  "samples": [
+    {
+      "trade_date": "20240701",
+      "exchange": "SSE",
+      "orders_file": "20240701/SSE/orders.csv",
+      "transactions_file": "20240701/SSE/transactions.csv",
+      "snapshots_file": "20240701/SSE/snapshots.csv",
+      "full_market": true,
+      "sequence_complete": true,
+      "sequence_gap_detection": true,
+      "order_trade_linkage": true,
+      "raw_unadjusted_price": true,
+      "volume_unit": "SHARE",
+      "coverage_start_hhmm": 930,
+      "coverage_end_hhmm": 1455,
+      "expected_security_count": 0
+    }
+  ]
+}

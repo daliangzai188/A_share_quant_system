@@ -52,6 +52,8 @@ data/processed/*
 # 五年研究底座可由原始数据和冻结配置完整重建；大体积CSV只保留本机，
 # manifest/audit JSON保留版本控制用于复现与校验哈希。
 data/research/**/*.csv
+# 历史L2供应商真实样本可能受授权限制且体积巨大，只提交验收报告和模板。
+data/research/strategy_d_l2_vendor_sample/
 # POV守护进程的本地执行账本，包含委托号并用于防止重复分片下单，禁止入库
 data/state/
 data/database/*

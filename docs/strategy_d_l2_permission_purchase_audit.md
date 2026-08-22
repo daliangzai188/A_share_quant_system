@@ -9,10 +9,11 @@
 
 这不等于现在就应该付款。当前最合理的顺序是：
 
-1. 先向现有国金/QMT或掘金商务申请历史L2试用；
-2. 要求沪、深、京三市场样本按本文件门禁验收；
-3. 试用不满足时，再向三家官方行情管理方分别询价；
-4. 三市场样本全部通过后才比较含税总价并购买。
+1. 先申请掘金兼容券商环境试用，验证沪深历史L2；
+2. 同时单独确认北交所历史逐笔来源，不能假定沪深套餐包含北交所；
+3. 要求沪、深、京三市场样本按本文件的内容级门禁验收；
+4. 试用不满足时，再向三家官方行情管理方分别询价；
+5. 三市场样本全部通过后才比较含税总价并购买。
 
 单买上海数据不能完成正式D认证，因为D的股票池和盘中情绪口径同时覆盖
 沪市、深市和北交所。任何供应商如果只提供成交明细、分钟K或周期快照，也不
@@ -40,11 +41,11 @@
 Mac和Windows均未发现``gm``/``gm-api``/``myquant`` Python包，Windows开始菜单
 也未发现掘金客户端，因此当前没有可测试的Token或历史L2授权。
 
-掘金官方文档确实列有历史L2 tick、逐笔成交、逐笔委托和委托队列接口；但
-L2数据事件文档同时注明仅特定券商版本可用。接口名称本身不能证明某个账号
-覆盖2024-07-01至2026-06-30，也不能证明覆盖北交所或允许全市场批量落盘。
-[掘金历史数据接口](https://www.myquant.cn/docs/python/python_other_api)
-[掘金L2数据事件](https://www.myquant.cn/docs/python/python_data_event)
+掘金官方L2文档列有历史十档、逐笔成交、逐笔委托和委托队列接口；历史数据表
+明确列出SSE、SZSE从2016-01-04至今，因此时间跨度覆盖本项目窗口。文档同时
+明确L2只支持券商内网环境，逐笔和队列接口单次只查询一天。公开接口表没有列
+BSE，所以掘金目前只能作为沪深优先试用候选，不能据此宣称沪深京全部齐备。
+[掘金L2数据说明](https://www.myquant.cn/docs2/tools/L2%E6%95%B0%E6%8D%AE.html)
 
 ### 2.3 Tushare历史分钟
 
@@ -61,17 +62,21 @@ L2数据事件文档同时注明仅特定券商版本可用。接口名称本身
 
 ### 3.1 上海市场
 
-上证信息官方历史产品说明可确认Level-2包含快照类、竞价逐笔类和K线数据；
-Level-2产品还提供十档及最优价前50笔委托队列。公开价目为人民币12万元/年。
-由于本项目24个月跨越2024、2025、2026三个自然年，不能自行把网页单价直接
-当成最终总价，必须要求对方书面确认计年方式、含税总价和实际交付文件。
+上证信息官方历史产品表可确认Level-2包含集合竞价、快照、逐笔成交和K线；
+公开表没有列逐笔委托。因此，不能再把该历史产品直接描述成已经具备
+``ORDER_ADD/ORDER_CANCEL``，也不能仅凭快照中的前50笔队列认定可重建FIFO。
+
+上证信息公开价格页当前列出的``24万元/年/数据中心``为实时Level-2非展示
+自用许可，另列``6万元/年/VDE``技术服务费。这不是历史数据报价。仓库原来写的
+“历史Level-2公开价12万元/年”缺少当前官方页面支持，现已撤销；本项目历史
+数据总价必须以书面报价为准。
 
 - [上交所历史数据](https://www.sseinfo.com/services/assortment/historical/)
 - [上交所Level-2](https://www.sseinfo.com/services/assortment/level2/)
 - [上交所公开价目](https://www.sseinfo.com/services/cpfwjg/)
 
-结论：是上海市场的官方候选来源，但仍须用样本确认竞价逐笔文件如何映射
-``ORDER_ADD/ORDER_CANCEL/TRADE``以及历史队列快照频率。
+结论：是上海市场的官方候选来源，但必须先拿真实样本确认是否另有未公开列出的
+逐笔委托文件；只有逐笔成交和快照时不能通过D的FIFO门禁。
 
 ### 3.2 深圳市场
 
@@ -123,6 +128,74 @@ Level-2产品还提供十档及最优价前50笔委托队列。公开价目为�
 任何一市场失败都不付款。供应商演示“能查某只股票某一天”不等于通过，因为
 正式研究需要484日全市场批量数据。
 
+一分钟账本的55个信号日中，按正式炸板优先级只有3日第一档候选唯一，另外52日
+同优先级候选不止一只。因此信号时点封单金额、严格as-of流通市值和同步市场
+状态不是可选字段；缺这些字段时，即使能确认某只股票价格路径，也不能证明正式
+D当天究竟会选择哪一只。
+
+### 4.1 内容级自动验收
+
+样本解压到本机后按如下结构放置，原始样本不提交Git：
+
+```text
+data/research/strategy_d_l2_vendor_sample/
+├── manifest.json
+└── 20240701/SSE/
+    ├── orders.csv
+    ├── transactions.csv
+    └── snapshots.csv
+```
+
+``manifest.json``从
+``config/strategy_d_l2_vendor_sample_manifest.example.json``复制后填写。每个日期、
+市场都必须有三类标准化文件：
+
+```text
+orders.csv:
+trade_date, exchange, ts_code, event_time, channel_no, sequence,
+order_id, action, side, price, volume
+
+transactions.csv:
+trade_date, exchange, ts_code, event_time, channel_no, sequence,
+price, volume, bid_order_id, ask_order_id
+
+snapshots.csv:
+trade_date, exchange, ts_code, event_time, scan_id, last_price,
+bid_price_1, bid_volume_1, bid_order_count_1, bid_queue_1
+```
+
+深圳逐笔成交中的撤单事件必须在标准化时转换到``orders.csv``的``CANCEL``；上海
+逐笔委托中的``A/D``分别转换成``ADD/CANCEL``。``bid_queue_1``使用JSON数组保存
+最优价前50笔数量。
+
+运行：
+
+```bash
+PYTHONPATH="$PWD/.venv/lib/python3.9/site-packages" \
+python3 scripts/validate_strategy_d_l2_vendor_sample.py
+```
+
+验收器会实际读取CSV并计算SHA-256，不只相信清单声明；它检查：
+
+1. 九个``日期×市场``样本是否齐全；
+2. ``(channel_no, sequence)``是否重复、是否发生时间倒序；
+3. 每笔撤单能否引用已有新增委托；
+4. 每笔成交的买卖委托编号能否关联；
+5. 各``scan_id``是否有相同股票宇宙和相同时刻；
+6. 是否覆盖09:30及14:55，买一总量、总笔数与前50队列是否自洽。
+
+当前没有供应商样本，机器状态为：
+
+```text
+status=BLOCKED_NO_VENDOR_SAMPLE_MANIFEST
+passed_sample_count=0
+expected_sample_count=9
+```
+
+这属于正确的失败关闭，不代表供应商已经失败。取得样本后原命令会自动生成
+``reports/strategy_d_intraday_research/l2_vendor_sample_acceptance.json``；只有状态
+变为``PREPAYMENT_SAMPLE_GATE_PASSED``才进入报价比较。
+
 ## 五、合同与交付硬条件
 
 合同或订单必须书面列明：
@@ -153,5 +226,6 @@ Level-2产品还提供十档及最优价前50笔委托队列。公开价目为�
 样本通过我方逐笔序列、盘口队列和全市场同步验收后再确认采购。谢谢。
 ```
 
-本专项不会代替用户发送询价或购买。取得样本后，下一步是先运行统一契约验收，
-仍不直接优化D规则。
+本专项不会未经确认代替用户发送询价或购买。当前最小下一步是申请掘金兼容
+券商的沪深试用样本，并向供应商单独确认BSE；提交任何外部申请前由用户确认。
+取得样本后先运行内容级验收，仍不直接优化D规则。
