@@ -80,6 +80,25 @@ def test_sealed_queue_without_depth_is_cancelled_as_unknown_at_1455() -> None:
     assert replay["events"][-1]["hhmm"] == 1455
 
 
+def test_reseal_at_cancel_time_does_not_generate_order() -> None:
+    replay = replay_intraday_path(
+        bars(
+            [
+                (1000, 9.9, 10.0, 9.9, 10.0),
+                (1001, 10.0, 10.0, 9.9, 9.9),
+                (1002, 9.9, 10.0, 9.9, 10.0),
+                (1003, 10.0, 10.0, 9.9, 9.9),
+                (1455, 9.9, 10.0, 9.9, 10.0),
+            ]
+        ),
+        limit_price=LIMIT,
+    )
+
+    assert replay["eligible_signal_hhmm"] == 0
+    assert replay["signal_rule_current"] is False
+    assert replay["queue_fill_status"] == "NO_SIGNAL"
+
+
 def test_only_one_break_never_generates_d_signal() -> None:
     replay = replay_intraday_path(
         bars(
@@ -169,6 +188,25 @@ def test_baostock_end_label_and_five_minute_coverage() -> None:
     assert len(normalized) == 48
     assert status["bar_minutes"] == 5
     assert status["minute_status"] == "APPROXIMATE_5M_PATH_NO_QUEUE_DEPTH"
+    assert status["path_complete"] is True
+
+
+def test_tushare_full_day_one_minute_coverage() -> None:
+    hhmm = (
+        [hour * 100 + minute for hour in (9, 10) for minute in range(60)]
+        + [1100 + minute for minute in range(31)]
+        + [1300 + minute for minute in range(1, 60)]
+        + [1400 + minute for minute in range(60)]
+        + [1500]
+    )
+    hhmm = [value for value in hhmm if value >= 930]
+    raw = bars([(value, 10.0, 10.0, 10.0, 10.0) for value in hhmm])
+
+    status = coverage_status(normalize_minute_bars(raw))
+
+    assert len(raw) == 241
+    assert status["bar_minutes"] == 1
+    assert status["minute_status"] == "READY_1M_PATH_NO_QUEUE_DEPTH"
     assert status["path_complete"] is True
 
 

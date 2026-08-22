@@ -75,6 +75,11 @@ Tushare历史分钟接口一次只支持单一股票、单次最多8,000行；�
 ``TUSHARE_STK_MINS_1M_UNADJUSTED``。机器报告保存在
 ``reports/strategy_d_intraday_research/tushare_1m_collection.json``。
 
+一分钟事件账本进一步按``14:00<=第一次可交易回封<14:55``重放，得到370个
+路径信号：263个可由信号后板下成交确认限价单成交，107个始终封板且缺队列
+证据；370个信号全部仍有至少一个分钟内事件先后歧义。详细统计见
+[策略D一分钟路径与爆发/爆亏研究](strategy_d_intraday_1m_research.md)。
+
 ## 四、为什么必须是全市场L2
 
 ### 4.1 盘中情绪不是收盘情绪

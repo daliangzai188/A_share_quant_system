@@ -5,7 +5,7 @@
 
 1. 分钟收盘价到达涨停价才确认该分钟结束时处于封板状态；
 2. 从封板到非封板计一次炸板，从非封板到封板计一次回封；
-3. 14:00后第一次满足炸板2~3次的回封是第一可交易信号；
+3. 14:00起、14:55撤单前第一次满足炸板2~3次的回封是第一可交易信号；
 4. 信号发出后，只有14:55撤单前价格再次低于涨停价，才把涨停限价排队单
    记为“价格穿透确认可成交”；始终封住时没有历史队列深度，必须记为未知；
 5. 同一分钟内既触涨停又交易到涨停下方时，OHLC无法确认先后顺序，路径标记歧义。
@@ -307,6 +307,7 @@ def replay_intraday_path(
             if (
                 signal_hhmm == 0
                 and hhmm >= policy.signal_start_hhmm
+                and hhmm < policy.cancel_hhmm
                 and policy.min_open_times <= open_times <= policy.max_open_times
                 and bucket in policy.allowed_first_time_buckets
             ):

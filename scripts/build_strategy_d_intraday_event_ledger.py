@@ -13,10 +13,10 @@
     # 第一步：生成6848只次完整采集目标
     python3 scripts/build_strategy_d_intraday_event_ledger.py --targets-only
 
-    # 第二步：有分钟数据后重建事件账本
+    # 第二步：有一分钟数据后重建事件账本
     python3 scripts/build_strategy_d_intraday_event_ledger.py \
-      --minute-bars data/research/strategy_d_intraday/minute_5m_baostock.csv \
-      --data-source BAOSTOCK_5M_APPROXIMATE
+      --minute-bars data/research/strategy_d_intraday/minute_1m_tushare.csv \
+      --data-source TUSHARE_STK_MINS_1M_UNADJUSTED
 
 输出目录：``data/research/strategy_d_intraday``和
 ``reports/strategy_d_intraday_research``。
@@ -663,7 +663,8 @@ def summary_payload(
             "current_static_pool_signal_overlap_count": static_pool_signal_overlap_count,
             "open_times_at_signal_counts": signal_open_times_counts,
             "first_eligible_signal_definition": (
-                "09:30起连续跟踪；首次封板桶合规；炸板2~3次；14:00后第一次回封"
+                "09:30起连续跟踪；首次封板桶合规；炸板2~3次；"
+                "14:00起且14:55撤单前第一次回封"
             ),
             "queue_fill_definition": (
                 "信号后且14:55撤单前价格低于涨停价才确认涨停限价单可成交；"
@@ -677,14 +678,22 @@ def summary_payload(
             "daily_live_ranking_reconstructable": False,
             "d_standalone_replay_certifiable": False,
             "acde_one_leg_replacement_certifiable": False,
-            "status": "BLOCKED_BY_MINUTE_AND_QUEUE_DEPTH" if not targets_only else "TARGET_MANIFEST_READY",
+            "status": (
+                "TARGET_MANIFEST_READY"
+                if targets_only
+                else (
+                    "BLOCKED_BY_QUEUE_DEPTH_AND_LIVE_RANKING"
+                    if one_minute_ready == len(mother)
+                    else "BLOCKED_BY_MINUTE_AND_QUEUE_DEPTH"
+                )
+            ),
         },
         "limitations": [
             "历史市场strong门使用最终收盘情绪；精确复现实盘还需全市场盘中ever_sealed路径。",
             "OHLCV没有回封时买一封单和队列前方数量，始终封板期间不能证明排队成交。",
-            "五分钟K无法确定同一bar内触板、炸板和回封先后，只能作近似覆盖预检。",
+            "一分钟OHLCV仍无法确定同一分钟内多次触板、炸板和回封的先后顺序；五分钟歧义更大。",
             "跨数据源分钟最高价未确认官方涨停价的目标单独标记不一致，禁止用于路径认证。",
-            "在一分钟路径和历史队列深度补齐前，不得用本账本修改正式D规则或计算认证组合复利。",
+            "在历史队列深度和同日候选盘中排名补齐前，不得用本账本修改正式D规则或计算认证组合复利。",
         ],
     }
 
