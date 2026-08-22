@@ -7,15 +7,17 @@
 本专项已经完成严格采集入口、统一事件契约、同步全市场信号重放器、价格时间
 优先队列重放器和认证闸门；正式D规则、A/E/C规则及当前复利基线均未修改。
 
-当前数据还不能执行正式D复利和ACDE逐腿替换比较。机器审计状态为：
+当前数据可以继续执行484日全窗口的一分钟路径研究，但还不能把始终封板样本
+认证为真实FIFO成交，也不能据此修改正式D。最终L2认证闸门状态仍为：
 
 ```text
 BLOCKED_HISTORICAL_FULL_MARKET_L2_REQUIRED
 ```
 
-原因不是代码没有候选，而是当前没有覆盖整个24个月窗口的全市场历史逐笔
-委托、逐笔成交和盘口队列。缺这些数据时，程序会主动阻止收益认证，绝不把
-5分钟或1分钟OHLCV冒充真实排队成交。
+原因不是代码没有候选，也不是一分钟数据不足以研究，而是当前没有覆盖整个
+24个月窗口的全市场历史逐笔委托、逐笔成交和盘口队列。缺这些数据时，程序
+只阻止最终FIFO收益认证；分钟价格穿透样本可以继续研究，始终封板样本则按
+保守不成交处理，绝不把5分钟或1分钟OHLCV冒充真实排队成交。
 
 ## 二、冻结基线
 
@@ -42,6 +44,7 @@ BLOCKED_HISTORICAL_FULL_MARKET_L2_REQUIRED
 |---|---:|---|---|
 | BaoStock 5分钟 | 6,848/6,848目标已终态 | 近似筛查明显炸板/回封路径 | 否 |
 | Tushare 1分钟 | 6,848/6,848目标完整，共1,650,368根 | 缩小bar内路径歧义 | 否 |
+| Tushare官方涨跌停价 | 484/484交易日完整 | 生成全窗口首板触板母池 | 是（母池层） |
 | QMT历史1分钟抽样 | 6个日期分位目标中仅最近2个有241根 | 证明本机近期分钟覆盖 | 否 |
 | QMT历史tick抽样 | 0/6 | 无 | 否 |
 | QMT历史盘口字段抽样 | 0/6 | 无 | 否 |
@@ -75,12 +78,16 @@ Tushare历史分钟接口一次只支持单一股票、单次最多8,000行；�
 ``TUSHARE_STK_MINS_1M_UNADJUSTED``。机器报告保存在
 ``reports/strategy_d_intraday_research/tushare_1m_collection.json``。
 
-一分钟事件账本进一步按``14:00<=第一次可交易回封<14:55``重放，得到370个
+上述6,848只次只是56个最终收盘strong日的第一阶段目标，并非484日全窗口。
+官方``stk_limit``已补齐其余428日；日级预扫描得到全窗口40,336只次目标，
+下一项将生成正式目标清单并用已购一分钟权限补齐新增33,488只次。
+
+第一阶段一分钟事件账本进一步按``14:00<=第一次可交易回封<14:55``重放，得到370个
 路径信号：263个可由信号后板下成交确认限价单成交，107个始终封板且缺队列
 证据；370个信号全部仍有至少一个分钟内事件先后歧义。详细统计见
 [策略D一分钟路径与爆发/爆亏研究](strategy_d_intraday_1m_research.md)。
 
-## 四、为什么必须是全市场L2
+## 四、为什么最终FIFO认证仍需要全市场L2
 
 ### 4.1 盘中情绪不是收盘情绪
 
@@ -164,6 +171,7 @@ fill_probability, fill_reliable
 | 同上 | ``replay_price_time_queue`` | 重建价格时间优先队列、部分成交和14:55撤余单 |
 | 同上 | ``normalize_event_time`` | 保留``HH:MM:SS.mmm``毫秒，避免破坏逐笔先后顺序 |
 | ``scripts/collect_strategy_d_intraday_tushare_1m.py`` | ``load_collection_policy`` / ``fetch_job_with_retry`` / ``consolidate_minute_parts`` / ``main`` | 付费权限限速、33交易日聚合、缺日单日补取、退避重试、原子分片、断点状态和总表合并 |
+| ``scripts/collect_strategy_d_stk_limit_history.py`` | ``load_window_open_dates`` / ``normalize_stk_limit`` / ``collect_missing`` | 补齐484日官方涨跌停价、内容校验、原子保存和断点续跑 |
 | ``scripts/probe_strategy_d_intraday_qmt_depth.py`` | ``fetch_period`` / ``report_paths`` / ``main`` | 只读探测QMT 1分钟、tick和历史盘口字段；不同批次报告互不覆盖 |
 | ``scripts/audit_strategy_d_l2_purchase_readiness.py`` | ``build_audit`` | 汇总当前权限、官方候选来源和付款前样本门槛 |
 | ``src/strategy_d_l2_sample_acceptance.py`` | ``validate_sample_package`` | 读取真实供应商样本，校验逐笔序列、委托关联、全市场同步扫描和前50队列 |
@@ -173,13 +181,13 @@ fill_probability, fill_reliable
 
 ## 七、运行与验证
 
-### 7.1 只看Tushare工作量
+### 7.1 第一阶段Tushare分钟数据验收
 
 ```bash
 python3 scripts/collect_strategy_d_intraday_tushare_1m.py --dry-run
 ```
 
-当前必须看到：
+现有56个收盘strong日的第一阶段结果必须看到：
 
 ```text
 target_count=6848
@@ -235,7 +243,13 @@ python3 -m pytest -q \
 测试覆盖：同信号时点真实封单排在虚拟单前、队列全成、部成后14:55撤余、
 数据不完整fail-closed、全市场同步扫描、实时情绪、同日排名和分钟请求聚合上限。
 
-## 八、下一步需要的数据权限
+## 八、当前下一步与最终数据闸门
+
+当前不再购买或申请L2。下一步是生成484日全窗口40,336只次首板触板目标，
+并用已经购买的Tushare一分钟权限断点补齐新增33,488只次。分钟研究中，价格
+跌破涨停价可以确认限价委托成交；始终封板且没有队列证据的样本一律按保守
+不成交。只有分钟候选先同时改善D独立腿和ACDE逐腿替换研究结果，才重新评估
+下述L2样本与报价。
 
 上证信息官方历史产品表列有集合竞价、快照、逐笔成交和K线，但没有公开列出
 逐笔委托，所以不能据此认定可重建FIFO。公开价格页的24万元/年非展示自用许可
@@ -246,7 +260,7 @@ Level-2公开价12万元/年”的口径已撤销。
 
 掘金量化文档提供SSE、SZSE从2016-01-04至今的历史十档、逐笔成交、逐笔委托
 和委托队列接口，时间跨度符合本项目；但L2只支持券商内网环境，公开接口表也
-没有列BSE。当前优先申请兼容券商沪深试用，并单独确认北交所来源。
+没有列BSE。因此它只作为未来最终认证的候选来源，当前不申请、不购买。
 [掘金量化L2数据说明](https://www.myquant.cn/docs2/tools/L2%E6%95%B0%E6%8D%AE.html)
 
 深交所官方历史增强行情明确包含逐笔委托、逐笔成交、3秒快照和证券委托队列；
@@ -254,8 +268,9 @@ Level-2公开价12万元/年”的口径已撤销。
 样本门槛和询价模板见
 ``docs/strategy_d_l2_permission_purchase_audit.md``。
 
-本专项没有购买数据、没有联系供应商，也没有启用任何实盘接口。下一步必须先
-取得沪深京九份真实样本并运行
+本专项没有购买L2、没有联系供应商，也没有启用任何实盘接口。用户已经购买的
+Tushare历史一分钟权限是当前D研究主数据，不属于这里所说的缺失L2。未来只有
+分钟候选通过双复利研究门槛，才取得沪深京九份真实L2样本并运行
 ``python3 scripts/validate_strategy_d_l2_vendor_sample.py``；当前结果为``0/9``、
-``BLOCKED_NO_VENDOR_SAMPLE_MANIFEST``。在此之前不运行D/ACDE收益比较，也不修改
+``BLOCKED_NO_VENDOR_SAMPLE_MANIFEST``。在最终认证前不修改
 ``src/strategy_d_spec.py``或正式配置。

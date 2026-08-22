@@ -29,6 +29,10 @@ class StrategyDL2PurchaseReadinessTest(unittest.TestCase):
         )
         self.assertTrue(audit["purchase_decision"]["permission_missing"])
         self.assertFalse(audit["purchase_decision"]["buy_now"])
+        self.assertEqual(
+            audit["purchase_decision"]["status"],
+            "DEFERRED_COMPLETE_MINUTE_RESEARCH_FIRST",
+        )
         self.assertFalse(audit["certification_impact"]["formal_d_change_allowed"])
         self.assertFalse(
             audit["current_permissions"]["vendor_sample_content_gate"]["passed"]

@@ -216,12 +216,13 @@ def build_audit(
         "purchase_decision": {
             "permission_missing": True,
             "buy_now": False,
-            "reason": "单买上海或未经验收的接口仍不能通过沪深京全市场严格门禁",
+            "status": "DEFERRED_COMPLETE_MINUTE_RESEARCH_FIRST",
+            "reason": "L2只影响最终FIFO认证；先用已购一分钟权限完成484日全窗口研究，不再追加采购",
             "recommended_sequence": [
-                "先申请掘金兼容券商环境试用，验证SSE/SZSE历史委托、成交和队列",
-                "同时单独书面确认BSE历史逐笔来源；未确认前不得宣称三市场齐备",
-                "若券商试用不满足，再分别向上证信息、深证信息和中证股转科技询价",
-                "三市场样本全部通过自动验收后再比较总价并购买",
+                "先补齐484日全部首板触板母池并使用已购一分钟权限重放",
+                "用分钟价格穿透确认成交；始终封板样本按保守不成交处理",
+                "候选先通过D独立腿和ACDE逐腿替换研究门槛",
+                "只有通过后才重启沪深京L2样本与报价流程",
             ],
         },
         "certification_impact": {
@@ -230,7 +231,7 @@ def build_audit(
             "acde_one_leg_replacement_allowed": False,
             "formal_d_change_allowed": False,
         },
-        "next_authorized_action": "申请掘金兼容券商SSE/SZSE试用样本并单独确认BSE；提交外部申请前需用户确认，当前不付款、不改策略",
+        "next_authorized_action": "生成484日全窗口首板触板目标并继续Tushare一分钟采集；当前不申请、不付款、不改正式D",
     }
 
 
