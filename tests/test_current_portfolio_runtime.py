@@ -33,7 +33,7 @@ def make_engine(
         "trade_mode": "backtest",
         "position": {"initial_cash": 500_000},
         "live_trade": {"max_single_order_amount": 0},
-        "active_strategy_profile": {"mode": 1, "mode_name": "D_A_E_C"},
+        "active_strategy_profile": {"mode": 1, "mode_name": "A_C_E_D"},
     }
     engine.load_positions = lambda: list(positions or [])
     if ac_leg:
@@ -64,15 +64,16 @@ def make_engine(
     )
     engine.load_today_e_signal = lambda _today: None
     engine.active_strategy_mode = lambda: 1
-    engine.active_strategy_name = lambda: "D_A_E_C"
+    engine.active_strategy_name = lambda: "A_C_E_D"
     engine.is_b_strategy_removed = lambda: True
     return engine
 
 
 class CurrentPortfolioRuntimeTests(unittest.TestCase):
-    def test_current_priority_is_a_then_e_then_c(self) -> None:
+    def test_current_priority_is_a_then_c_then_e_then_d(self) -> None:
         for ac_leg, with_e, expected in (
             ("A", True, "A"),
+            ("C", True, "C"),
             (None, True, "E"),
             ("C", False, "C"),
         ):
@@ -94,7 +95,7 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
         self.assertNotIn("ALLOW_D_INTRADAY_TRACKING_ONLY", actions)
 
     def test_any_strategy_candidate_blocks_d_scan_and_entry_all_day(self) -> None:
-        """A/E/C及未来新增策略的候选，均不能因执行窗口结束而释放D。"""
+        """A/C/E及未来新增策略的候选，均不能因执行窗口结束而释放D。"""
 
         for action, leg in (
             ("ALLOW_ABC_BUY_PREVIEW", "A"),
@@ -253,7 +254,7 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
         ):
             run_strategy_e_signal.finish_occupied_without_e_signal(
                 "20260821",
-                "A今日已生成计划委托（腿序A>E），E不触发",
+                "A今日已生成计划委托（腿序A>C>E），E不触发",
                 dry_run=False,
             )
 
@@ -316,7 +317,7 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
             "signal_date": "20260821",
             "status": "NO_SIGNAL_OCCUPIED",
             "reason": "A今日已生成计划委托；E只读候选检查为0只",
-            "priority_blocker": "A今日已生成计划委托（腿序A>E），E不触发",
+            "priority_blocker": "A今日已生成计划委托（腿序A>C>E），E不触发",
             "candidate_check_status": "CALCULATED",
             "counterfactual_e_status": "NO_CANDIDATE",
             "candidate_count": 0,
@@ -420,11 +421,11 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
                 trading_daemon._log_close_pipeline_candidate_summary("20260821")
 
         message = str(log.info.call_args.args[0])
-        self.assertIn("① D盘中：未完成统计", message)
+        self.assertIn("④ D盘中兜底：未完成统计", message)
         self.assertIn("不能据此断言D无候选", message)
-        self.assertIn("② A主策略：已计算｜候选1只｜第一名 300016.SZ 北陆药业", message)
+        self.assertIn("① A主策略：已计算｜候选1只｜第一名 300016.SZ 北陆药业", message)
+        self.assertIn("② C强势龙头：已计算｜候选0只", message)
         self.assertIn("③ E策略：已计算｜候选0只", message)
-        self.assertIn("④ C垫底：已计算｜候选0只", message)
 
     def test_d_shared_proxy_checks_release_certification_before_buy(self) -> None:
         proxy = trading_daemon.SharedQMTBrokerProxy({"adapter": "qmt"})
@@ -619,7 +620,7 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
                 json.dumps({
                     "status": "PASS_WITH_RISK_ACCEPTANCE",
                     "current_executable": True,
-                    "scenario": "current_d_a_e_c",
+                    "scenario": "current_a_c_e_d",
                 }),
                 encoding="utf-8",
             )
@@ -628,7 +629,7 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
                 {
                     "certification_summary_path": "cert.json",
                     "certification_required_status": "PASS_WITH_RISK_ACCEPTANCE",
-                    "certification_expected_scenario": "current_d_a_e_c",
+                    "certification_expected_scenario": "current_a_c_e_d",
                 },
             )
             self.assertTrue(check.ok, check.reason)
@@ -666,7 +667,7 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
         self.assertIn("决策优先级流程图", message)
         self.assertIn("开仓决策链", message)
         self.assertIn("最终开仓计划", message)
-        self.assertIn("A/E/C均无开仓计划", message)
+        self.assertIn("A/C/E均无开仓计划", message)
         log.warning.assert_not_called()
 
     def test_e_readonly_candidate_is_shown_when_position_blocks_formal_signal(self) -> None:
@@ -806,13 +807,13 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
 
         message = str(log.info.call_args.args[0])
         for expected in (
-            "② A主策略：不触发（当前有持仓）｜候选 000001.SZ 测试A",
+            "① A主策略：不触发（当前有持仓）｜候选 000001.SZ 测试A",
+            "② C强势龙头：不触发（当前有持仓）｜候选 600001.SH 测试C",
             "③ E策略：不触发（当前有持仓）｜候选 300001.SZ 测试E",
-            "④ C垫底：不触发（当前有持仓）｜候选 600001.SH 测试C",
         ):
             self.assertIn(expected, message)
         self.assertIn(
-            "① D盘中：不触发｜无候选",
+            "④ D盘中兜底：不触发｜无候选",
             message,
         )
         log.warning.assert_not_called()

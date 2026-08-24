@@ -10,7 +10,8 @@
 5. E入场门禁在每日第一名确定后执行，被排除时不回补第二名；
 6. 所有收益按同一账户、同一时间顺序连乘，禁止把各腿复利直接相乘。
 
-当前有效腿序 **D > A > E > C**，见 pick_by_priority。
+历史身份回放腿序 **D > A > E > C**，见 pick_by_priority；当前正式顺序已改为
+**A > C > E > D**，正式统计只认certify_strict_asof_portfolio。
 D 不在 pick_by_priority 里：它在信号日盘中就买了，位置由时序锁死，见 replay。
 
 ⚠️ **本脚本只验证实盘选择身份，两侧必须同时正确。** 实盘一侧分两层，缺一层就是空转：
@@ -1097,7 +1098,7 @@ def write_current_report(
         "",
         "## 结论",
         "",
-        "- **当前腿序：D > A > E > C。**",
+        "- **历史身份回放腿序：D > A > E > C（非当前生产顺序）。**",
         f"- 冻结窗口481个信号日，共{int(current['executed_trade_count'])}笔；"
         f"A={int(current['a_trade_count'])}、C={int(current['c_trade_count'])}、"
         f"D={int(current['d_trade_count'])}、E={int(current['e_trade_count'])}。",
@@ -1171,7 +1172,7 @@ def certify_current(*, refresh_input_manifest: bool = False) -> None:
         for value in portfolio_config.get("strategy_priority_order", [])
     ]
     if priority != ["D", "A", "E", "C"]:
-        raise RuntimeError("当前配置腿序不是D>A>E>C，拒绝认证")
+        raise RuntimeError("当前配置已不是历史D>A>E>C身份回放腿序，拒绝运行旧认证")
 
     e_validation = e_entry_gate_validation(sources)
     e_portfolio_comparison = segment_comparison(

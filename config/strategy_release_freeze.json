@@ -1,20 +1,20 @@
 {
   "schema_version": 1,
   "status": "UNFROZEN_PENDING_CERTIFICATION",
-  "release_id": "portfolio-d-a-e-c-pending",
-  "invalidated_at": "2026-08-21",
-  "invalidated_reason": "当前D>A>E>C组合尚未取得严格发布认证；旧组合配置哈希、代码哈希、输入哈希与复利锚点均不可复用。",
+  "release_id": "portfolio-a-c-e-d-pending",
+  "invalidated_at": "2026-08-24",
+  "invalidated_reason": "当前A>C>E>D组合只有严格发现期统计，尚未取得LOCKED_OOS或WALK_FORWARD发布认证；旧组合配置哈希、代码哈希、输入哈希与复利锚点均不可复用。",
   "strategy_priority_order": [
-    "D",
     "A",
+    "C",
     "E",
-    "C"
+    "D"
   ],
   "research_input_start_date": "20240630",
   "research_input_end_date": "20260630",
   "oos_start_date": "20260820",
   "certification_status": "NOT_CERTIFIED",
-  "certification_scenario": "current_d_a_e_c",
+  "certification_scenario": "current_a_c_e_d",
   "capacity_certified": false,
-  "note": "新BUY保持关闭；SELL、撤单、成交回写和既有持仓退出不依赖新BUY认证，仍须正常执行。"
+  "note": "A>C>E>D生产顺序已落地，但本文件不伪造样本外认证：新BUY仍受现有认证安全门约束；SELL、撤单、成交回写和既有持仓退出不受影响。"
 }

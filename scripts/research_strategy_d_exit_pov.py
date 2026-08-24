@@ -67,7 +67,7 @@ PORTFOLIO_TRADES_PATH = (
 )
 D_TRADES_PATH = PROJECT_ROOT / "reports" / "strategy_d" / "d_daily_candidates.csv"
 OUTPUT_DIR = PROJECT_ROOT / "reports" / "strategy_d" / "exit_pov"
-# 当前D>A>E>C发布标尺必须重新严格认证；容量仍未认证。
+# 当前A>C>E>D真实开仓日标尺必须重新严格认证；容量仍未认证。
 EXPECTED_D_COUNT = 18
 EXPECTED_PORTFOLIO_COUNT = 128
 EXPECTED_PORTFOLIO_MULTIPLE = 1727.906227926422

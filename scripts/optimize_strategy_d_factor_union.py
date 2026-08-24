@@ -9,7 +9,7 @@
 * 胜率严格大于55%；
 * 没有无法解析的退出。
 
-所有合格分支都会逐个替换当前D，并重新执行D>A>E>C单账户组合回放。脚本只在
+所有合格分支都会逐个替换当前D，并重新执行A>C>E>D真实开仓日单账户组合回放。脚本只在
 D独立复利和ACDE总复利都提高的条件中，选择ACDE复利最高的单一条件作为最佳
 候选。默认只生成完整TXT/JSON/CSV报告；显式传入``--apply``才会原子替换D因子
 发布文件。全部合格条件的OR并集仍保留为诊断对照，但不再作为正式候选。
@@ -46,7 +46,6 @@ from scripts.research_strategy_d_explosion_features import (  # noqa: E402
 )
 from scripts.research_strategy_d_reseal_combinations import (  # noqa: E402
     basic_metrics,
-    combo_replay_fast,
     fast_standalone_records,
     outcome_frame_from_picks,
 )
@@ -69,10 +68,10 @@ DEFAULT_CONFIG = ROOT / "config/strategy_d_factor_optimizer.json"
 DEFAULT_EVENTS = ROOT / "reports/strategy_d_reseal_combinations/all_reseal_signal_events.csv"
 CURRENT_OFFICIAL_START = "20240630"
 CURRENT_OFFICIAL_END = "20260630"
-CURRENT_D_MULTIPLE = 2.0261239235922566
-CURRENT_ACDE_MULTIPLE = 327.72671897548867
-CURRENT_D_TRADES = 39
-CURRENT_ACDE_TRADES = 132
+CURRENT_D_MULTIPLE = 2.8112400677086447
+CURRENT_ACDE_MULTIPLE = 1023.791243962826
+CURRENT_D_TRADES = 33
+CURRENT_ACDE_TRADES = 136
 TOLERANCE = 1e-12
 
 BRANCH_METRIC_KEYS = (
@@ -538,6 +537,22 @@ def build_incumbent_and_other_legs(
     return incumbent, other_legs, source_audit
 
 
+def combo_replay_current_priority(
+    d_outcomes: pd.DataFrame,
+    other_legs: dict[str, pd.DataFrame],
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """按当前A>C>E>D真实开仓日口径快速回放，不在搜索循环做bootstrap。"""
+
+    legs = {"D": d_outcomes, **other_legs}
+    detail = strict.replay_by_action_date(legs, ("A", "C", "E", "D"))
+    trades = detail[detail["status"].eq("EXECUTED")]
+    metrics = basic_metrics(pd.to_numeric(trades["account_return"], errors="raise"))
+    metrics["leg_counts"] = (
+        trades["strategy_leg"].value_counts().sort_index().to_dict()
+    )
+    return detail, metrics
+
+
 def replay_comparison(
     incumbent_outcomes: pd.DataFrame,
     candidate_outcomes: pd.DataFrame,
@@ -550,10 +565,10 @@ def replay_comparison(
     incumbent_d = executed_metrics(incumbent_d_detail)
     candidate_d = executed_metrics(candidate_d_detail)
     with strict_window(start, end):
-        incumbent_acde_detail, incumbent_acde = combo_replay_fast(
+        incumbent_acde_detail, incumbent_acde = combo_replay_current_priority(
             incumbent_outcomes, other_legs
         )
-        candidate_acde_detail, candidate_acde = combo_replay_fast(
+        candidate_acde_detail, candidate_acde = combo_replay_current_priority(
             candidate_outcomes, other_legs
         )
     return {
@@ -591,7 +606,7 @@ def evaluate_profiles_in_portfolio(
             mask = profile_mask(factorized_events, conditions).to_numpy(dtype=bool)
             picks = daily_union_picks(factorized_events, mask)
             outcomes = outcome_frame_from_picks(picks)
-            _, acde_metrics = combo_replay_fast(outcomes, other_legs)
+            _, acde_metrics = combo_replay_current_priority(outcomes, other_legs)
             d_metrics = {
                 key: row[key]
                 for key in (*BRANCH_METRIC_KEYS, *BRANCH_DIAGNOSTIC_KEYS)
@@ -733,7 +748,7 @@ def render_best_result_text(payload: Mapping[str, Any]) -> str:
         "",
         f"回测窗口：{window['start']}～{window['end']}",
         "回测口径：严格as-of、单账户逐笔机械复利",
-        "组合占仓顺序：D > A > E > C",
+        "组合占仓顺序：A > C > E > D（按真实开仓日）",
         "费用、滑点、涨跌停、T+1、仓位和持仓占用规则：沿用当前正式口径",
         "默认行为：只生成报告，不修改正式D",
         "",
@@ -855,7 +870,6 @@ def assert_current_official_anchor(
     if not (
         start == CURRENT_OFFICIAL_START
         and end == CURRENT_OFFICIAL_END
-        and str(release["strategy_mode"]) == LEGACY_MODE
     ):
         return
     d = comparison["incumbent_d"]

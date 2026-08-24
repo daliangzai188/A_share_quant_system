@@ -253,8 +253,9 @@ python3 scripts/certify_strict_asof_portfolio.py
 ```
 
 它必须复现A独立63笔、18.9115486868倍、E独立74笔、11.7037898965倍、
-C独立55笔、23.6176160942倍，以及ACDE 134笔、1375.6238529689倍、
-分腿D15/A44/E42/C33。该证书仍标记
+C独立55笔、23.6176160942倍，以及真实开仓日A>C>E>D组合136笔、
+1023.7912439628倍、分腿A42/C47/E36/D11。用户已明确接受该组合低于
+A>E>C>D的1164.500295倍。该证书仍标记
 `STRICT_DISCOVERY`：它证明配置、代码、输入和本次规则能够重放，但不等于冻结
 样本外或真实容量已经通过；研究证书不参与实盘BUY开关，真实订单继续由执行风控拦截。
 
@@ -404,7 +405,7 @@ cd /Users/user/Desktop/A_System
 |---|---|
 | `config/strategy_config.json` | A/C当前参数、B退役墓碑、失效的旧发布标记 |
 | `scripts/run_strategy_release_validation.py` | 旧A+B发布验证失效保护；当前仍应拒绝运行 |
-| `scripts/certify_strict_asof_portfolio.py` | 当前D>A>E>C严格as-of机械回放与输入/代码哈希证书 |
+| `scripts/certify_strict_asof_portfolio.py` | 当前A>C>E>D真实开仓日严格as-of机械回放与输入/代码哈希证书 |
 | `scripts/run_paper_ab_filtered_daily_ops.py` | A/C filtered 每日操作台 |
 | `scripts/run_paper_ab_filtered_observation_window.py` | B历史回放代码；当前配置拒绝运行 |
 | `scripts/stress_test_ab_filtered_b_residual_filters.py` | B历史研究归档，不属于当前执行链 |

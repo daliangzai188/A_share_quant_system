@@ -234,9 +234,8 @@ def has_ac_planned_order(signal_date: str, legs: tuple[str, ...]) -> bool:
     """A/C daily ops 是否为 signal_date 生成了 `legs` 中某条腿的计划委托。
 
     `legs` 必须由调用方按腿序显式声明——**只有排在自己前面的腿才有资格挡住
-    本腿的信号**。2026-08-07 之前这里不分 A 和 C，谁调用都是"A 或 C 有计划
-    就挡"，于是 C 事实上挡住了排在它前面的 E。M已退役，当前固定腿序为
-    D>A>E>C，上游门与下游排序必须保持同一口径。
+    本腿的信号**。当前可执行腿序为A>C>E>D，因此A、C都排在E之前；任一腿
+    已形成今日计划时，E只做反事实候选检查，不生成占用资金的正式信号。
 
     旧 B 计划只能人工退出、不占用新开仓资金，一律排除。
     """
@@ -598,14 +597,13 @@ def run_signal_generation(signal_date: str, *, dry_run: bool) -> None:
         )
         return
 
-    # 腿序 D>A>E>C：排在 E 前面的是 D、A，后面是 C。
-    # C 有计划时 E 必须照常出信号，由 combined_live_engine 按腿序在两者间挑；
-    # 2026-08-07 之前这里连 C 一起挡，等于把 C 顶到了 E 前面。
-    #
-    if has_ac_planned_order(signal_date, legs=("A",)):
+    # 可执行腿序A>C>E>D：A/C任一已有今日计划时，E不再生成正式资金信号，
+    # 但finish_occupied_without_e_signal仍会独立计算并记录E反事实候选，确保
+    # “被上游阻断”和“E本身无候选”在日志中可区分。
+    if has_ac_planned_order(signal_date, legs=("A", "C")):
         finish_occupied_without_e_signal(
             signal_date,
-            "A今日已生成计划委托（腿序A>E），E不触发",
+            "A或C今日已生成计划委托（腿序A>C>E），E不触发",
             dry_run=dry_run,
         )
         return

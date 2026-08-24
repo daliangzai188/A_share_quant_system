@@ -5,7 +5,7 @@
 1. 历史成交概率只读逐日as-of评分，训练截止日必须早于信号日；
 2. A/C/E按T+1开盘买，D按信号日涨停价买；统一处理前复权、涨跌停、
    卖出延期、双边滑点和日期化费用；
-3. 按D>A>E>C顺序做单账户串行回放；
+3. 旧研究函数保留信号日串行回放；正式组合另用真实开仓日回放，按A>C>E>D裁决；
 4. 对每条腿做“有该腿/删除该腿”组合边际比较；
 5. 同时报告Wilson胜率区间、bootstrap平均收益区间、样本外状态和容量缺口。
 
@@ -441,6 +441,38 @@ def candidate_map(frame: pd.DataFrame) -> dict[str, dict[str, Any]]:
     }
 
 
+def action_candidate_map(
+    frame: pd.DataFrame,
+    leg: str,
+) -> dict[str, dict[str, Any]]:
+    """把候选映射到真实资金开仓日，而不是策略信号日。
+
+    D在信号日盘中开仓，所以开仓日就是 ``signal_date``；A/C/E在前一交易日
+    收盘后形成计划，并于 ``buy_date`` 开盘执行。把四腿都压到signal_date会让
+    D错误地使用尚未产生的未来候选参与排序，因此该映射只供可执行组合认证。
+    """
+
+    normalized_leg = str(leg).strip().upper()
+    if normalized_leg not in {"A", "C", "D", "E"}:
+        raise ValueError(f"未知策略腿：{leg}")
+    valid = frame[frame["status"].astype(str).eq("OK")].copy()
+    if valid.empty:
+        return {}
+    entry_column = "signal_date" if normalized_leg == "D" else "buy_date"
+    if entry_column not in valid.columns:
+        raise KeyError(f"{normalized_leg}候选缺少真实开仓日字段{entry_column}")
+    valid["signal_date"] = date_text(valid["signal_date"])
+    valid["action_date"] = date_text(valid[entry_column])
+    valid["exit_date"] = date_text(valid["exit_date"])
+    valid["strategy_leg"] = normalized_leg
+    if valid["action_date"].eq("").any() or valid["action_date"].isna().any():
+        raise ValueError(f"{normalized_leg}候选存在空真实开仓日")
+    return {
+        str(row["action_date"]): row.to_dict()
+        for _, row in valid.drop_duplicates("action_date", keep="last").iterrows()
+    }
+
+
 def baseline_dates() -> list[str]:
     calendar = pd.read_csv(
         ROOT / "data" / "raw" / "trade_calendar.csv",
@@ -513,6 +545,107 @@ def replay(
                 "strategy_leg": occupied_leg,
                 "ts_code": occupied_code,
                 "name": occupied_name,
+                "exit_date": occupied_until,
+                "account_return": value,
+                "equity_after": equity,
+            }
+        )
+    detail = pd.DataFrame(rows)
+    detail["peak_equity"] = detail["equity_after"].cummax()
+    detail["drawdown"] = detail["equity_after"] / detail["peak_equity"] - 1
+    return detail
+
+
+def replay_by_action_date(
+    legs: dict[str, pd.DataFrame],
+    priority: tuple[str, ...] | list[str] = ("A", "C", "E", "D"),
+    *,
+    action_dates: list[str] | None = None,
+) -> pd.DataFrame:
+    """按真实开仓日重放单账户组合。
+
+    可执行语义固定为：上一交易日收盘后生成的A/C/E计划先按传入顺序选择；
+    三者均无计划时，才允许当日D盘中策略。持仓在退出日收盘才释放，因此退出日
+    本身仍视为占仓，最早下一交易日才允许新开仓。
+
+    ``action_dates`` 仅用于单元测试注入微型交易日历；正式调用必须留空并读取
+    仓库交易日历。
+    """
+
+    normalized_priority = tuple(str(leg).strip().upper() for leg in priority)
+    if set(normalized_priority) != set(legs) or len(normalized_priority) != len(legs):
+        raise ValueError("真实开仓日回放的priority必须与legs一一对应且不得重复")
+    maps = {
+        leg: action_candidate_map(legs[leg], leg)
+        for leg in normalized_priority
+    }
+    if action_dates is None:
+        calendar = pd.read_csv(
+            ROOT / "data" / "raw" / "trade_calendar.csv",
+            dtype={"cal_date": str},
+            low_memory=False,
+        )
+        if "is_open" in calendar.columns:
+            calendar = calendar[
+                calendar["is_open"].astype(str).isin({"1", "1.0", "True", "true"})
+            ]
+        all_entry_dates = [date for mapping in maps.values() for date in mapping]
+        last_entry_date = max(all_entry_dates, default=END)
+        action_dates = sorted(
+            calendar.loc[
+                calendar["cal_date"].astype(str).between(START, last_entry_date),
+                "cal_date",
+            ].astype(str)
+        )
+    else:
+        action_dates = sorted(str(value) for value in action_dates)
+
+    equity = 1.0
+    occupied_until = ""
+    rows: list[dict[str, Any]] = []
+    for action_date in action_dates:
+        if occupied_until and action_date <= occupied_until:
+            rows.append(
+                {
+                    "action_date": action_date,
+                    "signal_date": "",
+                    "status": "SKIP_OCCUPIED",
+                    "strategy_leg": "",
+                    "account_return": 0.0,
+                    "equity_after": equity,
+                }
+            )
+            continue
+
+        selected: dict[str, Any] | None = None
+        for leg in normalized_priority:
+            if action_date in maps[leg]:
+                selected = maps[leg][action_date]
+                break
+        if selected is None:
+            rows.append(
+                {
+                    "action_date": action_date,
+                    "signal_date": "",
+                    "status": "NO_CANDIDATE",
+                    "strategy_leg": "",
+                    "account_return": 0.0,
+                    "equity_after": equity,
+                }
+            )
+            continue
+
+        value = float(selected["account_return"])
+        equity *= 1 + value
+        occupied_until = str(selected["exit_date"])
+        rows.append(
+            {
+                "action_date": action_date,
+                "signal_date": str(selected["signal_date"]),
+                "status": "EXECUTED",
+                "strategy_leg": str(selected["strategy_leg"]),
+                "ts_code": str(selected["ts_code"]),
+                "name": str(selected.get("name", "")),
                 "exit_date": occupied_until,
                 "account_return": value,
                 "equity_after": equity,
@@ -655,14 +788,17 @@ def main() -> None:
         OUT / "candidate_identity_changes.csv", index=False, encoding="utf-8-sig"
     )
 
-    maps = {leg: candidate_map(frame) for leg, frame in legs.items()}
-    all_enabled = set(legs)
-    full = replay(maps, all_enabled)
+    executable_priority = ("A", "C", "E", "D")
+    full = replay_by_action_date(legs, executable_priority)
     full.to_csv(OUT / "strict_portfolio_daily.csv", index=False, encoding="utf-8-sig")
     full_metrics = combo_metrics(full)
     marginal_rows: list[dict[str, Any]] = []
     for leg in legs:
-        without = replay(maps, all_enabled - {leg})
+        remaining_priority = tuple(item for item in executable_priority if item != leg)
+        without = replay_by_action_date(
+            {item: legs[item] for item in remaining_priority},
+            remaining_priority,
+        )
         without_metrics = combo_metrics(without)
         marginal_rows.append(
             {
@@ -784,7 +920,7 @@ def main() -> None:
             "returns": "前复权链接、买卖各0.1%滑点（D买入为涨停价）、日期化费用",
             "position": POSITION_PCT,
             "d_fill_stress": D_FILL_STRESS,
-            "portfolio": "D>A>E>C；单账户串行占仓",
+            "portfolio": "A>C>E>D；按真实开仓日单账户串行占仓，退出日收盘后释放资金",
         },
         "strict_leg_metrics": metric_rows,
         "strict_combo": full_metrics,

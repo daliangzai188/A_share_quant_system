@@ -5,10 +5,10 @@
   "window": "20240630~20260630",
   "input_end_buffer": "20260710",
   "strategy_priority_order": [
-    "D",
     "A",
+    "C",
     "E",
-    "C"
+    "D"
   ],
   "file_count": 992,
   "files": [
@@ -19,8 +19,8 @@
     },
     {
       "path": "config/config.json",
-      "size": 88976,
-      "sha256": "22938767e2a78224c9798c93bbf966aa02038df808c5d24fd5f415a78ba7b651"
+      "size": 89163,
+      "sha256": "6b85c1298156bbee0a1c79eedcf18fcf4e771cba352ad1c3e9374438460c9c8d"
     },
     {
       "path": "config/strategy_config.json",

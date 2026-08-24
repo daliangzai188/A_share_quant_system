@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""生成当前D>A>E>C唯一正式的严格as-of机械复利证书。
+"""生成当前A>C>E>D唯一正式的真实开仓日严格as-of机械复利证书。
 
 本脚本固定当前规则，不优化参数；只从逐日as-of成交评分源重建候选，并按
-单账户真实占仓顺序执行 ``equity *= 1 + account_return``。输出只用于研究统计，
+单账户真实开仓日与占仓顺序执行 ``equity *= 1 + account_return``。输出只用于研究统计，
 不参与实盘程序启停或BUY控制。
 
 首次建立或明确接受输入变化时：
@@ -61,11 +61,11 @@ REPORT_PATH = OUTPUT_DIR / "strict_asof_portfolio_report.md"
 MANIFEST_PATH = OUTPUT_DIR / "strict_asof_input_manifest.json"
 DAILY_DIR = ROOT / "data" / "raw" / "daily"
 DAILY_BASIC_DIR = ROOT / "data" / "raw" / "daily_basic"
-EXPECTED_PRIORITY = ["D", "A", "E", "C"]
-EXPECTED_TRADE_COUNT = 134
-EXPECTED_EQUITY_MULTIPLE = 1375.6238529689376
+EXPECTED_PRIORITY = ["A", "C", "E", "D"]
+EXPECTED_TRADE_COUNT = 136
+EXPECTED_EQUITY_MULTIPLE = 1023.791243962826
 EXPECTED_MAX_DRAWDOWN = -0.14119813241960621
-EXPECTED_LEG_COUNTS = {"D": 15, "A": 44, "E": 42, "C": 33}
+EXPECTED_LEG_COUNTS = {"A": 42, "C": 47, "E": 36, "D": 11}
 LOGGER = logging.getLogger("strict_portfolio_certifier")
 # 2026-06-30 信号的 C/E T+3 退出在极端跌停时最多继续检查 4 个交易日；
 # 输入清单保守锁到 2026-07-10，覆盖正常退出和延期卖出行情。
@@ -116,10 +116,10 @@ def _write_strict_report(
     """输出与正式JSON同口径的可读报告，禁止复用旧身份回放Markdown。"""
 
     lines = [
-        "# D>A>E>C 严格 as-of 组合证书",
+        "# A>C>E>D 真实开仓日严格 as-of 组合证书",
         "",
         f"- 锚点窗口：{certification['input_start_date']}～{certification['input_end_date']}",
-        "- 复利口径：单账户逐笔机械复利，D>A>E>C，占仓82.5%",
+        "- 复利口径：单账户逐笔机械复利，真实开仓日按A>C>E>D裁决，占仓82.5%",
         "- 研究口径：STRICT_DISCOVERY（只作统计审计，不参与实盘BUY控制）",
         f"- 组合成交：{certification['executed_trade_count']}笔",
         f"- 组合复利：{certification['equity_multiple']:.12f}倍",
@@ -146,7 +146,10 @@ def _write_strict_report(
             "## 口径与限制",
             "",
             "- 2024-06-30为非交易日，首个可用信号日自然为2024-07-01；自然日边界未改写。",
+            "- A/C/E使用上一交易日收盘后计划并在buy_date开仓；三腿都无计划时D才在action_date盘中运行。",
+            "- 持仓在退出日收盘后才释放，退出日不允许同一账户再开新仓。",
             "- 费用、滑点、涨跌停、T+1、跌停延期卖出和D成交压力折扣均已保留。",
+            "- 用户于2026-08-24明确接受A>E>C>D的1164.500295倍下降为A>C>E>D的1023.791244倍，作为提升C优先级的人工覆盖决定。",
             "- 本窗口参与规则研究，属于STRICT_DISCOVERY；尚未完成冻结样本外或walk-forward发布认证。",
             "- 历史机械复利不等于大资金可成交收益，也不代表未来收益。",
             "",
@@ -208,7 +211,7 @@ def write_or_verify_input_manifest(*, refresh: bool) -> Path:
 
 def build_strict_snapshot() -> tuple[dict[str, Any], pd.DataFrame, dict[str, pd.DataFrame]]:
     # D已经发布为固定因子版本，不能再用旧D条件重建正式证书。这里与D/C研究
-    # 的逐腿替换口径共用同一发布读取器，并由下方134笔/1375.6239倍锚点锁死。
+    # 的逐腿替换口径共用同一发布读取器，并由下方136笔/1023.7912倍锚点锁死。
     d_events, _d_event_audit = load_d_events(
         D_EVENT_PATH, strict.START, strict.END
     )
@@ -221,8 +224,7 @@ def build_strict_snapshot() -> tuple[dict[str, Any], pd.DataFrame, dict[str, pd.
     if not bool(source_audit.get("passed")):
         raise RuntimeError("严格as-of源审计未通过，拒绝生成组合证书")
     legs = {"D": strategy_d, **other_legs}
-    maps = {leg: strict.candidate_map(frame) for leg, frame in legs.items()}
-    daily = strict.replay(maps, set(EXPECTED_PRIORITY))
+    daily = strict.replay_by_action_date(legs, EXPECTED_PRIORITY)
     metrics = strict.combo_metrics(daily)
     trades = daily[
         daily["status"].eq("EXECUTED")
@@ -263,7 +265,7 @@ def certify(*, refresh_input_manifest: bool = False) -> dict[str, Any]:
         CERTIFICATION_PATH,
         {
             "schema_version": 2,
-            "scenario": "current_d_a_e_c",
+            "scenario": "current_a_c_e_d",
             "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
             "note": "严格as-of研究统计重建中；不参与实盘程序启停或BUY控制。",
         },
@@ -271,12 +273,14 @@ def certify(*, refresh_input_manifest: bool = False) -> dict[str, Any]:
     manifest_path = write_or_verify_input_manifest(refresh=refresh_input_manifest)
     LOGGER.info("输入清单校验通过：%s", manifest_path)
     source_audit, daily, legs = build_strict_snapshot()
-    sample = daily[daily["signal_date"].between(strict.START, strict.END)].copy()
+    # 日账本必须保留NO_CANDIDATE与SKIP_OCCUPIED，不能再用signal_date筛掉；
+    # 组合候选本身已在build_incumbent_and_other_legs中锁定研究窗口。
+    sample = daily.copy()
     trades = sample[sample["status"].eq("EXECUTED")].copy()
     metrics = strict.combo_metrics(sample)
     mechanical = mechanical_compound_frame(trades)
     LOGGER.info(
-        "严格回放复现：signal_days=%d executed=%d multiple=%.12f max_drawdown=%.6f legs=%s",
+        "严格回放复现：action_days=%d executed=%d multiple=%.12f max_drawdown=%.6f legs=%s",
         len(sample),
         int(metrics["trade_count"]),
         mechanical.equity_multiple,
@@ -288,13 +292,12 @@ def certify(*, refresh_input_manifest: bool = False) -> dict[str, Any]:
     trades.to_csv(OUTPUT_DIR / "strict_asof_portfolio_trades.csv", index=False, encoding="utf-8-sig")
     leg_candidate_metrics: dict[str, dict[str, Any]] = {}
     leg_standalone_metrics: dict[str, dict[str, Any]] = {}
-    maps = {leg: strict.candidate_map(frame) for leg, frame in legs.items()}
     for leg, frame in legs.items():
         executed = frame[frame["status"].astype(str).eq("OK")]
         leg_candidate_metrics[leg] = strict.return_metrics(executed["account_return"])
         # 独立策略仍必须遵守自己的持仓期和资金释放日；不能将重叠候选全部连乘。
         leg_standalone_metrics[leg] = strict.combo_metrics(
-            strict.replay(maps, {leg})
+            strict.replay_by_action_date({leg: frame}, (leg,))
         )
         LOGGER.info(
             "%s腿指标：候选池=%d笔/%.12f倍；独立单账户=%d笔/%.12f倍",
@@ -316,12 +319,13 @@ def certify(*, refresh_input_manifest: bool = False) -> dict[str, Any]:
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "window": f"{strict.START}~{strict.END}",
         "source_audit": source_audit,
-        "selection_policy": "固定当前D/A/E/C规则；候选只读信号日可见字段，不按结果回头选规则",
+        "selection_policy": "固定当前A/C/E/D规则；候选只读各自决策时点可见字段，不按结果回头选规则",
         "execution_policy": (
-            "D信号日涨停价；A/E/C为T+1开盘；跌停卖出延期；前复权链接；"
+            "A/C/E为上一交易日收盘计划、buy_date开盘；三腿均无计划时D才在当日盘中运行；"
+            "D按信号日涨停价；跌停卖出延期；前复权链接；"
             "双边滑点、佣金、过户费、日期化印花税"
         ),
-        "portfolio_policy": "D>A>E>C单账户占仓；每天最多一笔实际成交；退出前不重复使用资金",
+        "portfolio_policy": "真实开仓日按A>C>E>D单账户占仓；每天最多一笔实际成交；退出日收盘后才释放资金",
         "mechanical_compound_formula": "equity_t = equity_(t-1) * (1 + account_return_t)",
         "strict_combo": metrics,
         "strict_leg_candidate_metrics": leg_candidate_metrics,
@@ -339,12 +343,13 @@ def certify(*, refresh_input_manifest: bool = False) -> dict[str, Any]:
     audit_rel = AUDIT_PATH.relative_to(ROOT).as_posix()
     certification = {
         "schema_version": 2,
-        "scenario": "current_d_a_e_c",
+        "scenario": "current_a_c_e_d",
         "metric_scope": "STRICT_ASOF_MECHANICAL_COMPOUND",
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "input_start_date": strict.START,
         "input_end_date": strict.END,
-        "signal_day_count": int(len(sample)),
+        "signal_day_count": int(len(strict.baseline_dates())),
+        "action_day_count": int(len(sample)),
         "executed_trade_count": int(metrics["trade_count"]),
         "a_trade_count": int(metrics["leg_counts"].get("A", 0)),
         "c_trade_count": int(metrics["leg_counts"].get("C", 0)),
@@ -379,8 +384,11 @@ def certify(*, refresh_input_manifest: bool = False) -> dict[str, Any]:
         ),
         "note": (
             "这是当前组合唯一正式统计口径：严格as-of、单账户、逐笔机械复利。"
+            "A/C/E按上一交易日收盘计划映射到真实buy_date，三腿均无计划才启动D。"
+            "用户已明确接受组合历史复利从A>E>C>D的1164.500295倍下降到"
+            "A>C>E>D的1023.791244倍。"
             "当前协议仍是STRICT_DISCOVERY；研究结果不参与实盘程序启停或BUY控制，"
-            "旧来源1727倍不得用于正式收益或比较。"
+            "旧信号日排序1375.623853倍与同日重排1463.912878倍不得用于正式收益或比较。"
         ),
     }
     _atomic_json(CERTIFICATION_PATH, certification)

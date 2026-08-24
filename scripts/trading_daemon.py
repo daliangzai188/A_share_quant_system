@@ -10095,7 +10095,7 @@ def job_morning() -> None:
     else:
         logger().info("组合状态机未允许E开仓，跳过。")
 
-    # ⑤ 策略D监控 —— 与A/E/C全日互斥。只有“无持仓、无非D正式候选、
+    # ⑤ 策略D监控 —— 与A/C/E全日互斥。只有“无持仓、无非D正式候选、
     # 无非D开仓计划”三项同时成立，D才从09:30启动扫描、记录和开仓。
     d_allowed, d_gate_reason = d_intraday_monitor_gate(decisions)
     if d_allowed:
@@ -10167,7 +10167,7 @@ def job_opening_buy(*, recovery_only: bool = False) -> None:
         return
 
     # 与09:20共用同一个动作解析器，避免新增策略腿后两个入口名单漂移：
-    # 当前正式腿序为 A > E > C，一个组合计划只执行最高优先动作一次。
+    # 当前正式腿序为 A > C > E > D，一个组合计划只执行最高优先动作一次。
     open_action = _combined_open_action_for_current_mode(decisions)
 
     # 正常路径在09:20已启动D线程；这里是09:25~09:30整机重启、09:20任务
@@ -10326,7 +10326,7 @@ def _combined_open_action_for_current_mode(decisions) -> str:
     """返回当前模式唯一可执行的正式开仓动作，供09:20与09:30共同使用。
 
     决策表异常地同时出现多条ALLOW时仍只取腿序最前的一条，避免同一资金被
-    多个执行入口重复消费。当前固定按A>E>C；C与A共用
+    多个执行入口重复消费。当前固定按A>C>E；C与A共用
     ALLOW_ABC_BUY_PREVIEW动作和同一计划单执行通道。
     """
 
@@ -12697,20 +12697,20 @@ def _log_close_pipeline_candidate_summary(signal_date: str) -> None:
     try:
         summaries = {
             leg: _read_close_candidate_artifact(leg, signal_date)
-            for leg in ("D", "A", "E", "C")
+            for leg in ("A", "C", "E", "D")
         }
         labels = {
-            "D": "① D盘中",
-            "A": "② A主策略",
+            "A": "① A主策略",
+            "C": "② C强势龙头",
             "E": "③ E策略",
-            "C": "④ C垫底",
+            "D": "④ D盘中兜底",
         }
         lines = [
             "┃━━━━━━━━━━ 收盘流水线候选产物统计 ━━━━━━━━━━",
             f"┃ 信号日：{signal_date}",
-            "┃ 口径：只读取当日产物；不重算、不参与下单；执行层按A/E/C候选计划与D全日互斥",
+            "┃ 口径：只读取当日产物；不重算、不参与下单；执行层按A>C>E>D真实开仓日互斥",
         ]
-        for leg in ("D", "A", "E", "C"):
+        for leg in ("A", "C", "E", "D"):
             item = summaries[leg]
             count = item["candidate_count"]
             if not item["calculated"]:
@@ -13710,10 +13710,10 @@ def _local_position_blocks_open_plan_broadcast(
 
 
 def _log_final_decision_summary(signal_date: str, action_date_compact: str, buy_orders: Any) -> None:
-    """打印【最终结果】：先判A>E>C静态计划；三腿均无候选时才允许D盘中执行。"""
+    """打印【最终结果】：先判A>C>E静态计划；三腿均无候选时才允许D盘中执行。"""
     try:
         cfg = load_json_config(PROJECT_ROOT / "config" / "config.json")
-        mode_name = "D_A_E_C"
+        mode_name = "A_C_E_D"
         readable = f"{action_date_compact[:4]}-{action_date_compact[4:6]}-{action_date_compact[6:]}" \
             if len(action_date_compact) == 8 else action_date_compact
 
@@ -13746,10 +13746,8 @@ def _log_final_decision_summary(signal_date: str, action_date_compact: str, buy_
                 })
         e_sig = _load_e_signal_for_signal_date(signal_date)
         e_buy: dict[str, Any] | None = None
-        _has_a_plan = any(
-            str(r.get("strategy", "")).strip().upper() != "C" for r in abc_rows
-        )
-        if (not _has_a_plan and e_sig
+        _has_ac_plan = bool(abc_rows)
+        if (not _has_ac_plan and e_sig
                 and str(e_sig.get("planned_buy_date", "")) == action_date_compact
                 and bool(e_sig.get("allow_buy_reliable", False))):
             price = float(e_sig.get("limit_close", 0.0) or 0.0)
@@ -13762,15 +13760,15 @@ def _log_final_decision_summary(signal_date: str, action_date_compact: str, buy_
                 "exit_date": str(e_sig.get("planned_exit_date", "")),
                 "exit_rule": str(e_sig.get("planned_exit_rule", "T+2_close")),
             }
-        # 腿序 A > E > C：A 与 C 拆开，C 垫底。
+        # 腿序 A > C > E：A/C计划均先于E。
         _a_rows = [r for r in abc_rows if str(r.get("strategy", "")).strip().upper() != "C"]
         _c_rows = [r for r in abc_rows if str(r.get("strategy", "")).strip().upper() == "C"]
         if _a_rows:
             mode1_buys = _a_rows
-        elif e_buy:
-            mode1_buys = [e_buy]
         elif _c_rows:
             mode1_buys = _c_rows
+        elif e_buy:
+            mode1_buys = [e_buy]
         else:
             mode1_buys = []
 
@@ -13789,7 +13787,7 @@ def _log_final_decision_summary(signal_date: str, action_date_compact: str, buy_
             note = "有旧策略仓尚未实际清空，取消衔接开仓"
         else:
             final_buys = mode1_buys
-            note = "按腿序A>E>C取第一个收盘后候选；存在任一候选/计划时D全日关闭"
+            note = "按腿序A>C>E取第一个收盘后候选；存在任一候选/计划时D全日关闭"
 
         expired_buys = (
             list(final_buys)
@@ -13827,7 +13825,7 @@ def _log_final_decision_summary(signal_date: str, action_date_compact: str, buy_
                 "D今日不扫描也不开仓"
             )
         elif not final_buys:
-            out.append("开仓计划：❌ 无 —— A/E/C均无开仓计划")
+            out.append("开仓计划：❌ 无 —— A/C/E均无开仓计划")
         else:
             out.append(f"开仓计划：✅ 共 {len(final_buys)} 笔")
             for b in final_buys:
@@ -14183,7 +14181,7 @@ def _log_decision_chain_summary(signal_date: str) -> None:
 
         readonly_candidates: dict[str, dict[str, Any]] = {}
         readonly_reasons: dict[str, str] = {}
-        for leg in ("A", "E", "C"):
+        for leg in ("A", "C", "E"):
             if leg in candidates:
                 continue
             readonly_candidate, readonly_reason = (
@@ -14198,14 +14196,14 @@ def _log_decision_chain_summary(signal_date: str) -> None:
         broadcast_selected = next(
             (
                 broadcast_candidates[leg]
-                for leg in ("A", "E", "C")
+                for leg in ("A", "C", "E")
                 if leg in broadcast_candidates
             ),
             None,
         )
 
         selected = next(
-            (candidates[leg] for leg in ("A", "E", "C") if leg in candidates),
+            (candidates[leg] for leg in ("A", "C", "E") if leg in candidates),
             None,
         )
         positions = [
@@ -14240,7 +14238,7 @@ def _log_decision_chain_summary(signal_date: str) -> None:
             for position in positions
         )
         candidate_text: dict[str, str] = {}
-        for leg in ("A", "E", "C"):
+        for leg in ("A", "C", "E"):
             candidate = broadcast_candidates.get(leg)
             if candidate is None:
                 candidate_text[leg] = "不触发｜无候选"
@@ -14269,14 +14267,14 @@ def _log_decision_chain_summary(signal_date: str) -> None:
         lines = [
             "┃━━━━━━━━━━━━ 决策优先级流程图 ━━━━━━━━━━━━",
             f"┃ 信号日：{signal_date}；操作日：{action_date or '未知'}",
-            "┃ 当前互斥顺序：①持仓 > ②非D候选/计划(A>E>C) > ③D盘中",
+            "┃ 当前互斥顺序：①持仓 > ②非D候选/计划(A>C>E) > ③D盘中",
             "┃",
             "┃ 【0】券商仍有本系统策略仓？",
             f"┃   ├─ 是 → 不开新仓，确认实际清仓后再等待下一候选{path_tag if blocked else ''}",
             "┃   └─ 否",
             "┃        ↓",
-            "┃ 【1】今日存在A/E/C正式候选或开仓计划？",
-            "┃   ├─ 是 → 按A>E>C取首个计划执行；D全日不扫描、不记录、不下单",
+            "┃ 【1】今日存在A/C/E正式候选或开仓计划？",
+            "┃   ├─ 是 → 按A>C>E取首个计划执行；D全日不扫描、不记录、不下单",
             "┃   └─ 否",
             "┃        ↓",
             "┃ 【2】D从09:30开始盘中扫描/记录，满足正式条件才允许开仓",
@@ -14285,10 +14283,10 @@ def _log_decision_chain_summary(signal_date: str) -> None:
             bottom,
             "┃",
             "┃━━━━━━━━━━━━━━ 开仓决策链 ━━━━━━━━━━━━━━",
-            f"┃ ① D盘中：{'已有D策略仓，串行资金门禁生效' if d_holding else '不触发｜无候选'}",
-            f"┃ ② A主策略：{candidate_text['A']}",
+            f"┃ ① A主策略：{candidate_text['A']}",
+            f"┃ ② C强势龙头：{candidate_text['C']}",
             f"┃ ③ E策略：{candidate_text['E']}",
-            f"┃ ④ C垫底：{candidate_text['C']}",
+            f"┃ ④ D盘中兜底：{'已有D策略仓，串行资金门禁生效' if d_holding else '不触发｜无候选'}",
             "┃ 账户空仓时首选："
             + (
                 _format_strategy_candidate(
@@ -14320,7 +14318,7 @@ def _log_decision_chain_summary(signal_date: str) -> None:
         elif final_buy:
             lines.append(f"┃ ★ 开仓计划：{_format_live_plan_line(final_buy, live_sizing)}")
         else:
-            lines.append(f"┃ ★ {day_label}A/E/C均无开仓计划")
+            lines.append(f"┃ ★ {day_label}A/C/E均无开仓计划")
         lines.append(bottom)
         logger().info("\n".join(lines))
 
@@ -14485,7 +14483,7 @@ def push_open_plan_notification(occasion: str) -> None:
             body = _format_live_plan_line(fb, plan.get("live_sizing")) + "。"
         else:
             title = f"📋 {label}无新开仓计划"
-            body = f"{label}所有在役策略(A/E/C)均无符合条件标的,不开新仓。"
+            body = f"{label}所有收盘计划策略(A/C/E)均无符合条件标的,不开新仓。"
         if hold:
             body += f" ⚠{hold}"
         sent = _notify("buy_result", title, body, level="timeSensitive")
@@ -15024,7 +15022,7 @@ def _log_d_status_for_signal(signal_date: str) -> None:
             logger().info(
                 "  D策略后续过滤链：组合状态机允许 -> 09:30起完整实时路径 -> 首板且昨日未涨停 -> 当前封涨停 -> 炸板2~3次(multi_open) -> 首封不早于10:00 -> 当前封板88~132只(strong代理，不含very_strong) -> 14:00后真实回封 -> 成交概率>=80%且可靠 -> 按实时封单金额/流通市值(fd_amount_to_circ_mv)排序 -> LiveOrderGateway二次风控。"
             )
-            logger().info("  D策略明日判断：若09:20账户空仓且A/E/C均无正式候选，才允许启动D盘中监控；能否下单取决于盘中实时过滤。")
+            logger().info("  D策略明日判断：若09:20账户空仓且A/C/E均无正式候选，才允许启动D盘中监控；能否下单取决于盘中实时过滤。")
         else:
             logger().info("  D策略停止点：组合状态机或实时扫描。当前处于 D 可启动/监控时段，实际是否启动以组合状态机决策明细为准；若已启动，还要看盘中实时基础过滤。")
     except Exception as exc:

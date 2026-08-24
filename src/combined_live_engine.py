@@ -1,18 +1,19 @@
-"""组合状态机：把 D、A、E、C 四条在役腿合成每日唯一的开仓/平仓计划。
+"""组合状态机：把 A、C、E、D 四条在役腿合成每日唯一的开仓/平仓计划。
 
 腿序与接力口径（2026-08-07 定稿）
 ================================
 
-**当前腿序：D > A > E > C**
+**当前可执行腿序：A > C > E > D**
 
-D 排第一不是优化结果，是时序决定的——D 在信号日**盘中**(14:00~14:56)买入，
-而 A/C/E 的候选要到当天**收盘后**才算得出来。让 D "看到别的腿有票就不做"
-需要预知几小时后的结果，属于前视，实盘做不到。
+A/C/E 都是上一交易日收盘后已经确定、今天开盘执行的静态计划；组合状态机先按
+``A > C > E`` 选择唯一计划。只有账户空仓且三条静态腿今天都没有可执行计划时，
+D 才从09:30启动完整盘中路径，并在自身规则允许的时段开仓。不能把今天收盘后
+才生成的下一交易日候选提前用于今天的D门禁。
 
-其余腿序依据（481信号日同口径回放，A/C 已用逐日独立候选、衔接日D已剔除）：
-A 与 C 的条件互斥
-（A 要 market_chain_count_bucket=8_15、C 要 15_30），同一天不可能都有票，
-所以 C 排在 A 之后的任何位置结果都相同。
+2026-08-24用户明确接受真实开仓日严格回放中复利由 ``A>E>C>D`` 的
+1164.500295倍下降至 ``A>C>E>D`` 的1023.791244倍，决定把C提升到E之前。
+A仍先于C，保留既有“A无正式候选才由C补位”的生产依赖，避免为没有历史增益的
+C>A重构扩大执行风险。
 
 **D 接力：全关**
 
@@ -37,13 +38,13 @@ A 与 C 的条件互斥
     D   monitor_strategy_d_intraday.py 盘中自己判；本模块只负责在有 D 持仓时
         阻断其余各腿（build_mode1_plan 的 open_d_positions 分支）
     A   build_mode1_plan 空仓分支 ①，取 abc_orders 里 strategy_leg=A 的行
-    E   build_mode1_plan 空仓分支 ②
-    C   build_mode1_plan 空仓分支 ③，取 abc_orders 里 strategy_leg=C 的行
-        （2026-08-07 之前 A 和 C 是同一份 abc_orders 一起判的，等于 C 也享受了
-         A 的最高优先级，与认证脚本 pick_by_priority 不一致，本次拆开收口）
+    C   build_mode1_plan 空仓分支 ②，A无正式计划时取strategy_leg=C的行
+    E   build_mode1_plan 空仓分支 ③，A/C均无正式计划时读取昨日E信号
+    D   A/C/E均无可执行计划时才输出ALLOW_D_INTRADAY_MONITOR
 
-实盘身份对照见certify_current_executable_portfolio.pick_by_priority；正式收益口径
-只认certify_strict_asof_portfolio。改任何一侧都要同时重跑身份核对和严格认证。
+生产顺序由本状态机与trading_daemon共同执行；正式收益口径只认
+certify_strict_asof_portfolio中的真实开仓日回放。改任何一侧都要同时更新运行时
+回归测试和严格认证，旧certify_current_executable_portfolio只保留历史身份审计。
 当前严格结果仍是开发段；新组合未重新冻结发布前，
 新BUY必须由LiveOrderGateway fail-closed，已有持仓SELL不得受影响。
 
@@ -97,11 +98,11 @@ class CombinedLiveDecision:
 
 
 class CombinedLiveEngine:
-    """A>E>C静态计划与D盘中策略全日互斥的生产状态机（B、M、N均已移除）。
+    """A>C>E静态计划与D盘中策略全日互斥的生产状态机（B、M、N均已移除）。
 
     这个类只负责组合层面的顺序和阻断，不直接提交真实委托。
     当前总策略开关在 config/config.json 的 active_strategy_profile.mode：
-      1 = D_A_E_C（兼容配置名；执行语义为持仓 > A/E/C候选计划 > D）
+      1 = A_C_E_D（执行语义为持仓 > A>C>E候选计划 > D）
 
     当前只保留这一种模式，所有计划单仍经过 LiveOrderGateway 风控。
     """
@@ -604,12 +605,10 @@ class CombinedLiveEngine:
             ))
 
         else:
-            # ── 账户无旧策略仓：按腿序 A > E > C 决定今日开仓 ─────────────
-            # 完整腿序为 D > A > E > C：
-            #   · D 由时序自然排在最前——它在 signal 日盘中 14:00 后就买了，
-            #     其余各腿要等收盘出信号、T+1 开盘才买，所以"让 D 往后排"必须
-            #     用到收盘后才知道的信息，是前视，不可实现；
-            #   · 本函数负责D之后的三档：A > E > C。
+            # ── 账户无旧策略仓：按可执行腿序 A > C > E > D 决定今日开仓 ───
+            # A/C/E均是上一交易日收盘后生成、今天执行的计划；三者都没有时，
+            # 才允许D从09:30启动今天的盘中路径。今天收盘后生成的候选属于
+            # 下一交易日计划，不能反向影响今天D是否启动。
             # D 接力已全关：D 未确认卖出前根本不会走到本分支（上面的持仓分支
             # 会一路阻断新开仓），所以这里不再有"卖D一片→买候选一片"的路径。
             abc_decisions = self.build_abc_buy_decisions(abc_orders, str(abc_path or ""))
@@ -622,13 +621,10 @@ class CombinedLiveEngine:
             else:
                 abc_orders_buy = abc_orders
 
-            # ── A 与 C 拆开：C 垫底，排到 E 之后 ────────────────────────────
-            # 之前 A 和 C 是同一个 abc_orders 一起判断的，等于 C 也享受了 A 的
-            # 最高优先级，与认证脚本 pick_by_priority 的 A>E>C 不一致——
-            # 这是腿序改造后实盘与回测之间最后一处口径差，本次收口。
-            # C新增强势龙头分支后不再假设A/C条件互斥。收盘流水线允许两腿
-            # 独立形成候选，并在计划阶段按A>E>C裁决；即使旧操作台文件意外
-            # 同时带有A/C，本段也只会先执行A档，不会让两腿重复占用资金。
+            # ── A 与 C 拆开：保留A→C补位依赖，并把C提升到E之前 ───────────
+            # 收盘流水线分别落地A/C候选用于审计，但正式计划仍保留A优先、
+            # A无候选才由C补位。即使兼容文件意外同时带有A/C，本段也只会
+            # 选择一条腿，不会重复占用资金。
             # 未知腿（含历史 B）归入 A 档，保持改动前的行为不变。
             c_decisions = [
                 d for d in abc_decisions if str(d.strategy_leg).strip().upper() == "C"
@@ -657,7 +653,13 @@ class CombinedLiveEngine:
                 decisions.extend(a_decisions)
                 planned_orders.extend(a_orders_buy.to_dict("records"))
 
-            # ② E
+            # ② C（A无正式计划时补位）
+            if opened_leg is None and c_decisions:
+                opened_leg = "C"
+                decisions.extend(c_decisions)
+                planned_orders.extend(c_orders_buy.to_dict("records"))
+
+            # ③ E（A/C均无正式计划时）
             if opened_leg is None:
                 yesterday_signal = self.load_yesterday_e_signal(today)
                 if yesterday_signal:
@@ -693,17 +695,11 @@ class CombinedLiveEngine:
                     # 统一成 None，避免"有 order 但股数为0"的半成品流到摘要里
                     e_order = None
 
-            # ③ C（垫底）
-            if opened_leg is None and c_decisions:
-                opened_leg = "C"
-                decisions.extend(c_decisions)
-                planned_orders.extend(c_orders_buy.to_dict("records"))
-
             # ── 统一写各腿的结论/阻断决策 ────────────────────────────────────
             if opened_leg == "E":
                 decisions.append(CombinedLiveDecision(
                     action="NO_ABC_BUY", strategy_leg="A+C",
-                    reason="今日A无买入计划，E代替开仓；C排在E之后，本日不再开仓。",
+                    reason="今日A/C均无买入计划，E补位开仓。",
                     source=str(abc_path or ""),
                 ))
             elif opened_leg is None:
@@ -716,7 +712,7 @@ class CombinedLiveEngine:
                 decisions.append(CombinedLiveDecision(
                     action="ALLOW_D_INTRADAY_MONITOR", strategy_leg="D",
                     reason=(
-                        "无持仓、无A/E/C正式候选且今日无A/E/C开仓计划，允许启动D盘中监控；"
+                        "无持仓、无A/C/E正式候选且今日无A/C/E开仓计划，允许启动D盘中监控；"
                         "D本身仍需实时行情、成交概率和风控校验。"
                     ),
                     source="combined_state_machine",
@@ -751,10 +747,8 @@ class CombinedLiveEngine:
             e_status_reason = f"账户有 {len(open_positions)} 个未平仓头寸，E 不触发。"
         elif has_abc_buy:
             e_status_action = "BLOCK_E"
-            # C 排在 E 之后：走到 C 开仓说明 E 这一档已经先判过且没信号，
-            # 不能再播报成"被A/C抢走资金"。
             e_status_reason = (
-                "今日 C 按腿序垫底开仓（E 已先判过且无可执行信号）。"
+                "今日 C 已按A>C>E腿序生成开仓计划，E不触发（资金冲突）。"
                 if opened_leg == "C"
                 else "今日 A 已生成买入计划，E 不触发（资金冲突）。"
             )
@@ -914,11 +908,11 @@ class CombinedLiveEngine:
     @staticmethod
     def write_markdown(path: Path, state: pd.DataFrame, decisions: pd.DataFrame, planned_orders: pd.DataFrame) -> None:
         active_mode = "1"
-        active_name = "D_A_E_C"
+        active_name = "A_C_E_D"
         if not state.empty:
             active_mode = str(state.iloc[0].get("active_strategy_mode", "1"))
-            active_name = str(state.iloc[0].get("active_strategy_name", "D_A_E_C"))
-        title = "A/E/C候选计划与D盘中全日互斥组合实盘计划"
+            active_name = str(state.iloc[0].get("active_strategy_name", "A_C_E_D"))
+        title = "A/C/E候选计划与D盘中全日互斥组合实盘计划"
         status_leg = "E"
         status_title = "策略 E 状态"
         status_rows = (
@@ -951,13 +945,13 @@ class CombinedLiveEngine:
 {strategy_status}
 ## 执行原则
 
-- 若存在 D 待卖持仓，先卖 D，未确认卖出前阻断 A/C 买入。
+- 若存在 D 待卖持仓，先卖 D，未确认卖出前阻断 A/C/E 买入。
 - 若存在 A/C 旧持仓或仅人工退出的历史B仓，阻断 D 盘中买入，避免资金冲突。
-- 若今日已有 A/C 买入计划，默认不启动 D 盘中买入监控。
-- 若无持仓且 A/C、E 今日均无买入计划，才允许 D 盘中监控。
+- 若今日已有 A/C/E 买入计划，不启动 D 盘中买入监控。
+- 若无持仓且 A/C/E 今日均无买入计划，才允许 D 盘中监控。
 - 普通空仓日目标仓位为总资产82.5%，任何单票仍受总资产85%硬顶；旧策略仓未实际清空前取消衔接开仓。
 - E 条件：40条R1规则的当日第一名并集 → neutral + 非ST + 成交可靠 → 流通市值最小1只；T+1按82.5%目标仓开仓，按命中规则在T+2或T+3到期日卖出。
-- 腿序：D > A > E > C。D的位置由时序锁死（盘中买入，早于收盘后各腿）。
+- 可执行腿序：A > C > E > D。A/C/E读取上一交易日收盘计划，三腿均无计划时D才启动盘中路径。
 - D 接力已全关：D 一律走 T+2 收盘平仓，平仓确认后的下一个信号日才轮到别的腿，不再有 09:23 卖一片买一片的成对POV。
 - 真实下单仍必须经过 LiveOrderGateway 的交易时间、涨跌停、持仓、资金和重复委托校验。
 """

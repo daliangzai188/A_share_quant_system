@@ -17,7 +17,7 @@ import pandas as pd
 from src.strategy_identity import normalize_strategy_frame, normalize_strategy_leg
 
 
-LEGS = ("D", "A", "E", "C")
+LEGS = ("A", "C", "E", "D")
 SCHEMA_VERSION = 1
 METHODOLOGY_VERSION = "released_shadow_t1_open_fixed_exit_v1"
 LEDGER_COLUMNS = [
@@ -305,6 +305,7 @@ def collect_signal_date(root: Path, release: dict[str, Any], signal_date: str) -
         _collect_standard_leg(root, release, signal_date, "E", now, open_dates),
         _collect_ac(root, release, signal_date, "C", now, open_dates),
     ]
+    rows.sort(key=lambda item: int(item["priority_rank"]))
     eligible = [row for row in rows if row["candidate_status"] == "CANDIDATE"]
     if eligible:
         min(eligible, key=lambda item: int(item["priority_rank"]))["account_empty_winner"] = True
