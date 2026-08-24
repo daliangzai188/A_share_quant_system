@@ -1,0 +1,203 @@
+{
+  "schema_version": 1,
+  "protocol": "STRICT_DISCOVERY",
+  "window": {
+    "start": "20240630",
+    "end": "20260630"
+  },
+  "search_space": {
+    "factor_column_count": 16,
+    "factor_set_count": 696,
+    "observed_factor_value_group_count": 51110,
+    "support_passed_profile_count": 34157,
+    "evaluated_profile_count": 34157,
+    "max_factor_count": 3,
+    "threshold_qualified_profile_count": 337,
+    "qualified_unique_selection_count": 326,
+    "effective_or_profile_count": 276,
+    "portfolio_evaluated_profile_count": 337,
+    "dual_gate_passed_profile_count": 1,
+    "factor_columns": [
+      "reseal_time_bucket",
+      "first_seal_time_bucket",
+      "open_count_bucket",
+      "reseal_speed_bucket",
+      "first_to_reseal_bucket",
+      "previous_seal_hold_bucket",
+      "break_close_depth_bucket",
+      "open_gap_bucket",
+      "pre_signal_low_bucket",
+      "cumulative_amount_bucket",
+      "market_touch_count_bucket",
+      "market_active_count_bucket",
+      "market_seal_rate_bucket",
+      "market_break_rate_bucket",
+      "segment_bucket",
+      "segment_seal_rate_bucket"
+    ]
+  },
+  "selection_rule": "BEST_SINGLE_PROFILE_MAX_ACDE_SUBJECT_TO_D_AND_ACDE_COMPOUND_IMPROVEMENT",
+  "incumbent": {
+    "release_id": "D_LEGACY_FORMAL_2026H1",
+    "strategy_mode": "LEGACY_FORMAL_D",
+    "d_metrics": {
+      "trade_count": 39,
+      "win_rate": 0.5384615384615384,
+      "avg_account_return": 0.021664985780859743,
+      "median_account_return": 0.010782646179660961,
+      "equity_multiple": 2.0261239235922566,
+      "max_drawdown": -0.31648360601037373,
+      "max_profit": 0.4527951871228668,
+      "max_loss": -0.07417800648559235,
+      "profit_loss_ratio": 1.9354592229027174,
+      "max_consecutive_losses": 4,
+      "win_rate_wilson_95_lower": 0.3856944827051576,
+      "win_rate_wilson_95_upper": 0.6843311439327215,
+      "avg_return_bootstrap_95_lower": -0.0028667490643349606,
+      "avg_return_bootstrap_95_upper": 0.05231501152171357
+    },
+    "acde_metrics": {
+      "trade_count": 132,
+      "win_rate": 0.6818181818181818,
+      "avg_account_return": 0.049119684470091414,
+      "median_account_return": 0.0230432370814819,
+      "equity_multiple": 327.72671897548867,
+      "max_drawdown": -0.22970534744710858,
+      "max_profit": 0.4892913885103991,
+      "max_loss": -0.13823939725321072,
+      "profit_loss_ratio": 2.3906519156419375,
+      "max_consecutive_losses": 4,
+      "leg_counts": {
+        "A": 44,
+        "C": 17,
+        "D": 22,
+        "E": 49
+      }
+    }
+  },
+  "best_dual_gate_profile": {
+    "profile_id": "DIF_6501c8c095f9",
+    "factor_count": 3,
+    "conditions": {
+      "reseal_time_bucket": "0930_1000",
+      "break_close_depth_bucket": "LT0_2PCT",
+      "segment_bucket": "GROWTH_BOARD"
+    },
+    "readable_conditions": [
+      "本次回封发生时间：09:30～10:00（reseal_time_bucket=0930_1000）",
+      "最后炸板时相对涨停价的回落深度：小于0.2%（break_close_depth_bucket=LT0_2PCT）",
+      "股票所属交易板块：创业板或科创板（segment_bucket=GROWTH_BOARD）"
+    ],
+    "description": "reseal_time_bucket=0930_1000 AND break_close_depth_bucket=LT0_2PCT AND segment_bucket=GROWTH_BOARD",
+    "d_metrics": {
+      "trade_count": 33,
+      "win_rate": 0.6363636363636364,
+      "avg_account_return": 0.03438417896572329,
+      "median_account_return": 0.0189352946274622,
+      "equity_multiple": 2.8112400677086447,
+      "max_drawdown": -0.22308861429444682,
+      "max_profit": 0.2191184735692947,
+      "max_loss": -0.0699162117478346,
+      "profit_loss_ratio": 1.9310029782969222,
+      "max_consecutive_losses": 3,
+      "win_rate_wilson_95_lower": 0.466161783022664,
+      "win_rate_wilson_95_upper": 0.7781282176475764,
+      "avg_return_bootstrap_95_lower": 0.009734985066893041,
+      "avg_return_bootstrap_95_upper": 0.059999900675913376,
+      "first_12m_trade_count": 10,
+      "first_12m_multiple": 1.0001720947934947,
+      "second_12m_trade_count": 23,
+      "second_12m_multiple": 2.8107563511748253,
+      "candidate_day_count": 50,
+      "price_confirmed_day_count": 42,
+      "queue_unknown_day_count": 8,
+      "unresolved_exit_count": 0
+    },
+    "acde_metrics": {
+      "trade_count": 129,
+      "win_rate": 0.6821705426356589,
+      "avg_account_return": 0.05338158777858806,
+      "median_account_return": 0.03734707754276177,
+      "equity_multiple": 486.3661434308374,
+      "max_drawdown": -0.22970534744710858,
+      "max_profit": 0.4892913885103991,
+      "max_loss": -0.14417251000998996,
+      "profit_loss_ratio": 2.3663948756157485,
+      "max_consecutive_losses": 4,
+      "leg_counts": {
+        "A": 47,
+        "C": 21,
+        "D": 17,
+        "E": 44
+      }
+    },
+    "d_compound_improved": true,
+    "acde_compound_improved": true,
+    "dual_compound_gate_passed": true
+  },
+  "best_observed_profile": {
+    "profile_id": "DIF_6501c8c095f9",
+    "factor_count": 3,
+    "conditions": {
+      "reseal_time_bucket": "0930_1000",
+      "break_close_depth_bucket": "LT0_2PCT",
+      "segment_bucket": "GROWTH_BOARD"
+    },
+    "readable_conditions": [
+      "本次回封发生时间：09:30～10:00（reseal_time_bucket=0930_1000）",
+      "最后炸板时相对涨停价的回落深度：小于0.2%（break_close_depth_bucket=LT0_2PCT）",
+      "股票所属交易板块：创业板或科创板（segment_bucket=GROWTH_BOARD）"
+    ],
+    "description": "reseal_time_bucket=0930_1000 AND break_close_depth_bucket=LT0_2PCT AND segment_bucket=GROWTH_BOARD",
+    "d_metrics": {
+      "trade_count": 33,
+      "win_rate": 0.6363636363636364,
+      "avg_account_return": 0.03438417896572329,
+      "median_account_return": 0.0189352946274622,
+      "equity_multiple": 2.8112400677086447,
+      "max_drawdown": -0.22308861429444682,
+      "max_profit": 0.2191184735692947,
+      "max_loss": -0.0699162117478346,
+      "profit_loss_ratio": 1.9310029782969222,
+      "max_consecutive_losses": 3,
+      "win_rate_wilson_95_lower": 0.466161783022664,
+      "win_rate_wilson_95_upper": 0.7781282176475764,
+      "avg_return_bootstrap_95_lower": 0.009734985066893041,
+      "avg_return_bootstrap_95_upper": 0.059999900675913376,
+      "first_12m_trade_count": 10,
+      "first_12m_multiple": 1.0001720947934947,
+      "second_12m_trade_count": 23,
+      "second_12m_multiple": 2.8107563511748253,
+      "candidate_day_count": 50,
+      "price_confirmed_day_count": 42,
+      "queue_unknown_day_count": 8,
+      "unresolved_exit_count": 0
+    },
+    "acde_metrics": {
+      "trade_count": 129,
+      "win_rate": 0.6821705426356589,
+      "avg_account_return": 0.05338158777858806,
+      "median_account_return": 0.03734707754276177,
+      "equity_multiple": 486.3661434308374,
+      "max_drawdown": -0.22970534744710858,
+      "max_profit": 0.4892913885103991,
+      "max_loss": -0.14417251000998996,
+      "profit_loss_ratio": 2.3663948756157485,
+      "max_consecutive_losses": 4,
+      "leg_counts": {
+        "A": 47,
+        "C": 21,
+        "D": 17,
+        "E": 44
+      }
+    },
+    "d_compound_improved": true,
+    "acde_compound_improved": true,
+    "dual_compound_gate_passed": true
+  },
+  "candidate_release_id": "D_FACTOR_BEST_20260630_b74c0c03",
+  "candidate_release_eligible": true,
+  "apply_requested": false,
+  "formal_strategy_modified": false,
+  "decision": "BEST_SINGLE_PROFILE_PASSED_WAITING_HUMAN_DECISION"
+}

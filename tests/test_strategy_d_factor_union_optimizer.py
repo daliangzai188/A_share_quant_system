@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as dt
 import json
 from pathlib import Path
 
@@ -7,7 +8,13 @@ import numpy as np
 import pandas as pd
 
 from scripts.monitor_strategy_d_intraday import StockState, StrategyDMonitor
-from scripts.optimize_strategy_d_factor_union import minimize_profile_union
+from scripts.optimize_strategy_d_factor_union import (
+    minimize_profile_union,
+    latest_completed_update_node,
+    rank_profile_comparisons,
+    render_best_result_text,
+    select_best_dual_gate_profile,
+)
 from src.strategy_d_factor_rules import (
     FACTOR_SCHEMA_ID,
     FACTOR_UNION_MODE,
@@ -226,3 +233,119 @@ def test_factor_union_consumes_earliest_signal_without_later_substitution(
     assert monitor.factor_signal_consumed is True
     assert monitor.factor_signal_locked_ts_code == "000003.SZ"
     assert monitor.order_placed is False
+
+
+def test_best_profile_requires_dual_gate_then_maximizes_acde() -> None:
+    comparisons = pd.DataFrame(
+        [
+            {
+                "profile_id": "D_ONLY_TOP",
+                "factor_count": 2,
+                "d_equity_multiple": 7.0,
+                "acde_equity_multiple": 40.0,
+                "acde_max_drawdown": -0.40,
+                "dual_compound_gate_passed": False,
+            },
+            {
+                "profile_id": "DUAL_LOWER",
+                "factor_count": 2,
+                "d_equity_multiple": 3.0,
+                "acde_equity_multiple": 400.0,
+                "acde_max_drawdown": -0.25,
+                "dual_compound_gate_passed": True,
+            },
+            {
+                "profile_id": "DUAL_BEST",
+                "factor_count": 3,
+                "d_equity_multiple": 2.8,
+                "acde_equity_multiple": 486.0,
+                "acde_max_drawdown": -0.23,
+                "dual_compound_gate_passed": True,
+            },
+        ]
+    )
+
+    ranked = rank_profile_comparisons(comparisons)
+    best = select_best_dual_gate_profile(comparisons)
+
+    assert ranked.iloc[0]["profile_id"] == "DUAL_BEST"
+    assert best is not None
+    assert best["profile_id"] == "DUAL_BEST"
+
+
+def test_direct_run_uses_latest_completed_semiannual_node() -> None:
+    assert latest_completed_update_node(dt.date(2026, 2, 1)) == "20251231"
+    assert latest_completed_update_node(dt.date(2026, 6, 30)) == "20260630"
+    assert latest_completed_update_node(dt.date(2026, 8, 24)) == "20260630"
+    assert latest_completed_update_node(dt.date(2026, 12, 31)) == "20261231"
+
+
+def test_complete_text_report_contains_conditions_baselines_and_decision() -> None:
+    def metrics(multiple: float) -> dict:
+        return {
+            "trade_count": 33,
+            "win_rate": 0.63,
+            "avg_account_return": 0.034,
+            "median_account_return": 0.019,
+            "equity_multiple": multiple,
+            "max_drawdown": -0.22,
+            "max_profit": 0.21,
+            "max_loss": -0.07,
+            "profit_loss_ratio": 1.93,
+            "max_consecutive_losses": 3,
+        }
+
+    d_metrics = {
+        **metrics(2.8112400677),
+        "first_12m_trade_count": 10,
+        "first_12m_multiple": 1.0001720948,
+        "second_12m_trade_count": 23,
+        "second_12m_multiple": 2.8107563512,
+        "candidate_day_count": 50,
+        "price_confirmed_day_count": 42,
+        "queue_unknown_day_count": 8,
+        "unresolved_exit_count": 0,
+    }
+    profile = {
+        "profile_id": "DIF_6501c8c095f9",
+        "conditions": {
+            "reseal_time_bucket": "0930_1000",
+            "break_close_depth_bucket": "LT0_2PCT",
+            "segment_bucket": "GROWTH_BOARD",
+        },
+        "readable_conditions": [
+            "本次回封发生时间：09:30～10:00",
+            "最后炸板时相对涨停价的回落深度：小于0.2%",
+            "股票所属交易板块：创业板或科创板",
+        ],
+        "d_metrics": d_metrics,
+        "acde_metrics": {**metrics(486.3661434308), "leg_counts": {"D": 17}},
+        "d_compound_improved": True,
+        "acde_compound_improved": True,
+        "dual_compound_gate_passed": True,
+    }
+    payload = {
+        "window": {"start": "20240630", "end": "20260630"},
+        "search_space": {
+            "factor_column_count": 16,
+            "observed_factor_value_group_count": 51110,
+            "evaluated_profile_count": 34157,
+            "threshold_qualified_profile_count": 337,
+            "portfolio_evaluated_profile_count": 337,
+            "dual_gate_passed_profile_count": 1,
+        },
+        "incumbent": {
+            "d_metrics": metrics(2.0261239236),
+            "acde_metrics": {**metrics(327.7267189755), "leg_counts": {"D": 22}},
+        },
+        "best_dual_gate_profile": profile,
+        "best_observed_profile": profile,
+        "formal_strategy_modified": False,
+    }
+
+    text = render_best_result_text(payload)
+
+    assert "DIF_6501c8c095f9" in text
+    assert "486.3661434308倍" in text
+    assert "候选具备替换资格：是" in text
+    assert "本次是否已经修改正式D：否" in text

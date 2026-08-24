@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
-"""半年重算D回封板因子组合，并把全部合格条件按OR并集守擂。
+"""半年重算D回封板因子组合，并输出可供人工决策的完整最佳结果。
 
-与只取单一Top1规则不同，本脚本先把信号时点字段转换成固定因子值，再枚举一至
-三个不同因子的实际取值组合。每条条件分支必须同时满足：
+本脚本先把信号时点字段转换成固定因子值，再枚举一至三个不同因子的实际取值
+组合。每条条件分支必须同时满足：
 
 * 独立单账户执行至少配置笔数；
 * 平均每笔账户收益严格大于2%；
 * 胜率严格大于55%；
 * 没有无法解析的退出。
 
-所有合格分支先按实际逐日选择序列去重，再取OR并集形成候选D。只有候选D复利和
-D>A>E>C总复利都高于当前正式版本时，候选才具备替换资格。默认只生成报告；显式
-传入``--apply``才会原子替换D因子发布文件。
+所有合格分支都会逐个替换当前D，并重新执行D>A>E>C单账户组合回放。脚本只在
+D独立复利和ACDE总复利都提高的条件中，选择ACDE复利最高的单一条件作为最佳
+候选。默认只生成完整TXT/JSON/CSV报告；显式传入``--apply``才会原子替换D因子
+发布文件。全部合格条件的OR并集仍保留为诊断对照，但不再作为正式候选。
 """
 
 from __future__ import annotations
@@ -51,6 +52,7 @@ from scripts.research_strategy_d_reseal_combinations import (  # noqa: E402
 )
 from src.strategy_d_factor_rules import (  # noqa: E402
     FACTOR_COLUMNS,
+    FACTOR_DEFINITIONS,
     FACTOR_SCHEMA_ID,
     FACTOR_UNION_MODE,
     LEGACY_MODE,
@@ -72,6 +74,73 @@ CURRENT_ACDE_MULTIPLE = 327.72671897548867
 CURRENT_D_TRADES = 39
 CURRENT_ACDE_TRADES = 132
 TOLERANCE = 1e-12
+
+BRANCH_METRIC_KEYS = (
+    "trade_count", "win_rate", "avg_account_return", "median_account_return",
+    "equity_multiple", "max_drawdown", "max_profit", "max_loss",
+    "profit_loss_ratio", "max_consecutive_losses", "first_12m_trade_count",
+    "first_12m_multiple", "second_12m_trade_count", "second_12m_multiple",
+)
+BRANCH_DIAGNOSTIC_KEYS = (
+    "candidate_day_count", "price_confirmed_day_count", "queue_unknown_day_count",
+    "unresolved_exit_count",
+)
+
+FACTOR_LABELS = {
+    definition.name: definition.description for definition in FACTOR_DEFINITIONS
+}
+FACTOR_VALUE_LABELS = {
+    "0930_1000": "09:30～10:00",
+    "1001_1030": "10:01～10:30",
+    "1031_1130": "10:31～11:30",
+    "1300_1359": "13:00～13:59",
+    "1400_1429": "14:00～14:29",
+    "1430_1454": "14:30～14:54",
+    "LE1": "1分钟以内",
+    "2_5": "2～5分钟",
+    "6_10": "6～10分钟",
+    "11_20": "11～20分钟",
+    "GE21": "21分钟以上",
+    "LE15": "15分钟以内",
+    "16_30": "16～30分钟",
+    "31_60": "31～60分钟",
+    "61_120": "61～120分钟",
+    "GE121": "121分钟以上",
+    "GE11": "11分钟以上",
+    "LT0_2PCT": "小于0.2%",
+    "0_2_0_5PCT": "0.2%～0.5%",
+    "0_5_1PCT": "0.5%～1%",
+    "1_2PCT": "1%～2%",
+    "GE2PCT": "2%以上",
+    "LT0": "小于0",
+    "0_3PCT": "0～3%",
+    "3_7PCT": "3%～7%",
+    "GE7PCT": "7%以上",
+    "LT0_5": "小于前一日0.5倍",
+    "0_5_1": "前一日0.5～1倍",
+    "1_1_5": "前一日1～1.5倍",
+    "GE1_5": "前一日1.5倍以上",
+    "LT40": "40以下",
+    "40_70": "40～70",
+    "71_100": "71～100",
+    "101_150": "101～150",
+    "GE151": "151以上",
+    "LT20": "20以下",
+    "20_40": "20～40",
+    "41_70": "41～70",
+    "GE101": "101以上",
+    "LT40PCT": "40%以下",
+    "40_60PCT": "40%～60%",
+    "60_80PCT": "60%～80%",
+    "GE80PCT": "80%以上",
+    "LT25PCT": "25%以下",
+    "25_50PCT": "25%～50%",
+    "50_75PCT": "50%～75%",
+    "GE75PCT": "75%以上",
+    "MAIN_BOARD": "沪深主板",
+    "GROWTH_BOARD": "创业板或科创板",
+    "BJ": "北交所",
+}
 
 
 def date_text(series: pd.Series) -> pd.Series:
@@ -113,6 +182,21 @@ def natural_window_start(end: str, years: int) -> str:
     return start.strftime("%Y%m%d")
 
 
+def latest_completed_update_node(today: dt.date | None = None) -> str:
+    """返回不晚于运行日的最近一个6月30日或12月31日更新节点。"""
+
+    value = today or dt.date.today()
+    june = value.replace(month=6, day=30)
+    december = value.replace(month=12, day=31)
+    if value >= december:
+        node = december
+    elif value >= june:
+        node = june
+    else:
+        node = value.replace(year=value.year - 1, month=12, day=31)
+    return node.strftime("%Y%m%d")
+
+
 def next_calendar_day(value: str) -> str:
     parsed = dt.datetime.strptime(str(value), "%Y%m%d").date()
     return (parsed + dt.timedelta(days=1)).strftime("%Y%m%d")
@@ -135,6 +219,8 @@ def load_optimizer_config(path: Path) -> dict[str, Any]:
         raise ValueError("D因子优化配置schema_version不支持")
     if str(payload.get("factor_schema_id", "")) != FACTOR_SCHEMA_ID:
         raise ValueError("D因子优化配置factor_schema_id不匹配")
+    if not str(payload.get("candidate_selection_policy", "")).strip():
+        raise ValueError("D因子优化配置缺少candidate_selection_policy")
     return payload
 
 
@@ -482,6 +568,261 @@ def replay_comparison(
     }
 
 
+def evaluate_profiles_in_portfolio(
+    qualified: pd.DataFrame,
+    factorized_events: pd.DataFrame,
+    conditions_by_id: Mapping[str, Mapping[str, str]],
+    other_legs: dict[str, pd.DataFrame],
+    incumbent_d: Mapping[str, Any],
+    incumbent_acde: Mapping[str, Any],
+    start: str,
+    end: str,
+) -> pd.DataFrame:
+    """把每条达标分支单独替换D，并执行完整ACDE账户回放。"""
+
+    if qualified.empty:
+        return pd.DataFrame()
+    rows: list[dict[str, Any]] = []
+    total = len(qualified)
+    with strict_window(start, end):
+        for position, (_, row) in enumerate(qualified.iterrows(), 1):
+            profile_id = str(row["profile_id"])
+            conditions = conditions_by_id[profile_id]
+            mask = profile_mask(factorized_events, conditions).to_numpy(dtype=bool)
+            picks = daily_union_picks(factorized_events, mask)
+            outcomes = outcome_frame_from_picks(picks)
+            _, acde_metrics = combo_replay_fast(outcomes, other_legs)
+            d_metrics = {
+                key: row[key]
+                for key in (*BRANCH_METRIC_KEYS, *BRANCH_DIAGNOSTIC_KEYS)
+            }
+            d_improved = bool(
+                float(d_metrics["equity_multiple"])
+                > float(incumbent_d["equity_multiple"]) + TOLERANCE
+            )
+            acde_improved = bool(
+                float(acde_metrics["equity_multiple"])
+                > float(incumbent_acde["equity_multiple"]) + TOLERANCE
+            )
+            rows.append(
+                {
+                    "profile_id": profile_id,
+                    "factor_count": int(row["factor_count"]),
+                    "factor_names": str(row["factor_names"]),
+                    "conditions_json": str(row["conditions_json"]),
+                    "description": str(row["description"]),
+                    "selection_signature": str(row["selection_signature"]),
+                    **flatten("d", d_metrics),
+                    **flatten("acde", acde_metrics),
+                    "acde_leg_counts_json": json.dumps(
+                        acde_metrics.get("leg_counts", {}),
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                    "d_compound_improved": d_improved,
+                    "acde_compound_improved": acde_improved,
+                    "dual_compound_gate_passed": bool(d_improved and acde_improved),
+                }
+            )
+            if position % 25 == 0 or position == total:
+                LOGGER.info("逐组合ACDE严格回放：%d/%d", position, total)
+    return pd.DataFrame(rows)
+
+
+def rank_profile_comparisons(comparisons: pd.DataFrame) -> pd.DataFrame:
+    """按双门通过优先、ACDE复利优先形成稳定排名。"""
+
+    if comparisons.empty:
+        return comparisons.copy()
+    return comparisons.sort_values(
+        [
+            "dual_compound_gate_passed", "acde_equity_multiple",
+            "d_equity_multiple", "factor_count", "acde_max_drawdown", "profile_id",
+        ],
+        ascending=[False, False, False, True, False, True],
+    ).reset_index(drop=True)
+
+
+def select_best_dual_gate_profile(comparisons: pd.DataFrame) -> pd.Series | None:
+    ranked = rank_profile_comparisons(comparisons)
+    if ranked.empty:
+        return None
+    passed = ranked[ranked["dual_compound_gate_passed"].astype(bool)]
+    return None if passed.empty else passed.iloc[0]
+
+
+def readable_conditions(conditions: Mapping[str, str]) -> list[str]:
+    rows: list[str] = []
+    for name, value in conditions.items():
+        factor_label = FACTOR_LABELS.get(name, name)
+        value_label = FACTOR_VALUE_LABELS.get(str(value), str(value))
+        rows.append(f"{factor_label}：{value_label}（{name}={value}）")
+    return rows
+
+
+def metrics_from_comparison_row(row: pd.Series, prefix: str) -> dict[str, Any]:
+    keys = (
+        "trade_count", "win_rate", "avg_account_return", "median_account_return",
+        "equity_multiple", "max_drawdown", "max_profit", "max_loss",
+        "profit_loss_ratio", "max_consecutive_losses",
+    )
+    result = {key: json_value(row[f"{prefix}_{key}"]) for key in keys}
+    if prefix == "d":
+        result.update(
+            {
+                key: json_value(row[f"d_{key}"])
+                for key in (
+                    "first_12m_trade_count", "first_12m_multiple",
+                    "second_12m_trade_count", "second_12m_multiple",
+                    *BRANCH_DIAGNOSTIC_KEYS,
+                )
+            }
+        )
+    if prefix == "acde":
+        result["leg_counts"] = json.loads(str(row["acde_leg_counts_json"]))
+    return result
+
+
+def pct_text(value: Any) -> str:
+    return f"{float(value) * 100:+.8f}%"
+
+
+def multiple_text(value: Any) -> str:
+    return f"{float(value):.10f}倍"
+
+
+def render_best_result_text(payload: Mapping[str, Any]) -> str:
+    """生成用户每半年直接查看的完整中文结果文件。"""
+
+    window = payload["window"]
+    search = payload["search_space"]
+    incumbent = payload["incumbent"]
+    best = payload.get("best_dual_gate_profile")
+    observed = payload.get("best_observed_profile")
+    selected = best or observed
+    lines = [
+        "D策略半年因子组合最佳结果",
+        "==========================",
+        "",
+        "一、运行口径",
+        "",
+        f"回测窗口：{window['start']}～{window['end']}",
+        "回测口径：严格as-of、单账户逐笔机械复利",
+        "组合占仓顺序：D > A > E > C",
+        "费用、滑点、涨跌停、T+1、仓位和持仓占用规则：沿用当前正式口径",
+        "默认行为：只生成报告，不修改正式D",
+        "",
+        "二、搜索结果",
+        "",
+        f"固定因子：{search['factor_column_count']}个",
+        f"实际出现的因子值组合：{search['observed_factor_value_group_count']:,}个",
+        f"完成严格D评估：{search['evaluated_profile_count']:,}个",
+        f"达到分支门槛：{search['threshold_qualified_profile_count']:,}个",
+        f"完成逐组合ACDE回放：{search['portfolio_evaluated_profile_count']:,}个",
+        f"同时提高D和ACDE复利：{search['dual_gate_passed_profile_count']:,}个",
+        "",
+        "分支门槛：样本数至少20笔、平均每笔收益严格大于2%、胜率严格大于55%、退出全部可解析。",
+        "最佳候选排名：先要求D和ACDE双复利门通过，再按ACDE复利从高到低排名。",
+        "",
+    ]
+    if selected is None:
+        lines.extend(
+            [
+                "三、结论",
+                "",
+                "本轮没有任何达到分支门槛的条件，正式D保持不变。",
+            ]
+        )
+        return "\n".join(lines) + "\n"
+
+    candidate_label = "最佳双门通过组合" if best is not None else "ACDE最高观察组合（未通过双门）"
+    d = selected["d_metrics"]
+    acde = selected["acde_metrics"]
+    base_d = incumbent["d_metrics"]
+    base_acde = incumbent["acde_metrics"]
+    lines.extend(
+        [
+            f"三、{candidate_label}",
+            "",
+            f"组合编号：{selected['profile_id']}",
+            "条件：",
+        ]
+    )
+    lines.extend(f"{index}. {text}" for index, text in enumerate(selected["readable_conditions"], 1))
+    lines.extend(
+        [
+            "",
+            "等价条件表达式：",
+            "if (",
+        ]
+    )
+    conditions = selected["conditions"]
+    for index, (name, value) in enumerate(conditions.items()):
+        prefix = "    " if index == 0 else "    and "
+        lines.append(f'{prefix}{name} == "{value}"')
+    lines.extend(
+        [
+            "):",
+            "    允许进入D候选",
+            "",
+            "四、D独立严格回测",
+            "",
+            f"候选信号日：{int(d['candidate_day_count'])}",
+            f"价格穿透确认日：{int(d['price_confirmed_day_count'])}",
+            f"历史队列未知日：{int(d['queue_unknown_day_count'])}",
+            f"无法解析退出：{int(d['unresolved_exit_count'])}",
+            "",
+            "指标                 当前正式D              最佳候选D",
+            f"交易数               {int(base_d['trade_count']):>10}              {int(d['trade_count']):>10}",
+            f"胜率                 {pct_text(base_d['win_rate']):>14}       {pct_text(d['win_rate']):>14}",
+            f"平均每笔收益         {pct_text(base_d['avg_account_return']):>14}       {pct_text(d['avg_account_return']):>14}",
+            f"中位数收益           {pct_text(base_d['median_account_return']):>14}       {pct_text(d['median_account_return']):>14}",
+            f"机械复利             {multiple_text(base_d['equity_multiple']):>16}     {multiple_text(d['equity_multiple']):>16}",
+            f"最大回撤             {pct_text(base_d['max_drawdown']):>14}       {pct_text(d['max_drawdown']):>14}",
+            f"最大单笔盈利         {pct_text(base_d['max_profit']):>14}       {pct_text(d['max_profit']):>14}",
+            f"最大单笔亏损         {pct_text(base_d['max_loss']):>14}       {pct_text(d['max_loss']):>14}",
+            f"盈亏比               {float(base_d['profit_loss_ratio']):>14.8f}       {float(d['profit_loss_ratio']):>14.8f}",
+            f"最大连续亏损         {int(base_d['max_consecutive_losses']):>10}              {int(d['max_consecutive_losses']):>10}",
+            "",
+            f"候选前12个月：{int(d['first_12m_trade_count'])}笔，{multiple_text(d['first_12m_multiple'])}",
+            f"候选后12个月：{int(d['second_12m_trade_count'])}笔，{multiple_text(d['second_12m_multiple'])}",
+            "",
+            "五、替换D后的ACDE严格组合回测",
+            "",
+            "指标                 当前正式ACDE           替换后ACDE",
+            f"交易数               {int(base_acde['trade_count']):>10}              {int(acde['trade_count']):>10}",
+            f"胜率                 {pct_text(base_acde['win_rate']):>14}       {pct_text(acde['win_rate']):>14}",
+            f"平均每笔收益         {pct_text(base_acde['avg_account_return']):>14}       {pct_text(acde['avg_account_return']):>14}",
+            f"中位数收益           {pct_text(base_acde['median_account_return']):>14}       {pct_text(acde['median_account_return']):>14}",
+            f"机械复利             {multiple_text(base_acde['equity_multiple']):>16}     {multiple_text(acde['equity_multiple']):>16}",
+            f"最大回撤             {pct_text(base_acde['max_drawdown']):>14}       {pct_text(acde['max_drawdown']):>14}",
+            f"最大单笔盈利         {pct_text(base_acde['max_profit']):>14}       {pct_text(acde['max_profit']):>14}",
+            f"最大单笔亏损         {pct_text(base_acde['max_loss']):>14}       {pct_text(acde['max_loss']):>14}",
+            f"盈亏比               {float(base_acde['profit_loss_ratio']):>14.8f}       {float(acde['profit_loss_ratio']):>14.8f}",
+            f"最大连续亏损         {int(base_acde['max_consecutive_losses']):>10}              {int(acde['max_consecutive_losses']):>10}",
+            "",
+            f"当前ACDE腿分布：{json.dumps(base_acde.get('leg_counts', {}), ensure_ascii=False, sort_keys=True)}",
+            f"候选ACDE腿分布：{json.dumps(acde.get('leg_counts', {}), ensure_ascii=False, sort_keys=True)}",
+            "",
+            "六、双复利替换闸门",
+            "",
+            f"D复利提高：{'通过' if selected['d_compound_improved'] else '不通过'}",
+            f"ACDE复利提高：{'通过' if selected['acde_compound_improved'] else '不通过'}",
+            f"候选具备替换资格：{'是' if selected['dual_compound_gate_passed'] else '否'}",
+            f"本次是否已经修改正式D：{'是' if payload['formal_strategy_modified'] else '否'}",
+            "",
+            "七、风险说明",
+            "",
+            "1. 条件来自同一24个月内的多重组合搜索，存在数据挖掘和过拟合风险。",
+            "2. 前后12个月结果只披露稳定性，不属于真正未来样本外。",
+            "3. 一分钟K无法恢复同一分钟逐笔队列，历史成交采用保守价格穿透口径。",
+            "4. 机械复利只用于相同口径版本比较，不代表未来收益或真实资金容量。",
+            "5. 请先阅读本文件，再决定是否用--apply更换正式D。",
+        ]
+    )
+    return "\n".join(lines) + "\n"
+
+
 def assert_current_official_anchor(
     release: Mapping[str, Any], comparison: Mapping[str, Any], start: str, end: str
 ) -> None:
@@ -532,14 +873,7 @@ def release_profiles(
                 "conditions": dict(conditions_by_id[profile_id]),
                 "branch_metrics": {
                     key: json_value(row[key])
-                    for key in (
-                        "trade_count", "win_rate", "avg_account_return",
-                        "median_account_return", "equity_multiple", "max_drawdown",
-                        "max_profit", "max_loss", "profit_loss_ratio",
-                        "max_consecutive_losses", "first_12m_trade_count",
-                        "first_12m_multiple", "second_12m_trade_count",
-                        "second_12m_multiple",
-                    )
+                    for key in (*BRANCH_METRIC_KEYS, *BRANCH_DIAGNOSTIC_KEYS)
                 },
             }
         )
@@ -576,7 +910,7 @@ def apply_release(
 
 def pseudo_code(profiles: Iterable[Mapping[str, Any]]) -> str:
     lines = [
-        "# 机器生成的D回封板多条件并集；任一if成立即允许进入D候选排序",
+        "# 机器生成的D最佳单条件；由人工确认发布后才用于盘中D候选排序",
         "allow_d = False",
     ]
     for profile in profiles:
@@ -591,14 +925,20 @@ def pseudo_code(profiles: Iterable[Mapping[str, Any]]) -> str:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="半年优化D回封板多因子条件并集")
-    parser.add_argument("--as-of", default=CURRENT_OFFICIAL_END, help="更新节点YYYYMMDD，只允许0630/1231")
+    parser = argparse.ArgumentParser(
+        description="半年优化D回封板因子组合并输出完整最佳结果"
+    )
+    parser.add_argument(
+        "--as-of",
+        default=None,
+        help="更新节点YYYYMMDD；省略时自动选择不晚于今天的最近0630/1231",
+    )
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--events", type=Path, default=DEFAULT_EVENTS)
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument(
         "--apply", action="store_true",
-        help="仅当D和ACDE双复利门禁通过时，原子替换正式D因子发布文件",
+        help="人工阅读结果后使用；仅当最佳单条件通过双复利门时替换正式D",
     )
     return parser.parse_args()
 
@@ -611,7 +951,7 @@ def main() -> int:
     )
     config_path = resolve_path(args.config)
     config = load_optimizer_config(config_path)
-    end = str(args.as_of)
+    end = str(args.as_of or latest_completed_update_node())
     dt.datetime.strptime(end, "%Y%m%d")
     allowed_nodes = {str(value) for value in config["allowed_update_nodes"]}
     if end[4:] not in allowed_nodes:
@@ -648,63 +988,147 @@ def main() -> int:
     )
     qualified = search[search["threshold_qualified"]].copy()
     qualified_unique = deduplicate_qualified_profiles(search)
+
+    # 全部分支OR只保留为诊断对照。正式候选改为逐个分支替换D后，在双复利
+    # 门通过的条件中选择ACDE复利最高者。
     effective, union_mask = minimize_profile_union(
         factorized, qualified_unique, conditions_by_id
     )
     union_picks = daily_union_picks(factorized, union_mask)
-    candidate_outcomes = outcome_frame_from_picks(union_picks)
+    union_outcomes = outcome_frame_from_picks(union_picks)
 
     incumbent_outcomes, other_legs, strict_source_audit = build_incumbent_and_other_legs(
         incumbent_release, factorized, start, end
     )
-    comparison = replay_comparison(
-        incumbent_outcomes, candidate_outcomes, other_legs, start, end
+    union_comparison = replay_comparison(
+        incumbent_outcomes, union_outcomes, other_legs, start, end
     )
-    assert_current_official_anchor(incumbent_release, comparison, start, end)
+    assert_current_official_anchor(incumbent_release, union_comparison, start, end)
 
-    d_improved = bool(
-        float(comparison["candidate_d"]["equity_multiple"])
-        > float(comparison["incumbent_d"]["equity_multiple"]) + TOLERANCE
+    LOGGER.info("开始把%d个达标条件逐个替换D并回放ACDE", len(qualified))
+    profile_comparisons = evaluate_profiles_in_portfolio(
+        qualified,
+        factorized,
+        conditions_by_id,
+        other_legs,
+        union_comparison["incumbent_d"],
+        union_comparison["incumbent_acde"],
+        start,
+        end,
     )
-    acde_improved = bool(
-        float(comparison["candidate_acde"]["equity_multiple"])
-        > float(comparison["incumbent_acde"]["equity_multiple"]) + TOLERANCE
+    ranked_comparisons = rank_profile_comparisons(profile_comparisons)
+    best_row = select_best_dual_gate_profile(ranked_comparisons)
+    observed_row = None if ranked_comparisons.empty else ranked_comparisons.iloc[0]
+    selected_row = best_row if best_row is not None else observed_row
+
+    selected_comparison: dict[str, Any] | None = None
+    selected_conditions: dict[str, str] = {}
+    selected_original = pd.DataFrame()
+    if selected_row is not None:
+        selected_id = str(selected_row["profile_id"])
+        selected_conditions = dict(conditions_by_id[selected_id])
+        selected_mask = profile_mask(
+            factorized, selected_conditions
+        ).to_numpy(dtype=bool)
+        selected_picks = daily_union_picks(factorized, selected_mask)
+        selected_outcomes = outcome_frame_from_picks(selected_picks)
+        selected_comparison = replay_comparison(
+            incumbent_outcomes, selected_outcomes, other_legs, start, end
+        )
+        selected_original = qualified[
+            qualified["profile_id"].astype(str).eq(selected_id)
+        ].head(1)
+
+    release_eligible = best_row is not None
+    profiles = (
+        release_profiles(selected_original, conditions_by_id)
+        if not selected_original.empty
+        else []
     )
-    release_eligible = bool(len(effective) > 0 and d_improved and acde_improved)
-    profiles = release_profiles(effective, conditions_by_id)
-    release_id = f"D_FACTOR_UNION_{end}_{hashlib.sha1(json.dumps(profiles, sort_keys=True).encode()).hexdigest()[:8]}"
+    release_digest = hashlib.sha1(
+        json.dumps(profiles, sort_keys=True).encode()
+    ).hexdigest()[:8]
+    release_id = f"D_FACTOR_BEST_{end}_{release_digest}"
+    selected_d_metrics = (
+        selected_comparison["candidate_d"] if selected_comparison else {}
+    )
+    selected_acde_metrics = (
+        selected_comparison["candidate_acde"] if selected_comparison else {}
+    )
     candidate_release = {
         "schema_version": 1,
         "factor_schema_id": FACTOR_SCHEMA_ID,
         "release_id": release_id,
-        "strategy_mode": FACTOR_UNION_MODE,
+        "strategy_mode": FACTOR_UNION_MODE if profiles else LEGACY_MODE,
         "effective_from": next_calendar_day(end),
         "research_window": {"start": start, "end": end},
         "profiles": profiles,
         "selection_policy": str(config["selection_policy"]),
+        "candidate_selection_policy": str(config["candidate_selection_policy"]),
         "branch_gate": {
             "trade_count_at_least": int(config["min_branch_trade_count"]),
             "avg_account_return_must_exceed": float(config["min_branch_avg_account_return"]),
             "win_rate_must_exceed": float(config["min_branch_win_rate"]),
         },
         "certified_metrics": {
-            "d": comparison["candidate_d"],
-            "acde": comparison["candidate_acde"],
+            "d": selected_d_metrics,
+            "acde": selected_acde_metrics,
         },
         "replaced_release_id": str(incumbent_release["release_id"]),
         "release_gate_passed": release_eligible,
+        "human_review_required": True,
     }
 
     applied = False
     archive_path = ""
     if args.apply:
         if not release_eligible:
-            LOGGER.warning("候选未同时提高D与ACDE复利，正式D发布文件保持不变")
+            LOGGER.warning("没有单一候选同时提高D与ACDE复利，正式D保持不变")
         else:
             archive = apply_release(release_path, incumbent_release, candidate_release)
             archive_path = str(archive.relative_to(ROOT))
             applied = True
-            LOGGER.warning("D因子并集通过双门禁并已替换正式发布：%s", release_id)
+            LOGGER.warning("D最佳单条件通过双门禁并已替换正式发布：%s", release_id)
+
+    selected_profile_payload: dict[str, Any] | None = None
+    if selected_row is not None and selected_comparison is not None:
+        d_payload = dict(selected_comparison["candidate_d"])
+        d_payload.update(
+            {
+                key: json_value(selected_row[f"d_{key}"])
+                for key in (
+                    "first_12m_trade_count", "first_12m_multiple",
+                    "second_12m_trade_count", "second_12m_multiple",
+                    *BRANCH_DIAGNOSTIC_KEYS,
+                )
+            }
+        )
+        selected_profile_payload = {
+            "profile_id": str(selected_row["profile_id"]),
+            "factor_count": int(selected_row["factor_count"]),
+            "conditions": selected_conditions,
+            "readable_conditions": readable_conditions(selected_conditions),
+            "description": str(selected_row["description"]),
+            "d_metrics": d_payload,
+            "acde_metrics": selected_comparison["candidate_acde"],
+            "d_compound_improved": bool(selected_row["d_compound_improved"]),
+            "acde_compound_improved": bool(selected_row["acde_compound_improved"]),
+            "dual_compound_gate_passed": bool(
+                selected_row["dual_compound_gate_passed"]
+            ),
+        }
+
+    dual_passed_count = int(
+        profile_comparisons.get(
+            "dual_compound_gate_passed", pd.Series(dtype=bool)
+        ).astype(bool).sum()
+    )
+    incumbent_payload = {
+        "release_id": str(incumbent_release["release_id"]),
+        "strategy_mode": str(incumbent_release["strategy_mode"]),
+        "d_metrics": union_comparison["incumbent_d"],
+        "acde_metrics": union_comparison["incumbent_acde"],
+    }
 
     summary = {
         "schema_version": 1,
@@ -722,6 +1146,8 @@ def main() -> int:
             "threshold_qualified_profile_count": int(len(qualified)),
             "qualified_unique_selection_count": int(len(qualified_unique)),
             "effective_or_profile_count": int(len(effective)),
+            "portfolio_evaluated_profile_count": int(len(profile_comparisons)),
+            "dual_gate_passed_profile_count": dual_passed_count,
             "factor_columns": list(FACTOR_COLUMNS),
         },
         "branch_gate": {
@@ -730,21 +1156,25 @@ def main() -> int:
             "win_rate_must_exceed": float(config["min_branch_win_rate"]),
             "comparison_is_strict": True,
         },
-        "union_candidate": {
+        "union_diagnostic_only": {
             "candidate_day_count": int(len(union_picks)),
-            "profiles": profiles,
-            "d_metrics": comparison["candidate_d"],
-            "acde_metrics": comparison["candidate_acde"],
+            "profile_count": int(len(effective)),
+            "d_metrics": union_comparison["candidate_d"],
+            "acde_metrics": union_comparison["candidate_acde"],
+            "note": "全部达标条件OR只作诊断，不作为发布候选",
         },
-        "incumbent": {
-            "release_id": str(incumbent_release["release_id"]),
-            "strategy_mode": str(incumbent_release["strategy_mode"]),
-            "d_metrics": comparison["incumbent_d"],
-            "acde_metrics": comparison["incumbent_acde"],
-        },
+        "incumbent": incumbent_payload,
+        "candidate_selection_policy": str(config["candidate_selection_policy"]),
+        "best_single_profile": selected_profile_payload,
         "replace_gate": {
-            "d_compound_improved": d_improved,
-            "acde_compound_improved": acde_improved,
+            "d_compound_improved": bool(
+                selected_profile_payload
+                and selected_profile_payload["d_compound_improved"]
+            ),
+            "acde_compound_improved": bool(
+                selected_profile_payload
+                and selected_profile_payload["acde_compound_improved"]
+            ),
             "release_eligible": release_eligible,
         },
         "candidate_release": candidate_release,
@@ -753,12 +1183,12 @@ def main() -> int:
         "archived_release_path": archive_path,
         "formal_strategy_modified": applied,
         "decision": (
-            "REPLACE_FORMAL_D_WITH_FACTOR_UNION"
+            "REPLACE_FORMAL_D_WITH_BEST_SINGLE_PROFILE"
             if applied
             else (
-                "FACTOR_UNION_PASSED_WAITING_EXPLICIT_APPLY"
+                "BEST_SINGLE_PROFILE_PASSED_WAITING_HUMAN_DECISION"
                 if release_eligible
-                else "KEEP_INCUMBENT_D_DUAL_COMPOUND_GATE_NOT_PASSED"
+                else "KEEP_INCUMBENT_D_NO_SINGLE_PROFILE_PASSED_DUAL_GATE"
             )
         ),
         "limitations": [
@@ -767,6 +1197,24 @@ def main() -> int:
             "一分钟K无法恢复同一分钟内逐笔队列；始终封板且无价格穿透仍保守记未成交。",
             "更早6个月只作旁证，未来6个月才是真正前向样本外。",
         ],
+    }
+
+    best_result = {
+        "schema_version": 1,
+        "protocol": STRICT_DISCOVERY,
+        "window": {"start": start, "end": end},
+        "search_space": summary["search_space"],
+        "selection_rule": str(config["candidate_selection_policy"]),
+        "incumbent": incumbent_payload,
+        "best_dual_gate_profile": (
+            selected_profile_payload if release_eligible else None
+        ),
+        "best_observed_profile": selected_profile_payload,
+        "candidate_release_id": release_id,
+        "candidate_release_eligible": release_eligible,
+        "apply_requested": bool(args.apply),
+        "formal_strategy_modified": applied,
+        "decision": summary["decision"],
     }
 
     search.sort_values(
@@ -782,27 +1230,62 @@ def main() -> int:
     effective.to_csv(
         output_dir / "effective_or_profiles.csv", index=False, encoding="utf-8-sig"
     )
+    ranked_comparisons.to_csv(
+        output_dir / "all_profiles_acde_comparison.csv",
+        index=False,
+        encoding="utf-8-sig",
+    )
     union_picks.to_csv(
         output_dir / "candidate_union_daily_picks.csv", index=False, encoding="utf-8-sig"
     )
-    comparison["incumbent_d_detail"].to_csv(
+    detail_source = selected_comparison or union_comparison
+    detail_source["incumbent_d_detail"].to_csv(
         output_dir / "incumbent_d_detail.csv", index=False, encoding="utf-8-sig"
     )
-    comparison["candidate_d_detail"].to_csv(
+    detail_source["candidate_d_detail"].to_csv(
         output_dir / "candidate_d_detail.csv", index=False, encoding="utf-8-sig"
     )
-    comparison["incumbent_acde_detail"].to_csv(
+    detail_source["incumbent_acde_detail"].to_csv(
         output_dir / "incumbent_acde_detail.csv", index=False, encoding="utf-8-sig"
     )
-    comparison["candidate_acde_detail"].to_csv(
+    detail_source["candidate_acde_detail"].to_csv(
         output_dir / "candidate_acde_detail.csv", index=False, encoding="utf-8-sig"
+    )
+    union_comparison["candidate_d_detail"].to_csv(
+        output_dir / "union_diagnostic_d_detail.csv", index=False, encoding="utf-8-sig"
+    )
+    union_comparison["candidate_acde_detail"].to_csv(
+        output_dir / "union_diagnostic_acde_detail.csv",
+        index=False,
+        encoding="utf-8-sig",
     )
     (output_dir / "d_if_conditions.py.txt").write_text(
         pseudo_code(profiles), encoding="utf-8"
     )
     write_json_atomic(output_dir / "candidate_release.json", candidate_release)
     write_json_atomic(output_dir / "summary.json", summary)
-    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    write_json_atomic(output_dir / "best_dual_gate_profile.json", best_result)
+    best_text_path = output_dir / "best_dual_gate_profile.txt"
+    best_text_path.write_text(
+        render_best_result_text(best_result), encoding="utf-8"
+    )
+    print(
+        json.dumps(
+            {
+                "decision": summary["decision"],
+                "best_result_file": str(best_text_path),
+                "best_profile_id": (
+                    selected_profile_payload["profile_id"]
+                    if selected_profile_payload
+                    else ""
+                ),
+                "candidate_release_eligible": release_eligible,
+                "formal_strategy_modified": applied,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
     return 0
 
 

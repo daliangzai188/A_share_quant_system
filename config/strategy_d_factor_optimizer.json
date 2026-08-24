@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "factor_schema_id": "D_RESEAL_FACTOR_VALUES_V1",
-  "file_role": "D回封板半年因子组合优化参数。条件分支严格按平均账户收益>2%、胜率>55%筛选；所有合格分支取OR并集后，再执行D独立复利与ACDE总复利双守擂。",
+  "file_role": "D回封板半年因子组合优化参数。条件分支严格按平均账户收益>2%、胜率>55%筛选；每条达标分支逐个替换D并回放ACDE，只在双复利提高的分支中选择ACDE复利最高者供人工决定。",
   "allowed_update_nodes": [
     "0630",
     "1231"
@@ -13,7 +13,8 @@
   "min_branch_win_rate": 0.55,
   "position_pct": 0.825,
   "selection_policy": "EARLIEST_RESEAL_THEN_OPEN2_THEN_CODE",
-  "candidate_merge_policy": "OR_ALL_QUALIFIED_PROFILES_REMOVE_EVENT_REDUNDANCY",
+  "candidate_selection_policy": "BEST_SINGLE_PROFILE_MAX_ACDE_SUBJECT_TO_D_AND_ACDE_COMPOUND_IMPROVEMENT",
+  "candidate_merge_policy": "NO_MERGE_EVALUATE_EACH_QUALIFIED_PROFILE_INDEPENDENTLY",
   "replace_gate": "CANDIDATE_D_COMPOUND_GT_INCUMBENT_AND_CANDIDATE_ACDE_COMPOUND_GT_INCUMBENT",
   "active_release_path": "config/strategy_d_factor_release.json",
   "reports_root": "reports/strategy_d_factor_optimizer"
