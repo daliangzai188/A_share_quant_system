@@ -21,6 +21,12 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from src.runtime_stop_state import load_manual_stop
+
+
 PID_FILE = PROJECT_ROOT / ".daemon_pid"
 # keeper 自己的 pid 文件：stop_windows.py 会先停 keeper 再停 daemon，
 # 否则用户按老习惯只停 daemon，keeper 会在 30 秒内把它拉回来（2026-07-27）。
@@ -251,10 +257,13 @@ def restart_delay_seconds(attempt_no: int) -> int:
 
 
 def start_daemon() -> bool:
+    if load_manual_stop(PROJECT_ROOT) is not None:
+        log("检测到人工停机标记，本轮不拉起daemon；等待keeper退出。")
+        return False
     log("拉起 daemon ...")
     try:
         result = subprocess.run(
-            [sys.executable, str(START_SCRIPT), "--no-tail"],
+            [sys.executable, str(START_SCRIPT), "--no-tail", "--automatic-recovery"],
             cwd=str(PROJECT_ROOT),
             check=False,
             timeout=120,
@@ -285,6 +294,10 @@ def main() -> None:
 
     while True:
         try:
+            if load_manual_stop(PROJECT_ROOT) is not None:
+                log("检测到人工停机标记，停止自动拉起并退出keeper。")
+                KEEPER_PID_FILE.unlink(missing_ok=True)
+                return
             pid = read_pid()
             alive = bool(pid and pid_alive(pid))
             _state, age, heartbeat_pid = heartbeat_state()

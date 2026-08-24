@@ -10,6 +10,8 @@ ROOT = Path(__file__).absolute().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from src.runtime_stop_state import write_manual_stop
+
 pid_file = ROOT / ".daemon_pid"
 d_monitor_pid_file = ROOT / "logs" / "strategy_d_monitor.pid"
 keeper_pid_file = ROOT / ".keeper_pid"   # 守护器（win_daemon_keeper.py），须先于 daemon 停止
@@ -282,6 +284,29 @@ def _scan_related_pids() -> dict[int, str]:
 
 print(GREEN + f"{timestamp()} | 停止 A_System：清理全部守护进程 / D 监控进程..." + RESET, flush=True)
 
+# 必须先于停止keeper/daemon落盘。这样即使停止动作与keeper的30秒轮询、
+# 登录触发或每日08:15计划任务发生竞态，所有自动恢复入口也会看到人工停机意图。
+try:
+    manual_stop_marker = write_manual_stop(
+        ROOT,
+        source="stop_windows.py",
+        reason="用户显式执行Windows停止命令；仅人工start_windows.py允许恢复",
+    )
+    print(
+        GREEN
+        + f"{timestamp()} | 已登记人工停机：{manual_stop_marker.name}；自动恢复将保持暂停。"
+        + RESET,
+        flush=True,
+    )
+except Exception as exc:
+    print(
+        YELLOW
+        + f"{timestamp()} | 无法写入人工停机标记，停止已中止，避免稍后被计划任务误启动：{exc}"
+        + RESET,
+        flush=True,
+    )
+    raise SystemExit(1)
+
 # 目标进程集合：pid 文件（精确、毫秒级）优先；子进程由 _stop_and_verify 的
 # 进程树清理带走。只有 pid 文件找不到任何存活进程时，才用命令行扫描兜底找孤儿——
 # 全盘 CIM 扫描要十几秒且吃CPU/IO，每次都跑曾把停止拖到 62 秒、虚拟机卡到重启。
@@ -324,6 +349,7 @@ for pid in sorted(targets):
 # 停止动作已完成，统一清理 pid 文件。
 pid_file.unlink(missing_ok=True)
 d_monitor_pid_file.unlink(missing_ok=True)
+keeper_pid_file.unlink(missing_ok=True)
 
 if all_ok:
     print(GREEN + f"{timestamp()} | 已清理 {cleared} 个进程，全部停止确认，可安全重启。" + RESET, flush=True)

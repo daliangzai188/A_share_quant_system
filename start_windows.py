@@ -20,11 +20,25 @@ full_log = "--full-log" in sys.argv
 # --no-tail：启动 daemon 后立刻返回，不在终端跟随日志。
 # 供 win_daemon_keeper.py 调用——守护器需要 start 调用能立即返回才能继续守护循环。
 no_tail = "--no-tail" in sys.argv
+# --automatic-recovery：仅供 keeper/计划任务使用。它绝不能清除人工停机标记；
+# 只有用户直接运行 start_windows.py 才表示明确恢复自动交易。
+automatic_recovery = "--automatic-recovery" in sys.argv
 PROCESS_TERMINATE = 0x0001
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 STILL_ACTIVE = 259
 
 root = Path(__file__).absolute().parent
+from src.runtime_stop_state import clear_manual_stop, load_manual_stop
+
+manual_stop = load_manual_stop(root)
+if automatic_recovery and manual_stop is not None:
+    print(
+        "A_System保持人工停机：keeper/计划任务本轮不启动daemon。"
+        "如需恢复，请人工运行：py -3.11 start_windows.py"
+    )
+    sys.exit(0)
+if not automatic_recovery and clear_manual_stop(root):
+    print("已收到人工启动指令：人工停机标记已清除，恢复异常自愈与每日运行兜底。")
 try:
     from src.secret_config import load_local_env
 
@@ -184,6 +198,12 @@ if stopped_d or stopped_orphan_d or stopped_daemon:
     print("Old process state verified; starting new daemon.")
 
 log_start_pos = log.stat().st_size if log.exists() else 0
+
+# 再检查一次，封住“自动恢复入口刚通过首次检查，用户紧接着执行stop”的竞态窗。
+# 人工停止标记总是在杀进程之前写入，因此这里命中时绝不能创建新daemon。
+if automatic_recovery and load_manual_stop(root) is not None:
+    print("自动恢复在启动前检测到人工停机标记，本轮不创建daemon。")
+    sys.exit(0)
 
 # 让 daemon 自己的 RotatingFileHandler 写日志，stdout/stderr 丢弃
 proc = subprocess.Popen(

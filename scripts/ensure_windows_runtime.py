@@ -12,8 +12,13 @@ import sys
 import time
 from pathlib import Path
 
-
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from src.runtime_stop_state import load_manual_stop
+
+
 DAEMON_PID_FILE = PROJECT_ROOT / ".daemon_pid"
 KEEPER_PID_FILE = PROJECT_ROOT / ".keeper_pid"
 START_SCRIPT = PROJECT_ROOT / "start_windows.py"
@@ -69,6 +74,14 @@ def ensure_runtime() -> int:
         print("本脚本只在 Windows 虚拟机内运行。")
         return 2
 
+    manual_stop = load_manual_stop(PROJECT_ROOT)
+    if manual_stop is not None:
+        print(
+            "A_System处于人工停机状态；登录/每日08:15运行兜底不启动daemon或keeper。"
+            "如需恢复，请人工运行 start_windows.py。"
+        )
+        return 0
+
     daemon_alive, keeper_alive, daemon_pid, keeper_pid = runtime_status()
     if daemon_alive and keeper_alive:
         print(f"A_System运行正常：daemon={daemon_pid} keeper={keeper_pid}，无需重启。")
@@ -94,7 +107,7 @@ def ensure_runtime() -> int:
     # daemon已不在。start_windows.py会清理失效pid文件、启动daemon，并确保keeper。
     print(f"daemon未运行（记录PID={daemon_pid}），开始无人值守恢复。")
     result = subprocess.run(
-        [sys.executable, str(START_SCRIPT), "--no-tail"],
+        [sys.executable, str(START_SCRIPT), "--no-tail", "--automatic-recovery"],
         cwd=str(PROJECT_ROOT),
         check=False,
         timeout=120,

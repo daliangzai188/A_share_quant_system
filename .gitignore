@@ -70,6 +70,7 @@ reports/paper_trade/ab_filtered_daily_ops/*.csv
 .daemon_pid
 .watchdog_pid
 .keeper_pid
+.manual_stop.json
 
 # 临时安装包
 *.exe
