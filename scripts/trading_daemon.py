@@ -38,6 +38,7 @@ import sys
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import replace
 from decimal import Decimal, ROUND_CEILING, ROUND_HALF_UP
 from pathlib import Path
@@ -1832,6 +1833,7 @@ def _confirm_fill(
     *,
     timeout_sec: float | None = None,
     poll_sec: float | None = None,
+    qmt_priority_label: str = "",
 ) -> "OrderFill":
     """轮询确认委托成交情况。受理(accepted)不等于成交(filled)，此处确认真实成交股数与均价。
 
@@ -1873,7 +1875,7 @@ def _confirm_fill(
 
     while True:
         try:
-            with _qmt_lock:
+            with _qmt_access(qmt_priority_label):
                 adapter = _qmt_get(broker_cfg)
                 last_fill = adapter.get_order_fill(order_id)
         except Exception as e:
@@ -9253,7 +9255,7 @@ def _pov_execute_slice(
 
         # 账户、持仓和行情在同一把QMT短锁中读取，形成该片一致的资金快照；任一
         # 查询失败即fail-closed，本片不下单，绝不用过期可用余额冒险生成废单。
-        with _qmt_lock:
+        with _qmt_access(f"买入POV片{slice_no + 1}资金持仓行情快照"):
             adapter = _qmt_get(broker_cfg)
             account = adapter.query_account()
             broker_positions = adapter.query_positions()
@@ -9398,7 +9400,7 @@ def _pov_execute_slice(
             source_key=f"BUY_POV|{today_str}|{ts_code}|{slice_no + 1}",
             metadata={"execution_channel": "买入POV", "name": name_s},
         )
-        with _qmt_lock:
+        with _qmt_access(f"买入POV片{slice_no + 1}下单"):
             adapter = _qmt_get(broker_cfg)
             result = adapter.place_order(request)
         if not result.accepted:
@@ -9406,11 +9408,32 @@ def _pov_execute_slice(
             _pov_log_slice(_pov_slice_row(it, last_price=last, order_qty=qty, note=f"提交失败:{result.message}"))
             return
         oid = str(result.order_id or "")
-        fill = _confirm_fill(broker_cfg, oid, qty, f"POV片{slice_no + 1}", timeout_sec=90, poll_sec=5)
+        fill = _confirm_fill(
+            broker_cfg,
+            oid,
+            qty,
+            f"POV片{slice_no + 1}",
+            timeout_sec=90,
+            poll_sec=5,
+            qmt_priority_label=f"买入POV片{slice_no + 1}成交确认",
+        )
         if fill.filled_qty < qty and not fill.is_terminal:
-            _try_cancel_order(broker_cfg, oid, ts_code)
+            _try_cancel_order(
+                broker_cfg,
+                oid,
+                ts_code,
+                qmt_priority_label=f"买入POV片{slice_no + 1}撤单",
+            )
             # 撤单成败以订单终态为准(2026-07-10口径),再确认一次拿最终成交数
-            fill = _confirm_fill(broker_cfg, oid, qty, f"POV片{slice_no + 1}终态", timeout_sec=20, poll_sec=3)
+            fill = _confirm_fill(
+                broker_cfg,
+                oid,
+                qty,
+                f"POV片{slice_no + 1}终态",
+                timeout_sec=20,
+                poll_sec=3,
+                qmt_priority_label=f"买入POV片{slice_no + 1}撤单终态确认",
+            )
         fq = int(fill.filled_qty or 0)
         fp = float(fill.avg_price) if float(getattr(fill, "avg_price", 0) or 0) > 0 else last
         confirmed_after = actual_amount
@@ -9560,7 +9583,7 @@ def _pov_worker() -> None:
             return
         # POV线程支持断点恢复，不能假设一定经过当天09:20的计划门禁；恢复后先用
         # 券商真实持仓做一次串行单仓校验，防止旧状态文件在旧仓未清时继续买入。
-        with _qmt_lock:
+        with _qmt_access("买入POV启动持仓校验"):
             adapter = _qmt_get(broker_cfg)
             positions_live = adapter.query_positions()
         if _broker_has_preexisting_strategy_position(positions_live):
@@ -11077,9 +11100,15 @@ def confirm_pending_premarket_buys(confirm_source: str = "09:30") -> None:
     logger().info("===== 盘前买单成交确认完成 =====")
 
 
-def _try_cancel_order(broker_cfg: dict, order_id: str, ts_code: str) -> None:
+def _try_cancel_order(
+    broker_cfg: dict,
+    order_id: str,
+    ts_code: str,
+    *,
+    qmt_priority_label: str = "",
+) -> None:
     try:
-        with _qmt_lock:
+        with _qmt_access(qmt_priority_label):
             adapter = _qmt_get(broker_cfg)
             ok = adapter.cancel_order(order_id)
         logger().info("撤单 %s（%s）请求%s", ts_code, order_id, "已提交" if ok else "失败")
@@ -15186,7 +15215,117 @@ _qmt_execution_init_lock = threading.RLock()
 _qmt_last_verified_at: str = ""      # 最近一次 query_account/query_positions 成功时间
 _last_account_has_position: bool = False  # 最近一次券商账户心跳是否确认有持仓
 _qmt_lock = threading.RLock()        # 保护 _qmt_adapter 并发访问（可重入：平仓路径内嵌撤止盈单）
+# 买入POV与D行情采集共用上面的唯一QMT通道。POV发起资金/持仓/行情/下单请求前
+# 先登记优先权；D只允许完成已经在途的一批行情，下一批必须等待POV释放。
+# 计数器而不是单一Event可正确处理同一时刻多个POV请求，避免首个请求结束时
+# 误清除另一个仍在等待的请求。
+_buy_pov_qmt_priority_condition = threading.Condition()
+_buy_pov_qmt_priority_waiters = 0
+_buy_pov_qmt_priority_active = 0
 _d_monitor_thread: threading.Thread | None = None  # D监控线程；D不再独立连接QMT
+
+
+def _buy_pov_qmt_priority_pending() -> bool:
+    with _buy_pov_qmt_priority_condition:
+        return bool(
+            _buy_pov_qmt_priority_waiters > 0
+            or _buy_pov_qmt_priority_active > 0
+        )
+
+
+@contextmanager
+def _qmt_access(priority_label: str = ""):
+    """获取QMT串行锁；非空标签代表买入POV请求，优先于D批量行情。
+
+    优先权只覆盖一次真实QMT调用，不覆盖POV的五分钟等待或成交轮询间隔，
+    因而D仍能持续采集；如果D已有一批get_full_tick在途，POV等待该批自然返回，
+    不尝试中断QMT C++调用。
+    """
+
+    global _buy_pov_qmt_priority_waiters, _buy_pov_qmt_priority_active
+
+    label = str(priority_label or "").strip()
+    if not label:
+        with _qmt_lock:
+            yield
+        return
+
+    requested_at = time.monotonic()
+    registered_waiter = False
+    registered_active = False
+    acquired = False
+    try:
+        with _buy_pov_qmt_priority_condition:
+            _buy_pov_qmt_priority_waiters += 1
+            registered_waiter = True
+            _buy_pov_qmt_priority_condition.notify_all()
+
+        _qmt_lock.acquire()
+        acquired = True
+        waited_ms = (time.monotonic() - requested_at) * 1000.0
+
+        with _buy_pov_qmt_priority_condition:
+            _buy_pov_qmt_priority_waiters -= 1
+            registered_waiter = False
+            _buy_pov_qmt_priority_active += 1
+            registered_active = True
+            _buy_pov_qmt_priority_condition.notify_all()
+
+        logger().info(
+            "[QMT调度] %s取得优先通道，等待%.0fms；D仅允许完成已在途行情批次。",
+            label,
+            waited_ms,
+        )
+        yield
+    finally:
+        if acquired:
+            _qmt_lock.release()
+        with _buy_pov_qmt_priority_condition:
+            if registered_waiter:
+                _buy_pov_qmt_priority_waiters -= 1
+            if registered_active:
+                _buy_pov_qmt_priority_active -= 1
+            _buy_pov_qmt_priority_condition.notify_all()
+
+
+def _d_get_full_tick_with_pov_priority(
+    broker_config: dict[str, Any],
+    ts_codes: list[str],
+) -> Any:
+    """D行情批次在买入POV请求存在时让路，最多保留一个已在途批次。"""
+
+    requested_at = time.monotonic()
+    yielded_to_pov = False
+    while True:
+        with _buy_pov_qmt_priority_condition:
+            while (
+                _buy_pov_qmt_priority_waiters > 0
+                or _buy_pov_qmt_priority_active > 0
+            ):
+                yielded_to_pov = True
+                _buy_pov_qmt_priority_condition.wait(timeout=0.5)
+
+        _qmt_lock.acquire()
+        # 防止D通过上面的检查后，在等待_qmt_lock期间POV才登记优先权。
+        # 此时D必须释放锁重新排队，不能依赖RLock的非公平唤醒顺序。
+        if _buy_pov_qmt_priority_pending():
+            yielded_to_pov = True
+            _qmt_lock.release()
+            continue
+
+        admitted_at = time.monotonic()
+        try:
+            result = _qmt_get(broker_config).get_full_tick(ts_codes)
+        finally:
+            _qmt_lock.release()
+
+        if yielded_to_pov:
+            logger().info(
+                "[QMT调度] D行情批次已为买入POV让路，批次=%d只，等待%.0fms后恢复。",
+                len(ts_codes),
+                (admitted_at - requested_at) * 1000.0,
+            )
+        return result
 
 
 def _broker_config_with_qmt_override(
@@ -15436,8 +15575,7 @@ class SharedQMTBrokerProxy:
             return _qmt_get(self.broker_config).query_trades()
 
     def get_full_tick(self, ts_codes: list[str]) -> Any:
-        with _qmt_lock:
-            return _qmt_get(self.broker_config).get_full_tick(ts_codes)
+        return _d_get_full_tick_with_pov_priority(self.broker_config, ts_codes)
 
     def place_order(self, request: Any) -> Any:
         side = str(getattr(request, "side", "")).strip().upper()
