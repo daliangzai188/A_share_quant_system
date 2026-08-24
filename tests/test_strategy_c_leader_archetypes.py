@@ -16,6 +16,7 @@ from scripts.research_strategy_c_leader_archetypes import (
     STRONG_VALUE_DOMAINS,
     factor_sets,
     json_ready,
+    next_six_month_window,
     select_profiles,
     six_month_segments,
 )
@@ -82,6 +83,14 @@ class StrategyCLeaderArchetypeTests(unittest.TestCase):
             ("20250701", "20251231"),
             ("20260101", "20260630"),
         ])
+        self.assertEqual(
+            next_six_month_window("20260630"),
+            ("20260701", "20261231"),
+        )
+        self.assertEqual(
+            next_six_month_window("20261231"),
+            ("20270101", "20270630"),
+        )
 
     def test_json_ready_normalizes_numpy_style_nan(self) -> None:
         self.assertEqual(json_ready({"value": math.nan, "items": (1, 2)}), {

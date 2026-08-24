@@ -209,6 +209,31 @@ def prior_six_month_window(start: str) -> tuple[str, str]:
     return prior_start.strftime("%Y%m%d"), prior_end.strftime("%Y%m%d")
 
 
+def next_six_month_window(end: str) -> tuple[str, str]:
+    """返回半年节点后的真实前向账本区间，不参与研究选优。"""
+
+    boundary = dt.datetime.strptime(end, "%Y%m%d").date()
+    start = boundary + dt.timedelta(days=1)
+    if boundary.month == 6 and boundary.day == 30:
+        forward_end = dt.date(boundary.year, 12, 31)
+    elif boundary.month == 12 and boundary.day == 31:
+        forward_end = dt.date(boundary.year + 1, 6, 30)
+    else:
+        raise ValueError("前向账本只接受0630或1231半年节点")
+    return start.strftime("%Y%m%d"), forward_end.strftime("%Y%m%d")
+
+
+@lru_cache(maxsize=1)
+def reliable_candidate_signal_max() -> str:
+    frame = pd.read_csv(
+        strict.STRICT_SOURCE,
+        usecols=["trade_date"],
+        dtype={"trade_date": str},
+        low_memory=False,
+    )
+    return date_text(frame["trade_date"]).max()
+
+
 @contextmanager
 def strict_window(start: str, end: str) -> Iterator[None]:
     old_start, old_end = strict.START, strict.END
@@ -978,6 +1003,7 @@ def render_report(summary: Mapping[str, Any]) -> str:
         "",
         f"决策窗口：{summary['window']['start']}～{summary['window']['end']}",
         f"更早6个月旁证：{summary['prior_validation']['start']}～{summary['prior_validation']['end']}（不参与选优）",
+        f"发布后前向旁证：{summary['forward_validation']['start']}～{summary['forward_validation']['available_through']}（数据可用范围，不参与选优）",
         "严格as-of、82.5%仓位、费用、滑点、涨跌停、T+1及D>A>E>C顺序不变。",
         "研究分两族：纯强势环境×明确龙头；以及固定现有C核心后增加1～2个确认因子的保守精修。",
         "两族分别标记，不把现有C精修冒充为显式龙头条件。",
@@ -1013,6 +1039,7 @@ def render_report(summary: Mapping[str, Any]) -> str:
             f"ACDE：{best['acde_trade_count']}笔，胜率{best['acde_win_rate']:.2%}，平均{best['acde_avg_account_return']:.2%}，复利{best['acde_equity_multiple']:.10f}倍，最大回撤{best['acde_max_drawdown']:.2%}。",
             f"最佳候选分支审计：{json.dumps(summary['best_branch_audit'], ensure_ascii=False, sort_keys=True)}",
             f"更早6个月C旁证：{json.dumps(summary['prior_validation']['metrics'], ensure_ascii=False, sort_keys=True)}",
+            f"发布后前向C旁证：{json.dumps(summary['forward_validation'], ensure_ascii=False, sort_keys=True)}",
             f"决策窗口分半年表现：{json.dumps(summary['best_half_year_segments'], ensure_ascii=False)}",
         ])
     lines.extend([
@@ -1025,8 +1052,9 @@ def render_report(summary: Mapping[str, Any]) -> str:
         "4. 本次12个双门通过项全部是“现有C精修+显式龙头”两分支并集；纯强势×明确龙头没有单独通过。",
         "5. 最佳两条分支单独替换C时均未提高ACDE，合并后的提升来自占仓路径交互，过拟合风险高于单条规则。",
         "6. 更早6个月只有5笔且复利略低于1倍，不能把两年窗口内的大幅提升当成已经样本外成立。",
-        "7. 机械复利仅用于同口径相对比较，不代表未来收益或大资金容量。",
-        "8. 即使双复利通过，本脚本也不会自动接入实盘；必须先人工审阅逐笔明细。",
+        "7. 发布后前向账本当前只有1笔实际执行，虽为正收益但完全不足以证明稳定。",
+        "8. 机械复利仅用于同口径相对比较，不代表未来收益或大资金容量。",
+        "9. 即使双复利通过，本脚本也不会自动接入实盘；必须先人工审阅逐笔明细。",
     ])
     return "\n".join(lines) + "\n"
 
@@ -1069,6 +1097,12 @@ def main() -> int:
         raise ValueError("C研究只接受0630或1231半年节点")
     start = natural_window_start(end, 2)
     prior_start, prior_end = prior_six_month_window(start)
+    forward_start, forward_window_end = next_six_month_window(end)
+    source_signal_max = reliable_candidate_signal_max()
+    forward_available_end = (
+        min(forward_window_end, source_signal_max)
+        if source_signal_max >= forward_start else "暂无"
+    )
     output_dir = args.output_dir or ROOT / "reports/strategy_c_leader_research" / end
     if not output_dir.is_absolute():
         output_dir = ROOT / output_dir
@@ -1165,6 +1199,14 @@ def main() -> int:
     incumbent_acde_detail.to_csv(output_dir / "incumbent_acde_detail.csv", index=False, encoding="utf-8-sig")
 
     prior_metrics: dict[str, Any] = {}
+    forward_validation: dict[str, Any] = {
+        "start": forward_start,
+        "window_end": forward_window_end,
+        "available_through": forward_available_end,
+        "influenced_selection": False,
+        "candidate_day_count": 0,
+        "metrics": {},
+    }
     half_segments: list[dict[str, Any]] = []
     best_branch_audit: dict[str, Any] = {}
     best_key = str(best_row["candidate_id"]) if best_row else ""
@@ -1181,6 +1223,40 @@ def main() -> int:
         prior_selected = select_profiles(prior_pool, best_artifact["profiles"], rule)
         prior_selected = attach_outcomes(prior_selected, int(best_row["hold_days"]))
         _, prior_metrics = standalone_metrics(outcome_frame(prior_selected), prior_start, prior_end)
+
+        if forward_available_end != "暂无":
+            LOGGER.info(
+                "只读验证发布后前向账本：%s~%s，不参与候选选优",
+                forward_start,
+                forward_available_end,
+            )
+            forward_pool, forward_pool_audit = build_mother_pool(
+                forward_start, forward_available_end
+            )
+            forward_selected = select_profiles(
+                forward_pool, best_artifact["profiles"], rule
+            )
+            forward_selected = attach_outcomes(
+                forward_selected, int(best_row["hold_days"])
+            )
+            forward_detail, forward_metrics = standalone_metrics(
+                outcome_frame(forward_selected), forward_start, forward_available_end
+            )
+            forward_validation.update({
+                "candidate_day_count": int(len(forward_selected)),
+                "mother_pool_audit": forward_pool_audit,
+                "metrics": forward_metrics,
+            })
+            forward_selected.to_csv(
+                output_dir / "best_candidate_forward_picks.csv",
+                index=False,
+                encoding="utf-8-sig",
+            )
+            forward_detail.to_csv(
+                output_dir / "best_candidate_forward_c_detail.csv",
+                index=False,
+                encoding="utf-8-sig",
+            )
 
         output_dir.mkdir(parents=True, exist_ok=True)
         best_artifact["selected"].to_csv(output_dir / "best_candidate_picks.csv", index=False, encoding="utf-8-sig")
@@ -1258,6 +1334,7 @@ def main() -> int:
             "influenced_selection": False,
             "metrics": prior_metrics,
         },
+        "forward_validation": forward_validation,
         "best_half_year_segments": half_segments,
         "best_branch_audit": best_branch_audit,
         "formal_strategy_modified": False,
@@ -1268,6 +1345,7 @@ def main() -> int:
             "纯强势环境×明确龙头候选没有通过双复利闸门。",
             "最佳并集的两条分支单独替换C均未提高ACDE，提升依赖组合占仓路径交互。",
             "更早6个月只有5笔且复利略低于1倍，旁证不支持宣称策略已经样本外稳定。",
+            "发布后前向数据当前只覆盖到可靠候选母表的最新日期，实际执行样本仍极少。",
             "未来6个月才是真正前向样本外。",
             "机械复利不代表未来收益或资金容量。",
         ],

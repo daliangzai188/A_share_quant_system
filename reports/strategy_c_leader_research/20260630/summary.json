@@ -211,6 +211,41 @@
       }
     }
   },
+  "forward_validation": {
+    "start": "20260701",
+    "window_end": "20261231",
+    "available_through": "20260710",
+    "influenced_selection": false,
+    "candidate_day_count": 2,
+    "metrics": {
+      "trade_count": 1,
+      "win_rate": 1.0,
+      "avg_account_return": 0.00839811329670327,
+      "median_account_return": 0.00839811329670327,
+      "equity_multiple": 1.0083981132967033,
+      "max_drawdown": 0.0,
+      "max_profit": 0.00839811329670327,
+      "max_loss": 0.00839811329670327,
+      "profit_loss_ratio": 0.0,
+      "max_consecutive_losses": 0,
+      "win_rate_wilson_95_lower": 0.20654931437723745,
+      "win_rate_wilson_95_upper": 1.0,
+      "avg_return_bootstrap_95_lower": 0.00839811329670327,
+      "avg_return_bootstrap_95_upper": 0.00839811329670327,
+      "compound_standard_id": "A_SYSTEM_MECHANICAL_COMPOUND_V1",
+      "leg_counts": {
+        "C": 1
+      }
+    },
+    "mother_pool_audit": {
+      "all_reliable_candidate_count": 73671,
+      "window_rows_before_a_gate": 457,
+      "a_blocked_signal_day_count": 1,
+      "mother_pool_row_count": 387,
+      "mother_pool_signal_day_count": 7,
+      "risk_rejected_row_count": 19
+    }
+  },
   "best_half_year_segments": [
     {
       "start": "20240630",
@@ -360,6 +395,7 @@
     "纯强势环境×明确龙头候选没有通过双复利闸门。",
     "最佳并集的两条分支单独替换C均未提高ACDE，提升依赖组合占仓路径交互。",
     "更早6个月只有5笔且复利略低于1倍，旁证不支持宣称策略已经样本外稳定。",
+    "发布后前向数据当前只覆盖到可靠候选母表的最新日期，实际执行样本仍极少。",
     "未来6个月才是真正前向样本外。",
     "机械复利不代表未来收益或资金容量。"
   ]
