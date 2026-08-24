@@ -345,6 +345,12 @@ def test_complete_text_report_contains_conditions_baselines_and_decision() -> No
 
     text = render_best_result_text(payload)
 
+    assert "【一眼结论】" in text
+    assert "最佳组合：DIF_6501c8c095f9" in text
+    assert "D复利：2.8112400677倍" in text
+    assert "ACDE复利：486.3661434308倍" in text
+    assert "双复利闸门：通过" in text
+    assert "正式D是否修改：否" in text
     assert "DIF_6501c8c095f9" in text
     assert "486.3661434308倍" in text
     assert "候选具备替换资格：是" in text

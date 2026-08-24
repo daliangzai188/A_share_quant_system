@@ -704,6 +704,31 @@ def render_best_result_text(payload: Mapping[str, Any]) -> str:
         "D策略半年因子组合最佳结果",
         "==========================",
         "",
+    ]
+    if selected is not None:
+        lines.extend(
+            [
+                "【一眼结论】",
+                f"最佳组合：{selected['profile_id']}",
+                f"D复利：{multiple_text(selected['d_metrics']['equity_multiple'])}",
+                f"ACDE复利：{multiple_text(selected['acde_metrics']['equity_multiple'])}",
+                f"双复利闸门：{'通过' if selected['dual_compound_gate_passed'] else '不通过'}",
+                f"正式D是否修改：{'是' if payload['formal_strategy_modified'] else '否'}",
+                "",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "【一眼结论】",
+                "最佳组合：无",
+                "双复利闸门：不通过",
+                f"正式D是否修改：{'是' if payload['formal_strategy_modified'] else '否'}",
+                "",
+            ]
+        )
+    lines.extend(
+        [
         "一、运行口径",
         "",
         f"回测窗口：{window['start']}～{window['end']}",
@@ -724,7 +749,8 @@ def render_best_result_text(payload: Mapping[str, Any]) -> str:
         "分支门槛：样本数至少20笔、平均每笔收益严格大于2%、胜率严格大于55%、退出全部可解析。",
         "最佳候选排名：先要求D和ACDE双复利门通过，再按ACDE复利从高到低排名。",
         "",
-    ]
+        ]
+    )
     if selected is None:
         lines.extend(
             [
