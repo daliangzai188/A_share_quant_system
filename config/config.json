@@ -291,6 +291,7 @@
   },
   "strategy_d": {
     "file_role": "策略D首板打板配置。实盘必须逐字段对齐历史D核心口径：strong情绪、multi_open、炸板2~3次、首次封板不早于10:00、最后真实回封不早于14:00、成交概率>=80%且可靠、每日只取排序第一名、T+2收盘退出。09:30后启动仅可恢复同机、同日、同代码配置且未超过75秒的原子完整路径检查点，否则fail-closed。",
+    "factor_release_path": "config/strategy_d_factor_release.json",
     "allowed_market_segments": [
       "sh_main",
       "sz_main",

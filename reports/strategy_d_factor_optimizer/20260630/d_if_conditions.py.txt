@@ -1,0 +1,554 @@
+# 机器生成的D回封板多条件并集；任一if成立即允许进入D候选排序
+allow_d = False
+if factors['market_touch_count_bucket'] == '40_70' and factors['market_seal_rate_bucket'] == '40_60PCT':  # DIF_33b5f79a23d1
+    allow_d = True
+if factors['cumulative_amount_bucket'] == 'LT0_5' and factors['market_seal_rate_bucket'] == 'GE80PCT':  # DIF_2f0e7642041e
+    allow_d = True
+if factors['open_gap_bucket'] == '0_3PCT' and factors['cumulative_amount_bucket'] == 'LT0_5':  # DIF_86f99bf6f4af
+    allow_d = True
+if factors['cumulative_amount_bucket'] == 'LT0_5' and factors['market_break_rate_bucket'] == 'LT25PCT':  # DIF_d2f0271b3d9c
+    allow_d = True
+if factors['open_gap_bucket'] == 'GE7PCT' and factors['market_touch_count_bucket'] == '101_150':  # DIF_3f5d0e5f38f0
+    allow_d = True
+if factors['reseal_time_bucket'] == '1430_1454' and factors['pre_signal_low_bucket'] == 'GE7PCT':  # DIF_523830ae68d9
+    allow_d = True
+if factors['reseal_time_bucket'] == '1031_1130' and factors['market_touch_count_bucket'] == '40_70' and factors['market_seal_rate_bucket'] == '60_80PCT':  # DIF_97895b928bfd
+    allow_d = True
+if factors['reseal_time_bucket'] == '1031_1130' and factors['open_count_bucket'] == '1' and factors['open_gap_bucket'] == '3_7PCT':  # DIF_b6412f980c54
+    allow_d = True
+if factors['reseal_time_bucket'] == '1300_1359' and factors['reseal_speed_bucket'] == '2_5' and factors['open_gap_bucket'] == '3_7PCT':  # DIF_1bd5d9402168
+    allow_d = True
+if factors['reseal_time_bucket'] == '1001_1030' and factors['cumulative_amount_bucket'] == '0_5_1' and factors['market_seal_rate_bucket'] == '60_80PCT':  # DIF_a25ce0d62657
+    allow_d = True
+if factors['reseal_time_bucket'] == '1001_1030' and factors['first_to_reseal_bucket'] == '16_30' and factors['market_break_rate_bucket'] == '50_75PCT':  # DIF_7e652dd84e17
+    allow_d = True
+if factors['break_close_depth_bucket'] == 'LT0_2PCT' and factors['open_gap_bucket'] == '3_7PCT' and factors['market_active_count_bucket'] == '41_70':  # DIF_305261a80a5a
+    allow_d = True
+if factors['reseal_time_bucket'] == '1300_1359' and factors['reseal_speed_bucket'] == '6_10' and factors['segment_seal_rate_bucket'] == 'GE80PCT':  # DIF_ace9f52e1610
+    allow_d = True
+if factors['open_count_bucket'] == '4' and factors['cumulative_amount_bucket'] == 'GE1_5' and factors['market_touch_count_bucket'] == '71_100':  # DIF_cded55fffae8
+    allow_d = True
+if factors['open_count_bucket'] == '4' and factors['market_touch_count_bucket'] == '71_100' and factors['market_active_count_bucket'] == '41_70':  # DIF_56902285a6d8
+    allow_d = True
+if factors['reseal_time_bucket'] == '1031_1130' and factors['open_count_bucket'] == '3' and factors['previous_seal_hold_bucket'] == 'GE11':  # DIF_745e06484fc3
+    allow_d = True
+if factors['previous_seal_hold_bucket'] == 'LE1' and factors['open_gap_bucket'] == 'GE7PCT' and factors['market_seal_rate_bucket'] == 'GE80PCT':  # DIF_894acffa4fc2
+    allow_d = True
+if factors['open_count_bucket'] == '2' and factors['open_gap_bucket'] == '3_7PCT' and factors['market_active_count_bucket'] == '41_70':  # DIF_01e8e7d3768c
+    allow_d = True
+if factors['reseal_speed_bucket'] == '11_20' and factors['open_gap_bucket'] == '3_7PCT' and factors['market_seal_rate_bucket'] == '60_80PCT':  # DIF_8753b401e42c
+    allow_d = True
+if factors['reseal_time_bucket'] == '1031_1130' and factors['first_seal_time_bucket'] == '1001_1030' and factors['cumulative_amount_bucket'] == '0_5_1':  # DIF_e13b85c1a8e6
+    allow_d = True
+if factors['open_gap_bucket'] == '3_7PCT' and factors['market_touch_count_bucket'] == '71_100' and factors['market_active_count_bucket'] == '41_70':  # DIF_bef8f05b2a93
+    allow_d = True
+if factors['first_seal_time_bucket'] == '1001_1030' and factors['first_to_reseal_bucket'] == '16_30' and factors['market_break_rate_bucket'] == '50_75PCT':  # DIF_ede3913e8e8f
+    allow_d = True
+if factors['open_count_bucket'] == '3' and factors['cumulative_amount_bucket'] == '0_5_1' and factors['market_active_count_bucket'] == '20_40':  # DIF_4df87058dcb5
+    allow_d = True
+if factors['reseal_speed_bucket'] == '6_10' and factors['cumulative_amount_bucket'] == '0_5_1' and factors['segment_seal_rate_bucket'] == '60_80PCT':  # DIF_7df4e88ca4cf
+    allow_d = True
+if factors['first_seal_time_bucket'] == '1001_1030' and factors['first_to_reseal_bucket'] == '16_30' and factors['previous_seal_hold_bucket'] == 'GE11':  # DIF_bb1feb0d2f2f
+    allow_d = True
+if factors['reseal_time_bucket'] == '1300_1359' and factors['reseal_speed_bucket'] == '6_10' and factors['break_close_depth_bucket'] == '0_5_1PCT':  # DIF_e6adc2b571f5
+    allow_d = True
+if factors['reseal_time_bucket'] == '1300_1359' and factors['open_count_bucket'] == '3' and factors['market_seal_rate_bucket'] == 'GE80PCT':  # DIF_e48a404d49c7
+    allow_d = True
+if factors['reseal_speed_bucket'] == '11_20' and factors['open_gap_bucket'] == '3_7PCT' and factors['segment_seal_rate_bucket'] == 'GE80PCT':  # DIF_f9715ecc8ecb
+    allow_d = True
+if factors['reseal_time_bucket'] == '1001_1030' and factors['market_touch_count_bucket'] == '40_70' and factors['market_active_count_bucket'] == '20_40':  # DIF_52fe8c066788
+    allow_d = True
+if factors['open_count_bucket'] == '4' and factors['open_gap_bucket'] == '3_7PCT' and factors['market_touch_count_bucket'] == '40_70':  # DIF_082e9ac0a840
+    allow_d = True
+if factors['reseal_speed_bucket'] == '6_10' and factors['cumulative_amount_bucket'] == '0_5_1' and factors['market_touch_count_bucket'] == '40_70':  # DIF_7d626b7e4a22
+    allow_d = True
+if factors['break_close_depth_bucket'] == 'LT0_2PCT' and factors['open_gap_bucket'] == '3_7PCT' and factors['market_touch_count_bucket'] == '71_100':  # DIF_b3067a7a14ed
+    allow_d = True
+if factors['reseal_time_bucket'] == '1031_1130' and factors['reseal_speed_bucket'] == 'LE1' and factors['pre_signal_low_bucket'] == '3_7PCT':  # DIF_a735f4f06d46
+    allow_d = True
+if factors['first_seal_time_bucket'] == '1031_1130' and factors['first_to_reseal_bucket'] == '61_120' and factors['market_touch_count_bucket'] == '71_100':  # DIF_4e0e12156abe
+    allow_d = True
+if factors['open_count_bucket'] == '1' and factors['reseal_speed_bucket'] == '11_20' and factors['open_gap_bucket'] == '3_7PCT':  # DIF_f8acb7e03dbd
+    allow_d = True
+if factors['first_to_reseal_bucket'] == '31_60' and factors['previous_seal_hold_bucket'] == '6_10' and factors['pre_signal_low_bucket'] == '0_3PCT':  # DIF_f0da558411f7
+    allow_d = True
+if factors['reseal_time_bucket'] == '1300_1359' and factors['open_gap_bucket'] == '3_7PCT' and factors['cumulative_amount_bucket'] == '1_1_5':  # DIF_b43f9229a1a0
+    allow_d = True
+if factors['reseal_time_bucket'] == '1300_1359' and factors['reseal_speed_bucket'] == 'GE21' and factors['previous_seal_hold_bucket'] == '6_10':  # DIF_936728d89c4e
+    allow_d = True
+if factors['market_touch_count_bucket'] == '40_70' and factors['market_break_rate_bucket'] == 'GE75PCT' and factors['segment_seal_rate_bucket'] == '40_60PCT':  # DIF_302ec524dfaa
+    allow_d = True
+if factors['previous_seal_hold_bucket'] == 'LE1' and factors['open_gap_bucket'] == '3_7PCT' and factors['market_touch_count_bucket'] == '71_100':  # DIF_042f03f2ec1e
+    allow_d = True
+if factors['first_to_reseal_bucket'] == '31_60' and factors['break_close_depth_bucket'] == '1_2PCT' and factors['segment_bucket'] == 'GROWTH_BOARD':  # DIF_4b64a2826cf7
+    allow_d = True
+if factors['market_break_rate_bucket'] == 'GE75PCT' and factors['segment_bucket'] == 'GROWTH_BOARD' and factors['segment_seal_rate_bucket'] == '40_60PCT':  # DIF_ce88ed3ae07c
+    allow_d = True
+if factors['reseal_time_bucket'] == '1300_1359' and factors['previous_seal_hold_bucket'] == '6_10' and factors['open_gap_bucket'] == '3_7PCT':  # DIF_3e5bf0b15f59
+    allow_d = True
+if factors['reseal_time_bucket'] == '1031_1130' and factors['open_count_bucket'] == '3' and factors['pre_signal_low_bucket'] == '3_7PCT':  # DIF_1eef86ebd30a
+    allow_d = True
+if factors['first_seal_time_bucket'] == '1001_1030' and factors['open_count_bucket'] == '2' and factors['cumulative_amount_bucket'] == '0_5_1':  # DIF_ad6c674b45d4
+    allow_d = True
+if factors['reseal_speed_bucket'] == '6_10' and factors['break_close_depth_bucket'] == 'LT0_2PCT' and factors['pre_signal_low_bucket'] == '3_7PCT':  # DIF_42b61da7a52d
+    allow_d = True
+if factors['reseal_time_bucket'] == '0930_1000' and factors['break_close_depth_bucket'] == '0_2_0_5PCT' and factors['pre_signal_low_bucket'] == '3_7PCT':  # DIF_5574ca34b6be
+    allow_d = True
+if factors['reseal_time_bucket'] == '1300_1359' and factors['reseal_speed_bucket'] == '6_10' and factors['market_touch_count_bucket'] == '71_100':  # DIF_66f596668d13
+    allow_d = True
+if factors['open_gap_bucket'] == '3_7PCT' and factors['segment_bucket'] == 'GROWTH_BOARD' and factors['segment_seal_rate_bucket'] == '60_80PCT':  # DIF_056b941da7c4
+    allow_d = True
+if factors['reseal_time_bucket'] == '1031_1130' and factors['first_to_reseal_bucket'] == '16_30' and factors['segment_bucket'] == 'GROWTH_BOARD':  # DIF_d00f26f24e6a
+    allow_d = True
+if factors['open_count_bucket'] == '4' and factors['previous_seal_hold_bucket'] == '2_5' and factors['open_gap_bucket'] == '3_7PCT':  # DIF_03e480431872
+    allow_d = True
+if factors['reseal_time_bucket'] == '1300_1359' and factors['open_count_bucket'] == '4' and factors['market_touch_count_bucket'] == '71_100':  # DIF_96e298412895
+    allow_d = True
+if factors['reseal_time_bucket'] == '1300_1359' and factors['reseal_speed_bucket'] == '6_10' and factors['open_gap_bucket'] == '3_7PCT':  # DIF_1c205278fb6e
+    allow_d = True
+if factors['reseal_time_bucket'] == '1300_1359' and factors['first_to_reseal_bucket'] == 'LE15' and factors['open_gap_bucket'] == '3_7PCT':  # DIF_ae80a11e477d
+    allow_d = True
+if factors['open_count_bucket'] == 'GE5' and factors['cumulative_amount_bucket'] == '0_5_1' and factors['market_seal_rate_bucket'] == '60_80PCT':  # DIF_8e3c8eb02fec
+    allow_d = True
+if factors['first_seal_time_bucket'] == '1031_1130' and factors['open_count_bucket'] == '4' and factors['market_touch_count_bucket'] == '71_100':  # DIF_e88bd6988f4d
+    allow_d = True
+if factors['reseal_time_bucket'] == '1031_1130' and factors['first_seal_time_bucket'] == '1001_1030' and factors['open_gap_bucket'] == '3_7PCT':  # DIF_1c072737a711
+    allow_d = True
+if factors['open_count_bucket'] == '4' and factors['first_to_reseal_bucket'] == '61_120' and factors['pre_signal_low_bucket'] == '3_7PCT':  # DIF_c30b18e4e4d6
+    allow_d = True
+if factors['pre_signal_low_bucket'] == '0_3PCT' and factors['market_active_count_bucket'] == 'LT20' and factors['market_break_rate_bucket'] == 'LT25PCT':  # DIF_c2449378b30a
+    allow_d = True
+if factors['reseal_time_bucket'] == '1300_1359' and factors['open_gap_bucket'] == '3_7PCT' and factors['market_touch_count_bucket'] == '71_100':  # DIF_5af1b3009c08
+    allow_d = True
+if factors['market_active_count_bucket'] == '41_70' and factors['market_seal_rate_bucket'] == '60_80PCT' and factors['segment_seal_rate_bucket'] == '40_60PCT':  # DIF_84dae76982b2
+    allow_d = True
+if factors['first_seal_time_bucket'] == '1001_1030' and factors['reseal_speed_bucket'] == 'LE1' and factors['first_to_reseal_bucket'] == '16_30':  # DIF_8608cea45f88
+    allow_d = True
+if factors['reseal_time_bucket'] == '1001_1030' and factors['market_touch_count_bucket'] == '40_70' and factors['segment_seal_rate_bucket'] == '60_80PCT':  # DIF_5e092ed87d4b
+    allow_d = True
+if factors['first_seal_time_bucket'] == '1001_1030' and factors['reseal_speed_bucket'] == '2_5' and factors['market_touch_count_bucket'] == '71_100':  # DIF_24317ebd9b96
+    allow_d = True
+if factors['open_gap_bucket'] == '3_7PCT' and factors['cumulative_amount_bucket'] == '0_5_1' and factors['market_touch_count_bucket'] == '40_70':  # DIF_e1412f500d8a
+    allow_d = True
+if factors['open_count_bucket'] == 'GE5' and factors['previous_seal_hold_bucket'] == '2_5' and factors['cumulative_amount_bucket'] == '0_5_1':  # DIF_62d216bba5e3
+    allow_d = True
+if factors['first_seal_time_bucket'] == '1001_1030' and factors['first_to_reseal_bucket'] == '16_30' and factors['cumulative_amount_bucket'] == '0_5_1':  # DIF_6ab407a89f59
+    allow_d = True
+if factors['cumulative_amount_bucket'] == '1_1_5' and factors['market_touch_count_bucket'] == '40_70' and factors['segment_seal_rate_bucket'] == '40_60PCT':  # DIF_0eea0ab6cb1d
+    allow_d = True
+if factors['open_count_bucket'] == '3' and factors['break_close_depth_bucket'] == '0_5_1PCT' and factors['market_seal_rate_bucket'] == 'GE80PCT':  # DIF_6890788d4582
+    allow_d = True
+if factors['reseal_speed_bucket'] == '6_10' and factors['previous_seal_hold_bucket'] == '6_10' and factors['pre_signal_low_bucket'] == '0_3PCT':  # DIF_b80623d96b63
+    allow_d = True
+if factors['first_seal_time_bucket'] == '1001_1030' and factors['reseal_speed_bucket'] == '2_5' and factors['open_gap_bucket'] == '3_7PCT':  # DIF_2dcd8e36e128
+    allow_d = True
+if factors['reseal_time_bucket'] == '1031_1130' and factors['open_count_bucket'] == '4' and factors['pre_signal_low_bucket'] == '3_7PCT':  # DIF_7fbd9aefaedf
+    allow_d = True
+if factors['reseal_speed_bucket'] == '11_20' and factors['open_gap_bucket'] == '3_7PCT' and factors['cumulative_amount_bucket'] == '1_1_5':  # DIF_77cc00e52bd9
+    allow_d = True
+if factors['reseal_time_bucket'] == '1001_1030' and factors['open_gap_bucket'] == '3_7PCT' and factors['cumulative_amount_bucket'] == '0_5_1':  # DIF_323060cc687f
+    allow_d = True
+if factors['first_seal_time_bucket'] == '1300_1359' and factors['previous_seal_hold_bucket'] == 'LE1' and factors['open_gap_bucket'] == '3_7PCT':  # DIF_8ce570142e55
+    allow_d = True
+if factors['reseal_time_bucket'] == '1300_1359' and factors['open_count_bucket'] == '4' and factors['cumulative_amount_bucket'] == '0_5_1':  # DIF_0049c5e5e177
+    allow_d = True
+if factors['break_close_depth_bucket'] == 'LT0_2PCT' and factors['pre_signal_low_bucket'] == '3_7PCT' and factors['market_touch_count_bucket'] == '71_100':  # DIF_70fa24b54e24
+    allow_d = True
+if factors['first_to_reseal_bucket'] == '61_120' and factors['previous_seal_hold_bucket'] == '6_10' and factors['open_gap_bucket'] == '3_7PCT':  # DIF_699d42648e3e
+    allow_d = True
+if factors['first_seal_time_bucket'] == '1300_1359' and factors['reseal_speed_bucket'] == 'LE1' and factors['open_gap_bucket'] == '3_7PCT':  # DIF_309452763dcc
+    allow_d = True
+if factors['open_count_bucket'] == '3' and factors['previous_seal_hold_bucket'] == '6_10' and factors['market_active_count_bucket'] == '41_70':  # DIF_c7e997348c8d
+    allow_d = True
+if factors['reseal_speed_bucket'] == '6_10' and factors['break_close_depth_bucket'] == '0_2_0_5PCT' and factors['cumulative_amount_bucket'] == '0_5_1':  # DIF_7347954c8de8
+    allow_d = True
+if factors['open_count_bucket'] == 'GE5' and factors['open_gap_bucket'] == '3_7PCT' and factors['market_touch_count_bucket'] == '71_100':  # DIF_93832867b433
+    allow_d = True
+if factors['reseal_time_bucket'] == '1031_1130' and factors['break_close_depth_bucket'] == '1_2PCT' and factors['open_gap_bucket'] == '3_7PCT':  # DIF_ef67f0a21bae
+    allow_d = True
+if factors['market_active_count_bucket'] == '41_70' and factors['market_break_rate_bucket'] == 'GE75PCT' and factors['segment_seal_rate_bucket'] == '40_60PCT':  # DIF_ceba7fdd0b80
+    allow_d = True
+if factors['open_gap_bucket'] == '3_7PCT' and factors['cumulative_amount_bucket'] == '1_1_5' and factors['segment_bucket'] == 'GROWTH_BOARD':  # DIF_fd879a2e3f10
+    allow_d = True
+if factors['pre_signal_low_bucket'] == '3_7PCT' and factors['cumulative_amount_bucket'] == '0_5_1' and factors['market_touch_count_bucket'] == '40_70':  # DIF_905032acc3cc
+    allow_d = True
+if factors['reseal_time_bucket'] == '1031_1130' and factors['reseal_speed_bucket'] == '11_20' and factors['open_gap_bucket'] == '3_7PCT':  # DIF_71f98e5fe06d
+    allow_d = True
+if factors['first_seal_time_bucket'] == '1300_1359' and factors['open_gap_bucket'] == '3_7PCT' and factors['segment_seal_rate_bucket'] == '60_80PCT':  # DIF_9851ec5c5622
+    allow_d = True
+if factors['break_close_depth_bucket'] == 'LT0_2PCT' and factors['market_active_count_bucket'] == '71_100' and factors['segment_bucket'] == 'MAIN_BOARD':  # DIF_732ef8b27352
+    allow_d = True
+if factors['reseal_time_bucket'] == '1430_1454' and factors['break_close_depth_bucket'] == '0_2_0_5PCT' and factors['market_seal_rate_bucket'] == 'GE80PCT':  # DIF_0dadfd6de631
+    allow_d = True
+if factors['open_count_bucket'] == '3' and factors['previous_seal_hold_bucket'] == 'GE11' and factors['cumulative_amount_bucket'] == '0_5_1':  # DIF_76d7c32a4c9a
+    allow_d = True
+if factors['reseal_speed_bucket'] == '6_10' and factors['first_to_reseal_bucket'] == '16_30' and factors['previous_seal_hold_bucket'] == '2_5':  # DIF_8934a57add97
+    allow_d = True
+if factors['open_gap_bucket'] == '0_3PCT' and factors['market_active_count_bucket'] == '41_70' and factors['segment_seal_rate_bucket'] == '40_60PCT':  # DIF_93a577b481e1
+    allow_d = True
+if factors['first_seal_time_bucket'] == '1300_1359' and factors['open_gap_bucket'] == '3_7PCT' and factors['pre_signal_low_bucket'] == '0_3PCT':  # DIF_cdc0d3e40e9f
+    allow_d = True
+if factors['reseal_speed_bucket'] == '6_10' and factors['previous_seal_hold_bucket'] == '6_10' and factors['market_active_count_bucket'] == '41_70':  # DIF_4e3c134d9e79
+    allow_d = True
+if factors['reseal_time_bucket'] == '1031_1130' and factors['first_to_reseal_bucket'] == '16_30' and factors['open_gap_bucket'] == '3_7PCT':  # DIF_523a604c5ff5
+    allow_d = True
+if factors['reseal_speed_bucket'] == '11_20' and factors['break_close_depth_bucket'] == '0_2_0_5PCT' and factors['open_gap_bucket'] == '3_7PCT':  # DIF_b44af3cfd546
+    allow_d = True
+if factors['reseal_speed_bucket'] == '6_10' and factors['open_gap_bucket'] == '3_7PCT' and factors['cumulative_amount_bucket'] == '0_5_1':  # DIF_42c0429f07d6
+    allow_d = True
+if factors['reseal_speed_bucket'] == '2_5' and factors['pre_signal_low_bucket'] == '3_7PCT' and factors['market_touch_count_bucket'] == '71_100':  # DIF_018aaa597b28
+    allow_d = True
+if factors['first_seal_time_bucket'] == '1001_1030' and factors['first_to_reseal_bucket'] == '61_120' and factors['previous_seal_hold_bucket'] == '6_10':  # DIF_3bc345295c06
+    allow_d = True
+if factors['reseal_time_bucket'] == '1001_1030' and factors['pre_signal_low_bucket'] == '3_7PCT' and factors['cumulative_amount_bucket'] == '0_5_1':  # DIF_864d19371c1b
+    allow_d = True
+if factors['first_seal_time_bucket'] == '1300_1359' and factors['reseal_speed_bucket'] == '2_5' and factors['segment_seal_rate_bucket'] == '40_60PCT':  # DIF_897ce21d898b
+    allow_d = True
+if factors['open_count_bucket'] == 'GE5' and factors['first_to_reseal_bucket'] == '61_120' and factors['cumulative_amount_bucket'] == '0_5_1':  # DIF_572bd7c6a2b4
+    allow_d = True
+if factors['first_to_reseal_bucket'] == '16_30' and factors['break_close_depth_bucket'] == '0_2_0_5PCT' and factors['open_gap_bucket'] == '3_7PCT':  # DIF_876bf3fb5b05
+    allow_d = True
+if factors['reseal_speed_bucket'] == '11_20' and factors['first_to_reseal_bucket'] == '31_60' and factors['open_gap_bucket'] == '3_7PCT':  # DIF_770be959c836
+    allow_d = True
+if factors['reseal_speed_bucket'] == '2_5' and factors['pre_signal_low_bucket'] == '0_3PCT' and factors['market_break_rate_bucket'] == 'LT25PCT':  # DIF_ceb99bcf84d9
+    allow_d = True
+if factors['open_count_bucket'] == '3' and factors['open_gap_bucket'] == '3_7PCT' and factors['cumulative_amount_bucket'] == '0_5_1':  # DIF_a543560ff7c3
+    allow_d = True
+if factors['previous_seal_hold_bucket'] == 'LE1' and factors['open_gap_bucket'] == 'GE7PCT' and factors['cumulative_amount_bucket'] == '0_5_1':  # DIF_74f088d9e1fc
+    allow_d = True
+if factors['reseal_time_bucket'] == '1031_1130' and factors['open_gap_bucket'] == '3_7PCT' and factors['cumulative_amount_bucket'] == '0_5_1':  # DIF_b071a3716b42
+    allow_d = True
+if factors['open_count_bucket'] == '4' and factors['first_to_reseal_bucket'] == '31_60' and factors['open_gap_bucket'] == '3_7PCT':  # DIF_b8004667c1b6
+    allow_d = True
+if factors['open_count_bucket'] == '3' and factors['previous_seal_hold_bucket'] == '6_10' and factors['open_gap_bucket'] == '3_7PCT':  # DIF_3f9571ec43f1
+    allow_d = True
+if factors['reseal_time_bucket'] == '1300_1359' and factors['open_count_bucket'] == 'GE5' and factors['cumulative_amount_bucket'] == '0_5_1':  # DIF_b14eeb3debc4
+    allow_d = True
+if factors['reseal_speed_bucket'] == '6_10' and factors['break_close_depth_bucket'] == '0_2_0_5PCT' and factors['pre_signal_low_bucket'] == '3_7PCT':  # DIF_441e0f7ecbb7
+    allow_d = True
+if factors['first_seal_time_bucket'] == '1001_1030' and factors['first_to_reseal_bucket'] == '16_30' and factors['market_active_count_bucket'] == '41_70':  # DIF_ebed68a00a88
+    allow_d = True
+if factors['reseal_time_bucket'] == '1001_1030' and factors['open_count_bucket'] == '2' and factors['market_active_count_bucket'] == '41_70':  # DIF_a0f6ee99744b
+    allow_d = True
+if factors['first_seal_time_bucket'] == '1300_1359' and factors['open_count_bucket'] == '3' and factors['open_gap_bucket'] == '3_7PCT':  # DIF_8ca799a1e392
+    allow_d = True
+if factors['break_close_depth_bucket'] == '0_2_0_5PCT' and factors['cumulative_amount_bucket'] == 'GE1_5' and factors['market_touch_count_bucket'] == '101_150':  # DIF_99dd26b14152
+    allow_d = True
+if factors['market_touch_count_bucket'] == '71_100' and factors['market_break_rate_bucket'] == 'GE75PCT' and factors['segment_seal_rate_bucket'] == '40_60PCT':  # DIF_9b9b473d20fb
+    allow_d = True
+if factors['reseal_time_bucket'] == '1300_1359' and factors['market_active_count_bucket'] == '71_100' and factors['segment_seal_rate_bucket'] == 'GE80PCT':  # DIF_5c049afbceba
+    allow_d = True
+if factors['reseal_speed_bucket'] == 'LE1' and factors['market_active_count_bucket'] == '71_100' and factors['market_break_rate_bucket'] == 'GE75PCT':  # DIF_e28a2e98905b
+    allow_d = True
+if factors['reseal_time_bucket'] == '1300_1359' and factors['open_gap_bucket'] == '3_7PCT' and factors['cumulative_amount_bucket'] == '0_5_1':  # DIF_a5fe750af57d
+    allow_d = True
+if factors['reseal_time_bucket'] == '1001_1030' and factors['previous_seal_hold_bucket'] == '6_10' and factors['market_touch_count_bucket'] == '40_70':  # DIF_df66d125878b
+    allow_d = True
+if factors['open_gap_bucket'] == 'GE7PCT' and factors['market_active_count_bucket'] == 'LT20' and factors['market_break_rate_bucket'] == 'LT25PCT':  # DIF_476ed06d5928
+    allow_d = True
+if factors['first_seal_time_bucket'] == '1031_1130' and factors['open_count_bucket'] == 'GE5' and factors['first_to_reseal_bucket'] == '31_60':  # DIF_64b8de66053f
+    allow_d = True
+if factors['open_count_bucket'] == '3' and factors['first_to_reseal_bucket'] == 'GE121' and factors['cumulative_amount_bucket'] == '0_5_1':  # DIF_b87b5d87bb20
+    allow_d = True
+if factors['previous_seal_hold_bucket'] == '2_5' and factors['pre_signal_low_bucket'] == '3_7PCT' and factors['market_touch_count_bucket'] == '71_100':  # DIF_57da3ca3094c
+    allow_d = True
+if factors['reseal_time_bucket'] == '1400_1429' and factors['open_count_bucket'] == '4' and factors['market_seal_rate_bucket'] == 'GE80PCT':  # DIF_ab4699fa5d94
+    allow_d = True
+if factors['first_to_reseal_bucket'] == 'LE15' and factors['open_gap_bucket'] == '3_7PCT' and factors['market_touch_count_bucket'] == '71_100':  # DIF_5afcf505f041
+    allow_d = True
+if factors['cumulative_amount_bucket'] == 'GE1_5' and factors['market_touch_count_bucket'] == '101_150' and factors['market_active_count_bucket'] == '71_100':  # DIF_158f7558fca8
+    allow_d = True
+if factors['first_seal_time_bucket'] == '1031_1130' and factors['reseal_speed_bucket'] == '11_20' and factors['segment_bucket'] == 'GROWTH_BOARD':  # DIF_bfabd023ed36
+    allow_d = True
+if factors['break_close_depth_bucket'] == 'GE2PCT' and factors['cumulative_amount_bucket'] == '0_5_1' and factors['market_seal_rate_bucket'] == 'GE80PCT':  # DIF_f643e16e8c10
+    allow_d = True
+if factors['cumulative_amount_bucket'] == '1_1_5' and factors['market_active_count_bucket'] == 'LT20' and factors['segment_bucket'] == 'GROWTH_BOARD':  # DIF_1643047ad5f1
+    allow_d = True
+if factors['first_seal_time_bucket'] == '1001_1030' and factors['open_gap_bucket'] == '3_7PCT' and factors['market_active_count_bucket'] == '41_70':  # DIF_b57089b77ab5
+    allow_d = True
+if factors['open_count_bucket'] == 'GE5' and factors['cumulative_amount_bucket'] == '0_5_1' and factors['market_touch_count_bucket'] == '40_70':  # DIF_c93f8294b021
+    allow_d = True
+if factors['reseal_time_bucket'] == '1001_1030' and factors['open_count_bucket'] == '4' and factors['pre_signal_low_bucket'] == '0_3PCT':  # DIF_231386eb8a53
+    allow_d = True
+if factors['previous_seal_hold_bucket'] == '2_5' and factors['market_touch_count_bucket'] == '101_150' and factors['market_active_count_bucket'] == '71_100':  # DIF_5790878661b9
+    allow_d = True
+if factors['open_count_bucket'] == '3' and factors['reseal_speed_bucket'] == '6_10' and factors['first_to_reseal_bucket'] == '16_30':  # DIF_3e6154e06e00
+    allow_d = True
+if factors['reseal_speed_bucket'] == '2_5' and factors['cumulative_amount_bucket'] == 'GE1_5' and factors['market_touch_count_bucket'] == '101_150':  # DIF_121ccbcbb40b
+    allow_d = True
+if factors['open_count_bucket'] == 'GE5' and factors['first_to_reseal_bucket'] == 'GE121' and factors['open_gap_bucket'] == 'GE7PCT':  # DIF_eb7991c9a6fc
+    allow_d = True
+if factors['first_seal_time_bucket'] == '1001_1030' and factors['previous_seal_hold_bucket'] == '6_10' and factors['cumulative_amount_bucket'] == '0_5_1':  # DIF_612bd6c4e89f
+    allow_d = True
+if factors['open_count_bucket'] == '3' and factors['market_touch_count_bucket'] == '101_150' and factors['market_active_count_bucket'] == '71_100':  # DIF_f1b3fe94a1e0
+    allow_d = True
+if factors['reseal_speed_bucket'] == '6_10' and factors['pre_signal_low_bucket'] == '3_7PCT' and factors['cumulative_amount_bucket'] == '0_5_1':  # DIF_63d4c16c6bac
+    allow_d = True
+if factors['previous_seal_hold_bucket'] == '2_5' and factors['break_close_depth_bucket'] == '0_5_1PCT' and factors['open_gap_bucket'] == 'GE7PCT':  # DIF_bb1d16a8e9b1
+    allow_d = True
+if factors['previous_seal_hold_bucket'] == '6_10' and factors['open_gap_bucket'] == '3_7PCT' and factors['cumulative_amount_bucket'] == '0_5_1':  # DIF_f3a590fbc101
+    allow_d = True
+if factors['first_to_reseal_bucket'] == 'LE15' and factors['market_active_count_bucket'] == '71_100' and factors['market_break_rate_bucket'] == 'GE75PCT':  # DIF_fdac7ee8ce18
+    allow_d = True
+if factors['first_to_reseal_bucket'] == 'GE121' and factors['break_close_depth_bucket'] == '0_5_1PCT' and factors['open_gap_bucket'] == 'GE7PCT':  # DIF_0c2d875035f2
+    allow_d = True
+if factors['reseal_speed_bucket'] == '2_5' and factors['market_touch_count_bucket'] == '71_100' and factors['segment_seal_rate_bucket'] == '40_60PCT':  # DIF_4b373e6b0e18
+    allow_d = True
+if factors['reseal_time_bucket'] == '1300_1359' and factors['reseal_speed_bucket'] == '11_20' and factors['pre_signal_low_bucket'] == '3_7PCT':  # DIF_fc9774c8ed57
+    allow_d = True
+if factors['open_count_bucket'] == '3' and factors['reseal_speed_bucket'] == 'GE21' and factors['segment_bucket'] == 'GROWTH_BOARD':  # DIF_8f247a4b7d4a
+    allow_d = True
+if factors['market_touch_count_bucket'] == '40_70' and factors['market_active_count_bucket'] == '41_70' and factors['segment_seal_rate_bucket'] == '40_60PCT':  # DIF_c87168c29b2c
+    allow_d = True
+if factors['open_count_bucket'] == '3' and factors['previous_seal_hold_bucket'] == '6_10' and factors['pre_signal_low_bucket'] == '3_7PCT':  # DIF_979aadfe3f2a
+    allow_d = True
+if factors['first_to_reseal_bucket'] == '16_30' and factors['break_close_depth_bucket'] == 'GE2PCT' and factors['segment_seal_rate_bucket'] == '60_80PCT':  # DIF_4bc8323f69b1
+    allow_d = True
+if factors['reseal_time_bucket'] == '1031_1130' and factors['segment_bucket'] == 'GROWTH_BOARD' and factors['segment_seal_rate_bucket'] == '40_60PCT':  # DIF_c6ab3a012a49
+    allow_d = True
+if factors['reseal_time_bucket'] == '1300_1359' and factors['market_active_count_bucket'] == '71_100' and factors['market_seal_rate_bucket'] == 'GE80PCT':  # DIF_c33517e8bbf4
+    allow_d = True
+if factors['first_seal_time_bucket'] == '1300_1359' and factors['previous_seal_hold_bucket'] == '6_10' and factors['open_gap_bucket'] == '3_7PCT':  # DIF_2bb40fc421b1
+    allow_d = True
+if factors['open_count_bucket'] == '2' and factors['reseal_speed_bucket'] == '2_5' and factors['market_touch_count_bucket'] == '101_150':  # DIF_0ad32d9da966
+    allow_d = True
+if factors['reseal_time_bucket'] == '1400_1429' and factors['first_seal_time_bucket'] == '1300_1359' and factors['segment_seal_rate_bucket'] == '40_60PCT':  # DIF_b65025cdf1ef
+    allow_d = True
+if factors['reseal_speed_bucket'] == 'GE21' and factors['market_touch_count_bucket'] == '101_150' and factors['market_active_count_bucket'] == '71_100':  # DIF_f45a50078a53
+    allow_d = True
+if factors['reseal_time_bucket'] == '0930_1000' and factors['break_close_depth_bucket'] == 'LT0_2PCT' and factors['segment_bucket'] == 'GROWTH_BOARD':  # DIF_6501c8c095f9
+    allow_d = True
+if factors['reseal_time_bucket'] == '1400_1429' and factors['first_seal_time_bucket'] == '1001_1030' and factors['reseal_speed_bucket'] == '6_10':  # DIF_a4f06096ff88
+    allow_d = True
+if factors['first_to_reseal_bucket'] == '61_120' and factors['market_touch_count_bucket'] == '101_150' and factors['market_break_rate_bucket'] == 'GE75PCT':  # DIF_0dffb2cb340c
+    allow_d = True
+if factors['first_seal_time_bucket'] == '1001_1030' and factors['reseal_speed_bucket'] == '11_20' and factors['open_gap_bucket'] == '3_7PCT':  # DIF_9ae054086c83
+    allow_d = True
+if factors['first_seal_time_bucket'] == '1001_1030' and factors['previous_seal_hold_bucket'] == '6_10' and factors['market_touch_count_bucket'] == '71_100':  # DIF_0b730b173d7b
+    allow_d = True
+if factors['cumulative_amount_bucket'] == 'GE1_5' and factors['market_touch_count_bucket'] == '101_150' and factors['segment_seal_rate_bucket'] == 'GE80PCT':  # DIF_e57d9fb277b0
+    allow_d = True
+if factors['first_seal_time_bucket'] == '1400_1429' and factors['first_to_reseal_bucket'] == '31_60' and factors['cumulative_amount_bucket'] == 'GE1_5':  # DIF_399522478be6
+    allow_d = True
+if factors['open_count_bucket'] == 'GE5' and factors['reseal_speed_bucket'] == '11_20' and factors['open_gap_bucket'] == '3_7PCT':  # DIF_f977f2b14154
+    allow_d = True
+if factors['previous_seal_hold_bucket'] == '2_5' and factors['pre_signal_low_bucket'] == '0_3PCT' and factors['market_break_rate_bucket'] == 'LT25PCT':  # DIF_3f3c3d3db7c6
+    allow_d = True
+if factors['open_count_bucket'] == '2' and factors['pre_signal_low_bucket'] == 'GE7PCT' and factors['market_break_rate_bucket'] == 'GE75PCT':  # DIF_c535386131b2
+    allow_d = True
+if factors['reseal_time_bucket'] == '1300_1359' and factors['first_to_reseal_bucket'] == '16_30' and factors['market_active_count_bucket'] == '71_100':  # DIF_4a317fc6799a
+    allow_d = True
+if factors['open_count_bucket'] == 'GE5' and factors['cumulative_amount_bucket'] == '0_5_1' and factors['market_active_count_bucket'] == '20_40':  # DIF_9456ab6622c7
+    allow_d = True
+if factors['reseal_time_bucket'] == '1001_1030' and factors['open_count_bucket'] == '3' and factors['market_active_count_bucket'] == '41_70':  # DIF_d6128cff7a88
+    allow_d = True
+if factors['break_close_depth_bucket'] == '0_2_0_5PCT' and factors['open_gap_bucket'] == 'GE7PCT' and factors['cumulative_amount_bucket'] == '1_1_5':  # DIF_19996579c485
+    allow_d = True
+if factors['first_seal_time_bucket'] == '1300_1359' and factors['cumulative_amount_bucket'] == '1_1_5' and factors['segment_seal_rate_bucket'] == '40_60PCT':  # DIF_efeab84c6838
+    allow_d = True
+if factors['reseal_speed_bucket'] == '6_10' and factors['previous_seal_hold_bucket'] == '6_10' and factors['cumulative_amount_bucket'] == '1_1_5':  # DIF_efd040032ba8
+    allow_d = True
+if factors['previous_seal_hold_bucket'] == 'GE11' and factors['break_close_depth_bucket'] == 'GE2PCT' and factors['segment_seal_rate_bucket'] == '40_60PCT':  # DIF_e4d5c42111e2
+    allow_d = True
+if factors['first_to_reseal_bucket'] == 'GE121' and factors['break_close_depth_bucket'] == '0_2_0_5PCT' and factors['cumulative_amount_bucket'] == '0_5_1':  # DIF_9ff03bf20b66
+    allow_d = True
+if factors['reseal_speed_bucket'] == '6_10' and factors['previous_seal_hold_bucket'] == '6_10' and factors['market_touch_count_bucket'] == '71_100':  # DIF_414e35e93982
+    allow_d = True
+if factors['break_close_depth_bucket'] == 'GE2PCT' and factors['market_break_rate_bucket'] == 'GE75PCT' and factors['segment_seal_rate_bucket'] == '40_60PCT':  # DIF_6fdd0fc994cf
+    allow_d = True
+if factors['open_count_bucket'] == '3' and factors['pre_signal_low_bucket'] == '3_7PCT' and factors['segment_seal_rate_bucket'] == '40_60PCT':  # DIF_85f3c562e4de
+    allow_d = True
+if factors['reseal_time_bucket'] == '1001_1030' and factors['first_to_reseal_bucket'] == '16_30' and factors['open_gap_bucket'] == 'GE7PCT':  # DIF_6bcf46628f41
+    allow_d = True
+if factors['previous_seal_hold_bucket'] == 'GE11' and factors['pre_signal_low_bucket'] == 'GE7PCT' and factors['segment_seal_rate_bucket'] == '40_60PCT':  # DIF_e6a19d0ef9eb
+    allow_d = True
+if factors['reseal_speed_bucket'] == 'LE1' and factors['break_close_depth_bucket'] == '0_2_0_5PCT' and factors['pre_signal_low_bucket'] == 'GE7PCT':  # DIF_b6f22da26b5d
+    allow_d = True
+if factors['open_count_bucket'] == '4' and factors['break_close_depth_bucket'] == '0_2_0_5PCT' and factors['open_gap_bucket'] == 'GE7PCT':  # DIF_0c23797b2d9b
+    allow_d = True
+if factors['previous_seal_hold_bucket'] == '6_10' and factors['cumulative_amount_bucket'] == '1_1_5' and factors['segment_seal_rate_bucket'] == '40_60PCT':  # DIF_3f0ac110ea1f
+    allow_d = True
+if factors['reseal_time_bucket'] == '1001_1030' and factors['break_close_depth_bucket'] == '1_2PCT' and factors['open_gap_bucket'] == 'GE7PCT':  # DIF_a51d2d96e807
+    allow_d = True
+if factors['open_count_bucket'] == '2' and factors['reseal_speed_bucket'] == '6_10' and factors['previous_seal_hold_bucket'] == '6_10':  # DIF_6dd25c7f0e23
+    allow_d = True
+if factors['open_count_bucket'] == '4' and factors['pre_signal_low_bucket'] == '0_3PCT' and factors['market_touch_count_bucket'] == '101_150':  # DIF_ef7e2244a05f
+    allow_d = True
+if factors['first_seal_time_bucket'] == '1400_1429' and factors['open_count_bucket'] == '1' and factors['market_touch_count_bucket'] == '101_150':  # DIF_9cc8565b5297
+    allow_d = True
+if factors['first_seal_time_bucket'] == '0930_1000' and factors['break_close_depth_bucket'] == 'LT0_2PCT' and factors['market_break_rate_bucket'] == 'LT25PCT':  # DIF_ab7289836cec
+    allow_d = True
+if factors['open_count_bucket'] == '1' and factors['pre_signal_low_bucket'] == 'GE7PCT' and factors['segment_seal_rate_bucket'] == '40_60PCT':  # DIF_70ad56b9355f
+    allow_d = True
+if factors['market_touch_count_bucket'] == '71_100' and factors['segment_bucket'] == 'GROWTH_BOARD' and factors['segment_seal_rate_bucket'] == '40_60PCT':  # DIF_b1c130330bfb
+    allow_d = True
+if factors['pre_signal_low_bucket'] == 'GE7PCT' and factors['market_break_rate_bucket'] == 'GE75PCT' and factors['segment_seal_rate_bucket'] == '60_80PCT':  # DIF_cbb2daeeb840
+    allow_d = True
+if factors['reseal_time_bucket'] == '1300_1359' and factors['break_close_depth_bucket'] == '0_5_1PCT' and factors['open_gap_bucket'] == 'GE7PCT':  # DIF_c8ff611fe7fa
+    allow_d = True
+if factors['reseal_speed_bucket'] == '2_5' and factors['cumulative_amount_bucket'] == 'LT0_5' and factors['market_touch_count_bucket'] == 'LT40':  # DIF_fc817e74312a
+    allow_d = True
+if factors['reseal_speed_bucket'] == 'GE21' and factors['previous_seal_hold_bucket'] == 'LE1' and factors['market_active_count_bucket'] == 'LT20':  # DIF_6423fdf2f2dd
+    allow_d = True
+if factors['reseal_time_bucket'] == '1031_1130' and factors['first_to_reseal_bucket'] == '16_30' and factors['market_touch_count_bucket'] == '71_100':  # DIF_c3f28a8d8366
+    allow_d = True
+if factors['first_seal_time_bucket'] == '1031_1130' and factors['first_to_reseal_bucket'] == '61_120' and factors['market_touch_count_bucket'] == '101_150':  # DIF_bb14d96495b2
+    allow_d = True
+if factors['first_seal_time_bucket'] == '1300_1359' and factors['reseal_speed_bucket'] == 'GE21' and factors['open_gap_bucket'] == '3_7PCT':  # DIF_14d39922f81a
+    allow_d = True
+if factors['reseal_time_bucket'] == '1031_1130' and factors['market_active_count_bucket'] == '20_40' and factors['market_seal_rate_bucket'] == '40_60PCT':  # DIF_fe12d974a96d
+    allow_d = True
+if factors['open_count_bucket'] == '2' and factors['pre_signal_low_bucket'] == 'GE7PCT' and factors['market_active_count_bucket'] == '41_70':  # DIF_43a229a52e96
+    allow_d = True
+if factors['pre_signal_low_bucket'] == 'GE7PCT' and factors['market_seal_rate_bucket'] == '60_80PCT' and factors['segment_seal_rate_bucket'] == '40_60PCT':  # DIF_02e92e992ecb
+    allow_d = True
+if factors['reseal_speed_bucket'] == 'GE21' and factors['pre_signal_low_bucket'] == 'GE7PCT' and factors['market_break_rate_bucket'] == 'GE75PCT':  # DIF_3f69d6347eea
+    allow_d = True
+if factors['reseal_speed_bucket'] == '2_5' and factors['first_to_reseal_bucket'] == 'GE121' and factors['pre_signal_low_bucket'] == 'GE7PCT':  # DIF_00052385a089
+    allow_d = True
+if factors['reseal_time_bucket'] == '1031_1130' and factors['pre_signal_low_bucket'] == '3_7PCT' and factors['cumulative_amount_bucket'] == '0_5_1':  # DIF_7bf765735cf6
+    allow_d = True
+if factors['first_seal_time_bucket'] == '1400_1429' and factors['first_to_reseal_bucket'] == 'LE15' and factors['market_touch_count_bucket'] == '101_150':  # DIF_0339f813667a
+    allow_d = True
+if factors['reseal_time_bucket'] == '1300_1359' and factors['previous_seal_hold_bucket'] == '2_5' and factors['market_touch_count_bucket'] == '101_150':  # DIF_e1839ccf102b
+    allow_d = True
+if factors['open_count_bucket'] == '1' and factors['break_close_depth_bucket'] == 'LT0_2PCT' and factors['market_break_rate_bucket'] == 'LT25PCT':  # DIF_7f487a8255e7
+    allow_d = True
+if factors['first_seal_time_bucket'] == '1430_1454' and factors['first_to_reseal_bucket'] == 'LE15' and factors['market_touch_count_bucket'] == '101_150':  # DIF_606a266d2dc2
+    allow_d = True
+if factors['first_seal_time_bucket'] == '1031_1130' and factors['break_close_depth_bucket'] == 'LT0_2PCT' and factors['market_touch_count_bucket'] == '101_150':  # DIF_3bce4849c5b6
+    allow_d = True
+if factors['reseal_time_bucket'] == '1031_1130' and factors['pre_signal_low_bucket'] == '0_3PCT' and factors['market_active_count_bucket'] == 'LT20':  # DIF_70083b0de053
+    allow_d = True
+if factors['reseal_time_bucket'] == '1031_1130' and factors['pre_signal_low_bucket'] == '3_7PCT' and factors['segment_seal_rate_bucket'] == '40_60PCT':  # DIF_434b9eacce39
+    allow_d = True
+if factors['open_count_bucket'] == '3' and factors['pre_signal_low_bucket'] == 'GE7PCT' and factors['market_break_rate_bucket'] == 'GE75PCT':  # DIF_07f779bc0a3f
+    allow_d = True
+if factors['reseal_speed_bucket'] == '11_20' and factors['previous_seal_hold_bucket'] == '6_10' and factors['cumulative_amount_bucket'] == '0_5_1':  # DIF_5c99f786050b
+    allow_d = True
+if factors['open_count_bucket'] == '4' and factors['reseal_speed_bucket'] == '11_20' and factors['cumulative_amount_bucket'] == '1_1_5':  # DIF_2f68a769fb44
+    allow_d = True
+if factors['open_count_bucket'] == '2' and factors['previous_seal_hold_bucket'] == 'GE11' and factors['break_close_depth_bucket'] == 'GE2PCT':  # DIF_9196cd4c8f74
+    allow_d = True
+if factors['reseal_speed_bucket'] == '6_10' and factors['first_to_reseal_bucket'] == '16_30' and factors['market_active_count_bucket'] == '71_100':  # DIF_ca5aa31855cb
+    allow_d = True
+if factors['first_seal_time_bucket'] == '1300_1359' and factors['reseal_speed_bucket'] == '6_10' and factors['open_gap_bucket'] == '3_7PCT':  # DIF_49a5cdc3a0fd
+    allow_d = True
+if factors['reseal_speed_bucket'] == 'GE21' and factors['market_active_count_bucket'] == 'LT20' and factors['segment_seal_rate_bucket'] == 'GE80PCT':  # DIF_a3b886bc98a1
+    allow_d = True
+if factors['reseal_time_bucket'] == '1031_1130' and factors['market_seal_rate_bucket'] == '40_60PCT' and factors['segment_seal_rate_bucket'] == '40_60PCT':  # DIF_66319da02a20
+    allow_d = True
+if factors['previous_seal_hold_bucket'] == 'LE1' and factors['open_gap_bucket'] == '3_7PCT' and factors['pre_signal_low_bucket'] == 'LT0':  # DIF_ddf49ef54dd6
+    allow_d = True
+if factors['reseal_time_bucket'] == '1430_1454' and factors['first_seal_time_bucket'] == '1031_1130' and factors['open_gap_bucket'] == '3_7PCT':  # DIF_1b3667968b05
+    allow_d = True
+if factors['open_count_bucket'] == 'GE5' and factors['reseal_speed_bucket'] == '11_20' and factors['pre_signal_low_bucket'] == '3_7PCT':  # DIF_6b18f768a1e9
+    allow_d = True
+if factors['open_count_bucket'] == '4' and factors['pre_signal_low_bucket'] == 'GE7PCT' and factors['market_break_rate_bucket'] == 'GE75PCT':  # DIF_cb0b6621ce60
+    allow_d = True
+if factors['first_to_reseal_bucket'] == 'GE121' and factors['previous_seal_hold_bucket'] == 'GE11' and factors['segment_seal_rate_bucket'] == 'LT40PCT':  # DIF_482d05504661
+    allow_d = True
+if factors['first_to_reseal_bucket'] == '31_60' and factors['previous_seal_hold_bucket'] == '6_10' and factors['segment_seal_rate_bucket'] == '40_60PCT':  # DIF_8c72aaffec66
+    allow_d = True
+if factors['reseal_speed_bucket'] == 'LE1' and factors['cumulative_amount_bucket'] == '0_5_1' and factors['market_touch_count_bucket'] == '101_150':  # DIF_e29f9bed270d
+    allow_d = True
+if factors['reseal_time_bucket'] == '1400_1429' and factors['first_seal_time_bucket'] == '1400_1429' and factors['market_touch_count_bucket'] == '101_150':  # DIF_893d26909102
+    allow_d = True
+if factors['reseal_speed_bucket'] == '11_20' and factors['open_gap_bucket'] == 'GE7PCT' and factors['segment_seal_rate_bucket'] == '60_80PCT':  # DIF_8777a836cb7a
+    allow_d = True
+if factors['reseal_time_bucket'] == '1430_1454' and factors['first_to_reseal_bucket'] == '31_60' and factors['segment_bucket'] == 'GROWTH_BOARD':  # DIF_8aea442badc7
+    allow_d = True
+if factors['first_to_reseal_bucket'] == '16_30' and factors['previous_seal_hold_bucket'] == '2_5' and factors['market_touch_count_bucket'] == '101_150':  # DIF_82ffc88a717b
+    allow_d = True
+if factors['reseal_speed_bucket'] == '11_20' and factors['previous_seal_hold_bucket'] == '6_10' and factors['pre_signal_low_bucket'] == '3_7PCT':  # DIF_01e1edbab8db
+    allow_d = True
+if factors['break_close_depth_bucket'] == 'LT0_2PCT' and factors['pre_signal_low_bucket'] == 'GE7PCT' and factors['market_touch_count_bucket'] == '71_100':  # DIF_34e2cb5db83a
+    allow_d = True
+if factors['first_to_reseal_bucket'] == '16_30' and factors['cumulative_amount_bucket'] == '0_5_1' and factors['segment_bucket'] == 'GROWTH_BOARD':  # DIF_95b0442386e5
+    allow_d = True
+if factors['first_to_reseal_bucket'] == '61_120' and factors['market_touch_count_bucket'] == '101_150' and factors['market_seal_rate_bucket'] == 'GE80PCT':  # DIF_5363c110be61
+    allow_d = True
+if factors['reseal_speed_bucket'] == '11_20' and factors['market_seal_rate_bucket'] == '40_60PCT' and factors['segment_seal_rate_bucket'] == '60_80PCT':  # DIF_e409cf25891e
+    allow_d = True
+if factors['open_count_bucket'] == '2' and factors['open_gap_bucket'] == 'GE7PCT' and factors['segment_seal_rate_bucket'] == '40_60PCT':  # DIF_16960d436540
+    allow_d = True
+if factors['reseal_time_bucket'] == '1001_1030' and factors['previous_seal_hold_bucket'] == '6_10' and factors['market_active_count_bucket'] == '41_70':  # DIF_cafb4ca764a4
+    allow_d = True
+if factors['reseal_speed_bucket'] == '11_20' and factors['break_close_depth_bucket'] == 'LT0_2PCT' and factors['market_seal_rate_bucket'] == '40_60PCT':  # DIF_a6710853e839
+    allow_d = True
+if factors['first_seal_time_bucket'] == '1031_1130' and factors['pre_signal_low_bucket'] == '0_3PCT' and factors['market_touch_count_bucket'] == '101_150':  # DIF_c46950ea2c4a
+    allow_d = True
+if factors['reseal_time_bucket'] == '1300_1359' and factors['market_touch_count_bucket'] == '101_150' and factors['market_break_rate_bucket'] == 'GE75PCT':  # DIF_666d6c91bb9e
+    allow_d = True
+if factors['first_seal_time_bucket'] == '0930_1000' and factors['reseal_speed_bucket'] == '11_20' and factors['pre_signal_low_bucket'] == 'GE7PCT':  # DIF_15035866c422
+    allow_d = True
+if factors['first_to_reseal_bucket'] == 'GE121' and factors['break_close_depth_bucket'] == 'GE2PCT' and factors['market_break_rate_bucket'] == '50_75PCT':  # DIF_9be12eaa774d
+    allow_d = True
+if factors['reseal_speed_bucket'] == '11_20' and factors['previous_seal_hold_bucket'] == '2_5' and factors['open_gap_bucket'] == 'GE7PCT':  # DIF_c162bc7f360d
+    allow_d = True
+if factors['previous_seal_hold_bucket'] == 'LE1' and factors['pre_signal_low_bucket'] == 'GE7PCT' and factors['market_active_count_bucket'] == '41_70':  # DIF_8889adf2e2d7
+    allow_d = True
+if factors['first_seal_time_bucket'] == '1300_1359' and factors['open_gap_bucket'] == '3_7PCT' and factors['cumulative_amount_bucket'] == '1_1_5':  # DIF_ce2b75edf877
+    allow_d = True
+if factors['reseal_time_bucket'] == '1001_1030' and factors['previous_seal_hold_bucket'] == '6_10' and factors['open_gap_bucket'] == 'GE7PCT':  # DIF_3f928dc225e8
+    allow_d = True
+if factors['open_count_bucket'] == '3' and factors['market_touch_count_bucket'] == '101_150' and factors['market_seal_rate_bucket'] == 'GE80PCT':  # DIF_84fbb67b69a8
+    allow_d = True
+if factors['reseal_time_bucket'] == '0930_1000' and factors['reseal_speed_bucket'] == '6_10' and factors['break_close_depth_bucket'] == 'LT0_2PCT':  # DIF_72f0e8ce90e5
+    allow_d = True
+if factors['first_seal_time_bucket'] == '1300_1359' and factors['pre_signal_low_bucket'] == '0_3PCT' and factors['cumulative_amount_bucket'] == '0_5_1':  # DIF_1bb06edce08b
+    allow_d = True
+if factors['first_seal_time_bucket'] == '1300_1359' and factors['open_count_bucket'] == '4' and factors['segment_seal_rate_bucket'] == '40_60PCT':  # DIF_d5af10157d16
+    allow_d = True
+if factors['break_close_depth_bucket'] == '0_5_1PCT' and factors['pre_signal_low_bucket'] == 'GE7PCT' and factors['market_break_rate_bucket'] == 'GE75PCT':  # DIF_9318cdf90eb3
+    allow_d = True
+if factors['reseal_time_bucket'] == '1001_1030' and factors['open_count_bucket'] == '2' and factors['pre_signal_low_bucket'] == 'GE7PCT':  # DIF_a9695395e050
+    allow_d = True
+if factors['reseal_speed_bucket'] == '2_5' and factors['market_active_count_bucket'] == '20_40' and factors['segment_seal_rate_bucket'] == 'LT40PCT':  # DIF_fd4ccb1c1654
+    allow_d = True
+if factors['reseal_speed_bucket'] == '2_5' and factors['cumulative_amount_bucket'] == 'LT0_5' and factors['segment_seal_rate_bucket'] == 'GE80PCT':  # DIF_b12e797e3f82
+    allow_d = True
+if factors['reseal_time_bucket'] == '1400_1429' and factors['first_seal_time_bucket'] == '1031_1130' and factors['cumulative_amount_bucket'] == '0_5_1':  # DIF_1f1b2b518f39
+    allow_d = True
+if factors['reseal_speed_bucket'] == '2_5' and factors['open_gap_bucket'] == '3_7PCT' and factors['pre_signal_low_bucket'] == 'LT0':  # DIF_f8fbddf694fc
+    allow_d = True
+if factors['break_close_depth_bucket'] == '1_2PCT' and factors['market_touch_count_bucket'] == '71_100' and factors['market_break_rate_bucket'] == '25_50PCT':  # DIF_dac3e2d04d9b
+    allow_d = True
+if factors['first_seal_time_bucket'] == '1300_1359' and factors['open_count_bucket'] == '2' and factors['market_break_rate_bucket'] == '25_50PCT':  # DIF_ad616012ec7b
+    allow_d = True
+if factors['reseal_speed_bucket'] == '11_20' and factors['break_close_depth_bucket'] == 'GE2PCT' and factors['market_break_rate_bucket'] == 'GE75PCT':  # DIF_5d2d80c8e3eb
+    allow_d = True
+if factors['open_count_bucket'] == '2' and factors['open_gap_bucket'] == '3_7PCT' and factors['pre_signal_low_bucket'] == 'LT0':  # DIF_9b1a02333f21
+    allow_d = True
+if factors['first_seal_time_bucket'] == '1001_1030' and factors['cumulative_amount_bucket'] == '1_1_5' and factors['market_touch_count_bucket'] == '101_150':  # DIF_7263f420de28
+    allow_d = True
+if factors['first_seal_time_bucket'] == '1300_1359' and factors['previous_seal_hold_bucket'] == '6_10' and factors['segment_seal_rate_bucket'] == '40_60PCT':  # DIF_ef1c86125219
+    allow_d = True
+if factors['first_to_reseal_bucket'] == '61_120' and factors['previous_seal_hold_bucket'] == '2_5' and factors['market_active_count_bucket'] == 'LT20':  # DIF_7eac2568f0ce
+    allow_d = True
+if factors['reseal_time_bucket'] == '1031_1130' and factors['market_active_count_bucket'] == 'LT20' and factors['segment_seal_rate_bucket'] == 'GE80PCT':  # DIF_6158e284b6a7
+    allow_d = True
+if factors['break_close_depth_bucket'] == '0_2_0_5PCT' and factors['pre_signal_low_bucket'] == 'GE7PCT' and factors['market_break_rate_bucket'] == 'GE75PCT':  # DIF_6bacd3dc777e
+    allow_d = True
+if factors['reseal_speed_bucket'] == '11_20' and factors['break_close_depth_bucket'] == 'LT0_2PCT' and factors['open_gap_bucket'] == 'GE7PCT':  # DIF_02fbe9a8568c
+    allow_d = True
+if factors['first_to_reseal_bucket'] == 'LE15' and factors['previous_seal_hold_bucket'] == 'GE11' and factors['market_touch_count_bucket'] == '71_100':  # DIF_f683e29b6ff7
+    allow_d = True
+if factors['first_to_reseal_bucket'] == '61_120' and factors['previous_seal_hold_bucket'] == 'LE1' and factors['pre_signal_low_bucket'] == 'GE7PCT':  # DIF_2f1a7e7ce103
+    allow_d = True
+if factors['first_seal_time_bucket'] == '1001_1030' and factors['open_count_bucket'] == '2' and factors['market_touch_count_bucket'] == '101_150':  # DIF_01a6ab9eb922
+    allow_d = True
+if factors['first_to_reseal_bucket'] == '61_120' and factors['market_active_count_bucket'] == 'LT20' and factors['segment_seal_rate_bucket'] == '60_80PCT':  # DIF_75762be4509d
+    allow_d = True
+if factors['first_seal_time_bucket'] == '1031_1130' and factors['reseal_speed_bucket'] == '11_20' and factors['market_touch_count_bucket'] == '101_150':  # DIF_f96e510ef66b
+    allow_d = True
+if factors['first_seal_time_bucket'] == '1400_1429' and factors['first_to_reseal_bucket'] == '31_60' and factors['open_gap_bucket'] == '0_3PCT':  # DIF_ac45dbd107b8
+    allow_d = True
+if factors['reseal_speed_bucket'] == '2_5' and factors['first_to_reseal_bucket'] == 'GE121' and factors['segment_seal_rate_bucket'] == 'LT40PCT':  # DIF_de68d475d258
+    allow_d = True
+if factors['reseal_time_bucket'] == '1001_1030' and factors['break_close_depth_bucket'] == 'GE2PCT' and factors['open_gap_bucket'] == 'GE7PCT':  # DIF_539a7ec876b0
+    allow_d = True
+if factors['reseal_speed_bucket'] == '2_5' and factors['pre_signal_low_bucket'] == 'LT0' and factors['segment_seal_rate_bucket'] == 'LT40PCT':  # DIF_b94fe430e7a0
+    allow_d = True
+if factors['first_seal_time_bucket'] == '1430_1454' and factors['market_active_count_bucket'] == '71_100' and factors['market_break_rate_bucket'] == 'GE75PCT':  # DIF_9773b64654ca
+    allow_d = True

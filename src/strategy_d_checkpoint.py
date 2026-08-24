@@ -25,12 +25,14 @@ D_CHECKPOINT_STATUS_CLOSED = "CLOSED"
 _D_RUNTIME_CODE_FILES = (
     "scripts/monitor_strategy_d_intraday.py",
     "src/strategy_d_checkpoint.py",
+    "src/strategy_d_factor_rules.py",
     "src/strategy_d_spec.py",
     "src/fill_model.py",
     "src/data_cleaner.py",
 )
 
 _D_STRATEGY_CONFIG_KEYS = (
+    "factor_release_path",
     "allowed_market_segments",
     "min_fill_probability",
     "min_open_times",
@@ -84,6 +86,7 @@ def strategy_d_market_context_sha256(
     yesterday_limit_codes: Sequence[str] | set[str],
     name_map: Mapping[str, Any],
     circ_mv_map: Mapping[str, Any],
+    previous_day_amount_map: Mapping[str, Any] | None = None,
 ) -> str:
     """绑定首板身份、ST名称和流通市值，防止重启时静态选股上下文漂移。"""
 
@@ -96,11 +99,19 @@ def strategy_d_market_context_sha256(
             circ_mv = 0.0
         if not math.isfinite(circ_mv):
             circ_mv = 0.0
+        raw_previous_amount = (previous_day_amount_map or {}).get(raw_code, 0.0)
+        try:
+            previous_amount = float(raw_previous_amount or 0.0)
+        except (TypeError, ValueError):
+            previous_amount = 0.0
+        if not math.isfinite(previous_amount):
+            previous_amount = 0.0
         rows.append(
             [
                 raw_code,
                 str(name_map.get(raw_code, "") or ""),
                 circ_mv,
+                previous_amount,
             ]
         )
     payload = {
@@ -156,6 +167,20 @@ def strategy_d_runtime_fingerprint(
         digest.update(b"\0")
         digest.update(_normalized_file_bytes(path))
         digest.update(b"\0")
+    release_relative = str(
+        strategy_config.get(
+            "factor_release_path", "config/strategy_d_factor_release.json"
+        )
+    )
+    release_path = Path(release_relative)
+    if not release_path.is_absolute():
+        release_path = root / release_path
+    if not release_path.exists() or not release_path.is_file():
+        raise FileNotFoundError(release_path)
+    digest.update(release_relative.encode("utf-8"))
+    digest.update(b"\0")
+    digest.update(_normalized_file_bytes(release_path))
+    digest.update(b"\0")
     return digest.hexdigest()
 
 

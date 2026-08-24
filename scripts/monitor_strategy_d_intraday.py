@@ -60,6 +60,14 @@ from src.strategy_d_checkpoint import (
     strategy_d_universe_sha256,
     write_strategy_d_checkpoint,
 )
+from src.strategy_d_factor_rules import (
+    FACTOR_UNION_MODE,
+    factor_values_from_raw,
+    load_factor_release,
+    matching_profile_ids,
+    release_uses_factor_union,
+    trading_minutes_between,
+)
 from src.strategy_d_spec import (
     D_CHECKPOINT_MAX_AGE_SECONDS,
     D_FIRST_TIME_BUCKETS,
@@ -126,6 +134,17 @@ class StockState:
     fill_reliable: bool = False
     fill_matched_source: str = "none"
     fill_reject_reason: str = "尚未计算成交概率"
+    pre_close: float = 0.0
+    open_price: float = 0.0
+    session_low_price: float = 0.0
+    cumulative_amount: float = 0.0
+    previous_day_amount_yuan: float = 0.0
+    last_break_hhmm: int = 0
+    last_break_price: float = 0.0
+    previous_seal_to_break_minutes: int = 0
+    last_reseal_scan_round: int = 0
+    matched_factor_profile_ids: str = ""
+    factor_values_json: str = ""
 
 
 # ── 工具函数 ──────────────────────────────────────────────────────────────────
@@ -253,6 +272,30 @@ def load_latest_circ_mv_map() -> dict[str, float]:
     return {}
 
 
+def load_previous_daily_amount_map() -> dict[str, float]:
+    """加载今天之前最近交易日成交额，统一转换为人民币元。"""
+
+    daily_dir = PROJECT_ROOT / "data" / "raw" / "daily"
+    today_str = today_beijing().strftime("%Y%m%d")
+    files = sorted(
+        path
+        for path in daily_dir.glob("*.csv")
+        if path.stem.isdigit() and len(path.stem) == 8 and path.stem < today_str
+    )
+    for path in reversed(files):
+        try:
+            data = pd.read_csv(path, dtype={"ts_code": str}, low_memory=False)
+        except Exception:
+            continue
+        if {"ts_code", "amount"}.issubset(data.columns) and not data.empty:
+            amount = pd.to_numeric(data["amount"], errors="coerce").fillna(0.0) * 1000.0
+            result = dict(zip(data["ts_code"].astype(str), amount.astype(float)))
+            print(f"[前日成交额] 使用日线: {path.name}，股票数={len(result)}")
+            return result
+    print("[警告] 未找到前一交易日成交额；使用成交额因子的D发布条件将fail-closed。")
+    return {}
+
+
 def classify_market_segment(ts_code: object) -> str:
     code = str(ts_code).strip().upper()
     prefix = code.split(".")[0]
@@ -272,6 +315,17 @@ def classify_market_segment(ts_code: object) -> str:
 def load_strategy_d_config(config: dict[str, Any]) -> dict[str, Any]:
     strategy_config = config.get("strategy_d", {})
     return strategy_config if isinstance(strategy_config, dict) else {}
+
+
+def configured_factor_release_path(config: dict[str, Any]) -> Path:
+    strategy_config = load_strategy_d_config(config)
+    raw = str(
+        strategy_config.get(
+            "factor_release_path", "config/strategy_d_factor_release.json"
+        )
+    )
+    path = Path(raw)
+    return path if path.is_absolute() else PROJECT_ROOT / path
 
 
 def configured_allowed_segments(config: dict[str, Any]) -> set[str]:
@@ -604,6 +658,11 @@ class StrategyDMonitor:
         self.position_recorder = position_recorder
         if self.live_order and self.position_recorder is None:
             raise RuntimeError("D实盘必须由daemon统一持仓记录器回写，禁止直写positions.json")
+        self.factor_release_path = configured_factor_release_path(self.config)
+        self.factor_release = load_factor_release(self.factor_release_path)
+        self.factor_union_active = release_uses_factor_union(self.factor_release)
+        self.factor_profiles = list(self.factor_release.get("profiles", []))
+        self.factor_release_id = str(self.factor_release.get("release_id", ""))
         validate_configured_execution_clock(self.config)
         self.min_open_times = configured_min_open_times(self.config)
         self.max_open_times = configured_max_open_times(self.config)
@@ -626,6 +685,7 @@ class StrategyDMonitor:
         self.universe: list[str] = []
         self.name_map: dict[str, str] = {}
         self.circ_mv_map: dict[str, float] = {}
+        self.previous_day_amount_map: dict[str, float] = {}
         self.segment_stock_counts: dict[str, int] = {}
         self.states: dict[str, StockState] = {}
         self.fill_estimator: FillProbabilityEstimator | None = None
@@ -653,6 +713,8 @@ class StrategyDMonitor:
         self.signal_records: list[dict] = []
         self.order_placed: bool = False   # 本会话已触发BUY，不再对其他股票下单
         self.order_locked_ts_code: str = ""
+        self.factor_signal_consumed: bool = False
+        self.factor_signal_locked_ts_code: str = ""
         self.position_opened: bool = False
         self.waiting_order_only: bool = False
         self.limit_price_fallback_logged: bool = False
@@ -667,6 +729,7 @@ class StrategyDMonitor:
         self.universe = filter_universe_by_segments(full_universe, self.allowed_segments)
         self.name_map = load_stock_names()
         self.circ_mv_map = load_latest_circ_mv_map()
+        self.previous_day_amount_map = load_previous_daily_amount_map()
         segment_counts: dict[str, int] = {}
         for code in self.universe:
             segment = classify_market_segment(code)
@@ -678,6 +741,7 @@ class StrategyDMonitor:
             self.yesterday_limit_codes,
             self.name_map,
             self.circ_mv_map,
+            self.previous_day_amount_map,
         )
         if not self.checkpoint_runtime_fingerprint:
             self.checkpoint_runtime_fingerprint = strategy_d_runtime_fingerprint(
@@ -701,21 +765,34 @@ class StrategyDMonitor:
             len(self._batches()), POLL_BATCH_SIZE, POLL_INTERVAL_SEC,
         )
         max_order_amount = float(self.config.get("live_trade", {}).get("max_single_order_amount", 50000))
+        if self.factor_union_active:
+            self.logger.warning(
+                "D启用半年因子并集发布: release_id=%s profiles=%d | 任一if命中后进入候选 | "
+                "首板/非ST/真实新回封/14:55前/成交概率>=%.0f%%且可靠仍是公共安全门",
+                self.factor_release_id,
+                len(self.factor_profiles),
+                self.min_fill_probability * 100,
+            )
+        else:
+            self.logger.info(
+                "D最低开仓条件: 市场分段在%s | 首板(排除昨日涨停) | 当前封涨停 | 今日炸板%d~%d次(multi_open) | 首次封板时段=%s | 当前封板数=%d~%d(strong代理，不含very_strong) | 最后真实回封>=%s | 成交概率>=%.0f%%且可靠 | 实盘二次复核通过",
+                ",".join(sorted(self.allowed_segments)),
+                self.min_open_times,
+                self.max_open_times,
+                ",".join(sorted(self.first_time_buckets)),
+                self.sentiment_current_min,
+                self.sentiment_current_max,
+                hhmm_to_str(self.tail_reseal_hhmm),
+                self.min_fill_probability * 100,
+            )
         self.logger.info(
-            "D最低开仓条件: 市场分段在%s | 首板(排除昨日涨停) | 当前封涨停 | 今日炸板%d~%d次(multi_open) | 首次封板时段=%s | 当前封板数=%d~%d(strong代理，不含very_strong) | 最后真实回封>=%s | 成交概率>=%.0f%%且可靠 | 实盘二次复核通过",
-            ",".join(sorted(self.allowed_segments)),
-            self.min_open_times,
-            self.max_open_times,
-            ",".join(sorted(self.first_time_buckets)),
-            self.sentiment_current_min,
-            self.sentiment_current_max,
-            hhmm_to_str(self.tail_reseal_hhmm),
-            self.min_fill_probability * 100,
-        )
-        self.logger.info(
-            "D回测对齐时钟: %s开始持续记录完整封板/炸板路径；%s后只有真实回封才允许BUY；%s停止并撤销未成交委托。",
+            "D回测对齐时钟: %s开始持续记录完整封板/炸板路径；%s；%s停止并撤销未成交委托。",
             hhmm_to_str(MONITOR_START_HHMM),
-            hhmm_to_str(SIGNAL_START_HHMM),
+            (
+                "每次真实新回封按发布因子if即时判断"
+                if self.factor_union_active
+                else f"{hhmm_to_str(SIGNAL_START_HHMM)}后只有真实回封才允许BUY"
+            ),
             hhmm_to_str(CANCEL_HHMM),
         )
         self.logger.info(
@@ -823,6 +900,8 @@ class StrategyDMonitor:
             "limit_price_fallback_logged": self.limit_price_fallback_logged,
             "order_placed": self.order_placed,
             "order_locked_ts_code": self.order_locked_ts_code,
+            "factor_signal_consumed": self.factor_signal_consumed,
+            "factor_signal_locked_ts_code": self.factor_signal_locked_ts_code,
             "session_orders": self._json_safe(self.session_orders),
         }
         try:
@@ -880,6 +959,12 @@ class StrategyDMonitor:
         self.limit_price_fallback_logged = bool(
             payload.get("limit_price_fallback_logged", False)
         )
+        self.factor_signal_consumed = bool(
+            payload.get("factor_signal_consumed", False)
+        )
+        self.factor_signal_locked_ts_code = str(
+            payload.get("factor_signal_locked_ts_code", "")
+        )
         self._restored_from_checkpoint = True
         return True, check.reason
 
@@ -911,6 +996,103 @@ class StrategyDMonitor:
         return DataCleaner.classify_segment_sentiment(
             limit_count, stock_count
         )
+
+    @property
+    def market_ever_sealed_count(self) -> int:
+        return sum(1 for state in self.states.values() if state.ever_sealed)
+
+    @property
+    def market_break_event_count(self) -> int:
+        return sum(int(state.open_times_today) for state in self.states.values())
+
+    def _same_segment_reseal_context(self, segment: str) -> tuple[int, int, float]:
+        same = [
+            state for state in self.states.values()
+            if state.market_segment == segment
+        ]
+        active = sum(1 for state in same if state.was_sealed)
+        ever = sum(1 for state in same if state.ever_sealed)
+        return active, ever, active / ever if ever > 0 else 0.0
+
+    def _factor_raw_values(self, st: StockState) -> dict[str, Any]:
+        market_active = self.sealed_ever_count
+        market_ever = self.market_ever_sealed_count
+        segment_active, segment_ever, segment_rate = self._same_segment_reseal_context(
+            st.market_segment
+        )
+        amount_ratio = (
+            st.cumulative_amount / st.previous_day_amount_yuan
+            if st.previous_day_amount_yuan > 0
+            else float("nan")
+        )
+        return {
+            "signal_hhmm": st.last_seal_hhmm,
+            "first_seal_hhmm": st.first_seal_hhmm,
+            "open_times_at_signal": st.open_times_today,
+            "first_to_signal_minutes": trading_minutes_between(
+                st.first_seal_hhmm, st.last_seal_hhmm
+            ),
+            "last_break_to_signal_minutes": trading_minutes_between(
+                st.last_break_hhmm, st.last_seal_hhmm
+            ),
+            "previous_seal_to_break_minutes": st.previous_seal_to_break_minutes,
+            "last_break_close_depth_pct": (
+                max(st.upper_limit / st.last_break_price - 1.0, 0.0)
+                if st.upper_limit > 0 and st.last_break_price > 0
+                else float("nan")
+            ),
+            "open_gap_pct": (
+                st.open_price / st.pre_close - 1.0
+                if st.open_price > 0 and st.pre_close > 0
+                else float("nan")
+            ),
+            "pre_signal_min_return": (
+                st.session_low_price / st.pre_close - 1.0
+                if st.session_low_price > 0 and st.pre_close > 0
+                else float("nan")
+            ),
+            "signal_cumulative_amount_vs_prev_day": amount_ratio,
+            "market_ever_sealed_count": market_ever,
+            "market_active_sealed_count": market_active,
+            "market_seal_rate": market_active / market_ever if market_ever > 0 else 0.0,
+            "market_break_event_rate": (
+                self.market_break_event_count / market_ever if market_ever > 0 else 0.0
+            ),
+            "market_segment": st.market_segment,
+            "same_segment_seal_rate": segment_rate,
+            "same_segment_active_sealed_count": segment_active,
+            "same_segment_ever_sealed_count": segment_ever,
+        }
+
+    def _factor_release_match(
+        self, st: StockState, *, require_fresh_reseal: bool
+    ) -> tuple[bool, str]:
+        if not self.factor_union_active:
+            return False, "当前D发布不是因子并集模式"
+        if st.st_suspect:
+            return False, "ST/风险警示"
+        if st.market_segment not in self.allowed_segments:
+            return False, f"市场分段{st.market_segment}不在允许范围"
+        if st.ts_code in self.yesterday_limit_codes:
+            return False, "昨日已涨停，非首板"
+        if not st.was_sealed:
+            return False, "当前不在涨停封板状态"
+        if st.open_times_today < 1 or st.last_break_hhmm <= 0:
+            return False, "尚未形成炸板后的真实回封"
+        if not (MONITOR_START_HHMM <= st.last_seal_hhmm < CANCEL_HHMM):
+            return False, "回封时间不在可委托窗口"
+        if require_fresh_reseal and st.last_reseal_scan_round != self.scan_round:
+            return False, "不是本轮新发生的回封事件"
+        raw = self._factor_raw_values(st)
+        values = factor_values_from_raw(raw)
+        matched = matching_profile_ids(values, self.factor_profiles)
+        st.factor_values_json = json.dumps(
+            values, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        st.matched_factor_profile_ids = ";".join(matched)
+        if not matched:
+            return False, "未命中任何已发布D因子if条件"
+        return True, f"命中D因子条件:{','.join(matched)}"
 
     def _refresh_fill_gate(self, st: StockState) -> tuple[bool, str]:
         """按历史成交概率模型实时复算；模型或字段缺失时fail-closed。"""
@@ -1018,10 +1200,41 @@ class StrategyDMonitor:
                     market_segment=classify_market_segment(ts_code),
                     upper_limit=upper_limit,
                     circ_mv=float(self.circ_mv_map.get(ts_code, 0.0) or 0.0),
+                    pre_close=float(snap.pre_close or 0.0),
+                    open_price=float(getattr(snap, "open_price", 0.0) or 0.0),
+                    session_low_price=float(
+                        getattr(snap, "low_price", 0.0) or snap.last_price or 0.0
+                    ),
+                    cumulative_amount=float(getattr(snap, "amount", 0.0) or 0.0),
+                    previous_day_amount_yuan=float(
+                        self.previous_day_amount_map.get(ts_code, 0.0) or 0.0
+                    ),
                 )
             st = self.states[ts_code]
             st.upper_limit = upper_limit
             st.last_price = float(snap.last_price or 0.0)
+            st.pre_close = float(snap.pre_close or st.pre_close or 0.0)
+            st.open_price = float(
+                getattr(snap, "open_price", 0.0) or st.open_price or 0.0
+            )
+            raw_low = float(
+                getattr(snap, "low_price", 0.0) or st.last_price or 0.0
+            )
+            if raw_low > 0:
+                st.session_low_price = (
+                    raw_low
+                    if st.session_low_price <= 0
+                    else min(st.session_low_price, raw_low)
+                )
+            st.cumulative_amount = max(
+                float(st.cumulative_amount or 0.0),
+                float(getattr(snap, "amount", 0.0) or 0.0),
+            )
+            st.previous_day_amount_yuan = float(
+                self.previous_day_amount_map.get(
+                    ts_code, st.previous_day_amount_yuan
+                ) or 0.0
+            )
             # ST/风险警示识别（对齐回测口径 ~is_st，2026-07-23 春兴精工废单事故）：
             # ①名字带ST/退；②QMT真实涨停幅≈5%（名字缓存可能不带前缀，这次就栽在名字上，
             # 涨停幅是交易所口径、不会骗人）。命中任一即嫌疑。
@@ -1052,6 +1265,7 @@ class StrategyDMonitor:
                 if not st.was_sealed:
                     # 非涨停 → 涨停：记录重封时间
                     st.last_seal_hhmm = hhmm
+                    st.last_reseal_scan_round = self.scan_round + 1
                 st.was_sealed = True
                 # 更新封单量（涨停买一量，单位：股）
                 if snap.bid_volumes:
@@ -1059,6 +1273,11 @@ class StrategyDMonitor:
             else:
                 if st.was_sealed:
                     # 涨停 → 非涨停：炸板
+                    st.previous_seal_to_break_minutes = trading_minutes_between(
+                        st.last_seal_hhmm, hhmm
+                    )
+                    st.last_break_hhmm = hhmm
+                    st.last_break_price = float(st.last_price or 0.0)
                     st.open_times_today += 1
                 st.was_sealed = False
                 st.bid_vol = 0
@@ -1126,8 +1345,70 @@ class StrategyDMonitor:
             ts_code=st.ts_code,
         )
 
+    def _check_and_fire_factor_union(self) -> None:
+        """执行半年发布的多个D因子if；任一命中即进入当轮唯一候选排序。"""
+
+        if self.factor_signal_consumed:
+            return
+        candidates: list[StockState] = []
+        for st in self.states.values():
+            if st.buy_signaled:
+                continue
+            matched, reason = self._factor_release_match(
+                st, require_fresh_reseal=True
+            )
+            if not matched:
+                continue
+            self.logger.info("[D因子命中] %s %s", st.ts_code, reason)
+            candidates.append(st)
+
+        if not candidates:
+            return
+        # 与历史因子并集一致：先取最早回封；同一轮/分钟优先炸板2次，再按代码稳定排序。
+        ranked = sorted(
+            candidates,
+            key=lambda state: (
+                -int(state.open_times_today == D_PREFERRED_OPEN_TIMES),
+                state.ts_code,
+            ),
+        )
+        candidate = ranked[0]
+        # 历史账本先选当日最早信号，再判断该挂单能否成交；即使成交门失败，
+        # 也不能用事后结果补选更晚回封。因此选中即永久消耗今日D机会。
+        self.factor_signal_consumed = True
+        self.factor_signal_locked_ts_code = candidate.ts_code
+        self.logger.warning(
+            "[D FACTOR BUY] release=%s profiles=%s 本轮候选=%d，选择=%s",
+            self.factor_release_id,
+            candidate.matched_factor_profile_ids,
+            len(ranked),
+            candidate.ts_code,
+        )
+        fill_passed, fill_reason = self._refresh_fill_gate(candidate)
+        if not fill_passed:
+            self.logger.warning(
+                "[D FACTOR NO FILL] %s 当日最早if信号未通过成交概率门，"
+                "按无补选口径锁定今日D: %s",
+                candidate.ts_code,
+                fill_reason,
+            )
+            return
+        valid, invalid_reason = self._validate_buy_candidate(candidate)
+        if not valid:
+            self.logger.warning(
+                "[D FACTOR BUY SKIP] %s 二次复核失败: %s",
+                candidate.ts_code,
+                invalid_reason,
+            )
+            return
+        self._fire_buy_signal(candidate)
+
     def _check_and_fire(self) -> None:
         if self.order_placed:
+            return
+
+        if self.factor_union_active:
+            self._check_and_fire_factor_union()
             return
 
         hhmm = now_hhmm()
@@ -1272,6 +1553,21 @@ class StrategyDMonitor:
             )
         if not st.was_sealed:
             return False, "当前不在涨停封板状态"
+        if st.st_suspect:
+            return False, "ST/风险警示股不允许进入D"
+        if self.factor_union_active:
+            matched, match_reason = self._factor_release_match(
+                st, require_fresh_reseal=False
+            )
+            if not matched:
+                return False, match_reason
+            hhmm = now_hhmm()
+            if not (MONITOR_START_HHMM <= hhmm < CANCEL_HHMM):
+                return False, f"当前{hhmm_to_str(hhmm)}不在D可委托窗口"
+            fill_passed, fill_reason = self._refresh_fill_gate(st)
+            if not fill_passed:
+                return False, fill_reason
+            return True, match_reason
         common_reason = common_candidate_rejection_reason(
             open_times=st.open_times_today,
             first_seal_hhmm=st.first_seal_hhmm,
@@ -1337,7 +1633,12 @@ class StrategyDMonitor:
         st.buy_signaled = True
         self.order_placed = True   # 先加锁再下单，防止QMT资金冻结延迟导致重复委托
         self.order_locked_ts_code = st.ts_code
-        source = "14:00后真实回封"
+        source = (
+            f"半年D因子并集:{self.factor_release_id}:"
+            f"{st.matched_factor_profile_ids}"
+            if self.factor_union_active
+            else "14:00后真实回封"
+        )
 
         msg = (
             f"\n{'='*55}\n"
@@ -1371,6 +1672,9 @@ class StrategyDMonitor:
             "fill_reliable": st.fill_reliable,
             "fill_matched_source": st.fill_matched_source,
             "source": source,
+            "factor_release_id": self.factor_release_id,
+            "matched_factor_profile_ids": st.matched_factor_profile_ids,
+            "factor_values_json": st.factor_values_json,
             "order_id": "",
         }
         if self.live_order and self.broker is not None:
@@ -2046,7 +2350,11 @@ class StrategyDMonitor:
         self.logger.info("完成全市场扫描: round=%d updated=%d states=%d", self.scan_round, updated_count, len(self.states))
         # 历史D只取strong，不含very_strong；实时代理必须同时满足上下界。
         sealed = self.sealed_ever_count
-        if not self._strong_notified and self._sentiment_passes():
+        if (
+            not self.factor_union_active
+            and not self._strong_notified
+            and self._sentiment_passes()
+        ):
             self._strong_notified = True
             self.logger.warning(
                 "📈 情绪进入D历史strong代理区间：当前封板%d只(%d~%d)。",
@@ -2208,7 +2516,12 @@ class StrategyDMonitor:
             f"\n开始扫描 — {len(self.universe)}只股票，"
             f"{len(batches)}批x{POLL_BATCH_SIZE}，"
             f"每轮扫完整市场后等待{POLL_INTERVAL_SEC}s\n"
-            f"  09:35 → 观察提醒  |  14:00 → 买入信号  |  14:55 → 自动撤单\n"
+            + (
+                f"  真实新回封 → 匹配{len(self.factor_profiles)}条发布if条件 "
+                "| 14:55 → 自动撤单\n"
+                if self.factor_union_active
+                else "  09:35 → 观察提醒  |  14:00 → 买入信号  |  14:55 → 自动撤单\n"
+            )
         )
 
         try:
@@ -2305,9 +2618,16 @@ def main() -> None:
     first_time_buckets = configured_first_time_buckets(config)
     tail_reseal_hhmm = configured_tail_reseal_hhmm(config)
     sentiment_min, sentiment_max = configured_sentiment_bounds(config)
+    factor_release_path = configured_factor_release_path(config)
+    factor_release = load_factor_release(factor_release_path)
 
     if args.dry_run:
         print("=== 策略D监控配置 ===")
+        print(
+            f"  D发布版本: {factor_release.get('release_id', '')} | "
+            f"模式={factor_release.get('strategy_mode', '')} | "
+            f"if条件数={len(factor_release.get('profiles', []))}"
+        )
         print(
             f"  情绪阈值: 全市场当前封板涨停数 {sentiment_min}~{sentiment_max} "
             "(代理历史strong，不含very_strong)"
