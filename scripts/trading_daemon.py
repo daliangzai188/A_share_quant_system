@@ -9617,6 +9617,51 @@ def _pov_worker() -> None:
                 level="critical", call=True)
 
 
+def _new_buy_execution_gate() -> tuple[bool, str]:
+    """只读预检新增BUY总门，供播报和09:30降级路径共用。
+
+    非实盘/未接券商场景继续保留模拟计划；真正启用QMT实盘时必须经过与最终
+    下单完全相同的LiveOrderGateway门禁。该函数不连接QMT、不查账户、不下单。
+    """
+
+    try:
+        config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+        if not (
+            str(config.get("trade_mode", "")).lower() == "live"
+            and bool(config.get("broker_adapter_enabled"))
+            and bool(config.get("qmt_enabled"))
+        ):
+            return True, ""
+        from src.live_order_gateway import LiveOrderGateway
+
+        confirm = str(
+            config.get("live_trade", {}).get(
+                "real_order_confirm_text", "A_SYSTEM_REAL_ORDER_CONFIRMED"
+            )
+        )
+        LiveOrderGateway(
+            PROJECT_ROOT / "config" / "config.json"
+        ).assert_real_order_allowed(confirm, side="BUY")
+        return True, ""
+    except Exception as exc:
+        return False, str(exc)
+
+
+def _notify_new_buy_gate_block(stage: str, reason: str) -> None:
+    message = (
+        f"{stage}发现正式候选，但新增BUY安全门禁未通过：{reason}。"
+        "系统按fail-closed保持空仓，不会转POV、不会切换其他策略腿，也不建议手动追买；"
+        "请先完成并冻结当前组合的严格样本外/逐折发布认证。"
+    )
+    logger().error("⛔ %s", message)
+    _notify(
+        "buy_result",
+        "⛔ 候选存在但新增BUY被安全门禁阻断",
+        message,
+        level="critical",
+    )
+
+
 def job_premarket_buy() -> None:
     """09:20集合竞价预挂当前组合计划；有旧仓时不提交新买单。"""
     logger().info("===== 集合竞价买入预挂（09:20）=====")
@@ -9707,6 +9752,7 @@ def job_premarket_buy() -> None:
         gateway.assert_real_order_allowed(confirm, side="BUY")
     except RuntimeError as e:
         logger().error("❌ [盘前买入] 下单条件不满足：%s", e)
+        _notify_new_buy_gate_block("09:20集合竞价预挂", str(e))
         return
 
     with _qmt_lock:
@@ -10142,28 +10188,26 @@ def job_opening_buy(*, recovery_only: bool = False) -> None:
         # fail-closed，不允许D绕过资金让路规则。
         logger().error("09:30 D启动总门未通过：%s", d_gate_reason)
 
+    if open_action:
+        buy_gate_ok, buy_gate_reason = _new_buy_execution_gate()
+        if not buy_gate_ok:
+            _notify_new_buy_gate_block("09:30开盘执行", buy_gate_reason)
+            logger().info("===== 开盘买入任务完成（新增BUY门禁阻断）=====")
+            return
+
     # 走到这里=今日有买入窗口但09:20预挂链路没有产生持仓、也没有待确认单
     # （预挂失败/未执行/被拒）。属于执行降级：失去集合竞价排队优势；普通
-    # A/C/M不再一次性整单追买，而是建立同一套持久化POV任务。
+    # A/C普通候选不再一次性整单追买，而是建立同一套持久化POV任务。
     # （2026-07-03 德冠新材即此场景：预挂未生效，09:30补买20.33，事后才发现。）
     if open_action:
         if open_action == "ALLOW_E_BUY":
             logger().warning(
-                "⚠️ E开仓执行降级：09:20/09:24竞价链未生效，转专用延迟重试。"
-            )
-            _notify(
-                "buy_result",
-                "⚠️ E开仓执行降级",
-                "E竞价链未生效；09:30起转专用延迟重试，继续遵守竞价容量口径和"
-                "相对开盘涨幅不超过2%的追价保护。",
-                level="timeSensitive",
+                "E竞价链未生效；先建立专用延迟执行，确认接管后再发送降级通知。"
             )
         else:
-            logger().warning("⚠️ 开仓执行降级：09:20盘前预挂未生效（09:30无持仓且无待确认单），转09:30持久化POV。")
-            _notify("buy_result", "⚠️ 开仓执行降级",
-                    "09:20盘前预挂未生效；普通候选将转09:30持久化POV，继续遵守82.5%目标、"
-                    "80%验收下限、+2%追价保护和85%硬顶。",
-                    level="timeSensitive")
+            logger().warning(
+                "09:20盘前预挂未生效；先建立09:30持久化POV，确认接管后再发送降级通知。"
+            )
 
     action_reason = {
         "ALLOW_ABC_BUY_PREVIEW": "A/C 09:30开仓",
@@ -10182,6 +10226,15 @@ def job_opening_buy(*, recovery_only: bool = False) -> None:
                 open_action=open_action,
                 reason=action_label,
             )
+
+    if accepted_buy:
+        _notify(
+            "buy_result",
+            "⚠️ 开仓执行已降级并接管",
+            "09:20盘前预挂未生效；09:30已成功落盘并启动持久化POV，继续遵守"
+            "82.5%目标、80%验收下限、+2%追价保护和85%硬顶。",
+            level="timeSensitive",
+        )
 
     if not attempted_buy:
         logger().info("09:30无A/C/E买入计划；D是否扫描已由空仓及全策略候选总门单独判定。")
@@ -14002,6 +14055,12 @@ def _log_decision_chain_summary(signal_date: str) -> None:
         )
         if execution_expired:
             final_buy = None
+        execution_block_reason = ""
+        if final_buy:
+            buy_gate_ok, buy_gate_reason = _new_buy_execution_gate()
+            if not buy_gate_ok:
+                execution_block_reason = buy_gate_reason
+                final_buy = None
 
         hold_line = _describe_holdings(positions, with_quote=False) if positions else ""
         live_sizing = (
@@ -14024,6 +14083,8 @@ def _log_decision_chain_summary(signal_date: str) -> None:
                 status_text = "不触发（当前有持仓）"
             elif execution_expired and leg == selected_leg:
                 status_text = "不触发（已过执行窗口）"
+            elif execution_block_reason and leg == selected_leg:
+                status_text = "不触发（新增BUY安全门禁）"
             elif leg == actual_leg:
                 status_text = "成立"
             elif leg in readonly_candidates:
@@ -14052,11 +14113,11 @@ def _log_decision_chain_summary(signal_date: str) -> None:
             f"┃   ├─ 已成交 → 写入持仓并回到【0】，阻断其余策略{path_tag if d_holding else ''}",
             "┃   └─ 未成交/未触发 → 收盘后按下面顺序取第一个正式候选",
             "┃        ↓",
-            f"┃ 【2】②A有候选？ ─是→ 买A并结束{path_tag if actual_leg == 'A' else ''}",
+            f"┃ 【2】②A有候选？ ─是→ 买A并结束{path_tag if actual_leg == 'A' or (execution_block_reason and selected_leg == 'A') else ''}",
             "┃        ↓否",
-            f"┃ 【3】③E有候选？ ─是→ 买E并结束{path_tag if actual_leg == 'E' else ''}",
+            f"┃ 【3】③E有候选？ ─是→ 买E并结束{path_tag if actual_leg == 'E' or (execution_block_reason and selected_leg == 'E') else ''}",
             "┃        ↓否",
-            f"┃ 【4】④C有候选？ ─是→ 买C并结束{path_tag if actual_leg == 'C' else ''}",
+            f"┃ 【4】④C有候选？ ─是→ 买C并结束{path_tag if actual_leg == 'C' or (execution_block_reason and selected_leg == 'C') else ''}",
             f"┃        └─ 否 → 空仓{path_tag if not blocked and not selected_leg else ''}",
             bottom,
             "┃",
@@ -14086,6 +14147,12 @@ def _log_decision_chain_summary(signal_date: str) -> None:
                 f"{_format_strategy_candidate(str(original_final_buy.get('strategy', '?')), original_final_buy)}"
                 "已过执行窗口且未成交，不追补"
             )
+        elif execution_block_reason and original_final_buy:
+            lines.append(
+                "┃ ★ 不开新仓：候选"
+                f"{_format_strategy_candidate(str(original_final_buy.get('strategy', '?')), original_final_buy)}"
+                f"已被新增BUY安全门禁阻断｜{execution_block_reason}"
+            )
         elif final_buy:
             lines.append(f"┃ ★ 开仓计划：{_format_live_plan_line(final_buy, live_sizing)}")
         else:
@@ -14102,6 +14169,7 @@ def _log_decision_chain_summary(signal_date: str) -> None:
             "action_date": str(action_date),
             "signal_date": str(signal_date),
             "execution_expired": execution_expired,
+            "execution_block_reason": execution_block_reason,
             "computed_at": now_beijing().strftime("%Y-%m-%d %H:%M:%S"),
         }
     except Exception as exc:
@@ -14225,7 +14293,15 @@ def push_open_plan_notification(occasion: str) -> None:
         label = "明日" if occasion == "收盘" else "今日"
         fb = plan.get("final_buy")
         hold = plan.get("hold_line") or ""
-        if fb:
+        execution_block_reason = str(plan.get("execution_block_reason", "") or "")
+        if fb and execution_block_reason:
+            title = f"⛔ {label}候选不可执行:{fb.get('name','')}"
+            body = (
+                f"{_format_strategy_candidate(str(fb.get('strategy', '?')), fb)}已入选，"
+                f"但新增BUY安全门禁阻断：{execution_block_reason}。"
+                "系统将保持空仓，不会自动或建议手动绕过认证门禁。"
+            )
+        elif fb:
             _ls = plan.get("live_sizing")
             if _ls is not None and int(_ls.get("shares", 0) or 0) <= 0:
                 title = f"⚠️ {label}资金不足开不出仓:{fb.get('name','')}"
@@ -14372,10 +14448,30 @@ def job_open_plan_fill_check() -> None:
         if not fb:
             log.info("[开仓核查] 今日本来就无开仓计划，无需核查。")
             return
-        detail = _open_plan_execution_detail(plan)
+        # 实际成交优先于播报缓存：认证可能在08:50播报后、09:20执行前完成更新。
+        # 若券商成交已登记，绝不能拿旧的execution_block_reason误报成“未执行”。
         if has_position_bought_today():
+            detail = _open_plan_execution_detail(plan)
             log.info("[开仓核查] ✅ 今日已有买入成交，开仓计划已执行（%s）。", detail)
             return
+        buy_gate_ok, buy_gate_reason = _new_buy_execution_gate()
+        execution_block_reason = "" if buy_gate_ok else buy_gate_reason
+        if execution_block_reason:
+            message = (
+                f"策略{fb.get('strategy','')} {fb.get('ts_code','')} {fb.get('name','')}有正式候选，"
+                f"但新增BUY安全门禁未通过：{execution_block_reason}。"
+                "因此零成交、零在途单是预期的fail-closed结果，不是POV丢单；"
+                "请勿手动绕过，先完成并冻结当前组合发布认证。"
+            )
+            _notify(
+                "buy_result",
+                "⛔ 开仓按安全门禁未执行",
+                message,
+                level="critical",
+            )
+            log.error("[开仓核查] %s", message)
+            return
+        detail = _open_plan_execution_detail(plan)
         if _pov_active_today():
             _notify(
                 "buy_result",

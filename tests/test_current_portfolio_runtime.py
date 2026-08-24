@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import datetime
 import sys
 import tempfile
 import unittest
@@ -234,6 +235,122 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
                 proxy.place_order(SimpleNamespace(side="BUY"))
         gate.assert_called_once_with("A_SYSTEM_REAL_ORDER_CONFIRMED", side="BUY")
         qmt_get.assert_not_called()
+
+    def test_opening_buy_gate_block_never_claims_pov_handoff(self) -> None:
+        decisions = pd.DataFrame([{"action": "ALLOW_ABC_BUY_PREVIEW"}])
+        log = MagicMock()
+        with (
+            patch.object(trading_daemon, "check_and_close_positions"),
+            patch.object(trading_daemon, "confirm_pending_premarket_buys"),
+            patch.object(trading_daemon, "_d_relay_pair_active_today", return_value=False),
+            patch.object(trading_daemon, "_pov_active_today", return_value=False),
+            patch.object(trading_daemon, "has_position_bought_today", return_value=False),
+            patch.object(trading_daemon, "load_pending_buys", return_value=[]),
+            patch.object(
+                trading_daemon,
+                "load_combined_decisions",
+                return_value=(decisions, Path("orders.csv")),
+            ),
+            patch.object(trading_daemon, "d_intraday_monitor_gate", return_value=(False, "A占用")),
+            patch.object(
+                trading_daemon,
+                "_new_buy_execution_gate",
+                return_value=(False, "认证状态=FAIL_STRICT_RELEASE_REQUIRED"),
+            ),
+            patch.object(trading_daemon, "_notify_new_buy_gate_block") as blocked_notify,
+            patch.object(trading_daemon, "_enqueue_opening_pov_from_plan") as enqueue,
+            patch.object(trading_daemon, "logger", return_value=log),
+        ):
+            trading_daemon.job_opening_buy()
+
+        blocked_notify.assert_called_once_with(
+            "09:30开盘执行",
+            "认证状态=FAIL_STRICT_RELEASE_REQUIRED",
+        )
+        enqueue.assert_not_called()
+        self.assertFalse(
+            any("转09:30持久化POV" in str(call_item) for call_item in log.mock_calls)
+        )
+
+    def test_candidate_broadcast_marks_failed_buy_gate_as_non_executable(self) -> None:
+        orders = pd.DataFrame([{
+            "strategy_leg": "A",
+            "side": "BUY",
+            "ts_code": "300016.SZ",
+            "name": "北陆药业",
+            "round_lot_shares": 6_400,
+            "reference_price": 12.53,
+        }])
+        frozen_now = datetime.datetime(
+            2026, 8, 24, 8, 50, tzinfo=trading_daemon.BEIJING_TZ
+        )
+        log = MagicMock()
+        previous = trading_daemon._last_final_plan
+        try:
+            with (
+                patch.object(trading_daemon.glob, "glob", return_value=["orders.csv"]),
+                patch.object(pd, "read_csv", return_value=orders),
+                patch.object(trading_daemon, "_load_e_signal_for_signal_date", return_value=None),
+                patch.object(trading_daemon, "load_positions", return_value=[]),
+                patch.object(trading_daemon, "today_beijing", return_value=frozen_now.date()),
+                patch.object(trading_daemon, "now_beijing", return_value=frozen_now),
+                patch.object(
+                    trading_daemon,
+                    "_new_buy_execution_gate",
+                    return_value=(False, "认证状态=FAIL_STRICT_RELEASE_REQUIRED"),
+                ),
+                patch.object(trading_daemon, "_live_plan_sizing") as sizing,
+                patch.object(trading_daemon, "logger", return_value=log),
+            ):
+                trading_daemon._log_decision_chain_summary("20260821")
+        finally:
+            current = trading_daemon._last_final_plan
+            trading_daemon._last_final_plan = previous
+
+        self.assertEqual(
+            current["execution_block_reason"],
+            "认证状态=FAIL_STRICT_RELEASE_REQUIRED",
+        )
+        self.assertEqual(current["final_buy"]["ts_code"], "300016.SZ")
+        message = str(log.info.call_args.args[0])
+        self.assertIn("不开新仓", message)
+        self.assertIn("新增BUY安全门禁阻断", message)
+        self.assertNotIn("★ 开仓计划：", message)
+        sizing.assert_not_called()
+
+    def test_plan_notification_calls_blocked_candidate_non_executable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            state_path = Path(temporary) / "open_plan_push.json"
+            previous = trading_daemon._last_final_plan
+            trading_daemon._last_final_plan = {
+                "action_date": "20260824",
+                "final_buy": {
+                    "strategy": "A",
+                    "ts_code": "300016.SZ",
+                    "name": "北陆药业",
+                },
+                "execution_block_reason": "认证状态=FAIL_STRICT_RELEASE_REQUIRED",
+                "hold_line": "",
+                "live_sizing": None,
+            }
+            try:
+                with patch.object(
+                    trading_daemon,
+                    "_PLAN_PUSH_STATE",
+                    state_path,
+                ), patch.object(
+                    trading_daemon,
+                    "_notify",
+                    return_value=True,
+                ) as notify:
+                    trading_daemon.push_open_plan_notification("早盘")
+            finally:
+                trading_daemon._last_final_plan = previous
+
+        _event, title, body = notify.call_args.args[:3]
+        self.assertIn("候选不可执行", title)
+        self.assertIn("FAIL_STRICT_RELEASE_REQUIRED", body)
+        self.assertIn("不会自动或建议手动绕过", body)
 
     def test_existing_position_blocks_all_new_buys(self) -> None:
         engine = make_engine(
