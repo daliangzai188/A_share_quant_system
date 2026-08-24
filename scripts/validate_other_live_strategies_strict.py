@@ -33,8 +33,8 @@ from scripts import certify_current_executable_portfolio as cert  # noqa: E402
 from scripts.backtest_strategy_d import build_daily_candidate_ledger  # noqa: E402
 from scripts.build_ac_daily_candidates import trade_return_details  # noqa: E402
 from scripts.run_paper_ab_filtered_daily_ops import (  # noqa: E402
+    build_c_factor_filtered_pool,
     condition_strategy_config,
-    configured_c_conditions,
     reject_strategy_risk_mask,
 )
 from scripts.verify_strategy_e_alignment import load_historical_bucketed_pool  # noqa: E402
@@ -65,6 +65,7 @@ from src.strategy_e import (  # noqa: E402
     select_e_candidates,
     select_e_daily_picks,
 )
+from src.strategy_c_factor_rules import FACTOR_UNION_MODE as C_FACTOR_UNION_MODE  # noqa: E402
 from src.trading_fees import account_return_after_fees  # noqa: E402
 from src.utils.config import load_json_config  # noqa: E402
 
@@ -208,10 +209,14 @@ def build_ac(
         return item
 
     strategy_a = generator(None, "A")
-    strategy_c = generator(configured_c_conditions(config), "C")
     all_candidates = strategy_a.load_all_candidates()
+    all_candidates = all_candidates[
+        all_candidates["trade_date"].astype(str).between(START, END)
+    ].copy()
     a_filtered = strategy_a.apply_strategy_filters(all_candidates)
-    c_filtered = strategy_c.apply_strategy_filters(all_candidates)
+    _, strategy_c, c_filtered, c_release = build_c_factor_filtered_pool(
+        STRATEGY_CONFIG, config, all_candidates, include_match_ids=False
+    )
     a_filtered = a_filtered[a_filtered["trade_date"].between(START, END)]
     c_filtered = c_filtered[c_filtered["trade_date"].between(START, END)]
     a_by_date = {date: rows for date, rows in a_filtered.groupby("trade_date")}
@@ -226,6 +231,8 @@ def build_ac(
                 leg, picked = "A", ranked.iloc[0]
         if picked is None and signal_date in c_by_date:
             ranked = strategy_c.rank_candidates(c_by_date[signal_date].copy()).reset_index(drop=True)
+            if str(c_release["strategy_mode"]) == C_FACTOR_UNION_MODE:
+                ranked = ranked.head(1).copy()
             rejected = reject_strategy_risk_mask(ranked, config, "c_strategy")
             ranked = ranked[~pd.Series(rejected.values, index=ranked.index)]
             if len(ranked):

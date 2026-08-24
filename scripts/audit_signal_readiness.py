@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import pandas as pd
 
@@ -12,11 +12,14 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.run_paper_ab_filtered_daily_ops import (
-    condition_strategy_config,
+    build_c_factor_filtered_pool,
     condition_text,
-    configured_c_conditions,
 )
 from src.paper_candidate_generator import PaperCandidateGenerator
+from src.strategy_c_factor_rules import (
+    FACTOR_UNION_MODE as C_FACTOR_UNION_MODE,
+    apply_profile_union as apply_c_profile_union,
+)
 from src.utils.config import load_json_config
 
 
@@ -299,7 +302,14 @@ def stop_point_text(trace: pd.DataFrame, label: str) -> str:
     return f"{label}: 未识别停止点"
 
 
-def filter_trace(label: str, generator: PaperCandidateGenerator, all_candidates: pd.DataFrame, signal_date: str) -> pd.DataFrame:
+def filter_trace(
+    label: str,
+    generator: PaperCandidateGenerator,
+    all_candidates: pd.DataFrame,
+    signal_date: str,
+    *,
+    post_filter: Callable[[pd.DataFrame], pd.DataFrame] | None = None,
+) -> pd.DataFrame:
     config = generator.config
     filters = config.get("candidate_filters", {})
     rows: list[dict[str, Any]] = []
@@ -374,6 +384,17 @@ def filter_trace(label: str, generator: PaperCandidateGenerator, all_candidates:
         current,
         compound_exclude_reason_detail(before, filters.get("exclude_rules", []), signal_date),
     )
+
+    if post_filter is not None:
+        before = current
+        current = post_filter(current)
+        add(
+            "5_c_factor_union",
+            "命中正式C发布文件中任一达标if分支（OR关系）",
+            before,
+            current,
+            "未命中任何正式C因子分支时停止。",
+        )
 
     daily = current[current["trade_date"].astype(str) == signal_date].copy() if "trade_date" in current.columns else pd.DataFrame()
     ranked = generator.rank_candidates(daily) if not daily.empty else pd.DataFrame()
@@ -486,14 +507,24 @@ def main() -> None:
         all_candidates = base_generator.load_all_candidates()
         traces = [filter_trace("A主策略", base_generator, all_candidates, signal_date)]
 
-        c_conditions = configured_c_conditions(strategy_config)
+        c_conditions, c_generator, _c_filtered, c_release = build_c_factor_filtered_pool(
+            args.strategy_config, strategy_config, all_candidates
+        )
         if c_conditions:
-            c_config = condition_strategy_config(strategy_config, c_conditions, "backup_strategy_c_current")
-            c_generator = PaperCandidateGenerator(args.strategy_config, **generator_kwargs)
-            c_generator.config = c_config
-            c_generator.paper_config = c_config.get("paper_candidate", {})
-            c_generator.risk_thresholds = c_generator.paper_config.get("risk_thresholds", {})
-            traces.append(filter_trace(f"C补位策略（{condition_text(c_conditions)}）", c_generator, all_candidates, signal_date))
+            post_filter = None
+            if str(c_release["strategy_mode"]) == C_FACTOR_UNION_MODE:
+                post_filter = lambda frame: apply_c_profile_union(
+                    frame, c_release["profiles"], include_match_ids=False
+                )
+            traces.append(
+                filter_trace(
+                    f"C补位策略（{condition_text(c_conditions)}）",
+                    c_generator,
+                    all_candidates,
+                    signal_date,
+                    post_filter=post_filter,
+                )
+            )
 
         trace = pd.concat(traces, ignore_index=True)
         print(trace.to_string(index=False))

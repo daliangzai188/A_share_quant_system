@@ -103,6 +103,11 @@ reports/account_risk_shadow/
 reports/account_risk_research/
 reports/account_risk_robustness/
 
+# C半年因子全量JSON包含数千个分支和重复指标，体积大且可由脚本/完整TXT重建；
+# 正式生效版本只保存在config/strategy_c_factor_release.json。
+reports/strategy_c_factor_optimizer/**/candidate_release.json
+reports/strategy_c_factor_optimizer/**/summary.json
+
 # 实盘运行状态备份包含持仓、委托号和成交事件，只保留本机/异地备份，禁止入库
 backups/runtime_state/
 reports/runtime_state_backup/

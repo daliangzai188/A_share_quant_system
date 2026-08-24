@@ -31,6 +31,11 @@ from src.market_rules import (
 )
 from src.mechanical_compound import mechanical_compound
 from src.paper_candidate_generator import PaperCandidateGenerator
+from src.strategy_c_factor_rules import (
+    FACTOR_UNION_MODE as C_FACTOR_UNION_MODE,
+    apply_profile_union as apply_c_profile_union,
+    load_factor_release as load_c_factor_release,
+)
 from src.strategy_e import (
     build_r1_universe_from_pool,
     load_e_spec,
@@ -525,11 +530,24 @@ class NestedWalkForwardResearch:
 
     def _current_generator(self, *, c_strategy: bool) -> PaperCandidateGenerator:
         config = self.strategy_config
-        selected = (
-            condition_strategy_config(config, configured_c_conditions(config), "five_year_c_current")
-            if c_strategy
-            else config
-        )
+        if c_strategy:
+            c_config = config.get("paper_ab_filtered_strategy", {}).get("c_strategy", {})
+            release_path = Path(
+                c_config.get("factor_release_path", "config/strategy_c_factor_release.json")
+            )
+            if not release_path.is_absolute():
+                release_path = self.root / release_path
+            release = load_c_factor_release(release_path)
+            conditions = (
+                []
+                if str(release["strategy_mode"]) == C_FACTOR_UNION_MODE
+                else configured_c_conditions(config)
+            )
+            selected = condition_strategy_config(
+                config, conditions, "five_year_c_current"
+            )
+        else:
+            selected = config
         generator = PaperCandidateGenerator(
             self.strategy_config_path,
             input_trades_path=self.pool_path,
@@ -542,6 +560,18 @@ class NestedWalkForwardResearch:
     def select_current_a_or_c(self, pool: pd.DataFrame, leg: str) -> pd.DataFrame:
         generator = self._current_generator(c_strategy=leg == "C")
         filtered = generator.apply_strategy_filters(self.apply_common_filters(pool))
+        if leg == "C":
+            c_config = self.strategy_config.get("paper_ab_filtered_strategy", {}).get("c_strategy", {})
+            release_path = Path(
+                c_config.get("factor_release_path", "config/strategy_c_factor_release.json")
+            )
+            if not release_path.is_absolute():
+                release_path = self.root / release_path
+            release = load_c_factor_release(release_path)
+            if str(release["strategy_mode"]) == C_FACTOR_UNION_MODE:
+                filtered = apply_c_profile_union(
+                    filtered, release["profiles"], include_match_ids=False
+                )
         picks: list[pd.DataFrame] = []
         for _, group in filtered.groupby("trade_date", sort=True):
             ranked = generator.rank_candidates(group.copy()).head(1).copy()

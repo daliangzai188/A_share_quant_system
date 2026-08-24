@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "factor_schema_id": "C_CLOSE_FACTOR_VALUES_V1",
+  "release_id": "C_LEGACY_FORMAL_2026H1",
+  "strategy_mode": "LEGACY_FORMAL_C",
+  "effective_from": "20260701",
+  "research_window": {
+    "start": "20240630",
+    "end": "20260630"
+  },
+  "profiles": [],
+  "selection_policy": "LEGACY_AND_CONDITIONS_FROM_STRATEGY_CONFIG",
+  "branch_gate": {
+    "trade_count_at_least": 20,
+    "avg_account_return_must_exceed": 0.02,
+    "win_rate_must_exceed": 0.55
+  },
+  "certified_metrics": {
+    "c": {
+      "trade_count": 35,
+      "equity_multiple": 3.1108307989904436
+    },
+    "acde": {
+      "trade_count": 129,
+      "equity_multiple": 486.3661434308374,
+      "leg_counts": {
+        "A": 47,
+        "C": 21,
+        "D": 17,
+        "E": 44
+      }
+    }
+  },
+  "release_gate_passed": true,
+  "human_review_required": true,
+  "human_review_completed": true,
+  "applied_at": "legacy_anchor"
+}
