@@ -646,7 +646,9 @@ class StrategyDMonitor:
                  allowed_segments: set[str] | None = None,
                  position_pct: float = D_POSITION_PCT,
                  config: dict[str, Any] | None = None,
-                 position_recorder: Callable[[dict[str, Any]], None] | None = None) -> None:
+                 position_recorder: Callable[[dict[str, Any]], None] | None = None,
+                 entry_gate: Callable[[], tuple[bool, str]] | None = None,
+                 tracking_gate: Callable[[], tuple[bool, str]] | None = None) -> None:
         self.broker = broker
         self.live_order = live_order
         self.logger = logger
@@ -656,6 +658,12 @@ class StrategyDMonitor:
         self.position_pct = position_pct
         self.config = config or {}
         self.position_recorder = position_recorder
+        # D的行情路径采集与实际入场必须解耦：上游候选仍在执行时继续从09:30
+        # 维护完整日内路径，但每轮形成BUY候选前动态复核资金是否已经真正释放。
+        # 独立研究/回测未传回调时保持原行为；daemon实盘入口必须传入组合门禁。
+        self.entry_gate = entry_gate
+        self.tracking_gate = tracking_gate
+        self._last_entry_gate_reason = ""
         if self.live_order and self.position_recorder is None:
             raise RuntimeError("D实盘必须由daemon统一持仓记录器回写，禁止直写positions.json")
         self.factor_release_path = configured_factor_release_path(self.config)
@@ -1345,6 +1353,41 @@ class StrategyDMonitor:
             ts_code=st.ts_code,
         )
 
+    def _entry_gate_allows_buy(self) -> tuple[bool, str]:
+        """动态复核D能否入场；门禁异常一律fail-closed但不停止路径采集。"""
+
+        if self.entry_gate is None:
+            return True, "未配置外部候选资金门禁"
+        try:
+            allowed, reason = self.entry_gate()
+            normalized_reason = str(reason or ("动态门禁允许" if allowed else "动态门禁阻断"))
+        except Exception as exc:
+            allowed = False
+            normalized_reason = f"动态门禁检查异常:{exc}"
+        if not allowed and normalized_reason != self._last_entry_gate_reason:
+            self.logger.info(
+                "[D TRACKING ONLY] 继续维护09:30起完整路径，暂不产生BUY：%s",
+                normalized_reason,
+            )
+        elif allowed and self._last_entry_gate_reason and normalized_reason != self._last_entry_gate_reason:
+            self.logger.warning(
+                "[D ENTRY UNLOCKED] 上游候选已不再占用资金；D从本轮起允许按正式条件形成BUY：%s",
+                normalized_reason,
+            )
+        self._last_entry_gate_reason = normalized_reason
+        return bool(allowed), normalized_reason
+
+    def _tracking_gate_allows_monitor(self) -> tuple[bool, str]:
+        """候选一旦真实成交便结束D只读扫描；异常时停止扫描并fail-closed。"""
+
+        if self.tracking_gate is None:
+            return True, "未配置外部路径继续门禁"
+        try:
+            allowed, reason = self.tracking_gate()
+            return bool(allowed), str(reason or "路径继续门禁未说明原因")
+        except Exception as exc:
+            return False, f"路径继续门禁检查异常:{exc}"
+
     def _check_and_fire_factor_union(self) -> None:
         """执行半年发布的多个D因子if；任一命中即进入当轮唯一候选排序。"""
 
@@ -1405,6 +1448,13 @@ class StrategyDMonitor:
 
     def _check_and_fire(self) -> None:
         if self.order_placed:
+            return
+
+        # 只拦截信号选择/下单，不拦截poll_once中的全市场行情更新和检查点保存。
+        # 因此上游任意策略候选失败并过了补仓窗口后，D可以使用同一进程从
+        # 09:30连续积累的真实路径继续判断，而不是从午后快照伪造路径。
+        entry_allowed, _entry_reason = self._entry_gate_allows_buy()
+        if not entry_allowed:
             return
 
         if self.factor_union_active:
@@ -2526,6 +2576,18 @@ class StrategyDMonitor:
 
         try:
             while now_hhmm() < CANCEL_HHMM:
+                tracking_allowed, tracking_reason = self._tracking_gate_allows_monitor()
+                if not tracking_allowed:
+                    self.logger.info(
+                        "[D TRACKING STOPPED] 其他策略候选已成交或路径继续门禁失效，"
+                        "停止D只读扫描：%s",
+                        tracking_reason,
+                    )
+                    self._invalidate_checkpoint(
+                        D_CHECKPOINT_STATUS_CLOSED,
+                        f"D只读扫描终止:{tracking_reason}",
+                    )
+                    return
                 self.poll_once()
                 print(self.status_line())
                 if self.position_opened or self.waiting_order_only:

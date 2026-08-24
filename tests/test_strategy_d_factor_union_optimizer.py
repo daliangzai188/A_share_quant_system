@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import numpy as np
 import pandas as pd
@@ -234,6 +235,51 @@ def test_factor_union_consumes_earliest_signal_without_later_substitution(
     assert monitor.factor_signal_consumed is True
     assert monitor.factor_signal_locked_ts_code == "000003.SZ"
     assert monitor.order_placed is False
+
+
+def test_dynamic_entry_gate_blocks_buy_selection_but_not_monitor_lifecycle(
+    tmp_path: Path,
+) -> None:
+    """上游候选占用资金时只跳过BUY选择，D监控对象和路径状态继续保留。"""
+
+    release_path = tmp_path / "release.json"
+    release_path.write_text(json.dumps(factor_release()), encoding="utf-8")
+    gate_state = {"allowed": False}
+    tracking_state = {"allowed": True}
+    monitor = StrategyDMonitor(
+        broker=None,
+        live_order=False,
+        logger=DummyLogger(),
+        signal_csv=tmp_path / "signals.csv",
+        config={"strategy_d": {"factor_release_path": str(release_path)}},
+        entry_gate=lambda: (
+            gate_state["allowed"],
+            "候选窗口已结束" if gate_state["allowed"] else "候选仍在补仓窗口",
+        ),
+        tracking_gate=lambda: (
+            tracking_state["allowed"],
+            "账户仍空仓" if tracking_state["allowed"] else "候选已经成交",
+        ),
+    )
+    monitor.scan_round = 12
+    monitor.states = {"sentinel": StockState(ts_code="sentinel")}
+    factor_check = MagicMock()
+    monitor._check_and_fire_factor_union = factor_check  # type: ignore[method-assign]
+
+    monitor._check_and_fire()
+
+    factor_check.assert_not_called()
+    assert monitor.scan_round == 12
+    assert "sentinel" in monitor.states
+
+    gate_state["allowed"] = True
+    monitor._check_and_fire()
+
+    factor_check.assert_called_once_with()
+    tracking_state["allowed"] = False
+    tracking_allowed, tracking_reason = monitor._tracking_gate_allows_monitor()
+    assert tracking_allowed is False
+    assert "候选已经成交" in tracking_reason
 
 
 def test_best_factor_release_early_reseal_is_not_blocked_by_legacy_tail_gate(

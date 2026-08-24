@@ -82,6 +82,135 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
                 buys = orders[orders["side"].astype(str).str.upper().eq("BUY")]
                 self.assertEqual(str(buys.iloc[0]["strategy_leg"]), expected)
 
+    def test_static_candidate_keeps_d_tracking_but_blocks_d_entry(self) -> None:
+        """任意静态候选存在时，状态机必须拆开D路径跟踪与D实际入场。"""
+
+        engine = make_engine(ac_leg="A")
+        _state, decisions, _orders = engine.build_mode1_plan("20260803")
+        actions = set(decisions["action"].astype(str))
+
+        self.assertIn("BLOCK_D_INTRADAY_ENTRY", actions)
+        self.assertIn("ALLOW_D_INTRADAY_TRACKING_ONLY", actions)
+
+    def test_a_candidate_releases_d_after_failed_open_window(self) -> None:
+        decisions = pd.DataFrame([{
+            "action": "ALLOW_ABC_BUY_PREVIEW",
+            "strategy_leg": "A",
+            "side": "BUY",
+        }, {
+            "action": "ALLOW_D_INTRADAY_TRACKING_ONLY",
+            "strategy_leg": "D",
+        }])
+        before_release = datetime.datetime(
+            2026, 8, 24, 9, 34, tzinfo=trading_daemon.BEIJING_TZ
+        )
+        after_release = before_release.replace(minute=36)
+
+        with (
+            patch.object(trading_daemon, "has_open_local_position", return_value=False),
+            patch.object(trading_daemon, "has_position_bought_today", return_value=False),
+            patch.object(trading_daemon, "_d_relay_pair_active_today", return_value=False),
+            patch.object(trading_daemon, "load_pending_buys", return_value=[]),
+            patch.object(trading_daemon, "_pov_active_today", return_value=False),
+            patch.object(trading_daemon, "now_beijing", return_value=before_release),
+        ):
+            tracking_allowed, tracking_reason = trading_daemon.d_intraday_monitor_gate(decisions)
+            entry_before, reason_before = trading_daemon.d_intraday_entry_gate(decisions)
+
+        with (
+            patch.object(trading_daemon, "has_open_local_position", return_value=False),
+            patch.object(trading_daemon, "has_position_bought_today", return_value=False),
+            patch.object(trading_daemon, "_d_relay_pair_active_today", return_value=False),
+            patch.object(trading_daemon, "load_pending_buys", return_value=[]),
+            patch.object(trading_daemon, "_pov_active_today", return_value=False),
+            patch.object(trading_daemon, "now_beijing", return_value=after_release),
+        ):
+            entry_after, reason_after = trading_daemon.d_intraday_entry_gate(decisions)
+
+        self.assertTrue(tracking_allowed)
+        self.assertIn("实际入场由候选成交状态", tracking_reason)
+        self.assertFalse(entry_before)
+        self.assertIn("09:35", reason_before)
+        self.assertTrue(entry_after)
+        self.assertIn("资金占用已释放", reason_after)
+
+    def test_candidate_activity_still_blocks_d_after_clock_release(self) -> None:
+        decisions = pd.DataFrame([{
+            "action": "ALLOW_F_BUY",
+            "strategy_leg": "F",
+            "side": "BUY",
+        }])
+        after_release = datetime.datetime(
+            2026, 8, 24, 10, 0, tzinfo=trading_daemon.BEIJING_TZ
+        )
+        with (
+            patch.object(trading_daemon, "has_open_local_position", return_value=False),
+            patch.object(trading_daemon, "has_position_bought_today", return_value=False),
+            patch.object(trading_daemon, "_d_relay_pair_active_today", return_value=False),
+            patch.object(trading_daemon, "load_pending_buys", return_value=[]),
+            patch.object(trading_daemon, "_pov_active_today", return_value=True),
+            patch.object(trading_daemon, "now_beijing", return_value=after_release),
+        ):
+            allowed, reason = trading_daemon.d_intraday_entry_gate(decisions)
+
+        self.assertFalse(allowed)
+        self.assertIn("POV仍在补仓窗口", reason)
+
+    def test_e_candidate_uses_own_release_window(self) -> None:
+        decisions = pd.DataFrame([{
+            "action": "ALLOW_E_BUY",
+            "strategy_leg": "E",
+            "side": "BUY",
+        }])
+        before_release = datetime.datetime(
+            2026, 8, 24, 13, 29, tzinfo=trading_daemon.BEIJING_TZ
+        )
+        after_release = before_release.replace(minute=31)
+
+        def check(at: datetime.datetime) -> tuple[bool, str]:
+            with (
+                patch.object(trading_daemon, "has_open_local_position", return_value=False),
+                patch.object(trading_daemon, "has_position_bought_today", return_value=False),
+                patch.object(trading_daemon, "_d_relay_pair_active_today", return_value=False),
+                patch.object(trading_daemon, "load_pending_buys", return_value=[]),
+                patch.object(trading_daemon, "_pov_active_today", return_value=False),
+                patch.object(trading_daemon, "_e_retry_running", return_value=False),
+                patch.object(trading_daemon, "_e_retry_resolved_today", return_value=(False, "")),
+                patch.object(trading_daemon, "now_beijing", return_value=at),
+            ):
+                return trading_daemon.d_intraday_entry_gate(decisions)
+
+        allowed_before, reason_before = check(before_release)
+        allowed_after, reason_after = check(after_release)
+
+        self.assertFalse(allowed_before)
+        self.assertIn("13:30", reason_before)
+        self.assertTrue(allowed_after)
+        self.assertIn("资金占用已释放", reason_after)
+
+        with (
+            patch.object(trading_daemon, "has_open_local_position", return_value=False),
+            patch.object(trading_daemon, "has_position_bought_today", return_value=False),
+            patch.object(trading_daemon, "_d_relay_pair_active_today", return_value=False),
+            patch.object(trading_daemon, "load_pending_buys", return_value=[]),
+            patch.object(trading_daemon, "_pov_active_today", return_value=False),
+            patch.object(trading_daemon, "_e_retry_running", return_value=False),
+            patch.object(
+                trading_daemon,
+                "_e_retry_resolved_today",
+                return_value=(True, "涨幅超过2%追价上限"),
+            ),
+            patch.object(
+                trading_daemon,
+                "now_beijing",
+                return_value=before_release.replace(hour=10, minute=0),
+            ),
+        ):
+            allowed_early, reason_early = trading_daemon.d_intraday_entry_gate(decisions)
+
+        self.assertTrue(allowed_early)
+        self.assertIn("结束补仓机会", reason_early)
+
     def test_blocked_e_run_records_priority_and_counterfactual_candidate_result(self) -> None:
         """A阻断正式信号后，E候选仍应独立计算并写入可审计字段。"""
 
@@ -351,6 +480,41 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
         self.assertIn("候选不可执行", title)
         self.assertIn("FAIL_STRICT_RELEASE_REQUIRED", body)
         self.assertIn("不会自动或建议手动绕过", body)
+
+    def test_expired_candidate_notification_releases_d_fund_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            state_path = Path(temporary) / "open_plan_push.json"
+            previous = trading_daemon._last_final_plan
+            trading_daemon._last_final_plan = {
+                "action_date": "20260824",
+                "final_buy": {
+                    "strategy": "F",
+                    "ts_code": "600001.SH",
+                    "name": "测试候选",
+                },
+                "execution_expired": True,
+                "execution_block_reason": "",
+                "hold_line": "",
+                "live_sizing": None,
+            }
+            try:
+                with patch.object(
+                    trading_daemon,
+                    "_PLAN_PUSH_STATE",
+                    state_path,
+                ), patch.object(
+                    trading_daemon,
+                    "_notify",
+                    return_value=True,
+                ) as notify:
+                    trading_daemon.push_open_plan_notification("早盘")
+            finally:
+                trading_daemon._last_final_plan = previous
+
+        _event, title, body = notify.call_args.args[:3]
+        self.assertIn("原候选已错过执行窗口", title)
+        self.assertIn("该候选已释放D资金门", body)
+        self.assertIn("09:30完整路径", body)
 
     def test_existing_position_blocks_all_new_buys(self) -> None:
         engine = make_engine(

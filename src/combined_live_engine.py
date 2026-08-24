@@ -722,13 +722,22 @@ class CombinedLiveEngine:
                 ))
             else:
                 _d_block_reason = {
-                    "A": "今日存在A买入计划，D盘中策略不再使用同一资金。",
-                    "E": "E今日开仓使用同一资金，D盘中监控跳过。",
-                    "C": "C按腿序垫底开仓并使用同一资金，D盘中监控跳过。",
+                    "A": "今日存在A买入计划，候选执行窗口内禁止D使用同一资金。",
+                    "E": "E今日开仓使用同一资金，E延迟执行窗口结束前禁止D入场。",
+                    "C": "C按腿序垫底开仓并使用同一资金，候选执行窗口内禁止D入场。",
                 }[opened_leg]
                 decisions.append(CombinedLiveDecision(
-                    action="BLOCK_D_INTRADAY_MONITOR", strategy_leg="D",
+                    action="BLOCK_D_INTRADAY_ENTRY", strategy_leg="D",
                     reason=_d_block_reason,
+                    source="combined_state_machine",
+                ))
+                decisions.append(CombinedLiveDecision(
+                    action="ALLOW_D_INTRADAY_TRACKING_ONLY", strategy_leg="D",
+                    reason=(
+                        f"今日{opened_leg}候选执行期间，D仍从09:30只读维护完整日内路径；"
+                        "不得下单。若该候选最终零成交且补仓窗口结束，daemon动态解除"
+                        "D入场门禁；若候选有任何成交则继续由串行单仓门禁阻断D。"
+                    ),
                     source="combined_state_machine",
                 ))
         # ── E 盘中状态显示（摘要用） ─────────────────────────────────────────
