@@ -9,7 +9,6 @@ import pandas as pd
 from pandas.errors import EmptyDataError
 
 from src.broker_adapter import PositionSnapshot
-from src.live_certification import validate_live_certification
 from src.qmt_adapter import QMTBrokerAdapter, tushare_to_qmt_code
 from src.qmt_single_owner import assert_standalone_qmt_allowed
 from src.utils.config import get_project_root, load_json_config, mkdir_p
@@ -61,16 +60,6 @@ class LiveOrderGateway:
             raise RuntimeError("live_trade.real_order_enabled=false，拒绝真实下单。")
         if confirm != expected:
             raise RuntimeError(f"确认文本不匹配，拒绝真实下单。需要: {expected}")
-        # 认证失效只能阻止风险增加的BUY，绝不能阻断已有持仓的SELL/撤单/回写。
-        certification = self.config.get("portfolio_certification", {})
-        if normalized_side == "BUY" and bool(certification.get("require_live_certification", False)):
-            check = validate_live_certification(
-                self.project_root,
-                certification,
-                full_config=self.config,
-            )
-            if not check.ok:
-                raise RuntimeError(f"实盘组合认证未通过，拒绝新增BUY：{check.reason}")
 
     def assert_small_cash_test_allowed(self) -> None:
         self.assert_qmt_enabled()

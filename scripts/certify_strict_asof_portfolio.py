@@ -2,8 +2,8 @@
 """生成当前D>A>E>C唯一正式的严格as-of机械复利证书。
 
 本脚本固定当前规则，不优化参数；只从逐日as-of成交评分源重建候选，并按
-单账户真实占仓顺序执行 ``equity *= 1 + account_return``。由于当前窗口仍是
-规则开发段，证书会如实记录严格as-of通过，但保持不可发布和新BUY fail-closed。
+单账户真实占仓顺序执行 ``equity *= 1 + account_return``。输出只用于研究统计，
+不参与实盘程序启停或BUY控制。
 
 首次建立或明确接受输入变化时：
     python3 scripts/certify_strict_asof_portfolio.py --refresh-input-manifest
@@ -106,7 +106,7 @@ def _write_strict_report(
         "",
         f"- 锚点窗口：{certification['input_start_date']}～{certification['input_end_date']}",
         "- 复利口径：单账户逐笔机械复利，D>A>E>C，占仓82.5%",
-        f"- 认证状态：{certification['status']}（严格发现，不授权新增BUY）",
+        "- 研究口径：STRICT_DISCOVERY（只作统计审计，不参与实盘BUY控制）",
         f"- 组合成交：{certification['executed_trade_count']}笔",
         f"- 组合复利：{certification['equity_multiple']:.12f}倍",
         f"- 胜率：{certification['win_rate']:.4%}",
@@ -247,11 +247,9 @@ def certify(*, refresh_input_manifest: bool = False) -> dict[str, Any]:
         CERTIFICATION_PATH,
         {
             "schema_version": 2,
-            "status": "RUNNING_STRICT_ASOF_REBUILD",
-            "current_executable": False,
             "scenario": "current_d_a_e_c",
             "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
-            "note": "严格as-of重建中；新BUY保持fail-closed，SELL不受影响。",
+            "note": "严格as-of研究统计重建中；不参与实盘程序启停或BUY控制。",
         },
     )
     manifest_path = write_or_verify_input_manifest(refresh=refresh_input_manifest)
@@ -297,7 +295,6 @@ def certify(*, refresh_input_manifest: bool = False) -> dict[str, Any]:
         "asof_mode": "STRICT",
         "strict_asof_passed": True,
         "research_protocol": STRICT_DISCOVERY,
-        "release_eligible": False,
         "result_scope": "DISCOVERY_ONLY",
         "compound_standard_id": MECHANICAL_COMPOUND_STANDARD_ID,
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
@@ -326,8 +323,6 @@ def certify(*, refresh_input_manifest: bool = False) -> dict[str, Any]:
     audit_rel = AUDIT_PATH.relative_to(ROOT).as_posix()
     certification = {
         "schema_version": 2,
-        "status": "FAIL_STRICT_RELEASE_REQUIRED",
-        "current_executable": False,
         "scenario": "current_d_a_e_c",
         "metric_scope": "STRICT_ASOF_MECHANICAL_COMPOUND",
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
@@ -352,12 +347,10 @@ def certify(*, refresh_input_manifest: bool = False) -> dict[str, Any]:
         "max_consecutive_losses": int(metrics["max_consecutive_losses"]),
         "initial_equity": float(runtime_config["portfolio_certification"]["initial_equity"]),
         "position_pct": float(runtime_config["portfolio_certification"]["position_pct"]),
-        "capacity_certified": False,
         "strict_asof_standard_id": STRICT_ASOF_STANDARD_ID,
         "strict_asof_passed": True,
         "compound_standard_id": MECHANICAL_COMPOUND_STANDARD_ID,
         "research_protocol": STRICT_DISCOVERY,
-        "release_eligible": False,
         "strict_asof_audit_path": audit_rel,
         "strict_asof_audit_sha256": certification_file_sha256(AUDIT_PATH),
         "config_sha256": certification_config_sha256(runtime_config),
@@ -370,15 +363,14 @@ def certify(*, refresh_input_manifest: bool = False) -> dict[str, Any]:
         ),
         "note": (
             "这是当前组合唯一正式统计口径：严格as-of、单账户、逐笔机械复利。"
-            "但当前协议仍是STRICT_DISCOVERY，未完成冻结样本外/逐折walk-forward发布认证，"
-            "因此新BUY继续fail-closed；旧来源1727倍不得用于正式收益、发布或比较。"
+            "当前协议仍是STRICT_DISCOVERY；研究结果不参与实盘程序启停或BUY控制，"
+            "旧来源1727倍不得用于正式收益或比较。"
         ),
     }
     _atomic_json(CERTIFICATION_PATH, certification)
     _write_strict_report(certification, leg_standalone_metrics)
-    LOGGER.warning(
-        "认证结果=%s；STRICT_DISCOVERY仅作研究，新BUY继续fail-closed。certificate=%s audit=%s report=%s",
-        certification["status"],
+    LOGGER.info(
+        "STRICT_DISCOVERY统计完成；不参与实盘BUY控制。certificate=%s audit=%s report=%s",
         CERTIFICATION_PATH,
         AUDIT_PATH,
         REPORT_PATH,

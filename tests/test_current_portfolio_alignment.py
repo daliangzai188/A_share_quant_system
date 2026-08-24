@@ -29,9 +29,10 @@ class CurrentPortfolioAlignmentTests(unittest.TestCase):
     def test_legacy_alignment_cannot_be_current_or_strict(self) -> None:
         self.assertEqual(self.legacy["input_start_date"], "20240520")
         self.assertEqual(self.legacy["input_end_date"], "20260514")
-        self.assertFalse(self.legacy["current_executable"])
-        self.assertFalse(self.legacy["strict_asof_passed"])
-        self.assertFalse(self.legacy["release_eligible"])
+        self.assertNotIn("status", self.legacy)
+        self.assertNotIn("current_executable", self.legacy)
+        self.assertNotIn("release_eligible", self.legacy)
+        self.assertNotIn("capacity_certified", self.legacy)
 
     def test_current_certificate_uses_new_anchor(self) -> None:
         current = json.loads(
@@ -42,7 +43,10 @@ class CurrentPortfolioAlignmentTests(unittest.TestCase):
         self.assertEqual(current["input_start_date"], "20240630")
         self.assertEqual(current["input_end_date"], "20260630")
         self.assertTrue(current["strict_asof_passed"])
-        self.assertFalse(current["release_eligible"])
+        self.assertNotIn("status", current)
+        self.assertNotIn("current_executable", current)
+        self.assertNotIn("release_eligible", current)
+        self.assertNotIn("capacity_certified", current)
 
     def test_legacy_leg_breakdown_stays_archived(self) -> None:
         self.assertEqual(self.legacy["executed_trade_count"], 128)

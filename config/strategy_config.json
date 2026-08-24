@@ -206,8 +206,7 @@
     "candidate_pool_equity_multiple": 9.698459418277993,
     "st_trade_count": 0,
     "position_pct": 0.825,
-    "research_protocol": "STRICT_DISCOVERY",
-    "release_eligible": false
+    "research_protocol": "STRICT_DISCOVERY"
   },
   "pre_paper_trade_requirements": {
     "file_role": "A/C复核与准入要求。B已删除；must_review_each_trade=false 后仅 risk_flags 非空标的生成复核单，复核不阻塞实盘执行链。",
@@ -464,7 +463,6 @@
         "legacy_source_window": "20240520-20260514",
         "legacy_source_report": "reports/paper_trade/backup_strategy_c/current_config_c_exit_refine_exit5_20240520_20260514_481d_summary.csv",
         "research_protocol": "STRICT_DISCOVERY",
-        "release_eligible": false,
         "minute_data_verified": false,
         "minute_data_required_for_c_acceptance": false,
         "order_book_verified": false

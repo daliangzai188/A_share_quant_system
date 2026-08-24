@@ -1,7 +1,5 @@
 {
   "schema_version": 1,
-  "status": "FAIL_STRICT_RELEASE_REQUIRED",
-  "current_executable": false,
   "scenario": "current_d_a_e_c",
   "generated_at": "2026-08-21T04:52:51.465115+00:00",
   "input_start_date": "20240520",
@@ -30,11 +28,8 @@
   "fixed_initial_notional_multiple": 9.406974363406409,
   "theoretical_ending_equity": 863953113.9632109,
   "theoretical_next_order_amount": 712761319.019649,
-  "capacity_certified": false,
   "strict_asof_standard_id": "A_SYSTEM_STRICT_ASOF_V1",
-  "strict_asof_passed": false,
   "research_protocol": "STRICT_DISCOVERY",
-  "release_eligible": false,
   "e_strategy_leg": "E",
   "e_strategy_variant": "E_CURRENT",
   "config_sha256": "29d02c1cfc5a078afa3c662570bcd935ba518ff5237402b5c9c1c61aba08803a",
@@ -67,5 +62,5 @@
     "reports/current_portfolio_alignment/input_manifest.json"
   ],
   "input_sha256": "c2118d3f3322f27266bd866dc2cf945971d7816bdd49728e1eb35928cf25b72d",
-  "note": "该结果是D>A>E>C旧来源身份回放，不是严格as-of发布认证。新BUY保持fail-closed；完成严格统计、容量和发布冻结后才能改为可执行。"
+  "note": "该结果是D>A>E>C旧来源身份回放，只作历史统计，不参与实盘程序启停或BUY控制。"
 }

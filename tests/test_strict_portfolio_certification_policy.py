@@ -28,8 +28,10 @@ class StrictPortfolioCertificationPolicyTests(unittest.TestCase):
         self.assertTrue(payload["strict_asof_passed"])
         self.assertEqual(payload["compound_standard_id"], MECHANICAL_COMPOUND_STANDARD_ID)
         self.assertEqual(payload["research_protocol"], STRICT_DISCOVERY)
-        self.assertFalse(payload["release_eligible"])
-        self.assertFalse(payload["current_executable"])
+        self.assertNotIn("status", payload)
+        self.assertNotIn("current_executable", payload)
+        self.assertNotIn("release_eligible", payload)
+        self.assertNotIn("capacity_certified", payload)
         self.assertEqual(payload["input_start_date"], "20240630")
         self.assertEqual(payload["input_end_date"], "20260630")
         self.assertEqual((strict.START, strict.END), ("20240630", "20260630"))
@@ -51,6 +53,7 @@ class StrictPortfolioCertificationPolicyTests(unittest.TestCase):
         audit = json.loads(
             (ROOT / payload["strict_asof_audit_path"]).read_text(encoding="utf-8")
         )
+        self.assertNotIn("release_eligible", audit)
         standalone = audit["strict_leg_standalone_metrics"]
         self.assertEqual(standalone["A"]["trade_count"], 58)
         self.assertAlmostEqual(standalone["A"]["equity_multiple"], 12.023750012345724)

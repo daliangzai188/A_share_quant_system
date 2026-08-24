@@ -4,7 +4,6 @@
   "asof_mode": "STRICT",
   "strict_asof_passed": true,
   "research_protocol": "STRICT_DISCOVERY",
-  "release_eligible": false,
   "result_scope": "DISCOVERY_ONLY",
   "compound_standard_id": "A_SYSTEM_MECHANICAL_COMPOUND_V1",
   "generated_at": "2026-08-21T12:04:48.625246+00:00",

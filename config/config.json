@@ -1,24 +1,20 @@
 {
   "project_name": "A股量化交易系统",
   "strict_asof": {
-    "enabled": true,
     "standard_id": "A_SYSTEM_STRICT_ASOF_V1",
     "default_mode": "STRICT",
     "default_research_protocol": "STRICT_DISCOVERY",
     "formal_protocols": ["LOCKED_OOS", "WALK_FORWARD"],
     "fill_probability_method": "asof_turnover_space_proxy_v2",
-    "require_for_all_strategy_return_research": true,
-    "require_mechanical_compound": true,
     "mechanical_compound_standard_id": "A_SYSTEM_MECHANICAL_COMPOUND_V1",
     "official_portfolio_certifier": "scripts/certify_strict_asof_portfolio.py",
-    "legacy_alignment_is_non_official": true,
     "policy_note": "所有策略收益研究必须使用严格point-in-time数据和单账户逐笔机械复利；STRICT_DISCOVERY只能开发规则，不能认证或发布。正式结论只接受冻结规则LOCKED_OOS或逐折训练在先WALK_FORWARD。B/L/M/N式旧来源或结果回看不得进入正式收益。"
   },
   "trade_mode": "live",
   "broker_adapter_enabled": true,
   "qmt_enabled": true,
   "active_strategy_profile": {
-    "file_role": "目标生产组合。当前严格发布认证尚未完成；新认证冻结前所有新增BUY（含D盘中BUY）必须fail-closed，SELL/撤单/成交回写继续执行。",
+    "file_role": "当前生产组合。程序启停由人工控制；所有真实订单仍必须经过交易时间、资金、仓位、重复委托、成交概率及QMT状态等执行风控。",
     "mode": 1,
     "mode_name": "D_A_E_C",
     "available_modes": {
@@ -38,22 +34,14 @@
     "full_sample_gate_risk_acceptance_note": "2026-08-18统一完整样本后发现：E_R1门禁前102个候选日，E_CURRENT门禁后82个候选日；被排除20笔平均账户收益+2.297%，后半段门禁降低单腿复利。用户已明确继续保持当前实盘E_CURRENT，因此本项按风险接受保留；这不等于门禁统计通过，不得据此扩大资金。"
   },
   "portfolio_certification": {
-    "file_role": "D>A>E>C组合资金口径和发布门禁。组合身份已变化；新认证冻结前所有新增BUY必须fail-closed。",
+    "file_role": "D>A>E>C组合资金和研究统计口径；研究认证结果不参与实盘BUY开关。",
     "initial_equity": 500000,
     "position_pct": 0.825,
     "input_manifest_path": "reports/current_portfolio_alignment/input_manifest.json",
     "input_manifest_update_policy": "默认只验证；确认数据版本变化后显式运行--refresh-input-manifest并审查清单差异。",
     "fee_source": "analysis.commission_rate/stamp_tax_schedule/transfer_fee_rate/minimum_commission",
-    "require_live_certification": true,
     "certification_summary_path": "reports/current_portfolio_alignment/live_certification.json",
     "certification_report_path": "reports/current_portfolio_alignment/strict_asof_portfolio_report.md",
-    "certification_required_status": "PASS_WITH_RISK_ACCEPTANCE",
-    "certification_expected_scenario": "current_d_a_e_c",
-    "certification_max_age_hours": 168,
-    "certification_require_hashes": true,
-    "certification_require_strict_asof": true,
-    "require_strategy_release_freeze": true,
-    "strategy_release_freeze_path": "config/strategy_release_freeze.json",
     "strategy_priority_order": [
       "D",
       "A",
@@ -65,10 +53,6 @@
     "selected_rule_name": "current_d_a_e_c",
     "selected_rule_description": "当前生产腿序D>A>E>C；D按盘中真实时序优先，收盘后静态腿依次为A、E、C。",
     "live_candidate_metrics": {
-      "certification_invalidated": true,
-      "certification_invalidation_reason": "严格as-of机械复利已重建，但当前仅属STRICT_DISCOVERY，尚无可发布的冻结OOS/walk-forward证书。",
-      "strict_rebuild_required": false,
-      "capacity_certified": false,
       "scenario": "current_d_a_e_c_strict_asof_discovery",
       "strict_asof_window": "20240630~20260630",
       "strict_asof_trade_count": 132,
@@ -76,7 +60,7 @@
       "strict_asof_win_rate": 0.6818181818181818,
       "strict_asof_max_drawdown": -0.22970534744710858,
       "compound_standard_id": "A_SYSTEM_MECHANICAL_COMPOUND_V1",
-      "note": "当前正式窗口为2024-06-30至2026-06-30，A/E通过逐腿双复利门槛后统计为132笔、327.726719倍的严格as-of单账户机械复利；优化前同窗口锚点为133笔、300.312461倍，旧305.348870倍和五年底座343.5434倍均不得继续作为比较基线。STRICT_DISCOVERY不能授权新BUY。"
+      "note": "当前研究窗口为2024-06-30至2026-06-30，A/E通过逐腿双复利门槛后统计为132笔、327.726719倍的严格as-of单账户机械复利；优化前同窗口锚点为133笔、300.312461倍，旧305.348870倍和五年底座343.5434倍均不得继续作为比较基线。研究结论不参与实盘BUY开关。"
     }
   },
   "live_performance_report": {

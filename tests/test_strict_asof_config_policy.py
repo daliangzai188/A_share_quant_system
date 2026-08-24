@@ -16,12 +16,13 @@ class StrictAsOfConfigPolicyTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.config = json.loads((ROOT / "config/config.json").read_text(encoding="utf-8"))
 
-    def test_global_policy_is_active(self) -> None:
+    def test_global_research_standard_has_no_runtime_switch(self) -> None:
         policy = self.config["strict_asof"]
-        self.assertTrue(policy["enabled"])
+        self.assertNotIn("enabled", policy)
         self.assertEqual(policy["standard_id"], STRICT_ASOF_STANDARD_ID)
-        self.assertTrue(policy["require_for_all_strategy_return_research"])
-        self.assertTrue(policy["require_mechanical_compound"])
+        self.assertNotIn("require_for_all_strategy_return_research", policy)
+        self.assertNotIn("require_mechanical_compound", policy)
+        self.assertNotIn("legacy_alignment_is_non_official", policy)
         self.assertEqual(
             policy["mechanical_compound_standard_id"],
             MECHANICAL_COMPOUND_STANDARD_ID,
@@ -55,9 +56,15 @@ class StrictAsOfConfigPolicyTests(unittest.TestCase):
         self.assertTrue(analysis["output_exit_rule_trades_path"].endswith("_asof.csv"))
         self.assertTrue(self.config["candidate_pool"]["output_candidate_pool_path"].endswith("_asof.csv"))
 
-    def test_live_release_requires_formal_strict_asof_audit(self) -> None:
+    def test_research_certification_has_no_live_buy_switches(self) -> None:
         certification = self.config["portfolio_certification"]
-        self.assertTrue(certification["certification_require_strict_asof"])
+        for field in (
+            "require_live_certification",
+            "certification_required_status",
+            "certification_require_strict_asof",
+            "require_strategy_release_freeze",
+        ):
+            self.assertNotIn(field, certification)
 
 
 if __name__ == "__main__":

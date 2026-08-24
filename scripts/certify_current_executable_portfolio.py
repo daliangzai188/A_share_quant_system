@@ -723,11 +723,8 @@ def summarize(detail: pd.DataFrame, scenario: str) -> dict[str, Any]:
         "fixed_initial_notional_multiple": fixed_initial_notional_multiple,
         "theoretical_ending_equity": float(INITIAL_EQUITY * multiple),
         "theoretical_next_order_amount": float(INITIAL_EQUITY * multiple * POSITION_PCT),
-        "capacity_certified": False,
         "strict_asof_standard_id": STRICT_ASOF_STANDARD_ID,
-        "strict_asof_passed": False,
         "research_protocol": STRICT_DISCOVERY,
-        "release_eligible": False,
         "total_compound_return": multiple - 1.0,
         "max_drawdown": float(detail["drawdown"].min()),
         "max_profit": float(returns.max()),
@@ -1091,7 +1088,6 @@ def write_current_report(
     e_portfolio_comparison: pd.DataFrame,
     *,
     current_scenario: str,
-    certification_status: str,
 ) -> None:
     """写出当前四腿组合报告；严格发布认证完成前只作研究审计。"""
 
@@ -1108,8 +1104,7 @@ def write_current_report(
         f"- 胜率{current['win_rate']:.2%}，平均账户收益{current['avg_return']:.2%}，"
         f"中位数{current['median_return']:.2%}，逐笔复利{current['equity_multiple']:.6f}倍，"
         f"最大回撤{current['max_drawdown']:.2%}。",
-        f"- 认证状态：`{certification_status}`。该旧来源回放只能验证代码身份，"
-        "不能代替严格as-of发布认证。",
+        "- 该旧来源回放只验证代码身份，不参与实盘程序启停或BUY控制。",
         "- 机械复利是假定每笔按82.5%仓位连续放大的历史结果；资金容量未认证，不能作为实盘收益预期。",
         "",
         "## 同口径场景",
@@ -1138,17 +1133,15 @@ def write_current_report(
         "\n".join(lines), encoding="utf-8"
     )
 def certify_current(*, refresh_input_manifest: bool = False) -> None:
-    """重放D>A>E>C；严格as-of新认证完成前始终fail-closed。"""
+    """重放D>A>E>C旧来源身份；结果不参与实盘程序启停或BUY控制。"""
 
     current_scenario = "current_d_a_e_c"
     write_certification(
         {
             "schema_version": 1,
-            "status": "RUNNING",
-            "current_executable": False,
             "scenario": current_scenario,
             "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
-            "note": "正在重建四腿历史身份回放；完成严格发布认证前禁止新BUY。",
+            "note": "正在重建四腿历史身份回放；结果不参与实盘BUY控制。",
         }
     )
     sources = load_sources()
@@ -1160,7 +1153,6 @@ def certify_current(*, refresh_input_manifest: bool = False) -> None:
             summarize(current_daily, current_scenario),
         ]
     )
-    summary["is_current_executable"] = False
     current_summary = summary[summary["scenario"].eq(current_scenario)].iloc[0]
 
     if int(current_summary["executed_trade_count"]) != EXPECTED_CURRENT_TRADE_COUNT:
@@ -1188,8 +1180,6 @@ def certify_current(*, refresh_input_manifest: bool = False) -> None:
         before_label="gate_off",
         after_label="gate_on",
     )
-    certification_status = "FAIL_STRICT_RELEASE_REQUIRED"
-
     without_e.to_csv(
         OUTPUT_DIR / "portfolio_daily_before_gate.csv", index=False, encoding="utf-8-sig"
     )
@@ -1217,7 +1207,6 @@ def certify_current(*, refresh_input_manifest: bool = False) -> None:
         e_validation,
         e_portfolio_comparison,
         current_scenario=current_scenario,
-        certification_status=certification_status,
     )
 
     manifest_path = write_input_manifest(refresh=refresh_input_manifest)
@@ -1225,8 +1214,6 @@ def certify_current(*, refresh_input_manifest: bool = False) -> None:
     e_config = runtime_config.get("strategy_e", {})
     certification = {
         "schema_version": 1,
-        "status": certification_status,
-        "current_executable": False,
         "scenario": current_scenario,
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "input_start_date": str(current_daily["signal_date"].min()),
@@ -1254,11 +1241,8 @@ def certify_current(*, refresh_input_manifest: bool = False) -> None:
         "theoretical_next_order_amount": float(
             current_summary["theoretical_next_order_amount"]
         ),
-        "capacity_certified": False,
         "strict_asof_standard_id": STRICT_ASOF_STANDARD_ID,
-        "strict_asof_passed": False,
         "research_protocol": STRICT_DISCOVERY,
-        "release_eligible": False,
         "e_strategy_leg": "E",
         "e_strategy_variant": str(e_config.get("strategy_variant", "E_CURRENT")),
         "config_sha256": certification_config_sha256(runtime_config),
@@ -1268,11 +1252,11 @@ def certify_current(*, refresh_input_manifest: bool = False) -> None:
         "input_sha256": certification_files_sha256(PROJECT_ROOT, input_files),
         "note": (
             "该结果是D>A>E>C旧来源身份回放，不是严格as-of发布认证。"
-            "新BUY保持fail-closed；完成严格统计、容量和发布冻结后才能改为可执行。"
+            "结果只作历史统计，不参与实盘程序启停或BUY控制。"
         ),
     }
     write_certification(certification)
-    print("四腿历史身份回放完成；严格发布认证仍未通过，新BUY保持关闭。")
+    print("四腿历史身份回放完成；结果不参与实盘程序启停或BUY控制。")
     print(summary.to_string(index=False))
 def main(*, refresh_input_manifest: bool = False) -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)

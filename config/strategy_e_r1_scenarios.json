@@ -120,7 +120,6 @@
     "baseline_combo_equity_multiple": 300.31246148623836,
     "selected_combo_trade_count_when_only_e_replaced": 132,
     "selected_combo_equity_multiple_when_only_e_replaced": 314.32522439492567,
-    "release_eligible": false,
     "note": "同窗口样本内排序搜索，存在多重比较和过拟合风险；只证明通过本轮单腿与逐腿组合双复利门槛，不等于样本外或实盘认证。"
   }
 }
