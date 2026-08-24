@@ -1103,6 +1103,8 @@ def main() -> int:
         "replaced_release_id": str(incumbent_release["release_id"]),
         "release_gate_passed": release_eligible,
         "human_review_required": True,
+        "human_review_completed": False,
+        "applied_at": "",
     }
 
     applied = False
@@ -1111,6 +1113,10 @@ def main() -> int:
         if not release_eligible:
             LOGGER.warning("没有单一候选同时提高D与ACDE复利，正式D保持不变")
         else:
+            candidate_release["human_review_completed"] = True
+            candidate_release["applied_at"] = dt.datetime.now().astimezone().isoformat(
+                timespec="seconds"
+            )
             archive = apply_release(release_path, incumbent_release, candidate_release)
             archive_path = str(archive.relative_to(ROOT))
             applied = True

@@ -197,7 +197,7 @@
   },
   "candidate_release_id": "D_FACTOR_BEST_20260630_b74c0c03",
   "candidate_release_eligible": true,
-  "apply_requested": false,
-  "formal_strategy_modified": false,
-  "decision": "BEST_SINGLE_PROFILE_PASSED_WAITING_HUMAN_DECISION"
+  "apply_requested": true,
+  "formal_strategy_modified": true,
+  "decision": "REPLACE_FORMAL_D_WITH_BEST_SINGLE_PROFILE"
 }

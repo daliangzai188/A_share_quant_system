@@ -1,18 +1,90 @@
 {
   "schema_version": 1,
   "factor_schema_id": "D_RESEAL_FACTOR_VALUES_V1",
-  "release_id": "D_LEGACY_FORMAL_2026H1",
-  "strategy_mode": "LEGACY_FORMAL_D",
+  "release_id": "D_FACTOR_BEST_20260630_b74c0c03",
+  "strategy_mode": "FACTOR_UNION",
   "effective_from": "20260701",
   "research_window": {
     "start": "20240630",
     "end": "20260630"
   },
-  "profiles": [],
-  "selection_policy": "LEGACY_PREFERRED_OPEN2_THEN_FD_RATIO",
-  "certified_metrics": {
-    "d_equity_multiple": 2.0261239235922566,
-    "acde_equity_multiple": 327.72671897548867
+  "profiles": [
+    {
+      "profile_id": "DIF_6501c8c095f9",
+      "priority": 1,
+      "conditions": {
+        "reseal_time_bucket": "0930_1000",
+        "break_close_depth_bucket": "LT0_2PCT",
+        "segment_bucket": "GROWTH_BOARD"
+      },
+      "branch_metrics": {
+        "trade_count": 33,
+        "win_rate": 0.6363636363636364,
+        "avg_account_return": 0.03438417896572329,
+        "median_account_return": 0.0189352946274622,
+        "equity_multiple": 2.8112400677086447,
+        "max_drawdown": -0.22308861429444682,
+        "max_profit": 0.2191184735692947,
+        "max_loss": -0.0699162117478346,
+        "profit_loss_ratio": 1.9310029782969222,
+        "max_consecutive_losses": 3,
+        "first_12m_trade_count": 10,
+        "first_12m_multiple": 1.0001720947934947,
+        "second_12m_trade_count": 23,
+        "second_12m_multiple": 2.8107563511748253,
+        "candidate_day_count": 50,
+        "price_confirmed_day_count": 42,
+        "queue_unknown_day_count": 8,
+        "unresolved_exit_count": 0
+      }
+    }
+  ],
+  "selection_policy": "EARLIEST_RESEAL_THEN_OPEN2_THEN_CODE",
+  "candidate_selection_policy": "BEST_SINGLE_PROFILE_MAX_ACDE_SUBJECT_TO_D_AND_ACDE_COMPOUND_IMPROVEMENT",
+  "branch_gate": {
+    "trade_count_at_least": 20,
+    "avg_account_return_must_exceed": 0.02,
+    "win_rate_must_exceed": 0.55
   },
-  "note": "当前正式D仍使用既有静态回封规则；只有半年优化候选同时提高D与ACDE复利并显式执行--apply，才会原子替换本文件。"
+  "certified_metrics": {
+    "d": {
+      "trade_count": 33,
+      "win_rate": 0.6363636363636364,
+      "avg_account_return": 0.03438417896572329,
+      "median_account_return": 0.0189352946274622,
+      "equity_multiple": 2.8112400677086447,
+      "max_drawdown": -0.22308861429444682,
+      "max_profit": 0.2191184735692947,
+      "max_loss": -0.0699162117478346,
+      "profit_loss_ratio": 1.9310029782969222,
+      "max_consecutive_losses": 3,
+      "win_rate_wilson_95_lower": 0.466161783022664,
+      "win_rate_wilson_95_upper": 0.7781282176475764,
+      "avg_return_bootstrap_95_lower": 0.009734985066893041,
+      "avg_return_bootstrap_95_upper": 0.059999900675913376
+    },
+    "acde": {
+      "trade_count": 129,
+      "win_rate": 0.6821705426356589,
+      "avg_account_return": 0.05338158777858806,
+      "median_account_return": 0.03734707754276177,
+      "equity_multiple": 486.3661434308374,
+      "max_drawdown": -0.22970534744710858,
+      "max_profit": 0.4892913885103991,
+      "max_loss": -0.14417251000998996,
+      "profit_loss_ratio": 2.3663948756157485,
+      "max_consecutive_losses": 4,
+      "leg_counts": {
+        "A": 47,
+        "C": 21,
+        "D": 17,
+        "E": 44
+      }
+    }
+  },
+  "replaced_release_id": "D_LEGACY_FORMAL_2026H1",
+  "release_gate_passed": true,
+  "human_review_required": true,
+  "human_review_completed": true,
+  "applied_at": "2026-08-24T11:01:36+07:00"
 }

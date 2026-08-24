@@ -1,16 +1,16 @@
 """
-策略D盘中监控：首板打板信号检测 + 14:55自动撤单
+策略D盘中监控：首板回封信号检测 + 14:55自动撤单
 
-【两档信号设计】
-  观察档（09:35-14:00 回封）:
-    首板 + multi_open + strong情绪 + 当前处于涨停 → 发出 [WATCH] 提醒
-    → 只作观察；回测要求最后真实回封时间>=14:00，不能仅因14:00仍封着就买
+【正式发布驱动】
+  FACTOR_UNION模式：
+    从09:30持续维护完整路径，每次真实新回封即时匹配已发布因子条件；
+    旧D的14:00时间、strong情绪和2～3次炸板条件不参与因子版判断。
 
-  买入档（14:00+ 真实回封）:
-    满足全部条件 + 当前处于涨停 + 重封时间>=14:00 → 发出 [BUY] 信号
-    → 涨停价挂单
+  LEGACY_FORMAL_D模式：
+    09:35～14:00只观察；14:00后真实回封并满足旧D全部条件才允许BUY。
 
-  14:55: 撤销所有D腿未成交委托
+  两种模式都继续强制首板、非ST、当前封板、可靠成交概率、单日唯一候选和
+  14:55撤单等公共安全门。
 
 运行方式：
   python scripts/monitor_strategy_d_intraday.py              # 仅提醒，不下单
@@ -1634,7 +1634,7 @@ class StrategyDMonitor:
         self.order_placed = True   # 先加锁再下单，防止QMT资金冻结延迟导致重复委托
         self.order_locked_ts_code = st.ts_code
         source = (
-            f"半年D因子并集:{self.factor_release_id}:"
+            f"半年D正式因子:{self.factor_release_id}:"
             f"{st.matched_factor_profile_ids}"
             if self.factor_union_active
             else "14:00后真实回封"
@@ -2549,7 +2549,8 @@ class StrategyDMonitor:
         print(f"观察提醒: {len(watched) + len(bought)} 次 | 买入信号: {len(bought)} 次")
         for st in bought:
             order_str = f"order_id={st.order_id}" if st.order_id else "仅提醒"
-            print(f"  [BUY/14:00后真实回封] {st.ts_code} {st.name} "
+            source = "正式因子回封" if self.factor_union_active else "14:00后真实回封"
+            print(f"  [BUY/{source}] {st.ts_code} {st.name} "
                   f"重封={hhmm_to_str(st.last_seal_hhmm)} 炸板={st.open_times_today}次 {order_str}")
         print(f"信号记录: {self.signal_csv}")
         self.logger.info("监控结束 观察=%d 买入=%d", len(watched) + len(bought), len(bought))
@@ -2620,6 +2621,7 @@ def main() -> None:
     sentiment_min, sentiment_max = configured_sentiment_bounds(config)
     factor_release_path = configured_factor_release_path(config)
     factor_release = load_factor_release(factor_release_path)
+    factor_release_active = release_uses_factor_union(factor_release)
 
     if args.dry_run:
         print("=== 策略D监控配置 ===")
@@ -2628,19 +2630,35 @@ def main() -> None:
             f"模式={factor_release.get('strategy_mode', '')} | "
             f"if条件数={len(factor_release.get('profiles', []))}"
         )
-        print(
-            f"  情绪阈值: 全市场当前封板涨停数 {sentiment_min}~{sentiment_max} "
-            "(代理历史strong，不含very_strong)"
-        )
-        print(
-            f"  D排序口径: 优先炸板{preferred_open_times}次，再按实时封单金额 / "
-            "流通市值(fd_amount_to_circ_mv)降序"
-        )
-        print(f"  炸板次数: {min_open_times}~{max_open_times}（multi_open）")
-        print(
-            f"  首次封板时段: {','.join(sorted(first_time_buckets))} | "
-            f"最后真实回封>={hhmm_to_str(tail_reseal_hhmm)}"
-        )
+        if factor_release_active:
+            print("  正式D条件: 最佳半年因子条件（旧D时间/情绪/炸板次数门不参与）")
+            for profile in factor_release.get("profiles", []):
+                conditions = " AND ".join(
+                    f"{name}={value}"
+                    for name, value in profile.get("conditions", {}).items()
+                )
+                print(f"    {profile.get('profile_id', '')}: {conditions}")
+            print(
+                "  因子排序口径: 当日最早合格回封；同一分钟优先炸板2次，再按代码排序"
+            )
+            print(
+                "  公共安全门: 首板、非ST、当前封板、真实新回封、09:30~14:54、"
+                "成交概率可靠"
+            )
+        else:
+            print(
+                f"  情绪阈值: 全市场当前封板涨停数 {sentiment_min}~{sentiment_max} "
+                "(代理历史strong，不含very_strong)"
+            )
+            print(
+                f"  D排序口径: 优先炸板{preferred_open_times}次，再按实时封单金额 / "
+                "流通市值(fd_amount_to_circ_mv)降序"
+            )
+            print(f"  炸板次数: {min_open_times}~{max_open_times}（multi_open）")
+            print(
+                f"  首次封板时段: {','.join(sorted(first_time_buckets))} | "
+                f"最后真实回封>={hhmm_to_str(tail_reseal_hhmm)}"
+            )
         print(
             f"  成交概率: >={min_fill_probability:.0%}且历史匹配可靠，"
             "实时复算失败则禁止开仓"
@@ -2649,12 +2667,15 @@ def main() -> None:
         print(f"  目标开仓仓位: {position_pct:.1%}")
         print("  补偿机制: 已取消，只尝试D排序第1名")
         print(f"  扫描开始: {hhmm_to_str(args.start_hhmm)}")
-        print(
-            f"  观察提醒: {hhmm_to_str(WATCH_START_HHMM)} 起（只提醒，不升级买入）"
-        )
-        print(
-            f"  买入信号: {hhmm_to_str(SIGNAL_START_HHMM)} 起发生真实回封才允许BUY"
-        )
+        if factor_release_active:
+            print("  因子信号: 09:30~14:54发生真实新回封时即时匹配正式条件")
+        else:
+            print(
+                f"  观察提醒: {hhmm_to_str(WATCH_START_HHMM)} 起（只提醒，不升级买入）"
+            )
+            print(
+                f"  买入信号: {hhmm_to_str(SIGNAL_START_HHMM)} 起发生真实回封才允许BUY"
+            )
         print(
             f"  重启保护: {hhmm_to_str(D_LATEST_COMPLETE_HISTORY_START_HHMM)}后才启动时，"
             "因缺少完整日内路径而禁止当日D开仓"

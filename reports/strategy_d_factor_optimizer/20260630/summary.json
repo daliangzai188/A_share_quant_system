@@ -305,11 +305,11 @@
     "release_gate_passed": true,
     "human_review_required": true
   },
-  "apply_requested": false,
-  "formal_release_applied": false,
-  "archived_release_path": "",
-  "formal_strategy_modified": false,
-  "decision": "BEST_SINGLE_PROFILE_PASSED_WAITING_HUMAN_DECISION",
+  "apply_requested": true,
+  "formal_release_applied": true,
+  "archived_release_path": "config/strategy_d_factor_release_history/D_LEGACY_FORMAL_2026H1.json",
+  "formal_strategy_modified": true,
+  "decision": "REPLACE_FORMAL_D_WITH_BEST_SINGLE_PROFILE",
   "limitations": [
     "条件分支来自同一24个月的多重组合搜索；2%与55%只是入选线，不代表未来收益。",
     "前后12个月仅披露稳定性，不作为未来样本外。",

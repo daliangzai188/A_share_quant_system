@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "factor_schema_id": "D_RESEAL_FACTOR_VALUES_V1",
+  "release_id": "D_LEGACY_FORMAL_2026H1",
+  "strategy_mode": "LEGACY_FORMAL_D",
+  "effective_from": "20260701",
+  "research_window": {
+    "start": "20240630",
+    "end": "20260630"
+  },
+  "profiles": [],
+  "selection_policy": "LEGACY_PREFERRED_OPEN2_THEN_FD_RATIO",
+  "certified_metrics": {
+    "d_equity_multiple": 2.0261239235922566,
+    "acde_equity_multiple": 327.72671897548867
+  },
+  "note": "当前正式D仍使用既有静态回封规则；只有半年优化候选同时提高D与ACDE复利并显式执行--apply，才会原子替换本文件。"
+}

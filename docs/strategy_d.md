@@ -728,11 +728,12 @@ ACDE总复利同时提高的分支中，选择ACDE复利最高的一条供人工
 `DIF_6501c8c095f9`同时通过双复利门：09:30～10:00回封、最后炸板收盘回落小于
 0.2%、创业板或科创板。其D独立33笔、2.811240倍；替换后的ACDE为129笔、
 486.366143倍。全部337条直接`OR`仍只有D 1.096366倍、ACDE 4.774653倍，因此
-`OR`只作反例诊断，不作为候选。该最佳项目前仍是研究候选，正式D尚未修改。
+`OR`只作反例诊断，不作为候选。用户于2026-08-24确认后，该最佳项已经发布为
+`D_FACTOR_BEST_20260630_b74c0c03`并接入盘中D。
 
 半年更新入口为`scripts/optimize_strategy_d_factor_union.py`。直接运行会自动生成
 `best_dual_gate_profile.txt`、完整JSON和全部逐组合ACDE比较CSV，默认只研究；人工
 查看报告后才能决定是否再次传入`--apply`。即使传入`--apply`也必须先通过双复利门，
 未通过绝不修改
-`config/strategy_d_factor_release.json`。盘中监控已支持读取发布模式；当前仍为
-`LEGACY_FORMAL_D`，所以实盘行为没有变化。
+`config/strategy_d_factor_release.json`。当前正式模式为`FACTOR_UNION`，只发布
+`DIF_6501c8c095f9`这一条最佳条件；旧版`D_LEGACY_FORMAL_2026H1`已归档。

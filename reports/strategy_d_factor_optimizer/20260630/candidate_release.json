@@ -84,5 +84,7 @@
   },
   "replaced_release_id": "D_LEGACY_FORMAL_2026H1",
   "release_gate_passed": true,
-  "human_review_required": true
+  "human_review_required": true,
+  "human_review_completed": true,
+  "applied_at": "2026-08-24T11:01:36+07:00"
 }

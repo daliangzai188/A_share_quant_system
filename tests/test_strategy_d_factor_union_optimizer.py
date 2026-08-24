@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from scripts import monitor_strategy_d_intraday as d_monitor
 from scripts.monitor_strategy_d_intraday import StockState, StrategyDMonitor
 from scripts.optimize_strategy_d_factor_union import (
     minimize_profile_union,
@@ -233,6 +234,56 @@ def test_factor_union_consumes_earliest_signal_without_later_substitution(
     assert monitor.factor_signal_consumed is True
     assert monitor.factor_signal_locked_ts_code == "000003.SZ"
     assert monitor.order_placed is False
+
+
+def test_best_factor_release_early_reseal_is_not_blocked_by_legacy_tail_gate(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    release = factor_release("DIF_6501c8c095f9")
+    release["profiles"][0]["conditions"] = {
+        "reseal_time_bucket": "0930_1000",
+        "break_close_depth_bucket": "LT0_2PCT",
+        "segment_bucket": "GROWTH_BOARD",
+    }
+    release_path = tmp_path / "release.json"
+    release_path.write_text(json.dumps(release), encoding="utf-8")
+    monitor = StrategyDMonitor(
+        broker=None,
+        live_order=False,
+        logger=DummyLogger(),
+        signal_csv=tmp_path / "signals.csv",
+        config={
+            "strategy_d": {
+                "factor_release_path": str(release_path),
+                "tail_reseal_hhmm": 1400,
+                "first_time_buckets": ["midday", "afternoon", "late"],
+            }
+        },
+    )
+    state = StockState(
+        ts_code="300001.SZ",
+        name="测试",
+        market_segment="chi_next",
+        upper_limit=12.0,
+        was_sealed=True,
+        ever_sealed=True,
+        open_times_today=1,
+        first_seal_hhmm=935,
+        last_seal_hhmm=945,
+        last_break_hhmm=943,
+        last_break_price=11.99,
+        previous_seal_to_break_minutes=3,
+        pre_close=10.0,
+        open_price=10.2,
+        session_low_price=10.1,
+    )
+    monkeypatch.setattr(d_monitor, "now_hhmm", lambda: 945)
+    monitor._refresh_fill_gate = lambda _state: (True, "测试成交门通过")
+
+    valid, reason = monitor._validate_buy_candidate(state)
+
+    assert valid is True
+    assert "DIF_6501c8c095f9" in reason
 
 
 def test_best_profile_requires_dual_gate_then_maximizes_acde() -> None:
