@@ -19,7 +19,7 @@ from src.strategy_identity import normalize_strategy_frame, normalize_strategy_l
 
 LEGS = ("A", "C", "E", "D")
 SCHEMA_VERSION = 1
-METHODOLOGY_VERSION = "released_shadow_t1_open_fixed_exit_v1"
+METHODOLOGY_VERSION = "released_shadow_action_date_fixed_exit_v2"
 LEDGER_COLUMNS = [
     "schema_version", "methodology_version", "release_id", "oos_start_date",
     "signal_date", "strategy_leg", "priority_rank", "candidate_status",
@@ -151,6 +151,7 @@ def _candidate_from_file(
     hold_offset: int,
     open_dates: list[str],
     run: dict[str, Any] | None = None,
+    exit_offsets_by_rule: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     run = run or {}
     if path is None:
@@ -170,15 +171,27 @@ def _candidate_from_file(
         row["candidate_reason"] = str(run.get("reason", run.get("note", "候选文件为空")))
         return row
     picked = frame.sort_values("candidate_rank").iloc[0] if "candidate_rank" in frame else frame.iloc[0]
+    source_exit_rule = str(picked.get("exit_rule", "")).strip()
+    resolved_hold_offset = int(hold_offset)
+    if source_exit_rule and exit_offsets_by_rule:
+        resolved_hold_offset = int(
+            exit_offsets_by_rule.get(source_exit_rule, resolved_hold_offset)
+        )
     row.update({
         "candidate_status": "CANDIDATE",
         "ts_code": str(picked.get("ts_code", "")),
         "name": str(picked.get("name", "")),
         "candidate_reason": str(run.get("reason", picked.get("selection_reason", "通过本腿规则"))),
         "planned_buy_date": offset_trade_date(open_dates, signal_date, 1),
-        "planned_exit_date": offset_trade_date(open_dates, signal_date, hold_offset),
+        "planned_exit_date": offset_trade_date(
+            open_dates, signal_date, resolved_hold_offset
+        ),
         "entry_rule": "T+1_OPEN",
-        "exit_rule": f"T+{hold_offset}_CLOSE",
+        "exit_rule": (
+            f"T+{resolved_hold_offset}_CLOSE:{source_exit_rule}"
+            if source_exit_rule
+            else f"T+{resolved_hold_offset}_CLOSE"
+        ),
         "position_pct": _float(picked.get("planned_position_pct", picked.get("position_pct", 0.825)), 0.825),
         "counterfactual_status": "WAITING_ENTRY_DATA",
     })
@@ -211,7 +224,23 @@ def _collect_standard_leg(root: Path, release: dict[str, Any], signal_date: str,
     low = leg.lower()
     run = _run_for_date(root / "reports" / f"strategy_{low}" / f"{low}_signal_runs_recent.json", signal_date)
     path = root / "reports" / f"strategy_{low}" / f"{low}_signal_{signal_date}_candidates.csv"
-    row = _candidate_from_file(row, path if path.exists() else None, signal_date, 2, open_dates, run)
+    exit_offsets_by_rule: dict[str, int] = {}
+    if leg == "E":
+        spec = _read_json(root / "config" / "strategy_e_r1_scenarios.json", {})
+        for rule, config in spec.get("exit_rules", {}).items():
+            if isinstance(config, dict):
+                exit_offsets_by_rule[str(rule)] = int(
+                    _float(config.get("hold_offset"), 2)
+                )
+    row = _candidate_from_file(
+        row,
+        path if path.exists() else None,
+        signal_date,
+        2,
+        open_dates,
+        run,
+        exit_offsets_by_rule=exit_offsets_by_rule,
+    )
     if row["candidate_status"] == "NOT_OBSERVED" and run.get("ts_code"):
         row.update({
             "candidate_status": "CANDIDATE",
@@ -306,11 +335,45 @@ def collect_signal_date(root: Path, release: dict[str, Any], signal_date: str) -
         _collect_ac(root, release, signal_date, "C", now, open_dates),
     ]
     rows.sort(key=lambda item: int(item["priority_rank"]))
-    eligible = [row for row in rows if row["candidate_status"] == "CANDIDATE"]
-    if eligible:
-        min(eligible, key=lambda item: int(item["priority_rank"]))["account_empty_winner"] = True
+    # 这里不能在同一signal_date内直接选资金赢家：D在signal_date盘中执行，
+    # A/C/E则是该日收盘计划并在下一交易日执行。真正的竞争关系只能等账本合并后，
+    # 按planned_buy_date把前一晚静态计划和当日D放到同一真实开仓日比较。
     _combined_live_selection(root, rows, signal_date)
     return rows
+
+
+def _assign_action_date_winners(frame: pd.DataFrame) -> pd.DataFrame:
+    """按真实开仓日标记账户空仓时的冻结优先级赢家。
+
+    旧账本按signal_date比较，会让当日D与当晚才形成、次日才可执行的A/C/E
+    错误争用资金。v2只在同一release_id、planned_buy_date内选择priority_rank最小
+    的有效候选；没有真实开仓日的记录不参与优先级统计。
+    """
+
+    result = frame.copy()
+    result["account_empty_winner"] = False
+    if result.empty or "planned_buy_date" not in result.columns:
+        return result
+    result["planned_buy_date"] = result["planned_buy_date"].map(_date)
+    candidates = result[
+        result["candidate_status"].astype(str).eq("CANDIDATE")
+        & result["planned_buy_date"].astype(str).ne("")
+    ].copy()
+    if candidates.empty:
+        return result
+    candidates["_priority"] = pd.to_numeric(
+        candidates["priority_rank"], errors="coerce"
+    ).fillna(len(LEGS) + 1)
+    winners = (
+        candidates.sort_values(
+            ["release_id", "planned_buy_date", "_priority", "strategy_leg"],
+            kind="stable",
+        )
+        .drop_duplicates(["release_id", "planned_buy_date"], keep="first")
+        .index
+    )
+    result.loc[winners, "account_empty_winner"] = True
+    return result
 
 
 def _daily_row(root: Path, trade_date: str, ts_code: str) -> pd.Series | None:
@@ -468,7 +531,10 @@ def upsert_ledger(root: Path, new_rows: Iterable[dict[str, Any]]) -> pd.DataFram
     for column in LEDGER_COLUMNS:
         if column not in result:
             result[column] = ""
-    result = update_counterfactual_outcomes(root, result[LEDGER_COLUMNS])
-    result = result.sort_values(["signal_date", "priority_rank"], kind="stable").reset_index(drop=True)
+    result = _assign_action_date_winners(result[LEDGER_COLUMNS])
+    result = update_counterfactual_outcomes(root, result)
+    result = result.sort_values(
+        ["signal_date", "priority_rank"], kind="stable"
+    ).reset_index(drop=True)
     _atomic_csv(result, path)
     return result

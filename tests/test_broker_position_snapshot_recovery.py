@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import datetime
 import os
 import sys
 import unittest
@@ -61,7 +62,14 @@ class BrokerPositionSnapshotRecoveryTests(unittest.TestCase):
         account = SimpleNamespace(total_asset=278_600.0, available_cash=50_600.0)
         local = [_ghost_position()]
 
-        with patch.object(daemon, "load_positions", return_value=local):
+        with (
+            patch.object(daemon, "load_positions", return_value=local),
+            patch.object(
+                daemon,
+                "today_beijing",
+                return_value=datetime.date(2026, 8, 18),
+            ),
+        ):
             with self.assertRaisesRegex(
                 daemon.BrokerSnapshotInconsistentError,
                 "本轮禁止清理本地持仓或执行新买入",
@@ -84,6 +92,11 @@ class BrokerPositionSnapshotRecoveryTests(unittest.TestCase):
             patch.object(daemon, "load_positions", side_effect=store.load),
             patch.object(daemon, "save_positions", side_effect=store.save),
             patch.object(daemon, "_notify", return_value=True),
+            patch.object(
+                daemon,
+                "today_beijing",
+                return_value=datetime.date(2026, 8, 18),
+            ),
         ):
             restored = daemon.restore_ghost_cleared_strategy_positions(
                 broker,

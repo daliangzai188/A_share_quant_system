@@ -21,7 +21,7 @@ class ShadowCandidateLedgerTest(unittest.TestCase):
             "status": "FROZEN",
             "release_id": "test-release",
             "oos_start_date": "20260105",
-            "strategy_priority_order": ["D", "A", "E", "C"],
+            "strategy_priority_order": ["A", "C", "E", "D"],
         }
         (self.root / "config" / "strategy_release_freeze.json").write_text(
             json.dumps(release), encoding="utf-8"
@@ -37,6 +37,15 @@ class ShadowCandidateLedgerTest(unittest.TestCase):
             "portfolio_certification": {"initial_equity": 500000},
         }
         (self.root / "config" / "config.json").write_text(json.dumps(config), encoding="utf-8")
+        (self.root / "config" / "strategy_e_r1_scenarios.json").write_text(
+            json.dumps({
+                "exit_rules": {
+                    "fixed_t2_close": {"hold_offset": 2},
+                    "fixed_hold3_close": {"hold_offset": 3},
+                }
+            }),
+            encoding="utf-8",
+        )
         pd.DataFrame({
             "cal_date": [20260105, 20260106, 20260107, 20260108, 20260109],
             "is_open": [1, 1, 1, 1, 1],
@@ -61,7 +70,7 @@ class ShadowCandidateLedgerTest(unittest.TestCase):
             "planned_position_pct": 0.825, "selection_reason": "C通过",
         }])
         self._csv("reports/strategy_e/e_signal_20260105_candidates.csv", [{
-            "ts_code": "000005.SZ", "name": "E股",
+            "ts_code": "000005.SZ", "name": "E股", "exit_rule": "fixed_hold3_close",
         }])
         self._csv("reports/strategy_d/intraday_signals_20260105.csv", [{
             "signal_type": "BUY", "ts_code": "000001.SZ", "name": "D股",
@@ -88,10 +97,10 @@ class ShadowCandidateLedgerTest(unittest.TestCase):
         self._install_candidates()
         release = load_release(self.root)
         rows = collect_signal_date(self.root, release, "20260105")
-        self.assertEqual([row["strategy_leg"] for row in rows], ["D", "A", "E", "C"])
+        self.assertEqual([row["strategy_leg"] for row in rows], ["A", "C", "E", "D"])
         self.assertTrue(all(row["candidate_status"] == "CANDIDATE" for row in rows))
-        self.assertEqual([row["strategy_leg"] for row in rows if row["account_empty_winner"]], ["D"])
-        self.assertTrue(rows[0]["live_selected"])
+        self.assertFalse(any(row["account_empty_winner"] for row in rows))
+        self.assertTrue(next(row for row in rows if row["strategy_leg"] == "D")["live_selected"])
 
     def test_upsert_is_idempotent_and_resolves_conservative_returns(self) -> None:
         self._install_candidates()
@@ -104,6 +113,14 @@ class ShadowCandidateLedgerTest(unittest.TestCase):
         self.assertEqual(len(second), 4)
         self.assertTrue(second["counterfactual_status"].eq("RESOLVED").all())
         self.assertTrue(second["account_net_return"].astype(float).notna().all())
+        e_row = second[second["strategy_leg"].eq("E")].iloc[0]
+        self.assertEqual(str(e_row["planned_exit_date"]), "20260108")
+        self.assertIn("fixed_hold3_close", str(e_row["exit_rule"]))
+        winners = second[second["account_empty_winner"].astype(bool)]
+        self.assertEqual(
+            set(zip(winners["planned_buy_date"].astype(str), winners["strategy_leg"])),
+            {("20260105", "D"), ("20260106", "A")},
+        )
         self.assertGreater(
             float(second.loc[second["strategy_leg"].eq("A"), "account_net_return"].iloc[0]),
             0.0,
@@ -116,7 +133,7 @@ class ShadowCandidateLedgerTest(unittest.TestCase):
     def test_d_not_monitored_is_not_mislabeled_as_no_candidate(self) -> None:
         release = load_release(self.root)
         rows = collect_signal_date(self.root, release, "20260105")
-        d = rows[0]
+        d = next(row for row in rows if row["strategy_leg"] == "D")
         self.assertEqual(d["candidate_status"], "NOT_OBSERVED")
         self.assertEqual(d["source_status"], "NOT_MONITORED")
 

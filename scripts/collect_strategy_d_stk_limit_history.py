@@ -21,8 +21,6 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.data_source import TushareDataSource  # noqa: E402
-
 
 START = "20240630"
 END = "20260630"
@@ -204,6 +202,10 @@ def main() -> int:
             "passed": len(complete) == len(dates) and not invalid,
         }
     else:
+        # 延迟导入：纯清洗/断点续传函数和--dry-run不应强制要求当前解释器已安装
+        # tushare；真正发起官方接口请求时再加载数据源并正常暴露依赖缺失错误。
+        from src.data_source import TushareDataSource
+
         source = TushareDataSource()
         report = collect_missing(
             source,

@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""从当前正式严格锚点逐腿搜索 ACDE 排序变体。
+"""复现2026-06-30早期D>A>E>C底座的A/E排序研究（历史归档）。
+
+这不是当前A>C>E>D的半年优化入口。脚本显式重建133笔、300.312461倍的
+历史底座，只用于复现当时A/E排序发现；直接运行必须加``--legacy-baseline``，
+防止把旧信号日占仓顺序生成的结果误当成当前正式认证。
 
 本脚本只做 STRICT_DISCOVERY 研究，不自动修改实盘规则。所有候选都满足：
 
@@ -12,10 +16,11 @@
    替换后的组合机械复利都严格提高，才标记双门槛通过。
 
 运行：
-    python3 scripts/optimize_strict_acde_from_official_baseline.py
+    python3 scripts/optimize_strict_acde_from_official_baseline.py --legacy-baseline
 """
 from __future__ import annotations
 
+import argparse
 from functools import lru_cache
 from itertools import combinations, product
 import json
@@ -692,6 +697,21 @@ class OfficialBaselineOptimizer:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="复现2026-06-30早期D>A>E>C历史排序研究；不是当前组合优化器"
+    )
+    parser.add_argument(
+        "--legacy-baseline",
+        action="store_true",
+        help="明确确认只复现133笔/300.312461倍历史底座",
+    )
+    args = parser.parse_args()
+    if not args.legacy_baseline:
+        parser.error(
+            "本脚本是D>A>E>C历史排序研究，当前正式组合为A>C>E>D。"
+            "如确需复现旧研究，请显式添加--legacy-baseline；当前统计请运行"
+            "scripts/certify_strict_asof_portfolio.py。"
+        )
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",

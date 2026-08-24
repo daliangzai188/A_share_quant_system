@@ -2,7 +2,7 @@
   "schema_version": 2,
   "scenario": "current_a_c_e_d",
   "metric_scope": "STRICT_ASOF_MECHANICAL_COMPOUND",
-  "generated_at": "2026-08-24T11:59:00.919395+00:00",
+  "generated_at": "2026-08-24T12:17:33.296177+00:00",
   "input_start_date": "20240630",
   "input_end_date": "20260630",
   "signal_day_count": 484,
@@ -35,7 +35,7 @@
   "compound_standard_id": "A_SYSTEM_MECHANICAL_COMPOUND_V1",
   "research_protocol": "STRICT_DISCOVERY",
   "strict_asof_audit_path": "reports/current_portfolio_alignment/strict_asof_audit.json",
-  "strict_asof_audit_sha256": "ebcf53c9672167ffd78a2d7a079c53bde8abecd1d016cd5ee2d08c2c12a583b5",
+  "strict_asof_audit_sha256": "e9475d5de718c3593596abfeb1960bfc9586548ab1fb3ed45ba7676646b4a39c",
   "config_sha256": "f1a597266879540bf48ea2144e4d19dd2e5a89e350eee3f4724ff227254f56a1",
   "code_files": [
     "scripts/certify_strict_asof_portfolio.py",
@@ -62,7 +62,7 @@
     "src/strict_asof.py",
     "src/trading_fees.py"
   ],
-  "code_sha256": "6a81b01798b49a7704ef3dad36b601ce25e1b5f2b37f28a22b206092a24c6587",
+  "code_sha256": "1ccc51414c381157d7c2e7b781548efe848b2c36ba4b236cf59e76337e52b21a",
   "input_files": [
     "reports/current_portfolio_alignment/strict_asof_input_manifest.json"
   ],

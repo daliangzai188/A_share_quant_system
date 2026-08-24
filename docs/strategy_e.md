@@ -64,8 +64,8 @@
 | `scripts/run_strategy_e_signal.py` | 检查账户空闲状态，调用唯一规则源并生成次日实盘信号 |
 | `src/combined_live_engine.py` | 把E信号转成组合计划单，并按信号退出偏移登记T+2/T+3到期日 |
 | `scripts/verify_strategy_e_alignment.py` | 复核当前窗口89个双因子候选日逐票一致性 |
-| `scripts/optimize_strict_acde_from_official_baseline.py` | 在新窗口内按独立腿+总组合双复利门槛搜索排序 |
-| `scripts/certify_current_executable_portfolio.py` | 只核对E与当前D/A/E/C实盘选择身份，不生成正式收益 |
+| `scripts/optimize_strict_acde_from_official_baseline.py --legacy-baseline` | 复现早期D>A>E>C底座的历史A/E排序研究；不是当前组合优化入口 |
+| `scripts/certify_current_executable_portfolio.py` | 只复现历史D>A>E>C来源身份，不生成当前正式收益 |
 | `scripts/certify_strict_asof_portfolio.py` | 用严格as-of候选和统一机械复利生成当前组合唯一正式统计证书 |
 
 ## 四、选股与退出流程

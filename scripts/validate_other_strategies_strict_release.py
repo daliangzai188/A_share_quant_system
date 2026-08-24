@@ -325,7 +325,7 @@ def main() -> None:
     payload = {
         "schema_version": 1,
         "status": "LIVE_RELEASEABLE" if all_releaseable else "NOT_LIVE_RELEASEABLE",
-        "validation_scope": "D_A_E_C_strict_asof_nested_outer_oos_untouched_capacity_release",
+        "validation_scope": "A_C_E_D_action_date_strict_asof_nested_outer_oos_untouched_capacity_release",
         "legs": result,
         "source_sha256": {
             str(path.relative_to(ROOT)): file_sha256(path) for path in SOURCE_PATHS

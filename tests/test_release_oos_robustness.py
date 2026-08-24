@@ -7,7 +7,11 @@ import unittest
 
 import pandas as pd
 
-from src.release_oos_robustness import evaluate_release_oos, write_release_oos_report
+from src.release_oos_robustness import (
+    evaluate_release_oos,
+    priority_pair_metrics,
+    write_release_oos_report,
+)
 
 
 class ReleaseOosRobustnessTest(unittest.TestCase):
@@ -21,7 +25,7 @@ class ReleaseOosRobustnessTest(unittest.TestCase):
             "status": "FROZEN",
             "release_id": "release-new",
             "oos_start_date": "20260105",
-            "strategy_priority_order": ["D", "A", "E", "C"],
+            "strategy_priority_order": ["A", "C", "E", "D"],
         }
         (self.root / "config/strategy_release_freeze.json").write_text(json.dumps(release), encoding="utf-8")
         config = {
@@ -41,27 +45,27 @@ class ReleaseOosRobustnessTest(unittest.TestCase):
             rows.extend([
                 {
                     "release_id": "release-new", "signal_date": date, "strategy_leg": "A",
-                    "priority_rank": 2, "candidate_status": "CANDIDATE", "counterfactual_status": "RESOLVED",
+                    "planned_buy_date": date, "priority_rank": 1, "candidate_status": "CANDIDATE", "counterfactual_status": "RESOLVED",
                     "account_empty_winner": True, "live_selected": False, "account_net_return": winner_return,
                 },
                 {
                     "release_id": "release-new", "signal_date": date, "strategy_leg": "C",
-                    "priority_rank": 3, "candidate_status": "CANDIDATE", "counterfactual_status": "RESOLVED",
+                    "planned_buy_date": date, "priority_rank": 2, "candidate_status": "CANDIDATE", "counterfactual_status": "RESOLVED",
                     "account_empty_winner": False, "live_selected": day_index == 0, "account_net_return": challenger_return,
                 },
             ])
-            for rank, leg in enumerate(["D", "E"], start=1):
+            for rank, leg in ((3, "E"), (4, "D")):
                 rows.append({
                     "release_id": "release-new", "signal_date": date, "strategy_leg": leg,
-                    "priority_rank": rank, "candidate_status": "NO_CANDIDATE", "counterfactual_status": "NOT_APPLICABLE",
+                    "planned_buy_date": date, "priority_rank": rank, "candidate_status": "NO_CANDIDATE", "counterfactual_status": "NOT_APPLICABLE",
                     "account_empty_winner": False, "live_selected": False, "account_net_return": "",
                 })
         # 旧发布和OOS起点之前的高收益不得混入。
         rows.extend([
-            {"release_id": "release-old", "signal_date": "20260106", "strategy_leg": "D", "priority_rank": 1,
+            {"release_id": "release-old", "signal_date": "20260106", "planned_buy_date": "20260106", "strategy_leg": "D", "priority_rank": 4,
              "candidate_status": "CANDIDATE", "counterfactual_status": "RESOLVED", "account_empty_winner": True,
              "live_selected": True, "account_net_return": 9.0},
-            {"release_id": "release-new", "signal_date": "20260102", "strategy_leg": "D", "priority_rank": 1,
+            {"release_id": "release-new", "signal_date": "20260102", "planned_buy_date": "20260102", "strategy_leg": "D", "priority_rank": 4,
              "candidate_status": "CANDIDATE", "counterfactual_status": "RESOLVED", "account_empty_winner": True,
              "live_selected": True, "account_net_return": 9.0},
         ])
@@ -98,6 +102,36 @@ class ReleaseOosRobustnessTest(unittest.TestCase):
         self.assertEqual(status["status"], "NO_SAMPLE")
         self.assertEqual(status["optimization_decision"], "HOLD_RELEASE")
         self.assertEqual(status["priority_winner_resolved_count"], 0)
+
+    def test_priority_pairs_use_action_date_not_signal_date(self) -> None:
+        resolved = pd.DataFrame([
+            {
+                "signal_date": "20260105",
+                "planned_buy_date": "20260106",
+                "strategy_leg": "A",
+                "account_empty_winner": True,
+                "account_net_return": 0.01,
+            },
+            {
+                "signal_date": "20260106",
+                "planned_buy_date": "20260106",
+                "strategy_leg": "D",
+                "account_empty_winner": False,
+                "account_net_return": 0.02,
+            },
+            {
+                "signal_date": "20260105",
+                "planned_buy_date": "20260107",
+                "strategy_leg": "C",
+                "account_empty_winner": False,
+                "account_net_return": 0.50,
+            },
+        ])
+        pairs = priority_pair_metrics(resolved, minimum_pairs=20)
+        d = pairs[pairs["challenger_leg"].eq("D")].iloc[0]
+        self.assertEqual(int(d["paired_sample_count"]), 1)
+        self.assertAlmostEqual(float(d["avg_return_delta"]), 0.01)
+        self.assertFalse(pairs["challenger_leg"].eq("C").any())
 
 
 if __name__ == "__main__":

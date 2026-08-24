@@ -29,10 +29,10 @@ python3 scripts/certify_strict_asof_portfolio.py
 ## 重现本轮排序搜索
 
 ```bash
-python3 scripts/optimize_strict_acde_from_official_baseline.py
+python3 scripts/optimize_strict_acde_from_official_baseline.py --legacy-baseline
 ```
 
-优化器显式重建A原`profit_source_score+turnover_rate`排序和E原
+该命令是历史归档复现，不是当前A>C>E>D半年优化入口。优化器显式重建A原`profit_source_score+turnover_rate`排序和E原
 `circ_mv:asc`排序，因此不会因为当前A/E已应用新规则而丢失本轮底座。
 预期日志必须显示：
 

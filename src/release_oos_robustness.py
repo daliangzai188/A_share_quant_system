@@ -47,8 +47,15 @@ def _maximum_consecutive_losses(values: pd.Series) -> int:
 
 def return_metrics(frame: pd.DataFrame, segment: str, return_column: str) -> dict[str, Any]:
     ordered = frame.copy()
-    if "signal_date" in ordered:
-        ordered = ordered.sort_values(["signal_date", "priority_rank"] if "priority_rank" in ordered else ["signal_date"])
+    date_column = "signal_date"
+    if "planned_buy_date" in ordered and ordered["planned_buy_date"].map(_date).ne("").any():
+        date_column = "planned_buy_date"
+    if date_column in ordered:
+        ordered = ordered.sort_values(
+            [date_column, "priority_rank"]
+            if "priority_rank" in ordered
+            else [date_column]
+        )
     returns = pd.to_numeric(ordered.get(return_column, pd.Series(dtype=float)), errors="coerce").dropna()
     if returns.empty:
         return {
@@ -62,7 +69,11 @@ def return_metrics(frame: pd.DataFrame, segment: str, return_column: str) -> dic
     peak = curve.cummax().clip(lower=1.0)
     gains = returns[returns > 0]
     losses = returns[returns < 0]
-    dates = ordered.loc[returns.index, "signal_date"].map(_date) if "signal_date" in ordered else pd.Series(dtype=str)
+    dates = (
+        ordered.loc[returns.index, date_column].map(_date)
+        if date_column in ordered
+        else pd.Series(dtype=str)
+    )
     return {
         "segment": segment,
         "sample_count": int(len(returns)),
@@ -90,6 +101,8 @@ def load_release_ledger(root: Path, release: Mapping[str, Any]) -> pd.DataFrame:
     if missing:
         raise ValueError("影子账本缺少字段：" + "、".join(missing))
     ledger["signal_date"] = ledger["signal_date"].map(_date)
+    if "planned_buy_date" in ledger:
+        ledger["planned_buy_date"] = ledger["planned_buy_date"].map(_date)
     return ledger[
         ledger["release_id"].astype(str).eq(str(release["release_id"]))
         & ledger["signal_date"].ge(_date(release["oos_start_date"]))
@@ -141,18 +154,36 @@ def priority_pair_metrics(resolved: pd.DataFrame, minimum_pairs: int) -> pd.Data
     ]
     if resolved.empty:
         return pd.DataFrame(columns=columns)
-    winners = resolved[resolved.get("account_empty_winner", False).astype(str).str.lower().isin(["true", "1"])].copy()
+    paired_source = resolved.copy()
+    paired_source["action_date"] = (
+        paired_source["planned_buy_date"].map(_date)
+        if "planned_buy_date" in paired_source
+        else paired_source["signal_date"].map(_date)
+    )
+    winner_flags = paired_source.get(
+        "account_empty_winner", pd.Series(False, index=paired_source.index)
+    )
+    winners = paired_source[
+        winner_flags
+        .astype(str)
+        .str.lower()
+        .isin(["true", "1"])
+    ].copy()
+    winners = winners[winners["action_date"].ne("")]
     if winners.empty:
         return pd.DataFrame(columns=columns)
-    winner_view = winners[["signal_date", "strategy_leg", "account_net_return"]].rename(columns={
+    winner_view = winners[["action_date", "strategy_leg", "account_net_return"]].rename(columns={
         "strategy_leg": "winner_leg", "account_net_return": "winner_return",
     })
     rows: list[dict[str, Any]] = []
     for leg in LEGS:
-        challengers = resolved[resolved["strategy_leg"].astype(str).eq(leg)][["signal_date", "account_net_return"]].rename(
+        challengers = paired_source[
+            paired_source["strategy_leg"].astype(str).eq(leg)
+            & paired_source["action_date"].ne("")
+        ][["action_date", "account_net_return"]].rename(
             columns={"account_net_return": "challenger_return"}
         )
-        paired = challengers.merge(winner_view, on="signal_date", how="inner")
+        paired = challengers.merge(winner_view, on="action_date", how="inner")
         paired = paired[paired["winner_leg"].astype(str).ne(leg)].copy()
         if paired.empty:
             continue
@@ -315,7 +346,7 @@ def write_release_oos_report(root: Path) -> dict[str, Any]:
         "actual_data_quality": result["actual_quality"],
         "generated_at": result["generated_at"],
         "live_gate_enforced": False,
-        "note": "报告只读且不接入下单。全部影子候选层存在同日重叠，只有优先级胜出层近似账户空仓可执行组合；真实成交按入场日>=OOS起点绑定，旧成交不混入。",
+        "note": "报告只读且不接入下单。全部影子候选层可能重叠；优先级胜出与成对反事实均按真实planned_buy_date比较，D当日盘中与前一晚A/C/E计划处于同一action_date时才构成资金竞争。真实成交按入场日>=OOS起点绑定，旧成交不混入。",
     }
     _atomic_text(output / "release_oos_status.json", json.dumps(payload, ensure_ascii=False, indent=2))
     report = [
@@ -326,7 +357,7 @@ def write_release_oos_report(root: Path) -> dict[str, Any]:
         f"- 状态：**{result['status']}**",
         f"- 结论：{result['reason']}",
         f"- 优化动作：**{result['optimization_decision']}**（报告不接入下单门禁）",
-        "- 固定规则：优先级影子样本和真实完整成交均至少20笔，才允许进入人工复核；任何优先级替换还需同日成对样本至少20笔，且平均差、中位数差均为正。",
+        "- 固定规则：优先级影子样本和真实完整成交均至少20笔，才允许进入人工复核；任何优先级替换还需同一真实开仓日成对样本至少20笔，且平均差、中位数差均为正。",
         "",
         "## 数据覆盖",
         "",

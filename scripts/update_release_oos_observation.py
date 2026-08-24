@@ -12,13 +12,41 @@ PROJECT_ROOT = Path(__file__).absolute().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.shadow_candidate_ledger import collect_signal_date, load_release, upsert_ledger  # noqa: E402
+from src.shadow_candidate_ledger import (  # noqa: E402
+    _read_json,
+    collect_signal_date,
+    load_release,
+    upsert_ledger,
+)
+
+
+def unfrozen_skip_payload(root: Path, signal_date: str) -> dict[str, object] | None:
+    """未冻结版本没有合法OOS起点，按预期状态跳过而不是让收盘流水线报错。"""
+
+    path = root / "config" / "strategy_release_freeze.json"
+    release = _read_json(path, {})
+    freeze_status = str(release.get("status", ""))
+    if freeze_status == "FROZEN":
+        return None
+    return {
+        "status": "UNFROZEN_SKIPPED",
+        "release_id": str(release.get("release_id", "")),
+        "signal_date": str(signal_date),
+        "freeze_status": freeze_status or "MISSING",
+        "reason": "发布版本尚未FROZEN，拒绝把研究期数据写入样本外账本",
+        "trading_side_effects": False,
+    }
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="更新发布版本样本外旁路观察")
     parser.add_argument("--signal-date", required=True, help="信号日YYYYMMDD")
     args = parser.parse_args()
+
+    skipped = unfrozen_skip_payload(PROJECT_ROOT, args.signal_date)
+    if skipped is not None:
+        print(json.dumps(skipped, ensure_ascii=False, indent=2))
+        return
 
     release = load_release(PROJECT_ROOT)
     rows = collect_signal_date(PROJECT_ROOT, release, args.signal_date)
