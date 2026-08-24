@@ -2,13 +2,13 @@
 
 2026-08-05 排查实盘选股时踩过的坑：该文件顶层写着"只用于本地回测、不接实盘"
 且 enabled=false，实际却驱动着 A/C 两条实盘腿；更麻烦的是文件里有两套并存
-且互斥的规则——
+但必须独立加载的规则——
 
-    A → candidate_filters（market_chain_count_bucket=8_15）
-    C → paper_ab_filtered_strategy.c_strategy（market_chain_count_bucket=15_30）
+    A → candidate_filters（单个AND规则）
+    C → paper_ab_filtered_strategy.c_strategy.condition_profiles（两个OR分支）
 
 当时误把 candidate_filters 当成 C 的规则去比对，得出了错误的"实盘与回测一致"
-结论。这些测试确保：两段都存在、归属清晰、互斥关系不被无意改掉。
+结论。这些测试确保：两段都存在、归属清晰，C的OR分支不会覆盖A规则。
 """
 from __future__ import annotations
 
@@ -39,18 +39,35 @@ class StrategyConfigSectionTests(unittest.TestCase):
         self.assertNotIn("不接实盘", role)
 
     def test_c_rules_live_in_their_own_section(self) -> None:
-        """C 的规则在 paper_ab_filtered_strategy.c_strategy，不在 candidate_filters。"""
+        """C正式规则必须是两个冻结profile的OR，不能退回旧单AND条件。"""
         c_strategy = self.config["paper_ab_filtered_strategy"]["c_strategy"]
         self.assertTrue(c_strategy["enabled"])
-        values = {
-            str(item["column"]): str(item["value"])
-            for item in c_strategy["conditions"]
+        self.assertEqual(c_strategy["release_id"], "C_LEADER_UNION_20260630_V1")
+        self.assertEqual(c_strategy["condition_mode"], "ANY_PROFILE")
+        self.assertEqual(c_strategy["conditions"], [])
+        profiles = {
+            str(item["profile_id"]): {
+                str(condition["column"]): str(condition["value"])
+                for condition in item["conditions"]
+            }
+            for item in c_strategy["condition_profiles"]
         }
-        self.assertEqual(values["market_chain_count_bucket"], "15_30")
-        self.assertEqual(values["segment_limit_up_count_bucket"], "40_80")
+        self.assertEqual(profiles, {
+            "C_CORE_REFINEMENT_1100_1330_MULTI_OPEN": {
+                "market_chain_count_bucket": "15_30",
+                "segment_limit_up_count_bucket": "40_80",
+                "first_time_detail_bucket": "1100_1330",
+                "board_type": "multi_open",
+            },
+            "C_STRONG_LEADER_RANK4_10_FD01_03": {
+                "limit_up_count_bucket": "50_80",
+                "market_leader_rank_bucket": "rank_4_10",
+                "fd_ratio_bucket": "0_1pct_0_3pct",
+            },
+        })
 
     def test_c_holds_three_days(self) -> None:
-        """C 是全系统唯一 T+3 退出的腿，18笔回测已验证全部持有3个交易日。"""
+        """C正式两分支版仍使用T+3退出，不得因入选条件更新改变卖出口径。"""
         exit_rule = self.config["paper_ab_filtered_strategy"]["c_strategy"]["exit_rule"]
         self.assertEqual(exit_rule["rule_name"], "fixed_hold3_close")
         self.assertEqual(int(exit_rule["max_hold_days"]), 3)
@@ -87,26 +104,23 @@ class StrategyConfigSectionTests(unittest.TestCase):
         self.assertEqual(
             c_audit["metric_scope"], "STRICT_ASOF_C_STANDALONE_SINGLE_ACCOUNT"
         )
-        self.assertEqual(c_audit["c_trade_count"], 35)
-        self.assertAlmostEqual(c_audit["c_equity_multiple"], 3.1108307989904436)
-        self.assertEqual(c_audit["candidate_pool_trade_count"], 46)
+        self.assertEqual(c_audit["c_trade_count"], 55)
+        self.assertAlmostEqual(c_audit["c_equity_multiple"], 23.617616094205008)
+        self.assertEqual(c_audit["candidate_day_count"], 72)
+        self.assertAlmostEqual(
+            c_audit["released_acde_equity_multiple"], 921.3365015462819
+        )
 
-    def test_a_and_c_chain_count_are_mutually_exclusive(self) -> None:
-        """A 要 8_15、C 要 15_30，互斥。这个关系变了说明有人改错了段。"""
+    def test_a_and_c_rules_remain_in_separate_config_sections(self) -> None:
+        """C的OR规则不得覆盖A顶层candidate_filters。"""
         a_values = {
             str(item["column"]): str(item["value"])
             for item in self.config["candidate_filters"]["conditions"]
         }
-        c_values = {
-            str(item["column"]): str(item["value"])
-            for item in self.config["paper_ab_filtered_strategy"]["c_strategy"]["conditions"]
-        }
         self.assertEqual(a_values["market_chain_count_bucket"], "8_15")
-        self.assertEqual(c_values["market_chain_count_bucket"], "15_30")
-        self.assertNotEqual(
-            a_values["market_chain_count_bucket"],
-            c_values["market_chain_count_bucket"],
-        )
+        c_strategy = self.config["paper_ab_filtered_strategy"]["c_strategy"]
+        self.assertEqual(c_strategy["conditions"], [])
+        self.assertEqual(len(c_strategy["condition_profiles"]), 2)
 
 
 if __name__ == "__main__":

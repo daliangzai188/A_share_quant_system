@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import sys
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,10 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.utils.config import load_json_config, mkdir_p
+from scripts.run_paper_ab_filtered_daily_ops import (
+    configured_c_condition_profiles,
+    reject_strategy_risk_mask,
+)
 
 
 OUTPUT_PREFIX = "reports/paper_trade/ab_filtered_daily_ops/a_strict_plus_c_hold3"
@@ -112,6 +117,22 @@ def add_runtime_buckets(data: pd.DataFrame) -> pd.DataFrame:
         "segment_market_sentiment_level", pd.Series("unknown", index=result.index)
     ).fillna("unknown").astype(str)
     result["retreat_state_bucket"] = result.get("retreat_state_bucket", pd.Series("unknown", index=result.index))
+    # 与历史StrategyConditionOptimizer一致：板高降序、首次封板早者优先、
+    # 炸板次数和成交额降序，得到T日收盘即可确定的全市场龙头排名。
+    ranked_index = result.sort_values(
+        ["trade_date", "limit_times", "first_time_minutes", "open_times", "amount"],
+        ascending=[True, False, True, False, False],
+    ).index
+    leader_rank = pd.Series(index=result.index, dtype="float64")
+    leader_rank.loc[ranked_index] = (
+        result.loc[ranked_index].groupby("trade_date").cumcount() + 1
+    ).to_numpy(dtype=float)
+    result["market_leader_rank"] = leader_rank
+    result["market_leader_rank_bucket"] = pd.cut(
+        leader_rank,
+        bins=[-float("inf"), 1, 3, 10, 30, float("inf")],
+        labels=["rank_1", "rank_2_3", "rank_4_10", "rank_11_30", "rank_gt_30"],
+    ).astype(str)
     return result
 
 
@@ -152,6 +173,29 @@ def apply_conditions(data: pd.DataFrame, conditions: list[dict[str, Any]], stric
             continue
         result = result[result[column].fillna("missing").astype(str) == expected].copy()
     return result
+
+
+def apply_condition_profiles(
+    data: pd.DataFrame,
+    profiles: list[dict[str, Any]],
+) -> pd.DataFrame:
+    if not profiles:
+        return data.iloc[0:0].copy()
+    union = pd.Series(False, index=data.index)
+    hits = pd.Series("", index=data.index, dtype="object")
+    for profile in profiles:
+        profile_id = str(profile["profile_id"])
+        matched = apply_conditions(
+            data, profile.get("conditions", []), strict_missing=True
+        ).index
+        mask = data.index.isin(matched)
+        union |= mask
+        hits.loc[mask] = hits.loc[mask].map(
+            lambda value: f"{value};{profile_id}".strip(";")
+        )
+    selected = data[union].copy()
+    selected["matched_condition_profile_ids"] = hits.loc[selected.index]
+    return selected
 
 
 def apply_exclusions(data: pd.DataFrame, config: dict[str, Any]) -> pd.DataFrame:
@@ -218,10 +262,25 @@ def select_candidates(data: pd.DataFrame, config: dict[str, Any], top_n: int) ->
     if not a_pool.empty:
         return "LIVE_LIMIT_POOL_A", rank_candidates(a_pool, config, top_n)
 
+    c_profiles = configured_c_condition_profiles(config)
     c_conditions = config.get("paper_ab_filtered_strategy", {}).get("c_strategy", {}).get("conditions", [])
-    c_pool = apply_conditions(base, c_conditions, strict_missing=True)
+    c_pool = (
+        apply_condition_profiles(base, c_profiles)
+        if c_profiles
+        else apply_conditions(base, c_conditions, strict_missing=True)
+    )
     if not c_pool.empty:
-        return "LIVE_LIMIT_POOL_C", rank_candidates(c_pool, config, top_n)
+        c_rank_config = copy.deepcopy(config)
+        c_ranking = config.get("paper_ab_filtered_strategy", {}).get("c_strategy", {}).get("ranking", {})
+        if c_ranking:
+            c_rank_config["ranking"] = copy.deepcopy(c_ranking)
+            c_rank_config["ranking"].setdefault(
+                "score_rules", copy.deepcopy(config.get("ranking", {}).get("score_rules", []))
+            )
+        c_pool["risk_flags"] = [build_risk_flags(row, config) for _, row in c_pool.iterrows()]
+        c_pool = c_pool[~reject_strategy_risk_mask(c_pool, config, "c_strategy")].copy()
+        if not c_pool.empty:
+            return "LIVE_LIMIT_POOL_C", rank_candidates(c_pool, c_rank_config, top_n)
 
     return "LIVE_LIMIT_POOL_WATCH", rank_candidates(base, config, top_n)
 
@@ -275,6 +334,9 @@ def build_outputs(candidates: pd.DataFrame, strategy_leg: str, signal_date: str,
             "planned_action": planned_action,
             "ts_code": row.get("ts_code", ""),
             "name": row.get("name", ""),
+            "matched_condition_profile_ids": row.get(
+                "matched_condition_profile_ids", ""
+            ),
             "market_segment": row.get("market_segment", ""),
             "strategy_leg": strategy_leg,
             "selection_status": "TODAY_LIMIT_POOL_GENERATED",
@@ -289,6 +351,9 @@ def build_outputs(candidates: pd.DataFrame, strategy_leg: str, signal_date: str,
             "fd_amount_to_circ_mv": to_float(row.get("fd_amount_to_circ_mv", 0.0)),
             "segment_limit_up_count_bucket": row.get("segment_limit_up_count_bucket", ""),
             "market_chain_count_bucket": row.get("market_chain_count_bucket", ""),
+            "limit_up_count_bucket": row.get("limit_up_count_bucket", ""),
+            "market_leader_rank_bucket": row.get("market_leader_rank_bucket", ""),
+            "board_type": row.get("board_type", ""),
             "first_time_detail_bucket": row.get("first_time_detail_bucket", ""),
             "turnover_rate_bucket": row.get("turnover_rate_bucket", ""),
             "amount_ratio_bucket": row.get("amount_ratio_bucket", ""),

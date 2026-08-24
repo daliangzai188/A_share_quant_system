@@ -14957,6 +14957,7 @@ def _log_abc_filter_funnel(signal_date: str) -> None:
         from scripts.run_paper_ab_filtered_daily_ops import (
             condition_strategy_config,
             condition_text,
+            configured_c_condition_profiles,
             configured_c_conditions,
         )
         from src.paper_candidate_generator import PaperCandidateGenerator
@@ -14977,13 +14978,20 @@ def _log_abc_filter_funnel(signal_date: str) -> None:
         traces = [filter_trace("A主策略", base_generator, all_candidates, signal_date)]
 
         c_conditions = configured_c_conditions(strategy_cfg)
-        if c_conditions:
-            c_config = condition_strategy_config(strategy_cfg, c_conditions, "backup_strategy_c_current")
+        c_profiles = configured_c_condition_profiles(strategy_cfg)
+        if c_conditions or c_profiles:
+            c_config = condition_strategy_config(
+                strategy_cfg,
+                c_conditions,
+                "backup_strategy_c_current",
+                condition_profiles=c_profiles,
+            )
             c_generator = PaperCandidateGenerator(strategy_path, **generator_kwargs)
             c_generator.config = c_config
             c_generator.paper_config = c_config.get("paper_candidate", {})
             c_generator.risk_thresholds = c_generator.paper_config.get("risk_thresholds", {})
-            traces.append(filter_trace(f"C补位策略（{condition_text(c_conditions)}）", c_generator, all_candidates, signal_date))
+            c_rule_text = condition_text(c_profiles or c_conditions)
+            traces.append(filter_trace(f"C补位策略（{c_rule_text}）", c_generator, all_candidates, signal_date))
 
         trace = pd.concat(traces, ignore_index=True)
         logger().info("  A/C逐层筛选漏斗（B已删除）：")

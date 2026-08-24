@@ -98,35 +98,44 @@ CSV视图移出的旧事件，因此`retained_history_head_count>0`不属于错�
 当前固定观察策略：
 
 ```text
-a_strict_plus_c_hold3
+a_strict_plus_c_leader_union_hold3
 ```
+
+历史操作台和报告文件名继续保留`a_strict_plus_c_hold3`前缀，以兼容既有账本读取；
+策略身份以配置中的`strategy_label`和C的`release_id`为准，不能依据文件名前缀判断版本。
 
 策略组成：
 
 1. A 严格主策略优先。
 2. B 已于 2026-07-22 删除，不再参与候选、买入或自动卖出。
 3. A 无候选时直接检查 C。
-4. C 条件：`market_chain_count_bucket=15_30` 且 `segment_limit_up_count_bucket=40_80`。
+4. C正式版本为`C_LEADER_UNION_20260630_V1`，按任一分支命中：
+   - 核心精修：`market_chain_count_bucket=15_30`、`segment_limit_up_count_bucket=40_80`、`first_time_detail_bucket=1100_1330`、`board_type=multi_open`；
+   - 强势龙头：`limit_up_count_bucket=50_80`、`market_leader_rank_bucket=rank_4_10`、`fd_ratio_bucket=0_1pct_0_3pct`。
 5. C 使用自己的风险过滤：`封单/流通市值偏高`、`LOSS_OVERLAY_WATCH`，以及按板高分档的炸板次数限制。
 6. C 卖出口径仍为 T+3 收盘；A按自己的既有退出口径执行。
 7. D、E按当前组合资金占用规则继续参与；M、N已退役。
 8. 仅人工退出的历史 B 仓存在时，所有新开仓均阻断。
 
-当前发布验证状态：
+当前C规则发布状态：
 
 ```text
-INVALIDATED_BY_B_REMOVAL_REVALIDATION_REQUIRED
+C_LEADER_UNION_20260630_V1
+effective_from=20260825
 ```
 
-原因：旧 A+B、A+B+C结果包含B历史交易。删除B会释放交易日，必须重放完整时间线，不能简单从旧复利中扣减B收益。
+发布依据：在固定`20240630~20260630`窗口中，C独立复利由3.110831倍提高到
+23.617616倍，只替换C后的D>A>E>C总复利由486.366143倍提高到921.336502倍，
+同时最大回撤由-22.9705%改善到-15.3995%，满足半年更新框架的双复利门槛。
 
-在重新完成逐日资金占用回放以前：
+发布边界：
 
 ```text
-不把旧复利、胜率和回撤当成当前组合结果；
-不运行旧 A+B 发布验证；
-不承诺删除 B 后复利提高；
-继续优先保证持仓、成交、滑点和自动退出安全。
+排序仍为profit_source_score、turnover_rate降序；
+退出仍为T+3收盘；
+风险过滤必须先于最终选股并允许下一名递补；
+更早6个月和发布后前向账本不反向改写本次24个月选择；
+历史机械复利不代表未来收益或真实资金容量。
 ```
 
 详细删除范围、持仓处理和部署检查见：
@@ -227,14 +236,26 @@ HISTORICAL_SIM_FILLED
     只代表历史复盘里可形成闭环，不代表现实一定成交。
 ```
 
-### 2. 删除 B 后的发布验证
+### 2. 删除B后的当前严格认证
+
+旧A+B验证器只保留为失效保护，运行时应明确拒绝：
 
 ```bash
 cd /Users/user/Desktop/A_System
 .venv/bin/python -B scripts/run_strategy_release_validation.py
 ```
 
-当前该命令应明确拒绝运行，因为旧验证器仍是 A+B 历史口径。只有完成 A/C/D/E 全链路逐日回放、重新定义样本外窗口和门槛后，才能建立新的发布验证。
+当前正式规则身份与机械回放改由以下命令复核：
+
+```bash
+cd /Users/user/Desktop/A_System
+python3 scripts/certify_strict_asof_portfolio.py
+```
+
+它必须复现C独立55笔、23.6176160942倍，以及ACDE 134笔、
+921.3365015463倍、分腿D15/A42/E47/C30。该证书仍标记`STRICT_DISCOVERY`：它证明
+配置、代码、输入和本次双复利结论能够重放，但不等于冻结样本外、真实容量或自动
+BUY门禁已经通过。
 
 ### 3. 什么时候重新找最新策略
 
@@ -252,7 +273,7 @@ cd /Users/user/Desktop/A_System
 
 ---
 
-## 五、发布验证阈值
+## 五、旧A+B验证阈值（仅历史兼容）
 
 配置位置：
 
@@ -266,7 +287,7 @@ config/strategy_config.json
 strategy_release_validation.gates
 ```
 
-当前阈值：
+以下字段只属于已停用的A+B验证器，不能用来判断当前C版本：
 
 | 指标 | 阈值 |
 |---|---:|
@@ -277,19 +298,23 @@ strategy_release_validation.gates
 | 最少成交笔数 | >= 5 |
 | 跌停阻塞卖出次数 | = 0 |
 
-这些阈值不是收益承诺，只是发布前过滤标准。
+这些阈值不是收益承诺，也不是当前C双复利门槛。
 
 ---
 
 ## 六、当前发布验证结果
 
-当前状态：
+当前策略规则状态：
 
 ```text
-INVALIDATED_BY_B_REMOVAL_REVALIDATION_REQUIRED
+C_LEADER_UNION_20260630_V1_RULE_LANDED
+STRICT_ASOF_REPLAY_PASSED
+LOCKED_OOS_AND_CAPACITY_PENDING
 ```
 
-旧窗口结果全部归档为“删除 B 前历史结果”，不得显示为当前 PASS。新的 A/C 组合至少需要重新输出训练集、测试集、样本外、近60/90/120日结果，以及成交概率、手续费、滑点、最大回撤、最大单笔亏损和连续亏损。
+旧A+B窗口结果继续归档，不得显示为当前PASS。当前C规则已进入正式配置和候选流水线，
+严格两年重放通过；冻结版本从2026-08-25起积累前向样本外。全局自动BUY是否开放仍由
+冻结清单、真实容量、模拟/小资金验证和执行风控单独决定，本次C规则替换不修改这些开关。
 
 ---
 
@@ -305,15 +330,9 @@ INVALIDATED_BY_B_REMOVAL_REVALIDATION_REQUIRED
 6. 小资金人工确认交易验证。
 7. 连续运行日志复盘。
 
-在这些完成前，不允许自动实盘。
-
-如果要进入小资金人工确认阶段，必须保持：
-
-```text
-live_order_enabled = false
-broker_adapter_enabled = false
-qmt_enabled = false
-```
+在这些完成前，不得因为历史复利提高而自动扩大资金。进入小资金人工确认阶段前，
+必须单独复核当前部署开关、冻结清单、账户和风控，且所有订单继续经过
+`LiveOrderGateway`；本次C规则替换不修改任何交易开关。
 
 ---
 
@@ -329,17 +348,24 @@ qmt_enabled = false
 
 1. 先读取 `docs/strategy_release_playbook.md`。
 2. 问你当前已经模拟 / 小资金运行多久。
-3. 如果删除 B 后的新回放尚未完成，先做全链路重新回测，不能运行旧发布验证。
-4. 新发布验证 PASS 后，下一步是确认涨停/跌停排队保守成交规则仍然生效；盘口和分钟数据作为更高精度复核。
-5. 如果新发布验证 FAIL，下一步是重新优化策略或降低风险。
-6. 如果已经运行到季度 / 半年，下一步是重新训练和重新发布。
+3. 运行严格认证，确认C独立与ACDE组合锚点没有漂移；不能运行旧A+B验证器代替。
+4. 严格重放通过后，下一步是积累冻结版本前向账本并复核真实成交、容量和滑点。
+5. 如果严格认证失败，先定位数据、代码或输入清单漂移，不直接放宽门槛。
+6. 如果已经运行到6月30日或12月31日更新节点，再按最新两年重新研究并生成新版本。
 7. 如果只是单日观察异常，不直接改策略，先归类是数据问题、成交问题、风控问题还是策略衰减。
 
 ---
 
 ## 九、常用命令汇总
 
-发布验证：
+当前严格认证：
+
+```bash
+cd /Users/user/Desktop/A_System
+python3 scripts/certify_strict_asof_portfolio.py
+```
+
+旧A+B验证器失效保护：
 
 ```bash
 cd /Users/user/Desktop/A_System
@@ -376,12 +402,14 @@ cd /Users/user/Desktop/A_System
 | 文件 | 作用 |
 |---|---|
 | `config/strategy_config.json` | A/C当前参数、B退役墓碑、失效的旧发布标记 |
-| `scripts/run_strategy_release_validation.py` | 旧发布验证失效保护；新口径建立前拒绝运行 |
+| `scripts/run_strategy_release_validation.py` | 旧A+B发布验证失效保护；当前仍应拒绝运行 |
+| `scripts/certify_strict_asof_portfolio.py` | 当前D>A>E>C严格as-of机械回放与输入/代码哈希证书 |
 | `scripts/run_paper_ab_filtered_daily_ops.py` | A/C filtered 每日操作台 |
 | `scripts/run_paper_ab_filtered_observation_window.py` | B历史回放代码；当前配置拒绝运行 |
 | `scripts/stress_test_ab_filtered_b_residual_filters.py` | B历史研究归档，不属于当前执行链 |
 | `scripts/refine_backup_strategy_c_sort_exit.py` | C 备用策略排序和卖出规则精修 |
 | `docs/strategy_b_removal_20260722.md` | B删除范围、验证和部署记录 |
+| `docs/strategy_c.md` | C两分支OR正式条件、排序、退出、指标与发布边界 |
 | `reports/strategy_release/` | 发布验证报告 |
 | `reports/paper_trade/ab_filtered_daily_ops/` | 每日模拟盘操作台输出 |
 | `reports/paper_trade/ab_filtered/` | 删除B前的历史窗口回放和压力测试报告 |

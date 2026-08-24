@@ -51,16 +51,24 @@
     "rolling_live_report_path": "reports/live_performance/rolling_live_status.json",
     "rolling_min_trades_for_decision": 20,
     "selected_rule_name": "current_d_a_e_c",
-    "selected_rule_description": "当前生产腿序D>A>E>C；D按盘中真实时序优先，收盘后静态腿依次为A、E、C。",
+    "selected_rule_description": "当前生产腿序D>A>E>C；D使用已发布回封因子规则，A/E保持冻结，C使用C_LEADER_UNION_20260630_V1两分支OR并统一按profit_source_score、turnover_rate排序。",
     "live_candidate_metrics": {
       "scenario": "current_d_a_e_c_strict_asof_discovery",
       "strict_asof_window": "20240630~20260630",
-      "strict_asof_trade_count": 132,
-      "strict_asof_equity_multiple": 327.72671897548867,
-      "strict_asof_win_rate": 0.6818181818181818,
-      "strict_asof_max_drawdown": -0.22970534744710858,
+      "strict_asof_trade_count": 134,
+      "strict_asof_equity_multiple": 921.3365015462819,
+      "strict_asof_win_rate": 0.7014925373134329,
+      "strict_asof_avg_account_return": 0.05634197911651343,
+      "strict_asof_median_account_return": 0.04102415458421389,
+      "strict_asof_max_drawdown": -0.15399452246695433,
+      "strict_asof_leg_counts": {
+        "D": 15,
+        "A": 42,
+        "E": 47,
+        "C": 30
+      },
       "compound_standard_id": "A_SYSTEM_MECHANICAL_COMPOUND_V1",
-      "note": "当前研究窗口为2024-06-30至2026-06-30，A/E通过逐腿双复利门槛后统计为132笔、327.726719倍的严格as-of单账户机械复利；优化前同窗口锚点为133笔、300.312461倍，旧305.348870倍和五年底座343.5434倍均不得继续作为比较基线。研究结论不参与实盘BUY开关。"
+      "note": "当前研究窗口为2024-06-30至2026-06-30；D因子版、A/E优化版和C两分支OR正式版按D>A>E>C重放为134笔、921.336502倍。C相对旧正式版的独立复利由3.110831倍提高到23.617616倍，总组合由486.366143倍提高到921.336502倍，双复利门槛通过。旧305.348870倍、五年底座343.5434倍及D优化前327.726719倍均不得继续作为当前锚点。"
     }
   },
   "live_performance_report": {

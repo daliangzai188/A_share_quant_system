@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from src.strategy_optimizer import StrategyConditionOptimizer
@@ -157,7 +158,37 @@ class PaperCandidateGenerator:
 
     def apply_include_conditions(self, candidates: pd.DataFrame) -> pd.DataFrame:
         result = candidates.copy()
-        for condition in self.config.get("candidate_filters", {}).get("conditions", []):
+        filters = self.config.get("candidate_filters", {})
+        profiles = filters.get("condition_profiles", [])
+        if profiles:
+            # C正式版允许少量、冻结且可解释的if分支做OR：每个profile内部
+            # 仍是AND，不允许把所有历史达标条件无差别并集。匹配编号随候选
+            # 一起下传，便于收盘日志、计划单和前向账本审计分支来源。
+            union = pd.Series(False, index=result.index)
+            matched_ids: list[list[str]] = [[] for _ in range(len(result))]
+            for position, profile in enumerate(profiles, 1):
+                profile_id = str(profile.get("profile_id", f"PROFILE_{position}"))
+                conditions = profile.get("conditions", [])
+                if not conditions:
+                    raise RuntimeError(f"候选条件分支不能为空: {profile_id}")
+                mask = pd.Series(True, index=result.index)
+                for condition in conditions:
+                    column = str(condition.get("column", ""))
+                    expected = str(condition.get("value", ""))
+                    if column not in result.columns:
+                        raise RuntimeError(f"候选入选条件字段不存在: {column}")
+                    mask &= result[column].fillna("missing").astype(str).eq(expected)
+                union |= mask
+                for row_position in np.flatnonzero(mask.to_numpy(dtype=bool)):
+                    matched_ids[int(row_position)].append(profile_id)
+            kept_positions = np.flatnonzero(union.to_numpy(dtype=bool))
+            result = result.loc[union].copy()
+            result["matched_condition_profile_ids"] = [
+                ";".join(matched_ids[int(position)]) for position in kept_positions
+            ]
+            return result
+
+        for condition in filters.get("conditions", []):
             column = str(condition.get("column", ""))
             expected = str(condition.get("value", ""))
             if column not in result.columns:
@@ -258,6 +289,9 @@ class PaperCandidateGenerator:
             "planned_action": planned_action,
             "ts_code": row.ts_code,
             "name": row.name,
+            "matched_condition_profile_ids": getattr(
+                row, "matched_condition_profile_ids", ""
+            ),
             "market_segment": getattr(row, "market_segment", ""),
             "profit_source_score": float(getattr(row, "profit_source_score", 0.0)),
             "planned_position_pct": float(self.config.get("position", {}).get("target_position_pct", 0.825))
@@ -273,7 +307,10 @@ class PaperCandidateGenerator:
             "fd_ratio_bucket": getattr(row, "fd_ratio_bucket", ""),
             "fd_amount_to_circ_mv": self.normalize_number(getattr(row, "fd_amount_to_circ_mv", 0.0)),
             "segment_limit_up_count_bucket": getattr(row, "segment_limit_up_count_bucket", ""),
+            "limit_up_count_bucket": getattr(row, "limit_up_count_bucket", ""),
             "market_chain_count_bucket": getattr(row, "market_chain_count_bucket", ""),
+            "market_leader_rank_bucket": getattr(row, "market_leader_rank_bucket", ""),
+            "board_type": getattr(row, "board_type", ""),
             "market_limit_down_count_bucket": getattr(row, "market_limit_down_count_bucket", ""),
             "retreat_state_bucket": getattr(row, "retreat_state_bucket", ""),
             "market_emotion_state_bucket": getattr(row, "market_emotion_state_bucket", ""),
@@ -451,6 +488,17 @@ class PaperCandidateGenerator:
 
     def conditions_text(self) -> str:
         filters = self.config.get("candidate_filters", {})
+        profiles = filters.get("condition_profiles", [])
+        if profiles:
+            profile_text = []
+            for position, profile in enumerate(profiles, 1):
+                profile_id = str(profile.get("profile_id", f"PROFILE_{position}"))
+                conditions = "&&".join(
+                    f"{condition.get('column')}={condition.get('value')}"
+                    for condition in profile.get("conditions", [])
+                )
+                profile_text.append(f"{profile_id}({conditions})")
+            return "ANY_PROFILE[" + " || ".join(profile_text) + "]"
         include = [
             f"{condition.get('column')}={condition.get('value')}"
             for condition in filters.get("conditions", [])

@@ -10,7 +10,7 @@
     "E",
     "C"
   ],
-  "file_count": 990,
+  "file_count": 992,
   "files": [
     {
       "path": "data/processed/limit_up_fill_scored_asof.csv",
@@ -19,18 +19,28 @@
     },
     {
       "path": "config/config.json",
-      "size": 89008,
-      "sha256": "2a4abde3435b8eeff785df9f118dd38d871d38a69c383dead2697506151e2852"
+      "size": 88584,
+      "sha256": "7ddb48b4fa78df32f11816a33dd75cdf40684255190226dd12a795951c2d9081"
     },
     {
       "path": "config/strategy_config.json",
-      "size": 20669,
-      "sha256": "b9736424bfb5d3a94ce4b7d745a57d9ed99c70a39fe8dc5da47508f1337e1e64"
+      "size": 23014,
+      "sha256": "4bff6ac8d84139f5c2733ba515edd4a1a22fae3808e98dccf30d82219845b281"
+    },
+    {
+      "path": "config/strategy_d_factor_release.json",
+      "size": 3036,
+      "sha256": "8df0f2df164771c389ad99e3dd54a54ee9c662668fe7b2366e96c123098fd22c"
+    },
+    {
+      "path": "reports/strategy_d_reseal_combinations/all_reseal_signal_events.csv",
+      "size": 14347587,
+      "sha256": "aed351d5836feafbcc89122f584d63b81326feb9fb7b827bd9bb12baccdf6963"
     },
     {
       "path": "config/strategy_e_r1_scenarios.json",
-      "size": 12354,
-      "sha256": "f5ce436c62760c944a85889e3713f62a5b58280a358d809f3e0bfb759ae9f7b1"
+      "size": 12323,
+      "sha256": "3182add688b14e22e96b482c7f8e063705e855b6a0303a3dc2a3f30703441d7a"
     },
     {
       "path": "data/raw/trade_calendar.csv",

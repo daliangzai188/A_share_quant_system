@@ -19,6 +19,7 @@ import pandas as pd
 
 from scripts.run_paper_ab_filtered_daily_ops import (
     condition_strategy_config,
+    configured_c_condition_profiles,
     configured_c_conditions,
     reject_strategy_risk_mask,
 )
@@ -526,7 +527,12 @@ class NestedWalkForwardResearch:
     def _current_generator(self, *, c_strategy: bool) -> PaperCandidateGenerator:
         config = self.strategy_config
         selected = (
-            condition_strategy_config(config, configured_c_conditions(config), "five_year_c_current")
+            condition_strategy_config(
+                config,
+                configured_c_conditions(config),
+                "five_year_c_current",
+                condition_profiles=configured_c_condition_profiles(config),
+            )
             if c_strategy
             else config
         )

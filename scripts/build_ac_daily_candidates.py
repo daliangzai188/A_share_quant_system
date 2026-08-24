@@ -14,12 +14,11 @@
 
 口径与实盘/认证一致：
   A: candidate_filters + ranking(顶层)，T+1开盘×1.001买、T+2收盘×0.999卖
-  C: paper_ab_filtered_strategy.c_strategy.conditions，T+3收盘卖
+  C: paper_ab_filtered_strategy.c_strategy.condition_profiles任一分支，T+3收盘卖
      C只在A当天无候选时才生成（only_when_a_no_candidate）
   T+1开盘一字涨停视为排队买不到；卖出日跌停顺延到可卖日。
 
-校验：现有 abc 明细里 operation_status=HISTORICAL_SIM_FILLED 的90天，
-      重建结果必须选出同一只 ts_code。对不上就报出来。
+诊断：旧abc明细只用于显示历史差异，不再决定窗口、候选或发布结论。
 """
 from __future__ import annotations
 
@@ -44,6 +43,7 @@ from src.market_rules import (  # noqa: E402
 from src.utils.config import load_json_config  # noqa: E402
 from scripts.run_paper_ab_filtered_daily_ops import (  # noqa: E402
     condition_strategy_config,
+    configured_c_condition_profiles,
     configured_c_conditions,
     reject_strategy_risk_mask,
 )
@@ -54,6 +54,8 @@ HERE.mkdir(parents=True, exist_ok=True)
 STRAT = ROOT / "config" / "strategy_config.json"
 SRC = ROOT / "data" / "processed" / "next_day_premium_trades_2y.csv"
 DAILY = ROOT / "data" / "raw" / "daily"
+WINDOW_START = "20240630"
+WINDOW_END = "20260630"
 
 cal = pd.read_csv(ROOT / "data" / "raw" / "trade_calendar.csv", dtype=str)
 ccol = "cal_date" if "cal_date" in cal.columns else cal.columns[0]
@@ -240,8 +242,14 @@ def trade_return(
 def main() -> None:
     cfg = load_json_config(STRAT)
 
-    def make(conditions, label):
-        c = condition_strategy_config(cfg, conditions, label) if conditions else cfg
+    def make(conditions, label, *, profiles=None):
+        c = (
+            condition_strategy_config(
+                cfg, conditions or [], label, condition_profiles=profiles
+            )
+            if conditions or profiles
+            else cfg
+        )
         g = PaperCandidateGenerator(STRAT, input_trades_path=SRC)
         g.config = c
         g.paper_config = c.get("paper_candidate", {})
@@ -249,12 +257,18 @@ def main() -> None:
         return g
 
     ga = make(None, "A")                                  # A用顶层conditions
-    gc = make(configured_c_conditions(cfg), "C")
+    gc = make(
+        configured_c_conditions(cfg),
+        "C",
+        profiles=configured_c_condition_profiles(cfg),
+    )
     allc = ga.load_all_candidates()
 
     fa = ga.apply_strategy_filters(allc)
     fc = gc.apply_strategy_filters(allc)
-    win = (str(cert.load_sources().baseline["date"].min()), str(cert.load_sources().baseline["date"].max()))
+    # 当前唯一正式锚点必须显式锁定。旧cert.load_sources().baseline仍是删除B前的
+    # 20240520~20260514身份回放，只能做下方历史差异诊断，绝不能反向决定窗口。
+    win = (WINDOW_START, WINDOW_END)
     print("窗口", win)
     fa = fa[(fa.trade_date >= win[0]) & (fa.trade_date <= win[1])]
     fc = fc[(fc.trade_date >= win[0]) & (fc.trade_date <= win[1])]
@@ -299,7 +313,7 @@ def main() -> None:
     print("有候选天数:", int(out["leg"].ne("").sum()), " (A %d / C %d)"
           % (int(out.leg.eq("A").sum()), int(out.leg.eq("C").sum())))
 
-    # ---- 校验：对上已知90天成交 ----
+    # ---- 历史诊断：旧A/B/C成交只显示差异，不作为当前发布门槛 ----
     s = cert.load_sources()
     abc = s.abc.reset_index() if s.abc.index.name else s.abc.copy()
     filled = abc[abc["operation_status"].astype(str).eq("HISTORICAL_SIM_FILLED")].copy()
@@ -324,7 +338,7 @@ def main() -> None:
                 bad.append((d, str(r["strategy_leg"]), exp, str(r.get("name", "")),
                             got, str(oi.loc[d, "name"]), str(oi.loc[d, "leg"])))
     print()
-    print("=== 校验:已知成交日 vs 重建 ===")
+    print("=== 历史诊断:旧A/B/C成交日 vs 当前A/C规则 ===")
     print(f"一致 {same} / 不一致 {diff} / 缺失 {missing}")
     if bad:
         print("不一致样例(日期 原腿 原票 → 重建票 重建腿):")

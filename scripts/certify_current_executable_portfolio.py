@@ -354,7 +354,8 @@ def load_ac_daily() -> dict[str, dict[str, Any]]:
     所以这不是放宽口径，是把回测对齐到实盘一直在做的事。
 
     本文件由 A/C 各自的认证规则逐日重算得出（A: candidate_filters+ranking，
-    T+2收盘；C: c_strategy.conditions，T+3收盘；一字涨停买不到、跌停顺延），
+    T+2收盘；C: c_strategy.condition_profiles按分支内AND、分支间OR，T+3收盘；
+    一字涨停买不到、跌停顺延），
     并已验证：与已知90天成交对比，69天 ts_code 完全一致，21天不一致全部是
     已删除的B腿；无B重选表里3天实际生效的C（融发核电/岭南股份/洛凯股份）
     全部命中同一只票。
@@ -397,9 +398,8 @@ def pick_by_priority(
 ) -> dict[str, Any] | None:
     """按当前有效腿序选出当天唯一候选（D 不在此处，见 replay）。
 
-    A 与 C 条件互斥（A 要 market_chain_count_bucket=8_15、C 要 15_30），同一天
-    不可能都有票，所以 C 排在 A 之后的任何位置结果相同；这里显式让 C 垫底，
-    与实盘的腿序声明保持一致。
+    A与C都必须独立产生候选；C新增强势龙头分支后不再保证与A条件互斥。
+    最终资金裁决仍显式执行A>E>C，确保同一天只选择一条腿。
     """
 
     signal_date = str(row["date"])

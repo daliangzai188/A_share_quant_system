@@ -30,6 +30,10 @@ if str(ROOT) not in sys.path:
 
 from scripts import certify_current_executable_portfolio as legacy  # noqa: E402
 from scripts import validate_other_live_strategies_strict as strict  # noqa: E402
+from scripts.optimize_strategy_d_factor_union import (  # noqa: E402
+    build_incumbent_and_other_legs,
+    load_events as load_d_events,
+)
 from src.live_certification import (  # noqa: E402
     certification_config_sha256,
     certification_file_sha256,
@@ -39,6 +43,10 @@ from src.live_certification import (  # noqa: E402
 from src.mechanical_compound import (  # noqa: E402
     MECHANICAL_COMPOUND_STANDARD_ID,
     mechanical_compound_frame,
+)
+from src.strategy_d_factor_rules import (  # noqa: E402
+    add_factor_values as add_d_factor_values,
+    load_factor_release as load_d_factor_release,
 )
 from src.strict_asof import (  # noqa: E402
     STRICT_ASOF_STANDARD_ID,
@@ -54,14 +62,16 @@ MANIFEST_PATH = OUTPUT_DIR / "strict_asof_input_manifest.json"
 DAILY_DIR = ROOT / "data" / "raw" / "daily"
 DAILY_BASIC_DIR = ROOT / "data" / "raw" / "daily_basic"
 EXPECTED_PRIORITY = ["D", "A", "E", "C"]
-EXPECTED_TRADE_COUNT = 132
-EXPECTED_EQUITY_MULTIPLE = 327.72671897548867
-EXPECTED_MAX_DRAWDOWN = -0.22970534744710858
-EXPECTED_LEG_COUNTS = {"D": 22, "A": 44, "E": 49, "C": 17}
+EXPECTED_TRADE_COUNT = 134
+EXPECTED_EQUITY_MULTIPLE = 921.3365015462819
+EXPECTED_MAX_DRAWDOWN = -0.15399452246695433
+EXPECTED_LEG_COUNTS = {"D": 15, "A": 42, "E": 47, "C": 30}
 LOGGER = logging.getLogger("strict_portfolio_certifier")
 # 2026-06-30 信号的 C/E T+3 退出在极端跌停时最多继续检查 4 个交易日；
 # 输入清单保守锁到 2026-07-10，覆盖正常退出和延期卖出行情。
 INPUT_END_BUFFER = "20260710"
+D_EVENT_PATH = ROOT / "reports/strategy_d_reseal_combinations/all_reseal_signal_events.csv"
+D_RELEASE_PATH = ROOT / "config/strategy_d_factor_release.json"
 
 CODE_FILES = [
     "scripts/certify_strict_asof_portfolio.py",
@@ -69,7 +79,10 @@ CODE_FILES = [
     "scripts/certify_current_executable_portfolio.py",
     "scripts/backtest_strategy_d.py",
     "scripts/build_ac_daily_candidates.py",
+    "scripts/optimize_strategy_d_factor_union.py",
     "scripts/optimize_strict_acde_from_official_baseline.py",
+    "scripts/research_strategy_d_explosion_features.py",
+    "scripts/research_strategy_d_reseal_combinations.py",
     "scripts/run_paper_ab_filtered_daily_ops.py",
     "scripts/run_strategy_e_signal.py",
     "scripts/verify_strategy_e_alignment.py",
@@ -79,6 +92,7 @@ CODE_FILES = [
     "src/mechanical_compound.py",
     "src/paper_candidate_generator.py",
     "src/strategy_d_spec.py",
+    "src/strategy_d_factor_rules.py",
     "src/strategy_e.py",
     "src/strategy_optimizer.py",
     "src/strict_asof.py",
@@ -146,6 +160,8 @@ def _input_files() -> list[Path]:
         strict.STRICT_SOURCE,
         ROOT / "config" / "config.json",
         strict.STRATEGY_CONFIG,
+        D_RELEASE_PATH,
+        D_EVENT_PATH,
         legacy.E_SPEC_PATH,
         legacy.TRADE_CALENDAR_PATH,
         legacy.STOCK_BASIC_PATH,
@@ -191,20 +207,20 @@ def write_or_verify_input_manifest(*, refresh: bool) -> Path:
 
 
 def build_strict_snapshot() -> tuple[dict[str, Any], pd.DataFrame, dict[str, pd.DataFrame]]:
-    source, source_audit = strict.source_audit()
+    # D已经发布为固定因子版本，不能再用旧D条件重建正式证书。这里与D/C研究
+    # 的逐腿替换口径共用同一发布读取器，并由下方134笔/921.3365倍锚点锁死。
+    d_events, _d_event_audit = load_d_events(
+        D_EVENT_PATH, strict.START, strict.END
+    )
+    strategy_d, other_legs, source_audit = build_incumbent_and_other_legs(
+        load_d_factor_release(D_RELEASE_PATH),
+        add_d_factor_values(d_events),
+        strict.START,
+        strict.END,
+    )
     if not bool(source_audit.get("passed")):
         raise RuntimeError("严格as-of源审计未通过，拒绝生成组合证书")
-
-    data = strict.daily_data()
-    ac = strict.build_ac(strict.STRICT_SOURCE)
-    strategy_d = strict.build_d(source, data)
-    _e_pre, strategy_e = strict.build_e()
-    legs = {
-        "D": strategy_d,
-        "A": ac[ac["strategy_leg"].eq("A")].copy(),
-        "E": strategy_e,
-        "C": ac[ac["strategy_leg"].eq("C")].copy(),
-    }
+    legs = {"D": strategy_d, **other_legs}
     maps = {leg: strict.candidate_map(frame) for leg, frame in legs.items()}
     daily = strict.replay(maps, set(EXPECTED_PRIORITY))
     metrics = strict.combo_metrics(daily)

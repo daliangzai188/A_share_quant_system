@@ -626,11 +626,9 @@ class CombinedLiveEngine:
             # 之前 A 和 C 是同一个 abc_orders 一起判断的，等于 C 也享受了 A 的
             # 最高优先级，与认证脚本 pick_by_priority 的 A>E>C 不一致——
             # 这是腿序改造后实盘与回测之间最后一处口径差，本次收口。
-            # 安全性依据：A 与 C 条件互斥。收盘流水线
-            # generate_live_limit_pool_daily_ops.select_candidates 每个信号日
-            # 先试 A 池，A 池为空才试 C 池，因此同一份 planned_orders.csv 里
-            # 不会同时出现 A 和 C（历史48份操作台文件实测 0 例同现）；拆开不会
-            # 造成同日两腿抢同一笔资金。
+            # C新增强势龙头分支后不再假设A/C条件互斥。收盘流水线允许两腿
+            # 独立形成候选，并在计划阶段按A>E>C裁决；即使旧操作台文件意外
+            # 同时带有A/C，本段也只会先执行A档，不会让两腿重复占用资金。
             # 未知腿（含历史 B）归入 A 档，保持改动前的行为不变。
             c_decisions = [
                 d for d in abc_decisions if str(d.strategy_leg).strip().upper() == "C"

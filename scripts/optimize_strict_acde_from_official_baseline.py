@@ -36,6 +36,7 @@ from scripts import validate_other_live_strategies_strict as strict  # noqa: E40
 from scripts.build_ac_daily_candidates import trade_return_details  # noqa: E402
 from scripts.run_paper_ab_filtered_daily_ops import (  # noqa: E402
     condition_strategy_config,
+    configured_c_condition_profiles,
     configured_c_conditions,
     reject_strategy_risk_mask,
 )
@@ -487,6 +488,7 @@ class OfficialBaselineOptimizer:
                     config,
                     configured_c_conditions(config),
                     "strict_c_ranking_search",
+                    condition_profiles=configured_c_condition_profiles(config),
                 ),
                 3,
             ),

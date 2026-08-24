@@ -76,10 +76,17 @@ def condition_strategy_config(
     base_config: dict[str, Any],
     conditions: list[dict[str, str]],
     strategy_name: str,
+    *,
+    condition_profiles: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     config = copy.deepcopy(base_config)
     config["strategy_name"] = strategy_name
-    config.setdefault("candidate_filters", {})["conditions"] = [dict(condition) for condition in conditions]
+    filters = config.setdefault("candidate_filters", {})
+    filters["conditions"] = [dict(condition) for condition in conditions]
+    if condition_profiles:
+        filters["condition_profiles"] = copy.deepcopy(condition_profiles)
+    else:
+        filters.pop("condition_profiles", None)
     # 当前所有传入自定义 conditions 的调用方都是 C。A 的排序优化不能被 C
     # 隐式继承；C 未通过本轮双复利门槛时，必须读取 c_strategy.ranking 冻结原排序。
     c_ranking = (
@@ -97,8 +104,22 @@ def condition_strategy_config(
     return config
 
 
-def condition_text(conditions: list[dict[str, str]]) -> str:
+def condition_text(conditions: list[dict[str, Any]]) -> str:
+    if conditions and "conditions" in conditions[0]:
+        return condition_profiles_text(conditions)
     return ";".join(f"{condition['column']}={condition['value']}" for condition in conditions)
+
+
+def condition_profiles_text(profiles: list[dict[str, Any]]) -> str:
+    parts: list[str] = []
+    for position, profile in enumerate(profiles, 1):
+        profile_id = str(profile.get("profile_id", f"PROFILE_{position}"))
+        conditions = " AND ".join(
+            f"{condition['column']}={condition['value']}"
+            for condition in profile.get("conditions", [])
+        )
+        parts.append(f"{profile_id}({conditions})")
+    return " OR ".join(parts)
 
 
 def apply_and_rank(
@@ -471,6 +492,48 @@ def configured_c_conditions(config: dict[str, Any]) -> list[dict[str, str]]:
     return conditions
 
 
+def configured_c_condition_profiles(config: dict[str, Any]) -> list[dict[str, Any]]:
+    """读取正式C的少量冻结OR分支；每个分支内部仍是AND。"""
+
+    c_config = config.get("paper_ab_filtered_strategy", {}).get("c_strategy", {})
+    if not bool(c_config.get("enabled", False)):
+        return []
+    mode = str(c_config.get("condition_mode", "ALL_CONDITIONS")).upper()
+    profiles = c_config.get("condition_profiles", [])
+    if mode != "ANY_PROFILE":
+        return []
+    if not isinstance(profiles, list) or not profiles:
+        raise RuntimeError("C配置声明ANY_PROFILE但没有condition_profiles")
+    normalized: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for position, raw in enumerate(profiles, 1):
+        profile_id = str(raw.get("profile_id", "")).strip()
+        if not profile_id or profile_id in seen:
+            raise RuntimeError(f"C条件分支编号缺失或重复: {profile_id}")
+        seen.add(profile_id)
+        raw_conditions = raw.get("conditions", [])
+        if not isinstance(raw_conditions, list) or not raw_conditions:
+            raise RuntimeError(f"C条件分支不能为空: {profile_id}")
+        conditions = [
+            {
+                "column": str(condition["column"]),
+                "operator": str(condition.get("operator", "==")),
+                "value": str(condition["value"]),
+            }
+            for condition in raw_conditions
+        ]
+        if any(condition["operator"] != "==" for condition in conditions):
+            raise RuntimeError(f"C正式分支目前只允许等值条件: {profile_id}")
+        normalized.append(
+            {
+                "profile_id": profile_id,
+                "priority": int(raw.get("priority", position)),
+                "conditions": conditions,
+            }
+        )
+    return sorted(normalized, key=lambda item: (item["priority"], item["profile_id"]))
+
+
 def build_c_shadow_candidates(
     strategy_config_path: str | Path,
     config: dict[str, Any],
@@ -478,7 +541,7 @@ def build_c_shadow_candidates(
     signal_date: str,
     selected_action: str,
     top_n: int | None = None,
-) -> tuple[list[dict[str, str]], pd.DataFrame, pd.Series | None, pd.DataFrame]:
+) -> tuple[list[dict[str, Any]], pd.DataFrame, pd.Series | None, pd.DataFrame]:
     """始终计算 C 自身候选，但不改变 A>C 的实盘让路规则。
 
     过去只有 A 为空时才计算 C，导致 A 命中日无法观察 C 的样本外表现。
@@ -486,24 +549,46 @@ def build_c_shadow_candidates(
     ``selected/planned_orders`` 仍由调用方原有的 ``A优先`` 分支决定。
     """
 
+    profiles = configured_c_condition_profiles(config)
     conditions = configured_c_conditions(config)
-    if not conditions:
-        return conditions, pd.DataFrame(), None, pd.DataFrame()
-    c_config = condition_strategy_config(config, conditions, "backup_strategy_c_current")
+    configured_rules: list[dict[str, Any]] = profiles or conditions
+    if not configured_rules:
+        return configured_rules, pd.DataFrame(), None, pd.DataFrame()
+    c_config = condition_strategy_config(
+        config,
+        conditions,
+        "backup_strategy_c_current",
+        condition_profiles=profiles,
+    )
     c_generator = build_generator(strategy_config_path, c_config)
     c_filtered = c_generator.apply_strategy_filters(all_candidates)
-    candidates = apply_and_rank(c_generator, c_filtered, signal_date, top_n=top_n)
+    daily = c_filtered[
+        c_filtered["trade_date"].map(normalize_date).eq(signal_date)
+    ].copy()
+    if daily.empty:
+        return configured_rules, pd.DataFrame(), None, pd.DataFrame()
+
+    # 与严格回放一致：先为全部命中OR分支的股票计算C自身风险过滤，再在
+    # 剩余股票中按profit_source_score、turnover_rate排序并允许顺位递补。
+    ranked = c_generator.rank_candidates(daily)
+    ranked["risk_flags"] = [
+        c_generator.build_risk_flags(row) for row in ranked.itertuples(index=False)
+    ]
+    rejected_mask = reject_strategy_risk_mask(ranked, config, "c_strategy")
+    rejected = ranked[rejected_mask].copy()
+    if not rejected.empty:
+        rejected["reject_reason"] = "C_HIT_RISK_REJECT_RULES_BEFORE_FINAL_RANK"
+        rejected["reject_reason_desc"] = "C候选命中自身风险规则，最终排序前剔除并允许下一名递补。"
+        rejected["risk_reject_detail"] = risk_reject_detail(rejected, config)
+    accepted = ranked[~rejected_mask].copy().reset_index(drop=True)
+    accepted["candidate_rank"] = range(1, len(accepted) + 1)
+    candidates = c_generator.build_output(
+        accepted,
+        signal_date,
+        top_n=top_n or c_generator.default_top_n,
+    )
     picked = selected_candidate(candidates, selected_action)
-    rejected = pd.DataFrame()
-    if picked is not None:
-        picked_frame = pd.DataFrame([picked])
-        rejected_mask = reject_strategy_risk_mask(picked_frame, config, "c_strategy")
-        if bool(rejected_mask.iloc[0]):
-            rejected = picked_frame.copy()
-            rejected["reject_reason"] = "C_SELECTED_HIT_RISK_REJECT_RULES"
-            rejected["reject_reason_desc"] = "C 首选标的命中风险过滤规则。"
-            rejected["risk_reject_detail"] = risk_reject_detail(rejected, config)
-    return conditions, candidates, picked, rejected
+    return configured_rules, candidates, picked, rejected
 
 
 def configured_c_exit_rule(config: dict[str, Any]) -> ReplayRule:

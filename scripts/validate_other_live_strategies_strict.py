@@ -34,6 +34,7 @@ from scripts.backtest_strategy_d import build_daily_candidate_ledger  # noqa: E4
 from scripts.build_ac_daily_candidates import trade_return_details  # noqa: E402
 from scripts.run_paper_ab_filtered_daily_ops import (  # noqa: E402
     condition_strategy_config,
+    configured_c_condition_profiles,
     configured_c_conditions,
     reject_strategy_risk_mask,
 )
@@ -199,8 +200,22 @@ def build_ac(
 
     config = config_override or load_json_config(STRATEGY_CONFIG)
 
-    def generator(conditions: list[dict[str, Any]] | None, label: str) -> PaperCandidateGenerator:
-        selected = condition_strategy_config(config, conditions, label) if conditions else config
+    def generator(
+        conditions: list[dict[str, Any]] | None,
+        label: str,
+        *,
+        profiles: list[dict[str, Any]] | None = None,
+    ) -> PaperCandidateGenerator:
+        selected = (
+            condition_strategy_config(
+                config,
+                conditions or [],
+                label,
+                condition_profiles=profiles,
+            )
+            if conditions or profiles
+            else config
+        )
         item = PaperCandidateGenerator(STRATEGY_CONFIG, input_trades_path=source_path)
         item.config = selected
         item.paper_config = selected.get("paper_candidate", {})
@@ -208,7 +223,11 @@ def build_ac(
         return item
 
     strategy_a = generator(None, "A")
-    strategy_c = generator(configured_c_conditions(config), "C")
+    strategy_c = generator(
+        configured_c_conditions(config),
+        "C",
+        profiles=configured_c_condition_profiles(config),
+    )
     all_candidates = strategy_a.load_all_candidates()
     a_filtered = strategy_a.apply_strategy_filters(all_candidates)
     c_filtered = strategy_c.apply_strategy_filters(all_candidates)
