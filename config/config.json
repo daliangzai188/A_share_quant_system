@@ -25,13 +25,15 @@
     "file_role": "策略E唯一身份配置。正式策略腿只写E；E2仅允许作为旧账本只读别名，读取后立即归一为E。",
     "strategy_leg": "E",
     "strategy_variant": "E_CURRENT",
+    "strategy_version": "E_R1_NO_LOOKAHEAD_SINGLE_ACCOUNT_ENTRY_GATE_V6_TURNOVER_AMOUNT_RATIO_SCORE",
+    "ranking_config_path": "config/strategy_e_r1_scenarios.json",
     "legacy_read_aliases": ["E2"],
     "live_order_enabled": true,
     "complete_sample_path": "reports/strategy_e_samples/e_current_daily_candidates_full.csv",
     "pre_gate_sample_path": "reports/strategy_e_samples/e_r1_daily_candidates_full.csv",
     "full_sample_gate_noninferiority_passed": false,
     "full_sample_gate_risk_accepted": true,
-    "full_sample_gate_risk_acceptance_note": "2026-08-18统一完整样本后发现：E_R1门禁前102个候选日，E_CURRENT门禁后82个候选日；被排除20笔平均账户收益+2.297%，后半段门禁降低单腿复利。用户已明确继续保持当前实盘E_CURRENT，因此本项按风险接受保留；这不等于门禁统计通过，不得据此扩大资金。"
+    "full_sample_gate_risk_acceptance_note": "13:30~14:30无回补门禁沿用既有风险接受。2026-08-24用户进一步明确落地E双因子排名：换手率高值与一日成交额倍率低值各占50%同日分位分。双因子只直接改变3个E信号日，组合增量集中于2026年6月；这不等于冻结样本外通过，不得据此扩大资金。"
   },
   "portfolio_certification": {
     "file_role": "D>A>E>C组合资金和研究统计口径；研究认证结果不参与实盘BUY开关。",
@@ -51,24 +53,24 @@
     "rolling_live_report_path": "reports/live_performance/rolling_live_status.json",
     "rolling_min_trades_for_decision": 20,
     "selected_rule_name": "current_d_a_e_c",
-    "selected_rule_description": "当前生产腿序D>A>E>C；D使用已发布回封因子规则，A使用A_FD_EXPANSION_20260630_V1两分支OR将封单比例扩展至0.3%-1%，E保持冻结，C使用C_LEADER_UNION_20260630_V1两分支OR并按自身排序。",
+    "selected_rule_description": "当前生产腿序D>A>E>C；D使用已发布回封因子规则，A使用A_FD_EXPANSION_20260630_V1两分支OR将封单比例扩展至0.3%-1%，E使用换手率高值与一日成交额倍率低值各50%的同日分位综合分，C使用C_LEADER_UNION_20260630_V1两分支OR并按自身排序。",
     "live_candidate_metrics": {
       "scenario": "current_d_a_e_c_strict_asof_discovery",
       "strict_asof_window": "20240630~20260630",
-      "strict_asof_trade_count": 135,
-      "strict_asof_equity_multiple": 1213.6649948910629,
-      "strict_asof_win_rate": 0.7111111111111111,
-      "strict_asof_avg_account_return": 0.057605920549432796,
-      "strict_asof_median_account_return": 0.04757615837663166,
+      "strict_asof_trade_count": 134,
+      "strict_asof_equity_multiple": 1375.6238529689376,
+      "strict_asof_win_rate": 0.7164179104477612,
+      "strict_asof_avg_account_return": 0.0590209065397547,
+      "strict_asof_median_account_return": 0.04558279162658738,
       "strict_asof_max_drawdown": -0.14119813241960621,
       "strict_asof_leg_counts": {
         "D": 15,
         "A": 44,
-        "E": 46,
-        "C": 30
+        "E": 42,
+        "C": 33
       },
       "compound_standard_id": "A_SYSTEM_MECHANICAL_COMPOUND_V1",
-      "note": "当前研究窗口为2024-06-30至2026-06-30；A封单比例由0.5%-1%相邻扩展到0.3%-1%，其余规则不变。按D>A>E>C重放为135笔、1213.664995倍，最大回撤-14.1198%；A独立63笔、18.911549倍。该扩展在开发段弱于旧A，存在阶段切换或近期拟合风险，用户于2026-08-24明确接受并要求落地；STRICT_DISCOVERY机械复利不是未来收益承诺。旧921.336502倍及更早锚点不得继续作为当前组合锚点。"
+      "note": "当前研究窗口为2024-06-30至2026-06-30；E在原换手率因子基础上新增一日成交额倍率低值优先因子，两个因子按同日分位各占50%。按D>A>E>C重放为134笔、1375.623853倍，最大回撤-14.1198%；E独立74笔、11.703790倍。该方案只直接改变3个E信号日，组合增量集中于2026年6月，用户于2026-08-24明确接受并要求落地；STRICT_DISCOVERY机械复利不是未来收益承诺。旧1213.664995倍及更早锚点不得继续作为当前组合锚点。"
     }
   },
   "live_performance_report": {

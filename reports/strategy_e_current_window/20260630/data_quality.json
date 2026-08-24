@@ -1,0 +1,219 @@
+{
+  "strict_source_path": "data/processed/limit_up_fill_scored_asof.csv",
+  "strict_source_rows": 98842,
+  "strict_source_asof_passed": true,
+  "strict_source_duplicate_keys": 0,
+  "feature_pool_rows": 29176,
+  "feature_pool_signal_dates": 484,
+  "feature_pool_duplicate_keys": 0,
+  "r1_union_rows": 400,
+  "r1_union_signal_dates": 287,
+  "neutral_rows": 141,
+  "neutral_signal_dates": 113,
+  "segment_retreat_state_counts": {
+    "weak_below_3": 157,
+    "neutral": 141,
+    "retreat_weak": 44,
+    "retreat_2day": 31,
+    "warming_2day": 27
+  },
+  "required_signal_fields": [
+    "allow_buy_reliable",
+    "amount",
+    "amount_ratio_1d",
+    "amount_ratio_bucket",
+    "circ_mv",
+    "fd_amount_to_circ_mv",
+    "fd_ratio_bucket",
+    "fill_probability",
+    "first_time_detail_bucket",
+    "is_fd_amount_abnormal",
+    "is_fill_score_reliable",
+    "limit_data_quality",
+    "limit_height_rank_bucket",
+    "limit_times_bucket",
+    "limit_times_detail_bucket",
+    "market_chain_count_bucket",
+    "market_emotion_state_bucket",
+    "market_leader_rank",
+    "market_leader_rank_bucket",
+    "name",
+    "open_times",
+    "sample_count",
+    "segment_chain_count_bucket",
+    "segment_emotion_state_bucket",
+    "segment_limit_down_count_bucket",
+    "segment_limit_down_ratio_bucket",
+    "segment_limit_height_rank_bucket",
+    "segment_limit_up_count_bucket",
+    "segment_market_sentiment_level",
+    "segment_retreat_state_bucket",
+    "strategy_compatible",
+    "trade_date",
+    "ts_code",
+    "turnover_rate",
+    "volume_ratio",
+    "volume_ratio_bucket"
+  ],
+  "missing_required_signal_fields": [],
+  "required_field_null_counts_in_neutral_universe": {
+    "allow_buy_reliable": 0,
+    "amount": 0,
+    "amount_ratio_1d": 0,
+    "amount_ratio_bucket": 0,
+    "circ_mv": 0,
+    "fd_amount_to_circ_mv": 0,
+    "fd_ratio_bucket": 0,
+    "fill_probability": 0,
+    "first_time_detail_bucket": 0,
+    "is_fd_amount_abnormal": 0,
+    "is_fill_score_reliable": 0,
+    "limit_data_quality": 0,
+    "limit_height_rank_bucket": 0,
+    "limit_times_bucket": 0,
+    "limit_times_detail_bucket": 0,
+    "market_chain_count_bucket": 0,
+    "market_emotion_state_bucket": 0,
+    "market_leader_rank": 0,
+    "market_leader_rank_bucket": 0,
+    "name": 0,
+    "open_times": 0,
+    "sample_count": 0,
+    "segment_chain_count_bucket": 0,
+    "segment_emotion_state_bucket": 0,
+    "segment_limit_down_count_bucket": 0,
+    "segment_limit_down_ratio_bucket": 0,
+    "segment_limit_height_rank_bucket": 0,
+    "segment_limit_up_count_bucket": 0,
+    "segment_market_sentiment_level": 0,
+    "segment_retreat_state_bucket": 0,
+    "strategy_compatible": 0,
+    "trade_date": 0,
+    "ts_code": 0,
+    "turnover_rate": 0,
+    "volume_ratio": 0,
+    "volume_ratio_bucket": 0
+  },
+  "numeric_factor_availability": {
+    "turnover_rate": {
+      "available": true,
+      "nonnull_count": 141,
+      "unique_count": 141
+    },
+    "amount": {
+      "available": true,
+      "nonnull_count": 141,
+      "unique_count": 141
+    },
+    "sample_count": {
+      "available": true,
+      "nonnull_count": 141,
+      "unique_count": 129
+    },
+    "volume_ratio": {
+      "available": true,
+      "nonnull_count": 141,
+      "unique_count": 103
+    },
+    "open_times": {
+      "available": true,
+      "nonnull_count": 141,
+      "unique_count": 15
+    },
+    "market_leader_rank": {
+      "available": true,
+      "nonnull_count": 141,
+      "unique_count": 69
+    },
+    "segment_market_leader_rank": {
+      "available": true,
+      "nonnull_count": 141,
+      "unique_count": 25
+    },
+    "limit_height_rank": {
+      "available": true,
+      "nonnull_count": 141,
+      "unique_count": 8
+    },
+    "segment_limit_height_rank": {
+      "available": true,
+      "nonnull_count": 141,
+      "unique_count": 6
+    },
+    "fd_amount_to_circ_mv": {
+      "available": true,
+      "nonnull_count": 141,
+      "unique_count": 141
+    },
+    "first_time": {
+      "available": true,
+      "nonnull_count": 141,
+      "unique_count": 140
+    },
+    "last_time": {
+      "available": true,
+      "nonnull_count": 141,
+      "unique_count": 137
+    },
+    "circ_mv": {
+      "available": true,
+      "nonnull_count": 141,
+      "unique_count": 141
+    },
+    "limit_times": {
+      "available": true,
+      "nonnull_count": 141,
+      "unique_count": 3
+    },
+    "prev_pct_chg": {
+      "available": true,
+      "nonnull_count": 141,
+      "unique_count": 138
+    },
+    "prev2_pct_chg": {
+      "available": true,
+      "nonnull_count": 141,
+      "unique_count": 141
+    },
+    "amount_ratio_1d": {
+      "available": true,
+      "nonnull_count": 141,
+      "unique_count": 141
+    },
+    "turnover_ratio_1d": {
+      "available": true,
+      "nonnull_count": 141,
+      "unique_count": 141
+    },
+    "market_emotion_score": {
+      "available": true,
+      "nonnull_count": 141,
+      "unique_count": 113
+    },
+    "segment_emotion_score": {
+      "available": true,
+      "nonnull_count": 141,
+      "unique_count": 114
+    },
+    "theme_heat_score": {
+      "available": true,
+      "nonnull_count": 139,
+      "unique_count": 139
+    },
+    "theme_heat_rank": {
+      "available": true,
+      "nonnull_count": 139,
+      "unique_count": 34
+    },
+    "theme_leader_rank": {
+      "available": true,
+      "nonnull_count": 139,
+      "unique_count": 12
+    },
+    "same_theme_limit_count": {
+      "available": true,
+      "nonnull_count": 139,
+      "unique_count": 17
+    }
+  }
+}

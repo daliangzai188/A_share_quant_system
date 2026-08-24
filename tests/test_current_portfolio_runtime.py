@@ -263,6 +263,52 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
         self.assertEqual(kwargs["counterfactual_e_status"], "NO_CANDIDATE")
         self.assertIn("A今日已生成计划委托", kwargs["priority_blocker"])
 
+    def test_e_signal_and_candidate_audit_require_dual_factor_values(self) -> None:
+        """正式信号和候选审计文件都必须保留新增双因子排名证据。"""
+
+        candidate = pd.Series(
+            {
+                "ts_code": "300001.SZ",
+                "name": "测试股票",
+                "market_segment": "chi_next",
+                "segment_retreat_state_bucket": "neutral",
+                "scenario": "test",
+                "scenario_rank": 1,
+                "exit_rule": "fixed_t2_close",
+                "turnover_rate": 12.0,
+                "amount_ratio_1d": 1.5,
+                "_e_rank_turnover_rate": 1.0,
+                "_e_rank_amount_ratio_1d": 0.5,
+                "_e_final_score": 0.75,
+            }
+        )
+        signal = run_strategy_e_signal.build_signal("20260821", candidate, {})
+        self.assertEqual(signal["turnover_rate"], 12.0)
+        self.assertEqual(signal["amount_ratio_1d"], 1.5)
+        self.assertEqual(signal["final_ranking_score"], 0.75)
+
+        missing = candidate.drop(labels=["amount_ratio_1d"])
+        with self.assertRaisesRegex(RuntimeError, "amount_ratio_1d"):
+            run_strategy_e_signal.build_signal("20260821", missing, {})
+
+        with tempfile.TemporaryDirectory(prefix="e_candidate_audit_") as temp_dir:
+            with patch.object(run_strategy_e_signal, "OUTPUT_DIR", Path(temp_dir)):
+                path = run_strategy_e_signal.save_candidates(
+                    "20260821",
+                    pd.DataFrame([candidate]),
+                    dry_run=False,
+                )
+            saved = pd.read_csv(path)
+        self.assertTrue(
+            {
+                "turnover_rate",
+                "amount_ratio_1d",
+                "_e_rank_turnover_rate",
+                "_e_rank_amount_ratio_1d",
+                "_e_final_score",
+            }.issubset(saved.columns)
+        )
+
     def test_e_status_log_distinguishes_a_block_from_no_candidate(self) -> None:
         """播报必须明确：A阻断存在，但E候选也确实已单独算成0只。"""
 

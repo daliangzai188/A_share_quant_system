@@ -1,11 +1,11 @@
-"""验证E实盘规则与无前视、单账户、入场门禁回测基准是否逐票一致。
+"""验证E实盘双因子规则与当前严格研究候选是否逐票一致。
 
 验证内容：
 1. 配置固定为40条R1规则，且选股条件/排序不含未来成交和收益字段；
 2. 使用与实盘相同的 ``src.strategy_e`` 构造历史候选宇宙；
-3. 对门禁前102个完整候选日逐日核对股票与退出规则；
+3. 对换手率高值优先、一日成交额倍率低值优先的等权日内分位排序逐日核对；
 4. 每日第一名确定后排除13:30~14:30首次涨停组，且禁止回补第二名；
-5. 对门禁后82个完整候选日复算候选序列指标；单账户资金占用由组合认证脚本验证。
+5. 单账户收益、资金占用和组合腿序由严格组合认证脚本独立验证。
 
 运行：
     python scripts/verify_strategy_e_alignment.py
@@ -41,13 +41,19 @@ from src.strategy_optimizer import StrategyConditionOptimizer  # noqa: E402
 
 
 HIST_POOL_PATH = PROJECT_ROOT / "data" / "processed" / "limit_up_fill_scored_asof.csv"
-LOCKED_TRADES_PATH = PROJECT_ROOT / "reports" / "strategy_e_samples" / "e_r1_daily_candidates_full.csv"
+LOCKED_PICKS_PATH = (
+    PROJECT_ROOT
+    / "reports"
+    / "strategy_e_current_window"
+    / "20260630"
+    / "stable_noninferiority_candidate_picks.csv"
+)
 OUTPUT_DIR = PROJECT_ROOT / "reports" / "strategy_e_alignment"
 POSITION_PCT = 0.825
-EXPECTED_PRE_GATE_TRADE_COUNT = 102
-EXPECTED_ENTRY_GATE_TRADE_COUNT = 82
-EXPECTED_EQUITY_MULTIPLE = 9.64571212266072
-EXPECTED_MAX_DRAWDOWN = -0.2766138432983575
+START_DATE = "20240630"
+END_DATE = "20260630"
+EXPECTED_PRE_GATE_TRADE_COUNT = 113
+EXPECTED_ENTRY_GATE_TRADE_COUNT = 89
 
 
 def load_historical_bucketed_pool(start_date: str, end_date: str, lookback_dates: int) -> pd.DataFrame:
@@ -106,87 +112,59 @@ def verify_single_account_occupancy(trades: pd.DataFrame) -> list[str]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="验证E实盘与82日完整入场门禁候选样本逐票对齐")
+    parser = argparse.ArgumentParser(description="验证E实盘与当前双因子89日候选逐票对齐")
     parser.add_argument("--lookback-dates", type=int, default=80, help="板块状态前置数据日数量")
     args = parser.parse_args()
 
     spec = load_e_spec(PROJECT_ROOT)
-    locked = pd.read_csv(LOCKED_TRADES_PATH, dtype={"trade_date": str}, low_memory=False)
-    start_date = str(locked["trade_date"].min())
-    end_date = str(locked["trade_date"].max())
+    locked = pd.read_csv(LOCKED_PICKS_PATH, dtype={"trade_date": str}, low_memory=False)
 
     future_fields = sorted(required_signal_fields(spec) & FORBIDDEN_SELECTION_COLUMNS)
     if future_fields:
         raise RuntimeError(f"E规则含前视字段：{future_fields}")
 
-    pool = load_historical_bucketed_pool(start_date, end_date, args.lookback_dates)
+    pool = load_historical_bucketed_pool(START_DATE, END_DATE, args.lookback_dates)
     universe = build_r1_universe_from_pool(pool, spec, audit_readiness=True)
-    candidates = select_e_candidates(universe)
+    candidates = select_e_candidates(universe, spec)
     pre_gate_daily_pick = candidates.groupby("trade_date", as_index=False).head(1).copy()
     daily_pick = select_e_daily_picks(universe, spec)
 
-    # 门禁前必须保持102个完整候选日逐票一致；历史50行子集不得再替代完整样本。
-    pre_gate_expected = locked[["trade_date", "ts_code", "exit_rule"]].copy()
-    pre_gate_actual = pre_gate_daily_pick[
-        ["trade_date", "ts_code", "exit_rule"]
-    ].copy()
-    pre_gate_compare = pre_gate_expected.merge(
-        pre_gate_actual,
-        on="trade_date",
-        how="left",
-        suffixes=("_expected", "_actual"),
-    )
-    pre_gate_compare["same_stock"] = pre_gate_compare["ts_code_expected"].eq(
-        pre_gate_compare["ts_code_actual"]
-    )
-    pre_gate_compare["same_exit_rule"] = pre_gate_compare[
-        "exit_rule_expected"
-    ].eq(pre_gate_compare["exit_rule_actual"])
-
-    eligible_locked = apply_e_entry_gate(locked, spec)
-    expected = eligible_locked[["trade_date", "ts_code", "exit_rule"]].copy()
+    # 锁定文件是本轮研究中经过现行入场门禁后的89个候选日。用outer合并，
+    # 防止新增或缺失日期被left join静默隐藏。
+    expected = locked[["trade_date", "ts_code", "exit_rule"]].copy()
     actual = daily_pick[["trade_date", "ts_code", "exit_rule", "scenario_rank", "scenario"]].copy()
-    compare = expected.merge(actual, on="trade_date", how="left", suffixes=("_expected", "_actual"))
+    compare = expected.merge(
+        actual,
+        on="trade_date",
+        how="outer",
+        suffixes=("_expected", "_actual"),
+        indicator=True,
+    )
     compare["same_stock"] = compare["ts_code_expected"].eq(compare["ts_code_actual"])
     compare["same_exit_rule"] = compare["exit_rule_expected"].eq(compare["exit_rule_actual"])
-
-    returns = pd.to_numeric(eligible_locked["net_return"], errors="raise") * POSITION_PCT
-    equity = (1 + returns).cumprod()
-    drawdown = equity / equity.cummax() - 1
 
     summary = pd.DataFrame(
         [
             {
                 "strategy_version": E_VERSION,
                 "scenario_count": len(spec["scenarios"]),
-                "pre_gate_trade_count": len(locked),
-                "pre_gate_same_stock_count": int(pre_gate_compare["same_stock"].sum()),
-                "pre_gate_same_exit_rule_count": int(pre_gate_compare["same_exit_rule"].sum()),
-                "entry_gate_removed_count": int(len(locked) - len(eligible_locked)),
-                "locked_trade_count": len(eligible_locked),
+                "pre_gate_trade_count": len(pre_gate_daily_pick),
+                "entry_gate_removed_count": int(len(pre_gate_daily_pick) - len(daily_pick)),
+                "locked_trade_count": len(locked),
+                "actual_trade_count": len(daily_pick),
                 "same_stock_count": int(compare["same_stock"].sum()),
                 "same_exit_rule_count": int(compare["same_exit_rule"].sum()),
                 "position_pct": POSITION_PCT,
-                "avg_account_return": float(returns.mean()),
-                "median_account_return": float(returns.median()),
-                "win_rate": float((returns > 0).mean()),
-                "equity_multiple": float(equity.iloc[-1]),
-                "max_drawdown": float(drawdown.min()),
-                "max_profit": float(returns.max()),
-                "max_loss": float(returns.min()),
-                "max_consecutive_losses": max_consecutive_losses(returns),
                 "future_selection_field_count": len(future_fields),
-                "sample_scope": "COMPLETE_DAILY_CANDIDATES",
+                "sample_scope": "STRICT_20240630_20260630_DUAL_FACTOR_DAILY_PICKS",
                 "single_account_validation_source": "certify_strict_asof_portfolio.py",
                 "alignment_passed": bool(
-                    len(locked) == EXPECTED_PRE_GATE_TRADE_COUNT
-                    and len(eligible_locked) == EXPECTED_ENTRY_GATE_TRADE_COUNT
-                    and pre_gate_compare["same_stock"].all()
-                    and pre_gate_compare["same_exit_rule"].all()
+                    len(pre_gate_daily_pick) == EXPECTED_PRE_GATE_TRADE_COUNT
+                    and len(locked) == EXPECTED_ENTRY_GATE_TRADE_COUNT
+                    and len(daily_pick) == EXPECTED_ENTRY_GATE_TRADE_COUNT
+                    and compare["_merge"].eq("both").all()
                     and compare["same_stock"].all()
                     and compare["same_exit_rule"].all()
-                    and abs(float(equity.iloc[-1]) - EXPECTED_EQUITY_MULTIPLE) < 1e-9
-                    and abs(float(drawdown.min()) - EXPECTED_MAX_DRAWDOWN) < 1e-9
                 ),
             }
         ]
@@ -195,13 +173,13 @@ def main() -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     summary.to_csv(OUTPUT_DIR / "e_live_alignment_verification.csv", index=False, encoding="utf-8-sig")
     compare.to_csv(OUTPUT_DIR / "e_live_alignment_compare.csv", index=False, encoding="utf-8-sig")
-    pre_gate_compare.to_csv(
-        OUTPUT_DIR / "e_live_alignment_pre_gate_compare.csv",
+    pre_gate_daily_pick.to_csv(
+        OUTPUT_DIR / "e_live_alignment_pre_gate_picks.csv",
         index=False,
         encoding="utf-8-sig",
     )
-    eligible_locked.to_csv(
-        OUTPUT_DIR / "e_r1_entry_gate_trades.csv",
+    daily_pick.to_csv(
+        OUTPUT_DIR / "e_r1_entry_gate_picks.csv",
         index=False,
         encoding="utf-8-sig",
     )
@@ -209,9 +187,9 @@ def main() -> None:
     if not bool(summary.iloc[0]["alignment_passed"]):
         mismatches = compare[~(compare["same_stock"] & compare["same_exit_rule"])]
         print(mismatches.to_string(index=False))
-        raise SystemExit("E实盘规则未通过102日完整候选样本逐票对齐验证，禁止上线。")
+        raise SystemExit("E实盘规则未通过当前双因子候选逐票对齐验证，禁止上线。")
     print(
-        "E对齐验证通过：门禁前102/102同股同退出，门禁后82/82同股同退出；"
+        "E对齐验证通过：门禁前113日、门禁后89/89同股同退出；"
         "组合单账户结果由当前组合认证报告锁定。"
     )
 

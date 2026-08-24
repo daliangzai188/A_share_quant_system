@@ -19,8 +19,8 @@
     },
     {
       "path": "config/config.json",
-      "size": 88702,
-      "sha256": "f9cefff3f008f86329d9a6379d0e374bd27a317927a1445ad5063f2d04a143d2"
+      "size": 88976,
+      "sha256": "22938767e2a78224c9798c93bbf966aa02038df808c5d24fd5f415a78ba7b651"
     },
     {
       "path": "config/strategy_config.json",
@@ -39,8 +39,8 @@
     },
     {
       "path": "config/strategy_e_r1_scenarios.json",
-      "size": 12323,
-      "sha256": "3182add688b14e22e96b482c7f8e063705e855b6a0303a3dc2a3f30703441d7a"
+      "size": 12928,
+      "sha256": "dffbe01a95729a5900acbd8451932f1628b729e15140fddd035d8af34f5cc87c"
     },
     {
       "path": "data/raw/trade_calendar.csv",

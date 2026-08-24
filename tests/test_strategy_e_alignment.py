@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 from pathlib import Path
 from types import ModuleType
@@ -106,6 +107,22 @@ def make_pool() -> pd.DataFrame:
 
 
 class StrategyEAlignmentTests(unittest.TestCase):
+    def test_runtime_config_records_v6_identity_and_new_anchor(self) -> None:
+        runtime = json.loads(
+            (PROJECT_ROOT / "config" / "config.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(runtime["strategy_e"]["strategy_version"], E_VERSION)
+        metrics = runtime["portfolio_certification"]["live_candidate_metrics"]
+        self.assertEqual(metrics["strict_asof_trade_count"], 134)
+        self.assertAlmostEqual(
+            metrics["strict_asof_equity_multiple"],
+            1375.6238529689376,
+        )
+        self.assertEqual(
+            metrics["strict_asof_leg_counts"],
+            {"D": 15, "A": 44, "E": 42, "C": 33},
+        )
+
     def test_production_spec_has_40_rules_and_no_future_columns(self) -> None:
         spec = load_e_spec(PROJECT_ROOT)
         self.assertEqual(len(spec["scenarios"]), 40)
@@ -115,24 +132,95 @@ class StrategyEAlignmentTests(unittest.TestCase):
             spec["entry_gate"]["exclude_values"]["first_time_detail_bucket"],
             ["1330_1430"],
         )
-        self.assertEqual(spec["final_ranking"]["columns"], ["turnover_rate"])
-        self.assertEqual(spec["final_ranking"]["ascending"], [False])
-        self.assertIn("ENTRY_GATE_V5_TURNOVER_RANK", E_VERSION)
+        self.assertEqual(
+            spec["final_ranking"]["columns"],
+            ["turnover_rate", "amount_ratio_1d"],
+        )
+        self.assertEqual(spec["final_ranking"]["ascending"], [False, True])
+        self.assertEqual(spec["final_ranking"]["weights"], [0.5, 0.5])
+        self.assertEqual(
+            spec["final_ranking"]["method"],
+            "daily_percentile_weighted_score",
+        )
+        self.assertIn("amount_ratio_1d", required_signal_fields(spec))
+        self.assertIn("V6_TURNOVER_AMOUNT_RATIO_SCORE", E_VERSION)
         audit = spec["strict_2y_ranking_optimization"]
         self.assertEqual(
             audit["metric_scope"], "STRICT_ASOF_E_STANDALONE_SINGLE_ACCOUNT"
         )
-        self.assertEqual(audit["selected_leg_trade_count"], 76)
+        self.assertEqual(audit["selected_leg_trade_count"], 74)
         self.assertAlmostEqual(
-            audit["selected_leg_equity_multiple"], 10.83416173854884
+            audit["selected_leg_equity_multiple"], 11.70378989651547
         )
-        self.assertEqual(audit["selected_candidate_pool_trade_count"], 91)
+        self.assertEqual(audit["selected_candidate_pool_trade_count"], 89)
 
-    def test_final_ranking_uses_signal_day_turnover_rate(self) -> None:
-        universe = build_r1_universe_from_pool(make_pool(), make_test_spec())
-        spec = {"final_ranking": {"columns": ["turnover_rate"], "ascending": [False]}}
+    def test_final_ranking_uses_equal_weight_daily_percentile_score(self) -> None:
+        universe = pd.DataFrame(
+            [
+                {
+                    "trade_date": "20260731",
+                    "ts_code": "300001.SZ",
+                    "segment_retreat_state_bucket": "neutral",
+                    "turnover_rate": 12.0,
+                    "amount_ratio_1d": 4.0,
+                    "scenario_rank": 1,
+                },
+                {
+                    "trade_date": "20260731",
+                    "ts_code": "300002.SZ",
+                    "segment_retreat_state_bucket": "neutral",
+                    "turnover_rate": 10.0,
+                    "amount_ratio_1d": 1.0,
+                    "scenario_rank": 2,
+                },
+                {
+                    "trade_date": "20260731",
+                    "ts_code": "300003.SZ",
+                    "segment_retreat_state_bucket": "neutral",
+                    "turnover_rate": 8.0,
+                    "amount_ratio_1d": 2.0,
+                    "scenario_rank": 3,
+                },
+            ]
+        )
+        spec = {
+            "final_ranking": {
+                "method": "daily_percentile_weighted_score",
+                "columns": ["turnover_rate", "amount_ratio_1d"],
+                "ascending": [False, True],
+                "weights": [0.5, 0.5],
+                "tie_breaker_columns": ["scenario_rank", "ts_code"],
+                "tie_breaker_ascending": [True, True],
+            }
+        }
         selected = select_e_candidates(universe, spec).iloc[0]
         self.assertEqual(selected["ts_code"], "300002.SZ")
+        self.assertAlmostEqual(float(selected["_e_final_score"]), 5 / 6)
+
+    def test_final_ranking_missing_new_factor_fails_closed(self) -> None:
+        universe = pd.DataFrame(
+            [
+                {
+                    "trade_date": "20260731",
+                    "ts_code": "300001.SZ",
+                    "segment_retreat_state_bucket": "neutral",
+                    "turnover_rate": 12.0,
+                    "scenario_rank": 1,
+                }
+            ]
+        )
+        spec = {
+            "final_ranking": {
+                "method": "daily_percentile_weighted_score",
+                "columns": ["turnover_rate", "amount_ratio_1d"],
+                "ascending": [False, True],
+                "weights": [0.5, 0.5],
+                "tie_breaker_columns": ["scenario_rank", "ts_code"],
+                "tie_breaker_ascending": [True, True],
+            }
+        }
+        with self.assertRaisesRegex(RuntimeError, "amount_ratio_1d"):
+            select_e_candidates(universe, spec)
 
     def test_scenario_parser_restores_conditions_sort_and_exit(self) -> None:
         parsed = parse_scenario_name(

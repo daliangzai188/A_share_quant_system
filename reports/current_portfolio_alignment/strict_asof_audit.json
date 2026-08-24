@@ -6,7 +6,7 @@
   "research_protocol": "STRICT_DISCOVERY",
   "result_scope": "DISCOVERY_ONLY",
   "compound_standard_id": "A_SYSTEM_MECHANICAL_COMPOUND_V1",
-  "generated_at": "2026-08-24T08:51:28.576340+00:00",
+  "generated_at": "2026-08-24T10:01:40.975075+00:00",
   "window": "20240630~20260630",
   "source_audit": {
     "standard_id": "A_SYSTEM_STRICT_ASOF_V1",
@@ -34,26 +34,26 @@
   "portfolio_policy": "D>A>E>C单账户占仓；每天最多一笔实际成交；退出前不重复使用资金",
   "mechanical_compound_formula": "equity_t = equity_(t-1) * (1 + account_return_t)",
   "strict_combo": {
-    "trade_count": 135,
-    "win_rate": 0.7111111111111111,
-    "avg_account_return": 0.057605920549432796,
-    "median_account_return": 0.04757615837663166,
-    "equity_multiple": 1213.6649948910629,
+    "trade_count": 134,
+    "win_rate": 0.7164179104477612,
+    "avg_account_return": 0.0590209065397547,
+    "median_account_return": 0.04558279162658738,
+    "equity_multiple": 1375.6238529689376,
     "max_drawdown": -0.14119813241960621,
     "max_profit": 0.3687231660523884,
     "max_loss": -0.11849477438811166,
-    "profit_loss_ratio": 2.612701646429346,
+    "profit_loss_ratio": 2.65420754497904,
     "max_consecutive_losses": 3,
-    "win_rate_wilson_95_lower": 0.6296526217148781,
-    "win_rate_wilson_95_upper": 0.780887576322167,
-    "avg_return_bootstrap_95_lower": 0.04268849011779994,
-    "avg_return_bootstrap_95_upper": 0.07272445748486424,
+    "win_rate_wilson_95_lower": 0.6348997570372046,
+    "win_rate_wilson_95_upper": 0.7858735030270778,
+    "avg_return_bootstrap_95_lower": 0.04402768938748807,
+    "avg_return_bootstrap_95_upper": 0.07466475184854764,
     "compound_standard_id": "A_SYSTEM_MECHANICAL_COMPOUND_V1",
     "leg_counts": {
       "A": 44,
-      "C": 30,
+      "C": 33,
       "D": 15,
-      "E": 46
+      "E": 42
     }
   },
   "strict_leg_candidate_metrics": {
@@ -90,20 +90,20 @@
       "avg_return_bootstrap_95_upper": 0.06508042065050479
     },
     "E": {
-      "trade_count": 91,
-      "win_rate": 0.6593406593406593,
-      "avg_account_return": 0.03441863121599817,
+      "trade_count": 89,
+      "win_rate": 0.6629213483146067,
+      "avg_account_return": 0.03530663457082527,
       "median_account_return": 0.01838722394693575,
-      "equity_multiple": 15.490272044579283,
+      "equity_multiple": 15.634337181122495,
       "max_drawdown": -0.2392961408914025,
       "max_profit": 0.5231929254879739,
       "max_loss": -0.17629142067722955,
-      "profit_loss_ratio": 1.5974786026325682,
+      "profit_loss_ratio": 1.5901142727871886,
       "max_consecutive_losses": 4,
-      "win_rate_wilson_95_lower": 0.5572871428187045,
-      "win_rate_wilson_95_upper": 0.7484863064786853,
-      "avg_return_bootstrap_95_lower": 0.016190368835452645,
-      "avg_return_bootstrap_95_upper": 0.05427656982475395
+      "win_rate_wilson_95_lower": 0.5597888036006071,
+      "win_rate_wilson_95_upper": 0.7525716479516251,
+      "avg_return_bootstrap_95_lower": 0.016575026229810854,
+      "avg_return_bootstrap_95_upper": 0.05574228469926599
     },
     "C": {
       "trade_count": 70,
@@ -164,23 +164,23 @@
       }
     },
     "E": {
-      "trade_count": 76,
-      "win_rate": 0.6447368421052632,
-      "avg_account_return": 0.03603595325965961,
-      "median_account_return": 0.0172393380151361,
-      "equity_multiple": 10.83416173854884,
-      "max_drawdown": -0.24746103236951644,
+      "trade_count": 74,
+      "win_rate": 0.6486486486486487,
+      "avg_account_return": 0.03810258369129678,
+      "median_account_return": 0.017921563012179384,
+      "equity_multiple": 11.70378989651547,
+      "max_drawdown": -0.24746103236951633,
       "max_profit": 0.5231929254879739,
       "max_loss": -0.17629142067722955,
-      "profit_loss_ratio": 1.7756009375180655,
+      "profit_loss_ratio": 1.8015237564601654,
       "max_consecutive_losses": 3,
-      "win_rate_wilson_95_lower": 0.5325638551414933,
-      "win_rate_wilson_95_upper": 0.7429822123396512,
-      "avg_return_bootstrap_95_lower": 0.015558038959412003,
-      "avg_return_bootstrap_95_upper": 0.05879192509472622,
+      "win_rate_wilson_95_lower": 0.535007626173502,
+      "win_rate_wilson_95_upper": 0.747618115087032,
+      "avg_return_bootstrap_95_lower": 0.016918861612285015,
+      "avg_return_bootstrap_95_upper": 0.06145277282780605,
       "compound_standard_id": "A_SYSTEM_MECHANICAL_COMPOUND_V1",
       "leg_counts": {
-        "E": 76
+        "E": 74
       }
     },
     "C": {

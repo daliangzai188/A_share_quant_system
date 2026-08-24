@@ -15,7 +15,7 @@ from typing import Any
 import pandas as pd
 
 
-E_VERSION = "E_R1_NO_LOOKAHEAD_SINGLE_ACCOUNT_ENTRY_GATE_V5_TURNOVER_RANK"
+E_VERSION = "E_R1_NO_LOOKAHEAD_SINGLE_ACCOUNT_ENTRY_GATE_V6_TURNOVER_AMOUNT_RATIO_SCORE"
 DEFAULT_SCENARIO_PATH = Path("config/strategy_e_r1_scenarios.json")
 
 # 这些字段都属于买入日以后才能知道的结果，禁止出现在E选股条件或排序规则中。
@@ -145,8 +145,10 @@ def load_e_spec(project_root: Path, scenario_path: Path | None = None) -> dict[s
 
     final_ranking = spec.get("final_ranking", {})
     if final_ranking:
+        method = str(final_ranking.get("method", "lexicographic"))
         columns = [str(column) for column in final_ranking.get("columns", [])]
         ascending = list(final_ranking.get("ascending", []))
+        weights = [float(value) for value in final_ranking.get("weights", [])]
         tie_columns = [
             str(column) for column in final_ranking.get("tie_breaker_columns", [])
         ]
@@ -155,6 +157,11 @@ def load_e_spec(project_root: Path, scenario_path: Path | None = None) -> dict[s
             raise ValueError("E最终排序字段与方向数量不一致")
         if len(tie_columns) != len(tie_ascending):
             raise ValueError("E最终排序的稳定并列字段与方向数量不一致")
+        if method not in {"lexicographic", "daily_percentile_weighted_score"}:
+            raise ValueError(f"E最终排序方法不支持：{method}")
+        if method == "daily_percentile_weighted_score":
+            if len(weights) != len(columns) or any(weight <= 0 for weight in weights):
+                raise ValueError("E日内分位综合排序的权重必须与字段等长且全部为正")
         used_columns.update(columns)
         used_columns.update(tie_columns)
 
@@ -305,14 +312,21 @@ def select_e_candidates(
     universe: pd.DataFrame,
     spec: dict[str, Any] | None = None,
 ) -> pd.DataFrame:
-    """在R1候选并集中取板块neutral，再按配置的信号日字段排序。"""
+    """在R1候选并集中保留neutral，再按配置生成最终稳定排序。
+
+    ``daily_percentile_weighted_score``只在同一个信号日的R1候选之间计算
+    分位得分，避免换手率和成交额倍率的量纲差异。配置中的``ascending``仍
+    表示原始因子的择优方向：False为数值越大越优，True为数值越小越优。
+    """
 
     if universe.empty:
         return pd.DataFrame()
     result = universe[universe["segment_retreat_state_bucket"].astype(str).eq("neutral")].copy()
     ranking = (spec or {}).get("final_ranking", {})
+    method = str(ranking.get("method", "lexicographic"))
     columns = [str(column) for column in ranking.get("columns", ["circ_mv"])]
     ascending = [bool(value) for value in ranking.get("ascending", [True])]
+    weights = [float(value) for value in ranking.get("weights", [])]
     tie_columns = [
         str(column)
         for column in ranking.get("tie_breaker_columns", ["scenario_rank", "ts_code"])
@@ -329,6 +343,33 @@ def select_e_candidates(
     for column in columns:
         result[column] = pd.to_numeric(result[column], errors="coerce")
     result = result[result[columns].notna().all(axis=1)].copy()
+
+    if method == "daily_percentile_weighted_score":
+        if len(weights) != len(columns) or any(weight <= 0 for weight in weights):
+            raise ValueError("E日内分位综合排序的权重必须与字段等长且全部为正")
+        total_weight = float(sum(weights))
+        result["_e_final_score"] = 0.0
+        for column, sort_ascending, weight in zip(columns, ascending, weights):
+            # sort_ascending=False表示高值优先，rank需用ascending=True使最高值
+            # 得到1；低值优先时反向排名，使最低值取得1。
+            rank_column = f"_e_rank_{column}"
+            result[rank_column] = result.groupby("trade_date")[column].rank(
+                method="average",
+                pct=True,
+                ascending=not sort_ascending,
+            )
+            result["_e_final_score"] += result[rank_column] * weight
+        result["_e_final_score"] /= total_weight
+        ordered_columns = ["trade_date", "_e_final_score", *tie_columns]
+        ordered_ascending = [True, False, *tie_ascending]
+        return result.sort_values(
+            ordered_columns,
+            ascending=ordered_ascending,
+            na_position="last",
+        ).reset_index(drop=True)
+
+    if method != "lexicographic":
+        raise ValueError(f"E最终排序方法不支持：{method}")
     ordered_columns: list[str] = []
     ordered_ascending: list[bool] = []
     for column, direction in [
