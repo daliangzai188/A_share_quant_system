@@ -252,7 +252,6 @@ class PaperCandidateGenerator:
         return pd.DataFrame(rows)
 
     def build_candidate_row(self, row: object, signal_date: str, planned_action: str) -> dict[str, Any]:
-        matched_c_profile_ids = str(getattr(row, "matched_c_profile_ids", "") or "")
         result: dict[str, Any] = {
             "signal_date": signal_date,
             "candidate_rank": int(row.candidate_rank),
@@ -264,11 +263,7 @@ class PaperCandidateGenerator:
             "planned_position_pct": float(self.config.get("position", {}).get("target_position_pct", 0.825))
             if planned_action == self.paper_config.get("planned_action_for_selected", "PLAN_BUY_T1_OPEN")
             else 0.0,
-            "selection_reason": (
-                f"C因子OR命中:{matched_c_profile_ids}"
-                if matched_c_profile_ids else self.conditions_text()
-            ),
-            "matched_c_profile_ids": matched_c_profile_ids,
+            "selection_reason": self.conditions_text(),
             "sort_rule": self.config.get("ranking", {}).get("sort_rule", ""),
             "exit_rule": self.config.get("exit_rule", {}).get("rule_name", ""),
             "risk_flags": self.build_risk_flags(row),

@@ -42,10 +42,9 @@ from src.market_rules import (  # noqa: E402
     price_limit_pct,
 )
 from src.utils.config import load_json_config  # noqa: E402
-from src.strategy_c_factor_rules import FACTOR_UNION_MODE as C_FACTOR_UNION_MODE  # noqa: E402
 from scripts.run_paper_ab_filtered_daily_ops import (  # noqa: E402
-    build_c_factor_filtered_pool,
     condition_strategy_config,
+    configured_c_conditions,
     reject_strategy_risk_mask,
 )
 import scripts.certify_current_executable_portfolio as cert  # noqa: E402
@@ -250,12 +249,11 @@ def main() -> None:
         return g
 
     ga = make(None, "A")                                  # A用顶层conditions
+    gc = make(configured_c_conditions(cfg), "C")
     allc = ga.load_all_candidates()
 
     fa = ga.apply_strategy_filters(allc)
-    _, gc, fc, c_release = build_c_factor_filtered_pool(
-        STRAT, cfg, allc, include_match_ids=False
-    )
+    fc = gc.apply_strategy_filters(allc)
     win = (str(cert.load_sources().baseline["date"].min()), str(cert.load_sources().baseline["date"].max()))
     print("窗口", win)
     fa = fa[(fa.trade_date >= win[0]) & (fa.trade_date <= win[1])]
@@ -277,8 +275,6 @@ def main() -> None:
                 leg, pick = "A", r.iloc[0]
         if pick is None and d in c_by:
             r = gc.rank_candidates(c_by[d].copy()).reset_index(drop=True)
-            if str(c_release["strategy_mode"]) == C_FACTOR_UNION_MODE:
-                r = r.head(1).copy()
             try:
                 m = reject_strategy_risk_mask(r, cfg, "c_strategy")
                 r = r[~pd.Series(m.values, index=r.index)]

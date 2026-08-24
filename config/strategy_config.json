@@ -333,10 +333,9 @@
     },
     "c_strategy": {
       "enabled": true,
-      "factor_release_path": "config/strategy_c_factor_release.json",
       "only_when_a_no_candidate": true,
       "only_when_a_and_b_no_candidate": false,
-      "description": "C备用龙头战法。正式模式由strategy_c_factor_release.json控制：LEGACY读取本段旧AND条件，FACTOR_UNION读取多个达标if分支并按OR合并；只在A严格策略无候选且没有持仓占用时启用。",
+      "description": "C备用龙头战法条件。B停止新增开仓后，只在A严格策略无候选且没有持仓占用时启用。",
       "conditions": [
         {
           "column": "market_chain_count_bucket",
@@ -513,11 +512,10 @@
     },
     "C策略": {
       "规则段": "paper_ab_filtered_strategy.c_strategy",
-      "正式模式": "config/strategy_c_factor_release.json；LEGACY读取旧AND条件，FACTOR_UNION读取全部达标if分支OR并集",
       "入选条件": "market_chain_count_bucket=15_30；segment_limit_up_count_bucket=40_80",
       "退出": "T+3收盘（fixed_hold3_close，全系统唯一持有2个交易日）",
       "触发前提": "only_when_a_no_candidate=true，仅在A无候选时补位",
-      "加载方": "scripts/run_paper_ab_filtered_daily_ops.py 的 build_c_factor_filtered_pool()"
+      "加载方": "scripts/run_paper_ab_filtered_daily_ops.py 的 configured_c_conditions()"
     },
     "⚠️易错点": "A要求market_chain_count_bucket=8_15、C要求15_30，两者互斥。C不读candidate_filters，改那一段不会影响C。2026-08-05核对实盘选股时曾因此误判。",
     "C回测校验": "2024-06-30至2026-06-30严格as-of口径：C独立单账户35笔，82.5%仓位机械复利3.110831倍，平均账户收益+3.7450%，最大回撤-22.0803%；未做占仓去重的候选池为46笔、2.424303倍，仅作诊断。C未通过本轮双复利门槛，规则保持不变。"

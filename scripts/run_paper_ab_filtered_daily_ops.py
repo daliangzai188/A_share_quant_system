@@ -30,12 +30,6 @@ from scripts.run_paper_ab_filtered_observation_window import (
 from src.paper_candidate_generator import PaperCandidateGenerator
 from src.paper_daily_flow import PaperDailyFlowRunner
 from src.trade_replay import ConservativeTradeReplay, ReplayRule
-from src.strategy_c_factor_rules import (
-    FACTOR_UNION_MODE as C_FACTOR_UNION_MODE,
-    LEGACY_MODE as C_LEGACY_MODE,
-    apply_profile_union as apply_c_profile_union,
-    load_factor_release as load_c_factor_release,
-)
 from src.utils.config import load_json_config, mkdir_p
 from src.utils.logger import setup_logger
 
@@ -477,56 +471,6 @@ def configured_c_conditions(config: dict[str, Any]) -> list[dict[str, str]]:
     return conditions
 
 
-def configured_c_factor_release(config: dict[str, Any]) -> dict[str, Any]:
-    """读取C正式发布；文件缺失或格式漂移时fail-closed。"""
-
-    c_config = config.get("paper_ab_filtered_strategy", {}).get("c_strategy", {})
-    configured = str(
-        c_config.get("factor_release_path", "config/strategy_c_factor_release.json")
-    )
-    path = resolve_path(configured)
-    return load_c_factor_release(path)
-
-
-def build_c_factor_filtered_pool(
-    strategy_config_path: str | Path,
-    config: dict[str, Any],
-    all_candidates: pd.DataFrame,
-    *,
-    include_match_ids: bool = True,
-) -> tuple[list[dict[str, str]], PaperCandidateGenerator, pd.DataFrame, dict[str, Any]]:
-    """按C正式模式生成候选池；研究、严格回放和每日流水线共用。"""
-
-    release = configured_c_factor_release(config)
-    mode = str(release["strategy_mode"])
-    if mode == C_LEGACY_MODE:
-        conditions = configured_c_conditions(config)
-        selected_config = condition_strategy_config(
-            config, conditions, "backup_strategy_c_current"
-        )
-        display_conditions = conditions
-    elif mode == C_FACTOR_UNION_MODE:
-        selected_config = condition_strategy_config(
-            config, [], "strategy_c_factor_union_current"
-        )
-        display_conditions = [
-            {
-                "column": "factor_union_release",
-                "value": str(release["release_id"]),
-            }
-        ]
-    else:  # load_c_factor_release正常情况下已拦截；保留防御性分支。
-        raise RuntimeError(f"不支持的C正式模式: {mode}")
-
-    generator = build_generator(strategy_config_path, selected_config)
-    filtered = generator.apply_strategy_filters(all_candidates)
-    if mode == C_FACTOR_UNION_MODE:
-        filtered = apply_c_profile_union(
-            filtered, release["profiles"], include_match_ids=include_match_ids
-        )
-    return display_conditions, generator, filtered, release
-
-
 def build_c_shadow_candidates(
     strategy_config_path: str | Path,
     config: dict[str, Any],
@@ -542,11 +486,12 @@ def build_c_shadow_candidates(
     ``selected/planned_orders`` 仍由调用方原有的 ``A优先`` 分支决定。
     """
 
-    conditions, c_generator, c_filtered, _release = build_c_factor_filtered_pool(
-        strategy_config_path, config, all_candidates
-    )
+    conditions = configured_c_conditions(config)
     if not conditions:
         return conditions, pd.DataFrame(), None, pd.DataFrame()
+    c_config = condition_strategy_config(config, conditions, "backup_strategy_c_current")
+    c_generator = build_generator(strategy_config_path, c_config)
+    c_filtered = c_generator.apply_strategy_filters(all_candidates)
     candidates = apply_and_rank(c_generator, c_filtered, signal_date, top_n=top_n)
     picked = selected_candidate(candidates, selected_action)
     rejected = pd.DataFrame()
