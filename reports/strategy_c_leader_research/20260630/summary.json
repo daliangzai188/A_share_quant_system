@@ -1,0 +1,366 @@
+{
+  "schema_version": 1,
+  "protocol": "STRICT_DISCOVERY",
+  "strategy_concept": "C_STRONG_ENVIRONMENT_X_LEADER_ARCHETYPE",
+  "window": {
+    "start": "20240630",
+    "end": "20260630"
+  },
+  "parameters": {
+    "min_trades": 20,
+    "min_refinement_trades": 15,
+    "top_rank_refine": 40,
+    "top_union_profiles": 24,
+    "top_exit_candidates": 20
+  },
+  "strict_source_audit_passed": true,
+  "d_event_audit": {
+    "path": "reports/strategy_d_reseal_combinations/all_reseal_signal_events.csv",
+    "sha256": "aed351d5836feafbcc89122f584d63b81326feb9fb7b827bd9bb12baccdf6963",
+    "available_start": "20240701",
+    "available_end": "20260630",
+    "window_event_count": 33821,
+    "window_stock_day_count": 12639,
+    "window_trade_day_count": 484,
+    "duplicate_event_id_count": 0
+  },
+  "mother_pool_audit": {
+    "all_reliable_candidate_count": 73671,
+    "window_rows_before_a_gate": 23094,
+    "a_blocked_signal_day_count": 69,
+    "mother_pool_row_count": 20351,
+    "mother_pool_signal_day_count": 415,
+    "risk_rejected_row_count": 1124
+  },
+  "formal_c_identity": {
+    "rebuilt_candidate_days": 50,
+    "formal_candidate_days": 50,
+    "same_stock_and_status_days": 50,
+    "different_days": 0,
+    "passed": true
+  },
+  "incumbent": {
+    "c": {
+      "trade_count": 35,
+      "win_rate": 0.5714285714285714,
+      "avg_account_return": 0.03744983562750105,
+      "median_account_return": 0.008314087929306298,
+      "equity_multiple": 3.1108307989904436,
+      "max_drawdown": -0.22080340403677012,
+      "max_profit": 0.23327959380397686,
+      "max_loss": -0.14417251000998996,
+      "profit_loss_ratio": 2.168651564015697,
+      "max_consecutive_losses": 4,
+      "win_rate_wilson_95_lower": 0.4085741114397492,
+      "win_rate_wilson_95_upper": 0.7201543182281931,
+      "avg_return_bootstrap_95_lower": 0.006037977440161331,
+      "avg_return_bootstrap_95_upper": 0.07027575658876911,
+      "compound_standard_id": "A_SYSTEM_MECHANICAL_COMPOUND_V1",
+      "leg_counts": {
+        "C": 35
+      }
+    },
+    "acde": {
+      "trade_count": 129,
+      "win_rate": 0.6821705426356589,
+      "avg_account_return": 0.05338158777858806,
+      "median_account_return": 0.03734707754276177,
+      "equity_multiple": 486.3661434308374,
+      "max_drawdown": -0.22970534744710858,
+      "max_profit": 0.4892913885103991,
+      "max_loss": -0.14417251000998996,
+      "profit_loss_ratio": 2.3663948756157485,
+      "max_consecutive_losses": 4,
+      "win_rate_wilson_95_lower": 0.5975458593064132,
+      "win_rate_wilson_95_upper": 0.7562593489263519,
+      "avg_return_bootstrap_95_lower": 0.03690898419239952,
+      "avg_return_bootstrap_95_upper": 0.0705826823287546,
+      "compound_standard_id": "A_SYSTEM_MECHANICAL_COMPOUND_V1",
+      "leg_counts": {
+        "A": 47,
+        "C": 21,
+        "D": 17,
+        "E": 44
+      }
+    }
+  },
+  "search_audit": {
+    "semantic_factor_set_count": 740,
+    "observed_value_group_count": 71431,
+    "support_passed_profile_count": 10847,
+    "current_refinement_factor_set_count": 300,
+    "current_refinement_observed_group_count": 4947,
+    "current_refinement_support_passed_count": 1693,
+    "exact_candidate_count": 77,
+    "small_union_count": 85,
+    "exit_variant_count": 33,
+    "dual_gate_count": 12,
+    "pure_semantic_dual_gate_count": 0,
+    "mixed_refinement_dual_gate_count": 12
+  },
+  "best_candidate": {
+    "candidate_id": "UNION2:CLA_13725468e1a7+CLA_d9b5bbdcead4|current_profit_source_turnover|H3",
+    "candidate_type": "two_profile_union",
+    "profile_ids": "CLA_13725468e1a7;CLA_d9b5bbdcead4",
+    "conditions_json": "[{\"board_type\": \"multi_open\", \"first_time_detail_bucket\": \"1100_1330\", \"market_chain_count_bucket\": \"15_30\", \"segment_limit_up_count_bucket\": \"40_80\"}, {\"fd_ratio_bucket\": \"0_1pct_0_3pct\", \"limit_up_count_bucket\": \"50_80\", \"market_leader_rank_bucket\": \"rank_4_10\"}]",
+    "rank_rule": "current_profit_source_turnover",
+    "hold_days": 3,
+    "selection_signature": "6029f56c01958c19454631b48b690044d4264150",
+    "c_trade_count": 55,
+    "c_win_rate": 0.7636363636363637,
+    "c_avg_account_return": 0.06227047920938943,
+    "c_median_account_return": 0.05859513470730027,
+    "c_equity_multiple": 23.617616094205008,
+    "c_max_drawdown": -0.06571254302140761,
+    "c_max_profit": 0.29736612594436845,
+    "c_max_loss": -0.0582604445984784,
+    "c_profit_loss_ratio": 2.4965512807278243,
+    "c_max_consecutive_losses": 2,
+    "c_win_rate_wilson_95_lower": 0.6365163381083228,
+    "c_win_rate_wilson_95_upper": 0.8563334413026682,
+    "c_avg_return_bootstrap_95_lower": 0.041142669909432966,
+    "c_avg_return_bootstrap_95_upper": 0.08432643186415213,
+    "c_compound_standard_id": "A_SYSTEM_MECHANICAL_COMPOUND_V1",
+    "acde_trade_count": 134,
+    "acde_win_rate": 0.7014925373134329,
+    "acde_avg_account_return": 0.05634197911651343,
+    "acde_median_account_return": 0.04102415458421389,
+    "acde_equity_multiple": 921.3365015462819,
+    "acde_max_drawdown": -0.15399452246695433,
+    "acde_max_profit": 0.4892913885103991,
+    "acde_max_loss": -0.11849477438811166,
+    "acde_profit_loss_ratio": 2.4873592381069503,
+    "acde_max_consecutive_losses": 5,
+    "acde_win_rate_wilson_95_lower": 0.6192792073665024,
+    "acde_win_rate_wilson_95_upper": 0.7724752071761053,
+    "acde_avg_return_bootstrap_95_lower": 0.040333319207045096,
+    "acde_avg_return_bootstrap_95_upper": 0.07272071559902371,
+    "acde_compound_standard_id": "A_SYSTEM_MECHANICAL_COMPOUND_V1",
+    "acde_leg_counts": "{\"A\": 42, \"C\": 30, \"D\": 15, \"E\": 47}",
+    "c_gate": true,
+    "acde_gate": true,
+    "dual_gate": true,
+    "profile_families": "[\"current_c_core_refinement\", \"strong_environment_x_leader\"]"
+  },
+  "best_near_miss": {
+    "candidate_id": "UNION2:CLA_13725468e1a7+CLA_d9b5bbdcead4|current_profit_source_turnover|H3",
+    "candidate_type": "two_profile_union",
+    "profile_ids": "CLA_13725468e1a7;CLA_d9b5bbdcead4",
+    "conditions_json": "[{\"board_type\": \"multi_open\", \"first_time_detail_bucket\": \"1100_1330\", \"market_chain_count_bucket\": \"15_30\", \"segment_limit_up_count_bucket\": \"40_80\"}, {\"fd_ratio_bucket\": \"0_1pct_0_3pct\", \"limit_up_count_bucket\": \"50_80\", \"market_leader_rank_bucket\": \"rank_4_10\"}]",
+    "rank_rule": "current_profit_source_turnover",
+    "hold_days": 3,
+    "selection_signature": "6029f56c01958c19454631b48b690044d4264150",
+    "c_trade_count": 55,
+    "c_win_rate": 0.7636363636363637,
+    "c_avg_account_return": 0.06227047920938943,
+    "c_median_account_return": 0.05859513470730027,
+    "c_equity_multiple": 23.617616094205008,
+    "c_max_drawdown": -0.06571254302140761,
+    "c_max_profit": 0.29736612594436845,
+    "c_max_loss": -0.0582604445984784,
+    "c_profit_loss_ratio": 2.4965512807278243,
+    "c_max_consecutive_losses": 2,
+    "c_win_rate_wilson_95_lower": 0.6365163381083228,
+    "c_win_rate_wilson_95_upper": 0.8563334413026682,
+    "c_avg_return_bootstrap_95_lower": 0.041142669909432966,
+    "c_avg_return_bootstrap_95_upper": 0.08432643186415213,
+    "c_compound_standard_id": "A_SYSTEM_MECHANICAL_COMPOUND_V1",
+    "acde_trade_count": 134,
+    "acde_win_rate": 0.7014925373134329,
+    "acde_avg_account_return": 0.05634197911651343,
+    "acde_median_account_return": 0.04102415458421389,
+    "acde_equity_multiple": 921.3365015462819,
+    "acde_max_drawdown": -0.15399452246695433,
+    "acde_max_profit": 0.4892913885103991,
+    "acde_max_loss": -0.11849477438811166,
+    "acde_profit_loss_ratio": 2.4873592381069503,
+    "acde_max_consecutive_losses": 5,
+    "acde_win_rate_wilson_95_lower": 0.6192792073665024,
+    "acde_win_rate_wilson_95_upper": 0.7724752071761053,
+    "acde_avg_return_bootstrap_95_lower": 0.040333319207045096,
+    "acde_avg_return_bootstrap_95_upper": 0.07272071559902371,
+    "acde_compound_standard_id": "A_SYSTEM_MECHANICAL_COMPOUND_V1",
+    "acde_leg_counts": "{\"A\": 42, \"C\": 30, \"D\": 15, \"E\": 47}",
+    "c_gate": true,
+    "acde_gate": true,
+    "dual_gate": true,
+    "profile_families": "[\"current_c_core_refinement\", \"strong_environment_x_leader\"]"
+  },
+  "prior_validation": {
+    "start": "20231228",
+    "end": "20240629",
+    "influenced_selection": false,
+    "metrics": {
+      "trade_count": 5,
+      "win_rate": 0.4,
+      "avg_account_return": 0.0010720942330673705,
+      "median_account_return": -0.005915263367729706,
+      "equity_multiple": 0.9959081817563402,
+      "max_drawdown": -0.1029266982129109,
+      "max_profit": 0.08972719595288806,
+      "max_loss": -0.09758869769375351,
+      "profit_loss_ratio": 1.569619503336893,
+      "max_consecutive_losses": 2,
+      "win_rate_wilson_95_lower": 0.11762077423264783,
+      "win_rate_wilson_95_upper": 0.769275718723987,
+      "avg_return_bootstrap_95_lower": -0.054725771361465704,
+      "avg_return_bootstrap_95_upper": 0.052264017223559736,
+      "compound_standard_id": "A_SYSTEM_MECHANICAL_COMPOUND_V1",
+      "leg_counts": {
+        "C": 5
+      }
+    }
+  },
+  "best_half_year_segments": [
+    {
+      "start": "20240630",
+      "end": "20241231",
+      "trade_count": 11,
+      "win_rate": 0.7272727272727273,
+      "avg_account_return": 0.05297340164514393,
+      "median_account_return": 0.055132321538681785,
+      "equity_multiple": 1.720621517076532,
+      "max_drawdown": -0.05775109007303647,
+      "max_profit": 0.1774438434065936,
+      "max_loss": -0.05775109007303647,
+      "profit_loss_ratio": 2.2529309521049226,
+      "max_consecutive_losses": 1,
+      "win_rate_wilson_95_lower": 0.43435469882387084,
+      "win_rate_wilson_95_upper": 0.902539407099751,
+      "avg_return_bootstrap_95_lower": 0.010910541650051307,
+      "avg_return_bootstrap_95_upper": 0.09501078720569146,
+      "compound_standard_id": "A_SYSTEM_MECHANICAL_COMPOUND_V1",
+      "leg_counts": {
+        "C": 11
+      }
+    },
+    {
+      "start": "20250101",
+      "end": "20250630",
+      "trade_count": 14,
+      "win_rate": 0.7142857142857143,
+      "avg_account_return": 0.050705428338415855,
+      "median_account_return": 0.07101234597222099,
+      "equity_multiple": 1.9473039844688569,
+      "max_drawdown": -0.05826044459847857,
+      "max_profit": 0.14037045596497266,
+      "max_loss": -0.0582604445984784,
+      "profit_loss_ratio": 2.6516714433520656,
+      "max_consecutive_losses": 1,
+      "win_rate_wilson_95_lower": 0.4535091567010681,
+      "win_rate_wilson_95_upper": 0.8827862135542308,
+      "avg_return_bootstrap_95_lower": 0.01704526958437473,
+      "avg_return_bootstrap_95_upper": 0.08353984431968918,
+      "compound_standard_id": "A_SYSTEM_MECHANICAL_COMPOUND_V1",
+      "leg_counts": {
+        "C": 14
+      }
+    },
+    {
+      "start": "20250701",
+      "end": "20251231",
+      "trade_count": 10,
+      "win_rate": 0.9,
+      "avg_account_return": 0.1097666586519825,
+      "median_account_return": 0.0771751189360263,
+      "equity_multiple": 2.708869095968055,
+      "max_drawdown": -0.05510910990868623,
+      "max_profit": 0.29736612594436845,
+      "max_loss": -0.055109109908686185,
+      "profit_loss_ratio": 2.3242289469797464,
+      "max_consecutive_losses": 1,
+      "win_rate_wilson_95_lower": 0.5958499732047615,
+      "win_rate_wilson_95_upper": 0.9821237869049271,
+      "avg_return_bootstrap_95_lower": 0.045407125997889305,
+      "avg_return_bootstrap_95_upper": 0.17665577364612292,
+      "compound_standard_id": "A_SYSTEM_MECHANICAL_COMPOUND_V1",
+      "leg_counts": {
+        "C": 10
+      }
+    },
+    {
+      "start": "20260101",
+      "end": "20260630",
+      "trade_count": 20,
+      "win_rate": 0.75,
+      "avg_account_return": 0.05173131775810944,
+      "median_account_return": 0.03430412305750597,
+      "equity_multiple": 2.6021296909698908,
+      "max_drawdown": -0.05023690078403542,
+      "max_profit": 0.2201462779442635,
+      "max_loss": -0.04762024569823918,
+      "profit_loss_ratio": 2.1762284762716075,
+      "max_consecutive_losses": 2,
+      "win_rate_wilson_95_lower": 0.531299122381256,
+      "win_rate_wilson_95_upper": 0.8881382985923343,
+      "avg_return_bootstrap_95_lower": 0.01854038809101588,
+      "avg_return_bootstrap_95_upper": 0.08674601327548148,
+      "compound_standard_id": "A_SYSTEM_MECHANICAL_COMPOUND_V1",
+      "leg_counts": {
+        "C": 20
+      }
+    }
+  ],
+  "best_branch_audit": {
+    "union_candidate_day_count": 72,
+    "union_status_counts": {
+      "OK": 70,
+      "LIMIT_UP_UNBUYABLE": 2
+    },
+    "branch_overlap_candidate_day_count": 1,
+    "branches": [
+      {
+        "profile_id": "CLA_13725468e1a7",
+        "research_family": "current_c_core_refinement",
+        "conditions": {
+          "market_chain_count_bucket": "15_30",
+          "segment_limit_up_count_bucket": "40_80",
+          "first_time_detail_bucket": "1100_1330",
+          "board_type": "multi_open"
+        },
+        "candidate_day_count": 44,
+        "status_counts": {
+          "OK": 43,
+          "LIMIT_UP_UNBUYABLE": 1
+        },
+        "individual_c_trade_count": 35,
+        "individual_c_win_rate": 0.7142857142857143,
+        "individual_c_avg_account_return": 0.05133580369332741,
+        "individual_c_equity_multiple": 5.202805544956778,
+        "individual_acde_equity_multiple": 396.86581550893516,
+        "individual_dual_gate": false
+      },
+      {
+        "profile_id": "CLA_d9b5bbdcead4",
+        "research_family": "strong_environment_x_leader",
+        "conditions": {
+          "fd_ratio_bucket": "0_1pct_0_3pct",
+          "limit_up_count_bucket": "50_80",
+          "market_leader_rank_bucket": "rank_4_10"
+        },
+        "candidate_day_count": 29,
+        "status_counts": {
+          "OK": 28,
+          "LIMIT_UP_UNBUYABLE": 1
+        },
+        "individual_c_trade_count": 24,
+        "individual_c_win_rate": 0.8333333333333334,
+        "individual_c_avg_account_return": 0.08454400967101339,
+        "individual_c_equity_multiple": 6.3724508776013025,
+        "individual_acde_equity_multiple": 285.2111216130128,
+        "individual_dual_gate": false
+      }
+    ]
+  },
+  "formal_strategy_modified": false,
+  "decision": "DUAL_GATE_CANDIDATE_FOUND_RESEARCH_ONLY",
+  "limitations": [
+    "候选在同一24个月内发现，存在多重比较和过拟合风险。",
+    "更早6个月只做旁证，不影响24个月决策。",
+    "纯强势环境×明确龙头候选没有通过双复利闸门。",
+    "最佳并集的两条分支单独替换C均未提高ACDE，提升依赖组合占仓路径交互。",
+    "更早6个月只有5笔且复利略低于1倍，旁证不支持宣称策略已经样本外稳定。",
+    "未来6个月才是真正前向样本外。",
+    "机械复利不代表未来收益或资金容量。"
+  ]
+}

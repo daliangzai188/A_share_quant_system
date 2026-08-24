@@ -1,0 +1,57 @@
+C强势龙头组合研究结果
+=====================
+
+【结论】
+找到双复利通过候选：UNION2:CLA_13725468e1a7+CLA_d9b5bbdcead4|current_profit_source_turnover|H3
+C复利：3.1108307990倍 → 23.6176160942倍
+ACDE复利：486.3661434308倍 → 921.3365015463倍
+本脚本只做研究，尚未修改正式C。
+
+一、锁定口径
+
+决策窗口：20240630～20260630
+更早6个月旁证：20231228～20240629（不参与选优）
+严格as-of、82.5%仓位、费用、滑点、涨跌停、T+1及D>A>E>C顺序不变。
+研究分两族：纯强势环境×明确龙头；以及固定现有C核心后增加1～2个确认因子的保守精修。
+两族分别标记，不把现有C精修冒充为显式龙头条件。
+
+二、当前正式锚点
+
+C：35笔，胜率57.14%，平均3.74%，复利3.1108307990倍，最大回撤-22.08%。
+ACDE：129笔，复利486.3661434308倍，最大回撤-22.97%。
+正式C语义重建一致性：{"different_days": 0, "formal_candidate_days": 50, "passed": true, "rebuilt_candidate_days": 50, "same_stock_and_status_days": 50}
+
+三、搜索范围
+
+语义因子列组合：740组。
+实际观察取值组合：71,431条。
+满足最低20笔：10,847条。
+当前C核心精修（最低15笔）：1,693条。
+完成严格C/ACDE复核候选：77条。
+完成两分支小并集：85条。
+完成持有期精修：33条。
+双复利同时通过：12条。
+其中纯强势×明确龙头通过：0条；混合现有C精修分支通过：12条。
+
+四、最佳候选
+
+候选编号：UNION2:CLA_13725468e1a7+CLA_d9b5bbdcead4|current_profit_source_turnover|H3
+候选类型：two_profile_union
+条件：[{"board_type": "multi_open", "first_time_detail_bucket": "1100_1330", "market_chain_count_bucket": "15_30", "segment_limit_up_count_bucket": "40_80"}, {"fd_ratio_bucket": "0_1pct_0_3pct", "limit_up_count_bucket": "50_80", "market_leader_rank_bucket": "rank_4_10"}]
+排序：current_profit_source_turnover；持有参数：H3
+C：55笔，胜率76.36%，平均6.23%，中位数5.86%，复利23.6176160942倍，最大回撤-6.57%。
+ACDE：134笔，胜率70.15%，平均5.63%，复利921.3365015463倍，最大回撤-15.40%。
+最佳候选分支审计：{"branch_overlap_candidate_day_count": 1, "branches": [{"candidate_day_count": 44, "conditions": {"board_type": "multi_open", "first_time_detail_bucket": "1100_1330", "market_chain_count_bucket": "15_30", "segment_limit_up_count_bucket": "40_80"}, "individual_acde_equity_multiple": 396.86581550893516, "individual_c_avg_account_return": 0.05133580369332741, "individual_c_equity_multiple": 5.202805544956778, "individual_c_trade_count": 35, "individual_c_win_rate": 0.7142857142857143, "individual_dual_gate": false, "profile_id": "CLA_13725468e1a7", "research_family": "current_c_core_refinement", "status_counts": {"LIMIT_UP_UNBUYABLE": 1, "OK": 43}}, {"candidate_day_count": 29, "conditions": {"fd_ratio_bucket": "0_1pct_0_3pct", "limit_up_count_bucket": "50_80", "market_leader_rank_bucket": "rank_4_10"}, "individual_acde_equity_multiple": 285.2111216130128, "individual_c_avg_account_return": 0.08454400967101339, "individual_c_equity_multiple": 6.3724508776013025, "individual_c_trade_count": 24, "individual_c_win_rate": 0.8333333333333334, "individual_dual_gate": false, "profile_id": "CLA_d9b5bbdcead4", "research_family": "strong_environment_x_leader", "status_counts": {"LIMIT_UP_UNBUYABLE": 1, "OK": 28}}], "union_candidate_day_count": 72, "union_status_counts": {"LIMIT_UP_UNBUYABLE": 2, "OK": 70}}
+更早6个月C旁证：{"avg_account_return": 0.0010720942330673705, "avg_return_bootstrap_95_lower": -0.054725771361465704, "avg_return_bootstrap_95_upper": 0.052264017223559736, "compound_standard_id": "A_SYSTEM_MECHANICAL_COMPOUND_V1", "equity_multiple": 0.9959081817563402, "leg_counts": {"C": 5}, "max_consecutive_losses": 2, "max_drawdown": -0.1029266982129109, "max_loss": -0.09758869769375351, "max_profit": 0.08972719595288806, "median_account_return": -0.005915263367729706, "profit_loss_ratio": 1.569619503336893, "trade_count": 5, "win_rate": 0.4, "win_rate_wilson_95_lower": 0.11762077423264783, "win_rate_wilson_95_upper": 0.769275718723987}
+决策窗口分半年表现：[{"start": "20240630", "end": "20241231", "trade_count": 11, "win_rate": 0.7272727272727273, "avg_account_return": 0.05297340164514393, "median_account_return": 0.055132321538681785, "equity_multiple": 1.720621517076532, "max_drawdown": -0.05775109007303647, "max_profit": 0.1774438434065936, "max_loss": -0.05775109007303647, "profit_loss_ratio": 2.2529309521049226, "max_consecutive_losses": 1, "win_rate_wilson_95_lower": 0.43435469882387084, "win_rate_wilson_95_upper": 0.902539407099751, "avg_return_bootstrap_95_lower": 0.010910541650051307, "avg_return_bootstrap_95_upper": 0.09501078720569146, "compound_standard_id": "A_SYSTEM_MECHANICAL_COMPOUND_V1", "leg_counts": {"C": 11}}, {"start": "20250101", "end": "20250630", "trade_count": 14, "win_rate": 0.7142857142857143, "avg_account_return": 0.050705428338415855, "median_account_return": 0.07101234597222099, "equity_multiple": 1.9473039844688569, "max_drawdown": -0.05826044459847857, "max_profit": 0.14037045596497266, "max_loss": -0.0582604445984784, "profit_loss_ratio": 2.6516714433520656, "max_consecutive_losses": 1, "win_rate_wilson_95_lower": 0.4535091567010681, "win_rate_wilson_95_upper": 0.8827862135542308, "avg_return_bootstrap_95_lower": 0.01704526958437473, "avg_return_bootstrap_95_upper": 0.08353984431968918, "compound_standard_id": "A_SYSTEM_MECHANICAL_COMPOUND_V1", "leg_counts": {"C": 14}}, {"start": "20250701", "end": "20251231", "trade_count": 10, "win_rate": 0.9, "avg_account_return": 0.1097666586519825, "median_account_return": 0.0771751189360263, "equity_multiple": 2.708869095968055, "max_drawdown": -0.05510910990868623, "max_profit": 0.29736612594436845, "max_loss": -0.055109109908686185, "profit_loss_ratio": 2.3242289469797464, "max_consecutive_losses": 1, "win_rate_wilson_95_lower": 0.5958499732047615, "win_rate_wilson_95_upper": 0.9821237869049271, "avg_return_bootstrap_95_lower": 0.045407125997889305, "avg_return_bootstrap_95_upper": 0.17665577364612292, "compound_standard_id": "A_SYSTEM_MECHANICAL_COMPOUND_V1", "leg_counts": {"C": 10}}, {"start": "20260101", "end": "20260630", "trade_count": 20, "win_rate": 0.75, "avg_account_return": 0.05173131775810944, "median_account_return": 0.03430412305750597, "equity_multiple": 2.6021296909698908, "max_drawdown": -0.05023690078403542, "max_profit": 0.2201462779442635, "max_loss": -0.04762024569823918, "profit_loss_ratio": 2.1762284762716075, "max_consecutive_losses": 2, "win_rate_wilson_95_lower": 0.531299122381256, "win_rate_wilson_95_upper": 0.8881382985923343, "avg_return_bootstrap_95_lower": 0.01854038809101588, "avg_return_bootstrap_95_upper": 0.08674601327548148, "compound_standard_id": "A_SYSTEM_MECHANICAL_COMPOUND_V1", "leg_counts": {"C": 20}}]
+
+五、风险说明
+
+1. 选优仍来自同一24个月历史窗口，属于STRICT_DISCOVERY，不是真正未来样本外。
+2. 更早6个月只披露，不参与候选选择；未来6个月才是发布后的前向账本。
+3. 小并集最多两条可解释分支，不允许把所有历史达标条件无差别OR。
+4. 本次12个双门通过项全部是“现有C精修+显式龙头”两分支并集；纯强势×明确龙头没有单独通过。
+5. 最佳两条分支单独替换C时均未提高ACDE，合并后的提升来自占仓路径交互，过拟合风险高于单条规则。
+6. 更早6个月只有5笔且复利略低于1倍，不能把两年窗口内的大幅提升当成已经样本外成立。
+7. 机械复利仅用于同口径相对比较，不代表未来收益或大资金容量。
+8. 即使双复利通过，本脚本也不会自动接入实盘；必须先人工审阅逐笔明细。
