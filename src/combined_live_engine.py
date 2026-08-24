@@ -97,11 +97,11 @@ class CombinedLiveDecision:
 
 
 class CombinedLiveEngine:
-    """D>A>E>C 唯一生产组合状态机（B、M、N均已移除）。
+    """A>E>C静态计划与D盘中策略全日互斥的生产状态机（B、M、N均已移除）。
 
     这个类只负责组合层面的顺序和阻断，不直接提交真实委托。
     当前总策略开关在 config/config.json 的 active_strategy_profile.mode：
-      1 = D>A>E>C 组合状态机
+      1 = D_A_E_C（兼容配置名；执行语义为持仓 > A/E/C候选计划 > D）
 
     当前只保留这一种模式，所有计划单仍经过 LiveOrderGateway 风控。
     """
@@ -715,27 +715,21 @@ class CombinedLiveEngine:
             if opened_leg is None:
                 decisions.append(CombinedLiveDecision(
                     action="ALLOW_D_INTRADAY_MONITOR", strategy_leg="D",
-                    reason="无持仓且A、E、C今日均无买入计划，允许启动D盘中监控；D本身仍需实时行情、成交概率和风控校验。",
+                    reason=(
+                        "无持仓、无A/E/C正式候选且今日无A/E/C开仓计划，允许启动D盘中监控；"
+                        "D本身仍需实时行情、成交概率和风控校验。"
+                    ),
                     source="combined_state_machine",
                 ))
             else:
                 _d_block_reason = {
-                    "A": "今日存在A买入计划，候选执行窗口内禁止D使用同一资金。",
-                    "E": "E今日开仓使用同一资金，E延迟执行窗口结束前禁止D入场。",
-                    "C": "C按腿序垫底开仓并使用同一资金，候选执行窗口内禁止D入场。",
+                    "A": "今日存在A正式候选/开仓计划；按全日互斥规则，D今日不启动、不扫描、不记录、不下单。",
+                    "E": "今日存在E正式候选/开仓计划；按全日互斥规则，D今日不启动、不扫描、不记录、不下单。",
+                    "C": "今日存在C正式候选/开仓计划；按全日互斥规则，D今日不启动、不扫描、不记录、不下单。",
                 }[opened_leg]
                 decisions.append(CombinedLiveDecision(
-                    action="BLOCK_D_INTRADAY_ENTRY", strategy_leg="D",
+                    action="BLOCK_D_INTRADAY_MONITOR", strategy_leg="D",
                     reason=_d_block_reason,
-                    source="combined_state_machine",
-                ))
-                decisions.append(CombinedLiveDecision(
-                    action="ALLOW_D_INTRADAY_TRACKING_ONLY", strategy_leg="D",
-                    reason=(
-                        f"今日{opened_leg}候选执行期间，D仍从09:30只读维护完整日内路径；"
-                        "不得下单。若该候选最终零成交且补仓窗口结束，daemon动态解除"
-                        "D入场门禁；若候选有任何成交则继续由串行单仓门禁阻断D。"
-                    ),
                     source="combined_state_machine",
                 ))
         # ── E 盘中状态显示（摘要用） ─────────────────────────────────────────
@@ -924,7 +918,7 @@ class CombinedLiveEngine:
         if not state.empty:
             active_mode = str(state.iloc[0].get("active_strategy_mode", "1"))
             active_name = str(state.iloc[0].get("active_strategy_name", "D_A_E_C"))
-        title = "D>A>E>C 组合实盘计划"
+        title = "A/E/C候选计划与D盘中全日互斥组合实盘计划"
         status_leg = "E"
         status_title = "策略 E 状态"
         status_rows = (

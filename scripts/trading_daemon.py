@@ -38,7 +38,6 @@ import sys
 import threading
 import time
 import uuid
-from contextlib import contextmanager
 from dataclasses import replace
 from decimal import Decimal, ROUND_CEILING, ROUND_HALF_UP
 from pathlib import Path
@@ -1833,7 +1832,6 @@ def _confirm_fill(
     *,
     timeout_sec: float | None = None,
     poll_sec: float | None = None,
-    qmt_priority_label: str = "",
 ) -> "OrderFill":
     """轮询确认委托成交情况。受理(accepted)不等于成交(filled)，此处确认真实成交股数与均价。
 
@@ -1875,7 +1873,7 @@ def _confirm_fill(
 
     while True:
         try:
-            with _qmt_access(qmt_priority_label):
+            with _qmt_lock:
                 adapter = _qmt_get(broker_cfg)
                 last_fill = adapter.get_order_fill(order_id)
         except Exception as e:
@@ -9255,7 +9253,7 @@ def _pov_execute_slice(
 
         # 账户、持仓和行情在同一把QMT短锁中读取，形成该片一致的资金快照；任一
         # 查询失败即fail-closed，本片不下单，绝不用过期可用余额冒险生成废单。
-        with _qmt_access(f"买入POV片{slice_no + 1}资金持仓行情快照"):
+        with _qmt_lock:
             adapter = _qmt_get(broker_cfg)
             account = adapter.query_account()
             broker_positions = adapter.query_positions()
@@ -9400,7 +9398,7 @@ def _pov_execute_slice(
             source_key=f"BUY_POV|{today_str}|{ts_code}|{slice_no + 1}",
             metadata={"execution_channel": "买入POV", "name": name_s},
         )
-        with _qmt_access(f"买入POV片{slice_no + 1}下单"):
+        with _qmt_lock:
             adapter = _qmt_get(broker_cfg)
             result = adapter.place_order(request)
         if not result.accepted:
@@ -9415,15 +9413,9 @@ def _pov_execute_slice(
             f"POV片{slice_no + 1}",
             timeout_sec=90,
             poll_sec=5,
-            qmt_priority_label=f"买入POV片{slice_no + 1}成交确认",
         )
         if fill.filled_qty < qty and not fill.is_terminal:
-            _try_cancel_order(
-                broker_cfg,
-                oid,
-                ts_code,
-                qmt_priority_label=f"买入POV片{slice_no + 1}撤单",
-            )
+            _try_cancel_order(broker_cfg, oid, ts_code)
             # 撤单成败以订单终态为准(2026-07-10口径),再确认一次拿最终成交数
             fill = _confirm_fill(
                 broker_cfg,
@@ -9432,7 +9424,6 @@ def _pov_execute_slice(
                 f"POV片{slice_no + 1}终态",
                 timeout_sec=20,
                 poll_sec=3,
-                qmt_priority_label=f"买入POV片{slice_no + 1}撤单终态确认",
             )
         fq = int(fill.filled_qty or 0)
         fp = float(fill.avg_price) if float(getattr(fill, "avg_price", 0) or 0) > 0 else last
@@ -9583,7 +9574,7 @@ def _pov_worker() -> None:
             return
         # POV线程支持断点恢复，不能假设一定经过当天09:20的计划门禁；恢复后先用
         # 券商真实持仓做一次串行单仓校验，防止旧状态文件在旧仓未清时继续买入。
-        with _qmt_access("买入POV启动持仓校验"):
+        with _qmt_lock:
             adapter = _qmt_get(broker_cfg)
             positions_live = adapter.query_positions()
         if _broker_has_preexisting_strategy_position(positions_live):
@@ -10104,9 +10095,8 @@ def job_morning() -> None:
     else:
         logger().info("组合状态机未允许E开仓，跳过。")
 
-    # ⑤ 策略D监控 —— 账户空仓即从09:30维护完整路径。其他腿候选只在其
-    # 执行/补仓窗口内阻断D的BUY，不再阻断只读扫描；若候选最终零成交，
-    # 动态门禁会在窗口结束后释放D，而无需从午后快照补造路径。
+    # ⑤ 策略D监控 —— 与A/E/C全日互斥。只有“无持仓、无非D正式候选、
+    # 无非D开仓计划”三项同时成立，D才从09:30启动扫描、记录和开仓。
     d_allowed, d_gate_reason = d_intraday_monitor_gate(decisions)
     if d_allowed:
         logger().info("D路径采集总门通过：%s", d_gate_reason)
@@ -10210,8 +10200,8 @@ def job_opening_buy(*, recovery_only: bool = False) -> None:
             _notify("buy_result", "⛔ D错过完整路径起点", reason, level="critical")
     elif (
         has_combined_action(decisions, "ALLOW_D_INTRADAY_MONITOR")
-        or has_combined_action(decisions, D_TRACKING_ONLY_ACTION)
         or bool(_d_blocking_buy_actions(decisions))
+        or has_combined_action(decisions, "BLOCK_D_INTRADAY_MONITOR")
     ):
         logger().error("09:30 D启动总门未通过：%s", d_gate_reason)
 
@@ -10247,13 +10237,12 @@ def job_opening_buy(*, recovery_only: bool = False) -> None:
         if open_action == "ALLOW_E_BUY":
             # E保留按竞价容量与开盘涨幅≤2%的专用延迟重试，不能混入普通POV。
             accepted_buy = False
-        elif now_beijing().time() >= D_CANDIDATE_DEFAULT_RELEASE_TIME:
-            # 调度器如果在09:35后才补跑09:30任务，不能一边把候选判为已过期
-            # 释放D，一边又从旧计划新建POV。先硬性关闭普通候选，再由D动态门
-            # 在确认零持仓/零pending/零POV后接管剩余时段。
+        elif now_beijing().time() >= OPEN_PLAN_DEFAULT_EXECUTION_CUTOFF:
+            # 调度器如果在09:35后才补跑09:30任务，不再从旧计划新建POV。
+            # 原候选虽不追买，但仍按全日互斥规则继续阻断D至当日结束。
             logger().warning(
                 "%s实际执行时已过普通候选09:35恢复宽限；不再新建买入POV，"
-                "不追买原候选。",
+                "不追买原候选；D今日保持关闭。",
                 action_label,
             )
         else:
@@ -10283,7 +10272,7 @@ def job_opening_buy(*, recovery_only: bool = False) -> None:
         else:
             logger().warning(
                 "09:30 %s开仓未提交成功/未成交；不追补其他静态候选。"
-                "D已独立维护完整路径，09:35确认无持仓、无待确认单、无POV后可动态解除入场门禁。",
+                "该候选仍按全日互斥规则阻断D，今日D不扫描也不开仓。",
                 open_action,
             )
 
@@ -10411,14 +10400,13 @@ D_INTRADAY_BLOCKING_BUY_ACTIONS = frozenset({
     "ALLOW_E_BUY",
 })
 
-# 普通开盘候选只允许在09:20竞价预挂、09:30确认以及09:30~09:35恢复宽限内
-# 新建执行；E有独立的13:30延迟截止。新增普通策略腿如果没有专用截止时间，
-# 默认继承09:35，避免“候选文件存在”整日占用D资金。
-D_CANDIDATE_DEFAULT_RELEASE_TIME = datetime.time(9, 35)
-D_CANDIDATE_RELEASE_TIME_BY_LEG: dict[str, datetime.time] = {
+# 普通开盘计划只允许在09:20竞价预挂、09:30确认以及09:30~09:35恢复宽限内
+# 新建执行；E有独立的13:30延迟截止。该时间只决定原候选是否还能执行，
+# 不再释放D：只要当日存在正式候选/开仓计划，D全日不启动。
+OPEN_PLAN_DEFAULT_EXECUTION_CUTOFF = datetime.time(9, 35)
+OPEN_PLAN_EXECUTION_CUTOFF_BY_LEG: dict[str, datetime.time] = {
     "E": datetime.time(13, 30),
 }
-D_TRACKING_ONLY_ACTION = "ALLOW_D_INTRADAY_TRACKING_ONLY"
 
 
 def _d_blocking_buy_actions(decisions) -> list[str]:
@@ -10465,73 +10453,49 @@ def _d_candidate_legs(decisions, blocking_actions: list[str]) -> list[str]:
 
 
 def d_intraday_monitor_gate(decisions) -> tuple[bool, str]:
-    """D路径采集总门：空仓时允许扫描；候选冲突只阻断入场，不阻断跟踪。"""
+    """D全活动总门：持仓、非D候选或非D开仓计划任一存在即全日关闭。"""
 
-    if has_open_local_position():
-        return False, "本地持仓账本仍有未平仓策略仓"
+    if has_position_bought_today() or has_open_local_position():
+        return False, "已有策略买入成交或未平仓持仓，D不启动、不扫描、不记录、不下单"
     if decisions is None or decisions.empty or "action" not in decisions.columns:
-        return False, "组合状态机决策为空，无法确认D跟踪权限"
+        return False, "组合状态机决策为空，无法确认D全活动权限"
     if has_combined_action(decisions, "PLAN_SELL_D_FIRST"):
         return False, "组合状态机仍要求先处理D持仓"
+    if _d_relay_pair_active_today():
+        return False, "D接力成对POV仍在执行/待恢复，D新监控关闭"
+    pending = load_pending_buys()
+    if pending:
+        return False, f"今日仍有{len(pending)}笔非D开仓买单待确认，D全活动关闭"
+    if _pov_active_today():
+        return False, "今日非D开仓POV仍在执行/待恢复，D全活动关闭"
 
     conflicting = _d_blocking_buy_actions(decisions)
     if conflicting:
         legs = _d_candidate_legs(decisions, conflicting)
-        return True, (
-            f"正式候选记录={','.join(legs) or '/'.join(conflicting)}；D从09:30维护完整路径，"
-            "实际入场由候选成交状态/待确认单/POV及补仓截止时间动态复核"
+        return False, (
+            f"今日存在非D正式候选/开仓计划={','.join(legs) or '/'.join(conflicting)}；"
+            "按全日互斥规则，D不启动、不扫描、不记录、不下单"
         )
+    if has_combined_action(decisions, "BLOCK_D_INTRADAY_MONITOR"):
+        reason = "组合状态机明确阻断D盘中活动"
+        if "reason" in decisions.columns:
+            blocked = decisions[
+                decisions["action"].astype(str).eq("BLOCK_D_INTRADAY_MONITOR")
+            ]
+            reasons = blocked["reason"].dropna().astype(str).str.strip()
+            reason_text = "；".join(value for value in reasons.tolist() if value)
+            if reason_text:
+                reason = reason_text
+        return False, reason
     if has_combined_action(decisions, "ALLOW_D_INTRADAY_MONITOR"):
-        return True, "账户空仓且全策略无正式开仓计划，D允许跟踪并入场"
-    if has_combined_action(decisions, D_TRACKING_ONLY_ACTION):
-        return True, "组合状态机明确允许D只读跟踪，入场由动态候选门禁复核"
-    return False, "组合状态机既未允许D入场，也未允许D只读跟踪"
+        return True, "无持仓、无非D正式候选且今日无非D开仓计划，D允许扫描、记录和入场"
+    return False, "组合状态机未明确授权D盘中活动"
 
 
 def d_intraday_entry_gate(decisions) -> tuple[bool, str]:
-    """D每轮BUY动态门禁：候选失败且执行窗口结束后释放，不限制路径扫描。"""
+    """D每轮BUY门禁与扫描总门完全同源，不再存在候选过期后的动态放行。"""
 
-    if has_position_bought_today() or has_open_local_position():
-        return False, "已有策略买入成交或未平仓持仓，串行单仓门禁生效"
-    if _d_relay_pair_active_today():
-        return False, "D接力成对POV仍在执行/待恢复"
-    pending = load_pending_buys()
-    if pending:
-        return False, f"仍有{len(pending)}笔候选买单待确认"
-    if _pov_active_today():
-        return False, "候选实际成交额POV仍在补仓窗口内"
-
-    conflicting = _d_blocking_buy_actions(decisions)
-    if not conflicting:
-        if has_combined_action(decisions, "ALLOW_D_INTRADAY_MONITOR"):
-            return True, "全策略无正式候选，D资金可用"
-        return False, "组合状态机未授权D入场"
-
-    legs = _d_candidate_legs(decisions, conflicting)
-    now = now_beijing()
-    if "E" in legs and _e_retry_running():
-        return False, "E候选延迟开仓线程仍在执行"
-    if set(legs) == {"E"}:
-        e_resolved, e_reason = _e_retry_resolved_today()
-        if e_resolved:
-            return True, f"E候选已明确零成交并结束补仓机会:{e_reason}"
-
-    release_times = [
-        D_CANDIDATE_RELEASE_TIME_BY_LEG.get(
-            leg, D_CANDIDATE_DEFAULT_RELEASE_TIME
-        )
-        for leg in (legs or [""])
-    ]
-    release_time = max(release_times)
-    if now.time() < release_time:
-        return False, (
-            f"候选{','.join(legs) or '/'.join(conflicting)}仍在执行/补仓窗口，"
-            f"最早释放时间{release_time.strftime('%H:%M')}"
-        )
-    return True, (
-        f"候选{','.join(legs) or '/'.join(conflicting)}零成交，且补仓窗口"
-        f"{release_time.strftime('%H:%M')}已结束；候选资金占用已释放"
-    )
+    return d_intraday_monitor_gate(decisions)
 
 
 def has_open_local_position() -> bool:
@@ -11104,11 +11068,9 @@ def _try_cancel_order(
     broker_cfg: dict,
     order_id: str,
     ts_code: str,
-    *,
-    qmt_priority_label: str = "",
 ) -> None:
     try:
-        with _qmt_access(qmt_priority_label):
+        with _qmt_lock:
             adapter = _qmt_get(broker_cfg)
             ok = adapter.cancel_order(order_id)
         logger().info("撤单 %s（%s）请求%s", ts_code, order_id, "已提交" if ok else "失败")
@@ -11117,11 +11079,7 @@ def _try_cancel_order(
 
 
 def blocks_d_for_opening_plan(decisions) -> bool:
-    """识别 D 入场是否只是被当日任意正式候选占用资金挡住。
-
-    候选存在时D仍可只读采集完整路径，但实际BUY必须等候选零成交且补仓窗口
-    结束；如果D是因为旧仓、行情时段或风控被挡住，本函数不负责放行。
-    """
+    """识别D是否因当日任意非D正式候选/开仓计划而全活动关闭。"""
     if decisions is None or decisions.empty or "action" not in decisions.columns:
         return False
     actions = decisions["action"].astype(str)
@@ -11236,6 +11194,20 @@ def job_strategy_d(decisions=None) -> None:
         if _strategy_d_monitor_running():
             logger().info("策略D监控已在运行，跳过重复启动。")
             return
+
+        gate_decisions = decisions
+        if gate_decisions is None:
+            cached = read_cached_combined_decisions()
+            gate_decisions = cached[0] if cached is not None else None
+        if gate_decisions is None:
+            logger().error("D监控缺少当日组合状态机决策，禁止启动，避免绕过全日互斥门禁。")
+            return
+
+        monitor_allowed, monitor_gate_reason = d_intraday_monitor_gate(gate_decisions)
+        if not monitor_allowed:
+            logger().info("D全活动总门未通过，监控线程不启动：%s", monitor_gate_reason)
+            return
+
         config = load_json_config(PROJECT_ROOT / "config" / "config.json")
         broker_config = config.get("broker", {})
         qmt_ready = (
@@ -11267,21 +11239,11 @@ def job_strategy_d(decisions=None) -> None:
         mkdir_p(signal_dir)
         signal_csv = signal_dir / f"intraday_signals_{today_str}.csv"
 
-        gate_decisions = decisions
-        if gate_decisions is None:
-            cached = read_cached_combined_decisions()
-            gate_decisions = cached[0] if cached is not None else None
-        if gate_decisions is None:
-            logger().error("D监控缺少当日组合状态机决策，禁止启动，避免绕过候选资金门禁。")
-            return
-
         def _entry_gate() -> tuple[bool, str]:
             return d_intraday_entry_gate(gate_decisions)
 
         def _tracking_gate() -> tuple[bool, str]:
-            if has_position_bought_today() or has_open_local_position():
-                return False, "其他策略候选已经成交并形成持仓，串行单仓结果已确定"
-            return True, "账户仍空仓，继续保存D完整路径以等待候选最终执行结果"
+            return d_intraday_monitor_gate(gate_decisions)
 
         def _record_d_position(payload: dict[str, Any]) -> None:
             _record_live_buy(
@@ -11734,13 +11696,13 @@ def _e_retry_running() -> bool:
 
 
 def _mark_e_retry_resolved(reason: str) -> None:
-    """记录E候选已明确零成交并结束补仓机会，供D动态入场门即时释放。"""
+    """记录E候选已明确零成交并结束补仓机会；当日D仍保持关闭。"""
 
     global _e_retry_resolved_date, _e_retry_resolution_reason
     _e_retry_resolved_date = today_beijing().strftime("%Y%m%d")
     _e_retry_resolution_reason = str(reason or "E延迟开仓已结束且零成交")
     logger().warning(
-        "E候选执行占用已释放：%s；D若有09:30起完整路径，可从下一轮按正式条件入场。",
+        "E候选延迟执行已结束：%s；原候选不追买，但按全日互斥规则D今日仍保持关闭。",
         _e_retry_resolution_reason,
     )
 
@@ -11947,15 +11909,13 @@ def _e_delayed_buy_loop(combined_orders_path, decisions) -> None:
 
     价格条件：当前价（或最新价）≤ 今日开盘价 × 1.02。
     午间11:30-13:00不提交委托，避免券商返回废单；13:00后继续检查。
-    超出条件或超过截止时间时放弃并补启动D监控。
+    超出条件或超过截止时间时放弃；E候选当日仍按全日互斥规则关闭D。
     """
     log = logger()
     ts_codes = _get_e_buy_ts_codes(decisions)
     if not ts_codes:
-        log.warning("E延迟开仓：无法获取标的代码，直接补启动D监控。")
+        log.warning("E延迟开仓：无法获取标的代码，停止E重试；D今日保持关闭。")
         _mark_e_retry_resolved("E候选缺少可执行标的代码")
-        if not has_open_local_position() and not _strategy_d_monitor_running():
-            job_strategy_d(decisions)
         return
 
     # 从decisions中提取买入元信息（stock details）
@@ -11981,10 +11941,8 @@ def _e_delayed_buy_loop(combined_orders_path, decisions) -> None:
             return
 
         if now.time() >= CUTOFF:
-            log.warning("E延迟开仓：已过13:30截止时间，放弃开仓，补启动D监控。")
+            log.warning("E延迟开仓：已过13:30截止时间，放弃开仓；D今日保持关闭。")
             _mark_e_retry_resolved("E已过13:30延迟开仓截止且零成交")
-            if not _strategy_d_monitor_running():
-                job_strategy_d(decisions)
             return
 
         if not market_is_open():
@@ -11992,10 +11950,8 @@ def _e_delayed_buy_loop(combined_orders_path, decisions) -> None:
             continue
 
         if not all(_e_open_price_ok(code, TOLERANCE) for code in ts_codes):
-            log.warning("E延迟开仓：%s 涨幅已超开盘价2%%，放弃开仓，补启动D监控。", ts_codes)
+            log.warning("E延迟开仓：%s 涨幅已超开盘价2%%，放弃开仓；D今日保持关闭。", ts_codes)
             _mark_e_retry_resolved("E标的已超过开盘价2%追价上限，补仓机会结束且零成交")
-            if not _strategy_d_monitor_running():
-                job_strategy_d(decisions)
             return
 
         log.info("E延迟开仓 %s：价格满足条件，尝试提交...", now.strftime("%H:%M:%S"))
@@ -12032,11 +11988,9 @@ def _e_delayed_buy_loop(combined_orders_path, decisions) -> None:
             return
         if terminal_reject_any:
             log.warning(
-                "E延迟开仓：券商已返回终态废单/终态未成交，停止重复提交同一计划，释放资金占用并补启动D监控。"
+                "E延迟开仓：券商已返回终态废单/终态未成交，停止重复提交同一计划；D今日保持关闭。"
             )
             _mark_e_retry_resolved("E券商委托已终态废单/终态未成交")
-            if not _strategy_d_monitor_running():
-                job_strategy_d(decisions)
             return
         log.warning("E延迟开仓：本次提交未成功，%d秒后重试。", RETRY_INTERVAL_S)
 
@@ -12161,21 +12115,23 @@ def startup_catchup_strategy_d() -> None:
         logger().error("启动补检：%s", reason)
         _notify("buy_result", "⛔ D因晚启动停止开仓", reason, level="critical")
 
-    d_tracking_allowed, d_tracking_reason = d_intraday_monitor_gate(decisions)
-    if not d_tracking_allowed:
-        logger().info("启动补检：D路径采集总门未通过，跳过：%s", d_tracking_reason)
-        return
-
+    # E延迟开仓是原候选自己的恢复链，必须先于D互斥门处理；有E候选时D会被
+    # 正确关闭，但不能因此连E自己的重试也一起跳过。
     if (
         has_combined_action(decisions, "ALLOW_E_BUY")
         and now.time() < datetime.time(13, 30)
         and not _e_retry_running()
     ):
         logger().warning(
-            "启动补检：E候选仍在13:30延迟窗口内，先恢复E重试；"
-            "D同时只读恢复完整路径，E零成交并结束窗口后才允许D入场。"
+            "启动补检：E候选仍在13:30延迟窗口内，恢复E重试；"
+            "按全日互斥规则D今日不启动、不扫描、不记录、不下单。"
         )
         _start_e_retry_thread(combined_orders_path, decisions)
+
+    d_tracking_allowed, d_tracking_reason = d_intraday_monitor_gate(decisions)
+    if not d_tracking_allowed:
+        logger().info("启动补检：D全活动总门未通过，跳过：%s", d_tracking_reason)
+        return
 
     if d_history_complete or d_checkpoint_check.ok:
         if d_checkpoint_check.ok and not d_history_complete:
@@ -12193,7 +12149,7 @@ def startup_catchup_strategy_d() -> None:
         job_strategy_d(decisions)
     else:
         _reject_late_d_recovery(
-            "D虽已不再被失效候选永久占用，但本次进程没有09:30起完整路径"
+            "今日无持仓、无非D候选且无非D开仓计划，但本次进程没有09:30起完整路径"
         )
 
 
@@ -12752,7 +12708,7 @@ def _log_close_pipeline_candidate_summary(signal_date: str) -> None:
         lines = [
             "┃━━━━━━━━━━ 收盘流水线候选产物统计 ━━━━━━━━━━",
             f"┃ 信号日：{signal_date}",
-            "┃ 口径：只读取当日产物；不重算、不改变D>A>E>C、不参与下单",
+            "┃ 口径：只读取当日产物；不重算、不参与下单；执行层按A/E/C候选计划与D全日互斥",
         ]
         for leg in ("D", "A", "E", "C"):
             item = summaries[leg]
@@ -13704,9 +13660,8 @@ def _ordinary_open_plan_expired(
 ) -> bool:
     """判断任意静态候选的执行/补仓窗口是否已结束且没有任何执行活动。
 
-    普通候选默认09:35释放，E使用13:30专用截止；D是盘中实时策略，不走本函数。
-    新增策略腿未配置专用窗口时继承普通截止，避免候选文件整日占用D。
-    本函数只影响播报；实际D入场由d_intraday_entry_gate按同一截止再次复核。
+    普通候选默认09:35停止追买，E使用13:30专用截止；D是盘中实时策略，
+    不走本函数。候选过期只影响原计划执行与播报，不释放D的全日互斥门禁。
     """
 
     if not final_buy:
@@ -13714,8 +13669,8 @@ def _ordinary_open_plan_expired(
     leg = str(final_buy.get("strategy", "")).strip().upper().replace("龙头", "")
     if not leg or leg == "D":
         return False
-    release_time = D_CANDIDATE_RELEASE_TIME_BY_LEG.get(
-        leg, D_CANDIDATE_DEFAULT_RELEASE_TIME
+    execution_cutoff = OPEN_PLAN_EXECUTION_CUTOFF_BY_LEG.get(
+        leg, OPEN_PLAN_DEFAULT_EXECUTION_CUTOFF
     )
     now = now_beijing()
     today = now.strftime("%Y%m%d")
@@ -13723,7 +13678,7 @@ def _ordinary_open_plan_expired(
     e_resolved = leg == "E" and _e_retry_resolved_today()[0]
     if compact_action > today:
         return False
-    if compact_action == today and now.time() < release_time and not e_resolved:
+    if compact_action == today and now.time() < execution_cutoff and not e_resolved:
         return False
     if (
         has_position_bought_today()
@@ -13755,7 +13710,7 @@ def _local_position_blocks_open_plan_broadcast(
 
 
 def _log_final_decision_summary(signal_date: str, action_date_compact: str, buy_orders: Any) -> None:
-    """打印【最终结果】：按D>A>E>C判定下一交易日实际开仓计划。"""
+    """打印【最终结果】：先判A>E>C静态计划；三腿均无候选时才允许D盘中执行。"""
     try:
         cfg = load_json_config(PROJECT_ROOT / "config" / "config.json")
         mode_name = "D_A_E_C"
@@ -13834,7 +13789,7 @@ def _log_final_decision_summary(signal_date: str, action_date_compact: str, buy_
             note = "有旧策略仓尚未实际清空，取消衔接开仓"
         else:
             final_buys = mode1_buys
-            note = "按腿序A>E>C取第一个有计划的收盘后候选；D由盘中时序优先"
+            note = "按腿序A>E>C取第一个收盘后候选；存在任一候选/计划时D全日关闭"
 
         expired_buys = (
             list(final_buys)
@@ -13868,8 +13823,8 @@ def _log_final_decision_summary(signal_date: str, action_date_compact: str, buy_
             out.append(
                 "开仓计划：❌ 当前无 —— 原计划"
                 f"{expired.get('strategy','')} {expired.get('ts_code','')} {expired.get('name','')}"
-                "已过执行窗口且未成交；不追买。该候选已释放D资金门禁；"
-                "若D已从09:30持续维护完整路径，则可在剩余时段按D正式条件独立开仓"
+                "已过执行窗口且未成交；不追买。该候选仍按全日互斥规则阻断D，"
+                "D今日不扫描也不开仓"
             )
         elif not final_buys:
             out.append("开仓计划：❌ 无 —— A/E/C均无开仓计划")
@@ -14314,22 +14269,19 @@ def _log_decision_chain_summary(signal_date: str) -> None:
         lines = [
             "┃━━━━━━━━━━━━ 决策优先级流程图 ━━━━━━━━━━━━",
             f"┃ 信号日：{signal_date}；操作日：{action_date or '未知'}",
-            "┃ 当前唯一腿序：①D盘中 > ②A > ③E > ④C",
+            "┃ 当前互斥顺序：①持仓 > ②非D候选/计划(A>E>C) > ③D盘中",
             "┃",
             "┃ 【0】券商仍有本系统策略仓？",
             f"┃   ├─ 是 → 不开新仓，确认实际清仓后再等待下一候选{path_tag if blocked else ''}",
             "┃   └─ 否",
             "┃        ↓",
-            "┃ 【1】①D在信号日14:00后盘中实时扫描",
-            f"┃   ├─ 已成交 → 写入持仓并回到【0】，阻断其余策略{path_tag if d_holding else ''}",
-            "┃   └─ 未成交/未触发 → 收盘后按下面顺序取第一个正式候选",
+            "┃ 【1】今日存在A/E/C正式候选或开仓计划？",
+            "┃   ├─ 是 → 按A>E>C取首个计划执行；D全日不扫描、不记录、不下单",
+            "┃   └─ 否",
             "┃        ↓",
-            f"┃ 【2】②A有候选？ ─是→ 买A并结束{path_tag if actual_leg == 'A' or (execution_block_reason and selected_leg == 'A') else ''}",
-            "┃        ↓否",
-            f"┃ 【3】③E有候选？ ─是→ 买E并结束{path_tag if actual_leg == 'E' or (execution_block_reason and selected_leg == 'E') else ''}",
-            "┃        ↓否",
-            f"┃ 【4】④C有候选？ ─是→ 买C并结束{path_tag if actual_leg == 'C' or (execution_block_reason and selected_leg == 'C') else ''}",
-            f"┃        └─ 否 → 空仓{path_tag if not blocked and not selected_leg else ''}",
+            "┃ 【2】D从09:30开始盘中扫描/记录，满足正式条件才允许开仓",
+            f"┃   ├─ D已成交 → 写入持仓并回到【0】{path_tag if d_holding else ''}",
+            f"┃   └─ D未成交/未触发 → 空仓{path_tag if not blocked and not selected_leg else ''}",
             bottom,
             "┃",
             "┃━━━━━━━━━━━━━━ 开仓决策链 ━━━━━━━━━━━━━━",
@@ -14356,8 +14308,8 @@ def _log_decision_chain_summary(signal_date: str) -> None:
             lines.append(
                 "┃ ★ 当前不开仓：原计划"
                 f"{_format_strategy_candidate(str(original_final_buy.get('strategy', '?')), original_final_buy)}"
-                "已过执行窗口且未成交，不追补；该候选不再阻断D，"
-                "D仅在已持续维护09:30完整路径时按自身正式条件判断"
+                "已过执行窗口且未成交，不追补；该候选仍按全日互斥规则阻断D，"
+                "D今日不扫描也不开仓"
             )
         elif execution_block_reason and original_final_buy:
             lines.append(
@@ -14404,7 +14356,8 @@ def _d_candidate_gate_line(
         leg = str(mode1_buy.get("strategy", "A/C/E") or "A/C/E")
         return (
             f"阻断｜{day_label}已有{leg}正式开仓计划 "
-            f"{mode1_buy.get('ts_code', '')} {mode1_buy.get('name', '')} 占用同一资金"
+            f"{mode1_buy.get('ts_code', '')} {mode1_buy.get('name', '')}；"
+            "D全日不扫描、不记录、不下单"
         )
     return "允许｜全策略均无正式开仓计划时启动盘中监控（仍需实时行情+风控校验）"
 
@@ -14435,7 +14388,7 @@ def _retry_morning_plan_notification_if_needed(source: str) -> None:
 
 
 def _notify_missed_open_window_if_needed(source: str) -> None:
-    """候选窗口后计划仍零成交时告警；不追补静态候选，并释放D候选占用。"""
+    """候选窗口后计划仍零成交时告警；不追补静态候选，D仍全日关闭。"""
     now = now_beijing()
     if not is_trade_day(now.date()) or not (
         datetime.time(9, 35) <= now.time() < datetime.time(14, 40)
@@ -14468,7 +14421,7 @@ def _notify_missed_open_window_if_needed(source: str) -> None:
         f"{source}发现今日原计划为策略{final_buy.get('strategy','')} "
         f"{final_buy.get('ts_code','')} {final_buy.get('name','')}，但09:20/09:30执行窗口内"
         "未完成开仓且当前无策略持仓/在途买单。系统不会在盘中追补已过期的静态候选，避免偏离回测；"
-        "该候选不再占用D资金门。D若已从09:30持续维护完整路径，将从下一轮按自身正式条件判断。"
+        "该候选仍按全日互斥规则阻断D，D今日不扫描、不记录、不下单。"
     )
     sent = _notify("buy_result", title, body, level="critical")
     if sent:
@@ -14512,8 +14465,8 @@ def push_open_plan_notification(occasion: str) -> None:
             title = f"⚠️ {label}原候选已错过执行窗口:{fb.get('name','')}"
             body = (
                 f"{_format_strategy_candidate(str(fb.get('strategy', '?')), fb)}零成交且补仓窗口已结束；"
-                "系统不追买原候选，该候选已释放D资金门。D只有在已持续维护09:30完整路径，"
-                "并重新通过自身正式条件、成交概率和风控时才可开仓。"
+                "系统不追买原候选，但该候选仍按全日互斥规则阻断D，"
+                "D今日不扫描、不记录、不下单。"
             )
         elif fb and execution_block_reason:
             title = f"⛔ {label}候选不可执行:{fb.get('name','')}"
@@ -15029,10 +14982,7 @@ def _log_d_status_for_signal(signal_date: str) -> None:
         ]
         current_plan = _last_final_plan or {}
         formal_candidate = None
-        if (
-            str(current_plan.get("signal_date", "")) == str(signal_date)
-            and not bool(current_plan.get("execution_expired", False))
-        ):
+        if str(current_plan.get("signal_date", "")) == str(signal_date):
             formal_candidate = current_plan.get("final_buy")
         if open_positions:
             held = _describe_holdings(open_positions, with_quote=False)
@@ -15047,26 +14997,25 @@ def _log_d_status_for_signal(signal_date: str) -> None:
             allowed_text = ",".join(str(x) for x in allowed_segments) if isinstance(allowed_segments, list) else "未配置"
             if formal_candidate or planned_count > 0:
                 reason = (
-                    "D盘中线程正在只读维护09:30起完整路径；其他策略候选仍在执行时"
-                    "动态BUY门禁保持关闭，候选零成交且补仓窗口结束后才释放。"
+                    "检测到非D正式候选/开仓计划但D线程仍在运行；运行中全活动门禁会在"
+                    "下一轮停止线程，不再继续扫描、记录或下单。"
                 )
             else:
-                reason = "D盘中监控线程正在运行；账户空仓且当前没有静态候选占用D资金。"
+                reason = "D盘中监控线程正在运行；账户空仓且今日没有非D正式候选/开仓计划。"
             logger().info("  D策略状态：RUNNING（%s）", reason)
             logger().info("  D实盘扫描范围：%s；日志中的扫描数量为D当前配置股票池数量。", allowed_text)
         elif formal_candidate:
             logger().info(
                 "  D策略停止点：组合状态机。原因：今日已有%s正式候选 %s %s，"
-                "但D只读路径线程当前未运行；候选窗口结束后不能从迟到快照补造路径，"
-                "请检查D线程启动日志。",
+                "按全日互斥规则D不启动、不扫描、不记录、不下单。",
                 formal_candidate.get("strategy", ""),
                 formal_candidate.get("ts_code", ""),
                 formal_candidate.get("name", ""),
             )
         elif planned_count > 0:
             logger().info(
-                "  D策略停止点：今日已有正式候选但D只读路径线程未运行；"
-                "候选只应阻断D入场，不应阻断09:30路径采集，请检查启动日志。"
+                "  D策略停止点：今日已有非D正式候选/开仓计划；"
+                "按全日互斥规则D不启动、不扫描、不记录、不下单。"
             )
         elif not in_d_start_window:
             logger().info(
@@ -15223,117 +15172,7 @@ _qmt_execution_init_lock = threading.RLock()
 _qmt_last_verified_at: str = ""      # 最近一次 query_account/query_positions 成功时间
 _last_account_has_position: bool = False  # 最近一次券商账户心跳是否确认有持仓
 _qmt_lock = threading.RLock()        # 保护 _qmt_adapter 并发访问（可重入：平仓路径内嵌撤止盈单）
-# 买入POV与D行情采集共用上面的唯一QMT通道。POV发起资金/持仓/行情/下单请求前
-# 先登记优先权；D只允许完成已经在途的一批行情，下一批必须等待POV释放。
-# 计数器而不是单一Event可正确处理同一时刻多个POV请求，避免首个请求结束时
-# 误清除另一个仍在等待的请求。
-_buy_pov_qmt_priority_condition = threading.Condition()
-_buy_pov_qmt_priority_waiters = 0
-_buy_pov_qmt_priority_active = 0
 _d_monitor_thread: threading.Thread | None = None  # D监控线程；D不再独立连接QMT
-
-
-def _buy_pov_qmt_priority_pending() -> bool:
-    with _buy_pov_qmt_priority_condition:
-        return bool(
-            _buy_pov_qmt_priority_waiters > 0
-            or _buy_pov_qmt_priority_active > 0
-        )
-
-
-@contextmanager
-def _qmt_access(priority_label: str = ""):
-    """获取QMT串行锁；非空标签代表买入POV请求，优先于D批量行情。
-
-    优先权只覆盖一次真实QMT调用，不覆盖POV的五分钟等待或成交轮询间隔，
-    因而D仍能持续采集；如果D已有一批get_full_tick在途，POV等待该批自然返回，
-    不尝试中断QMT C++调用。
-    """
-
-    global _buy_pov_qmt_priority_waiters, _buy_pov_qmt_priority_active
-
-    label = str(priority_label or "").strip()
-    if not label:
-        with _qmt_lock:
-            yield
-        return
-
-    requested_at = time.monotonic()
-    registered_waiter = False
-    registered_active = False
-    acquired = False
-    try:
-        with _buy_pov_qmt_priority_condition:
-            _buy_pov_qmt_priority_waiters += 1
-            registered_waiter = True
-            _buy_pov_qmt_priority_condition.notify_all()
-
-        _qmt_lock.acquire()
-        acquired = True
-        waited_ms = (time.monotonic() - requested_at) * 1000.0
-
-        with _buy_pov_qmt_priority_condition:
-            _buy_pov_qmt_priority_waiters -= 1
-            registered_waiter = False
-            _buy_pov_qmt_priority_active += 1
-            registered_active = True
-            _buy_pov_qmt_priority_condition.notify_all()
-
-        logger().info(
-            "[QMT调度] %s取得优先通道，等待%.0fms；D仅允许完成已在途行情批次。",
-            label,
-            waited_ms,
-        )
-        yield
-    finally:
-        if acquired:
-            _qmt_lock.release()
-        with _buy_pov_qmt_priority_condition:
-            if registered_waiter:
-                _buy_pov_qmt_priority_waiters -= 1
-            if registered_active:
-                _buy_pov_qmt_priority_active -= 1
-            _buy_pov_qmt_priority_condition.notify_all()
-
-
-def _d_get_full_tick_with_pov_priority(
-    broker_config: dict[str, Any],
-    ts_codes: list[str],
-) -> Any:
-    """D行情批次在买入POV请求存在时让路，最多保留一个已在途批次。"""
-
-    requested_at = time.monotonic()
-    yielded_to_pov = False
-    while True:
-        with _buy_pov_qmt_priority_condition:
-            while (
-                _buy_pov_qmt_priority_waiters > 0
-                or _buy_pov_qmt_priority_active > 0
-            ):
-                yielded_to_pov = True
-                _buy_pov_qmt_priority_condition.wait(timeout=0.5)
-
-        _qmt_lock.acquire()
-        # 防止D通过上面的检查后，在等待_qmt_lock期间POV才登记优先权。
-        # 此时D必须释放锁重新排队，不能依赖RLock的非公平唤醒顺序。
-        if _buy_pov_qmt_priority_pending():
-            yielded_to_pov = True
-            _qmt_lock.release()
-            continue
-
-        admitted_at = time.monotonic()
-        try:
-            result = _qmt_get(broker_config).get_full_tick(ts_codes)
-        finally:
-            _qmt_lock.release()
-
-        if yielded_to_pov:
-            logger().info(
-                "[QMT调度] D行情批次已为买入POV让路，批次=%d只，等待%.0fms后恢复。",
-                len(ts_codes),
-                (admitted_at - requested_at) * 1000.0,
-            )
-        return result
 
 
 def _broker_config_with_qmt_override(
@@ -15583,7 +15422,8 @@ class SharedQMTBrokerProxy:
             return _qmt_get(self.broker_config).query_trades()
 
     def get_full_tick(self, ts_codes: list[str]) -> Any:
-        return _d_get_full_tick_with_pov_priority(self.broker_config, ts_codes)
+        with _qmt_lock:
+            return _qmt_get(self.broker_config).get_full_tick(ts_codes)
 
     def place_order(self, request: Any) -> Any:
         side = str(getattr(request, "side", "")).strip().upper()

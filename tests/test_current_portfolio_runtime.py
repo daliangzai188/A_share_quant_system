@@ -82,134 +82,163 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
                 buys = orders[orders["side"].astype(str).str.upper().eq("BUY")]
                 self.assertEqual(str(buys.iloc[0]["strategy_leg"]), expected)
 
-    def test_static_candidate_keeps_d_tracking_but_blocks_d_entry(self) -> None:
-        """任意静态候选存在时，状态机必须拆开D路径跟踪与D实际入场。"""
+    def test_static_candidate_blocks_all_d_activity(self) -> None:
+        """任意非D正式候选存在时，状态机只输出D全活动阻断。"""
 
         engine = make_engine(ac_leg="A")
         _state, decisions, _orders = engine.build_mode1_plan("20260803")
         actions = set(decisions["action"].astype(str))
 
-        self.assertIn("BLOCK_D_INTRADAY_ENTRY", actions)
-        self.assertIn("ALLOW_D_INTRADAY_TRACKING_ONLY", actions)
+        self.assertIn("BLOCK_D_INTRADAY_MONITOR", actions)
+        self.assertNotIn("BLOCK_D_INTRADAY_ENTRY", actions)
+        self.assertNotIn("ALLOW_D_INTRADAY_TRACKING_ONLY", actions)
 
-    def test_a_candidate_releases_d_after_failed_open_window(self) -> None:
-        decisions = pd.DataFrame([{
-            "action": "ALLOW_ABC_BUY_PREVIEW",
-            "strategy_leg": "A",
-            "side": "BUY",
-        }, {
-            "action": "ALLOW_D_INTRADAY_TRACKING_ONLY",
-            "strategy_leg": "D",
-        }])
-        before_release = datetime.datetime(
-            2026, 8, 24, 9, 34, tzinfo=trading_daemon.BEIJING_TZ
-        )
-        after_release = before_release.replace(minute=36)
+    def test_any_strategy_candidate_blocks_d_scan_and_entry_all_day(self) -> None:
+        """A/E/C及未来新增策略的候选，均不能因执行窗口结束而释放D。"""
 
-        with (
-            patch.object(trading_daemon, "has_open_local_position", return_value=False),
-            patch.object(trading_daemon, "has_position_bought_today", return_value=False),
-            patch.object(trading_daemon, "_d_relay_pair_active_today", return_value=False),
-            patch.object(trading_daemon, "load_pending_buys", return_value=[]),
-            patch.object(trading_daemon, "_pov_active_today", return_value=False),
-            patch.object(trading_daemon, "now_beijing", return_value=before_release),
+        for action, leg in (
+            ("ALLOW_ABC_BUY_PREVIEW", "A"),
+            ("ALLOW_E_BUY", "E"),
+            ("ALLOW_ABC_BUY_PREVIEW", "C"),
+            ("ALLOW_F_BUY", "F"),
         ):
-            tracking_allowed, tracking_reason = trading_daemon.d_intraday_monitor_gate(decisions)
-            entry_before, reason_before = trading_daemon.d_intraday_entry_gate(decisions)
-
-        with (
-            patch.object(trading_daemon, "has_open_local_position", return_value=False),
-            patch.object(trading_daemon, "has_position_bought_today", return_value=False),
-            patch.object(trading_daemon, "_d_relay_pair_active_today", return_value=False),
-            patch.object(trading_daemon, "load_pending_buys", return_value=[]),
-            patch.object(trading_daemon, "_pov_active_today", return_value=False),
-            patch.object(trading_daemon, "now_beijing", return_value=after_release),
-        ):
-            entry_after, reason_after = trading_daemon.d_intraday_entry_gate(decisions)
-
-        self.assertTrue(tracking_allowed)
-        self.assertIn("实际入场由候选成交状态", tracking_reason)
-        self.assertFalse(entry_before)
-        self.assertIn("09:35", reason_before)
-        self.assertTrue(entry_after)
-        self.assertIn("资金占用已释放", reason_after)
-
-    def test_candidate_activity_still_blocks_d_after_clock_release(self) -> None:
-        decisions = pd.DataFrame([{
-            "action": "ALLOW_F_BUY",
-            "strategy_leg": "F",
-            "side": "BUY",
-        }])
-        after_release = datetime.datetime(
-            2026, 8, 24, 10, 0, tzinfo=trading_daemon.BEIJING_TZ
-        )
-        with (
-            patch.object(trading_daemon, "has_open_local_position", return_value=False),
-            patch.object(trading_daemon, "has_position_bought_today", return_value=False),
-            patch.object(trading_daemon, "_d_relay_pair_active_today", return_value=False),
-            patch.object(trading_daemon, "load_pending_buys", return_value=[]),
-            patch.object(trading_daemon, "_pov_active_today", return_value=True),
-            patch.object(trading_daemon, "now_beijing", return_value=after_release),
-        ):
-            allowed, reason = trading_daemon.d_intraday_entry_gate(decisions)
-
-        self.assertFalse(allowed)
-        self.assertIn("POV仍在补仓窗口", reason)
-
-    def test_e_candidate_uses_own_release_window(self) -> None:
-        decisions = pd.DataFrame([{
-            "action": "ALLOW_E_BUY",
-            "strategy_leg": "E",
-            "side": "BUY",
-        }])
-        before_release = datetime.datetime(
-            2026, 8, 24, 13, 29, tzinfo=trading_daemon.BEIJING_TZ
-        )
-        after_release = before_release.replace(minute=31)
-
-        def check(at: datetime.datetime) -> tuple[bool, str]:
+            decisions = pd.DataFrame([{
+                "action": action,
+                "strategy_leg": leg,
+                "side": "BUY",
+            }])
             with (
                 patch.object(trading_daemon, "has_open_local_position", return_value=False),
                 patch.object(trading_daemon, "has_position_bought_today", return_value=False),
                 patch.object(trading_daemon, "_d_relay_pair_active_today", return_value=False),
                 patch.object(trading_daemon, "load_pending_buys", return_value=[]),
                 patch.object(trading_daemon, "_pov_active_today", return_value=False),
-                patch.object(trading_daemon, "_e_retry_running", return_value=False),
-                patch.object(trading_daemon, "_e_retry_resolved_today", return_value=(False, "")),
-                patch.object(trading_daemon, "now_beijing", return_value=at),
             ):
-                return trading_daemon.d_intraday_entry_gate(decisions)
+                monitor_allowed, monitor_reason = trading_daemon.d_intraday_monitor_gate(decisions)
+                entry_allowed, entry_reason = trading_daemon.d_intraday_entry_gate(decisions)
 
-        allowed_before, reason_before = check(before_release)
-        allowed_after, reason_after = check(after_release)
+            with self.subTest(strategy_leg=leg):
+                self.assertFalse(monitor_allowed)
+                self.assertFalse(entry_allowed)
+                self.assertIn("全日互斥", monitor_reason)
+                self.assertEqual(entry_reason, monitor_reason)
 
-        self.assertFalse(allowed_before)
-        self.assertIn("13:30", reason_before)
-        self.assertTrue(allowed_after)
-        self.assertIn("资金占用已释放", reason_after)
+    def test_non_d_pending_order_or_pov_blocks_all_d_activity(self) -> None:
+        decisions = pd.DataFrame([{
+            "action": "ALLOW_D_INTRADAY_MONITOR",
+            "strategy_leg": "D",
+        }])
 
+        for pending, pov, expected in (
+            ([{"ts_code": "000001.SZ"}], False, "买单待确认"),
+            ([], True, "开仓POV"),
+        ):
+            with (
+                patch.object(trading_daemon, "has_open_local_position", return_value=False),
+                patch.object(trading_daemon, "has_position_bought_today", return_value=False),
+                patch.object(trading_daemon, "_d_relay_pair_active_today", return_value=False),
+                patch.object(trading_daemon, "load_pending_buys", return_value=pending),
+                patch.object(trading_daemon, "_pov_active_today", return_value=pov),
+            ):
+                monitor_allowed, monitor_reason = trading_daemon.d_intraday_monitor_gate(decisions)
+                entry_allowed, entry_reason = trading_daemon.d_intraday_entry_gate(decisions)
+
+            self.assertFalse(monitor_allowed)
+            self.assertFalse(entry_allowed)
+            self.assertIn(expected, monitor_reason)
+            self.assertEqual(entry_reason, monitor_reason)
+
+    def test_d_runs_only_when_position_candidate_and_plan_are_all_absent(self) -> None:
+        decisions = pd.DataFrame([{
+            "action": "ALLOW_D_INTRADAY_MONITOR",
+            "strategy_leg": "D",
+        }])
         with (
             patch.object(trading_daemon, "has_open_local_position", return_value=False),
             patch.object(trading_daemon, "has_position_bought_today", return_value=False),
             patch.object(trading_daemon, "_d_relay_pair_active_today", return_value=False),
             patch.object(trading_daemon, "load_pending_buys", return_value=[]),
             patch.object(trading_daemon, "_pov_active_today", return_value=False),
-            patch.object(trading_daemon, "_e_retry_running", return_value=False),
-            patch.object(
-                trading_daemon,
-                "_e_retry_resolved_today",
-                return_value=(True, "涨幅超过2%追价上限"),
-            ),
-            patch.object(
-                trading_daemon,
-                "now_beijing",
-                return_value=before_release.replace(hour=10, minute=0),
-            ),
         ):
-            allowed_early, reason_early = trading_daemon.d_intraday_entry_gate(decisions)
+            monitor_allowed, monitor_reason = trading_daemon.d_intraday_monitor_gate(decisions)
+            entry_allowed, entry_reason = trading_daemon.d_intraday_entry_gate(decisions)
 
-        self.assertTrue(allowed_early)
-        self.assertIn("结束补仓机会", reason_early)
+        self.assertTrue(monitor_allowed)
+        self.assertTrue(entry_allowed)
+        self.assertIn("无持仓、无非D正式候选", monitor_reason)
+        self.assertEqual(entry_reason, monitor_reason)
+
+    def test_direct_d_start_is_rejected_before_qmt_or_monitor_setup(self) -> None:
+        """即使绕过调度器直接调用D入口，候选总门也必须最先拦截。"""
+
+        decisions = pd.DataFrame([{
+            "action": "ALLOW_E_BUY",
+            "strategy_leg": "E",
+            "side": "BUY",
+        }])
+        with (
+            patch.object(trading_daemon, "_strategy_d_monitor_running", return_value=False),
+            patch.object(
+                trading_daemon,
+                "d_intraday_monitor_gate",
+                return_value=(False, "今日存在E候选，D全日关闭"),
+            ),
+            patch.object(trading_daemon, "load_json_config") as load_config,
+            patch.object(trading_daemon, "logger", return_value=MagicMock()),
+        ):
+            trading_daemon.job_strategy_d(decisions)
+
+        load_config.assert_not_called()
+
+    def test_startup_recovery_restores_e_before_d_gate_rejects_d(self) -> None:
+        """盘中重启有E候选时应恢复E自己的重试，同时绝不启动D。"""
+
+        frozen_now = datetime.datetime(
+            2026, 8, 24, 10, 0, tzinfo=trading_daemon.BEIJING_TZ
+        )
+        decisions = pd.DataFrame([{
+            "action": "ALLOW_E_BUY",
+            "strategy_leg": "E",
+            "side": "BUY",
+        }, {
+            "action": "BLOCK_D_INTRADAY_MONITOR",
+            "strategy_leg": "D",
+        }])
+        orders_path = Path("e_orders.csv")
+        with (
+            patch.object(trading_daemon, "now_beijing", return_value=frozen_now),
+            patch.object(trading_daemon, "is_trade_day", return_value=True),
+            patch.object(trading_daemon, "load_pending_buys", return_value=[]),
+            patch.object(trading_daemon, "_d_relay_pair_active_today", return_value=False),
+            patch.object(trading_daemon, "_pov_active_today", return_value=False),
+            patch.object(trading_daemon, "_strategy_d_monitor_running", return_value=False),
+            patch.object(
+                trading_daemon,
+                "read_cached_combined_decisions",
+                return_value=(decisions, orders_path),
+            ),
+            patch.object(trading_daemon, "intraday_history_is_complete", return_value=True),
+            patch.object(
+                trading_daemon,
+                "_strategy_d_checkpoint_recovery_check",
+                return_value=SimpleNamespace(ok=False, reason="无检查点"),
+            ),
+            patch.object(trading_daemon, "_e_retry_running", return_value=False),
+            patch.object(trading_daemon, "_start_e_retry_thread") as start_e,
+            patch.object(
+                trading_daemon,
+                "d_intraday_monitor_gate",
+                return_value=(False, "今日存在E候选，D全日关闭"),
+            ),
+            patch.object(trading_daemon, "job_strategy_d") as start_d,
+            patch.object(trading_daemon, "logger", return_value=MagicMock()),
+        ):
+            trading_daemon.startup_catchup_strategy_d()
+
+        start_e.assert_called_once()
+        self.assertEqual(start_e.call_args.args[0], orders_path)
+        self.assertIs(start_e.call_args.args[1], decisions)
+        start_d.assert_not_called()
 
     def test_blocked_e_run_records_priority_and_counterfactual_candidate_result(self) -> None:
         """A阻断正式信号后，E候选仍应独立计算并写入可审计字段。"""
@@ -481,7 +510,7 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
         self.assertIn("FAIL_STRICT_RELEASE_REQUIRED", body)
         self.assertIn("不会自动或建议手动绕过", body)
 
-    def test_expired_candidate_notification_releases_d_fund_gate(self) -> None:
+    def test_expired_candidate_notification_keeps_d_closed_all_day(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             state_path = Path(temporary) / "open_plan_push.json"
             previous = trading_daemon._last_final_plan
@@ -513,8 +542,8 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
 
         _event, title, body = notify.call_args.args[:3]
         self.assertIn("原候选已错过执行窗口", title)
-        self.assertIn("该候选已释放D资金门", body)
-        self.assertIn("09:30完整路径", body)
+        self.assertIn("全日互斥规则阻断D", body)
+        self.assertIn("D今日不扫描、不记录、不下单", body)
 
     def test_existing_position_blocks_all_new_buys(self) -> None:
         engine = make_engine(
@@ -534,6 +563,8 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
             and orders.get("side", pd.Series(dtype=str)).astype(str).str.upper().eq("BUY").any()
         )
         self.assertIn("BLOCK_ABC_BUY", set(decisions["action"]))
+        self.assertIn("BLOCK_D_INTRADAY_MONITOR", set(decisions["action"]))
+        self.assertNotIn("ALLOW_D_INTRADAY_MONITOR", set(decisions["action"]))
 
     def test_certification_validator(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
