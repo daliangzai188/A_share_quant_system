@@ -257,8 +257,14 @@ def select_candidates(data: pd.DataFrame, config: dict[str, Any], top_n: int) ->
     base = base[base.get("is_fill_score_reliable", pd.Series(False, index=base.index)).map(to_bool)].copy()
     base = apply_exclusions(base, config)
 
-    a_conditions = config.get("candidate_filters", {}).get("conditions", [])
-    a_pool = apply_conditions(base, a_conditions, strict_missing=True)
+    a_filters = config.get("candidate_filters", {})
+    a_profiles = a_filters.get("condition_profiles", [])
+    a_conditions = a_filters.get("conditions", [])
+    a_pool = (
+        apply_condition_profiles(base, a_profiles)
+        if a_profiles
+        else apply_conditions(base, a_conditions, strict_missing=True)
+    )
     if not a_pool.empty:
         return "LIVE_LIMIT_POOL_A", rank_candidates(a_pool, config, top_n)
 

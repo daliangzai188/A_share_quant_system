@@ -4,11 +4,11 @@
 且 enabled=false，实际却驱动着 A/C 两条实盘腿；更麻烦的是文件里有两套并存
 但必须独立加载的规则——
 
-    A → candidate_filters（单个AND规则）
+    A → candidate_filters.condition_profiles（两个OR分支）
     C → paper_ab_filtered_strategy.c_strategy.condition_profiles（两个OR分支）
 
 当时误把 candidate_filters 当成 C 的规则去比对，得出了错误的"实盘与回测一致"
-结论。这些测试确保：两段都存在、归属清晰，C的OR分支不会覆盖A规则。
+结论。这些测试确保：两段都存在、归属清晰，A/C各自的OR分支不会串用。
 """
 from __future__ import annotations
 
@@ -94,9 +94,9 @@ class StrategyConfigSectionTests(unittest.TestCase):
         self.assertEqual(
             a_audit["metric_scope"], "STRICT_ASOF_A_STANDALONE_SINGLE_ACCOUNT"
         )
-        self.assertEqual(a_audit["executed_trade_count"], 58)
-        self.assertAlmostEqual(a_audit["equity_multiple"], 12.023750012345724)
-        self.assertEqual(a_audit["candidate_pool_trade_count"], 69)
+        self.assertEqual(a_audit["executed_trade_count"], 63)
+        self.assertAlmostEqual(a_audit["equity_multiple"], 18.91154868679943)
+        self.assertEqual(a_audit["candidate_pool_trade_count"], 78)
 
         c_audit = self.config["paper_ab_filtered_strategy"]["c_strategy"][
             "latest_2y_audit"
@@ -112,12 +112,29 @@ class StrategyConfigSectionTests(unittest.TestCase):
         )
 
     def test_a_and_c_rules_remain_in_separate_config_sections(self) -> None:
-        """C的OR规则不得覆盖A顶层candidate_filters。"""
-        a_values = {
-            str(item["column"]): str(item["value"])
-            for item in self.config["candidate_filters"]["conditions"]
+        """A/C各自的OR规则不得覆盖另一段配置。"""
+        a_filters = self.config["candidate_filters"]
+        self.assertEqual(a_filters["condition_mode"], "ANY_PROFILE")
+        self.assertEqual(a_filters["conditions"], [])
+        a_profiles = {
+            str(item["profile_id"]): {
+                str(condition["column"]): str(condition["value"])
+                for condition in item["conditions"]
+            }
+            for item in a_filters["condition_profiles"]
         }
-        self.assertEqual(a_values["market_chain_count_bucket"], "8_15")
+        self.assertEqual(a_profiles, {
+            "A_FD_0_5PCT_1PCT": {
+                "segment_limit_up_count_bucket": "lt_5",
+                "market_chain_count_bucket": "8_15",
+                "fd_ratio_bucket": "0_5pct_1pct",
+            },
+            "A_FD_0_3PCT_0_5PCT": {
+                "segment_limit_up_count_bucket": "lt_5",
+                "market_chain_count_bucket": "8_15",
+                "fd_ratio_bucket": "0_3pct_0_5pct",
+            },
+        })
         c_strategy = self.config["paper_ab_filtered_strategy"]["c_strategy"]
         self.assertEqual(c_strategy["conditions"], [])
         self.assertEqual(len(c_strategy["condition_profiles"]), 2)

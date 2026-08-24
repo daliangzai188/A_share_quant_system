@@ -19,13 +19,13 @@
     },
     {
       "path": "config/config.json",
-      "size": 88584,
-      "sha256": "7ddb48b4fa78df32f11816a33dd75cdf40684255190226dd12a795951c2d9081"
+      "size": 88702,
+      "sha256": "f9cefff3f008f86329d9a6379d0e374bd27a317927a1445ad5063f2d04a143d2"
     },
     {
       "path": "config/strategy_config.json",
-      "size": 23014,
-      "sha256": "4bff6ac8d84139f5c2733ba515edd4a1a22fae3808e98dccf30d82219845b281"
+      "size": 24957,
+      "sha256": "c3b499eb9a0048e27fe5193e51dfa7cc39a5e115c09d66f9d3d93370a34d3a39"
     },
     {
       "path": "config/strategy_d_factor_release.json",

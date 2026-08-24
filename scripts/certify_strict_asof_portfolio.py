@@ -62,10 +62,10 @@ MANIFEST_PATH = OUTPUT_DIR / "strict_asof_input_manifest.json"
 DAILY_DIR = ROOT / "data" / "raw" / "daily"
 DAILY_BASIC_DIR = ROOT / "data" / "raw" / "daily_basic"
 EXPECTED_PRIORITY = ["D", "A", "E", "C"]
-EXPECTED_TRADE_COUNT = 134
-EXPECTED_EQUITY_MULTIPLE = 921.3365015462819
-EXPECTED_MAX_DRAWDOWN = -0.15399452246695433
-EXPECTED_LEG_COUNTS = {"D": 15, "A": 42, "E": 47, "C": 30}
+EXPECTED_TRADE_COUNT = 135
+EXPECTED_EQUITY_MULTIPLE = 1213.6649948910629
+EXPECTED_MAX_DRAWDOWN = -0.14119813241960621
+EXPECTED_LEG_COUNTS = {"D": 15, "A": 44, "E": 46, "C": 30}
 LOGGER = logging.getLogger("strict_portfolio_certifier")
 # 2026-06-30 信号的 C/E T+3 退出在极端跌停时最多继续检查 4 个交易日；
 # 输入清单保守锁到 2026-07-10，覆盖正常退出和延期卖出行情。
@@ -208,7 +208,7 @@ def write_or_verify_input_manifest(*, refresh: bool) -> Path:
 
 def build_strict_snapshot() -> tuple[dict[str, Any], pd.DataFrame, dict[str, pd.DataFrame]]:
     # D已经发布为固定因子版本，不能再用旧D条件重建正式证书。这里与D/C研究
-    # 的逐腿替换口径共用同一发布读取器，并由下方134笔/921.3365倍锚点锁死。
+    # 的逐腿替换口径共用同一发布读取器，并由下方135笔/1213.6650倍锚点锁死。
     d_events, _d_event_audit = load_d_events(
         D_EVENT_PATH, strict.START, strict.END
     )

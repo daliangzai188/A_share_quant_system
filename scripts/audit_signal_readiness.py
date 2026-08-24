@@ -128,6 +128,20 @@ def condition_desc(conditions: list[dict[str, Any]]) -> str:
     return "；".join(parts)
 
 
+def condition_profiles_desc(profiles: list[dict[str, Any]]) -> str:
+    if not profiles:
+        return "无"
+    parts = []
+    for position, profile in enumerate(profiles, 1):
+        profile_id = str(profile.get("profile_id", f"PROFILE_{position}"))
+        conditions = " 且 ".join(
+            f"{item.get('column', '')} {item.get('operator', '==')} {item.get('value', '')}"
+            for item in profile.get("conditions", [])
+        )
+        parts.append(f"{profile_id}: {conditions}")
+    return "；或 ".join(parts)
+
+
 def exclude_rules_desc(rules: list[dict[str, Any]]) -> str:
     if not rules:
         return "无"
@@ -223,6 +237,35 @@ def include_reason_detail(before: pd.DataFrame, conditions: list[dict[str, Any]]
         current = current[passed].copy()
         if current.empty:
             break
+    return "；".join(parts)
+
+
+def include_profiles_reason_detail(
+    before: pd.DataFrame,
+    profiles: list[dict[str, Any]],
+    signal_date: str,
+) -> str:
+    current = signal_slice(before, signal_date)
+    if current.empty:
+        return "当日进入入选条件分支前已经没有候选。"
+    if not profiles:
+        return "没有配置入选条件分支。"
+    parts: list[str] = []
+    total_union = pd.Series(False, index=current.index)
+    for position, profile in enumerate(profiles, 1):
+        profile_id = str(profile.get("profile_id", f"PROFILE_{position}"))
+        mask = pd.Series(True, index=current.index)
+        for condition in profile.get("conditions", []):
+            column = str(condition.get("column", ""))
+            expected = str(condition.get("value", ""))
+            if column not in current.columns:
+                mask &= False
+                parts.append(f"{profile_id}:{column}字段不存在")
+                break
+            mask &= current[column].fillna("missing").astype(str).eq(expected)
+        total_union |= mask
+        parts.append(f"{profile_id}命中={int(mask.sum())}")
+    parts.append(f"OR并集命中={int(total_union.sum())}")
     return "；".join(parts)
 
 
@@ -347,13 +390,17 @@ def filter_trace(label: str, generator: PaperCandidateGenerator, all_candidates:
     add("1_universe_filters", universe_desc, before, current, universe_reason_detail(before, current, config, signal_date))
 
     before = current
+    profiles = filters.get("condition_profiles", [])
+    conditions = filters.get("conditions", [])
     current = generator.apply_include_conditions(current)
     add(
         "2_include_conditions",
-        condition_desc(filters.get("conditions", [])),
+        condition_profiles_desc(profiles) if profiles else condition_desc(conditions),
         before,
         current,
-        include_reason_detail(before, filters.get("conditions", []), signal_date),
+        include_profiles_reason_detail(before, profiles, signal_date)
+        if profiles
+        else include_reason_detail(before, conditions, signal_date),
     )
 
     before = current

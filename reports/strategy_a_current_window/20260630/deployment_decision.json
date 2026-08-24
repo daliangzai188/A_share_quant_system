@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "decision_date": "2026-08-24",
+  "decision": "DEPLOY_TO_LIVE_RULE_SOURCE",
+  "decision_source": "USER_EXPLICIT_ACCEPTANCE",
+  "selected_variant": "EXPAND__fd_ratio_bucket__0_3pct_0_5pct",
+  "release_id": "A_FD_EXPANSION_20260630_V1",
+  "effective_from": "20260825",
+  "live_rule_source": "config/strategy_config.json",
+  "runtime_config": "config/config.json",
+  "strict_certificate": "reports/current_portfolio_alignment/live_certification.json",
+  "rule_change": {
+    "unchanged_conditions": {
+      "segment_limit_up_count_bucket": "lt_5",
+      "market_chain_count_bucket": "8_15"
+    },
+    "old_fd_ratio_buckets": [
+      "0_5pct_1pct"
+    ],
+    "new_fd_ratio_buckets": [
+      "0_3pct_0_5pct",
+      "0_5pct_1pct"
+    ],
+    "unchanged": [
+      "exclude_conditions",
+      "exclude_rules",
+      "ranking",
+      "T+2 exit",
+      "position_pct=0.825",
+      "fees",
+      "slippage",
+      "T+1",
+      "limit-up buyability",
+      "limit-down delayed exit",
+      "D>A>E>C priority"
+    ]
+  },
+  "strict_asof_metrics": {
+    "window": "20240630~20260630",
+    "a_standalone_trade_count": 63,
+    "a_standalone_win_rate": 0.6825396825396826,
+    "a_standalone_avg_account_return": 0.051704258011289195,
+    "a_standalone_median_account_return": 0.03893068315788266,
+    "a_standalone_equity_multiple": 18.91154868679943,
+    "a_standalone_max_drawdown": -0.19374531590159605,
+    "combo_trade_count": 135,
+    "combo_win_rate": 0.7111111111111111,
+    "combo_avg_account_return": 0.057605920549432796,
+    "combo_median_account_return": 0.04757615837663166,
+    "combo_equity_multiple": 1213.6649948910629,
+    "combo_max_drawdown": -0.14119813241960621,
+    "combo_leg_counts": {
+      "D": 15,
+      "A": 44,
+      "E": 46,
+      "C": 30
+    }
+  },
+  "research_protocol": "STRICT_DISCOVERY",
+  "risk_note": "开发段弱于旧A，存在阶段切换或近期窗口拟合风险；机械复利不代表未来收益或大资金可成交容量。"
+}

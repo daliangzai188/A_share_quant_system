@@ -161,7 +161,7 @@ class PaperCandidateGenerator:
         filters = self.config.get("candidate_filters", {})
         profiles = filters.get("condition_profiles", [])
         if profiles:
-            # C正式版允许少量、冻结且可解释的if分支做OR：每个profile内部
+            # A/C允许少量、冻结且可解释的条件分支做OR：每个profile内部
             # 仍是AND，不允许把所有历史达标条件无差别并集。匹配编号随候选
             # 一起下传，便于收盘日志、计划单和前向账本审计分支来源。
             union = pd.Series(False, index=result.index)

@@ -82,15 +82,29 @@ def score_rule_hit(row: pd.Series, rule: dict[str, Any]) -> bool:
 
 def build_reason_text(row: pd.Series, config: dict[str, Any]) -> tuple[str, str, str]:
     include_hits = []
-    for condition in config.get("candidate_filters", {}).get("conditions", []):
-        status = "命中" if condition_hit(row, condition) else "未命中"
-        include_hits.append(f"{condition['column']}={condition['value']}({status})")
+    filters = config.get("candidate_filters", {})
+    profiles = filters.get("condition_profiles", [])
+    if profiles:
+        for position, profile in enumerate(profiles, 1):
+            profile_id = str(profile.get("profile_id", f"PROFILE_{position}"))
+            conditions = profile.get("conditions", [])
+            status = "命中" if conditions and all(
+                condition_hit(row, condition) for condition in conditions
+            ) else "未命中"
+            condition_text = "&&".join(
+                f"{condition['column']}={condition['value']}" for condition in conditions
+            )
+            include_hits.append(f"{profile_id}[{condition_text}]({status})")
+    else:
+        for condition in filters.get("conditions", []):
+            status = "命中" if condition_hit(row, condition) else "未命中"
+            include_hits.append(f"{condition['column']}={condition['value']}({status})")
 
     exclude_hits = []
-    for condition in config.get("candidate_filters", {}).get("exclude_conditions", []):
+    for condition in filters.get("exclude_conditions", []):
         status = "触发" if condition_hit(row, condition) else "未触发"
         exclude_hits.append(f"{condition['column']}={condition['value']}({status})")
-    for rule in config.get("candidate_filters", {}).get("exclude_rules", []):
+    for rule in filters.get("exclude_rules", []):
         status = "触发" if rule_hit(row, rule) else "未触发"
         condition_text = "&&".join(
             f"{condition['column']}={condition['value']}" for condition in rule.get("conditions", [])
