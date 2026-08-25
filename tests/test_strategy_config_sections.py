@@ -94,9 +94,9 @@ class StrategyConfigSectionTests(unittest.TestCase):
         self.assertEqual(
             a_audit["metric_scope"], "STRICT_ASOF_A_STANDALONE_SINGLE_ACCOUNT"
         )
-        self.assertEqual(a_audit["executed_trade_count"], 63)
-        self.assertAlmostEqual(a_audit["equity_multiple"], 18.91154868679943)
-        self.assertEqual(a_audit["candidate_pool_trade_count"], 78)
+        self.assertEqual(a_audit["executed_trade_count"], 82)
+        self.assertAlmostEqual(a_audit["equity_multiple"], 94.39844282719737)
+        self.assertEqual(a_audit["candidate_pool_trade_count"], 103)
 
         c_audit = self.config["paper_ab_filtered_strategy"]["c_strategy"][
             "latest_2y_audit"
@@ -135,6 +135,25 @@ class StrategyConfigSectionTests(unittest.TestCase):
                 "fd_ratio_bucket": "0_3pct_0_5pct",
             },
         })
+        fallback = a_filters["fallback_when_primary_empty"]
+        self.assertTrue(fallback["enabled"])
+        self.assertTrue(fallback["same_trade_date_only"])
+        self.assertTrue(fallback["inherit_primary_ranking"])
+        self.assertEqual(
+            {
+                str(condition["column"]): str(condition["value"])
+                for condition in fallback["conditions"]
+            },
+            {
+                "segment_limit_up_count_bucket": "lt_5",
+                "market_chain_count_bucket": "8_15",
+                "fd_ratio_bucket": "1pct_2pct",
+            },
+        )
+        self.assertEqual(
+            fallback["exclude_conditions"],
+            [{"column": "board_type", "operator": "==", "value": "one_word"}],
+        )
         c_strategy = self.config["paper_ab_filtered_strategy"]["c_strategy"]
         self.assertEqual(c_strategy["conditions"], [])
         self.assertEqual(len(c_strategy["condition_profiles"]), 2)

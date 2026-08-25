@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "status": "UNFROZEN_PENDING_CERTIFICATION",
-  "release_id": "portfolio-a-c-e-d-pending",
+  "release_id": "portfolio-a-c-e-d-a-fd-1-2-non-one-word-pending",
   "invalidated_at": "2026-08-24",
-  "invalidated_reason": "当前A>C>E>D组合只有严格发现期统计，尚未取得LOCKED_OOS或WALK_FORWARD发布认证；旧组合配置哈希、代码哈希、输入哈希与复利锚点均不可复用。",
+  "invalidated_reason": "最新A已按用户要求写入生产选股链，但其1%-2%封单非一字板补位来自355个变体的事后观察；当前A>C>E>D只有严格发现期统计，尚未取得LOCKED_OOS、WALK_FORWARD或容量发布认证，旧组合哈希与复利锚点不可复用。",
   "strategy_priority_order": [
     "A",
     "C",
@@ -16,5 +16,5 @@
   "certification_status": "NOT_CERTIFIED",
   "certification_scenario": "current_a_c_e_d",
   "capacity_certified": false,
-  "note": "A>C>E>D生产顺序已落地，但本文件不伪造样本外认证：新BUY仍受现有认证安全门约束；SELL、撤单、成交回写和既有持仓退出不受影响。"
+  "note": "A>C>E>D生产顺序与A_FD_1_2_NON_ONE_WORD_FALLBACK_20260630_V1选股规则已落地；本文件不伪造样本外或容量认证。真实BUY继续受交易时间、余额、仓位、重复委托、成交可靠性、涨跌停、流动性和QMT状态等执行风控约束。"
 }

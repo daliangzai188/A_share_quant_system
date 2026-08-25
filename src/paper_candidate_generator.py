@@ -128,12 +128,86 @@ class PaperCandidateGenerator:
         return candidates
 
     def apply_strategy_filters(self, candidates: pd.DataFrame) -> pd.DataFrame:
-        result = candidates.copy()
-        result = self.apply_universe_filters(result)
-        result = self.apply_include_conditions(result)
-        result = self.apply_exclude_conditions(result)
-        result = self.apply_exclude_rules(result)
+        # 全局股票池与排除规则同时约束主分支和补位分支。补位不能写成普通
+        # ANY_PROFILE，否则它会在主A已有候选的日期参与排序，改变“原A绝对
+        # 优先、仅空缺日补位”的研究定义。
+        base = self.apply_universe_filters(candidates.copy())
+        base = self.apply_exclude_conditions(base)
+        base = self.apply_exclude_rules(base)
+        primary = self.apply_include_conditions(base)
+        result = self.apply_primary_empty_fallback(base, primary)
         return result.sort_values(["trade_date", "ts_code"]).reset_index(drop=True)
+
+    @staticmethod
+    def _condition_mask(
+        candidates: pd.DataFrame,
+        conditions: list[dict[str, Any]],
+        *,
+        context: str,
+    ) -> pd.Series:
+        if not conditions:
+            raise RuntimeError(f"{context}条件不能为空")
+        mask = pd.Series(True, index=candidates.index)
+        for condition in conditions:
+            column = str(condition.get("column", ""))
+            operator = str(condition.get("operator", "==")).strip()
+            expected = str(condition.get("value", ""))
+            if operator != "==":
+                raise RuntimeError(f"{context}目前只允许等值条件: {column} {operator}")
+            if column not in candidates.columns:
+                raise RuntimeError(f"{context}字段不存在: {column}")
+            mask &= candidates[column].fillna("missing").astype(str).eq(expected)
+        return mask
+
+    def apply_primary_empty_fallback(
+        self,
+        base: pd.DataFrame,
+        primary: pd.DataFrame,
+    ) -> pd.DataFrame:
+        """仅在同一信号日主A为空时追加冻结的A补位分支。"""
+
+        fallback = self.config.get("candidate_filters", {}).get(
+            "fallback_when_primary_empty", {}
+        )
+        if not bool(fallback.get("enabled", False)):
+            return primary.copy()
+        if not bool(fallback.get("same_trade_date_only", False)):
+            raise RuntimeError("A补位配置必须声明same_trade_date_only=true")
+        if not bool(fallback.get("inherit_primary_ranking", False)):
+            raise RuntimeError("A补位配置必须继承主A排序，禁止隐式改变排名口径")
+
+        fallback_id = str(fallback.get("fallback_id", "")).strip()
+        if not fallback_id:
+            raise RuntimeError("A补位配置缺少fallback_id")
+        selected = base[
+            self._condition_mask(
+                base,
+                list(fallback.get("conditions", [])),
+                context=f"A补位分支{fallback_id}",
+            )
+        ].copy()
+        for condition in fallback.get("exclude_conditions", []):
+            column = str(condition.get("column", ""))
+            operator = str(condition.get("operator", "==")).strip()
+            expected = str(condition.get("value", ""))
+            if operator != "==":
+                raise RuntimeError(f"A补位排除目前只允许等值条件: {column} {operator}")
+            if column not in selected.columns:
+                raise RuntimeError(f"A补位排除字段不存在: {column}")
+            selected = selected[
+                ~selected[column].fillna("missing").astype(str).eq(expected)
+            ].copy()
+
+        primary_dates = set(primary["trade_date"].astype(str))
+        selected = selected[
+            ~selected["trade_date"].astype(str).isin(primary_dates)
+        ].copy()
+        selected["matched_condition_profile_ids"] = fallback_id
+        if primary.empty:
+            return selected
+        if selected.empty:
+            return primary.copy()
+        return pd.concat([primary, selected], ignore_index=True, sort=False)
 
     def apply_universe_filters(self, candidates: pd.DataFrame) -> pd.DataFrame:
         result = candidates.copy()

@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
-"""在当前严格实盘锚点下重新研究策略A。
+"""复现2026-08-24最新A落地前的严格策略A研究。
 
-本脚本只写 ``reports/strategy_a_current_window/20260630`` 研究报告，不修改
+本脚本只写 ``reports/strategy_a_current_window/20260630_ac_ed`` 研究报告，不修改
 ``config/strategy_config.json``、发布证书、实盘开关或券商状态。
 
 固定口径：
 
 1. 研究窗口为 2024-06-30 至 2026-06-30；2024-06-30 为非交易日，
    首个实际信号日自然是 2024-07-01；
-2. D/E/C、D>A>E>C 单账户占仓顺序、82.5% 仓位、费用、滑点、前复权、
+2. C/E/D、A>C>E>D 真实开仓日单账户占仓顺序、82.5% 仓位、费用、滑点、前复权、
    T+1、涨停买不到和跌停延期卖出全部冻结；
 3. 只改变策略A的信号日可见筛选或排序字段；
 4. 先用 2024-07-01~2025-06-30 开发段排序候选，再用 2025H2 做验证
    门槛，最后只在 2026H1 检查测试表现；
-5. 结果属于 STRICT_DISCOVERY，不自动替换实盘规则。
+5. 结果属于 STRICT_DISCOVERY；落地后重跑仍显式剥离新补位配置，以旧A为
+   基准复现本次研究，禁止把新A误当成自己的研究基线。
 
 运行：
     python3 scripts/research_strategy_a_current_window.py
@@ -45,13 +46,15 @@ from src.utils.config import load_json_config  # noqa: E402
 
 
 LOGGER = logging.getLogger("strategy_a_current_window_research")
-OUTPUT_DIR = ROOT / "reports" / "strategy_a_current_window" / "20260630"
+OUTPUT_DIR = ROOT / "reports" / "strategy_a_current_window" / "20260630_ac_ed"
 VARIANT_PATH = OUTPUT_DIR / "variant_metrics.csv"
 PERIOD_PATH = OUTPUT_DIR / "selected_comparison_by_period.csv"
 PICKS_PATH = OUTPUT_DIR / "selected_candidate_picks.csv"
 TRADES_PATH = OUTPUT_DIR / "selected_candidate_trades.csv"
 CHALLENGER_PICKS_PATH = OUTPUT_DIR / "full_window_challenger_picks.csv"
 CHALLENGER_TRADES_PATH = OUTPUT_DIR / "full_window_challenger_trades.csv"
+ROBUST_PICKS_PATH = OUTPUT_DIR / "posthoc_robust_observation_picks.csv"
+ROBUST_TRADES_PATH = OUTPUT_DIR / "posthoc_robust_observation_trades.csv"
 FACTOR_PATH = OUTPUT_DIR / "baseline_factor_diagnostics.csv"
 QUALITY_PATH = OUTPUT_DIR / "data_quality.json"
 SUMMARY_PATH = OUTPUT_DIR / "summary.json"
@@ -128,19 +131,22 @@ EXCLUSION_FACTOR_COLUMNS = [
     "theme_leader_rank_bucket",
     "theme_height_rank_bucket",
     "theme_is_mainline_bucket",
+    "fd_ratio_bucket",
+    "segment_limit_up_count_bucket",
+    "market_chain_count_bucket",
 ]
 
 CORE_CONDITIONS = {
-    "segment_limit_up_count_bucket": "lt_5",
-    "market_chain_count_bucket": "8_15",
-    "fd_ratio_bucket": "0_5pct_1pct",
+    "segment_limit_up_count_bucket": {"lt_5"},
+    "market_chain_count_bucket": {"8_15"},
+    "fd_ratio_bucket": {"0_3pct_0_5pct", "0_5pct_1pct"},
 }
 
 # 只向相邻区间扩一档，避免一次放开到完全不同的策略母池。
 CORE_ADJACENT_EXPANSIONS = {
     "segment_limit_up_count_bucket": ["5_10"],
     "market_chain_count_bucket": ["3_8", "15_30"],
-    "fd_ratio_bucket": ["0_3pct_0_5pct", "1pct_2pct"],
+    "fd_ratio_bucket": ["0_1pct_0_3pct", "1pct_2pct"],
 }
 
 
@@ -215,6 +221,13 @@ def _rank_daily(
 class StrategyACurrentWindowResearch:
     def __init__(self) -> None:
         self.config = load_json_config(strict.STRATEGY_CONFIG)
+        # 本报告研究的基线是落地前A（0.3%~1%两个核心分支）。正式配置现已
+        # 包含本研究选出的补位规则；复现报告时必须剥离它，避免循环使用候选
+        # 作为基线并导致63笔/18.911549倍锚点漂移。
+        self.config = copy.deepcopy(self.config)
+        self.config.get("candidate_filters", {}).pop(
+            "fallback_when_primary_empty", None
+        )
         self.generator = _generator(self.config)
         self.source, self.source_audit = strict.source_audit()
         if not bool(self.source_audit.get("passed")):
@@ -243,18 +256,28 @@ class StrategyACurrentWindowResearch:
         self._standalone_by_variant: dict[str, pd.DataFrame] = {}
         self._combo_by_variant: dict[str, pd.DataFrame] = {}
 
-        source_audit, baseline_daily, baseline_legs = certifier.build_strict_snapshot()
+        source_audit, _released_daily, released_legs = certifier.build_strict_snapshot()
         if not bool(source_audit.get("passed")):
             raise RuntimeError("当前正式组合源审计失败，拒绝优化")
+        incumbent_ac = strict.build_ac(
+            strict.STRICT_SOURCE,
+            config_override=self.config,
+        )
+        baseline_legs = {
+            "A": incumbent_ac[incumbent_ac["strategy_leg"].eq("A")].copy(),
+            "C": incumbent_ac[incumbent_ac["strategy_leg"].eq("C")].copy(),
+            "E": released_legs["E"].copy(),
+            "D": released_legs["D"].copy(),
+        }
+        baseline_daily = strict.replay_by_action_date(
+            baseline_legs, ("A", "C", "E", "D")
+        )
         self.baseline_daily = baseline_daily
         self.baseline_legs = baseline_legs
-        self.baseline_maps = {
-            leg: strict.candidate_map(frame) for leg, frame in baseline_legs.items()
-        }
         self.baseline_a = baseline_legs["A"].copy()
-        self.baseline_a_standalone = strict.replay(
-            {"D": {}, "A": self.baseline_maps["A"], "E": {}, "C": {}},
-            {"A"},
+        self.baseline_a_standalone = strict.replay_by_action_date(
+            {"A": self.baseline_a},
+            ("A",),
         )
         self.baseline_metrics = self._period_metrics(
             self.baseline_a_standalone, self.baseline_daily
@@ -349,6 +372,19 @@ class StrategyACurrentWindowResearch:
             official_values.to_numpy(float), current_values.to_numpy(float), atol=TOLERANCE, rtol=0
         ):
             raise RuntimeError("当前策略A收益未复现正式锚点")
+        standalone = strict.replay_by_action_date({"A": outcomes}, ("A",))
+        standalone_metrics = strict.combo_metrics(standalone)
+        combo_metrics = strict.combo_metrics(self.baseline_daily)
+        if (
+            int(standalone_metrics["trade_count"]) != 63
+            or abs(float(standalone_metrics["equity_multiple"]) - 18.91154868679943) > 1e-9
+        ):
+            raise RuntimeError("当前策略A独立63笔/18.911549倍正式锚点未复现")
+        if (
+            int(combo_metrics["trade_count"]) != 136
+            or abs(float(combo_metrics["equity_multiple"]) - 1023.791243962826) > 1e-9
+        ):
+            raise RuntimeError("落地前A>C>E>D组合136笔/1023.791244倍研究基线未复现")
 
     def _outcome(self, row: pd.Series) -> dict[str, Any]:
         signal_date = str(row["trade_date"])
@@ -449,14 +485,13 @@ class StrategyACurrentWindowResearch:
             spec.rank_ascending,
         )
         outcomes = self._outcomes(picks)
-        a_map = strict.candidate_map(outcomes)
-        standalone = strict.replay(
-            {"D": {}, "A": a_map, "E": {}, "C": {}},
-            {"A"},
+        standalone = strict.replay_by_action_date(
+            {"A": outcomes},
+            ("A",),
         )
-        maps = dict(self.baseline_maps)
-        maps["A"] = a_map
-        combo = strict.replay(maps, {"D", "A", "E", "C"})
+        legs = dict(self.baseline_legs)
+        legs["A"] = outcomes
+        combo = strict.replay_by_action_date(legs, ("A", "C", "E", "D"))
         metrics = self._period_metrics(standalone, combo)
 
         identity = baseline_picks[["trade_date", "ts_code"]].merge(
@@ -493,8 +528,8 @@ class StrategyACurrentWindowResearch:
 
     def _core_expansion_pool(self, column: str, value: str) -> pd.DataFrame:
         mask = pd.Series(True, index=self.broad_pool.index)
-        for current_column, current_value in CORE_CONDITIONS.items():
-            allowed = {current_value}
+        for current_column, current_values in CORE_CONDITIONS.items():
+            allowed = set(current_values)
             if current_column == column:
                 allowed.add(value)
             mask &= self.broad_pool[current_column].fillna("missing").astype(str).isin(allowed)
@@ -539,6 +574,14 @@ class StrategyACurrentWindowResearch:
 
     def _variant_space(self) -> tuple[list[VariantSpec], dict[str, pd.DataFrame]]:
         pools: dict[str, pd.DataFrame] = {"current": self.current_pool}
+        current_rank_columns = tuple(str(value) for value in self.config["ranking"]["columns"])
+        current_rank_ascending = tuple(bool(value) for value in self.config["ranking"]["ascending"])
+        frozen_current_picks = _rank_daily(
+            self.current_pool,
+            self.generator,
+            current_rank_columns,
+            current_rank_ascending,
+        )
         specs = [
             VariantSpec(
                 name="BASELINE_CURRENT_A",
@@ -564,6 +607,30 @@ class StrategyACurrentWindowResearch:
                         ),
                         rank_columns=("profit_source_score", "limit_times", column),
                         rank_ascending=(False, False, ascending),
+                    )
+                )
+                specs.append(
+                    VariantSpec(
+                        name=f"RANK_REPLACE_SECOND__{column}__{direction}",
+                        family="rank_replace_secondary",
+                        description=(
+                            "保留当前收益来源分第一排序键，用"
+                            f"{column}替换连板高度作为第二排序键（{direction}）。"
+                        ),
+                        rank_columns=("profit_source_score", column),
+                        rank_ascending=(False, ascending),
+                    )
+                )
+                specs.append(
+                    VariantSpec(
+                        name=f"RANK_FACTOR_FIRST__{column}__{direction}",
+                        family="rank_factor_primary",
+                        description=(
+                            f"使用{column}作为第一排序键（{direction}），再按当前"
+                            "收益来源分和连板高度排序。"
+                        ),
+                        rank_columns=(column, "profit_source_score", "limit_times"),
+                        rank_ascending=(ascending, False, False),
                     )
                 )
 
@@ -604,7 +671,7 @@ class StrategyACurrentWindowResearch:
                         name=f"EXPAND__{column}__{value}",
                         family="adjacent_core_expansion",
                         description=(
-                            f"核心条件 {column} 在当前 {CORE_CONDITIONS[column]} 基础上"
+                            f"核心条件 {column} 在当前 {sorted(CORE_CONDITIONS[column])} 基础上"
                             f"相邻扩展 {value}，其余条件不变。"
                         ),
                         pool_key=key,
@@ -624,12 +691,75 @@ class StrategyACurrentWindowResearch:
                         name=f"FALLBACK__{column}__{value}",
                         family="adjacent_core_fallback",
                         description=(
-                            f"保持当前 {column}={CORE_CONDITIONS[column]} 候选绝对优先；"
+                            f"保持当前 {column}={sorted(CORE_CONDITIONS[column])} 候选绝对优先；"
                             f"仅在当天当前池为空时，用相邻区间 {value} 补充候选。"
                         ),
                         pool_key=fallback_key,
                     )
                 )
+
+                # 1%~2%封单比例补位是最接近当前A的上相邻分支。除直接扩展外，
+                # 预先穷举“只约束补位分支、当前A候选与排序完全冻结”的单因子版本，
+                # 避免为抑制补位风险而误改当前已在生产的A核心分支。
+                if column == "fd_ratio_bucket" and value == "1pct_2pct":
+                    for factor in EXCLUSION_FACTOR_COLUMNS:
+                        if factor not in fallback_only.columns:
+                            continue
+                        factor_values = fallback_only[factor].fillna("missing").astype(str)
+                        for bucket, count in factor_values.value_counts().items():
+                            if int(count) < 4:
+                                continue
+                            filtered = fallback_only.loc[~factor_values.eq(bucket)].copy()
+                            if filtered["trade_date"].nunique() < 20:
+                                continue
+                            filtered_key = f"filtered_fallback::{factor}::{bucket}"
+                            pools[filtered_key] = pd.concat(
+                                [self.current_pool, filtered],
+                                ignore_index=True,
+                            ).sort_values(["trade_date", "ts_code"]).reset_index(drop=True)
+                            specs.append(
+                                VariantSpec(
+                                    name=f"FILTER_FALLBACK_FD_1_2__EXCLUDE__{factor}__{bucket}",
+                                    family="filtered_fd_1_2_fallback",
+                                    description=(
+                                        "保持当前A核心分支和排序不变；仅在1%~2%封单比例"
+                                        f"补位分支排除 {factor}={bucket}。"
+                                    ),
+                                    pool_key=filtered_key,
+                                )
+                            )
+
+                    # 当前A日期先冻结为既有每日第一名；以下排序只会作用于当天
+                    # 当前A完全无候选时的1%~2%补位池。
+                    for factor in RANK_FACTOR_COLUMNS:
+                        if factor not in fallback_only.columns:
+                            continue
+                        numeric = pd.to_numeric(fallback_only[factor], errors="coerce")
+                        if numeric.notna().sum() < 10 or numeric.nunique(dropna=True) < 2:
+                            continue
+                        for direction, ascending in (("asc", True), ("desc", False)):
+                            supplemental_picks = _rank_daily(
+                                fallback_only,
+                                self.generator,
+                                (factor, "profit_source_score", "limit_times"),
+                                (ascending, False, False),
+                            )
+                            rank_key = f"rank_fallback::{factor}::{direction}"
+                            pools[rank_key] = pd.concat(
+                                [frozen_current_picks, supplemental_picks],
+                                ignore_index=True,
+                            ).sort_values(["trade_date", "ts_code"]).reset_index(drop=True)
+                            specs.append(
+                                VariantSpec(
+                                    name=f"RANK_FALLBACK_FD_1_2__{factor}__{direction}",
+                                    family="rank_fd_1_2_fallback",
+                                    description=(
+                                        "保持当前A核心分支每日选择不变；仅在1%~2%封单比例"
+                                        f"补位分支按 {factor} {direction} 优先。"
+                                    ),
+                                    pool_key=rank_key,
+                                )
+                            )
 
         for relax, description in (
             ("amount_ratio_0_8_1_2", "放回当前排除的成交额倍率0.8~1.2区间。"),
@@ -680,6 +810,8 @@ class StrategyACurrentWindowResearch:
                 and compound_passed
                 and float(row[f"{period}_a_max_drawdown"])
                 >= float(baseline[f"{period}_a_max_drawdown"]) - MAX_DRAWDOWN_WORSENING
+                and float(row[f"{period}_combo_max_drawdown"])
+                >= float(baseline[f"{period}_combo_max_drawdown"]) - MAX_DRAWDOWN_WORSENING
             )
 
         result["development_gate_passed"] = result.apply(
@@ -768,10 +900,17 @@ class StrategyACurrentWindowResearch:
             ["factor", "candidate_count", "bucket"], ascending=[True, False, True]
         )
 
-    def _period_comparison(self, selected: str, challenger: str) -> pd.DataFrame:
+    def _period_comparison(
+        self,
+        selected: str,
+        robust: str,
+        challenger: str,
+    ) -> pd.DataFrame:
         rows: list[dict[str, Any]] = []
         for period in PERIODS:
-            variants = list(dict.fromkeys(("BASELINE_CURRENT_A", selected, challenger)))
+            variants = list(
+                dict.fromkeys(("BASELINE_CURRENT_A", selected, robust, challenger))
+            )
             for variant in variants:
                 metrics = self._period_metrics(
                     self._standalone_by_variant[variant],
@@ -802,12 +941,14 @@ class StrategyACurrentWindowResearch:
         self,
         result: pd.DataFrame,
         selected: str,
+        robust: str,
         challenger: str,
         shortlist: list[str],
         promotion_passed: bool,
     ) -> None:
         baseline = result[result["variant"].eq("BASELINE_CURRENT_A")].iloc[0]
         candidate = result[result["variant"].eq(selected)].iloc[0]
+        robust_row = result[result["variant"].eq(robust)].iloc[0]
         challenger_row = result[result["variant"].eq(challenger)].iloc[0]
         verdict = (
             "发现按预设时序门槛仍优于当前基准的研究候选，但仍只能进入冻结模拟盘/前向观察。"
@@ -823,7 +964,7 @@ class StrategyACurrentWindowResearch:
             "",
             f"- 窗口：{START}~{END}；开发段至{DEVELOPMENT_END}，验证段为2025H2，测试段为2026H1。",
             "- A为T+1开盘买、T+2收盘卖、82.5%仓位；费用、滑点、前复权、涨跌停和T+1规则不变。",
-            "- 组合固定D>A>E>C优先级，只替换A；D/E/C候选冻结。",
+            "- 组合固定A>C>E>D真实开仓日优先级，只替换A；C/E/D候选冻结。",
             "- 测试段不参与候选排序，研究不修改实盘配置。",
             "",
             "## 数据质量",
@@ -841,6 +982,7 @@ class StrategyACurrentWindowResearch:
         for label, row in (
             ("当前基准", baseline),
             ("顺序候选", candidate),
+            ("事后稳健观察", robust_row),
             ("全窗观察候选", challenger_row),
         ):
             lines.append(
@@ -852,11 +994,50 @@ class StrategyACurrentWindowResearch:
         lines.extend(
             [
                 "",
+                "## 全窗完整风险指标",
+                "",
+                "| 方案 | 范围 | 样本数 | 胜率 | 平均 | 中位 | 复利 | 最大回撤 | 最大盈利 | 最大亏损 | 盈亏比 | 最大连亏 |",
+                "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+            ]
+        )
+        for label, row in (
+            ("当前基准", baseline),
+            ("顺序候选", candidate),
+            ("事后稳健观察", robust_row),
+            ("全窗观察候选", challenger_row),
+        ):
+            for scope, scope_label in (("a", "A独立"), ("combo", "ACED组合")):
+                lines.append(
+                    f"| {label} | {scope_label} | {int(row[f'full_{scope}_trade_count'])} | "
+                    f"{float(row[f'full_{scope}_win_rate']):.2%} | "
+                    f"{float(row[f'full_{scope}_avg_account_return']):.2%} | "
+                    f"{float(row[f'full_{scope}_median_account_return']):.2%} | "
+                    f"{float(row[f'full_{scope}_equity_multiple']):.6f}倍 | "
+                    f"{float(row[f'full_{scope}_max_drawdown']):.2%} | "
+                    f"{float(row[f'full_{scope}_max_profit']):.2%} | "
+                    f"{float(row[f'full_{scope}_max_loss']):.2%} | "
+                    f"{float(row[f'full_{scope}_profit_loss_ratio']):.3f} | "
+                    f"{int(row[f'full_{scope}_max_consecutive_losses'])} |"
+                )
+        lines.extend(
+            [
+                "",
                 f"- 顺序候选：`{selected}`；{candidate['description']}",
                 f"- 开发段前{TOP_DEVELOPMENT_CANDIDATES}名：{', '.join(shortlist) if shortlist else '无'}。",
                 f"- 开发/验证/测试/全段门槛：{bool(candidate['development_gate_passed'])}/"
                 f"{bool(candidate['validation_gate_passed'])}/{bool(candidate['test_gate_passed'])}/"
                 f"{bool(candidate['full_gate_passed'])}。",
+                "",
+                "## 事后稳健观察（不具备发布资格）",
+                "",
+                f"- 方案：`{robust}`；{robust_row['description']}",
+                f"- A全窗复利相对基准变化：{float(robust_row['full_a_compound_uplift']):+.2%}；"
+                f"组合全窗复利变化：{float(robust_row['full_combo_compound_uplift']):+.2%}。",
+                f"- 开发/验证/测试/全段门槛：{bool(robust_row['development_gate_passed'])}/"
+                f"{bool(robust_row['validation_gate_passed'])}/{bool(robust_row['test_gate_passed'])}/"
+                f"{bool(robust_row['full_gate_passed'])}。",
+                "- 该方案是在查看测试段门槛后从通过者中识别，测试段已被污染；只能作为"
+                "下一阶段冻结影子方案，不能倒推为本轮可发布优胜者。",
                 "",
                 "## 全窗收益最高的双提升观察候选",
                 "",
@@ -866,8 +1047,8 @@ class StrategyACurrentWindowResearch:
                 f"- 开发/验证/测试/全段门槛：{bool(challenger_row['development_gate_passed'])}/"
                 f"{bool(challenger_row['validation_gate_passed'])}/{bool(challenger_row['test_gate_passed'])}/"
                 f"{bool(challenger_row['full_gate_passed'])}。",
-                "- 该方案开发段落后、随后两个半年段领先，存在阶段切换或近期窗口拟合两种解释；"
-                "只能作为前向影子观察候选，不能按全窗最高值直接替换实盘。",
+                "- 该方案按全窗结果事后选出，存在路径依赖、多重比较和同窗口拟合；"
+                "只能作为诊断，不能按全窗最高值直接替换实盘。",
                 "",
                 "## 风险与发布限制",
                 "",
@@ -910,6 +1091,18 @@ class StrategyACurrentWindowResearch:
             if not challenger_pool.empty
             else "BASELINE_CURRENT_A"
         )
+        robust_pool = result[
+            ~result["variant"].eq("BASELINE_CURRENT_A")
+            & result["all_research_gates_passed"]
+        ].sort_values(
+            ["development_score", "development_a_compound_uplift"],
+            ascending=False,
+        )
+        robust = (
+            str(robust_pool.iloc[0]["variant"])
+            if not robust_pool.empty
+            else "BASELINE_CURRENT_A"
+        )
         promotion_passed = bool(
             selected != "BASELINE_CURRENT_A"
             and selected_row["development_gate_passed"]
@@ -926,7 +1119,7 @@ class StrategyACurrentWindowResearch:
         self._factor_diagnostics(baseline_picks).to_csv(
             FACTOR_PATH, index=False, encoding="utf-8-sig"
         )
-        period = self._period_comparison(selected, challenger)
+        period = self._period_comparison(selected, robust, challenger)
         period.to_csv(PERIOD_PATH, index=False, encoding="utf-8-sig")
 
         selected_picks = self._picks_by_variant[selected].copy()
@@ -955,6 +1148,19 @@ class StrategyACurrentWindowResearch:
         challenger_trades[challenger_trades["status"].eq("EXECUTED")].to_csv(
             CHALLENGER_TRADES_PATH, index=False, encoding="utf-8-sig"
         )
+        robust_picks = self._picks_by_variant[robust].copy()
+        robust_outcomes = self._outcomes_by_variant[robust].copy()
+        robust_picks.merge(
+            robust_outcomes,
+            left_on=["trade_date", "ts_code"],
+            right_on=["signal_date", "ts_code"],
+            how="left",
+            suffixes=("", "_outcome"),
+        ).to_csv(ROBUST_PICKS_PATH, index=False, encoding="utf-8-sig")
+        robust_trades = self._combo_by_variant[robust]
+        robust_trades[robust_trades["status"].eq("EXECUTED")].to_csv(
+            ROBUST_TRADES_PATH, index=False, encoding="utf-8-sig"
+        )
         QUALITY_PATH.write_text(
             json.dumps(self.data_quality, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
@@ -962,6 +1168,7 @@ class StrategyACurrentWindowResearch:
 
         baseline_row = result[result["variant"].eq("BASELINE_CURRENT_A")].iloc[0]
         selected_row = result[result["variant"].eq(selected)].iloc[0]
+        robust_row = result[result["variant"].eq(robust)].iloc[0]
         challenger_row = result[result["variant"].eq(challenger)].iloc[0]
         payload = {
             "schema_version": 1,
@@ -981,6 +1188,8 @@ class StrategyACurrentWindowResearch:
             "selected_variant": selected,
             "selected_description": str(selected_row["description"]),
             "promotion_research_gates_passed": promotion_passed,
+            "posthoc_robust_observation": robust,
+            "posthoc_robust_observation_description": str(robust_row["description"]),
             "full_window_challenger": challenger,
             "full_window_challenger_description": str(challenger_row["description"]),
             "baseline": {
@@ -990,6 +1199,10 @@ class StrategyACurrentWindowResearch:
             "selected": {
                 key: _json_value(value)
                 for key, value in selected_row.to_dict().items()
+            },
+            "robust_observation": {
+                key: _json_value(value)
+                for key, value in robust_row.to_dict().items()
             },
             "challenger": {
                 key: _json_value(value)
@@ -1010,6 +1223,7 @@ class StrategyACurrentWindowResearch:
         self._write_report(
             result,
             selected,
+            robust,
             challenger,
             shortlist,
             promotion_passed,

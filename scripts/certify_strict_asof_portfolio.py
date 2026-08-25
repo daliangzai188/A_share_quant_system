@@ -62,10 +62,10 @@ MANIFEST_PATH = OUTPUT_DIR / "strict_asof_input_manifest.json"
 DAILY_DIR = ROOT / "data" / "raw" / "daily"
 DAILY_BASIC_DIR = ROOT / "data" / "raw" / "daily_basic"
 EXPECTED_PRIORITY = ["A", "C", "E", "D"]
-EXPECTED_TRADE_COUNT = 136
-EXPECTED_EQUITY_MULTIPLE = 1023.791243962826
+EXPECTED_TRADE_COUNT = 143
+EXPECTED_EQUITY_MULTIPLE = 2280.9020459698163
 EXPECTED_MAX_DRAWDOWN = -0.14119813241960621
-EXPECTED_LEG_COUNTS = {"A": 42, "C": 47, "E": 36, "D": 11}
+EXPECTED_LEG_COUNTS = {"A": 53, "C": 45, "E": 35, "D": 10}
 LOGGER = logging.getLogger("strict_portfolio_certifier")
 # 2026-06-30 信号的 C/E T+3 退出在极端跌停时最多继续检查 4 个交易日；
 # 输入清单保守锁到 2026-07-10，覆盖正常退出和延期卖出行情。
@@ -149,7 +149,7 @@ def _write_strict_report(
             "- A/C/E使用上一交易日收盘后计划并在buy_date开仓；三腿都无计划时D才在action_date盘中运行。",
             "- 持仓在退出日收盘后才释放，退出日不允许同一账户再开新仓。",
             "- 费用、滑点、涨跌停、T+1、跌停延期卖出和D成交压力折扣均已保留。",
-            "- 用户于2026-08-24明确接受A>E>C>D的1164.500295倍下降为A>C>E>D的1023.791244倍，作为提升C优先级的人工覆盖决定。",
+            "- 用户于2026-08-24明确要求：在逐笔收益、费用、T+1、成交与占仓口径核对无计算错误后，将A的1%-2%封单非一字板空缺日补位规则落地。",
             "- 本窗口参与规则研究，属于STRICT_DISCOVERY；尚未完成冻结样本外或walk-forward发布认证。",
             "- 历史机械复利不等于大资金可成交收益，也不代表未来收益。",
             "",
@@ -211,7 +211,7 @@ def write_or_verify_input_manifest(*, refresh: bool) -> Path:
 
 def build_strict_snapshot() -> tuple[dict[str, Any], pd.DataFrame, dict[str, pd.DataFrame]]:
     # D已经发布为固定因子版本，不能再用旧D条件重建正式证书。这里与D/C研究
-    # 的逐腿替换口径共用同一发布读取器，并由下方136笔/1023.7912倍锚点锁死。
+    # 的逐腿替换口径共用同一发布读取器，并由下方143笔/2280.9020倍锚点锁死。
     d_events, _d_event_audit = load_d_events(
         D_EVENT_PATH, strict.START, strict.END
     )
@@ -385,8 +385,8 @@ def certify(*, refresh_input_manifest: bool = False) -> dict[str, Any]:
         "note": (
             "这是当前组合唯一正式统计口径：严格as-of、单账户、逐笔机械复利。"
             "A/C/E按上一交易日收盘计划映射到真实buy_date，三腿均无计划才启动D。"
-            "用户已明确接受组合历史复利从A>E>C>D的1164.500295倍下降到"
-            "A>C>E>D的1023.791244倍。"
+            "用户已明确接受在逐笔回放口径无计算错误的前提下，将A空缺日的"
+            "1%-2%封单非一字板补位规则纳入A>C>E>D，当前窗口为2280.902046倍。"
             "当前协议仍是STRICT_DISCOVERY；研究结果不参与实盘程序启停或BUY控制，"
             "旧信号日排序1375.623853倍与同日重排1463.912878倍不得用于正式收益或比较。"
         ),

@@ -83,6 +83,10 @@ def condition_strategy_config(
     config["strategy_name"] = strategy_name
     filters = config.setdefault("candidate_filters", {})
     filters["conditions"] = [dict(condition) for condition in conditions]
+    # 自定义conditions/profile当前只用于生成C配置副本。A的“主池为空才补位”
+    # 是A专属语义，绝不能随顶层candidate_filters复制到C，否则会在C自身
+    # 无候选日错误启用A补位分支，造成跨腿污染。
+    filters.pop("fallback_when_primary_empty", None)
     if condition_profiles:
         filters["condition_profiles"] = copy.deepcopy(condition_profiles)
     else:

@@ -53,24 +53,24 @@
     "rolling_live_report_path": "reports/live_performance/rolling_live_status.json",
     "rolling_min_trades_for_decision": 20,
     "selected_rule_name": "current_a_c_e_d",
-    "selected_rule_description": "当前生产可执行腿序A>C>E>D：A/C/E读取上一交易日收盘后计划，按A、C、E选择唯一开仓，三腿均无计划时D才启动当日盘中路径。A使用A_FD_EXPANSION_20260630_V1，C使用C_LEADER_UNION_20260630_V1，E使用换手率高值与一日成交额倍率低值各50%的同日分位综合分，D使用已发布回封因子规则。",
+    "selected_rule_description": "当前生产可执行腿序A>C>E>D：A/C/E读取上一交易日收盘后计划，按A、C、E选择唯一开仓，三腿均无计划时D才启动当日盘中路径。A使用A_FD_1_2_NON_ONE_WORD_FALLBACK_20260630_V1：原0.3%-1%核心A绝对优先，仅核心A当日为空时启用1%-2%封单且排除一字板的补位；C使用C_LEADER_UNION_20260630_V1，E使用换手率高值与一日成交额倍率低值各50%的同日分位综合分，D使用已发布回封因子规则。",
     "live_candidate_metrics": {
       "scenario": "current_a_c_e_d_strict_asof_discovery",
       "strict_asof_window": "20240630~20260630",
-      "strict_asof_trade_count": 136,
-      "strict_asof_equity_multiple": 1023.791243962826,
-      "strict_asof_win_rate": 0.7132352941176471,
-      "strict_asof_avg_account_return": 0.05560118955903521,
-      "strict_asof_median_account_return": 0.04196830755934645,
+      "strict_asof_trade_count": 143,
+      "strict_asof_equity_multiple": 2280.9020459698163,
+      "strict_asof_win_rate": 0.7272727272727273,
+      "strict_asof_avg_account_return": 0.059120573025650436,
+      "strict_asof_median_account_return": 0.04807778952940472,
       "strict_asof_max_drawdown": -0.14119813241960621,
       "strict_asof_leg_counts": {
-        "A": 42,
-        "C": 47,
-        "E": 36,
-        "D": 11
+        "A": 53,
+        "C": 45,
+        "E": 35,
+        "D": 10
       },
       "compound_standard_id": "A_SYSTEM_MECHANICAL_COMPOUND_V1",
-      "note": "当前研究窗口为2024-06-30至2026-06-30；正式组合必须按真实开仓日回放：A/C/E为上一交易日收盘计划并在buy_date执行，三腿均无计划时D才在当日盘中运行，退出日收盘后才释放资金。A>C>E>D为136笔、1023.791244倍、最大回撤-14.1198%，分腿A42/C47/E36/D11。用户于2026-08-24明确接受其低于可执行A>E>C>D的1164.500295倍，并要求提升C到E之前。STRICT_DISCOVERY机械复利不是未来收益承诺；旧信号日D>A>E>C的1375.623853倍和同日重排1463.912878倍均不得继续作为当前组合锚点。"
+      "note": "当前研究窗口为2024-06-30至2026-06-30；组合按真实开仓日回放：A/C/E为上一交易日收盘计划并在buy_date执行，三腿均无计划时D才在当日盘中运行，退出日收盘后才释放资金。A保持原0.3%-1%核心规则绝对优先，仅核心A当日为空时用1%-2%封单且非一字板补位。A>C>E>D为143笔、2280.902046倍、最大回撤-14.1198%，分腿A53/C45/E35/D10。用户于2026-08-24明确以逐笔回放无计算错误作为采用门槛。STRICT_DISCOVERY机械复利不是未来收益承诺，且该补位规则来自355个变体的事后观察。"
     }
   },
   "live_performance_report": {

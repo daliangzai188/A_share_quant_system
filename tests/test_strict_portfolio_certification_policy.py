@@ -55,12 +55,12 @@ class StrictPortfolioCertificationPolicyTests(unittest.TestCase):
         )
         self.assertNotIn("release_eligible", audit)
         standalone = audit["strict_leg_standalone_metrics"]
-        self.assertEqual(standalone["A"]["trade_count"], 63)
-        self.assertAlmostEqual(standalone["A"]["equity_multiple"], 18.91154868679943)
+        self.assertEqual(standalone["A"]["trade_count"], 82)
+        self.assertAlmostEqual(standalone["A"]["equity_multiple"], 94.39844282719737)
         self.assertEqual(standalone["E"]["trade_count"], 74)
         self.assertAlmostEqual(standalone["E"]["equity_multiple"], 11.70378989651547)
         candidate = audit["strict_leg_candidate_metrics"]
-        self.assertEqual(candidate["A"]["trade_count"], 78)
+        self.assertEqual(candidate["A"]["trade_count"], 103)
         self.assertEqual(candidate["E"]["trade_count"], 89)
 
     def test_legacy_identity_script_cannot_overwrite_official_certificate(self) -> None:

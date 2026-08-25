@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "verification_status": "PASS",
+  "release_id": "A_FD_1_2_NON_ONE_WORD_FALLBACK_20260630_V1",
+  "window": "20240630~20260630",
+  "config_checks": {
+    "release_id": true,
+    "fallback_enabled": true,
+    "fallback_id": true,
+    "same_trade_date_only": true,
+    "inherit_primary_ranking": true,
+    "fallback_conditions": true,
+    "fallback_excludes_one_word": true,
+    "priority_a_c_e_d": true,
+    "runtime_live_mode": true,
+    "real_order_enabled": true,
+    "risk_gateway_enabled": true
+  },
+  "candidate_identity_count": 103,
+  "candidate_identity_mismatch_count": 0,
+  "fallback_checks": {
+    "fallback_pick_count": 25,
+    "fallback_all_fd_1_2": true,
+    "fallback_all_non_one_word": true,
+    "fallback_never_competes_with_primary": true
+  },
+  "fee_recalculation_count": 103,
+  "maximum_fee_recalculation_error": 5.551115123125783e-17,
+  "combo_identity_count": 143,
+  "combo_identity_mismatch_count": 0,
+  "a_metrics": {
+    "trade_count": 82,
+    "win_rate": 0.6951219512195121,
+    "avg_account_return": 0.06220239873176411,
+    "median_account_return": 0.04102415458421389,
+    "equity_multiple": 94.39844282719737,
+    "max_drawdown": -0.19374531590159627,
+    "max_profit": 0.4762530065206852,
+    "max_loss": -0.11849477438811166,
+    "profit_loss_ratio": 2.521611817289454,
+    "max_consecutive_losses": 3,
+    "win_rate_wilson_95_lower": 0.5886142087835207,
+    "win_rate_wilson_95_upper": 0.7841660356300986,
+    "avg_return_bootstrap_95_lower": 0.03973427771355651,
+    "avg_return_bootstrap_95_upper": 0.08622866167269595,
+    "compound_standard_id": "A_SYSTEM_MECHANICAL_COMPOUND_V1",
+    "leg_counts": {
+      "A": 82
+    }
+  },
+  "combo_metrics": {
+    "trade_count": 143,
+    "win_rate": 0.7272727272727273,
+    "avg_account_return": 0.059120573025650436,
+    "median_account_return": 0.04807778952940472,
+    "equity_multiple": 2280.9020459698163,
+    "max_drawdown": -0.14119813241960621,
+    "max_profit": 0.3687231660523884,
+    "max_loss": -0.09240440692497143,
+    "profit_loss_ratio": 2.6675624646024425,
+    "max_consecutive_losses": 4,
+    "win_rate_wilson_95_lower": 0.6490483258578806,
+    "win_rate_wilson_95_upper": 0.7936059525865368,
+    "avg_return_bootstrap_95_lower": 0.04502824780369744,
+    "avg_return_bootstrap_95_upper": 0.07387204763447149,
+    "compound_standard_id": "A_SYSTEM_MECHANICAL_COMPOUND_V1",
+    "leg_counts": {
+      "A": 53,
+      "C": 45,
+      "D": 10,
+      "E": 35
+    }
+  },
+  "mechanical_compound": {
+    "standard_id": "A_SYSTEM_MECHANICAL_COMPOUND_V1",
+    "trade_count": 143,
+    "initial_equity": 1.0,
+    "final_equity": 2280.9020459698163,
+    "equity_multiple": 2280.9020459698163,
+    "total_compound_return": 2279.9020459698163,
+    "max_drawdown": -0.14119813241960621
+  },
+  "formal_release_certification": {
+    "status": "UNFROZEN_PENDING_CERTIFICATION",
+    "certification_status": "NOT_CERTIFIED",
+    "capacity_certified": false
+  },
+  "conclusion": "研究候选、生产候选、费用公式、真实开仓日组合逐笔和机械复利全部一致；未发现收益计算错误。正式样本外与容量认证状态仍保持未通过，不伪造。"
+}

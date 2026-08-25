@@ -198,6 +198,45 @@ def apply_condition_profiles(
     return selected
 
 
+def apply_a_primary_empty_fallback(
+    base: pd.DataFrame,
+    primary: pd.DataFrame,
+    config: dict[str, Any],
+) -> pd.DataFrame:
+    """当日主A为空时才启用配置中的A补位分支。"""
+
+    fallback = config.get("candidate_filters", {}).get(
+        "fallback_when_primary_empty", {}
+    )
+    if not bool(fallback.get("enabled", False)) or not primary.empty:
+        return primary
+    if not bool(fallback.get("same_trade_date_only", False)):
+        raise RuntimeError("A补位配置必须声明same_trade_date_only=true")
+    if not bool(fallback.get("inherit_primary_ranking", False)):
+        raise RuntimeError("A补位配置必须继承主A排序")
+    fallback_id = str(fallback.get("fallback_id", "")).strip()
+    if not fallback_id:
+        raise RuntimeError("A补位配置缺少fallback_id")
+    selected = apply_conditions(
+        base,
+        list(fallback.get("conditions", [])),
+        strict_missing=True,
+    )
+    for condition in fallback.get("exclude_conditions", []):
+        column = str(condition.get("column", ""))
+        operator = str(condition.get("operator", "==")).strip()
+        expected = str(condition.get("value", ""))
+        if operator != "==":
+            raise RuntimeError(f"A补位排除目前只允许等值条件: {column} {operator}")
+        if column not in selected.columns:
+            raise RuntimeError(f"A补位排除字段不存在: {column}")
+        selected = selected[
+            ~selected[column].fillna("missing").astype(str).eq(expected)
+        ].copy()
+    selected["matched_condition_profile_ids"] = fallback_id
+    return selected
+
+
 def apply_exclusions(data: pd.DataFrame, config: dict[str, Any]) -> pd.DataFrame:
     result = data.copy()
     filters = config.get("candidate_filters", {})
@@ -265,6 +304,7 @@ def select_candidates(data: pd.DataFrame, config: dict[str, Any], top_n: int) ->
         if a_profiles
         else apply_conditions(base, a_conditions, strict_missing=True)
     )
+    a_pool = apply_a_primary_empty_fallback(base, a_pool, config)
     if not a_pool.empty:
         return "LIVE_LIMIT_POOL_A", rank_candidates(a_pool, config, top_n)
 

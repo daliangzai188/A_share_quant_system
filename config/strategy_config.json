@@ -1,10 +1,10 @@
 {
   "file_role": "A/C两条实盘腿的选股规则源。⚠️本文件确实驱动实盘：守护进程trading_daemon.py 与 run_paper_ab_filtered_daily_ops.py 都从这里加载A/C的入选条件。顶层enabled/live_trading_enabled/broker_adapter_enabled/qmt_enabled 是研究期遗留的占位开关，实盘总闸在 config/config.json，不要据此判断本文件是否生效。",
-  "strategy_name": "a_strict_fd_0_3pct_1pct_profit_score_height_rank",
+  "strategy_name": "a_strict_fd_0_3pct_1pct_with_fd_1pct_2pct_non_one_word_fallback",
   "enabled": false,
-  "description": "A严格策略封单比例扩展版。保持市场分段、连板环境、排除项、排序、T+2退出和执行规则不变，将封单金额/流通市值由0.5%-1%相邻扩展为0.3%-1%；用户于2026-08-24明确接受全窗双提升结果并要求落地实盘。",
+  "description": "A严格策略补位版。原A的0.3%-1%封单比例两条核心分支、排除项、排序、T+2退出和执行规则全部不变；只有原A当日完全无候选时，才启用1%-2%封单比例补位，并只在补位分支排除一字板。用户于2026-08-24明确要求在收益逐笔口径无计算错误后落地。",
   "version": "2026-08-24",
-  "release_id": "A_FD_EXPANSION_20260630_V1",
+  "release_id": "A_FD_1_2_NON_ONE_WORD_FALLBACK_20260630_V1",
   "effective_from": "20260825",
   "trade_mode": "paper",
   "live_trading_enabled": false,
@@ -96,6 +96,37 @@
         ]
       }
     ],
+    "fallback_when_primary_empty": {
+      "enabled": true,
+      "fallback_id": "A_FD_1PCT_2PCT_NON_ONE_WORD_FALLBACK",
+      "description": "仅在同一信号日原A核心池为空时启用；补位条件保持低分段热度和中等连板环境，将封单比例放到1%-2%，并排除一字板。",
+      "same_trade_date_only": true,
+      "inherit_primary_ranking": true,
+      "conditions": [
+        {
+          "column": "segment_limit_up_count_bucket",
+          "operator": "==",
+          "value": "lt_5"
+        },
+        {
+          "column": "market_chain_count_bucket",
+          "operator": "==",
+          "value": "8_15"
+        },
+        {
+          "column": "fd_ratio_bucket",
+          "operator": "==",
+          "value": "1pct_2pct"
+        }
+      ],
+      "exclude_conditions": [
+        {
+          "column": "board_type",
+          "operator": "==",
+          "value": "one_word"
+        }
+      ]
+    },
     "exclude_conditions": [
       {
         "column": "amount_ratio_bucket",
@@ -228,24 +259,24 @@
     "audit_date": "2026-08-24",
     "metric_scope": "STRICT_ASOF_A_STANDALONE_SINGLE_ACCOUNT",
     "window": "20240630~20260630",
-    "equity_multiple": 18.91154868679943,
-    "executed_trade_count": 63,
-    "win_rate": 0.6825396825396826,
-    "avg_account_return": 0.051704258011289195,
-    "median_account_return": 0.03893068315788266,
-    "max_drawdown": -0.19374531590159605,
-    "max_profit": 0.3687231660523884,
+    "equity_multiple": 94.39844282719737,
+    "executed_trade_count": 82,
+    "win_rate": 0.6951219512195121,
+    "avg_account_return": 0.06220239873176411,
+    "median_account_return": 0.04102415458421389,
+    "max_drawdown": -0.19374531590159627,
+    "max_profit": 0.4762530065206852,
     "max_loss": -0.11849477438811166,
-    "profit_loss_ratio": 2.2278484310681637,
+    "profit_loss_ratio": 2.521611817289454,
     "max_consecutive_losses": 3,
-    "candidate_pool_trade_count": 78,
-    "candidate_pool_equity_multiple": 23.71995362242552,
+    "candidate_pool_trade_count": 103,
+    "candidate_pool_equity_multiple": 122.85365369438532,
     "st_trade_count": 0,
     "position_pct": 0.825,
     "research_protocol": "STRICT_DISCOVERY",
-    "release_decision": "USER_ACCEPTED_FULL_WINDOW_EXPANSION",
-    "source_report": "reports/strategy_a_current_window/20260630/summary.json",
-    "risk_note": "全窗候选开发段弱于旧基准，存在阶段切换或近期窗口拟合风险；本次按用户明确决策落地，不代表未来收益承诺。"
+    "release_decision": "USER_ACCEPTED_ACCURATE_BACKTEST_POSTHOC_ROBUST_OBSERVATION",
+    "source_report": "reports/strategy_a_current_window/20260630_ac_ed/summary.json",
+    "risk_note": "当前窗口A独立82笔/94.398443倍；固定A>C>E>D组合143笔/2280.902046倍。该规则从355个变体的事后观察中选出，不是未触碰样本外；2020-2026扩窗回放最大回撤约-55.20%，提升集中于2025。用户明确以回测口径无计算错误作为采用门槛，不代表未来收益承诺。"
   },
   "pre_paper_trade_requirements": {
     "file_role": "A/C复核与准入要求。B已删除；must_review_each_trade=false 后仅 risk_flags 非空标的生成复核单，复核不阻塞实盘执行链。",
@@ -598,10 +629,10 @@
   },
   "risk_notice": "该配置只表示当前本地回测和审计口径下的候选策略，不代表可直接实盘。实盘前必须完成分钟K、盘口档位、集合竞价、滑点、跌停卖出和模拟盘验证。",
   "_config_section_map": {
-    "说明": "本文件含A顶层两分支OR规则与C独立两分支OR规则，读之前先看清楚加载段，避免把A/C条件串用。",
+    "说明": "本文件含A顶层两条核心OR分支、A主池空缺日专属补位，以及C独立两分支OR规则；读之前先看清楚加载段，避免把A补位复制到C。",
     "A策略": {
       "规则段": "candidate_filters + ranking（顶层）",
-      "入选条件": "ANY_PROFILE：①segment_limit_up_count_bucket=lt_5 + market_chain_count_bucket=8_15 + fd_ratio_bucket=0_5pct_1pct；②前两项相同 + fd_ratio_bucket=0_3pct_0_5pct",
+      "入选条件": "核心ANY_PROFILE：①segment_limit_up_count_bucket=lt_5 + market_chain_count_bucket=8_15 + fd_ratio_bucket=0_5pct_1pct；②前两项相同 + fd_ratio_bucket=0_3pct_0_5pct。仅核心当日为空时，补位fd_ratio_bucket=1pct_2pct并排除board_type=one_word。",
       "退出": "T+2收盘",
       "加载方": "src/paper_candidate_generator.py 的 PaperCandidateGenerator 默认配置"
     },
@@ -612,7 +643,7 @@
       "触发前提": "only_when_a_no_candidate=true，仅在A无候选时补位",
       "加载方": "scripts/run_paper_ab_filtered_daily_ops.py 的 configured_c_condition_profiles()"
     },
-    "⚠️易错点": "A和C都使用condition_profiles。A读取顶层candidate_filters，C读取paper_ab_filtered_strategy.c_strategy；分支内部AND、分支之间OR。如果仍只读取conditions空数组，会把策略误判为空。",
-    "C回测校验": "2024-06-30至2026-06-30严格as-of口径：C独立单账户55笔，胜率76.36%，平均账户收益+6.2270%，82.5%仓位机械复利23.617616倍，最大回撤-6.5713%；只替换C后的D>A>E>C为134笔、921.336502倍，最大回撤-15.3995%。"
+    "⚠️易错点": "A和C都使用condition_profiles。A读取顶层candidate_filters，并额外读取fallback_when_primary_empty；C读取paper_ab_filtered_strategy.c_strategy，生成C配置副本时必须删除A补位字段。分支内部AND、分支之间OR。",
+    "C回测校验": "C规则本身未改变；旧A可用日条件下C独立单账户55笔/23.617616倍。最新A补位增加后，按A>C依赖得到的正式C机会为54笔/23.396688倍；变化来自A让路关系，不是C因子或排序变化。"
   }
 }
