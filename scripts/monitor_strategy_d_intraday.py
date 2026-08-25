@@ -51,9 +51,12 @@ from src.strategy_d_checkpoint import (
     D_CHECKPOINT_STATUS_CLOSED,
     D_CHECKPOINT_STATUS_READY,
     D_CHECKPOINT_STATUS_SCAN_IN_PROGRESS,
+    block_strategy_d_checkpoint_recovery,
+    clear_strategy_d_checkpoint_recovery_block,
     inspect_strategy_d_checkpoint,
     invalidate_strategy_d_checkpoint,
     strategy_d_checkpoint_path,
+    strategy_d_checkpoint_recovery_block_path,
     strategy_d_machine_fingerprint,
     strategy_d_market_context_sha256,
     strategy_d_runtime_fingerprint,
@@ -702,6 +705,11 @@ class StrategyDMonitor:
         self.path_integrity_failed = False
         self.path_integrity_reason = ""
         self._path_failure_notified = False
+        # 检查点 I/O 降级与行情路径缺失分开管理。前者可在后续完整扫描并成功写入
+        # 新 READY 后恢复；后者涉及真实封板/炸板证据缺口，必须全天 fail-closed。
+        self.checkpoint_io_degraded = False
+        self.checkpoint_io_reason = ""
+        self._last_checkpoint_io_error = ""
         self.checkpoint_path = strategy_d_checkpoint_path(
             PROJECT_ROOT, today_beijing().strftime("%Y%m%d")
         )
@@ -850,10 +858,59 @@ class StrategyDMonitor:
                 machine_fingerprint=self.checkpoint_machine_fingerprint,
                 runtime_fingerprint=self.checkpoint_runtime_fingerprint,
             )
+            self._last_checkpoint_io_error = ""
             return True
         except Exception as exc:
+            self._last_checkpoint_io_error = str(exc)
             self.logger.error("D路径检查点失效标记写入失败：%s", exc)
             return False
+
+    def _enter_checkpoint_io_degraded(self, reason: str) -> bool:
+        """隔离检查点I/O故障；不把完整的内存行情路径误判为永久缺失。"""
+
+        self.checkpoint_io_degraded = True
+        self.checkpoint_io_reason = str(reason)
+        try:
+            block_strategy_d_checkpoint_recovery(
+                self.checkpoint_path,
+                trade_date=today_beijing().strftime("%Y%m%d"),
+                reason=self.checkpoint_io_reason,
+                recorded_at=now_beijing(),
+            )
+        except Exception as exc:
+            # 主检查点没能切换为 SCAN_IN_PROGRESS，恢复阻断标记也无法落盘时，
+            # 新进程可能读取陈旧 READY。此时无法证明恢复唯一性，只能永久停开。
+            self.path_integrity_failed = True
+            self.path_integrity_reason = (
+                "D检查点I/O失败且恢复阻断标记无法落盘，不能证明重启恢复路径唯一:"
+                f"{exc}"
+            )
+            self.logger.error("D完整路径已永久失效：%s", self.path_integrity_reason)
+            return False
+        self.logger.warning(
+            "D检查点进入I/O降级保护：%s；当前轮不判断BUY。若后续全市场扫描完整、"
+            "新READY原子落盘且恢复阻断标记清除成功，将自动恢复D，不按全天路径缺失处理。",
+            self.checkpoint_io_reason,
+        )
+        return True
+
+    def _clear_checkpoint_io_degraded(self) -> bool:
+        try:
+            clear_strategy_d_checkpoint_recovery_block(self.checkpoint_path)
+        except Exception as exc:
+            self._last_checkpoint_io_error = str(exc)
+            self.logger.error("D新READY已落盘，但恢复阻断标记清除失败：%s", exc)
+            return False
+        old_reason = self.checkpoint_io_reason
+        self.checkpoint_io_degraded = False
+        self.checkpoint_io_reason = ""
+        self._last_checkpoint_io_error = ""
+        self.logger.warning(
+            "D检查点I/O已恢复：后续完整扫描已成功写入新READY并清除恢复阻断标记；"
+            "D继续使用09:30起内存路径判断信号。原故障=%s",
+            old_reason,
+        )
+        return True
 
     def _save_ready_checkpoint(self) -> bool:
         now = now_beijing()
@@ -914,10 +971,11 @@ class StrategyDMonitor:
         }
         try:
             write_strategy_d_checkpoint(self.checkpoint_path, payload)
+            self._last_checkpoint_io_error = ""
             return True
         except Exception as exc:
+            self._last_checkpoint_io_error = str(exc)
             self.logger.error("D完整路径检查点保存失败，本轮状态不可用于重启恢复：%s", exc)
-            self.checkpoint_path.unlink(missing_ok=True)
             return False
 
     def _restore_ready_checkpoint(self) -> tuple[bool, str]:
@@ -2343,14 +2401,24 @@ class StrategyDMonitor:
         batches = self._batches()
         if not batches:
             return
+        if strategy_d_checkpoint_recovery_block_path(self.checkpoint_path).exists():
+            self.checkpoint_io_degraded = True
+            if not self.checkpoint_io_reason:
+                self.checkpoint_io_reason = "检测到尚未由新READY解除的恢复阻断标记"
         # 先原子摧毁上一轮READY检查点。若进程在本轮扫描中途退出，新进程只能看到
         # SCAN_IN_PROGRESS，绝不会拿上一轮状态跨过一段未知行情继续计数。
         if not self._invalidate_checkpoint(
             D_CHECKPOINT_STATUS_SCAN_IN_PROGRESS,
             f"第{self.scan_round + 1}轮全市场扫描进行中",
         ):
-            self.path_integrity_failed = True
-            self.path_integrity_reason = "无法使上一轮D检查点失效，不能证明重启恢复路径唯一"
+            self._enter_checkpoint_io_degraded(
+                "无法使上一轮D检查点原子切换为SCAN_IN_PROGRESS"
+                + (
+                    f":{self._last_checkpoint_io_error}"
+                    if self._last_checkpoint_io_error
+                    else ""
+                )
+            )
         updated_count = 0
         failures: list[str] = []
         for batch in batches:
@@ -2423,16 +2491,43 @@ class StrategyDMonitor:
                 )
             except Exception as exc:
                 self.logger.warning("情绪转强推送失败：%s", exc)
-        if not self.path_integrity_failed:
-            self._check_and_fire()
-            if not self._save_ready_checkpoint():
-                self.logger.warning(
-                    "D本轮扫描仍可在当前进程内继续，但进程重启时将因无有效检查点安全停开。"
-                )
-        else:
+        if self.path_integrity_failed:
             self._invalidate_checkpoint(
                 D_CHECKPOINT_STATUS_CLOSED,
                 self.path_integrity_reason or "D全市场路径已失效",
+            )
+            return
+
+        if self.checkpoint_io_degraded:
+            # I/O降级期间内存路径仍连续，但必须先把本轮完整状态持久化并解除阻断，
+            # 才能重新判断BUY。这样临时锁不会关闭全天D，也不会让陈旧READY被恢复。
+            if self._save_ready_checkpoint() and self._clear_checkpoint_io_degraded():
+                self._check_and_fire()
+                if not self._save_ready_checkpoint():
+                    self._enter_checkpoint_io_degraded(
+                        "D恢复信号判断后未能保存最新READY"
+                        + (
+                            f":{self._last_checkpoint_io_error}"
+                            if self._last_checkpoint_io_error
+                            else ""
+                        )
+                    )
+            else:
+                self.logger.warning(
+                    "D检查点I/O仍处于降级保护，本轮全市场行情虽完整，但不判断BUY；"
+                    "下一轮继续尝试生成新的原子READY。"
+                )
+            return
+
+        self._check_and_fire()
+        if not self._save_ready_checkpoint():
+            self._enter_checkpoint_io_degraded(
+                "D本轮完整路径未能保存为READY"
+                + (
+                    f":{self._last_checkpoint_io_error}"
+                    if self._last_checkpoint_io_error
+                    else ""
+                )
             )
 
     def status_line(self) -> str:

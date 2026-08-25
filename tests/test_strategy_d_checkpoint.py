@@ -20,6 +20,8 @@ from scripts.monitor_strategy_d_intraday import StockState, StrategyDMonitor
 from src.strategy_d_checkpoint import (
     D_CHECKPOINT_STATUS_READY,
     D_CHECKPOINT_STATUS_SCAN_IN_PROGRESS,
+    block_strategy_d_checkpoint_recovery,
+    clear_strategy_d_checkpoint_recovery_block,
     inspect_strategy_d_checkpoint,
     invalidate_strategy_d_checkpoint,
     strategy_d_market_context_sha256,
@@ -212,6 +214,45 @@ class StrategyDCheckpointTests(unittest.TestCase):
         self.assertFalse(check.ok)
         self.assertIn("摘要", check.reason)
 
+    def test_atomic_write_retries_transient_windows_sharing_violation(self) -> None:
+        import src.strategy_d_checkpoint as checkpoint_module
+
+        real_replace = checkpoint_module.os.replace
+        attempts = 0
+
+        def flaky_replace(source, target):
+            nonlocal attempts
+            attempts += 1
+            if attempts < 3:
+                exc = PermissionError("temporary sharing violation")
+                exc.winerror = 32
+                raise exc
+            return real_replace(source, target)
+
+        with patch.object(
+            checkpoint_module.os, "replace", side_effect=flaky_replace
+        ), patch.object(checkpoint_module.time, "sleep", return_value=None):
+            write_strategy_d_checkpoint(self.path, self._payload())
+
+        self.assertEqual(attempts, 3)
+        self.assertTrue(self._inspect().ok)
+
+    def test_recovery_block_rejects_old_ready_until_explicitly_cleared(self) -> None:
+        write_strategy_d_checkpoint(self.path, self._payload())
+        block_strategy_d_checkpoint_recovery(
+            self.path,
+            trade_date="20260819",
+            reason="checkpoint target temporarily locked",
+            recorded_at=self.now,
+        )
+
+        blocked = self._inspect()
+
+        self.assertFalse(blocked.ok)
+        self.assertIn("I/O保护标记", blocked.reason)
+        clear_strategy_d_checkpoint_recovery_block(self.path)
+        self.assertTrue(self._inspect().ok)
+
     def test_runtime_fingerprint_changes_with_d_configuration(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
         base = {"strategy_d": {"checkpoint_max_age_sec": 75}, "fill_model": {}}
@@ -311,6 +352,51 @@ class StrategyDCheckpointTests(unittest.TestCase):
         rejected = self._inspect(now=self.now + dt.timedelta(seconds=30))
         self.assertFalse(rejected.ok)
         self.assertTrue(monitor.path_integrity_failed)
+
+    def test_checkpoint_io_failure_rearms_after_complete_scan_and_new_ready(self) -> None:
+        quote = SimpleNamespace(
+            upper_limit=11.0,
+            pre_close=10.0,
+            last_price=11.0,
+            bid_volumes=[10000],
+        )
+        monitor = StrategyDMonitor(
+            broker=_QuoteBroker({"000001.SZ": quote}),
+            live_order=False,
+            logger=_Logger(),
+            signal_csv=Path(self.temp_dir.name) / "signals.csv",
+            allowed_segments={"sz_main"},
+            config={"strategy_d": {"checkpoint_max_age_sec": 75}},
+        )
+        monitor.checkpoint_path = self.path
+        monitor.checkpoint_machine_fingerprint = "machine"
+        monitor.checkpoint_runtime_fingerprint = "runtime"
+        monitor.universe = list(self.universe)
+        monitor.universe_sha256 = self.universe_hash
+        monitor.name_map = {"000001.SZ": "平安银行"}
+        monitor.circ_mv_map = {"000001.SZ": 100000.0}
+        monitor.segment_stock_counts = {"sz_main": 1}
+        monitor.original_session_start_hhmm = 920
+
+        with patch(
+            "scripts.monitor_strategy_d_intraday.now_beijing",
+            return_value=self.now,
+        ), patch(
+            "scripts.monitor_strategy_d_intraday.today_beijing",
+            return_value=self.now.date(),
+        ), patch.object(
+            monitor, "_invalidate_checkpoint", return_value=False
+        ), patch.object(
+            monitor, "_check_and_fire"
+        ) as check_and_fire:
+            monitor.poll_once()
+
+        self.assertFalse(monitor.path_integrity_failed)
+        self.assertFalse(monitor.checkpoint_io_degraded)
+        check_and_fire.assert_called_once_with()
+        ready = self._inspect()
+        self.assertTrue(ready.ok, ready.reason)
+        self.assertEqual(ready.payload["last_scan_updated_count"], 1)
 
 
 if __name__ == "__main__":

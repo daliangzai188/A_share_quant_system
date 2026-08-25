@@ -14,13 +14,22 @@ import math
 import os
 from pathlib import Path
 import platform
+import time
 from typing import Any, Mapping, Sequence
+import uuid
 
 
 D_CHECKPOINT_SCHEMA_VERSION = 1
 D_CHECKPOINT_STATUS_READY = "READY"
 D_CHECKPOINT_STATUS_SCAN_IN_PROGRESS = "SCAN_IN_PROGRESS"
 D_CHECKPOINT_STATUS_CLOSED = "CLOSED"
+D_CHECKPOINT_STATUS_RECOVERY_BLOCKED = "RECOVERY_BLOCKED"
+
+# Windows 上 Syncthing、杀毒软件等短暂读取检查点时，os.replace/unlink 可能返回
+# WinError 32（共享冲突）。这是持久化 I/O 故障，不等于盘中行情路径缺失；先在
+# 2 秒内重试，仍失败再由恢复阻断标记保护旧 READY，禁止新进程读取陈旧状态。
+_CHECKPOINT_IO_RETRY_ATTEMPTS = 20
+_CHECKPOINT_IO_RETRY_DELAY_SECONDS = 0.1
 
 _D_RUNTIME_CODE_FILES = (
     "scripts/monitor_strategy_d_intraday.py",
@@ -66,6 +75,13 @@ def strategy_d_checkpoint_path(project_root: Path, trade_date: str) -> Path:
         / "state"
         / f"strategy_d_intraday_checkpoint_{trade_date}.json"
     )
+
+
+def strategy_d_checkpoint_recovery_block_path(checkpoint_path: Path) -> Path:
+    """返回检查点恢复阻断标记；标记存在时旧 READY 不得用于盘中恢复。"""
+
+    path = Path(checkpoint_path)
+    return path.with_name(f"{path.name}.recovery_blocked")
 
 
 def strategy_d_machine_fingerprint() -> str:
@@ -196,6 +212,42 @@ def _payload_sha256(payload: Mapping[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _is_retryable_checkpoint_io_error(exc: OSError) -> bool:
+    return isinstance(exc, PermissionError) or getattr(exc, "winerror", None) in {
+        5,   # access denied
+        32,  # sharing violation
+        33,  # lock violation
+    }
+
+
+def _replace_with_retry(temporary: Path, path: Path) -> None:
+    for attempt in range(1, _CHECKPOINT_IO_RETRY_ATTEMPTS + 1):
+        try:
+            os.replace(temporary, path)
+            return
+        except OSError as exc:
+            if (
+                not _is_retryable_checkpoint_io_error(exc)
+                or attempt >= _CHECKPOINT_IO_RETRY_ATTEMPTS
+            ):
+                raise
+            time.sleep(_CHECKPOINT_IO_RETRY_DELAY_SECONDS)
+
+
+def _unlink_with_retry(path: Path) -> None:
+    for attempt in range(1, _CHECKPOINT_IO_RETRY_ATTEMPTS + 1):
+        try:
+            path.unlink(missing_ok=True)
+            return
+        except OSError as exc:
+            if (
+                not _is_retryable_checkpoint_io_error(exc)
+                or attempt >= _CHECKPOINT_IO_RETRY_ATTEMPTS
+            ):
+                raise
+            time.sleep(_CHECKPOINT_IO_RETRY_DELAY_SECONDS)
+
+
 def write_strategy_d_checkpoint(path: Path, payload: Mapping[str, Any]) -> None:
     """同目录临时文件+原子替换，禁止读到半份股票状态。"""
 
@@ -203,16 +255,51 @@ def write_strategy_d_checkpoint(path: Path, payload: Mapping[str, Any]) -> None:
     normalized["schema_version"] = D_CHECKPOINT_SCHEMA_VERSION
     normalized["payload_sha256"] = _payload_sha256(normalized)
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary = path.with_name(
+        f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    )
     try:
         temporary.write_text(
             json.dumps(normalized, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
             + "\n",
             encoding="utf-8",
         )
-        os.replace(temporary, path)
+        _replace_with_retry(temporary, path)
     finally:
-        temporary.unlink(missing_ok=True)
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            # 主文件替换结果才决定检查点是否成功；临时文件清理失败不能覆盖原异常。
+            pass
+
+
+def block_strategy_d_checkpoint_recovery(
+    checkpoint_path: Path,
+    *,
+    trade_date: str,
+    reason: str,
+    recorded_at: dt.datetime,
+) -> Path:
+    """阻断旧 READY 恢复，直到完整扫描成功写入新 READY 后显式清除。"""
+
+    block_path = strategy_d_checkpoint_recovery_block_path(checkpoint_path)
+    write_strategy_d_checkpoint(
+        block_path,
+        {
+            "status": D_CHECKPOINT_STATUS_RECOVERY_BLOCKED,
+            "resume_allowed": False,
+            "trade_date": str(trade_date),
+            "recorded_at": recorded_at.isoformat(),
+            "reason": str(reason),
+        },
+    )
+    return block_path
+
+
+def clear_strategy_d_checkpoint_recovery_block(checkpoint_path: Path) -> None:
+    """新 READY 已原子落盘后清除阻断标记；Windows 文件占用同样有界重试。"""
+
+    _unlink_with_retry(strategy_d_checkpoint_recovery_block_path(checkpoint_path))
 
 
 def invalidate_strategy_d_checkpoint(
@@ -225,9 +312,10 @@ def invalidate_strategy_d_checkpoint(
     machine_fingerprint: str,
     runtime_fingerprint: str,
 ) -> None:
-    """扫描开始前先摧毁旧READY状态；进程若在半轮扫描中崩溃就不能恢复。"""
+    """扫描开始前原子覆盖旧READY；进程若在半轮扫描中崩溃就不能恢复。"""
 
-    path.unlink(missing_ok=True)
+    # 不先 unlink：os.replace 本身即为原子覆盖。先删除会扩大“既无旧检查点、又无
+    # 新状态”的窗口，也更容易在 Windows 文件读取锁下触发 WinError 32。
     write_strategy_d_checkpoint(
         path,
         {
@@ -270,6 +358,15 @@ def inspect_strategy_d_checkpoint(
     def reject(reason: str, payload: dict[str, Any] | None = None) -> StrategyDCheckpointCheck:
         return StrategyDCheckpointCheck(False, reason, path, payload or {})
 
+    recovery_block_path = strategy_d_checkpoint_recovery_block_path(path)
+    if recovery_block_path.exists():
+        block_reason = "原因不可读取"
+        try:
+            block_payload = json.loads(recovery_block_path.read_text(encoding="utf-8"))
+            block_reason = str(block_payload.get("reason", block_reason))
+        except Exception:
+            pass
+        return reject(f"D检查点恢复仍被I/O保护标记阻断:{block_reason}")
     if not path.exists():
         return reject("不存在D盘中路径检查点")
     try:
