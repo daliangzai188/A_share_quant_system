@@ -105,6 +105,7 @@ SIGNAL_START_HHMM = D_SIGNAL_START_HHMM  # 回测last_time下限；必须在此�
 CANCEL_HHMM = D_ORDER_CANCEL_HHMM        # 冻结的D实盘撤单边界
 POLL_BATCH_SIZE = 500        # 每次 get_full_tick 的股票数量
 POLL_INTERVAL_SEC = 30       # 每批轮询间隔（秒）
+ORDER_FILL_POLL_INTERVAL_SEC = 2  # D活动委托成交事实轮询；不参与策略信号判断
 MONITOR_START_HHMM = D_TRACKING_START_HHMM  # 完整路径从连续竞价开始跟踪
 D_POSITION_PCT = 0.825       # 默认目标仓位82.5%，优先使用 config.json/strategy_d/position_pct
 D_RETRY_TOP_N = 1            # 严格对齐D原始回测口径：只尝试排序第1名，失败不补偿
@@ -2343,12 +2344,27 @@ class StrategyDMonitor:
         from src.broker_adapter import OrderFill
 
         last_error: Exception | None = None
+        last_visible_fill: OrderFill | None = None
         for attempt in range(1, 4):
             time.sleep(1.0)
             try:
                 fill = self.broker.get_order_fill(order_id)
-                if fill.status_code >= 0 or fill.filled_qty > 0:
+                # “已报/待报”只证明券商受理，不代表成交确认结束。旧代码在
+                # status=50、filled=0时直接返回，随后到达的真实成交无人回写。
+                if fill.filled_qty > 0 or fill.is_terminal:
                     return fill
+                if fill.status_code >= 0:
+                    last_visible_fill = fill
+                    self.logger.info(
+                        "D委托已在券商可见但尚未成交，第%d次继续确认: %s "
+                        "order_id=%s 状态=%s(%s)",
+                        attempt,
+                        ts_code,
+                        order_id,
+                        fill.status_text,
+                        fill.status_code,
+                    )
+                    continue
                 self.logger.warning(
                     "D委托提交后第%d次反查未确认: %s order_id=%s",
                     attempt,
@@ -2359,6 +2375,8 @@ class StrategyDMonitor:
                 last_error = e
                 self.logger.error("D委托提交后第%d次反查异常: %s order_id=%s: %s",
                                   attempt, ts_code, order_id, e)
+        if last_visible_fill is not None:
+            return last_visible_fill
         status_text = f"QUERY_ERROR:{last_error}" if last_error else "NOT_FOUND_IN_QMT_ORDERS"
         return OrderFill(order_id=str(order_id), status_code=-1, status_text=status_text)
 
@@ -2479,6 +2497,12 @@ class StrategyDMonitor:
         buy_date = str(detail.get("buy_date", today_beijing().strftime("%Y%m%d")))
         shares = int(filled_qty) if filled_qty and filled_qty > 0 else int(detail.get("shares", 0))
         buy_price = float(fill_price) if fill_price and fill_price > 0 else float(detail.get("buy_price", 0.0))
+        recorded_filled_qty = max(
+            int(detail.get("recorded_filled_qty", 0) or 0),
+            0,
+        )
+        if shares <= recorded_filled_qty:
+            return
         planned_exit_date = next_trade_day(buy_date, 2)
         payload = {
             "order_id": str(order_id),
@@ -2513,6 +2537,8 @@ class StrategyDMonitor:
                 existing["shares"] = shares
                 existing["buy_price"] = buy_price
             save_position_records(positions)
+        # 同一委托的成交回报是累计数量；只在持仓投影成功后推进确认水位。
+        detail["recorded_filled_qty"] = shares
         self.position_opened = True
         self.logger.warning(
             "D持仓信息已写入持仓账本: 策略=D order_id=%s ts_code=%s %d股 @%.2f 买入日=%s 默认计划平仓日=%s；若次日有A/B/C接力则T+1开盘先卖D",
@@ -2747,13 +2773,67 @@ class StrategyDMonitor:
 
         if self.waiting_order_only:
             self.logger.warning(
-                "D已有有效委托/部分成交，停止新的开仓扫描；等待%s确认成交并撤未成残单。",
+                "D已有有效委托/部分成交，停止新的开仓扫描；持续确认真实成交，"
+                "%s撤未成残单。",
                 hhmm_to_str(CANCEL_HHMM),
             )
-            print(f"D已有有效委托/部分成交，停止新的开仓扫描；等待{hhmm_to_str(CANCEL_HHMM)}确认成交并撤未成残单。")
+            print(
+                "D已有有效委托/部分成交，停止新的开仓扫描；"
+                f"持续确认真实成交，{hhmm_to_str(CANCEL_HHMM)}撤未成残单。"
+            )
             while now_hhmm() < CANCEL_HHMM:
-                time.sleep(POLL_INTERVAL_SEC)
+                if self._reconcile_active_d_orders_once():
+                    self.logger.warning(
+                        "D活动委托已全部成交并写入策略持仓，成交确认生命周期完成。"
+                    )
+                    return
+                time.sleep(ORDER_FILL_POLL_INTERVAL_SEC)
             self.cancel_all_d_orders()
+
+    def _reconcile_active_d_orders_once(self) -> bool:
+        """推进D活动委托的成交状态；成交事实只能来自同一QMT委托。"""
+
+        if not self.session_orders or self.broker is None:
+            return False
+
+        all_filled = True
+        for order_id, ts_code in self.session_orders.items():
+            detail = self.session_order_details.get(order_id, {})
+            planned_qty = max(int(detail.get("shares", 0) or 0), 0)
+            try:
+                fill = self.broker.get_order_fill(order_id)
+            except Exception as exc:
+                all_filled = False
+                self.logger.error(
+                    "D活动委托成交确认异常: %s order_id=%s: %s",
+                    ts_code,
+                    order_id,
+                    exc,
+                )
+                continue
+
+            filled_qty = max(int(getattr(fill, "filled_qty", 0) or 0), 0)
+            fill_price = float(getattr(fill, "avg_price", 0.0) or 0.0)
+            if fill_price <= 0:
+                fill_price = float(detail.get("buy_price", 0.0) or 0.0)
+            if filled_qty > int(detail.get("recorded_filled_qty", 0) or 0):
+                self._record_filled_d_position(order_id, filled_qty, fill_price)
+                self.logger.warning(
+                    "D活动委托成交已回写: %s order_id=%s 累计成交%d/%d股 @%.2f",
+                    ts_code,
+                    order_id,
+                    filled_qty,
+                    planned_qty,
+                    fill_price,
+                )
+
+            if planned_qty <= 0 or filled_qty < planned_qty:
+                all_filled = False
+
+        if all_filled:
+            self.position_opened = True
+            self.waiting_order_only = False
+        return all_filled
 
     # ── 主循环 ────────────────────────────────────────────────────────────────
 
