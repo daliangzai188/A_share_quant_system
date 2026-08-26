@@ -15423,6 +15423,20 @@ class SharedQMTBrokerProxy:
         with _qmt_lock:
             return _qmt_get(self.broker_config).get_full_tick(ts_codes)
 
+    def get_minute_bars(
+        self,
+        ts_codes: list[str],
+        *,
+        start_time: str,
+        end_time: str,
+    ) -> Any:
+        with _qmt_lock:
+            return _qmt_get(self.broker_config).get_minute_bars(
+                ts_codes,
+                start_time=start_time,
+                end_time=end_time,
+            )
+
     def place_order(self, request: Any) -> Any:
         side = str(getattr(request, "side", "")).strip().upper()
         if side == "BUY":

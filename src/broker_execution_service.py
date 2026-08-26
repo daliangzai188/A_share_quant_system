@@ -319,6 +319,21 @@ class SerializedBrokerProxy(BrokerAdapter):
     def get_full_tick(self, ts_codes: list[str]) -> dict[str, QuoteSnapshot]:
         return self._service.call(self._adapter_provider, "get_full_tick", ts_codes)
 
+    def get_minute_bars(
+        self,
+        ts_codes: list[str],
+        *,
+        start_time: str,
+        end_time: str,
+    ) -> dict[str, list[dict[str, Any]]]:
+        return self._service.call(
+            self._adapter_provider,
+            "get_minute_bars",
+            ts_codes,
+            start_time=start_time,
+            end_time=end_time,
+        )
+
     def place_order(self, request: OrderRequest) -> OrderResult:
         return self._service.call(self._adapter_provider, "place_order", request)
 

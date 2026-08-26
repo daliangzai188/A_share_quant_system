@@ -165,6 +165,17 @@ class BrokerAdapter(ABC):
     def get_full_tick(self, ts_codes: list[str]) -> dict[str, QuoteSnapshot]:
         """查询实时行情快照。"""
 
+    def get_minute_bars(
+        self,
+        ts_codes: list[str],
+        *,
+        start_time: str,
+        end_time: str,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """查询一分钟K线；不支持时必须显式失败，禁止退化为快照逻辑。"""
+
+        raise NotImplementedError("当前券商适配器不支持一分钟K线查询")
+
     @abstractmethod
     def place_order(self, request: OrderRequest) -> OrderResult:
         """提交真实委托。调用前必须经过实盘风控闸门。"""

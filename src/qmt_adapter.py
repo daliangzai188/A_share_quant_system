@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 
@@ -126,6 +128,28 @@ def unique_values(values: list[Any]) -> list[Any]:
         result.append(value)
         seen.add(key)
     return result
+
+
+CHINA_TZ = ZoneInfo("Asia/Shanghai")
+
+
+def qmt_bar_hhmm(value: Any) -> int:
+    """把QMT分钟线索引或time字段统一为HHMM。"""
+
+    if isinstance(value, (int, float)) and 1_000_000_000_000 <= float(value) < 10_000_000_000_000:
+        return int(
+            datetime.fromtimestamp(float(value) / 1000.0, tz=CHINA_TZ).strftime("%H%M")
+        )
+    digits = "".join(character for character in str(value or "") if character.isdigit())
+    if len(digits) == 13:
+        return int(
+            datetime.fromtimestamp(int(digits) / 1000.0, tz=CHINA_TZ).strftime("%H%M")
+        )
+    if len(digits) >= 12 and digits[:2] in {"19", "20"}:
+        return to_int(digits[8:12])
+    if len(digits) >= 6:
+        return to_int(digits[-6:-2])
+    return 0
 
 
 class QMTBrokerAdapter(BrokerAdapter):
@@ -407,6 +431,59 @@ class QMTBrokerAdapter(BrokerAdapter):
                 raw=raw,
             )
         return result
+
+    def get_minute_bars(
+        self,
+        ts_codes: list[str],
+        *,
+        start_time: str,
+        end_time: str,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """读取QMT一分钟K线并保留与Tushare回测一致的原始分钟标签。"""
+
+        self._load_xtquant()
+        broker_codes = [tushare_to_qmt_code(code) for code in ts_codes]
+        raw_result = self.xtdata_module.get_market_data_ex(
+            ["open", "high", "low", "close", "volume", "amount"],
+            broker_codes,
+            period="1m",
+            start_time=str(start_time),
+            end_time=str(end_time),
+        )
+        if raw_result is None:
+            raise RuntimeError("QMT一分钟K线查询返回None（结果未知）")
+        if not isinstance(raw_result, dict):
+            raise RuntimeError(
+                f"QMT一分钟K线查询返回非法类型{type(raw_result).__name__}"
+            )
+
+        normalized: dict[str, list[dict[str, Any]]] = {}
+        for broker_code in broker_codes:
+            frame = raw_result.get(broker_code)
+            ts_code = qmt_to_tushare_code(broker_code)
+            rows: list[dict[str, Any]] = []
+            if frame is not None and hasattr(frame, "iterrows"):
+                for index, bar in frame.iterrows():
+                    raw_time = bar.get("time", index)
+                    hhmm = qmt_bar_hhmm(raw_time)
+                    if hhmm <= 0:
+                        continue
+                    close = to_float(bar.get("close"))
+                    rows.append(
+                        {
+                            "ts_code": ts_code,
+                            "bar_time": str(raw_time),
+                            "hhmm": hhmm,
+                            "open": to_float(bar.get("open")),
+                            "high": to_float(bar.get("high")),
+                            "low": to_float(bar.get("low"), close),
+                            "close": close,
+                            "volume": to_float(bar.get("volume")),
+                            "amount": to_float(bar.get("amount")),
+                        }
+                    )
+            normalized[ts_code] = sorted(rows, key=lambda row: int(row["hhmm"]))
+        return normalized
 
     def place_order(self, request: OrderRequest) -> OrderResult:
         if self.trader is None or self.account is None:

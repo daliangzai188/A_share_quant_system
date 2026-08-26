@@ -3,7 +3,8 @@
 
 【正式发布驱动】
   FACTOR_UNION模式：
-    从09:30持续维护完整路径，每次真实新回封即时匹配已发布因子条件；
+    从09:30读取QMT一分钟K线；只用已完成分钟收盘重建封板、炸板和回封，
+    每次新完成的分钟回封匹配已发布因子条件；
     旧D的14:00时间、strong情绪和2～3次炸板条件不参与因子版判断。
 
   LEGACY_FORMAL_D模式：
@@ -70,6 +71,10 @@ from src.strategy_d_factor_rules import (
     matching_profile_ids,
     release_uses_factor_union,
     trading_minutes_between,
+)
+from src.strategy_d_minute_alignment import (
+    StrictMinutePath,
+    replay_completed_minute_path,
 )
 from src.strategy_d_spec import (
     D_CHECKPOINT_MAX_AGE_SECONDS,
@@ -735,6 +740,11 @@ class StrategyDMonitor:
         self.waiting_order_only: bool = False
         self.limit_price_fallback_logged: bool = False
         self._strong_notified: bool = False     # 情绪转强(≥阈值)只推送一次
+        # 正式因子D的事件时钟必须来自“已完成QMT 1m收盘”，不能再使用30秒快照
+        # 的瞬时涨停/炸板转换。缓存只覆盖当前分钟；下一分钟重新拉取完整路径。
+        self.strict_minute_paths: dict[str, StrictMinutePath] = {}
+        self.strict_minute_refresh_hhmm: int = 0
+        self.strict_minute_refresh_error: str = ""
 
     # ── 初始化 ────────────────────────────────────────────────────────────────
 
@@ -784,7 +794,8 @@ class StrategyDMonitor:
         if self.factor_union_active:
             self.logger.warning(
                 "D启用半年因子并集发布: release_id=%s profiles=%d | 任一if命中后进入候选 | "
-                "首板/非ST/真实新回封/14:55前/成交概率>=%.0f%%且可靠仍是公共安全门",
+                "封板/炸板/回封严格按已完成QMT 1m收盘重建 | "
+                "首板/非ST/14:55前/成交概率>=%.0f%%且可靠仍是公共安全门",
                 self.factor_release_id,
                 len(self.factor_profiles),
                 self.min_fill_probability * 100,
@@ -805,7 +816,7 @@ class StrategyDMonitor:
             "D回测对齐时钟: %s开始持续记录完整封板/炸板路径；%s；%s停止并撤销未成交委托。",
             hhmm_to_str(MONITOR_START_HHMM),
             (
-                "每次真实新回封按发布因子if即时判断"
+                "每次已完成1m收盘形成回封后按发布因子if判断"
                 if self.factor_union_active
                 else f"{hhmm_to_str(SIGNAL_START_HHMM)}后只有真实回封才允许BUY"
             ),
@@ -1080,31 +1091,158 @@ class StrategyDMonitor:
         ever = sum(1 for state in same if state.ever_sealed)
         return active, ever, active / ever if ever > 0 else 0.0
 
-    def _factor_raw_values(self, st: StockState) -> dict[str, Any]:
+    def _strict_path_for(self, st: StockState) -> StrictMinutePath | None:
+        return self.strict_minute_paths.get(st.ts_code)
+
+    def _refresh_strict_minute_paths(self) -> bool:
+        """为当前可能入选的股票批量重建回测同口径分钟路径；失败即不产生BUY。"""
+
+        current_hhmm = now_hhmm()
+        if self.strict_minute_refresh_hhmm == current_hhmm:
+            return not self.strict_minute_refresh_error
+
+        targets = [
+            state
+            for state in self.states.values()
+            if (
+                state.was_sealed
+                and not state.st_suspect
+                and state.ts_code not in self.yesterday_limit_codes
+                and state.market_segment in self.allowed_segments
+                and state.upper_limit >= MIN_D_VALID_LIMIT_PRICE
+            )
+        ]
+        self.strict_minute_paths = {}
+        self.strict_minute_refresh_error = ""
+        if not targets:
+            self.strict_minute_refresh_hhmm = current_hhmm
+            return True
+        if self.broker is None or not hasattr(self.broker, "get_minute_bars"):
+            self.strict_minute_refresh_error = "券商行情接口不支持QMT一分钟K线"
+            self.logger.error(
+                "[D STRICT 1M BLOCK] %s，正式因子D本轮禁止开仓",
+                self.strict_minute_refresh_error,
+            )
+            return False
+
+        now = now_beijing()
+        trade_date = today_beijing().strftime("%Y%m%d")
+        codes = [state.ts_code for state in targets]
+        try:
+            raw_paths: dict[str, list[dict[str, Any]]] = {}
+            for index in range(0, len(codes), POLL_BATCH_SIZE):
+                batch = codes[index : index + POLL_BATCH_SIZE]
+                result = self.broker.get_minute_bars(
+                    batch,
+                    start_time=trade_date + "093000",
+                    end_time=now.strftime("%Y%m%d%H%M%S"),
+                )
+                if not isinstance(result, dict):
+                    raise RuntimeError(
+                        f"一分钟K线返回非法类型{type(result).__name__}"
+                    )
+                missing_codes = set(batch).difference(str(code) for code in result)
+                if missing_codes:
+                    raise RuntimeError(
+                        f"一分钟K线缺少股票:{sorted(missing_codes)[:5]}"
+                    )
+                raw_paths.update(result)
+            for state in targets:
+                self.strict_minute_paths[state.ts_code] = replay_completed_minute_path(
+                    raw_paths.get(state.ts_code, []),
+                    limit_price=state.upper_limit,
+                    current_hhmm=current_hhmm,
+                )
+        except Exception as exc:
+            self.strict_minute_paths = {}
+            self.strict_minute_refresh_error = f"QMT一分钟路径查询/重建失败:{exc}"
+            self.logger.error(
+                "[D STRICT 1M BLOCK] %s，正式因子D本轮禁止开仓",
+                self.strict_minute_refresh_error,
+            )
+            return False
+
+        uncertified = [
+            f"{code}:{path.reason}"
+            for code, path in self.strict_minute_paths.items()
+            if not path.certifiable
+        ]
+        if uncertified:
+            self.strict_minute_refresh_error = (
+                f"{len(uncertified)}只候选的一分钟路径不完整，"
+                f"示例={uncertified[:3]}"
+            )
+            self.logger.error(
+                "[D STRICT 1M BLOCK] %s，正式因子D本轮禁止开仓",
+                self.strict_minute_refresh_error,
+            )
+            return False
+
+        self.strict_minute_refresh_hhmm = current_hhmm
+        self.logger.info(
+            "[D STRICT 1M] 已按回测分钟收盘口径认证%d只当前封板候选，完成分钟=%s",
+            len(self.strict_minute_paths),
+            hhmm_to_str(current_hhmm),
+        )
+        return True
+
+    def _factor_raw_values(
+        self,
+        st: StockState,
+        strict_path: StrictMinutePath | None = None,
+    ) -> dict[str, Any]:
         market_active = self.sealed_ever_count
         market_ever = self.market_ever_sealed_count
         segment_active, segment_ever, segment_rate = self._same_segment_reseal_context(
             st.market_segment
         )
+        event_first_seal_hhmm = (
+            strict_path.first_seal_hhmm if strict_path else st.first_seal_hhmm
+        )
+        event_last_seal_hhmm = (
+            strict_path.last_reseal_hhmm if strict_path else st.last_seal_hhmm
+        )
+        event_open_times = strict_path.open_times if strict_path else st.open_times_today
+        event_last_break_hhmm = (
+            strict_path.last_break_hhmm if strict_path else st.last_break_hhmm
+        )
+        event_last_break_price = (
+            strict_path.last_break_close if strict_path else st.last_break_price
+        )
+        event_previous_hold = (
+            strict_path.previous_seal_to_break_minutes
+            if strict_path
+            else st.previous_seal_to_break_minutes
+        )
+        event_low = (
+            strict_path.pre_signal_low_price
+            if strict_path and strict_path.pre_signal_low_price > 0
+            else st.session_low_price
+        )
+        event_amount = (
+            strict_path.signal_cumulative_amount
+            if strict_path and strict_path.signal_cumulative_amount > 0
+            else st.cumulative_amount
+        )
         amount_ratio = (
-            st.cumulative_amount / st.previous_day_amount_yuan
+            event_amount / st.previous_day_amount_yuan
             if st.previous_day_amount_yuan > 0
             else float("nan")
         )
         return {
-            "signal_hhmm": st.last_seal_hhmm,
-            "first_seal_hhmm": st.first_seal_hhmm,
-            "open_times_at_signal": st.open_times_today,
+            "signal_hhmm": event_last_seal_hhmm,
+            "first_seal_hhmm": event_first_seal_hhmm,
+            "open_times_at_signal": event_open_times,
             "first_to_signal_minutes": trading_minutes_between(
-                st.first_seal_hhmm, st.last_seal_hhmm
+                event_first_seal_hhmm, event_last_seal_hhmm
             ),
             "last_break_to_signal_minutes": trading_minutes_between(
-                st.last_break_hhmm, st.last_seal_hhmm
+                event_last_break_hhmm, event_last_seal_hhmm
             ),
-            "previous_seal_to_break_minutes": st.previous_seal_to_break_minutes,
+            "previous_seal_to_break_minutes": event_previous_hold,
             "last_break_close_depth_pct": (
-                max(st.upper_limit / st.last_break_price - 1.0, 0.0)
-                if st.upper_limit > 0 and st.last_break_price > 0
+                max(st.upper_limit / event_last_break_price - 1.0, 0.0)
+                if st.upper_limit > 0 and event_last_break_price > 0
                 else float("nan")
             ),
             "open_gap_pct": (
@@ -1113,8 +1251,8 @@ class StrategyDMonitor:
                 else float("nan")
             ),
             "pre_signal_min_return": (
-                st.session_low_price / st.pre_close - 1.0
-                if st.session_low_price > 0 and st.pre_close > 0
+                event_low / st.pre_close - 1.0
+                if event_low > 0 and st.pre_close > 0
                 else float("nan")
             ),
             "signal_cumulative_amount_vs_prev_day": amount_ratio,
@@ -1143,13 +1281,20 @@ class StrategyDMonitor:
             return False, "昨日已涨停，非首板"
         if not st.was_sealed:
             return False, "当前不在涨停封板状态"
-        if st.open_times_today < 1 or st.last_break_hhmm <= 0:
-            return False, "尚未形成炸板后的真实回封"
-        if not (MONITOR_START_HHMM <= st.last_seal_hhmm < CANCEL_HHMM):
+        strict_path = self._strict_path_for(st)
+        if strict_path is None:
+            return False, "尚未取得已完成QMT一分钟路径认证"
+        if not strict_path.certifiable:
+            return False, f"QMT一分钟路径不可认证:{strict_path.reason}"
+        if not strict_path.has_reseal:
+            return False, "回测分钟收盘口径尚未形成封板→炸板→回封"
+        if not (
+            MONITOR_START_HHMM <= strict_path.last_reseal_hhmm < CANCEL_HHMM
+        ):
             return False, "回封时间不在可委托窗口"
-        if require_fresh_reseal and st.last_reseal_scan_round != self.scan_round:
-            return False, "不是本轮新发生的回封事件"
-        raw = self._factor_raw_values(st)
+        if require_fresh_reseal and not strict_path.has_fresh_reseal:
+            return False, "不是最新完成分钟刚形成的回测口径回封事件"
+        raw = self._factor_raw_values(st, strict_path)
         values = factor_values_from_raw(raw)
         matched = matching_profile_ids(values, self.factor_profiles)
         st.factor_values_json = json.dumps(
@@ -1176,7 +1321,10 @@ class StrategyDMonitor:
             st.fill_reject_reason = "流通市值/涨停价/实时封单缺失"
             return False, st.fill_reject_reason
 
-        first_bucket = classify_first_time_bucket_hhmm(st.first_seal_hhmm)
+        strict_path = self._strict_path_for(st) if self.factor_union_active else None
+        first_bucket = classify_first_time_bucket_hhmm(
+            strict_path.first_seal_hhmm if strict_path else st.first_seal_hhmm
+        )
         current_queue_amount = float(st.bid_vol) * float(st.upper_limit)
         fd_ratio = self._fd_amount_to_circ_mv(st)
         abnormal_threshold = float(
@@ -1447,9 +1595,11 @@ class StrategyDMonitor:
             return False, f"路径继续门禁检查异常:{exc}"
 
     def _check_and_fire_factor_union(self) -> None:
-        """执行半年发布的多个D因子if；任一命中即进入当轮唯一候选排序。"""
+        """用已完成1m路径执行半年发布因子；任一命中即进入唯一候选排序。"""
 
         if self.factor_signal_consumed:
+            return
+        if not self._refresh_strict_minute_paths():
             return
         candidates: list[StockState] = []
         for st in self.states.values():
@@ -1469,7 +1619,13 @@ class StrategyDMonitor:
         ranked = sorted(
             candidates,
             key=lambda state: (
-                -int(state.open_times_today == D_PREFERRED_OPEN_TIMES),
+                -int(
+                    bool(
+                        self._strict_path_for(state)
+                        and self._strict_path_for(state).open_times
+                        == D_PREFERRED_OPEN_TIMES
+                    )
+                ),
                 state.ts_code,
             ),
         )
@@ -1738,6 +1894,14 @@ class StrategyDMonitor:
             self.logger.info("[BUY SKIP] 已锁定本轮D委托: %s，跳过 %s", self.order_locked_ts_code, st.ts_code)
             return True
         hhmm = now_hhmm()
+        strict_path = self._strict_path_for(st) if self.factor_union_active else None
+        event_reseal_hhmm = (
+            strict_path.last_reseal_hhmm if strict_path else st.last_seal_hhmm
+        )
+        event_open_times = strict_path.open_times if strict_path else st.open_times_today
+        event_first_seal_hhmm = (
+            strict_path.first_seal_hhmm if strict_path else st.first_seal_hhmm
+        )
         st.buy_signaled = True
         self.order_placed = True   # 先加锁再下单，防止QMT资金冻结延迟导致重复委托
         self.order_locked_ts_code = st.ts_code
@@ -1752,8 +1916,8 @@ class StrategyDMonitor:
             f"\n{'='*55}\n"
             f"  ★ [BUY] 买入信号 {hhmm_to_str(hhmm)}  [{source}]\n"
             f"  {st.ts_code} {st.name}  涨停价 {st.upper_limit:.2f}\n"
-            f"  重封时间 {hhmm_to_str(st.last_seal_hhmm)}  "
-            f"炸板 {st.open_times_today} 次\n"
+            f"  重封时间 {hhmm_to_str(event_reseal_hhmm)}  "
+            f"炸板 {event_open_times} 次\n"
             f"  情绪估算：当前封板涨停 {self.sealed_ever_count} 只\n"
             f"  操作：{'实盘挂单' if self.live_order else '仅提醒（--live-order 开启下单）'}\n"
             f"{'='*55}"
@@ -1761,8 +1925,8 @@ class StrategyDMonitor:
         print(msg)
         self.logger.warning(
             "[BUY] %s %s 重封=%s 炸板=%d次 来源=%s",
-            st.ts_code, st.name, hhmm_to_str(st.last_seal_hhmm),
-            st.open_times_today, source,
+            st.ts_code, st.name, hhmm_to_str(event_reseal_hhmm),
+            event_open_times, source,
         )
         record = {
             "signal_time": now_beijing().strftime("%Y-%m-%d %H:%M:%S"),
@@ -1770,11 +1934,11 @@ class StrategyDMonitor:
             "ts_code": st.ts_code,
             "name": st.name,
             "upper_limit": st.upper_limit,
-            "reseal_hhmm": st.last_seal_hhmm,
-            "open_times_today": st.open_times_today,
+            "reseal_hhmm": event_reseal_hhmm,
+            "open_times_today": event_open_times,
             "sentiment_est": self.sealed_ever_count,
             "first_time_bucket": classify_first_time_bucket_hhmm(
-                st.first_seal_hhmm
+                event_first_seal_hhmm
             ),
             "fill_probability": st.fill_probability,
             "fill_reliable": st.fill_reliable,
@@ -1783,6 +1947,14 @@ class StrategyDMonitor:
             "factor_release_id": self.factor_release_id,
             "matched_factor_profile_ids": st.matched_factor_profile_ids,
             "factor_values_json": st.factor_values_json,
+            "event_clock_source": (
+                "QMT_COMPLETED_1M_CLOSE"
+                if strict_path
+                else "REALTIME_SNAPSHOT"
+            ),
+            "strict_break_close": (
+                strict_path.last_break_close if strict_path else 0.0
+            ),
             "order_id": "",
         }
         if self.live_order and self.broker is not None:
@@ -2707,8 +2879,13 @@ class StrategyDMonitor:
         for st in bought:
             order_str = f"order_id={st.order_id}" if st.order_id else "仅提醒"
             source = "正式因子回封" if self.factor_union_active else "14:00后真实回封"
+            strict_path = self._strict_path_for(st) if self.factor_union_active else None
+            reseal_hhmm = (
+                strict_path.last_reseal_hhmm if strict_path else st.last_seal_hhmm
+            )
+            open_times = strict_path.open_times if strict_path else st.open_times_today
             print(f"  [BUY/{source}] {st.ts_code} {st.name} "
-                  f"重封={hhmm_to_str(st.last_seal_hhmm)} 炸板={st.open_times_today}次 {order_str}")
+                  f"重封={hhmm_to_str(reseal_hhmm)} 炸板={open_times}次 {order_str}")
         print(f"信号记录: {self.signal_csv}")
         self.logger.info("监控结束 观察=%d 买入=%d", len(watched) + len(bought), len(bought))
 

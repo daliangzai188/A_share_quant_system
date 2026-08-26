@@ -25,6 +25,7 @@ from src.strategy_d_factor_rules import (
     load_factor_release,
     matching_profile_ids,
 )
+from src.strategy_d_minute_alignment import StrictMinutePath
 
 
 class DummyLogger:
@@ -168,11 +169,38 @@ def test_monitor_factor_union_only_accepts_fresh_reseal(tmp_path: Path) -> None:
         previous_day_amount_yuan=10_000_000,
     )
     monitor.states = {state.ts_code: state}
+    monitor.strict_minute_paths = {
+        state.ts_code: StrictMinutePath(
+            certifiable=True,
+            last_completed_hhmm=945,
+            was_sealed=True,
+            ever_sealed=True,
+            first_seal_hhmm=935,
+            last_seal_hhmm=945,
+            last_reseal_hhmm=945,
+            open_times=1,
+            last_break_hhmm=942,
+            last_break_close=10.95,
+            previous_seal_to_break_minutes=4,
+        )
+    }
 
     passed, reason = monitor._factor_release_match(
         state, require_fresh_reseal=True
     )
-    state.last_reseal_scan_round = 6
+    monitor.strict_minute_paths[state.ts_code] = StrictMinutePath(
+        certifiable=True,
+        last_completed_hhmm=946,
+        was_sealed=True,
+        ever_sealed=True,
+        first_seal_hhmm=935,
+        last_seal_hhmm=945,
+        last_reseal_hhmm=945,
+        open_times=1,
+        last_break_hhmm=942,
+        last_break_close=10.95,
+        previous_seal_to_break_minutes=4,
+    )
     stale, stale_reason = monitor._factor_release_match(
         state, require_fresh_reseal=True
     )
@@ -180,11 +208,11 @@ def test_monitor_factor_union_only_accepts_fresh_reseal(tmp_path: Path) -> None:
     assert passed is True
     assert "P1" in reason
     assert stale is False
-    assert "不是本轮新发生" in stale_reason
+    assert "不是最新完成分钟" in stale_reason
 
 
 def test_factor_union_consumes_earliest_signal_without_later_substitution(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch,
 ) -> None:
     release_path = tmp_path / "release.json"
     release = factor_release()
@@ -222,6 +250,24 @@ def test_factor_union_consumes_earliest_signal_without_later_substitution(
     monitor.states = {
         "000002.SZ": state("000002.SZ", 1),
         "000003.SZ": state("000003.SZ", 2),
+    }
+    monkeypatch.setattr(d_monitor, "now_hhmm", lambda: 945)
+    monitor.strict_minute_refresh_hhmm = 945
+    monitor.strict_minute_paths = {
+        code: StrictMinutePath(
+            certifiable=True,
+            last_completed_hhmm=945,
+            was_sealed=True,
+            ever_sealed=True,
+            first_seal_hhmm=935,
+            last_seal_hhmm=945,
+            last_reseal_hhmm=945,
+            open_times=opens,
+            last_break_hhmm=943,
+            last_break_close=10.95,
+            previous_seal_to_break_minutes=3,
+        )
+        for code, opens in (("000002.SZ", 1), ("000003.SZ", 2))
     }
     monitor._refresh_fill_gate = lambda _state: (False, "模拟无法成交")
 
@@ -324,6 +370,21 @@ def test_best_factor_release_early_reseal_is_not_blocked_by_legacy_tail_gate(
         session_low_price=10.1,
     )
     monkeypatch.setattr(d_monitor, "now_hhmm", lambda: 945)
+    monitor.strict_minute_paths = {
+        state.ts_code: StrictMinutePath(
+            certifiable=True,
+            last_completed_hhmm=945,
+            was_sealed=True,
+            ever_sealed=True,
+            first_seal_hhmm=935,
+            last_seal_hhmm=945,
+            last_reseal_hhmm=945,
+            open_times=1,
+            last_break_hhmm=943,
+            last_break_close=11.99,
+            previous_seal_to_break_minutes=3,
+        )
+    }
     monitor._refresh_fill_gate = lambda _state: (True, "测试成交门通过")
 
     valid, reason = monitor._validate_buy_candidate(state)

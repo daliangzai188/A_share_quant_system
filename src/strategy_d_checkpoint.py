@@ -35,7 +35,9 @@ _D_RUNTIME_CODE_FILES = (
     "scripts/monitor_strategy_d_intraday.py",
     "src/strategy_d_checkpoint.py",
     "src/strategy_d_factor_rules.py",
+    "src/strategy_d_minute_alignment.py",
     "src/strategy_d_spec.py",
+    "src/qmt_adapter.py",
     "src/fill_model.py",
     "src/data_cleaner.py",
 )
