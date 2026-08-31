@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""断点回填D完整触板母池的Tushare历史1分钟K。
+"""断点回填D指定窗口触板母池的Tushare历史1分钟K。
 
 这只是盘中价格路径层，不是排队成交认证。``stk_mins``没有历史买一队列，
-所以即使40,336个目标全部得到241根一分钟K，也不能把始终封板的委托记为成交。
+所以即使冻结目标全部得到241根一分钟K，也不能把始终封板的委托记为成交。
 
 为平衡调用次数和无关行下载量，本脚本按交易日横截面聚合，单次最多33只
 股票（33*241=7,953，严格小于接口8,000行上限）。聚合返回缺某只时，
@@ -115,7 +115,11 @@ def load_collection_policy(path: Path = COLLECTION_CONFIG_PATH) -> CollectionPol
     return policy
 
 
-def load_targets(path: Path = TARGET_PATH) -> pd.DataFrame:
+def load_targets(
+    path: Path = TARGET_PATH,
+    *,
+    expected_target_count: int | None = EXPECTED_TARGET_COUNT,
+) -> pd.DataFrame:
     frame = pd.read_csv(
         path,
         dtype={"trade_date": str, "ts_code": str, "target_key": str},
@@ -126,10 +130,15 @@ def load_targets(path: Path = TARGET_PATH) -> pd.DataFrame:
     if missing:
         raise ValueError(f"D一分钟目标缺少字段：{missing}")
     frame["trade_date"] = frame["trade_date"].str.replace(r"\.0$", "", regex=True)
-    frame = frame.drop_duplicates("target_key", keep="last")
-    if len(frame) != EXPECTED_TARGET_COUNT:
+    if frame["target_key"].duplicated().any():
+        duplicates = frame.loc[frame["target_key"].duplicated(False), "target_key"]
+        raise ValueError(f"D一分钟目标target_key重复：{duplicates.head(5).tolist()}")
+    rebuilt = frame["trade_date"].astype(str) + "|" + frame["ts_code"].astype(str)
+    if not rebuilt.eq(frame["target_key"].astype(str)).all():
+        raise ValueError("D一分钟目标target_key与trade_date/ts_code不一致")
+    if expected_target_count is not None and len(frame) != expected_target_count:
         raise RuntimeError(
-            f"D一分钟目标漂移：expected={EXPECTED_TARGET_COUNT} actual={len(frame)}"
+            f"D一分钟目标漂移：expected={expected_target_count} actual={len(frame)}"
         )
     return frame.sort_values(["ts_code", "trade_date"]).reset_index(drop=True)
 
@@ -155,12 +164,16 @@ def load_known_data_gaps(
         return pd.DataFrame(columns=columns)
     payload = json.loads(path.read_text(encoding="utf-8-sig"))
     rows = payload.get("gaps", [])
+    if not rows:
+        return pd.DataFrame(columns=columns)
     gaps = pd.DataFrame(rows)
     required = set(columns)
     missing = sorted(required - set(gaps.columns))
     if missing:
         raise ValueError(f"D一分钟已知缺口缺少字段：{missing}")
     gaps = gaps[columns].copy()
+    target_dates = set(targets["trade_date"].astype(str))
+    gaps = gaps[gaps["trade_date"].astype(str).isin(target_dates)].copy()
     if gaps["target_key"].duplicated().any():
         raise ValueError("D一分钟已知缺口target_key重复")
     expected_keys = set(targets["target_key"].astype(str))
@@ -320,9 +333,10 @@ def atomic_write_csv(frame: pd.DataFrame, path: Path) -> None:
     temporary.replace(path)
 
 
-def job_part_path(job: Any, parts_dir: Path = PARTS_DIR) -> Path:
+def job_part_path(job: Any, parts_dir: Path | None = None) -> Path:
     """生成同时兼容macOS和Windows的稳定分片名。"""
 
+    parts_dir = PARTS_DIR if parts_dir is None else parts_dir
     filename = str(getattr(job, "part_filename", "") or "")
     if not filename:
         filename = f"{job.ts_code}_{job.start_date}_{job.end_date}.csv"
@@ -331,11 +345,13 @@ def job_part_path(job: Any, parts_dir: Path = PARTS_DIR) -> Path:
 
 def consolidate_minute_parts(
     *,
-    output_path: Path = OUTPUT_PATH,
-    parts_dir: Path = PARTS_DIR,
+    output_path: Path | None = None,
+    parts_dir: Path | None = None,
 ) -> pd.DataFrame:
     """把已有总表和请求分片去重合并；分片保留用于断点审计。"""
 
+    output_path = OUTPUT_PATH if output_path is None else output_path
+    parts_dir = PARTS_DIR if parts_dir is None else parts_dir
     frames: list[pd.DataFrame] = []
     existing = load_csv(
         output_path,
@@ -363,11 +379,13 @@ def consolidate_minute_parts(
 def recover_missing_parts_from_output(
     jobs: pd.DataFrame,
     *,
-    output_path: Path = OUTPUT_PATH,
-    parts_dir: Path = PARTS_DIR,
+    output_path: Path | None = None,
+    parts_dir: Path | None = None,
 ) -> int:
     """把分片机制启用前已写入总表的完整job恢复为可独立重建的分片。"""
 
+    output_path = OUTPUT_PATH if output_path is None else output_path
+    parts_dir = PARTS_DIR if parts_dir is None else parts_dir
     missing_jobs = [
         job
         for job in jobs.itertuples(index=False)
@@ -429,6 +447,62 @@ def csv_data_row_count(path: Path) -> int:
     if last_byte and last_byte != b"\n":
         line_count += 1
     return max(line_count - 1, 0)
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def portable_path(path: Path) -> str:
+    """跨机器审计清单优先写项目相对路径，项目外文件保留绝对路径。"""
+
+    resolved = path.resolve()
+    try:
+        return resolved.relative_to(ROOT.resolve()).as_posix()
+    except ValueError:
+        return str(resolved)
+
+
+def lock_or_verify_collection_manifest(
+    *,
+    targets: pd.DataFrame,
+    target_path: Path,
+    collection_config_path: Path,
+) -> None:
+    """锁定断点采集的目标与速率配置，防止续跑时混入另一窗口。"""
+
+    path = OUTPUT_PATH.parent / "collection_run_manifest.json"
+    payload = {
+        "schema_version": 1,
+        "target_path": portable_path(target_path),
+        "target_manifest_sha256": sha256_file(target_path),
+        "target_count": int(len(targets)),
+        "first_trade_date": str(targets["trade_date"].min()),
+        "last_trade_date": str(targets["trade_date"].max()),
+        "collection_config_sha256": sha256_file(collection_config_path),
+        "output_path": portable_path(OUTPUT_PATH),
+        "parts_dir": portable_path(PARTS_DIR),
+        "status_path": portable_path(STATUS_PATH),
+        "job_status_path": portable_path(JOB_STATUS_PATH),
+        "summary_path": portable_path(SUMMARY_PATH),
+    }
+    if path.exists():
+        prior = json.loads(path.read_text(encoding="utf-8-sig"))
+        comparable_prior = {key: prior.get(key) for key in payload}
+        if comparable_prior != payload:
+            raise RuntimeError(
+                "D一分钟断点采集清单漂移，禁止混用旧状态："
+                f"prior={comparable_prior} current={payload}"
+            )
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
 
 
 def upsert_rows(existing: pd.DataFrame, additions: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
@@ -655,8 +729,8 @@ def write_summary(
         "limitations": [
             "一分钟OHLCV仍无法确定同一分钟内多次炸板和回封的先后顺序。",
             "stk_mins不含历史买一排队顺序，始终封板委托不能证明成交。",
-            "40,336目标覆盖484日全窗口；盘中市场情绪仍须按同分钟全市场封板状态重建。",
-            "2024-11-28北交所4个目标为Tushare数据商单日市场缺口；留在母样本分母且重放时按缺数无信号处理，禁止删除或插值。",
+            f"{len(targets):,}个目标按目标清单完整采集；盘中市场情绪仍须按同分钟全市场封板状态重建。",
+            f"窗口内{len(gaps)}个已确认Tushare数据商缺口留在母样本分母且重放时按缺数无信号处理，禁止删除或插值。",
         ],
     }
     SUMMARY_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -669,6 +743,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--targets", type=Path, default=TARGET_PATH)
     parser.add_argument("--calendar", type=Path, default=CALENDAR_PATH)
     parser.add_argument("--collection-config", type=Path, default=COLLECTION_CONFIG_PATH)
+    parser.add_argument("--output", type=Path, default=OUTPUT_PATH)
+    parser.add_argument("--parts-dir", type=Path, default=PARTS_DIR)
+    parser.add_argument("--status", type=Path, default=STATUS_PATH)
+    parser.add_argument("--job-status", type=Path, default=JOB_STATUS_PATH)
+    parser.add_argument("--summary", type=Path, default=SUMMARY_PATH)
+    parser.add_argument("--known-gaps", type=Path, default=KNOWN_GAPS_PATH)
+    parser.add_argument(
+        "--expected-target-count",
+        type=int,
+        default=EXPECTED_TARGET_COUNT,
+        help="冻结目标数；传0时仅校验目标键，不套用默认两年40336条回归锁。",
+    )
     parser.add_argument("--limit-jobs", type=int, default=0)
     parser.add_argument(
         "--consolidate-only",
@@ -692,7 +778,37 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    policy = load_collection_policy(args.collection_config)
+    global OUTPUT_PATH, PARTS_DIR, STATUS_PATH, JOB_STATUS_PATH, SUMMARY_PATH
+
+    def resolve(path: Path) -> Path:
+        return path if path.is_absolute() else ROOT / path
+
+    OUTPUT_PATH = resolve(args.output)
+    PARTS_DIR = resolve(args.parts_dir)
+    STATUS_PATH = resolve(args.status)
+    JOB_STATUS_PATH = resolve(args.job_status)
+    SUMMARY_PATH = resolve(args.summary)
+    target_path = resolve(args.targets)
+    calendar_path = resolve(args.calendar)
+    collection_config_path = resolve(args.collection_config)
+    known_gaps_path = resolve(args.known_gaps)
+    expected_target_count = (
+        None if args.expected_target_count == 0 else int(args.expected_target_count)
+    )
+    default_target = TARGET_PATH.resolve()
+    if target_path.resolve() != default_target:
+        default_outputs = {
+            OUTPUT_PATH.resolve() == (ROOT / "data/research/strategy_d_intraday/minute_1m_tushare.csv").resolve(),
+            PARTS_DIR.resolve() == (ROOT / "data/research/strategy_d_intraday/minute_1m_tushare_parts").resolve(),
+            STATUS_PATH.resolve() == (ROOT / "data/research/strategy_d_intraday/tushare_1m_status.csv").resolve(),
+            JOB_STATUS_PATH.resolve() == (ROOT / "data/research/strategy_d_intraday/tushare_1m_job_status.csv").resolve(),
+            SUMMARY_PATH.resolve() == (ROOT / "reports/strategy_d_intraday_research/tushare_1m_collection.json").resolve(),
+        }
+        if True in default_outputs:
+            raise ValueError("非默认D目标必须同时使用隔离的全部输出路径")
+    if expected_target_count is None and not args.dry_run:
+        raise ValueError("正式D分钟采集必须传入冻结的expected-target-count，0只允许dry-run")
+    policy = load_collection_policy(collection_config_path)
     request_interval = (
         policy.request_interval_seconds
         if args.request_interval is None
@@ -704,10 +820,17 @@ def main() -> int:
             f"requested={request_interval} minimum={policy.minimum_request_interval_seconds}"
         )
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    targets = load_targets(args.targets)
-    known_gaps = load_known_data_gaps(targets)
+    targets = load_targets(
+        target_path, expected_target_count=expected_target_count
+    )
+    lock_or_verify_collection_manifest(
+        targets=targets,
+        target_path=target_path,
+        collection_config_path=collection_config_path,
+    )
+    known_gaps = load_known_data_gaps(targets, path=known_gaps_path)
     # 仍加载并校验交易日历，防止目标日期漂移；实际请求按同日多股横截面批量。
-    open_dates = set(load_open_dates(args.calendar))
+    open_dates = set(load_open_dates(calendar_path))
     unknown_dates = sorted(set(targets["trade_date"].astype(str)) - open_dates)
     if unknown_dates:
         raise ValueError(f"D一分钟目标日期不在交易日历：{unknown_dates[:5]}")

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""建立策略D完整首板触板母池和历史分钟事件账本。
+"""建立策略D指定窗口的首板触板母池和历史分钟事件账本。
 
-该脚本从当前两年窗口内全部484个交易日出发，纳入所有允许板块、非ST、昨日
+默认口径仍是冻结的两年484交易日回归；指定非默认边界时，输出必须落到
+隔离目录并另行冻结目标清单。母池纳入所有允许板块、非ST、昨日
 未涨停且当日最高价触及涨停的股票，包括收盘未封住的失败样本。收盘strong
 只作为事后标签保留，绝不再作为母池入口，因此不会漏掉盘中强转弱、失败回封
 和最终非strong日的爆亏路径。
@@ -29,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Iterator
+import hashlib
 import json
 import logging
 from pathlib import Path
@@ -59,8 +61,11 @@ from src.strict_asof import STRICT_DISCOVERY  # noqa: E402
 
 LOGGER = logging.getLogger("strategy_d_intraday_event_ledger")
 
-START = "20240630"
-END = "20260630"
+DEFAULT_START = "20240630"
+DEFAULT_END = "20260630"
+START = DEFAULT_START
+END = DEFAULT_END
+USE_DEFAULT_REGRESSION_LOCKS = True
 ALLOWED_SEGMENTS = {"sh_main", "sz_main", "chi_next", "star", "bj"}
 EXPECTED_STRONG_DAY_COUNT = 56
 EXPECTED_WINDOW_OPEN_DAY_COUNT = 484
@@ -81,16 +86,129 @@ HISTORICAL_IDENTITY_OVERRIDES_PATH = (
 STK_LIMIT_DIR = ROOT / "data/raw/stk_limit_history"
 DAILY_DIR = ROOT / "data/raw/daily"
 LIMIT_LIST_DIR = ROOT / "data/raw/limit_list"
-DATA_DIR = ROOT / "data/research/strategy_d_intraday"
-REPORT_DIR = ROOT / "reports/strategy_d_intraday_research"
+DEFAULT_DATA_DIR = ROOT / "data/research/strategy_d_intraday"
+DEFAULT_REPORT_DIR = ROOT / "reports/strategy_d_intraday_research"
+DATA_DIR = DEFAULT_DATA_DIR
+REPORT_DIR = DEFAULT_REPORT_DIR
 MOTHER_POOL_PATH = DATA_DIR / "mother_pool_full_window.csv"
 TARGET_MANIFEST_PATH = DATA_DIR / "minute_target_manifest_full_window.csv"
 EVENT_LEDGER_PATH = DATA_DIR / "event_ledger_full_window.csv"
 EVENT_DETAIL_PATH = DATA_DIR / "event_detail_full_window.csv"
 COVERAGE_PATH = DATA_DIR / "minute_coverage_full_window.csv"
 SUMMARY_PATH = REPORT_DIR / "full_window_summary.json"
+WINDOW_MANIFEST_PATH = DATA_DIR / "window_manifest.json"
 KNOWN_DATA_GAPS_PATH = ROOT / "config/strategy_d_intraday_known_data_gaps.json"
 MINUTE_CHUNK_SIZE = 250_000
+WINDOW_MANIFEST_VERIFIED = True
+
+
+def configure_window(
+    *,
+    start_exclusive: str,
+    end_inclusive: str,
+    data_dir: Path,
+    report_dir: Path,
+    stk_limit_dir: Path,
+    known_gaps_path: Path,
+) -> None:
+    """配置研究窗口及隔离输出目录；默认两年窗口继续执行冻结回归锁。"""
+
+    global START, END, USE_DEFAULT_REGRESSION_LOCKS, WINDOW_MANIFEST_VERIFIED
+    global EXPECTED_WINDOW_OPEN_DAY_COUNT
+    global DATA_DIR, REPORT_DIR, MOTHER_POOL_PATH, TARGET_MANIFEST_PATH
+    global EVENT_LEDGER_PATH, EVENT_DETAIL_PATH, COVERAGE_PATH, SUMMARY_PATH
+    global WINDOW_MANIFEST_PATH, STK_LIMIT_DIR, KNOWN_DATA_GAPS_PATH
+
+    start = str(start_exclusive).replace("-", "")
+    end = str(end_inclusive).replace("-", "")
+    if len(start) != 8 or len(end) != 8 or start >= end:
+        raise ValueError(
+            f"D研究窗口无效：start_exclusive={start_exclusive} end_inclusive={end_inclusive}"
+        )
+    START = start
+    END = end
+    USE_DEFAULT_REGRESSION_LOCKS = START == DEFAULT_START and END == DEFAULT_END
+    EXPECTED_WINDOW_OPEN_DAY_COUNT = len(
+        [date for date in load_calendar() if START < date <= END]
+    )
+    if EXPECTED_WINDOW_OPEN_DAY_COUNT <= 0:
+        raise ValueError(f"D研究窗口没有交易日：{START}~{END}")
+
+    DATA_DIR = data_dir.resolve()
+    REPORT_DIR = report_dir.resolve()
+    if not USE_DEFAULT_REGRESSION_LOCKS and (
+        DATA_DIR == DEFAULT_DATA_DIR.resolve()
+        or REPORT_DIR == DEFAULT_REPORT_DIR.resolve()
+    ):
+        raise ValueError("非默认D窗口必须同时使用隔离的data-dir和report-dir")
+    WINDOW_MANIFEST_VERIFIED = USE_DEFAULT_REGRESSION_LOCKS
+    STK_LIMIT_DIR = stk_limit_dir.resolve()
+    KNOWN_DATA_GAPS_PATH = known_gaps_path.resolve()
+    MOTHER_POOL_PATH = DATA_DIR / "mother_pool_full_window.csv"
+    TARGET_MANIFEST_PATH = DATA_DIR / "minute_target_manifest_full_window.csv"
+    EVENT_LEDGER_PATH = DATA_DIR / "event_ledger_full_window.csv"
+    EVENT_DETAIL_PATH = DATA_DIR / "event_detail_full_window.csv"
+    COVERAGE_PATH = DATA_DIR / "minute_coverage_full_window.csv"
+    SUMMARY_PATH = REPORT_DIR / "full_window_summary.json"
+    WINDOW_MANIFEST_PATH = DATA_DIR / "window_manifest.json"
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def portable_path(path: Path) -> str:
+    """项目内路径在冻结清单中保存为相对路径，避免机器目录造成伪漂移。"""
+
+    resolved = path.resolve()
+    try:
+        return resolved.relative_to(ROOT.resolve()).as_posix()
+    except ValueError:
+        return str(resolved)
+
+
+def lock_or_verify_window_manifest(mother: pd.DataFrame) -> bool:
+    """首次冻结非默认窗口，后续运行必须逐项复核同一目标清单。"""
+
+    global WINDOW_MANIFEST_VERIFIED
+    target_keys = mother["trade_date"].astype(str) + "|" + mother["ts_code"].astype(str)
+    payload = {
+        "schema_version": 1,
+        "window": {"start_exclusive": START, "end_inclusive": END},
+        "open_day_count": int(EXPECTED_WINDOW_OPEN_DAY_COUNT),
+        "first_trade_date": str(mother["trade_date"].min()),
+        "last_trade_date": str(mother["trade_date"].max()),
+        "mother_pool_count": int(len(mother)),
+        "failed_close_count": int(mother["failed_to_close_at_limit"].sum()),
+        "strong_subpool_count": int(
+            mother["historical_is_current_final_close_strong_day"].sum()
+        ),
+        "static_d_overlap_count": int(mother["in_current_static_d_pool"].sum()),
+        "duplicate_target_key_count": int(target_keys.duplicated().sum()),
+        "target_manifest_sha256": sha256_file(TARGET_MANIFEST_PATH),
+        "stk_limit_dir": portable_path(STK_LIMIT_DIR),
+    }
+    if payload["duplicate_target_key_count"]:
+        raise RuntimeError("D窗口目标存在重复键，禁止冻结")
+    if WINDOW_MANIFEST_PATH.exists():
+        prior = json.loads(WINDOW_MANIFEST_PATH.read_text(encoding="utf-8-sig"))
+        comparable_prior = {key: prior.get(key) for key in payload}
+        if comparable_prior != payload:
+            raise RuntimeError(
+                "D窗口冻结清单漂移，禁止覆盖："
+                f"prior={comparable_prior} current={payload}"
+            )
+        WINDOW_MANIFEST_VERIFIED = True
+        return True
+    WINDOW_MANIFEST_PATH.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    WINDOW_MANIFEST_VERIFIED = False
+    return False
 
 
 def date_text(series: pd.Series) -> pd.Series:
@@ -277,7 +395,7 @@ def historical_window_days() -> pd.DataFrame:
         & result["strategy_compatible"].astype(bool)
     )
     strong_count = int(result["is_current_final_close_strong_day"].sum())
-    if strong_count != EXPECTED_STRONG_DAY_COUNT:
+    if USE_DEFAULT_REGRESSION_LOCKS and strong_count != EXPECTED_STRONG_DAY_COUNT:
         raise RuntimeError(
             "D旧strong日子集漂移："
             f"expected={EXPECTED_STRONG_DAY_COUNT} actual={strong_count}"
@@ -318,8 +436,8 @@ def current_static_d_pool() -> pd.DataFrame:
         min_fill_probability=0.80,
         allowed_segments=ALLOWED_SEGMENTS,
     )
-    result = frame[mask & frame["trade_date"].between(START, END)].copy()
-    if len(result) != EXPECTED_STATIC_D_POOL_COUNT:
+    result = frame[mask & frame["trade_date"].gt(START) & frame["trade_date"].le(END)].copy()
+    if USE_DEFAULT_REGRESSION_LOCKS and len(result) != EXPECTED_STATIC_D_POOL_COUNT:
         raise RuntimeError(
             "当前D收盘静态池漂移："
             f"expected={EXPECTED_STATIC_D_POOL_COUNT} actual={len(result)}"
@@ -346,7 +464,7 @@ def current_static_d_pool() -> pd.DataFrame:
 
 
 def build_mother_pool() -> pd.DataFrame:
-    """从484日全窗口日线最高价建立无收盘幸存者偏差的首板触板母池。"""
+    """从当前配置窗口的日线最高价建立无收盘幸存者偏差的首板触板母池。"""
 
     calendar = load_calendar()
     date_index = {date: index for index, date in enumerate(calendar)}
@@ -474,7 +592,7 @@ def build_mother_pool() -> pd.DataFrame:
     )
     mother["in_current_static_d_pool"] = mother["static_first_time"].notna()
     failed = int(mother["failed_to_close_at_limit"].sum())
-    if (
+    if USE_DEFAULT_REGRESSION_LOCKS and (
         len(mother) != EXPECTED_MOTHER_POOL_COUNT
         or failed != EXPECTED_FAILED_CLOSE_COUNT
     ):
@@ -487,7 +605,7 @@ def build_mother_pool() -> pd.DataFrame:
         mother["historical_is_current_final_close_strong_day"].astype(bool)
     ]
     legacy_failed = int(legacy_strong["failed_to_close_at_limit"].sum())
-    if (
+    if USE_DEFAULT_REGRESSION_LOCKS and (
         len(legacy_strong) != EXPECTED_LEGACY_STRONG_SUBPOOL_COUNT
         or legacy_failed != EXPECTED_LEGACY_STRONG_FAILED_CLOSE_COUNT
     ):
@@ -499,7 +617,7 @@ def build_mother_pool() -> pd.DataFrame:
             f"actual={legacy_failed}"
         )
     static_count = int(mother["in_current_static_d_pool"].sum())
-    if static_count != EXPECTED_STATIC_D_POOL_COUNT:
+    if USE_DEFAULT_REGRESSION_LOCKS and static_count != EXPECTED_STATIC_D_POOL_COUNT:
         raise RuntimeError(
             f"D母池与当前静态池合并不完整：expected={EXPECTED_STATIC_D_POOL_COUNT} actual={static_count}"
         )
@@ -527,6 +645,7 @@ def write_mother_and_targets(mother: pd.DataFrame) -> None:
     targets["required_frequency"] = "1m_for_path;tick_depth_for_queue"
     targets["acceptance_role"] = "D_COMPLETE_FIRST_BOARD_TOUCH_MOTHER_POOL"
     targets.to_csv(TARGET_MANIFEST_PATH, index=False, encoding="utf-8-sig")
+    lock_or_verify_window_manifest(mother)
 
 
 def load_minute_source(path: Path | None) -> pd.DataFrame:
@@ -630,6 +749,8 @@ def load_known_data_gap_keys(mother: pd.DataFrame) -> set[tuple[str, str]]:
         if missing:
             raise ValueError(f"D一分钟已知缺口缺少字段：{missing}")
         key = (str(row["trade_date"]), str(row["ts_code"]))
+        if not START < key[0] <= END:
+            continue
         if str(row["target_key"]) != "|".join(key):
             raise ValueError(f"D一分钟已知缺口target_key不一致：{row}")
         if key not in mother_keys:
@@ -658,6 +779,8 @@ def load_known_price_mismatch_keys(mother: pd.DataFrame) -> set[tuple[str, str]]
     result: set[tuple[str, str]] = set()
     for row in rows:
         key = (str(row.get("trade_date", "")), str(row.get("ts_code", "")))
+        if not START < key[0] <= END:
+            continue
         if str(row.get("target_key", "")) != "|".join(key):
             raise ValueError(f"D一分钟价格不一致target_key错误：{row}")
         if key not in mother_keys:
@@ -1067,8 +1190,14 @@ def summary_payload(
                 .le(0)
                 .sum()
             ),
-            "legacy_strong_subpool_regression_passed": True,
-            "current_static_d_pool_regression_passed": True,
+            "default_window_regression_locks_applied": USE_DEFAULT_REGRESSION_LOCKS,
+            "window_manifest_verified": WINDOW_MANIFEST_VERIFIED,
+            "legacy_strong_subpool_regression_passed": (
+                True if USE_DEFAULT_REGRESSION_LOCKS else None
+            ),
+            "current_static_d_pool_regression_passed": (
+                True if USE_DEFAULT_REGRESSION_LOCKS else None
+            ),
         },
         "minute_data": {
             "path": str(minute_path.relative_to(ROOT)) if minute_path and minute_path.is_absolute() and ROOT in minute_path.parents else str(minute_path or ""),
@@ -1112,7 +1241,9 @@ def summary_payload(
             ),
         },
         "certification": {
-            "complete_mother_pool_passed": True,
+            "complete_mother_pool_passed": bool(
+                USE_DEFAULT_REGRESSION_LOCKS or WINDOW_MANIFEST_VERIFIED
+            ),
             "complete_one_minute_path_passed": one_minute_ready == len(mother),
             "full_window_replay_fail_closed_passed": replay_fail_closed_ready,
             "historical_queue_depth_passed": False,
@@ -1120,7 +1251,11 @@ def summary_payload(
             "d_standalone_replay_certifiable": False,
             "acde_one_leg_replacement_certifiable": False,
             "status": (
-                "TARGET_MANIFEST_READY"
+                (
+                    "TARGET_MANIFEST_READY"
+                    if USE_DEFAULT_REGRESSION_LOCKS or WINDOW_MANIFEST_VERIFIED
+                    else "DISCOVERY_MANIFEST_CREATED_RERUN_REQUIRED"
+                )
                 if targets_only
                 else (
                     "READY_FOR_FULL_WINDOW_FEATURE_RESEARCH_FAIL_CLOSED"
@@ -1134,11 +1269,11 @@ def summary_payload(
             ),
         },
         "limitations": [
-            "母池覆盖全部484日；历史收盘情绪只作标签，精确复现实盘仍需用分钟路径重建盘中ever_sealed情绪。",
+            f"母池覆盖全部{EXPECTED_WINDOW_OPEN_DAY_COUNT}日；历史收盘情绪只作标签，精确复现实盘仍需用分钟路径重建盘中ever_sealed情绪。",
             "OHLCV没有回封时买一封单和队列前方数量，始终封板期间不能证明排队成交。",
             "一分钟OHLCV仍无法确定同一分钟内多次触板、炸板和回封的先后顺序；五分钟歧义更大。",
             "跨数据源分钟最高价未确认官方涨停价的目标单独标记不一致，禁止用于路径认证。",
-            "4条已复核Tushare北交所日期市场缺口保留在分母并机械记为无信号；不插值、不删除。",
+            f"{len(known_gap_keys)}条窗口内已复核Tushare数据商缺口保留在分母并机械记为无信号；不插值、不删除。",
             "本账本自身不直接输出复利；须由全窗口特征与双门禁脚本先按信号时点字段选当日唯一候选，再用价格穿透/未知未成交的保守口径比较D和ACDE。",
         ],
     }
@@ -1146,6 +1281,40 @@ def summary_payload(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="建立D完整首板触板分钟事件账本")
+    parser.add_argument(
+        "--start-exclusive",
+        default=DEFAULT_START,
+        help="窗口左端锚点（不含），默认20240630。",
+    )
+    parser.add_argument(
+        "--end-inclusive",
+        default=DEFAULT_END,
+        help="窗口右端（含），默认20260630。",
+    )
+    parser.add_argument(
+        "--data-dir",
+        type=Path,
+        default=DATA_DIR,
+        help="母池、目标和事件账本输出目录。",
+    )
+    parser.add_argument(
+        "--report-dir",
+        type=Path,
+        default=REPORT_DIR,
+        help="摘要报告输出目录。",
+    )
+    parser.add_argument(
+        "--stk-limit-dir",
+        type=Path,
+        default=STK_LIMIT_DIR,
+        help="官方涨跌停价逐日文件目录。",
+    )
+    parser.add_argument(
+        "--known-gaps",
+        type=Path,
+        default=KNOWN_DATA_GAPS_PATH,
+        help="分钟数据商缺口与价格不一致的冻结说明。",
+    )
     parser.add_argument(
         "--minute-bars",
         type=Path,
@@ -1169,9 +1338,34 @@ def main() -> int:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
+    data_dir = args.data_dir if args.data_dir.is_absolute() else ROOT / args.data_dir
+    report_dir = (
+        args.report_dir if args.report_dir.is_absolute() else ROOT / args.report_dir
+    )
+    stk_limit_dir = (
+        args.stk_limit_dir
+        if args.stk_limit_dir.is_absolute()
+        else ROOT / args.stk_limit_dir
+    )
+    known_gaps_path = (
+        args.known_gaps if args.known_gaps.is_absolute() else ROOT / args.known_gaps
+    )
+    configure_window(
+        start_exclusive=args.start_exclusive,
+        end_inclusive=args.end_inclusive,
+        data_dir=data_dir,
+        report_dir=report_dir,
+        stk_limit_dir=stk_limit_dir,
+        known_gaps_path=known_gaps_path,
+    )
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
-    LOGGER.info("从484日全窗口构建D完整首板触板母池")
+    LOGGER.info(
+        "从%d日窗口构建D完整首板触板母池：%s<date<=%s",
+        EXPECTED_WINDOW_OPEN_DAY_COUNT,
+        START,
+        END,
+    )
     mother = build_mother_pool()
     write_mother_and_targets(mother)
     LOGGER.info(

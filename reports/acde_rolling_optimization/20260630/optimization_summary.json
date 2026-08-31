@@ -1,0 +1,2263 @@
+{
+  "schema_version": 1,
+  "mode": "research_only",
+  "formal_strategy_modified": false,
+  "priority": [
+    "A",
+    "C",
+    "E",
+    "D"
+  ],
+  "windows": {
+    "update_node": "20260630",
+    "main": {
+      "name": "main",
+      "start": "20230701",
+      "end": "20260630",
+      "role": "参数筛选与跨行情稳定性",
+      "may_rank_candidates": true
+    },
+    "recent": {
+      "name": "recent",
+      "start": "20240701",
+      "end": "20260630",
+      "role": "确认参数未被旧行情拖累",
+      "may_rank_candidates": false
+    },
+    "failure_check": {
+      "name": "failure_check",
+      "start": "20260101",
+      "end": "20260630",
+      "role": "只检查是否明显失效",
+      "may_rank_candidates": false
+    }
+  },
+  "readiness_sha256": "d9a71a89d47d1ded13e4a638162223cdaef909c2a3b2310a4968138c085e5e28",
+  "readiness_d_target_denominator": {
+    "passed": true,
+    "reason": "OK",
+    "failures": [],
+    "target_count": 54178,
+    "target_trade_day_count": 725,
+    "required_trade_day_count": 725,
+    "ready_path_target_count": 54166,
+    "registered_vendor_gap_count": 4,
+    "registered_price_mismatch_count": 8,
+    "fail_closed_abnormal_count": 12,
+    "event_count": 44536,
+    "event_trade_day_count": 725,
+    "known_abnormal_keys": [
+      "20231129|920932.BJ",
+      "20231207|920262.BJ",
+      "20240206|920030.BJ",
+      "20240619|920090.BJ",
+      "20241025|920641.BJ",
+      "20241122|920926.BJ",
+      "20241128|920149.BJ",
+      "20241128|920199.BJ",
+      "20241128|920765.BJ",
+      "20241128|920802.BJ",
+      "20250310|920367.BJ",
+      "20251103|920304.BJ"
+    ],
+    "source_sha256": {
+      "d_missing_year_target_ledger": "69166cca8534a73fde719b25b39b0d2c8aa74b304b2ffbe338eec1406ea6d51a",
+      "d_recent_target_ledger": "685b109d886268175b1bf4754ef57d53ec004fef89cf2fb7f026a939e4256b94",
+      "d_known_data_gaps": "d8d9776eaae4f05f4e63a19aa63eef21d67cbc23eda5456a11ae2278201e4879",
+      "d_missing_year_summary": "26d8b95e89440a85d327f5c54ba8baf37282fb0faf756b70d00b6b7e388ac86d",
+      "d_recent_summary": "2c09cf094cf1a6aa39650b79214790c32962e37c179563d6921004ca039a40ef",
+      "d_merge_summary": "6be6d408f6ade51b00e6d27c063c58f2eb6847238d531da61a1b7f9e5a60d2b8",
+      "d_event_source": "15e3190a0f4685d1f3aad57f117204fc1918fccfeef8cbd293f21593f4fdd19c",
+      "trade_calendar": "53978e56252200b2b4f980fc6237dc76834f614410ab8c7a6a7dfa0d53ea39d4"
+    },
+    "known_abnormal_keys_sha256": "b1e5270c02d7a25657744375c0d2dc593e1ef101e851643184d285e109c3c5ca",
+    "frozen_contract_present": true,
+    "frozen_contract_passed": true
+  },
+  "market_controller": {
+    "hard_gate_enabled": true,
+    "state_reference": "previous_open_day_close",
+    "minimum_limit_up_count": 50,
+    "applies_to": [
+      "A",
+      "C",
+      "E",
+      "D"
+    ],
+    "regime_routing_mode": "strategy_internal_filters_frozen",
+    "note": "四腿在真实开仓日前一交易日收盘涨停数少于50时均不建立开仓计划；D不得使用当日收盘值回看盘中信号。",
+    "action_day_count": 725,
+    "allowed_action_day_count": 425,
+    "blocked_action_day_count": 300
+  },
+  "data_fingerprints": {
+    "strict_daily_source": {
+      "path": "data/research/five_year_strict/limit_up_fill_scored_asof.csv",
+      "sha256": "35d8256a345815b5c39498ed2b574b998598d1e005008fb2d7578e964b0ef7ed"
+    },
+    "strict_feature_pool": {
+      "path": "data/research/five_year_strict/strict_feature_pool.csv",
+      "sha256": "f1d4b1ee83b991a169ba8530a135b2ba4ff43ef7ae32dd6759de7a64555fc482"
+    },
+    "market_sentiment": {
+      "path": "data/research/five_year_strict/market_sentiment.csv",
+      "sha256": "4ba851e3c7469b2a93a2b6cdfe8b6336d33ef57c10c30e27faa642dfdb0355c3"
+    },
+    "d_event_source": {
+      "path": "data/research/acde_rolling_optimization/20260630/strategy_d_three_year/all_reseal_signal_events.csv",
+      "sha256": "15e3190a0f4685d1f3aad57f117204fc1918fccfeef8cbd293f21593f4fdd19c"
+    },
+    "d_missing_year_target_ledger": {
+      "path": "data/research/acde_rolling_optimization/20260630/strategy_d_missing_year/event_ledger_full_window.csv",
+      "sha256": "69166cca8534a73fde719b25b39b0d2c8aa74b304b2ffbe338eec1406ea6d51a"
+    },
+    "d_recent_target_ledger": {
+      "path": "data/research/strategy_d_intraday/event_ledger_full_window.csv",
+      "sha256": "685b109d886268175b1bf4754ef57d53ec004fef89cf2fb7f026a939e4256b94"
+    },
+    "d_known_data_gaps": {
+      "path": "config/strategy_d_intraday_known_data_gaps.json",
+      "sha256": "d8d9776eaae4f05f4e63a19aa63eef21d67cbc23eda5456a11ae2278201e4879"
+    },
+    "d_missing_year_summary": {
+      "path": "reports/acde_rolling_optimization/20260630/strategy_d_missing_year/full_window_summary.json",
+      "sha256": "26d8b95e89440a85d327f5c54ba8baf37282fb0faf756b70d00b6b7e388ac86d"
+    },
+    "d_recent_summary": {
+      "path": "reports/strategy_d_intraday_research/full_window_summary.json",
+      "sha256": "2c09cf094cf1a6aa39650b79214790c32962e37c179563d6921004ca039a40ef"
+    },
+    "d_merge_summary": {
+      "path": "reports/acde_rolling_optimization/20260630/strategy_d_three_year/merge_summary.json",
+      "sha256": "6be6d408f6ade51b00e6d27c063c58f2eb6847238d531da61a1b7f9e5a60d2b8"
+    },
+    "trade_calendar": {
+      "path": "data/raw/trade_calendar.csv",
+      "sha256": "53978e56252200b2b4f980fc6237dc76834f614410ab8c7a6a7dfa0d53ea39d4"
+    }
+  },
+  "candidate_space_version": "ACDE_STYLE_GATED_LOCAL_V7",
+  "candidate_space": {
+    "version": "ACDE_STYLE_GATED_LOCAL_V7",
+    "only_predeclared_single_axis_changes": false,
+    "selection_candidates_declared_before_final_v7_replay": true,
+    "candidate_space_discovered_using_same_main_window": true,
+    "note": "V7候选空间在同一三年主窗内迭代发现后，于最终回放前冻结；因此属于样本内STRICT_DISCOVERY，不是事前独立验证。",
+    "deduplicate_by_plan_signature": true,
+    "A": "当前规则；低热度/连板/封单相邻桶单轴变化；fallback开关；4种固定排序",
+    "C": "固定T+3；只有显式限定全市场/所属分段warming/main_rise/climax或分段最高板强势高度的候选可进入排名，未限定强势环境的相邻桶和排序变化仅作数学诊断",
+    "E": "只有显式限定ice_point/retreat/warming修复状态的单门禁或状态并集候选可进入排名；未限定修复状态的排序与时间门禁变化仅作数学诊断",
+    "D": "冻结首板真实炸板回封、分钟路径和成交口径；只有使用信号时盘中市场广度或累计炸板事件率显式限定强势环境的候选可进入排名，其余相邻因子变化仅作数学诊断"
+  },
+  "d_style_stress_diagnostics": [
+    {
+      "variant_id": "D_STRONG_BREAK_LT75_ACTIVE_GE20",
+      "description": "累计炸板事件率低于75%，且信号时仍封首板不少于20只",
+      "style_gate_passed": true,
+      "style_gate_reason": "同时使用信号时盘中炸板质量与市场广度确认强势环境，保持D首板炸板回封风格",
+      "main_gate_passed": false,
+      "main_gate_reasons": "MAIN_STANDALONE_COMPOUND;MAIN_SAMPLE_RETENTION;MAIN_ABSOLUTE_SAMPLE",
+      "recent_confirmation_passed": false,
+      "recent_confirmation_reasons": "RECENT_STANDALONE_COMPOUND;RECENT_SAMPLE_RETENTION;RECENT_ABSOLUTE_SAMPLE",
+      "selection_gate_passed": false,
+      "replacement_gate_passed": false,
+      "selection_gate_reasons": "MAIN_STANDALONE_COMPOUND;MAIN_SAMPLE_RETENTION;MAIN_ABSOLUTE_SAMPLE",
+      "failure_flags": "",
+      "main_standalone_trade_count": 18,
+      "main_standalone_equity_multiple": 1.6664003764082413,
+      "main_standalone_max_drawdown": -0.18135112931856967,
+      "main_portfolio_trade_count": 126,
+      "main_portfolio_equity_multiple": 236.310702072181,
+      "main_portfolio_max_drawdown": -0.3355350056100803,
+      "recent_standalone_trade_count": 14,
+      "recent_standalone_equity_multiple": 1.789583079031314,
+      "recent_standalone_max_drawdown": -0.06991621174783458,
+      "recent_portfolio_trade_count": 107,
+      "recent_portfolio_equity_multiple": 309.2843418747643,
+      "recent_portfolio_max_drawdown": -0.11528424939635429,
+      "failure_check_standalone_trade_count": 8,
+      "failure_check_standalone_equity_multiple": 1.4518394154012597,
+      "failure_check_standalone_max_drawdown": -0.04297805872847971,
+      "failure_check_portfolio_trade_count": 39,
+      "failure_check_portfolio_equity_multiple": 7.278947808193191,
+      "failure_check_portfolio_max_drawdown": -0.11528424939635407
+    },
+    {
+      "variant_id": "D_STRONG_BREAK_LT75_TOUCH_GE40",
+      "description": "累计炸板事件率低于75%，且信号时累计首板触板不少于40只",
+      "style_gate_passed": true,
+      "style_gate_reason": "同时使用信号时盘中炸板质量与市场广度确认强势环境，保持D首板炸板回封风格",
+      "main_gate_passed": false,
+      "main_gate_reasons": "MAIN_STANDALONE_COMPOUND;MAIN_PORTFOLIO_COMPOUND;MAIN_SAMPLE_RETENTION;MAIN_ABSOLUTE_SAMPLE",
+      "recent_confirmation_passed": false,
+      "recent_confirmation_reasons": "RECENT_STANDALONE_COMPOUND;RECENT_PORTFOLIO_COMPOUND;RECENT_SAMPLE_RETENTION;RECENT_ABSOLUTE_SAMPLE",
+      "selection_gate_passed": false,
+      "replacement_gate_passed": false,
+      "selection_gate_reasons": "MAIN_STANDALONE_COMPOUND;MAIN_PORTFOLIO_COMPOUND;MAIN_SAMPLE_RETENTION;MAIN_ABSOLUTE_SAMPLE",
+      "failure_flags": "",
+      "main_standalone_trade_count": 6,
+      "main_standalone_equity_multiple": 1.0665261701183475,
+      "main_standalone_max_drawdown": -0.12484288366397833,
+      "main_portfolio_trade_count": 122,
+      "main_portfolio_equity_multiple": 153.79687620977165,
+      "main_portfolio_max_drawdown": -0.2761460906507551,
+      "recent_standalone_trade_count": 5,
+      "recent_standalone_equity_multiple": 1.2169637165551908,
+      "recent_standalone_max_drawdown": -0.0013986653999999987,
+      "recent_portfolio_trade_count": 105,
+      "recent_portfolio_equity_multiple": 184.77501217757035,
+      "recent_portfolio_max_drawdown": -0.11528424939635418,
+      "failure_check_standalone_trade_count": 1,
+      "failure_check_standalone_equity_multiple": 1.0005906831695017,
+      "failure_check_standalone_max_drawdown": 0.0,
+      "failure_check_portfolio_trade_count": 38,
+      "failure_check_portfolio_equity_multiple": 5.440056665520555,
+      "failure_check_portfolio_max_drawdown": -0.11528424939635429
+    }
+  ],
+  "decisions": {
+    "A": {
+      "baseline_variant_id": "A_CURRENT",
+      "candidate_count": 10,
+      "unique_candidate_signature_count": 10,
+      "main_gate_passed_count": 0,
+      "style_eligible_main_gate_passed_count": 0,
+      "main_recent_gate_passed_count": 0,
+      "style_eligible_main_recent_gate_passed_count": 0,
+      "mathematical_winner": {},
+      "best_style_candidate": {
+        "variant_id": "A_RANK_SCORE_AMOUNT",
+        "description": "保持条件，仅改为利润源得分后按成交额降序",
+        "style_gate_passed": true,
+        "style_gate_reason": "只调整A内部热度、连板、封单、fallback或排序，保持低热度首板强度风格",
+        "main_gate_passed": false,
+        "main_gate_reasons": "MAIN_STANDALONE_COMPOUND;MAIN_PORTFOLIO_COMPOUND",
+        "recent_confirmation_passed": false,
+        "recent_confirmation_reasons": "RECENT_STANDALONE_COMPOUND;RECENT_PORTFOLIO_COMPOUND",
+        "selection_gate_passed": false,
+        "replacement_gate_passed": false,
+        "selection_gate_reasons": "MAIN_STANDALONE_COMPOUND;MAIN_PORTFOLIO_COMPOUND",
+        "failure_flags": "",
+        "main_standalone_trade_count": 55,
+        "main_standalone_equity_multiple": 10.019044656989625,
+        "main_standalone_max_drawdown": -0.21598767785514295,
+        "main_portfolio_trade_count": 135,
+        "main_portfolio_equity_multiple": 190.30039195942737,
+        "main_portfolio_max_drawdown": -0.3767614533307604,
+        "recent_standalone_trade_count": 49,
+        "recent_standalone_equity_multiple": 11.189928733954744,
+        "recent_standalone_max_drawdown": -0.13771679446052276,
+        "recent_portfolio_trade_count": 111,
+        "recent_portfolio_equity_multiple": 257.59083003024904,
+        "recent_portfolio_max_drawdown": -0.19703500830407583,
+        "failure_check_standalone_trade_count": 21,
+        "failure_check_standalone_equity_multiple": 2.382538767606469,
+        "failure_check_standalone_max_drawdown": -0.08016089187600917,
+        "failure_check_portfolio_trade_count": 39,
+        "failure_check_portfolio_equity_multiple": 7.278947808193191,
+        "failure_check_portfolio_max_drawdown": -0.11528424939635407
+      },
+      "selected_variant_id": "",
+      "selected_description": "",
+      "selected_recent_confirmation_passed": false,
+      "selected_recent_confirmation_reasons": "",
+      "half_year_failure_flags": "",
+      "promoted_in_research": false,
+      "decision": "KEEP_CURRENT_NO_CANDIDATE_PASSED_MAIN"
+    },
+    "C": {
+      "baseline_variant_id": "C_CURRENT",
+      "candidate_count": 11,
+      "unique_candidate_signature_count": 9,
+      "main_gate_passed_count": 2,
+      "style_eligible_main_gate_passed_count": 0,
+      "main_recent_gate_passed_count": 1,
+      "style_eligible_main_recent_gate_passed_count": 0,
+      "mathematical_winner": {
+        "variant_id": "C_LEADER_RANK_ADJACENT",
+        "description": "龙头分支排名相邻加入2_3",
+        "style_gate_passed": false,
+        "style_gate_reason": "未显式限定warming/main_rise/climax；只能诊断现有C规则，不满足固定的强势/主升龙头风格门禁",
+        "main_gate_passed": true,
+        "main_gate_reasons": "",
+        "recent_confirmation_passed": true,
+        "recent_confirmation_reasons": "",
+        "selection_gate_passed": true,
+        "replacement_gate_passed": true,
+        "selection_gate_reasons": "",
+        "failure_flags": "",
+        "main_standalone_trade_count": 58,
+        "main_standalone_equity_multiple": 16.592266587212748,
+        "main_standalone_max_drawdown": -0.15479014188878015,
+        "main_portfolio_trade_count": 135,
+        "main_portfolio_equity_multiple": 238.15784287165897,
+        "main_portfolio_max_drawdown": -0.3767614533307604,
+        "recent_standalone_trade_count": 54,
+        "recent_standalone_equity_multiple": 16.812064489133974,
+        "recent_standalone_max_drawdown": -0.15479014188878015,
+        "recent_portfolio_trade_count": 111,
+        "recent_portfolio_equity_multiple": 322.37073077917626,
+        "recent_portfolio_max_drawdown": -0.19703500830407583,
+        "failure_check_standalone_trade_count": 18,
+        "failure_check_standalone_equity_multiple": 2.742331000461555,
+        "failure_check_standalone_max_drawdown": -0.047620245698239194,
+        "failure_check_portfolio_trade_count": 39,
+        "failure_check_portfolio_equity_multiple": 7.695009955253768,
+        "failure_check_portfolio_max_drawdown": -0.1176675942029588
+      },
+      "best_style_candidate": {
+        "variant_id": "C_SEGMENT_HEIGHT_GE4",
+        "description": "固定原双分支，只允许所属分段最高板达到4板以上",
+        "style_gate_passed": true,
+        "style_gate_reason": "用信号日所属分段最高板至少4板确认强势高度，保持C龙头进攻身份",
+        "main_gate_passed": false,
+        "main_gate_reasons": "MAIN_STANDALONE_COMPOUND",
+        "recent_confirmation_passed": false,
+        "recent_confirmation_reasons": "RECENT_STANDALONE_COMPOUND",
+        "selection_gate_passed": false,
+        "replacement_gate_passed": false,
+        "selection_gate_reasons": "MAIN_STANDALONE_COMPOUND",
+        "failure_flags": "",
+        "main_standalone_trade_count": 49,
+        "main_standalone_equity_multiple": 10.24726788092665,
+        "main_standalone_max_drawdown": -0.15479014188878026,
+        "main_portfolio_trade_count": 133,
+        "main_portfolio_equity_multiple": 214.8934762293645,
+        "main_portfolio_max_drawdown": -0.3767614533307604,
+        "recent_standalone_trade_count": 45,
+        "recent_standalone_equity_multiple": 10.383013528985874,
+        "recent_standalone_max_drawdown": -0.15479014188878004,
+        "recent_portfolio_trade_count": 109,
+        "recent_portfolio_equity_multiple": 290.8800572613074,
+        "recent_portfolio_max_drawdown": -0.19703500830407605,
+        "failure_check_standalone_trade_count": 13,
+        "failure_check_standalone_equity_multiple": 1.72068225272659,
+        "failure_check_standalone_max_drawdown": -0.047620245698239305,
+        "failure_check_portfolio_trade_count": 38,
+        "failure_check_portfolio_equity_multiple": 8.192539497603251,
+        "failure_check_portfolio_max_drawdown": -0.05589317513736258
+      },
+      "selected_variant_id": "",
+      "selected_description": "",
+      "selected_recent_confirmation_passed": false,
+      "selected_recent_confirmation_reasons": "",
+      "half_year_failure_flags": "",
+      "promoted_in_research": false,
+      "decision": "KEEP_CURRENT_STYLE_GATE"
+    },
+    "E": {
+      "baseline_variant_id": "E_CURRENT",
+      "candidate_count": 10,
+      "unique_candidate_signature_count": 7,
+      "main_gate_passed_count": 0,
+      "style_eligible_main_gate_passed_count": 0,
+      "main_recent_gate_passed_count": 0,
+      "style_eligible_main_recent_gate_passed_count": 0,
+      "mathematical_winner": {},
+      "best_style_candidate": {
+        "variant_id": "E_ANY_REPAIR_STATE",
+        "description": "所属分段ice_point，或全市场处于ice_point/retreat/warming",
+        "style_gate_passed": true,
+        "style_gate_reason": "以信号日已知状态的并集限定冰点或修复阶段，保持E的修复风格",
+        "main_gate_passed": false,
+        "main_gate_reasons": "MAIN_STANDALONE_COMPOUND;MAIN_PORTFOLIO_COMPOUND",
+        "recent_confirmation_passed": false,
+        "recent_confirmation_reasons": "RECENT_STANDALONE_COMPOUND;RECENT_PORTFOLIO_COMPOUND;RECENT_PORTFOLIO_DRAWDOWN",
+        "selection_gate_passed": false,
+        "replacement_gate_passed": false,
+        "selection_gate_reasons": "MAIN_STANDALONE_COMPOUND;MAIN_PORTFOLIO_COMPOUND",
+        "failure_flags": "",
+        "main_standalone_trade_count": 50,
+        "main_standalone_equity_multiple": 6.169429358486491,
+        "main_standalone_max_drawdown": -0.17629142067722958,
+        "main_portfolio_trade_count": 129,
+        "main_portfolio_equity_multiple": 158.24756441160358,
+        "main_portfolio_max_drawdown": -0.3347995487024632,
+        "recent_standalone_trade_count": 44,
+        "recent_standalone_equity_multiple": 5.560001849617522,
+        "recent_standalone_max_drawdown": -0.17629142067722958,
+        "recent_portfolio_trade_count": 107,
+        "recent_portfolio_equity_multiple": 200.69175058239642,
+        "recent_portfolio_max_drawdown": -0.23129829864721474,
+        "failure_check_standalone_trade_count": 20,
+        "failure_check_standalone_equity_multiple": 1.7633808450844637,
+        "failure_check_standalone_max_drawdown": -0.1751403635963671,
+        "failure_check_portfolio_trade_count": 39,
+        "failure_check_portfolio_equity_multiple": 6.5587002146343085,
+        "failure_check_portfolio_max_drawdown": -0.11528424939635407
+      },
+      "selected_variant_id": "",
+      "selected_description": "",
+      "selected_recent_confirmation_passed": false,
+      "selected_recent_confirmation_reasons": "",
+      "half_year_failure_flags": "",
+      "promoted_in_research": false,
+      "decision": "KEEP_CURRENT_NO_CANDIDATE_PASSED_MAIN"
+    },
+    "D": {
+      "baseline_variant_id": "D_CURRENT",
+      "candidate_count": 10,
+      "unique_candidate_signature_count": 10,
+      "main_gate_passed_count": 1,
+      "style_eligible_main_gate_passed_count": 1,
+      "main_recent_gate_passed_count": 1,
+      "style_eligible_main_recent_gate_passed_count": 1,
+      "mathematical_winner": {
+        "variant_id": "D_STRONG_BREAK_LT75",
+        "description": "信号时全市场累计炸板事件率低于75%",
+        "style_gate_passed": true,
+        "style_gate_reason": "使用信号时已经可见的盘中市场质量或广度过滤弱势环境，保持D首板炸板回封风格",
+        "main_gate_passed": true,
+        "main_gate_reasons": "",
+        "recent_confirmation_passed": true,
+        "recent_confirmation_reasons": "",
+        "selection_gate_passed": true,
+        "replacement_gate_passed": true,
+        "selection_gate_reasons": "",
+        "failure_flags": "",
+        "main_standalone_trade_count": 31,
+        "main_standalone_equity_multiple": 1.9766295198070163,
+        "main_standalone_max_drawdown": -0.1860185403544109,
+        "main_portfolio_trade_count": 133,
+        "main_portfolio_equity_multiple": 215.99663972767195,
+        "main_portfolio_max_drawdown": -0.3399195065290058,
+        "recent_standalone_trade_count": 22,
+        "recent_standalone_equity_multiple": 2.227285070409831,
+        "recent_standalone_max_drawdown": -0.1271943797217051,
+        "recent_portfolio_trade_count": 110,
+        "recent_portfolio_equity_multiple": 276.05468239279566,
+        "recent_portfolio_max_drawdown": -0.14119813241960633,
+        "failure_check_standalone_trade_count": 12,
+        "failure_check_standalone_equity_multiple": 1.898775493440468,
+        "failure_check_standalone_max_drawdown": -0.04297805872847971,
+        "failure_check_portfolio_trade_count": 39,
+        "failure_check_portfolio_equity_multiple": 7.278947808193191,
+        "failure_check_portfolio_max_drawdown": -0.11528424939635407
+      },
+      "best_style_candidate": {
+        "variant_id": "D_STRONG_BREAK_LT75",
+        "description": "信号时全市场累计炸板事件率低于75%",
+        "style_gate_passed": true,
+        "style_gate_reason": "使用信号时已经可见的盘中市场质量或广度过滤弱势环境，保持D首板炸板回封风格",
+        "main_gate_passed": true,
+        "main_gate_reasons": "",
+        "recent_confirmation_passed": true,
+        "recent_confirmation_reasons": "",
+        "selection_gate_passed": true,
+        "replacement_gate_passed": true,
+        "selection_gate_reasons": "",
+        "failure_flags": "",
+        "main_standalone_trade_count": 31,
+        "main_standalone_equity_multiple": 1.9766295198070163,
+        "main_standalone_max_drawdown": -0.1860185403544109,
+        "main_portfolio_trade_count": 133,
+        "main_portfolio_equity_multiple": 215.99663972767195,
+        "main_portfolio_max_drawdown": -0.3399195065290058,
+        "recent_standalone_trade_count": 22,
+        "recent_standalone_equity_multiple": 2.227285070409831,
+        "recent_standalone_max_drawdown": -0.1271943797217051,
+        "recent_portfolio_trade_count": 110,
+        "recent_portfolio_equity_multiple": 276.05468239279566,
+        "recent_portfolio_max_drawdown": -0.14119813241960633,
+        "failure_check_standalone_trade_count": 12,
+        "failure_check_standalone_equity_multiple": 1.898775493440468,
+        "failure_check_standalone_max_drawdown": -0.04297805872847971,
+        "failure_check_portfolio_trade_count": 39,
+        "failure_check_portfolio_equity_multiple": 7.278947808193191,
+        "failure_check_portfolio_max_drawdown": -0.11528424939635407
+      },
+      "selected_variant_id": "D_STRONG_BREAK_LT75",
+      "selected_description": "信号时全市场累计炸板事件率低于75%",
+      "selected_recent_confirmation_passed": true,
+      "selected_recent_confirmation_reasons": "",
+      "half_year_failure_flags": "",
+      "promoted_in_research": true,
+      "decision": "RESEARCH_CANDIDATE_PROMOTED"
+    }
+  },
+  "selected_bundle_gate": {
+    "selected_legs": [
+      "D"
+    ],
+    "selection_gate_passed": true,
+    "replacement_gate_passed": true,
+    "reasons": [],
+    "status": "BUNDLE_GATE_PASSED"
+  },
+  "formal_update_recommendation": {
+    "A": "KEEP_CURRENT",
+    "C": "KEEP_CURRENT",
+    "E": "KEEP_CURRENT",
+    "D": "MANUAL_REVIEW_RESEARCH_CANDIDATE"
+  },
+  "proposed_bundle_before_gate": {
+    "portfolio": {
+      "main": {
+        "trade_count": 133,
+        "win_rate": 0.6842105263157895,
+        "avg_account_return": 0.04449586294979534,
+        "median_account_return": 0.0311433558460928,
+        "equity_multiple": 215.99663972767195,
+        "max_drawdown": -0.3399195065290058,
+        "max_profit": 0.3687231660523884,
+        "max_loss": -0.1236171172487218,
+        "profit_loss_ratio": 2.033459558754199,
+        "max_consecutive_losses": 5,
+        "leg_counts": {
+          "A": 40,
+          "C": 44,
+          "D": 15,
+          "E": 34
+        }
+      },
+      "recent": {
+        "trade_count": 110,
+        "win_rate": 0.7363636363636363,
+        "avg_account_return": 0.05570802231253129,
+        "median_account_return": 0.049262116825142005,
+        "equity_multiple": 276.05468239279566,
+        "max_drawdown": -0.14119813241960633,
+        "max_profit": 0.3687231660523884,
+        "max_loss": -0.09240440692497143,
+        "profit_loss_ratio": 2.331979688204909,
+        "max_consecutive_losses": 5,
+        "leg_counts": {
+          "A": 34,
+          "C": 40,
+          "D": 8,
+          "E": 28
+        }
+      },
+      "failure_check": {
+        "trade_count": 39,
+        "win_rate": 0.8461538461538461,
+        "avg_account_return": 0.054272436339007864,
+        "median_account_return": 0.04807778952940472,
+        "equity_multiple": 7.278947808193191,
+        "max_drawdown": -0.11528424939635407,
+        "max_profit": 0.20556653674601238,
+        "max_loss": -0.06932825022948397,
+        "profit_loss_ratio": 1.635336346459318,
+        "max_consecutive_losses": 1,
+        "leg_counts": {
+          "A": 16,
+          "C": 13,
+          "D": 2,
+          "E": 8
+        }
+      }
+    },
+    "standalone": {
+      "A": {
+        "main": {
+          "trade_count": 55,
+          "win_rate": 0.6,
+          "avg_account_return": 0.05028180160946296,
+          "median_account_return": 0.021243541591960853,
+          "equity_multiple": 11.101435929248517,
+          "max_drawdown": -0.2021997618809025,
+          "max_profit": 0.4762530065206852,
+          "max_loss": -0.1043668645883486,
+          "profit_loss_ratio": 2.70634329241547,
+          "max_consecutive_losses": 4,
+          "leg_counts": {
+            "A": 55
+          }
+        },
+        "recent": {
+          "trade_count": 49,
+          "win_rate": 0.6326530612244898,
+          "avg_account_return": 0.05851655570124612,
+          "median_account_return": 0.02892162643672605,
+          "equity_multiple": 12.39881457222495,
+          "max_drawdown": -0.13771679446052298,
+          "max_profit": 0.4762530065206852,
+          "max_loss": -0.1043668645883486,
+          "profit_loss_ratio": 2.9601957021901195,
+          "max_consecutive_losses": 3,
+          "leg_counts": {
+            "A": 49
+          }
+        },
+        "failure_check": {
+          "trade_count": 21,
+          "win_rate": 0.6666666666666666,
+          "avg_account_return": 0.04500596662160167,
+          "median_account_return": 0.04311762601054512,
+          "equity_multiple": 2.382538767606469,
+          "max_drawdown": -0.08016089187600917,
+          "max_profit": 0.20556653674601238,
+          "max_loss": -0.06520474752857118,
+          "profit_loss_ratio": 2.201532157941121,
+          "max_consecutive_losses": 2,
+          "leg_counts": {
+            "A": 21
+          }
+        }
+      },
+      "C": {
+        "main": {
+          "trade_count": 56,
+          "win_rate": 0.75,
+          "avg_account_return": 0.04983302679158844,
+          "median_account_return": 0.051119987177559376,
+          "equity_multiple": 13.028258859210185,
+          "max_drawdown": -0.15479014188878015,
+          "max_profit": 0.2173828879635992,
+          "max_loss": -0.1466810861919058,
+          "profit_loss_ratio": 1.6894764881156286,
+          "max_consecutive_losses": 3,
+          "leg_counts": {
+            "C": 56
+          }
+        },
+        "recent": {
+          "trade_count": 52,
+          "win_rate": 0.7692307692307693,
+          "avg_account_return": 0.05376391439537958,
+          "median_account_return": 0.05225086254686408,
+          "equity_multiple": 13.200844319303275,
+          "max_drawdown": -0.15479014188878015,
+          "max_profit": 0.2173828879635992,
+          "max_loss": -0.1466810861919058,
+          "profit_loss_ratio": 1.7400455236730858,
+          "max_consecutive_losses": 2,
+          "leg_counts": {
+            "C": 52
+          }
+        },
+        "failure_check": {
+          "trade_count": 17,
+          "win_rate": 0.8235294117647058,
+          "avg_account_return": 0.05155388210707736,
+          "median_account_return": 0.037304008865496785,
+          "equity_multiple": 2.2685699651560136,
+          "max_drawdown": -0.047620245698239194,
+          "max_profit": 0.17193786638361655,
+          "max_loss": -0.04762024569823918,
+          "profit_loss_ratio": 1.5916259481683679,
+          "max_consecutive_losses": 1,
+          "leg_counts": {
+            "C": 17
+          }
+        }
+      },
+      "E": {
+        "main": {
+          "trade_count": 63,
+          "win_rate": 0.6666666666666666,
+          "avg_account_return": 0.04281441779879025,
+          "median_account_return": 0.022708749607088758,
+          "equity_multiple": 10.663700804012231,
+          "max_drawdown": -0.24746103236951633,
+          "max_profit": 0.5231929254879739,
+          "max_loss": -0.17629142067722955,
+          "profit_loss_ratio": 1.8067867875328203,
+          "max_consecutive_losses": 4,
+          "leg_counts": {
+            "E": 63
+          }
+        },
+        "recent": {
+          "trade_count": 55,
+          "win_rate": 0.6909090909090909,
+          "avg_account_return": 0.048206886164458236,
+          "median_account_return": 0.038003570713725156,
+          "equity_multiple": 10.257372341833824,
+          "max_drawdown": -0.24746103236951633,
+          "max_profit": 0.5231929254879739,
+          "max_loss": -0.17629142067722955,
+          "profit_loss_ratio": 1.7434144073226558,
+          "max_consecutive_losses": 3,
+          "leg_counts": {
+            "E": 55
+          }
+        },
+        "failure_check": {
+          "trade_count": 21,
+          "win_rate": 0.7142857142857143,
+          "avg_account_return": 0.0517060397132069,
+          "median_account_return": 0.05394086667644121,
+          "equity_multiple": 2.5306204665222136,
+          "max_drawdown": -0.24746103236951633,
+          "max_profit": 0.5231929254879739,
+          "max_loss": -0.10235208564764443,
+          "profit_loss_ratio": 1.603284886215195,
+          "max_consecutive_losses": 3,
+          "leg_counts": {
+            "E": 21
+          }
+        }
+      },
+      "D": {
+        "main": {
+          "trade_count": 31,
+          "win_rate": 0.5806451612903226,
+          "avg_account_return": 0.024957591578098865,
+          "median_account_return": 0.01254902781,
+          "equity_multiple": 1.9766295198070163,
+          "max_drawdown": -0.1860185403544109,
+          "max_profit": 0.2191184735692947,
+          "max_loss": -0.1236171172487218,
+          "profit_loss_ratio": 1.718323031902367,
+          "max_consecutive_losses": 4,
+          "leg_counts": {
+            "D": 31
+          }
+        },
+        "recent": {
+          "trade_count": 22,
+          "win_rate": 0.6818181818181818,
+          "avg_account_return": 0.03960615151254424,
+          "median_account_return": 0.022748044173013453,
+          "equity_multiple": 2.227285070409831,
+          "max_drawdown": -0.1271943797217051,
+          "max_profit": 0.2191184735692947,
+          "max_loss": -0.0699162117478346,
+          "profit_loss_ratio": 1.964973060556428,
+          "max_consecutive_losses": 2,
+          "leg_counts": {
+            "D": 22
+          }
+        },
+        "failure_check": {
+          "trade_count": 12,
+          "win_rate": 0.8333333333333334,
+          "avg_account_return": 0.05720906485053579,
+          "median_account_return": 0.0455858631624974,
+          "equity_multiple": 1.898775493440468,
+          "max_drawdown": -0.04297805872847971,
+          "max_profit": 0.2191184735692947,
+          "max_loss": -0.0429780587284797,
+          "profit_loss_ratio": 2.4468845940524053,
+          "max_consecutive_losses": 1,
+          "leg_counts": {
+            "D": 12
+          }
+        }
+      }
+    }
+  },
+  "baseline": {
+    "portfolio": {
+      "main": {
+        "trade_count": 135,
+        "win_rate": 0.674074074074074,
+        "avg_account_return": 0.04292778284163469,
+        "median_account_return": 0.02892162643672605,
+        "equity_multiple": 190.30039195942737,
+        "max_drawdown": -0.3767614533307604,
+        "max_profit": 0.3687231660523884,
+        "max_loss": -0.1236171172487218,
+        "profit_loss_ratio": 1.9897837025280847,
+        "max_consecutive_losses": 6,
+        "leg_counts": {
+          "A": 40,
+          "C": 44,
+          "D": 17,
+          "E": 34
+        }
+      },
+      "recent": {
+        "trade_count": 111,
+        "win_rate": 0.7297297297297297,
+        "avg_account_return": 0.05460358279360413,
+        "median_account_return": 0.04807778952940472,
+        "equity_multiple": 257.59083003024904,
+        "max_drawdown": -0.19703500830407583,
+        "max_profit": 0.3687231660523884,
+        "max_loss": -0.09240440692497143,
+        "profit_loss_ratio": 2.275459161196863,
+        "max_consecutive_losses": 6,
+        "leg_counts": {
+          "A": 34,
+          "C": 40,
+          "D": 9,
+          "E": 28
+        }
+      },
+      "failure_check": {
+        "trade_count": 39,
+        "win_rate": 0.8461538461538461,
+        "avg_account_return": 0.054272436339007864,
+        "median_account_return": 0.04807778952940472,
+        "equity_multiple": 7.278947808193191,
+        "max_drawdown": -0.11528424939635407,
+        "max_profit": 0.20556653674601238,
+        "max_loss": -0.06932825022948397,
+        "profit_loss_ratio": 1.635336346459318,
+        "max_consecutive_losses": 1,
+        "leg_counts": {
+          "A": 16,
+          "C": 13,
+          "D": 2,
+          "E": 8
+        }
+      }
+    },
+    "standalone": {
+      "A": {
+        "main": {
+          "trade_count": 55,
+          "win_rate": 0.6,
+          "avg_account_return": 0.05028180160946296,
+          "median_account_return": 0.021243541591960853,
+          "equity_multiple": 11.101435929248517,
+          "max_drawdown": -0.2021997618809025,
+          "max_profit": 0.4762530065206852,
+          "max_loss": -0.1043668645883486,
+          "profit_loss_ratio": 2.70634329241547,
+          "max_consecutive_losses": 4,
+          "leg_counts": {
+            "A": 55
+          }
+        },
+        "recent": {
+          "trade_count": 49,
+          "win_rate": 0.6326530612244898,
+          "avg_account_return": 0.05851655570124612,
+          "median_account_return": 0.02892162643672605,
+          "equity_multiple": 12.39881457222495,
+          "max_drawdown": -0.13771679446052298,
+          "max_profit": 0.4762530065206852,
+          "max_loss": -0.1043668645883486,
+          "profit_loss_ratio": 2.9601957021901195,
+          "max_consecutive_losses": 3,
+          "leg_counts": {
+            "A": 49
+          }
+        },
+        "failure_check": {
+          "trade_count": 21,
+          "win_rate": 0.6666666666666666,
+          "avg_account_return": 0.04500596662160167,
+          "median_account_return": 0.04311762601054512,
+          "equity_multiple": 2.382538767606469,
+          "max_drawdown": -0.08016089187600917,
+          "max_profit": 0.20556653674601238,
+          "max_loss": -0.06520474752857118,
+          "profit_loss_ratio": 2.201532157941121,
+          "max_consecutive_losses": 2,
+          "leg_counts": {
+            "A": 21
+          }
+        }
+      },
+      "C": {
+        "main": {
+          "trade_count": 56,
+          "win_rate": 0.75,
+          "avg_account_return": 0.04983302679158844,
+          "median_account_return": 0.051119987177559376,
+          "equity_multiple": 13.028258859210185,
+          "max_drawdown": -0.15479014188878015,
+          "max_profit": 0.2173828879635992,
+          "max_loss": -0.1466810861919058,
+          "profit_loss_ratio": 1.6894764881156286,
+          "max_consecutive_losses": 3,
+          "leg_counts": {
+            "C": 56
+          }
+        },
+        "recent": {
+          "trade_count": 52,
+          "win_rate": 0.7692307692307693,
+          "avg_account_return": 0.05376391439537958,
+          "median_account_return": 0.05225086254686408,
+          "equity_multiple": 13.200844319303275,
+          "max_drawdown": -0.15479014188878015,
+          "max_profit": 0.2173828879635992,
+          "max_loss": -0.1466810861919058,
+          "profit_loss_ratio": 1.7400455236730858,
+          "max_consecutive_losses": 2,
+          "leg_counts": {
+            "C": 52
+          }
+        },
+        "failure_check": {
+          "trade_count": 17,
+          "win_rate": 0.8235294117647058,
+          "avg_account_return": 0.05155388210707736,
+          "median_account_return": 0.037304008865496785,
+          "equity_multiple": 2.2685699651560136,
+          "max_drawdown": -0.047620245698239194,
+          "max_profit": 0.17193786638361655,
+          "max_loss": -0.04762024569823918,
+          "profit_loss_ratio": 1.5916259481683679,
+          "max_consecutive_losses": 1,
+          "leg_counts": {
+            "C": 17
+          }
+        }
+      },
+      "E": {
+        "main": {
+          "trade_count": 63,
+          "win_rate": 0.6666666666666666,
+          "avg_account_return": 0.04281441779879025,
+          "median_account_return": 0.022708749607088758,
+          "equity_multiple": 10.663700804012231,
+          "max_drawdown": -0.24746103236951633,
+          "max_profit": 0.5231929254879739,
+          "max_loss": -0.17629142067722955,
+          "profit_loss_ratio": 1.8067867875328203,
+          "max_consecutive_losses": 4,
+          "leg_counts": {
+            "E": 63
+          }
+        },
+        "recent": {
+          "trade_count": 55,
+          "win_rate": 0.6909090909090909,
+          "avg_account_return": 0.048206886164458236,
+          "median_account_return": 0.038003570713725156,
+          "equity_multiple": 10.257372341833824,
+          "max_drawdown": -0.24746103236951633,
+          "max_profit": 0.5231929254879739,
+          "max_loss": -0.17629142067722955,
+          "profit_loss_ratio": 1.7434144073226558,
+          "max_consecutive_losses": 3,
+          "leg_counts": {
+            "E": 55
+          }
+        },
+        "failure_check": {
+          "trade_count": 21,
+          "win_rate": 0.7142857142857143,
+          "avg_account_return": 0.0517060397132069,
+          "median_account_return": 0.05394086667644121,
+          "equity_multiple": 2.5306204665222136,
+          "max_drawdown": -0.24746103236951633,
+          "max_profit": 0.5231929254879739,
+          "max_loss": -0.10235208564764443,
+          "profit_loss_ratio": 1.603284886215195,
+          "max_consecutive_losses": 3,
+          "leg_counts": {
+            "E": 21
+          }
+        }
+      },
+      "D": {
+        "main": {
+          "trade_count": 36,
+          "win_rate": 0.5555555555555556,
+          "avg_account_return": 0.01983431743993091,
+          "median_account_return": 0.0043508369039453,
+          "equity_multiple": 1.8408288463453852,
+          "max_drawdown": -0.2905634637664257,
+          "max_profit": 0.2191184735692947,
+          "max_loss": -0.1236171172487218,
+          "profit_loss_ratio": 1.5751947423718022,
+          "max_consecutive_losses": 5,
+          "leg_counts": {
+            "D": 36
+          }
+        },
+        "recent": {
+          "trade_count": 26,
+          "win_rate": 0.6538461538461539,
+          "avg_account_return": 0.033365374869466745,
+          "median_account_return": 0.01936146459471335,
+          "equity_multiple": 2.19688100000776,
+          "max_drawdown": -0.2180603177857955,
+          "max_profit": 0.2191184735692947,
+          "max_loss": -0.0699162117478346,
+          "profit_loss_ratio": 1.7025078629249082,
+          "max_consecutive_losses": 4,
+          "leg_counts": {
+            "D": 26
+          }
+        },
+        "failure_check": {
+          "trade_count": 12,
+          "win_rate": 0.8333333333333334,
+          "avg_account_return": 0.05720906485053579,
+          "median_account_return": 0.0455858631624974,
+          "equity_multiple": 1.898775493440468,
+          "max_drawdown": -0.04297805872847971,
+          "max_profit": 0.2191184735692947,
+          "max_loss": -0.0429780587284797,
+          "profit_loss_ratio": 2.4468845940524053,
+          "max_consecutive_losses": 1,
+          "leg_counts": {
+            "D": 12
+          }
+        }
+      }
+    },
+    "half_year_breakdown": {
+      "2023H2": {
+        "trade_count": 7,
+        "win_rate": 0.5714285714285714,
+        "avg_account_return": -0.0012592503766498953,
+        "median_account_return": 0.01254902781,
+        "equity_multiple": 0.9859626226079353,
+        "max_drawdown": -0.10079012868268356,
+        "max_profit": 0.04675824219929025,
+        "max_loss": -0.06531641376346838,
+        "profit_loss_ratio": 0.698205300094107,
+        "max_consecutive_losses": 2,
+        "leg_counts": {
+          "A": 2,
+          "C": 1,
+          "D": 2,
+          "E": 2
+        }
+      },
+      "2024H1": {
+        "trade_count": 17,
+        "win_rate": 0.35294117647058826,
+        "avg_account_return": -0.015113661990166283,
+        "median_account_return": -0.010332193214803956,
+        "equity_multiple": 0.7492880959053023,
+        "max_drawdown": -0.30690424277014083,
+        "max_profit": 0.07547856079881644,
+        "max_loss": -0.1236171172487218,
+        "profit_loss_ratio": 0.9835803197431845,
+        "max_consecutive_losses": 6,
+        "leg_counts": {
+          "A": 4,
+          "C": 3,
+          "D": 6,
+          "E": 4
+        }
+      },
+      "2024H2": {
+        "trade_count": 16,
+        "win_rate": 0.75,
+        "avg_account_return": 0.054926658258586065,
+        "median_account_return": 0.056864471840530145,
+        "equity_multiple": 2.260169620684484,
+        "max_drawdown": -0.11417036042301532,
+        "max_profit": 0.1774438434065936,
+        "max_loss": -0.0615838795357449,
+        "profit_loss_ratio": 1.979598704865262,
+        "max_consecutive_losses": 2,
+        "leg_counts": {
+          "C": 9,
+          "D": 3,
+          "E": 4
+        }
+      },
+      "2025H1": {
+        "trade_count": 26,
+        "win_rate": 0.7307692307692307,
+        "avg_account_return": 0.06201009825364622,
+        "median_account_return": 0.05794864247040833,
+        "equity_multiple": 4.330404209950402,
+        "max_drawdown": -0.09240440692497143,
+        "max_profit": 0.30118950050718524,
+        "max_loss": -0.09240440692497143,
+        "profit_loss_ratio": 2.5889507410495707,
+        "max_consecutive_losses": 1,
+        "leg_counts": {
+          "A": 7,
+          "C": 12,
+          "E": 7
+        }
+      },
+      "2025H2": {
+        "trade_count": 30,
+        "win_rate": 0.5666666666666667,
+        "avg_account_return": 0.048442786204552446,
+        "median_account_return": 0.00821298296126155,
+        "equity_multiple": 3.615699453765173,
+        "max_drawdown": -0.19061331821424843,
+        "max_profit": 0.3687231660523884,
+        "max_loss": -0.0677056228881947,
+        "profit_loss_ratio": 3.1387606908277887,
+        "max_consecutive_losses": 5,
+        "leg_counts": {
+          "A": 11,
+          "C": 6,
+          "D": 4,
+          "E": 9
+        }
+      },
+      "2026H1": {
+        "trade_count": 39,
+        "win_rate": 0.8461538461538461,
+        "avg_account_return": 0.054272436339007864,
+        "median_account_return": 0.04807778952940472,
+        "equity_multiple": 7.278947808193191,
+        "max_drawdown": -0.11528424939635407,
+        "max_profit": 0.20556653674601238,
+        "max_loss": -0.06932825022948397,
+        "profit_loss_ratio": 1.635336346459318,
+        "max_consecutive_losses": 1,
+        "leg_counts": {
+          "A": 16,
+          "C": 13,
+          "D": 2,
+          "E": 8
+        }
+      }
+    },
+    "standalone_half_year_breakdown": {
+      "A": {
+        "2023H2": {
+          "trade_count": 2,
+          "win_rate": 0.0,
+          "avg_account_return": -0.051634529693846826,
+          "median_account_return": -0.051634529693846826,
+          "equity_multiple": 0.8992098713173164,
+          "max_drawdown": -0.10079012868268356,
+          "max_profit": -0.037952645624225276,
+          "max_loss": -0.06531641376346838,
+          "profit_loss_ratio": 0.0,
+          "max_consecutive_losses": 2,
+          "leg_counts": {
+            "A": 2
+          }
+        },
+        "2024H1": {
+          "trade_count": 4,
+          "win_rate": 0.5,
+          "avg_account_return": 0.0003642296367740803,
+          "median_account_return": 0.006408605036994941,
+          "equity_multiple": 0.9957215945003903,
+          "max_drawdown": -0.0988648573890969,
+          "max_profit": 0.06027020292003181,
+          "max_loss": -0.07163049444692537,
+          "profit_loss_ratio": 1.0144297668537536,
+          "max_consecutive_losses": 2,
+          "leg_counts": {
+            "A": 4
+          }
+        },
+        "2024H2": {
+          "trade_count": 1,
+          "win_rate": 0.0,
+          "avg_account_return": -0.0809219434850863,
+          "median_account_return": -0.0809219434850863,
+          "equity_multiple": 0.9190780565149137,
+          "max_drawdown": -0.0809219434850863,
+          "max_profit": -0.0809219434850863,
+          "max_loss": -0.0809219434850863,
+          "profit_loss_ratio": 0.0,
+          "max_consecutive_losses": 1,
+          "leg_counts": {
+            "A": 1
+          }
+        },
+        "2025H1": {
+          "trade_count": 12,
+          "win_rate": 0.6666666666666666,
+          "avg_account_return": 0.06391866548572263,
+          "median_account_return": 0.03596636181630869,
+          "equity_multiple": 1.9942364885734083,
+          "max_drawdown": -0.030511252716151738,
+          "max_profit": 0.30118950050718524,
+          "max_loss": -0.03051125271615173,
+          "profit_loss_ratio": 4.784728443472362,
+          "max_consecutive_losses": 2,
+          "leg_counts": {
+            "A": 12
+          }
+        },
+        "2025H2": {
+          "trade_count": 15,
+          "win_rate": 0.6,
+          "avg_account_return": 0.08240559253092264,
+          "median_account_return": 0.0021752415944633883,
+          "equity_multiple": 2.8392990265610463,
+          "max_drawdown": -0.13771679446052287,
+          "max_profit": 0.4762530065206852,
+          "max_loss": -0.1043668645883486,
+          "profit_loss_ratio": 3.9431069258590665,
+          "max_consecutive_losses": 3,
+          "leg_counts": {
+            "A": 15
+          }
+        },
+        "2026H1": {
+          "trade_count": 21,
+          "win_rate": 0.6666666666666666,
+          "avg_account_return": 0.04500596662160167,
+          "median_account_return": 0.04311762601054512,
+          "equity_multiple": 2.382538767606469,
+          "max_drawdown": -0.08016089187600917,
+          "max_profit": 0.20556653674601238,
+          "max_loss": -0.06520474752857118,
+          "profit_loss_ratio": 2.201532157941121,
+          "max_consecutive_losses": 2,
+          "leg_counts": {
+            "A": 21
+          }
+        }
+      },
+      "C": {
+        "2023H2": {
+          "trade_count": 1,
+          "win_rate": 1.0,
+          "avg_account_return": 0.022951352031881037,
+          "median_account_return": 0.022951352031881037,
+          "equity_multiple": 1.0229513520318811,
+          "max_drawdown": 0.0,
+          "max_profit": 0.022951352031881037,
+          "max_loss": 0.022951352031881037,
+          "profit_loss_ratio": 0.0,
+          "max_consecutive_losses": 0,
+          "leg_counts": {
+            "C": 1
+          }
+        },
+        "2024H1": {
+          "trade_count": 3,
+          "win_rate": 0.3333333333333333,
+          "avg_account_return": -0.009341800087555592,
+          "median_account_return": -0.005915263367729706,
+          "equity_multiple": 0.9647831035370208,
+          "max_drawdown": -0.102926698212911,
+          "max_profit": 0.07547856079881644,
+          "max_loss": -0.09758869769375351,
+          "profit_loss_ratio": 1.4584670968095765,
+          "max_consecutive_losses": 2,
+          "leg_counts": {
+            "C": 3
+          }
+        },
+        "2024H2": {
+          "trade_count": 10,
+          "win_rate": 0.6,
+          "avg_account_return": 0.03981352324487962,
+          "median_account_return": 0.037456007561910046,
+          "equity_multiple": 1.4339082346375027,
+          "max_drawdown": -0.05775109007303647,
+          "max_profit": 0.1774438434065936,
+          "max_loss": -0.05775109007303647,
+          "profit_loss_ratio": 2.198390482518961,
+          "max_consecutive_losses": 1,
+          "leg_counts": {
+            "C": 10
+          }
+        },
+        "2025H1": {
+          "trade_count": 14,
+          "win_rate": 0.7142857142857143,
+          "avg_account_return": 0.050705428338415855,
+          "median_account_return": 0.07101234597222099,
+          "equity_multiple": 1.9473039844688569,
+          "max_drawdown": -0.05826044459847857,
+          "max_profit": 0.14037045596497266,
+          "max_loss": -0.0582604445984784,
+          "profit_loss_ratio": 2.6516714433520656,
+          "max_consecutive_losses": 1,
+          "leg_counts": {
+            "C": 14
+          }
+        },
+        "2025H2": {
+          "trade_count": 11,
+          "win_rate": 0.9090909090909091,
+          "avg_account_return": 0.07375421123207321,
+          "median_account_return": 0.06692171829157585,
+          "equity_multiple": 2.0839841911202632,
+          "max_drawdown": -0.14668108619190579,
+          "max_profit": 0.2173828879635992,
+          "max_loss": -0.1466810861919058,
+          "profit_loss_ratio": 0.6531022060276879,
+          "max_consecutive_losses": 1,
+          "leg_counts": {
+            "C": 11
+          }
+        },
+        "2026H1": {
+          "trade_count": 17,
+          "win_rate": 0.8235294117647058,
+          "avg_account_return": 0.05155388210707736,
+          "median_account_return": 0.037304008865496785,
+          "equity_multiple": 2.2685699651560136,
+          "max_drawdown": -0.047620245698239194,
+          "max_profit": 0.17193786638361655,
+          "max_loss": -0.04762024569823918,
+          "profit_loss_ratio": 1.5916259481683679,
+          "max_consecutive_losses": 1,
+          "leg_counts": {
+            "C": 17
+          }
+        }
+      },
+      "E": {
+        "2023H2": {
+          "trade_count": 3,
+          "win_rate": 1.0,
+          "avg_account_return": 0.03148987417415794,
+          "median_account_return": 0.0365664125866853,
+          "equity_multiple": 1.0971271097438497,
+          "max_drawdown": 0.0,
+          "max_profit": 0.04675824219929025,
+          "max_loss": 0.011144967736498276,
+          "profit_loss_ratio": 0.0,
+          "max_consecutive_losses": 0,
+          "leg_counts": {
+            "E": 3
+          }
+        },
+        "2024H1": {
+          "trade_count": 5,
+          "win_rate": 0.2,
+          "avg_account_return": -0.009708008048778175,
+          "median_account_return": -0.010332193214803956,
+          "equity_multiple": 0.9475778147938112,
+          "max_drawdown": -0.11300148451389469,
+          "max_profit": 0.06829695681565642,
+          "max_loss": -0.06269169114520536,
+          "profit_loss_ratio": 2.3381962403860173,
+          "max_consecutive_losses": 4,
+          "leg_counts": {
+            "E": 5
+          }
+        },
+        "2024H2": {
+          "trade_count": 6,
+          "win_rate": 0.6666666666666666,
+          "avg_account_return": 0.01744968029159516,
+          "median_account_return": 0.04358067513923893,
+          "equity_multiple": 1.0655357455381933,
+          "max_drawdown": -0.2392961408914026,
+          "max_profit": 0.16436389020536632,
+          "max_loss": -0.17629142067722955,
+          "profit_loss_ratio": 0.7070928672254164,
+          "max_consecutive_losses": 2,
+          "leg_counts": {
+            "E": 6
+          }
+        },
+        "2025H1": {
+          "trade_count": 11,
+          "win_rate": 0.8181818181818182,
+          "avg_account_return": 0.05437258816390564,
+          "median_account_return": 0.05969691065881177,
+          "equity_multiple": 1.7374343430608628,
+          "max_drawdown": -0.09240440692497143,
+          "max_profit": 0.18913663535077044,
+          "max_loss": -0.09240440692497143,
+          "profit_loss_ratio": 1.4154189290348946,
+          "max_consecutive_losses": 1,
+          "leg_counts": {
+            "E": 11
+          }
+        },
+        "2025H2": {
+          "trade_count": 17,
+          "win_rate": 0.5882352941176471,
+          "avg_account_return": 0.050750314912666177,
+          "median_account_return": 0.01838722394693575,
+          "equity_multiple": 2.1894381400244347,
+          "max_drawdown": -0.06960427016472637,
+          "max_profit": 0.22599754987278736,
+          "max_loss": -0.05822321904492573,
+          "profit_loss_ratio": 3.8772979437043666,
+          "max_consecutive_losses": 3,
+          "leg_counts": {
+            "E": 17
+          }
+        },
+        "2026H1": {
+          "trade_count": 21,
+          "win_rate": 0.7142857142857143,
+          "avg_account_return": 0.0517060397132069,
+          "median_account_return": 0.05394086667644121,
+          "equity_multiple": 2.5306204665222136,
+          "max_drawdown": -0.24746103236951633,
+          "max_profit": 0.5231929254879739,
+          "max_loss": -0.10235208564764443,
+          "profit_loss_ratio": 1.603284886215195,
+          "max_consecutive_losses": 3,
+          "leg_counts": {
+            "E": 21
+          }
+        }
+      },
+      "D": {
+        "2023H2": {
+          "trade_count": 2,
+          "win_rate": 0.5,
+          "avg_account_return": -0.0059108500333561005,
+          "median_account_return": -0.0059108500333561005,
+          "equity_multiple": 0.987872470991413,
+          "max_drawdown": -0.02437072787671224,
+          "max_profit": 0.01254902781,
+          "max_loss": -0.0243707278767122,
+          "profit_loss_ratio": 0.5149221588080429,
+          "max_consecutive_losses": 1,
+          "leg_counts": {
+            "D": 2
+          }
+        },
+        "2024H1": {
+          "trade_count": 8,
+          "win_rate": 0.25,
+          "avg_account_return": -0.017705327337738812,
+          "median_account_return": -0.0328119307973076,
+          "equity_multiple": 0.8482150916876198,
+          "max_drawdown": -0.23145036560981846,
+          "max_profit": 0.135852570975,
+          "max_loss": -0.1236171172487218,
+          "profit_loss_ratio": 1.6762995201580393,
+          "max_consecutive_losses": 5,
+          "leg_counts": {
+            "D": 8
+          }
+        },
+        "2024H2": {
+          "trade_count": 6,
+          "win_rate": 0.5,
+          "avg_account_return": -0.0005469311327974171,
+          "median_account_return": 0.00017324695721099997,
+          "equity_multiple": 0.9873819122531147,
+          "max_drawdown": -0.1271943797217051,
+          "max_profit": 0.0967286547262802,
+          "max_loss": -0.0699162117478346,
+          "profit_loss_ratio": 0.9753076185310169,
+          "max_consecutive_losses": 2,
+          "leg_counts": {
+            "D": 6
+          }
+        },
+        "2025H1": {
+          "trade_count": 1,
+          "win_rate": 1.0,
+          "avg_account_return": 0.0973929964876664,
+          "median_account_return": 0.0973929964876664,
+          "equity_multiple": 1.0973929964876663,
+          "max_drawdown": 0.0,
+          "max_profit": 0.0973929964876664,
+          "max_loss": 0.0973929964876664,
+          "profit_loss_ratio": 0.0,
+          "max_consecutive_losses": 0,
+          "leg_counts": {
+            "D": 1
+          }
+        },
+        "2025H2": {
+          "trade_count": 7,
+          "win_rate": 0.42857142857142855,
+          "avg_account_return": 0.012411365529831995,
+          "median_account_return": -0.0331008871959566,
+          "equity_multiple": 1.0677892974849135,
+          "max_drawdown": -0.18361778481390145,
+          "max_profit": 0.1441340011204929,
+          "max_loss": -0.0668847642883833,
+          "profit_loss_ratio": 1.9198873764582731,
+          "max_consecutive_losses": 4,
+          "leg_counts": {
+            "D": 7
+          }
+        },
+        "2026H1": {
+          "trade_count": 12,
+          "win_rate": 0.8333333333333334,
+          "avg_account_return": 0.05720906485053579,
+          "median_account_return": 0.0455858631624974,
+          "equity_multiple": 1.898775493440468,
+          "max_drawdown": -0.04297805872847971,
+          "max_profit": 0.2191184735692947,
+          "max_loss": -0.0429780587284797,
+          "profit_loss_ratio": 2.4468845940524053,
+          "max_consecutive_losses": 1,
+          "leg_counts": {
+            "D": 12
+          }
+        }
+      }
+    }
+  },
+  "final_research": {
+    "portfolio": {
+      "main": {
+        "trade_count": 133,
+        "win_rate": 0.6842105263157895,
+        "avg_account_return": 0.04449586294979534,
+        "median_account_return": 0.0311433558460928,
+        "equity_multiple": 215.99663972767195,
+        "max_drawdown": -0.3399195065290058,
+        "max_profit": 0.3687231660523884,
+        "max_loss": -0.1236171172487218,
+        "profit_loss_ratio": 2.033459558754199,
+        "max_consecutive_losses": 5,
+        "leg_counts": {
+          "A": 40,
+          "C": 44,
+          "D": 15,
+          "E": 34
+        }
+      },
+      "recent": {
+        "trade_count": 110,
+        "win_rate": 0.7363636363636363,
+        "avg_account_return": 0.05570802231253129,
+        "median_account_return": 0.049262116825142005,
+        "equity_multiple": 276.05468239279566,
+        "max_drawdown": -0.14119813241960633,
+        "max_profit": 0.3687231660523884,
+        "max_loss": -0.09240440692497143,
+        "profit_loss_ratio": 2.331979688204909,
+        "max_consecutive_losses": 5,
+        "leg_counts": {
+          "A": 34,
+          "C": 40,
+          "D": 8,
+          "E": 28
+        }
+      },
+      "failure_check": {
+        "trade_count": 39,
+        "win_rate": 0.8461538461538461,
+        "avg_account_return": 0.054272436339007864,
+        "median_account_return": 0.04807778952940472,
+        "equity_multiple": 7.278947808193191,
+        "max_drawdown": -0.11528424939635407,
+        "max_profit": 0.20556653674601238,
+        "max_loss": -0.06932825022948397,
+        "profit_loss_ratio": 1.635336346459318,
+        "max_consecutive_losses": 1,
+        "leg_counts": {
+          "A": 16,
+          "C": 13,
+          "D": 2,
+          "E": 8
+        }
+      }
+    },
+    "standalone": {
+      "A": {
+        "main": {
+          "trade_count": 55,
+          "win_rate": 0.6,
+          "avg_account_return": 0.05028180160946296,
+          "median_account_return": 0.021243541591960853,
+          "equity_multiple": 11.101435929248517,
+          "max_drawdown": -0.2021997618809025,
+          "max_profit": 0.4762530065206852,
+          "max_loss": -0.1043668645883486,
+          "profit_loss_ratio": 2.70634329241547,
+          "max_consecutive_losses": 4,
+          "leg_counts": {
+            "A": 55
+          }
+        },
+        "recent": {
+          "trade_count": 49,
+          "win_rate": 0.6326530612244898,
+          "avg_account_return": 0.05851655570124612,
+          "median_account_return": 0.02892162643672605,
+          "equity_multiple": 12.39881457222495,
+          "max_drawdown": -0.13771679446052298,
+          "max_profit": 0.4762530065206852,
+          "max_loss": -0.1043668645883486,
+          "profit_loss_ratio": 2.9601957021901195,
+          "max_consecutive_losses": 3,
+          "leg_counts": {
+            "A": 49
+          }
+        },
+        "failure_check": {
+          "trade_count": 21,
+          "win_rate": 0.6666666666666666,
+          "avg_account_return": 0.04500596662160167,
+          "median_account_return": 0.04311762601054512,
+          "equity_multiple": 2.382538767606469,
+          "max_drawdown": -0.08016089187600917,
+          "max_profit": 0.20556653674601238,
+          "max_loss": -0.06520474752857118,
+          "profit_loss_ratio": 2.201532157941121,
+          "max_consecutive_losses": 2,
+          "leg_counts": {
+            "A": 21
+          }
+        }
+      },
+      "C": {
+        "main": {
+          "trade_count": 56,
+          "win_rate": 0.75,
+          "avg_account_return": 0.04983302679158844,
+          "median_account_return": 0.051119987177559376,
+          "equity_multiple": 13.028258859210185,
+          "max_drawdown": -0.15479014188878015,
+          "max_profit": 0.2173828879635992,
+          "max_loss": -0.1466810861919058,
+          "profit_loss_ratio": 1.6894764881156286,
+          "max_consecutive_losses": 3,
+          "leg_counts": {
+            "C": 56
+          }
+        },
+        "recent": {
+          "trade_count": 52,
+          "win_rate": 0.7692307692307693,
+          "avg_account_return": 0.05376391439537958,
+          "median_account_return": 0.05225086254686408,
+          "equity_multiple": 13.200844319303275,
+          "max_drawdown": -0.15479014188878015,
+          "max_profit": 0.2173828879635992,
+          "max_loss": -0.1466810861919058,
+          "profit_loss_ratio": 1.7400455236730858,
+          "max_consecutive_losses": 2,
+          "leg_counts": {
+            "C": 52
+          }
+        },
+        "failure_check": {
+          "trade_count": 17,
+          "win_rate": 0.8235294117647058,
+          "avg_account_return": 0.05155388210707736,
+          "median_account_return": 0.037304008865496785,
+          "equity_multiple": 2.2685699651560136,
+          "max_drawdown": -0.047620245698239194,
+          "max_profit": 0.17193786638361655,
+          "max_loss": -0.04762024569823918,
+          "profit_loss_ratio": 1.5916259481683679,
+          "max_consecutive_losses": 1,
+          "leg_counts": {
+            "C": 17
+          }
+        }
+      },
+      "E": {
+        "main": {
+          "trade_count": 63,
+          "win_rate": 0.6666666666666666,
+          "avg_account_return": 0.04281441779879025,
+          "median_account_return": 0.022708749607088758,
+          "equity_multiple": 10.663700804012231,
+          "max_drawdown": -0.24746103236951633,
+          "max_profit": 0.5231929254879739,
+          "max_loss": -0.17629142067722955,
+          "profit_loss_ratio": 1.8067867875328203,
+          "max_consecutive_losses": 4,
+          "leg_counts": {
+            "E": 63
+          }
+        },
+        "recent": {
+          "trade_count": 55,
+          "win_rate": 0.6909090909090909,
+          "avg_account_return": 0.048206886164458236,
+          "median_account_return": 0.038003570713725156,
+          "equity_multiple": 10.257372341833824,
+          "max_drawdown": -0.24746103236951633,
+          "max_profit": 0.5231929254879739,
+          "max_loss": -0.17629142067722955,
+          "profit_loss_ratio": 1.7434144073226558,
+          "max_consecutive_losses": 3,
+          "leg_counts": {
+            "E": 55
+          }
+        },
+        "failure_check": {
+          "trade_count": 21,
+          "win_rate": 0.7142857142857143,
+          "avg_account_return": 0.0517060397132069,
+          "median_account_return": 0.05394086667644121,
+          "equity_multiple": 2.5306204665222136,
+          "max_drawdown": -0.24746103236951633,
+          "max_profit": 0.5231929254879739,
+          "max_loss": -0.10235208564764443,
+          "profit_loss_ratio": 1.603284886215195,
+          "max_consecutive_losses": 3,
+          "leg_counts": {
+            "E": 21
+          }
+        }
+      },
+      "D": {
+        "main": {
+          "trade_count": 31,
+          "win_rate": 0.5806451612903226,
+          "avg_account_return": 0.024957591578098865,
+          "median_account_return": 0.01254902781,
+          "equity_multiple": 1.9766295198070163,
+          "max_drawdown": -0.1860185403544109,
+          "max_profit": 0.2191184735692947,
+          "max_loss": -0.1236171172487218,
+          "profit_loss_ratio": 1.718323031902367,
+          "max_consecutive_losses": 4,
+          "leg_counts": {
+            "D": 31
+          }
+        },
+        "recent": {
+          "trade_count": 22,
+          "win_rate": 0.6818181818181818,
+          "avg_account_return": 0.03960615151254424,
+          "median_account_return": 0.022748044173013453,
+          "equity_multiple": 2.227285070409831,
+          "max_drawdown": -0.1271943797217051,
+          "max_profit": 0.2191184735692947,
+          "max_loss": -0.0699162117478346,
+          "profit_loss_ratio": 1.964973060556428,
+          "max_consecutive_losses": 2,
+          "leg_counts": {
+            "D": 22
+          }
+        },
+        "failure_check": {
+          "trade_count": 12,
+          "win_rate": 0.8333333333333334,
+          "avg_account_return": 0.05720906485053579,
+          "median_account_return": 0.0455858631624974,
+          "equity_multiple": 1.898775493440468,
+          "max_drawdown": -0.04297805872847971,
+          "max_profit": 0.2191184735692947,
+          "max_loss": -0.0429780587284797,
+          "profit_loss_ratio": 2.4468845940524053,
+          "max_consecutive_losses": 1,
+          "leg_counts": {
+            "D": 12
+          }
+        }
+      }
+    },
+    "half_year_breakdown": {
+      "2023H2": {
+        "trade_count": 7,
+        "win_rate": 0.5714285714285714,
+        "avg_account_return": -0.0012592503766498953,
+        "median_account_return": 0.01254902781,
+        "equity_multiple": 0.9859626226079353,
+        "max_drawdown": -0.10079012868268356,
+        "max_profit": 0.04675824219929025,
+        "max_loss": -0.06531641376346838,
+        "profit_loss_ratio": 0.698205300094107,
+        "max_consecutive_losses": 2,
+        "leg_counts": {
+          "A": 2,
+          "C": 1,
+          "D": 2,
+          "E": 2
+        }
+      },
+      "2024H1": {
+        "trade_count": 16,
+        "win_rate": 0.375,
+        "avg_account_return": -0.012569870588694541,
+        "median_account_return": -0.00812372829126683,
+        "equity_multiple": 0.7935813000340604,
+        "max_drawdown": -0.26593277662310866,
+        "max_profit": 0.07547856079881644,
+        "max_loss": -0.1236171172487218,
+        "profit_loss_ratio": 0.994275699268293,
+        "max_consecutive_losses": 5,
+        "leg_counts": {
+          "A": 4,
+          "C": 3,
+          "D": 5,
+          "E": 4
+        }
+      },
+      "2024H2": {
+        "trade_count": 16,
+        "win_rate": 0.75,
+        "avg_account_return": 0.054926658258586065,
+        "median_account_return": 0.056864471840530145,
+        "equity_multiple": 2.260169620684484,
+        "max_drawdown": -0.11417036042301532,
+        "max_profit": 0.1774438434065936,
+        "max_loss": -0.0615838795357449,
+        "profit_loss_ratio": 1.979598704865262,
+        "max_consecutive_losses": 2,
+        "leg_counts": {
+          "C": 9,
+          "D": 3,
+          "E": 4
+        }
+      },
+      "2025H1": {
+        "trade_count": 26,
+        "win_rate": 0.7307692307692307,
+        "avg_account_return": 0.06201009825364622,
+        "median_account_return": 0.05794864247040833,
+        "equity_multiple": 4.330404209950402,
+        "max_drawdown": -0.09240440692497143,
+        "max_profit": 0.30118950050718524,
+        "max_loss": -0.09240440692497143,
+        "profit_loss_ratio": 2.5889507410495707,
+        "max_consecutive_losses": 1,
+        "leg_counts": {
+          "A": 7,
+          "C": 12,
+          "E": 7
+        }
+      },
+      "2025H2": {
+        "trade_count": 29,
+        "win_rate": 0.5862068965517241,
+        "avg_account_return": 0.05241959829051574,
+        "median_account_return": 0.014250724328059712,
+        "equity_multiple": 3.874869164479723,
+        "max_drawdown": -0.13259729258574016,
+        "max_profit": 0.3687231660523884,
+        "max_loss": -0.0677056228881947,
+        "profit_loss_ratio": 3.3802961690162454,
+        "max_consecutive_losses": 4,
+        "leg_counts": {
+          "A": 11,
+          "C": 6,
+          "D": 3,
+          "E": 9
+        }
+      },
+      "2026H1": {
+        "trade_count": 39,
+        "win_rate": 0.8461538461538461,
+        "avg_account_return": 0.054272436339007864,
+        "median_account_return": 0.04807778952940472,
+        "equity_multiple": 7.278947808193191,
+        "max_drawdown": -0.11528424939635407,
+        "max_profit": 0.20556653674601238,
+        "max_loss": -0.06932825022948397,
+        "profit_loss_ratio": 1.635336346459318,
+        "max_consecutive_losses": 1,
+        "leg_counts": {
+          "A": 16,
+          "C": 13,
+          "D": 2,
+          "E": 8
+        }
+      }
+    },
+    "standalone_half_year_breakdown": {
+      "A": {
+        "2023H2": {
+          "trade_count": 2,
+          "win_rate": 0.0,
+          "avg_account_return": -0.051634529693846826,
+          "median_account_return": -0.051634529693846826,
+          "equity_multiple": 0.8992098713173164,
+          "max_drawdown": -0.10079012868268356,
+          "max_profit": -0.037952645624225276,
+          "max_loss": -0.06531641376346838,
+          "profit_loss_ratio": 0.0,
+          "max_consecutive_losses": 2,
+          "leg_counts": {
+            "A": 2
+          }
+        },
+        "2024H1": {
+          "trade_count": 4,
+          "win_rate": 0.5,
+          "avg_account_return": 0.0003642296367740803,
+          "median_account_return": 0.006408605036994941,
+          "equity_multiple": 0.9957215945003903,
+          "max_drawdown": -0.0988648573890969,
+          "max_profit": 0.06027020292003181,
+          "max_loss": -0.07163049444692537,
+          "profit_loss_ratio": 1.0144297668537536,
+          "max_consecutive_losses": 2,
+          "leg_counts": {
+            "A": 4
+          }
+        },
+        "2024H2": {
+          "trade_count": 1,
+          "win_rate": 0.0,
+          "avg_account_return": -0.0809219434850863,
+          "median_account_return": -0.0809219434850863,
+          "equity_multiple": 0.9190780565149137,
+          "max_drawdown": -0.0809219434850863,
+          "max_profit": -0.0809219434850863,
+          "max_loss": -0.0809219434850863,
+          "profit_loss_ratio": 0.0,
+          "max_consecutive_losses": 1,
+          "leg_counts": {
+            "A": 1
+          }
+        },
+        "2025H1": {
+          "trade_count": 12,
+          "win_rate": 0.6666666666666666,
+          "avg_account_return": 0.06391866548572263,
+          "median_account_return": 0.03596636181630869,
+          "equity_multiple": 1.9942364885734083,
+          "max_drawdown": -0.030511252716151738,
+          "max_profit": 0.30118950050718524,
+          "max_loss": -0.03051125271615173,
+          "profit_loss_ratio": 4.784728443472362,
+          "max_consecutive_losses": 2,
+          "leg_counts": {
+            "A": 12
+          }
+        },
+        "2025H2": {
+          "trade_count": 15,
+          "win_rate": 0.6,
+          "avg_account_return": 0.08240559253092264,
+          "median_account_return": 0.0021752415944633883,
+          "equity_multiple": 2.8392990265610463,
+          "max_drawdown": -0.13771679446052287,
+          "max_profit": 0.4762530065206852,
+          "max_loss": -0.1043668645883486,
+          "profit_loss_ratio": 3.9431069258590665,
+          "max_consecutive_losses": 3,
+          "leg_counts": {
+            "A": 15
+          }
+        },
+        "2026H1": {
+          "trade_count": 21,
+          "win_rate": 0.6666666666666666,
+          "avg_account_return": 0.04500596662160167,
+          "median_account_return": 0.04311762601054512,
+          "equity_multiple": 2.382538767606469,
+          "max_drawdown": -0.08016089187600917,
+          "max_profit": 0.20556653674601238,
+          "max_loss": -0.06520474752857118,
+          "profit_loss_ratio": 2.201532157941121,
+          "max_consecutive_losses": 2,
+          "leg_counts": {
+            "A": 21
+          }
+        }
+      },
+      "C": {
+        "2023H2": {
+          "trade_count": 1,
+          "win_rate": 1.0,
+          "avg_account_return": 0.022951352031881037,
+          "median_account_return": 0.022951352031881037,
+          "equity_multiple": 1.0229513520318811,
+          "max_drawdown": 0.0,
+          "max_profit": 0.022951352031881037,
+          "max_loss": 0.022951352031881037,
+          "profit_loss_ratio": 0.0,
+          "max_consecutive_losses": 0,
+          "leg_counts": {
+            "C": 1
+          }
+        },
+        "2024H1": {
+          "trade_count": 3,
+          "win_rate": 0.3333333333333333,
+          "avg_account_return": -0.009341800087555592,
+          "median_account_return": -0.005915263367729706,
+          "equity_multiple": 0.9647831035370208,
+          "max_drawdown": -0.102926698212911,
+          "max_profit": 0.07547856079881644,
+          "max_loss": -0.09758869769375351,
+          "profit_loss_ratio": 1.4584670968095765,
+          "max_consecutive_losses": 2,
+          "leg_counts": {
+            "C": 3
+          }
+        },
+        "2024H2": {
+          "trade_count": 10,
+          "win_rate": 0.6,
+          "avg_account_return": 0.03981352324487962,
+          "median_account_return": 0.037456007561910046,
+          "equity_multiple": 1.4339082346375027,
+          "max_drawdown": -0.05775109007303647,
+          "max_profit": 0.1774438434065936,
+          "max_loss": -0.05775109007303647,
+          "profit_loss_ratio": 2.198390482518961,
+          "max_consecutive_losses": 1,
+          "leg_counts": {
+            "C": 10
+          }
+        },
+        "2025H1": {
+          "trade_count": 14,
+          "win_rate": 0.7142857142857143,
+          "avg_account_return": 0.050705428338415855,
+          "median_account_return": 0.07101234597222099,
+          "equity_multiple": 1.9473039844688569,
+          "max_drawdown": -0.05826044459847857,
+          "max_profit": 0.14037045596497266,
+          "max_loss": -0.0582604445984784,
+          "profit_loss_ratio": 2.6516714433520656,
+          "max_consecutive_losses": 1,
+          "leg_counts": {
+            "C": 14
+          }
+        },
+        "2025H2": {
+          "trade_count": 11,
+          "win_rate": 0.9090909090909091,
+          "avg_account_return": 0.07375421123207321,
+          "median_account_return": 0.06692171829157585,
+          "equity_multiple": 2.0839841911202632,
+          "max_drawdown": -0.14668108619190579,
+          "max_profit": 0.2173828879635992,
+          "max_loss": -0.1466810861919058,
+          "profit_loss_ratio": 0.6531022060276879,
+          "max_consecutive_losses": 1,
+          "leg_counts": {
+            "C": 11
+          }
+        },
+        "2026H1": {
+          "trade_count": 17,
+          "win_rate": 0.8235294117647058,
+          "avg_account_return": 0.05155388210707736,
+          "median_account_return": 0.037304008865496785,
+          "equity_multiple": 2.2685699651560136,
+          "max_drawdown": -0.047620245698239194,
+          "max_profit": 0.17193786638361655,
+          "max_loss": -0.04762024569823918,
+          "profit_loss_ratio": 1.5916259481683679,
+          "max_consecutive_losses": 1,
+          "leg_counts": {
+            "C": 17
+          }
+        }
+      },
+      "E": {
+        "2023H2": {
+          "trade_count": 3,
+          "win_rate": 1.0,
+          "avg_account_return": 0.03148987417415794,
+          "median_account_return": 0.0365664125866853,
+          "equity_multiple": 1.0971271097438497,
+          "max_drawdown": 0.0,
+          "max_profit": 0.04675824219929025,
+          "max_loss": 0.011144967736498276,
+          "profit_loss_ratio": 0.0,
+          "max_consecutive_losses": 0,
+          "leg_counts": {
+            "E": 3
+          }
+        },
+        "2024H1": {
+          "trade_count": 5,
+          "win_rate": 0.2,
+          "avg_account_return": -0.009708008048778175,
+          "median_account_return": -0.010332193214803956,
+          "equity_multiple": 0.9475778147938112,
+          "max_drawdown": -0.11300148451389469,
+          "max_profit": 0.06829695681565642,
+          "max_loss": -0.06269169114520536,
+          "profit_loss_ratio": 2.3381962403860173,
+          "max_consecutive_losses": 4,
+          "leg_counts": {
+            "E": 5
+          }
+        },
+        "2024H2": {
+          "trade_count": 6,
+          "win_rate": 0.6666666666666666,
+          "avg_account_return": 0.01744968029159516,
+          "median_account_return": 0.04358067513923893,
+          "equity_multiple": 1.0655357455381933,
+          "max_drawdown": -0.2392961408914026,
+          "max_profit": 0.16436389020536632,
+          "max_loss": -0.17629142067722955,
+          "profit_loss_ratio": 0.7070928672254164,
+          "max_consecutive_losses": 2,
+          "leg_counts": {
+            "E": 6
+          }
+        },
+        "2025H1": {
+          "trade_count": 11,
+          "win_rate": 0.8181818181818182,
+          "avg_account_return": 0.05437258816390564,
+          "median_account_return": 0.05969691065881177,
+          "equity_multiple": 1.7374343430608628,
+          "max_drawdown": -0.09240440692497143,
+          "max_profit": 0.18913663535077044,
+          "max_loss": -0.09240440692497143,
+          "profit_loss_ratio": 1.4154189290348946,
+          "max_consecutive_losses": 1,
+          "leg_counts": {
+            "E": 11
+          }
+        },
+        "2025H2": {
+          "trade_count": 17,
+          "win_rate": 0.5882352941176471,
+          "avg_account_return": 0.050750314912666177,
+          "median_account_return": 0.01838722394693575,
+          "equity_multiple": 2.1894381400244347,
+          "max_drawdown": -0.06960427016472637,
+          "max_profit": 0.22599754987278736,
+          "max_loss": -0.05822321904492573,
+          "profit_loss_ratio": 3.8772979437043666,
+          "max_consecutive_losses": 3,
+          "leg_counts": {
+            "E": 17
+          }
+        },
+        "2026H1": {
+          "trade_count": 21,
+          "win_rate": 0.7142857142857143,
+          "avg_account_return": 0.0517060397132069,
+          "median_account_return": 0.05394086667644121,
+          "equity_multiple": 2.5306204665222136,
+          "max_drawdown": -0.24746103236951633,
+          "max_profit": 0.5231929254879739,
+          "max_loss": -0.10235208564764443,
+          "profit_loss_ratio": 1.603284886215195,
+          "max_consecutive_losses": 3,
+          "leg_counts": {
+            "E": 21
+          }
+        }
+      },
+      "D": {
+        "2023H2": {
+          "trade_count": 2,
+          "win_rate": 0.5,
+          "avg_account_return": -0.0059108500333561005,
+          "median_account_return": -0.0059108500333561005,
+          "equity_multiple": 0.987872470991413,
+          "max_drawdown": -0.02437072787671224,
+          "max_profit": 0.01254902781,
+          "max_loss": -0.0243707278767122,
+          "profit_loss_ratio": 0.5149221588080429,
+          "max_consecutive_losses": 1,
+          "leg_counts": {
+            "D": 2
+          }
+        },
+        "2024H1": {
+          "trade_count": 7,
+          "win_rate": 0.2857142857142857,
+          "avg_account_return": -0.012261184898313762,
+          "median_account_return": -0.0281194655446153,
+          "equity_multiple": 0.8983562382059295,
+          "max_drawdown": -0.1860185403544109,
+          "max_profit": 0.135852570975,
+          "max_loss": -0.1236171172487218,
+          "profit_loss_ratio": 1.690912143574539,
+          "max_consecutive_losses": 4,
+          "leg_counts": {
+            "D": 7
+          }
+        },
+        "2024H2": {
+          "trade_count": 5,
+          "win_rate": 0.4,
+          "avg_account_return": -0.001005349222241303,
+          "median_account_return": -0.0013986654,
+          "equity_multiple": 0.9856617754248621,
+          "max_drawdown": -0.1271943797217051,
+          "max_profit": 0.0967286547262802,
+          "max_loss": -0.0699162117478346,
+          "profit_loss_ratio": 1.4432641857985011,
+          "max_consecutive_losses": 2,
+          "leg_counts": {
+            "D": 5
+          }
+        },
+        "2025H1": {
+          "trade_count": 1,
+          "win_rate": 1.0,
+          "avg_account_return": 0.0973929964876664,
+          "median_account_return": 0.0973929964876664,
+          "equity_multiple": 1.0973929964876663,
+          "max_drawdown": 0.0,
+          "max_profit": 0.0973929964876664,
+          "max_loss": 0.0973929964876664,
+          "profit_loss_ratio": 0.0,
+          "max_consecutive_losses": 0,
+          "leg_counts": {
+            "D": 1
+          }
+        },
+        "2025H2": {
+          "trade_count": 4,
+          "win_rate": 0.5,
+          "avg_account_return": 0.02311507617327095,
+          "median_account_return": -0.0036962167059471,
+          "equity_multiple": 1.084456382795123,
+          "max_drawdown": -0.07591640111950049,
+          "max_profit": 0.1441340011204929,
+          "max_loss": -0.0442812630155149,
+          "profit_loss_ratio": 2.19485313396444,
+          "max_consecutive_losses": 2,
+          "leg_counts": {
+            "D": 4
+          }
+        },
+        "2026H1": {
+          "trade_count": 12,
+          "win_rate": 0.8333333333333334,
+          "avg_account_return": 0.05720906485053579,
+          "median_account_return": 0.0455858631624974,
+          "equity_multiple": 1.898775493440468,
+          "max_drawdown": -0.04297805872847971,
+          "max_profit": 0.2191184735692947,
+          "max_loss": -0.0429780587284797,
+          "profit_loss_ratio": 2.4468845940524053,
+          "max_consecutive_losses": 1,
+          "leg_counts": {
+            "D": 12
+          }
+        }
+      }
+    }
+  },
+  "incremental_change_audit": {
+    "selected_plan_change_count": 5,
+    "portfolio_decision_state_change_day_count": 6,
+    "portfolio_direct_return_change_trade_count": 2,
+    "portfolio_action_change_count": 6,
+    "changed_plan_counts_by_leg": {
+      "D": 5
+    },
+    "direct_return_change_details": [
+      {
+        "action_date": "20240415",
+        "baseline_strategy_leg": "D",
+        "baseline_ts_code": "301077.SZ",
+        "baseline_account_return": -0.0558143244137142,
+        "final_strategy_leg": "",
+        "final_ts_code": "",
+        "final_account_return": 0.0
+      },
+      {
+        "action_date": "20250717",
+        "baseline_strategy_leg": "D",
+        "baseline_ts_code": "300051.SZ",
+        "baseline_account_return": -0.0668847642883833,
+        "final_strategy_leg": "",
+        "final_ts_code": "",
+        "final_account_return": 0.0
+      }
+    ],
+    "main_portfolio_multiple_ratio": 1.135029925601641,
+    "recent_portfolio_multiple_ratio": 1.0716789971148368,
+    "warning": "增量变更笔数用于披露候选收益是否由极少数样本驱动；逐日状态变化包含持仓占用的衍生日，不能冒充收益变化成交；本轮预声明门禁未设置最少增量变更笔数，因此不得事后用该字段改选候选。"
+  },
+  "execution_assumptions": {
+    "single_account": true,
+    "position_pct": 0.825,
+    "static_buy_slippage_rate": 0.001,
+    "static_sell_slippage_rate": 0.001,
+    "commission_rate_each_side": 0.0003,
+    "transfer_fee_rate_each_side": 1e-05,
+    "stamp_tax_schedule_sell_side": [
+      {
+        "start_date": "19000101",
+        "end_date": "20230827",
+        "rate": 0.001
+      },
+      {
+        "start_date": "20230828",
+        "end_date": "99991231",
+        "rate": 0.0005
+      }
+    ],
+    "minimum_commission_modeled": false,
+    "d_fill_stress_multiplier": 0.8,
+    "limit_up_open_buy_rejected": true,
+    "limit_down_close_sell_delayed": true,
+    "d_unknown_queue_fill": "FAIL_CLOSED_NOT_FILLED",
+    "note": "A/C/E按买卖各0.1%固定滑点并扣日期化费用；D按涨停价买、卖出价0.1%滑点、日期化费用及80%成交压力。未建模5元最低佣金，因此本结果不适合直接外推到很小单笔资金。"
+  },
+  "strict_limits": [
+    "三年主窗口与两年确认窗口重叠，两年确认不是独立样本外。",
+    "两年确认只否决三年主窗选出的唯一第一名；否决后不得改选三年第二名。",
+    "最近半年只在唯一胜者选出后执行失效否决，不参与排名，也不改选第二名。",
+    "D一分钟OHLCV没有历史买一队列深度；始终封板的未知队列按未成交处理。",
+    "当前统一市场控制只实现前一交易日涨停数不少于50的硬门禁；完整冰点/修复/混沌/主升/高潮/退潮风格路由尚未形成可发布规则。",
+    "V7候选空间在查看同一三年主窗后迭代扩充并于最终回放前冻结，属于样本内发现，不是事前独立验证。",
+    "以下数学胜者未通过固定风格门禁，只保留诊断，未进入最终研究组合：C:C_LEADER_RANK_ADJACENT。",
+    "最终研究组合只有2笔成交直接改变收益；收益改善存在明显增量样本集中，不能视为独立样本外证明。",
+    "本轮属于STRICT_DISCOVERY；正式配置、发布冻结和实盘BUY出口均未修改。"
+  ],
+  "status": "THREE_YEAR_RESEARCH_COMPLETED"
+}

@@ -1,0 +1,107 @@
+{
+  "schema_version": 1,
+  "mode": "research_only",
+  "formal_strategy_auto_apply": false,
+  "priority": ["A", "C", "E", "D"],
+  "allowed_update_nodes": ["0630", "1231"],
+  "windows": {
+    "main_years": 3,
+    "recent_confirmation_years": 2,
+    "failure_check_months": 6,
+    "metric_date": "action_date",
+    "selection_window": "main",
+    "main_window_selects_one_winner": true,
+    "recent_confirmation_may_rank_candidates": false,
+    "recent_confirmation_can_only_veto": true,
+    "failure_check_may_rank_candidates": false,
+    "failure_check_can_only_veto": true,
+    "vetoed_winner_may_fallback_to_runner_up": false
+  },
+  "market_controller": {
+    "hard_gate_enabled": true,
+    "state_reference": "previous_open_day_close",
+    "minimum_limit_up_count": 50,
+    "applies_to": ["A", "C", "E", "D"],
+    "regime_routing_mode": "strategy_internal_filters_frozen",
+    "note": "四腿在真实开仓日前一交易日收盘涨停数少于50时均不建立开仓计划；D不得使用当日收盘值回看盘中信号。"
+  },
+  "replacement_gate": {
+    "require_main_standalone_compound_improvement": true,
+    "require_main_portfolio_compound_improvement": true,
+    "require_recent_standalone_compound_improvement": true,
+    "require_recent_portfolio_compound_improvement": true,
+    "minimum_main_sample_retention": 0.7,
+    "minimum_recent_sample_retention": 0.7,
+    "minimum_absolute_trades": {
+      "A": 40,
+      "C": 25,
+      "E": 35,
+      "D": 20
+    },
+    "maximum_main_drawdown_worsening_pp": 0.03,
+    "maximum_recent_drawdown_worsening_pp": 0.03,
+    "failure_check_minimum_trades": 8,
+    "failure_check_equity_floor": 1.0,
+    "failure_check_require_nonpositive_average_with_equity_failure": true,
+    "failure_check_drawdown_floor": -0.2
+  },
+  "d_quality_contracts": {
+    "20260630": {
+      "target_count": 54178,
+      "target_trade_day_count": 725,
+      "ready_path_target_count": 54166,
+      "registered_vendor_gap_count": 4,
+      "registered_price_mismatch_count": 8,
+      "fail_closed_abnormal_count": 12,
+      "event_count": 44536,
+      "event_trade_day_count": 725,
+      "known_abnormal_keys_sha256": "b1e5270c02d7a25657744375c0d2dc593e1ef101e851643184d285e109c3c5ca",
+      "source_sha256": {
+        "d_event_source": "15e3190a0f4685d1f3aad57f117204fc1918fccfeef8cbd293f21593f4fdd19c",
+        "d_missing_year_target_ledger": "69166cca8534a73fde719b25b39b0d2c8aa74b304b2ffbe338eec1406ea6d51a",
+        "d_recent_target_ledger": "685b109d886268175b1bf4754ef57d53ec004fef89cf2fb7f026a939e4256b94",
+        "d_known_data_gaps": "d8d9776eaae4f05f4e63a19aa63eef21d67cbc23eda5456a11ae2278201e4879",
+        "d_missing_year_summary": "26d8b95e89440a85d327f5c54ba8baf37282fb0faf756b70d00b6b7e388ac86d",
+        "d_recent_summary": "2c09cf094cf1a6aa39650b79214790c32962e37c179563d6921004ca039a40ef",
+        "d_merge_summary": "6be6d408f6ade51b00e6d27c063c58f2eb6847238d531da61a1b7f9e5a60d2b8",
+        "trade_calendar": "53978e56252200b2b4f980fc6237dc76834f614410ab8c7a6a7dfa0d53ea39d4"
+      }
+    }
+  },
+  "candidate_space": {
+    "version": "ACDE_STYLE_GATED_LOCAL_V7",
+    "only_predeclared_single_axis_changes": false,
+    "selection_candidates_declared_before_final_v7_replay": true,
+    "candidate_space_discovered_using_same_main_window": true,
+    "note": "V7候选空间在同一三年主窗内迭代发现后，于最终回放前冻结；因此属于样本内STRICT_DISCOVERY，不是事前独立验证。",
+    "deduplicate_by_plan_signature": true,
+    "A": "当前规则；低热度/连板/封单相邻桶单轴变化；fallback开关；4种固定排序",
+    "C": "固定T+3；只有显式限定全市场/所属分段warming/main_rise/climax或分段最高板强势高度的候选可进入排名，未限定强势环境的相邻桶和排序变化仅作数学诊断",
+    "E": "只有显式限定ice_point/retreat/warming修复状态的单门禁或状态并集候选可进入排名；未限定修复状态的排序与时间门禁变化仅作数学诊断",
+    "D": "冻结首板真实炸板回封、分钟路径和成交口径；只有使用信号时盘中市场广度或累计炸板事件率显式限定强势环境的候选可进入排名，其余相邻因子变化仅作数学诊断"
+  },
+  "execution": {
+    "position_pct": 0.825,
+    "a_hold_rule": "T+1开盘买入，T+2收盘卖出",
+    "c_hold_rule": "T+1开盘买入，T+3收盘卖出",
+    "e_hold_rule": "T+1开盘买入，按冻结E规则收盘卖出",
+    "d_hold_rule": "信号日盘中成交，信号日后第2个交易日收盘卖出（从买入日计共占用3个交易日）",
+    "static_plan_preempts_lower_priority_even_when_unfilled": true,
+    "exit_day_remains_occupied": true,
+    "fees_slippage_t1_limit_rules_frozen": true
+  },
+  "data": {
+    "strict_daily_source": "data/research/five_year_strict/limit_up_fill_scored_asof.csv",
+    "strict_feature_pool": "data/research/five_year_strict/strict_feature_pool.csv",
+    "market_sentiment": "data/research/five_year_strict/market_sentiment.csv",
+    "d_event_source": "data/research/acde_rolling_optimization/20260630/strategy_d_three_year/all_reseal_signal_events.csv",
+    "d_missing_year_target_ledger": "data/research/acde_rolling_optimization/20260630/strategy_d_missing_year/event_ledger_full_window.csv",
+    "d_recent_target_ledger": "data/research/strategy_d_intraday/event_ledger_full_window.csv",
+    "d_known_data_gaps": "config/strategy_d_intraday_known_data_gaps.json",
+    "d_missing_year_summary": "reports/acde_rolling_optimization/20260630/strategy_d_missing_year/full_window_summary.json",
+    "d_recent_summary": "reports/strategy_d_intraday_research/full_window_summary.json",
+    "d_merge_summary": "reports/acde_rolling_optimization/20260630/strategy_d_three_year/merge_summary.json",
+    "trade_calendar": "data/raw/trade_calendar.csv",
+    "report_root": "reports/acde_rolling_optimization"
+  }
+}

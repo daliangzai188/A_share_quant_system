@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""补齐策略D两年全窗口的Tushare官方涨跌停价。
+"""补齐策略D指定研究窗口的Tushare官方涨跌停价。
 
 一分钟权限负责盘中路径，但生成全市场首板触板母池还需要每个交易日的官方
 ``stk_limit``。本脚本只补缺失日期，逐日原子落盘并支持中断续跑；不修改正式D。
@@ -40,7 +40,12 @@ def date_text(series: pd.Series) -> pd.Series:
     return series.astype(str).str.replace(r"\.0$", "", regex=True)
 
 
-def load_window_open_dates(path: Path = CALENDAR_PATH) -> list[str]:
+def load_window_open_dates(
+    path: Path = CALENDAR_PATH,
+    *,
+    start: str = START,
+    end: str = END,
+) -> list[str]:
     frame = pd.read_csv(path, dtype={"cal_date": str}, low_memory=False)
     missing = sorted({"cal_date", "is_open"} - set(frame.columns))
     if missing:
@@ -50,9 +55,9 @@ def load_window_open_dates(path: Path = CALENDAR_PATH) -> list[str]:
             pd.to_numeric(frame["is_open"], errors="coerce").eq(1), "cal_date"
         ]
     )
-    result = sorted(date for date in dates.unique() if START < date <= END)
+    result = sorted(date for date in dates.unique() if str(start) < date <= str(end))
     if not result:
-        raise RuntimeError("正式两年窗口没有交易日")
+        raise RuntimeError("指定D研究窗口没有交易日")
     return result
 
 
@@ -120,6 +125,8 @@ def collect_missing(
     limit_days: int | None = None,
     request_interval_seconds: float = 0.15,
     sleep_fn: Callable[[float], None] = time.sleep,
+    start: str = START,
+    end: str = END,
 ) -> dict[str, Any]:
     existing, invalid_before = audit_existing(dates, output_dir=output_dir)
     existing_set = set(existing)
@@ -152,7 +159,7 @@ def collect_missing(
     return {
         "schema_version": 1,
         "strategy": "D",
-        "window": f"{START}~{END}",
+        "window": f"{start}~{end}",
         "formal_rule_modified": False,
         "source": "TUSHARE_STK_LIMIT",
         "expected_open_day_count": len(dates),
@@ -168,7 +175,7 @@ def collect_missing(
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="补齐D两年全窗口官方stk_limit")
+    parser = argparse.ArgumentParser(description="补齐D指定窗口官方stk_limit")
     parser.add_argument("--calendar", type=Path, default=CALENDAR_PATH)
     parser.add_argument("--output-dir", type=Path, default=OUTPUT_DIR)
     parser.add_argument("--report", type=Path, default=REPORT_PATH)
@@ -176,6 +183,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit-days", type=int)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--request-interval-seconds", type=float, default=0.15)
+    parser.add_argument("--start", default=START, help="自然日左边界，开区间")
+    parser.add_argument("--end", default=END, help="自然日右边界，闭区间")
     return parser.parse_args()
 
 
@@ -185,13 +194,21 @@ def main() -> int:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    dates = load_window_open_dates(args.calendar)
+    dt_start = pd.to_datetime(str(args.start), format="%Y%m%d")
+    dt_end = pd.to_datetime(str(args.end), format="%Y%m%d")
+    if dt_start >= dt_end:
+        raise ValueError("stk_limit采集窗口必须满足start < end")
+    dates = load_window_open_dates(
+        args.calendar,
+        start=str(args.start),
+        end=str(args.end),
+    )
     complete, invalid = audit_existing(dates, output_dir=args.output_dir)
     if args.dry_run:
         report = {
             "schema_version": 1,
             "strategy": "D",
-            "window": f"{START}~{END}",
+            "window": f"{args.start}~{args.end}",
             "formal_rule_modified": False,
             "source": "TUSHARE_STK_LIMIT",
             "expected_open_day_count": len(dates),
@@ -214,6 +231,8 @@ def main() -> int:
             overwrite=args.overwrite,
             limit_days=args.limit_days,
             request_interval_seconds=args.request_interval_seconds,
+            start=str(args.start),
+            end=str(args.end),
         )
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(

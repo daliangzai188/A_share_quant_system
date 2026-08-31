@@ -115,6 +115,51 @@ class TradeReturnResult:
     exit_rule: str = ""
 
 
+@dataclass(frozen=True)
+class FixedOpenEntryResult:
+    status: str
+    buy_date: str
+    open_price: float | None
+
+
+def fixed_open_entry_details(
+    sig: str,
+    code: str,
+    *,
+    name: str = "",
+) -> FixedOpenEntryResult:
+    """只检查T+1开盘是否可成交，不读取计划退出日之后的数据。"""
+
+    i = DIDX.get(sig)
+    if i is None or i + 1 >= len(DATES):
+        return FixedOpenEntryResult("NO_CALENDAR", "", None)
+    buy_date = DATES[i + 1]
+    frame = day(buy_date)
+    if frame is None or code not in frame.index:
+        return FixedOpenEntryResult("NO_PRICE", buy_date, None)
+    row = frame.loc[code]
+    open_price = float(row["open"])
+    pre_close = float(row.get("pre_close", 0) or 0)
+    if open_price <= 0:
+        return FixedOpenEntryResult("BAD_PRICE", buy_date, None)
+
+    resolved_name, list_date = stock_meta(code, name)
+    listing_day = listing_trade_day_number(list_date, buy_date, DATES)
+    buy_limit_pct = price_limit_pct(
+        code,
+        name=resolved_name,
+        trade_date=buy_date,
+        listing_day_number=listing_day,
+    )
+    if pre_close > 0 and not fixed_open_buy_executable(
+        pre_close=pre_close,
+        open_price=open_price,
+        limit_pct=buy_limit_pct,
+    ):
+        return FixedOpenEntryResult("LIMIT_UP_UNBUYABLE", buy_date, open_price)
+    return FixedOpenEntryResult("OK", buy_date, open_price)
+
+
 def trade_return_details(
     sig: str,
     code: str,
@@ -130,30 +175,13 @@ def trade_return_details(
     i = DIDX.get(sig)
     if i is None or i + hold >= len(DATES):
         return TradeReturnResult("NO_CALENDAR", "", "", None)
-    d1 = DATES[i + 1]
-    f1 = day(d1)
-    if f1 is None or code not in f1.index:
-        return TradeReturnResult("NO_PRICE", "", "", None)
-    r1 = f1.loc[code]
-    open_price = float(r1["open"])
-    pre_close = float(r1.get("pre_close", 0) or 0)
-    if open_price <= 0:
-        return TradeReturnResult("BAD_PRICE", "", "", None)
+    entry = fixed_open_entry_details(sig, code, name=name)
+    d1 = entry.buy_date
+    if entry.status != "OK" or entry.open_price is None:
+        return TradeReturnResult(entry.status, d1, "", None)
+    open_price = float(entry.open_price)
 
     resolved_name, list_date = stock_meta(code, name)
-    listing_day = listing_trade_day_number(list_date, d1, DATES)
-    buy_limit_pct = price_limit_pct(
-        code,
-        name=resolved_name,
-        trade_date=d1,
-        listing_day_number=listing_day,
-    )
-    if pre_close > 0 and not fixed_open_buy_executable(
-        pre_close=pre_close,
-        open_price=open_price,
-        limit_pct=buy_limit_pct,
-    ):
-        return TradeReturnResult("LIMIT_UP_UNBUYABLE", d1, "", None)
 
     buy_price = open_price * 1.001
     for k in range(hold, hold + max(int(sell_delay_max), 1)):

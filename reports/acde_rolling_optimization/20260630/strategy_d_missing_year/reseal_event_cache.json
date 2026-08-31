@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "mode": "research_only",
+  "formal_strategy_modified": false,
+  "ledger_path": "data/research/acde_rolling_optimization/20260630/strategy_d_missing_year/event_ledger_full_window.csv",
+  "ledger_sha256": "69166cca8534a73fde719b25b39b0d2c8aa74b304b2ffbe338eec1406ea6d51a",
+  "minute_path": "data/research/acde_rolling_optimization/20260630/strategy_d_missing_year/minute_1m_tushare.csv",
+  "minute_sha256": "9eef6e4ab6e3594439b4118300cbfa32688d95927982f3a5c351dc9fa6d51689",
+  "output_path": "data/research/acde_rolling_optimization/20260630/strategy_d_missing_year/all_reseal_signal_events.csv",
+  "output_sha256": "be74617248681d79b11e6a5a24d3897a1023b8583ffcea8035186b9853532423",
+  "first_trade_date": "20230703",
+  "last_trade_date": "20240628",
+  "ledger_target_count": 13842,
+  "event_count": 10715,
+  "event_stock_day_count": 4137,
+  "event_trade_day_count": 241,
+  "queue_price_confirmed_count": 8737,
+  "extraction": {
+    "ready_path_count": 13838,
+    "skipped_or_mismatch_count": 4,
+    "reseal_event_count_before_1455": 10715,
+    "reseal_stock_day_count": 4137,
+    "reseal_trade_day_count": 241,
+    "open_times_min": 1,
+    "open_times_max": 23
+  },
+  "queue_depth_available": false,
+  "certification_eligible": false,
+  "status": "RESEARCH_EVENT_CACHE_READY_NO_QUEUE_DEPTH"
+}

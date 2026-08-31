@@ -1,0 +1,212 @@
+{
+  "schema_version": 1,
+  "mode": "research_only",
+  "formal_strategy_modified": false,
+  "priority": [
+    "A",
+    "C",
+    "E",
+    "D"
+  ],
+  "windows": {
+    "update_node": "20260630",
+    "main": {
+      "name": "main",
+      "start": "20230701",
+      "end": "20260630",
+      "role": "参数筛选与跨行情稳定性",
+      "may_rank_candidates": true
+    },
+    "recent": {
+      "name": "recent",
+      "start": "20240701",
+      "end": "20260630",
+      "role": "确认参数未被旧行情拖累",
+      "may_rank_candidates": false
+    },
+    "failure_check": {
+      "name": "failure_check",
+      "start": "20260101",
+      "end": "20260630",
+      "role": "只检查是否明显失效",
+      "may_rank_candidates": false
+    }
+  },
+  "window_boundary_policy": {
+    "metric_date": "action_date",
+    "main_action_day_count": 725,
+    "first_action_date": "20230703",
+    "last_action_date": "20260630",
+    "previous_signal_date_loaded_for_static_plans": "20230630"
+  },
+  "data_audits": {
+    "strict_asof": {
+      "standard_id": "A_SYSTEM_STRICT_ASOF_V1",
+      "dataset_name": "acde_rolling_strict_daily_source",
+      "row_count": 101020,
+      "signal_date_count": 1632,
+      "first_signal_date": "20191128",
+      "last_signal_date": "20260820",
+      "duplicate_key_count": 0,
+      "invalid_signal_date_count": 0,
+      "invalid_as_of_date_count": 0,
+      "as_of_after_signal_count": 0,
+      "as_of_mismatch_count": 0,
+      "reliable_method_bad_count": 0,
+      "reliable_training_end_missing_count": 0,
+      "reliable_training_not_prior_count": 0,
+      "availability_date_invalid_count": 0,
+      "availability_after_signal_count": 0,
+      "passed": true,
+      "issues": []
+    },
+    "strict_daily": {
+      "passed": true,
+      "required_start": "20230630",
+      "required_end": "20260630",
+      "available_start": "20191128",
+      "available_end": "20260820",
+      "start_gap_calendar_days": -1310,
+      "end_gap_calendar_days": -51,
+      "row_count": 101020,
+      "date_count": 1632,
+      "reason": "OK"
+    },
+    "strict_feature_pool": {
+      "passed": true,
+      "required_start": "20230630",
+      "required_end": "20260630",
+      "available_start": "20200103",
+      "available_end": "20260820",
+      "start_gap_calendar_days": -1274,
+      "end_gap_calendar_days": -51,
+      "row_count": 75612,
+      "date_count": 1551,
+      "reason": "OK"
+    },
+    "market_sentiment": {
+      "passed": true,
+      "required_start": "20230630",
+      "required_end": "20260630",
+      "available_start": "20190102",
+      "available_end": "20260820",
+      "start_gap_calendar_days": -1640,
+      "end_gap_calendar_days": -51,
+      "row_count": 1852,
+      "date_count": 1852,
+      "reason": "OK"
+    },
+    "d_minute_events": {
+      "passed": true,
+      "required_start": "20230701",
+      "required_end": "20260630",
+      "available_start": "20230703",
+      "available_end": "20260630",
+      "start_gap_calendar_days": 2,
+      "end_gap_calendar_days": 0,
+      "row_count": 44536,
+      "date_count": 725,
+      "reason": "OK"
+    },
+    "d_target_denominator": {
+      "passed": true,
+      "reason": "OK",
+      "failures": [],
+      "target_count": 54178,
+      "target_trade_day_count": 725,
+      "required_trade_day_count": 725,
+      "ready_path_target_count": 54166,
+      "registered_vendor_gap_count": 4,
+      "registered_price_mismatch_count": 8,
+      "fail_closed_abnormal_count": 12,
+      "event_count": 44536,
+      "event_trade_day_count": 725,
+      "known_abnormal_keys": [
+        "20231129|920932.BJ",
+        "20231207|920262.BJ",
+        "20240206|920030.BJ",
+        "20240619|920090.BJ",
+        "20241025|920641.BJ",
+        "20241122|920926.BJ",
+        "20241128|920149.BJ",
+        "20241128|920199.BJ",
+        "20241128|920765.BJ",
+        "20241128|920802.BJ",
+        "20250310|920367.BJ",
+        "20251103|920304.BJ"
+      ],
+      "source_sha256": {
+        "d_missing_year_target_ledger": "69166cca8534a73fde719b25b39b0d2c8aa74b304b2ffbe338eec1406ea6d51a",
+        "d_recent_target_ledger": "685b109d886268175b1bf4754ef57d53ec004fef89cf2fb7f026a939e4256b94",
+        "d_known_data_gaps": "d8d9776eaae4f05f4e63a19aa63eef21d67cbc23eda5456a11ae2278201e4879",
+        "d_missing_year_summary": "26d8b95e89440a85d327f5c54ba8baf37282fb0faf756b70d00b6b7e388ac86d",
+        "d_recent_summary": "2c09cf094cf1a6aa39650b79214790c32962e37c179563d6921004ca039a40ef",
+        "d_merge_summary": "6be6d408f6ade51b00e6d27c063c58f2eb6847238d531da61a1b7f9e5a60d2b8",
+        "d_event_source": "15e3190a0f4685d1f3aad57f117204fc1918fccfeef8cbd293f21593f4fdd19c",
+        "trade_calendar": "53978e56252200b2b4f980fc6237dc76834f614410ab8c7a6a7dfa0d53ea39d4"
+      },
+      "known_abnormal_keys_sha256": "b1e5270c02d7a25657744375c0d2dc593e1ef101e851643184d285e109c3c5ca",
+      "frozen_contract_present": true,
+      "frozen_contract_passed": true
+    }
+  },
+  "input_fingerprints": {
+    "strict_daily_source": {
+      "path": "data/research/five_year_strict/limit_up_fill_scored_asof.csv",
+      "sha256": "35d8256a345815b5c39498ed2b574b998598d1e005008fb2d7578e964b0ef7ed"
+    },
+    "strict_feature_pool": {
+      "path": "data/research/five_year_strict/strict_feature_pool.csv",
+      "sha256": "f1d4b1ee83b991a169ba8530a135b2ba4ff43ef7ae32dd6759de7a64555fc482"
+    },
+    "market_sentiment": {
+      "path": "data/research/five_year_strict/market_sentiment.csv",
+      "sha256": "4ba851e3c7469b2a93a2b6cdfe8b6336d33ef57c10c30e27faa642dfdb0355c3"
+    },
+    "d_event_source": {
+      "path": "data/research/acde_rolling_optimization/20260630/strategy_d_three_year/all_reseal_signal_events.csv",
+      "sha256": "15e3190a0f4685d1f3aad57f117204fc1918fccfeef8cbd293f21593f4fdd19c"
+    },
+    "d_missing_year_target_ledger": {
+      "path": "data/research/acde_rolling_optimization/20260630/strategy_d_missing_year/event_ledger_full_window.csv",
+      "sha256": "69166cca8534a73fde719b25b39b0d2c8aa74b304b2ffbe338eec1406ea6d51a"
+    },
+    "d_recent_target_ledger": {
+      "path": "data/research/strategy_d_intraday/event_ledger_full_window.csv",
+      "sha256": "685b109d886268175b1bf4754ef57d53ec004fef89cf2fb7f026a939e4256b94"
+    },
+    "d_known_data_gaps": {
+      "path": "config/strategy_d_intraday_known_data_gaps.json",
+      "sha256": "d8d9776eaae4f05f4e63a19aa63eef21d67cbc23eda5456a11ae2278201e4879"
+    },
+    "d_missing_year_summary": {
+      "path": "reports/acde_rolling_optimization/20260630/strategy_d_missing_year/full_window_summary.json",
+      "sha256": "26d8b95e89440a85d327f5c54ba8baf37282fb0faf756b70d00b6b7e388ac86d"
+    },
+    "d_recent_summary": {
+      "path": "reports/strategy_d_intraday_research/full_window_summary.json",
+      "sha256": "2c09cf094cf1a6aa39650b79214790c32962e37c179563d6921004ca039a40ef"
+    },
+    "d_merge_summary": {
+      "path": "reports/acde_rolling_optimization/20260630/strategy_d_three_year/merge_summary.json",
+      "sha256": "6be6d408f6ade51b00e6d27c063c58f2eb6847238d531da61a1b7f9e5a60d2b8"
+    },
+    "trade_calendar": {
+      "path": "data/raw/trade_calendar.csv",
+      "sha256": "53978e56252200b2b4f980fc6237dc76834f614410ab8c7a6a7dfa0d53ea39d4"
+    }
+  },
+  "readiness_gates": {
+    "strict_asof_source": true,
+    "strict_daily_three_year_coverage": true,
+    "strict_feature_three_year_coverage": true,
+    "market_sentiment_three_year_coverage": true,
+    "d_minute_event_three_year_coverage": true,
+    "d_target_denominator_fail_closed": true,
+    "action_date_calendar_nonempty": true
+  },
+  "blocking_gates": [],
+  "optimization_started": true,
+  "status": "READY_FOR_THREE_YEAR_OPTIMIZATION",
+  "next_action": "逐腿冻结其他三腿并开始候选搜索"
+}

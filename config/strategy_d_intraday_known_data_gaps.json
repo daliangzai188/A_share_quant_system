@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "strategy": "D",
-  "window": "20240630~20260630",
+  "window": "20230701~20260630",
   "purpose": "精确记录付费Tushare历史一分钟中已复核的供应商日期市场缺口和分钟/官方日线价格不一致；不伪装完整，不从母样本分母删除，不允许用日线或插值伪造分钟路径。",
-  "checked_at": "2026-08-22",
+  "checked_at": "2026-08-31",
   "gaps": [
     {
       "target_key": "20241128|920149.BJ",
@@ -51,6 +51,50 @@
     }
   ],
   "price_mismatches": [
+    {
+      "target_key": "20231129|920932.BJ",
+      "trade_date": "20231129",
+      "ts_code": "920932.BJ",
+      "name": "科达自控",
+      "market": "BSE",
+      "source": "TUSHARE_STK_MINS_VS_STK_LIMIT_AND_DAILY",
+      "status": "CONFIRMED_TUSHARE_MINUTE_DAILY_PRICE_MISMATCH",
+      "handling": "FAIL_CLOSED_KEEP_IN_DENOMINATOR",
+      "evidence": "241根分钟K齐全，但分钟最高20.93低于官方涨停价/日线最高21.24；分钟收盘16.39与日线收盘16.39一致，仍无法用分钟路径确认触板。"
+    },
+    {
+      "target_key": "20231207|920262.BJ",
+      "trade_date": "20231207",
+      "ts_code": "920262.BJ",
+      "name": "太湖雪",
+      "market": "BSE",
+      "source": "TUSHARE_STK_MINS_VS_STK_LIMIT_AND_DAILY",
+      "status": "CONFIRMED_TUSHARE_MINUTE_DAILY_PRICE_MISMATCH",
+      "handling": "FAIL_CLOSED_KEEP_IN_DENOMINATOR",
+      "evidence": "241根分钟K齐全，但分钟最高21.08低于官方涨停价/日线最高21.12；分钟收盘17.16与日线收盘17.16一致，仍无法用分钟路径确认触板。"
+    },
+    {
+      "target_key": "20240206|920030.BJ",
+      "trade_date": "20240206",
+      "ts_code": "920030.BJ",
+      "name": "德众汽车",
+      "market": "BSE",
+      "source": "TUSHARE_STK_MINS_VS_STK_LIMIT_AND_DAILY",
+      "status": "CONFIRMED_TUSHARE_MINUTE_DAILY_PRICE_MISMATCH",
+      "handling": "FAIL_CLOSED_KEEP_IN_DENOMINATOR",
+      "evidence": "241根分钟K齐全，但分钟最高3.66低于官方涨停价/日线最高3.67；分钟收盘3.64与日线收盘3.64一致，仍无法用分钟路径确认触板。"
+    },
+    {
+      "target_key": "20240619|920090.BJ",
+      "trade_date": "20240619",
+      "ts_code": "920090.BJ",
+      "name": "同辉信息",
+      "market": "BSE",
+      "source": "TUSHARE_STK_MINS_VS_STK_LIMIT_AND_DAILY",
+      "status": "CONFIRMED_TUSHARE_MINUTE_DAILY_PRICE_MISMATCH",
+      "handling": "FAIL_CLOSED_KEEP_IN_DENOMINATOR",
+      "evidence": "241根分钟K齐全，但分钟最高2.98低于官方涨停价/日线最高2.99，且分钟收盘2.88与日线收盘2.84不一致。"
+    },
     {
       "target_key": "20241025|920641.BJ",
       "trade_date": "20241025",

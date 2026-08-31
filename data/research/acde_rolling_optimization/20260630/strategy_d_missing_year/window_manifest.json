@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "window": {
+    "start_exclusive": "20230701",
+    "end_inclusive": "20240630"
+  },
+  "open_day_count": 241,
+  "first_trade_date": "20230703",
+  "last_trade_date": "20240628",
+  "mother_pool_count": 13842,
+  "failed_close_count": 4742,
+  "strong_subpool_count": 1198,
+  "static_d_overlap_count": 53,
+  "duplicate_target_key_count": 0,
+  "target_manifest_sha256": "4856bb90febec20071645f6fecce57b7267716e7fe1e2d82c7eab0fc47866647",
+  "stk_limit_dir": "data/raw/stk_limit_history"
+}

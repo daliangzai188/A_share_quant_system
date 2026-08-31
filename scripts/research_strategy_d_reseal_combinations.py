@@ -429,6 +429,8 @@ def extract_reseal_events(
     ledger: pd.DataFrame,
     minute_path: Path,
     daily_data: strict.DailyData,
+    *,
+    expected_event_count: int | None = EXPECTED_RESEAL_EVENT_COUNT,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     """流式扫描完整分钟文件，提取每一次14:55前回封及其时点特征。"""
 
@@ -574,9 +576,9 @@ def extract_reseal_events(
     if missing:
         raise RuntimeError(f"分钟文件缺少已认证回封路径：{missing[:10]}")
     reseals = pd.DataFrame(reseal_rows)
-    if len(reseals) != EXPECTED_RESEAL_EVENT_COUNT:
+    if expected_event_count is not None and len(reseals) != expected_event_count:
         raise RuntimeError(
-            f"14:55前回封事件数漂移：expected={EXPECTED_RESEAL_EVENT_COUNT} actual={len(reseals)}"
+            f"14:55前回封事件数漂移：expected={expected_event_count} actual={len(reseals)}"
         )
     reseals = add_market_context(reseals, pd.DataFrame(state_rows))
     reseals = reseals.sort_values(
