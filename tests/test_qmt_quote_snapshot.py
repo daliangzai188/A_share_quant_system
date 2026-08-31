@@ -16,6 +16,43 @@ class _FakeXtData:
     ) -> None:
         self._ticks = ticks
         self._minute_bars = minute_bars or {}
+        self.subscription_results: dict[str, int] = {}
+        self.unsubscribe_failures: set[int] = set()
+        self.subscribe_calls: list[dict[str, object]] = []
+        self.unsubscribe_calls: list[int] = []
+        self.market_data_calls: list[dict[str, object]] = []
+        self._next_subscription_id = 1
+
+    def subscribe_quote(
+        self,
+        stock_code: str,
+        *,
+        period: str,
+        start_time: str,
+        end_time: str,
+        count: int,
+        callback: object,
+    ) -> int:
+        self.subscribe_calls.append(
+            {
+                "stock_code": stock_code,
+                "period": period,
+                "start_time": start_time,
+                "end_time": end_time,
+                "count": count,
+                "callback": callback,
+            }
+        )
+        if stock_code in self.subscription_results:
+            return self.subscription_results[stock_code]
+        result = self._next_subscription_id
+        self._next_subscription_id += 1
+        return result
+
+    def unsubscribe_quote(self, subscription_id: int) -> None:
+        self.unsubscribe_calls.append(subscription_id)
+        if subscription_id in self.unsubscribe_failures:
+            raise RuntimeError(f"cannot unsubscribe {subscription_id}")
 
     def get_full_tick(self, broker_codes: list[str]) -> dict[str, dict[str, object]]:
         return {code: self._ticks.get(code, {}) for code in broker_codes}
@@ -24,8 +61,11 @@ class _FakeXtData:
         self,
         _fields: list[str],
         broker_codes: list[str],
-        **_kwargs: object,
+        **kwargs: object,
     ) -> dict[str, pd.DataFrame]:
+        self.market_data_calls.append(
+            {"broker_codes": list(broker_codes), **kwargs}
+        )
         return {
             code: self._minute_bars.get(code, pd.DataFrame())
             for code in broker_codes
@@ -128,6 +168,113 @@ class QMTQuoteSnapshotAmountTest(unittest.TestCase):
         self.assertEqual(bars[0]["hhmm"], 931)
         self.assertEqual(bars[0]["close"], 193.28)
         self.assertEqual(bars[0]["low"], 190.30)
+
+    def test_minute_query_subscribes_once_reuses_ids_and_releases_stale_codes(self) -> None:
+        adapter = _adapter_with_ticks({})
+        xtdata = adapter.xtdata_module
+
+        adapter.get_minute_bars(
+            ["000001.SZ", "000002.SZ"],
+            start_time="20260831093000",
+            end_time="20260831102700",
+        )
+        adapter.get_minute_bars(
+            ["000001.SZ", "000002.SZ"],
+            start_time="20260831093000",
+            end_time="20260831102800",
+        )
+
+        self.assertEqual(len(xtdata.subscribe_calls), 2)
+        self.assertEqual(xtdata.subscribe_calls[0]["period"], "1m")
+        self.assertEqual(
+            xtdata.subscribe_calls[0]["start_time"], "20260831093000"
+        )
+        self.assertEqual(xtdata.subscribe_calls[0]["count"], -1)
+        self.assertEqual(xtdata.market_data_calls[-1]["fill_data"], True)
+
+        adapter.get_minute_bars(
+            ["000002.SZ", "000003.SZ"],
+            start_time="20260831093000",
+            end_time="20260831102900",
+        )
+
+        self.assertEqual(len(xtdata.subscribe_calls), 3)
+        self.assertEqual(xtdata.subscribe_calls[-1]["stock_code"], "000003.SZ")
+        self.assertEqual(xtdata.unsubscribe_calls, [1])
+        self.assertEqual(
+            set(adapter._minute_quote_subscriptions),
+            {"000002.SZ", "000003.SZ"},
+        )
+
+    def test_failed_subscription_rolls_back_new_ids_and_does_not_query(self) -> None:
+        adapter = _adapter_with_ticks({})
+        xtdata = adapter.xtdata_module
+        xtdata.subscription_results["000002.SZ"] = -1
+
+        with self.assertRaisesRegex(RuntimeError, "订阅失败"):
+            adapter.get_minute_bars(
+                ["000001.SZ", "000002.SZ"],
+                start_time="20260831093000",
+                end_time="20260831102700",
+            )
+
+        self.assertEqual(xtdata.unsubscribe_calls, [1])
+        self.assertEqual(adapter._minute_quote_subscriptions, {})
+        self.assertEqual(xtdata.market_data_calls, [])
+
+    def test_more_than_fifty_minute_codes_fails_before_partial_subscription(self) -> None:
+        adapter = _adapter_with_ticks({})
+        xtdata = adapter.xtdata_module
+        codes = [f"{index:06d}.SZ" for index in range(51)]
+
+        with self.assertRaisesRegex(RuntimeError, "超过安全上限"):
+            adapter.get_minute_bars(
+                codes,
+                start_time="20260831093000",
+                end_time="20260831102700",
+            )
+
+        self.assertEqual(xtdata.subscribe_calls, [])
+        self.assertEqual(adapter._minute_quote_subscriptions, {})
+
+    def test_missing_unsubscribe_api_fails_before_creating_subscription(self) -> None:
+        adapter = _adapter_with_ticks({})
+        xtdata = adapter.xtdata_module
+        xtdata.unsubscribe_quote = None
+
+        with self.assertRaisesRegex(RuntimeError, "无法释放"):
+            adapter.get_minute_bars(
+                ["000001.SZ"],
+                start_time="20260831093000",
+                end_time="20260831102700",
+            )
+
+        self.assertEqual(xtdata.subscribe_calls, [])
+        self.assertEqual(adapter._minute_quote_subscriptions, {})
+
+    def test_disconnect_releases_all_subscriptions_even_if_one_release_fails(self) -> None:
+        adapter = _adapter_with_ticks({})
+        xtdata = adapter.xtdata_module
+        adapter.get_minute_bars(
+            ["000001.SZ", "000002.SZ"],
+            start_time="20260831093000",
+            end_time="20260831102700",
+        )
+        xtdata.unsubscribe_failures.add(1)
+
+        class _Trader:
+            stopped = False
+
+            def stop(self) -> None:
+                self.stopped = True
+
+        trader = _Trader()
+        adapter.trader = trader
+        adapter.disconnect()
+
+        self.assertEqual(xtdata.unsubscribe_calls, [1, 2])
+        self.assertTrue(trader.stopped)
+        self.assertEqual(adapter._minute_quote_subscriptions, {"000001.SZ": 1})
 
 
 if __name__ == "__main__":

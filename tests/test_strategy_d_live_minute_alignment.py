@@ -5,7 +5,10 @@ from pathlib import Path
 
 from scripts import monitor_strategy_d_intraday as d_monitor
 from scripts.monitor_strategy_d_intraday import StockState, StrategyDMonitor
-from src.strategy_d_minute_alignment import replay_completed_minute_path
+from src.strategy_d_minute_alignment import (
+    expected_completed_minute_hhmm,
+    replay_completed_minute_path,
+)
 
 
 class _Logger:
@@ -16,6 +19,7 @@ class _Logger:
 class _MinuteBroker:
     def __init__(self, bars_by_code: dict[str, list[dict]]) -> None:
         self.bars_by_code = bars_by_code
+        self.calls = 0
 
     def get_minute_bars(
         self,
@@ -24,6 +28,7 @@ class _MinuteBroker:
         start_time: str,
         end_time: str,
     ) -> dict[str, list[dict]]:
+        self.calls += 1
         assert start_time.endswith("093000")
         assert end_time
         return {code: list(self.bars_by_code.get(code, [])) for code in ts_codes}
@@ -89,6 +94,35 @@ def _growth_state() -> StockState:
         cumulative_amount=330_000_000,
         previous_day_amount_yuan=182_996_014.02,
     )
+
+
+def test_expected_completed_minutes_follow_real_clock_boundaries() -> None:
+    expected_counts = {
+        929: 0,
+        930: 1,
+        931: 2,
+        959: 30,
+        1000: 31,
+        1027: 58,
+        1130: 121,
+        1131: 121,
+        1200: 121,
+        1259: 121,
+        1300: 121,
+        1301: 122,
+        1459: 240,
+        1500: 241,
+        1501: 241,
+    }
+
+    for current_hhmm, count in expected_counts.items():
+        labels = expected_completed_minute_hhmm(current_hhmm)
+        assert len(labels) == count
+        assert all(divmod(label, 100)[1] < 60 for label in labels)
+
+    assert expected_completed_minute_hhmm(1000)[-3:] == [958, 959, 1000]
+    assert expected_completed_minute_hhmm(1300)[-1] == 1130
+    assert expected_completed_minute_hhmm(1301)[-2:] == [1130, 1301]
 
 
 def test_one_cent_below_limit_is_not_treated_as_sealed() -> None:
@@ -222,3 +256,28 @@ def test_live_factor_gate_accepts_completed_minute_reseal(
     values = json.loads(state.factor_values_json)
     assert values["reseal_time_bucket"] == "0930_1000"
     assert values["break_close_depth_bucket"] == "LT0_2PCT"
+
+
+def test_live_minute_gate_blocks_more_than_qmt_subscription_limit(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    release_path = _release(tmp_path / "release.json")
+    broker = _MinuteBroker({})
+    monitor = StrategyDMonitor(
+        broker=broker,
+        live_order=False,
+        logger=_Logger(),
+        signal_csv=tmp_path / "signals.csv",
+        config={"strategy_d": {"factor_release_path": str(release_path)}},
+    )
+    states: dict[str, StockState] = {}
+    for index in range(51):
+        state = _growth_state()
+        state.ts_code = f"{index:06d}.SZ"
+        states[state.ts_code] = state
+    monitor.states = states
+    monkeypatch.setattr(d_monitor, "now_hhmm", lambda: 1027)
+
+    assert monitor._refresh_strict_minute_paths() is False
+    assert "超过QMT单股订阅安全上限" in monitor.strict_minute_refresh_error
+    assert broker.calls == 0

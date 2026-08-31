@@ -76,6 +76,7 @@ from src.strategy_d_minute_alignment import (
     StrictMinutePath,
     replay_completed_minute_path,
 )
+from src.qmt_adapter import MAX_SINGLE_QUOTE_SUBSCRIPTIONS
 from src.strategy_d_spec import (
     D_CHECKPOINT_MAX_AGE_SECONDS,
     D_FIRST_TIME_BUCKETS,
@@ -1129,25 +1130,31 @@ class StrategyDMonitor:
         now = now_beijing()
         trade_date = today_beijing().strftime("%Y%m%d")
         codes = [state.ts_code for state in targets]
+        if len(codes) > MAX_SINGLE_QUOTE_SUBSCRIPTIONS:
+            self.strict_minute_refresh_error = (
+                "严格D一分钟候选超过QMT单股订阅安全上限："
+                f"{len(codes)}>{MAX_SINGLE_QUOTE_SUBSCRIPTIONS}"
+            )
+            self.logger.error(
+                "[D STRICT 1M BLOCK] %s，正式因子D本轮禁止开仓",
+                self.strict_minute_refresh_error,
+            )
+            return False
         try:
-            raw_paths: dict[str, list[dict[str, Any]]] = {}
-            for index in range(0, len(codes), POLL_BATCH_SIZE):
-                batch = codes[index : index + POLL_BATCH_SIZE]
-                result = self.broker.get_minute_bars(
-                    batch,
-                    start_time=trade_date + "093000",
-                    end_time=now.strftime("%Y%m%d%H%M%S"),
+            raw_paths = self.broker.get_minute_bars(
+                codes,
+                start_time=trade_date + "093000",
+                end_time=now.strftime("%Y%m%d%H%M%S"),
+            )
+            if not isinstance(raw_paths, dict):
+                raise RuntimeError(
+                    f"一分钟K线返回非法类型{type(raw_paths).__name__}"
                 )
-                if not isinstance(result, dict):
-                    raise RuntimeError(
-                        f"一分钟K线返回非法类型{type(result).__name__}"
-                    )
-                missing_codes = set(batch).difference(str(code) for code in result)
-                if missing_codes:
-                    raise RuntimeError(
-                        f"一分钟K线缺少股票:{sorted(missing_codes)[:5]}"
-                    )
-                raw_paths.update(result)
+            missing_codes = set(codes).difference(str(code) for code in raw_paths)
+            if missing_codes:
+                raise RuntimeError(
+                    f"一分钟K线缺少股票:{sorted(missing_codes)[:5]}"
+                )
             for state in targets:
                 self.strict_minute_paths[state.ts_code] = replay_completed_minute_path(
                     raw_paths.get(state.ts_code, []),

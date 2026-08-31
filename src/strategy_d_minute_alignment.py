@@ -9,6 +9,21 @@ from src.strategy_d_factor_rules import trading_minutes_between
 from src.strategy_d_intraday_ledger import PRICE_TOLERANCE
 
 
+# 回测数据的分钟标签：09:30为独立开盘K线，之后按分钟结束时刻标记；
+# 午后第一根为13:01。这里预先列出合法时钟，禁止对HHMM直接做十进制range。
+_COMPLETED_TRADING_MINUTE_HHMM = tuple(
+    hour * 100 + minute
+    for hour in (9, 10, 11)
+    for minute in range(60)
+    if 930 <= hour * 100 + minute <= 1130
+) + tuple(
+    hour * 100 + minute
+    for hour in (13, 14, 15)
+    for minute in range(60)
+    if 1301 <= hour * 100 + minute <= 1500
+)
+
+
 @dataclass(frozen=True)
 class StrictMinutePath:
     certifiable: bool
@@ -54,14 +69,12 @@ def expected_completed_minute_hhmm(current_hhmm: int) -> list[int]:
     current = int(current_hhmm)
     if current < 930:
         return []
-    result = [930]
-    morning_end = min(current, 1130)
-    if morning_end >= 931:
-        result.extend(range(931, morning_end + 1))
-    if current >= 1301:
-        afternoon_end = min(current, 1500)
-        result.extend(range(1301, afternoon_end + 1))
-    return result
+    capped_current = min(current, 1500)
+    return [
+        hhmm
+        for hhmm in _COMPLETED_TRADING_MINUTE_HHMM
+        if hhmm <= capped_current
+    ]
 
 
 def replay_completed_minute_path(

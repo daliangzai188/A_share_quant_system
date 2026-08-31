@@ -131,6 +131,7 @@ def unique_values(values: list[Any]) -> list[Any]:
 
 
 CHINA_TZ = ZoneInfo("Asia/Shanghai")
+MAX_SINGLE_QUOTE_SUBSCRIPTIONS = 50
 
 
 def qmt_bar_hhmm(value: Any) -> int:
@@ -169,6 +170,7 @@ class QMTBrokerAdapter(BrokerAdapter):
         self.account: Any = None
         self._active_session_id: int = config.session_id
         self._active_qmt_path: str = config.qmt_path
+        self._minute_quote_subscriptions: dict[str, int] = {}
 
     @classmethod
     def from_config(cls, broker_config: dict[str, Any]) -> "QMTBrokerAdapter":
@@ -283,9 +285,131 @@ class QMTBrokerAdapter(BrokerAdapter):
         raise RuntimeError("QMT connect 全部失败: " + " | ".join(errors))
 
     def disconnect(self) -> None:
+        self._release_minute_quote_subscriptions(
+            set(self._minute_quote_subscriptions),
+            context="断开QMT连接",
+        )
         if self.trader is not None and hasattr(self.trader, "stop"):
             self.trader.stop()
         self.logger.debug("QMT 连接已关闭。")
+
+    def _release_minute_quote_subscriptions(
+        self,
+        broker_codes: set[str],
+        *,
+        context: str,
+    ) -> set[str]:
+        """释放指定的一分钟订阅，返回未能释放的代码。"""
+
+        if not broker_codes:
+            return set()
+        unsubscribe = getattr(self.xtdata_module, "unsubscribe_quote", None)
+        if not callable(unsubscribe):
+            self.logger.warning(
+                "QMT当前版本未提供unsubscribe_quote，无法在%s时释放%d个一分钟订阅",
+                context,
+                len(broker_codes),
+            )
+            return set(broker_codes)
+
+        failed: set[str] = set()
+        for broker_code in sorted(broker_codes):
+            seq = self._minute_quote_subscriptions.get(broker_code)
+            if seq is None:
+                continue
+            try:
+                unsubscribe(seq)
+            except Exception as exc:
+                failed.add(broker_code)
+                # 保留订阅号，后续同步时可以重试释放，避免重复订阅和容量泄漏。
+                self.logger.warning(
+                    "QMT释放一分钟订阅失败：%s seq=%s context=%s error=%s",
+                    broker_code,
+                    seq,
+                    context,
+                    exc,
+                )
+                continue
+            self._minute_quote_subscriptions.pop(broker_code, None)
+        return failed
+
+    def _sync_minute_quote_subscriptions(
+        self,
+        broker_codes: list[str],
+        *,
+        start_time: str,
+    ) -> None:
+        """让实时一分钟订阅与本轮严格D候选集合完全一致。"""
+
+        if len(broker_codes) > MAX_SINGLE_QUOTE_SUBSCRIPTIONS:
+            raise RuntimeError(
+                "QMT严格D一分钟订阅超过安全上限："
+                f"{len(broker_codes)}>{MAX_SINGLE_QUOTE_SUBSCRIPTIONS}"
+            )
+
+        requested = set(broker_codes)
+        stale = set(self._minute_quote_subscriptions) - requested
+        failed_to_release = self._release_minute_quote_subscriptions(
+            stale,
+            context="更新D候选池",
+        )
+        if failed_to_release:
+            raise RuntimeError(
+                "QMT旧的一分钟订阅未能释放，禁止继续增加订阅："
+                f"{sorted(failed_to_release)[:5]}"
+            )
+        if not broker_codes:
+            return
+
+        subscribe = getattr(self.xtdata_module, "subscribe_quote", None)
+        unsubscribe = getattr(self.xtdata_module, "unsubscribe_quote", None)
+        if not callable(subscribe):
+            raise RuntimeError(
+                "QMT当前版本未提供subscribe_quote，无法订阅实时一分钟行情"
+            )
+        if not callable(unsubscribe):
+            raise RuntimeError(
+                "QMT当前版本未提供unsubscribe_quote，禁止创建无法释放的一分钟订阅"
+            )
+
+        subscribed_now: set[str] = set()
+        try:
+            for broker_code in broker_codes:
+                if broker_code in self._minute_quote_subscriptions:
+                    continue
+                seq = subscribe(
+                    broker_code,
+                    period="1m",
+                    start_time=str(start_time),
+                    end_time="",
+                    count=-1,
+                    callback=None,
+                )
+                try:
+                    seq_int = int(seq)
+                except (TypeError, ValueError) as exc:
+                    raise RuntimeError(
+                        f"{broker_code}返回非法订阅号={seq!r}"
+                    ) from exc
+                if seq_int <= 0:
+                    raise RuntimeError(
+                        f"{broker_code}返回订阅号={seq_int}"
+                    )
+                self._minute_quote_subscriptions[broker_code] = seq_int
+                subscribed_now.add(broker_code)
+        except Exception as exc:
+            rollback_failed = self._release_minute_quote_subscriptions(
+                subscribed_now,
+                context="回滚本批失败订阅",
+            )
+            rollback_text = (
+                f"；回滚未释放={sorted(rollback_failed)[:5]}"
+                if rollback_failed
+                else ""
+            )
+            raise RuntimeError(
+                f"QMT实时一分钟行情订阅失败：{exc}{rollback_text}"
+            ) from exc
 
     def query_account(self) -> AccountSnapshot:
         if self.trader is None or self.account is None:
@@ -442,13 +566,25 @@ class QMTBrokerAdapter(BrokerAdapter):
         """读取QMT一分钟K线并保留与Tushare回测一致的原始分钟标签。"""
 
         self._load_xtquant()
-        broker_codes = [tushare_to_qmt_code(code) for code in ts_codes]
+        broker_codes = list(
+            dict.fromkeys(tushare_to_qmt_code(code) for code in ts_codes)
+        )
+        self._sync_minute_quote_subscriptions(
+            broker_codes,
+            start_time=str(start_time),
+        )
+        if not broker_codes:
+            return {}
         raw_result = self.xtdata_module.get_market_data_ex(
             ["open", "high", "low", "close", "volume", "amount"],
             broker_codes,
             period="1m",
             start_time=str(start_time),
             end_time=str(end_time),
+            count=-1,
+            # 回测日内数据每个合法分钟都有一根K线。无成交分钟沿用价格
+            # 不会制造封板/炸板切换，并能保持实盘与回测的完整路径口径。
+            fill_data=True,
         )
         if raw_result is None:
             raise RuntimeError("QMT一分钟K线查询返回None（结果未知）")
