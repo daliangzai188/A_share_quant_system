@@ -1,0 +1,132 @@
+{
+  "schema_version": 1,
+  "as_of": "20260630",
+  "mode": "research_only",
+  "code_fingerprint_policy": "EXPLICIT_DATA_BUILD_CHAIN_PLUS_LOADED_PROJECT_PYTHON_MODULES",
+  "git_commit": "1c633c9803d159a15f7b3ad86b94e2851c600e62",
+  "git_worktree_dirty": true,
+  "code_config_fingerprints": {
+    "config/acde_rolling_optimization.json": "0c19023207cfd90eafd391a86069777d34996adb5d4fb8e950b805f4751cafb8",
+    "config/config.json": "d2e9c9696bed37ce4249dd01def9bf3d0cd80e0c283f774d95269d6bdf0a9a90",
+    "config/strategy_config.json": "7ca042c4f428d617c465bc5cf613c51bb466b760f4c51b7a2f9744375c35e2a1",
+    "config/strategy_d_factor_release.json": "85e5a72f8edc8e6b2268b6371f7cab47e7ce215225c1a111238dad166e8b85c3",
+    "config/strategy_d_intraday_collection.json": "980edef5175f8553512aaf8816d36d9fc9207d038138ec505b9f611cf2fdbc8e",
+    "config/strategy_d_intraday_known_data_gaps.json": "d8d9776eaae4f05f4e63a19aa63eef21d67cbc23eda5456a11ae2278201e4879",
+    "config/strategy_e_r1_scenarios.json": "7f7b46676e3380541540c436c30d46b805e3f9171090fc5869cd6ac1ffb17587",
+    "scripts/audit_backup_strategy_b.py": "9269e1c016de99fd31ea9b652fbca72716974a4e8b0bb257575d331ba1e7016b",
+    "scripts/backtest_strategy_d.py": "0f64a0b5c5bfb0bc23c687e7a5832f911f449249f7daacd97852143e8e2f128e",
+    "scripts/build_ac_daily_candidates.py": "c859cb8f563895e4a3842eadb6a2fe8adc1290ff5411ff0cca3fc25aa9c80c74",
+    "scripts/build_strategy_d_intraday_event_ledger.py": "9ffc877b59af1c78b753e78785306d025c07a6382206065e2bc597f5ffbb9697",
+    "scripts/build_strategy_d_reseal_events_window.py": "67939c83f9c417abd42fbbbb68a7e2bd6183eacd94248209cea3da4b93107cb4",
+    "scripts/certify_current_executable_portfolio.py": "e2f80e4e80272ab3d68289885882fa7313cb2f304923382a0c2c633dfb78b49c",
+    "scripts/collect_strategy_d_intraday_tushare_1m.py": "1fae4b56513d8f4e9f8620d1c420fe1c96217c522932d04c8ee516d1e351c796",
+    "scripts/collect_strategy_d_stk_limit_history.py": "7f22326448f041aadeccdca3c262f5dfec75879ed827946fc2b37a77ff4b1749",
+    "scripts/merge_strategy_d_reseal_event_windows.py": "0383874a2b9725aaa99b6aff8ad7a0058ace51522b4534d4df58671a23e0376c",
+    "scripts/optimize_acde_rolling_three_year.py": "915d006dbe2845a0d3ce5e81e8784301dc89fea60d0292a212bef8229cc796ed",
+    "scripts/research_strategy_d_explosion_features.py": "f86bede7c758735bf804a43c46cc7128f711f9fb2da7684f6073ddfb0379a32a",
+    "scripts/research_strategy_d_full_window_features_and_gates.py": "4365d22fad26dfaedbfb778edff9ff0ff828ee6af085c5a5e0df3ed30f592463",
+    "scripts/research_strategy_d_reseal_combinations.py": "7250d07e3cfc2029f3a9f06fffdf16b385f767947ae3e5879ded10f549fb0b69",
+    "scripts/research_strategy_d_six_schools.py": "e29ee608b3b0947395ff95c1551e28376cadab6cd4a128346287fe148c4c4d91",
+    "scripts/run_paper_ab_filtered_daily_ops.py": "9dbea90861a3f627392e70d0563d01f8ba0ededeea16b536318b080a0bf31721",
+    "scripts/run_paper_ab_filtered_observation_window.py": "f0a406e78171b02945b1b4a9b46e4239cecf6150107cf40ee0b22dda0cf4945a",
+    "scripts/run_strategy_e_signal.py": "4cf1b4973444edbddace341eb1bf9a99e84e378e9fe3e299853ce412e4f2a4d3",
+    "scripts/search_paper_backup_strategy_b.py": "81f20d698a8b033bb332dd7ecfd49a02f6c9873e1077a11a42027f978ddc57b1",
+    "scripts/validate_other_live_strategies_strict.py": "91639ba70023c4165e5e6c80a8788cff81a1488098e2ff321000728287b5985f",
+    "scripts/verify_strategy_e_alignment.py": "cdc249a8c0b7e7d6e6f016b304f726c5116ca68cd7c70fb7676ae17fa39fe064",
+    "src/__init__.py": "7459235994bb1bfe17524900ed00a1a7b897b42aef606af8e9a0ad97d71cf630",
+    "src/acde_rolling_candidates.py": "c2f5e80eb21de7dce9a41fb8fcd183c9b830b17f530d5272dc15c48e8c3350f6",
+    "src/acde_rolling_framework.py": "3cf9fa5303da6b5d6f20553ed6631cc97c04335cb8bcc9a3105f32613c40a743",
+    "src/adjusted_returns.py": "47f46a9f633cdf60053b381800edd9c38fb38963b5ccb1ff51b7e9e0926ce3bb",
+    "src/data_source.py": "ba9a99fd49fba5592f87ffd1a98aedadbc2d00164a013b275186956f085777d1",
+    "src/factors.py": "79bcb0059e7f46f58d0af77634b1efdaec4419f9e83c08d647a7de901638d1ca",
+    "src/live_certification.py": "f7f3e6ee8b1e4aa674afa180a2a630d08e452b6b5cf2d92c2e316ec0e0c74964",
+    "src/market_rules.py": "86e8e35f5381b900cbf0c9f7cb7d9c22adecdf4a8f97e775767bb1f5a1d95ac6",
+    "src/mechanical_compound.py": "c6934056ecae88d95245c607666e972da0a0de6e746579955b54ee6969dbc9c6",
+    "src/paper_candidate_generator.py": "2c25c6dcec07ab00f60f8da33426ef095817e8a2972c7636fd065d5824570577",
+    "src/paper_daily_flow.py": "c8d3948aabcc42f418cf4a4e112340e7c252e31535570521f2ee9c2553b36d0b",
+    "src/rolling_signal_store.py": "a78168b1dd4db975a82bb8e2b2d741a9754ef8f427eb5776b829593a828513a2",
+    "src/secret_config.py": "2b6deeaa0c58ee7ef612420f9e7c46937f6a457d2f84687de03d11bbc99163ad",
+    "src/strategy_d_factor_rules.py": "97f07baa6faf8f0399fe0cc3a29053781ee0d13b51c264a0922d0d7d8b9ca52f",
+    "src/strategy_d_intraday_ledger.py": "0590ebb8e01c4323bf7ed1b823fcad7e1cf5b0349832c079cc45b38d131a4e19",
+    "src/strategy_d_spec.py": "0df6eb15d654576b83e70f2f0ccc1c328f5573a15b6c68b658aae484c3549e44",
+    "src/strategy_e.py": "8c1236c305eef82d02389ec36bf3dbca1fd8e38a5c770ae01b68ef88407904b5",
+    "src/strategy_identity.py": "379b0eab9a51a9fdd8c10d2b2292713774bf46ff0a010ee062b7b678d9b6c749",
+    "src/strategy_optimizer.py": "d71fd9cbc9465a01b8b08572e393738136baa635ca779be188032dd8284d200d",
+    "src/strict_asof.py": "864c3469cc713b6eb27692bd301865bebaa2768c5416bfe9eb0aaab865848824",
+    "src/trade_replay.py": "472978eef1874ffe8a8be6c70c9ed250c30dee49d297ad8cc3abc12b4ff14267",
+    "src/trading_fees.py": "2f470c14a4c584a5857d802500495935e3b8f1f49d1152201670f4603074a772",
+    "src/utils/__init__.py": "cb7b963905b57f0d262e510efa08bb1c29c3163cf34a0840d8432e07035c71ec",
+    "src/utils/config.py": "8a068641f3e8a23605af97b2dd7783adab7393a9753df86e7b06762ac9215b28",
+    "src/utils/logger.py": "f687ccd48da616ccfab41a2ab021e1c4b457f369fd75182c752b8dccc6758b38",
+    "tests/test_acde_rolling_framework.py": "b46de934669bfd560f45c5f1ccef4aaa8a38557e042871f0d609c2ade59dfa01",
+    "tests/test_strategy_d_stk_limit_history.py": "985e2d809b4883593454cf3b895ef8c7a2ad66f1f0494c4c8410b51d1e27b022",
+    "tests/test_strict_action_date_replay.py": "41d5d3c05f5f1178b2b77e30c49847f7e4b47d59e6725bb2ac4fce90394a306c"
+  },
+  "input_fingerprints": {
+    "strict_daily_source": {
+      "path": "data/research/five_year_strict/limit_up_fill_scored_asof.csv",
+      "sha256": "35d8256a345815b5c39498ed2b574b998598d1e005008fb2d7578e964b0ef7ed"
+    },
+    "strict_feature_pool": {
+      "path": "data/research/five_year_strict/strict_feature_pool.csv",
+      "sha256": "f1d4b1ee83b991a169ba8530a135b2ba4ff43ef7ae32dd6759de7a64555fc482"
+    },
+    "market_sentiment": {
+      "path": "data/research/five_year_strict/market_sentiment.csv",
+      "sha256": "4ba851e3c7469b2a93a2b6cdfe8b6336d33ef57c10c30e27faa642dfdb0355c3"
+    },
+    "d_event_source": {
+      "path": "data/research/acde_rolling_optimization/20260630/strategy_d_three_year/all_reseal_signal_events.csv",
+      "sha256": "15e3190a0f4685d1f3aad57f117204fc1918fccfeef8cbd293f21593f4fdd19c"
+    },
+    "d_missing_year_target_ledger": {
+      "path": "data/research/acde_rolling_optimization/20260630/strategy_d_missing_year/event_ledger_full_window.csv",
+      "sha256": "69166cca8534a73fde719b25b39b0d2c8aa74b304b2ffbe338eec1406ea6d51a"
+    },
+    "d_recent_target_ledger": {
+      "path": "data/research/strategy_d_intraday/event_ledger_full_window.csv",
+      "sha256": "685b109d886268175b1bf4754ef57d53ec004fef89cf2fb7f026a939e4256b94"
+    },
+    "d_known_data_gaps": {
+      "path": "config/strategy_d_intraday_known_data_gaps.json",
+      "sha256": "d8d9776eaae4f05f4e63a19aa63eef21d67cbc23eda5456a11ae2278201e4879"
+    },
+    "d_missing_year_summary": {
+      "path": "reports/acde_rolling_optimization/20260630/strategy_d_missing_year/full_window_summary.json",
+      "sha256": "26d8b95e89440a85d327f5c54ba8baf37282fb0faf756b70d00b6b7e388ac86d"
+    },
+    "d_recent_summary": {
+      "path": "reports/strategy_d_intraday_research/full_window_summary.json",
+      "sha256": "2c09cf094cf1a6aa39650b79214790c32962e37c179563d6921004ca039a40ef"
+    },
+    "d_merge_summary": {
+      "path": "reports/acde_rolling_optimization/20260630/strategy_d_three_year/merge_summary.json",
+      "sha256": "6be6d408f6ade51b00e6d27c063c58f2eb6847238d531da61a1b7f9e5a60d2b8"
+    },
+    "trade_calendar": {
+      "path": "data/raw/trade_calendar.csv",
+      "sha256": "53978e56252200b2b4f980fc6237dc76834f614410ab8c7a6a7dfa0d53ea39d4"
+    }
+  },
+  "artifact_fingerprints": {
+    "baseline_plans/a_plans.csv": "271919432df2f6df7d0a3df839531227c06d5e52a077c1df8c5d62ffc2a3b549",
+    "baseline_plans/c_plans.csv": "a5f73852fe098111bdd3618caf9783abadda8696c11447a95225bc782db0b4c5",
+    "baseline_plans/d_plans.csv": "d8f96c6a87594e0152a2cb6ca77149df12cf9af6e27765f3dd5ab3da55371aac",
+    "baseline_plans/e_plans.csv": "e3bfb62733b31baefd669a01ce0228b08d074a5bb6df490fc5116bddbd6cc647",
+    "baseline_portfolio_replay.csv": "16cab0e826dfd4aa2e941a4e293b5b1800e7df990c487af31bc6b95a99bf78ee",
+    "candidate_evaluations.csv": "f99833d1d8ec9c1647ecda895596692f9ba212ffbb993d1d47c33f0dfa083e6c",
+    "final_portfolio_replay.csv": "90657a12db2573cdfa8dffa3452be5ba2c94141bf2babe7d84813a1d007c38e0",
+    "final_research_plans/a_plans.csv": "271919432df2f6df7d0a3df839531227c06d5e52a077c1df8c5d62ffc2a3b549",
+    "final_research_plans/c_plans.csv": "a5f73852fe098111bdd3618caf9783abadda8696c11447a95225bc782db0b4c5",
+    "final_research_plans/d_plans.csv": "d8f96c6a87594e0152a2cb6ca77149df12cf9af6e27765f3dd5ab3da55371aac",
+    "final_research_plans/e_plans.csv": "91b915ee64294f3c9ebcd6f53252e074e73d51bb2fec74f2d9370355a318f5ba",
+    "market_hard_gate_by_action_date.csv": "6eb2e088ef0eeb32a0897a0b06e439703af09cfcf2ada8f74f631c4d252f4786",
+    "optimization_summary.json": "94ed971744ec843e8724a87d4b65638e61e09e37650ee274c9682944200461b1",
+    "optimization_summary.md": "a95ec3cb9508efb64db0173001ca79ae82f989309d5949f93ce381c8dcb5e728",
+    "portfolio_decision_changes.csv": "074e701119ea8311010b1d2e4cf4493c49b558cd23b7176f78dc017025c74079",
+    "readiness.json": "d9a71a89d47d1ded13e4a638162223cdaef909c2a3b2310a4968138c085e5e28",
+    "readiness.md": "a38021965efd5cbdae5013fc373b814a755252b336df1695f64df87bfdd2e0f0",
+    "selected_plan_changes.csv": "87f1b8232fbf137749ddf4baf5e6ef9c5e162622f44b7f807c2bf128c90e236f",
+    "variant_catalog.json": "8b4d75bcd50e9a70d62d37da5ac70b81caf490b0ebd9a58b69a35595e664d8bf"
+  }
+}

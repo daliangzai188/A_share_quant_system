@@ -29,7 +29,7 @@ class StrictAsOfConfigPolicyTests(unittest.TestCase):
         )
         self.assertEqual(
             policy["official_portfolio_certifier"],
-            "scripts/certify_strict_asof_portfolio.py",
+            "scripts/certify_acde_v12_release.py",
         )
 
     def test_all_shared_research_entrypoints_fail_closed_to_strict(self) -> None:
@@ -56,15 +56,16 @@ class StrictAsOfConfigPolicyTests(unittest.TestCase):
         self.assertTrue(analysis["output_exit_rule_trades_path"].endswith("_asof.csv"))
         self.assertTrue(self.config["candidate_pool"]["output_candidate_pool_path"].endswith("_asof.csv"))
 
-    def test_research_certification_has_no_live_buy_switches(self) -> None:
+    def test_user_approved_v12_certification_is_explicitly_labeled(self) -> None:
         certification = self.config["portfolio_certification"]
-        for field in (
-            "require_live_certification",
-            "certification_required_status",
-            "certification_require_strict_asof",
-            "require_strategy_release_freeze",
-        ):
-            self.assertNotIn(field, certification)
+        self.assertEqual(certification["certification_required_status"], "PASS")
+        self.assertEqual(
+            certification["certification_expected_scenario"],
+            "acde_ced_v12_6046_formal",
+        )
+        self.assertTrue(certification["certification_require_hashes"])
+        self.assertFalse(certification["certification_require_strict_asof"])
+        self.assertIn("STRICT_DISCOVERY", certification["user_risk_acceptance"])
 
 
 if __name__ == "__main__":

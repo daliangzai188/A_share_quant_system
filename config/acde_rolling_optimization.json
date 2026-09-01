@@ -18,12 +18,12 @@
     "vetoed_winner_may_fallback_to_runner_up": false
   },
   "market_controller": {
-    "hard_gate_enabled": true,
+    "hard_gate_enabled": false,
     "state_reference": "previous_open_day_close",
-    "minimum_limit_up_count": 50,
+    "minimum_limit_up_count": 0,
     "applies_to": ["A", "C", "E", "D"],
     "regime_routing_mode": "strategy_internal_filters_frozen",
-    "note": "四腿在真实开仓日前一交易日收盘涨停数少于50时均不建立开仓计划；D不得使用当日收盘值回看盘中信号。"
+    "note": "当前实盘基准没有四腿共用的涨停数>=50硬门禁；统一优化必须复现该基准。市场情绪只允许作为逐腿候选因子，D不得使用当日收盘值回看盘中信号。"
   },
   "replacement_gate": {
     "require_main_standalone_compound_improvement": true,
@@ -69,16 +69,16 @@
     }
   },
   "candidate_space": {
-    "version": "ACDE_STYLE_GATED_LOCAL_V7",
+    "version": "ACDE_OPENING_PROFIT_V12_EXECUTED_RISK",
     "only_predeclared_single_axis_changes": false,
-    "selection_candidates_declared_before_final_v7_replay": true,
+    "selection_candidates_declared_before_final_replay": true,
     "candidate_space_discovered_using_same_main_window": true,
-    "note": "V7候选空间在同一三年主窗内迭代发现后，于最终回放前冻结；因此属于样本内STRICT_DISCOVERY，不是事前独立验证。",
+    "note": "V12根据三年真实执行腿的亏损暴露扩展候选，并于最终回放前冻结；新增条件只读信号时已知字段，A/E命中后空仓且不回补第二名；2026-07以后只能作为冻结前向检验，不能参与参数选择。",
     "deduplicate_by_plan_signature": true,
-    "A": "当前规则；低热度/连板/封单相邻桶单轴变化；fallback开关；4种固定排序",
-    "C": "固定T+3；只有显式限定全市场/所属分段warming/main_rise/climax或分段最高板强势高度的候选可进入排名，未限定强势环境的相邻桶和排序变化仅作数学诊断",
-    "E": "只有显式限定ice_point/retreat/warming修复状态的单门禁或状态并集候选可进入排名；未限定修复状态的排序与时间门禁变化仅作数学诊断",
-    "D": "冻结首板真实炸板回封、分钟路径和成交口径；只有使用信号时盘中市场广度或累计炸板事件率显式限定强势环境的候选可进入排名，其余相邻因子变化仅作数学诊断"
+    "A": "当前规则；原相邻桶与排序候选；新增下午首次封板尾部门禁，第一名命中后空仓且不回补",
+    "C": "固定T+3；新增第2~3名龙头仅在跌停压力<30或分段非冰点时启用的双因子候选",
+    "E": "固定R1并集、排序与退出；新增龙头排名11~30、弱市场、异常放量及拥挤封单尾部门禁",
+    "D": "冻结真实炸板回封、分钟路径和成交口径；新增触板拥挤度<40及炸板率25%~75%的信号时质量候选"
   },
   "execution": {
     "position_pct": 0.825,

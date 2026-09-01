@@ -27,6 +27,8 @@ def config() -> dict:
             "enabled": True,
             "real_order_enabled": True,
             "real_order_confirm_text": "CONFIRM",
+            "allow_buy": True,
+            "allow_sell": True,
         },
         "portfolio_certification": {"initial_equity": 500000},
         "logging": {"log_dir": "logs", "log_file": "test.log", "level": "INFO"},
@@ -54,6 +56,30 @@ class LiveOrderGatewayTests(unittest.TestCase):
             gateway = self.gateway(Path(temporary))
             with self.assertRaisesRegex(RuntimeError, "明确声明"):
                 gateway.assert_real_order_allowed("CONFIRM", side="")
+
+    def test_buy_switch_is_enforced_at_lowest_order_gateway(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            payload = config()
+            payload["live_trade"]["allow_buy"] = False
+            path = root / "config.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            gateway = LiveOrderGateway(path)
+            with self.assertRaisesRegex(RuntimeError, "allow_buy=false"):
+                gateway.assert_real_order_allowed("CONFIRM", side="BUY")
+            gateway.assert_real_order_allowed("CONFIRM", side="SELL")
+
+    def test_sell_switch_does_not_reopen_buy(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            payload = config()
+            payload["live_trade"]["allow_sell"] = False
+            path = root / "config.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            gateway = LiveOrderGateway(path)
+            gateway.assert_real_order_allowed("CONFIRM", side="BUY")
+            with self.assertRaisesRegex(RuntimeError, "allow_sell=false"):
+                gateway.assert_real_order_allowed("CONFIRM", side="SELL")
 
 
 if __name__ == "__main__":

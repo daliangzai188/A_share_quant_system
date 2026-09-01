@@ -15,7 +15,7 @@ from typing import Any
 import pandas as pd
 
 
-E_VERSION = "E_R1_NO_LOOKAHEAD_SINGLE_ACCOUNT_ENTRY_GATE_V6_TURNOVER_AMOUNT_RATIO_SCORE"
+E_VERSION = "E_R1_V12_LEADER11_30_OR_LU120_180_GATE"
 DEFAULT_SCENARIO_PATH = Path("config/strategy_e_r1_scenarios.json")
 
 # 这些字段都属于买入日以后才能知道的结果，禁止出现在E选股条件或排序规则中。

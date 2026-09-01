@@ -876,7 +876,6 @@ def selected_plan_change_ledger(
         "buy_date",
         "ts_code",
         "name",
-        "matched_condition_profile_ids",
         "status",
         "exit_rule",
         "exit_date",
@@ -990,11 +989,16 @@ def run_three_year_optimization(
     sentiment = pd.read_csv(paths["market_sentiment"], dtype={"trade_date": str}, low_memory=False)
     action_dates = open_dates(calendar, windows.main.start, windows.main.end)
     controller = config["market_controller"]
+    minimum_limit_up_count = (
+        int(controller["minimum_limit_up_count"])
+        if bool(controller.get("hard_gate_enabled", False))
+        else 0
+    )
     allowed_actions, allowed_signals, gate_frame = previous_close_market_gate(
         calendar=calendar,
         sentiment=sentiment,
         action_dates=action_dates,
-        minimum_limit_up_count=int(controller["minimum_limit_up_count"]),
+        minimum_limit_up_count=minimum_limit_up_count,
     )
     all_signal_dates = set(gate_frame["state_date"].astype(str))
     feature_pool = pd.read_csv(paths["strict_feature_pool"], low_memory=False)
@@ -1336,10 +1340,13 @@ def run_three_year_optimization(
         "最近半年只在唯一胜者选出后执行失效否决，不参与排名，也不改选第二名。",
         "D一分钟OHLCV没有历史买一队列深度；始终封板的未知队列按未成交处理。",
         (
-            "当前统一市场控制只实现前一交易日涨停数不少于50的硬门禁；"
+            "当前实盘基准没有四腿共用的涨停数硬门禁；"
             "完整冰点/修复/混沌/主升/高潮/退潮风格路由尚未形成可发布规则。"
         ),
-        "V7候选空间在查看同一三年主窗后迭代扩充并于最终回放前冻结，属于样本内发现，不是事前独立验证。",
+        (
+            f"{config['candidate_space']['version']}候选空间在查看同一三年主窗后"
+            "迭代扩充并于最终回放前冻结，属于样本内发现，不是事前独立验证。"
+        ),
         "本轮属于STRICT_DISCOVERY；正式配置、发布冻结和实盘BUY出口均未修改。",
     ]
     if style_rejected_math_winners:

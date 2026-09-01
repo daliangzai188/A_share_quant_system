@@ -58,6 +58,9 @@ class LiveOrderGateway:
             raise RuntimeError("live_trade.enabled=false，拒绝真实下单。")
         if not bool(self.live_config.get("real_order_enabled", False)):
             raise RuntimeError("live_trade.real_order_enabled=false，拒绝真实下单。")
+        side_switch = "allow_buy" if normalized_side == "BUY" else "allow_sell"
+        if not bool(self.live_config.get(side_switch, False)):
+            raise RuntimeError(f"live_trade.{side_switch}=false，拒绝真实{normalized_side}下单。")
         if confirm != expected:
             raise RuntimeError(f"确认文本不匹配，拒绝真实下单。需要: {expected}")
 

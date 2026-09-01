@@ -371,8 +371,8 @@
     "allow_live_order": false
   },
   "paper_ab_filtered_strategy": {
-    "file_role": "A严格主策略 + C强势龙头两分支OR补位策略配置。B策略已从当前交易链路彻底移除，历史B结果只保留在旧报告中审计。",
-    "strategy_label": "a_strict_plus_c_leader_union_hold3",
+    "file_role": "A严格主策略 + C强势龙头五分支OR补位策略配置。B策略已从当前交易链路彻底移除，历史B结果只保留在旧报告中审计。",
+    "strategy_label": "a_strict_plus_c_leader_rank23_ldlt30_hold3_v12",
     "data_quality_requirements": {
       "required_limit_data_quality": "full",
       "required_columns": [
@@ -405,11 +405,11 @@
       "enabled": true,
       "only_when_a_no_candidate": true,
       "only_when_a_and_b_no_candidate": false,
-      "description": "C强势龙头补位策略。B停止新增开仓后，只在A严格策略无候选且没有持仓占用时进入组合裁决；候选同时独立生成用于审计。",
-      "release_id": "C_LEADER_UNION_20260630_V1",
-      "effective_from": "20260825",
+      "description": "C强势龙头补位策略。保留原两分支，并仅在全市场跌停少于30只时扩展市场龙头第2~3名；只在A无静态计划且没有持仓占用时进入组合裁决。",
+      "release_id": "C_LEADER_RANK23_LD_LT30_20260630_V12",
+      "effective_from": "20260902",
       "research_window": {
-        "start_date": "20240630",
+        "start_date": "20230701",
         "end_date": "20260630"
       },
       "condition_mode": "ANY_PROFILE",
@@ -463,6 +463,87 @@
               "value": "0_1pct_0_3pct"
             }
           ]
+        },
+        {
+          "profile_id": "C_STRONG_LEADER_RANK2_3_FD01_03_LD_LT5",
+          "priority": 3,
+          "description": "市场涨停50～80只、龙头排名2～3、封单比0.1%～0.3%，且全市场跌停少于5只。",
+          "conditions": [
+            {
+              "column": "limit_up_count_bucket",
+              "operator": "==",
+              "value": "50_80"
+            },
+            {
+              "column": "market_leader_rank_bucket",
+              "operator": "==",
+              "value": "rank_2_3"
+            },
+            {
+              "column": "fd_ratio_bucket",
+              "operator": "==",
+              "value": "0_1pct_0_3pct"
+            },
+            {
+              "column": "market_limit_down_count_bucket",
+              "operator": "==",
+              "value": "lt_5"
+            }
+          ]
+        },
+        {
+          "profile_id": "C_STRONG_LEADER_RANK2_3_FD01_03_LD_5_15",
+          "priority": 4,
+          "description": "市场涨停50～80只、龙头排名2～3、封单比0.1%～0.3%，且全市场跌停5～15只。",
+          "conditions": [
+            {
+              "column": "limit_up_count_bucket",
+              "operator": "==",
+              "value": "50_80"
+            },
+            {
+              "column": "market_leader_rank_bucket",
+              "operator": "==",
+              "value": "rank_2_3"
+            },
+            {
+              "column": "fd_ratio_bucket",
+              "operator": "==",
+              "value": "0_1pct_0_3pct"
+            },
+            {
+              "column": "market_limit_down_count_bucket",
+              "operator": "==",
+              "value": "5_15"
+            }
+          ]
+        },
+        {
+          "profile_id": "C_STRONG_LEADER_RANK2_3_FD01_03_LD_15_30",
+          "priority": 5,
+          "description": "市场涨停50～80只、龙头排名2～3、封单比0.1%～0.3%，且全市场跌停15～30只。",
+          "conditions": [
+            {
+              "column": "limit_up_count_bucket",
+              "operator": "==",
+              "value": "50_80"
+            },
+            {
+              "column": "market_leader_rank_bucket",
+              "operator": "==",
+              "value": "rank_2_3"
+            },
+            {
+              "column": "fd_ratio_bucket",
+              "operator": "==",
+              "value": "0_1pct_0_3pct"
+            },
+            {
+              "column": "market_limit_down_count_bucket",
+              "operator": "==",
+              "value": "15_30"
+            }
+          ]
         }
       ],
       "ranking": {
@@ -476,7 +557,7 @@
           false
         ],
         "score_rules_source": "顶层ranking.score_rules",
-        "description": "两条C分支合并后统一按profit_source_score、turnover_rate降序；排序保持研究口径，禁止继承A的limit_times排序键。"
+        "description": "五条C分支合并后统一按profit_source_score、turnover_rate降序；排序保持研究口径，禁止继承A的limit_times排序键。"
       },
       "risk_reject_rules_source": "c_strategy_local_rules_after_b_removal",
       "risk_reject_rules": [
@@ -557,34 +638,38 @@
         "description": "C补位策略使用T+3收盘卖出。最近2年精修结果显示该规则相对C的T+2口径提升组合收益且未扩大组合最大回撤。"
       },
       "latest_2y_audit": {
-        "audit_date": "2026-08-24",
-        "metric_scope": "STRICT_ASOF_C_STANDALONE_SINGLE_ACCOUNT",
-        "window": "20240630-20260630",
-        "c_trade_count": 55,
-        "c_equity_multiple": 23.617616094205008,
-        "c_win_rate": 0.7636363636363637,
-        "c_avg_account_return": 0.06227047920938943,
-        "c_median_account_return": 0.05859513470730027,
-        "c_max_drawdown": -0.06571254302140761,
-        "c_max_profit": 0.29736612594436845,
-        "c_max_loss": -0.0582604445984784,
-        "c_profit_loss_ratio": 2.4965512807278243,
-        "c_max_consecutive_losses": 2,
-        "candidate_day_count": 72,
-        "buyable_candidate_day_count": 70,
-        "branch_executed_trade_counts": {
-          "C_CORE_REFINEMENT_1100_1330_MULTI_OPEN": 34,
-          "C_STRONG_LEADER_RANK4_10_FD01_03": 21
+        "audit_date": "2026-09-01",
+        "metric_scope": "STRICT_ASOF_C_STANDALONE_SINGLE_ACCOUNT_THREE_YEAR_V12",
+        "window": "20230701-20260630",
+        "c_trade_count": 58,
+        "c_equity_multiple": 16.592266587212748,
+        "c_win_rate": 0.7413793103448276,
+        "c_avg_account_return": 0.052735148723569214,
+        "c_median_account_return": 0.05225086254686408,
+        "c_max_drawdown": -0.15479014188878015,
+        "c_max_profit": 0.2173828879635992,
+        "c_max_loss": -0.1466810861919058,
+        "c_profit_loss_ratio": 1.8551882990663768,
+        "c_max_consecutive_losses": 3,
+        "candidate_plan_count": 73,
+        "buyable_candidate_plan_count": 72,
+        "branch_plan_counts_before_standalone_occupancy": {
+          "C_CORE_REFINEMENT_1100_1330_MULTI_OPEN": 40,
+          "C_STRONG_LEADER_RANK4_10_FD01_03": 29,
+          "C_STRONG_LEADER_RANK2_3_FD01_03_LD_LT5": 1,
+          "C_STRONG_LEADER_RANK2_3_FD01_03_LD_5_15": 2,
+          "C_STRONG_LEADER_RANK2_3_FD01_03_LD_15_30": 1
         },
         "c_sort_rule": "c_leader_union_profit_source_turnover_20260630",
         "c_exit_rule": "fixed_hold3_close",
-        "source_report": "reports/strategy_c_leader_research/20260630/summary.json",
-        "formal_release_decision": "DUAL_COMPOUND_GATE_PASSED",
-        "incumbent_c_equity_multiple": 3.1108307989904436,
-        "incumbent_acde_equity_multiple": 486.3661434308374,
-        "released_acde_equity_multiple": 921.3365015462819,
-        "released_acde_max_drawdown": -0.15399452246695433,
-        "release_note": "C独立复利和只替换C后的D>A>E>C总复利同时提高，按半年更新框架正式替换；更早6个月和发布后前向数据只作风险披露，不参与24个月决策。",
+        "source_report": "reports/acde_rolling_optimization/20260630_opening_profit_v12/optimization_summary.json",
+        "formal_release_decision": "V12_C_E_D_BUNDLE_GATE_PASSED_USER_APPROVED",
+        "incumbent_c_equity_multiple": 13.028258859210185,
+        "released_c_equity_multiple": 16.592266587212748,
+        "incumbent_acde_equity_multiple": 1735.0812,
+        "released_acde_equity_multiple": 6046.316593512633,
+        "released_acde_max_drawdown": -0.24337404018667597,
+        "release_note": "用户于2026-09-01明确选择三年6046.3166倍研究组合并要求落地；A和A>C>E>D顺序冻结，只替换C/E/D。该窗口属于STRICT_DISCOVERY，历史结果不保证未来收益。",
         "legacy_source_window": "20240520-20260514",
         "legacy_source_report": "reports/paper_trade/backup_strategy_c/current_config_c_exit_refine_exit5_20240520_20260514_481d_summary.csv",
         "research_protocol": "STRICT_DISCOVERY",

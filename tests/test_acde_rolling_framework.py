@@ -13,6 +13,7 @@ from src.acde_rolling_framework import (
     replay_action_date_portfolio,
 )
 from src.acde_rolling_candidates import (
+    apply_a_research_post_pick_gate,
     apply_e_research_style_filter,
     c_variants,
     d_variants,
@@ -163,6 +164,12 @@ def test_c_candidates_without_explicit_strong_regime_are_diagnostic_only() -> No
     assert by_id["C_STRONG_REGIME_ONLY"].style_gate_passed is True
     assert by_id["C_SEGMENT_STRONG_REGIME_ONLY"].style_gate_passed is True
     assert by_id["C_SEGMENT_HEIGHT_GE4"].style_gate_passed is True
+    assert by_id["C_SEGMENT_NON_ICE_POINT"].style_gate_passed is True
+    assert by_id["C_MARKET_LIMIT_DOWN_LT30"].style_gate_passed is True
+    assert by_id["C_SEGMENT_LIMIT_DOWN_LT15"].style_gate_passed is True
+    assert by_id["C_RISK_EXCLUDE_SINGLE_OPEN"].style_gate_passed is True
+    assert by_id["C_LEADER_RANK_2_3_LIMIT_DOWN_LT30"].style_gate_passed is True
+    assert by_id["C_LEADER_RANK_2_3_SEGMENT_NON_ICE"].style_gate_passed is True
     assert all(
         not item.style_gate_passed
         for item in variants
@@ -170,6 +177,12 @@ def test_c_candidates_without_explicit_strong_regime_are_diagnostic_only() -> No
             "C_STRONG_REGIME_ONLY",
             "C_SEGMENT_STRONG_REGIME_ONLY",
             "C_SEGMENT_HEIGHT_GE4",
+            "C_SEGMENT_NON_ICE_POINT",
+            "C_MARKET_LIMIT_DOWN_LT30",
+            "C_SEGMENT_LIMIT_DOWN_LT15",
+            "C_RISK_EXCLUDE_SINGLE_OPEN",
+            "C_LEADER_RANK_2_3_LIMIT_DOWN_LT30",
+            "C_LEADER_RANK_2_3_SEGMENT_NON_ICE",
         }
     )
     assert "warming/main_rise/climax" in by_id[
@@ -184,6 +197,20 @@ def test_e_and_d_candidates_require_explicit_style_environment() -> None:
     assert e_by_id["E_ANY_REPAIR_STATE"].style_gate_passed is True
     assert e_by_id["E_MARKET_REPAIR_STATES"].style_gate_passed is True
     assert e_by_id["E_SEGMENT_ICE_POINT_ONLY"].style_gate_passed is True
+    assert e_by_id["E_RISK_EXCLUDE_AMOUNT_RATIO_LT08"].style_gate_passed is True
+    assert e_by_id["E_RISK_EXCLUDE_LIMIT_UP_GE120"].style_gate_passed is True
+    assert e_by_id["E_RISK_EXCLUDE_LEADER_RANK_11_30"].style_gate_passed is True
+    assert e_by_id["E_RISK_LEADER_11_30_OR_LIMIT_UP_LT30"].changed_axis_count == 2
+    assert e_by_id[
+        "E_RISK_LEADER_11_30_OR_LIMIT_UP_OUTSIDE_30_120"
+    ].style_gate_passed is True
+    assert e_by_id[
+        "E_RISK_LEADER_11_30_OR_LIMIT_UP_LT30_OR_120_180"
+    ].changed_axis_count == 2
+    assert e_by_id[
+        "E_RISK_LEADER_11_30_OR_LIMIT_UP_120_180"
+    ].style_gate_passed is True
+    assert e_by_id["E_RISK_AMOUNT_LT08_OR_LIMIT_UP_GE120"].changed_axis_count == 2
     assert e_by_id["E_RANK_TURNOVER"].style_gate_passed is False
 
     d_release = json.loads(
@@ -201,6 +228,8 @@ def test_e_and_d_candidates_require_explicit_style_environment() -> None:
     } == {"LT25PCT", "25_50PCT", "50_75PCT"}
     assert d_by_id["D_STRONG_ACTIVE_GE20"].style_gate_passed is True
     assert d_by_id["D_STRONG_TOUCH_GE40"].style_gate_passed is True
+    assert d_by_id["D_QUALITY_TOUCH_LT40"].style_gate_passed is True
+    assert d_by_id["D_QUALITY_BREAK_25_75_TOUCH_LT40"].changed_axis_count == 2
     assert d_by_id["D_TIME_ADJACENT"].style_gate_passed is False
 
 
@@ -224,6 +253,33 @@ def test_e_any_repair_style_filter_is_or_not_and() -> None:
     }
     result = apply_e_research_style_filter(pool, spec)
     assert result["id"].tolist() == [1, 2, 3]
+
+
+def test_a_post_pick_risk_gate_skips_without_second_candidate_fallback() -> None:
+    picks = pd.DataFrame(
+        [
+            {"trade_date": "20260102", "id": 1, "turnover_rate_bucket": "3_6"},
+            {"trade_date": "20260105", "id": 2, "turnover_rate_bucket": "6_10"},
+        ]
+    )
+    config = {
+        "rolling_research_post_pick_exclude": {
+            "column": "turnover_rate_bucket",
+            "values": ["3_6"],
+            "fallback_to_second_candidate": False,
+        }
+    }
+    result = apply_a_research_post_pick_gate(picks, config)
+    assert result["id"].tolist() == [2]
+
+    broken = json.loads(json.dumps(config))
+    broken["rolling_research_post_pick_exclude"]["fallback_to_second_candidate"] = True
+    try:
+        apply_a_research_post_pick_gate(picks, broken)
+    except ValueError as exc:
+        assert "禁止回补" in str(exc)
+    else:
+        raise AssertionError("A研究尾部门禁必须拒绝回补第二名")
 
 
 def test_unfilled_a_plan_still_blocks_c_e_and_d() -> None:

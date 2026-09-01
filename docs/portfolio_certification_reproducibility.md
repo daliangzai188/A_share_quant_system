@@ -1,79 +1,66 @@
 # 当前组合严格as-of机械复利复现规则
 
-当前锚点为`20240630~20260630`。新窗口优化前底座为133笔、
-300.31246148623836倍；经过A、C、A封单比例扩展、A空缺日1%-2%封单非一字板补位及E双因子更新后，当前严格
-研究标尺为真实开仓日A>C>E>D的143笔、2280.9020459698163倍。旧305.348870倍、
-五年343.5434倍、信号日D>A>E>C的1375.6238529689376倍和同信号日重排
-1463.912878倍都不得进入当前比较。
+当前正式配置为`ACDE_CED_V12_6046_20260630`，生效日`20260902`，固定腿序
+`A>C>E>D`。A保持不变，只替换C/E/D：
 
-正式收益证书只能由 `scripts/certify_strict_asof_portfolio.py` 生成。旧脚本
-`scripts/certify_current_executable_portfolio.py` 只写
-`legacy_identity_alignment.json`，用于核对实盘选股身份，不能覆盖正式证书、
-不能提供正式复利、不能用于发布比较。
+- C：保留原两分支，并在全市场跌停少于30只时允许市场龙头第2～3名；
+- E：保留R1双因子排名，第一名落在龙头排名11～30或全市场涨停120～180时空仓，不回补第二名；
+- D：只允许成长板09:30～10:00浅炸回封，信号时全市场炸板率25%～75%、累计首板触板少于40只。
 
-当前组合认证分为两类文件：
+三年认证窗口为`20230701~20260630`。按真实`action_date`、单账户资金占用、
+82.5%仓位、日期化费用、双边0.1%滑点、T+1、涨跌停及D成交压力重放，正式锁定结果为：
 
-- Git内的代码、配置、`input_manifest.json`和认证结果；
-- Git外的历史行情及研究明细。大体量市场数据不提交到Git，但每个认证输入都必须在清单中记录相对路径、文件大小和SHA-256。
+| 指标 | 结果 |
+|---|---:|
+| 成交数 | 176 |
+| 胜率 | 72.73% |
+| 平均单笔账户收益 | 5.4840% |
+| 中位数单笔账户收益 | 3.7326% |
+| 机械复利倍数 | 6046.316594 |
+| 最大回撤 | -24.3374% |
+| 最大单笔盈利 | 47.6253% |
+| 最大单笔亏损 | -18.5129% |
+| 盈亏比 | 2.1794 |
+| 最大连续亏损 | 4 |
+| 分腿成交 | A78 / C46 / E36 / D16 |
 
-## 日常复核
+最近两年确认段为135笔、3165.327401倍、最大回撤-14.1198%；2026H1为40笔、
+7.425547倍、最大回撤-11.5284%。这两个区间与三年发现窗口重叠，不是独立样本外。
+2026-07～08冻结前向只有10笔，且新旧组合没有产生差异，不能证明V12已经通过前向验证。
 
-把历史数据恢复到清单记录的相对路径后运行：
+## 正式复现
 
-```bash
-python3 scripts/certify_strict_asof_portfolio.py
-```
-
-默认行为只核对锁定清单。任一输入缺失或内容变化都会失败，并把实盘认证状态先改为非PASS，禁止新的买入计划。
-
-## 重现本轮排序搜索
-
-```bash
-python3 scripts/optimize_strict_acde_from_official_baseline.py --legacy-baseline
-```
-
-该命令是历史归档复现，不是当前A>C>E>D半年优化入口。优化器显式重建A原`profit_source_score+turnover_rate`排序和E原
-`circ_mv:asc`排序，因此不会因为当前A/E已应用新规则而丢失本轮底座。
-预期日志必须显示：
-
-- 底座133笔、300.31246148623836倍；
-- D/C为`KEEP_CURRENT`；
-- A/E为`DUAL_GATE_PASSED`；
-- A独立单账户由58笔、10.103128倍提高到58笔、12.023750倍；
-- E独立单账户由76笔、4.664899倍提高到76笔、10.834162倍；
-- A/E同时应用后132笔、327.72671897548867倍。
-
-上述命令复现的是早期A/E排序搜索，不包含后续C、A封单扩展和E双因子研究。
-当前E双因子发现过程由以下命令复现：
+先重新生成V12三年正式基准：
 
 ```bash
-python3 scripts/research_strategy_e_current_window.py
+python3 scripts/optimize_acde_rolling_three_year.py \
+  --as-of 20260630 \
+  --output-dir reports/acde_rolling_optimization/20260630_v12_formal_baseline_verification
 ```
 
-它生成202条规则定义并去重为160个唯一候选结果；正式落地规则为换手率高值与
-一日成交额倍率低值的50%/50%同日分位综合分。当前严格证书必须另外复现E独立
-74笔、11.7037898965倍；当前正式证书还必须复现A独立82笔、94.3984428272倍，
-以及ACDE 143笔、2280.9020459698倍、分腿A53/C45/E35/D10。
-
-候选池连乘和独立单账户复利在摘要中分栏保存。独立腿门槛只读取执行自身占仓约束后的
-`official_baseline_legs`及`best_by_leg.*.leg_metrics`，不得用候选池数字替代。
-
-## 确认更新数据版本
-
-只有确认数据修复或研究口径调整后才运行：
+然后生成并核验正式证书：
 
 ```bash
-python3 scripts/certify_strict_asof_portfolio.py --refresh-input-manifest
+python3 scripts/certify_acde_v12_release.py
 ```
 
-随后必须单独审查并提交：
+证书必须输出`status=PASS`、`scenario=acde_ced_v12_6046_formal`、176笔和
+6046.316594倍；配置、代码、输入和基准重放任一哈希变化都必须失败关闭，不能静默刷新。
 
-1. `reports/current_portfolio_alignment/strict_asof_input_manifest.json`差异；
-2. `strict_asof_portfolio_trades.csv`和`strict_asof_audit.json`收益变化；
-3. `live_certification.json`中的代码、配置和输入摘要；
-4. 完整测试及历史选择路径核对结果。
+正式产物包括：
 
-机械复利固定为按信号日升序，对单账户实际成交逐笔执行
-`equity *= 1 + account_return`；候选、跳过交易、固定本金收益和各腿独立复利
-不得混入。不得为了让认证通过而无说明刷新清单，也不得把历史倍数当作
-实盘收益预期。
+- `reports/current_portfolio_alignment/live_certification.json`；
+- `reports/current_portfolio_alignment/strict_asof_audit.json`；
+- `reports/current_portfolio_alignment/strict_asof_portfolio_report.md`；
+- `reports/acde_rolling_optimization/20260630_v12_formal_baseline_verification/`。
+
+旧`certify_strict_asof_portfolio.py`和`certify_current_executable_portfolio.py`只用于历史
+两年口径或身份归档，不得覆盖V12正式证书。
+
+## 风险边界
+
+V12候选空间是在同一三年窗口查看亏损暴露后扩展，协议仍是`STRICT_DISCOVERY`，
+`release_eligible=false`。本次启用依据是用户明确风险接受，不等于`LOCKED_OOS`或
+`WALK_FORWARD`通过，也不构成未来收益承诺。机械复利必须按成交顺序执行
+`equity *= 1 + account_return`；候选池连乘、固定本金收益、跳过交易或各腿独立复利
+不得混入组合复利。实盘应先小资金运行，并单独监控成交偏差、连续亏损和滚动回撤。

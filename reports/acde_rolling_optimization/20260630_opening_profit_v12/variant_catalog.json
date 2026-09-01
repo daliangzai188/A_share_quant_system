@@ -1,0 +1,641 @@
+[
+  {
+    "strategy_leg": "A",
+    "variant_id": "A_CURRENT",
+    "description": "当前正式A",
+    "changed_axis_count": 0,
+    "style_gate_passed": true,
+    "style_gate_reason": "冻结正式A基线，仅用于比较",
+    "payload_sha256": "2e17ef8807f2f32824a60ce81fc5f1bc04eac3d62824eeef14a1f9a62cc6775d"
+  },
+  {
+    "strategy_leg": "C",
+    "variant_id": "C_CURRENT",
+    "description": "当前正式C",
+    "changed_axis_count": 0,
+    "style_gate_passed": false,
+    "style_gate_reason": "冻结正式C基线仅用于比较；现有分支未被证明全部属于强势/主升状态",
+    "payload_sha256": "2e17ef8807f2f32824a60ce81fc5f1bc04eac3d62824eeef14a1f9a62cc6775d"
+  },
+  {
+    "strategy_leg": "E",
+    "variant_id": "E_CURRENT",
+    "description": "当前正式E",
+    "changed_axis_count": 0,
+    "style_gate_passed": false,
+    "style_gate_reason": "冻结正式E基线仅用于比较；现有40条R1并集未被证明每笔都属于冰点/退潮修复",
+    "payload_sha256": "d10466f39ce588c8c50ace203d98b8a3768b835598b50818c202a0f5a87f173e"
+  },
+  {
+    "strategy_leg": "D",
+    "variant_id": "D_CURRENT",
+    "description": "当前正式D因子发布",
+    "changed_axis_count": 0,
+    "style_gate_passed": false,
+    "style_gate_reason": "冻结正式D基线仅用于比较；现有因子未显式限定盘中强势市场广度",
+    "payload_sha256": "08cd1fee4b0347ea2fdf542be62d3ddc80a3255103a9611bfaa580a161017712"
+  },
+  {
+    "strategy_leg": "A",
+    "variant_id": "A_SEGMENT_ADJACENT",
+    "description": "低分段热度从lt_5相邻放宽到lt_5或5_10",
+    "changed_axis_count": 1,
+    "style_gate_passed": true,
+    "style_gate_reason": "只调整A内部热度、连板、封单、fallback或排序，保持低热度首板强度风格",
+    "payload_sha256": "908f6a548af646668bf7950d20677f6b53a7eec60508111d94ce5f9919434579"
+  },
+  {
+    "strategy_leg": "A",
+    "variant_id": "A_CHAIN_LOWER_ADJACENT",
+    "description": "连板环境向下相邻放宽到3_8或8_15",
+    "changed_axis_count": 1,
+    "style_gate_passed": true,
+    "style_gate_reason": "只调整A内部热度、连板、封单、fallback或排序，保持低热度首板强度风格",
+    "payload_sha256": "af0da610de3189890c6c1edb678148efbec1c525773b123adc35ea0234bd7643"
+  },
+  {
+    "strategy_leg": "A",
+    "variant_id": "A_CHAIN_UPPER_ADJACENT",
+    "description": "连板环境向上相邻放宽到8_15或15_30",
+    "changed_axis_count": 1,
+    "style_gate_passed": true,
+    "style_gate_reason": "只调整A内部热度、连板、封单、fallback或排序，保持低热度首板强度风格",
+    "payload_sha256": "78a890175d8c6de17e8311592d7585566ddc55c91750eda634dc987f374cf74c"
+  },
+  {
+    "strategy_leg": "A",
+    "variant_id": "A_FD_NARROW",
+    "description": "主分支封单比例收窄为0.5%~1%",
+    "changed_axis_count": 1,
+    "style_gate_passed": true,
+    "style_gate_reason": "只调整A内部热度、连板、封单、fallback或排序，保持低热度首板强度风格",
+    "payload_sha256": "17a7b2942bb4efa2dffa31d323b0ebaef10ba285784f7cd01b79c3232ca5905b"
+  },
+  {
+    "strategy_leg": "A",
+    "variant_id": "A_FD_LOWER_ADJACENT",
+    "description": "主分支封单比例相邻放宽为0.1%~1%",
+    "changed_axis_count": 1,
+    "style_gate_passed": true,
+    "style_gate_reason": "只调整A内部热度、连板、封单、fallback或排序，保持低热度首板强度风格",
+    "payload_sha256": "893e35b44a8086c7e5796b1aa2dbef17988044b8d843d5ae82ccd96acaf6caa6"
+  },
+  {
+    "strategy_leg": "A",
+    "variant_id": "A_NO_FALLBACK",
+    "description": "关闭主池空缺日的1%~2%非一字补位",
+    "changed_axis_count": 1,
+    "style_gate_passed": true,
+    "style_gate_reason": "只调整A内部热度、连板、封单、fallback或排序，保持低热度首板强度风格",
+    "payload_sha256": "b13169c62648871beeadbc8a87664916484209a420bfe15156f02054664fb385"
+  },
+  {
+    "strategy_leg": "A",
+    "variant_id": "A_RANK_SCORE_TURNOVER",
+    "description": "保持条件，仅改为利润源得分后按换手率降序",
+    "changed_axis_count": 1,
+    "style_gate_passed": true,
+    "style_gate_reason": "只调整A内部热度、连板、封单、fallback或排序，保持低热度首板强度风格",
+    "payload_sha256": "3a7eaa4a8d3ffed8e9b280abffe30f5ac2490ea9078cbfa7db41e9eefedc7b96"
+  },
+  {
+    "strategy_leg": "A",
+    "variant_id": "A_RANK_SCORE_FD",
+    "description": "保持条件，仅改为利润源得分后按封单比例降序",
+    "changed_axis_count": 1,
+    "style_gate_passed": true,
+    "style_gate_reason": "只调整A内部热度、连板、封单、fallback或排序，保持低热度首板强度风格",
+    "payload_sha256": "f1db056999c5dced845c5606361a7f497be1016c06167d58395962e2697d93cf"
+  },
+  {
+    "strategy_leg": "A",
+    "variant_id": "A_RANK_SCORE_FIRST_TIME",
+    "description": "保持条件，仅改为利润源得分后按首次封板时间早优先",
+    "changed_axis_count": 1,
+    "style_gate_passed": true,
+    "style_gate_reason": "只调整A内部热度、连板、封单、fallback或排序，保持低热度首板强度风格",
+    "payload_sha256": "e4e193f2e2e99ec1a40fd95360031cee9dfec70774c06972877ba078a836b6a8"
+  },
+  {
+    "strategy_leg": "A",
+    "variant_id": "A_RANK_SCORE_AMOUNT",
+    "description": "保持条件，仅改为利润源得分后按成交额降序",
+    "changed_axis_count": 1,
+    "style_gate_passed": true,
+    "style_gate_reason": "只调整A内部热度、连板、封单、fallback或排序，保持低热度首板强度风格",
+    "payload_sha256": "a71abfce50aec9bf449053f822d3504c59229a024a2674cb6d59530f8cf194d1"
+  },
+  {
+    "strategy_leg": "A",
+    "variant_id": "A_RISK_EXCLUDE_MARKET_DOWN_30_60",
+    "description": "排除全市场跌停数30~60的高压力信号日",
+    "changed_axis_count": 1,
+    "style_gate_passed": true,
+    "style_gate_reason": "冻结A每日第一名后再做信号日尾部风险门禁；命中时空仓且不回补第二名",
+    "payload_sha256": "c99efa950bf17a96a21ae0ca6cf3b6bdbbd134ee405dcf4eaa8efb0b4ba664c6"
+  },
+  {
+    "strategy_leg": "A",
+    "variant_id": "A_RISK_EXCLUDE_MARKET_DOWN_GE30",
+    "description": "排除全市场跌停数达到30只以上的极端压力信号日",
+    "changed_axis_count": 1,
+    "style_gate_passed": true,
+    "style_gate_reason": "冻结A每日第一名后再做信号日尾部风险门禁；命中时空仓且不回补第二名",
+    "payload_sha256": "36ba3928d1bf02b85a6c53eebd5c27163f010943e7c30fd275a199bcf84f904d"
+  },
+  {
+    "strategy_leg": "A",
+    "variant_id": "A_RISK_EXCLUDE_LIMIT_UP_GE120",
+    "description": "排除全市场涨停数达到120只以上的过热信号日",
+    "changed_axis_count": 1,
+    "style_gate_passed": true,
+    "style_gate_reason": "冻结A每日第一名后再做信号日尾部风险门禁；命中时空仓且不回补第二名",
+    "payload_sha256": "defbb905a8d2a748b6fa59fd4a4c00887d8ff7572e266f6661562228446e6e4e"
+  },
+  {
+    "strategy_leg": "A",
+    "variant_id": "A_RISK_EXCLUDE_TURNOVER_3_6",
+    "description": "排除换手率3%~6%的低换手弱承接候选",
+    "changed_axis_count": 1,
+    "style_gate_passed": true,
+    "style_gate_reason": "冻结A每日第一名后再做信号日尾部风险门禁；命中时空仓且不回补第二名",
+    "payload_sha256": "eb3f8f016e61dc55b8a1ae57e81f67e89332df23d4b693c3c434dc033ec1134c"
+  },
+  {
+    "strategy_leg": "A",
+    "variant_id": "A_RISK_EXCLUDE_AFTERNOON_FIRST_SEAL",
+    "description": "每日第一名首次封板属于下午时段时空仓，不回补第二名",
+    "changed_axis_count": 1,
+    "style_gate_passed": true,
+    "style_gate_reason": "冻结A每日第一名后再做信号日尾部风险门禁；命中时空仓且不回补第二名",
+    "payload_sha256": "1098f0591483806bcba1f692cf9b3d5b78d5d39624f8e133fe6e0bca73922b55"
+  },
+  {
+    "strategy_leg": "C",
+    "variant_id": "C_STRONG_REGIME_ONLY",
+    "description": "固定原双分支，只允许全市场warming/main_rise/climax强势状态",
+    "changed_axis_count": 1,
+    "style_gate_passed": true,
+    "style_gate_reason": "显式限定全市场warming/main_rise/climax，保持C强势/主升龙头身份",
+    "payload_sha256": "cde8367c3ce11b97295e271bf83066621c9cda3e0cdb53dcda439b3607109d8f"
+  },
+  {
+    "strategy_leg": "C",
+    "variant_id": "C_SEGMENT_STRONG_REGIME_ONLY",
+    "description": "固定原双分支，只允许所属分段warming/main_rise/climax强势状态",
+    "changed_axis_count": 1,
+    "style_gate_passed": true,
+    "style_gate_reason": "显式限定所属分段warming/main_rise/climax，保持C强势/主升龙头身份",
+    "payload_sha256": "08e1522abe00408150b57859362b7cb05e3b3118cc3a380d38c6951ae512862b"
+  },
+  {
+    "strategy_leg": "C",
+    "variant_id": "C_SEGMENT_HEIGHT_GE4",
+    "description": "固定原双分支，只允许所属分段最高板达到4板以上",
+    "changed_axis_count": 1,
+    "style_gate_passed": true,
+    "style_gate_reason": "用信号日所属分段最高板至少4板确认强势高度，保持C龙头进攻身份",
+    "payload_sha256": "fcd9841c888245229456cd6fbea0b0194b633d1c069606e0b8e13e54cfee7f44"
+  },
+  {
+    "strategy_leg": "C",
+    "variant_id": "C_CORE_CHAIN_ADJACENT",
+    "description": "承接分支连板环境相邻加入8_15",
+    "changed_axis_count": 1,
+    "style_gate_passed": false,
+    "style_gate_reason": "未显式限定warming/main_rise/climax；只能诊断现有C规则，不满足固定的强势/主升龙头风格门禁",
+    "payload_sha256": "a2c664a25a8c9d7101b45c1b860d0db579c2b994a45d0568e355369ac1fbd3ab"
+  },
+  {
+    "strategy_leg": "C",
+    "variant_id": "C_CORE_SEGMENT_ADJACENT",
+    "description": "承接分支分段热度相邻加入gte_80",
+    "changed_axis_count": 1,
+    "style_gate_passed": false,
+    "style_gate_reason": "未显式限定warming/main_rise/climax；只能诊断现有C规则，不满足固定的强势/主升龙头风格门禁",
+    "payload_sha256": "bf4395b204d70bad2baed51e31aa0a52a6e26d39191f69cd27f9e04a9da600bc"
+  },
+  {
+    "strategy_leg": "C",
+    "variant_id": "C_LEADER_MARKET_ADJACENT",
+    "description": "龙头分支全市场热度相邻加入80_120",
+    "changed_axis_count": 1,
+    "style_gate_passed": false,
+    "style_gate_reason": "未显式限定warming/main_rise/climax；只能诊断现有C规则，不满足固定的强势/主升龙头风格门禁",
+    "payload_sha256": "27ee88fba8b746affd8f358cbf4aaa890ea3bceb86835d9e28396701d3cd2895"
+  },
+  {
+    "strategy_leg": "C",
+    "variant_id": "C_LEADER_RANK_ADJACENT",
+    "description": "龙头分支排名相邻加入2_3",
+    "changed_axis_count": 1,
+    "style_gate_passed": false,
+    "style_gate_reason": "未显式限定warming/main_rise/climax；只能诊断现有C规则，不满足固定的强势/主升龙头风格门禁",
+    "payload_sha256": "f6d152423fa26b811aa3c8f7fe17efa7e63566a1d2f9ccf13a7f60fa30f0afb8"
+  },
+  {
+    "strategy_leg": "C",
+    "variant_id": "C_LEADER_FD_ADJACENT",
+    "description": "龙头分支封单比例相邻加入0.3%~0.5%",
+    "changed_axis_count": 1,
+    "style_gate_passed": false,
+    "style_gate_reason": "未显式限定warming/main_rise/climax；只能诊断现有C规则，不满足固定的强势/主升龙头风格门禁",
+    "payload_sha256": "31c768aabae93355f4ec542434b5905122f5dd384318615259465cf1b6cd59af"
+  },
+  {
+    "strategy_leg": "C",
+    "variant_id": "C_RANK_LEADER_SCORE_TURNOVER",
+    "description": "龙头排名优先，再按利润源得分和换手率",
+    "changed_axis_count": 1,
+    "style_gate_passed": false,
+    "style_gate_reason": "排序仍覆盖未显式限定warming/main_rise/climax的分支；只能作为数学诊断候选",
+    "payload_sha256": "aa59341b630a3155683fae96dccf8bd93f0f3623cccdfc7ce1bf88d28aa5e946"
+  },
+  {
+    "strategy_leg": "C",
+    "variant_id": "C_RANK_HEIGHT_LEADER_SCORE",
+    "description": "板高排名、龙头排名优先，再按利润源得分",
+    "changed_axis_count": 1,
+    "style_gate_passed": false,
+    "style_gate_reason": "排序仍覆盖未显式限定warming/main_rise/climax的分支；只能作为数学诊断候选",
+    "payload_sha256": "d3cb8ee8cf5ab423394a2782571ce97703b214f3f53d32d4aa40c6d26aca59ed"
+  },
+  {
+    "strategy_leg": "C",
+    "variant_id": "C_RANK_FILL_LEADER_TURNOVER",
+    "description": "成交概率优先，再按龙头排名和换手率",
+    "changed_axis_count": 1,
+    "style_gate_passed": false,
+    "style_gate_reason": "排序仍覆盖未显式限定warming/main_rise/climax的分支；只能作为数学诊断候选",
+    "payload_sha256": "142028ffeb47007d616f7fd8d8740e96e2289bce3243993019dabc5e45b749e1"
+  },
+  {
+    "strategy_leg": "C",
+    "variant_id": "C_SEGMENT_NON_ICE_POINT",
+    "description": "保留C双分支，但排除所属分段ice_point",
+    "changed_axis_count": 1,
+    "style_gate_passed": true,
+    "style_gate_reason": "显式排除所属分段冰点，保留C强势承接与龙头身份",
+    "payload_sha256": "ad6c5a611626b874e168c4492e42bd10bbf8edfcab24447b9a0ef7465ebd28b0"
+  },
+  {
+    "strategy_leg": "C",
+    "variant_id": "C_MARKET_LIMIT_DOWN_LT30",
+    "description": "保留C双分支，只允许全市场跌停数少于30只",
+    "changed_axis_count": 1,
+    "style_gate_passed": true,
+    "style_gate_reason": "用信号日全市场跌停压力排除极弱环境，保留C进攻身份",
+    "payload_sha256": "b9388a403331a3226681036c4c875b0c899d00f38f0f344ea345136f58b4a630"
+  },
+  {
+    "strategy_leg": "C",
+    "variant_id": "C_SEGMENT_LIMIT_DOWN_LT15",
+    "description": "保留C双分支，只允许所属分段跌停数少于15只",
+    "changed_axis_count": 1,
+    "style_gate_passed": true,
+    "style_gate_reason": "用信号日所属分段跌停压力排除极弱环境，保留C进攻身份",
+    "payload_sha256": "d3e3d39738197b086c6f0fbcb985e8254dcb8d65d49a30d42861c5e2acf77df2"
+  },
+  {
+    "strategy_leg": "C",
+    "variant_id": "C_RISK_EXCLUDE_SINGLE_OPEN",
+    "description": "排除炸板次数恰为1次的弱回封候选",
+    "changed_axis_count": 1,
+    "style_gate_passed": true,
+    "style_gate_reason": "冻结C双分支、排序和T+3退出，只增加信号日已知的尾部风险排除",
+    "payload_sha256": "ebed2e2391c0a46343d114f40d4dab70c74cc6ce46d6e8323cda68afafc3f2a2"
+  },
+  {
+    "strategy_leg": "C",
+    "variant_id": "C_LEADER_RANK_2_3_LIMIT_DOWN_LT30",
+    "description": "仅在全市场跌停少于30只时，将C龙头分支扩展至市场第2~3名",
+    "changed_axis_count": 2,
+    "style_gate_passed": true,
+    "style_gate_reason": "只在信号日跌停压力非极端或分段非冰点时扩展龙头第2~3名，保持C进攻身份",
+    "payload_sha256": "3f05b0648937324dde4ae515cc5816e6ed9f031565d10afef3df7aed03468d47"
+  },
+  {
+    "strategy_leg": "C",
+    "variant_id": "C_LEADER_RANK_2_3_SEGMENT_NON_ICE",
+    "description": "仅在所属分段非冰点时，将C龙头分支扩展至市场第2~3名",
+    "changed_axis_count": 2,
+    "style_gate_passed": true,
+    "style_gate_reason": "只在信号日跌停压力非极端或分段非冰点时扩展龙头第2~3名，保持C进攻身份",
+    "payload_sha256": "745d21aa3ce336f4f52e8f12326546799c04fe75b5f23f3e5869fd80019494bf"
+  },
+  {
+    "strategy_leg": "E",
+    "variant_id": "E_ANY_REPAIR_STATE",
+    "description": "所属分段ice_point，或全市场处于ice_point/retreat/warming",
+    "changed_axis_count": 1,
+    "style_gate_passed": true,
+    "style_gate_reason": "以信号日已知状态的并集限定冰点或修复阶段，保持E的修复风格",
+    "payload_sha256": "a60add1bd08bb22dd71372dcffdb39cd4220b60fe8ede186557845abeea6b2ee"
+  },
+  {
+    "strategy_leg": "E",
+    "variant_id": "E_MARKET_REPAIR_STATES",
+    "description": "只允许全市场ice_point/retreat/warming修复状态",
+    "changed_axis_count": 1,
+    "style_gate_passed": true,
+    "style_gate_reason": "显式限定冰点、退潮或回暖修复状态，保持E的修复风格",
+    "payload_sha256": "682ac39d642050915748c19cf3e95bd1245d4511df693623deaa94cc1f4e4ac1"
+  },
+  {
+    "strategy_leg": "E",
+    "variant_id": "E_SEGMENT_ICE_POINT_ONLY",
+    "description": "只允许所属分段处于ice_point",
+    "changed_axis_count": 1,
+    "style_gate_passed": true,
+    "style_gate_reason": "显式限定冰点、退潮或回暖修复状态，保持E的修复风格",
+    "payload_sha256": "49ee9ebd9d92f8eda3ecdea5a1379dacfa82bb7d1ea4304a9ba5a80a2d216a2d"
+  },
+  {
+    "strategy_leg": "E",
+    "variant_id": "E_RANK_TURNOVER",
+    "description": "最终排序只用换手率高优先",
+    "changed_axis_count": 1,
+    "style_gate_passed": false,
+    "style_gate_reason": "排序仍覆盖未显式限定冰点/退潮修复的R1分支，只能作为数学诊断候选",
+    "payload_sha256": "ee511af664ee477bcd87985db9a20196864beae2b99933e3b3661a947c09f8af"
+  },
+  {
+    "strategy_leg": "E",
+    "variant_id": "E_RANK_AMOUNT_RATIO",
+    "description": "最终排序只用成交额倍率低优先",
+    "changed_axis_count": 1,
+    "style_gate_passed": false,
+    "style_gate_reason": "排序仍覆盖未显式限定冰点/退潮修复的R1分支，只能作为数学诊断候选",
+    "payload_sha256": "c5f4db1786b4887f6dc21c67adc2a344a70f38a7d011aabca6b76d076081537b"
+  },
+  {
+    "strategy_leg": "E",
+    "variant_id": "E_RANK_TURNOVER_2_AMOUNT_1",
+    "description": "换手率与成交额倍率按2:1加权",
+    "changed_axis_count": 1,
+    "style_gate_passed": false,
+    "style_gate_reason": "排序仍覆盖未显式限定冰点/退潮修复的R1分支，只能作为数学诊断候选",
+    "payload_sha256": "d5fbd956c3b5c7f41f50bd825e98e939e6c124821bdfcb76eb20c0a6b53b6137"
+  },
+  {
+    "strategy_leg": "E",
+    "variant_id": "E_RANK_TURNOVER_1_AMOUNT_2",
+    "description": "换手率与成交额倍率按1:2加权",
+    "changed_axis_count": 1,
+    "style_gate_passed": false,
+    "style_gate_reason": "排序仍覆盖未显式限定冰点/退潮修复的R1分支，只能作为数学诊断候选",
+    "payload_sha256": "6447d21b434456f5010d4ba5c1e313613f2c23278236234d84f931e88ed74a5e"
+  },
+  {
+    "strategy_leg": "E",
+    "variant_id": "E_RANK_TURNOVER_FILL",
+    "description": "换手率与成交概率等权",
+    "changed_axis_count": 1,
+    "style_gate_passed": false,
+    "style_gate_reason": "排序仍覆盖未显式限定冰点/退潮修复的R1分支，只能作为数学诊断候选",
+    "payload_sha256": "d2b111141440bbc7ed8fd10a0d46749562b593b9535a0ae8ed44afc5323c5aad"
+  },
+  {
+    "strategy_leg": "E",
+    "variant_id": "E_RANK_TURNOVER_FD_LOW",
+    "description": "换手率高与封单比例低等权",
+    "changed_axis_count": 1,
+    "style_gate_passed": false,
+    "style_gate_reason": "排序仍覆盖未显式限定冰点/退潮修复的R1分支，只能作为数学诊断候选",
+    "payload_sha256": "be7cf6d43a95e1b54fc0c17b9cc0acd417678a84c09d88c1d6827d9114c1c8e0"
+  },
+  {
+    "strategy_leg": "E",
+    "variant_id": "E_GATE_AFTER_1430",
+    "description": "保持当前排序，第一名若13:30后首次封板则空仓且不回补",
+    "changed_axis_count": 1,
+    "style_gate_passed": false,
+    "style_gate_reason": "时间门禁仍覆盖未显式限定冰点/退潮修复的R1分支，只能作为数学诊断候选",
+    "payload_sha256": "8fb43055e5c4ec8319f556d618a6e7660ce0e45449a78b817c241a1d5ca77d7a"
+  },
+  {
+    "strategy_leg": "E",
+    "variant_id": "E_RISK_EXCLUDE_AMOUNT_RATIO_LT08",
+    "description": "每日第一名成交额倍率低于0.8时空仓，不回补第二名",
+    "changed_axis_count": 1,
+    "style_gate_passed": true,
+    "style_gate_reason": "冻结E的R1并集、排序与退出；第一名命中信号日尾部风险后直接空仓且不回补",
+    "payload_sha256": "2bc35b91985af659eee284cfd3c8f2b6c2bbea3121d0fe78cbbba774427c4ee3"
+  },
+  {
+    "strategy_leg": "E",
+    "variant_id": "E_RISK_EXCLUDE_LIMIT_UP_GE120",
+    "description": "每日第一名处于全市场120只以上涨停过热区时空仓",
+    "changed_axis_count": 1,
+    "style_gate_passed": true,
+    "style_gate_reason": "冻结E的R1并集、排序与退出；第一名命中信号日尾部风险后直接空仓且不回补",
+    "payload_sha256": "0d8f4f977ec0bcb08b47c1829d507f377de005516cc6e71fdcdfe6f567c40071"
+  },
+  {
+    "strategy_leg": "E",
+    "variant_id": "E_RISK_EXCLUDE_SEGMENT_DOWN_TAILS",
+    "description": "每日第一名所属分段跌停压力处于1~3只或15只以上时空仓",
+    "changed_axis_count": 1,
+    "style_gate_passed": true,
+    "style_gate_reason": "冻结E的R1并集、排序与退出；第一名命中信号日尾部风险后直接空仓且不回补",
+    "payload_sha256": "79bb49366e1b57a1c0936bf15af9cb8a190b58ac331f47993d8eb6453f010e8e"
+  },
+  {
+    "strategy_leg": "E",
+    "variant_id": "E_RISK_AMOUNT_LT08_OR_LIMIT_UP_GE120",
+    "description": "每日第一名命中成交额倍率过低或全市场过热任一风险时空仓",
+    "changed_axis_count": 2,
+    "style_gate_passed": true,
+    "style_gate_reason": "冻结E的R1并集、排序与退出；第一名命中信号日尾部风险后直接空仓且不回补",
+    "payload_sha256": "21a4b2ca16b0b9710dd263d36a3f862fc1c1a681bccea19f7fca38c324b55d25"
+  },
+  {
+    "strategy_leg": "E",
+    "variant_id": "E_RISK_EXCLUDE_LEADER_RANK_11_30",
+    "description": "每日第一名市场龙头排名在11~30名时空仓，不回补第二名",
+    "changed_axis_count": 1,
+    "style_gate_passed": true,
+    "style_gate_reason": "冻结E的R1并集、排序与退出；第一名命中信号日尾部风险后直接空仓且不回补",
+    "payload_sha256": "e30d797745522fc26a7c0371a09158fa46d65bebb41297d50120378c334141ed"
+  },
+  {
+    "strategy_leg": "E",
+    "variant_id": "E_RISK_EXCLUDE_LIMIT_UP_LT30",
+    "description": "每日第一名处于全市场涨停少于30只的弱环境时空仓",
+    "changed_axis_count": 1,
+    "style_gate_passed": true,
+    "style_gate_reason": "冻结E的R1并集、排序与退出；第一名命中信号日尾部风险后直接空仓且不回补",
+    "payload_sha256": "e7b1c99acc95ab01c483dbf08a5eadc18159f696a851087f92b5b8a5f72b9ea0"
+  },
+  {
+    "strategy_leg": "E",
+    "variant_id": "E_RISK_EXCLUDE_AMOUNT_RATIO_3_5",
+    "description": "每日第一名成交额倍率处于3~5倍异常放量区时空仓",
+    "changed_axis_count": 1,
+    "style_gate_passed": true,
+    "style_gate_reason": "冻结E的R1并集、排序与退出；第一名命中信号日尾部风险后直接空仓且不回补",
+    "payload_sha256": "cb9f516e34f51dcb970d0bfa1683770400628c2d525c65394ff2bb30d93770a8"
+  },
+  {
+    "strategy_leg": "E",
+    "variant_id": "E_RISK_EXCLUDE_FD_RATIO_2_5PCT",
+    "description": "每日第一名封单比例处于2%~5%拥挤区时空仓",
+    "changed_axis_count": 1,
+    "style_gate_passed": true,
+    "style_gate_reason": "冻结E的R1并集、排序与退出；第一名命中信号日尾部风险后直接空仓且不回补",
+    "payload_sha256": "297f2b571ab9d16431cb351539b6481b36bf1ce9d9968d1ca7773a013be5a33a"
+  },
+  {
+    "strategy_leg": "E",
+    "variant_id": "E_RISK_LEADER_11_30_OR_LIMIT_UP_LT30",
+    "description": "每日第一名排名11~30名或全市场涨停少于30只时空仓",
+    "changed_axis_count": 2,
+    "style_gate_passed": true,
+    "style_gate_reason": "冻结E的R1并集、排序与退出；第一名命中信号日尾部风险后直接空仓且不回补",
+    "payload_sha256": "e327e4abbc6b9e5162422a9d7faa4380b9c856fc2d8d9677e421f0da4ae435ad"
+  },
+  {
+    "strategy_leg": "E",
+    "variant_id": "E_RISK_LEADER_11_30_OR_LIMIT_UP_OUTSIDE_30_120",
+    "description": "每日第一名排名11~30名，或全市场涨停数不在30~120只时空仓",
+    "changed_axis_count": 2,
+    "style_gate_passed": true,
+    "style_gate_reason": "冻结E的R1并集、排序与退出；第一名命中信号日尾部风险后直接空仓且不回补",
+    "payload_sha256": "e45444ba2d307f6fd5fc2237fb81a238893c5a88361625fafd90053099236531"
+  },
+  {
+    "strategy_leg": "E",
+    "variant_id": "E_RISK_LEADER_11_30_OR_LIMIT_UP_LT30_OR_120_180",
+    "description": "每日第一名排名11~30名，或全市场涨停少于30只/处于120~180只时空仓",
+    "changed_axis_count": 2,
+    "style_gate_passed": true,
+    "style_gate_reason": "冻结E的R1并集、排序与退出；第一名命中信号日尾部风险后直接空仓且不回补",
+    "payload_sha256": "5afceee495d9db0e998d62b79b5c9ff9a50fb2e636ff989a7810ee8673aed5c6"
+  },
+  {
+    "strategy_leg": "E",
+    "variant_id": "E_RISK_LEADER_11_30_OR_LIMIT_UP_120_180",
+    "description": "每日第一名排名11~30名，或全市场涨停处于120~180只时空仓",
+    "changed_axis_count": 2,
+    "style_gate_passed": true,
+    "style_gate_reason": "冻结E的R1并集、排序与退出；第一名命中信号日尾部风险后直接空仓且不回补",
+    "payload_sha256": "428aba8d275b06a9e4678624a02ad0598bed84549a6cc034ccb72d8cd9be830a"
+  },
+  {
+    "strategy_leg": "D",
+    "variant_id": "D_STRONG_BREAK_LT75",
+    "description": "信号时全市场累计炸板事件率低于75%",
+    "changed_axis_count": 1,
+    "style_gate_passed": true,
+    "style_gate_reason": "使用信号时已经可见的盘中市场质量或广度过滤弱势环境，保持D首板炸板回封风格",
+    "payload_sha256": "118038daaac05ac9f0aeb6cd63bd8d1dd5517e0c760f9f265353e5785cfb78c5"
+  },
+  {
+    "strategy_leg": "D",
+    "variant_id": "D_STRONG_BREAK_LT50",
+    "description": "信号时全市场累计炸板事件率低于50%",
+    "changed_axis_count": 1,
+    "style_gate_passed": true,
+    "style_gate_reason": "使用信号时已经可见的盘中市场质量或广度过滤弱势环境，保持D首板炸板回封风格",
+    "payload_sha256": "1d8ed6abaee7e1cebf4f9edce0375283272b889c6c0155e5373073b13b3421e8"
+  },
+  {
+    "strategy_leg": "D",
+    "variant_id": "D_STRONG_BREAK_LT75_ACTIVE_GE20",
+    "description": "累计炸板事件率低于75%，且信号时仍封首板不少于20只",
+    "changed_axis_count": 2,
+    "style_gate_passed": true,
+    "style_gate_reason": "同时使用信号时盘中炸板质量与市场广度确认强势环境，保持D首板炸板回封风格",
+    "payload_sha256": "b481eb71790341b631887827c665ad75d39899c5a34faddc7d48dbd740fda8c3"
+  },
+  {
+    "strategy_leg": "D",
+    "variant_id": "D_STRONG_BREAK_LT75_TOUCH_GE40",
+    "description": "累计炸板事件率低于75%，且信号时累计首板触板不少于40只",
+    "changed_axis_count": 2,
+    "style_gate_passed": true,
+    "style_gate_reason": "同时使用信号时盘中炸板质量与市场广度确认强势环境，保持D首板炸板回封风格",
+    "payload_sha256": "32bd388e48c9a9606670ef8bd1bef28bedea9eb8db8838119d90d45b85aaace3"
+  },
+  {
+    "strategy_leg": "D",
+    "variant_id": "D_STRONG_ACTIVE_GE20",
+    "description": "信号时全市场仍封住的首板不少于20只",
+    "changed_axis_count": 1,
+    "style_gate_passed": true,
+    "style_gate_reason": "使用信号时已经可见的盘中市场质量或广度过滤弱势环境，保持D首板炸板回封风格",
+    "payload_sha256": "345a905be72d9cfd983e6272dacb42e59851a709318e51b49eceec6e151ed654"
+  },
+  {
+    "strategy_leg": "D",
+    "variant_id": "D_STRONG_TOUCH_GE40",
+    "description": "信号时全市场累计首板触板不少于40只",
+    "changed_axis_count": 1,
+    "style_gate_passed": true,
+    "style_gate_reason": "使用信号时已经可见的盘中市场质量或广度过滤弱势环境，保持D首板炸板回封风格",
+    "payload_sha256": "372ac81675d171ea873c1d7c0aff41f2eef864d6fb885fe588d4f51ede883628"
+  },
+  {
+    "strategy_leg": "D",
+    "variant_id": "D_QUALITY_TOUCH_LT40",
+    "description": "信号时累计首板触板少于40只，避开40~70只历史亏损拥挤区",
+    "changed_axis_count": 1,
+    "style_gate_passed": true,
+    "style_gate_reason": "使用信号时已经可见的盘中市场质量或广度过滤弱势环境，保持D首板炸板回封风格",
+    "payload_sha256": "d8b2b96a2eb7556b816e68b5526748837cef6b7c0be7caafa893b2f9d1115af0"
+  },
+  {
+    "strategy_leg": "D",
+    "variant_id": "D_QUALITY_BREAK_25_75",
+    "description": "信号时累计炸板事件率保持25%~75%，排除过低价格发现和极端炸板",
+    "changed_axis_count": 1,
+    "style_gate_passed": true,
+    "style_gate_reason": "使用信号时已经可见的盘中市场质量或广度过滤弱势环境，保持D首板炸板回封风格",
+    "payload_sha256": "934ab364474da20c505ae5acccf01a58acba32210ac2fee85fdc48e4a79349f3"
+  },
+  {
+    "strategy_leg": "D",
+    "variant_id": "D_QUALITY_BREAK_25_75_TOUCH_LT40",
+    "description": "累计炸板率25%~75%且累计首板触板少于40只",
+    "changed_axis_count": 2,
+    "style_gate_passed": true,
+    "style_gate_reason": "同时使用信号时盘中炸板质量与市场广度确认强势环境，保持D首板炸板回封风格",
+    "payload_sha256": "ee67ec70a15cecc7f2465affbd1b1dbb2929b75429b486ba00c0efbcdbfe8aca"
+  },
+  {
+    "strategy_leg": "D",
+    "variant_id": "D_TIME_ADJACENT",
+    "description": "当前早盘回封时段相邻加入10:01~10:30",
+    "changed_axis_count": 1,
+    "style_gate_passed": false,
+    "style_gate_reason": "保持盘中回封形态但未显式限定强势市场，只能作为数学诊断候选",
+    "payload_sha256": "a5bff46453ff460e35caae7194cea1f66219d0f8bb4d73c8f15ff7092cd67fa0"
+  },
+  {
+    "strategy_leg": "D",
+    "variant_id": "D_DEPTH_ADJACENT",
+    "description": "当前浅炸深度相邻加入0.2%~0.5%",
+    "changed_axis_count": 1,
+    "style_gate_passed": false,
+    "style_gate_reason": "保持盘中回封形态但未显式限定强势市场，只能作为数学诊断候选",
+    "payload_sha256": "7c35908ccfe2b84527759449c782892ed91758e5127c29dc8c9df4a651851885"
+  },
+  {
+    "strategy_leg": "D",
+    "variant_id": "D_SEGMENT_ADJACENT",
+    "description": "当前成长板范围相邻加入沪深主板",
+    "changed_axis_count": 1,
+    "style_gate_passed": false,
+    "style_gate_reason": "保持盘中回封形态但未显式限定强势市场，只能作为数学诊断候选",
+    "payload_sha256": "d7f8ede43173a5c4e2f5400f0e94d8ae300950fea5cd842e0d3faa46101d1fe4"
+  },
+  {
+    "strategy_leg": "D",
+    "variant_id": "D_TIME_SHIFT_1001_1030",
+    "description": "仅将回封时段平移到10:01~10:30",
+    "changed_axis_count": 1,
+    "style_gate_passed": false,
+    "style_gate_reason": "保持盘中回封形态但未显式限定强势市场，只能作为数学诊断候选",
+    "payload_sha256": "9782de95fe878eb138b606d3dccad36c084aa614f6307469c30c206591f7ec74"
+  }
+]

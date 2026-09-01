@@ -217,6 +217,26 @@ def a_variants(base_config: dict[str, Any]) -> tuple[VariantDefinition, list[Var
             "只调整A内部热度、连板、封单、fallback或排序，保持低热度首板强度风格",
         )
 
+    def risk_exclusion_variant(
+        variant_id: str,
+        description: str,
+        *,
+        column: str,
+        values: tuple[str, ...],
+    ) -> VariantDefinition:
+        """对A每日第一名增加无回补的信号日尾部风险门禁。"""
+
+        config = copy.deepcopy(base_config)
+        config["rolling_research_post_pick_exclude"] = {
+            "column": column,
+            "values": list(values),
+            "fallback_to_second_candidate": False,
+        }
+        return VariantDefinition(
+            "A", variant_id, description, config, 1, True,
+            "冻结A每日第一名后再做信号日尾部风险门禁；命中时空仓且不回补第二名",
+        )
+
     candidates = [
         configured(
             "A_SEGMENT_ADJACENT",
@@ -264,8 +284,59 @@ def a_variants(base_config: dict[str, Any]) -> tuple[VariantDefinition, list[Var
             "保持条件，仅改为利润源得分后按成交额降序",
             ranking=(["profit_source_score", "amount"], [False, False]),
         ),
+        risk_exclusion_variant(
+            "A_RISK_EXCLUDE_MARKET_DOWN_30_60",
+            "排除全市场跌停数30~60的高压力信号日",
+            column="market_limit_down_count_bucket",
+            values=("30_60",),
+        ),
+        risk_exclusion_variant(
+            "A_RISK_EXCLUDE_MARKET_DOWN_GE30",
+            "排除全市场跌停数达到30只以上的极端压力信号日",
+            column="market_limit_down_count_bucket",
+            values=("30_60", "gte_60"),
+        ),
+        risk_exclusion_variant(
+            "A_RISK_EXCLUDE_LIMIT_UP_GE120",
+            "排除全市场涨停数达到120只以上的过热信号日",
+            column="limit_up_count_bucket",
+            values=("120_180", "gte_180"),
+        ),
+        risk_exclusion_variant(
+            "A_RISK_EXCLUDE_TURNOVER_3_6",
+            "排除换手率3%~6%的低换手弱承接候选",
+            column="turnover_rate_bucket",
+            values=("3_6",),
+        ),
+        risk_exclusion_variant(
+            "A_RISK_EXCLUDE_AFTERNOON_FIRST_SEAL",
+            "每日第一名首次封板属于下午时段时空仓，不回补第二名",
+            column="first_time_bucket",
+            values=("afternoon",),
+        ),
     ]
     return baseline, candidates
+
+
+def apply_a_research_post_pick_gate(
+    picks: pd.DataFrame,
+    config: Mapping[str, Any],
+) -> pd.DataFrame:
+    """对已经冻结的A每日第一名执行研究风险门禁，不允许回补第二名。"""
+
+    result = picks.copy().reset_index(drop=True)
+    gate = config.get("rolling_research_post_pick_exclude", {})
+    if result.empty or not gate:
+        return result
+    if bool(gate.get("fallback_to_second_candidate", True)):
+        raise ValueError("A研究尾部门禁禁止回补当日第二名")
+    column = str(gate.get("column", ""))
+    values = {str(value) for value in gate.get("values", [])}
+    if not column or not values or column not in result.columns:
+        raise ValueError("A研究尾部门禁字段或排除值非法")
+    return result.loc[
+        ~result[column].fillna("").astype(str).isin(values)
+    ].copy().reset_index(drop=True)
 
 
 def build_a_picks(pool: pd.DataFrame, config: dict[str, Any]) -> pd.DataFrame:
@@ -276,7 +347,8 @@ def build_a_picks(pool: pd.DataFrame, config: dict[str, Any]) -> pd.DataFrame:
         ranked = generator.rank_candidates(group.copy()).reset_index(drop=True)
         if not ranked.empty:
             picks.append(ranked.iloc[0])
-    return pd.DataFrame(picks).reset_index(drop=True) if picks else pd.DataFrame()
+    result = pd.DataFrame(picks).reset_index(drop=True) if picks else pd.DataFrame()
+    return apply_a_research_post_pick_gate(result, config)
 
 
 def _append_profile_value(
@@ -399,6 +471,82 @@ def c_variants(base_config: dict[str, Any]) -> tuple[VariantDefinition, list[Var
             reason,
         )
 
+    def risk_exclusion_variant(
+        variant_id: str,
+        description: str,
+        *,
+        column: str,
+        values: tuple[str, ...],
+    ) -> VariantDefinition:
+        """保留C双分支与排序，仅增加一个信号日尾部风险排除轴。"""
+
+        config = copy.deepcopy(base_config)
+        exclusions = config["candidate_filters"].setdefault(
+            "exclude_conditions", []
+        )
+        exclusions.extend(
+            {"column": column, "operator": "==", "value": value}
+            for value in values
+        )
+        return VariantDefinition(
+            "C",
+            variant_id,
+            description,
+            config,
+            1,
+            True,
+            "冻结C双分支、排序和T+3退出，只增加信号日已知的尾部风险排除",
+        )
+
+    def guarded_profile_variant(
+        variant_id: str,
+        description: str,
+        *,
+        source_index: int,
+        changed_column: str,
+        changed_value: str,
+        guard_column: str,
+        guard_values: tuple[str, ...],
+    ) -> VariantDefinition:
+        """仅在信号日风险环境合格时扩展C的相邻龙头桶。"""
+
+        config = copy.deepcopy(base_config)
+        profiles = config["paper_ab_filtered_strategy"]["c_strategy"][
+            "condition_profiles"
+        ]
+        source = copy.deepcopy(profiles[source_index])
+        next_priority = max(int(item.get("priority", 0)) for item in profiles) + 1
+        for guard_value in guard_values:
+            profile = copy.deepcopy(source)
+            profile["profile_id"] = (
+                f"{source['profile_id']}_{variant_id}_{guard_value.upper()}"
+            )
+            profile["priority"] = next_priority
+            next_priority += 1
+            for condition in profile["conditions"]:
+                if str(condition["column"]) == changed_column:
+                    condition["value"] = changed_value
+                    break
+            else:
+                raise KeyError(f"C分支缺少待调整字段：{changed_column}")
+            profile["conditions"].append(
+                {
+                    "column": guard_column,
+                    "operator": "==",
+                    "value": guard_value,
+                }
+            )
+            profiles.append(profile)
+        return VariantDefinition(
+            "C",
+            variant_id,
+            description,
+            config,
+            2,
+            True,
+            "只在信号日跌停压力非极端或分段非冰点时扩展龙头第2~3名，保持C进攻身份",
+        )
+
     candidates = [
         explicit_style_values_variant(
             "C_STRONG_REGIME_ONLY",
@@ -473,6 +621,51 @@ def c_variants(base_config: dict[str, Any]) -> tuple[VariantDefinition, list[Var
             "成交概率优先，再按龙头排名和换手率",
             ["fill_probability", "market_leader_rank", "turnover_rate"],
             [False, True, False],
+        ),
+        explicit_style_values_variant(
+            "C_SEGMENT_NON_ICE_POINT",
+            "保留C双分支，但排除所属分段ice_point",
+            column="segment_emotion_state",
+            values=("mixed", "retreat", "warming", "main_rise", "climax"),
+            reason="显式排除所属分段冰点，保留C强势承接与龙头身份",
+        ),
+        explicit_style_values_variant(
+            "C_MARKET_LIMIT_DOWN_LT30",
+            "保留C双分支，只允许全市场跌停数少于30只",
+            column="market_limit_down_count_bucket",
+            values=("lt_5", "5_15", "15_30"),
+            reason="用信号日全市场跌停压力排除极弱环境，保留C进攻身份",
+        ),
+        explicit_style_values_variant(
+            "C_SEGMENT_LIMIT_DOWN_LT15",
+            "保留C双分支，只允许所属分段跌停数少于15只",
+            column="segment_limit_down_count_bucket",
+            values=("lt_1", "1_3", "3_8", "8_15"),
+            reason="用信号日所属分段跌停压力排除极弱环境，保留C进攻身份",
+        ),
+        risk_exclusion_variant(
+            "C_RISK_EXCLUDE_SINGLE_OPEN",
+            "排除炸板次数恰为1次的弱回封候选",
+            column="open_times_bucket",
+            values=("1",),
+        ),
+        guarded_profile_variant(
+            "C_LEADER_RANK_2_3_LIMIT_DOWN_LT30",
+            "仅在全市场跌停少于30只时，将C龙头分支扩展至市场第2~3名",
+            source_index=1,
+            changed_column="market_leader_rank_bucket",
+            changed_value="rank_2_3",
+            guard_column="market_limit_down_count_bucket",
+            guard_values=("lt_5", "5_15", "15_30"),
+        ),
+        guarded_profile_variant(
+            "C_LEADER_RANK_2_3_SEGMENT_NON_ICE",
+            "仅在所属分段非冰点时，将C龙头分支扩展至市场第2~3名",
+            source_index=1,
+            changed_column="market_leader_rank_bucket",
+            changed_value="rank_2_3",
+            guard_column="segment_emotion_state",
+            guard_values=("mixed", "retreat", "warming", "main_rise", "climax"),
         ),
     ]
     return baseline, candidates
@@ -555,6 +748,29 @@ def e_variants(base_spec: dict[str, Any]) -> tuple[VariantDefinition, list[Varia
             "以信号日已知状态的并集限定冰点或修复阶段，保持E的修复风格",
         )
 
+    def risk_gate_variant(
+        variant_id: str,
+        description: str,
+        *,
+        exclusions: Mapping[str, Sequence[str]],
+    ) -> VariantDefinition:
+        """在每日第一名确定后执行无回补风险门禁，避免偷偷换成第二名。"""
+
+        spec = copy.deepcopy(base_spec)
+        gate = spec.setdefault("entry_gate", {})
+        excluded_values = gate.setdefault("exclude_values", {})
+        for column, values in exclusions.items():
+            current_values = excluded_values.setdefault(str(column), [])
+            for value in values:
+                if str(value) not in current_values:
+                    current_values.append(str(value))
+        gate["apply_after_daily_first_pick"] = True
+        gate["fallback_to_second_candidate"] = False
+        return VariantDefinition(
+            "E", variant_id, description, spec, len(exclusions), True,
+            "冻结E的R1并集、排序与退出；第一名命中信号日尾部风险后直接空仓且不回补",
+        )
+
     gate_spec = copy.deepcopy(base_spec)
     excluded = gate_spec["entry_gate"]["exclude_values"].setdefault(
         "first_time_detail_bucket", []
@@ -624,6 +840,83 @@ def e_variants(base_spec: dict[str, Any]) -> tuple[VariantDefinition, list[Varia
             1,
             False,
             "时间门禁仍覆盖未显式限定冰点/退潮修复的R1分支，只能作为数学诊断候选",
+        ),
+        risk_gate_variant(
+            "E_RISK_EXCLUDE_AMOUNT_RATIO_LT08",
+            "每日第一名成交额倍率低于0.8时空仓，不回补第二名",
+            exclusions={"amount_ratio_bucket": ("lt_0_8",)},
+        ),
+        risk_gate_variant(
+            "E_RISK_EXCLUDE_LIMIT_UP_GE120",
+            "每日第一名处于全市场120只以上涨停过热区时空仓",
+            exclusions={"limit_up_count_bucket": ("120_180", "gte_180")},
+        ),
+        risk_gate_variant(
+            "E_RISK_EXCLUDE_SEGMENT_DOWN_TAILS",
+            "每日第一名所属分段跌停压力处于1~3只或15只以上时空仓",
+            exclusions={
+                "segment_limit_down_count_bucket": ("1_3", "gte_15")
+            },
+        ),
+        risk_gate_variant(
+            "E_RISK_AMOUNT_LT08_OR_LIMIT_UP_GE120",
+            "每日第一名命中成交额倍率过低或全市场过热任一风险时空仓",
+            exclusions={
+                "amount_ratio_bucket": ("lt_0_8",),
+                "limit_up_count_bucket": ("120_180", "gte_180"),
+            },
+        ),
+        risk_gate_variant(
+            "E_RISK_EXCLUDE_LEADER_RANK_11_30",
+            "每日第一名市场龙头排名在11~30名时空仓，不回补第二名",
+            exclusions={"market_leader_rank_bucket": ("rank_11_30",)},
+        ),
+        risk_gate_variant(
+            "E_RISK_EXCLUDE_LIMIT_UP_LT30",
+            "每日第一名处于全市场涨停少于30只的弱环境时空仓",
+            exclusions={"limit_up_count_bucket": ("lt_30",)},
+        ),
+        risk_gate_variant(
+            "E_RISK_EXCLUDE_AMOUNT_RATIO_3_5",
+            "每日第一名成交额倍率处于3~5倍异常放量区时空仓",
+            exclusions={"amount_ratio_bucket": ("3_5",)},
+        ),
+        risk_gate_variant(
+            "E_RISK_EXCLUDE_FD_RATIO_2_5PCT",
+            "每日第一名封单比例处于2%~5%拥挤区时空仓",
+            exclusions={"fd_ratio_bucket": ("2pct_5pct",)},
+        ),
+        risk_gate_variant(
+            "E_RISK_LEADER_11_30_OR_LIMIT_UP_LT30",
+            "每日第一名排名11~30名或全市场涨停少于30只时空仓",
+            exclusions={
+                "market_leader_rank_bucket": ("rank_11_30",),
+                "limit_up_count_bucket": ("lt_30",),
+            },
+        ),
+        risk_gate_variant(
+            "E_RISK_LEADER_11_30_OR_LIMIT_UP_OUTSIDE_30_120",
+            "每日第一名排名11~30名，或全市场涨停数不在30~120只时空仓",
+            exclusions={
+                "market_leader_rank_bucket": ("rank_11_30",),
+                "limit_up_count_bucket": ("lt_30", "120_180", "gte_180"),
+            },
+        ),
+        risk_gate_variant(
+            "E_RISK_LEADER_11_30_OR_LIMIT_UP_LT30_OR_120_180",
+            "每日第一名排名11~30名，或全市场涨停少于30只/处于120~180只时空仓",
+            exclusions={
+                "market_leader_rank_bucket": ("rank_11_30",),
+                "limit_up_count_bucket": ("lt_30", "120_180"),
+            },
+        ),
+        risk_gate_variant(
+            "E_RISK_LEADER_11_30_OR_LIMIT_UP_120_180",
+            "每日第一名排名11~30名，或全市场涨停处于120~180只时空仓",
+            exclusions={
+                "market_leader_rank_bucket": ("rank_11_30",),
+                "limit_up_count_bucket": ("120_180",),
+            },
         ),
     ]
     return baseline, candidates
@@ -919,6 +1212,26 @@ def d_variants(release: Mapping[str, Any]) -> tuple[VariantDefinition, list[Vari
             "信号时全市场累计首板触板不少于40只",
             "market_touch_count_bucket",
             ("40_70", "71_100", "101_150", "GE151"),
+        ),
+        strong_market_values(
+            "D_QUALITY_TOUCH_LT40",
+            "信号时累计首板触板少于40只，避开40~70只历史亏损拥挤区",
+            "market_touch_count_bucket",
+            ("LT40",),
+        ),
+        strong_market_values(
+            "D_QUALITY_BREAK_25_75",
+            "信号时累计炸板事件率保持25%~75%，排除过低价格发现和极端炸板",
+            "market_break_rate_bucket",
+            ("25_50PCT", "50_75PCT"),
+        ),
+        combined_strong_market_values(
+            "D_QUALITY_BREAK_25_75_TOUCH_LT40",
+            "累计炸板率25%~75%且累计首板触板少于40只",
+            "market_break_rate_bucket",
+            ("25_50PCT", "50_75PCT"),
+            "market_touch_count_bucket",
+            ("LT40",),
         ),
         widened(
             "D_TIME_ADJACENT",

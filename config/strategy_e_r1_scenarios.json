@@ -1,17 +1,25 @@
 {
   "_comment": "E R1候选宇宙规则。每条规则在信号日候选池中只选第一名，合并去重后保留板块neutral；final_ranking对换手率（高值优先）和一日成交额倍率（低值优先）计算同日候选内分位数并等权评分。选出每日第一名后再执行entry_gate，禁止因门禁淘汰第一名后偷换成当日第二名。实盘和回测必须共同读取本文件。",
   "_warning": "40条原始R1规则来自20240520~20260514历史样本内Top40，该旧窗口只是规则来源，不再是当前比较锚点。当前正式严格锚点为20240630~20260630；双因子排名仍使用该窗口研究，且160个唯一候选结果参与比较，存在多重比较、路径依赖和过拟合风险。双因子只直接改变3个E信号日，组合增量集中于2026年6月的持仓腿序切换。旧62笔12.028倍包含前视成交过滤及资金重复占用，不能作为实盘可实现收益。历史结果不代表未来收益。",
+  "release_id": "E_R1_RISK_LEADER11_30_OR_LU120_180_20260630_V12",
+  "effective_from": "20260902",
+  "research_window": {
+    "start": "20230701",
+    "end": "20260630"
+  },
   "universe_prefilters": {
     "exclude_st_or_delisting": true,
     "exclude_amount_ratio_bucket": ["0_8_1_2"]
   },
   "entry_gate": {
     "exclude_values": {
-      "first_time_detail_bucket": ["1330_1430"]
+      "first_time_detail_bucket": ["1330_1430"],
+      "market_leader_rank_bucket": ["rank_11_30"],
+      "limit_up_count_bucket": ["120_180"]
     },
     "apply_after_daily_first_pick": true,
     "fallback_to_second_candidate": false,
-    "reason": "13:30~14:30首次涨停组7笔在前25笔训练段均值-4.067%、后25笔测试段均值-0.729%，且2024/2025/2026三个自然年组均值均为负；门禁字段在信号日收盘前已确定，不使用次日价格、成交结果或收益。"
+    "reason": "保留原13:30~14:30首次涨停门禁；V12新增排除每日第一名龙头排名11~30和全市场涨停120~180的信号日风险尾部。门禁在每日第一名确定后执行，不回补第二名，字段均在信号日可见。"
   },
   "final_ranking": {
     "method": "daily_percentile_weighted_score",
@@ -128,5 +136,26 @@
     "selected_combo_trade_count_when_only_e_replaced": 134,
     "selected_combo_equity_multiple_when_only_e_replaced": 1375.6238529689376,
     "note": "用户明确决定将双因子挑战方案落地。它在开发、验证、测试三段的E复利均提高且组合不劣，但已经查看完整窗口；只直接改变3个E信号日，组合增量集中于2026年6月，仍属于STRICT_DISCOVERY，不等于冻结样本外或容量认证。"
+  },
+  "three_year_v12_release": {
+    "audit_date": "2026-09-01",
+    "window": "20230701~20260630",
+    "research_protocol": "STRICT_DISCOVERY",
+    "selected_variant": "E_RISK_LEADER_11_30_OR_LIMIT_UP_120_180",
+    "standalone_trade_count": 68,
+    "standalone_win_rate": 0.7352941176470589,
+    "standalone_avg_account_return": 0.05227538848065176,
+    "standalone_median_account_return": 0.04284446267858645,
+    "standalone_equity_multiple": 24.490296758748624,
+    "standalone_max_drawdown": -0.1751403635963671,
+    "standalone_max_profit": 0.5231929254879739,
+    "standalone_max_loss": -0.10235208564764443,
+    "standalone_profit_loss_ratio": 1.9036320294204647,
+    "standalone_max_consecutive_losses": 4,
+    "bundle_equity_multiple": 6046.316593512633,
+    "bundle_max_drawdown": -0.24337404018667597,
+    "source_report": "reports/acde_rolling_optimization/20260630_opening_profit_v12/optimization_summary.json",
+    "user_approved_at": "2026-09-01",
+    "risk_note": "历史复利不代表未来收益；2026-07~08冻结前向10笔没有形成实际组合差异，最大单笔亏损风险必须继续监控。"
   }
 }

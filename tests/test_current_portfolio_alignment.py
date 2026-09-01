@@ -34,18 +34,23 @@ class CurrentPortfolioAlignmentTests(unittest.TestCase):
         self.assertNotIn("release_eligible", self.legacy)
         self.assertNotIn("capacity_certified", self.legacy)
 
-    def test_current_certificate_uses_new_anchor(self) -> None:
+    def test_current_certificate_uses_v12_three_year_anchor(self) -> None:
         current = json.loads(
             (
                 ROOT / "reports/current_portfolio_alignment/live_certification.json"
             ).read_text(encoding="utf-8")
         )
-        self.assertEqual(current["input_start_date"], "20240630")
+        self.assertEqual(current["input_start_date"], "20230701")
         self.assertEqual(current["input_end_date"], "20260630")
         self.assertTrue(current["strict_asof_passed"])
-        self.assertNotIn("status", current)
-        self.assertNotIn("current_executable", current)
-        self.assertNotIn("release_eligible", current)
+        self.assertEqual(current["status"], "PASS")
+        self.assertTrue(current["current_executable"])
+        self.assertFalse(current["release_eligible"])
+        self.assertTrue(current["user_approved_for_current_live"])
+        self.assertEqual(current["scenario"], "acde_ced_v12_6046_formal")
+        self.assertEqual(current["release_id"], "ACDE_CED_V12_6046_20260630")
+        self.assertEqual(current["executed_trade_count"], 176)
+        self.assertAlmostEqual(current["equity_multiple"], 6046.316593512633)
         self.assertNotIn("capacity_certified", current)
 
     def test_legacy_leg_breakdown_stays_archived(self) -> None:

@@ -7,7 +7,7 @@
     "formal_protocols": ["LOCKED_OOS", "WALK_FORWARD"],
     "fill_probability_method": "asof_turnover_space_proxy_v2",
     "mechanical_compound_standard_id": "A_SYSTEM_MECHANICAL_COMPOUND_V1",
-    "official_portfolio_certifier": "scripts/certify_strict_asof_portfolio.py",
+    "official_portfolio_certifier": "scripts/certify_acde_v12_release.py",
     "policy_note": "所有策略收益研究必须使用严格point-in-time数据和单账户逐笔机械复利；STRICT_DISCOVERY只能开发规则，不能认证或发布。正式结论只接受冻结规则LOCKED_OOS或逐折训练在先WALK_FORWARD。B/L/M/N式旧来源或结果回看不得进入正式收益。"
   },
   "trade_mode": "live",
@@ -25,7 +25,7 @@
     "file_role": "策略E唯一身份配置。正式策略腿只写E；E2仅允许作为旧账本只读别名，读取后立即归一为E。",
     "strategy_leg": "E",
     "strategy_variant": "E_CURRENT",
-    "strategy_version": "E_R1_NO_LOOKAHEAD_SINGLE_ACCOUNT_ENTRY_GATE_V6_TURNOVER_AMOUNT_RATIO_SCORE",
+    "strategy_version": "E_R1_V12_LEADER11_30_OR_LU120_180_GATE",
     "ranking_config_path": "config/strategy_e_r1_scenarios.json",
     "legacy_read_aliases": ["E2"],
     "live_order_enabled": true,
@@ -33,7 +33,7 @@
     "pre_gate_sample_path": "reports/strategy_e_samples/e_r1_daily_candidates_full.csv",
     "full_sample_gate_noninferiority_passed": false,
     "full_sample_gate_risk_accepted": true,
-    "full_sample_gate_risk_acceptance_note": "13:30~14:30无回补门禁沿用既有风险接受。2026-08-24用户进一步明确落地E双因子排名：换手率高值与一日成交额倍率低值各占50%同日分位分。双因子只直接改变3个E信号日，组合增量集中于2026年6月；这不等于冻结样本外通过，不得据此扩大资金。"
+    "full_sample_gate_risk_acceptance_note": "保留13:30~14:30无回补门禁和双因子排名。2026-09-01用户明确要求落地V12：每日第一名龙头排名11~30或全市场涨停120~180时空仓且不回补。三年结果属于STRICT_DISCOVERY，不等于冻结样本外通过，不得据此扩大资金。"
   },
   "portfolio_certification": {
     "file_role": "A>C>E>D真实开仓日组合资金和研究统计口径；研究认证结果不参与实盘BUY开关。",
@@ -44,6 +44,14 @@
     "fee_source": "analysis.commission_rate/stamp_tax_schedule/transfer_fee_rate/minimum_commission",
     "certification_summary_path": "reports/current_portfolio_alignment/live_certification.json",
     "certification_report_path": "reports/current_portfolio_alignment/strict_asof_portfolio_report.md",
+    "certification_required_status": "PASS",
+    "certification_expected_scenario": "acde_ced_v12_6046_formal",
+    "certification_require_hashes": true,
+    "certification_require_strict_asof": false,
+    "require_strategy_release_freeze": false,
+    "release_id": "ACDE_CED_V12_6046_20260630",
+    "effective_from": "20260902",
+    "user_risk_acceptance": "用户于2026-09-01明确选择三年6046.3166倍研究版本并要求落地C/E/D；接受其STRICT_DISCOVERY和最大单笔亏损-18.51%的已披露风险。",
     "strategy_priority_order": [
       "A",
       "C",
@@ -52,25 +60,26 @@
     ],
     "rolling_live_report_path": "reports/live_performance/rolling_live_status.json",
     "rolling_min_trades_for_decision": 20,
-    "selected_rule_name": "current_a_c_e_d",
-    "selected_rule_description": "当前生产可执行腿序A>C>E>D：A/C/E读取上一交易日收盘后计划，按A、C、E选择唯一开仓，三腿均无计划时D才启动当日盘中路径。A使用A_FD_1_2_NON_ONE_WORD_FALLBACK_20260630_V1：原0.3%-1%核心A绝对优先，仅核心A当日为空时启用1%-2%封单且排除一字板的补位；C使用C_LEADER_UNION_20260630_V1，E使用换手率高值与一日成交额倍率低值各50%的同日分位综合分，D使用已发布回封因子规则。",
+    "selected_rule_name": "acde_ced_v12_6046_formal",
+    "selected_rule_description": "当前生产顺序固定A>C>E>D。A完全不变；C使用C_LEADER_RANK23_LD_LT30_20260630_V12；E在原R1双因子排名后排除第一名龙头排名11~30或全市场涨停120~180且不回补；D只允许盘中炸板率25%~75%、累计首板触板少于40只的成长板早盘浅炸回封。A/C/E读取上一交易日冻结计划，三腿均无计划时D才启动。",
     "live_candidate_metrics": {
-      "scenario": "current_a_c_e_d_strict_asof_discovery",
-      "strict_asof_window": "20240630~20260630",
-      "strict_asof_trade_count": 143,
-      "strict_asof_equity_multiple": 2280.9020459698163,
+      "scenario": "acde_ced_v12_6046_formal",
+      "strict_asof_window": "20230701~20260630",
+      "strict_asof_trade_count": 176,
+      "strict_asof_equity_multiple": 6046.316593512633,
       "strict_asof_win_rate": 0.7272727272727273,
-      "strict_asof_avg_account_return": 0.059120573025650436,
-      "strict_asof_median_account_return": 0.04807778952940472,
-      "strict_asof_max_drawdown": -0.14119813241960621,
+      "strict_asof_avg_account_return": 0.05484005979593039,
+      "strict_asof_median_account_return": 0.03732554320412928,
+      "strict_asof_max_drawdown": -0.24337404018667597,
+      "strict_asof_max_loss": -0.18512867639717417,
       "strict_asof_leg_counts": {
-        "A": 53,
-        "C": 45,
-        "E": 35,
-        "D": 10
+        "A": 78,
+        "C": 46,
+        "E": 36,
+        "D": 16
       },
       "compound_standard_id": "A_SYSTEM_MECHANICAL_COMPOUND_V1",
-      "note": "当前研究窗口为2024-06-30至2026-06-30；组合按真实开仓日回放：A/C/E为上一交易日收盘计划并在buy_date执行，三腿均无计划时D才在当日盘中运行，退出日收盘后才释放资金。A保持原0.3%-1%核心规则绝对优先，仅核心A当日为空时用1%-2%封单且非一字板补位。A>C>E>D为143笔、2280.902046倍、最大回撤-14.1198%，分腿A53/C45/E35/D10。用户于2026-08-24明确以逐笔回放无计算错误作为采用门槛。STRICT_DISCOVERY机械复利不是未来收益承诺，且该补位规则来自355个变体的事后观察。"
+      "note": "三年V12组合按真实action_date和固定A>C>E>D回放，退出日收盘前不复用资金；费用、双边0.1%滑点、T+1、涨跌停排队和D成交压力保持不变。176笔、6046.316594倍、最大回撤-24.3374%，分腿A78/C46/E36/D16。用户于2026-09-01明确要求落地；该结果属于STRICT_DISCOVERY，不是未来收益承诺，2026-07~08冻结前向10笔未产生组合差异。"
     }
   },
   "live_performance_report": {
@@ -284,7 +293,7 @@
     "exit_pov_runway_buffer_note": "跑道冗余系数(2026-07-16扫描定稿1.2):80笔重放1000万损耗1.5=-0.220%/1.2=-0.204%/1.0=-0.190%,1.2免费拿0.016%且实盘另有14:30流速复查+14:45尾段复查双兜底(重放未模拟,实际更安全);1.0再往下压安全垫过薄。35%参与率+动量调节仅再省0.02%,过拟合风险不值,不采用"
   },
   "strategy_d": {
-    "file_role": "策略D首板打板配置。实盘必须逐字段对齐历史D核心口径：strong情绪、multi_open、炸板2~3次、首次封板不早于10:00、最后真实回封不早于14:00、成交概率>=80%且可靠、每日只取排序第一名、T+2收盘退出。09:30后启动仅可恢复同机、同日、同代码配置且未超过75秒的原子完整路径检查点，否则fail-closed。",
+    "file_role": "策略D首板回封配置。当前FACTOR_UNION正式身份由strategy_d_factor_release.json决定：V12只允许09:30~10:00回封、成长板、炸板回落<0.2%、信号时全市场炸板率25%~75%且累计首板触板<40；成交概率>=80%且可靠、每日最早信号只取第一名、失败不补选、T+2收盘退出。旧14:00/strong参数仅供LEGACY_FORMAL_D回退模式校验，FACTOR_UNION不得读取它们改变候选。",
     "factor_release_path": "config/strategy_d_factor_release.json",
     "allowed_market_segments": [
       "sh_main",
@@ -313,7 +322,7 @@
     "sentiment_current_sealed_max": 132,
     "sentiment_proxy_note": "历史只取market_sentiment_level=strong(收盘100~150只，不含very_strong)；盘中沿用既有88/100校准比例，故实时当前封板代理区间为88~132只。该代理仍须用分钟快照持续校准。",
     "backtest_input_path": "data/processed/next_day_premium_trades_2y.csv",
-    "execution_alignment_note": "D实盘与回测共同使用：仅在账户空仓且昨日无其他策略正式候选、今日无其他开仓计划时，09:30起持续记录完整封板/炸板路径，14:00后只有真实回封才允许BUY，14:55停止并撤未成交委托；炸板2~3次(multi_open)，优先炸板2次，再按封单金额/流通市值降序；首次封板时段、成交概率可靠性和strong情绪桶均不可放宽；每天只尝试排序第一名，失败不递补。每轮完整扫描后原子保存逐票路径，盘中重启只允许恢复75秒内且同机、同日、同代码配置、同股票宇宙、同昨日涨停/ST名称/流通市值上下文的检查点；Windows临时文件占用先有界重试，仍失败则阻断旧READY恢复，当轮不判断BUY，只有后续全市场扫描完整、新READY原子落盘且阻断标记清除后才自动恢复；真实扫描缺批或证据变化继续全天停开。"
+    "execution_alignment_note": "D实盘与V12回放共同读取FACTOR_UNION发布：仅在A/C/E均无冻结计划且账户资金可用时，09:30起持续记录完整1分钟封板/炸板/回封路径；每次已完成1分钟收盘形成新回封后立即计算发布因子，命中两条V12 profile之一才允许BUY，14:55停止并撤未成交委托。每日最早命中信号只尝试第一名，成交门或二次复核失败均不补选。每轮完整扫描后原子保存逐票路径，盘中重启只允许恢复75秒内且同机、同日、同代码配置、同股票宇宙和同市场上下文的检查点；真实扫描缺批或证据变化继续全天停开。"
   },
   "strategy_s": {
     "file_role": "策略S深市/创业板动量补充策略配置。S 独立于 ACDE，只能在组合空闲且通过实盘口径认证后接入真实下单。",

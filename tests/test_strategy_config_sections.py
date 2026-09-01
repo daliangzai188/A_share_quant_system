@@ -5,7 +5,7 @@
 但必须独立加载的规则——
 
     A → candidate_filters.condition_profiles（两个OR分支）
-    C → paper_ab_filtered_strategy.c_strategy.condition_profiles（两个OR分支）
+    C → paper_ab_filtered_strategy.c_strategy.condition_profiles（五个OR分支）
 
 当时误把 candidate_filters 当成 C 的规则去比对，得出了错误的"实盘与回测一致"
 结论。这些测试确保：两段都存在、归属清晰，A/C各自的OR分支不会串用。
@@ -39,10 +39,13 @@ class StrategyConfigSectionTests(unittest.TestCase):
         self.assertNotIn("不接实盘", role)
 
     def test_c_rules_live_in_their_own_section(self) -> None:
-        """C正式规则必须是两个冻结profile的OR，不能退回旧单AND条件。"""
+        """C正式规则必须是五个冻结profile的OR，不能退回旧单AND条件。"""
         c_strategy = self.config["paper_ab_filtered_strategy"]["c_strategy"]
         self.assertTrue(c_strategy["enabled"])
-        self.assertEqual(c_strategy["release_id"], "C_LEADER_UNION_20260630_V1")
+        self.assertEqual(
+            c_strategy["release_id"],
+            "C_LEADER_RANK23_LD_LT30_20260630_V12",
+        )
         self.assertEqual(c_strategy["condition_mode"], "ANY_PROFILE")
         self.assertEqual(c_strategy["conditions"], [])
         profiles = {
@@ -63,6 +66,24 @@ class StrategyConfigSectionTests(unittest.TestCase):
                 "limit_up_count_bucket": "50_80",
                 "market_leader_rank_bucket": "rank_4_10",
                 "fd_ratio_bucket": "0_1pct_0_3pct",
+            },
+            "C_STRONG_LEADER_RANK2_3_FD01_03_LD_LT5": {
+                "limit_up_count_bucket": "50_80",
+                "market_leader_rank_bucket": "rank_2_3",
+                "fd_ratio_bucket": "0_1pct_0_3pct",
+                "market_limit_down_count_bucket": "lt_5",
+            },
+            "C_STRONG_LEADER_RANK2_3_FD01_03_LD_5_15": {
+                "limit_up_count_bucket": "50_80",
+                "market_leader_rank_bucket": "rank_2_3",
+                "fd_ratio_bucket": "0_1pct_0_3pct",
+                "market_limit_down_count_bucket": "5_15",
+            },
+            "C_STRONG_LEADER_RANK2_3_FD01_03_LD_15_30": {
+                "limit_up_count_bucket": "50_80",
+                "market_leader_rank_bucket": "rank_2_3",
+                "fd_ratio_bucket": "0_1pct_0_3pct",
+                "market_limit_down_count_bucket": "15_30",
             },
         })
 
@@ -102,13 +123,14 @@ class StrategyConfigSectionTests(unittest.TestCase):
             "latest_2y_audit"
         ]
         self.assertEqual(
-            c_audit["metric_scope"], "STRICT_ASOF_C_STANDALONE_SINGLE_ACCOUNT"
+            c_audit["metric_scope"],
+            "STRICT_ASOF_C_STANDALONE_SINGLE_ACCOUNT_THREE_YEAR_V12",
         )
-        self.assertEqual(c_audit["c_trade_count"], 55)
-        self.assertAlmostEqual(c_audit["c_equity_multiple"], 23.617616094205008)
-        self.assertEqual(c_audit["candidate_day_count"], 72)
+        self.assertEqual(c_audit["c_trade_count"], 58)
+        self.assertAlmostEqual(c_audit["c_equity_multiple"], 16.592266587212748)
+        self.assertEqual(c_audit["candidate_plan_count"], 73)
         self.assertAlmostEqual(
-            c_audit["released_acde_equity_multiple"], 921.3365015462819
+            c_audit["released_acde_equity_multiple"], 6046.316593512633
         )
 
     def test_a_and_c_rules_remain_in_separate_config_sections(self) -> None:
@@ -156,7 +178,7 @@ class StrategyConfigSectionTests(unittest.TestCase):
         )
         c_strategy = self.config["paper_ab_filtered_strategy"]["c_strategy"]
         self.assertEqual(c_strategy["conditions"], [])
-        self.assertEqual(len(c_strategy["condition_profiles"]), 2)
+        self.assertEqual(len(c_strategy["condition_profiles"]), 5)
 
 
 if __name__ == "__main__":

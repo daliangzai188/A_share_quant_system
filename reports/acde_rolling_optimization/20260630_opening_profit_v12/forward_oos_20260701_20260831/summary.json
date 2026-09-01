@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "mode": "frozen_forward_oos",
+  "training_cutoff": "20260630",
+  "forward_action_window": {
+    "start": "20260701",
+    "end": "20260831"
+  },
+  "available_signal_end": "20260820",
+  "scope": "A_C_E_STATIC_ONLY_D_EXCLUDED_MISSING_COMPLETE_FORWARD_MINUTE_MOTHER_POOL",
+  "selected_rules": {
+    "A": "A_CURRENT",
+    "C": "C_LEADER_RANK_2_3_LIMIT_DOWN_LT30",
+    "E": "E_RISK_LEADER_11_30_OR_LIMIT_UP_120_180",
+    "D": "NOT_EVALUATED"
+  },
+  "baseline_metrics": {
+    "trade_count": 10,
+    "win_rate": 0.5,
+    "avg_account_return": 0.0007840764454083229,
+    "median_account_return": -0.0019833845310047067,
+    "equity_multiple": 0.9684932339867344,
+    "max_drawdown": -0.2553409902015954,
+    "max_profit": 0.17879766382673692,
+    "max_loss": -0.17603475191054316,
+    "profit_loss_ratio": 1.0242166300416065,
+    "max_consecutive_losses": 3,
+    "leg_counts": {
+      "A": 4,
+      "C": 3,
+      "E": 3
+    }
+  },
+  "candidate_metrics": {
+    "trade_count": 10,
+    "win_rate": 0.5,
+    "avg_account_return": 0.0007840764454083229,
+    "median_account_return": -0.0019833845310047067,
+    "equity_multiple": 0.9684932339867344,
+    "max_drawdown": -0.2553409902015954,
+    "max_profit": 0.17879766382673692,
+    "max_loss": -0.17603475191054316,
+    "profit_loss_ratio": 1.0242166300416065,
+    "max_consecutive_losses": 3,
+    "leg_counts": {
+      "A": 4,
+      "C": 3,
+      "E": 3
+    }
+  },
+  "plan_change_count": 1,
+  "portfolio_change_count": 0
+}
