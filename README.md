@@ -19,6 +19,14 @@
 > 实盘接入：QMT / miniQMT 已完成只读连接与守护进程联调，真实下单仍必须先走小资金验证。所有时间以北京时间（Asia/Shanghai）为准。
 > 策略 B 删除范围、自动卖出硬拦截和部署检查见 `docs/strategy_b_removal_20260722.md`。
 
+> 当前策略研究目标自2026-09-01起改为“收益高优先”：候选只要因子规则完全可量化、
+> 数据与严格时点检查通过、A股真实约束回测成功且可复现、研究/回测/模拟/拟发布逻辑
+> 完全对齐，就进入固定`A>C>E>D`全组合排名，最近3年期末复利最高者为唯一机械胜者。
+> 样本、回撤、盈亏比、收益集中、压力测试、容量、过拟合和`STRICT_DISCOVERY`必须完整
+> 披露，但不再提前否决或改排收益冠军；只有它们证明数据、回测或逻辑实际有错时才排除。
+> 机械胜者经用户审核和独立重算认证后属于“可以落地的策略”，可进入正式配置和模拟/
+> 前向阶段；真实资金BUY仍须单独授权，并先模拟和小资金验证。
+
 ---
 
 ## 一、项目目标
@@ -585,7 +593,7 @@ python scripts/run_strategy_e_signal.py
 
 ## 严格 as-of 研究门禁
 
-所有共享策略研究入口已默认启用 `A_SYSTEM_STRICT_ASOF_V1`。历史研究使用独立的 `*_asof.csv` 数据链；开发段结果固定标记为不可发布，正式结论只接受冻结规则后的 `LOCKED_OOS` 或逐折训练在先的 `WALK_FORWARD`。
+所有共享策略研究入口已默认启用 `A_SYSTEM_STRICT_ASOF_V1`。历史研究使用独立的 `*_asof.csv` 数据链。`LOCKED_OOS`、`WALK_FORWARD`和真实前向结果继续作为强制风险证据；缺少这些证据不再自动否决通过四项硬条件的组合复利第一名进入用户审核、独立认证和策略落地，但必须显著标记过拟合风险，且不得据此直接放开真实资金BUY。
 
 标准、运行顺序和失败条件见 [docs/strict_asof_standard.md](docs/strict_asof_standard.md)。
 
@@ -597,17 +605,24 @@ python scripts/run_strategy_e_signal.py
 [月度最近三年数据更新规范](docs/monthly_three_year_data_update.md)自动计算截至上月末的
 36个完整自然月，补齐数据并执行质量门禁；是否继续优化ACED以用户当次指令为准。
 
-数据通过后，候选冻结、逐腿优化、`A>C>E>D`真实资金回放、策略C专项回归、唯一胜者
+数据通过后，候选登记、逐腿回测、`A>C>E>D`全部候选组合真实资金回放、策略C专项回归、唯一胜者
 选择和独立认证，统一执行
 [ACDE月度数据更新、策略优化与精确回测标准流程](docs/monthly_acde_optimization_sop.md)。
 研究胜者产生后必须先展示新旧规则、`OLD_ON_OLD/OLD_ON_NEW/NEW_ON_NEW`收益与样本
 对比并等待用户审核，禁止直接提交；只有用户明确要求再次精准校验并在成功后提交，
 才进入最终认证和代码提交阶段。
 
-现有三窗口ACDE研究入口`scripts/optimize_acde_rolling_three_year.py`及配置
-`config/acde_rolling_optimization.json`仍保留半年旧流程，尚未完成月度流程改造；在
-改造和回归完成前不得把它描述为已经执行新月度标准。研究结果不会自动覆盖正式策略
-或实盘配置。
+当前月度入口为`scripts/optimize_acde_monthly.py`；兼容入口
+`scripts/optimize_acde_rolling_three_year.py`读取schema_version=2配置时会自动转交月度
+执行器。`config/acde_rolling_optimization.json`已冻结36个完整自然月、真实
+`action_date`、A>C>E>D、精确现金/申报股数和最低佣金。现有执行器中的旧样本、回撤和
+单腿增益门槛尚待按收益高优先标准改造；在此之前旧`eligible_winner`只作风险诊断，
+全候选组合期末复利第一名才是研究机械胜者。旧半年函数只供历史证书审计。研究结果仍
+不会自动覆盖正式策略或实盘配置。
+
+```bash
+python3 scripts/optimize_acde_monthly.py --cutoff 20260831
+```
 
 当前两年锚点、A/E双复利门槛和复现命令见
 [docs/acde_anchor_20240630_20260630.md](docs/acde_anchor_20240630_20260630.md)。

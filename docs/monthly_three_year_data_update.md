@@ -17,6 +17,10 @@
 本规范只定义数据更新。是否继续运行ACDE优化，由用户指令决定；数据更新成功不代表
 策略参数已经改变，也不允许自动覆盖正式策略或打开实盘BUY。
 
+数据质量门禁只负责证明研究输入真实、完整、无未来数据并可复现。它是收益选优前的
+硬条件，但不得夹带最低样本数、最大回撤、单腿增益、过拟合评级等策略风险门槛；数据
+就绪后，优化阶段必须对可量化且可精确回测的候选按`A>C>E>D`组合复利最高优先排序。
+
 ## 二、用户触发语
 
 用户以后只需要说：
@@ -50,6 +54,12 @@
 4. 如果`cutoff_date`不是交易日，行情数据的实际末日为交易日历中不晚于
    `cutoff_date`的最后一个交易日；不得把休市日误报为缺失交易日。
 5. 禁止读取或使用`cutoff_date`之后的数据生成当月研究结果。
+
+最近36个月是候选生成、参数排序和收益评价的唯一窗口。成交概率等冻结执行模型在计算
+窗口早期信号时，可以读取该信号日前已经公开的历史样本；当前统一从2019-01-01开始
+重建严格as-of状态。该前置历史只参与逐日恢复当时可知的执行模型，不能直接进入本轮
+候选排名、复利指标或冒充独立样本外。若把执行模型历史截断到三年窗口附近，导致同一
+历史信号的`sample_count`、换手率分位或`allow_buy_reliable`漂移，质量门禁必须失败。
 
 示例：
 
@@ -104,6 +114,7 @@
 
 ```bash
 python3 scripts/collect_all_data.py --start-date <YYYYMMDD> --end-date <YYYYMMDD>
+python3 scripts/collect_adj_factor_data.py --start-date <YYYYMMDD> --end-date <YYYYMMDD>
 python3 scripts/validate_collected_data.py --start-date <YYYYMMDD> --end-date <YYYYMMDD>
 python3 scripts/clean_collected_data.py --start-date <YYYYMMDD> --end-date <YYYYMMDD> --incremental-replace
 python3 scripts/build_dynamic_features.py --start-date <YYYYMMDD> --end-date <YYYYMMDD>
@@ -113,6 +124,9 @@ python3 scripts/score_limit_up_fill_probability.py --historical-asof
 这些命令只是当前已有基础入口，不代表单独执行后就完成ACDE月度数据更新。系统还必须
 根据策略依赖清单处理严格研究底座、D分钟数据、退出日数据和最终就绪门禁。需要Token
 时只允许从`.env`、配置文件或环境变量读取，禁止写入代码或报告。
+
+`collect_all_data.py`和`collect_daily_data.py`现已默认同步采集`adj_factor`；只有非月度
+诊断任务才能显式使用`--no-adj-factor`。月度研究若缺任一交易日复权因子，必须失败关闭。
 
 ## 六、数据质量门禁
 
@@ -175,7 +189,11 @@ READY_FOR_MONTHLY_ACDE_RESEARCH
     ↓
 冻结基线、候选空间、因子和评价标准
     ↓
-用这3年数据研究A/C/E/D并按A>C>E>D回放
+登记全部可量化候选并完成精确、可复现回测
+    ↓
+只排除数据、回测或逻辑对齐失败项，按A>C>E>D组合复利选第一名
+    ↓
+披露样本、回撤、异常、压力测试和过拟合风险
     ↓
 人工审核、认证和显式发布
     ↓
@@ -187,3 +205,6 @@ READY_FOR_MONTHLY_ACDE_RESEARCH
 
 后续优化、精确回测、唯一胜者选择、策略C专项回归和发布状态，统一执行
 [ACDE月度数据更新、策略优化与精确回测标准流程](monthly_acde_optimization_sop.md)。
+其中样本不足、高回撤、收益集中或`STRICT_DISCOVERY`属于风险披露，不得反过来把通过
+四项真实性硬条件的组合复利第一名改成收益更低的候选；只有这些复核发现实际数据错误、
+未来数据、回测失败或逻辑不一致时，才回退并取消原候选资格。
