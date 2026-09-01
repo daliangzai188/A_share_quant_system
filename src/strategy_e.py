@@ -15,7 +15,7 @@ from typing import Any
 import pandas as pd
 
 
-E_VERSION = "E_R1_V13_FD_RATIO_2_5PCT_GATE"
+E_VERSION = "E_R1_V14_TURNOVER_FD_SCORE_AMOUNT12_OPEN23_NO_TRADE"
 DEFAULT_SCENARIO_PATH = Path("config/strategy_e_r1_scenarios.json")
 
 # 这些字段都属于买入日以后才能知道的结果，禁止出现在E选股条件或排序规则中。
@@ -132,8 +132,11 @@ def load_e_spec(project_root: Path, scenario_path: Path | None = None) -> dict[s
     # 形成新的口径漂移，因此这两个开关只能保持当前安全值。
     entry_gate = spec.get("entry_gate", {})
     exclude_values = entry_gate.get("exclude_values", {})
+    exclude_all_conditions = entry_gate.get("exclude_all_conditions", [])
     if not isinstance(exclude_values, dict):
         raise ValueError("E entry_gate.exclude_values必须是字段到排除值列表的映射")
+    if not isinstance(exclude_all_conditions, list):
+        raise ValueError("E entry_gate.exclude_all_conditions必须是联合门禁列表")
     if entry_gate and not bool(entry_gate.get("apply_after_daily_first_pick", False)):
         raise ValueError("E入场门禁必须在每日第一名确定后执行")
     if bool(entry_gate.get("fallback_to_second_candidate", False)):
@@ -142,6 +145,18 @@ def load_e_spec(project_root: Path, scenario_path: Path | None = None) -> dict[s
         if not isinstance(values, list) or not values:
             raise ValueError(f"E入场门禁排除值非法：{column}")
         used_columns.add(str(column))
+    for rule in exclude_all_conditions:
+        if not isinstance(rule, dict):
+            raise ValueError("E联合入场门禁必须是对象")
+        if str(rule.get("action", "NO_TRADE")) != "NO_TRADE":
+            raise ValueError("E联合入场门禁只允许NO_TRADE动作")
+        conditions = rule.get("conditions", {})
+        if not isinstance(conditions, dict) or len(conditions) < 2:
+            raise ValueError("E联合入场门禁至少需要两个AND条件")
+        for column, values in conditions.items():
+            if not isinstance(values, list) or not values:
+                raise ValueError(f"E联合入场门禁排除值非法：{column}")
+            used_columns.add(str(column))
 
     final_ranking = spec.get("final_ranking", {})
     if final_ranking:
@@ -184,6 +199,8 @@ def required_signal_fields(spec: dict[str, Any]) -> set[str]:
         str(column)
         for column in spec.get("entry_gate", {}).get("exclude_values", {})
     )
+    for rule in spec.get("entry_gate", {}).get("exclude_all_conditions", []):
+        fields.update(str(column) for column in rule.get("conditions", {}))
     fields.update(
         str(column)
         for column in spec.get("final_ranking", {}).get("columns", [])
@@ -406,6 +423,18 @@ def apply_e_entry_gate(daily_picks: pd.DataFrame, spec: dict[str, Any]) -> pd.Da
             raise RuntimeError(f"E入场门禁字段缺失：{column}")
         excluded = {str(value) for value in values}
         keep &= ~result[column].fillna("").astype(str).isin(excluded)
+
+    # 联合门禁使用AND语义：只有同一只每日第一名同时命中规则内全部条件才空仓。
+    # 不能把条件拆进exclude_values，否则会错误扩大为任一条件命中即拒绝。
+    for rule in spec.get("entry_gate", {}).get("exclude_all_conditions", []):
+        conditions = rule.get("conditions", {})
+        matched_all = pd.Series(True, index=result.index, dtype="bool")
+        for column, values in conditions.items():
+            if column not in result.columns:
+                raise RuntimeError(f"E联合入场门禁字段缺失：{column}")
+            expected = {str(value) for value in values}
+            matched_all &= result[column].fillna("").astype(str).isin(expected)
+        keep &= ~matched_all
     return result.loc[keep].copy().reset_index(drop=True)
 
 

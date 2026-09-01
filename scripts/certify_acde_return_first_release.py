@@ -47,9 +47,10 @@ from src.utils.config import load_json_config  # noqa: E402
 
 
 CUTOFF = "20260831"
-SCENARIO = "acde_return_first_10240_20260831_v13"
-RELEASE_ID = "ACDE_RETURN_FIRST_10240_20260831_V13"
+SCENARIO = "acde_e_no_trade_10687_20260831_v14"
+RELEASE_ID = "ACDE_E_NO_TRADE_10687_20260831_V14"
 SOURCE_DIR = ROOT / "reports/monthly_acde_research/20260831/run_20260831_return_first_final"
+RELEASE_LEDGER_DIR = ROOT / "reports/current_portfolio_alignment/acde_e_no_trade_v14"
 DEFAULT_OUTPUT = ROOT / "reports/current_portfolio_alignment/return_first_live_certification.json"
 DEFAULT_MARKDOWN = ROOT / "reports/current_portfolio_alignment/return_first_portfolio_report.md"
 TOLERANCE = 1e-10
@@ -57,32 +58,33 @@ TOLERANCE = 1e-10
 VARIANT_IDS = {
     "A": "A_RISK_EXCLUDE_AFTERNOON_FIRST_SEAL",
     "C": "C_RISK_EXCLUDE_SINGLE_OPEN",
-    "E": "E_RISK_EXCLUDE_FD_RATIO_2_5PCT",
+    "E": "E_TURNOVER_FD_AMOUNT12_OPEN23_NO_TRADE",
     "D": "D_STRONG_BREAK_LT75_ACTIVE_GE20",
 }
 
 EXPECTED_COMBO = {
-    "trade_count": 175,
-    "win_rate": 0.7428571428571429,
-    "avg_account_return": 0.058192201138335294,
-    "median_account_return": 0.042359031004999936,
-    "equity_multiple": 10240.653243754481,
-    "max_drawdown": -0.25534064469452433,
-    "max_profit": 0.4762529834346876,
-    "max_loss": -0.17603442208877318,
-    "profit_loss_ratio": 2.2854610177117114,
+    "trade_count": 174,
+    "win_rate": 0.7413793103448276,
+    "avg_account_return": 0.05885093228120308,
+    "median_account_return": 0.04053620090783183,
+    "equity_multiple": 10687.85062762251,
+    "max_drawdown": -0.255340805503775,
+    "max_profit": 0.4762528686547085,
+    "max_loss": -0.17603459352274986,
+    "profit_loss_ratio": 2.343070487017434,
     "max_consecutive_losses": 3,
-    "leg_counts": {"A": 86, "C": 51, "D": 8, "E": 30},
+    "leg_counts": {"A": 85, "C": 52, "D": 8, "E": 29},
 }
 
 EXPECTED_STANDALONE = {
     "A": {"trade_count": 108, "equity_multiple": 155.0269020298712, "max_drawdown": -0.19372149239299818},
     "C": {"trade_count": 61, "equity_multiple": 17.90855770136303, "max_drawdown": -0.17589327975064117},
-    "E": {"trade_count": 65, "equity_multiple": 16.052804209464963, "max_drawdown": -0.48496048783395074},
+    "E": {"trade_count": 59, "equity_multiple": 30.818622006506075, "max_drawdown": -0.09623820346548773},
     "D": {"trade_count": 16, "equity_multiple": 2.1732624681795736, "max_drawdown": -0.06988945074504782},
 }
 
 CODE_FILES = [
+    "config/acde_rolling_optimization.json",
     "config/config.json",
     "config/strategy_config.json",
     "config/strategy_e_r1_scenarios.json",
@@ -99,6 +101,9 @@ CODE_FILES = [
     "src/strategy_identity.py",
     "scripts/optimize_acde_rolling_three_year.py",
     "scripts/run_paper_ab_filtered_daily_ops.py",
+    "scripts/run_strategy_e_signal.py",
+    "scripts/verify_strategy_e_alignment.py",
+    "scripts/certify_current_executable_portfolio.py",
     "scripts/generate_live_limit_pool_daily_ops.py",
     "scripts/monitor_strategy_d_intraday.py",
     "scripts/trading_daemon.py",
@@ -108,9 +113,14 @@ CODE_FILES = [
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="认证10240.653244倍ACDE正式规则与回测对齐")
+    parser = argparse.ArgumentParser(description="认证E直接空仓V14与10687.850628倍ACDE回测对齐")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--markdown", type=Path, default=DEFAULT_MARKDOWN)
+    parser.add_argument(
+        "--refresh-release-ledgers",
+        action="store_true",
+        help="仅在用户批准新版本时刷新V14逐腿与组合冻结账本；日常认证禁止使用。",
+    )
     return parser.parse_args()
 
 
@@ -284,6 +294,7 @@ def validate_formal_rules() -> dict[str, bool]:
     e_spec = load_json_config(ROOT / "config/strategy_e_r1_scenarios.json")
     d_release = load_json_config(ROOT / "config/strategy_d_factor_release.json")
     runtime = load_json_config(ROOT / "config/config.json")
+    release_freeze = load_json_config(ROOT / "config/strategy_release_freeze.json")
 
     c_rules = strategy["paper_ab_filtered_strategy"]["c_strategy"]["risk_reject_rules"]
     c_single_open = any(
@@ -302,6 +313,8 @@ def validate_formal_rules() -> dict[str, bool]:
 
     return {
         "runtime_release_id": runtime["portfolio_certification"]["release_id"] == RELEASE_ID,
+        "release_freeze_id": release_freeze["release_id"] == RELEASE_ID,
+        "release_freeze_scenario": release_freeze["certification_scenario"] == SCENARIO,
         "priority_a_c_e_d": runtime["portfolio_certification"]["strategy_priority_order"] == ["A", "C", "E", "D"],
         "a_release_id": strategy["release_id"] == "A_RISK_EXCLUDE_AFTERNOON_FIRST_SEAL_20260831_V13",
         "a_no_fallback_gate": strategy["rolling_research_post_pick_exclude"] == {
@@ -312,9 +325,22 @@ def validate_formal_rules() -> dict[str, bool]:
         },
         "c_release_id": strategy["paper_ab_filtered_strategy"]["c_strategy"]["release_id"] == "C_RISK_EXCLUDE_SINGLE_OPEN_20260831_V13",
         "c_excludes_open_times_equal_one": c_single_open,
-        "e_release_id": e_spec["release_id"] == "E_RISK_EXCLUDE_FD_RATIO_2_5PCT_20260831_V13",
+        "e_release_id": e_spec["release_id"] == "E_TURNOVER_FD_AMOUNT12_OPEN23_NO_TRADE_20260831_V14",
+        "e_turnover_fd_equal_weight_rank": e_spec["final_ranking"].get("columns")
+        == ["turnover_rate", "fd_amount_to_circ_mv"]
+        and e_spec["final_ranking"].get("ascending") == [False, True]
+        and e_spec["final_ranking"].get("weights") == [0.5, 0.5],
         "e_post_pick_fd_gate": e_spec["entry_gate"]["exclude_values"].get("fd_ratio_bucket") == ["2pct_5pct"]
         and e_spec["entry_gate"].get("fallback_to_second_candidate") is False,
+        "e_post_pick_joint_no_trade_gate": any(
+            rule.get("conditions")
+            == {
+                "amount_ratio_bucket": ["1_2_2"],
+                "open_times_bucket": ["2_3"],
+            }
+            and rule.get("action") == "NO_TRADE"
+            for rule in e_spec["entry_gate"].get("exclude_all_conditions", [])
+        ),
         "d_release_id": d_release["release_id"] == "D_STRONG_BREAK_LT75_ACTIVE_GE20_20260831_V13",
         "d_has_12_or_profiles": len(profiles) == 12,
         "d_break_lt75": d_break_values == {"LT25PCT", "25_50PCT", "50_75PCT"},
@@ -328,8 +354,8 @@ def validate_formal_rules() -> dict[str, bool]:
 
 def compare_frozen_plan_signatures(plans: Mapping[str, pd.DataFrame]) -> dict[str, Any]:
     rows: dict[str, Any] = {}
-    for leg, variant_id in VARIANT_IDS.items():
-        path = SOURCE_DIR / f"candidate_ledgers/{leg.lower()}/{variant_id}_plans.csv"
+    for leg in VARIANT_IDS:
+        path = RELEASE_LEDGER_DIR / f"{leg.lower()}_plans.csv"
         frozen = pd.read_csv(path, low_memory=False)
         formal_signature = plan_signature(plans[leg])
         frozen_signature = plan_signature(frozen)
@@ -341,6 +367,63 @@ def compare_frozen_plan_signatures(plans: Mapping[str, pd.DataFrame]) -> dict[st
             "passed": formal_signature == frozen_signature,
         }
     return rows
+
+
+def refresh_release_ledgers(
+    plans: Mapping[str, pd.DataFrame],
+    combo_detail: pd.DataFrame,
+    combo_metrics: Mapping[str, Any],
+    standalone_metrics: Mapping[str, Mapping[str, Any]],
+) -> None:
+    """在用户明确批准后封存V14逐腿与组合账本，供后续只读认证。"""
+
+    RELEASE_LEDGER_DIR.mkdir(parents=True, exist_ok=True)
+    for leg, frame in plans.items():
+        frame.to_csv(
+            RELEASE_LEDGER_DIR / f"{leg.lower()}_plans.csv",
+            index=False,
+            encoding="utf-8-sig",
+        )
+    combo_detail.to_csv(
+        RELEASE_LEDGER_DIR / "combo_trades.csv",
+        index=False,
+        encoding="utf-8-sig",
+    )
+    summary = {
+        "schema_version": 1,
+        "scenario": SCENARIO,
+        "release_id": RELEASE_ID,
+        "window": {"start": "20230901", "end": CUTOFF},
+        "selected_variants": VARIANT_IDS,
+        "combo_metrics": dict(combo_metrics),
+        "standalone_metrics": {
+            leg: dict(metrics) for leg, metrics in standalone_metrics.items()
+        },
+        "e_plan_count": int(len(plans["E"])),
+        "e_selection_counts": {
+            "raw_daily_first": 148,
+            "after_v13_single_value_gates": 81,
+            "v14_joint_gate_removed": 12,
+            "formal_plans": int(len(plans["E"])),
+            "standalone_executed": int(standalone_metrics["E"]["trade_count"]),
+        },
+        "rule": {
+            "ranking": "daily_percentile(turnover_rate:desc)*50% + daily_percentile(fd_amount_to_circ_mv:asc)*50%",
+            "joint_no_trade": {
+                "amount_ratio_bucket": ["1_2_2"],
+                "open_times_bucket": ["2_3"],
+                "logic": "AND",
+                "fallback_to_second_candidate": False,
+                "position_when_matched": 0.0,
+            },
+        },
+        "research_protocol": "STRICT_DISCOVERY",
+        "risk_note": "历史机械复利不代表未来收益；尚无独立冻结样本外和真实资金容量认证。",
+    }
+    (RELEASE_LEDGER_DIR / "release_summary.json").write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
 
 def max_numeric_delta(actual: pd.DataFrame, expected: pd.DataFrame) -> float:
@@ -381,8 +464,6 @@ def main() -> int:
     first_metrics = _metrics(first_detail, window)
     second_metrics = _metrics(second_detail, window)
 
-    rule_checks = validate_formal_rules()
-    plan_checks = compare_frozen_plan_signatures(first_plans)
     deterministic = all(
         plan_signature(first_plans[leg]) == plan_signature(second_plans[leg])
         for leg in VARIANT_IDS
@@ -400,18 +481,35 @@ def main() -> int:
         close_enough(standalone_metrics[leg], EXPECTED_STANDALONE[leg])
         for leg in VARIANT_IDS
     )
+    rule_checks = validate_formal_rules()
+    if args.refresh_release_ledgers:
+        if not (
+            deterministic
+            and combo_match
+            and standalone_match
+            and all(rule_checks.values())
+        ):
+            raise RuntimeError("V14正式规则或预期指标未对齐，拒绝覆盖冻结发布账本")
+        refresh_release_ledgers(
+            first_plans,
+            first_detail,
+            first_metrics,
+            standalone_metrics,
+        )
 
-    frozen_trades = pd.read_csv(SOURCE_DIR / "return_first_best_trades.csv", low_memory=False)
+    plan_checks = compare_frozen_plan_signatures(first_plans)
+
+    frozen_trades = pd.read_csv(RELEASE_LEDGER_DIR / "combo_trades.csv", low_memory=False)
     frozen_trade_count_match = len(first_detail) == len(frozen_trades)
     frozen_trade_max_numeric_delta = (
         max_numeric_delta(first_detail, frozen_trades) if frozen_trade_count_match else float("inf")
     )
     frozen_trade_values_match = frozen_trade_max_numeric_delta <= 1e-5
 
-    source_summary = load_json_config(SOURCE_DIR / "return_first_summary.json")
+    source_summary = load_json_config(RELEASE_LEDGER_DIR / "release_summary.json")
     source_summary_match = (
-        source_summary.get("best_variants") == VARIANT_IDS
-        and close_enough(source_summary.get("best_metrics", {}), EXPECTED_COMBO)
+        source_summary.get("selected_variants") == VARIANT_IDS
+        and close_enough(source_summary.get("combo_metrics", {}), EXPECTED_COMBO)
     )
     data_and_artifact_integrity = validate_data_and_artifact_integrity(paths)
     passed = all(rule_checks.values()) and all(
@@ -424,8 +522,12 @@ def main() -> int:
         str(paths["market_sentiment"].relative_to(ROOT)),
         str(paths["d_event_source"].relative_to(ROOT)),
         str(paths["trade_calendar"].relative_to(ROOT)),
-        str((SOURCE_DIR / "return_first_summary.json").relative_to(ROOT)),
-        str((SOURCE_DIR / "return_first_best_trades.csv").relative_to(ROOT)),
+        str((RELEASE_LEDGER_DIR / "release_summary.json").relative_to(ROOT)),
+        str((RELEASE_LEDGER_DIR / "combo_trades.csv").relative_to(ROOT)),
+        *[
+            str((RELEASE_LEDGER_DIR / f"{leg.lower()}_plans.csv").relative_to(ROOT))
+            for leg in VARIANT_IDS
+        ],
         str((SOURCE_DIR / "data_manifest.json").relative_to(ROOT)),
         str((SOURCE_DIR / "artifact_manifest.json").relative_to(ROOT)),
         str((SOURCE_DIR / "return_first_artifact_manifest.json").relative_to(ROOT)),
@@ -470,8 +572,8 @@ def main() -> int:
         "code_sha256": certification_files_sha256(ROOT, CODE_FILES),
         "input_files": input_files,
         "input_sha256": certification_files_sha256(ROOT, input_files),
-        "source_summary_sha256": certification_file_sha256(SOURCE_DIR / "return_first_summary.json"),
-        "risk_note": "175笔、10240.653244倍是最近三年同窗32,256组合搜索的历史机械复利，不是收益承诺；E独立最大回撤-48.50%，尚无独立样本外和真实容量认证。",
+        "source_summary_sha256": certification_file_sha256(RELEASE_LEDGER_DIR / "release_summary.json"),
+        "risk_note": "174笔、10687.850628倍是最近三年同窗STRICT_DISCOVERY历史机械复利，不是收益承诺；E独立59笔、最大回撤-9.62%，尚无独立冻结样本外和真实容量认证。",
     }
 
     output = args.output if args.output.is_absolute() else ROOT / args.output
@@ -482,7 +584,7 @@ def main() -> int:
     markdown.write_text(
         "\n".join(
             [
-                "# ACDE收益冠军正式规则对齐报告",
+                "# ACDE策略E直接空仓V14正式规则对齐报告",
                 "",
                 f"- 状态：{payload['status']}",
                 f"- 场景：{SCENARIO}",

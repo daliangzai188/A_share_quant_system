@@ -1,7 +1,7 @@
 {
-  "_comment": "E R1收益优先正式规则。40条R1规则合并去重后保留板块neutral，再以换手率高、一日成交额倍率低的同日分位等权评分选每日第一名；随后执行entry_gate。每日第一名命中任一门禁即空仓，不回补第二名，研究、回测和实盘共同读取本文件。",
-  "_warning": "本版在V12门禁基础上新增每日第一名fd_ratio_bucket=2pct_5pct时空仓。最近三年同窗枚举属于STRICT_DISCOVERY；E独立最大回撤达到-48.50%，组合复利不等于真实大资金可成交收益，也不构成未来收益承诺。",
-  "release_id": "E_RISK_EXCLUDE_FD_RATIO_2_5PCT_20260831_V13",
+  "_comment": "E R1收益优先正式规则。40条R1规则合并去重后保留板块neutral，再以换手率高、封单金额/流通市值低的同日分位等权评分选每日第一名；随后执行entry_gate。每日第一名命中任一单项门禁，或同时命中成交额倍率1.2~2与炸板2~3次联合门禁时直接空仓，不回补第二名，研究、回测和实盘共同读取本文件。",
+  "_warning": "V14保留V13四项单独无回补门禁，并新增amount_ratio_bucket=1_2_2且open_times_bucket=2_3的AND空仓规则。最近三年同窗研究属于STRICT_DISCOVERY；E独立与组合复利不等于真实大资金可成交收益，也不构成未来收益承诺。",
+  "release_id": "E_TURNOVER_FD_AMOUNT12_OPEN23_NO_TRADE_20260831_V14",
   "effective_from": "20260902",
   "research_window": {
     "start": "20230901",
@@ -18,15 +18,26 @@
       "limit_up_count_bucket": ["120_180"],
       "fd_ratio_bucket": ["2pct_5pct"]
     },
+    "exclude_all_conditions": [
+      {
+        "rule_id": "E_NO_TRADE_AMOUNT_RATIO_1_2_2_AND_OPEN_TIMES_2_3",
+        "conditions": {
+          "amount_ratio_bucket": ["1_2_2"],
+          "open_times_bucket": ["2_3"]
+        },
+        "action": "NO_TRADE",
+        "reason": "每日第一名成交额倍率处于1.2~2且炸板2~3次时，历史收益质量不足；当天E直接空仓，不降低仓位，也不回补第二名。"
+      }
+    ],
     "apply_after_daily_first_pick": true,
     "fallback_to_second_candidate": false,
-    "reason": "保留原13:30~14:30首次涨停、龙头排名11~30和全市场涨停120~180门禁；V13新增封单比例2%~5%拥挤区门禁。全部在每日第一名确定后执行，命中即空仓且不回补第二名，字段均在信号日可见。"
+    "reason": "保留原13:30~14:30首次涨停、龙头排名11~30、全市场涨停120~180和封单比例2%~5%单项门禁；V14新增成交额倍率1.2~2且炸板2~3次联合门禁。全部在每日第一名确定后执行，命中即空仓且不回补第二名，字段均在信号日可见。"
   },
   "final_ranking": {
     "method": "daily_percentile_weighted_score",
     "columns": [
       "turnover_rate",
-      "amount_ratio_1d"
+      "fd_amount_to_circ_mv"
     ],
     "ascending": [
       false,
@@ -44,7 +55,7 @@
       true,
       true
     ],
-    "description": "R1规则逐日第一名并集先过滤segment_retreat_state_bucket=neutral，再对信号日换手率（高值优先）和一日成交额倍率（低值优先）计算当日候选内百分位并各占50%，按综合分降序取每日第一名；并列时按scenario_rank、ts_code升序。"
+    "description": "R1规则逐日第一名并集先过滤segment_retreat_state_bucket=neutral，再对信号日换手率（高值优先）和封单金额/流通市值（低值优先）计算当日候选内百分位并各占50%，按综合分降序取每日第一名；并列时按scenario_rank、ts_code升序。"
   },
   "sort_rules": {
     "default": {"columns": ["fill_probability", "sample_count", "amount", "turnover_rate"], "ascending": [false, false, false, false]},
@@ -163,22 +174,31 @@
     "audit_date": "2026-09-01",
     "window": "20230901~20260831",
     "research_protocol": "STRICT_DISCOVERY",
-    "selected_variant": "E_RISK_EXCLUDE_FD_RATIO_2_5PCT",
-    "standalone_trade_count": 65,
-    "standalone_win_rate": 0.7538461538461538,
-    "standalone_avg_account_return": 0.04929509432409239,
-    "standalone_median_account_return": 0.04674606160651251,
-    "standalone_equity_multiple": 16.052804209464963,
-    "standalone_max_drawdown": -0.48496048783395074,
-    "standalone_max_profit": 0.5230568956812018,
-    "standalone_max_loss": -0.26922568171601535,
-    "standalone_profit_loss_ratio": 1.233159754181201,
-    "standalone_max_consecutive_losses": 3,
-    "bundle_trade_count": 175,
-    "bundle_equity_multiple": 10240.653243754481,
-    "bundle_max_drawdown": -0.25534064469452433,
-    "source_report": "reports/monthly_acde_research/20260831/run_20260831_return_first_final/return_first_summary.json",
+    "selected_variant": "E_TURNOVER_FD_AMOUNT12_OPEN23_NO_TRADE",
+    "standalone_plan_count": 69,
+    "standalone_trade_count": 59,
+    "standalone_win_rate": 0.7966101694915254,
+    "standalone_avg_account_return": 0.06376261534506435,
+    "standalone_median_account_return": 0.0509834783449401,
+    "standalone_equity_multiple": 30.818622006506075,
+    "standalone_max_drawdown": -0.09623820346548773,
+    "standalone_max_profit": 0.5229781755348111,
+    "standalone_max_loss": -0.08105923230691292,
+    "standalone_profit_loss_ratio": 2.3460766389556946,
+    "standalone_max_consecutive_losses": 2,
+    "bundle_trade_count": 174,
+    "bundle_win_rate": 0.7413793103448276,
+    "bundle_avg_account_return": 0.05885093228120308,
+    "bundle_median_account_return": 0.04053620090783183,
+    "bundle_equity_multiple": 10687.85062762251,
+    "bundle_max_drawdown": -0.255340805503775,
+    "bundle_max_profit": 0.4762528686547085,
+    "bundle_max_loss": -0.17603459352274986,
+    "bundle_profit_loss_ratio": 2.343070487017434,
+    "bundle_max_consecutive_losses": 3,
+    "bundle_leg_counts": {"A": 85, "C": 52, "E": 29, "D": 8},
+    "source_report": "reports/current_portfolio_alignment/acde_e_no_trade_v14/release_summary.json",
     "user_approved_at": "2026-09-01",
-    "risk_note": "E独立最大回撤达到-48.50%，但固定A>C>E>D组合历史复利最高；按用户确认的收益高优先标准落地。历史结果不代表未来收益，禁止据此直接扩大资金。"
+    "risk_note": "按用户确认将弱收益联合区间从25%仓位改为直接空仓。最近三年历史回放中E独立回撤降至-9.62%、组合复利提高，但仍属于同窗STRICT_DISCOVERY，不代表未来收益，禁止据此直接扩大资金。"
   }
 }

@@ -49,11 +49,11 @@ class CurrentPortfolioAlignmentTests(unittest.TestCase):
         self.assertFalse(current["release_eligible"])
         self.assertFalse(current["independent_oos_certified"])
         self.assertFalse(current["capacity_certified"])
-        self.assertEqual(current["scenario"], "acde_return_first_10240_20260831_v13")
-        self.assertEqual(current["release_id"], "ACDE_RETURN_FIRST_10240_20260831_V13")
-        self.assertEqual(current["combo_metrics"]["trade_count"], 175)
+        self.assertEqual(current["scenario"], "acde_e_no_trade_10687_20260831_v14")
+        self.assertEqual(current["release_id"], "ACDE_E_NO_TRADE_10687_20260831_V14")
+        self.assertEqual(current["combo_metrics"]["trade_count"], 174)
         self.assertAlmostEqual(
-            current["combo_metrics"]["equity_multiple"], 10240.653243754481
+            current["combo_metrics"]["equity_multiple"], 10687.85062762251
         )
         self.assertTrue(current["deterministic_double_replay"])
 

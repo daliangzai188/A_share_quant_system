@@ -1,10 +1,10 @@
-"""验证E实盘双因子规则与当前严格研究候选是否逐票一致。
+"""验证E实盘V14规则与最近三年冻结计划是否逐票一致。
 
 验证内容：
 1. 配置固定为40条R1规则，且选股条件/排序不含未来成交和收益字段；
 2. 使用与实盘相同的 ``src.strategy_e`` 构造历史候选宇宙；
-3. 对换手率高值优先、一日成交额倍率低值优先的等权日内分位排序逐日核对；
-4. 每日第一名确定后排除13:30~14:30首次涨停组，且禁止回补第二名；
+3. 对换手率高值优先、封单金额/流通市值低值优先的等权日内分位排序逐日核对；
+4. 核对V13单项门禁及“倍率1.2~2且炸板2~3次”AND空仓门禁，禁止回补第二名；
 5. 单账户收益、资金占用和组合腿序由严格组合认证脚本独立验证。
 
 运行：
@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import argparse
 import sys
-import tempfile
 from pathlib import Path
 
 import pandas as pd
@@ -37,53 +36,25 @@ from src.strategy_e import (  # noqa: E402
     select_e_candidates,
     select_e_daily_picks,
 )
-from src.strategy_optimizer import StrategyConditionOptimizer  # noqa: E402
-
-
-HIST_POOL_PATH = PROJECT_ROOT / "data" / "processed" / "limit_up_fill_scored_asof.csv"
-LOCKED_PICKS_PATH = (
-    PROJECT_ROOT
-    / "reports"
-    / "strategy_e_current_window"
-    / "20260630"
-    / "stable_noninferiority_candidate_picks.csv"
-)
+HIST_POOL_PATH = PROJECT_ROOT / "data/research/monthly_acde/20260831/strict_feature_pool.csv"
+LOCKED_PICKS_PATH = PROJECT_ROOT / "reports/current_portfolio_alignment/acde_e_no_trade_v14/e_plans.csv"
 OUTPUT_DIR = PROJECT_ROOT / "reports" / "strategy_e_alignment"
 POSITION_PCT = 0.825
-START_DATE = "20240630"
-END_DATE = "20260630"
-EXPECTED_PRE_GATE_TRADE_COUNT = 113
-EXPECTED_ENTRY_GATE_TRADE_COUNT = 89
+START_DATE = "20230901"
+END_DATE = "20260831"
+EXPECTED_PRE_GATE_TRADE_COUNT = 148
+EXPECTED_V13_GATE_TRADE_COUNT = 81
+EXPECTED_ENTRY_GATE_TRADE_COUNT = 69
 
 
 def load_historical_bucketed_pool(start_date: str, end_date: str, lookback_dates: int) -> pd.DataFrame:
-    """用实盘同一特征链生成历史bucket，并为板块shift保留足够前置窗口。"""
+    """读取月度流水线冻结的严格时点特征池。"""
 
     if not HIST_POOL_PATH.exists():
         raise FileNotFoundError(
-            "历史研究禁止读取全样本成交打分表；请先运行 "
-            "python scripts/score_limit_up_fill_probability.py --historical-asof "
-            "--output-path data/processed/limit_up_fill_scored_asof.csv"
+            "缺少20260831月度流水线冻结特征池，禁止用其他数据临时代替。"
         )
-    raw = pd.read_csv(HIST_POOL_PATH, low_memory=False)
-    method = raw.get("fill_probability_method", pd.Series(dtype=str)).astype(str)
-    if method.empty or not method.eq("asof_turnover_space_proxy_v2").all():
-        raise RuntimeError("历史成交打分表缺少严格as-of方法标识，禁止用于研究/回测")
-    raw["trade_date"] = raw["trade_date"].astype(str).str.replace(r"\.0$", "", regex=True)
-    available = sorted(raw.loc[raw["trade_date"] <= end_date, "trade_date"].unique())
-    start_index = available.index(start_date) if start_date in available else 0
-    first_index = max(0, start_index - max(int(lookback_dates), 3))
-    keep_dates = set(available[first_index:])
-    raw = raw[raw["trade_date"].isin(keep_dates) & (raw["trade_date"] <= end_date)].copy()
-
-    with tempfile.TemporaryDirectory(prefix="e_alignment_") as temp_dir:
-        # 文件名以live_开头，强制optimizer读取逐日分片/原始日线；这与实盘入口一致，
-        # 也避免误读已停止更新的巨大daily_merged单文件。
-        input_path = Path(temp_dir) / "live_e_alignment_pool.csv"
-        raw.to_csv(input_path, index=False, encoding="utf-8-sig")
-        optimizer = StrategyConditionOptimizer(config_path="config/config.json")
-        optimizer.input_trades_path = input_path
-        pool = optimizer.load_trades(require_complete_exit=False)
+    pool = pd.read_csv(HIST_POOL_PATH, dtype={"trade_date": str}, low_memory=False)
     return pool[(pool["trade_date"] >= start_date) & (pool["trade_date"] <= end_date)].copy()
 
 
@@ -112,12 +83,13 @@ def verify_single_account_occupancy(trades: pd.DataFrame) -> list[str]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="验证E实盘与当前双因子89日候选逐票对齐")
+    parser = argparse.ArgumentParser(description="验证E实盘V14与最近三年69个冻结计划逐票对齐")
     parser.add_argument("--lookback-dates", type=int, default=80, help="板块状态前置数据日数量")
     args = parser.parse_args()
 
     spec = load_e_spec(PROJECT_ROOT)
-    locked = pd.read_csv(LOCKED_PICKS_PATH, dtype={"trade_date": str}, low_memory=False)
+    locked = pd.read_csv(LOCKED_PICKS_PATH, dtype={"signal_date": str}, low_memory=False)
+    locked = locked.rename(columns={"signal_date": "trade_date"})
 
     future_fields = sorted(required_signal_fields(spec) & FORBIDDEN_SELECTION_COLUMNS)
     if future_fields:
@@ -127,6 +99,10 @@ def main() -> None:
     universe = build_r1_universe_from_pool(pool, spec, audit_readiness=True)
     candidates = select_e_candidates(universe, spec)
     pre_gate_daily_pick = candidates.groupby("trade_date", as_index=False).head(1).copy()
+    v13_spec = dict(spec)
+    v13_spec["entry_gate"] = dict(spec["entry_gate"])
+    v13_spec["entry_gate"].pop("exclude_all_conditions", None)
+    v13_gate_daily_pick = apply_e_entry_gate(pre_gate_daily_pick, v13_spec)
     daily_pick = select_e_daily_picks(universe, spec)
 
     # 锁定文件是本轮研究中经过现行入场门禁后的89个候选日。用outer合并，
@@ -149,6 +125,10 @@ def main() -> None:
                 "strategy_version": E_VERSION,
                 "scenario_count": len(spec["scenarios"]),
                 "pre_gate_trade_count": len(pre_gate_daily_pick),
+                "v13_gate_trade_count": len(v13_gate_daily_pick),
+                "v14_joint_gate_removed_count": int(
+                    len(v13_gate_daily_pick) - len(daily_pick)
+                ),
                 "entry_gate_removed_count": int(len(pre_gate_daily_pick) - len(daily_pick)),
                 "locked_trade_count": len(locked),
                 "actual_trade_count": len(daily_pick),
@@ -156,10 +136,11 @@ def main() -> None:
                 "same_exit_rule_count": int(compare["same_exit_rule"].sum()),
                 "position_pct": POSITION_PCT,
                 "future_selection_field_count": len(future_fields),
-                "sample_scope": "STRICT_20240630_20260630_DUAL_FACTOR_DAILY_PICKS",
-                "single_account_validation_source": "certify_strict_asof_portfolio.py",
+                "sample_scope": "STRICT_20230901_20260831_E_V14_DAILY_PICKS",
+                "single_account_validation_source": "certify_acde_return_first_release.py",
                 "alignment_passed": bool(
                     len(pre_gate_daily_pick) == EXPECTED_PRE_GATE_TRADE_COUNT
+                    and len(v13_gate_daily_pick) == EXPECTED_V13_GATE_TRADE_COUNT
                     and len(locked) == EXPECTED_ENTRY_GATE_TRADE_COUNT
                     and len(daily_pick) == EXPECTED_ENTRY_GATE_TRADE_COUNT
                     and compare["_merge"].eq("both").all()
@@ -187,9 +168,9 @@ def main() -> None:
     if not bool(summary.iloc[0]["alignment_passed"]):
         mismatches = compare[~(compare["same_stock"] & compare["same_exit_rule"])]
         print(mismatches.to_string(index=False))
-        raise SystemExit("E实盘规则未通过当前双因子候选逐票对齐验证，禁止上线。")
+        raise SystemExit("E实盘V14未通过最近三年冻结计划逐票对齐验证，禁止上线。")
     print(
-        "E对齐验证通过：门禁前113日、门禁后89/89同股同退出；"
+        "E对齐验证通过：原始第一名148日、V13门禁后81日、V14联合门禁后69/69同股同退出；"
         "组合单账户结果由当前组合认证报告锁定。"
     )
 

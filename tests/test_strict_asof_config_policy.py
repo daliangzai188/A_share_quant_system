@@ -61,7 +61,7 @@ class StrictAsOfConfigPolicyTests(unittest.TestCase):
         self.assertEqual(certification["certification_required_status"], "PASS")
         self.assertEqual(
             certification["certification_expected_scenario"],
-            "acde_return_first_10240_20260831_v13",
+            "acde_e_no_trade_10687_20260831_v14",
         )
         self.assertTrue(certification["certification_require_hashes"])
         self.assertFalse(certification["certification_require_strict_asof"])

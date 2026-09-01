@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "status": "FORMAL_RULES_APPLIED_DISCOVERY_ONLY",
-  "release_id": "ACDE_RETURN_FIRST_10240_20260831_V13",
+  "release_id": "ACDE_E_NO_TRADE_10687_20260831_V14",
   "invalidated_at": null,
   "invalidated_reason": "",
   "strategy_priority_order": [
@@ -14,7 +14,7 @@
   "research_input_end_date": "20260831",
   "oos_start_date": "20260901",
   "certification_status": "BACKTEST_REPRODUCED_NOT_OOS_OR_CAPACITY_CERTIFIED",
-  "certification_scenario": "acde_return_first_10240_20260831_v13",
+  "certification_scenario": "acde_e_no_trade_10687_20260831_v14",
   "capacity_certified": false,
-  "note": "用户明确选择最近三年纯收益最高NEW组合，A/C/E/D正式规则已落地且精确现金回放复现175笔、10240.653243754481倍。本文件不把同窗32,256组合搜索伪装成独立样本外或容量认证；真实BUY继续受交易时间、余额、仓位、重复委托、成交可靠性、涨跌停、流动性和QMT状态等执行风控约束。"
+  "note": "用户明确要求E不看好时直接不开仓，并授权落地V14。A/C/D冻结不变，E改用换手率高与封单比例低的等权分位排序；每日第一名同时命中成交额倍率1.2~2和炸板2~3次时直接空仓且不回补。精确现金回放复现174笔、10687.85062762251倍。本文件不把同窗STRICT_DISCOVERY伪装成独立样本外或容量认证；真实BUY继续受交易时间、余额、仓位、重复委托、成交可靠性、涨跌停、流动性和QMT状态等执行风控约束。"
 }

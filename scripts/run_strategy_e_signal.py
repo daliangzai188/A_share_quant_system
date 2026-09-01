@@ -1,10 +1,10 @@
 """
 策略E每日收盘后信号生成脚本。
 
-策略条件（无前视、单账户R1、入场门禁对齐版）：
+策略条件（无前视、单账户R1、V14直接空仓对齐版）：
   - 40条R1规则各选信号日第一名，合并成可执行候选宇宙
-  - 在候选宇宙里保留板块neutral，对换手率高、一日成交额倍率低做等权日内分位评分
-  - 每日第一名若在13:30~14:30首次涨停，当日E空仓，不回补第二名
+  - 在候选宇宙里保留板块neutral，对换手率高、封单比例低做等权日内分位评分
+  - 保留V13四项单项门禁；倍率1.2~2且炸板2~3次时直接空仓，不回补第二名
   - T+1开盘买入；按命中规则在T+2或T+3收盘卖出
   - 仅在 A/C/D 均未占用资金时触发；B已删除
   - 关键字段、成交可靠性或完整数据任一不满足时拒绝生成信号
@@ -78,31 +78,31 @@ POSITION_PCT = 0.825
 E_MIN_CIRC_MV = 0       # 不设下限
 E_MAX_CIRC_MV = float("inf")
 E_RESEARCH_AUDIT = {
-    "window": "20240630~20260630",
-    "rule": "R1_no_lookahead_single_account_entry_gate_v6_turnover_amount_ratio_score",
+    "window": "20230901~20260831",
+    "rule": "R1_v14_turnover_fd_score_amount12_open23_no_trade",
     # 候选池计数只说明有多少个历史信号可评估；独立策略指标必须再执行
     # 单账户占仓约束，上一笔退出前不得复用同一笔资金。
-    "candidate_pool_before_gate_trade_count": 113,
-    "candidate_pool_after_gate_trade_count": 89,
-    "standalone_trade_count": 74,
-    "standalone_avg_account_return": 0.03810258369129678,
-    "standalone_median_account_return": 0.017921563012179384,
-    "standalone_win_rate": 0.6486486486486487,
-    "standalone_equity_multiple": 11.70378989651547,
-    "standalone_max_drawdown": -0.24746103236951633,
-    "aligned_max_profit": 0.5231929254879739,
-    "aligned_max_loss": -0.17629142067722955,
-    "standalone_profit_loss_ratio": 1.8015237564601654,
-    "standalone_max_consecutive_losses": 3,
-    "candidate_pool_equity_multiple": 15.634337181122449,
+    "raw_daily_first_trade_count": 148,
+    "candidate_pool_before_gate_trade_count": 81,
+    "candidate_pool_after_gate_trade_count": 69,
+    "standalone_trade_count": 59,
+    "standalone_avg_account_return": 0.06376261534506435,
+    "standalone_median_account_return": 0.0509834783449401,
+    "standalone_win_rate": 0.7966101694915254,
+    "standalone_equity_multiple": 30.818622006506075,
+    "standalone_max_drawdown": -0.09623820346548773,
+    "aligned_max_profit": 0.5229781755348111,
+    "aligned_max_loss": -0.08105923230691292,
+    "standalone_profit_loss_ratio": 2.3460766389556946,
+    "standalone_max_consecutive_losses": 2,
     "position_pct": POSITION_PCT,
-    "source_report": "reports/current_portfolio_alignment/strict_asof_audit.json",
+    "source_report": "reports/current_portfolio_alignment/acde_e_no_trade_v14/release_summary.json",
     "old_62_trade_reference_is_live_realisable": False,
-    "entry_gate": "排除每日第一名first_time_detail_bucket=1330_1430，且不回补第二名。",
-    "final_ranking": "换手率高值优先与一日成交额倍率低值优先，各自按同日候选分位计分并等权合成。",
+    "entry_gate": "保留V13四项单项门禁；每日第一名同时命中成交额倍率1.2~2和炸板2~3次时直接空仓，不回补第二名。",
+    "final_ranking": "换手率高值优先与封单金额/流通市值低值优先，各自按同日候选分位计分并等权合成。",
     "research_protocol": "STRICT_DISCOVERY",
     "release_eligible": False,
-    "overfit_warning": "双因子最终排序来自同窗口160个唯一候选结果比较，只直接改变3个E信号日，组合增量集中于2026年6月，存在多重比较、路径依赖和过拟合风险；严格as-of只证明未使用决策时点后数据，历史结果不代表未来收益。",
+    "overfit_warning": "V14排序与联合空仓门禁均查看过当前最近三年窗口，属于STRICT_DISCOVERY，存在多重比较、路径依赖和过拟合风险；严格as-of只证明未使用决策时点后数据，历史结果不代表未来收益。",
 }
 
 
@@ -349,10 +349,15 @@ def build_signal(signal_date: str, candidate: pd.Series, segment_states: dict[st
     spec = load_e_spec(PROJECT_ROOT)
     exit_rule = str(candidate.get("exit_rule", ""))
     exit_offset = resolve_exit_offset(spec, exit_rule)
-    # 双因子排名值和综合分必须来自已完成的正式候选链。这里再次fail-closed，
-    # 防止未来其他调用方绕过select_e_candidates后把缺失值静默写成0并下发。
+    # 双因子排名值、联合门禁原始倍率和综合分必须来自正式候选链。这里再次
+    # fail-closed，防止调用方绕过select_e_candidates后把缺失值静默写成0。
     ranking_values: dict[str, float] = {}
-    for field in ("turnover_rate", "amount_ratio_1d", "_e_final_score"):
+    for field in (
+        "turnover_rate",
+        "fd_amount_to_circ_mv",
+        "amount_ratio_1d",
+        "_e_final_score",
+    ):
         value = pd.to_numeric(candidate.get(field), errors="coerce")
         if pd.isna(value) or not float("-inf") < float(value) < float("inf"):
             raise RuntimeError(f"E信号关键排名字段不可用：{field}")
@@ -378,10 +383,11 @@ def build_signal(signal_date: str, candidate: pd.Series, segment_states: dict[st
         "circ_mv": float(candidate.get("circ_mv", 0)),
         "turnover_rate": ranking_values["turnover_rate"],
         "amount_ratio_1d": ranking_values["amount_ratio_1d"],
+        "fd_amount_to_circ_mv": ranking_values["fd_amount_to_circ_mv"],
         "final_ranking_score": ranking_values["_e_final_score"],
         "final_ranking_rule": (
             "daily_percentile_turnover_rate_desc_50pct_plus_"
-            "amount_ratio_1d_asc_50pct_then_scenario_rank_ts_code_asc"
+            "fd_amount_to_circ_mv_asc_50pct_then_scenario_rank_ts_code_asc"
         ),
         "limit_close": float(candidate.get("limit_close", 0)),
         "fill_probability": float(candidate.get("fill_probability", 0)),
@@ -424,11 +430,12 @@ def save_candidates(signal_date: str, candidates: pd.DataFrame, dry_run: bool) -
     path = OUTPUT_DIR / f"e_signal_{signal_date}_candidates.csv"
     cols = [c for c in ["ts_code", "name", "market_segment", "segment_retreat_state_bucket",
                          "scenario_rank", "exit_rule", "scenario",
-                         "turnover_rate", "amount_ratio_1d", "_e_rank_turnover_rate",
-                         "_e_rank_amount_ratio_1d", "_e_final_score",
+                         "turnover_rate", "amount_ratio_1d", "fd_amount_to_circ_mv",
+                         "open_times_bucket", "amount_ratio_bucket",
+                         "_e_rank_turnover_rate", "_e_rank_fd_amount_to_circ_mv", "_e_final_score",
                          "limit_data_quality", "limit_data_source", "strategy_compatible",
                          "circ_mv", "fill_probability", "allow_buy_reliable", "is_fill_score_reliable",
-                         "limit_close", "fd_amount_to_circ_mv"] if c in candidates.columns]
+                         "limit_close"] if c in candidates.columns]
     # 即使候选为0也覆盖当天文件，防止同一天重跑后仍读到先前非空候选的陈旧结果。
     if not dry_run:
         candidates[cols].to_csv(path, index=False, encoding="utf-8-sig")
@@ -645,7 +652,7 @@ def run_signal_generation(signal_date: str, *, dry_run: bool) -> None:
     cand_path = save_candidates(signal_date, candidates, dry_run)
 
     if candidates.empty:
-        reason = "R1每日第一名未通过neutral/成交可靠性/13:30~14:30入场门禁，E不触发且不回补第二名"
+        reason = "R1每日第一名未通过neutral、成交可靠性或V14无回补入场门禁，E直接空仓且不回补第二名"
         print(f"[E信号] {reason}。")
         save_run_status(
             signal_date,
@@ -671,7 +678,8 @@ def run_signal_generation(signal_date: str, *, dry_run: bool) -> None:
     print(f"  板块:       {signal['market_segment']}  ({signal['segment_retreat_state_bucket']})")
     print(f"  流通市值:   {signal['circ_mv']/10000:.1f} 亿")
     print(f"  信号日换手: {signal['turnover_rate']:.2f}%（高值优先）")
-    print(f"  成交额倍率: {signal['amount_ratio_1d']:.3f}（低值优先）")
+    print(f"  封单/流通市值: {signal['fd_amount_to_circ_mv']:.4%}（低值优先）")
+    print(f"  成交额倍率: {signal['amount_ratio_1d']:.3f}（只用于V14联合空仓门禁）")
     print(f"  综合分位分: {signal['final_ranking_score']:.4f}（两个因子各50%）")
     print(f"  成交概率:   {signal['fill_probability']:.1%}")
     print(f"  R1规则:     rank={signal['r1_scenario_rank']}  退出={signal['exit_rule']}")

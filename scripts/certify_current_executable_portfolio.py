@@ -60,7 +60,7 @@ from src.market_rules import (  # noqa: E402
     listing_trade_day_number,
     price_limit_pct,
 )
-from src.strategy_e import load_e_spec  # noqa: E402
+from src.strategy_e import apply_e_entry_gate, load_e_spec  # noqa: E402
 from src.strict_asof import STRICT_ASOF_STANDARD_ID, STRICT_DISCOVERY  # noqa: E402
 from src.live_certification import (  # noqa: E402
     certification_file_size,
@@ -331,14 +331,9 @@ def source_row(table: pd.DataFrame, date: str, source: str) -> pd.Series:
 
 
 def e_entry_gate_passes(row: pd.Series, spec: dict[str, Any]) -> bool:
-    """只用信号日字段执行配置化E入场门禁。"""
+    """复用正式E门禁，避免认证脚本漏掉V14的AND空仓规则。"""
 
-    for column, values in spec.get("entry_gate", {}).get("exclude_values", {}).items():
-        if column not in row.index:
-            raise RuntimeError(f"E锁定明细缺少入场门禁字段：{column}")
-        if str(row.get(column, "")) in {str(value) for value in values}:
-            return False
-    return True
+    return not apply_e_entry_gate(pd.DataFrame([row.to_dict()]), spec).empty
 
 
 def load_ac_daily() -> dict[str, dict[str, Any]]:

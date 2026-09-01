@@ -264,8 +264,8 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
         self.assertEqual(kwargs["counterfactual_e_status"], "NO_CANDIDATE")
         self.assertIn("A今日已生成计划委托", kwargs["priority_blocker"])
 
-    def test_e_signal_and_candidate_audit_require_dual_factor_values(self) -> None:
-        """正式信号和候选审计文件都必须保留新增双因子排名证据。"""
+    def test_e_signal_and_candidate_audit_require_v14_factor_values(self) -> None:
+        """正式信号和候选审计必须保留V14排序及联合门禁证据。"""
 
         candidate = pd.Series(
             {
@@ -278,18 +278,22 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
                 "exit_rule": "fixed_t2_close",
                 "turnover_rate": 12.0,
                 "amount_ratio_1d": 1.5,
+                "amount_ratio_bucket": "1_2_2",
+                "open_times_bucket": "1",
+                "fd_amount_to_circ_mv": 0.008,
                 "_e_rank_turnover_rate": 1.0,
-                "_e_rank_amount_ratio_1d": 0.5,
+                "_e_rank_fd_amount_to_circ_mv": 0.5,
                 "_e_final_score": 0.75,
             }
         )
         signal = run_strategy_e_signal.build_signal("20260821", candidate, {})
         self.assertEqual(signal["turnover_rate"], 12.0)
         self.assertEqual(signal["amount_ratio_1d"], 1.5)
+        self.assertEqual(signal["fd_amount_to_circ_mv"], 0.008)
         self.assertEqual(signal["final_ranking_score"], 0.75)
 
-        missing = candidate.drop(labels=["amount_ratio_1d"])
-        with self.assertRaisesRegex(RuntimeError, "amount_ratio_1d"):
+        missing = candidate.drop(labels=["fd_amount_to_circ_mv"])
+        with self.assertRaisesRegex(RuntimeError, "fd_amount_to_circ_mv"):
             run_strategy_e_signal.build_signal("20260821", missing, {})
 
         with tempfile.TemporaryDirectory(prefix="e_candidate_audit_") as temp_dir:
@@ -304,8 +308,11 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
             {
                 "turnover_rate",
                 "amount_ratio_1d",
+                "fd_amount_to_circ_mv",
+                "amount_ratio_bucket",
+                "open_times_bucket",
                 "_e_rank_turnover_rate",
-                "_e_rank_amount_ratio_1d",
+                "_e_rank_fd_amount_to_circ_mv",
                 "_e_final_score",
             }.issubset(saved.columns)
         )

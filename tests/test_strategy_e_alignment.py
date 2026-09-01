@@ -113,14 +113,14 @@ class StrategyEAlignmentTests(unittest.TestCase):
         )
         self.assertEqual(runtime["strategy_e"]["strategy_version"], E_VERSION)
         metrics = runtime["portfolio_certification"]["live_candidate_metrics"]
-        self.assertEqual(metrics["strict_asof_trade_count"], 175)
+        self.assertEqual(metrics["strict_asof_trade_count"], 174)
         self.assertAlmostEqual(
             metrics["strict_asof_equity_multiple"],
-            10240.653243754481,
+            10687.85062762251,
         )
         self.assertEqual(
             metrics["strict_asof_leg_counts"],
-            {"A": 86, "C": 51, "E": 30, "D": 8},
+            {"A": 85, "C": 52, "E": 29, "D": 8},
         )
 
     def test_production_spec_has_40_rules_and_no_future_columns(self) -> None:
@@ -146,7 +146,7 @@ class StrategyEAlignmentTests(unittest.TestCase):
         )
         self.assertEqual(
             spec["final_ranking"]["columns"],
-            ["turnover_rate", "amount_ratio_1d"],
+            ["turnover_rate", "fd_amount_to_circ_mv"],
         )
         self.assertEqual(spec["final_ranking"]["ascending"], [False, True])
         self.assertEqual(spec["final_ranking"]["weights"], [0.5, 0.5])
@@ -154,8 +154,17 @@ class StrategyEAlignmentTests(unittest.TestCase):
             spec["final_ranking"]["method"],
             "daily_percentile_weighted_score",
         )
-        self.assertIn("amount_ratio_1d", required_signal_fields(spec))
-        self.assertIn("V13_FD_RATIO_2_5PCT_GATE", E_VERSION)
+        self.assertIn("fd_amount_to_circ_mv", required_signal_fields(spec))
+        self.assertIn("amount_ratio_bucket", required_signal_fields(spec))
+        self.assertIn("open_times_bucket", required_signal_fields(spec))
+        self.assertEqual(
+            spec["entry_gate"]["exclude_all_conditions"][0]["conditions"],
+            {
+                "amount_ratio_bucket": ["1_2_2"],
+                "open_times_bucket": ["2_3"],
+            },
+        )
+        self.assertIn("V14_TURNOVER_FD_SCORE", E_VERSION)
         audit = spec["strict_2y_ranking_optimization"]
         self.assertEqual(
             audit["metric_scope"], "STRICT_ASOF_E_STANDALONE_SINGLE_ACCOUNT"
@@ -174,7 +183,7 @@ class StrategyEAlignmentTests(unittest.TestCase):
                     "ts_code": "300001.SZ",
                     "segment_retreat_state_bucket": "neutral",
                     "turnover_rate": 12.0,
-                    "amount_ratio_1d": 4.0,
+                    "fd_amount_to_circ_mv": 0.04,
                     "scenario_rank": 1,
                 },
                 {
@@ -182,7 +191,7 @@ class StrategyEAlignmentTests(unittest.TestCase):
                     "ts_code": "300002.SZ",
                     "segment_retreat_state_bucket": "neutral",
                     "turnover_rate": 10.0,
-                    "amount_ratio_1d": 1.0,
+                    "fd_amount_to_circ_mv": 0.01,
                     "scenario_rank": 2,
                 },
                 {
@@ -190,7 +199,7 @@ class StrategyEAlignmentTests(unittest.TestCase):
                     "ts_code": "300003.SZ",
                     "segment_retreat_state_bucket": "neutral",
                     "turnover_rate": 8.0,
-                    "amount_ratio_1d": 2.0,
+                    "fd_amount_to_circ_mv": 0.02,
                     "scenario_rank": 3,
                 },
             ]
@@ -198,7 +207,7 @@ class StrategyEAlignmentTests(unittest.TestCase):
         spec = {
             "final_ranking": {
                 "method": "daily_percentile_weighted_score",
-                "columns": ["turnover_rate", "amount_ratio_1d"],
+                "columns": ["turnover_rate", "fd_amount_to_circ_mv"],
                 "ascending": [False, True],
                 "weights": [0.5, 0.5],
                 "tie_breaker_columns": ["scenario_rank", "ts_code"],
@@ -224,14 +233,14 @@ class StrategyEAlignmentTests(unittest.TestCase):
         spec = {
             "final_ranking": {
                 "method": "daily_percentile_weighted_score",
-                "columns": ["turnover_rate", "amount_ratio_1d"],
+                "columns": ["turnover_rate", "fd_amount_to_circ_mv"],
                 "ascending": [False, True],
                 "weights": [0.5, 0.5],
                 "tie_breaker_columns": ["scenario_rank", "ts_code"],
                 "tie_breaker_ascending": [True, True],
             }
         }
-        with self.assertRaisesRegex(RuntimeError, "amount_ratio_1d"):
+        with self.assertRaisesRegex(RuntimeError, "fd_amount_to_circ_mv"):
             select_e_candidates(universe, spec)
 
     def test_scenario_parser_restores_conditions_sort_and_exit(self) -> None:
@@ -276,10 +285,11 @@ class StrategyEAlignmentTests(unittest.TestCase):
         self.assertAlmostEqual(float(equity.iloc[-1]), 14.2402504740, places=8)
         self.assertAlmostEqual(float(drawdown.min()), -0.2546037202, places=8)
 
-    def test_v13_entry_gate_complete_sample_has_53_candidate_days(self) -> None:
+    def test_archived_v13_entry_gate_sample_stays_reproducible(self) -> None:
         path = PROJECT_ROOT / "reports" / "strategy_e_samples" / "e_r1_daily_candidates_full.csv"
         trades = pd.read_csv(path, dtype={"trade_date": str}, low_memory=False)
         spec = load_e_spec(PROJECT_ROOT)
+        spec["entry_gate"].pop("exclude_all_conditions", None)
         eligible = apply_e_entry_gate(trades, spec)
         returns = pd.to_numeric(eligible["net_return"], errors="raise") * 0.825
         equity = (1 + returns).cumprod()
@@ -288,6 +298,32 @@ class StrategyEAlignmentTests(unittest.TestCase):
         self.assertEqual(len(eligible), 53)
         self.assertAlmostEqual(float(equity.iloc[-1]), 12.3555402425, places=8)
         self.assertAlmostEqual(float(drawdown.min()), -0.1503288897, places=8)
+
+    def test_v14_joint_gate_requires_both_risk_conditions(self) -> None:
+        spec = make_test_spec()
+        spec["entry_gate"] = {
+            "exclude_values": {},
+            "exclude_all_conditions": [
+                {
+                    "rule_id": "joint_test",
+                    "conditions": {
+                        "amount_ratio_bucket": ["1_2_2"],
+                        "open_times_bucket": ["2_3"],
+                    },
+                }
+            ],
+            "apply_after_daily_first_pick": True,
+            "fallback_to_second_candidate": False,
+        }
+        picks = pd.DataFrame(
+            [
+                {"ts_code": "A", "amount_ratio_bucket": "1_2_2", "open_times_bucket": "2_3"},
+                {"ts_code": "B", "amount_ratio_bucket": "1_2_2", "open_times_bucket": "1"},
+                {"ts_code": "C", "amount_ratio_bucket": "2_3", "open_times_bucket": "2_3"},
+            ]
+        )
+        passed = apply_e_entry_gate(picks, spec)
+        self.assertEqual(passed["ts_code"].tolist(), ["B", "C"])
 
     def test_legacy_e2_identity_is_read_as_e_with_explicit_variant(self) -> None:
         self.assertEqual(normalize_strategy_leg("E2"), "E")

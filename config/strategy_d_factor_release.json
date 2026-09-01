@@ -175,20 +175,20 @@
       "max_consecutive_losses": 2
     },
     "acde": {
-      "trade_count": 175,
-      "win_rate": 0.7428571428571429,
-      "avg_account_return": 0.058192201138335294,
-      "median_account_return": 0.042359031004999936,
-      "equity_multiple": 10240.653243754481,
-      "max_drawdown": -0.25534064469452433,
-      "max_profit": 0.4762529834346876,
-      "max_loss": -0.17603442208877318,
-      "profit_loss_ratio": 2.2854610177117114,
+      "trade_count": 174,
+      "win_rate": 0.7413793103448276,
+      "avg_account_return": 0.05885093228120308,
+      "median_account_return": 0.04053620090783183,
+      "equity_multiple": 10687.85062762251,
+      "max_drawdown": -0.255340805503775,
+      "max_profit": 0.4762528686547085,
+      "max_loss": -0.17603459352274986,
+      "profit_loss_ratio": 2.343070487017434,
       "max_consecutive_losses": 3,
       "leg_counts": {
-        "A": 86,
-        "C": 51,
-        "E": 30,
+        "A": 85,
+        "C": 52,
+        "E": 29,
         "D": 8
       }
     }
@@ -197,7 +197,7 @@
   "release_gate_passed": true,
   "human_review_required": true,
   "human_review_completed": true,
-  "human_review_note": "用户于2026-09-01明确选择最近三年纯收益最高的10240.653244倍NEW组合并要求落地；固定A>C>E>D、仓位、费用和执行口径不变。",
-  "source_report": "reports/monthly_acde_research/20260831/run_20260831_return_first_final/return_first_summary.json",
+  "human_review_note": "用户于2026-09-01授权落地E直接空仓优化；D规则不变，固定A>C>E>D、仓位、费用和执行口径不变，组合更新为174笔、10687.850628倍。",
+  "source_report": "reports/current_portfolio_alignment/acde_e_no_trade_v14/release_summary.json",
   "applied_at": "2026-09-01T00:00:00+07:00"
 }

@@ -1,6 +1,6 @@
 {
   "file_role": "A/C两条实盘腿的选股规则源。⚠️本文件确实驱动实盘：守护进程trading_daemon.py 与 run_paper_ab_filtered_daily_ops.py 都从这里加载A/C的入选条件。顶层enabled/live_trading_enabled/broker_adapter_enabled/qmt_enabled 是研究期遗留的占位开关，实盘总闸在 config/config.json，不要据此判断本文件是否生效。",
-  "strategy_name": "acde_return_first_a_afternoon_gate_c_single_open_v13",
+  "strategy_name": "acde_e_no_trade_a_afternoon_gate_c_single_open_v14",
   "enabled": false,
   "description": "A收益优先正式版。保留原A的0.3%-1%两条核心分支、1%-2%非一字补位、排序和T+2退出；每日第一名若首次封板属于下午时段则当日A空仓，不回补第二名。",
   "version": "2026-09-01",
@@ -51,10 +51,10 @@
     "standalone_max_loss": -0.11847246855829363,
     "standalone_profit_loss_ratio": 2.4616069154734586,
     "standalone_max_consecutive_losses": 3,
-    "bundle_trade_count": 175,
-    "bundle_equity_multiple": 10240.653243754481,
-    "bundle_max_drawdown": -0.25534064469452433,
-    "source_report": "reports/monthly_acde_research/20260831/run_20260831_return_first_final/return_first_summary.json",
+    "bundle_trade_count": 174,
+    "bundle_equity_multiple": 10687.85062762251,
+    "bundle_max_drawdown": -0.255340805503775,
+    "source_report": "reports/current_portfolio_alignment/acde_e_no_trade_v14/release_summary.json",
     "user_approved_at": "2026-09-01",
     "risk_note": "按收益高优先标准落地；最近三年历史结果属于STRICT_DISCOVERY，不代表未来收益。"
   },
@@ -402,7 +402,7 @@
   },
   "paper_ab_filtered_strategy": {
     "file_role": "A严格主策略 + C强势龙头五分支OR补位策略配置。B策略已从当前交易链路彻底移除，历史B结果只保留在旧报告中审计。",
-    "strategy_label": "acde_return_first_10240_20260831_v13",
+    "strategy_label": "acde_e_no_trade_10687_20260831_v14",
     "data_quality_requirements": {
       "required_limit_data_quality": "full",
       "required_columns": [
@@ -733,10 +733,10 @@
         "standalone_max_loss": -0.17589327975064117,
         "standalone_profit_loss_ratio": 1.632015117728434,
         "standalone_max_consecutive_losses": 3,
-        "bundle_trade_count": 175,
-        "bundle_equity_multiple": 10240.653243754481,
-        "bundle_max_drawdown": -0.25534064469452433,
-        "source_report": "reports/monthly_acde_research/20260831/run_20260831_return_first_final/return_first_summary.json",
+        "bundle_trade_count": 174,
+        "bundle_equity_multiple": 10687.85062762251,
+        "bundle_max_drawdown": -0.255340805503775,
+        "source_report": "reports/current_portfolio_alignment/acde_e_no_trade_v14/release_summary.json",
         "user_approved_at": "2026-09-01",
         "risk_note": "C独立复利略低于旧C，但固定A>C>E>D组合复利更高；按收益高优先标准落地。历史结果属于STRICT_DISCOVERY，不承诺未来收益。"
       }
