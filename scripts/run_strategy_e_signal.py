@@ -96,7 +96,7 @@ E_RESEARCH_AUDIT = {
     "standalone_profit_loss_ratio": 2.3460766389556946,
     "standalone_max_consecutive_losses": 2,
     "position_pct": POSITION_PCT,
-    "source_report": "reports/current_portfolio_alignment/acde_e_no_trade_v14/release_summary.json",
+    "source_report": "reports/current_portfolio_alignment/acde_d_active_lt20_open2_v15/release_summary.json",
     "old_62_trade_reference_is_live_realisable": False,
     "entry_gate": "保留V13四项单项门禁；每日第一名同时命中成交额倍率1.2~2和炸板2~3次时直接空仓，不回补第二名。",
     "final_ranking": "换手率高值优先与封单金额/流通市值低值优先，各自按同日候选分位计分并等权合成。",

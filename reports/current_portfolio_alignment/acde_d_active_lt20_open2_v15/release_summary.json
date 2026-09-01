@@ -1,0 +1,186 @@
+{
+  "schema_version": 1,
+  "scenario": "acde_d_active_lt20_open2_12483_20260831_v15",
+  "release_id": "ACDE_D_ACTIVE_LT20_OPEN2_12483_20260831_V15",
+  "window": {
+    "start": "20230901",
+    "end": "20260831"
+  },
+  "selected_variants": {
+    "A": "A_RISK_EXCLUDE_AFTERNOON_FIRST_SEAL",
+    "C": "C_RISK_EXCLUDE_SINGLE_OPEN",
+    "E": "E_TURNOVER_FD_AMOUNT12_OPEN23_NO_TRADE",
+    "D": "D_ACTIVE_LT20_OPEN2_EXTENSION"
+  },
+  "combo_metrics": {
+    "trade_count": 177,
+    "win_rate": 0.751412429378531,
+    "avg_account_return": 0.05873599209363823,
+    "median_account_return": 0.03893031151086923,
+    "equity_multiple": 12483.978370389923,
+    "max_drawdown": -0.25534081230210814,
+    "max_drawdown_peak_date": "20260706",
+    "max_drawdown_trough_date": "20260716",
+    "max_profit": 0.4762529831005069,
+    "max_loss": -0.17603457811871615,
+    "profit_loss_ratio": 2.3118357302467425,
+    "max_consecutive_losses": 3,
+    "leg_counts": {
+      "A": 85,
+      "C": 52,
+      "D": 11,
+      "E": 29
+    },
+    "buy_commission": 43966149.745626755,
+    "sell_commission": 45889396.41870553,
+    "transfer_fee": 2995184.872144411,
+    "stamp_tax": 76482327.36450924,
+    "total_fees": 169333058.400986,
+    "buy_slippage": 142156733.37253457,
+    "sell_slippage": 153117772.50152093,
+    "total_slippage": 295274505.8740555
+  },
+  "standalone_metrics": {
+    "A": {
+      "trade_count": 108,
+      "win_rate": 0.6481481481481481,
+      "avg_account_return": 0.05309198223687757,
+      "median_account_return": 0.03086286547738737,
+      "equity_multiple": 155.026902029871,
+      "max_drawdown": -0.19372149239299818,
+      "max_drawdown_peak_date": "20240923",
+      "max_drawdown_trough_date": "20250103",
+      "max_profit": 0.4762514258462671,
+      "max_loss": -0.11847246855829363,
+      "profit_loss_ratio": 2.4616069154734563,
+      "max_consecutive_losses": 3,
+      "leg_counts": {
+        "A": 108
+      },
+      "buy_commission": 517232.27094438893,
+      "sell_commission": 540934.8054452729,
+      "transfer_fee": 35272.2358796554,
+      "stamp_tax": 901558.009075455,
+      "total_fees": 1994997.3213447724,
+      "buy_slippage": 1722385.1846297956,
+      "sell_slippage": 1804920.9390900047,
+      "total_slippage": 3527306.1237198
+    },
+    "C": {
+      "trade_count": 61,
+      "win_rate": 0.7377049180327869,
+      "avg_account_return": 0.051972537753495106,
+      "median_account_return": 0.052706355382438064,
+      "equity_multiple": 17.908557701363033,
+      "max_drawdown": -0.17589327975064128,
+      "max_drawdown_peak_date": "20260706",
+      "max_drawdown_trough_date": "20260716",
+      "max_profit": 0.2165472971520006,
+      "max_loss": -0.17589327975064128,
+      "profit_loss_ratio": 1.632015117728433,
+      "max_consecutive_losses": 3,
+      "leg_counts": {
+        "C": 61
+      },
+      "buy_commission": 40599.8356764,
+      "sell_commission": 43183.684064756584,
+      "transfer_fee": 2792.783991371886,
+      "stamp_tax": 71972.80677459431,
+      "total_fees": 158549.11050712276,
+      "buy_slippage": 135197.58799998523,
+      "sell_slippage": 144073.11300000167,
+      "total_slippage": 279270.70099998696
+    },
+    "E": {
+      "trade_count": 59,
+      "win_rate": 0.7966101694915254,
+      "avg_account_return": 0.06376261534506435,
+      "median_account_return": 0.0509834783449401,
+      "equity_multiple": 30.818622006506075,
+      "max_drawdown": -0.09623820346548773,
+      "max_drawdown_peak_date": "20260629",
+      "max_drawdown_trough_date": "20260713",
+      "max_profit": 0.5229781755348111,
+      "max_loss": -0.08105923230691292,
+      "profit_loss_ratio": 2.3460766389556946,
+      "max_consecutive_losses": 2,
+      "leg_counts": {
+        "E": 59
+      },
+      "buy_commission": 67941.21063529799,
+      "sell_commission": 72493.78567797,
+      "transfer_fee": 4681.1665437756,
+      "stamp_tax": 120822.97612995002,
+      "total_fees": 265939.13898699364,
+      "buy_slippage": 226244.45765997597,
+      "sell_slippage": 241887.84009999916,
+      "total_slippage": 468132.2977599751
+    },
+    "D": {
+      "trade_count": 28,
+      "win_rate": 0.75,
+      "avg_account_return": 0.04339147279073494,
+      "median_account_return": 0.024842856970789917,
+      "equity_multiple": 3.0910717887644705,
+      "max_drawdown": -0.06952092036932622,
+      "max_drawdown_peak_date": "20241111",
+      "max_drawdown_trough_date": "20241206",
+      "max_profit": 0.21882557743748055,
+      "max_loss": -0.06952092036932633,
+      "profit_loss_ratio": 1.7908053213032897,
+      "max_consecutive_losses": 2,
+      "leg_counts": {
+        "D": 28
+      },
+      "buy_commission": 4660.313198999999,
+      "sell_commission": 4979.452020542999,
+      "transfer_fee": 321.32550731810005,
+      "stamp_tax": 8299.086700905,
+      "total_fees": 18260.1774277661,
+      "buy_slippage": 0.0,
+      "sell_slippage": 16614.788189999676,
+      "total_slippage": 16614.788189999676
+    }
+  },
+  "e_plan_count": 69,
+  "e_selection_counts": {
+    "raw_daily_first": 148,
+    "after_v13_single_value_gates": 81,
+    "v14_joint_gate_removed": 12,
+    "formal_plans": 69,
+    "standalone_executed": 59
+  },
+  "d_selection_counts": {
+    "formal_plans": 38,
+    "observable_plans": 32,
+    "queue_unconfirmed_fail_closed": 6,
+    "standalone_executed": 28,
+    "portfolio_executed": 11
+  },
+  "rule": {
+    "ranking": "daily_percentile(turnover_rate:desc)*50% + daily_percentile(fd_amount_to_circ_mv:asc)*50%",
+    "joint_no_trade": {
+      "amount_ratio_bucket": [
+        "1_2_2"
+      ],
+      "open_times_bucket": [
+        "2_3"
+      ],
+      "logic": "AND",
+      "fallback_to_second_candidate": false,
+      "position_when_matched": 0.0
+    },
+    "d_extension": {
+      "market_active_count_bucket": [
+        "LT20"
+      ],
+      "open_count_bucket": [
+        "2"
+      ],
+      "logic": "OR_WITH_EXISTING_12_PROFILES",
+      "fallback_to_later_candidate": false
+    }
+  },
+  "research_protocol": "STRICT_DISCOVERY",
+  "risk_note": "177笔、12483.978370倍是最近三年同窗STRICT_DISCOVERY历史机械复利，不是收益承诺；D独立28笔、弱广度扩展独立14笔，且相邻炸板次数桶不稳定，尚无独立冻结样本外和真实资金容量认证。"
+}

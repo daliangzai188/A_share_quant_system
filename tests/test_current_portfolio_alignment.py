@@ -49,11 +49,15 @@ class CurrentPortfolioAlignmentTests(unittest.TestCase):
         self.assertFalse(current["release_eligible"])
         self.assertFalse(current["independent_oos_certified"])
         self.assertFalse(current["capacity_certified"])
-        self.assertEqual(current["scenario"], "acde_e_no_trade_10687_20260831_v14")
-        self.assertEqual(current["release_id"], "ACDE_E_NO_TRADE_10687_20260831_V14")
-        self.assertEqual(current["combo_metrics"]["trade_count"], 174)
+        self.assertEqual(current["scenario"], "acde_d_active_lt20_open2_12483_20260831_v15")
+        self.assertEqual(current["release_id"], "ACDE_D_ACTIVE_LT20_OPEN2_12483_20260831_V15")
+        self.assertEqual(current["combo_metrics"]["trade_count"], 177)
         self.assertAlmostEqual(
-            current["combo_metrics"]["equity_multiple"], 10687.85062762251
+            current["combo_metrics"]["equity_multiple"], 12483.978370389923
+        )
+        self.assertEqual(
+            current["combo_metrics"]["leg_counts"],
+            {"A": 85, "C": 52, "D": 11, "E": 29},
         )
         self.assertTrue(current["deterministic_double_replay"])
 

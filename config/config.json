@@ -45,13 +45,13 @@
     "certification_summary_path": "reports/current_portfolio_alignment/return_first_live_certification.json",
     "certification_report_path": "reports/current_portfolio_alignment/return_first_portfolio_report.md",
     "certification_required_status": "PASS",
-    "certification_expected_scenario": "acde_e_no_trade_10687_20260831_v14",
+    "certification_expected_scenario": "acde_d_active_lt20_open2_12483_20260831_v15",
     "certification_require_hashes": true,
     "certification_require_strict_asof": false,
     "require_strategy_release_freeze": false,
-    "release_id": "ACDE_E_NO_TRADE_10687_20260831_V14",
+    "release_id": "ACDE_D_ACTIVE_LT20_OPEN2_12483_20260831_V15",
     "effective_from": "20260902",
-    "user_risk_acceptance": "用户于2026-09-01明确要求：E不看好时直接不开仓，不用25%仓位占用唯一资金槽；复核显示E独立回撤降至-9.62%、组合复利提高至10687.850628倍后，用户授权落地。已披露组合最大回撤-25.53%、最大单笔亏损-17.60%以及同窗STRICT_DISCOVERY过拟合风险。",
+    "user_risk_acceptance": "用户于2026-09-01审核D扩样结果后明确授权落地弱广度第2次回封扩展。复核显示D独立样本16增至28、复利2.173262增至3.091072倍，组合D成交8增至11、组合复利10687.850628增至12483.978370倍，组合最大回撤仍为-25.53%。已披露同窗STRICT_DISCOVERY过拟合风险、单桶邻域敏感、14笔扩展样本不确定性和最大单笔亏损-17.60%。",
     "strategy_priority_order": [
       "A",
       "C",
@@ -60,29 +60,29 @@
     ],
     "rolling_live_report_path": "reports/live_performance/rolling_live_status.json",
     "rolling_min_trades_for_decision": 20,
-    "selected_rule_name": "acde_e_no_trade_10687_20260831_v14",
-    "selected_rule_description": "当前生产顺序固定A>C>E>D。A每日第一名首次封板为afternoon时空仓且不回补A第二名；C在最终排序前排除炸板次数恰为1次的候选；E按换手率高与封单比例低的50%/50%同日分位排序，保留V13四项单项无回补门禁，并在每日第一名同时命中成交额倍率1.2~2和炸板2~3次时直接空仓、不降仓、不递补；D只允许09:30~10:00成长板浅炸回封、累计触板少于40、盘中炸板率低于75%且仍封首板不少于20只。A/C/E读取上一交易日冻结计划，三腿均无计划时D才启动。",
+    "selected_rule_name": "acde_d_active_lt20_open2_12483_20260831_v15",
+    "selected_rule_description": "当前生产顺序固定A>C>E>D。A每日第一名首次封板为afternoon时空仓且不回补A第二名；C在最终排序前排除炸板次数恰为1次的候选；E继续执行V14换手率/封单分位排序和弱区间直接空仓；D保留原12个09:30~10:00成长板浅炸回封档位，并新增仍封首板少于20只且恰好第2次回封的3个OR档位，累计触板仍须少于40、盘中炸板率仍须低于75%。A/C/E读取上一交易日冻结计划，三腿均无计划时D才启动。",
     "live_candidate_metrics": {
-      "scenario": "acde_e_no_trade_10687_20260831_v14",
+      "scenario": "acde_d_active_lt20_open2_12483_20260831_v15",
       "strict_asof_window": "20230901~20260831",
-      "strict_asof_trade_count": 174,
-      "strict_asof_equity_multiple": 10687.85062762251,
-      "strict_asof_win_rate": 0.7413793103448276,
-      "strict_asof_avg_account_return": 0.05885093228120308,
-      "strict_asof_median_account_return": 0.04053620090783183,
-      "strict_asof_max_drawdown": -0.255340805503775,
-      "strict_asof_max_profit": 0.4762528686547085,
-      "strict_asof_max_loss": -0.17603459352274986,
-      "strict_asof_profit_loss_ratio": 2.343070487017434,
+      "strict_asof_trade_count": 177,
+      "strict_asof_equity_multiple": 12483.978370389923,
+      "strict_asof_win_rate": 0.751412429378531,
+      "strict_asof_avg_account_return": 0.05873599209363823,
+      "strict_asof_median_account_return": 0.03893031151086923,
+      "strict_asof_max_drawdown": -0.25534081230210814,
+      "strict_asof_max_profit": 0.4762529831005069,
+      "strict_asof_max_loss": -0.17603457811871615,
+      "strict_asof_profit_loss_ratio": 2.3118357302467425,
       "strict_asof_max_consecutive_losses": 3,
       "strict_asof_leg_counts": {
         "A": 85,
         "C": 52,
         "E": 29,
-        "D": 8
+        "D": 11
       },
       "compound_standard_id": "A_SYSTEM_MECHANICAL_COMPOUND_V1",
-      "note": "最近三年按真实action_date和固定A>C>E>D回放，退出日收盘前不复用资金；费用、双边0.1%滑点、T+1、涨跌停排队和D成交压力保持不变。174笔、10687.850628倍、最大回撤-25.5341%，分腿A85/C52/E29/D8。E的弱收益联合区间直接空仓，不占用唯一资金槽；该结果属于同窗STRICT_DISCOVERY，不是未来收益承诺。"
+      "note": "最近三年按真实action_date和固定A>C>E>D回放，退出日收盘前不复用资金；费用、双边0.1%滑点、T+1、涨跌停排队和D成交压力保持不变。177笔、12483.978370倍、最大回撤-25.5341%，分腿A85/C52/E29/D11。D保留原12个强广度档位，新增弱广度且恰好第2次回封的3个OR档位；该结果属于同窗STRICT_DISCOVERY，不是未来收益承诺。"
     }
   },
   "live_performance_report": {
@@ -296,7 +296,7 @@
     "exit_pov_runway_buffer_note": "跑道冗余系数(2026-07-16扫描定稿1.2):80笔重放1000万损耗1.5=-0.220%/1.2=-0.204%/1.0=-0.190%,1.2免费拿0.016%且实盘另有14:30流速复查+14:45尾段复查双兜底(重放未模拟,实际更安全);1.0再往下压安全垫过薄。35%参与率+动量调节仅再省0.02%,过拟合风险不值,不采用"
   },
   "strategy_d": {
-    "file_role": "策略D首板回封配置。当前FACTOR_UNION正式身份由strategy_d_factor_release.json决定：V13只允许09:30~10:00回封、成长板、炸板回落<0.2%、累计首板触板<40、信号时全市场炸板率<75%且仍封首板>=20；成交概率>=80%且可靠、每日最早信号只取第一名、失败不补选、T+2收盘退出。旧14:00/strong参数仅供LEGACY_FORMAL_D回退模式校验，FACTOR_UNION不得读取它们改变候选。",
+    "file_role": "策略D首板回封配置。当前FACTOR_UNION正式身份由strategy_d_factor_release.json决定：V15保留V13的12个09:30~10:00成长板浅炸回封档位，并新增仍封首板<20且恰好第2次回封的3个弱广度OR档位；所有档位继续要求累计触板<40、盘中炸板率<75%。成交概率>=80%且可靠、每日最早信号只取第一名、失败不补选、T+2收盘退出。旧14:00/strong参数仅供LEGACY_FORMAL_D回退模式校验，FACTOR_UNION不得读取它们改变候选。",
     "factor_release_path": "config/strategy_d_factor_release.json",
     "allowed_market_segments": [
       "sh_main",
@@ -325,7 +325,7 @@
     "sentiment_current_sealed_max": 132,
     "sentiment_proxy_note": "历史只取market_sentiment_level=strong(收盘100~150只，不含very_strong)；盘中沿用既有88/100校准比例，故实时当前封板代理区间为88~132只。该代理仍须用分钟快照持续校准。",
     "backtest_input_path": "data/processed/next_day_premium_trades_2y.csv",
-    "execution_alignment_note": "D实盘与V13回放共同读取FACTOR_UNION发布：仅在A/C/E均无冻结计划且账户资金可用时，09:30起持续记录完整1分钟封板/炸板/回封路径；每次已完成1分钟收盘形成新回封后立即计算发布因子，命中12条V13 OR profile之一才允许BUY，14:55停止并撤未成交委托。每日最早命中信号只尝试第一名，成交门或二次复核失败均不补选。每轮完整扫描后原子保存逐票路径，盘中重启只允许恢复75秒内且同机、同日、同代码配置、同股票宇宙和同市场上下文的检查点；真实扫描缺批或证据变化继续全天停开。"
+    "execution_alignment_note": "D实盘与V15回放共同读取FACTOR_UNION发布：仅在A/C/E均无冻结计划且账户资金可用时，09:30起持续记录完整1分钟封板/炸板/回封路径；每次已完成1分钟收盘形成新回封后立即计算发布因子，命中15条V15 OR profile之一才允许BUY，14:55停止并撤未成交委托。新增弱广度档位必须同时满足market_active_count_bucket=LT20和open_count_bucket=2。每日最早命中信号只尝试第一名，成交门或二次复核失败均不补选。每轮完整扫描后原子保存逐票路径，盘中重启只允许恢复75秒内且同机、同日、同代码配置、同股票宇宙和同市场上下文的检查点；真实扫描缺批或证据变化继续全天停开。"
   },
   "strategy_s": {
     "file_role": "策略S深市/创业板动量补充策略配置。S 独立于 ACDE，只能在组合空闲且通过实盘口径认证后接入真实下单。",

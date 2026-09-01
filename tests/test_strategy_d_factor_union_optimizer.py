@@ -513,3 +513,51 @@ def test_complete_text_report_contains_conditions_baselines_and_decision() -> No
     assert "486.3661434308倍" in text
     assert "候选具备替换资格：是" in text
     assert "本次是否已经修改正式D：否" in text
+
+
+def test_v15_formal_release_keeps_core_and_adds_only_weak_active_open2() -> None:
+    """V15只能扩展弱广度二次回封，不能改写V13的12个正式档位。"""
+
+    project_root = Path(__file__).resolve().parents[1]
+    release = load_factor_release(
+        project_root / "config" / "strategy_d_factor_release.json"
+    )
+    assert release["release_id"] == "D_ACTIVE_LT20_OPEN2_EXTENSION_20260831_V15"
+    assert len(release["profiles"]) == 15
+
+    core = [
+        item for item in release["profiles"]
+        if item["conditions"].get("market_active_count_bucket") != "LT20"
+    ]
+    extension = [
+        item for item in release["profiles"]
+        if item["conditions"].get("market_active_count_bucket") == "LT20"
+    ]
+    assert len(core) == 12
+    assert all("open_count_bucket" not in item["conditions"] for item in core)
+    assert len(extension) == 3
+    assert {
+        item["conditions"]["market_break_rate_bucket"] for item in extension
+    } == {"LT25PCT", "25_50PCT", "50_75PCT"}
+    assert all(
+        item["conditions"].get("open_count_bucket") == "2"
+        for item in extension
+    )
+
+    weak_open2 = factor_values_from_raw(
+        raw_factor_row(
+            open_times_at_signal=2,
+            last_break_close_depth_pct=0.001,
+            market_ever_sealed_count=25,
+            market_active_sealed_count=10,
+            market_break_event_rate=0.30,
+            market_segment="chi_next",
+        )
+    )
+    assert matching_profile_ids(weak_open2, release["profiles"]) == [
+        "D_WEAK_ACTIVE_LT20_OPEN2_BREAK_25_50"
+    ]
+
+    # 相邻的第1次回封必须继续拒绝，锁住本次用户批准的精确规则边界。
+    weak_open1 = dict(weak_open2, open_count_bucket="1")
+    assert matching_profile_ids(weak_open1, release["profiles"]) == []

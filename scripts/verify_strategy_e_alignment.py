@@ -37,7 +37,7 @@ from src.strategy_e import (  # noqa: E402
     select_e_daily_picks,
 )
 HIST_POOL_PATH = PROJECT_ROOT / "data/research/monthly_acde/20260831/strict_feature_pool.csv"
-LOCKED_PICKS_PATH = PROJECT_ROOT / "reports/current_portfolio_alignment/acde_e_no_trade_v14/e_plans.csv"
+LOCKED_PICKS_PATH = PROJECT_ROOT / "reports/current_portfolio_alignment/acde_d_active_lt20_open2_v15/e_plans.csv"
 OUTPUT_DIR = PROJECT_ROOT / "reports" / "strategy_e_alignment"
 POSITION_PCT = 0.825
 START_DATE = "20230901"

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "factor_schema_id": "D_RESEAL_FACTOR_VALUES_V1",
-  "release_id": "D_STRONG_BREAK_LT75_ACTIVE_GE20_20260831_V13",
+  "release_id": "D_ACTIVE_LT20_OPEN2_EXTENSION_20260831_V15",
   "strategy_mode": "FACTOR_UNION",
   "effective_from": "20260902",
   "research_window": {
@@ -152,10 +152,49 @@
         "market_active_count_bucket": "GE101",
         "market_touch_count_bucket": "LT40"
       }
+    },
+    {
+      "profile_id": "D_WEAK_ACTIVE_LT20_OPEN2_BREAK_LT25",
+      "priority": 13,
+      "conditions": {
+        "reseal_time_bucket": "0930_1000",
+        "break_close_depth_bucket": "LT0_2PCT",
+        "segment_bucket": "GROWTH_BOARD",
+        "market_break_rate_bucket": "LT25PCT",
+        "market_active_count_bucket": "LT20",
+        "market_touch_count_bucket": "LT40",
+        "open_count_bucket": "2"
+      }
+    },
+    {
+      "profile_id": "D_WEAK_ACTIVE_LT20_OPEN2_BREAK_25_50",
+      "priority": 14,
+      "conditions": {
+        "reseal_time_bucket": "0930_1000",
+        "break_close_depth_bucket": "LT0_2PCT",
+        "segment_bucket": "GROWTH_BOARD",
+        "market_break_rate_bucket": "25_50PCT",
+        "market_active_count_bucket": "LT20",
+        "market_touch_count_bucket": "LT40",
+        "open_count_bucket": "2"
+      }
+    },
+    {
+      "profile_id": "D_WEAK_ACTIVE_LT20_OPEN2_BREAK_50_75",
+      "priority": 15,
+      "conditions": {
+        "reseal_time_bucket": "0930_1000",
+        "break_close_depth_bucket": "LT0_2PCT",
+        "segment_bucket": "GROWTH_BOARD",
+        "market_break_rate_bucket": "50_75PCT",
+        "market_active_count_bucket": "LT20",
+        "market_touch_count_bucket": "LT40",
+        "open_count_bucket": "2"
+      }
     }
   ],
   "selection_policy": "EARLIEST_RESEAL_THEN_OPEN2_THEN_CODE",
-  "candidate_selection_policy": "RETURN_FIRST_BREAK_LT75_ACTIVE_GE20_FIXED_ACED",
+  "candidate_selection_policy": "RETURN_FIRST_CURRENT_PLUS_ACTIVE_LT20_OPEN2_FIXED_ACED",
   "risk_diagnostics": {
     "standalone_sample_warning_below": 20,
     "selection_veto": false,
@@ -163,41 +202,43 @@
   },
   "certified_metrics": {
     "d": {
-      "trade_count": 16,
-      "win_rate": 0.8125,
-      "avg_account_return": 0.0518312390633297,
-      "median_account_return": 0.05121895061069681,
-      "equity_multiple": 2.1732624681795736,
-      "max_drawdown": -0.06988945074504782,
-      "max_profit": 0.14382777212393583,
-      "max_loss": -0.06988945074504782,
-      "profit_loss_ratio": 1.6439193572183433,
+      "plan_count": 38,
+      "observable_plan_count": 32,
+      "trade_count": 28,
+      "win_rate": 0.75,
+      "avg_account_return": 0.04339147279073494,
+      "median_account_return": 0.024842856970789917,
+      "equity_multiple": 3.0910717887644705,
+      "max_drawdown": -0.06952092036932622,
+      "max_profit": 0.21882557743748055,
+      "max_loss": -0.06952092036932633,
+      "profit_loss_ratio": 1.7908053213032897,
       "max_consecutive_losses": 2
     },
     "acde": {
-      "trade_count": 174,
-      "win_rate": 0.7413793103448276,
-      "avg_account_return": 0.05885093228120308,
-      "median_account_return": 0.04053620090783183,
-      "equity_multiple": 10687.85062762251,
-      "max_drawdown": -0.255340805503775,
-      "max_profit": 0.4762528686547085,
-      "max_loss": -0.17603459352274986,
-      "profit_loss_ratio": 2.343070487017434,
+      "trade_count": 177,
+      "win_rate": 0.751412429378531,
+      "avg_account_return": 0.05873599209363823,
+      "median_account_return": 0.03893031151086923,
+      "equity_multiple": 12483.978370389923,
+      "max_drawdown": -0.25534081230210814,
+      "max_profit": 0.4762529831005069,
+      "max_loss": -0.17603457811871615,
+      "profit_loss_ratio": 2.3118357302467425,
       "max_consecutive_losses": 3,
       "leg_counts": {
         "A": 85,
         "C": 52,
         "E": 29,
-        "D": 8
+        "D": 11
       }
     }
   },
-  "replaced_release_id": "D_QUALITY_BREAK25_75_TOUCH_LT40_20260630_V12",
+  "replaced_release_id": "D_STRONG_BREAK_LT75_ACTIVE_GE20_20260831_V13",
   "release_gate_passed": true,
   "human_review_required": true,
   "human_review_completed": true,
-  "human_review_note": "用户于2026-09-01授权落地E直接空仓优化；D规则不变，固定A>C>E>D、仓位、费用和执行口径不变，组合更新为174笔、10687.850628倍。",
-  "source_report": "reports/current_portfolio_alignment/acde_e_no_trade_v14/release_summary.json",
+  "human_review_note": "用户于2026-09-01审核D扩样结果后明确授权落地。保留V13的12个强广度档位，新增3个market_active_count_bucket=LT20且open_count_bucket=2的弱广度OR档位；固定A>C>E>D、仓位、费用和执行口径不变。已披露同窗STRICT_DISCOVERY、单桶邻域敏感和样本不确定性。",
+  "source_report": "reports/current_portfolio_alignment/acde_d_active_lt20_open2_v15/release_summary.json",
   "applied_at": "2026-09-01T00:00:00+07:00"
 }

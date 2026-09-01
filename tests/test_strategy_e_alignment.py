@@ -113,14 +113,14 @@ class StrategyEAlignmentTests(unittest.TestCase):
         )
         self.assertEqual(runtime["strategy_e"]["strategy_version"], E_VERSION)
         metrics = runtime["portfolio_certification"]["live_candidate_metrics"]
-        self.assertEqual(metrics["strict_asof_trade_count"], 174)
+        self.assertEqual(metrics["strict_asof_trade_count"], 177)
         self.assertAlmostEqual(
             metrics["strict_asof_equity_multiple"],
-            10687.85062762251,
+            12483.978370389923,
         )
         self.assertEqual(
             metrics["strict_asof_leg_counts"],
-            {"A": 85, "C": 52, "E": 29, "D": 8},
+            {"A": 85, "C": 52, "E": 29, "D": 11},
         )
 
     def test_production_spec_has_40_rules_and_no_future_columns(self) -> None:

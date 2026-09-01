@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""认证收益冠军ACDE正式规则与月度回测逐笔对齐。
+"""认证当前收益优先ACDE正式规则与月度回测逐笔对齐。
 
 本脚本不搜索参数，也不修改策略配置。它只做四件事：
 1. 核对A/C/E/D正式配置确实写入用户选定的四条规则；
@@ -47,10 +47,10 @@ from src.utils.config import load_json_config  # noqa: E402
 
 
 CUTOFF = "20260831"
-SCENARIO = "acde_e_no_trade_10687_20260831_v14"
-RELEASE_ID = "ACDE_E_NO_TRADE_10687_20260831_V14"
+SCENARIO = "acde_d_active_lt20_open2_12483_20260831_v15"
+RELEASE_ID = "ACDE_D_ACTIVE_LT20_OPEN2_12483_20260831_V15"
 SOURCE_DIR = ROOT / "reports/monthly_acde_research/20260831/run_20260831_return_first_final"
-RELEASE_LEDGER_DIR = ROOT / "reports/current_portfolio_alignment/acde_e_no_trade_v14"
+RELEASE_LEDGER_DIR = ROOT / "reports/current_portfolio_alignment/acde_d_active_lt20_open2_v15"
 DEFAULT_OUTPUT = ROOT / "reports/current_portfolio_alignment/return_first_live_certification.json"
 DEFAULT_MARKDOWN = ROOT / "reports/current_portfolio_alignment/return_first_portfolio_report.md"
 TOLERANCE = 1e-10
@@ -59,28 +59,28 @@ VARIANT_IDS = {
     "A": "A_RISK_EXCLUDE_AFTERNOON_FIRST_SEAL",
     "C": "C_RISK_EXCLUDE_SINGLE_OPEN",
     "E": "E_TURNOVER_FD_AMOUNT12_OPEN23_NO_TRADE",
-    "D": "D_STRONG_BREAK_LT75_ACTIVE_GE20",
+    "D": "D_ACTIVE_LT20_OPEN2_EXTENSION",
 }
 
 EXPECTED_COMBO = {
-    "trade_count": 174,
-    "win_rate": 0.7413793103448276,
-    "avg_account_return": 0.05885093228120308,
-    "median_account_return": 0.04053620090783183,
-    "equity_multiple": 10687.85062762251,
-    "max_drawdown": -0.255340805503775,
-    "max_profit": 0.4762528686547085,
-    "max_loss": -0.17603459352274986,
-    "profit_loss_ratio": 2.343070487017434,
+    "trade_count": 177,
+    "win_rate": 0.751412429378531,
+    "avg_account_return": 0.05873599209363823,
+    "median_account_return": 0.03893031151086923,
+    "equity_multiple": 12483.978370389923,
+    "max_drawdown": -0.25534081230210814,
+    "max_profit": 0.4762529831005069,
+    "max_loss": -0.17603457811871615,
+    "profit_loss_ratio": 2.3118357302467425,
     "max_consecutive_losses": 3,
-    "leg_counts": {"A": 85, "C": 52, "D": 8, "E": 29},
+    "leg_counts": {"A": 85, "C": 52, "D": 11, "E": 29},
 }
 
 EXPECTED_STANDALONE = {
     "A": {"trade_count": 108, "equity_multiple": 155.0269020298712, "max_drawdown": -0.19372149239299818},
     "C": {"trade_count": 61, "equity_multiple": 17.90855770136303, "max_drawdown": -0.17589327975064117},
     "E": {"trade_count": 59, "equity_multiple": 30.818622006506075, "max_drawdown": -0.09623820346548773},
-    "D": {"trade_count": 16, "equity_multiple": 2.1732624681795736, "max_drawdown": -0.06988945074504782},
+    "D": {"trade_count": 28, "equity_multiple": 3.0910717887644705, "max_drawdown": -0.06952092036932622},
 }
 
 CODE_FILES = [
@@ -113,13 +113,13 @@ CODE_FILES = [
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="认证E直接空仓V14与10687.850628倍ACDE回测对齐")
+    parser = argparse.ArgumentParser(description="认证D弱广度二次回封V15与12483.978370倍ACDE回测对齐")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--markdown", type=Path, default=DEFAULT_MARKDOWN)
     parser.add_argument(
         "--refresh-release-ledgers",
         action="store_true",
-        help="仅在用户批准新版本时刷新V14逐腿与组合冻结账本；日常认证禁止使用。",
+        help="仅在用户批准新版本时刷新V15逐腿与组合冻结账本；日常认证禁止使用。",
     )
     return parser.parse_args()
 
@@ -309,7 +309,23 @@ def validate_formal_rules() -> dict[str, bool]:
     profiles = d_release["profiles"]
     d_condition_sets = [profile["conditions"] for profile in profiles]
     d_break_values = {conditions.get("market_break_rate_bucket") for conditions in d_condition_sets}
-    d_active_values = {conditions.get("market_active_count_bucket") for conditions in d_condition_sets}
+    d_core_profiles = [
+        conditions
+        for conditions in d_condition_sets
+        if conditions.get("market_active_count_bucket") != "LT20"
+    ]
+    d_weak_profiles = [
+        conditions
+        for conditions in d_condition_sets
+        if conditions.get("market_active_count_bucket") == "LT20"
+    ]
+    d_common_conditions = all(
+        conditions.get("reseal_time_bucket") == "0930_1000"
+        and conditions.get("break_close_depth_bucket") == "LT0_2PCT"
+        and conditions.get("segment_bucket") == "GROWTH_BOARD"
+        and conditions.get("market_touch_count_bucket") == "LT40"
+        for conditions in d_condition_sets
+    )
 
     return {
         "runtime_release_id": runtime["portfolio_certification"]["release_id"] == RELEASE_ID,
@@ -341,13 +357,22 @@ def validate_formal_rules() -> dict[str, bool]:
             and rule.get("action") == "NO_TRADE"
             for rule in e_spec["entry_gate"].get("exclude_all_conditions", [])
         ),
-        "d_release_id": d_release["release_id"] == "D_STRONG_BREAK_LT75_ACTIVE_GE20_20260831_V13",
-        "d_has_12_or_profiles": len(profiles) == 12,
+        "d_release_id": d_release["release_id"] == "D_ACTIVE_LT20_OPEN2_EXTENSION_20260831_V15",
+        "d_has_15_or_profiles": len(profiles) == 15,
         "d_break_lt75": d_break_values == {"LT25PCT", "25_50PCT", "50_75PCT"},
-        "d_active_ge20": d_active_values == {"20_40", "41_70", "71_100", "GE101"},
+        # 原12个强广度档位必须原样保留；新增档位不能反向改变旧D。
+        "d_keeps_12_core_profiles": len(d_core_profiles) == 12
+        and {conditions.get("market_active_count_bucket") for conditions in d_core_profiles}
+        == {"20_40", "41_70", "71_100", "GE101"}
+        and all("open_count_bucket" not in conditions for conditions in d_core_profiles),
+        # 弱广度只允许恰好第2次回封，防止把回测中表现不稳的1/3/4次回封放进正式D。
+        "d_has_exact_weak_active_open2_extension": len(d_weak_profiles) == 3
+        and {conditions.get("market_break_rate_bucket") for conditions in d_weak_profiles}
+        == {"LT25PCT", "25_50PCT", "50_75PCT"}
+        and all(conditions.get("open_count_bucket") == "2" for conditions in d_weak_profiles),
+        "d_common_shape_frozen": d_common_conditions,
         "d_keeps_touch_lt40": all(
-            conditions.get("market_touch_count_bucket") == "LT40"
-            for conditions in d_condition_sets
+            conditions.get("market_touch_count_bucket") == "LT40" for conditions in d_condition_sets
         ),
     }
 
@@ -375,7 +400,7 @@ def refresh_release_ledgers(
     combo_metrics: Mapping[str, Any],
     standalone_metrics: Mapping[str, Mapping[str, Any]],
 ) -> None:
-    """在用户明确批准后封存V14逐腿与组合账本，供后续只读认证。"""
+    """在用户明确批准后封存V15逐腿与组合账本，供后续只读认证。"""
 
     RELEASE_LEDGER_DIR.mkdir(parents=True, exist_ok=True)
     for leg, frame in plans.items():
@@ -407,6 +432,15 @@ def refresh_release_ledgers(
             "formal_plans": int(len(plans["E"])),
             "standalone_executed": int(standalone_metrics["E"]["trade_count"]),
         },
+        "d_selection_counts": {
+            "formal_plans": int(len(plans["D"])),
+            "observable_plans": int(plans["D"]["status"].astype(str).eq("OK").sum()),
+            "queue_unconfirmed_fail_closed": int(
+                plans["D"]["status"].astype(str).eq("QUEUE_UNCONFIRMED_NO_DEPTH").sum()
+            ),
+            "standalone_executed": int(standalone_metrics["D"]["trade_count"]),
+            "portfolio_executed": int(combo_metrics["leg_counts"].get("D", 0)),
+        },
         "rule": {
             "ranking": "daily_percentile(turnover_rate:desc)*50% + daily_percentile(fd_amount_to_circ_mv:asc)*50%",
             "joint_no_trade": {
@@ -416,9 +450,15 @@ def refresh_release_ledgers(
                 "fallback_to_second_candidate": False,
                 "position_when_matched": 0.0,
             },
+            "d_extension": {
+                "market_active_count_bucket": ["LT20"],
+                "open_count_bucket": ["2"],
+                "logic": "OR_WITH_EXISTING_12_PROFILES",
+                "fallback_to_later_candidate": False,
+            },
         },
         "research_protocol": "STRICT_DISCOVERY",
-        "risk_note": "历史机械复利不代表未来收益；尚无独立冻结样本外和真实资金容量认证。",
+        "risk_note": "177笔、12483.978370倍是最近三年同窗STRICT_DISCOVERY历史机械复利，不是收益承诺；D独立28笔、弱广度扩展独立14笔，且相邻炸板次数桶不稳定，尚无独立冻结样本外和真实资金容量认证。",
     }
     (RELEASE_LEDGER_DIR / "release_summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2),
@@ -489,7 +529,7 @@ def main() -> int:
             and standalone_match
             and all(rule_checks.values())
         ):
-            raise RuntimeError("V14正式规则或预期指标未对齐，拒绝覆盖冻结发布账本")
+            raise RuntimeError("V15正式规则或预期指标未对齐，拒绝覆盖冻结发布账本")
         refresh_release_ledgers(
             first_plans,
             first_detail,
@@ -573,7 +613,7 @@ def main() -> int:
         "input_files": input_files,
         "input_sha256": certification_files_sha256(ROOT, input_files),
         "source_summary_sha256": certification_file_sha256(RELEASE_LEDGER_DIR / "release_summary.json"),
-        "risk_note": "174笔、10687.850628倍是最近三年同窗STRICT_DISCOVERY历史机械复利，不是收益承诺；E独立59笔、最大回撤-9.62%，尚无独立冻结样本外和真实容量认证。",
+        "risk_note": "177笔、12483.978370倍是最近三年同窗STRICT_DISCOVERY历史机械复利，不是收益承诺；D独立28笔、最大回撤-6.95%，弱广度第2次回封存在单桶邻域敏感，尚无独立冻结样本外和真实容量认证。",
     }
 
     output = args.output if args.output.is_absolute() else ROOT / args.output
@@ -584,7 +624,7 @@ def main() -> int:
     markdown.write_text(
         "\n".join(
             [
-                "# ACDE策略E直接空仓V14正式规则对齐报告",
+                "# ACDE策略D弱广度第2次回封V15正式规则对齐报告",
                 "",
                 f"- 状态：{payload['status']}",
                 f"- 场景：{SCENARIO}",

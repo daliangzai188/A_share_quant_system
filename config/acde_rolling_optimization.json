@@ -73,7 +73,7 @@
     }
   },
   "candidate_space": {
-    "version": "ACDE_MONTHLY_PREDECLARED_V1_CURRENT_V12_NEIGHBORS",
+    "version": "ACDE_MONTHLY_PREDECLARED_V2_CURRENT_V15_NEIGHBORS",
     "only_predeclared_single_axis_changes": false,
     "selection_candidates_declared_before_final_replay": true,
     "candidate_space_discovered_using_same_main_window": true,
@@ -83,7 +83,7 @@
     "A": "当前规则；原相邻桶与排序候选；新增下午首次封板尾部门禁，第一名命中后空仓且不回补",
     "C": "固定T+3；新增第2~3名龙头仅在跌停压力<30或分段非冰点时启用的双因子候选",
     "E": "当前V14固定R1并集、换手率高/封单比例低等权分位排序与退出；保留四项单项门禁，并冻结成交额倍率1.2~2且炸板2~3次时直接空仓的AND无回补门禁",
-    "D": "冻结真实炸板回封、分钟路径和成交口径；新增触板拥挤度<40及炸板率25%~75%的信号时质量候选"
+    "D": "当前V15保留12个强广度档位并新增3个仍封首板<20且恰好第2次回封的弱广度档位；冻结真实炸板回封、分钟路径、成交概率、T+2退出和失败不补选口径"
   },
   "execution": {
     "initial_cash": 500000.0,

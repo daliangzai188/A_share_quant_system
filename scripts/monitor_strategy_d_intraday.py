@@ -795,7 +795,7 @@ class StrategyDMonitor:
         max_order_amount = float(self.config.get("live_trade", {}).get("max_single_order_amount", 50000))
         if self.factor_union_active:
             self.logger.warning(
-                "D启用半年因子并集发布: release_id=%s profiles=%d | 任一if命中后进入候选 | "
+                "D启用月度冻结因子并集发布: release_id=%s profiles=%d | 任一if命中后进入候选 | "
                 "封板/炸板/回封严格按已完成QMT 1m收盘重建 | "
                 "首板/非ST/14:55前/成交概率>=%.0f%%且可靠仍是公共安全门",
                 self.factor_release_id,
@@ -1914,7 +1914,7 @@ class StrategyDMonitor:
         self.order_placed = True   # 先加锁再下单，防止QMT资金冻结延迟导致重复委托
         self.order_locked_ts_code = st.ts_code
         source = (
-            f"半年D正式因子:{self.factor_release_id}:"
+            f"月度冻结D正式因子:{self.factor_release_id}:"
             f"{st.matched_factor_profile_ids}"
             if self.factor_union_active
             else "14:00后真实回封"
@@ -3052,7 +3052,7 @@ def main() -> None:
             f"if条件数={len(factor_release.get('profiles', []))}"
         )
         if factor_release_active:
-            print("  正式D条件: 最佳半年因子条件（旧D时间/情绪/炸板次数门不参与）")
+            print("  正式D条件: 当前月度冻结因子条件（旧D时间/情绪/炸板次数门不参与）")
             for profile in factor_release.get("profiles", []):
                 conditions = " AND ".join(
                     f"{name}={value}"
