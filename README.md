@@ -393,9 +393,9 @@ a_strict_plus_c_leader_union_hold3
 
 原则：
 
-1. 不每天改策略。
+1. 月中不根据新盈亏临时改策略；每个自然月结束后按最新滚动3年进行一次正式研究，预测下个月。
 2. A、C各自生成审计候选，正式计划保留A无候选才由C补位；最终单账户资金按真实开仓日`A>C>E>D`统一裁决，B不再参与。
-3. 删除 B 后必须先完成全链路重新回测，再建立新的季度/半年发布验证基线。
+3. 删除 B 后必须先完成全链路重新回测，再建立新的月度滚动发布验证基线。
 4. 只有发布验证通过，才考虑进入下一阶段模拟或小资金人工确认。
 5. C 补位策略当前不强制分钟 K 验收；最低验收口径是涨停排队买不到、跌停排队卖不出的日线保守成交验证。
 6. 自动实盘前仍必须完成券商接口、风控、人工确认和成交可行性验证。
@@ -589,13 +589,25 @@ python scripts/run_strategy_e_signal.py
 
 标准、运行顺序和失败条件见 [docs/strict_asof_standard.md](docs/strict_asof_standard.md)。
 
-当前系统如何从数据、候选、组合资金走到交易执行，以及每年6月30日/12月31日如何
-使用最近3年主窗口优化、最近2年确认、最近半年失效检查，并在未来6个月积累真实
-前向样本外，统一见
+当前系统如何从数据、候选、组合资金走到交易执行，以及如何在每个月最后一个交易日
+使用最新3年数据优化、冻结版本并预测下个月，统一见
 [docs/core_framework.md](docs/core_framework.md)。
 
-三窗口ACDE研究入口：`scripts/optimize_acde_rolling_three_year.py`；冻结研究配置：
-`config/acde_rolling_optimization.json`。研究结果不会自动覆盖正式策略或实盘配置。
+以后只需提出“更新最近三年策略数据”，系统即按
+[月度最近三年数据更新规范](docs/monthly_three_year_data_update.md)自动计算截至上月末的
+36个完整自然月，补齐数据并执行质量门禁；是否继续优化ACED以用户当次指令为准。
+
+数据通过后，候选冻结、逐腿优化、`A>C>E>D`真实资金回放、策略C专项回归、唯一胜者
+选择和独立认证，统一执行
+[ACDE月度数据更新、策略优化与精确回测标准流程](docs/monthly_acde_optimization_sop.md)。
+研究胜者产生后必须先展示新旧规则、`OLD_ON_OLD/OLD_ON_NEW/NEW_ON_NEW`收益与样本
+对比并等待用户审核，禁止直接提交；只有用户明确要求再次精准校验并在成功后提交，
+才进入最终认证和代码提交阶段。
+
+现有三窗口ACDE研究入口`scripts/optimize_acde_rolling_three_year.py`及配置
+`config/acde_rolling_optimization.json`仍保留半年旧流程，尚未完成月度流程改造；在
+改造和回归完成前不得把它描述为已经执行新月度标准。研究结果不会自动覆盖正式策略
+或实盘配置。
 
 当前两年锚点、A/E双复利门槛和复现命令见
 [docs/acde_anchor_20240630_20260630.md](docs/acde_anchor_20240630_20260630.md)。
