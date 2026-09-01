@@ -6,7 +6,7 @@ import unittest
 
 import pandas as pd
 
-from scripts.generate_live_limit_pool_daily_ops import select_candidates
+from scripts.generate_live_limit_pool_daily_ops import add_runtime_buckets, select_candidates
 from scripts.run_paper_ab_filtered_daily_ops import condition_strategy_config
 from src.paper_candidate_generator import PaperCandidateGenerator
 
@@ -27,6 +27,7 @@ class StrategyAFdExpansionLiveChainTests(unittest.TestCase):
         limit_times: int,
         *,
         board_type: str = "multi_open",
+        first_time_bucket: str = "midday",
     ) -> dict[str, object]:
         fd_ratio = {
             "0_1pct_0_3pct": 0.002,
@@ -48,6 +49,7 @@ class StrategyAFdExpansionLiveChainTests(unittest.TestCase):
             "market_chain_count_bucket": "8_15",
             "fd_ratio_bucket": fd_bucket,
             "board_type": board_type,
+            "first_time_bucket": first_time_bucket,
             "amount_ratio_bucket": "1_2_2",
             "prev_pct_chg_bucket": "3_5",
             "limit_times": limit_times,
@@ -149,6 +151,38 @@ class StrategyAFdExpansionLiveChainTests(unittest.TestCase):
         self.assertNotIn(
             "fallback_when_primary_empty",
             c_config["candidate_filters"],
+        )
+
+    def test_afternoon_first_rank_is_empty_without_second_a_fallback(self) -> None:
+        """A第一名命中下午门禁后，第二名不能被升级为A买入。"""
+
+        frame = pd.DataFrame([
+            self.candidate(
+                "000001.SZ", "0_5pct_1pct", 5, first_time_bucket="afternoon"
+            ),
+            self.candidate(
+                "000002.SZ", "0_5pct_1pct", 1, first_time_bucket="midday"
+            ),
+        ])
+
+        strategy_leg, _selected = select_candidates(frame, self.config, top_n=10)
+
+        self.assertEqual(strategy_leg, "LIVE_LIMIT_POOL_WATCH")
+
+    def test_runtime_first_time_bucket_matches_formal_boundary(self) -> None:
+        frame = pd.DataFrame({
+            "trade_date": ["20260831"] * 5,
+            "first_time": [93100, 93200, 120000, 141500, 143000],
+            "limit_times": [1] * 5,
+            "open_times": [1] * 5,
+            "amount": [100000.0] * 5,
+        })
+
+        bucketed = add_runtime_buckets(frame)
+
+        self.assertEqual(
+            bucketed["first_time_bucket"].tolist(),
+            ["open_limit", "early_morning", "midday", "afternoon", "late"],
         )
 
 

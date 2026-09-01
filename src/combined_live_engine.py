@@ -42,14 +42,15 @@ C>A重构扩大执行风险。
     E   build_mode1_plan 空仓分支 ③，A/C均无正式计划时读取昨日E信号
     D   A/C/E均无可执行计划时才输出ALLOW_D_INTRADAY_MONITOR
 
-生产顺序由本状态机与trading_daemon共同执行；正式收益口径只认
-certify_strict_asof_portfolio中的真实开仓日回放。改任何一侧都要同时更新运行时
-回归测试和严格认证，旧certify_current_executable_portfolio只保留历史身份审计。
-当前严格结果仍是开发段；新组合未重新冻结发布前，
-新BUY必须由LiveOrderGateway fail-closed，已有持仓SELL不得受影响。
+生产顺序由本状态机与trading_daemon共同执行；2026-09-01起正式规则与收益口径
+统一由certify_acde_return_first_release中的真实开仓日回放认证。改任何一侧都要
+同时更新运行时回归测试和正式认证。该认证只证明规则、数据与回测逻辑对齐，
+不代表独立样本外或真实资金容量已经认证。所有计划单仍须经过
+LiveOrderGateway fail-closed，已有持仓SELL不得受影响。
 
 身份复现：python scripts/certify_current_executable_portfolio.py
-正式统计：python scripts/certify_strict_asof_portfolio.py
+正式统计：python scripts/certify_acde_return_first_release.py
+执行链核对：python scripts/verify_live_engine_matches_certify.py
 """
 from __future__ import annotations
 

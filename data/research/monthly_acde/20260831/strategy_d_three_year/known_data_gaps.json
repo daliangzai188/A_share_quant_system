@@ -1,0 +1,154 @@
+{
+  "schema_version": 1,
+  "strategy": "D",
+  "window": "20230901~20260831",
+  "purpose": "月度研究隔离缺口清单；异常保留在母样本分母并失败关闭。",
+  "checked_at": "2026-09-01",
+  "gaps": [
+    {
+      "target_key": "20241128|920149.BJ",
+      "trade_date": "20241128",
+      "ts_code": "920149.BJ",
+      "name": "旭杰科技",
+      "market": "BSE",
+      "source": "TUSHARE_STK_MINS_AND_PRO_BAR",
+      "status": "CONFIRMED_TUSHARE_VENDOR_DATE_MARKET_GAP",
+      "handling": "FAIL_CLOSED_KEEP_IN_DENOMINATOR",
+      "evidence": "当日现代码920149.BJ与旧代码836149.BJ均返0行；相邻20241127/20241129各返241行；同日其他北交所股也返0行。"
+    },
+    {
+      "target_key": "20241128|920199.BJ",
+      "trade_date": "20241128",
+      "ts_code": "920199.BJ",
+      "name": "倍益康",
+      "market": "BSE",
+      "source": "TUSHARE_STK_MINS_AND_PRO_BAR",
+      "status": "CONFIRMED_TUSHARE_VENDOR_DATE_MARKET_GAP",
+      "handling": "FAIL_CLOSED_KEEP_IN_DENOMINATOR",
+      "evidence": "当日现代码920199.BJ与旧代码870199.BJ均返0行；相邻20241127/20241129各返241行；同日其他北交所股也返0行。"
+    },
+    {
+      "target_key": "20241128|920765.BJ",
+      "trade_date": "20241128",
+      "ts_code": "920765.BJ",
+      "name": "美之高",
+      "market": "BSE",
+      "source": "TUSHARE_STK_MINS_AND_PRO_BAR",
+      "status": "CONFIRMED_TUSHARE_VENDOR_DATE_MARKET_GAP",
+      "handling": "FAIL_CLOSED_KEEP_IN_DENOMINATOR",
+      "evidence": "当日现代码920765.BJ与旧代码834765.BJ均返0行；相邻20241127/20241129各返241行；同日其他北交所股也返0行。"
+    },
+    {
+      "target_key": "20241128|920802.BJ",
+      "trade_date": "20241128",
+      "ts_code": "920802.BJ",
+      "name": "保丽洁",
+      "market": "BSE",
+      "source": "TUSHARE_STK_MINS_AND_PRO_BAR",
+      "status": "CONFIRMED_TUSHARE_VENDOR_DATE_MARKET_GAP",
+      "handling": "FAIL_CLOSED_KEEP_IN_DENOMINATOR",
+      "evidence": "当日现代码920802.BJ与旧代码832802.BJ均返0行；相邻20241127/20241129各返241行；同日其他北交所股也返0行。"
+    }
+  ],
+  "price_mismatches": [
+    {
+      "target_key": "20231129|920932.BJ",
+      "trade_date": "20231129",
+      "ts_code": "920932.BJ",
+      "name": "科达自控",
+      "market": "BSE",
+      "source": "TUSHARE_STK_MINS_VS_STK_LIMIT_AND_DAILY",
+      "status": "CONFIRMED_TUSHARE_MINUTE_DAILY_PRICE_MISMATCH",
+      "handling": "FAIL_CLOSED_KEEP_IN_DENOMINATOR",
+      "evidence": "241根分钟K齐全，但分钟最高20.93低于官方涨停价/日线最高21.24；分钟收盘16.39与日线收盘16.39一致，仍无法用分钟路径确认触板。"
+    },
+    {
+      "target_key": "20231207|920262.BJ",
+      "trade_date": "20231207",
+      "ts_code": "920262.BJ",
+      "name": "太湖雪",
+      "market": "BSE",
+      "source": "TUSHARE_STK_MINS_VS_STK_LIMIT_AND_DAILY",
+      "status": "CONFIRMED_TUSHARE_MINUTE_DAILY_PRICE_MISMATCH",
+      "handling": "FAIL_CLOSED_KEEP_IN_DENOMINATOR",
+      "evidence": "241根分钟K齐全，但分钟最高21.08低于官方涨停价/日线最高21.12；分钟收盘17.16与日线收盘17.16一致，仍无法用分钟路径确认触板。"
+    },
+    {
+      "target_key": "20240206|920030.BJ",
+      "trade_date": "20240206",
+      "ts_code": "920030.BJ",
+      "name": "德众汽车",
+      "market": "BSE",
+      "source": "TUSHARE_STK_MINS_VS_STK_LIMIT_AND_DAILY",
+      "status": "CONFIRMED_TUSHARE_MINUTE_DAILY_PRICE_MISMATCH",
+      "handling": "FAIL_CLOSED_KEEP_IN_DENOMINATOR",
+      "evidence": "241根分钟K齐全，但分钟最高3.66低于官方涨停价/日线最高3.67；分钟收盘3.64与日线收盘3.64一致，仍无法用分钟路径确认触板。"
+    },
+    {
+      "target_key": "20240619|920090.BJ",
+      "trade_date": "20240619",
+      "ts_code": "920090.BJ",
+      "name": "同辉信息",
+      "market": "BSE",
+      "source": "TUSHARE_STK_MINS_VS_STK_LIMIT_AND_DAILY",
+      "status": "CONFIRMED_TUSHARE_MINUTE_DAILY_PRICE_MISMATCH",
+      "handling": "FAIL_CLOSED_KEEP_IN_DENOMINATOR",
+      "evidence": "241根分钟K齐全，但分钟最高2.98低于官方涨停价/日线最高2.99，且分钟收盘2.88与日线收盘2.84不一致。"
+    },
+    {
+      "target_key": "20241025|920641.BJ",
+      "trade_date": "20241025",
+      "ts_code": "920641.BJ",
+      "name": "格利尔",
+      "market": "BSE",
+      "source": "TUSHARE_STK_MINS_VS_STK_LIMIT_AND_DAILY",
+      "status": "CONFIRMED_TUSHARE_MINUTE_DAILY_PRICE_MISMATCH",
+      "handling": "FAIL_CLOSED_KEEP_IN_DENOMINATOR",
+      "evidence": "241根分钟K齐全，但分钟最高16.15低于官方涨停价/日线最高16.19，且分钟收盘13.75与日线收盘13.61不一致。"
+    },
+    {
+      "target_key": "20241122|920926.BJ",
+      "trade_date": "20241122",
+      "ts_code": "920926.BJ",
+      "name": "鸿智科技",
+      "market": "BSE",
+      "source": "TUSHARE_STK_MINS_VS_STK_LIMIT_AND_DAILY",
+      "status": "CONFIRMED_TUSHARE_MINUTE_DAILY_PRICE_MISMATCH",
+      "handling": "FAIL_CLOSED_KEEP_IN_DENOMINATOR",
+      "evidence": "241根分钟K齐全，但分钟最高29.31低于官方涨停价/日线最高29.32，且分钟收盘24.00与日线收盘24.25不一致。"
+    },
+    {
+      "target_key": "20250310|920367.BJ",
+      "trade_date": "20250310",
+      "ts_code": "920367.BJ",
+      "name": "新赣江",
+      "market": "BSE",
+      "source": "TUSHARE_STK_MINS_VS_STK_LIMIT_AND_DAILY",
+      "status": "CONFIRMED_TUSHARE_MINUTE_DAILY_PRICE_MISMATCH",
+      "handling": "FAIL_CLOSED_KEEP_IN_DENOMINATOR",
+      "evidence": "241根分钟K齐全，但分钟最高37.46低于官方涨停价/日线最高37.81，且分钟收盘33.65与日线收盘33.47不一致。"
+    },
+    {
+      "target_key": "20251103|920304.BJ",
+      "trade_date": "20251103",
+      "ts_code": "920304.BJ",
+      "name": "迪尔化工",
+      "market": "BSE",
+      "source": "TUSHARE_STK_MINS_VS_STK_LIMIT_AND_DAILY",
+      "status": "CONFIRMED_TUSHARE_MINUTE_DAILY_PRICE_MISMATCH",
+      "handling": "FAIL_CLOSED_KEEP_IN_DENOMINATOR",
+      "evidence": "241根分钟K齐全，但分钟最高17.28低于官方涨停价/日线最高17.29，且分钟收盘16.12与日线收盘16.06不一致。"
+    },
+    {
+      "target_key": "20260820|920946.BJ",
+      "trade_date": "20260820",
+      "ts_code": "920946.BJ",
+      "name": "森萱医药",
+      "market": "BSE",
+      "source": "TUSHARE_STK_MINS_VS_STK_LIMIT_AND_DAILY",
+      "status": "CONFIRMED_TUSHARE_MINUTE_DAILY_PRICE_MISMATCH",
+      "handling": "FAIL_CLOSED_KEEP_IN_DENOMINATOR",
+      "evidence": "241根分钟K齐全，但分钟最高12.98低于官方涨停价/日线最高13.02；15:00分钟收盘11.20与日线收盘11.20一致，仍无法用分钟路径确认触板。"
+    }
+  ]
+}

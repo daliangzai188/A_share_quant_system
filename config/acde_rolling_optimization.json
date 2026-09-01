@@ -1,21 +1,20 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "mode": "research_only",
   "formal_strategy_auto_apply": false,
   "priority": ["A", "C", "E", "D"],
-  "allowed_update_nodes": ["0630", "1231"],
+  "schedule": {
+    "frequency": "monthly",
+    "cutoff_policy": "previous_calendar_month_end",
+    "prediction_policy": "immediately_following_calendar_month",
+    "timezone": "Asia/Shanghai"
+  },
   "windows": {
-    "main_years": 3,
-    "recent_confirmation_years": 2,
-    "failure_check_months": 6,
+    "main_months": 36,
+    "execution_model_history_start": "20190101",
     "metric_date": "action_date",
-    "selection_window": "main",
-    "main_window_selects_one_winner": true,
-    "recent_confirmation_may_rank_candidates": false,
-    "recent_confirmation_can_only_veto": true,
-    "failure_check_may_rank_candidates": false,
-    "failure_check_can_only_veto": true,
-    "vetoed_winner_may_fallback_to_runner_up": false
+    "selection_window": "main_only",
+    "older_data_role": "risk_and_data_quality_diagnostics_only"
   },
   "market_controller": {
     "hard_gate_enabled": false,
@@ -26,26 +25,31 @@
     "note": "当前实盘基准没有四腿共用的涨停数>=50硬门禁；统一优化必须复现该基准。市场情绪只允许作为逐腿候选因子，D不得使用当日收盘值回看盘中信号。"
   },
   "replacement_gate": {
-    "require_main_standalone_compound_improvement": true,
-    "require_main_portfolio_compound_improvement": true,
-    "require_recent_standalone_compound_improvement": true,
-    "require_recent_portfolio_compound_improvement": true,
-    "minimum_main_sample_retention": 0.7,
-    "minimum_recent_sample_retention": 0.7,
+    "require_standalone_compound_improvement": true,
+    "require_portfolio_compound_improvement": true,
+    "minimum_sample_retention": 0.7,
     "minimum_absolute_trades": {
       "A": 40,
       "C": 25,
       "E": 35,
       "D": 20
     },
-    "maximum_main_drawdown_worsening_pp": 0.03,
-    "maximum_recent_drawdown_worsening_pp": 0.03,
-    "failure_check_minimum_trades": 8,
-    "failure_check_equity_floor": 1.0,
-    "failure_check_require_nonpositive_average_with_equity_failure": true,
-    "failure_check_drawdown_floor": -0.2
+    "maximum_drawdown_worsening_pp": 0.0,
+    "require_positive_average_net_return": true
   },
-  "d_quality_contracts": {
+  "anomaly_review": {
+    "compound_ratio_high": 1.5,
+    "window_effect_ratio_low": 0.67,
+    "window_effect_ratio_high": 1.5,
+    "max_drawdown_change_pp": 0.05,
+    "trade_count_change_ratio": 0.15,
+    "win_rate_change_pp": 0.08,
+    "average_or_median_change_pp": 0.015,
+    "max_loss_change_pp": 0.03,
+    "top3_log_gain_share": 0.5,
+    "top5_removed_min_compound_ratio": 1.05
+  },
+  "historical_d_quality_contracts_read_only": {
     "20260630": {
       "target_count": 54178,
       "target_trade_day_count": 725,
@@ -69,11 +73,12 @@
     }
   },
   "candidate_space": {
-    "version": "ACDE_OPENING_PROFIT_V12_EXECUTED_RISK",
+    "version": "ACDE_MONTHLY_PREDECLARED_V1_CURRENT_V12_NEIGHBORS",
     "only_predeclared_single_axis_changes": false,
     "selection_candidates_declared_before_final_replay": true,
     "candidate_space_discovered_using_same_main_window": true,
-    "note": "V12根据三年真实执行腿的亏损暴露扩展候选，并于最终回放前冻结；新增条件只读信号时已知字段，A/E命中后空仓且不回补第二名；2026-07以后只能作为冻结前向检验，不能参与参数选择。",
+    "strict_discovery": true,
+    "note": "候选空间曾读取过与本轮重叠的历史数据；本轮只能产生研究胜者，不能冒充独立样本外或自动发布。",
     "deduplicate_by_plan_signature": true,
     "A": "当前规则；原相邻桶与排序候选；新增下午首次封板尾部门禁，第一名命中后空仓且不回补",
     "C": "固定T+3；新增第2~3名龙头仅在跌停压力<30或分段非冰点时启用的双因子候选",
@@ -81,7 +86,16 @@
     "D": "冻结真实炸板回封、分钟路径和成交口径；新增触板拥挤度<40及炸板率25%~75%的信号时质量候选"
   },
   "execution": {
+    "initial_cash": 500000.0,
     "position_pct": 0.825,
+    "max_position_pct": 0.85,
+    "max_positions": 1,
+    "commission_rate": 0.0003,
+    "minimum_commission": 5.0,
+    "transfer_fee_rate": 0.00001,
+    "buy_slippage_rate": 0.001,
+    "sell_slippage_rate": 0.001,
+    "stress_slippage_rates": [0.002, 0.005, 0.01],
     "a_hold_rule": "T+1开盘买入，T+2收盘卖出",
     "c_hold_rule": "T+1开盘买入，T+3收盘卖出",
     "e_hold_rule": "T+1开盘买入，按冻结E规则收盘卖出",
@@ -91,6 +105,12 @@
     "fees_slippage_t1_limit_rules_frozen": true
   },
   "data": {
+    "monthly_research_root": "data/research/monthly_acde/{cutoff}",
+    "raw_daily_dir": "data/raw/daily",
+    "raw_daily_basic_dir": "data/raw/daily_basic",
+    "raw_limit_list_dir": "data/raw/limit_list",
+    "raw_adj_factor_dir": "data/raw/adj_factor",
+    "stock_basic": "data/raw/stock_basic/stock_basic_all.csv",
     "strict_daily_source": "data/research/five_year_strict/limit_up_fill_scored_asof.csv",
     "strict_feature_pool": "data/research/five_year_strict/strict_feature_pool.csv",
     "market_sentiment": "data/research/five_year_strict/market_sentiment.csv",
@@ -102,6 +122,6 @@
     "d_recent_summary": "reports/strategy_d_intraday_research/full_window_summary.json",
     "d_merge_summary": "reports/acde_rolling_optimization/20260630/strategy_d_three_year/merge_summary.json",
     "trade_calendar": "data/raw/trade_calendar.csv",
-    "report_root": "reports/acde_rolling_optimization"
+    "report_root": "reports/monthly_acde_research"
   }
 }

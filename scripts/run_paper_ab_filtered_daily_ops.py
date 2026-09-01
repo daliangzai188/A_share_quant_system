@@ -957,6 +957,9 @@ def main() -> None:
     a_generator.theme_heat_features_path = base_generator.theme_heat_features_path
     a_filtered = a_generator.apply_strategy_filters(all_candidates)
     a_candidates = apply_and_rank(a_generator, a_filtered, signal_date, top_n=args.top_n)
+    # A收益冠军规则必须在每日第一名已经确定后执行；命中时当天A空仓，
+    # 不能把第二名升级成BUY。门禁后的空缺允许组合按A>C继续检查C。
+    a_candidates = a_generator.apply_post_pick_entry_gate(a_candidates)
     a_selected = selected_candidate(a_candidates, selected_action)
 
     # C 作为影子腿每天都独立计算并落盘，便于前向反事实评估；这里只增加

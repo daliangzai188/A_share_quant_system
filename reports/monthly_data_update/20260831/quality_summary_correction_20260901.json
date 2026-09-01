@@ -1,0 +1,27 @@
+{
+  "schema_version": 2,
+  "correction_of": "quality_summary.json",
+  "status": "PASS",
+  "ready_token": "READY_FOR_MONTHLY_ACDE_RESEARCH",
+  "research_window": {
+    "start": "20230901",
+    "cutoff": "20260831",
+    "trade_day_count": 725
+  },
+  "execution_model_history_start": "20190101",
+  "raw_rows": {
+    "daily": 3911296,
+    "daily_basic": 3912309,
+    "limit_list": 48219,
+    "adj_factor": 3934416
+  },
+  "missing_daily_adj_factor_symbols": 0,
+  "strict_asof_rows": 101484,
+  "strategy_d": {
+    "target_count": 56192,
+    "event_count": 45208,
+    "registered_fail_closed_abnormal_count": 13
+  },
+  "hard_failures": [],
+  "evidence": "reports/monthly_acde_research/20260831/run_20260831_20260901T144052/quality_summary.json"
+}

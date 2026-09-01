@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "run_id": "20260831_20260901T143759_cf7fc82",
+  "status": "NOT_READY",
+  "ready_token": "NOT_READY",
+  "window": {
+    "start": "20230901",
+    "cutoff": "20260831",
+    "last_trade_day": "20260831",
+    "trade_day_count": 725
+  },
+  "gates": [
+    {
+      "id": "Q01",
+      "name": "交易日历与核心原始文件覆盖",
+      "status": "PASS",
+      "evidence": "725交易日；daily/daily_basic/limit_list各725文件；0 FAIL"
+    },
+    {
+      "id": "Q02",
+      "name": "重复、字段与对齐",
+      "status": "PASS_WITH_EXPLAINED_WARNINGS",
+      "evidence": "0重复主键；14个对齐WARN均已归因新股/B股；1个北交所换手异常已排除"
+    },
+    {
+      "id": "Q03",
+      "name": "严格as-of成交概率与特征",
+      "status": "PASS",
+      "evidence": "strict_asof=True；49645行；未来可见违规0"
+    },
+    {
+      "id": "Q04",
+      "name": "A/C/E日频派生表更新到截止日",
+      "status": "PASS",
+      "evidence": "strict_feature_pool/market_sentiment/theme_heat最大日期20260831"
+    },
+    {
+      "id": "Q05",
+      "name": "D三年母池与事件分母",
+      "status": "PASS_FAIL_CLOSED",
+      "evidence": "目标56192，交易日725，异常13均NO_PATH_SIGNAL；事件45208"
+    },
+    {
+      "id": "Q06",
+      "name": "D完整分钟路径与逐腿/组合认证能力",
+      "status": "FAIL",
+      "evidence": "extension complete_one_minute_path=False，daily_live_ranking_reconstructable=False，d_standalone=False，acde_replace=False"
+    },
+    {
+      "id": "Q07",
+      "name": "独立复权因子与前复权价格",
+      "status": "FAIL",
+      "evidence": "data/raw不存在adj_factor或独立qfq价格数据集；仅有pre_close链接收益实现，未达到数据更新规范的采集要求"
+    },
+    {
+      "id": "Q08",
+      "name": "月度精确研究执行器就绪",
+      "status": "FAIL",
+      "evidence": "allowed_update_nodes仍为0630/1231；入口仍含最近2年/半年门禁；候选排序和精确现金/最低佣金/板块股数尚未按SOP落地"
+    }
+  ],
+  "hard_failures": [
+    "Q06",
+    "Q07",
+    "Q08"
+  ],
+  "optimization_authorized": false,
+  "optimization_started": false,
+  "failure_policy": "任一硬门失败即停止；未使用旧数据、未来数据、缩短窗口或旧半年优化器替代"
+}

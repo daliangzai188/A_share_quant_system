@@ -1,0 +1,86 @@
+{
+  "comparisons": {
+    "OLD_ON_OLD": {
+      "trade_count": 176,
+      "win_rate": 0.7272727272727273,
+      "avg_account_return": 0.054826499466908034,
+      "median_account_return": 0.03732535501804968,
+      "equity_multiple": 6036.405956398867,
+      "max_drawdown": -0.2427937759892067,
+      "max_profit": 0.4762529750526576,
+      "max_loss": -0.1849437297752865,
+      "profit_loss_ratio": 2.1808945327708913,
+      "max_consecutive_losses": 4,
+      "leg_counts": {
+        "A": 78,
+        "C": 46,
+        "D": 16,
+        "E": 36
+      },
+      "buy_commission": 11913879.812799698,
+      "sell_commission": 12833279.223261388,
+      "transfer_fee": 824905.3012020363,
+      "stamp_tax": 21389659.002277654,
+      "total_fees": 46961723.33954077,
+      "buy_slippage": 37579072.15232595,
+      "sell_slippage": 42820417.828699686,
+      "total_slippage": 80399489.98102564
+    },
+    "OLD_ON_NEW": {
+      "trade_count": 185,
+      "win_rate": 0.7135135135135136,
+      "avg_account_return": 0.05142799146103673,
+      "median_account_return": 0.03648483894111232,
+      "equity_multiple": 5120.941891305746,
+      "max_drawdown": -0.2553408718219389,
+      "max_profit": 0.4762528767972083,
+      "max_loss": -0.18489210947619072,
+      "profit_loss_ratio": 2.035211944752673,
+      "max_consecutive_losses": 4,
+      "leg_counts": {
+        "A": 83,
+        "C": 50,
+        "D": 15,
+        "E": 37
+      },
+      "buy_commission": 18281802.40935007,
+      "sell_commission": 19070908.487667844,
+      "transfer_fee": 1245090.3632339307,
+      "stamp_tax": 31784847.47944641,
+      "total_fees": 70382648.73969826,
+      "buy_slippage": 59107199.6302437,
+      "sell_slippage": 63633328.28718026,
+      "total_slippage": 122740527.91742398
+    },
+    "NEW_ON_NEW": {
+      "trade_count": 179,
+      "win_rate": 0.7430167597765364,
+      "avg_account_return": 0.05593619495209814,
+      "median_account_return": 0.0389304455392776,
+      "equity_multiple": 8613.636085235845,
+      "max_drawdown": -0.2079168697871422,
+      "max_profit": 0.47625285161627695,
+      "max_loss": -0.1850174246142049,
+      "profit_loss_ratio": 2.1269210193425683,
+      "max_consecutive_losses": 3,
+      "leg_counts": {
+        "A": 84,
+        "C": 50,
+        "D": 16,
+        "E": 29
+      },
+      "buy_commission": 27854215.000282064,
+      "sell_commission": 29178379.707280416,
+      "transfer_fee": 1901086.490252083,
+      "stamp_tax": 48630632.84546737,
+      "total_fees": 107564314.04328193,
+      "buy_slippage": 90129255.10355029,
+      "sell_slippage": 97358624.31525059,
+      "total_slippage": 187487879.41880083
+    }
+  },
+  "window_data_effect_log": -0.16447040923072614,
+  "rule_effect_log": 0.5200081535653347,
+  "total_effect_log": 0.3555377443346086,
+  "old_on_old_note": "月度标准首次启用，使用2026-06-30正式发布锚点窗口，不冒充上月月度窗口。"
+}

@@ -25,6 +25,7 @@ from scripts.run_paper_ab_filtered_daily_ops import (
     configured_c_condition_profiles,
     reject_strategy_risk_mask,
 )
+from src.paper_candidate_generator import apply_no_fallback_post_pick_gate
 
 
 OUTPUT_PREFIX = "reports/paper_trade/ab_filtered_daily_ops/a_strict_plus_c_hold3"
@@ -71,6 +72,17 @@ def first_time_minutes(data: pd.DataFrame) -> pd.Series:
 def add_runtime_buckets(data: pd.DataFrame) -> pd.DataFrame:
     result = data.copy()
     result["first_time_minutes"] = first_time_minutes(result)
+    # 与DataCleaner.classify_limit_time_bucket保持同一边界。A收益冠军门禁
+    # 使用这个信号日字段，不能只依赖历史文件偶然已经带有该列。
+    first_time_raw = pd.to_numeric(
+        result.get("first_time", pd.Series(index=result.index)), errors="coerce"
+    )
+    result["first_time_bucket"] = "unknown"
+    result.loc[first_time_raw.le(93100), "first_time_bucket"] = "open_limit"
+    result.loc[first_time_raw.gt(93100) & first_time_raw.lt(100000), "first_time_bucket"] = "early_morning"
+    result.loc[first_time_raw.ge(100000) & first_time_raw.lt(140000), "first_time_bucket"] = "midday"
+    result.loc[first_time_raw.ge(140000) & first_time_raw.lt(143000), "first_time_bucket"] = "afternoon"
+    result.loc[first_time_raw.ge(143000), "first_time_bucket"] = "late"
     result["first_time_detail_bucket"] = pd.cut(
         result["first_time_minutes"],
         bins=[-float("inf"), 570, 600, 660, 810, 870, float("inf")],
@@ -306,7 +318,16 @@ def select_candidates(data: pd.DataFrame, config: dict[str, Any], top_n: int) ->
     )
     a_pool = apply_a_primary_empty_fallback(base, a_pool, config)
     if not a_pool.empty:
-        return "LIVE_LIMIT_POOL_A", rank_candidates(a_pool, config, top_n)
+        ranked_a = rank_candidates(a_pool, config, top_n)
+        # 收益冠军A先冻结第一名，再做下午首次封板门禁；命中后不补A第二名，
+        # 而是继续按固定组合顺序检查C。
+        allowed_a = apply_no_fallback_post_pick_gate(
+            ranked_a.head(1),
+            config.get("rolling_research_post_pick_exclude", {}),
+            strategy_label="A",
+        )
+        if not allowed_a.empty:
+            return "LIVE_LIMIT_POOL_A", ranked_a
 
     c_profiles = configured_c_condition_profiles(config)
     c_conditions = config.get("paper_ab_filtered_strategy", {}).get("c_strategy", {}).get("conditions", [])

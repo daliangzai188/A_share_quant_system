@@ -1,81 +1,203 @@
 {
   "schema_version": 1,
   "factor_schema_id": "D_RESEAL_FACTOR_VALUES_V1",
-  "release_id": "D_QUALITY_BREAK25_75_TOUCH_LT40_20260630_V12",
+  "release_id": "D_STRONG_BREAK_LT75_ACTIVE_GE20_20260831_V13",
   "strategy_mode": "FACTOR_UNION",
   "effective_from": "20260902",
   "research_window": {
-    "start": "20230701",
-    "end": "20260630"
+    "start": "20230901",
+    "end": "20260831"
   },
   "profiles": [
     {
-      "profile_id": "D_QUALITY_BREAK_25_50_TOUCH_LT40",
+      "profile_id": "D_STRONG_BREAK_LT25_ACTIVE_20_40",
       "priority": 1,
       "conditions": {
         "reseal_time_bucket": "0930_1000",
         "break_close_depth_bucket": "LT0_2PCT",
         "segment_bucket": "GROWTH_BOARD",
-        "market_break_rate_bucket": "25_50PCT",
+        "market_break_rate_bucket": "LT25PCT",
+        "market_active_count_bucket": "20_40",
         "market_touch_count_bucket": "LT40"
       }
     },
     {
-      "profile_id": "D_QUALITY_BREAK_50_75_TOUCH_LT40",
+      "profile_id": "D_STRONG_BREAK_LT25_ACTIVE_41_70",
       "priority": 2,
       "conditions": {
         "reseal_time_bucket": "0930_1000",
         "break_close_depth_bucket": "LT0_2PCT",
         "segment_bucket": "GROWTH_BOARD",
+        "market_break_rate_bucket": "LT25PCT",
+        "market_active_count_bucket": "41_70",
+        "market_touch_count_bucket": "LT40"
+      }
+    },
+    {
+      "profile_id": "D_STRONG_BREAK_LT25_ACTIVE_71_100",
+      "priority": 3,
+      "conditions": {
+        "reseal_time_bucket": "0930_1000",
+        "break_close_depth_bucket": "LT0_2PCT",
+        "segment_bucket": "GROWTH_BOARD",
+        "market_break_rate_bucket": "LT25PCT",
+        "market_active_count_bucket": "71_100",
+        "market_touch_count_bucket": "LT40"
+      }
+    },
+    {
+      "profile_id": "D_STRONG_BREAK_LT25_ACTIVE_GE101",
+      "priority": 4,
+      "conditions": {
+        "reseal_time_bucket": "0930_1000",
+        "break_close_depth_bucket": "LT0_2PCT",
+        "segment_bucket": "GROWTH_BOARD",
+        "market_break_rate_bucket": "LT25PCT",
+        "market_active_count_bucket": "GE101",
+        "market_touch_count_bucket": "LT40"
+      }
+    },
+    {
+      "profile_id": "D_STRONG_BREAK_25_50_ACTIVE_20_40",
+      "priority": 5,
+      "conditions": {
+        "reseal_time_bucket": "0930_1000",
+        "break_close_depth_bucket": "LT0_2PCT",
+        "segment_bucket": "GROWTH_BOARD",
+        "market_break_rate_bucket": "25_50PCT",
+        "market_active_count_bucket": "20_40",
+        "market_touch_count_bucket": "LT40"
+      }
+    },
+    {
+      "profile_id": "D_STRONG_BREAK_25_50_ACTIVE_41_70",
+      "priority": 6,
+      "conditions": {
+        "reseal_time_bucket": "0930_1000",
+        "break_close_depth_bucket": "LT0_2PCT",
+        "segment_bucket": "GROWTH_BOARD",
+        "market_break_rate_bucket": "25_50PCT",
+        "market_active_count_bucket": "41_70",
+        "market_touch_count_bucket": "LT40"
+      }
+    },
+    {
+      "profile_id": "D_STRONG_BREAK_25_50_ACTIVE_71_100",
+      "priority": 7,
+      "conditions": {
+        "reseal_time_bucket": "0930_1000",
+        "break_close_depth_bucket": "LT0_2PCT",
+        "segment_bucket": "GROWTH_BOARD",
+        "market_break_rate_bucket": "25_50PCT",
+        "market_active_count_bucket": "71_100",
+        "market_touch_count_bucket": "LT40"
+      }
+    },
+    {
+      "profile_id": "D_STRONG_BREAK_25_50_ACTIVE_GE101",
+      "priority": 8,
+      "conditions": {
+        "reseal_time_bucket": "0930_1000",
+        "break_close_depth_bucket": "LT0_2PCT",
+        "segment_bucket": "GROWTH_BOARD",
+        "market_break_rate_bucket": "25_50PCT",
+        "market_active_count_bucket": "GE101",
+        "market_touch_count_bucket": "LT40"
+      }
+    },
+    {
+      "profile_id": "D_STRONG_BREAK_50_75_ACTIVE_20_40",
+      "priority": 9,
+      "conditions": {
+        "reseal_time_bucket": "0930_1000",
+        "break_close_depth_bucket": "LT0_2PCT",
+        "segment_bucket": "GROWTH_BOARD",
         "market_break_rate_bucket": "50_75PCT",
+        "market_active_count_bucket": "20_40",
+        "market_touch_count_bucket": "LT40"
+      }
+    },
+    {
+      "profile_id": "D_STRONG_BREAK_50_75_ACTIVE_41_70",
+      "priority": 10,
+      "conditions": {
+        "reseal_time_bucket": "0930_1000",
+        "break_close_depth_bucket": "LT0_2PCT",
+        "segment_bucket": "GROWTH_BOARD",
+        "market_break_rate_bucket": "50_75PCT",
+        "market_active_count_bucket": "41_70",
+        "market_touch_count_bucket": "LT40"
+      }
+    },
+    {
+      "profile_id": "D_STRONG_BREAK_50_75_ACTIVE_71_100",
+      "priority": 11,
+      "conditions": {
+        "reseal_time_bucket": "0930_1000",
+        "break_close_depth_bucket": "LT0_2PCT",
+        "segment_bucket": "GROWTH_BOARD",
+        "market_break_rate_bucket": "50_75PCT",
+        "market_active_count_bucket": "71_100",
+        "market_touch_count_bucket": "LT40"
+      }
+    },
+    {
+      "profile_id": "D_STRONG_BREAK_50_75_ACTIVE_GE101",
+      "priority": 12,
+      "conditions": {
+        "reseal_time_bucket": "0930_1000",
+        "break_close_depth_bucket": "LT0_2PCT",
+        "segment_bucket": "GROWTH_BOARD",
+        "market_break_rate_bucket": "50_75PCT",
+        "market_active_count_bucket": "GE101",
         "market_touch_count_bucket": "LT40"
       }
     }
   ],
   "selection_policy": "EARLIEST_RESEAL_THEN_OPEN2_THEN_CODE",
-  "candidate_selection_policy": "V12_BREAK_25_75_AND_TOUCH_LT40_SUBJECT_TO_D_AND_FIXED_ACED_COMPOUND_IMPROVEMENT",
-  "branch_gate": {
-    "trade_count_at_least": 20,
-    "avg_account_return_must_exceed": 0.02,
-    "win_rate_must_exceed": 0.55
+  "candidate_selection_policy": "RETURN_FIRST_BREAK_LT75_ACTIVE_GE20_FIXED_ACED",
+  "risk_diagnostics": {
+    "standalone_sample_warning_below": 20,
+    "selection_veto": false,
+    "note": "风险指标继续完整披露，但不再先于综合复利否决可量化、可回放且逻辑对齐的收益冠军。"
   },
   "certified_metrics": {
     "d": {
-      "trade_count": 38,
-      "win_rate": 0.6578947368421053,
-      "avg_account_return": 0.04013087176029336,
-      "median_account_return": 0.025465495204028653,
-      "equity_multiple": 4.055498709509449,
-      "max_drawdown": -0.16657267707585544,
-      "max_profit": 0.2191184735692947,
-      "max_loss": -0.0699162117478346,
-      "profit_loss_ratio": 2.2210705933035824,
-      "max_consecutive_losses": 3
+      "trade_count": 16,
+      "win_rate": 0.8125,
+      "avg_account_return": 0.0518312390633297,
+      "median_account_return": 0.05121895061069681,
+      "equity_multiple": 2.1732624681795736,
+      "max_drawdown": -0.06988945074504782,
+      "max_profit": 0.14382777212393583,
+      "max_loss": -0.06988945074504782,
+      "profit_loss_ratio": 1.6439193572183433,
+      "max_consecutive_losses": 2
     },
     "acde": {
-      "trade_count": 176,
-      "win_rate": 0.7272727272727273,
-      "avg_account_return": 0.05484005979593039,
-      "median_account_return": 0.03732554320412928,
-      "equity_multiple": 6046.316593512633,
-      "max_drawdown": -0.24337404018667597,
-      "max_profit": 0.4762530065206852,
-      "max_loss": -0.18512867639717417,
-      "profit_loss_ratio": 2.179355549412114,
-      "max_consecutive_losses": 4,
+      "trade_count": 175,
+      "win_rate": 0.7428571428571429,
+      "avg_account_return": 0.058192201138335294,
+      "median_account_return": 0.042359031004999936,
+      "equity_multiple": 10240.653243754481,
+      "max_drawdown": -0.25534064469452433,
+      "max_profit": 0.4762529834346876,
+      "max_loss": -0.17603442208877318,
+      "profit_loss_ratio": 2.2854610177117114,
+      "max_consecutive_losses": 3,
       "leg_counts": {
-        "A": 78,
-        "C": 46,
-        "D": 16,
-        "E": 36
+        "A": 86,
+        "C": 51,
+        "E": 30,
+        "D": 8
       }
     }
   },
-  "replaced_release_id": "D_FACTOR_BEST_20260630_b74c0c03",
+  "replaced_release_id": "D_QUALITY_BREAK25_75_TOUCH_LT40_20260630_V12",
   "release_gate_passed": true,
   "human_review_required": true,
   "human_review_completed": true,
-  "human_review_note": "用户于2026-09-01明确选择三年6046.3166倍C/E/D组合并要求落地；固定A>C>E>D和其余执行口径不变。",
-  "source_report": "reports/acde_rolling_optimization/20260630_opening_profit_v12/optimization_summary.json",
+  "human_review_note": "用户于2026-09-01明确选择最近三年纯收益最高的10240.653244倍NEW组合并要求落地；固定A>C>E>D、仓位、费用和执行口径不变。",
+  "source_report": "reports/monthly_acde_research/20260831/run_20260831_return_first_final/return_first_summary.json",
   "applied_at": "2026-09-01T00:00:00+07:00"
 }

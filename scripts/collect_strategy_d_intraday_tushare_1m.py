@@ -172,7 +172,15 @@ def load_known_data_gaps(
     if missing:
         raise ValueError(f"D一分钟已知缺口缺少字段：{missing}")
     gaps = gaps[columns].copy()
-    target_dates = set(targets["trade_date"].astype(str))
+    if "trade_date" in targets.columns:
+        target_dates = set(targets["trade_date"].astype(str))
+    elif "target_key" in targets.columns:
+        target_dates = {
+            str(value).split("|", 1)[0]
+            for value in targets["target_key"].astype(str)
+        }
+    else:
+        raise ValueError("D一分钟冻结目标缺少trade_date或target_key")
     gaps = gaps[gaps["trade_date"].astype(str).isin(target_dates)].copy()
     if gaps["target_key"].duplicated().any():
         raise ValueError("D一分钟已知缺口target_key重复")

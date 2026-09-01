@@ -15,11 +15,14 @@ import pandas as pd
 from scripts.build_ac_daily_candidates import (
     DATES,
     DIDX,
+    adj_factor_value,
+    day,
     fixed_open_entry_details,
     trade_return_details,
 )
 from scripts.run_paper_ab_filtered_daily_ops import condition_strategy_config
 from scripts.run_paper_ab_filtered_observation_window import reject_strategy_risk_mask
+from src.paper_candidate_generator import apply_no_fallback_post_pick_gate
 from scripts.validate_other_live_strategies_strict import account_return
 from src.paper_candidate_generator import PaperCandidateGenerator
 from src.strategy_d_factor_rules import add_factor_values, profile_mask
@@ -322,21 +325,13 @@ def apply_a_research_post_pick_gate(
     picks: pd.DataFrame,
     config: Mapping[str, Any],
 ) -> pd.DataFrame:
-    """对已经冻结的A每日第一名执行研究风险门禁，不允许回补第二名。"""
+    """对A每日第一名执行与模拟/实盘共用的无回补入场门禁。"""
 
-    result = picks.copy().reset_index(drop=True)
-    gate = config.get("rolling_research_post_pick_exclude", {})
-    if result.empty or not gate:
-        return result
-    if bool(gate.get("fallback_to_second_candidate", True)):
-        raise ValueError("A研究尾部门禁禁止回补当日第二名")
-    column = str(gate.get("column", ""))
-    values = {str(value) for value in gate.get("values", [])}
-    if not column or not values or column not in result.columns:
-        raise ValueError("A研究尾部门禁字段或排除值非法")
-    return result.loc[
-        ~result[column].fillna("").astype(str).isin(values)
-    ].copy().reset_index(drop=True)
+    return apply_no_fallback_post_pick_gate(
+        picks,
+        config.get("rolling_research_post_pick_exclude", {}),
+        strategy_label="A",
+    )
 
 
 def build_a_picks(pool: pd.DataFrame, config: dict[str, Any]) -> pd.DataFrame:
@@ -959,13 +954,20 @@ def build_e_picks(pool: pd.DataFrame, spec: dict[str, Any]) -> pd.DataFrame:
 
 class StaticOutcomeCache:
     def __init__(self) -> None:
-        self._values: dict[tuple[str, str, int, str], Any] = {}
+        self._values: dict[tuple[str, str, int, str, str], Any] = {}
 
-    def get(self, signal_date: str, ts_code: str, hold: int, name: str) -> Any:
-        key = (str(signal_date), str(ts_code), int(hold), str(name))
+    def get(
+        self,
+        signal_date: str,
+        ts_code: str,
+        hold: int,
+        name: str,
+        cutoff: str,
+    ) -> Any:
+        key = (str(signal_date), str(ts_code), int(hold), str(name), str(cutoff))
         if key not in self._values:
             self._values[key] = trade_return_details(
-                key[0], key[1], key[2], name=key[3]
+                key[0], key[1], key[2], name=key[3], cutoff_date=key[4]
             )
         return self._values[key]
 
@@ -1009,6 +1011,15 @@ def static_plan_outcomes(
             "matched_condition_profile_ids": str(
                 raw.get("matched_condition_profile_ids", "")
             ),
+            "fill_probability": pd.to_numeric(
+                raw.get("fill_probability"), errors="coerce"
+            ),
+            "planned_buy_amount": pd.to_numeric(
+                raw.get("planned_buy_amount"), errors="coerce"
+            ),
+            "available_fill_amount": pd.to_numeric(
+                raw.get("available_fill_amount"), errors="coerce"
+            ),
         }
         if not entry.buy_date or entry.buy_date > cutoff:
             continue
@@ -1048,7 +1059,7 @@ def static_plan_outcomes(
             )
             continue
 
-        execution = cache.get(signal_date, code, hold, name)
+        execution = cache.get(signal_date, code, hold, name, cutoff)
         exit_date = str(execution.exit_date or "")
         observable = (
             execution.status == "OK"
@@ -1064,6 +1075,13 @@ def static_plan_outcomes(
                     "status": "OK",
                     "exit_date": exit_date,
                     "stock_return_before_fees": execution.stock_return,
+                    "entry_reference_price": execution.entry_reference_price,
+                    "entry_price": execution.entry_price,
+                    "exit_reference_price": execution.exit_reference_price,
+                    "exit_price": execution.exit_price,
+                    "buy_adj_factor": execution.buy_adj_factor,
+                    "sell_adj_factor": execution.sell_adj_factor,
+                    "position_scale": 1.0,
                     "account_return": value,
                     "entry_filled": True,
                     "position_opened": True,
@@ -1298,12 +1316,29 @@ def build_d_plans(
         exit_date = str(raw.get("exit_date", "") or "").replace(".0", "")
         execution_status = str(raw.get("execution_status", ""))
         value = pd.to_numeric(raw.get("account_return"), errors="coerce")
+        stock_return = pd.to_numeric(
+            raw.get("stock_return_before_fees"), errors="coerce"
+        )
+        limit_price = pd.to_numeric(raw.get("limit_price"), errors="coerce")
+        exit_reference_price = np.nan
+        exit_price = np.nan
+        if exit_date and exit_date <= cutoff:
+            exit_frame = day(exit_date)
+            if exit_frame is not None and str(raw["ts_code"]) in exit_frame.index:
+                exit_reference_price = pd.to_numeric(
+                    exit_frame.loc[str(raw["ts_code"]), "close"], errors="coerce"
+                )
+                if not pd.isna(exit_reference_price):
+                    exit_price = float(exit_reference_price) * 0.999
         observable = bool(
             queue_confirmed
             and execution_status == "OK"
             and exit_date
             and exit_date <= cutoff
             and not pd.isna(value)
+            and not pd.isna(stock_return)
+            and not pd.isna(limit_price)
+            and not pd.isna(exit_price)
         )
         if not queue_confirmed:
             status = "QUEUE_UNCONFIRMED_NO_DEPTH"
@@ -1321,6 +1356,30 @@ def build_d_plans(
                 "signal_hhmm": int(raw["signal_hhmm"]),
                 "status": status,
                 "exit_date": exit_date if exit_date <= cutoff else "",
+                "stock_return_before_fees": (
+                    float(stock_return) if observable else np.nan
+                ),
+                "entry_reference_price": (
+                    float(limit_price) if not pd.isna(limit_price) else np.nan
+                ),
+                "entry_price": (
+                    float(limit_price) if not pd.isna(limit_price) else np.nan
+                ),
+                "exit_reference_price": (
+                    float(exit_reference_price)
+                    if not pd.isna(exit_reference_price)
+                    else np.nan
+                ),
+                "exit_price": float(exit_price) if not pd.isna(exit_price) else np.nan,
+                "buy_adj_factor": adj_factor_value(
+                    str(raw["trade_date"]), str(raw["ts_code"])
+                ),
+                "sell_adj_factor": (
+                    adj_factor_value(exit_date, str(raw["ts_code"]))
+                    if exit_date and exit_date <= cutoff
+                    else np.nan
+                ),
+                "position_scale": 0.8,
                 "account_return": float(value) if observable else np.nan,
                 "entry_filled": bool(queue_confirmed),
                 "position_opened": bool(queue_confirmed),

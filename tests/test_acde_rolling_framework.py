@@ -8,8 +8,10 @@ import pandas as pd
 
 from src.acde_rolling_framework import (
     action_metrics,
+    build_monthly_research_window,
     build_window_set,
     evaluate_three_window_replacement,
+    replay_action_date_cash_portfolio,
     replay_action_date_portfolio,
 )
 from src.acde_rolling_candidates import (
@@ -25,6 +27,7 @@ from scripts.optimize_acde_rolling_three_year import (
     period_breakdown,
     select_main_window_winner,
 )
+from src.acde_monthly_research import load_monthly_config
 from scripts.merge_strategy_d_reseal_event_windows import merge as merge_d_windows
 
 
@@ -64,6 +67,71 @@ def test_three_window_boundaries_for_20260630() -> None:
     assert windows.main.may_rank_candidates is True
     assert windows.recent.may_rank_candidates is False
     assert windows.failure_check.may_rank_candidates is False
+
+
+def test_monthly_window_uses_36_complete_calendar_months() -> None:
+    window = build_monthly_research_window("20260831")
+    assert (window.start, window.end) == ("20230901", "20260831")
+    try:
+        build_monthly_research_window("20260830")
+    except ValueError as exc:
+        assert "自然月最后一天" in str(exc)
+    else:
+        raise AssertionError("非月末不得成为月度研究截止日")
+
+
+def test_monthly_config_removes_half_year_selection_windows() -> None:
+    config = load_monthly_config(ROOT / "config/acde_rolling_optimization.json")
+    assert config["schedule"]["frequency"] == "monthly"
+    assert config["windows"] == {
+        "main_months": 36,
+        "execution_model_history_start": "20190101",
+        "metric_date": "action_date",
+        "selection_window": "main_only",
+        "older_data_role": "risk_and_data_quality_diagnostics_only",
+    }
+    assert config["execution"]["initial_cash"] == 500000.0
+    assert config["execution"]["minimum_commission"] == 5.0
+
+
+def test_exact_cash_replay_models_lot_and_minimum_commission() -> None:
+    plans = pd.DataFrame(
+        [
+            {
+                "signal_date": "20240101",
+                "buy_date": "20240102",
+                "status": "OK",
+                "strategy_leg": "A",
+                "ts_code": "000001.SZ",
+                "name": "测试",
+                "exit_date": "20240103",
+                "position_open_until": "20240103",
+                "entry_filled": True,
+                "position_opened": True,
+                "outcome_observable": True,
+                "entry_reference_price": 10.0,
+                "entry_price": 10.01,
+                "exit_reference_price": 11.0,
+                "exit_price": 10.989,
+                "stock_return_before_fees": 0.0978021978021978,
+                "position_scale": 1.0,
+            }
+        ]
+    )
+    detail = replay_action_date_cash_portfolio(
+        {"A": plans},
+        action_dates=["20240102", "20240103"],
+        priority=("A",),
+        initial_cash=10_000.0,
+        position_pct=0.825,
+        max_position_pct=0.85,
+    )
+    trade = detail.loc[detail["status"].eq("EXECUTED")].iloc[0]
+    assert trade["quantity"] == 800
+    assert trade["buy_commission"] == 5.0
+    assert trade["sell_commission"] == 5.0
+    assert trade["stamp_tax"] > 0
+    assert detail.iloc[-1]["status"] == "SKIP_OCCUPIED"
 
 
 def test_half_year_breakdown_rolls_forward_without_fixed_calendar_years() -> None:

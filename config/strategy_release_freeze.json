@@ -1,20 +1,20 @@
 {
   "schema_version": 1,
-  "status": "UNFROZEN_PENDING_CERTIFICATION",
-  "release_id": "portfolio-a-c-e-d-a-fd-1-2-non-one-word-pending",
-  "invalidated_at": "2026-08-24",
-  "invalidated_reason": "最新A已按用户要求写入生产选股链，但其1%-2%封单非一字板补位来自355个变体的事后观察；当前A>C>E>D只有严格发现期统计，尚未取得LOCKED_OOS、WALK_FORWARD或容量发布认证，旧组合哈希与复利锚点不可复用。",
+  "status": "FORMAL_RULES_APPLIED_DISCOVERY_ONLY",
+  "release_id": "ACDE_RETURN_FIRST_10240_20260831_V13",
+  "invalidated_at": null,
+  "invalidated_reason": "",
   "strategy_priority_order": [
     "A",
     "C",
     "E",
     "D"
   ],
-  "research_input_start_date": "20240630",
-  "research_input_end_date": "20260630",
-  "oos_start_date": "20260820",
-  "certification_status": "NOT_CERTIFIED",
-  "certification_scenario": "current_a_c_e_d",
+  "research_input_start_date": "20230901",
+  "research_input_end_date": "20260831",
+  "oos_start_date": "20260901",
+  "certification_status": "BACKTEST_REPRODUCED_NOT_OOS_OR_CAPACITY_CERTIFIED",
+  "certification_scenario": "acde_return_first_10240_20260831_v13",
   "capacity_certified": false,
-  "note": "A>C>E>D生产顺序与A_FD_1_2_NON_ONE_WORD_FALLBACK_20260630_V1选股规则已落地；本文件不伪造样本外或容量认证。真实BUY继续受交易时间、余额、仓位、重复委托、成交可靠性、涨跌停、流动性和QMT状态等执行风控约束。"
+  "note": "用户明确选择最近三年纯收益最高NEW组合，A/C/E/D正式规则已落地且精确现金回放复现175笔、10240.653243754481倍。本文件不把同窗32,256组合搜索伪装成独立样本外或容量认证；真实BUY继续受交易时间、余额、仓位、重复委托、成交可靠性、涨跌停、流动性和QMT状态等执行风控约束。"
 }

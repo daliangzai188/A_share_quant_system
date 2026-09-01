@@ -138,3 +138,24 @@ def fixed_close_sell_executable(
     if floor is None:
         return True
     return float(close_price) > floor + tolerance
+
+
+def orderable_buy_quantity(
+    *,
+    ts_code: object,
+    available_amount: float,
+    execution_price: float,
+) -> int:
+    """按市场申报单位把目标金额向下取整为可买股数。"""
+
+    amount = float(available_amount)
+    price = float(execution_price)
+    if amount <= 0 or price <= 0:
+        return 0
+    raw = int(amount // price)
+    segment = market_segment(ts_code)
+    if segment == "star":
+        return raw if raw >= 200 else 0
+    if segment == "bj":
+        return raw if raw >= 100 else 0
+    return (raw // 100) * 100

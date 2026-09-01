@@ -21,6 +21,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", default="config/config.json", help="配置文件路径。")
     parser.add_argument("--overwrite", action="store_true", help="覆盖已存在的本地 CSV。")
     parser.add_argument("--no-daily-basic", action="store_true", help="只采集日线和涨停池，不采集 daily_basic。")
+    parser.add_argument("--no-adj-factor", action="store_true", help="不采集复权因子；月度ACDE研究不得使用此选项。")
     parser.add_argument("--skip-daily", action="store_true", help="跳过日线和 daily_basic，只采集涨停池。")
     parser.add_argument("--skip-limit", action="store_true", help="跳过涨停池，只采集日线和 daily_basic。")
     parser.add_argument(
@@ -80,6 +81,7 @@ def main() -> None:
             end_date=end_date,
             overwrite=args.overwrite,
             include_daily_basic=not args.no_daily_basic,
+            include_adj_factor=not args.no_adj_factor,
         )
 
     if not args.skip_limit:

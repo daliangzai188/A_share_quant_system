@@ -29,10 +29,14 @@ class DataCollector:
         data_config = self.config["data"]
         self.daily_dir = self.project_root / data_config.get("daily_dir", "data/raw/daily")
         self.daily_basic_dir = self.project_root / data_config.get("daily_basic_dir", "data/raw/daily_basic")
+        self.adj_factor_dir = self.project_root / data_config.get(
+            "adj_factor_dir", "data/raw/adj_factor"
+        )
         self.limit_list_dir = self.project_root / data_config.get("limit_list_dir", "data/raw/limit_list")
         self._stock_names_cache: dict[str, str] | None = None
         self._mkdir_with_retry(self.daily_dir)
         self._mkdir_with_retry(self.daily_basic_dir)
+        self._mkdir_with_retry(self.adj_factor_dir)
         self._mkdir_with_retry(self.limit_list_dir)
 
     def collect_daily_data(
@@ -41,12 +45,20 @@ class DataCollector:
         end_date: str,
         overwrite: bool | None = None,
         include_daily_basic: bool = True,
+        include_adj_factor: bool = True,
     ) -> dict[str, int]:
         overwrite = self._resolve_overwrite(overwrite)
         trade_dates = self.calendar.get_open_dates(start_date=start_date, end_date=end_date)
         self.logger.info("开始采集日线数据，交易日数量: %s", len(trade_dates))
 
-        stats = {"daily_saved": 0, "daily_skipped": 0, "daily_basic_saved": 0, "daily_basic_skipped": 0}
+        stats = {
+            "daily_saved": 0,
+            "daily_skipped": 0,
+            "daily_basic_saved": 0,
+            "daily_basic_skipped": 0,
+            "adj_factor_saved": 0,
+            "adj_factor_skipped": 0,
+        }
         total = len(trade_dates)
         for index, trade_date in enumerate(trade_dates, 1):
             self.logger.info("日线采集进度 %d/%d: trade_date=%s", index, total, trade_date)
@@ -66,6 +78,25 @@ class DataCollector:
                             exc,
                         )
                         include_daily_basic = False
+                    else:
+                        raise
+
+            if include_adj_factor:
+                self.logger.info("复权因子采集进度 %d/%d: trade_date=%s", index, total, trade_date)
+                try:
+                    factor_saved = self.collect_adj_factor_by_date(
+                        trade_date=trade_date,
+                        overwrite=overwrite,
+                    )
+                    stats["adj_factor_saved" if factor_saved else "adj_factor_skipped"] += 1
+                except Exception as exc:
+                    if self._is_permission_error(exc):
+                        self.logger.warning(
+                            "当前 Tushare 账号没有 adj_factor 权限，本次日线采集将停止采集复权因子。"
+                            "月度ACDE研究的数据门禁仍会失败关闭。原始错误: %s",
+                            exc,
+                        )
+                        include_adj_factor = False
                     else:
                         raise
 
@@ -134,6 +165,74 @@ class DataCollector:
             return False
         self._save_dataframe(daily_basic, output_path)
         self.logger.info("保存每日基本面: %s, 行数: %s, 用时 %.1f 秒", output_path, len(daily_basic), time.monotonic() - started)
+        return True
+
+    def collect_adj_factor_data(
+        self,
+        start_date: str,
+        end_date: str,
+        overwrite: bool | None = None,
+    ) -> dict[str, int]:
+        """按交易日断点续传复权因子，不读取或改写策略产物。"""
+
+        overwrite = self._resolve_overwrite(overwrite)
+        trade_dates = self.calendar.get_open_dates(start_date=start_date, end_date=end_date)
+        stats = {"adj_factor_saved": 0, "adj_factor_skipped": 0}
+        total = len(trade_dates)
+        for index, trade_date in enumerate(trade_dates, 1):
+            self.logger.info("复权因子采集进度 %d/%d: trade_date=%s", index, total, trade_date)
+            saved = self.collect_adj_factor_by_date(
+                trade_date=trade_date,
+                overwrite=overwrite,
+            )
+            stats["adj_factor_saved" if saved else "adj_factor_skipped"] += 1
+        self.logger.info("复权因子采集完成: %s", stats)
+        return stats
+
+    def collect_adj_factor_by_date(
+        self,
+        trade_date: str,
+        overwrite: bool = False,
+    ) -> bool:
+        output_path = self.adj_factor_dir / f"{trade_date}.csv"
+        self.logger.info("检查本地复权因子文件: %s", output_path)
+        if self._should_skip(output_path, overwrite):
+            self.logger.info("跳过复权因子: %s 已存在且有数据", output_path)
+            return False
+
+        started = time.monotonic()
+        self.logger.info("请求 Tushare adj_factor: trade_date=%s", trade_date)
+        factors = self.data_source.get_adj_factor(trade_date=trade_date)
+        required = {"ts_code", "trade_date", "adj_factor"}
+        missing = sorted(required.difference(factors.columns))
+        if factors.empty:
+            self.logger.warning(
+                "Tushare 未返回 %s 复权因子，不保存（下次重试可重新采集），用时 %.1f 秒",
+                trade_date,
+                time.monotonic() - started,
+            )
+            return False
+        if missing:
+            raise ValueError(f"{trade_date}复权因子缺少字段: {missing}")
+        factors = factors[["ts_code", "trade_date", "adj_factor"]].copy()
+        factors["trade_date"] = factors["trade_date"].astype(str).str.replace(
+            r"\.0$", "", regex=True
+        )
+        if not factors["trade_date"].eq(str(trade_date)).all():
+            raise ValueError(f"{trade_date}复权因子返回了其他交易日")
+        if factors["ts_code"].astype(str).duplicated().any():
+            raise ValueError(f"{trade_date}复权因子存在重复股票代码")
+        values = pd.to_numeric(factors["adj_factor"], errors="coerce")
+        if values.isna().any() or values.le(0).any():
+            raise ValueError(f"{trade_date}复权因子存在缺失或非正值")
+        factors["adj_factor"] = values
+        self._save_dataframe(factors.sort_values("ts_code"), output_path)
+        self.logger.info(
+            "保存复权因子: %s, 行数: %s, 用时 %.1f 秒",
+            output_path,
+            len(factors),
+            time.monotonic() - started,
+        )
         return True
 
     def collect_limit_by_date(self, trade_date: str, overwrite: bool = False) -> bool:

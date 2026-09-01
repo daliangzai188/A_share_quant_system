@@ -34,24 +34,28 @@ class CurrentPortfolioAlignmentTests(unittest.TestCase):
         self.assertNotIn("release_eligible", self.legacy)
         self.assertNotIn("capacity_certified", self.legacy)
 
-    def test_current_certificate_uses_v12_three_year_anchor(self) -> None:
+    def test_current_certificate_uses_return_first_three_year_anchor(self) -> None:
         current = json.loads(
             (
-                ROOT / "reports/current_portfolio_alignment/live_certification.json"
+                ROOT
+                / "reports/current_portfolio_alignment/return_first_live_certification.json"
             ).read_text(encoding="utf-8")
         )
-        self.assertEqual(current["input_start_date"], "20230701")
-        self.assertEqual(current["input_end_date"], "20260630")
+        self.assertEqual(current["window"]["start"], "20230901")
+        self.assertEqual(current["window"]["end"], "20260831")
         self.assertTrue(current["strict_asof_passed"])
         self.assertEqual(current["status"], "PASS")
         self.assertTrue(current["current_executable"])
         self.assertFalse(current["release_eligible"])
-        self.assertTrue(current["user_approved_for_current_live"])
-        self.assertEqual(current["scenario"], "acde_ced_v12_6046_formal")
-        self.assertEqual(current["release_id"], "ACDE_CED_V12_6046_20260630")
-        self.assertEqual(current["executed_trade_count"], 176)
-        self.assertAlmostEqual(current["equity_multiple"], 6046.316593512633)
-        self.assertNotIn("capacity_certified", current)
+        self.assertFalse(current["independent_oos_certified"])
+        self.assertFalse(current["capacity_certified"])
+        self.assertEqual(current["scenario"], "acde_return_first_10240_20260831_v13")
+        self.assertEqual(current["release_id"], "ACDE_RETURN_FIRST_10240_20260831_V13")
+        self.assertEqual(current["combo_metrics"]["trade_count"], 175)
+        self.assertAlmostEqual(
+            current["combo_metrics"]["equity_multiple"], 10240.653243754481
+        )
+        self.assertTrue(current["deterministic_double_replay"])
 
     def test_legacy_leg_breakdown_stays_archived(self) -> None:
         self.assertEqual(self.legacy["executed_trade_count"], 128)

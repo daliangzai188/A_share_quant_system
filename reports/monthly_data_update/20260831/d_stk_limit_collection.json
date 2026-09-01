@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "strategy": "D",
+  "window": "20260630~20260831",
+  "formal_rule_modified": false,
+  "source": "TUSHARE_STK_LIMIT",
+  "expected_open_day_count": 44,
+  "complete_day_count": 44,
+  "saved_this_run_count": 44,
+  "missing_day_count": 0,
+  "missing_dates": [],
+  "invalid_before": [],
+  "invalid_after": [],
+  "request_errors": [],
+  "passed": true
+}

@@ -1,0 +1,30 @@
+{
+  "A": {
+    "old": "A_CURRENT",
+    "new": "A_RISK_EXCLUDE_AFTERNOON_FIRST_SEAL",
+    "operation": "替换",
+    "description": "每日第一名首次封板属于下午时段时空仓，不回补第二名",
+    "changed_plan_count": 5
+  },
+  "C": {
+    "old": "C_CURRENT",
+    "new": "C_SEGMENT_NON_ICE_POINT",
+    "operation": "替换",
+    "description": "保留C双分支，但排除所属分段ice_point",
+    "changed_plan_count": 4
+  },
+  "E": {
+    "old": "E_CURRENT",
+    "new": "E_RISK_EXCLUDE_FD_RATIO_2_5PCT",
+    "operation": "替换",
+    "description": "每日第一名封单比例处于2%~5%拥挤区时空仓",
+    "changed_plan_count": 11
+  },
+  "D": {
+    "old": "D_CURRENT",
+    "new": "D_CURRENT",
+    "operation": "保持",
+    "description": "保持当前正式规则",
+    "changed_plan_count": 0
+  }
+}

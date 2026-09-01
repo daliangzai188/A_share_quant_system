@@ -1,0 +1,37 @@
+{
+  "status": "PASS",
+  "plan_signatures": {
+    "A": "84c0c18c033858bf2f3e3acab326f5f976a315ecb9bb3d1d91f12f98a79ae581",
+    "C": "0effda6268609c9b1c11a4a52c09dca590b719fde662a1a548a7d36b1c267d30",
+    "E": "3ea2e41ad36abeb7be119ceb2ae182ef65036ea55b2e2cd6807a37c8fbb80f0c",
+    "D": "eed6eceef756e7447ca2d4485a47c212942f588d71788c3005d108030ead5b7c"
+  },
+  "metrics": {
+    "trade_count": 185,
+    "win_rate": 0.7135135135135136,
+    "avg_account_return": 0.05142799146103673,
+    "median_account_return": 0.03648483894111232,
+    "equity_multiple": 5120.941891305746,
+    "max_drawdown": -0.2553408718219389,
+    "max_profit": 0.4762528767972083,
+    "max_loss": -0.18489210947619072,
+    "profit_loss_ratio": 2.035211944752673,
+    "max_consecutive_losses": 4,
+    "leg_counts": {
+      "A": 83,
+      "C": 50,
+      "D": 15,
+      "E": 37
+    },
+    "buy_commission": 18281802.40935007,
+    "sell_commission": 19070908.487667844,
+    "transfer_fee": 1245090.3632339307,
+    "stamp_tax": 31784847.47944641,
+    "total_fees": 70382648.73969826,
+    "buy_slippage": 59107199.6302437,
+    "sell_slippage": 63633328.28718026,
+    "total_slippage": 122740527.91742398
+  },
+  "exact_cash": true,
+  "minimum_commission_modeled": true
+}

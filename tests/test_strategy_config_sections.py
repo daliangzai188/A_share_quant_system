@@ -44,7 +44,7 @@ class StrategyConfigSectionTests(unittest.TestCase):
         self.assertTrue(c_strategy["enabled"])
         self.assertEqual(
             c_strategy["release_id"],
-            "C_LEADER_RANK23_LD_LT30_20260630_V12",
+            "C_RISK_EXCLUDE_SINGLE_OPEN_20260831_V13",
         )
         self.assertEqual(c_strategy["condition_mode"], "ANY_PROFILE")
         self.assertEqual(c_strategy["conditions"], [])
@@ -86,6 +86,16 @@ class StrategyConfigSectionTests(unittest.TestCase):
                 "market_limit_down_count_bucket": "15_30",
             },
         })
+        single_open_rules = [
+            condition
+            for rule in c_strategy["risk_reject_rules"]
+            for condition in rule.get("numeric_conditions", [])
+            if condition.get("column") == "open_times"
+        ]
+        self.assertIn(
+            {"column": "open_times", "operator": "==", "value": 1},
+            single_open_rules,
+        )
 
     def test_c_holds_three_days(self) -> None:
         """C正式两分支版仍使用T+3退出，不得因入选条件更新改变卖出口径。"""
@@ -101,7 +111,7 @@ class StrategyConfigSectionTests(unittest.TestCase):
         """A/C当前数据窗口必须使用新锚点，且A排序变化不能串到C。"""
         self.assertEqual(
             self.config["data_scope"]["signal_window"],
-            {"start_date": "20240630", "end_date": "20260630"},
+            {"start_date": "20230901", "end_date": "20260831"},
         )
         c_ranking = self.config["paper_ab_filtered_strategy"]["c_strategy"]["ranking"]
         self.assertEqual(

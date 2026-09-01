@@ -11,6 +11,34 @@ from src.utils.config import get_project_root, load_json_config, mkdir_p
 from src.utils.logger import get_logger
 
 
+def apply_no_fallback_post_pick_gate(
+    picks: pd.DataFrame,
+    gate: dict[str, Any] | None,
+    *,
+    strategy_label: str,
+) -> pd.DataFrame:
+    """对已经选出的每日第一名执行无回补入场门禁。
+
+    这里故意不接收完整候选池：调用方必须先完成正式排序并只传第一名，
+    被门禁排除后当日直接空仓。这样研究回放、模拟计划和实盘计划不会
+    因为第一名被过滤而偷偷改买第二名。
+    """
+
+    result = picks.copy().reset_index(drop=True)
+    if result.empty or not gate:
+        return result
+    if bool(gate.get("fallback_to_second_candidate", False)):
+        raise ValueError(f"{strategy_label}入场门禁禁止回补第二名")
+    column = str(gate.get("column", "")).strip()
+    values = {str(value) for value in gate.get("values", [])}
+    if not column or not values:
+        raise ValueError(f"{strategy_label}入场门禁缺少字段或排除值")
+    if column not in result.columns:
+        raise ValueError(f"{strategy_label}入场门禁字段缺失：{column}")
+    keep = ~result[column].fillna("").astype(str).isin(values)
+    return result.loc[keep].copy().reset_index(drop=True)
+
+
 class PaperCandidateGenerator:
     """
     每日模拟盘候选生成器。
@@ -82,6 +110,7 @@ class PaperCandidateGenerator:
 
         ranked = self.rank_candidates(daily_candidates)
         output = self.build_output(ranked, resolved_signal_date, top_n or self.default_top_n)
+        output = self.apply_post_pick_entry_gate(output)
         summary = self.build_summary(output, resolved_signal_date, len(daily_candidates), len(filtered))
 
         mkdir_p(self.output_prefix.parent)
@@ -99,6 +128,47 @@ class PaperCandidateGenerator:
             "summary": summary_path,
             "markdown": markdown_path,
         }
+
+    def apply_post_pick_entry_gate(self, output: pd.DataFrame) -> pd.DataFrame:
+        """把A第一名门禁同步应用到候选输出，命中后只改为空仓观察。
+
+        输出仍保留被拒绝的第一名用于审计，但其``planned_action``会改成
+        ``WATCH_ONLY``，因此下游不会生成买入计划，也不会把第二名提升为BUY。
+        """
+
+        result = output.copy()
+        gate = self.config.get("rolling_research_post_pick_exclude", {})
+        if result.empty or not gate:
+            return result
+        selected_action = str(
+            self.paper_config.get("planned_action_for_selected", "PLAN_BUY_T1_OPEN")
+        )
+        selected = result[result["planned_action"].astype(str).eq(selected_action)]
+        if selected.empty:
+            return result
+        first = selected.head(1)
+        allowed = apply_no_fallback_post_pick_gate(
+            first,
+            gate,
+            strategy_label="A",
+        )
+        result["entry_gate_status"] = "NOT_APPLICABLE"
+        result["entry_gate_reason"] = ""
+        first_index = first.index[0]
+        if allowed.empty:
+            column = str(gate["column"])
+            values = ",".join(str(value) for value in gate["values"])
+            result.loc[first_index, "planned_action"] = str(
+                self.paper_config.get("planned_action_for_watchlist", "WATCH_ONLY")
+            )
+            result.loc[first_index, "planned_position_pct"] = 0.0
+            result.loc[first_index, "entry_gate_status"] = "REJECTED_NO_FALLBACK"
+            result.loc[first_index, "entry_gate_reason"] = (
+                f"A每日第一名命中无回补门禁：{column}属于[{values}]"
+            )
+        else:
+            result.loc[first_index, "entry_gate_status"] = "PASSED"
+        return result
 
     def assert_safe_mode(self) -> None:
         trade_mode = str(self.config.get("trade_mode", "")).strip().lower()
@@ -389,6 +459,9 @@ class PaperCandidateGenerator:
             "retreat_state_bucket": getattr(row, "retreat_state_bucket", ""),
             "market_emotion_state_bucket": getattr(row, "market_emotion_state_bucket", ""),
             "segment_emotion_state_bucket": getattr(row, "segment_emotion_state_bucket", ""),
+            # A收益冠军门禁依赖清洗层的标准首次封板时段；候选输出必须保留，
+            # 否则研究能回放、模拟/实盘计划却会因字段丢失而失配。
+            "first_time_bucket": getattr(row, "first_time_bucket", ""),
             "first_time_detail_bucket": getattr(row, "first_time_detail_bucket", ""),
             "turnover_rate_bucket": getattr(row, "turnover_rate_bucket", ""),
             "amount_ratio_bucket": getattr(row, "amount_ratio_bucket", ""),

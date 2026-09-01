@@ -1,0 +1,20 @@
+{
+  "standard_id": "A_SYSTEM_STRICT_ASOF_V1",
+  "dataset_name": "five_year_research_fill_source",
+  "row_count": 101484,
+  "signal_date_count": 1639,
+  "first_signal_date": "20191128",
+  "last_signal_date": "20260831",
+  "duplicate_key_count": 0,
+  "invalid_signal_date_count": 0,
+  "invalid_as_of_date_count": 0,
+  "as_of_after_signal_count": 0,
+  "as_of_mismatch_count": 0,
+  "reliable_method_bad_count": 0,
+  "reliable_training_end_missing_count": 0,
+  "reliable_training_not_prior_count": 0,
+  "availability_date_invalid_count": 0,
+  "availability_after_signal_count": 0,
+  "passed": true,
+  "issues": []
+}

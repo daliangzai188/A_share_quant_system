@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "window": {
+    "start": "20230901",
+    "end": "20260831"
+  },
+  "target_count": 56192,
+  "trade_day_count": 725,
+  "first_trade_date": "20230901",
+  "last_trade_date": "20260831",
+  "duplicate_target_key_count": 0,
+  "minute_status_counts": {
+    "READY_1M_PATH_NO_QUEUE_DEPTH": 56179,
+    "MISMATCH_DAILY_TOUCH_NOT_CONFIRMED": 9,
+    "MISSING_MINUTE_DATA": 4
+  },
+  "fail_closed_abnormal_count": 13,
+  "full_window_fail_closed_ready": true,
+  "sources": [
+    "data/research/acde_rolling_optimization/20260630/strategy_d_missing_year/event_ledger_full_window.csv",
+    "data/research/strategy_d_intraday/event_ledger_full_window.csv",
+    "data/research/monthly_acde/20260831/strategy_d_extension/event_ledger_full_window.csv"
+  ]
+}

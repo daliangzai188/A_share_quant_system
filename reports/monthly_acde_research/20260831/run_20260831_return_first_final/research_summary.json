@@ -1,0 +1,517 @@
+{
+  "schema_version": 2,
+  "run_id": "20260831_return_first_final",
+  "cutoff": "20260831",
+  "window": {
+    "start": "20230901",
+    "end": "20260831"
+  },
+  "prediction": {
+    "start": "20260901",
+    "end": "20260930"
+  },
+  "priority": [
+    "A",
+    "C",
+    "E",
+    "D"
+  ],
+  "selected_scenario": "UPDATE_A_C_E",
+  "selected_legs": [
+    "A",
+    "C",
+    "E"
+  ],
+  "status": "EXTREME_CHANGE_REVIEW_REQUIRED",
+  "pipeline": [
+    {
+      "gate": "P00",
+      "status": "PASS",
+      "reason": "月度日期与授权范围已冻结"
+    },
+    {
+      "gate": "P01",
+      "status": "PASS",
+      "reason": "复用已更新到截止日的原始数据"
+    },
+    {
+      "gate": "P02",
+      "status": "PASS",
+      "reason": "原始、复权、as-of与D失败关闭门禁通过"
+    },
+    {
+      "gate": "P03",
+      "status": "PASS",
+      "reason": "数据、代码与配置输入已冻结"
+    },
+    {
+      "gate": "P04",
+      "status": "PASS",
+      "reason": "当前正式ACDE计划与精确现金账本两次一致"
+    },
+    {
+      "gate": "P05",
+      "status": "PASS",
+      "reason": "有限候选、门槛和排序规则已冻结"
+    },
+    {
+      "gate": "P06",
+      "status": "PASS",
+      "reason": "逐腿独立与只替换该腿组合账本完成"
+    },
+    {
+      "gate": "P07",
+      "status": "PASS",
+      "reason": "C专项回归在P07文件中单列"
+    },
+    {
+      "gate": "P08",
+      "status": "PASS",
+      "reason": "唯一组合胜者=UPDATE_A_C_E"
+    },
+    {
+      "gate": "P09",
+      "status": "PASS",
+      "reason": "OLD_ON_OLD/OLD_ON_NEW/NEW_ON_NEW与逐笔差异已生成"
+    },
+    {
+      "gate": "P10",
+      "status": "REVIEW_REQUIRED",
+      "reason": "RULE_COMPOUND_RATIO"
+    },
+    {
+      "gate": "P11",
+      "status": "PENDING_USER_REVIEW",
+      "reason": "禁止修改正式配置或提交"
+    },
+    {
+      "gate": "P12",
+      "status": "NOT_RUN_PENDING_USER_AUTHORIZATION",
+      "reason": "需用户明确要求再次精准校验"
+    },
+    {
+      "gate": "P13",
+      "status": "NOT_RUN",
+      "reason": "未获配置落地与提交授权"
+    },
+    {
+      "gate": "P14",
+      "status": "PENDING_FORWARD_MONTH",
+      "reason": "真实前向月份202609"
+    }
+  ],
+  "leg_winners": {
+    "A": {
+      "baseline_variant_id": "A_CURRENT",
+      "selected_variant_id": "A_RISK_EXCLUDE_AFTERNOON_FIRST_SEAL",
+      "selected_description": "每日第一名首次封板属于下午时段时空仓，不回补第二名",
+      "eligible_candidate_count": 1,
+      "decision": "RESEARCH_WINNER",
+      "metrics": {
+        "standalone_equity_multiple": 155.026902029871,
+        "standalone_max_drawdown": -0.19372149239299818,
+        "standalone_trade_count": 108,
+        "portfolio_equity_multiple": 5530.698090735804,
+        "portfolio_max_drawdown": -0.2553406690889216,
+        "standalone_win_rate": 0.6481481481481481,
+        "standalone_avg_account_return": 0.05309198223687757,
+        "standalone_median_account_return": 0.03086286547738737,
+        "standalone_max_profit": 0.4762514258462671,
+        "standalone_max_loss": -0.11847246855829363,
+        "standalone_profit_loss_ratio": 2.4616069154734563,
+        "standalone_max_consecutive_losses": 3,
+        "standalone_leg_counts": "{\"A\": 108}",
+        "standalone_buy_commission": 517232.27094438893,
+        "standalone_sell_commission": 540934.8054452729,
+        "standalone_transfer_fee": 35272.2358796554,
+        "standalone_stamp_tax": 901558.009075455,
+        "standalone_total_fees": 1994997.3213447724,
+        "standalone_buy_slippage": 1722385.1846297956,
+        "standalone_sell_slippage": 1804920.9390900047,
+        "standalone_total_slippage": 3527306.1237198,
+        "portfolio_trade_count": 184,
+        "portfolio_win_rate": 0.717391304347826,
+        "portfolio_avg_account_return": 0.05210889037195887,
+        "portfolio_median_account_return": 0.03689430022595974,
+        "portfolio_max_profit": 0.4762528232960537,
+        "portfolio_max_loss": -0.1848116541950131,
+        "portfolio_profit_loss_ratio": 2.0624448791706347,
+        "portfolio_max_consecutive_losses": 4,
+        "portfolio_leg_counts": "{\"A\": 82, \"C\": 50, \"D\": 15, \"E\": 37}",
+        "portfolio_buy_commission": 19744308.656780165,
+        "portfolio_sell_commission": 20596567.325607877,
+        "portfolio_transfer_fee": 1344695.8660796017,
+        "portfolio_stamp_tax": 34327612.20934647,
+        "portfolio_total_fees": 76013184.0578141,
+        "portfolio_buy_slippage": 63835670.23722321,
+        "portfolio_sell_slippage": 68723948.36706029,
+        "portfolio_total_slippage": 132559618.6042835
+      }
+    },
+    "C": {
+      "baseline_variant_id": "C_CURRENT",
+      "selected_variant_id": "C_SEGMENT_NON_ICE_POINT",
+      "selected_description": "保留C双分支，但排除所属分段ice_point",
+      "eligible_candidate_count": 1,
+      "decision": "RESEARCH_WINNER",
+      "metrics": {
+        "standalone_equity_multiple": 24.888789676068367,
+        "standalone_max_drawdown": -0.15457539275523902,
+        "standalone_trade_count": 61,
+        "portfolio_equity_multiple": 5739.298503335108,
+        "portfolio_max_drawdown": -0.24289827959501942,
+        "standalone_win_rate": 0.7704918032786885,
+        "standalone_avg_account_return": 0.05708492659557976,
+        "standalone_median_account_return": 0.05853449465978322,
+        "standalone_max_profit": 0.21658432506711245,
+        "standalone_max_loss": -0.14644204675310324,
+        "standalone_profit_loss_ratio": 1.8964691848565005,
+        "standalone_max_consecutive_losses": 3,
+        "standalone_leg_counts": "{\"C\": 61}",
+        "standalone_buy_commission": 44376.01748579999,
+        "standalone_sell_commission": 48011.9822082195,
+        "standalone_transfer_fee": 3079.59998980065,
+        "standalone_stamp_tax": 80019.9703470325,
+        "standalone_total_fees": 175487.57003085266,
+        "standalone_buy_slippage": 147772.2859999835,
+        "standalone_sell_slippage": 160181.32000000202,
+        "standalone_total_slippage": 307953.60599998554,
+        "portfolio_trade_count": 185,
+        "portfolio_win_rate": 0.7135135135135136,
+        "portfolio_avg_account_return": 0.05196579823394763,
+        "portfolio_median_account_return": 0.03648483894111232,
+        "portfolio_max_profit": 0.4762528767972083,
+        "portfolio_max_loss": -0.18489210947619072,
+        "portfolio_profit_loss_ratio": 2.1256580456942866,
+        "portfolio_max_consecutive_losses": 4,
+        "portfolio_leg_counts": "{\"A\": 84, \"C\": 49, \"D\": 15, \"E\": 37}",
+        "portfolio_buy_commission": 18869559.990961272,
+        "portfolio_sell_commission": 19752153.574454043,
+        "portfolio_transfer_fee": 1287390.4521805106,
+        "portfolio_stamp_tax": 32920255.95742341,
+        "portfolio_total_fees": 72829359.97501925,
+        "portfolio_buy_slippage": 61064434.334243566,
+        "portfolio_sell_slippage": 65906418.333180375,
+        "portfolio_total_slippage": 126970852.66742393
+      }
+    },
+    "E": {
+      "baseline_variant_id": "E_CURRENT",
+      "selected_variant_id": "E_RISK_EXCLUDE_FD_RATIO_2_5PCT",
+      "selected_description": "每日第一名封单比例处于2%~5%拥挤区时空仓",
+      "eligible_candidate_count": 4,
+      "decision": "RESEARCH_WINNER",
+      "metrics": {
+        "standalone_equity_multiple": 16.052804209464945,
+        "standalone_max_drawdown": -0.48496048783395107,
+        "standalone_trade_count": 65,
+        "portfolio_equity_multiple": 7114.78125004562,
+        "portfolio_max_drawdown": -0.25534059183006197,
+        "standalone_win_rate": 0.7538461538461538,
+        "standalone_avg_account_return": 0.049295094324092376,
+        "standalone_median_account_return": 0.04674606160651251,
+        "standalone_max_profit": 0.5230568956812021,
+        "standalone_max_loss": -0.2692256817160156,
+        "standalone_profit_loss_ratio": 1.2331597541811998,
+        "standalone_max_consecutive_losses": 3,
+        "standalone_leg_counts": "{\"E\": 65}",
+        "standalone_buy_commission": 62602.24955084099,
+        "standalone_sell_commission": 64932.171938891996,
+        "standalone_transfer_fee": 4251.147382991101,
+        "standalone_stamp_tax": 108220.28656482,
+        "standalone_total_fees": 240005.85543754406,
+        "standalone_buy_slippage": 208465.69946997825,
+        "standalone_sell_slippage": 216657.2303599995,
+        "standalone_total_slippage": 425122.9298299778,
+        "portfolio_trade_count": 180,
+        "portfolio_win_rate": 0.7388888888888889,
+        "portfolio_avg_account_return": 0.05465970003621208,
+        "portfolio_median_account_return": 0.03864103327999424,
+        "portfolio_max_profit": 0.47625276917432036,
+        "portfolio_max_loss": -0.18481854488133853,
+        "portfolio_profit_loss_ratio": 1.994853319374435,
+        "portfolio_max_consecutive_losses": 4,
+        "portfolio_leg_counts": "{\"A\": 84, \"C\": 51, \"D\": 16, \"E\": 29}",
+        "portfolio_buy_commission": 24967488.317531932,
+        "portfolio_sell_commission": 26063406.785913803,
+        "portfolio_transfer_fee": 1701029.8367815248,
+        "portfolio_stamp_tax": 43439011.30985634,
+        "portfolio_total_fees": 96170936.25008361,
+        "portfolio_buy_slippage": 80711392.97979124,
+        "portfolio_sell_slippage": 86964987.60732038,
+        "portfolio_total_slippage": 167676380.58711162
+      }
+    },
+    "D": {
+      "baseline_variant_id": "D_CURRENT",
+      "selected_variant_id": "D_CURRENT",
+      "selected_description": "当前正式规则",
+      "eligible_candidate_count": 0,
+      "decision": "KEEP_CURRENT",
+      "metrics": {
+        "standalone_equity_multiple": 4.146791610463228,
+        "standalone_max_drawdown": -0.1661210601664751,
+        "standalone_trade_count": 37,
+        "portfolio_equity_multiple": 5120.941891305746,
+        "portfolio_max_drawdown": -0.2553408718219389,
+        "standalone_win_rate": 0.6756756756756757,
+        "standalone_avg_account_return": 0.04179470514802094,
+        "standalone_median_account_return": 0.030694082392719313,
+        "standalone_max_profit": 0.2186695561103873,
+        "standalone_max_loss": -0.06951374116811171,
+        "standalone_profit_loss_ratio": 2.1655018814974807,
+        "standalone_max_consecutive_losses": 3,
+        "standalone_leg_counts": "{\"D\": 37}",
+        "standalone_buy_commission": 7082.960768999999,
+        "standalone_sell_commission": 7563.301502625,
+        "standalone_transfer_fee": 488.2087423875001,
+        "standalone_stamp_tax": 12605.502504375,
+        "standalone_total_fees": 27739.973518387502,
+        "standalone_buy_slippage": 0.0,
+        "standalone_sell_slippage": 25236.241249999533,
+        "standalone_total_slippage": 25236.241249999533,
+        "portfolio_trade_count": 185,
+        "portfolio_win_rate": 0.7135135135135136,
+        "portfolio_avg_account_return": 0.05142799146103673,
+        "portfolio_median_account_return": 0.03648483894111232,
+        "portfolio_max_profit": 0.4762528767972083,
+        "portfolio_max_loss": -0.18489210947619072,
+        "portfolio_profit_loss_ratio": 2.035211944752673,
+        "portfolio_max_consecutive_losses": 4,
+        "portfolio_leg_counts": "{\"A\": 83, \"C\": 50, \"D\": 15, \"E\": 37}",
+        "portfolio_buy_commission": 18281802.40935007,
+        "portfolio_sell_commission": 19070908.487667844,
+        "portfolio_transfer_fee": 1245090.3632339307,
+        "portfolio_stamp_tax": 31784847.47944641,
+        "portfolio_total_fees": 70382648.73969826,
+        "portfolio_buy_slippage": 59107199.6302437,
+        "portfolio_sell_slippage": 63633328.28718026,
+        "portfolio_total_slippage": 122740527.91742398
+      }
+    }
+  },
+  "comparisons": {
+    "OLD_ON_OLD": {
+      "trade_count": 176,
+      "win_rate": 0.7272727272727273,
+      "avg_account_return": 0.054826499466908034,
+      "median_account_return": 0.03732535501804968,
+      "equity_multiple": 6036.405956398867,
+      "max_drawdown": -0.2427937759892067,
+      "max_profit": 0.4762529750526576,
+      "max_loss": -0.1849437297752865,
+      "profit_loss_ratio": 2.1808945327708913,
+      "max_consecutive_losses": 4,
+      "leg_counts": {
+        "A": 78,
+        "C": 46,
+        "D": 16,
+        "E": 36
+      },
+      "buy_commission": 11913879.812799698,
+      "sell_commission": 12833279.223261388,
+      "transfer_fee": 824905.3012020363,
+      "stamp_tax": 21389659.002277654,
+      "total_fees": 46961723.33954077,
+      "buy_slippage": 37579072.15232595,
+      "sell_slippage": 42820417.828699686,
+      "total_slippage": 80399489.98102564
+    },
+    "OLD_ON_NEW": {
+      "trade_count": 185,
+      "win_rate": 0.7135135135135136,
+      "avg_account_return": 0.05142799146103673,
+      "median_account_return": 0.03648483894111232,
+      "equity_multiple": 5120.941891305746,
+      "max_drawdown": -0.2553408718219389,
+      "max_profit": 0.4762528767972083,
+      "max_loss": -0.18489210947619072,
+      "profit_loss_ratio": 2.035211944752673,
+      "max_consecutive_losses": 4,
+      "leg_counts": {
+        "A": 83,
+        "C": 50,
+        "D": 15,
+        "E": 37
+      },
+      "buy_commission": 18281802.40935007,
+      "sell_commission": 19070908.487667844,
+      "transfer_fee": 1245090.3632339307,
+      "stamp_tax": 31784847.47944641,
+      "total_fees": 70382648.73969826,
+      "buy_slippage": 59107199.6302437,
+      "sell_slippage": 63633328.28718026,
+      "total_slippage": 122740527.91742398
+    },
+    "NEW_ON_NEW": {
+      "trade_count": 179,
+      "win_rate": 0.7430167597765364,
+      "avg_account_return": 0.05593619495209814,
+      "median_account_return": 0.0389304455392776,
+      "equity_multiple": 8613.636085235845,
+      "max_drawdown": -0.2079168697871422,
+      "max_profit": 0.47625285161627695,
+      "max_loss": -0.1850174246142049,
+      "profit_loss_ratio": 2.1269210193425683,
+      "max_consecutive_losses": 3,
+      "leg_counts": {
+        "A": 84,
+        "C": 50,
+        "D": 16,
+        "E": 29
+      },
+      "buy_commission": 27854215.000282064,
+      "sell_commission": 29178379.707280416,
+      "transfer_fee": 1901086.490252083,
+      "stamp_tax": 48630632.84546737,
+      "total_fees": 107564314.04328193,
+      "buy_slippage": 90129255.10355029,
+      "sell_slippage": 97358624.31525059,
+      "total_slippage": 187487879.41880083
+    }
+  },
+  "selected_standalone": {
+    "A": {
+      "trade_count": 108,
+      "win_rate": 0.6481481481481481,
+      "avg_account_return": 0.05309198223687757,
+      "median_account_return": 0.03086286547738737,
+      "equity_multiple": 155.026902029871,
+      "max_drawdown": -0.19372149239299818,
+      "max_profit": 0.4762514258462671,
+      "max_loss": -0.11847246855829363,
+      "profit_loss_ratio": 2.4616069154734563,
+      "max_consecutive_losses": 3,
+      "leg_counts": {
+        "A": 108
+      },
+      "buy_commission": 517232.27094438893,
+      "sell_commission": 540934.8054452729,
+      "transfer_fee": 35272.2358796554,
+      "stamp_tax": 901558.009075455,
+      "total_fees": 1994997.3213447724,
+      "buy_slippage": 1722385.1846297956,
+      "sell_slippage": 1804920.9390900047,
+      "total_slippage": 3527306.1237198
+    },
+    "C": {
+      "trade_count": 61,
+      "win_rate": 0.7704918032786885,
+      "avg_account_return": 0.05708492659557976,
+      "median_account_return": 0.05853449465978322,
+      "equity_multiple": 24.888789676068367,
+      "max_drawdown": -0.15457539275523902,
+      "max_profit": 0.21658432506711245,
+      "max_loss": -0.14644204675310324,
+      "profit_loss_ratio": 1.8964691848565005,
+      "max_consecutive_losses": 3,
+      "leg_counts": {
+        "C": 61
+      },
+      "buy_commission": 44376.01748579999,
+      "sell_commission": 48011.9822082195,
+      "transfer_fee": 3079.59998980065,
+      "stamp_tax": 80019.9703470325,
+      "total_fees": 175487.57003085266,
+      "buy_slippage": 147772.2859999835,
+      "sell_slippage": 160181.32000000202,
+      "total_slippage": 307953.60599998554
+    },
+    "E": {
+      "trade_count": 65,
+      "win_rate": 0.7538461538461538,
+      "avg_account_return": 0.049295094324092376,
+      "median_account_return": 0.04674606160651251,
+      "equity_multiple": 16.052804209464945,
+      "max_drawdown": -0.48496048783395107,
+      "max_profit": 0.5230568956812021,
+      "max_loss": -0.2692256817160156,
+      "profit_loss_ratio": 1.2331597541811998,
+      "max_consecutive_losses": 3,
+      "leg_counts": {
+        "E": 65
+      },
+      "buy_commission": 62602.24955084099,
+      "sell_commission": 64932.171938891996,
+      "transfer_fee": 4251.147382991101,
+      "stamp_tax": 108220.28656482,
+      "total_fees": 240005.85543754406,
+      "buy_slippage": 208465.69946997825,
+      "sell_slippage": 216657.2303599995,
+      "total_slippage": 425122.9298299778
+    },
+    "D": {
+      "trade_count": 37,
+      "win_rate": 0.6756756756756757,
+      "avg_account_return": 0.04179470514802094,
+      "median_account_return": 0.030694082392719313,
+      "equity_multiple": 4.146791610463228,
+      "max_drawdown": -0.1661210601664751,
+      "max_profit": 0.2186695561103873,
+      "max_loss": -0.06951374116811171,
+      "profit_loss_ratio": 2.1655018814974807,
+      "max_consecutive_losses": 3,
+      "leg_counts": {
+        "D": 37
+      },
+      "buy_commission": 7082.960768999999,
+      "sell_commission": 7563.301502625,
+      "transfer_fee": 488.2087423875001,
+      "stamp_tax": 12605.502504375,
+      "total_fees": 27739.973518387502,
+      "buy_slippage": 0.0,
+      "sell_slippage": 25236.241249999533,
+      "total_slippage": 25236.241249999533
+    }
+  },
+  "candidate_space": {
+    "version": "ACDE_MONTHLY_PREDECLARED_V1_CURRENT_V12_NEIGHBORS",
+    "only_predeclared_single_axis_changes": false,
+    "selection_candidates_declared_before_final_replay": true,
+    "candidate_space_discovered_using_same_main_window": true,
+    "strict_discovery": true,
+    "note": "候选空间曾读取过与本轮重叠的历史数据；本轮只能产生研究胜者，不能冒充独立样本外或自动发布。",
+    "deduplicate_by_plan_signature": true,
+    "A": "当前规则；原相邻桶与排序候选；新增下午首次封板尾部门禁，第一名命中后空仓且不回补",
+    "C": "固定T+3；新增第2~3名龙头仅在跌停压力<30或分段非冰点时启用的双因子候选",
+    "E": "固定R1并集、排序与退出；新增龙头排名11~30、弱市场、异常放量及拥挤封单尾部门禁",
+    "D": "冻结真实炸板回封、分钟路径和成交口径；新增触板拥挤度<40及炸板率25%~75%的信号时质量候选"
+  },
+  "anomaly_review": {
+    "status": "REVIEW_REQUIRED",
+    "flags": [
+      "RULE_COMPOUND_RATIO"
+    ],
+    "rule_compound_ratio": 1.6820413642771341,
+    "window_effect_ratio": 0.8483428596907591,
+    "top3_positive_log_gain_share": 0.4838630227045128,
+    "explanation": "所有变化均来自冻结候选规则、窗口滚动和A>C>E>D让路账本；命中阈值时仍需用户逐笔审核。"
+  },
+  "execution": {
+    "initial_cash": 500000.0,
+    "position_pct": 0.825,
+    "max_position_pct": 0.85,
+    "max_positions": 1,
+    "commission_rate": 0.0003,
+    "minimum_commission": 5.0,
+    "transfer_fee_rate": 1e-05,
+    "buy_slippage_rate": 0.001,
+    "sell_slippage_rate": 0.001,
+    "stress_slippage_rates": [
+      0.002,
+      0.005,
+      0.01
+    ],
+    "a_hold_rule": "T+1开盘买入，T+2收盘卖出",
+    "c_hold_rule": "T+1开盘买入，T+3收盘卖出",
+    "e_hold_rule": "T+1开盘买入，按冻结E规则收盘卖出",
+    "d_hold_rule": "信号日盘中成交，信号日后第2个交易日收盘卖出（从买入日计共占用3个交易日）",
+    "static_plan_preempts_lower_priority_even_when_unfilled": true,
+    "exit_day_remains_occupied": true,
+    "fees_slippage_t1_limit_rules_frozen": true,
+    "minimum_commission_modeled": true,
+    "exact_cash_ledger": true
+  },
+  "formal_strategy_modified": false,
+  "code_committed": false
+}

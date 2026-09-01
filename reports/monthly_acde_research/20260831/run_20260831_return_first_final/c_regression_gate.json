@@ -1,0 +1,55 @@
+{
+  "status": "PASS",
+  "checks": [
+    {
+      "id": "C01",
+      "passed": true,
+      "evidence": "action_date为信号后下一交易日"
+    },
+    {
+      "id": "C02",
+      "passed": true,
+      "evidence": "C固定T+3计划退出"
+    },
+    {
+      "id": "C03",
+      "passed": true,
+      "evidence": "统一通过build_c_picks重建信号时risk_flags后过滤"
+    },
+    {
+      "id": "C04",
+      "passed": true,
+      "evidence": "A/C同日计划5天"
+    },
+    {
+      "id": "C05",
+      "passed": true,
+      "evidence": "未成交/延期状态独立编码"
+    },
+    {
+      "id": "C06",
+      "passed": true,
+      "evidence": "退出日收盘前继续占资"
+    },
+    {
+      "id": "C07",
+      "passed": true,
+      "evidence": "C独立与只替换C组合账本分别落盘"
+    },
+    {
+      "id": "C08",
+      "passed": true,
+      "evidence": "P06的C候选组合账本只替换C；最终P08可枚举多腿子集"
+    },
+    {
+      "id": "C09",
+      "passed": true,
+      "evidence": "C_SEGMENT_NON_ICE_POINT"
+    },
+    {
+      "id": "C10",
+      "passed": true,
+      "evidence": "磁盘认证留待P12；当前计划签名确定"
+    }
+  ]
+}

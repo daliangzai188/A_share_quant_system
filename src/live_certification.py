@@ -1,8 +1,9 @@
 """实盘组合认证门禁。
 
-认证失败只能阻断新的买入计划，绝不能阻断已有持仓的卖出。正式认证文件由
-``scripts/certify_strict_asof_portfolio.py`` 生成；旧来源身份脚本不得覆盖它。实盘状态机只负责按
-fail-closed 口径读取和核对，不在运行时重新做历史回放。
+认证失败只能阻断新的买入计划，绝不能阻断已有持仓的卖出。当前收益优先正式
+认证文件由``scripts/certify_acde_return_first_release.py``生成；旧来源身份脚本
+不得覆盖它。实盘状态机只负责按fail-closed口径读取和核对，不在运行时重新做
+历史回放。
 """
 from __future__ import annotations
 

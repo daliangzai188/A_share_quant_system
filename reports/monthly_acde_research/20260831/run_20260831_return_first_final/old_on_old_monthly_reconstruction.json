@@ -1,0 +1,38 @@
+{
+  "status": "RECONSTRUCTED_NO_PRIOR_MONTH_FROZEN_ARTIFACT",
+  "window": {
+    "start": "20230801",
+    "end": "20260731",
+    "trade_days": 727
+  },
+  "d_event_rows": 44536,
+  "metrics": {
+    "trade_count": 182,
+    "win_rate": 0.7197802197802198,
+    "avg_account_return": 0.052159270511878325,
+    "median_account_return": 0.03690389340819433,
+    "equity_multiple": 5048.50924474118,
+    "max_drawdown": -0.2553409174208584,
+    "max_drawdown_peak_date": "20260706",
+    "max_drawdown_trough_date": "20260716",
+    "max_profit": 0.4762529457216955,
+    "max_loss": -0.18497108552341912,
+    "profit_loss_ratio": 2.0210330776245122,
+    "max_consecutive_losses": 4,
+    "leg_counts": {
+      "A": 80,
+      "C": 49,
+      "D": 15,
+      "E": 38
+    },
+    "buy_commission": 16790328.801377777,
+    "sell_commission": 17566889.49964638,
+    "transfer_fee": 1145240.6100341387,
+    "stamp_tax": 29278579.613698803,
+    "total_fees": 64781038.5247571,
+    "buy_slippage": 53938510.479254566,
+    "sell_slippage": 58614913.24539995,
+    "total_slippage": 112553423.72465451
+  },
+  "note": "首次月度切换没有2026-07冻结产物；使用最终已校验数据重建日期正确的上月窗口，不能证明供应商数据版本与2026-07-31当时完全一致。"
+}

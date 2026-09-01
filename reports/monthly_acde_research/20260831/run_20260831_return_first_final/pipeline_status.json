@@ -1,0 +1,80 @@
+{
+  "overall_status": "EXTREME_CHANGE_REVIEW_REQUIRED",
+  "stages": [
+    {
+      "gate": "P00",
+      "status": "PASS",
+      "reason": "月度日期与授权范围已冻结"
+    },
+    {
+      "gate": "P01",
+      "status": "PASS",
+      "reason": "复用已更新到截止日的原始数据"
+    },
+    {
+      "gate": "P02",
+      "status": "PASS",
+      "reason": "原始、复权、as-of与D失败关闭门禁通过"
+    },
+    {
+      "gate": "P03",
+      "status": "PASS",
+      "reason": "数据、代码与配置输入已冻结"
+    },
+    {
+      "gate": "P04",
+      "status": "PASS",
+      "reason": "当前正式ACDE计划与精确现金账本两次一致"
+    },
+    {
+      "gate": "P05",
+      "status": "PASS",
+      "reason": "有限候选、门槛和排序规则已冻结"
+    },
+    {
+      "gate": "P06",
+      "status": "PASS",
+      "reason": "逐腿独立与只替换该腿组合账本完成"
+    },
+    {
+      "gate": "P07",
+      "status": "PASS",
+      "reason": "C专项回归在P07文件中单列"
+    },
+    {
+      "gate": "P08",
+      "status": "PASS",
+      "reason": "唯一组合胜者=UPDATE_A_C_E"
+    },
+    {
+      "gate": "P09",
+      "status": "PASS",
+      "reason": "OLD_ON_OLD/OLD_ON_NEW/NEW_ON_NEW与逐笔差异已生成"
+    },
+    {
+      "gate": "P10",
+      "status": "REVIEW_REQUIRED",
+      "reason": "RULE_COMPOUND_RATIO"
+    },
+    {
+      "gate": "P11",
+      "status": "PENDING_USER_REVIEW",
+      "reason": "禁止修改正式配置或提交"
+    },
+    {
+      "gate": "P12",
+      "status": "NOT_RUN_PENDING_USER_AUTHORIZATION",
+      "reason": "需用户明确要求再次精准校验"
+    },
+    {
+      "gate": "P13",
+      "status": "NOT_RUN",
+      "reason": "未获配置落地与提交授权"
+    },
+    {
+      "gate": "P14",
+      "status": "PENDING_FORWARD_MONTH",
+      "reason": "真实前向月份202609"
+    }
+  ]
+}

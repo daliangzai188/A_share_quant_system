@@ -1,0 +1,101 @@
+{
+  "schema_version": 2,
+  "status": "PASS",
+  "ready_token": "READY_FOR_MONTHLY_ACDE_RESEARCH",
+  "window": {
+    "start": "20230901",
+    "cutoff": "20260831",
+    "trade_day_count": 725
+  },
+  "raw_audits": {
+    "daily": {
+      "passed": true,
+      "file_count": 725,
+      "expected_file_count": 725,
+      "row_count": 3911296,
+      "missing_dates": [],
+      "invalid_files": []
+    },
+    "daily_basic": {
+      "passed": true,
+      "file_count": 725,
+      "expected_file_count": 725,
+      "row_count": 3912309,
+      "missing_dates": [],
+      "invalid_files": []
+    },
+    "limit_list": {
+      "passed": true,
+      "file_count": 725,
+      "expected_file_count": 725,
+      "row_count": 48219,
+      "missing_dates": [],
+      "invalid_files": []
+    },
+    "adj_factor": {
+      "passed": true,
+      "file_count": 725,
+      "expected_file_count": 725,
+      "row_count": 3934416,
+      "missing_dates": [],
+      "invalid_files": []
+    }
+  },
+  "adj_factor_alignment": {
+    "missing_daily_symbol_count": 0,
+    "examples": [],
+    "passed": true
+  },
+  "strict_asof": {
+    "standard_id": "A_SYSTEM_STRICT_ASOF_V1",
+    "dataset_name": "monthly_acde_strict_daily_source",
+    "row_count": 101484,
+    "signal_date_count": 1639,
+    "first_signal_date": "20191128",
+    "last_signal_date": "20260831",
+    "duplicate_key_count": 0,
+    "invalid_signal_date_count": 0,
+    "invalid_as_of_date_count": 0,
+    "as_of_after_signal_count": 0,
+    "as_of_mismatch_count": 0,
+    "reliable_method_bad_count": 0,
+    "reliable_training_end_missing_count": 0,
+    "reliable_training_not_prior_count": 0,
+    "availability_date_invalid_count": 0,
+    "availability_after_signal_count": 0,
+    "passed": true,
+    "issues": []
+  },
+  "derived_audits": {
+    "strict_daily_source": {
+      "row_count": 101484,
+      "first_date": "20191128",
+      "last_date": "20260831",
+      "duplicate_date_rows": 0,
+      "passed": true
+    },
+    "strict_feature_pool": {
+      "row_count": 76016,
+      "first_date": "20200103",
+      "last_date": "20260831",
+      "duplicate_date_rows": 0,
+      "passed": true
+    },
+    "market_sentiment": {
+      "row_count": 1859,
+      "first_date": "20190102",
+      "last_date": "20260831",
+      "duplicate_date_rows": 0,
+      "passed": true
+    }
+  },
+  "d_audit": {
+    "passed": true,
+    "target_count": 56192,
+    "event_count": 45208,
+    "abnormal_count": 13,
+    "registered_abnormal_count": 13,
+    "fail_closed": true
+  },
+  "hard_failures": []
+}

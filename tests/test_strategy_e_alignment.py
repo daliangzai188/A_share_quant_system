@@ -107,20 +107,20 @@ def make_pool() -> pd.DataFrame:
 
 
 class StrategyEAlignmentTests(unittest.TestCase):
-    def test_runtime_config_records_v12_identity_and_three_year_anchor(self) -> None:
+    def test_runtime_config_records_v13_identity_and_three_year_anchor(self) -> None:
         runtime = json.loads(
             (PROJECT_ROOT / "config" / "config.json").read_text(encoding="utf-8")
         )
         self.assertEqual(runtime["strategy_e"]["strategy_version"], E_VERSION)
         metrics = runtime["portfolio_certification"]["live_candidate_metrics"]
-        self.assertEqual(metrics["strict_asof_trade_count"], 176)
+        self.assertEqual(metrics["strict_asof_trade_count"], 175)
         self.assertAlmostEqual(
             metrics["strict_asof_equity_multiple"],
-            6046.316593512633,
+            10240.653243754481,
         )
         self.assertEqual(
             metrics["strict_asof_leg_counts"],
-            {"A": 78, "C": 46, "E": 36, "D": 16},
+            {"A": 86, "C": 51, "E": 30, "D": 8},
         )
 
     def test_production_spec_has_40_rules_and_no_future_columns(self) -> None:
@@ -141,6 +141,10 @@ class StrategyEAlignmentTests(unittest.TestCase):
             ["120_180"],
         )
         self.assertEqual(
+            spec["entry_gate"]["exclude_values"]["fd_ratio_bucket"],
+            ["2pct_5pct"],
+        )
+        self.assertEqual(
             spec["final_ranking"]["columns"],
             ["turnover_rate", "amount_ratio_1d"],
         )
@@ -151,7 +155,7 @@ class StrategyEAlignmentTests(unittest.TestCase):
             "daily_percentile_weighted_score",
         )
         self.assertIn("amount_ratio_1d", required_signal_fields(spec))
-        self.assertIn("V12_LEADER11_30_OR_LU120_180_GATE", E_VERSION)
+        self.assertIn("V13_FD_RATIO_2_5PCT_GATE", E_VERSION)
         audit = spec["strict_2y_ranking_optimization"]
         self.assertEqual(
             audit["metric_scope"], "STRICT_ASOF_E_STANDALONE_SINGLE_ACCOUNT"
@@ -272,7 +276,7 @@ class StrategyEAlignmentTests(unittest.TestCase):
         self.assertAlmostEqual(float(equity.iloc[-1]), 14.2402504740, places=8)
         self.assertAlmostEqual(float(drawdown.min()), -0.2546037202, places=8)
 
-    def test_v12_entry_gate_complete_sample_has_62_candidate_days(self) -> None:
+    def test_v13_entry_gate_complete_sample_has_53_candidate_days(self) -> None:
         path = PROJECT_ROOT / "reports" / "strategy_e_samples" / "e_r1_daily_candidates_full.csv"
         trades = pd.read_csv(path, dtype={"trade_date": str}, low_memory=False)
         spec = load_e_spec(PROJECT_ROOT)
@@ -281,9 +285,9 @@ class StrategyEAlignmentTests(unittest.TestCase):
         equity = (1 + returns).cumprod()
         drawdown = equity / equity.cummax() - 1
 
-        self.assertEqual(len(eligible), 62)
-        self.assertAlmostEqual(float(equity.iloc[-1]), 13.3774250797, places=8)
-        self.assertAlmostEqual(float(drawdown.min()), -0.1689571797, places=8)
+        self.assertEqual(len(eligible), 53)
+        self.assertAlmostEqual(float(equity.iloc[-1]), 12.3555402425, places=8)
+        self.assertAlmostEqual(float(drawdown.min()), -0.1503288897, places=8)
 
     def test_legacy_e2_identity_is_read_as_e_with_explicit_variant(self) -> None:
         self.assertEqual(normalize_strategy_leg("E2"), "E")

@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "run_id": "20260831_20260901T143759_cf7fc82",
+  "timezone": "Asia/Shanghai",
+  "request_date": "20260901",
+  "start_date": "20230901",
+  "cutoff_date": "20260831",
+  "actual_last_trade_date": "20260831",
+  "research_action_date_rule": "20230901 <= action_date <= 20260831",
+  "research_trade_day_count": 725,
+  "old_on_old_window": {
+    "start_date": "20230801",
+    "cutoff_date": "20260731",
+    "trade_day_count": 727
+  },
+  "prediction_month": {
+    "start_date": "20260901",
+    "end_date": "20260930"
+  },
+  "dependency_buffer_start": "20230701",
+  "dependency_buffer_usage": "仅用于OLD_ON_OLD和首日上一交易日信号依赖，不参与本月候选生成、参数排名或胜者选择",
+  "authorized_scope": "更新最近三年数据并优化ACED；止于用户审核；禁止修改正式策略和提交代码"
+}

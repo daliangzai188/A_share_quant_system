@@ -1,0 +1,10 @@
+{
+  "status": "REVIEW_REQUIRED",
+  "flags": [
+    "RULE_COMPOUND_RATIO"
+  ],
+  "rule_compound_ratio": 1.6820413642771341,
+  "window_effect_ratio": 0.8483428596907591,
+  "top3_positive_log_gain_share": 0.4838630227045128,
+  "explanation": "所有变化均来自冻结候选规则、窗口滚动和A>C>E>D让路账本；命中阈值时仍需用户逐笔审核。"
+}

@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""A>C>E>D三年主优化、两年确认、半年失效检查统一入口。
+"""ACDE滚动研究兼容入口。
 
-本入口首先执行数据与口径硬门禁。任何一条腿缺少主窗口所需的严格数据时，
-只输出阻断报告，不启动参数搜索，也不改写生产配置。
+schema_version=2时转交月度36个完整自然月执行器；旧schema_version=1仅保留历史审计。
 """
 
 from __future__ import annotations
@@ -1842,8 +1841,8 @@ def render_report(payload: dict[str, Any]) -> str:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="A>C>E>D三窗口半年滚动优化")
-    parser.add_argument("--as-of", default=None, help="0630或1231更新节点，格式YYYYMMDD")
+    parser = argparse.ArgumentParser(description="ACDE滚动研究兼容入口；schema_version=2自动执行月度流程")
+    parser.add_argument("--as-of", default=None, help="月度自然月末或历史节点，格式YYYYMMDD")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument(
@@ -1858,6 +1857,18 @@ def main() -> int:
     args = parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     config_path = resolve_path(args.config)
+    raw_config = json.loads(config_path.read_text(encoding="utf-8"))
+    if int(raw_config.get("schema_version", 0)) == 2:
+        if args.readiness_only:
+            raise ValueError("月度执行器不支持绕过完整P00~P14流水线的readiness-only旧参数")
+        from scripts.optimize_acde_monthly import main as monthly_main
+
+        forwarded = ["--config", str(config_path)]
+        if args.as_of:
+            forwarded.extend(["--cutoff", str(args.as_of)])
+        if args.output_dir:
+            forwarded.extend(["--output-dir", str(args.output_dir)])
+        return monthly_main(forwarded)
     config = load_config(config_path)
     as_of = str(args.as_of or latest_completed_update_node())
     payload = build_readiness(config, as_of)

@@ -1,8 +1,8 @@
-"""A/C/E/D半年滚动研究的统一三窗口与真实开仓日回放框架。
+"""A/C/E/D滚动研究的窗口、真实开仓日与精确现金回放框架。
 
-本模块只提供研究口径，不读取或改写生产策略。候选生成器必须把每个信号计划
-输出为逐笔结果表，再由这里统一按 ``A>C>E>D``、真实 ``action_date``、退出日
-占资以及三窗口门禁评估。最近半年只产生失效告警，绝不参与候选排名。
+本模块只提供研究口径，不读取或改写生产策略。月度流程只使用36个完整自然月主窗口；
+旧三窗口函数仅为历史证书兼容。所有组合统一按 ``A>C>E>D``、真实 ``action_date``、
+退出日占资、真实现金、申报股数和最低佣金评估。
 """
 
 from __future__ import annotations
@@ -15,6 +15,8 @@ import numpy as np
 import pandas as pd
 
 from src.mechanical_compound import mechanical_compound
+from src.market_rules import market_segment, orderable_buy_quantity
+from src.trading_fees import stamp_tax_rate_for_date
 
 
 FIXED_PRIORITY = ("A", "C", "E", "D")
@@ -70,6 +72,34 @@ class RollingWindowSet:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+def build_monthly_research_window(
+    cutoff_date: str,
+    *,
+    months: int = 36,
+) -> ResearchWindow:
+    """建立截至自然月末的最近若干个完整自然月唯一选参窗口。"""
+
+    text = normalize_date(cutoff_date)
+    end = dt.datetime.strptime(text, "%Y%m%d").date()
+    next_month = (
+        dt.date(end.year + 1, 1, 1)
+        if end.month == 12
+        else dt.date(end.year, end.month + 1, 1)
+    )
+    if end != next_month - dt.timedelta(days=1):
+        raise ValueError("月度研究截止日必须是自然月最后一天")
+    if int(months) <= 0:
+        raise ValueError("月度研究窗口月份数必须大于0")
+    start = _subtract_months(end.replace(day=1), int(months) - 1)
+    return ResearchWindow(
+        name="main",
+        start=start.strftime("%Y%m%d"),
+        end=text,
+        role="唯一候选生成、参数选择和排序窗口",
+        may_rank_candidates=True,
+    )
 
 
 def build_window_set(
@@ -359,6 +389,264 @@ def replay_action_date_portfolio(
     return detail
 
 
+def replay_action_date_cash_portfolio(
+    legs: Mapping[str, pd.DataFrame],
+    *,
+    action_dates: Sequence[str],
+    priority: Sequence[str] = FIXED_PRIORITY,
+    initial_cash: float = 500_000.0,
+    position_pct: float = 0.825,
+    max_position_pct: float = 0.85,
+    commission_rate: float = 0.0003,
+    transfer_fee_rate: float = 0.00001,
+    minimum_commission: float = 5.0,
+    stamp_tax_schedule: Sequence[Mapping[str, Any]] | None = None,
+) -> pd.DataFrame:
+    """按真实现金、申报股数和最低佣金执行单账户回放。"""
+
+    normalized_priority = tuple(str(value).strip().upper() for value in priority)
+    normalized_legs = tuple(str(value).strip().upper() for value in legs)
+    if len(normalized_legs) == len(FIXED_PRIORITY):
+        if normalized_priority != FIXED_PRIORITY or set(normalized_legs) != set(FIXED_PRIORITY):
+            raise ValueError("四腿现金组合priority必须严格固定为A>C>E>D")
+    elif len(normalized_legs) == 1:
+        if normalized_priority != normalized_legs:
+            raise ValueError("单腿现金回放priority必须与唯一策略腿一致")
+    else:
+        raise ValueError("现金回放只接受完整A>C>E>D组合或单腿独立回放")
+    if initial_cash <= 0:
+        raise ValueError("初始现金必须大于0")
+    if not 0 < position_pct <= max_position_pct <= 1:
+        raise ValueError("仓位比例必须满足0<目标仓位<=单票硬顶<=1")
+
+    dates = tuple(sorted({normalize_date(value) for value in action_dates}))
+    maps = {
+        leg: plan_map(legs[leg], leg, calendar_dates=dates)
+        for leg in normalized_priority
+    }
+    cash = float(initial_cash)
+    occupied_until = ""
+    rows: list[dict[str, Any]] = []
+
+    def commission(gross: float) -> float:
+        return max(float(minimum_commission), float(gross) * float(commission_rate))
+
+    def quantity_step(code: str) -> int:
+        return 1 if market_segment(code) in {"star", "bj"} else 100
+
+    for action_date in dates:
+        common = {
+            "action_date": action_date,
+            "cash_before": cash,
+            "equity_before": cash,
+        }
+        if occupied_until and action_date <= occupied_until:
+            rows.append(
+                {
+                    **common,
+                    "signal_date": "",
+                    "status": "SKIP_OCCUPIED",
+                    "execution_status": "",
+                    "strategy_leg": "",
+                    "account_return": 0.0,
+                    "cash_after": cash,
+                    "equity_after": cash,
+                }
+            )
+            continue
+
+        selected: dict[str, Any] | None = None
+        for leg in normalized_priority:
+            selected = maps[leg].get(action_date)
+            if selected is not None:
+                break
+        if selected is None:
+            rows.append(
+                {
+                    **common,
+                    "signal_date": "",
+                    "status": "NO_PLAN",
+                    "execution_status": "",
+                    "strategy_leg": "",
+                    "account_return": 0.0,
+                    "cash_after": cash,
+                    "equity_after": cash,
+                }
+            )
+            continue
+
+        execution_status = str(selected.get("status", ""))
+        entry_filled = normalize_bool(
+            selected.get("entry_filled"), execution_status == "OK"
+        )
+        position_opened = normalize_bool(selected.get("position_opened"), entry_filled)
+        outcome_observable = normalize_bool(
+            selected.get("outcome_observable"), execution_status == "OK"
+        )
+        exit_date = normalize_date(selected.get("exit_date"))
+        position_open_until = normalize_date(
+            selected.get("position_open_until", exit_date)
+        )
+        base = {
+            **common,
+            "signal_date": normalize_date(selected.get("signal_date")),
+            "execution_status": execution_status,
+            "strategy_leg": str(selected.get("strategy_leg", "")),
+            "ts_code": str(selected.get("ts_code", "")),
+            "name": str(selected.get("name", "")),
+            "exit_date": exit_date,
+            "entry_filled": entry_filled,
+            "position_opened": position_opened,
+            "outcome_observable": outcome_observable,
+        }
+        if position_opened:
+            occupied_until = position_open_until or dates[-1]
+        if not position_opened:
+            rows.append(
+                {
+                    **base,
+                    "status": "PLAN_NOT_EXECUTED",
+                    "account_return": 0.0,
+                    "cash_after": cash,
+                    "equity_after": cash,
+                }
+            )
+            continue
+        if not outcome_observable or execution_status != "OK":
+            rows.append(
+                {
+                    **base,
+                    "status": "POSITION_OPEN_OUTCOME_UNOBSERVABLE",
+                    "account_return": 0.0,
+                    "cash_after": cash,
+                    "equity_after": cash,
+                }
+            )
+            continue
+
+        entry_price = pd.to_numeric(selected.get("entry_price"), errors="coerce")
+        exit_price = pd.to_numeric(selected.get("exit_price"), errors="coerce")
+        stock_return = pd.to_numeric(
+            selected.get("stock_return_before_fees"), errors="coerce"
+        )
+        if pd.isna(entry_price) or pd.isna(exit_price) or pd.isna(stock_return):
+            raise ValueError(
+                f"现金账本缺少价格或复权收益：{base['strategy_leg']} {action_date} {base['ts_code']}"
+            )
+        entry_price = float(entry_price)
+        exit_price = float(exit_price)
+        stock_return = float(stock_return)
+        scale = float(pd.to_numeric(selected.get("position_scale", 1.0), errors="coerce"))
+        target_ratio = min(float(position_pct) * scale, float(max_position_pct))
+        target_amount = cash * target_ratio
+        quantity = orderable_buy_quantity(
+            ts_code=base["ts_code"],
+            available_amount=target_amount,
+            execution_price=entry_price,
+        )
+        step = quantity_step(base["ts_code"])
+        while quantity > 0:
+            buy_gross = quantity * entry_price
+            buy_commission = commission(buy_gross)
+            buy_transfer = buy_gross * float(transfer_fee_rate)
+            if buy_gross + buy_commission + buy_transfer <= cash + 1e-9:
+                break
+            quantity -= step
+        if quantity <= 0:
+            rows.append(
+                {
+                    **base,
+                    "status": "PLAN_NOT_EXECUTED_INSUFFICIENT_CASH",
+                    "account_return": 0.0,
+                    "quantity": 0,
+                    "cash_after": cash,
+                    "equity_after": cash,
+                }
+            )
+            occupied_until = ""
+            continue
+
+        equity_before = cash
+        buy_gross = quantity * entry_price
+        buy_commission = commission(buy_gross)
+        buy_transfer = buy_gross * float(transfer_fee_rate)
+        raw_sell_gross = quantity * exit_price
+        adjusted_sell_gross = buy_gross * (1.0 + stock_return)
+        corporate_action_adjustment = adjusted_sell_gross - raw_sell_gross
+        sell_commission = commission(adjusted_sell_gross)
+        sell_transfer = adjusted_sell_gross * float(transfer_fee_rate)
+        stamp_tax = adjusted_sell_gross * stamp_tax_rate_for_date(
+            exit_date, stamp_tax_schedule
+        )
+        cash = (
+            cash
+            - buy_gross
+            - buy_commission
+            - buy_transfer
+            + adjusted_sell_gross
+            - sell_commission
+            - sell_transfer
+            - stamp_tax
+        )
+        account_return = cash / equity_before - 1.0
+        entry_reference = pd.to_numeric(
+            selected.get("entry_reference_price"), errors="coerce"
+        )
+        exit_reference = pd.to_numeric(
+            selected.get("exit_reference_price"), errors="coerce"
+        )
+        buy_slippage = (
+            quantity * max(entry_price - float(entry_reference), 0.0)
+            if not pd.isna(entry_reference)
+            else 0.0
+        )
+        sell_slippage = (
+            quantity * max(float(exit_reference) - exit_price, 0.0)
+            if not pd.isna(exit_reference)
+            else 0.0
+        )
+        rows.append(
+            {
+                **base,
+                "status": "EXECUTED",
+                "quantity": int(quantity),
+                "position_ratio": buy_gross / equity_before,
+                "entry_price": entry_price,
+                "exit_price": exit_price,
+                "buy_gross": buy_gross,
+                "raw_sell_gross": raw_sell_gross,
+                "adjusted_sell_gross": adjusted_sell_gross,
+                "corporate_action_adjustment": corporate_action_adjustment,
+                "buy_commission": buy_commission,
+                "sell_commission": sell_commission,
+                "transfer_fee": buy_transfer + sell_transfer,
+                "stamp_tax": stamp_tax,
+                "buy_slippage": buy_slippage,
+                "sell_slippage": sell_slippage,
+                "total_fees": buy_commission + sell_commission + buy_transfer + sell_transfer + stamp_tax,
+                "total_slippage": buy_slippage + sell_slippage,
+                "account_return": account_return,
+                "cash_after": cash,
+                "equity_after": cash,
+                "buy_adj_factor": selected.get("buy_adj_factor"),
+                "sell_adj_factor": selected.get("sell_adj_factor"),
+            }
+        )
+
+    detail = pd.DataFrame(rows)
+    if detail.empty:
+        return detail
+    detail["peak_equity"] = detail["equity_after"].cummax()
+    detail["drawdown"] = detail["equity_after"] / detail["peak_equity"] - 1.0
+    executed = detail[detail["status"].astype(str).eq("EXECUTED")]
+    if not executed.empty:
+        compound = mechanical_compound(executed["account_return"].to_numpy(dtype=float))
+        cash_multiple = float(detail.iloc[-1]["equity_after"]) / float(initial_cash)
+        if abs(compound.equity_multiple - cash_multiple) > 1e-10:
+            raise RuntimeError("精确现金流水与逐笔复利不一致")
+    return detail
+
+
 def _max_consecutive_losses(values: np.ndarray) -> int:
     current = maximum = 0
     for value in values:
@@ -386,6 +674,22 @@ def action_metrics(
     values = pd.to_numeric(
         trades.get("account_return", pd.Series(dtype=float)), errors="raise"
     ).dropna().to_numpy(dtype=float)
+    cost_fields = (
+        "buy_commission",
+        "sell_commission",
+        "transfer_fee",
+        "stamp_tax",
+        "total_fees",
+        "buy_slippage",
+        "sell_slippage",
+        "total_slippage",
+    )
+    cost_totals = {
+        field: float(pd.to_numeric(trades.get(field, 0.0), errors="coerce").fillna(0.0).sum())
+        if field in trades.columns
+        else 0.0
+        for field in cost_fields
+    }
     if len(values) == 0:
         return {
             "trade_count": 0,
@@ -394,13 +698,22 @@ def action_metrics(
             "median_account_return": 0.0,
             "equity_multiple": 1.0,
             "max_drawdown": 0.0,
+            "max_drawdown_peak_date": "",
+            "max_drawdown_trough_date": "",
             "max_profit": 0.0,
             "max_loss": 0.0,
             "profit_loss_ratio": 0.0,
             "max_consecutive_losses": 0,
             "leg_counts": {},
+            **cost_totals,
         }
     compound = mechanical_compound(values)
+    equity_curve = np.concatenate(([1.0], np.cumprod(1.0 + values)))
+    running_peak = np.maximum.accumulate(equity_curve)
+    drawdowns = equity_curve / running_peak - 1.0
+    trough_curve_position = int(np.argmin(drawdowns))
+    peak_curve_position = int(np.argmax(equity_curve[: trough_curve_position + 1]))
+    trade_dates = trades["action_date"].astype(str).to_numpy()
     gains = values[values > 0]
     losses = values[values < 0]
     return {
@@ -410,6 +723,12 @@ def action_metrics(
         "median_account_return": float(np.median(values)),
         "equity_multiple": float(compound.equity_multiple),
         "max_drawdown": float(compound.max_drawdown),
+        "max_drawdown_peak_date": (
+            "INITIAL" if peak_curve_position == 0 else str(trade_dates[peak_curve_position - 1])
+        ),
+        "max_drawdown_trough_date": (
+            "INITIAL" if trough_curve_position == 0 else str(trade_dates[trough_curve_position - 1])
+        ),
         "max_profit": float(values.max()),
         "max_loss": float(values.min()),
         "profit_loss_ratio": (
@@ -419,6 +738,7 @@ def action_metrics(
         ),
         "max_consecutive_losses": _max_consecutive_losses(values),
         "leg_counts": trades["strategy_leg"].value_counts().sort_index().to_dict(),
+        **cost_totals,
     }
 
 

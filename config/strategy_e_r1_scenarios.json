@@ -1,11 +1,11 @@
 {
-  "_comment": "E R1候选宇宙规则。每条规则在信号日候选池中只选第一名，合并去重后保留板块neutral；final_ranking对换手率（高值优先）和一日成交额倍率（低值优先）计算同日候选内分位数并等权评分。选出每日第一名后再执行entry_gate，禁止因门禁淘汰第一名后偷换成当日第二名。实盘和回测必须共同读取本文件。",
-  "_warning": "40条原始R1规则来自20240520~20260514历史样本内Top40，该旧窗口只是规则来源，不再是当前比较锚点。当前正式严格锚点为20240630~20260630；双因子排名仍使用该窗口研究，且160个唯一候选结果参与比较，存在多重比较、路径依赖和过拟合风险。双因子只直接改变3个E信号日，组合增量集中于2026年6月的持仓腿序切换。旧62笔12.028倍包含前视成交过滤及资金重复占用，不能作为实盘可实现收益。历史结果不代表未来收益。",
-  "release_id": "E_R1_RISK_LEADER11_30_OR_LU120_180_20260630_V12",
+  "_comment": "E R1收益优先正式规则。40条R1规则合并去重后保留板块neutral，再以换手率高、一日成交额倍率低的同日分位等权评分选每日第一名；随后执行entry_gate。每日第一名命中任一门禁即空仓，不回补第二名，研究、回测和实盘共同读取本文件。",
+  "_warning": "本版在V12门禁基础上新增每日第一名fd_ratio_bucket=2pct_5pct时空仓。最近三年同窗枚举属于STRICT_DISCOVERY；E独立最大回撤达到-48.50%，组合复利不等于真实大资金可成交收益，也不构成未来收益承诺。",
+  "release_id": "E_RISK_EXCLUDE_FD_RATIO_2_5PCT_20260831_V13",
   "effective_from": "20260902",
   "research_window": {
-    "start": "20230701",
-    "end": "20260630"
+    "start": "20230901",
+    "end": "20260831"
   },
   "universe_prefilters": {
     "exclude_st_or_delisting": true,
@@ -15,11 +15,12 @@
     "exclude_values": {
       "first_time_detail_bucket": ["1330_1430"],
       "market_leader_rank_bucket": ["rank_11_30"],
-      "limit_up_count_bucket": ["120_180"]
+      "limit_up_count_bucket": ["120_180"],
+      "fd_ratio_bucket": ["2pct_5pct"]
     },
     "apply_after_daily_first_pick": true,
     "fallback_to_second_candidate": false,
-    "reason": "保留原13:30~14:30首次涨停门禁；V12新增排除每日第一名龙头排名11~30和全市场涨停120~180的信号日风险尾部。门禁在每日第一名确定后执行，不回补第二名，字段均在信号日可见。"
+    "reason": "保留原13:30~14:30首次涨停、龙头排名11~30和全市场涨停120~180门禁；V13新增封单比例2%~5%拥挤区门禁。全部在每日第一名确定后执行，命中即空仓且不回补第二名，字段均在信号日可见。"
   },
   "final_ranking": {
     "method": "daily_percentile_weighted_score",
@@ -157,5 +158,27 @@
     "source_report": "reports/acde_rolling_optimization/20260630_opening_profit_v12/optimization_summary.json",
     "user_approved_at": "2026-09-01",
     "risk_note": "历史复利不代表未来收益；2026-07~08冻结前向10笔没有形成实际组合差异，最大单笔亏损风险必须继续监控。"
+  },
+  "monthly_return_first_release": {
+    "audit_date": "2026-09-01",
+    "window": "20230901~20260831",
+    "research_protocol": "STRICT_DISCOVERY",
+    "selected_variant": "E_RISK_EXCLUDE_FD_RATIO_2_5PCT",
+    "standalone_trade_count": 65,
+    "standalone_win_rate": 0.7538461538461538,
+    "standalone_avg_account_return": 0.04929509432409239,
+    "standalone_median_account_return": 0.04674606160651251,
+    "standalone_equity_multiple": 16.052804209464963,
+    "standalone_max_drawdown": -0.48496048783395074,
+    "standalone_max_profit": 0.5230568956812018,
+    "standalone_max_loss": -0.26922568171601535,
+    "standalone_profit_loss_ratio": 1.233159754181201,
+    "standalone_max_consecutive_losses": 3,
+    "bundle_trade_count": 175,
+    "bundle_equity_multiple": 10240.653243754481,
+    "bundle_max_drawdown": -0.25534064469452433,
+    "source_report": "reports/monthly_acde_research/20260831/run_20260831_return_first_final/return_first_summary.json",
+    "user_approved_at": "2026-09-01",
+    "risk_note": "E独立最大回撤达到-48.50%，但固定A>C>E>D组合历史复利最高；按用户确认的收益高优先标准落地。历史结果不代表未来收益，禁止据此直接扩大资金。"
   }
 }

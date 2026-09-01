@@ -370,9 +370,19 @@ class FiveYearResearchDatasetBuilder:
                 "size_bytes": candidate.stat().st_size,
                 "sha256": sha256_file(candidate),
             }
+        is_monthly_acde = "monthly_acde" in self.paths.root.parts
         manifest = {
             "schema_version": 1,
-            "purpose": "isolated_five_year_nested_walk_forward_research",
+            "purpose": (
+                "monthly_acde_point_in_time_execution_feature_history"
+                if is_monthly_acde
+                else "isolated_five_year_nested_walk_forward_research"
+            ),
+            **(
+                {"selection_metrics_use_full_history": False}
+                if is_monthly_acde
+                else {}
+            ),
             "live_paths_modified": False,
             "start_date_requested": str(start_date),
             "end_date_requested": str(end_date or "latest_complete_raw_date"),

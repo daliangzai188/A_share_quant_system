@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "target_path": "data/research/monthly_acde/20260831/strategy_d_extension/minute_target_manifest_full_window.csv",
+  "target_manifest_sha256": "7ed7048b7d91d1efd2cb5dcadd8c458f65981e2dae5e11b8bf64637acbbf8659",
+  "target_count": 3846,
+  "first_trade_date": "20260701",
+  "last_trade_date": "20260831",
+  "collection_config_sha256": "980edef5175f8553512aaf8816d36d9fc9207d038138ec505b9f611cf2fdbc8e",
+  "output_path": "data/research/monthly_acde/20260831/strategy_d_extension/minute_1m_tushare.csv",
+  "parts_dir": "data/research/monthly_acde/20260831/strategy_d_extension/minute_1m_tushare_parts",
+  "status_path": "data/research/monthly_acde/20260831/strategy_d_extension/tushare_1m_status.csv",
+  "job_status_path": "data/research/monthly_acde/20260831/strategy_d_extension/tushare_1m_job_status.csv",
+  "summary_path": "reports/monthly_data_update/20260831/strategy_d_extension/tushare_1m_collection.json"
+}

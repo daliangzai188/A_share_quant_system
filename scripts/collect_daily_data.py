@@ -21,6 +21,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", default="config/config.json", help="配置文件路径。")
     parser.add_argument("--overwrite", action="store_true", help="覆盖已存在的本地 CSV。")
     parser.add_argument("--no-daily-basic", action="store_true", help="只采集日线行情，不采集 daily_basic。")
+    parser.add_argument("--no-adj-factor", action="store_true", help="不采集复权因子；月度ACDE研究不得使用此选项。")
     return parser.parse_args()
 
 
@@ -41,6 +42,7 @@ def main() -> None:
         end_date=end_date,
         overwrite=args.overwrite,
         include_daily_basic=not args.no_daily_basic,
+        include_adj_factor=not args.no_adj_factor,
     )
 
 

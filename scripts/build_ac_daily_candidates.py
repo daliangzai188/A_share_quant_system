@@ -64,6 +64,7 @@ if "is_open" in cal.columns:
 DATES = sorted(cal[ccol].tolist())
 DIDX = {d: i for i, d in enumerate(DATES)}
 _dc: dict[str, pd.DataFrame] = {}
+_afc: dict[str, pd.DataFrame] = {}
 
 STOCK_BASIC_PATH = ROOT / "data" / "raw" / "stock_basic" / "stock_basic_all.csv"
 if STOCK_BASIC_PATH.exists():
@@ -81,6 +82,23 @@ def day(d: str):
         p = DAILY / f"{d}.csv"
         _dc[d] = pd.read_csv(p, dtype={"ts_code": str}).set_index("ts_code") if p.exists() else pd.DataFrame()
     return None if _dc[d].empty else _dc[d]
+
+
+def adj_factor_value(trade_date: str, ts_code: str) -> float | None:
+    """读取独立Tushare复权因子，供精确现金账本交叉校验。"""
+
+    if trade_date not in _afc:
+        path = ROOT / "data" / "raw" / "adj_factor" / f"{trade_date}.csv"
+        _afc[trade_date] = (
+            pd.read_csv(path, dtype={"ts_code": str}, low_memory=False).set_index("ts_code")
+            if path.exists()
+            else pd.DataFrame()
+        )
+    frame = _afc[trade_date]
+    if frame.empty or ts_code not in frame.index:
+        return None
+    value = pd.to_numeric(frame.loc[ts_code, "adj_factor"], errors="coerce")
+    return None if pd.isna(value) or float(value) <= 0 else float(value)
 
 
 def stock_meta(code: str, name: str = "") -> tuple[str, str]:
@@ -113,6 +131,12 @@ class TradeReturnResult:
     exit_date: str
     stock_return: float | None
     exit_rule: str = ""
+    entry_reference_price: float | None = None
+    entry_price: float | None = None
+    exit_reference_price: float | None = None
+    exit_price: float | None = None
+    buy_adj_factor: float | None = None
+    sell_adj_factor: float | None = None
 
 
 @dataclass(frozen=True)
@@ -169,6 +193,7 @@ def trade_return_details(
     use_intraday_takeprofit: bool = False,
     takeprofit_offset: float = 0.01,
     sell_delay_max: int = 4,
+    cutoff_date: str | None = None,
 ) -> TradeReturnResult:
     """按固定开盘买/固定收盘卖规则计算可执行的前复权收益。"""
 
@@ -188,6 +213,8 @@ def trade_return_details(
         if i + k >= len(DATES):
             break
         exit_date = DATES[i + k]
+        if cutoff_date and exit_date > str(cutoff_date):
+            break
         frame = day(exit_date)
         if frame is None or code not in frame.index:
             continue
@@ -241,7 +268,23 @@ def trade_return_details(
             )
         except ValueError:
             return TradeReturnResult("NO_ADJUSTED_PRICE", d1, exit_date, None, exit_rule)
-        return TradeReturnResult("OK", d1, exit_date, stock_return, exit_rule)
+        return TradeReturnResult(
+            "OK",
+            d1,
+            exit_date,
+            stock_return,
+            exit_rule,
+            entry_reference_price=open_price,
+            entry_price=buy_price,
+            exit_reference_price=(
+                sell_price
+                if exit_rule == "INTRADAY_LIMIT_UP_MINUS_OFFSET"
+                else exit_close
+            ),
+            exit_price=sell_price,
+            buy_adj_factor=adj_factor_value(d1, code),
+            sell_adj_factor=adj_factor_value(exit_date, code),
+        )
     return TradeReturnResult("SELL_UNRESOLVED", d1, "", None)
 
 

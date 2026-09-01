@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "mode": "research_only",
+  "formal_strategy_modified": false,
+  "window": {
+    "expected_start": "20230901",
+    "expected_end": "20260831",
+    "expected_trade_day_count": 725,
+    "coverage_passed": true
+  },
+  "sources": [
+    {
+      "path": "data/research/monthly_acde/20260831/strategy_d_three_year/base_events_20230901_20260630.csv",
+      "sha256": "d954bf3271ee0e3d7c565cb1021bd399651d586ee99810c1ae83d63a53ed0c17",
+      "first_trade_date": "20230901",
+      "last_trade_date": "20260630",
+      "event_count": 43134
+    },
+    {
+      "path": "data/research/monthly_acde/20260831/strategy_d_extension/all_reseal_signal_events.csv",
+      "sha256": "980f0ce799da2490fea2599f3d5105c1ec761a04b8c5d97a31893fd6b8c18c0f",
+      "first_trade_date": "20260701",
+      "last_trade_date": "20260831",
+      "event_count": 2074
+    }
+  ],
+  "output_path": "data/research/monthly_acde/20260831/strategy_d_three_year/all_reseal_signal_events.csv",
+  "output_sha256": "c00b7215730d30f6fecc7daee93c459c8ffa7f020a20bf97be4d08892ed11d4c",
+  "first_trade_date": "20230901",
+  "last_trade_date": "20260831",
+  "event_count": 45208,
+  "event_trade_day_count": 725,
+  "duplicate_path_count": 0,
+  "queue_depth_available": false,
+  "certification_eligible": false,
+  "status": "THREE_YEAR_RESEARCH_EVENT_CACHE_READY"
+}

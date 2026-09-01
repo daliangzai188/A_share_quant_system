@@ -1,0 +1,11 @@
+{
+  "status": "PASS",
+  "initial_cash": 500000.0,
+  "baseline_ending_cash": 2560470945.652877,
+  "baseline_multiple_from_cash": 5120.941891305753,
+  "baseline_multiple_from_returns": 5120.941891305746,
+  "selected_ending_cash": 4306818042.617921,
+  "selected_multiple_from_cash": 8613.636085235841,
+  "selected_multiple_from_returns": 8613.636085235845,
+  "tolerance": 1e-10
+}
