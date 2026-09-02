@@ -181,6 +181,41 @@ class PositionProjectionRecoveryTests(unittest.TestCase):
             self.assertEqual(positions[0]["shares"], 1000)
             self.assertEqual(positions[0]["entry_shares"], 1000)
 
+    def test_record_buy_preserves_c_branch_exit_audit_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "positions.json"
+            with (
+                patch.object(daemon, "POSITIONS_FILE", path),
+                patch.object(daemon, "_track_execution", return_value=None),
+            ):
+                daemon.record_buy(
+                    order_id="QMT-C-THIRD",
+                    ts_code="000001.SZ",
+                    name="C第三分支测试",
+                    signal_date="20260827",
+                    buy_date="20260828",
+                    shares=1000,
+                    buy_price=10.2,
+                    strategy_leg="C",
+                    exit_n_days=1,
+                    planned_exit_date_override="20260831",
+                    strategy_branch_id="C_BRANCH_3_PROFIT_EXPANSION",
+                    condition_profile_ids=(
+                        "C_THIRD_LIMITUP30_50_RANK4_10_FD01_03_"
+                        "CHAIN_NOT15_AMOUNT_NOT2_3"
+                    ),
+                    exit_rule="fixed_hold2_close",
+                )
+
+            position = json.loads(path.read_text(encoding="utf-8"))[0]
+            self.assertEqual(position["planned_exit_date"], "20260831")
+            self.assertEqual(
+                position["strategy_branch_id"],
+                "C_BRANCH_3_PROFIT_EXPANSION",
+            )
+            self.assertEqual(position["exit_rule"], "fixed_hold2_close")
+            self.assertTrue(position["condition_profile_ids"].startswith("C_THIRD_"))
+
     def test_corrupt_position_file_never_masquerades_as_empty_account(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "positions.json"

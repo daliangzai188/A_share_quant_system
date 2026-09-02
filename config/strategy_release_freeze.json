@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "status": "FORMAL_RULES_APPLIED_DISCOVERY_ONLY",
-  "release_id": "ACDE_D_ACTIVE_LT20_OPEN2_12483_20260831_V15",
+  "release_id": "ACDE_C_THIRD_BRANCH_T2_22695_20260902_V16",
   "invalidated_at": null,
   "invalidated_reason": "",
   "strategy_priority_order": [
@@ -12,9 +12,9 @@
   ],
   "research_input_start_date": "20230901",
   "research_input_end_date": "20260831",
-  "oos_start_date": "20260901",
+  "oos_start_date": "20260902",
   "certification_status": "BACKTEST_REPRODUCED_NOT_OOS_OR_CAPACITY_CERTIFIED",
-  "certification_scenario": "acde_d_active_lt20_open2_12483_20260831_v15",
+  "certification_scenario": "acde_c_third_branch_t2_22695_20260902_v16",
   "capacity_certified": false,
-  "note": "用户于2026-09-01审核后授权落地D弱广度第2次回封V15。A/C/E规则冻结不变；D保留原12个强广度OR档位，新增3个仍封首板<20且恰好第2次回封的弱广度OR档位。精确现金回放复现177笔、12483.978370389923倍，分腿A85/C52/E29/D11。本文件不把同窗STRICT_DISCOVERY伪装成独立样本外或容量认证；真实BUY继续受交易时间、余额、仓位、重复委托、成交可靠性、涨跌停、流动性和QMT状态等执行风控约束。"
+  "note": "用户于2026-09-02审核后授权落地C第3逻辑分支V16。A/E/D规则冻结不变；C保留原五个profile按T+3退出，新增涨停30~50只、龙头排名4~10、封单比0.1%~0.3%、排除连板15~30只及成交额倍率2~3的profile并按T+2退出。精确现金回放复现184笔、22695.89224525786倍，分腿A84/C62/E27/D11。本文件不把同窗STRICT_DISCOVERY_POST_REVIEW_STAGE4伪装成独立样本外或容量认证；真实BUY继续受交易时间、余额、仓位、重复委托、成交可靠性、涨跌停、流动性和QMT状态等执行风控约束。"
 }

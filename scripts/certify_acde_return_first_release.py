@@ -482,6 +482,15 @@ def max_numeric_delta(actual: pd.DataFrame, expected: pd.DataFrame) -> float:
 def main() -> int:
     args = parse_args()
     runtime = load_json_config(ROOT / "config/config.json")
+    current_release_id = str(
+        runtime.get("portfolio_certification", {}).get("release_id", "")
+    )
+    if current_release_id != RELEASE_ID:
+        raise RuntimeError(
+            "该脚本只认证已归档的D-V15，当前正式发布为"
+            f"{current_release_id or '未配置'}；拒绝覆盖当前认证文件，请运行"
+            "scripts/certify_strategy_c_third_branch_release.py。"
+        )
     monthly = load_monthly_config(ROOT / "config/acde_rolling_optimization.json")
     window = build_monthly_research_window(CUTOFF)
     paths = monthly_paths(monthly, CUTOFF)

@@ -1469,7 +1469,10 @@ def record_buy(order_id: str, ts_code: str, name: str, signal_date: str,
                execution_channel: str = "其他买入", planned_order_qty: int = 0,
                benchmark_open: float = 0.0,
                planned_exit_date_override: str = "",
-               component_order_ids: list[str] | None = None) -> None:
+               component_order_ids: list[str] | None = None,
+               strategy_branch_id: str = "",
+               condition_profile_ids: str = "",
+               exit_rule: str = "") -> None:
     """把券商买入累计成交幂等投影为本地策略持仓。
 
     同order_id的部分成交回报可能多次到达；这里接受的shares始终是
@@ -1523,6 +1526,12 @@ def record_buy(order_id: str, ts_code: str, name: str, signal_date: str,
             existing["traded_at"] = traded_at or existing.get("traded_at", "")
             existing["planned_exit_date"] = exit_date.strftime("%Y%m%d")
             existing["planned_exit_time"] = planned_exit_time
+            if strategy_branch_id:
+                existing["strategy_branch_id"] = strategy_branch_id
+            if condition_profile_ids:
+                existing["condition_profile_ids"] = condition_profile_ids
+            if exit_rule:
+                existing["exit_rule"] = exit_rule
             existing["position_updated_at"] = buy_time
             if component_ids:
                 existing["component_order_ids"] = component_ids
@@ -1543,6 +1552,9 @@ def record_buy(order_id: str, ts_code: str, name: str, signal_date: str,
                 "entry_shares": shares,
                 "buy_price": buy_price,
                 "strategy_leg": strategy_leg,
+                "strategy_branch_id": strategy_branch_id,
+                "condition_profile_ids": condition_profile_ids,
+                "exit_rule": exit_rule,
                 "status": "open",
                 "sell_date": None,
                 "sell_price": None,
@@ -1576,8 +1588,19 @@ def record_buy(order_id: str, ts_code: str, name: str, signal_date: str,
             status="已成交",
             note="持仓成交回写",
         )
-        logger().info("持仓记录：策略=%s %s %s 累计成交%d股 买入日%s 计划平仓日%s",
-                      strategy_leg, ts_code, name, shares, buy_date, exit_date.strftime("%Y%m%d"))
+        logger().info(
+            "持仓记录：策略=%s 分支=%s profile=%s 退出规则=%s %s %s "
+            "累计成交%d股 买入日%s 计划平仓日%s",
+            strategy_leg,
+            strategy_branch_id or "未标注",
+            condition_profile_ids or "未标注",
+            exit_rule or f"BUY_DATE_PLUS_{exit_n_days}",
+            ts_code,
+            name,
+            shares,
+            buy_date,
+            exit_date.strftime("%Y%m%d"),
+        )
 
 
 def _mark_buy_intent_position_projected(
@@ -2115,6 +2138,22 @@ def _execute_orders_inprocess(
             order_price_type = str(row["price_type"])
             order_price = float(row.get("price", 0.0))
             order_remark = str(row.get("remark", ""))
+            branch_id = str(row.get("matched_strategy_branch_ids", ""))
+            profile_ids = str(row.get("matched_condition_profile_ids", ""))
+            exit_rule = str(row.get("exit_rule", ""))
+            planned_exit_date = str(row.get("planned_exit_date", "")).split(".")[0]
+            if side == "BUY" and str(row.get("strategy_leg", "")).upper() == "C":
+                log.info(
+                    "[C分支退出裁决] %s %s 分支=%s profile=%s 规则=%s "
+                    "exit_n_days=%s 计划平仓日=%s",
+                    row.get("ts_code", ""),
+                    row.get("name", ""),
+                    branch_id,
+                    profile_ids,
+                    exit_rule,
+                    row.get("exit_n_days", ""),
+                    planned_exit_date,
+                )
             # 卖出（E平仓）改用买10/买5挂限价，确保成交、避免被动过夜
             if side == "SELL":
                 sell_price, sell_label = _pick_sell_limit_price(quote_map.get(str(row["ts_code"])))
@@ -2158,7 +2197,13 @@ def _execute_orders_inprocess(
                     f"{tag}|{today_beijing().strftime('%Y%m%d')}|{side}|"
                     f"{row['ts_code']}|{order_remark}|{qty}"
                 ),
-                metadata={"execution_channel": tag, "name": str(row.get("name", ""))},
+                metadata={
+                    "execution_channel": tag,
+                    "name": str(row.get("name", "")),
+                    "strategy_branch_id": branch_id,
+                    "condition_profile_ids": profile_ids,
+                    "exit_rule": exit_rule,
+                },
             )
             result = adapter.place_order(request)
             results.append(asdict(result))
@@ -2178,6 +2223,10 @@ def _execute_orders_inprocess(
                     "qty": qty,
                     "ref_price": ref_price,
                     "exit_n": exit_n,
+                    "planned_exit_date": planned_exit_date,
+                    "strategy_branch_id": branch_id,
+                    "condition_profile_ids": profile_ids,
+                    "exit_rule": exit_rule,
                 })
             else:
                 log.error("❌ [%s] %s %s %s %d股 失败：%s",
@@ -2215,6 +2264,10 @@ def _execute_orders_inprocess(
                         execution_channel="开盘补买" if "09:30" in tag else "普通买入",
                         planned_order_qty=s["qty"],
                         benchmark_open=0.0,
+                        planned_exit_date_override=s.get("planned_exit_date", ""),
+                        strategy_branch_id=s.get("strategy_branch_id", ""),
+                        condition_profile_ids=s.get("condition_profile_ids", ""),
+                        exit_rule=s.get("exit_rule", ""),
                     )
                     amount = fill.filled_qty * fill_price
                     if fill.filled_qty < s["qty"]:
@@ -9043,6 +9096,10 @@ def _enqueue_opening_pov_from_plan(
                 "broker_code": str(row.get("broker_code", ts_code)),
                 "strategy_name": str(row.get("strategy_name", "A_SYSTEM_ABC")),
                 "exit_n": exit_n,
+                "planned_exit_date": str(row.get("planned_exit_date", "")).split(".")[0],
+                "strategy_branch_id": str(row.get("matched_strategy_branch_ids", "")),
+                "condition_profile_ids": str(row.get("matched_condition_profile_ids", "")),
+                "exit_rule": str(row.get("exit_rule", "")),
                 "sig_amt": _signal_day_amount(ts_code, signal_date_s),
                 "target_amt": target_amount,
                 "remain_amt": target_amount,
@@ -9396,7 +9453,13 @@ def _pov_execute_slice(
             planned_exit_date=str(it.get("planned_exit_date", "")),
             purpose="OPEN",
             source_key=f"BUY_POV|{today_str}|{ts_code}|{slice_no + 1}",
-            metadata={"execution_channel": "买入POV", "name": name_s},
+            metadata={
+                "execution_channel": "买入POV",
+                "name": name_s,
+                "strategy_branch_id": str(it.get("strategy_branch_id", "")),
+                "condition_profile_ids": str(it.get("condition_profile_ids", "")),
+                "exit_rule": str(it.get("exit_rule", "")),
+            },
         )
         with _qmt_lock:
             adapter = _qmt_get(broker_cfg)
@@ -9497,6 +9560,9 @@ def _pov_finalize_item(it: dict[str, Any], log: Any, reason: str) -> None:
             planned_order_qty=int(it.get("pov_planned_qty", fq) or fq),
             planned_exit_date_override=str(it.get("planned_exit_date", "") or ""),
             component_order_ids=[str(oid) for oid in it.get("order_ids", []) if str(oid)],
+            strategy_branch_id=str(it.get("strategy_branch_id", "")),
+            condition_profile_ids=str(it.get("condition_profile_ids", "")),
+            exit_rule=str(it.get("exit_rule", "")),
         )
         _notify("buy_result", "✅ POV平滑段买入完成",
                 f"策略={it.get('strategy_leg', '')} {ts_code} {name_s} 平滑段成交{fq}股 "
@@ -9934,6 +10000,10 @@ def job_premarket_buy() -> None:
                     "broker_code": str(row.get("broker_code", ts_code)),
                     "strategy_name": str(row.get("strategy_name", "A_SYSTEM_ABC")),
                     "exit_n": exit_n_pov, "sig_amt": sig_amt_pov,
+                    "planned_exit_date": str(row.get("planned_exit_date", "")).split(".")[0],
+                    "strategy_branch_id": str(row.get("matched_strategy_branch_ids", "")),
+                    "condition_profile_ids": str(row.get("matched_condition_profile_ids", "")),
+                    "exit_rule": str(row.get("exit_rule", "")),
                     "target_amt": total_target_amount, "remain_amt": total_target_amount,
                     "target_actual_amount": total_target_amount,
                     "min_acceptable_amount": min_acceptable_amount,
@@ -9994,7 +10064,17 @@ def job_premarket_buy() -> None:
                 source_key=(
                     f"PREMARKET_OPEN|{today_str}|{row.get('strategy_leg', '')}|{ts_code}"
                 ),
-                metadata={"execution_channel": "盘前买入", "name": name_s},
+                metadata={
+                    "execution_channel": "盘前买入",
+                    "name": name_s,
+                    "strategy_branch_id": str(
+                        row.get("matched_strategy_branch_ids", "")
+                    ),
+                    "condition_profile_ids": str(
+                        row.get("matched_condition_profile_ids", "")
+                    ),
+                    "exit_rule": str(row.get("exit_rule", "")),
+                },
             )
             with _qmt_lock:
                 adapter = _qmt_get(broker_cfg)
@@ -10013,6 +10093,10 @@ def job_premarket_buy() -> None:
                     "qty": qty,
                     "ref_price": price,
                     "exit_n": exit_n,
+                    "planned_exit_date": str(row.get("planned_exit_date", "")).split(".")[0],
+                    "strategy_branch_id": str(row.get("matched_strategy_branch_ids", "")),
+                    "condition_profile_ids": str(row.get("matched_condition_profile_ids", "")),
+                    "exit_rule": str(row.get("exit_rule", "")),
                     "entry_target_qty": total_target_qty,
                     "entry_target_amount": total_target_amount,
                     "entry_min_acceptable_amount": min_acceptable_amount,
@@ -10767,6 +10851,10 @@ def _record_premarket_buy_fill(s: dict[str, Any], fill: Any, fallback_price: flo
         execution_channel="集合竞价买入",
         planned_order_qty=int(s.get("qty", 0) or 0),
         benchmark_open=0.0,
+        planned_exit_date_override=str(s.get("planned_exit_date", "") or ""),
+        strategy_branch_id=str(s.get("strategy_branch_id", "")),
+        condition_profile_ids=str(s.get("condition_profile_ids", "")),
+        exit_rule=str(s.get("exit_rule", "")),
     )
     amount = int(fill.filled_qty) * float(fill_price)
     logger().info("✅ [盘前买入监控] 持仓信息：策略=%s %s %s 持仓%d股 成本%.2f 市值%s",
@@ -11019,6 +11107,14 @@ def confirm_pending_premarket_buys(confirm_source: str = "09:30") -> None:
                     execution_channel="集合竞价买入",
                     planned_order_qty=qty,
                     benchmark_open=0.0,
+                    planned_exit_date_override=str(
+                        s.get("planned_exit_date", "") or ""
+                    ),
+                    strategy_branch_id=str(s.get("strategy_branch_id", "")),
+                    condition_profile_ids=str(
+                        s.get("condition_profile_ids", "")
+                    ),
+                    exit_rule=str(s.get("exit_rule", "")),
                 )
                 name_s = str(s.get("name", ""))
                 amount = fill.filled_qty * fill_price
@@ -11168,6 +11264,16 @@ def handle_combined_order_preview(
                         buy_price=float(row.get("reference_price", 0.0)),
                         strategy_leg=str(row.get("strategy_leg", "")),
                         exit_n_days=exit_n,
+                        planned_exit_date_override=str(
+                            row.get("planned_exit_date", "")
+                        ).split(".")[0],
+                        strategy_branch_id=str(
+                            row.get("matched_strategy_branch_ids", "")
+                        ),
+                        condition_profile_ids=str(
+                            row.get("matched_condition_profile_ids", "")
+                        ),
+                        exit_rule=str(row.get("exit_rule", "")),
                     )
                     recorded_any = True
                 except Exception as e:
@@ -13284,6 +13390,19 @@ def report_next_day_candidates() -> None:
                     "     计划：策略 %s  参考价 %.2f元  %d股  预估 %.0f元",
                     leg, ref_px, shares, amount,
                 )
+                if leg.upper() == "C":
+                    logger().info(
+                        "     C分支：%s  profile=%s",
+                        str(r.get("matched_strategy_branch_ids", "")),
+                        str(r.get("matched_condition_profile_ids", "")),
+                    )
+                    logger().info(
+                        "     平仓：%s（信号日T+%s；买入后%s个交易日） 计划平仓日=%s",
+                        str(r.get("exit_rule", "")),
+                        str(r.get("exit_signal_offset", "")),
+                        str(r.get("exit_n_days", "")),
+                        str(r.get("planned_exit_date", "")),
+                    )
             _log_e_signal_status(signal_date_str)
 
         _log_final_decision_summary(signal_date_str, action_date_str.replace("-", ""), buy_orders)
@@ -16523,6 +16642,11 @@ def _project_recovered_buy_intents(broker_positions: Any) -> int:
             execution_channel="启动交易恢复",
             planned_order_qty=int(intent.get("target_qty", 0) or filled_qty),
             planned_exit_date_override=str(intent.get("planned_exit_date", "") or ""),
+            strategy_branch_id=str(metadata.get("strategy_branch_id", "") or ""),
+            condition_profile_ids=str(
+                metadata.get("condition_profile_ids", "") or ""
+            ),
+            exit_rule=str(metadata.get("exit_rule", "") or ""),
         )
         # 必须先成功落positions.json，才允许在事务账本标记“已投影”。
         store.mark_position_projected(intent_id, filled_qty)

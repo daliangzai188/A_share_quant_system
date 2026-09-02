@@ -1,0 +1,103 @@
+{
+  "schema_version": 1,
+  "decision": "USER_REVIEW",
+  "research_protocol": "STRICT_DISCOVERY_POST_REVIEW_STAGE2",
+  "formal_strategy_modified": false,
+  "code_committed": false,
+  "window": {
+    "start": "20230901",
+    "end": "20260831"
+  },
+  "candidate_declared_count": 14,
+  "candidate_unique_count": 11,
+  "eligible_count": 1,
+  "selected_variant": "C_NEW_QUALITY_MULTI_CHAIN_NOT_15_30_OR_ONEWORD_AMOUNT_1_2",
+  "selected_new_branch": {
+    "trade_count": 15,
+    "win_rate": 0.6,
+    "avg_account_return": 0.06125329773880776,
+    "median_account_return": 0.05775051915475804,
+    "equity_multiple": 2.2513373668779626,
+    "max_drawdown": -0.13256287710865056,
+    "max_drawdown_peak_date": "20240701",
+    "max_drawdown_trough_date": "20240719",
+    "max_profit": 0.3347680674214353,
+    "max_loss": -0.08872623762165965,
+    "profit_loss_ratio": 3.060586855553943,
+    "max_consecutive_losses": 3,
+    "leg_counts": {
+      "C": 15
+    },
+    "buy_commission": 9280.262491499998,
+    "sell_commission": 10232.6993577,
+    "transfer_fee": 650.43206164,
+    "stamp_tax": 17054.498929499998,
+    "total_fees": 37217.89284034,
+    "buy_slippage": 30903.30499999623,
+    "sell_slippage": 34143.14099999893,
+    "total_slippage": 65046.44599999515
+  },
+  "selected_c": {
+    "trade_count": 76,
+    "win_rate": 0.7105263157894737,
+    "avg_account_return": 0.05381617607682786,
+    "median_account_return": 0.05522566029143705,
+    "equity_multiple": 40.34065962182638,
+    "max_drawdown": -0.17600531205497383,
+    "max_drawdown_peak_date": "20260709",
+    "max_drawdown_trough_date": "20260716",
+    "max_profit": 0.3347680674214353,
+    "max_loss": -0.17600531205497394,
+    "profit_loss_ratio": 1.8693373710299483,
+    "max_consecutive_losses": 4,
+    "leg_counts": {
+      "C": 76
+    },
+    "buy_commission": 89829.48494519999,
+    "sell_commission": 95836.0582359781,
+    "transfer_fee": 6188.851439372604,
+    "stamp_tax": 159726.7637266302,
+    "total_fees": 351581.1583471809,
+    "buy_slippage": 299132.483999967,
+    "sell_slippage": 319741.4390000022,
+    "total_slippage": 618873.9229999692
+  },
+  "selected_portfolio": {
+    "trade_count": 184,
+    "win_rate": 0.7554347826086957,
+    "avg_account_return": 0.06180620264469121,
+    "median_account_return": 0.0465959406761165,
+    "equity_multiple": 30291.991220799664,
+    "max_drawdown": -0.17603464728718787,
+    "max_drawdown_peak_date": "20260714",
+    "max_drawdown_trough_date": "20260716",
+    "max_profit": 0.4762529391807482,
+    "max_loss": -0.17603464728718787,
+    "profit_loss_ratio": 2.397821248102871,
+    "max_consecutive_losses": 3,
+    "leg_counts": {
+      "A": 84,
+      "C": 63,
+      "D": 11,
+      "E": 26
+    },
+    "buy_commission": 84278105.09527592,
+    "sell_commission": 88919905.11411785,
+    "transfer_fee": 5773267.006979793,
+    "stamp_tax": 148199841.85686308,
+    "total_fees": 327171119.0732367,
+    "buy_slippage": 273524667.153125,
+    "sell_slippage": 296696380.09382033,
+    "total_slippage": 570221047.2469453
+  },
+  "validation_status": "PASS",
+  "validation_checks": {
+    "factor_contract_all_passed": true,
+    "selected_plan_action_date_unique": true,
+    "t1_action_equals_buy": true,
+    "t3_hold": true,
+    "formal_hashes_unchanged": true,
+    "stress_finite": true
+  },
+  "risk_note": "第二轮是在已看到第一轮结果后继续搜索，属于更强的STRICT_DISCOVERY；达到历史硬门也不能视为独立样本外。"
+}

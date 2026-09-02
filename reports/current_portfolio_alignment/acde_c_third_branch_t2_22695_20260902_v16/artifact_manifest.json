@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "strategy_config_sha256": "24897187e7031a4d2b9f384e76c1acc14d1d604177e1324af2348662d9683caf",
+  "baseline_plan_sha256": {
+    "A": "6038d4602a8a3bea4741bb1a6c957f96639d159764c5e715826b5defa1044862",
+    "C": "f344710c25b013e09c4b4c992f7c2d986e4856613a369b4c8f68960410a0c27e",
+    "E": "66a9d543749bb031b00e029f9520dcdeb2608cfcf5397185cc9482c7601dff3c",
+    "D": "876c9f5cb4bb32eccf3e56cd2fe900e8395b044cd6d4785f4ba5d1b67888c263"
+  },
+  "artifacts": {
+    "a_plans.csv": "30ff331c281f9d8b6bce7ffee9b8944c9f77e2bd38b88e6b5a85f9bbc283b4b5",
+    "c_plans.csv": "b9667f3eb1fc2fae3d02d6bdf4bfda37b372a3ef9c5532d2d8aa46f4ed4fa6d0",
+    "c_trades.csv": "3a2a48685f0bc011b439348da10eaa08a66c1e805322d46bde87079fb7df8739",
+    "combo_trades.csv": "8ae717eea3d1bd6da943ef856329e4aac1c5de3c1bf04531bf7e300b8240b586",
+    "d_plans.csv": "b8bba39c12bc519c52bacc532b4bcb765acd96d05ff99688f1a1579b0fc8b567",
+    "e_plans.csv": "cf92a8a0a7acbf850e44b00444c6ab7135460dcf4d71c9b4a05d3d7408836496",
+    "release_summary.json": "8f135f30c94094effb6b499a3466e49b458ff26e261d35cf7b78efe2879e0b52",
+    "stress_metrics.csv": "8c6494daf4e4d81093d853820aa131d4bb02a361be54deb9c753425c9d23ca70",
+    "third_branch_factor_audit.csv": "f4eb8c82093e238b5259ef4a6ff9352377c5aa5ba03138f13799bb21d7c9e2d1",
+    "third_branch_plans.csv": "608069f95c96c7080914ee149019476811f7fd8b021140ebe93aac634152ffbf",
+    "third_branch_trades.csv": "f3a6d0025c2ff10fc2861e367e6b5e5bd29cc8cabb719c4db18b0c788fb22a6a"
+  }
+}

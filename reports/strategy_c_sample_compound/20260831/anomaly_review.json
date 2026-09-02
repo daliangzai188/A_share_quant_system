@@ -1,0 +1,50 @@
+{
+  "status": "PASS",
+  "checks": {
+    "formal_files_unchanged": true,
+    "current_c_rebuild_matches_formal_signature": true,
+    "old_on_old_equals_old_on_new": true,
+    "c_t1_entry_t3_exit_contract": true,
+    "selected_returns_finite": true,
+    "selected_plan_action_date_unique": true,
+    "a_e_d_plan_signatures_frozen": true,
+    "fixed_priority": [
+      "A",
+      "C",
+      "E",
+      "D"
+    ]
+  },
+  "old_c_concentration": {
+    "trade_count": 61,
+    "top1_positive_log_share": 0.05138688588152852,
+    "top3_positive_log_share": 0.15234172210494018,
+    "top5_positive_log_share": 0.23825036485827147,
+    "return_over_30pct_count": 0,
+    "return_below_minus_20pct_count": 0
+  },
+  "new_c_concentration": {
+    "trade_count": 80,
+    "top1_positive_log_share": 0.05901508132304095,
+    "top3_positive_log_share": 0.1398049395732925,
+    "top5_positive_log_share": 0.21854661928294145,
+    "return_over_30pct_count": 1,
+    "return_below_minus_20pct_count": 0
+  },
+  "old_portfolio_concentration": {
+    "trade_count": 177,
+    "top1_positive_log_share": 0.034698784496674455,
+    "top3_positive_log_share": 0.09361138036342626,
+    "top5_positive_log_share": 0.14275896079933448,
+    "return_over_30pct_count": 6,
+    "return_below_minus_20pct_count": 0
+  },
+  "new_portfolio_concentration": {
+    "trade_count": 187,
+    "top1_positive_log_share": 0.03241056275172586,
+    "top3_positive_log_share": 0.08744749483491795,
+    "top5_positive_log_share": 0.13466038342323353,
+    "return_over_30pct_count": 7,
+    "return_below_minus_20pct_count": 0
+  }
+}

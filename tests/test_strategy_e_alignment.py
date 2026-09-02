@@ -107,20 +107,20 @@ def make_pool() -> pd.DataFrame:
 
 
 class StrategyEAlignmentTests(unittest.TestCase):
-    def test_runtime_config_records_v13_identity_and_three_year_anchor(self) -> None:
+    def test_runtime_config_records_current_identity_and_three_year_anchor(self) -> None:
         runtime = json.loads(
             (PROJECT_ROOT / "config" / "config.json").read_text(encoding="utf-8")
         )
         self.assertEqual(runtime["strategy_e"]["strategy_version"], E_VERSION)
         metrics = runtime["portfolio_certification"]["live_candidate_metrics"]
-        self.assertEqual(metrics["strict_asof_trade_count"], 177)
+        self.assertEqual(metrics["strict_asof_trade_count"], 184)
         self.assertAlmostEqual(
             metrics["strict_asof_equity_multiple"],
-            12483.978370389923,
+            22695.89224525786,
         )
         self.assertEqual(
             metrics["strict_asof_leg_counts"],
-            {"A": 85, "C": 52, "E": 29, "D": 11},
+            {"A": 84, "C": 62, "E": 27, "D": 11},
         )
 
     def test_production_spec_has_40_rules_and_no_future_columns(self) -> None:

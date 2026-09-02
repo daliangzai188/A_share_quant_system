@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "decision": "KEEP_CURRENT",
+  "selection_status": "NO_ELIGIBLE_CANDIDATE",
+  "research_protocol": "STRICT_DISCOVERY_POST_REVIEW_STAGE4",
+  "formal_strategy_modified": false,
+  "code_committed": false,
+  "window": {
+    "start": "20230901",
+    "end": "20260831"
+  },
+  "candidate_declared_count": 56,
+  "candidate_unique_count": 44,
+  "eligible_count": 0,
+  "gate_pass_counts_among_unique_candidates": {
+    "branch_sample": 30,
+    "branch_win_rate": 11,
+    "branch_average": 30,
+    "branch_median": 11,
+    "branch_mean_median_gap": 20,
+    "c_sample": 44,
+    "c_compound": 27,
+    "portfolio_compound": 32
+  },
+  "selected_variant": "",
+  "selected_new_branch": {},
+  "selected_concentration": {},
+  "selected_c": {},
+  "selected_portfolio": {},
+  "validation_status": "PASS",
+  "validation_checks": {
+    "formal_hashes_unchanged": true,
+    "candidate_declared_count_matches_rows": true,
+    "candidate_unique_count_matches_signatures": true
+  },
+  "risk_note": "第四阶段联合枚举因子模板和退出周期，且发生在阅读前三阶段结果之后；属于更强的STRICT_DISCOVERY，不能冒充独立样本外。"
+}

@@ -1,0 +1,186 @@
+{
+  "schema_version": 1,
+  "mode": "research_only",
+  "formal_strategy_auto_apply": false,
+  "research_protocol": "STRICT_DISCOVERY",
+  "cutoff": "20260831",
+  "window": {
+    "start": "20230901",
+    "end": "20260831",
+    "metric_date": "action_date"
+  },
+  "objective": {
+    "baseline_c_trade_count": 61,
+    "baseline_c_equity_multiple": 17.908557701363033,
+    "baseline_portfolio_equity_multiple": 12483.978370389923,
+    "require_c_trade_count_strictly_higher": true,
+    "require_c_equity_multiple_strictly_higher": true,
+    "require_portfolio_equity_multiple_strictly_higher": true,
+    "comparison_tolerance": 1e-09,
+    "ranking": [
+      "portfolio_equity_multiple_desc",
+      "c_equity_multiple_desc",
+      "c_trade_count_desc",
+      "variant_id_asc"
+    ]
+  },
+  "frozen_rules": {
+    "priority": [
+      "A",
+      "C",
+      "E",
+      "D"
+    ],
+    "unchanged_legs": [
+      "A",
+      "E",
+      "D"
+    ],
+    "c_entry": "T+1_OPEN",
+    "c_exit": "T+3_CLOSE",
+    "fees_slippage_t1_limit_and_occupation": "CURRENT_FORMAL_V15"
+  },
+  "expansion_axes": [
+    {
+      "id": "CORE_SEGMENT_GTE80",
+      "source_profile_id": "C_CORE_REFINEMENT_1100_1330_MULTI_OPEN",
+      "column": "segment_limit_up_count_bucket",
+      "value": "gte_80",
+      "description": "核心承接分支只向相邻的分段涨停80只以上扩展"
+    },
+    {
+      "id": "CORE_CHAIN_8_15",
+      "source_profile_id": "C_CORE_REFINEMENT_1100_1330_MULTI_OPEN",
+      "column": "market_chain_count_bucket",
+      "value": "8_15",
+      "description": "核心承接分支只向相邻的全市场连板8至15只扩展"
+    },
+    {
+      "id": "CORE_CHAIN_GTE30",
+      "source_profile_id": "C_CORE_REFINEMENT_1100_1330_MULTI_OPEN",
+      "column": "market_chain_count_bucket",
+      "value": "gte_30",
+      "description": "核心承接分支只向相邻的全市场连板30只以上扩展"
+    },
+    {
+      "id": "CORE_FIRST_1000_1100",
+      "source_profile_id": "C_CORE_REFINEMENT_1100_1330_MULTI_OPEN",
+      "column": "first_time_detail_bucket",
+      "value": "1000_1100",
+      "description": "核心承接分支只向相邻的10:00至11:00首次封板扩展"
+    },
+    {
+      "id": "CORE_FIRST_1330_1430",
+      "source_profile_id": "C_CORE_REFINEMENT_1100_1330_MULTI_OPEN",
+      "column": "first_time_detail_bucket",
+      "value": "1330_1430",
+      "description": "核心承接分支只向相邻的13:30至14:30首次封板扩展"
+    },
+    {
+      "id": "LEADER_MARKET_30_50",
+      "source_profile_id": "C_STRONG_LEADER_RANK4_10_FD01_03",
+      "column": "limit_up_count_bucket",
+      "value": "30_50",
+      "description": "强势龙头分支只向相邻的全市场涨停30至50只扩展"
+    },
+    {
+      "id": "LEADER_MARKET_80_120",
+      "source_profile_id": "C_STRONG_LEADER_RANK4_10_FD01_03",
+      "column": "limit_up_count_bucket",
+      "value": "80_120",
+      "description": "强势龙头分支只向相邻的全市场涨停80至120只扩展"
+    },
+    {
+      "id": "LEADER_RANK_11_30",
+      "source_profile_id": "C_STRONG_LEADER_RANK4_10_FD01_03",
+      "column": "market_leader_rank_bucket",
+      "value": "rank_11_30",
+      "description": "强势龙头分支只向相邻的市场强度第11至30名扩展"
+    },
+    {
+      "id": "LEADER_RANK_1",
+      "source_profile_id": "C_STRONG_LEADER_RANK4_10_FD01_03",
+      "column": "market_leader_rank_bucket",
+      "value": "rank_1",
+      "description": "强势龙头分支加入市场强度第1名"
+    },
+    {
+      "id": "LEADER_FD_LT01",
+      "source_profile_id": "C_STRONG_LEADER_RANK4_10_FD01_03",
+      "column": "fd_ratio_bucket",
+      "value": "lt_0_1pct",
+      "description": "强势龙头分支只向相邻的封单比0.1%以下扩展"
+    },
+    {
+      "id": "LEADER_FD_03_05",
+      "source_profile_id": "C_STRONG_LEADER_RANK4_10_FD01_03",
+      "column": "fd_ratio_bucket",
+      "value": "0_3pct_0_5pct",
+      "description": "强势龙头分支只向相邻的封单比0.3%至0.5%扩展"
+    }
+  ],
+  "guards": [
+    {
+      "id": "NONE",
+      "scope": "none",
+      "description": "不增加环境门禁"
+    },
+    {
+      "id": "GLOBAL_SEGMENT_NON_ICE",
+      "scope": "global",
+      "column": "segment_emotion_state",
+      "values": [
+        "mixed",
+        "retreat",
+        "warming",
+        "main_rise",
+        "climax"
+      ],
+      "description": "全部C分支排除所属分段冰点"
+    },
+    {
+      "id": "GLOBAL_MARKET_LD_LT30",
+      "scope": "global",
+      "column": "market_limit_down_count_bucket",
+      "values": [
+        "lt_5",
+        "5_15",
+        "15_30"
+      ],
+      "description": "全部C分支只允许全市场跌停少于30只"
+    },
+    {
+      "id": "LOCAL_SEGMENT_NON_ICE",
+      "scope": "extension_only",
+      "column": "segment_emotion_state",
+      "values": [
+        "mixed",
+        "retreat",
+        "warming",
+        "main_rise",
+        "climax"
+      ],
+      "description": "只要求新增分支排除所属分段冰点"
+    },
+    {
+      "id": "LOCAL_MARKET_LD_LT30",
+      "scope": "extension_only",
+      "column": "market_limit_down_count_bucket",
+      "values": [
+        "lt_5",
+        "5_15",
+        "15_30"
+      ],
+      "description": "只要求新增分支的全市场跌停少于30只"
+    }
+  ],
+  "candidate_generation": {
+    "include_current": true,
+    "include_global_guard_only": true,
+    "cross_each_expansion_with_all_guards": true,
+    "deduplicate_by_plan_signature": true,
+    "declared_before_replay": true
+  },
+  "formal_baseline_root": "reports/current_portfolio_alignment/acde_d_active_lt20_open2_v15",
+  "output_root": "reports/strategy_c_sample_compound/20260831"
+}

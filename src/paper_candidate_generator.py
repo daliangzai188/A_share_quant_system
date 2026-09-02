@@ -221,12 +221,22 @@ class PaperCandidateGenerator:
         for condition in conditions:
             column = str(condition.get("column", ""))
             operator = str(condition.get("operator", "==")).strip()
-            expected = str(condition.get("value", ""))
-            if operator != "==":
-                raise RuntimeError(f"{context}目前只允许等值条件: {column} {operator}")
             if column not in candidates.columns:
                 raise RuntimeError(f"{context}字段不存在: {column}")
-            mask &= candidates[column].fillna("missing").astype(str).eq(expected)
+            values = candidates[column].fillna("missing").astype(str)
+            if operator == "==":
+                mask &= values.eq(str(condition.get("value", "")))
+            elif operator == "in":
+                expected_values = {
+                    str(value) for value in condition.get("values", [])
+                }
+                if not expected_values:
+                    raise RuntimeError(f"{context}集合条件不能为空: {column}")
+                mask &= values.isin(expected_values)
+            else:
+                raise RuntimeError(
+                    f"{context}只允许==或in条件: {column} {operator}"
+                )
         return mask
 
     def apply_primary_empty_fallback(
@@ -315,13 +325,11 @@ class PaperCandidateGenerator:
                 conditions = profile.get("conditions", [])
                 if not conditions:
                     raise RuntimeError(f"候选条件分支不能为空: {profile_id}")
-                mask = pd.Series(True, index=result.index)
-                for condition in conditions:
-                    column = str(condition.get("column", ""))
-                    expected = str(condition.get("value", ""))
-                    if column not in result.columns:
-                        raise RuntimeError(f"候选入选条件字段不存在: {column}")
-                    mask &= result[column].fillna("missing").astype(str).eq(expected)
+                mask = self._condition_mask(
+                    result,
+                    conditions,
+                    context=f"候选条件分支{profile_id}",
+                )
                 union |= mask
                 for row_position in np.flatnonzero(mask.to_numpy(dtype=bool)):
                     matched_ids[int(row_position)].append(profile_id)

@@ -139,7 +139,7 @@ CSV视图移出的旧事件，因此`retained_history_head_count>0`不属于错�
 当前固定观察策略：
 
 ```text
-a_strict_plus_c_leader_union_hold3
+acde_c_third_branch_t2_22695_20260902_v16
 ```
 
 历史操作台和报告文件名继续保留`a_strict_plus_c_hold3`前缀，以兼容既有账本读取；
@@ -150,30 +150,32 @@ a_strict_plus_c_leader_union_hold3
 1. A 严格主策略优先。
 2. B 已于 2026-07-22 删除，不再参与候选、买入或自动卖出。
 3. A 无候选时直接检查 C。
-4. C正式版本为`C_LEADER_UNION_20260630_V1`，按任一分支命中：
+4. C正式版本为`C_THIRD_BRANCH_T2_20260902_V16`，按三类逻辑分支任一命中：
    - 核心精修：`market_chain_count_bucket=15_30`、`segment_limit_up_count_bucket=40_80`、`first_time_detail_bucket=1100_1330`、`board_type=multi_open`；
    - 强势龙头：`limit_up_count_bucket=50_80`、`market_leader_rank_bucket=rank_4_10`、`fd_ratio_bucket=0_1pct_0_3pct`。
+   - 收益扩展：`limit_up_count_bucket=30_50`、`market_leader_rank_bucket=rank_4_10`、`fd_ratio_bucket=0_1pct_0_3pct`，并显式排除连板15～30只及成交额倍率2～3。
 5. C 使用自己的风险过滤：`封单/流通市值偏高`、`LOSS_OVERLAY_WATCH`，以及按板高分档的炸板次数限制。
-6. C 卖出口径仍为 T+3 收盘；A按自己的既有退出口径执行。
+6. C第1/2分支为T+3收盘，第3分支为T+2收盘；计划单必须携带分支编号、退出规则和计划平仓日，执行层不得按C统一默认周期。
 7. D、E按当前组合资金占用规则继续参与；M、N已退役。
 8. 仅人工退出的历史 B 仓存在时，所有新开仓均阻断。
 
 当前C规则发布状态：
 
 ```text
-C_LEADER_UNION_20260630_V1
-effective_from=20260825
+C_THIRD_BRANCH_T2_20260902_V16
+effective_from=20260902
 ```
 
-发布依据：在固定`20240630~20260630`窗口中，C独立复利由3.110831倍提高到
-23.617616倍，只替换C后的D>A>E>C总复利由486.366143倍提高到921.336502倍，
-同时最大回撤由-22.9705%改善到-15.3995%，满足半年更新框架的双复利门槛。
+发布依据：在固定`20230901~20260831`窗口中，第3分支独立实际成交14笔、胜率
+78.57%、平均每笔5.89%、中位每笔2.95%、复利2.100817倍；C整体为75笔、
+37.653391倍，固定`A>C>E>D`组合为184笔、22695.892245倍、最大回撤-19.88%。
+用户于2026-09-02审核收益分布后明确要求落地。
 
 发布边界：
 
 ```text
 排序仍为profit_source_score、turnover_rate降序；
-退出仍为T+3收盘；
+退出按profile解析：第1/2分支T+3，第3分支T+2；
 风险过滤必须先于最终选股并允许下一名递补；
 更早6个月和发布后前向账本不反向改写本次24个月选择；
 历史机械复利不代表未来收益或真实资金容量。
@@ -349,13 +351,13 @@ strategy_release_validation.gates
 当前策略规则状态：
 
 ```text
-C_LEADER_UNION_20260630_V1_RULE_LANDED
+C_THIRD_BRANCH_T2_20260902_V16_RULE_LANDED
 STRICT_ASOF_REPLAY_PASSED
 LOCKED_OOS_AND_CAPACITY_PENDING
 ```
 
 旧A+B窗口结果继续归档，不得显示为当前PASS。当前C规则已进入正式配置和候选流水线，
-严格两年重放通过；冻结版本从2026-08-25起积累前向样本外。全局自动BUY是否开放仍由
+最近三年真实action_date重放及31项认证检查通过；冻结版本从2026-09-02起积累前向样本外。全局自动BUY是否开放仍由
 冻结清单、真实容量、模拟/小资金验证和执行风控单独决定，本次C规则替换不修改这些开关。
 
 ---
@@ -445,13 +447,13 @@ cd /Users/user/Desktop/A_System
 |---|---|
 | `config/strategy_config.json` | A/C当前参数、B退役墓碑、失效的旧发布标记 |
 | `scripts/run_strategy_release_validation.py` | 旧A+B发布验证失效保护；当前仍应拒绝运行 |
-| `scripts/certify_strict_asof_portfolio.py` | 当前A>C>E>D真实开仓日严格as-of机械回放与输入/代码哈希证书 |
+| `scripts/certify_strategy_c_third_branch_release.py` | 当前C第3分支、分支级退出及A>C>E>D真实开仓日严格认证 |
 | `scripts/run_paper_ab_filtered_daily_ops.py` | A/C filtered 每日操作台 |
 | `scripts/run_paper_ab_filtered_observation_window.py` | B历史回放代码；当前配置拒绝运行 |
 | `scripts/stress_test_ab_filtered_b_residual_filters.py` | B历史研究归档，不属于当前执行链 |
 | `scripts/refine_backup_strategy_c_sort_exit.py` | C 备用策略排序和卖出规则精修 |
 | `docs/strategy_b_removal_20260722.md` | B删除范围、验证和部署记录 |
-| `docs/strategy_c.md` | C两分支OR正式条件、排序、退出、指标与发布边界 |
+| `docs/strategy_c.md` | C三类逻辑分支、分支级T+2/T+3退出、指标与发布边界 |
 | `reports/strategy_release/` | 发布验证报告 |
 | `reports/paper_trade/ab_filtered_daily_ops/` | 每日模拟盘操作台输出 |
 | `reports/paper_trade/ab_filtered/` | 删除B前的历史窗口回放和压力测试报告 |

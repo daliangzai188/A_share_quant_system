@@ -1,0 +1,17 @@
+{
+  "spec_path": "config/strategy_c_new_branch_exit_research.json",
+  "spec_sha256": "b4821ceabe6cc0b9884f132eb5aed16353923bcf2cb41ba48130e9c9ed5f6f80",
+  "source_stage2_plan_sha256": "38545e7e384db5673ff43aedb60af8268cdb479685ddd6d0425139c532c375f3",
+  "formal_plan_sha256": {
+    "A": "6038d4602a8a3bea4741bb1a6c957f96639d159764c5e715826b5defa1044862",
+    "C": "f344710c25b013e09c4b4c992f7c2d986e4856613a369b4c8f68960410a0c27e",
+    "E": "66a9d543749bb031b00e029f9520dcdeb2608cfcf5397185cc9482c7601dff3c",
+    "D": "876c9f5cb4bb32eccf3e56cd2fe900e8395b044cd6d4785f4ba5d1b67888c263"
+  },
+  "candidate_exit_offsets_declared_before_final_replay": [
+    2,
+    3,
+    4,
+    5
+  ]
+}

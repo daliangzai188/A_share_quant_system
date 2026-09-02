@@ -25,6 +25,7 @@ from scripts.run_paper_ab_filtered_observation_window import reject_strategy_ris
 from src.paper_candidate_generator import apply_no_fallback_post_pick_gate
 from scripts.validate_other_live_strategies_strict import account_return
 from src.paper_candidate_generator import PaperCandidateGenerator
+from src.strategy_c_exit import resolve_c_exit_decision
 from src.strategy_d_factor_rules import add_factor_values, profile_mask
 from src.strategy_e import (
     build_r1_universe_from_pool,
@@ -686,7 +687,26 @@ def build_c_picks(pool: pd.DataFrame, config: dict[str, Any]) -> pd.DataFrame:
         accepted = ranked.loc[~rejected].reset_index(drop=True)
         if not accepted.empty:
             picks.append(accepted.iloc[0])
-    return pd.DataFrame(picks).reset_index(drop=True) if picks else pd.DataFrame()
+    if not picks:
+        return pd.DataFrame()
+    result = pd.DataFrame(picks).reset_index(drop=True)
+    decisions = [
+        resolve_c_exit_decision(
+            c_config,
+            row.get("matched_condition_profile_ids", ""),
+        ).to_dict()
+        for _, row in result.iterrows()
+    ]
+    for column in (
+        "matched_strategy_branch_ids",
+        "resolved_exit_profile_id",
+        "exit_rule",
+        "exit_signal_offset",
+        "exit_n_days",
+        "exit_rule_resolution",
+    ):
+        result[column] = [decision[column] for decision in decisions]
+    return result
 
 
 def e_variants(base_spec: dict[str, Any]) -> tuple[VariantDefinition, list[VariantDefinition]]:
@@ -992,7 +1012,10 @@ def static_plan_outcomes(
         if leg == "A":
             hold, exit_rule = 2, "FIXED_T2_CLOSE"
         elif leg == "C":
-            hold, exit_rule = 3, "FIXED_T3_CLOSE"
+            hold = int(raw.get("exit_signal_offset", 3) or 3)
+            if hold not in {2, 3}:
+                raise ValueError(f"C分支退出偏移非法: {hold}")
+            exit_rule = f"FIXED_T{hold}_CLOSE"
         elif leg == "E" and e_spec is not None:
             exit_rule = str(raw["exit_rule"])
             hold = resolve_exit_offset(e_spec, exit_rule)
@@ -1010,6 +1033,12 @@ def static_plan_outcomes(
             "hold_offset": hold,
             "matched_condition_profile_ids": str(
                 raw.get("matched_condition_profile_ids", "")
+            ),
+            "matched_strategy_branch_ids": str(
+                raw.get("matched_strategy_branch_ids", "")
+            ),
+            "resolved_exit_profile_id": str(
+                raw.get("resolved_exit_profile_id", "")
             ),
             "fill_probability": pd.to_numeric(
                 raw.get("fill_probability"), errors="coerce"

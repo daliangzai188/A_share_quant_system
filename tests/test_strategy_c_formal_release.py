@@ -14,6 +14,7 @@ from scripts.run_paper_ab_filtered_daily_ops import (
     configured_c_conditions,
 )
 from src.paper_candidate_generator import PaperCandidateGenerator
+from src.strategy_c_exit import resolve_c_exit_decision
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,7 +27,7 @@ class StrategyCFormalReleaseTests(unittest.TestCase):
         cls.config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
         cls.profiles = configured_c_condition_profiles(cls.config)
 
-    def test_release_has_exactly_five_frozen_profiles(self) -> None:
+    def test_release_has_exactly_six_frozen_profiles(self) -> None:
         self.assertEqual(configured_c_conditions(self.config), [])
         self.assertEqual(
             [profile["profile_id"] for profile in self.profiles],
@@ -36,6 +37,7 @@ class StrategyCFormalReleaseTests(unittest.TestCase):
                 "C_STRONG_LEADER_RANK2_3_FD01_03_LD_LT5",
                 "C_STRONG_LEADER_RANK2_3_FD01_03_LD_5_15",
                 "C_STRONG_LEADER_RANK2_3_FD01_03_LD_15_30",
+                "C_THIRD_LIMITUP30_50_RANK4_10_FD01_03_CHAIN_NOT15_AMOUNT_NOT2_3",
             ],
         )
 
@@ -92,6 +94,39 @@ class StrategyCFormalReleaseTests(unittest.TestCase):
                     "fd_ratio_bucket": "0_1pct_0_3pct",
                     "market_limit_down_count_bucket": "15_30",
                 },
+                {
+                    "ts_code": "000005.SZ",
+                    "market_chain_count_bucket": "8_15",
+                    "segment_limit_up_count_bucket": "20_40",
+                    "first_time_detail_bucket": "before_1000",
+                    "board_type": "multi_open",
+                    "limit_up_count_bucket": "30_50",
+                    "market_leader_rank_bucket": "rank_4_10",
+                    "fd_ratio_bucket": "0_1pct_0_3pct",
+                    "amount_ratio_bucket": "1_2_2",
+                },
+                {
+                    "ts_code": "000006.SZ",
+                    "market_chain_count_bucket": "15_30",
+                    "segment_limit_up_count_bucket": "20_40",
+                    "first_time_detail_bucket": "before_1000",
+                    "board_type": "multi_open",
+                    "limit_up_count_bucket": "30_50",
+                    "market_leader_rank_bucket": "rank_4_10",
+                    "fd_ratio_bucket": "0_1pct_0_3pct",
+                    "amount_ratio_bucket": "1_2_2",
+                },
+                {
+                    "ts_code": "000007.SZ",
+                    "market_chain_count_bucket": "8_15",
+                    "segment_limit_up_count_bucket": "20_40",
+                    "first_time_detail_bucket": "before_1000",
+                    "board_type": "multi_open",
+                    "limit_up_count_bucket": "30_50",
+                    "market_leader_rank_bucket": "rank_4_10",
+                    "fd_ratio_bucket": "0_1pct_0_3pct",
+                    "amount_ratio_bucket": "2_3",
+                },
             ]
         )
 
@@ -99,13 +134,33 @@ class StrategyCFormalReleaseTests(unittest.TestCase):
 
         self.assertEqual(
             selected["ts_code"].tolist(),
-            ["000001.SZ", "000002.SZ", "000004.SZ"],
+            ["000001.SZ", "000002.SZ", "000004.SZ", "000005.SZ"],
         )
         self.assertEqual(selected["matched_condition_profile_ids"].tolist(), [
             "C_CORE_REFINEMENT_1100_1330_MULTI_OPEN",
             "C_STRONG_LEADER_RANK4_10_FD01_03",
             "C_STRONG_LEADER_RANK2_3_FD01_03_LD_15_30",
+            "C_THIRD_LIMITUP30_50_RANK4_10_FD01_03_CHAIN_NOT15_AMOUNT_NOT2_3",
         ])
+
+    def test_profile_exit_rule_resolves_old_t3_and_third_branch_t2(self) -> None:
+        c_config = self.config["paper_ab_filtered_strategy"]["c_strategy"]
+        old = resolve_c_exit_decision(
+            c_config,
+            "C_CORE_REFINEMENT_1100_1330_MULTI_OPEN",
+        )
+        third = resolve_c_exit_decision(
+            c_config,
+            "C_THIRD_LIMITUP30_50_RANK4_10_FD01_03_CHAIN_NOT15_AMOUNT_NOT2_3",
+        )
+        overlap = resolve_c_exit_decision(
+            c_config,
+            "C_CORE_REFINEMENT_1100_1330_MULTI_OPEN;"
+            "C_THIRD_LIMITUP30_50_RANK4_10_FD01_03_CHAIN_NOT15_AMOUNT_NOT2_3",
+        )
+        self.assertEqual((old.exit_signal_offset, old.exit_n_days), (3, 2))
+        self.assertEqual((third.exit_signal_offset, third.exit_n_days), (2, 1))
+        self.assertEqual((overlap.exit_signal_offset, overlap.exit_n_days), (2, 1))
 
     def test_release_audit_locks_double_compound_gate(self) -> None:
         audit = self.config["paper_ab_filtered_strategy"]["c_strategy"]["latest_2y_audit"]

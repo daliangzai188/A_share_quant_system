@@ -29,6 +29,7 @@ from scripts.run_paper_ab_filtered_observation_window import (
 )
 from src.paper_candidate_generator import PaperCandidateGenerator
 from src.paper_daily_flow import PaperDailyFlowRunner
+from src.strategy_c_exit import resolve_c_exit_decision
 from src.trade_replay import ConservativeTradeReplay, ReplayRule
 from src.utils.config import load_json_config, mkdir_p
 from src.utils.logger import setup_logger
@@ -118,10 +119,17 @@ def condition_profiles_text(profiles: list[dict[str, Any]]) -> str:
     parts: list[str] = []
     for position, profile in enumerate(profiles, 1):
         profile_id = str(profile.get("profile_id", f"PROFILE_{position}"))
-        conditions = " AND ".join(
-            f"{condition['column']}={condition['value']}"
-            for condition in profile.get("conditions", [])
-        )
+        condition_parts: list[str] = []
+        for condition in profile.get("conditions", []):
+            operator = str(condition.get("operator", "=="))
+            if operator == "in":
+                values = ",".join(str(value) for value in condition.get("values", []))
+                condition_parts.append(f"{condition['column']} IN [{values}]")
+            else:
+                condition_parts.append(
+                    f"{condition['column']}={condition.get('value', '')}"
+                )
+        conditions = " AND ".join(condition_parts)
         parts.append(f"{profile_id}({conditions})")
     return " OR ".join(parts)
 
@@ -497,7 +505,7 @@ def configured_c_conditions(config: dict[str, Any]) -> list[dict[str, str]]:
 
 
 def configured_c_condition_profiles(config: dict[str, Any]) -> list[dict[str, Any]]:
-    """读取正式C的少量冻结OR分支；每个分支内部仍是AND。"""
+    """读取正式C的冻结OR分支；每个分支内部仍是AND。"""
 
     c_config = config.get("paper_ab_filtered_strategy", {}).get("c_strategy", {})
     if not bool(c_config.get("enabled", False)):
@@ -508,7 +516,7 @@ def configured_c_condition_profiles(config: dict[str, Any]) -> list[dict[str, An
         return []
     if not isinstance(profiles, list) or not profiles:
         raise RuntimeError("C配置声明ANY_PROFILE但没有condition_profiles")
-    normalized: list[dict[str, Any]] = []
+    normalized_profiles: list[dict[str, Any]] = []
     seen: set[str] = set()
     for position, raw in enumerate(profiles, 1):
         profile_id = str(raw.get("profile_id", "")).strip()
@@ -518,24 +526,68 @@ def configured_c_condition_profiles(config: dict[str, Any]) -> list[dict[str, An
         raw_conditions = raw.get("conditions", [])
         if not isinstance(raw_conditions, list) or not raw_conditions:
             raise RuntimeError(f"C条件分支不能为空: {profile_id}")
-        conditions = [
-            {
+        conditions: list[dict[str, Any]] = []
+        for condition in raw_conditions:
+            operator = str(condition.get("operator", "=="))
+            normalized_condition: dict[str, Any] = {
                 "column": str(condition["column"]),
-                "operator": str(condition.get("operator", "==")),
-                "value": str(condition["value"]),
+                "operator": operator,
             }
-            for condition in raw_conditions
-        ]
-        if any(condition["operator"] != "==" for condition in conditions):
-            raise RuntimeError(f"C正式分支目前只允许等值条件: {profile_id}")
-        normalized.append(
+            if operator == "==":
+                normalized_condition["value"] = str(condition["value"])
+            elif operator == "in":
+                values = [str(value) for value in condition.get("values", [])]
+                if not values:
+                    raise RuntimeError(f"C正式分支集合条件不能为空: {profile_id}")
+                normalized_condition["values"] = values
+            else:
+                raise RuntimeError(
+                    f"C正式分支只允许==或in条件: {profile_id} {operator}"
+                )
+            conditions.append(normalized_condition)
+        normalized_profiles.append(
             {
                 "profile_id": profile_id,
                 "priority": int(raw.get("priority", position)),
+                "branch_id": str(raw.get("branch_id", profile_id)),
+                "branch_name": str(raw.get("branch_name", "")),
+                "exit_rule_id": str(raw.get("exit_rule_id", "")),
                 "conditions": conditions,
             }
         )
-    return sorted(normalized, key=lambda item: (item["priority"], item["profile_id"]))
+    return sorted(
+        normalized_profiles,
+        key=lambda item: (item["priority"], item["profile_id"]),
+    )
+
+
+def enrich_c_candidate_execution_metadata(
+    candidates: pd.DataFrame,
+    config: dict[str, Any],
+) -> pd.DataFrame:
+    """把C分支身份和退出周期写进候选，供计划、下单及日志逐层透传。"""
+
+    if candidates.empty:
+        return candidates.copy()
+    c_config = config.get("paper_ab_filtered_strategy", {}).get("c_strategy", {})
+    result = candidates.copy()
+    decisions = [
+        resolve_c_exit_decision(
+            c_config,
+            row.get("matched_condition_profile_ids", ""),
+        ).to_dict()
+        for _, row in result.iterrows()
+    ]
+    for column in (
+        "matched_strategy_branch_ids",
+        "resolved_exit_profile_id",
+        "exit_rule",
+        "exit_signal_offset",
+        "exit_n_days",
+        "exit_rule_resolution",
+    ):
+        result[column] = [decision[column] for decision in decisions]
+    return result
 
 
 def build_c_shadow_candidates(
@@ -591,18 +643,26 @@ def build_c_shadow_candidates(
         signal_date,
         top_n=top_n or c_generator.default_top_n,
     )
+    candidates = enrich_c_candidate_execution_metadata(candidates, config)
     picked = selected_candidate(candidates, selected_action)
     return configured_rules, candidates, picked, rejected
 
 
-def configured_c_exit_rule(config: dict[str, Any]) -> ReplayRule:
+def configured_c_exit_rule(
+    config: dict[str, Any],
+    selected: pd.Series | None = None,
+) -> ReplayRule:
     c_config = config.get("paper_ab_filtered_strategy", {}).get("c_strategy", {})
-    rule = c_config.get("exit_rule", {})
+    decision = resolve_c_exit_decision(
+        c_config,
+        "" if selected is None else selected.get("matched_condition_profile_ids", ""),
+    )
+    rule = c_config.get("exit_rules", {}).get(decision.exit_rule, {})
     if not rule:
-        rule = {"rule_name": "fixed_t2_close", "max_hold_days": 2, "exit_price_field": "close"}
+        rule = c_config.get("exit_rule", {})
     return ReplayRule(
-        rule_name=str(rule["rule_name"]),
-        max_hold_days=int(rule["max_hold_days"]),
+        rule_name=decision.exit_rule,
+        max_hold_days=decision.exit_signal_offset,
         exit_price_field=str(rule.get("exit_price_field", "close")),
         stop_loss=float(rule["stop_loss"]) if "stop_loss" in rule else None,
         take_profit=float(rule["take_profit"]) if "take_profit" in rule else None,
@@ -633,7 +693,7 @@ def resolve_c_execution(
     runtime_config_path: str | Path,
     config: dict[str, Any],
 ) -> tuple[pd.DataFrame, str, float, str, str]:
-    replay_rule = configured_c_exit_rule(config)
+    replay_rule = configured_c_exit_rule(config, selected_c.iloc[0])
     replayed = replay_selected_with_rule(selected_c, runtime_config_path, replay_rule)
     if replayed.empty:
         return replayed, "PLAN_ONLY_PENDING", 0.0, "", "C 未生成历史回放结果，只保留模拟计划。"
@@ -689,9 +749,27 @@ def estimate_planned_order(
     estimated_shares = int(planned_amount // reference_price) if reference_price > 0 else 0
     round_lot_shares = estimated_shares - estimated_shares % round_lot if round_lot > 0 else estimated_shares
     strategy_leg = str(selected.get("strategy_leg", "")).upper()
-    # exit_n_days 按买入日计算：A/B 信号日T、T+1买、T+2卖，所以买入后1个交易日卖；
-    # C 使用 fixed_hold3：信号日T、T+1买、T+3卖，所以买入后2个交易日卖。
-    exit_n_days = 2 if strategy_leg == "C" else 1
+    # 退出周期必须跟随C具体命中分支，不能再按strategy_leg统一写死。
+    if strategy_leg == "C":
+        c_config = config.get("paper_ab_filtered_strategy", {}).get("c_strategy", {})
+        exit_decision = resolve_c_exit_decision(
+            c_config,
+            selected.get("matched_condition_profile_ids", ""),
+        )
+        exit_n_days = exit_decision.exit_n_days
+        exit_signal_offset = exit_decision.exit_signal_offset
+        exit_rule = exit_decision.exit_rule
+        matched_branch_ids = exit_decision.matched_strategy_branch_ids
+        resolved_exit_profile_id = exit_decision.resolved_exit_profile_id
+        exit_rule_resolution = exit_decision.exit_rule_resolution
+    else:
+        exit_n_days = 1
+        exit_signal_offset = 2
+        exit_rule = str(selected.get("exit_rule", "fixed_hold2_close"))
+        matched_branch_ids = ""
+        resolved_exit_profile_id = ""
+        exit_rule_resolution = "strategy_default"
+    planned_exit_date = next_trade_day(signal_date, exit_signal_offset)
     return pd.DataFrame(
         [
             {
@@ -712,7 +790,16 @@ def estimate_planned_order(
                 "round_lot_shares": round_lot_shares,
                 "risk_flags": selected.get("risk_flags", ""),
                 "live_order_enabled": live_order_enabled,
+                "matched_condition_profile_ids": selected.get(
+                    "matched_condition_profile_ids", ""
+                ),
+                "matched_strategy_branch_ids": matched_branch_ids,
+                "resolved_exit_profile_id": resolved_exit_profile_id,
+                "exit_rule": exit_rule,
+                "exit_signal_offset": exit_signal_offset,
                 "exit_n_days": exit_n_days,
+                "planned_exit_date": planned_exit_date,
+                "exit_rule_resolution": exit_rule_resolution,
             }
         ]
     )
@@ -812,6 +899,20 @@ def build_checklist(
                 "risk_flags": row.get("risk_flags", ""),
                 "planned_order_date": row.get("historical_reference_next_trade_date", ""),
                 "planned_position_pct": to_float(row.get("planned_position_pct", 0.0)),
+                "matched_condition_profile_ids": row.get(
+                    "matched_condition_profile_ids", ""
+                ),
+                "matched_strategy_branch_ids": row.get(
+                    "matched_strategy_branch_ids", ""
+                ),
+                "exit_rule": planned_orders.iloc[0].get("exit_rule", "")
+                if not planned_orders.empty
+                else "",
+                "planned_exit_date": planned_orders.iloc[0].get(
+                    "planned_exit_date", ""
+                )
+                if not planned_orders.empty
+                else "",
                 "account_return": to_float(row.get("account_return", 0.0)),
                 "return_source": row.get("return_source", ""),
                 "execution_note": row.get("execution_note", ""),
@@ -894,7 +995,8 @@ def write_markdown(path: Path, checklist: pd.DataFrame, selected: pd.DataFrame, 
 ## 执行限制
 
 - A 优先；A 无选中标的时直接检查 C，B 已彻底删除。
-- C 命中自身 `risk_reject_rules` 时直接跳过，不寻找下一只替代。
+- C 命中自身 `risk_reject_rules` 时在最终排序前剔除，并允许下一名递补。
+- C退出周期按命中分支解析：第1/2分支T+3收盘，第3分支T+2收盘；计划单必须同时记录分支编号、退出规则和计划平仓日。
 - `live_order_enabled` 必须为 `False`。
 - 当前仍未完成分钟 K、盘口五档、集合竞价和连续模拟盘验证，不允许实盘。
 """

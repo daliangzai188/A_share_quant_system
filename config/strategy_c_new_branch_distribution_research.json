@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "mode": "research_only",
+  "formal_strategy_auto_apply": false,
+  "research_protocol": "STRICT_DISCOVERY_POST_REVIEW_STAGE4",
+  "cutoff": "20260831",
+  "window": {
+    "start": "20230901",
+    "end": "20260831",
+    "metric_date": "action_date"
+  },
+  "factor_candidate_spec": "config/strategy_c_new_branch_quality_research.json",
+  "exit_candidate_spec": "config/strategy_c_new_branch_exit_research.json",
+  "formal_baseline_root": "reports/current_portfolio_alignment/acde_d_active_lt20_open2_v15",
+  "output_root": "reports/strategy_c_new_branch_distribution/20260831",
+  "frozen_rules": {
+    "priority": [
+      "A",
+      "C",
+      "E",
+      "D"
+    ],
+    "unchanged_legs": [
+      "A",
+      "E",
+      "D"
+    ],
+    "unchanged_existing_c_profiles_and_t3_exit": true,
+    "new_branch_entry": "T+1_OPEN",
+    "fees_slippage_t1_limit_and_occupation": "CURRENT_FORMAL_V15"
+  },
+  "distribution_quality_gates": {
+    "new_branch_minimum_executed_trades": 12,
+    "new_branch_minimum_win_rate": 0.65,
+    "new_branch_minimum_average_return": 0.0,
+    "new_branch_minimum_median_return": 0.04,
+    "maximum_average_minus_median": 0.015,
+    "c_total_trade_count_strictly_above_formal": 61,
+    "c_equity_multiple_strictly_above_formal": 17.908557701363033,
+    "portfolio_equity_multiple_strictly_above_formal": 12483.978370389923,
+    "comparison_tolerance": 1e-09,
+    "ranking": [
+      "portfolio_equity_multiple_desc",
+      "new_branch_median_return_desc",
+      "new_branch_win_rate_desc",
+      "new_branch_trade_count_desc"
+    ]
+  }
+}

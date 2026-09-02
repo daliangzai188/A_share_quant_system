@@ -29,7 +29,7 @@ class StrictAsOfConfigPolicyTests(unittest.TestCase):
         )
         self.assertEqual(
             policy["official_portfolio_certifier"],
-            "scripts/certify_acde_return_first_release.py",
+            "scripts/certify_strategy_c_third_branch_release.py",
         )
 
     def test_all_shared_research_entrypoints_fail_closed_to_strict(self) -> None:
@@ -61,7 +61,7 @@ class StrictAsOfConfigPolicyTests(unittest.TestCase):
         self.assertEqual(certification["certification_required_status"], "PASS")
         self.assertEqual(
             certification["certification_expected_scenario"],
-            "acde_d_active_lt20_open2_12483_20260831_v15",
+            "acde_c_third_branch_t2_22695_20260902_v16",
         )
         self.assertTrue(certification["certification_require_hashes"])
         self.assertFalse(certification["certification_require_strict_asof"])

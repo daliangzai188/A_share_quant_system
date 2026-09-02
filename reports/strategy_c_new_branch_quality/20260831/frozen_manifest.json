@@ -1,0 +1,507 @@
+{
+  "spec_path": "config/strategy_c_new_branch_quality_research.json",
+  "spec_sha256": "5ec409d40dd66fe48d2b1ded658538ab15db768c21cfaded7e79e2ee5ef3b8a5",
+  "declared_before_replay": true,
+  "catalog": [
+    {
+      "variant_id": "C_NEW_QUALITY_UNFILTERED_STAGE1",
+      "description": "第一轮未精修的30至50只涨停分支",
+      "template": {
+        "id": "UNFILTERED_STAGE1",
+        "description": "第一轮未精修的30至50只涨停分支",
+        "or_clauses": [
+          {
+            "conditions": []
+          }
+        ]
+      },
+      "payload_sha256": "a1a069d4caa490c195385af69edb275f6b91e9b09fae38a4962643dcafaf7852"
+    },
+    {
+      "variant_id": "C_NEW_QUALITY_MULTI_ONLY",
+      "description": "只保留多次开板换手样本",
+      "template": {
+        "id": "MULTI_ONLY",
+        "description": "只保留多次开板换手样本",
+        "or_clauses": [
+          {
+            "conditions": [
+              {
+                "column": "board_type",
+                "values": [
+                  "multi_open"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "payload_sha256": "5f2b2a8dc484ac56560a78e77d17aa3fd749c0c5ae5471c5b9217c91a8c2a4d2"
+    },
+    {
+      "variant_id": "C_NEW_QUALITY_MULTI_CHAIN_NOT_15_30",
+      "description": "多次开板且排除全市场连板15至30只环境",
+      "template": {
+        "id": "MULTI_CHAIN_NOT_15_30",
+        "description": "多次开板且排除全市场连板15至30只环境",
+        "or_clauses": [
+          {
+            "conditions": [
+              {
+                "column": "board_type",
+                "values": [
+                  "multi_open"
+                ]
+              },
+              {
+                "column": "market_chain_count_bucket",
+                "values": [
+                  "lt_3",
+                  "3_8",
+                  "8_15",
+                  "gte_30"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "payload_sha256": "61b0f8c62597c13d58aea6cff8f8a943fead5d2277cb7b8458e703f814af91d3"
+    },
+    {
+      "variant_id": "C_NEW_QUALITY_MULTI_CHAIN_3_15",
+      "description": "多次开板且全市场连板3至15只",
+      "template": {
+        "id": "MULTI_CHAIN_3_15",
+        "description": "多次开板且全市场连板3至15只",
+        "or_clauses": [
+          {
+            "conditions": [
+              {
+                "column": "board_type",
+                "values": [
+                  "multi_open"
+                ]
+              },
+              {
+                "column": "market_chain_count_bucket",
+                "values": [
+                  "3_8",
+                  "8_15"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "payload_sha256": "378a636113e2c663f2290fdf62b8b8b2111e385bdf7fa9bac63b2de6e09ddd4a"
+    },
+    {
+      "variant_id": "C_NEW_QUALITY_MULTI_OPEN_2_3",
+      "description": "多次开板且炸板2至3次",
+      "template": {
+        "id": "MULTI_OPEN_2_3",
+        "description": "多次开板且炸板2至3次",
+        "or_clauses": [
+          {
+            "conditions": [
+              {
+                "column": "board_type",
+                "values": [
+                  "multi_open"
+                ]
+              },
+              {
+                "column": "open_times_bucket",
+                "values": [
+                  "2_3"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "payload_sha256": "380cb7d38e4eff7aca0c748669e52b2d2f7becef65b708e606962bc4b075ca09"
+    },
+    {
+      "variant_id": "C_NEW_QUALITY_MULTI_OPEN_2_3_CHAIN_NOT_15_30",
+      "description": "多次开板、炸板2至3次且排除连板15至30只环境",
+      "template": {
+        "id": "MULTI_OPEN_2_3_CHAIN_NOT_15_30",
+        "description": "多次开板、炸板2至3次且排除连板15至30只环境",
+        "or_clauses": [
+          {
+            "conditions": [
+              {
+                "column": "board_type",
+                "values": [
+                  "multi_open"
+                ]
+              },
+              {
+                "column": "open_times_bucket",
+                "values": [
+                  "2_3"
+                ]
+              },
+              {
+                "column": "market_chain_count_bucket",
+                "values": [
+                  "lt_3",
+                  "3_8",
+                  "8_15",
+                  "gte_30"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "payload_sha256": "2615e6300c186c6503cd534161e6342c3f25d0c649a4fc0fd5f2d339e117849e"
+    },
+    {
+      "variant_id": "C_NEW_QUALITY_MULTI_CHAIN_NOT_15_30_OR_ONEWORD_AMOUNT_1_2",
+      "description": "主分支保留非15至30连板的多次开板；一字板仅在成交额倍率1.2至2时例外",
+      "template": {
+        "id": "MULTI_CHAIN_NOT_15_30_OR_ONEWORD_AMOUNT_1_2",
+        "description": "主分支保留非15至30连板的多次开板；一字板仅在成交额倍率1.2至2时例外",
+        "or_clauses": [
+          {
+            "conditions": [
+              {
+                "column": "board_type",
+                "values": [
+                  "multi_open"
+                ]
+              },
+              {
+                "column": "market_chain_count_bucket",
+                "values": [
+                  "lt_3",
+                  "3_8",
+                  "8_15",
+                  "gte_30"
+                ]
+              }
+            ]
+          },
+          {
+            "conditions": [
+              {
+                "column": "board_type",
+                "values": [
+                  "one_word"
+                ]
+              },
+              {
+                "column": "amount_ratio_bucket",
+                "values": [
+                  "1_2_2"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "payload_sha256": "5171ab652b8b26459dfd31379ab79aa39caef5106902489b999451579ea916c1"
+    },
+    {
+      "variant_id": "C_NEW_QUALITY_MULTI_CHAIN_NOT_15_30_OR_ONEWORD_LIMIT2",
+      "description": "主分支保留非15至30连板的多次开板；一字板仅在二板时例外",
+      "template": {
+        "id": "MULTI_CHAIN_NOT_15_30_OR_ONEWORD_LIMIT2",
+        "description": "主分支保留非15至30连板的多次开板；一字板仅在二板时例外",
+        "or_clauses": [
+          {
+            "conditions": [
+              {
+                "column": "board_type",
+                "values": [
+                  "multi_open"
+                ]
+              },
+              {
+                "column": "market_chain_count_bucket",
+                "values": [
+                  "lt_3",
+                  "3_8",
+                  "8_15",
+                  "gte_30"
+                ]
+              }
+            ]
+          },
+          {
+            "conditions": [
+              {
+                "column": "board_type",
+                "values": [
+                  "one_word"
+                ]
+              },
+              {
+                "column": "limit_times",
+                "values": [
+                  2
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "payload_sha256": "012135208fac97f2172a75908e9c4c52de65850ca72f7deb1673594f1619ee00"
+    },
+    {
+      "variant_id": "C_NEW_QUALITY_MULTI_CHAIN_NOT_15_30_OR_ONEWORD_AMOUNT_1_2_LIMIT2",
+      "description": "主分支保留非15至30连板的多次开板；一字二板还须成交额倍率1.2至2",
+      "template": {
+        "id": "MULTI_CHAIN_NOT_15_30_OR_ONEWORD_AMOUNT_1_2_LIMIT2",
+        "description": "主分支保留非15至30连板的多次开板；一字二板还须成交额倍率1.2至2",
+        "or_clauses": [
+          {
+            "conditions": [
+              {
+                "column": "board_type",
+                "values": [
+                  "multi_open"
+                ]
+              },
+              {
+                "column": "market_chain_count_bucket",
+                "values": [
+                  "lt_3",
+                  "3_8",
+                  "8_15",
+                  "gte_30"
+                ]
+              }
+            ]
+          },
+          {
+            "conditions": [
+              {
+                "column": "board_type",
+                "values": [
+                  "one_word"
+                ]
+              },
+              {
+                "column": "amount_ratio_bucket",
+                "values": [
+                  "1_2_2"
+                ]
+              },
+              {
+                "column": "limit_times",
+                "values": [
+                  2
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "payload_sha256": "67436015961cda80ce9b1147613ab30a8b1b312739f021f26e153e741a4020fe"
+    },
+    {
+      "variant_id": "C_NEW_QUALITY_MULTI_CHAIN_NOT_15_30_OR_ONEWORD_AMOUNT_1_2_TURNOVER_3_15",
+      "description": "主分支保留非15至30连板的多次开板；一字板须成交额倍率1.2至2且换手率3%至15%",
+      "template": {
+        "id": "MULTI_CHAIN_NOT_15_30_OR_ONEWORD_AMOUNT_1_2_TURNOVER_3_15",
+        "description": "主分支保留非15至30连板的多次开板；一字板须成交额倍率1.2至2且换手率3%至15%",
+        "or_clauses": [
+          {
+            "conditions": [
+              {
+                "column": "board_type",
+                "values": [
+                  "multi_open"
+                ]
+              },
+              {
+                "column": "market_chain_count_bucket",
+                "values": [
+                  "lt_3",
+                  "3_8",
+                  "8_15",
+                  "gte_30"
+                ]
+              }
+            ]
+          },
+          {
+            "conditions": [
+              {
+                "column": "board_type",
+                "values": [
+                  "one_word"
+                ]
+              },
+              {
+                "column": "amount_ratio_bucket",
+                "values": [
+                  "1_2_2"
+                ]
+              },
+              {
+                "column": "turnover_rate_bucket",
+                "values": [
+                  "3_6",
+                  "6_10",
+                  "10_15"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "payload_sha256": "1003bf15308d7c6f381010e92a0398e426a77e598b14c223c79fcf3b88981777"
+    },
+    {
+      "variant_id": "C_NEW_QUALITY_MULTI_OR_ONEWORD_AMOUNT_1_2",
+      "description": "多次开板全部保留；一字板仅在成交额倍率1.2至2时例外",
+      "template": {
+        "id": "MULTI_OR_ONEWORD_AMOUNT_1_2",
+        "description": "多次开板全部保留；一字板仅在成交额倍率1.2至2时例外",
+        "or_clauses": [
+          {
+            "conditions": [
+              {
+                "column": "board_type",
+                "values": [
+                  "multi_open"
+                ]
+              }
+            ]
+          },
+          {
+            "conditions": [
+              {
+                "column": "board_type",
+                "values": [
+                  "one_word"
+                ]
+              },
+              {
+                "column": "amount_ratio_bucket",
+                "values": [
+                  "1_2_2"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "payload_sha256": "2e1f2b5bd3374d47ec9704e641a706a23db16c6a2ce9a8ac71c6471d3fa19936"
+    },
+    {
+      "variant_id": "C_NEW_QUALITY_OPEN_2_3_OR_ONEWORD_AMOUNT_1_2",
+      "description": "换手板仅保留炸板2至3次；一字板仅在成交额倍率1.2至2时例外",
+      "template": {
+        "id": "OPEN_2_3_OR_ONEWORD_AMOUNT_1_2",
+        "description": "换手板仅保留炸板2至3次；一字板仅在成交额倍率1.2至2时例外",
+        "or_clauses": [
+          {
+            "conditions": [
+              {
+                "column": "open_times_bucket",
+                "values": [
+                  "2_3"
+                ]
+              }
+            ]
+          },
+          {
+            "conditions": [
+              {
+                "column": "board_type",
+                "values": [
+                  "one_word"
+                ]
+              },
+              {
+                "column": "amount_ratio_bucket",
+                "values": [
+                  "1_2_2"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "payload_sha256": "9944867c67a188aee17bc8bcbbc3895d6bf063b833c9f4960ed0e07a716c9220"
+    },
+    {
+      "variant_id": "C_NEW_QUALITY_CHAIN_NOT_15_30_EXCLUDE_AMOUNT_2_3",
+      "description": "排除连板15至30只环境，并排除成交额倍率2至3",
+      "template": {
+        "id": "CHAIN_NOT_15_30_EXCLUDE_AMOUNT_2_3",
+        "description": "排除连板15至30只环境，并排除成交额倍率2至3",
+        "or_clauses": [
+          {
+            "conditions": [
+              {
+                "column": "market_chain_count_bucket",
+                "values": [
+                  "lt_3",
+                  "3_8",
+                  "8_15",
+                  "gte_30"
+                ]
+              },
+              {
+                "column": "amount_ratio_bucket",
+                "values": [
+                  "lt_0_8",
+                  "0_8_1_2",
+                  "1_2_2",
+                  "3_5",
+                  "gte_5"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "payload_sha256": "626dfe29ba90f617f28b1fbbd17bfa825f26ea9c87158f15da4afb071cef11bc"
+    },
+    {
+      "variant_id": "C_NEW_QUALITY_CHAIN_NOT_15_30_MARKET_LD_LT30",
+      "description": "排除连板15至30只环境，并要求全市场跌停少于30只",
+      "template": {
+        "id": "CHAIN_NOT_15_30_MARKET_LD_LT30",
+        "description": "排除连板15至30只环境，并要求全市场跌停少于30只",
+        "or_clauses": [
+          {
+            "conditions": [
+              {
+                "column": "market_chain_count_bucket",
+                "values": [
+                  "lt_3",
+                  "3_8",
+                  "8_15",
+                  "gte_30"
+                ]
+              },
+              {
+                "column": "market_limit_down_count_bucket",
+                "values": [
+                  "lt_5",
+                  "5_15",
+                  "15_30"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "payload_sha256": "ff8cb1c1b357d91d21fd46ac99c0ada83ebfebfe10f4f0a877d269116665d3fd"
+    }
+  ],
+  "formal_plan_sha256": {
+    "A": "6038d4602a8a3bea4741bb1a6c957f96639d159764c5e715826b5defa1044862",
+    "C": "f344710c25b013e09c4b4c992f7c2d986e4856613a369b4c8f68960410a0c27e",
+    "E": "66a9d543749bb031b00e029f9520dcdeb2608cfcf5397185cc9482c7601dff3c",
+    "D": "876c9f5cb4bb32eccf3e56cd2fe900e8395b044cd6d4785f4ba5d1b67888c263"
+  }
+}

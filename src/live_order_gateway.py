@@ -136,6 +136,18 @@ class LiveOrderGateway:
             "broker_code",
             "name",
             "strategy_leg",
+            "paper_order_id",
+            "signal_date",
+            "planned_order_date",
+            "planned_action",
+            "matched_condition_profile_ids",
+            "matched_strategy_branch_ids",
+            "resolved_exit_profile_id",
+            "exit_rule",
+            "exit_signal_offset",
+            "exit_n_days",
+            "planned_exit_date",
+            "exit_rule_resolution",
             "side",
             "quantity",
             "price_type",
@@ -245,6 +257,17 @@ class LiveOrderGateway:
                 reject_reasons.append("EXCEED_TOTAL_POSITION_PCT")
             if side == "BUY" and estimated_amount > account_cash:
                 reject_reasons.append("INSUFFICIENT_CASH")
+            if side == "BUY" and str(order.get("strategy_leg", "")).upper() == "C":
+                exit_n_days = self._to_int(order.get("exit_n_days", 0))
+                planned_exit_date = str(order.get("planned_exit_date", "")).split(".")[0]
+                if exit_n_days not in {1, 2}:
+                    reject_reasons.append("C_EXIT_N_DAYS_MISSING_OR_INVALID")
+                if not str(order.get("exit_rule", "")).strip():
+                    reject_reasons.append("C_EXIT_RULE_MISSING")
+                if not str(order.get("matched_strategy_branch_ids", "")).strip():
+                    reject_reasons.append("C_BRANCH_ID_MISSING")
+                if len(planned_exit_date) != 8 or not planned_exit_date.isdigit():
+                    reject_reasons.append("C_PLANNED_EXIT_DATE_MISSING_OR_INVALID")
             # 单笔金额上限只约束买入敞口；SELL平仓是风险释放，持仓上涨后
             # 卖出市值必然超过买入限额，拦截会导致"赚钱就平不了仓"
             # （2026-07-10 建研院事故：15200股卖出67640元被66000上限拒单）。
@@ -259,6 +282,30 @@ class LiveOrderGateway:
                     "broker_code": broker_code,
                     "name": order.get("name", ""),
                     "strategy_leg": order.get("strategy_leg", ""),
+                    # 分支与退出字段必须原样穿过校验预览。执行层正是读取这张
+                    # preview下单；丢字段会让C第3分支从T+2静默回退成默认T+3。
+                    "paper_order_id": order.get("paper_order_id", ""),
+                    "signal_date": order.get("signal_date", ""),
+                    "planned_order_date": order.get("planned_order_date", ""),
+                    "planned_action": order.get("planned_action", ""),
+                    "matched_condition_profile_ids": order.get(
+                        "matched_condition_profile_ids", ""
+                    ),
+                    "matched_strategy_branch_ids": order.get(
+                        "matched_strategy_branch_ids", ""
+                    ),
+                    "resolved_exit_profile_id": order.get(
+                        "resolved_exit_profile_id", ""
+                    ),
+                    "exit_rule": order.get("exit_rule", ""),
+                    "exit_signal_offset": self._to_int(
+                        order.get("exit_signal_offset", 0)
+                    ),
+                    "exit_n_days": self._to_int(order.get("exit_n_days", 0)),
+                    "planned_exit_date": order.get("planned_exit_date", ""),
+                    "exit_rule_resolution": order.get(
+                        "exit_rule_resolution", ""
+                    ),
                     "side": side,
                     "quantity": quantity,
                     "price_type": default_price_type,

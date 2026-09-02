@@ -5,7 +5,7 @@
 但必须独立加载的规则——
 
     A → candidate_filters.condition_profiles（两个OR分支）
-    C → paper_ab_filtered_strategy.c_strategy.condition_profiles（五个OR分支）
+    C → paper_ab_filtered_strategy.c_strategy.condition_profiles（六个可执行profile，归属三类逻辑分支）
 
 当时误把 candidate_filters 当成 C 的规则去比对，得出了错误的"实盘与回测一致"
 结论。这些测试确保：两段都存在、归属清晰，A/C各自的OR分支不会串用。
@@ -39,22 +39,25 @@ class StrategyConfigSectionTests(unittest.TestCase):
         self.assertNotIn("不接实盘", role)
 
     def test_c_rules_live_in_their_own_section(self) -> None:
-        """C正式规则必须是五个冻结profile的OR，不能退回旧单AND条件。"""
+        """C正式规则必须是六个冻结profile的OR，不能退回旧单AND条件。"""
         c_strategy = self.config["paper_ab_filtered_strategy"]["c_strategy"]
         self.assertTrue(c_strategy["enabled"])
         self.assertEqual(
             c_strategy["release_id"],
-            "C_RISK_EXCLUDE_SINGLE_OPEN_20260831_V13",
+            "C_THIRD_BRANCH_T2_20260902_V16",
         )
         self.assertEqual(c_strategy["condition_mode"], "ANY_PROFILE")
         self.assertEqual(c_strategy["conditions"], [])
-        profiles = {
-            str(item["profile_id"]): {
-                str(condition["column"]): str(condition["value"])
-                for condition in item["conditions"]
-            }
-            for item in c_strategy["condition_profiles"]
-        }
+        profiles = {}
+        for item in c_strategy["condition_profiles"]:
+            conditions = {}
+            for condition in item["conditions"]:
+                conditions[str(condition["column"])] = (
+                    tuple(str(value) for value in condition["values"])
+                    if str(condition.get("operator", "==")) == "in"
+                    else str(condition["value"])
+                )
+            profiles[str(item["profile_id"])] = conditions
         self.assertEqual(profiles, {
             "C_CORE_REFINEMENT_1100_1330_MULTI_OPEN": {
                 "market_chain_count_bucket": "15_30",
@@ -85,6 +88,19 @@ class StrategyConfigSectionTests(unittest.TestCase):
                 "fd_ratio_bucket": "0_1pct_0_3pct",
                 "market_limit_down_count_bucket": "15_30",
             },
+            "C_THIRD_LIMITUP30_50_RANK4_10_FD01_03_CHAIN_NOT15_AMOUNT_NOT2_3": {
+                "limit_up_count_bucket": "30_50",
+                "market_leader_rank_bucket": "rank_4_10",
+                "fd_ratio_bucket": "0_1pct_0_3pct",
+                "market_chain_count_bucket": ("lt_3", "3_8", "8_15", "gte_30"),
+                "amount_ratio_bucket": (
+                    "lt_0_8",
+                    "0_8_1_2",
+                    "1_2_2",
+                    "3_5",
+                    "gte_5",
+                ),
+            },
         })
         single_open_rules = [
             condition
@@ -97,11 +113,36 @@ class StrategyConfigSectionTests(unittest.TestCase):
             single_open_rules,
         )
 
-    def test_c_holds_three_days(self) -> None:
-        """C正式两分支版仍使用T+3退出，不得因入选条件更新改变卖出口径。"""
-        exit_rule = self.config["paper_ab_filtered_strategy"]["c_strategy"]["exit_rule"]
-        self.assertEqual(exit_rule["rule_name"], "fixed_hold3_close")
-        self.assertEqual(int(exit_rule["max_hold_days"]), 3)
+    def test_c_uses_profile_specific_exit_rules(self) -> None:
+        """旧C分支T+3、新第3分支T+2，退出映射不得被统一默认值覆盖。"""
+        c_strategy = self.config["paper_ab_filtered_strategy"]["c_strategy"]
+        self.assertEqual(c_strategy["default_exit_rule_id"], "fixed_hold3_close")
+        self.assertEqual(
+            int(c_strategy["exit_rules"]["fixed_hold3_close"]["max_hold_days"]),
+            3,
+        )
+        self.assertEqual(
+            int(c_strategy["exit_rules"]["fixed_hold2_close"]["max_hold_days"]),
+            2,
+        )
+        rule_by_profile = {
+            str(profile["profile_id"]): str(profile["exit_rule_id"])
+            for profile in c_strategy["condition_profiles"]
+        }
+        self.assertEqual(
+            rule_by_profile[
+                "C_THIRD_LIMITUP30_50_RANK4_10_FD01_03_CHAIN_NOT15_AMOUNT_NOT2_3"
+            ],
+            "fixed_hold2_close",
+        )
+        self.assertEqual(
+            {
+                rule
+                for profile_id, rule in rule_by_profile.items()
+                if not profile_id.startswith("C_THIRD_")
+            },
+            {"fixed_hold3_close"},
+        )
 
     def test_c_only_backs_up_when_a_empty(self) -> None:
         c_strategy = self.config["paper_ab_filtered_strategy"]["c_strategy"]
@@ -188,7 +229,7 @@ class StrategyConfigSectionTests(unittest.TestCase):
         )
         c_strategy = self.config["paper_ab_filtered_strategy"]["c_strategy"]
         self.assertEqual(c_strategy["conditions"], [])
-        self.assertEqual(len(c_strategy["condition_profiles"]), 5)
+        self.assertEqual(len(c_strategy["condition_profiles"]), 6)
 
 
 if __name__ == "__main__":

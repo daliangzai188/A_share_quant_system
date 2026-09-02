@@ -1,0 +1,379 @@
+{
+  "spec_path": "config/strategy_c_sample_compound_research.json",
+  "spec_sha256": "21831ed474b73d878d701ec7f1b4abc7657fe7554d4e8a6834861961b173e94f",
+  "declared_before_replay": true,
+  "catalog": [
+    {
+      "variant_id": "C_CURRENT",
+      "description": "当前正式C基线",
+      "changed_axis_count": 0,
+      "payload_sha256": "e689f8d200d45a0194e9e6ef2eeeba82448bc8c1384a6a6b205c5ecf08c8eb5d"
+    },
+    {
+      "variant_id": "C_CORE_SEGMENT_GTE80__NONE",
+      "description": "核心承接分支只向相邻的分段涨停80只以上扩展；不增加环境门禁",
+      "changed_axis_count": 1,
+      "payload_sha256": "0a245d27a68eb28d46f64215a1fff4336dbb57a778ea6984362eb3709f6385cf"
+    },
+    {
+      "variant_id": "C_CORE_CHAIN_8_15__NONE",
+      "description": "核心承接分支只向相邻的全市场连板8至15只扩展；不增加环境门禁",
+      "changed_axis_count": 1,
+      "payload_sha256": "54b35f2e021cff84e5538edacee62416de5badd28013b3c8c0df424f905dd501"
+    },
+    {
+      "variant_id": "C_CORE_CHAIN_GTE30__NONE",
+      "description": "核心承接分支只向相邻的全市场连板30只以上扩展；不增加环境门禁",
+      "changed_axis_count": 1,
+      "payload_sha256": "f4191f80b5c05cfba13b39edda789f2a9d509c7e52ed7b6aa3cb730045655aea"
+    },
+    {
+      "variant_id": "C_CORE_FIRST_1000_1100__NONE",
+      "description": "核心承接分支只向相邻的10:00至11:00首次封板扩展；不增加环境门禁",
+      "changed_axis_count": 1,
+      "payload_sha256": "eec943db59d330fcd39c3c65707c36c8931c12fb080636138bfbe587bcac9a4c"
+    },
+    {
+      "variant_id": "C_CORE_FIRST_1330_1430__NONE",
+      "description": "核心承接分支只向相邻的13:30至14:30首次封板扩展；不增加环境门禁",
+      "changed_axis_count": 1,
+      "payload_sha256": "8b2262e08a20cbd66b889bfe2292eef469138d30a3d8902f62c7cbc9e4743992"
+    },
+    {
+      "variant_id": "C_LEADER_MARKET_30_50__NONE",
+      "description": "强势龙头分支只向相邻的全市场涨停30至50只扩展；不增加环境门禁",
+      "changed_axis_count": 1,
+      "payload_sha256": "b9ea07430c3993e7e505caae524bf416cdfb0bcf61092d37e961ea8d712840be"
+    },
+    {
+      "variant_id": "C_LEADER_MARKET_80_120__NONE",
+      "description": "强势龙头分支只向相邻的全市场涨停80至120只扩展；不增加环境门禁",
+      "changed_axis_count": 1,
+      "payload_sha256": "6d9564610bb4dd71831bfc0796a88bfcb2d921cb32718e384fb4eb6b4f1bd110"
+    },
+    {
+      "variant_id": "C_LEADER_RANK_11_30__NONE",
+      "description": "强势龙头分支只向相邻的市场强度第11至30名扩展；不增加环境门禁",
+      "changed_axis_count": 1,
+      "payload_sha256": "90e28b9567689c50cf46e5e215d316580e6363922c873670a78ab355f6dd5dc7"
+    },
+    {
+      "variant_id": "C_LEADER_RANK_1__NONE",
+      "description": "强势龙头分支加入市场强度第1名；不增加环境门禁",
+      "changed_axis_count": 1,
+      "payload_sha256": "56ebf007c9b28e4cb9ee38671663d68831539ff768430a1ee508ce2747d2f46d"
+    },
+    {
+      "variant_id": "C_LEADER_FD_LT01__NONE",
+      "description": "强势龙头分支只向相邻的封单比0.1%以下扩展；不增加环境门禁",
+      "changed_axis_count": 1,
+      "payload_sha256": "e6583b362e82a6c760b4b8b66839439cabf18ee39d635b905ceb31a1f9a7b5a8"
+    },
+    {
+      "variant_id": "C_LEADER_FD_03_05__NONE",
+      "description": "强势龙头分支只向相邻的封单比0.3%至0.5%扩展；不增加环境门禁",
+      "changed_axis_count": 1,
+      "payload_sha256": "da484d652b5e494fede5e79f7863ced11f8a239c780cda6e389b4e152ed96007"
+    },
+    {
+      "variant_id": "C_GLOBAL_SEGMENT_NON_ICE",
+      "description": "全部C分支排除所属分段冰点",
+      "changed_axis_count": 1,
+      "payload_sha256": "a822a47db34ce93a74fd22c6d82f2b09624a49f5af9f08bcb3d4854273a7fe43"
+    },
+    {
+      "variant_id": "C_CORE_SEGMENT_GTE80__GLOBAL_SEGMENT_NON_ICE",
+      "description": "核心承接分支只向相邻的分段涨停80只以上扩展；全部C分支排除所属分段冰点",
+      "changed_axis_count": 2,
+      "payload_sha256": "d740886805614704f068e14d538d85d97713e9f8619cb4f9cb3855d03920b91c"
+    },
+    {
+      "variant_id": "C_CORE_CHAIN_8_15__GLOBAL_SEGMENT_NON_ICE",
+      "description": "核心承接分支只向相邻的全市场连板8至15只扩展；全部C分支排除所属分段冰点",
+      "changed_axis_count": 2,
+      "payload_sha256": "c9bcb0e3a2380abe320a6cd8389d08313295b7ad2d44f364e8591b706cdcf711"
+    },
+    {
+      "variant_id": "C_CORE_CHAIN_GTE30__GLOBAL_SEGMENT_NON_ICE",
+      "description": "核心承接分支只向相邻的全市场连板30只以上扩展；全部C分支排除所属分段冰点",
+      "changed_axis_count": 2,
+      "payload_sha256": "db118a3dbd143dd409a16d0d8e6500308e7577b92afb9c5380fc9146dc28126e"
+    },
+    {
+      "variant_id": "C_CORE_FIRST_1000_1100__GLOBAL_SEGMENT_NON_ICE",
+      "description": "核心承接分支只向相邻的10:00至11:00首次封板扩展；全部C分支排除所属分段冰点",
+      "changed_axis_count": 2,
+      "payload_sha256": "40660d5484254e787aaf97eef50a82c3d506dc4ee08db77c92606df6a2332423"
+    },
+    {
+      "variant_id": "C_CORE_FIRST_1330_1430__GLOBAL_SEGMENT_NON_ICE",
+      "description": "核心承接分支只向相邻的13:30至14:30首次封板扩展；全部C分支排除所属分段冰点",
+      "changed_axis_count": 2,
+      "payload_sha256": "d221862179c9f29e61b87a5a7811cf22ae6907f4c99e564a19b019dc38c40698"
+    },
+    {
+      "variant_id": "C_LEADER_MARKET_30_50__GLOBAL_SEGMENT_NON_ICE",
+      "description": "强势龙头分支只向相邻的全市场涨停30至50只扩展；全部C分支排除所属分段冰点",
+      "changed_axis_count": 2,
+      "payload_sha256": "5a1496503b85a38aea575448ba2bc7cf2f51b979aa25fd6be46d72d071814e54"
+    },
+    {
+      "variant_id": "C_LEADER_MARKET_80_120__GLOBAL_SEGMENT_NON_ICE",
+      "description": "强势龙头分支只向相邻的全市场涨停80至120只扩展；全部C分支排除所属分段冰点",
+      "changed_axis_count": 2,
+      "payload_sha256": "a25aa7ab9fdf981ffc162a85fcc590c72a23ca19856a9583f72517f146dafc4f"
+    },
+    {
+      "variant_id": "C_LEADER_RANK_11_30__GLOBAL_SEGMENT_NON_ICE",
+      "description": "强势龙头分支只向相邻的市场强度第11至30名扩展；全部C分支排除所属分段冰点",
+      "changed_axis_count": 2,
+      "payload_sha256": "8d672f42d9d2a0617c759bca56734012adfd6bfc8572a6ba7146aa0fe91b49a7"
+    },
+    {
+      "variant_id": "C_LEADER_RANK_1__GLOBAL_SEGMENT_NON_ICE",
+      "description": "强势龙头分支加入市场强度第1名；全部C分支排除所属分段冰点",
+      "changed_axis_count": 2,
+      "payload_sha256": "f55a558598ba2555803fc8dff86e82b0e373bb469d01162015bb2a9cebebeb8b"
+    },
+    {
+      "variant_id": "C_LEADER_FD_LT01__GLOBAL_SEGMENT_NON_ICE",
+      "description": "强势龙头分支只向相邻的封单比0.1%以下扩展；全部C分支排除所属分段冰点",
+      "changed_axis_count": 2,
+      "payload_sha256": "aeff4229f86d78359dc72db2a6d245542d4a9d70bad14622f4b1f63e924d615f"
+    },
+    {
+      "variant_id": "C_LEADER_FD_03_05__GLOBAL_SEGMENT_NON_ICE",
+      "description": "强势龙头分支只向相邻的封单比0.3%至0.5%扩展；全部C分支排除所属分段冰点",
+      "changed_axis_count": 2,
+      "payload_sha256": "816a81d3e77284dc272df91a0bdd15c021507ba65b3cd2d8228c094fa5b9b05e"
+    },
+    {
+      "variant_id": "C_GLOBAL_MARKET_LD_LT30",
+      "description": "全部C分支只允许全市场跌停少于30只",
+      "changed_axis_count": 1,
+      "payload_sha256": "21fc9e705a286aede17509bf19bfc87e4c11800d300899a26461a4d1bc615886"
+    },
+    {
+      "variant_id": "C_CORE_SEGMENT_GTE80__GLOBAL_MARKET_LD_LT30",
+      "description": "核心承接分支只向相邻的分段涨停80只以上扩展；全部C分支只允许全市场跌停少于30只",
+      "changed_axis_count": 2,
+      "payload_sha256": "2b21515b3fb279b484dc8304ba7be7d9db0aadbb27558a1403858c79f400764f"
+    },
+    {
+      "variant_id": "C_CORE_CHAIN_8_15__GLOBAL_MARKET_LD_LT30",
+      "description": "核心承接分支只向相邻的全市场连板8至15只扩展；全部C分支只允许全市场跌停少于30只",
+      "changed_axis_count": 2,
+      "payload_sha256": "70b32921eb07bef5e414611d9bf0bbb9efb8531f59304321e6a2aa14d0fdbe6d"
+    },
+    {
+      "variant_id": "C_CORE_CHAIN_GTE30__GLOBAL_MARKET_LD_LT30",
+      "description": "核心承接分支只向相邻的全市场连板30只以上扩展；全部C分支只允许全市场跌停少于30只",
+      "changed_axis_count": 2,
+      "payload_sha256": "106076a04709422eaf9d5ed124aca225920ef3572b1729ea8041f53610433a5b"
+    },
+    {
+      "variant_id": "C_CORE_FIRST_1000_1100__GLOBAL_MARKET_LD_LT30",
+      "description": "核心承接分支只向相邻的10:00至11:00首次封板扩展；全部C分支只允许全市场跌停少于30只",
+      "changed_axis_count": 2,
+      "payload_sha256": "4b6cfab850a609d893de61ee7a88773b90978bfe839b12ced3f5e4c8c75558ca"
+    },
+    {
+      "variant_id": "C_CORE_FIRST_1330_1430__GLOBAL_MARKET_LD_LT30",
+      "description": "核心承接分支只向相邻的13:30至14:30首次封板扩展；全部C分支只允许全市场跌停少于30只",
+      "changed_axis_count": 2,
+      "payload_sha256": "fe50d03b4dccb9536b9ac5c96a555e5c4c6cf5cd7c2bcff8f7231343861c4153"
+    },
+    {
+      "variant_id": "C_LEADER_MARKET_30_50__GLOBAL_MARKET_LD_LT30",
+      "description": "强势龙头分支只向相邻的全市场涨停30至50只扩展；全部C分支只允许全市场跌停少于30只",
+      "changed_axis_count": 2,
+      "payload_sha256": "65f49d2d77a593a55297b5611af2a95cc55dac8b66ed53ccc8186eec64a63a75"
+    },
+    {
+      "variant_id": "C_LEADER_MARKET_80_120__GLOBAL_MARKET_LD_LT30",
+      "description": "强势龙头分支只向相邻的全市场涨停80至120只扩展；全部C分支只允许全市场跌停少于30只",
+      "changed_axis_count": 2,
+      "payload_sha256": "4fcb3a62d8456631ec2cfafa247b8e06f8ffff2a68f8f089012961cdc2fdcb39"
+    },
+    {
+      "variant_id": "C_LEADER_RANK_11_30__GLOBAL_MARKET_LD_LT30",
+      "description": "强势龙头分支只向相邻的市场强度第11至30名扩展；全部C分支只允许全市场跌停少于30只",
+      "changed_axis_count": 2,
+      "payload_sha256": "b2b8baaee47bec68832ce40f1baeb2f2969fb2abd1f07568f9814f1b47767c7e"
+    },
+    {
+      "variant_id": "C_LEADER_RANK_1__GLOBAL_MARKET_LD_LT30",
+      "description": "强势龙头分支加入市场强度第1名；全部C分支只允许全市场跌停少于30只",
+      "changed_axis_count": 2,
+      "payload_sha256": "86d94fe98ddb42511a52874b566d6381079d97ff707bf6bc5d50eba0f11f90ac"
+    },
+    {
+      "variant_id": "C_LEADER_FD_LT01__GLOBAL_MARKET_LD_LT30",
+      "description": "强势龙头分支只向相邻的封单比0.1%以下扩展；全部C分支只允许全市场跌停少于30只",
+      "changed_axis_count": 2,
+      "payload_sha256": "e8cff4d974c8cd25479f1cc2673a6ff8226c292d83667184feec83e7a640f84e"
+    },
+    {
+      "variant_id": "C_LEADER_FD_03_05__GLOBAL_MARKET_LD_LT30",
+      "description": "强势龙头分支只向相邻的封单比0.3%至0.5%扩展；全部C分支只允许全市场跌停少于30只",
+      "changed_axis_count": 2,
+      "payload_sha256": "d4f3ca7960bcc2a270fc5f040dc984dc5e74a975656b73b712be3bad9a4a5b53"
+    },
+    {
+      "variant_id": "C_CORE_SEGMENT_GTE80__LOCAL_SEGMENT_NON_ICE",
+      "description": "核心承接分支只向相邻的分段涨停80只以上扩展；只要求新增分支排除所属分段冰点",
+      "changed_axis_count": 2,
+      "payload_sha256": "469443f7dd710c4de3f4fe980d0284bb0535dea805a8b21515c149d6c5eaeaa1"
+    },
+    {
+      "variant_id": "C_CORE_CHAIN_8_15__LOCAL_SEGMENT_NON_ICE",
+      "description": "核心承接分支只向相邻的全市场连板8至15只扩展；只要求新增分支排除所属分段冰点",
+      "changed_axis_count": 2,
+      "payload_sha256": "07244b13e7efe37153d77d356444e5ba57d768fa714d88bc0694582a514e4fb7"
+    },
+    {
+      "variant_id": "C_CORE_CHAIN_GTE30__LOCAL_SEGMENT_NON_ICE",
+      "description": "核心承接分支只向相邻的全市场连板30只以上扩展；只要求新增分支排除所属分段冰点",
+      "changed_axis_count": 2,
+      "payload_sha256": "7d29e9a7a7cdbc469399adbffe4079ed4ef5f829f52b2ac43dffaaea86f9eb3f"
+    },
+    {
+      "variant_id": "C_CORE_FIRST_1000_1100__LOCAL_SEGMENT_NON_ICE",
+      "description": "核心承接分支只向相邻的10:00至11:00首次封板扩展；只要求新增分支排除所属分段冰点",
+      "changed_axis_count": 2,
+      "payload_sha256": "988c61d3f8db46af3dc01c6f7b824bc7c6ce5475dd873be34365140646e3cec6"
+    },
+    {
+      "variant_id": "C_CORE_FIRST_1330_1430__LOCAL_SEGMENT_NON_ICE",
+      "description": "核心承接分支只向相邻的13:30至14:30首次封板扩展；只要求新增分支排除所属分段冰点",
+      "changed_axis_count": 2,
+      "payload_sha256": "9f11490a30082f3e0d59388d62de6c2814e9f02bf1a05ecbd027801a3126ee98"
+    },
+    {
+      "variant_id": "C_LEADER_MARKET_30_50__LOCAL_SEGMENT_NON_ICE",
+      "description": "强势龙头分支只向相邻的全市场涨停30至50只扩展；只要求新增分支排除所属分段冰点",
+      "changed_axis_count": 2,
+      "payload_sha256": "f8db93e41b6d8e6e0a8ded76a0b7dc3c35a9eefc39fbc5592b756395c8980a82"
+    },
+    {
+      "variant_id": "C_LEADER_MARKET_80_120__LOCAL_SEGMENT_NON_ICE",
+      "description": "强势龙头分支只向相邻的全市场涨停80至120只扩展；只要求新增分支排除所属分段冰点",
+      "changed_axis_count": 2,
+      "payload_sha256": "05b137b7164643ce3512a6f963bd53adc2a9c0e5e2c9299420c00981e2ccc7c6"
+    },
+    {
+      "variant_id": "C_LEADER_RANK_11_30__LOCAL_SEGMENT_NON_ICE",
+      "description": "强势龙头分支只向相邻的市场强度第11至30名扩展；只要求新增分支排除所属分段冰点",
+      "changed_axis_count": 2,
+      "payload_sha256": "9569f0d7e77b1d0c9bdb44d743236d12b61ad188259bb7e30dbcdf7a3a40d28b"
+    },
+    {
+      "variant_id": "C_LEADER_RANK_1__LOCAL_SEGMENT_NON_ICE",
+      "description": "强势龙头分支加入市场强度第1名；只要求新增分支排除所属分段冰点",
+      "changed_axis_count": 2,
+      "payload_sha256": "9c1a2642f73c1cba14a5cad1f0b544805f709f91a6c7d99997c6d6e9d5a6240f"
+    },
+    {
+      "variant_id": "C_LEADER_FD_LT01__LOCAL_SEGMENT_NON_ICE",
+      "description": "强势龙头分支只向相邻的封单比0.1%以下扩展；只要求新增分支排除所属分段冰点",
+      "changed_axis_count": 2,
+      "payload_sha256": "d05ea3a0d054fb19850471eba2e3395478ccffabe3d1ef495f8d4efe458971c6"
+    },
+    {
+      "variant_id": "C_LEADER_FD_03_05__LOCAL_SEGMENT_NON_ICE",
+      "description": "强势龙头分支只向相邻的封单比0.3%至0.5%扩展；只要求新增分支排除所属分段冰点",
+      "changed_axis_count": 2,
+      "payload_sha256": "7c74a2324c0600344c8bf1ba533d091856f9add97f1492d8163c7bf473a9bd1f"
+    },
+    {
+      "variant_id": "C_CORE_SEGMENT_GTE80__LOCAL_MARKET_LD_LT30",
+      "description": "核心承接分支只向相邻的分段涨停80只以上扩展；只要求新增分支的全市场跌停少于30只",
+      "changed_axis_count": 2,
+      "payload_sha256": "2f19d58246a3243400875e26e1bd0602376c10d1dbc29392d81630383be21936"
+    },
+    {
+      "variant_id": "C_CORE_CHAIN_8_15__LOCAL_MARKET_LD_LT30",
+      "description": "核心承接分支只向相邻的全市场连板8至15只扩展；只要求新增分支的全市场跌停少于30只",
+      "changed_axis_count": 2,
+      "payload_sha256": "b4bf10b1d59f62f40698ce97f1b8c83e34e1ed443e8f0f08425038d10efd1557"
+    },
+    {
+      "variant_id": "C_CORE_CHAIN_GTE30__LOCAL_MARKET_LD_LT30",
+      "description": "核心承接分支只向相邻的全市场连板30只以上扩展；只要求新增分支的全市场跌停少于30只",
+      "changed_axis_count": 2,
+      "payload_sha256": "89b30666995fe60200e380e5e1f21f3d6ce7fba8b6a0b16b16daae07c4f38a5d"
+    },
+    {
+      "variant_id": "C_CORE_FIRST_1000_1100__LOCAL_MARKET_LD_LT30",
+      "description": "核心承接分支只向相邻的10:00至11:00首次封板扩展；只要求新增分支的全市场跌停少于30只",
+      "changed_axis_count": 2,
+      "payload_sha256": "c66bfb6a65c7caac5965bb277b46db4182431964e7a78d7c1ea7db8fd1ff9a74"
+    },
+    {
+      "variant_id": "C_CORE_FIRST_1330_1430__LOCAL_MARKET_LD_LT30",
+      "description": "核心承接分支只向相邻的13:30至14:30首次封板扩展；只要求新增分支的全市场跌停少于30只",
+      "changed_axis_count": 2,
+      "payload_sha256": "ad872fc88682a162814b5492c3e469809760f449185429edeb50f6835db2a1b7"
+    },
+    {
+      "variant_id": "C_LEADER_MARKET_30_50__LOCAL_MARKET_LD_LT30",
+      "description": "强势龙头分支只向相邻的全市场涨停30至50只扩展；只要求新增分支的全市场跌停少于30只",
+      "changed_axis_count": 2,
+      "payload_sha256": "138305b70ea42a652c7b5f0ae040d8a5a76aef394829a2c284bab3ebbdc4713a"
+    },
+    {
+      "variant_id": "C_LEADER_MARKET_80_120__LOCAL_MARKET_LD_LT30",
+      "description": "强势龙头分支只向相邻的全市场涨停80至120只扩展；只要求新增分支的全市场跌停少于30只",
+      "changed_axis_count": 2,
+      "payload_sha256": "df9ef940f36fa00107f6beaf0eac894a07c921ad11d24ca2a3405c3198899cd7"
+    },
+    {
+      "variant_id": "C_LEADER_RANK_11_30__LOCAL_MARKET_LD_LT30",
+      "description": "强势龙头分支只向相邻的市场强度第11至30名扩展；只要求新增分支的全市场跌停少于30只",
+      "changed_axis_count": 2,
+      "payload_sha256": "ae6c79297d9b7f0200170eee0a5634b1e3178712a2aef54bdbfdaeb892109e69"
+    },
+    {
+      "variant_id": "C_LEADER_RANK_1__LOCAL_MARKET_LD_LT30",
+      "description": "强势龙头分支加入市场强度第1名；只要求新增分支的全市场跌停少于30只",
+      "changed_axis_count": 2,
+      "payload_sha256": "e109f3dd7d1ab751759374322371428bfcb8a5c7aea39404f78a8047179f8260"
+    },
+    {
+      "variant_id": "C_LEADER_FD_LT01__LOCAL_MARKET_LD_LT30",
+      "description": "强势龙头分支只向相邻的封单比0.1%以下扩展；只要求新增分支的全市场跌停少于30只",
+      "changed_axis_count": 2,
+      "payload_sha256": "acb22c851b6dfefc96ef0237224d394401fb89edd98082948197fb3d0115aa5f"
+    },
+    {
+      "variant_id": "C_LEADER_FD_03_05__LOCAL_MARKET_LD_LT30",
+      "description": "强势龙头分支只向相邻的封单比0.3%至0.5%扩展；只要求新增分支的全市场跌停少于30只",
+      "changed_axis_count": 2,
+      "payload_sha256": "bbd2810dce76ea91e45b710a5e02b1bf9a71f85d0824007370e3cdfbaf7863c5"
+    }
+  ],
+  "formal_plan_sha256": {
+    "A": "6038d4602a8a3bea4741bb1a6c957f96639d159764c5e715826b5defa1044862",
+    "C": "f344710c25b013e09c4b4c992f7c2d986e4856613a369b4c8f68960410a0c27e",
+    "E": "66a9d543749bb031b00e029f9520dcdeb2608cfcf5397185cc9482c7601dff3c",
+    "D": "876c9f5cb4bb32eccf3e56cd2fe900e8395b044cd6d4785f4ba5d1b67888c263"
+  },
+  "data_sources": {
+    "strict_feature_pool": {
+      "path": "data/research/monthly_acde/20260831/strict_feature_pool.csv",
+      "sha256": "bb62c166eb159e4b1d879c95da0917a00857ab7eff83629a1382bc76c963fb00"
+    },
+    "market_sentiment": {
+      "path": "data/research/monthly_acde/20260831/market_sentiment.csv",
+      "sha256": "dd2daf6d9f0ac2aa4a4fb02f482315c81c96004d3f195119ad62a56abb5cc8a8"
+    },
+    "d_event_source": {
+      "path": "data/research/monthly_acde/20260831/strategy_d_three_year/all_reseal_signal_events.csv",
+      "sha256": "c00b7215730d30f6fecc7daee93c459c8ffa7f020a20bf97be4d08892ed11d4c"
+    },
+    "trade_calendar": {
+      "path": "data/raw/trade_calendar.csv",
+      "sha256": "53978e56252200b2b4f980fc6237dc76834f614410ab8c7a6a7dfa0d53ea39d4"
+    }
+  }
+}
