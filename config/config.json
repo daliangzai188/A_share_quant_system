@@ -8,6 +8,7 @@
     "fill_probability_method": "asof_turnover_space_proxy_v2",
     "mechanical_compound_standard_id": "A_SYSTEM_MECHANICAL_COMPOUND_V1",
     "official_portfolio_certifier": "scripts/certify_strategy_c_third_branch_release.py",
+    "official_portfolio_certifier_status": "INVALIDATED_BY_D_ENTRY_ALIGNMENT_AUDIT",
     "policy_note": "所有策略收益研究必须使用严格point-in-time数据和单账户逐笔机械复利。候选能由信号时点因子量化、数据审计无异常、回测可成功复现且正式逻辑与回测逐笔对齐时，优先选择固定A>C>E>D组合复利最高者；风险、回撤、样本和过拟合继续完整披露，但不作为先验收益否决门。"
   },
   "trade_mode": "live",
@@ -36,7 +37,7 @@
     "full_sample_gate_risk_acceptance_note": "V14改用换手率高与封单比例低的等权分位排序，并在保留V13四项单独门禁基础上新增成交额倍率1.2~2且炸板2~3次时直接空仓、不回补。最近三年E独立59笔、30.818622倍、最大回撤-9.62%；结果属于STRICT_DISCOVERY，不得据此扩大资金。"
   },
   "portfolio_certification": {
-    "file_role": "A>C>E>D真实开仓日组合资金和研究统计口径；研究认证结果不参与实盘BUY开关。",
+    "file_role": "A>C>E>D真实开仓日组合资金和研究统计口径；研究认证结果不参与实盘BUY开关。旧V16认证因D开仓口径不对齐已作废，D的实盘BUY由strategy_d_factor_release.entry_alignment独立fail-closed。",
     "initial_equity": 500000,
     "position_pct": 0.825,
     "input_manifest_path": "reports/current_portfolio_alignment/input_manifest.json",
@@ -51,7 +52,7 @@
     "require_strategy_release_freeze": false,
     "release_id": "ACDE_C_THIRD_BRANCH_T2_22695_20260902_V16",
     "effective_from": "20260902",
-    "user_risk_acceptance": "用户于2026-09-02审核C第3分支逐笔收益后明确授权落地。新分支独立实际成交14笔、胜率78.57%、平均每笔5.89%、中位每笔2.95%、复利2.100817倍、最大回撤-10.69%；C整体75笔、37.653391倍；固定A>C>E>D组合184笔、22695.892245倍、最大回撤-19.88%。已披露同窗STRICT_DISCOVERY_POST_REVIEW_STAGE4过拟合风险、样本有限及尚无独立冻结前向和真实容量认证。",
+    "user_risk_acceptance": "用户于2026-09-02审核C第3分支逐笔收益后明确授权落地，C规则保留，原C的同窗过拟合风险披露继续有效。后续开仓口径复核发现D回测没有执行实盘fill_probability>=80%门，旧V16组合指标因此作废；本记录不表示用户已审核或接受新的D=0失败关闭组合指标。",
     "strategy_priority_order": [
       "A",
       "C",
@@ -61,28 +62,39 @@
     "rolling_live_report_path": "reports/live_performance/rolling_live_status.json",
     "rolling_min_trades_for_decision": 20,
     "selected_rule_name": "acde_c_third_branch_t2_22695_20260902_v16",
-    "selected_rule_description": "当前生产顺序固定A>C>E>D。A每日第一名首次封板为afternoon时空仓且不回补A第二名；C保留原五个profile及T+3退出，新增涨停30~50只、龙头排名4~10、封单比0.1%~0.3%、排除连板15~30只和成交额倍率2~3的第3分支，并按T+2退出；所有C分支继续在最终排序前排除炸板次数恰为1次的候选。E继续执行V14排序和弱区间直接空仓；D保持V15。A/C/E读取上一交易日冻结计划，三腿均无计划时D才启动。",
+    "selected_rule_description": "当前生产顺序固定A>C>E>D。A/C/E规则保持V16口径；C风险候选在最终排序前剔除，合格下一名可递补，不得因同日存在其他被拒C候选就整日空仓。D仅保留路径监控；历史信号时L2队列数据补齐并重新认证前禁止新BUY。",
+    "entry_alignment_remediation": {
+      "status": "D_FAIL_CLOSED_NEW_BUY_PAUSED",
+      "report_path": "reports/entry_alignment_fix_20260902/summary.json",
+      "old_v16_certification_valid": false,
+      "c_live_fallback_fixed": true,
+      "d_market_breadth_non_st_first_board_only": true,
+      "d_position_pct": 0.825,
+      "d_min_fill_probability": 0.8,
+      "d_historical_signal_time_l2_queue_available": false,
+      "d_new_buy_enabled": false
+    },
     "live_candidate_metrics": {
-      "scenario": "acde_c_third_branch_t2_22695_20260902_v16",
+      "scenario": "acde_entry_alignment_fail_closed_20260902",
       "strict_asof_window": "20230901~20260831",
-      "strict_asof_trade_count": 184,
-      "strict_asof_equity_multiple": 22695.89224525786,
-      "strict_asof_win_rate": 0.75,
-      "strict_asof_avg_account_return": 0.0600448376731205,
-      "strict_asof_median_account_return": 0.04224880257825414,
-      "strict_asof_max_drawdown": -0.19877379887361846,
-      "strict_asof_max_profit": 0.47625293482161846,
-      "strict_asof_max_loss": -0.1760347066955421,
-      "strict_asof_profit_loss_ratio": 2.414881609114635,
+      "strict_asof_trade_count": 174,
+      "strict_asof_equity_multiple": 10848.794220535914,
+      "strict_asof_win_rate": 0.735632183908046,
+      "strict_asof_avg_account_return": 0.059041737337179954,
+      "strict_asof_median_account_return": 0.04053638027625017,
+      "strict_asof_max_drawdown": -0.19877368185390087,
+      "strict_asof_max_profit": 0.47625300044860985,
+      "strict_asof_max_loss": -0.17603458841064734,
+      "strict_asof_profit_loss_ratio": 2.413000141610678,
       "strict_asof_max_consecutive_losses": 3,
       "strict_asof_leg_counts": {
         "A": 84,
-        "C": 62,
+        "C": 63,
         "E": 27,
-        "D": 11
+        "D": 0
       },
       "compound_standard_id": "A_SYSTEM_MECHANICAL_COMPOUND_V1",
-      "note": "最近三年按真实action_date和固定A>C>E>D回放，退出日收盘前不复用资金；费用、双边0.1%滑点、T+1、涨跌停排队和D成交压力保持不变。184笔、22695.892245倍、最大回撤-19.8774%，分腿A84/C62/E27/D11。C第1/2逻辑分支按T+3退出，第3分支按T+2退出；该结果属于同窗STRICT_DISCOVERY_POST_REVIEW_STAGE4，不是未来收益承诺。"
+      "note": "开仓口径缺陷修复后的失败关闭重算：固定A>C>E>D、82.5%目标仓位、费用、滑点和退出日占资不变。由于现有D三年数据没有信号时L2队列金额，D不可验证样本全部不计成交；组合174笔、10848.794221倍、最大回撤-19.8774%，分腿A84/C63/E27/D0。该结果不是未来收益承诺，也不代表D策略收益为0；它表示当前没有可认证的D历史成交样本。"
     }
   },
   "live_performance_report": {

@@ -27,6 +27,7 @@ from scripts.validate_other_live_strategies_strict import account_return
 from src.paper_candidate_generator import PaperCandidateGenerator
 from src.strategy_c_exit import resolve_c_exit_decision
 from src.strategy_d_factor_rules import add_factor_values, profile_mask
+from src.strategy_d_spec import D_MIN_FILL_PROBABILITY
 from src.strategy_e import (
     build_r1_universe_from_pool,
     resolve_exit_offset,
@@ -1408,7 +1409,26 @@ def build_d_plans(
                     if exit_date and exit_date <= cutoff
                     else np.nan
                 ),
-                "position_scale": 0.8,
+                # D与A/C/E统一使用组合82.5%目标仓位。原0.8缩放会把D
+                # 变成66%，与实盘委托口径错位。
+                "position_scale": 1.0,
+                # 历史D入场不再只看价格穿透。必须同时拥有信号时的
+                # 预估总成交金额与实时队列金额，再按回放当时真实拟买金额
+                # 计算成交概率。现有三年1m数据没有这两个L2字段，回放将
+                # fail-closed，不允许伪造可成交样本。
+                "fill_gate_required": True,
+                "fill_probability_threshold": D_MIN_FILL_PROBABILITY,
+                "fill_input_reliable": bool(
+                    str(raw.get("fill_input_reliable", "")).strip().lower()
+                    in {"true", "1", "yes"}
+                ),
+                "estimated_turnover_amount": pd.to_numeric(
+                    raw.get("estimated_turnover_amount"), errors="coerce"
+                ),
+                "current_queue_amount": pd.to_numeric(
+                    raw.get("current_queue_amount"), errors="coerce"
+                ),
+                "fill_probability_method": "SIGNAL_TIME_AMOUNT_SPACE_OVER_ACTUAL_ORDER_GROSS",
                 "account_return": float(value) if observable else np.nan,
                 "entry_filled": bool(queue_confirmed),
                 "position_opened": bool(queue_confirmed),

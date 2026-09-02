@@ -134,6 +134,83 @@ def test_exact_cash_replay_models_lot_and_minimum_commission() -> None:
     assert detail.iloc[-1]["status"] == "SKIP_OCCUPIED"
 
 
+def _d_fill_gate_plan(**overrides: object) -> pd.DataFrame:
+    row: dict[str, object] = {
+        "signal_date": "20240102",
+        "status": "OK",
+        "strategy_leg": "D",
+        "ts_code": "000001.SZ",
+        "name": "D测试",
+        "exit_date": "20240103",
+        "position_open_until": "20240103",
+        "entry_filled": True,
+        "position_opened": True,
+        "outcome_observable": True,
+        "entry_reference_price": 10.0,
+        "entry_price": 10.0,
+        "exit_reference_price": 10.5,
+        "exit_price": 10.5,
+        "stock_return_before_fees": 0.05,
+        "position_scale": 1.0,
+        "fill_gate_required": True,
+        "fill_probability_threshold": 0.8,
+        "fill_probability_method": "SIGNAL_TIME_AMOUNT_SPACE_OVER_ACTUAL_ORDER_GROSS",
+    }
+    row.update(overrides)
+    return pd.DataFrame([row])
+
+
+def test_d_cash_replay_fails_closed_without_historical_queue_amount() -> None:
+    detail = replay_action_date_cash_portfolio(
+        {"D": _d_fill_gate_plan(fill_input_reliable=False)},
+        action_dates=["20240102", "20240103"],
+        priority=("D",),
+    )
+
+    assert detail.iloc[0]["status"] == "PLAN_NOT_EXECUTED_FILL_GATE_UNVERIFIABLE"
+    assert detail.iloc[0]["position_opened"] == False  # noqa: E712
+    assert not detail["status"].eq("EXECUTED").any()
+
+
+def test_d_cash_replay_uses_82_5_percent_actual_gross_for_fill_gate() -> None:
+    detail = replay_action_date_cash_portfolio(
+        {
+            "D": _d_fill_gate_plan(
+                fill_input_reliable=True,
+                estimated_turnover_amount=900_000.0,
+                current_queue_amount=400_000.0,
+            )
+        },
+        action_dates=["20240102", "20240103"],
+        priority=("D",),
+    )
+    trade = detail.loc[detail["status"].eq("EXECUTED")].iloc[0]
+
+    assert trade["quantity"] == 41_200
+    assert trade["planned_buy_amount"] == 412_000.0
+    assert trade["buy_gross"] == trade["planned_buy_amount"]
+    assert trade["position_ratio"] == 0.824
+    assert trade["fill_probability"] == 1.0
+
+
+def test_d_cash_replay_rejects_fill_probability_below_80_percent() -> None:
+    detail = replay_action_date_cash_portfolio(
+        {
+            "D": _d_fill_gate_plan(
+                fill_input_reliable=True,
+                estimated_turnover_amount=700_000.0,
+                current_queue_amount=400_000.0,
+            )
+        },
+        action_dates=["20240102", "20240103"],
+        priority=("D",),
+    )
+
+    assert detail.iloc[0]["status"] == "PLAN_NOT_EXECUTED_FILL_PROBABILITY"
+    assert 0.72 < float(detail.iloc[0]["fill_probability"]) < 0.73
+    assert not detail["status"].eq("EXECUTED").any()
+
+
 def test_half_year_breakdown_rolls_forward_without_fixed_calendar_years() -> None:
     empty = pd.DataFrame()
     current = period_breakdown(empty, start="20230701", end="20260630")

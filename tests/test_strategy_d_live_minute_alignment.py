@@ -4,7 +4,11 @@ import json
 from pathlib import Path
 
 from scripts import monitor_strategy_d_intraday as d_monitor
-from scripts.monitor_strategy_d_intraday import StockState, StrategyDMonitor
+from scripts.monitor_strategy_d_intraday import (
+    StockState,
+    StrategyDMonitor,
+    calculate_d_order_capacity,
+)
 from src.strategy_d_minute_alignment import (
     expected_completed_minute_hhmm,
     replay_completed_minute_path,
@@ -56,6 +60,12 @@ def _release(path: Path) -> Path:
                 "strategy_mode": "FACTOR_UNION",
                 "effective_from": "20260701",
                 "research_window": {"start": "20240630", "end": "20260630"},
+                "entry_alignment": {
+                    "historical_signal_time_fill_gate_certified": True,
+                    "runtime_new_buy_enabled": True,
+                    "min_fill_probability": 0.8,
+                    "planned_buy_amount_source": "ACTUAL_ORDER_GROSS",
+                },
                 "profiles": [
                     {
                         "profile_id": "P_STRICT",
@@ -258,7 +268,7 @@ def test_live_factor_gate_accepts_completed_minute_reseal(
     assert values["break_close_depth_bucket"] == "LT0_2PCT"
 
 
-def test_live_minute_gate_blocks_more_than_qmt_subscription_limit(
+def test_live_minute_paths_are_queried_in_batches_above_subscription_limit(
     tmp_path: Path, monkeypatch,
 ) -> None:
     release_path = _release(tmp_path / "release.json")
@@ -279,5 +289,71 @@ def test_live_minute_gate_blocks_more_than_qmt_subscription_limit(
     monkeypatch.setattr(d_monitor, "now_hhmm", lambda: 1027)
 
     assert monitor._refresh_strict_minute_paths() is False
-    assert "超过QMT单股订阅安全上限" in monitor.strict_minute_refresh_error
-    assert broker.calls == 0
+    assert "一分钟路径不完整" in monitor.strict_minute_refresh_error
+    assert "超过QMT单股订阅安全上限" not in monitor.strict_minute_refresh_error
+    assert broker.calls == 2
+
+
+def test_d_order_capacity_uses_actual_82_5_percent_order_amount() -> None:
+    class Account:
+        available_cash = 1_000_000.0
+        total_asset = 1_000_000.0
+
+    capacity = calculate_d_order_capacity(
+        Account(),
+        price=10.0,
+        position_pct=0.825,
+        live_config={
+            "max_position_pct": 0.85,
+            "max_total_position_pct": 0.825,
+            "cash_buffer_amount": 1000,
+        },
+    )
+
+    assert capacity.shares == 82_400
+    assert capacity.actual_amount == 824_000.0
+    assert capacity.actual_amount != 412_500.0
+
+
+def test_d_market_breadth_excludes_st_previous_limit_and_multi_board(
+    tmp_path: Path,
+) -> None:
+    monitor = StrategyDMonitor(
+        broker=None,
+        live_order=False,
+        logger=_Logger(),
+        signal_csv=tmp_path / "signals.csv",
+        config={"strategy_d": {"factor_release_path": str(_release(tmp_path / "release.json"))}},
+    )
+
+    eligible = _growth_state()
+    eligible.ts_code = "300001.SZ"
+    eligible.open_times_today = 2
+    st_stock = _growth_state()
+    st_stock.ts_code = "300002.SZ"
+    st_stock.st_suspect = True
+    previous_limit = _growth_state()
+    previous_limit.ts_code = "300003.SZ"
+    main_board = _growth_state()
+    main_board.ts_code = "000004.SZ"
+    main_board.market_segment = "sz_main"
+    monitor.states = {
+        item.ts_code: item
+        for item in (eligible, st_stock, previous_limit, main_board)
+    }
+    monitor.yesterday_limit_codes = {previous_limit.ts_code}
+    monitor.strict_minute_paths = {
+        code: replay_completed_minute_path(
+            [_bar(930, state.upper_limit)],
+            limit_price=state.upper_limit,
+            current_hhmm=930,
+        )
+        for code, state in monitor.states.items()
+    }
+
+    assert monitor.market_ever_sealed_count == 2
+    assert monitor.sealed_ever_count == 2
+    assert monitor.market_break_event_count == 3
+    # 市场级广度统计全部已启用板块里的非ST首板；只有segment两列按查询的
+    # chi_next收窄。因此这里应包含创业板首板和深主板首板共2只。
+    assert monitor._strict_market_context("chi_next") == (2, 2, 0, 1, 1)

@@ -14,6 +14,7 @@ from typing import Any, Iterable, Mapping, Sequence
 import numpy as np
 import pandas as pd
 
+from src.fill_model import fill_probability_from_amounts
 from src.mechanical_compound import mechanical_compound
 from src.market_rules import market_segment, orderable_buy_quantity
 from src.trading_fees import stamp_tax_rate_for_date
@@ -499,12 +500,123 @@ def replay_action_date_cash_portfolio(
             "position_opened": position_opened,
             "outcome_observable": outcome_observable,
         }
+        fill_fields: dict[str, Any] = {}
+        gate_quantity: int | None = None
+        if normalize_bool(selected.get("fill_gate_required"), False):
+            entry_for_gate = pd.to_numeric(selected.get("entry_price"), errors="coerce")
+            scale_for_gate = pd.to_numeric(
+                selected.get("position_scale", 1.0), errors="coerce"
+            )
+            reliable = normalize_bool(selected.get("fill_input_reliable"), False)
+            estimated = pd.to_numeric(
+                selected.get("estimated_turnover_amount"), errors="coerce"
+            )
+            queue = pd.to_numeric(selected.get("current_queue_amount"), errors="coerce")
+            threshold = pd.to_numeric(
+                selected.get("fill_probability_threshold", 0.8), errors="coerce"
+            )
+            planned_quantity = 0
+            if not pd.isna(entry_for_gate) and not pd.isna(scale_for_gate):
+                gate_ratio = min(
+                    float(position_pct) * float(scale_for_gate),
+                    float(max_position_pct),
+                )
+                planned_quantity = orderable_buy_quantity(
+                    ts_code=base["ts_code"],
+                    available_amount=cash * gate_ratio,
+                    execution_price=float(entry_for_gate),
+                )
+                gate_step = quantity_step(base["ts_code"])
+                while planned_quantity > 0:
+                    planned_gross = planned_quantity * float(entry_for_gate)
+                    if (
+                        planned_gross
+                        + commission(planned_gross)
+                        + planned_gross * float(transfer_fee_rate)
+                        <= cash + 1e-9
+                    ):
+                        break
+                    planned_quantity -= gate_step
+            planned_gross = (
+                planned_quantity * float(entry_for_gate)
+                if planned_quantity > 0 and not pd.isna(entry_for_gate)
+                else 0.0
+            )
+            fill_fields = {
+                "fill_gate_required": True,
+                "fill_input_reliable": reliable,
+                "fill_probability_threshold": (
+                    float(threshold) if not pd.isna(threshold) else np.nan
+                ),
+                "planned_buy_amount": planned_gross,
+                "estimated_turnover_amount": (
+                    float(estimated) if not pd.isna(estimated) else np.nan
+                ),
+                "current_queue_amount": (
+                    float(queue) if not pd.isna(queue) else np.nan
+                ),
+                "fill_probability_method": str(
+                    selected.get("fill_probability_method", "")
+                ),
+            }
+            inputs_valid = bool(
+                reliable
+                and planned_gross > 0
+                and not pd.isna(estimated)
+                and float(estimated) >= 0
+                and not pd.isna(queue)
+                and float(queue) >= 0
+                and not pd.isna(threshold)
+                and 0 <= float(threshold) <= 1
+            )
+            if not inputs_valid:
+                rows.append(
+                    {
+                        **base,
+                        **fill_fields,
+                        "status": "PLAN_NOT_EXECUTED_FILL_GATE_UNVERIFIABLE",
+                        "fill_probability": np.nan,
+                        "fill_gate_reason": "缺少可靠的历史信号时预估成交金额或队列金额",
+                        "entry_filled": False,
+                        "position_opened": False,
+                        "account_return": 0.0,
+                        "cash_after": cash,
+                        "equity_after": cash,
+                    }
+                )
+                continue
+            fill_probability = fill_probability_from_amounts(
+                estimated_turnover_amount=float(estimated),
+                current_queue_amount=float(queue),
+                planned_buy_amount=planned_gross,
+            )
+            fill_fields["fill_probability"] = fill_probability
+            if fill_probability < float(threshold):
+                rows.append(
+                    {
+                        **base,
+                        **fill_fields,
+                        "status": "PLAN_NOT_EXECUTED_FILL_PROBABILITY",
+                        "fill_gate_reason": (
+                            f"成交概率{fill_probability:.6f}低于门槛{float(threshold):.6f}"
+                        ),
+                        "entry_filled": False,
+                        "position_opened": False,
+                        "account_return": 0.0,
+                        "cash_after": cash,
+                        "equity_after": cash,
+                    }
+                )
+                continue
+            fill_fields["fill_gate_reason"] = "成交概率门通过"
+            gate_quantity = planned_quantity
         if position_opened:
             occupied_until = position_open_until or dates[-1]
         if not position_opened:
             rows.append(
                 {
                     **base,
+                    **fill_fields,
                     "status": "PLAN_NOT_EXECUTED",
                     "account_return": 0.0,
                     "cash_after": cash,
@@ -516,6 +628,7 @@ def replay_action_date_cash_portfolio(
             rows.append(
                 {
                     **base,
+                    **fill_fields,
                     "status": "POSITION_OPEN_OUTCOME_UNOBSERVABLE",
                     "account_return": 0.0,
                     "cash_after": cash,
@@ -539,10 +652,14 @@ def replay_action_date_cash_portfolio(
         scale = float(pd.to_numeric(selected.get("position_scale", 1.0), errors="coerce"))
         target_ratio = min(float(position_pct) * scale, float(max_position_pct))
         target_amount = cash * target_ratio
-        quantity = orderable_buy_quantity(
-            ts_code=base["ts_code"],
-            available_amount=target_amount,
-            execution_price=entry_price,
+        quantity = (
+            gate_quantity
+            if gate_quantity is not None
+            else orderable_buy_quantity(
+                ts_code=base["ts_code"],
+                available_amount=target_amount,
+                execution_price=entry_price,
+            )
         )
         step = quantity_step(base["ts_code"])
         while quantity > 0:
@@ -556,6 +673,7 @@ def replay_action_date_cash_portfolio(
             rows.append(
                 {
                     **base,
+                    **fill_fields,
                     "status": "PLAN_NOT_EXECUTED_INSUFFICIENT_CASH",
                     "account_return": 0.0,
                     "quantity": 0,
@@ -608,6 +726,7 @@ def replay_action_date_cash_portfolio(
         rows.append(
             {
                 **base,
+                **fill_fields,
                 "status": "EXECUTED",
                 "quantity": int(quantity),
                 "position_ratio": buy_gross / equity_before,

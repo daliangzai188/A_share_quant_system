@@ -1003,6 +1003,31 @@ def write_markdown(path: Path, checklist: pd.DataFrame, selected: pd.DataFrame, 
     path.write_text(content, encoding="utf-8")
 
 
+def resolve_ac_selected_leg(
+    a_selected: pd.Series | None,
+    c_selected: pd.Series | None,
+    c_rejected: pd.DataFrame,
+) -> tuple[str, str]:
+    """解析A/C最终腿；C拒绝明细不能清空已经产生的合格递补。
+
+    ``build_c_shadow_candidates``已经先删除风险候选，再从剩余合格集合中
+    排序并生成``c_selected``。因此``c_rejected``只用于审计；只要
+    ``c_selected``存在，就必须继续生成该合格C候选的计划。
+    """
+
+    if a_selected is not None:
+        return "A", "A_SELECTED_HAS_PRIORITY"
+    if c_selected is not None:
+        rejected_count = int(len(c_rejected))
+        suffix = (
+            f":AFTER_{rejected_count}_RISK_REJECTED_FALLBACK"
+            if rejected_count
+            else ""
+        )
+        return "C", f"A_NO_SELECTED_C_SELECTED{suffix}"
+    return "", "A_NO_SELECTED_C_NO_SELECTED"
+
+
 def main() -> None:
     args = parse_args()
     setup_runtime_logger(args.runtime_config)
@@ -1078,48 +1103,47 @@ def main() -> None:
     selected = pd.DataFrame()
     selection_status = ""
 
-    if a_selected is not None:
+    selected_leg, leg_selection_status = resolve_ac_selected_leg(
+        a_selected,
+        c_selected,
+        c_rejected,
+    )
+    if selected_leg == "A":
         if live_plan_mode:
             operation_status, account_return, return_source, note = "PLAN_ONLY_PENDING", 0.0, "live_signal_plan", "A 实盘计划模式：只生成开仓计划，不读取历史回测成交回放。"
         else:
             operation_status, account_return, return_source, note = resolve_a_execution(audit, signal_date, a_selected)
-        selected = build_selected_row("A", a_selected, operation_status, "A_SELECTED_HAS_PRIORITY", account_return, return_source, note)
+        selected = build_selected_row("A", a_selected, operation_status, leg_selection_status, account_return, return_source, note)
     else:
         selection_status = "A_NO_SELECTED_B_REMOVED"
-        if selected.empty:
-            if c_conditions:
-                if c_selected is not None:
-                    c_selected_frame = pd.DataFrame([c_selected])
-                    if not c_rejected.empty:
-                        if selected.empty:
-                            selection_status = "A_NO_SELECTED_C_RISK_FILTERED"
-                    else:
-                        if live_plan_mode:
-                            c_reference, c_status, c_return, c_source, c_note = (
-                                pd.DataFrame(),
-                                "PLAN_ONLY_PENDING",
-                                0.0,
-                                "live_signal_plan",
-                                "C 实盘计划模式：只生成开仓计划，不读取历史回测成交回放。",
-                            )
-                        else:
-                            c_reference, c_status, c_return, c_source, c_note = resolve_c_execution(
-                                c_selected_frame,
-                                args.runtime_config,
-                                config,
-                            )
-                        execution_reference = c_reference
-                        selected = build_selected_row(
-                            "C",
-                            c_selected,
-                            c_status,
-                            f"A_NO_SELECTED_C_SELECTED:{condition_text(c_conditions)}",
-                            c_return,
-                            c_source,
-                            c_note,
-                        )
-                elif selected.empty:
-                    selection_status = "A_NO_SELECTED_C_NO_SELECTED"
+        if c_conditions and selected_leg == "C":
+            c_selected_frame = pd.DataFrame([c_selected])
+            if live_plan_mode:
+                c_reference, c_status, c_return, c_source, c_note = (
+                    pd.DataFrame(),
+                    "PLAN_ONLY_PENDING",
+                    0.0,
+                    "live_signal_plan",
+                    "C 实盘计划模式：只生成开仓计划，不读取历史回测成交回放。",
+                )
+            else:
+                c_reference, c_status, c_return, c_source, c_note = resolve_c_execution(
+                    c_selected_frame,
+                    args.runtime_config,
+                    config,
+                )
+            execution_reference = c_reference
+            selected = build_selected_row(
+                "C",
+                c_selected,
+                c_status,
+                f"{leg_selection_status}:{condition_text(c_conditions)}",
+                c_return,
+                c_source,
+                c_note,
+            )
+        elif c_conditions:
+            selection_status = leg_selection_status
 
     # live 模式下 selected 行没有价格列，从候选源数据按 ts_code+signal_date 反查涨停收盘价做参考价
     reference_price_fallback = 0.0

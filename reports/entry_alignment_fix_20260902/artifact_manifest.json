@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "artifacts": {
+    "aligned_d_plans.csv": "d024b172677b35b4330b431393e694dfab231ac6266b1876b05bdc846f0d47f9",
+    "aligned_fail_closed_combo_replay.csv": "0af31ff58a428642714e3067ee90de61f2b8dda32845249daaa07ba128c7b129",
+    "old_combo_replay.csv": "7cef896040775a71eea1345292f687ed0a40fec1028e972d2dab6f3c6addf7f7",
+    "position_only_combo_replay.csv": "715db493e0f909a84c994c5ab065b908571de9ea200603daab9f7bf9abb54458",
+    "report.md": "0c097a960f5687a3bb80301260ea1e24e4bb347f55a765943b4fac1dd6ac8f82",
+    "summary.json": "8d3a1757ef0cafced81b38e07f2192d896a1167f21c48442f5c91bad04a5d617",
+    "unverified_d_plan_days.csv": "40c68eae694af9d5ba4cc76a63ff10920a3a30348f32d971cb3a14f117bcec03"
+  }
+}

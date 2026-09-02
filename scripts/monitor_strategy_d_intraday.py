@@ -146,6 +146,7 @@ class StockState:
     fill_reject_reason: str = "尚未计算成交概率"
     pre_close: float = 0.0
     open_price: float = 0.0
+    session_high_price: float = 0.0
     session_low_price: float = 0.0
     cumulative_amount: float = 0.0
     previous_day_amount_yuan: float = 0.0
@@ -155,6 +156,9 @@ class StockState:
     last_reseal_scan_round: int = 0
     matched_factor_profile_ids: str = ""
     factor_values_json: str = ""
+    fill_planned_buy_amount: float = 0.0
+    fill_estimated_turnover_amount: float = 0.0
+    fill_current_queue_amount: float = 0.0
 
 
 # ── 工具函数 ──────────────────────────────────────────────────────────────────
@@ -605,6 +609,68 @@ def calc_shares_below_target_amount(target_amount: float, price: float) -> int:
     return max(int((target_amount - 0.01) / price / 100) * 100, 0)
 
 
+@dataclass(frozen=True)
+class DOrderCapacity:
+    """D成交门和真实下单共用的同一账户金额快照。"""
+
+    available_cash: float
+    total_asset: float
+    target_amount: float
+    shares: int
+    actual_amount: float
+
+
+def calculate_d_order_capacity(
+    account: Any,
+    *,
+    price: float,
+    position_pct: float,
+    live_config: dict[str, Any],
+) -> DOrderCapacity:
+    """按正式仓位上限计算D真实拟下单金额，供成交门和委托共同使用。"""
+
+    available_cash = float(getattr(account, "available_cash", 0.0) or 0.0)
+    total_asset = float(getattr(account, "total_asset", 0.0) or available_cash)
+    max_order_amount = float(live_config.get("max_single_order_amount", 0) or 0)
+    max_position_pct = float(live_config.get("max_position_pct", 0.85))
+    max_total_position_pct = float(
+        live_config.get("max_total_position_pct", 0.825)
+    )
+    cash_buffer = float(live_config.get("cash_buffer_amount", 1000) or 0)
+    target_amount = min(
+        max(available_cash - cash_buffer, 0.0),
+        total_asset * float(position_pct),
+        total_asset * max_total_position_pct,
+        total_asset * max_position_pct,
+    )
+    if max_order_amount > 0:
+        target_amount = min(target_amount, max_order_amount)
+    shares = calc_shares_below_target_amount(target_amount, price)
+    return DOrderCapacity(
+        available_cash=available_cash,
+        total_asset=total_asset,
+        target_amount=target_amount,
+        shares=shares,
+        actual_amount=float(shares) * float(price),
+    )
+
+
+def is_d_market_context_eligible(
+    state: StockState,
+    *,
+    yesterday_limit_codes: set[str],
+    allowed_segments: set[str],
+) -> bool:
+    """判定单票是否属于D回测广度的非ST首板母池。"""
+
+    return bool(
+        not state.st_suspect
+        and state.ts_code not in yesterday_limit_codes
+        and state.market_segment in allowed_segments
+        and state.upper_limit >= MIN_D_VALID_LIMIT_PRICE
+    )
+
+
 def next_trade_day(date_str: str, n: int = 1) -> str:
     calendar_path = PROJECT_ROOT / "data" / "raw" / "trade_calendar.csv"
     if calendar_path.exists():
@@ -681,6 +747,15 @@ class StrategyDMonitor:
         self.factor_union_active = release_uses_factor_union(self.factor_release)
         self.factor_profiles = list(self.factor_release.get("profiles", []))
         self.factor_release_id = str(self.factor_release.get("release_id", ""))
+        entry_alignment = self.factor_release.get("entry_alignment", {})
+        self.historical_fill_gate_certified = bool(
+            isinstance(entry_alignment, dict)
+            and entry_alignment.get("historical_signal_time_fill_gate_certified", False)
+        )
+        self.runtime_new_buy_enabled = bool(
+            isinstance(entry_alignment, dict)
+            and entry_alignment.get("runtime_new_buy_enabled", False)
+        )
         validate_configured_execution_clock(self.config)
         self.min_open_times = configured_min_open_times(self.config)
         self.max_open_times = configured_max_open_times(self.config)
@@ -742,6 +817,7 @@ class StrategyDMonitor:
         self.waiting_order_only: bool = False
         self.limit_price_fallback_logged: bool = False
         self._strong_notified: bool = False     # 情绪转强(≥阈值)只推送一次
+        self._fill_alignment_block_notified: bool = False
         # 正式因子D的事件时钟必须来自“已完成QMT 1m收盘”，不能再使用30秒快照
         # 的瞬时涨停/炸板转换。缓存只覆盖当前分钟；下一分钟重新拉取完整路径。
         self.strict_minute_paths: dict[str, StrictMinutePath] = {}
@@ -802,6 +878,14 @@ class StrategyDMonitor:
                 len(self.factor_profiles),
                 self.min_fill_probability * 100,
             )
+            if not (
+                self.historical_fill_gate_certified
+                and self.runtime_new_buy_enabled
+            ):
+                self.logger.error(
+                    "D发布未同时具备信号时历史成交概率认证和运行新BUY授权；"
+                    "为避免回测有交易、实盘另行拒单，当前D只维护路径并禁止新BUY。"
+                )
         else:
             self.logger.info(
                 "D最低开仓条件: 市场分段在%s | 首板(排除昨日涨停) | 当前封涨停 | 今日炸板%d~%d次(multi_open) | 首次封板时段=%s | 当前封板数=%d~%d(strong代理，不含very_strong) | 最后真实回封>=%s | 成交概率>=%.0f%%且可靠 | 实盘二次复核通过",
@@ -1049,6 +1133,15 @@ class StrategyDMonitor:
 
     # ── 状态更新 ──────────────────────────────────────────────────────────────
 
+    def _eligible_market_context_state(self, state: StockState) -> bool:
+        """D市场广度只统计与历史母池一致的非ST首板。"""
+
+        return is_d_market_context_eligible(
+            state,
+            yesterday_limit_codes=self.yesterday_limit_codes,
+            allowed_segments=self.allowed_segments,
+        )
+
     @property
     def sealed_ever_count(self) -> int:
         """全市场【当前正封在涨停】的家数（瞬时快照，每轮刷新）。
@@ -1056,7 +1149,11 @@ class StrategyDMonitor:
         与回测口径一致：回测数的是收盘封住的涨停(limit==U)，临近收盘时"当前封板数"≈"收盘涨停数"。
         只看每只票最近一次轮询的封板状态(was_sealed)，炸板打开的不计、回封的计入。
         """
-        return sum(1 for st in self.states.values() if st.was_sealed)
+        return sum(
+            1
+            for st in self.states.values()
+            if self._eligible_market_context_state(st) and st.was_sealed
+        )
 
     def _sentiment_passes(self) -> bool:
         return live_sentiment_is_historical_strong(
@@ -1070,7 +1167,11 @@ class StrategyDMonitor:
         limit_count = sum(
             1
             for state in self.states.values()
-            if state.was_sealed and state.market_segment == segment
+            if (
+                self._eligible_market_context_state(state)
+                and state.was_sealed
+                and state.market_segment == segment
+            )
         )
         return DataCleaner.classify_segment_sentiment(
             limit_count, stock_count
@@ -1078,16 +1179,27 @@ class StrategyDMonitor:
 
     @property
     def market_ever_sealed_count(self) -> int:
-        return sum(1 for state in self.states.values() if state.ever_sealed)
+        return sum(
+            1
+            for state in self.states.values()
+            if self._eligible_market_context_state(state) and state.ever_sealed
+        )
 
     @property
     def market_break_event_count(self) -> int:
-        return sum(int(state.open_times_today) for state in self.states.values())
+        return sum(
+            int(state.open_times_today)
+            for state in self.states.values()
+            if self._eligible_market_context_state(state)
+        )
 
     def _same_segment_reseal_context(self, segment: str) -> tuple[int, int, float]:
         same = [
             state for state in self.states.values()
-            if state.market_segment == segment
+            if (
+                self._eligible_market_context_state(state)
+                and state.market_segment == segment
+            )
         ]
         active = sum(1 for state in same if state.was_sealed)
         ever = sum(1 for state in same if state.ever_sealed)
@@ -1107,11 +1219,11 @@ class StrategyDMonitor:
             state
             for state in self.states.values()
             if (
-                state.was_sealed
-                and not state.st_suspect
-                and state.ts_code not in self.yesterday_limit_codes
-                and state.market_segment in self.allowed_segments
-                and state.upper_limit >= MIN_D_VALID_LIMIT_PRICE
+                self._eligible_market_context_state(state)
+                and (
+                    state.ever_sealed
+                    or state.session_high_price >= state.upper_limit - 0.015
+                )
             )
         ]
         self.strict_minute_paths = {}
@@ -1130,26 +1242,23 @@ class StrategyDMonitor:
         now = now_beijing()
         trade_date = today_beijing().strftime("%Y%m%d")
         codes = [state.ts_code for state in targets]
-        if len(codes) > MAX_SINGLE_QUOTE_SUBSCRIPTIONS:
-            self.strict_minute_refresh_error = (
-                "严格D一分钟候选超过QMT单股订阅安全上限："
-                f"{len(codes)}>{MAX_SINGLE_QUOTE_SUBSCRIPTIONS}"
-            )
-            self.logger.error(
-                "[D STRICT 1M BLOCK] %s，正式因子D本轮禁止开仓",
-                self.strict_minute_refresh_error,
-            )
-            return False
         try:
-            raw_paths = self.broker.get_minute_bars(
-                codes,
-                start_time=trade_date + "093000",
-                end_time=now.strftime("%Y%m%d%H%M%S"),
-            )
-            if not isinstance(raw_paths, dict):
-                raise RuntimeError(
-                    f"一分钟K线返回非法类型{type(raw_paths).__name__}"
+            # QMT单批实时分钟订阅安全上限是50只。强市非ST首板触板数
+            # 可能超过50，不能因为修正了市场广度口径就整轮fail-closed。
+            # 按50只分批查询；适配器会先释放上批订阅，已返回的K线保留在本轮内存。
+            raw_paths: dict[str, list[dict[str, Any]]] = {}
+            for offset in range(0, len(codes), MAX_SINGLE_QUOTE_SUBSCRIPTIONS):
+                batch = codes[offset : offset + MAX_SINGLE_QUOTE_SUBSCRIPTIONS]
+                batch_paths = self.broker.get_minute_bars(
+                    batch,
+                    start_time=trade_date + "093000",
+                    end_time=now.strftime("%Y%m%d%H%M%S"),
                 )
+                if not isinstance(batch_paths, dict):
+                    raise RuntimeError(
+                        f"一分钟K线返回非法类型{type(batch_paths).__name__}"
+                    )
+                raw_paths.update(batch_paths)
             missing_codes = set(codes).difference(str(code) for code in raw_paths)
             if missing_codes:
                 raise RuntimeError(
@@ -1188,22 +1297,66 @@ class StrategyDMonitor:
 
         self.strict_minute_refresh_hhmm = current_hhmm
         self.logger.info(
-            "[D STRICT 1M] 已按回测分钟收盘口径认证%d只当前封板候选，完成分钟=%s",
+            "[D STRICT 1M] 已按回测分钟收盘口径认证%d只非ST首板触板路径，完成分钟=%s",
             len(self.strict_minute_paths),
             hhmm_to_str(current_hhmm),
         )
         return True
+
+    def _strict_market_context(self, segment: str) -> tuple[int, int, int, int, int]:
+        """从同一完成分钟路径计算历史/实盘共用的D市场广度。"""
+
+        eligible = [
+            (self.states[code], path)
+            for code, path in self.strict_minute_paths.items()
+            if (
+                code in self.states
+                and path.certifiable
+                and self._eligible_market_context_state(self.states[code])
+            )
+        ]
+        market_active = sum(int(path.was_sealed) for _, path in eligible)
+        market_ever = sum(int(path.ever_sealed) for _, path in eligible)
+        market_breaks = sum(int(path.open_times) for _, path in eligible)
+        segment_active = sum(
+            int(path.was_sealed)
+            for state, path in eligible
+            if state.market_segment == segment
+        )
+        segment_ever = sum(
+            int(path.ever_sealed)
+            for state, path in eligible
+            if state.market_segment == segment
+        )
+        return (
+            market_active,
+            market_ever,
+            market_breaks,
+            segment_active,
+            segment_ever,
+        )
 
     def _factor_raw_values(
         self,
         st: StockState,
         strict_path: StrictMinutePath | None = None,
     ) -> dict[str, Any]:
-        market_active = self.sealed_ever_count
-        market_ever = self.market_ever_sealed_count
-        segment_active, segment_ever, segment_rate = self._same_segment_reseal_context(
-            st.market_segment
-        )
+        if strict_path is not None:
+            (
+                market_active,
+                market_ever,
+                market_breaks,
+                segment_active,
+                segment_ever,
+            ) = self._strict_market_context(st.market_segment)
+            segment_rate = segment_active / segment_ever if segment_ever > 0 else 0.0
+        else:
+            market_active = self.sealed_ever_count
+            market_ever = self.market_ever_sealed_count
+            market_breaks = self.market_break_event_count
+            segment_active, segment_ever, segment_rate = self._same_segment_reseal_context(
+                st.market_segment
+            )
         event_first_seal_hhmm = (
             strict_path.first_seal_hhmm if strict_path else st.first_seal_hhmm
         )
@@ -1268,7 +1421,7 @@ class StrategyDMonitor:
             "market_active_sealed_count": market_active,
             "market_seal_rate": market_active / market_ever if market_ever > 0 else 0.0,
             "market_break_event_rate": (
-                self.market_break_event_count / market_ever if market_ever > 0 else 0.0
+                market_breaks / market_ever if market_ever > 0 else 0.0
             ),
             "market_segment": st.market_segment,
             "same_segment_seal_rate": segment_rate,
@@ -1313,7 +1466,25 @@ class StrategyDMonitor:
             return False, "未命中任何已发布D因子if条件"
         return True, f"命中D因子条件:{','.join(matched)}"
 
-    def _refresh_fill_gate(self, st: StockState) -> tuple[bool, str]:
+    def _resolve_order_capacity(self, st: StockState) -> DOrderCapacity:
+        """读取当前账户并生成成交门/下单共用的真实目标金额。"""
+
+        if self.broker is None or not hasattr(self.broker, "query_account"):
+            raise RuntimeError("没有可查询资金的券商账户")
+        account = self.broker.query_account()
+        return calculate_d_order_capacity(
+            account,
+            price=st.upper_limit,
+            position_pct=self.position_pct,
+            live_config=self.config.get("live_trade", {}),
+        )
+
+    def _refresh_fill_gate(
+        self,
+        st: StockState,
+        *,
+        planned_buy_amount: float | None = None,
+    ) -> tuple[bool, str]:
         """按历史成交概率模型实时复算；模型或字段缺失时fail-closed。"""
 
         if not self.fill_model_ready or self.fill_estimator is None:
@@ -1334,6 +1505,26 @@ class StrategyDMonitor:
             strict_path.first_seal_hhmm if strict_path else st.first_seal_hhmm
         )
         current_queue_amount = float(st.bid_vol) * float(st.upper_limit)
+        if planned_buy_amount is None:
+            if self.live_order:
+                try:
+                    capacity = self._resolve_order_capacity(st)
+                except Exception as exc:
+                    st.fill_probability = 0.0
+                    st.fill_reliable = False
+                    st.fill_matched_source = "none"
+                    st.fill_reject_reason = f"无法按真实账户计算计划买入金额:{exc}"
+                    return False, st.fill_reject_reason
+                planned_buy_amount = capacity.actual_amount
+            else:
+                # 非下单观察模式没有实时账户，只用于展示成交模型，不参与真实BUY。
+                planned_buy_amount = self.default_fill_planned_amount
+        if float(planned_buy_amount or 0.0) <= 0:
+            st.fill_probability = 0.0
+            st.fill_reliable = False
+            st.fill_matched_source = "none"
+            st.fill_reject_reason = "真实计划买入金额或可下单股数为0"
+            return False, st.fill_reject_reason
         fd_ratio = self._fd_amount_to_circ_mv(st)
         abnormal_threshold = float(
             self.config.get("fill_model", {}).get(
@@ -1363,7 +1554,7 @@ class StrategyDMonitor:
                 ),
                 circ_mv=float(st.circ_mv),
                 current_queue_amount=current_queue_amount,
-                planned_buy_amount=self.default_fill_planned_amount,
+                planned_buy_amount=float(planned_buy_amount),
             )
         except Exception as exc:
             st.fill_probability = 0.0
@@ -1378,6 +1569,11 @@ class StrategyDMonitor:
         st.fill_probability = probability
         st.fill_reliable = reliable
         st.fill_matched_source = source
+        st.fill_planned_buy_amount = float(planned_buy_amount)
+        st.fill_estimated_turnover_amount = float(
+            result.get("estimated_turnover_amount", 0.0) or 0.0
+        )
+        st.fill_current_queue_amount = current_queue_amount
         if not reliable:
             st.fill_reject_reason = "成交概率没有可靠历史匹配"
             return False, st.fill_reject_reason
@@ -1424,6 +1620,9 @@ class StrategyDMonitor:
                     circ_mv=float(self.circ_mv_map.get(ts_code, 0.0) or 0.0),
                     pre_close=float(snap.pre_close or 0.0),
                     open_price=float(getattr(snap, "open_price", 0.0) or 0.0),
+                    session_high_price=float(
+                        getattr(snap, "high_price", 0.0) or snap.last_price or 0.0
+                    ),
                     session_low_price=float(
                         getattr(snap, "low_price", 0.0) or snap.last_price or 0.0
                     ),
@@ -1439,6 +1638,11 @@ class StrategyDMonitor:
             st.open_price = float(
                 getattr(snap, "open_price", 0.0) or st.open_price or 0.0
             )
+            raw_high = float(
+                getattr(snap, "high_price", 0.0) or st.last_price or 0.0
+            )
+            if raw_high > 0:
+                st.session_high_price = max(st.session_high_price, raw_high)
             raw_low = float(
                 getattr(snap, "low_price", 0.0) or st.last_price or 0.0
             )
@@ -1602,10 +1806,27 @@ class StrategyDMonitor:
         except Exception as exc:
             return False, f"路径继续门禁检查异常:{exc}"
 
+    def _entry_alignment_allows_new_buy(self) -> bool:
+        """只有发布文件同时完成历史成交门认证并显式授权时才允许D新开仓。"""
+
+        allowed = bool(
+            self.historical_fill_gate_certified
+            and self.runtime_new_buy_enabled
+        )
+        if not allowed and not self._fill_alignment_block_notified:
+            self._fill_alignment_block_notified = True
+            self.logger.error(
+                "[D ENTRY ALIGNMENT BLOCK] 当前发布未同时具备历史信号时成交概率门认证"
+                "和运行新BUY授权；D只记录路径，不产生BUY。"
+            )
+        return allowed
+
     def _check_and_fire_factor_union(self) -> None:
         """用已完成1m路径执行半年发布因子；任一命中即进入唯一候选排序。"""
 
         if self.factor_signal_consumed:
+            return
+        if not self._entry_alignment_allows_new_buy():
             return
         if not self._refresh_strict_minute_paths():
             return
@@ -1670,6 +1891,11 @@ class StrategyDMonitor:
 
     def _check_and_fire(self) -> None:
         if self.order_placed:
+            return
+
+        # 实盘新BUY必须在总入口再次校验发布认证。即使发布文件被误切回旧模式，
+        # 也不能绕过正式因子分支里的成交概率对齐门。
+        if self.live_order and not self._entry_alignment_allows_new_buy():
             return
 
         # 只拦截信号选择/下单，不拦截poll_once中的全市场行情更新和检查点保存。
@@ -1901,6 +2127,11 @@ class StrategyDMonitor:
         if self.order_placed:
             self.logger.info("[BUY SKIP] 已锁定本轮D委托: %s，跳过 %s", self.order_locked_ts_code, st.ts_code)
             return True
+        # 防御直接调用或未来分支遗漏总入口门禁：实盘未认证时不形成BUY，
+        # 不写BUY记录，也不提前占用本会话委托锁。
+        if self.live_order and not self._entry_alignment_allows_new_buy():
+            st.last_order_fail_reason = "D发布未通过开仓逻辑与成交概率对齐认证"
+            return False
         hhmm = now_hhmm()
         strict_path = self._strict_path_for(st) if self.factor_union_active else None
         event_reseal_hhmm = (
@@ -1979,6 +2210,17 @@ class StrategyDMonitor:
         from src.broker_adapter import OrderRequest
         from src.qmt_adapter import tushare_to_qmt_code
         try:
+            # 最终券商边界再做一次fail-closed校验，防止任何内部调用绕过信号层。
+            if not self._entry_alignment_allows_new_buy():
+                fail_reason = "D发布未通过开仓逻辑与成交概率对齐认证，禁止新开仓"
+                self.logger.error("D下单拦截: %s %s", st.ts_code, fail_reason)
+                st.last_order_fail_reason = fail_reason
+                record["order_status"] = "REJECTED_ENTRY_ALIGNMENT"
+                record["order_status_text"] = fail_reason
+                record["failure_reason"] = fail_reason
+                self.order_placed = False
+                self.order_locked_ts_code = ""
+                return False
             if self.session_orders:
                 self.logger.warning("本会话已有D委托，拒绝再次下单: %s", st.ts_code)
                 return True
@@ -2030,27 +2272,51 @@ class StrategyDMonitor:
                 record["order_status_text"] = fail_reason
                 record["failure_reason"] = fail_reason
                 return True
-            account = self.broker.query_account()
-            available_cash = float(getattr(account, "available_cash", 0.0) or 0.0)
-            total_asset = float(getattr(account, "total_asset", 0.0) or available_cash)
-            live_cfg = self.config.get("live_trade", {})
-            max_order_amount = float(live_cfg.get("max_single_order_amount", 0) or 0)
-            max_position_pct = float(live_cfg.get("max_position_pct", 0.85))
-            max_total_position_pct = float(live_cfg.get("max_total_position_pct", 0.825))
-            cash_buffer = float(live_cfg.get("cash_buffer_amount", 1000) or 0)
-            target_amount = min(
-                max(available_cash - cash_buffer, 0.0),
-                total_asset * self.position_pct,
-                total_asset * max_total_position_pct,
-                total_asset * max_position_pct,
-            )
-            if max_order_amount > 0:
-                target_amount = min(target_amount, max_order_amount)
-            shares = calc_shares_below_target_amount(target_amount, st.upper_limit)
+            # 成交概率门和真实委托必须共用同一账户快照、同一股数和同一
+            # 委托金额。禁止再以固定41.25万元估算成交概率后，另按82.5%仓位下单。
+            capacity = self._resolve_order_capacity(st)
+            shares = capacity.shares
             if shares <= 0:
+                fail_reason = "真实账户可用资金不足，可下单股数为0"
                 self.logger.warning("可用资金不足，跳过下单: %s", st.ts_code)
-                return True
-            actual_amount = shares * st.upper_limit
+                st.last_order_fail_reason = fail_reason
+                record["order_status"] = "REJECTED_INSUFFICIENT_CASH"
+                record["order_status_text"] = fail_reason
+                record["failure_reason"] = fail_reason
+                self.order_placed = False
+                self.order_locked_ts_code = ""
+                return False
+            fill_passed, fill_reason = self._refresh_fill_gate(
+                st,
+                planned_buy_amount=capacity.actual_amount,
+            )
+            record.update(
+                {
+                    "fill_probability": st.fill_probability,
+                    "fill_reliable": st.fill_reliable,
+                    "fill_matched_source": st.fill_matched_source,
+                    "fill_planned_buy_amount": st.fill_planned_buy_amount,
+                    "fill_estimated_turnover_amount": st.fill_estimated_turnover_amount,
+                    "fill_current_queue_amount": st.fill_current_queue_amount,
+                }
+            )
+            if not fill_passed:
+                fail_reason = f"按真实委托金额复核成交概率未通过:{fill_reason}"
+                self.logger.warning("D下单拦截: %s %s", st.ts_code, fail_reason)
+                st.last_order_fail_reason = fail_reason
+                record["order_status"] = "REJECTED_FILL_PROBABILITY"
+                record["order_status_text"] = fail_reason
+                record["failure_reason"] = fail_reason
+                self.order_placed = False
+                self.order_locked_ts_code = ""
+                return False
+            target_amount = capacity.target_amount
+            actual_amount = capacity.actual_amount
+            total_asset = capacity.total_asset
+            max_order_amount = float(
+                self.config.get("live_trade", {}).get("max_single_order_amount", 0)
+                or 0
+            )
             actual_position_pct = actual_amount / total_asset if total_asset > 0 else 0.0
             req = OrderRequest(
                 ts_code=st.ts_code,
@@ -2068,7 +2334,14 @@ class StrategyDMonitor:
                 source_key=(
                     f"D_FIRST_BOARD|{today_beijing().strftime('%Y%m%d')}|{st.ts_code}"
                 ),
-                metadata={"name": st.name, "entry_clock": now_beijing().strftime("%H:%M:%S")},
+                metadata={
+                    "name": st.name,
+                    "entry_clock": now_beijing().strftime("%H:%M:%S"),
+                    "fill_probability": st.fill_probability,
+                    "fill_planned_buy_amount": st.fill_planned_buy_amount,
+                    "fill_estimated_turnover_amount": st.fill_estimated_turnover_amount,
+                    "fill_current_queue_amount": st.fill_current_queue_amount,
+                },
             )
             result = self.broker.place_order(req)
             if result.accepted:

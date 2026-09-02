@@ -10,6 +10,32 @@ from src.utils.config import get_project_root, load_json_config, mkdir_p
 from src.utils.logger import get_logger
 
 
+def fill_probability_from_amounts(
+    *,
+    estimated_turnover_amount: float,
+    current_queue_amount: float,
+    planned_buy_amount: float,
+) -> float:
+    """用统一金额口径计算涨停排队成交空间比例。
+
+    研究现金回放和盘中D执行必须共同调用这个公式。``planned_buy_amount``
+    必须是本次真实目标股数乘委托价得到的金额，不能再用固定41.25万元代替
+    当前账户规模下的实际委托金额。
+    """
+
+    estimated = float(estimated_turnover_amount)
+    queue = float(current_queue_amount)
+    planned = float(planned_buy_amount)
+    if not np.isfinite(estimated) or estimated < 0:
+        raise ValueError("estimated_turnover_amount必须是非负有限数")
+    if not np.isfinite(queue) or queue < 0:
+        raise ValueError("current_queue_amount必须是非负有限数")
+    if not np.isfinite(planned) or planned <= 0:
+        raise ValueError("planned_buy_amount必须是正有限数")
+    available_fill_amount = max(estimated - queue, 0.0)
+    return min(max(available_fill_amount / planned, 0.0), 1.0)
+
+
 class FillRateTableBuilder:
     """构建涨停板成交概率模型所需的历史换手率查询表。"""
 
@@ -488,7 +514,11 @@ class FillProbabilityEstimator:
             turnover_rate=suggested_turnover_rate,
         )
         available_fill_amount = max(estimated_turnover_amount - current_queue_amount, 0.0)
-        fill_probability = min(available_fill_amount / planned_buy_amount, 1.0)
+        fill_probability = fill_probability_from_amounts(
+            estimated_turnover_amount=estimated_turnover_amount,
+            current_queue_amount=current_queue_amount,
+            planned_buy_amount=planned_buy_amount,
+        )
         position_scale = self.suggest_position_scale(fill_probability)
 
         return {

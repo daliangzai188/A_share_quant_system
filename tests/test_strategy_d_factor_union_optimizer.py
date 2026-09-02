@@ -64,6 +64,12 @@ def factor_release(profile_id: str = "P1") -> dict:
         "strategy_mode": FACTOR_UNION_MODE,
         "effective_from": "20260701",
         "research_window": {"start": "20240630", "end": "20260630"},
+        "entry_alignment": {
+            "historical_signal_time_fill_gate_certified": True,
+            "runtime_new_buy_enabled": True,
+            "min_fill_probability": 0.8,
+            "planned_buy_amount_source": "ACTUAL_ORDER_GROSS",
+        },
         "profiles": [
             {
                 "profile_id": profile_id,

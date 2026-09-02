@@ -70,6 +70,76 @@ def make_engine(
 
 
 class CurrentPortfolioRuntimeTests(unittest.TestCase):
+    @staticmethod
+    def _formal_buy_order(**overrides: object) -> pd.DataFrame:
+        row: dict[str, object] = {
+            "strategy_leg": "A",
+            "side": "BUY",
+            "ts_code": "000001.SZ",
+            "signal_date": "20260831",
+            "planned_order_date": "20260901",
+            "planned_action": "PLAN_BUY_T1_OPEN",
+        }
+        row.update(overrides)
+        return pd.DataFrame([row])
+
+    def test_formal_buy_order_contract_accepts_only_today_t1_plan(self) -> None:
+        with patch.object(
+            trading_daemon,
+            "today_beijing",
+            return_value=datetime.date(2026, 9, 1),
+        ):
+            selected = trading_daemon._select_unique_buy_order_for_action(
+                self._formal_buy_order(),
+                "ALLOW_ABC_BUY_PREVIEW",
+                context="测试正式计划契约",
+            )
+
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(selected.iloc[0]["ts_code"], "000001.SZ")
+
+    def test_stale_or_same_day_signal_buy_plan_fails_closed(self) -> None:
+        invalid_cases = (
+            {"planned_order_date": "20260831"},
+            {"planned_action": "PLAN_BUY_T0_OPEN"},
+            {"signal_date": "20260901"},
+            {"signal_date": ""},
+        )
+        with patch.object(
+            trading_daemon,
+            "today_beijing",
+            return_value=datetime.date(2026, 9, 1),
+        ):
+            for overrides in invalid_cases:
+                with self.subTest(overrides=overrides):
+                    selected = trading_daemon._select_unique_buy_order_for_action(
+                        self._formal_buy_order(**overrides),
+                        "ALLOW_ABC_BUY_PREVIEW",
+                        context="测试异常计划契约",
+                    )
+                    self.assertTrue(selected.empty)
+
+    def test_duplicate_same_leg_buy_plan_fails_closed(self) -> None:
+        orders = pd.concat(
+            [
+                self._formal_buy_order(ts_code="000001.SZ"),
+                self._formal_buy_order(ts_code="000002.SZ"),
+            ],
+            ignore_index=True,
+        )
+        with patch.object(
+            trading_daemon,
+            "today_beijing",
+            return_value=datetime.date(2026, 9, 1),
+        ):
+            selected = trading_daemon._select_unique_buy_order_for_action(
+                orders,
+                "ALLOW_ABC_BUY_PREVIEW",
+                context="测试重复计划契约",
+            )
+
+        self.assertTrue(selected.empty)
+
     def test_current_priority_is_a_then_c_then_e_then_d(self) -> None:
         for ac_leg, with_e, expected in (
             ("A", True, "A"),

@@ -205,6 +205,29 @@ def run() -> dict[str, Any]:
     strategy_config = load_json_config(strategy_config_path)
     runtime_config = load_json_config(ROOT / "config/config.json")
     release_freeze = load_json_config(ROOT / "config/strategy_release_freeze.json")
+    d_release = load_json_config(ROOT / "config/strategy_d_factor_release.json")
+    d_entry_alignment = d_release.get("entry_alignment", {})
+    if release_freeze.get("invalidated_at") or str(
+        release_freeze.get("status", "")
+    ).startswith("INVALIDATED"):
+        raise RuntimeError(
+            "V16发布冻结已因D开仓口径不对齐作废，禁止重新写出PASS证书；"
+            "请运行scripts/audit_acde_entry_alignment_fix.py查看失败关闭结果。"
+        )
+    if not (
+        bool(d_release.get("release_gate_passed", False))
+        and isinstance(d_entry_alignment, dict)
+        and bool(
+            d_entry_alignment.get(
+                "historical_signal_time_fill_gate_certified", False
+            )
+        )
+        and bool(d_entry_alignment.get("runtime_new_buy_enabled", False))
+    ):
+        raise RuntimeError(
+            "D未通过历史信号时成交概率门认证或新BUY未启用，"
+            "禁止将含D旧样本的V16组合重新认证为PASS。"
+        )
     c_config = strategy_config["paper_ab_filtered_strategy"]["c_strategy"]
     release = c_config["third_branch_release"]
     if c_config.get("release_id") != "C_THIRD_BRANCH_T2_20260902_V16":

@@ -10437,7 +10437,14 @@ def _select_unique_buy_order_for_action(
     if orders is None or orders.empty:
         logger().error("%s：组合计划为空。", context)
         return orders.iloc[0:0].copy() if orders is not None else orders
-    required = {"side", "strategy_leg", "ts_code"}
+    required = {
+        "side",
+        "strategy_leg",
+        "ts_code",
+        "signal_date",
+        "planned_order_date",
+        "planned_action",
+    }
     missing = sorted(required - set(orders.columns))
     if missing:
         logger().error("%s：组合计划缺少字段%s，禁止开仓。", context, missing)
@@ -10449,6 +10456,34 @@ def _select_unique_buy_order_for_action(
     buys = orders[
         orders["side"].astype(str).str.upper().eq("BUY")
     ].copy()
+    today_str = today_beijing().strftime("%Y%m%d")
+    planned_date = (
+        buys["planned_order_date"].astype(str).str.strip().str.split(".").str[0]
+    )
+    planned_action = buys["planned_action"].astype(str).str.strip().str.upper()
+    signal_date = buys["signal_date"].astype(str).str.strip().str.split(".").str[0]
+    contract_ok = (
+        planned_date.eq(today_str)
+        & planned_action.eq("PLAN_BUY_T1_OPEN")
+        & signal_date.str.fullmatch(r"\d{8}", na=False)
+        & signal_date.lt(planned_date)
+    )
+    invalid = buys[~contract_ok]
+    if not invalid.empty:
+        detail = "；".join(
+            f"{row.get('strategy_leg', '')}/{row.get('ts_code', '')} "
+            f"signal={row.get('signal_date', '')} "
+            f"plan={row.get('planned_order_date', '')} "
+            f"action={row.get('planned_action', '')}"
+            for _, row in invalid.iterrows()
+        )
+        logger().critical(
+            "🛑 %s：BUY计划日期/动作契约不合法（today=%s；%s），本轮全部拒绝。",
+            context,
+            today_str,
+            detail,
+        )
+        return orders.iloc[0:0].copy()
     leg_text = buys["strategy_leg"].astype(str).str.upper()
     for leg in leg_priority:
         selected = buys[leg_text.eq(leg)].copy()

@@ -195,6 +195,14 @@
   ],
   "selection_policy": "EARLIEST_RESEAL_THEN_OPEN2_THEN_CODE",
   "candidate_selection_policy": "RETURN_FIRST_CURRENT_PLUS_ACTIVE_LT20_OPEN2_FIXED_ACED",
+  "entry_alignment": {
+    "historical_signal_time_fill_gate_certified": false,
+    "runtime_new_buy_enabled": false,
+    "min_fill_probability": 0.8,
+    "planned_buy_amount_source": "ACTUAL_ORDER_GROSS",
+    "historical_data_status": "MISSING_SIGNAL_TIME_L2_QUEUE_AMOUNT",
+    "reason": "现有三年D事件账本只有1m价格穿透确认，没有信号时L2队列金额；在补齐并重新认证前，历史回放失败关闭且实盘D禁止新BUY。"
+  },
   "risk_diagnostics": {
     "standalone_sample_warning_below": 20,
     "selection_veto": false,
@@ -235,7 +243,9 @@
     }
   },
   "replaced_release_id": "D_STRONG_BREAK_LT75_ACTIVE_GE20_20260831_V13",
-  "release_gate_passed": true,
+  "release_gate_passed": false,
+  "invalidated_at": "2026-09-02T17:08:32+07:00",
+  "invalidated_reason": "开仓口径复核发现V15历史事件账本没有执行实盘fill_probability>=80%条件，且现有三年1m数据缺少信号时L2队列金额。在补齐数据并重新认证前D禁止新BUY。",
   "human_review_required": true,
   "human_review_completed": true,
   "human_review_note": "用户于2026-09-01审核D扩样结果后明确授权落地。保留V13的12个强广度档位，新增3个market_active_count_bucket=LT20且open_count_bucket=2的弱广度OR档位；固定A>C>E>D、仓位、费用和执行口径不变。已披露同窗STRICT_DISCOVERY、单桶邻域敏感和样本不确定性。",
