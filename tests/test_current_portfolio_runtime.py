@@ -98,6 +98,69 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
         self.assertEqual(len(selected), 1)
         self.assertEqual(selected.iloc[0]["ts_code"], "000001.SZ")
 
+    def test_final_summary_does_not_block_after_broker_confirmed_absent(self) -> None:
+        """券商三次完整快照确认空仓后，closed记录不得继续触发“旧仓未清”。"""
+        confirmed_closed = {
+            "ts_code": "603139.SH",
+            "strategy_leg": "C",
+            "status": "closed",
+            "shares": 2_200,
+            "sell_price": 0.0,
+            "exit_fills_by_date": {},
+            "ghost_cleared_at": "2026-09-02 11:14:31",
+            "ghost_clear_source": "逐票同步-账户心跳",
+            "ghost_clear_reason": "QMT连续3次完整且资产自洽的账户/持仓快照确认无此股票",
+            "broker_confirmed_absent": True,
+            "broker_confirmed_absent_at": "2026-09-02 11:14:31",
+        }
+
+        blocked = trading_daemon._local_position_blocks_open_plan_broadcast(
+            [confirmed_closed],
+            "20260903",
+        )
+
+        self.assertFalse(blocked)
+        summary_logger = MagicMock()
+        with patch.object(
+            trading_daemon, "load_positions", return_value=[confirmed_closed]
+        ), patch.object(
+            trading_daemon, "_load_e_signal_for_signal_date", return_value=None
+        ), patch.object(
+            trading_daemon, "load_json_config", return_value={}
+        ), patch.object(
+            trading_daemon, "logger", return_value=summary_logger
+        ):
+            trading_daemon._log_final_decision_summary(
+                "20260902",
+                "20260903",
+                pd.DataFrame(),
+            )
+
+        summary = summary_logger.info.call_args.args[0]
+        self.assertIn("判定：账户无旧策略仓，A/C/E均无开仓计划", summary)
+        self.assertNotIn("有旧策略仓尚未实际清空", summary)
+
+    def test_final_summary_keeps_unconfirmed_recent_ghost_fail_closed(self) -> None:
+        """没有三次完整快照证据的近期疑似误清记录仍须保持安全阻断。"""
+        unconfirmed_ghost = {
+            "ts_code": "603139.SH",
+            "strategy_leg": "C",
+            "status": "closed",
+            "shares": 2_200,
+            "sell_price": 0.0,
+            "exit_fills_by_date": {},
+            "ghost_cleared_at": "2026-09-02 11:14:31",
+            "ghost_clear_source": "账户心跳",
+            "ghost_clear_reason": "QMT瞬时空快照自动清理",
+        }
+
+        blocked = trading_daemon._local_position_blocks_open_plan_broadcast(
+            [unconfirmed_ghost],
+            "20260903",
+        )
+
+        self.assertTrue(blocked)
+
     def test_stale_or_same_day_signal_buy_plan_fails_closed(self) -> None:
         invalid_cases = (
             {"planned_order_date": "20260831"},

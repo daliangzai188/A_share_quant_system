@@ -13853,12 +13853,16 @@ def _local_position_blocks_open_plan_broadcast(
 
     候选仍可单独展示供审计，但不能再把被旧仓阻断的候选计入“开仓计划”。
     近期被自动误清的持仓也继续按策略仓处理，直至券商恢复对账或三次完整
-    快照确认其确实不存在。
+    快照确认其确实不存在。已经写入 broker_confirmed_absent=True 的记录正是
+    三次完整快照确认后的关闭结果，不能再被摘要层重复判成“尚未清空”。
     """
 
     return any(
         str(position.get("status", "")).lower() in {"open", "sell_pending"}
-        or _is_recent_auto_ghost_clear(position, as_of_date=action_date)
+        or (
+            not bool(position.get("broker_confirmed_absent", False))
+            and _is_recent_auto_ghost_clear(position, as_of_date=action_date)
+        )
         for position in positions
     )
 
@@ -13939,6 +13943,9 @@ def _log_final_decision_summary(signal_date: str, action_date_compact: str, buy_
         if _blocked_by_holding:
             final_buys = []
             note = "有旧策略仓尚未实际清空，取消衔接开仓"
+        elif not mode1_buys:
+            final_buys = []
+            note = "账户无旧策略仓，A/C/E均无开仓计划；后续仅按组合状态机判断D盘中路径"
         else:
             final_buys = mode1_buys
             note = "按腿序A>C>E取第一个收盘后候选；存在任一候选/计划时D全日关闭"
