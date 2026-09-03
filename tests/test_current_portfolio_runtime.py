@@ -374,6 +374,43 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
         self.assertIs(start_e.call_args.args[1], decisions)
         start_d.assert_not_called()
 
+    def test_late_start_with_no_position_or_non_d_candidate_starts_d_backfill(self) -> None:
+        """检查点因版本变化失效时，只要总门通过仍应启动D并交给QMT 1m回补。"""
+
+        frozen_now = datetime.datetime(
+            2026, 9, 3, 10, 44, tzinfo=trading_daemon.BEIJING_TZ
+        )
+        decisions = pd.DataFrame([{
+            "action": "ALLOW_D_INTRADAY_MONITOR",
+            "strategy_leg": "D",
+        }])
+        with (
+            patch.object(trading_daemon, "now_beijing", return_value=frozen_now),
+            patch.object(trading_daemon, "is_trade_day", return_value=True),
+            patch.object(trading_daemon, "load_pending_buys", return_value=[]),
+            patch.object(trading_daemon, "_d_relay_pair_active_today", return_value=False),
+            patch.object(trading_daemon, "_pov_active_today", return_value=False),
+            patch.object(trading_daemon, "_strategy_d_monitor_running", return_value=False),
+            patch.object(
+                trading_daemon,
+                "read_cached_combined_decisions",
+                return_value=(decisions, Path("d_orders.csv")),
+            ),
+            patch.object(trading_daemon, "has_position_bought_today", return_value=False),
+            patch.object(trading_daemon, "has_open_local_position", return_value=False),
+            patch.object(trading_daemon, "intraday_history_is_complete", return_value=False),
+            patch.object(
+                trading_daemon,
+                "_strategy_d_checkpoint_recovery_check",
+                return_value=SimpleNamespace(ok=False, reason="D策略代码或配置已变化"),
+            ),
+            patch.object(trading_daemon, "job_strategy_d") as start_d,
+            patch.object(trading_daemon, "logger", return_value=MagicMock()),
+        ):
+            trading_daemon.startup_catchup_strategy_d()
+
+        start_d.assert_called_once_with(decisions)
+
     def test_blocked_e_run_records_priority_and_counterfactual_candidate_result(self) -> None:
         """A阻断正式信号后，E候选仍应独立计算并写入可审计字段。"""
 

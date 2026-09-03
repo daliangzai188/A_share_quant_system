@@ -764,6 +764,11 @@ class StrategyDMonitor:
         self.first_time_buckets = configured_first_time_buckets(self.config)
         self.tail_reseal_hhmm = configured_tail_reseal_hhmm(self.config)
         self.checkpoint_max_age_sec = configured_checkpoint_max_age_sec(self.config)
+        self.late_start_qmt_1m_recovery_enabled = bool(
+            self.config.get("strategy_d", {}).get(
+                "late_start_qmt_1m_recovery_enabled", False
+            )
+        )
         (
             self.sentiment_current_min,
             self.sentiment_current_max,
@@ -823,6 +828,12 @@ class StrategyDMonitor:
         self.strict_minute_paths: dict[str, StrictMinutePath] = {}
         self.strict_minute_refresh_hhmm: int = 0
         self.strict_minute_refresh_error: str = ""
+        # daemon晚启动且原子检查点不可用时，正式FACTOR_UNION D可以从QMT补取
+        # 09:30至当前的完整1m K线重建路径。该标记只表示“需要回补”，真正完成
+        # 必须等首次全市场快照扫描完整、所有触板目标的分钟序列逐根认证通过。
+        self.minute_history_recovery_required: bool = False
+        self.minute_history_recovery_completed: bool = False
+        self.minute_history_recovery_reason: str = ""
 
     # ── 初始化 ────────────────────────────────────────────────────────────────
 
@@ -878,13 +889,16 @@ class StrategyDMonitor:
                 len(self.factor_profiles),
                 self.min_fill_probability * 100,
             )
-            if not (
-                self.historical_fill_gate_certified
-                and self.runtime_new_buy_enabled
-            ):
+            if not self.runtime_new_buy_enabled:
                 self.logger.error(
-                    "D发布未同时具备信号时历史成交概率认证和运行新BUY授权；"
-                    "为避免回测有交易、实盘另行拒单，当前D只维护路径并禁止新BUY。"
+                    "D发布未取得运行新BUY授权；当前只维护路径并禁止新BUY。"
+                )
+            elif not self.historical_fill_gate_certified:
+                self.logger.warning(
+                    "D历史信号时L2队列仍不完整，历史收益继续按D=0披露；"
+                    "实盘已按用户授权启用逐单实时门禁，只有V15因子、完整1m路径、"
+                    "真实委托金额及可靠成交概率>=%.0f%%全部通过才允许BUY。",
+                    self.min_fill_probability * 100,
                 )
         else:
             self.logger.info(
@@ -910,8 +924,10 @@ class StrategyDMonitor:
         )
         self.logger.info(
             "D重启恢复: 每轮完整扫描原子保存逐票路径；检查点最长%d秒，"
-            "跨设备/跨交易日/代码配置变化/扫描缺批一律拒绝恢复。",
+            "跨设备/跨交易日/代码配置变化/扫描缺批一律拒绝检查点恢复；"
+            "正式因子版QMT 1m回补=%s。",
             self.checkpoint_max_age_sec,
+            "启用" if self.late_start_qmt_1m_recovery_enabled else "关闭",
         )
         self.logger.info(
             "D选票规则: 每天最多买1只，先优先炸板%d次，再按封单金额÷流通市值降序；"
@@ -1131,6 +1147,68 @@ class StrategyDMonitor:
         self._restored_from_checkpoint = True
         return True, check.reason
 
+    def _prepare_intraday_history(
+        self,
+        session_start_hhmm: int,
+        *,
+        resumable_in_memory_path: bool,
+    ) -> tuple[bool, str]:
+        """准备D路径证据：内存/检查点优先，正式因子版可回补QMT 1m历史。
+
+        QMT回补只负责恢复09:30以来的已完成分钟，不能把此前已错过的回封信号
+        当成当前信号追买；后续仍由``require_fresh_reseal=True``只接受最新完成
+        分钟刚形成的回封。LEGACY模式依赖30秒快照转换，无法用1m数据等价恢复。
+        """
+
+        if intraday_history_is_complete(session_start_hhmm):
+            return True, "监控从09:30完整路径起点启动"
+        if resumable_in_memory_path:
+            return True, "同一监控对象保留09:30起连续内存路径"
+
+        restored, checkpoint_reason = self._restore_ready_checkpoint()
+        if restored:
+            return True, f"原子检查点恢复成功:{checkpoint_reason}"
+
+        if (
+            self.factor_union_active
+            and self.late_start_qmt_1m_recovery_enabled
+            and self.broker is not None
+            and hasattr(self.broker, "get_minute_bars")
+        ):
+            self.minute_history_recovery_required = True
+            self.minute_history_recovery_completed = False
+            self.minute_history_recovery_reason = (
+                "原子检查点不可恢复"
+                f"({checkpoint_reason or '无检查点'})，改由QMT回补09:30至当前完整1m路径"
+            )
+            return True, self.minute_history_recovery_reason
+
+        return False, (
+            "缺少09:30起连续内存路径，且原子检查点不可恢复"
+            f"({checkpoint_reason or '无检查点'})；当前D模式或行情接口不支持严格QMT 1m回补"
+        )
+
+    def _mark_minute_history_recovery_complete(
+        self,
+        *,
+        target_count: int,
+        current_hhmm: int,
+    ) -> None:
+        """只在全市场快照和全部触板目标1m路径均完整后解除回补门禁。"""
+
+        if not self.minute_history_recovery_required:
+            return
+        self.minute_history_recovery_required = False
+        self.minute_history_recovery_completed = True
+        self.logger.warning(
+            "[D QMT 1M RECOVERED] 已从QMT严格回补09:30~%s路径："
+            "全市场快照覆盖%d只，需逐分钟认证的非ST首板触板目标%d只。"
+            "恢复后只接受最新完成分钟新形成的回封，不追买恢复前已错过的历史信号。",
+            hhmm_to_str(current_hhmm),
+            self.last_scan_updated_count,
+            target_count,
+        )
+
     # ── 状态更新 ──────────────────────────────────────────────────────────────
 
     def _eligible_market_context_state(self, state: StockState) -> bool:
@@ -1230,6 +1308,12 @@ class StrategyDMonitor:
         self.strict_minute_refresh_error = ""
         if not targets:
             self.strict_minute_refresh_hhmm = current_hhmm
+            # 首轮全市场快照完整，且所有股票日内最高价都未触及涨停时，目标集为空
+            # 本身就是可验证结论，不需要为五千余只股票下载无关1m序列。
+            self._mark_minute_history_recovery_complete(
+                target_count=0,
+                current_hhmm=current_hhmm,
+            )
             return True
         if self.broker is None or not hasattr(self.broker, "get_minute_bars"):
             self.strict_minute_refresh_error = "券商行情接口不支持QMT一分钟K线"
@@ -1296,6 +1380,10 @@ class StrategyDMonitor:
             return False
 
         self.strict_minute_refresh_hhmm = current_hhmm
+        self._mark_minute_history_recovery_complete(
+            target_count=len(self.strict_minute_paths),
+            current_hhmm=current_hhmm,
+        )
         self.logger.info(
             "[D STRICT 1M] 已按回测分钟收盘口径认证%d只非ST首板触板路径，完成分钟=%s",
             len(self.strict_minute_paths),
@@ -1807,17 +1895,19 @@ class StrategyDMonitor:
             return False, f"路径继续门禁检查异常:{exc}"
 
     def _entry_alignment_allows_new_buy(self) -> bool:
-        """只有发布文件同时完成历史成交门认证并显式授权时才允许D新开仓。"""
+        """按运行授权控制D新开仓；历史缺失只影响历史收益认证。
 
-        allowed = bool(
-            self.historical_fill_gate_certified
-            and self.runtime_new_buy_enabled
-        )
+        实盘每一笔仍由因子匹配、完整一分钟路径、真实账户定仓和实时成交概率
+        三层门禁复核。历史信号时L2缺失不能被伪造成历史成交，但也不代表今天
+        可观测的实时封单和成交空间永远不能形成合格订单。
+        """
+
+        allowed = bool(self.runtime_new_buy_enabled)
         if not allowed and not self._fill_alignment_block_notified:
             self._fill_alignment_block_notified = True
             self.logger.error(
-                "[D ENTRY ALIGNMENT BLOCK] 当前发布未同时具备历史信号时成交概率门认证"
-                "和运行新BUY授权；D只记录路径，不产生BUY。"
+                "[D ENTRY ALIGNMENT BLOCK] 当前发布未取得运行新BUY授权；"
+                "D只记录路径，不产生BUY。"
             )
         return allowed
 
@@ -3128,30 +3218,26 @@ class StrategyDMonitor:
         )
         self.setup()
 
-        # 回测使用完整日内路径。午后重启若从当前快照重新计数，会把早盘已封/已炸历史
-        # 当成不存在，从而把t_board误判成multi_open。无法重建完整路径时必须fail-closed。
-        checkpoint_reason = ""
-        if not intraday_history_is_complete(session_start_hhmm) and not resumable_in_memory_path:
-            restored, checkpoint_reason = self._restore_ready_checkpoint()
-            resumable_in_memory_path = restored
-        if not intraday_history_is_complete(session_start_hhmm) and not resumable_in_memory_path:
-            reason = (
-                f"D监控于{hhmm_to_str(session_start_hhmm)}启动，晚于完整路径截止"
-                f"{hhmm_to_str(D_LATEST_COMPLETE_HISTORY_START_HHMM)}；缺少早盘首次封板/炸板历史，"
-                f"且检查点不可恢复({checkpoint_reason or '无检查点'})，"
-                "按回测严格对齐口径今日禁止D开仓"
-            )
+        # 正式因子D本来就用QMT已完成1m收盘复刻回测事件。晚启动时先尝试原子
+        # 检查点；检查点因代码/配置变化或过期不可用时，再从QMT回补09:30至当前
+        # 的完整分钟序列。绝不再用单张午后快照伪造早盘封板/炸板路径。
+        history_ready, history_reason = self._prepare_intraday_history(
+            session_start_hhmm,
+            resumable_in_memory_path=resumable_in_memory_path,
+        )
+        if not history_ready:
+            reason = f"D监控于{hhmm_to_str(session_start_hhmm)}启动；{history_reason}，今日禁止D开仓"
             self.logger.error(reason)
             print(f"[D跳过] {reason}")
             try:
                 notify(
                     "buy_result",
-                    "⛔ D因午后重启停止开仓",
+                    "⛔ D日内路径无法恢复",
                     reason,
                     level="critical",
                 )
             except Exception as exc:
-                self.logger.warning("D午后重启阻断推送失败: %s", exc)
+                self.logger.warning("D日内路径恢复阻断推送失败: %s", exc)
             return
         if not intraday_history_is_complete(session_start_hhmm):
             if self._restored_from_checkpoint:
@@ -3160,7 +3246,13 @@ class StrategyDMonitor:
                     "下一轮将从这些状态继续识别真实封板/炸板转换。",
                     self.scan_round,
                     len(self.states),
-                    checkpoint_reason,
+                    history_reason,
+                )
+            elif self.minute_history_recovery_required:
+                self.logger.warning(
+                    "D监控晚启动：%s。下一轮先完整扫描股票宇宙，再按日内最高价定位"
+                    "全部触板目标并逐只认证09:30至当前1m序列；认证完成前不产生BUY。",
+                    history_reason,
                 )
             else:
                 self.logger.warning(
@@ -3372,7 +3464,8 @@ def main() -> None:
             )
         print(
             f"  重启保护: {hhmm_to_str(D_LATEST_COMPLETE_HISTORY_START_HHMM)}后才启动时，"
-            "因缺少完整日内路径而禁止当日D开仓"
+            "先恢复同版本原子检查点；检查点不可用则严格回补QMT 09:30至当前1m，"
+            "逐根认证完成前禁止D开仓"
         )
         print(f"  撤单时间: {hhmm_to_str(CANCEL_HHMM)}")
         print(f"  实盘下单: {'是' if args.live_order else '否（仅提醒）'}")

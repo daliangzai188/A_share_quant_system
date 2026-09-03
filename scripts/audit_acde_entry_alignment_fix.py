@@ -255,10 +255,33 @@ def run() -> dict[str, Any]:
         == _metrics(aligned_legs, action_dates, execution)[1],
     }
 
+    d_release = json.loads(
+        (ROOT / "config/strategy_d_factor_release.json").read_text(encoding="utf-8")
+    )
+    d_entry_alignment = d_release.get("entry_alignment", {})
+    runtime_d_enabled = bool(
+        isinstance(d_entry_alignment, dict)
+        and d_entry_alignment.get("runtime_new_buy_enabled", False)
+    )
+    runtime_config = json.loads(
+        (ROOT / "config/config.json").read_text(encoding="utf-8")
+    )
+    late_start_qmt_recovery_enabled = bool(
+        runtime_config.get("strategy_d", {}).get(
+            "late_start_qmt_1m_recovery_enabled", False
+        )
+    )
+    checks["d_late_start_qmt_1m_recovery_enabled"] = (
+        late_start_qmt_recovery_enabled
+    )
     decision = (
-        "A_C_E_ACTIVE_D_NEW_BUY_PAUSED"
-        if checks["unverifiable_d_failed_closed"]
-        else "ALIGNMENT_REVIEW_REQUIRED"
+        "A_C_E_ACTIVE_D_RUNTIME_REALTIME_FILL_GATED"
+        if checks["unverifiable_d_failed_closed"] and runtime_d_enabled
+        else (
+            "A_C_E_ACTIVE_D_NEW_BUY_PAUSED"
+            if checks["unverifiable_d_failed_closed"]
+            else "ALIGNMENT_REVIEW_REQUIRED"
+        )
     )
     summary = {
         "schema_version": 1,
@@ -280,10 +303,19 @@ def run() -> dict[str, Any]:
             "source_missing_l2_columns": missing_l2_columns,
             "unverifiable_selected_plan_days_in_combo": int(len(unverified_rows)),
             "certified_executed_d_trades": aligned_d_executed,
-            "runtime_new_buy_enabled": False,
+            "runtime_new_buy_enabled": runtime_d_enabled,
+            "late_start_qmt_1m_recovery_enabled": (
+                late_start_qmt_recovery_enabled
+            ),
+            "late_start_recovery_policy": (
+                "仅无持仓、无非D正式候选/计划且无在途买单/POV时启动；"
+                "检查点不可用则回补QMT 09:30至当前完整1m，逐根认证完成前拒单，"
+                "不追买恢复前已错过的信号"
+            ),
             "reason": (
                 "历史事件数据没有信号时L2队列金额，不能精确复现"
                 "fill_probability>=80%；因此D样本不再计入已对齐收益。"
+                "实时D仅在当天信号时字段完整并通过同一>=80%门时允许开仓。"
             ),
         },
         "c_alignment_note": (

@@ -10254,34 +10254,30 @@ def job_opening_buy(*, recovery_only: bool = False) -> None:
     # 当前正式腿序为 A > C > E > D，一个组合计划只执行最高优先动作一次。
     open_action = _combined_open_action_for_current_mode(decisions)
 
-    # 正常路径在09:20已启动D线程；这里是09:25~09:30整机重启、09:20任务
-    # 未执行时的最后一个合法兜底点。仍须重新通过“空仓+无其他腿计划”总门，
-    # 且当前必须尚未错过09:30完整路径起点。
+    # 正常路径在09:20已启动D线程；这里处理09:20任务遗漏或daemon盘中恢复。
+    # 仍须重新通过“空仓+无其他腿候选/计划”总门。若已经错过09:30，监控器
+    # 优先恢复原子检查点；检查点不可用时再严格回补QMT 09:30至当前1m路径。
     d_allowed, d_gate_reason = d_intraday_monitor_gate(decisions)
     if d_allowed:
         current = now_beijing()
         current_hhmm = current.hour * 100 + current.minute
         checkpoint_check = _strategy_d_checkpoint_recovery_check(current)
-        if intraday_history_is_complete(current_hhmm) or checkpoint_check.ok:
-            recovery_text = (
-                "从连续竞价起点启动"
-                if intraday_history_is_complete(current_hhmm)
-                else f"从严格校验通过的原子路径恢复({checkpoint_check.reason})"
-            )
-            logger().info(
-                "09:30开盘复核：D路径采集总门通过（%s），确认D监控%s。",
-                d_gate_reason,
-                recovery_text,
-            )
-            job_strategy_d(decisions)
+        if intraday_history_is_complete(current_hhmm):
+            recovery_text = "从连续竞价起点启动"
+        elif checkpoint_check.ok:
+            recovery_text = f"从严格校验通过的原子路径恢复({checkpoint_check.reason})"
         else:
-            reason = (
-                f"09:30开盘复核实际执行于{current.strftime('%H:%M:%S')}，已错过D完整路径起点；"
-                "不从迟到快照补造首次封板/炸板历史，"
-                f"检查点不可恢复({checkpoint_check.reason})，今日D禁止开仓。"
+            recovery_text = (
+                f"检查点不可恢复({checkpoint_check.reason})，"
+                "启动后由监控器回补并逐根认证QMT 09:30至当前1m路径"
             )
-            logger().error(reason)
-            _notify("buy_result", "⛔ D错过完整路径起点", reason, level="critical")
+        logger().info(
+            "09:30开盘复核：D路径采集总门通过（%s），确认D监控%s；"
+            "回补认证完成前禁止BUY。",
+            d_gate_reason,
+            recovery_text,
+        )
+        job_strategy_d(decisions)
     elif (
         has_combined_action(decisions, "ALLOW_D_INTRADAY_MONITOR")
         or bool(_d_blocking_buy_actions(decisions))
@@ -12160,9 +12156,9 @@ def startup_catchup_strategy_d() -> None:
 
     09:20-09:25 属于本系统的集合竞价预挂窗口，若守护进程在此时段重启，
     这里会先复核再补挂计划买单；09:25之后不再补挂集合竞价单，等09:30开盘流程处理；
-    只读取组合状态机，如果它明确允许 D 且仍能取得完整日内路径，才补启动监控；
-    09:30后首次启动会缺少早盘封板/炸板历史，按回测一致口径直接阻断，不再启动
-    一个注定自行退出的D子进程。
+    只读取组合状态机；只有它明确证明今日无持仓、无非D候选/计划时才补启动D。
+    09:30后优先恢复同版本原子检查点；检查点不可用时由D监控从QMT回补并严格
+    认证09:30至当前的完整1m路径，认证完成前不允许BUY。
     对于 E 开仓：若 9:30 后市场仍开盘（14:00 前），允许延迟重试（涨幅≤2%%）。
     """
     now = now_beijing()
@@ -12246,16 +12242,6 @@ def startup_catchup_strategy_d() -> None:
     d_history_complete = intraday_history_is_complete(now.hour * 100 + now.minute)
     d_checkpoint_check = _strategy_d_checkpoint_recovery_check(now)
 
-    def _reject_late_d_recovery(prefix: str) -> None:
-        reason = (
-            f"{prefix}；daemon于{now.strftime('%H:%M')}才恢复，缺少09:30起的完整首次封板/"
-            "炸板内存路径，"
-            f"且原子检查点不可恢复({d_checkpoint_check.reason})，"
-            "按D回测严格对齐口径今日不开D。"
-        )
-        logger().error("启动补检：%s", reason)
-        _notify("buy_result", "⛔ D因晚启动停止开仓", reason, level="critical")
-
     # E延迟开仓是原候选自己的恢复链，必须先于D互斥门处理；有E候选时D会被
     # 正确关闭，但不能因此连E自己的重试也一起跳过。
     if (
@@ -12274,24 +12260,22 @@ def startup_catchup_strategy_d() -> None:
         logger().info("启动补检：D全活动总门未通过，跳过：%s", d_tracking_reason)
         return
 
-    if d_history_complete or d_checkpoint_check.ok:
-        if d_checkpoint_check.ok and not d_history_complete:
-            logger().warning(
-                "启动补检：D路径采集总门通过（%s），原子路径检查点预检通过：%s；"
-                "恢复D监控并执行逐票宇宙最终校验。",
-                d_tracking_reason,
-                d_checkpoint_check.reason,
-            )
-        else:
-            logger().info(
-                "启动补检：D路径采集总门通过（%s），启动D盘中扫描。",
-                d_tracking_reason,
-            )
-        job_strategy_d(decisions)
+    if d_history_complete:
+        recovery_text = "进程仍处于09:30完整路径起点"
+    elif d_checkpoint_check.ok:
+        recovery_text = f"原子路径检查点预检通过({d_checkpoint_check.reason})"
     else:
-        _reject_late_d_recovery(
-            "今日无持仓、无非D候选且无非D开仓计划，但本次进程没有09:30起完整路径"
+        recovery_text = (
+            f"daemon于{now.strftime('%H:%M')}恢复且检查点不可恢复"
+            f"({d_checkpoint_check.reason})；将从QMT回补09:30至当前完整1m路径"
         )
+    logger().warning(
+        "启动补检：D总门通过（%s）；%s。立即启动D监控，"
+        "回补逐分钟认证完成前禁止BUY，恢复前已错过的信号不追买。",
+        d_tracking_reason,
+        recovery_text,
+    )
+    job_strategy_d(decisions)
 
 
 def _sleep_until_beijing(target: datetime.time, *, max_wait: float = 300.0) -> None:

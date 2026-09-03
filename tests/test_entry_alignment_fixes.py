@@ -18,7 +18,10 @@ from scripts.monitor_strategy_d_intraday import (
 from scripts.run_paper_ab_filtered_daily_ops import resolve_ac_selected_leg
 from src.acde_rolling_framework import replay_action_date_cash_portfolio
 from src.fill_model import fill_probability_from_amounts
-from src.strategy_d_minute_alignment import StrictMinutePath
+from src.strategy_d_minute_alignment import (
+    StrictMinutePath,
+    expected_completed_minute_hhmm,
+)
 
 
 class _Logger:
@@ -117,7 +120,7 @@ class EntryAlignmentFixTests(unittest.TestCase):
         self.assertEqual(capacity.actual_amount, 824_000.0)
         self.assertNotEqual(capacity.actual_amount, 412_500.0)
 
-    def test_formal_d_release_is_fail_closed_until_historical_fill_is_certified(self) -> None:
+    def test_formal_d_release_keeps_history_closed_but_enables_realtime_gate(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
         release = json.loads(
             (project_root / "config" / "strategy_d_factor_release.json").read_text(
@@ -128,7 +131,28 @@ class EntryAlignmentFixTests(unittest.TestCase):
         self.assertFalse(
             alignment.get("historical_signal_time_fill_gate_certified", True)
         )
-        self.assertFalse(alignment.get("runtime_new_buy_enabled", True))
+        self.assertTrue(alignment.get("runtime_new_buy_enabled", False))
+
+    def test_live_d_runtime_permission_does_not_require_fabricated_history(self) -> None:
+        """历史L2缺失继续影响回测，但当天实时门有数据时可以进入逐单复核。"""
+        with tempfile.TemporaryDirectory() as directory:
+            release_path = self._write_d_release(
+                Path(directory) / "release.json",
+                certified=False,
+                enabled=True,
+            )
+            monitor = StrategyDMonitor(
+                broker=Mock(),
+                live_order=True,
+                logger=_Logger(),
+                signal_csv=Path(directory) / "signals.csv",
+                config={"strategy_d": {"factor_release_path": str(release_path)}},
+                position_recorder=lambda _payload: None,
+            )
+
+            self.assertFalse(monitor.historical_fill_gate_certified)
+            self.assertTrue(monitor.runtime_new_buy_enabled)
+            self.assertTrue(monitor._entry_alignment_allows_new_buy())
 
     def test_live_d_legacy_mode_cannot_bypass_entry_alignment_guard(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -247,10 +271,14 @@ class EntryAlignmentFixTests(unittest.TestCase):
             )
             monitor._record_filled_d_position = Mock()
 
+            # 单元测试只验证部分成交分支，必须隔离真实 Bark/电话通知出口。
+            # 否则测试桩中的股票、金额和订单号会被误发成实盘消息。
             with patch(
                 "scripts.monitor_strategy_d_intraday.check_strategy_position_occupied",
                 return_value=(False, ""),
-            ):
+            ), patch(
+                "scripts.monitor_strategy_d_intraday.notify"
+            ) as notify_mock, patch("builtins.print") as print_mock:
                 result = monitor._place_d_order(state, {})
 
             self.assertTrue(result)
@@ -258,6 +286,10 @@ class EntryAlignmentFixTests(unittest.TestCase):
             monitor._record_filled_d_position.assert_called_once_with(
                 "D-PARTIAL-1", 100, 10.0
             )
+            notify_mock.assert_called_once()
+            self.assertEqual(notify_mock.call_args.args[0], "buy_result")
+            self.assertEqual(notify_mock.call_args.args[1], "⏳ D开仓委托未全成")
+            print_mock.assert_called_once()
 
     @staticmethod
     def _d_plan(**overrides: object) -> pd.DataFrame:
@@ -494,6 +526,120 @@ class EntryAlignmentFixTests(unittest.TestCase):
             self.assertTrue(passed)
             self.assertEqual([len(batch) for batch in broker.calls], [50, 1])
             self.assertEqual(len(monitor.strict_minute_paths), 51)
+
+    def test_late_d_restart_uses_complete_qmt_backfill_but_does_not_chase(self) -> None:
+        """QMT回补可以恢复路径；恢复前已经错过的旧回封不能变成当前BUY。"""
+
+        class MinuteBroker:
+            def get_minute_bars(
+                self,
+                ts_codes: list[str],
+                *,
+                start_time: str,
+                end_time: str,
+            ) -> dict[str, list[dict[str, float | int]]]:
+                self.assert_start = start_time
+                self.assert_end = end_time
+                return {code: list(bars) for code in ts_codes}
+
+        bars: list[dict[str, float | int]] = []
+        for hhmm in expected_completed_minute_hhmm(1044):
+            if hhmm == 930:
+                close = 10.00
+            elif hhmm == 931:
+                close = 11.00
+            elif hhmm == 932:
+                close = 10.98
+            else:
+                close = 11.00
+            bars.append({
+                "hhmm": hhmm,
+                "open": close,
+                "high": close,
+                "low": close,
+                "close": close,
+                "volume": 1000,
+                "amount": 100_000.0,
+            })
+
+        with tempfile.TemporaryDirectory() as directory:
+            release_path = self._write_d_release(Path(directory) / "release.json")
+            monitor = StrategyDMonitor(
+                broker=MinuteBroker(),
+                live_order=False,
+                logger=_Logger(),
+                signal_csv=Path(directory) / "signals.csv",
+                config={
+                    "strategy_d": {
+                        "factor_release_path": str(release_path),
+                        "late_start_qmt_1m_recovery_enabled": True,
+                    }
+                },
+            )
+            state = StockState(
+                ts_code="300001.SZ",
+                name="D回补测试",
+                market_segment="chi_next",
+                upper_limit=11.0,
+                last_price=11.0,
+                was_sealed=True,
+                ever_sealed=True,
+                session_high_price=11.0,
+            )
+            monitor.states = {state.ts_code: state}
+            monitor.last_scan_updated_count = 5_546
+            monitor._restore_ready_checkpoint = Mock(
+                return_value=(False, "D策略代码或配置已变化")
+            )
+
+            ready, reason = monitor._prepare_intraday_history(
+                1044,
+                resumable_in_memory_path=False,
+            )
+            self.assertTrue(ready)
+            self.assertIn("QMT回补09:30至当前", reason)
+            self.assertTrue(monitor.minute_history_recovery_required)
+
+            with patch(
+                "scripts.monitor_strategy_d_intraday.now_hhmm",
+                return_value=1044,
+            ):
+                self.assertTrue(monitor._refresh_strict_minute_paths())
+                matched, reject_reason = monitor._factor_release_match(
+                    state,
+                    require_fresh_reseal=True,
+                )
+
+            self.assertTrue(monitor.minute_history_recovery_completed)
+            self.assertFalse(monitor.minute_history_recovery_required)
+            self.assertFalse(matched)
+            self.assertIn("不是最新完成分钟", reject_reason)
+
+    def test_late_d_restart_without_qmt_minute_history_stays_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            release_path = self._write_d_release(Path(directory) / "release.json")
+            monitor = StrategyDMonitor(
+                broker=object(),
+                live_order=False,
+                logger=_Logger(),
+                signal_csv=Path(directory) / "signals.csv",
+                config={
+                    "strategy_d": {
+                        "factor_release_path": str(release_path),
+                        "late_start_qmt_1m_recovery_enabled": True,
+                    }
+                },
+            )
+            monitor._restore_ready_checkpoint = Mock(return_value=(False, "无检查点"))
+
+            ready, reason = monitor._prepare_intraday_history(
+                1044,
+                resumable_in_memory_path=False,
+            )
+
+            self.assertFalse(ready)
+            self.assertIn("不支持严格QMT 1m回补", reason)
+            self.assertFalse(monitor.minute_history_recovery_required)
 
 
 if __name__ == "__main__":

@@ -59,6 +59,7 @@ _D_STRATEGY_CONFIG_KEYS = (
     "sentiment_current_sealed_min",
     "sentiment_current_sealed_max",
     "checkpoint_max_age_sec",
+    "late_start_qmt_1m_recovery_enabled",
 )
 
 

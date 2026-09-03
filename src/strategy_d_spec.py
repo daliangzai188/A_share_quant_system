@@ -19,8 +19,9 @@ D_PREFERRED_OPEN_TIMES = 2
 D_FIRST_TIME_BUCKETS = frozenset({"midday", "afternoon", "late"})
 D_TAIL_RESEAL_HHMM = 1400
 D_MIN_FILL_PROBABILITY = 0.80
-# 历史D候选依赖完整的首次封板、炸板次数和最后回封路径。实盘必须从
-# 连续竞价开始即跟踪，14:00只代表BUY信号起点，不能到14:00才取快照。
+# 历史D候选依赖完整的首次封板、炸板次数和最后回封路径。正常实盘从连续竞价
+# 开始跟踪；正式FACTOR_UNION晚启动时可以用QMT完整1m历史回补，禁止用当前快照
+# 代替早盘路径。LEGACY模式仍必须从起点连续跟踪。
 D_TRACKING_START_HHMM = 930
 D_SIGNAL_START_HHMM = D_TAIL_RESEAL_HHMM
 D_ORDER_CANCEL_HHMM = 1455
@@ -147,7 +148,7 @@ def live_sentiment_is_historical_strong(
 
 
 def intraday_history_is_complete(session_start_hhmm: int) -> bool:
-    """D必须最晚从09:30开始跟踪，午后快照不能伪造完整炸板路径。"""
+    """判断内存路径是否从09:30开始；False表示必须检查点恢复或QMT 1m回补。"""
 
     return int(session_start_hhmm) <= D_LATEST_COMPLETE_HISTORY_START_HHMM
 

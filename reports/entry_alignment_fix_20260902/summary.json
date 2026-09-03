@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "decision": "A_C_E_ACTIVE_D_NEW_BUY_PAUSED",
+  "decision": "A_C_E_ACTIVE_D_RUNTIME_REALTIME_FILL_GATED",
   "window": {
     "start": "20230901",
     "end": "20260831",
@@ -407,8 +407,10 @@
     ],
     "unverifiable_selected_plan_days_in_combo": 13,
     "certified_executed_d_trades": 0,
-    "runtime_new_buy_enabled": false,
-    "reason": "历史事件数据没有信号时L2队列金额，不能精确复现fill_probability>=80%；因此D样本不再计入已对齐收益。"
+    "runtime_new_buy_enabled": true,
+    "late_start_qmt_1m_recovery_enabled": true,
+    "late_start_recovery_policy": "仅无持仓、无非D正式候选/计划且无在途买单/POV时启动；检查点不可用则回补QMT 09:30至当前完整1m，逐根认证完成前拒单，不追买恢复前已错过的信号",
+    "reason": "历史事件数据没有信号时L2队列金额，不能精确复现fill_probability>=80%；因此D样本不再计入已对齐收益。实时D仅在当天信号时字段完整并通过同一>=80%门时允许开仓。"
   },
   "c_alignment_note": "C正式历史计划本来就是风险剔除后再排序，因此分腿样本不变；修复的是每日执行台错把c_rejected当成整日C禁买的分支。",
   "checks": {
@@ -420,6 +422,7 @@
     "d_fill_gate_threshold_is_80pct": true,
     "historical_d_l2_fields_available": false,
     "unverifiable_d_failed_closed": true,
-    "aligned_replay_deterministic": true
+    "aligned_replay_deterministic": true,
+    "d_late_start_qmt_1m_recovery_enabled": true
   }
 }

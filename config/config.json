@@ -37,7 +37,7 @@
     "full_sample_gate_risk_acceptance_note": "V14改用换手率高与封单比例低的等权分位排序，并在保留V13四项单独门禁基础上新增成交额倍率1.2~2且炸板2~3次时直接空仓、不回补。最近三年E独立59笔、30.818622倍、最大回撤-9.62%；结果属于STRICT_DISCOVERY，不得据此扩大资金。"
   },
   "portfolio_certification": {
-    "file_role": "A>C>E>D真实开仓日组合资金和研究统计口径；研究认证结果不参与实盘BUY开关。旧V16认证因D开仓口径不对齐已作废，D的实盘BUY由strategy_d_factor_release.entry_alignment独立fail-closed。",
+    "file_role": "A>C>E>D真实开仓日组合资金和研究统计口径；旧V16认证因D历史开仓口径不对齐继续作废。D历史收益认证与实时BUY权限分开：实时BUY由strategy_d_factor_release.entry_alignment授权，并逐单执行完整1m路径、真实委托金额及可靠成交概率>=80%的fail-closed门禁。",
     "initial_equity": 500000,
     "position_pct": 0.825,
     "input_manifest_path": "reports/current_portfolio_alignment/input_manifest.json",
@@ -62,9 +62,9 @@
     "rolling_live_report_path": "reports/live_performance/rolling_live_status.json",
     "rolling_min_trades_for_decision": 20,
     "selected_rule_name": "acde_c_third_branch_t2_22695_20260902_v16",
-    "selected_rule_description": "当前生产顺序固定A>C>E>D。A/C/E规则保持V16口径；C风险候选在最终排序前剔除，合格下一名可递补，不得因同日存在其他被拒C候选就整日空仓。D仅保留路径监控；历史信号时L2队列数据补齐并重新认证前禁止新BUY。",
+    "selected_rule_description": "当前生产顺序固定A>C>E>D。A/C/E规则保持V16口径；C风险候选在最终排序前剔除，合格下一名可递补，不得因同日存在其他被拒C候选就整日空仓。D历史回放因缺少信号时L2继续按0笔披露；实盘仅在V15因子、完整1m路径、实时封单、真实82.5%委托金额和可靠成交概率>=80%全部通过时允许新BUY。",
     "entry_alignment_remediation": {
-      "status": "D_FAIL_CLOSED_NEW_BUY_PAUSED",
+      "status": "D_HISTORICAL_FAIL_CLOSED_RUNTIME_REALTIME_GATED",
       "report_path": "reports/entry_alignment_fix_20260902/summary.json",
       "old_v16_certification_valid": false,
       "c_live_fallback_fixed": true,
@@ -72,7 +72,8 @@
       "d_position_pct": 0.825,
       "d_min_fill_probability": 0.8,
       "d_historical_signal_time_l2_queue_available": false,
-      "d_new_buy_enabled": false
+      "d_new_buy_enabled": true,
+      "d_runtime_policy": "仅当天信号时数据完整且按真实委托金额计算的可靠成交概率>=80%时允许；历史缺失不补造、不恢复旧收益"
     },
     "live_candidate_metrics": {
       "scenario": "acde_entry_alignment_fail_closed_20260902",
@@ -333,11 +334,12 @@
     "signal_start_hhmm": 1400,
     "cancel_hhmm": 1455,
     "checkpoint_max_age_sec": 75,
+    "late_start_qmt_1m_recovery_enabled": true,
     "sentiment_current_sealed_min": 88,
     "sentiment_current_sealed_max": 132,
     "sentiment_proxy_note": "历史只取market_sentiment_level=strong(收盘100~150只，不含very_strong)；盘中沿用既有88/100校准比例，故实时当前封板代理区间为88~132只。该代理仍须用分钟快照持续校准。",
     "backtest_input_path": "data/processed/next_day_premium_trades_2y.csv",
-    "execution_alignment_note": "D实盘与V15回放共同读取FACTOR_UNION发布：仅在A/C/E均无冻结计划且账户资金可用时，09:30起持续记录完整1分钟封板/炸板/回封路径；每次已完成1分钟收盘形成新回封后立即计算发布因子，命中15条V15 OR profile之一才允许BUY，14:55停止并撤未成交委托。新增弱广度档位必须同时满足market_active_count_bucket=LT20和open_count_bucket=2。每日最早命中信号只尝试第一名，成交门或二次复核失败均不补选。每轮完整扫描后原子保存逐票路径，盘中重启只允许恢复75秒内且同机、同日、同代码配置、同股票宇宙和同市场上下文的检查点；真实扫描缺批或证据变化继续全天停开。"
+    "execution_alignment_note": "D实盘与V15回放共同读取FACTOR_UNION发布：仅在账户无持仓、A/C/E均无正式候选或开仓计划、无在途买单/POV且资金可用时启动。正常路径09:30起记录完整1分钟封板/炸板/回封；daemon晚启动时先恢复75秒内同机同版本原子检查点，检查点不可用则从QMT严格回补09:30至当前全部已完成1m，并通过全市场快照完整性、日内最高价触板目标全集和逐根分钟连续性认证后继续。恢复前已错过的信号不追买，只接受恢复完成后最新分钟新形成的回封。每次命中15条V15 OR profile之一且成交概率>=80%才允许BUY，14:55停止并撤未成交委托；每日最早命中信号只尝试第一名，成交门或二次复核失败均不补选。回补缺根、全市场扫描缺批或任何证据不完整继续fail-closed。"
   },
   "strategy_s": {
     "file_role": "策略S深市/创业板动量补充策略配置。S 独立于 ACDE，只能在组合空闲且通过实盘口径认证后接入真实下单。",

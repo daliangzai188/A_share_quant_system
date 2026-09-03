@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "status": "INVALIDATED_D_ENTRY_ALIGNMENT_FAIL_CLOSED",
+  "status": "INVALIDATED_D_HISTORICAL_ENTRY_ALIGNMENT",
   "release_id": "ACDE_C_THIRD_BRANCH_T2_22695_20260902_V16",
   "invalidated_at": "2026-09-02T17:08:32+07:00",
-  "invalidated_reason": "V16组合中D回测未执行实盘fill_probability>=80%开仓门，且D历史信号时L2队列数据缺失。旧V16数字只保留为历史对照，不再代表当前完全对齐的ACED组合。D已fail-closed暂停新BUY。",
+  "invalidated_reason": "V16组合中D回测未执行实盘fill_probability>=80%开仓门，且D历史信号时L2队列数据缺失。旧V16数字只保留为历史对照，不再代表当前完全对齐的ACED组合。用户于2026-09-03仅授权当天实时门禁全部通过的D新BUY；该授权不恢复旧历史认证。",
   "strategy_priority_order": [
     "A",
     "C",
@@ -16,5 +16,5 @@
   "certification_status": "INVALIDATED_BY_D_ENTRY_ALIGNMENT_AUDIT",
   "certification_scenario": "acde_c_third_branch_t2_22695_20260902_v16",
   "capacity_certified": false,
-  "note": "C第3逻辑分支V16本身保留，A/C/E规则未因本次修复改变。旧V16的184笔、22695.89224525786倍已精确复现，但其D的11笔组合成交与实盘>=80%成交概率门不对齐。按82.5%实际仓位并对缺少L2队列的D失败关闭后，组合为174笔、10848.794220535914倍、最大回撤-19.8774%，分腿A84/C63/E27/D0。在D补齐历史信号时L2队列数据并重新认证前，旧V16组合发布冻结作废、D禁止新BUY。"
+  "note": "C第3逻辑分支V16本身保留，A/C/E规则未因本次修复改变。旧V16的184笔、22695.89224525786倍已精确复现，但其D的11笔组合成交与实盘>=80%成交概率门不对齐。历史失败关闭结果仍为174笔、10848.794220535914倍、最大回撤-19.8774%，分腿A84/C63/E27/D0。用户于2026-09-03授权D仅在当天实时V15因子、完整1m路径、真实委托金额和可靠成交概率>=80%全部通过时允许新BUY；旧V16历史认证继续作废。"
 }
