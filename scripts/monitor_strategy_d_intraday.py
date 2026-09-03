@@ -818,6 +818,10 @@ class StrategyDMonitor:
         self.order_locked_ts_code: str = ""
         self.factor_signal_consumed: bool = False
         self.factor_signal_locked_ts_code: str = ""
+        # 每个已完成分钟只输出一次候选结论，既明确回答“有没有合格候选”，
+        # 又避免30秒轮询在同一分钟重复刷屏。
+        self.factor_candidate_summary_hhmm: int = 0
+        self.factor_candidate_summary_announced: bool = False
         self.position_opened: bool = False
         self.waiting_order_only: bool = False
         self.limit_price_fallback_logged: bool = False
@@ -1912,7 +1916,7 @@ class StrategyDMonitor:
         return allowed
 
     def _check_and_fire_factor_union(self) -> None:
-        """用已完成1m路径执行半年发布因子；任一命中即进入唯一候选排序。"""
+        """用已完成1m路径执行月度发布因子，并明确记录候选筛选结论。"""
 
         if self.factor_signal_consumed:
             return
@@ -1933,6 +1937,35 @@ class StrategyDMonitor:
             candidates.append(st)
 
         if not candidates:
+            completed_hhmm = self.strict_minute_refresh_hhmm
+            if completed_hhmm != self.factor_candidate_summary_hhmm:
+                self.factor_candidate_summary_hhmm = completed_hhmm
+                reseal_buckets = ",".join(
+                    sorted(
+                        {
+                            str(profile.get("conditions", {}).get("reseal_time_bucket", "ANY"))
+                            for profile in self.factor_profiles
+                            if isinstance(profile, dict)
+                            and isinstance(profile.get("conditions", {}), dict)
+                        }
+                    )
+                ) or "ANY"
+                # 外层Windows启动器主要展示WARNING级D事件，因此每次进程启动后
+                # 第一条候选结论提升为WARNING；后续零候选分钟保留INFO，避免刷屏。
+                result_logger = (
+                    self.logger.info
+                    if self.factor_candidate_summary_announced
+                    else self.logger.warning
+                )
+                self.factor_candidate_summary_announced = True
+                result_logger(
+                    "[D候选结果] 完成分钟=%s 本分钟新增因子合格=0，"
+                    "最终可开仓=0；release=%s 发布回封桶=%s，"
+                    "没有股票同时满足发布因子、当前封板和最新完成分钟新回封条件。",
+                    hhmm_to_str(completed_hhmm),
+                    self.factor_release_id,
+                    reseal_buckets,
+                )
             return
         # 与历史因子并集一致：先取最早回封；同一轮/分钟优先炸板2次，再按代码稳定排序。
         ranked = sorted(
@@ -1949,6 +1982,19 @@ class StrategyDMonitor:
             ),
         )
         candidate = ranked[0]
+        candidate_summary = ",".join(
+            f"{state.ts_code}({state.matched_factor_profile_ids})"
+            for state in ranked
+        )
+        self.factor_candidate_summary_hhmm = self.strict_minute_refresh_hhmm
+        self.logger.warning(
+            "[D候选结果] 完成分钟=%s 本分钟新增因子合格=%d：%s；"
+            "按冻结排序选择%s，继续复核真实委托金额和成交概率门。",
+            hhmm_to_str(self.strict_minute_refresh_hhmm),
+            len(ranked),
+            candidate_summary,
+            candidate.ts_code,
+        )
         # 历史账本先选当日最早信号，再判断该挂单能否成交；即使成交门失败，
         # 也不能用事后结果补选更晚回封。因此选中即永久消耗今日D机会。
         self.factor_signal_consumed = True
@@ -1968,6 +2014,11 @@ class StrategyDMonitor:
                 candidate.ts_code,
                 fill_reason,
             )
+            self.logger.warning(
+                "[D候选结果] %s 因子合格但最终可开仓=0；成交概率门失败：%s",
+                candidate.ts_code,
+                fill_reason,
+            )
             return
         valid, invalid_reason = self._validate_buy_candidate(candidate)
         if not valid:
@@ -1976,7 +2027,17 @@ class StrategyDMonitor:
                 candidate.ts_code,
                 invalid_reason,
             )
+            self.logger.warning(
+                "[D候选结果] %s 因子合格但最终可开仓=0；二次复核失败：%s",
+                candidate.ts_code,
+                invalid_reason,
+            )
             return
+        self.logger.warning(
+            "[D候选结果] %s 最终可开仓=1；发布因子、完整1m路径、"
+            "真实委托金额及可靠成交概率门全部通过，开始提交委托。",
+            candidate.ts_code,
+        )
         self._fire_buy_signal(candidate)
 
     def _check_and_fire(self) -> None:
@@ -3346,7 +3407,6 @@ class StrategyDMonitor:
             pd.DataFrame(self.signal_records).to_csv(self.signal_csv, index=False)
         except Exception as e:
             self.logger.warning("保存信号CSV失败: %s", e)
-
 
 # ── 入口 ─────────────────────────────────────────────────────────────────────
 

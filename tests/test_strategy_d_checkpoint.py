@@ -21,6 +21,7 @@ from src.strategy_d_checkpoint import (
     D_CHECKPOINT_STATUS_READY,
     D_CHECKPOINT_STATUS_SCAN_IN_PROGRESS,
     block_strategy_d_checkpoint_recovery,
+    clear_strategy_d_intraday_checkpoints,
     clear_strategy_d_checkpoint_recovery_block,
     inspect_strategy_d_checkpoint,
     invalidate_strategy_d_checkpoint,
@@ -252,6 +253,41 @@ class StrategyDCheckpointTests(unittest.TestCase):
         self.assertIn("I/O保护标记", blocked.reason)
         clear_strategy_d_checkpoint_recovery_block(self.path)
         self.assertTrue(self._inspect().ok)
+
+    def test_post_market_cleanup_removes_only_d_intraday_transient_files(self) -> None:
+        """收盘清理不得误删持仓、成交或其他策略状态。"""
+
+        project_root = Path(self.temp_dir.name) / "project"
+        state_dir = project_root / "data" / "state"
+        state_dir.mkdir(parents=True)
+        targets = [
+            state_dir / "strategy_d_intraday_checkpoint_20260825.json",
+            state_dir / "strategy_d_intraday_checkpoint_20260903.json",
+            state_dir
+            / "strategy_d_intraday_checkpoint_20260903.json.recovery_blocked",
+        ]
+        protected = [
+            state_dir / "positions.json",
+            state_dir / "trade_intents.json",
+            state_dir / "strategy_e_intraday_checkpoint_20260903.json",
+            state_dir / "strategy_d_intraday_checkpoint_bad.json",
+        ]
+        for path in targets + protected:
+            path.write_text("{}", encoding="utf-8")
+
+        startup_removed = clear_strategy_d_intraday_checkpoints(
+            project_root,
+            preserve_trade_date="20260903",
+        )
+
+        self.assertEqual(startup_removed, [targets[0]])
+        self.assertFalse(targets[0].exists())
+        self.assertTrue(targets[1].exists())
+        self.assertTrue(targets[2].exists())
+        close_removed = clear_strategy_d_intraday_checkpoints(project_root)
+        self.assertEqual(set(close_removed), set(targets[1:]))
+        self.assertTrue(all(not path.exists() for path in targets))
+        self.assertTrue(all(path.exists() for path in protected))
 
     def test_runtime_fingerprint_changes_with_d_configuration(self) -> None:
         project_root = Path(__file__).resolve().parents[1]

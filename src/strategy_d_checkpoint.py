@@ -14,6 +14,7 @@ import math
 import os
 from pathlib import Path
 import platform
+import re
 import time
 from typing import Any, Mapping, Sequence
 import uuid
@@ -85,6 +86,39 @@ def strategy_d_checkpoint_recovery_block_path(checkpoint_path: Path) -> Path:
 
     path = Path(checkpoint_path)
     return path.with_name(f"{path.name}.recovery_blocked")
+
+
+_D_INTRADAY_TRANSIENT_FILE_RE = re.compile(
+    r"^strategy_d_intraday_checkpoint_(?P<trade_date>\d{8})\.json"
+    r"(?:\.recovery_blocked)?$"
+)
+
+
+def clear_strategy_d_intraday_checkpoints(
+    project_root: Path,
+    *,
+    preserve_trade_date: str = "",
+) -> list[Path]:
+    """收盘后删除全部D盘中临时检查点，避免跨交易日累积。
+
+    这里只匹配固定日期命名的路径恢复文件及其恢复阻断标记；盘中启动清理时
+    可用``preserve_trade_date``保留当天恢复证据。成交、持仓、信号CSV和运行
+    日志属于实盘审计证据，不在清理范围内。
+    """
+
+    state_dir = Path(project_root) / "data" / "state"
+    if not state_dir.exists():
+        return []
+    removed: list[Path] = []
+    for path in sorted(state_dir.iterdir()):
+        match = _D_INTRADAY_TRANSIENT_FILE_RE.fullmatch(path.name)
+        if not path.is_file() or match is None:
+            continue
+        if preserve_trade_date and match.group("trade_date") == preserve_trade_date:
+            continue
+        _unlink_with_retry(path)
+        removed.append(path)
+    return removed
 
 
 def strategy_d_machine_fingerprint() -> str:

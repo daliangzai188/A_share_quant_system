@@ -67,6 +67,7 @@ from src.strategy_equity_ledger import (
 from src.strategy_identity import normalize_strategy_leg, normalize_strategy_record
 from src.strategy_d_checkpoint import (
     StrategyDCheckpointCheck,
+    clear_strategy_d_intraday_checkpoints,
     inspect_strategy_d_checkpoint,
     strategy_d_checkpoint_path,
     strategy_d_machine_fingerprint,
@@ -11504,6 +11505,35 @@ def stop_strategy_d_monitor(reason: str = "") -> None:
         logger().warning("关闭D策略监控失败：%s", exc)
 
 
+def clear_strategy_d_intraday_transient_data(
+    reason: str,
+    *,
+    preserve_trade_date: str = "",
+) -> int:
+    """删除D盘中路径恢复文件，保证下一交易日不继承前一日状态。"""
+
+    try:
+        removed = clear_strategy_d_intraday_checkpoints(
+            PROJECT_ROOT,
+            preserve_trade_date=preserve_trade_date,
+        )
+    except Exception as exc:
+        logger().error("D盘中临时数据清理失败（%s）：%s", reason, exc)
+        return -1
+    logger().info(
+        "D盘中临时数据清理完成（%s）：删除%d个路径检查点；"
+        "%s成交、持仓、信号CSV和运行日志继续保留。",
+        reason,
+        len(removed),
+        (
+            f"当天{preserve_trade_date}恢复检查点仍保留；"
+            if preserve_trade_date
+            else ""
+        ),
+    )
+    return len(removed)
+
+
 def _start_d_monitor_log_forwarder(proc: subprocess.Popen) -> None:
     """异步转发 D 扫描进程输出到主日志，避免子进程输出阻塞。"""
     def _forward() -> None:
@@ -15293,6 +15323,9 @@ def run_job(scheduled_time: datetime.time) -> None:
         job_afternoon() if trade_day else logger().info("非交易日，跳过盘中任务")
     elif scheduled_time == SCHED_POST_MARKET:   # 15:10
         if trade_day:
+            # D盘中分钟路径和重启检查点仅服务当日执行。收盘后先清理，避免历史
+            # 临时文件逐日累积或被下一交易日误用；实盘审计记录不在清理范围。
+            clear_strategy_d_intraday_transient_data("15:10收盘任务")
             # 收盘全量对账（只读+告警，独立于数据流水线，先跑）
             try:
                 reconcile_positions_with_broker()
@@ -16795,6 +16828,17 @@ def main() -> None:
     setup()
     log = logger()
     log.info("A_System 守护进程启动（PID %d）", os.getpid() if (os := __import__("os")) else 0)
+    startup_now = now_beijing()
+    # 若前一日15:10任务因关机而没执行，下一次启动必须补清历史D检查点。
+    # 盘中重启时保留当天文件供严格恢复；收盘后重启则连当天文件一并清除。
+    clear_strategy_d_intraday_transient_data(
+        "守护进程启动兜底",
+        preserve_trade_date=(
+            startup_now.strftime("%Y%m%d")
+            if startup_now.time() < datetime.time(15, 0)
+            else ""
+        ),
+    )
     # 启动即覆盖上个进程遗留的 verified，防 keeper 在本进程尚未验证账户时误报恢复。
     write_broker_health("starting")
 

@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 import tempfile
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import pandas as pd
 
@@ -640,6 +640,86 @@ class EntryAlignmentFixTests(unittest.TestCase):
             self.assertFalse(ready)
             self.assertIn("不支持严格QMT 1m回补", reason)
             self.assertFalse(monitor.minute_history_recovery_required)
+
+    def test_d_explicitly_logs_zero_actionable_candidates_once_per_minute(self) -> None:
+        """触板目标不等于合格候选；每分钟必须明确报告最终可开仓为零。"""
+
+        with tempfile.TemporaryDirectory() as directory:
+            release_path = self._write_d_release(Path(directory) / "release.json")
+            log = MagicMock()
+            monitor = StrategyDMonitor(
+                broker=None,
+                live_order=False,
+                logger=log,
+                signal_csv=Path(directory) / "signals.csv",
+                config={"strategy_d": {"factor_release_path": str(release_path)}},
+            )
+            monitor.states = {"300001.SZ": StockState(ts_code="300001.SZ")}
+            monitor.strict_minute_refresh_hhmm = 1102
+            monitor._refresh_strict_minute_paths = Mock(return_value=True)
+            monitor._factor_release_match = Mock(
+                return_value=(False, "未命中任何已发布D因子if条件")
+            )
+
+            monitor._check_and_fire_factor_union()
+            monitor._check_and_fire_factor_union()
+
+            result_calls = [
+                call
+                for call in (
+                    log.warning.call_args_list + log.info.call_args_list
+                )
+                if call.args and str(call.args[0]).startswith("[D候选结果]")
+            ]
+            self.assertEqual(len(result_calls), 1)
+            self.assertEqual(result_calls[0].args[1], "11:02")
+            self.assertTrue(
+                any(
+                    call.args
+                    and str(call.args[0]).startswith("[D候选结果]")
+                    for call in log.warning.call_args_list
+                )
+            )
+
+    def test_d_logs_factor_hit_but_final_fill_rejection(self) -> None:
+        """因子命中后若成交门失败，日志必须明确最终仍不可开仓。"""
+
+        with tempfile.TemporaryDirectory() as directory:
+            release_path = self._write_d_release(Path(directory) / "release.json")
+            log = MagicMock()
+            monitor = StrategyDMonitor(
+                broker=None,
+                live_order=False,
+                logger=log,
+                signal_csv=Path(directory) / "signals.csv",
+                config={"strategy_d": {"factor_release_path": str(release_path)}},
+            )
+            state = StockState(ts_code="300001.SZ", name="成交门失败测试")
+            state.matched_factor_profile_ids = "P1"
+            monitor.states = {state.ts_code: state}
+            monitor.strict_minute_refresh_hhmm = 945
+            monitor._refresh_strict_minute_paths = Mock(return_value=True)
+            monitor._factor_release_match = Mock(
+                return_value=(True, "命中D因子条件:P1")
+            )
+            monitor._strict_path_for = Mock(
+                return_value=StrictMinutePath(certifiable=True, open_times=2)
+            )
+            monitor._refresh_fill_gate = Mock(
+                return_value=(False, "可靠成交概率79%<80%")
+            )
+
+            monitor._check_and_fire_factor_union()
+
+            rendered = "\n".join(
+                str(call.args[0]) % tuple(call.args[1:])
+                for call in log.warning.call_args_list
+                if call.args
+            )
+            self.assertIn("本分钟新增因子合格=1", rendered)
+            self.assertIn("300001.SZ(P1)", rendered)
+            self.assertIn("最终可开仓=0", rendered)
+            self.assertIn("可靠成交概率79%<80%", rendered)
 
 
 if __name__ == "__main__":
