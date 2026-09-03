@@ -73,8 +73,15 @@ from src.strategy_d_checkpoint import (
     strategy_d_machine_fingerprint,
     strategy_d_runtime_fingerprint,
 )
+from src.strategy_d_factor_rules import (
+    ReleaseSignalClock,
+    load_factor_release,
+    release_signal_clock,
+    release_uses_factor_union,
+)
 from src.strategy_d_spec import (
     D_CHECKPOINT_MAX_AGE_SECONDS,
+    D_ORDER_CANCEL_HHMM,
     D_TRACKING_START_HHMM,
     intraday_history_is_complete,
 )
@@ -95,6 +102,31 @@ from src.rolling_signal_store import (
 
 _execution_completion_tracker = ExecutionCompletionTracker(PROJECT_ROOT)
 _DAEMON_BOOT_ID = uuid.uuid4().hex
+
+
+def _strategy_d_release_signal_clock(
+    config: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], ReleaseSignalClock]:
+    """读取D正式发布并由发布分支推导唯一的实盘信号时钟。"""
+
+    runtime_config = config or load_json_config(
+        PROJECT_ROOT / "config" / "config.json"
+    )
+    strategy_config = runtime_config.get("strategy_d", {})
+    raw_path = str(
+        strategy_config.get(
+            "factor_release_path", "config/strategy_d_factor_release.json"
+        )
+    )
+    release_path = Path(raw_path)
+    if not release_path.is_absolute():
+        release_path = PROJECT_ROOT / release_path
+    release = load_factor_release(release_path)
+    clock = release_signal_clock(
+        release,
+        full_session_last_hhmm=D_ORDER_CANCEL_HHMM - 1,
+    )
+    return release, clock
 
 
 def _strategy_d_checkpoint_recovery_check(
@@ -11323,8 +11355,8 @@ def job_strategy_d(decisions=None) -> None:
     架构原则：QMT 连接只能由主守护进程持有。D监控在线程内运行，
     通过 SharedQMTBrokerProxy 复用主连接，禁止再启动独立 QMT 子进程。
     监控脚本内部从09:30开始完整跟踪；买入时点由当前正式D发布条件决定，
-    旧版D为14:00后回封，因子版D在09:30~14:54真实新回封时即时匹配；
-    14:56统一结束撤单流程。
+    旧版D为14:00后回封，因子版D由正式发布中的reseal_time_bucket自动决定
+    最后扫描分钟；已有活动委托仍持续确认并在14:55撤销未成交残单。
     """
     global _d_monitor_thread
     logger().info("===== 策略D监控启动（盘中后台）=====")
@@ -12269,9 +12301,6 @@ def startup_catchup_strategy_d() -> None:
     if has_combined_action(decisions, "PLAN_SELL_D_FIRST"):
         logger().info("启动补检：今日有D持仓待卖出(优先处理)，不再启动新的D买入监控。")
         return
-    d_history_complete = intraday_history_is_complete(now.hour * 100 + now.minute)
-    d_checkpoint_check = _strategy_d_checkpoint_recovery_check(now)
-
     # E延迟开仓是原候选自己的恢复链，必须先于D互斥门处理；有E候选时D会被
     # 正确关闭，但不能因此连E自己的重试也一起跳过。
     if (
@@ -12290,6 +12319,33 @@ def startup_catchup_strategy_d() -> None:
         logger().info("启动补检：D全活动总门未通过，跳过：%s", d_tracking_reason)
         return
 
+    try:
+        d_release, d_signal_clock = _strategy_d_release_signal_clock()
+    except Exception as exc:
+        logger().error(
+            "启动补检：D正式发布时钟读取失败，按fail-closed不启动D：%s",
+            exc,
+        )
+        return
+    now_hhmm_value = now.hour * 100 + now.minute
+    if (
+        release_uses_factor_union(d_release)
+        and now_hhmm_value > d_signal_clock.last_signal_hhmm
+    ):
+        logger().warning(
+            "启动补检：D总门通过（%s），但release=%s的有效回封桶=%s、"
+            "最后信号分钟=%02d:%02d，当前已过窗口；不启动全市场扫描或QMT分钟线"
+            "回补，避免执行不可能产生正式候选的行情请求。",
+            d_tracking_reason,
+            str(d_release.get("release_id", "")),
+            ",".join(d_signal_clock.reseal_time_buckets) or "全时段",
+            d_signal_clock.last_signal_hhmm // 100,
+            d_signal_clock.last_signal_hhmm % 100,
+        )
+        return
+
+    d_history_complete = intraday_history_is_complete(now_hhmm_value)
+    d_checkpoint_check = _strategy_d_checkpoint_recovery_check(now)
     if d_history_complete:
         recovery_text = "进程仍处于09:30完整路径起点"
     elif d_checkpoint_check.ok:

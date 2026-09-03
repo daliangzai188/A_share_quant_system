@@ -69,6 +69,15 @@ class FactorDefinition:
         return MISSING_FACTOR_VALUE
 
 
+@dataclass(frozen=True)
+class ReleaseSignalClock:
+    """由正式发布分支推导出的D信号扫描时钟。"""
+
+    reseal_time_buckets: tuple[str, ...]
+    last_signal_hhmm: int
+    constrained_by_profiles: bool
+
+
 FACTOR_DEFINITIONS: tuple[FactorDefinition, ...] = (
     FactorDefinition(
         "reseal_time_bucket",
@@ -389,3 +398,65 @@ def load_factor_release(path: Path) -> dict[str, Any]:
 
 def release_uses_factor_union(release: Mapping[str, Any]) -> bool:
     return str(release.get("strategy_mode", "")) == FACTOR_UNION_MODE
+
+
+def release_signal_clock(
+    release: Mapping[str, Any],
+    *,
+    full_session_last_hhmm: int,
+) -> ReleaseSignalClock:
+    """从发布条件本身推导最后有效回封分钟，供回测与实盘共用。
+
+    ``reseal_time_bucket``由本模块的``FACTOR_DEFINITIONS``唯一声明。只要有
+    一个发布分支没有该条件，就说明信号可能出现在任意盘中分钟，必须保守运行
+    到完整交易时段末尾；禁止实盘为了节省资源自行缩短策略时间。
+    """
+
+    fallback = ReleaseSignalClock(
+        reseal_time_buckets=tuple(),
+        last_signal_hhmm=int(full_session_last_hhmm),
+        constrained_by_profiles=False,
+    )
+    if not release_uses_factor_union(release):
+        return fallback
+
+    profiles = release.get("profiles", [])
+    if not isinstance(profiles, list) or not profiles:
+        return fallback
+    definition = FACTOR_BY_NAME["reseal_time_bucket"]
+    bucket_by_label = {bucket.label: bucket for bucket in definition.buckets}
+    bucket_order = {bucket.label: index for index, bucket in enumerate(definition.buckets)}
+    labels: set[str] = set()
+    last_signal_hhmm = 0
+    for profile in profiles:
+        if not isinstance(profile, Mapping):
+            return fallback
+        conditions = profile.get("conditions", {})
+        if not isinstance(conditions, Mapping):
+            return fallback
+        label = str(conditions.get("reseal_time_bucket", "")).strip()
+        if not label:
+            return fallback
+        bucket = bucket_by_label.get(label)
+        if bucket is None or bucket.upper is None:
+            return fallback
+        labels.add(label)
+        # 时间桶上界不包含。先转成绝对分钟再回到HHMM，避免14:00-1被错误
+        # 算成不存在的13:99；14:00的上一分钟必须是13:59。
+        upper_hhmm = int(bucket.upper)
+        upper_hour, upper_minute = divmod(upper_hhmm, 100)
+        previous_absolute_minute = upper_hour * 60 + upper_minute - 1
+        previous_hhmm = (
+            previous_absolute_minute // 60 * 100
+            + previous_absolute_minute % 60
+        )
+        last_signal_hhmm = max(last_signal_hhmm, previous_hhmm)
+
+    if last_signal_hhmm <= 0:
+        return fallback
+    ordered_labels = tuple(sorted(labels, key=bucket_order.__getitem__))
+    return ReleaseSignalClock(
+        reseal_time_buckets=ordered_labels,
+        last_signal_hhmm=min(last_signal_hhmm, int(full_session_last_hhmm)),
+        constrained_by_profiles=True,
+    )

@@ -69,6 +69,7 @@ from src.strategy_d_factor_rules import (
     factor_values_from_raw,
     load_factor_release,
     matching_profile_ids,
+    release_signal_clock,
     release_uses_factor_union,
     trading_minutes_between,
 )
@@ -747,6 +748,10 @@ class StrategyDMonitor:
         self.factor_union_active = release_uses_factor_union(self.factor_release)
         self.factor_profiles = list(self.factor_release.get("profiles", []))
         self.factor_release_id = str(self.factor_release.get("release_id", ""))
+        self.factor_signal_clock = release_signal_clock(
+            self.factor_release,
+            full_session_last_hhmm=CANCEL_HHMM - 1,
+        )
         entry_alignment = self.factor_release.get("entry_alignment", {})
         self.historical_fill_gate_certified = bool(
             isinstance(entry_alignment, dict)
@@ -888,9 +893,12 @@ class StrategyDMonitor:
             self.logger.warning(
                 "D启用月度冻结因子并集发布: release_id=%s profiles=%d | 任一if命中后进入候选 | "
                 "封板/炸板/回封严格按已完成QMT 1m收盘重建 | "
+                "有效回封桶=%s，最后信号分钟=%s | "
                 "首板/非ST/14:55前/成交概率>=%.0f%%且可靠仍是公共安全门",
                 self.factor_release_id,
                 len(self.factor_profiles),
+                ",".join(self.factor_signal_clock.reseal_time_buckets) or "全时段",
+                hhmm_to_str(self.factor_signal_clock.last_signal_hhmm),
                 self.min_fill_probability * 100,
             )
             if not self.runtime_new_buy_enabled:
@@ -948,6 +956,20 @@ class StrategyDMonitor:
     def _batches(self) -> list[list[str]]:
         return [self.universe[i: i + POLL_BATCH_SIZE]
                 for i in range(0, len(self.universe), POLL_BATCH_SIZE)]
+
+    def _signal_scan_is_open(self, hhmm: int) -> bool:
+        """当前分钟是否仍可能产生正式D信号。
+
+        因子模式直接服从发布分支推导出的时钟；旧模式保持原14:55撤单边界。
+        这是全市场快照与QMT分钟线查询的唯一运行条件，避免决策层和行情层各自
+        维护一套时间判断。
+        """
+
+        if int(hhmm) >= CANCEL_HHMM:
+            return False
+        if not self.factor_union_active:
+            return True
+        return int(hhmm) <= self.factor_signal_clock.last_signal_hhmm
 
     # ── 盘中路径检查点 ────────────────────────────────────────────────────────
 
@@ -3272,6 +3294,21 @@ class StrategyDMonitor:
         session_start_hhmm = now_hhmm()
         if self.original_session_start_hhmm <= 0:
             self.original_session_start_hhmm = session_start_hhmm
+        if not self._signal_scan_is_open(session_start_hhmm):
+            reason = (
+                f"当前时间{hhmm_to_str(session_start_hhmm)}已超过正式发布最后信号分钟"
+                f"{hhmm_to_str(self.factor_signal_clock.last_signal_hhmm)}"
+            )
+            self.logger.warning(
+                "[D SCAN WINDOW CLOSED] %s；不启动全市场快照、QMT分钟线回补或"
+                "新开仓判断，之后不可能形成与发布规则一致的新D信号。",
+                reason,
+            )
+            self._invalidate_checkpoint(
+                D_CHECKPOINT_STATUS_CLOSED,
+                f"D发布信号窗口结束:{reason}",
+            )
+            return
         resumable_in_memory_path = (
             self.scan_round > 0
             and bool(self.states)
@@ -3348,6 +3385,7 @@ class StrategyDMonitor:
             f"每轮扫完整市场后等待{POLL_INTERVAL_SEC}s\n"
             + (
                 f"  真实新回封 → 匹配{len(self.factor_profiles)}条发布if条件 "
+                f"| 最后信号分钟={hhmm_to_str(self.factor_signal_clock.last_signal_hhmm)} "
                 "| 14:55 → 自动撤单\n"
                 if self.factor_union_active
                 else "  09:35 → 观察提醒  |  14:00 → 买入信号  |  14:55 → 自动撤单\n"
@@ -3355,7 +3393,7 @@ class StrategyDMonitor:
         )
 
         try:
-            while now_hhmm() < CANCEL_HHMM:
+            while self._signal_scan_is_open(now_hhmm()):
                 tracking_allowed, tracking_reason = self._tracking_gate_allows_monitor()
                 if not tracking_allowed:
                     self.logger.info(
@@ -3378,9 +3416,18 @@ class StrategyDMonitor:
             print("\n用户中断，执行撤单流程...")
 
         self.cancel_all_d_orders()
+        if self.factor_union_active and now_hhmm() < CANCEL_HHMM:
+            close_reason = (
+                "D发布信号窗口正常结束；最后信号分钟="
+                f"{hhmm_to_str(self.factor_signal_clock.last_signal_hhmm)}，"
+                "已停止全市场快照和QMT分钟线查询"
+            )
+            self.logger.warning("[D SCAN WINDOW CLOSED] %s。", close_reason)
+        else:
+            close_reason = "D当日监控已到撤单边界并正常结束"
         self._invalidate_checkpoint(
             D_CHECKPOINT_STATUS_CLOSED,
-            "D当日监控已到撤单边界并正常结束",
+            close_reason,
         )
         self._print_summary()
 

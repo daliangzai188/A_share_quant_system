@@ -18,6 +18,10 @@ from scripts.monitor_strategy_d_intraday import (
 from scripts.run_paper_ab_filtered_daily_ops import resolve_ac_selected_leg
 from src.acde_rolling_framework import replay_action_date_cash_portfolio
 from src.fill_model import fill_probability_from_amounts
+from src.strategy_d_factor_rules import (
+    load_factor_release,
+    release_signal_clock,
+)
 from src.strategy_d_minute_alignment import (
     StrictMinutePath,
     expected_completed_minute_hhmm,
@@ -39,7 +43,11 @@ class EntryAlignmentFixTests(unittest.TestCase):
         mode: str = "FACTOR_UNION",
         certified: bool = True,
         enabled: bool = True,
+        reseal_time_bucket: str | None = None,
     ) -> Path:
+        conditions = {"segment_bucket": "GROWTH_BOARD"}
+        if reseal_time_bucket:
+            conditions["reseal_time_bucket"] = reseal_time_bucket
         path.write_text(
             json.dumps(
                 {
@@ -61,9 +69,7 @@ class EntryAlignmentFixTests(unittest.TestCase):
                             {
                                 "profile_id": "P1",
                                 "priority": 1,
-                                "conditions": {
-                                    "segment_bucket": "GROWTH_BOARD"
-                                },
+                                "conditions": conditions,
                             }
                         ]
                         if mode == "FACTOR_UNION"
@@ -75,6 +81,111 @@ class EntryAlignmentFixTests(unittest.TestCase):
             encoding="utf-8",
         )
         return path
+
+    def test_d_release_clock_is_derived_from_formal_reseal_buckets(self) -> None:
+        """正式分支的回封桶必须直接决定实盘最后扫描分钟。"""
+
+        with tempfile.TemporaryDirectory() as directory:
+            release = load_factor_release(
+                self._write_d_release(
+                    Path(directory) / "morning.json",
+                    reseal_time_bucket="0930_1000",
+                )
+            )
+            clock = release_signal_clock(
+                release,
+                full_session_last_hhmm=1454,
+            )
+
+        self.assertTrue(clock.constrained_by_profiles)
+        self.assertEqual(clock.reseal_time_buckets, ("0930_1000",))
+        self.assertEqual(clock.last_signal_hhmm, 1000)
+
+    def test_d_release_clock_extends_automatically_for_afternoon_profile(self) -> None:
+        """未来发布下午桶时不改监控代码也必须自动延长。"""
+
+        with tempfile.TemporaryDirectory() as directory:
+            release = load_factor_release(
+                self._write_d_release(
+                    Path(directory) / "afternoon.json",
+                    reseal_time_bucket="1300_1359",
+                )
+            )
+            clock = release_signal_clock(
+                release,
+                full_session_last_hhmm=1454,
+            )
+
+        self.assertEqual(clock.last_signal_hhmm, 1359)
+
+    def test_d_release_clock_keeps_full_session_if_any_profile_has_no_time(self) -> None:
+        """未限定回封时间的分支必须保守保留全天扫描，不能错误漏信号。"""
+
+        with tempfile.TemporaryDirectory() as directory:
+            release = load_factor_release(
+                self._write_d_release(Path(directory) / "unbounded.json")
+            )
+            clock = release_signal_clock(
+                release,
+                full_session_last_hhmm=1454,
+            )
+
+        self.assertFalse(clock.constrained_by_profiles)
+        self.assertEqual(clock.last_signal_hhmm, 1454)
+
+    def test_d_monitor_started_after_release_window_makes_no_qmt_market_call(self) -> None:
+        """窗口结束后的恢复不得再扫描全市场或下载分钟线。"""
+
+        with tempfile.TemporaryDirectory() as directory:
+            release_path = self._write_d_release(
+                Path(directory) / "release.json",
+                reseal_time_bucket="0930_1000",
+            )
+            broker = MagicMock()
+            log = MagicMock()
+            monitor = StrategyDMonitor(
+                broker=broker,
+                live_order=False,
+                logger=log,
+                signal_csv=Path(directory) / "signals.csv",
+                config={"strategy_d": {"factor_release_path": str(release_path)}},
+            )
+            monitor._invalidate_checkpoint = Mock(return_value=True)
+
+            with patch(
+                "scripts.monitor_strategy_d_intraday.now_hhmm",
+                return_value=1356,
+            ):
+                monitor.run()
+
+        broker.get_full_tick.assert_not_called()
+        broker.get_minute_bars.assert_not_called()
+        rendered = "\n".join(
+            str(call.args[0]) % tuple(call.args[1:])
+            for call in log.warning.call_args_list
+            if call.args
+        )
+        self.assertIn("D SCAN WINDOW CLOSED", rendered)
+        self.assertIn("10:00", rendered)
+
+    def test_d_monitor_signal_window_includes_exact_last_release_minute(self) -> None:
+        """10:00仍须认证最后合法分钟，10:01才关闭V15行情扫描。"""
+
+        with tempfile.TemporaryDirectory() as directory:
+            release_path = self._write_d_release(
+                Path(directory) / "release.json",
+                reseal_time_bucket="0930_1000",
+            )
+            monitor = StrategyDMonitor(
+                broker=MagicMock(),
+                live_order=False,
+                logger=MagicMock(),
+                signal_csv=Path(directory) / "signals.csv",
+                config={"strategy_d": {"factor_release_path": str(release_path)}},
+            )
+
+        self.assertTrue(monitor._signal_scan_is_open(1000))
+        self.assertFalse(monitor._signal_scan_is_open(1001))
 
     def test_c_accepted_fallback_survives_other_risk_rejections(self) -> None:
         leg, status = resolve_ac_selected_leg(
