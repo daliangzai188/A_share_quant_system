@@ -15406,6 +15406,25 @@ _last_account_has_position: bool = False  # 最近一次券商账户心跳是否
 _qmt_lock = threading.RLock()        # 保护 _qmt_adapter 并发访问（可重入：平仓路径内嵌撤止盈单）
 _d_monitor_thread: threading.Thread | None = None  # D监控线程；D不再独立连接QMT
 
+# QMT建连是有资源成本的操作。xtquant在connect=-1时不一定能立即释放
+# WaitingFreeWriter/套接字；因此所有业务线程共用同一个进程级退避门，
+# 禁止账户心跳、买单确认、POV等在连接故障时各自密集新建会话。
+_qmt_connect_failure_streak: int = 0
+_qmt_connect_retry_not_before: float = 0.0
+_qmt_connect_last_error: str = ""
+
+
+class QMTReconnectBackoffError(RuntimeError):
+    """上一次QMT建连已失败，当前仍在统一退避窗口。"""
+
+
+def _qmt_connect_backoff_seconds(failure_streak: int) -> float:
+    """连接失败的进程级退避；最长5分钟，成功后立即归零。"""
+
+    schedule = (5.0, 15.0, 30.0, 60.0, 120.0, 300.0)
+    index = min(max(int(failure_streak), 1), len(schedule)) - 1
+    return schedule[index]
+
 
 def _broker_config_with_qmt_override(
     broker_config: dict,
@@ -15515,6 +15534,19 @@ def _qmt_connect(broker_config: dict, *, allow_full_scan: bool | None = None) ->
        不先试缓存再叠加完整扫描，避免首选 session 超时线程未退出时又抢 QMT。
     2. 轻量心跳使用缓存优先，失败后交给下一轮关键重连处理。
     """
+    global _qmt_connect_failure_streak
+    global _qmt_connect_retry_not_before
+    global _qmt_connect_last_error
+    global _LAST_QMT_ERROR_TEXT
+
+    monotonic_now = time.monotonic()
+    if monotonic_now < _qmt_connect_retry_not_before:
+        remaining = _qmt_connect_retry_not_before - monotonic_now
+        raise QMTReconnectBackoffError(
+            f"QMT建连统一退避中，{remaining:.1f}秒后才允许下一次真实连接；"
+            f"上次错误={_qmt_connect_last_error or '未记录'}"
+        )
+
     errors: list[str] = []
     cached = _load_qmt_last_success()
     attempts: list[dict[str, Any]] = []
@@ -15565,12 +15597,22 @@ def _qmt_connect(broker_config: dict, *, allow_full_scan: bool | None = None) ->
                 qmt_path=str(getattr(adapter, "_active_qmt_path", "")),
                 session_id=str(getattr(adapter, "_active_session_id", "")),
             )
+            _qmt_connect_failure_streak = 0
+            _qmt_connect_retry_not_before = 0.0
+            _qmt_connect_last_error = ""
             return adapter
         except Exception as exc:
             errors.append(f"{attempt['label']}: {exc}")
             if attempt["label"] == "上次成功path/session" and _should_clear_qmt_cache_for_error(str(exc)):
                 _clear_qmt_last_success(str(exc))
-    raise RuntimeError("QMT连接失败: " + " | ".join(errors))
+    error_text = "QMT连接失败: " + " | ".join(errors)
+    _qmt_connect_failure_streak += 1
+    _qmt_connect_last_error = error_text
+    _LAST_QMT_ERROR_TEXT = error_text
+    _qmt_connect_retry_not_before = (
+        time.monotonic() + _qmt_connect_backoff_seconds(_qmt_connect_failure_streak)
+    )
+    raise RuntimeError(error_text)
 
 
 def _trade_intent_store() -> TradeIntentStore:
@@ -15704,11 +15746,31 @@ class SharedQMTBrokerProxy:
 
 
 def _qmt_query_account_positions(adapter: Any, *, timeout_sec: float = 25.0) -> tuple[Any, Any]:
-    """账户连接验证：资产和持仓均必须经唯一QMT队列成功返回。"""
+    """账户连接验证：资产和持仓均必须经唯一QMT队列成功返回。
+
+    账户在活动买单期间会出现 ``total_asset > available_cash + market_value``；
+    先用QMT直接返回的frozen_cash认证。只有这一轮因“缺失策略持仓+
+    资产差额”被拒绝时，才额外查一次当日委托，用非终态BUY的剩余金额
+    解释冻结资金。不为每分钟心跳无条件增加QMT查询。
+    """
     del timeout_sec  # 业务调用超时由执行服务统一管理，不再额外生成孤儿线程。
     account = adapter.query_account()
     positions = adapter.query_positions()
-    _sanitize_account_snapshot(account, positions)
+    try:
+        _sanitize_account_snapshot(
+            account,
+            positions,
+            log_inconsistent=False,
+        )
+    except BrokerSnapshotInconsistentError:
+        # 资产和持仓查询本身已成功；只为识别活动买单冻结金额补查委托。
+        active_orders = adapter.query_orders()
+        _sanitize_account_snapshot(
+            account,
+            positions,
+            active_orders=active_orders,
+            log_inconsistent=True,
+        )
     return account, positions
 
 
@@ -15719,7 +15781,79 @@ class BrokerSnapshotInconsistentError(RuntimeError):
     """券商查询有返回，但同一组账户/持仓快照自相矛盾。"""
 
 
-def _sanitize_account_snapshot(account: Any, positions: Any) -> None:
+_ACTIVE_QMT_ORDER_STATUSES = frozenset({48, 49, 50, 51, 52, 55})
+
+
+def _active_buy_order_reserved_cash(active_orders: Any) -> float:
+    """估算QMT当日活动买单尚未成交部分占用的资金。
+
+    只认QMT明确的非终态状态和BUY/STOCK_BUY方向。字段缺失时返回0，
+    不猜测、不用此函数放宽真实的持仓缺失。
+    """
+
+    from src.qmt_adapter import first_present, object_to_dict, to_float, to_int
+
+    reserved = 0.0
+    for raw_order in active_orders or []:
+        data = object_to_dict(raw_order)
+        status = to_int(
+            first_present(data, ["order_status", "m_nOrderStatus", "status"], -1),
+            -1,
+        )
+        if status not in _ACTIVE_QMT_ORDER_STATUSES:
+            continue
+        order_type = to_int(
+            first_present(data, ["order_type", "m_nOrderType"], -1),
+            -1,
+        )
+        side = str(
+            first_present(data, ["side", "order_side", "direction"], "")
+        ).strip().upper()
+        if order_type != 23 and side not in {"BUY", "B", "买入"}:
+            continue
+        ordered = max(
+            to_int(
+                first_present(
+                    data,
+                    ["order_volume", "m_nOrderVolume", "volume", "quantity"],
+                    0,
+                )
+            ),
+            0,
+        )
+        traded = max(
+            to_int(
+                first_present(
+                    data,
+                    ["traded_volume", "m_nTradedVolume", "traded_qty", "deal_volume"],
+                    0,
+                )
+            ),
+            0,
+        )
+        price = max(
+            to_float(
+                first_present(
+                    data,
+                    ["price", "order_price", "m_dPrice", "limit_price"],
+                    0.0,
+                )
+            ),
+            0.0,
+        )
+        remaining = max(ordered - traded, 0)
+        if remaining > 0 and price > 0:
+            reserved += remaining * price
+    return reserved
+
+
+def _sanitize_account_snapshot(
+    account: Any,
+    positions: Any,
+    *,
+    active_orders: Any = None,
+    log_inconsistent: bool = True,
+) -> None:
     """总资产自洽性校验（2026-07-25 事故：非交易日QMT先返回0、后返回1亿）。
 
     QMT 偶发返回脏的 total_asset，而它直接决定单票/总仓位上限：
@@ -15744,7 +15878,21 @@ def _sanitize_account_snapshot(account: Any, positions: Any) -> None:
                 broker_aliases.update(_ts_code_aliases(getattr(p, "ts_code", "")))
             except (TypeError, ValueError):
                 continue
-        implied = cash + mv
+        base_implied = cash + mv
+        reported_frozen = max(
+            float(getattr(account, "frozen_cash", 0.0) or 0.0),
+            0.0,
+        )
+        order_reserved = _active_buy_order_reserved_cash(active_orders)
+        # 冻结金额只能解释 total 中已经存在的正差额，不能反向把过期/
+        # 延迟委托金额加到账户总资产上。如此既兼容QMT frozen_cash字段缺失，
+        # 又不会用委托表掩盖 total_asset=0 等脏读。
+        positive_gap = max(total - base_implied, 0.0)
+        recognized_reserved = min(
+            max(reported_frozen, order_reserved),
+            positive_gap,
+        )
+        implied = base_implied + recognized_reserved
 
         # 2026-08-18事故：QMT在08:06/08:07连续两轮瞬时返回空持仓，
         # 但total_asset仍比cash多出整仓市值。旧逻辑错把total_asset改小，
@@ -15767,7 +15915,9 @@ def _sanitize_account_snapshot(account: Any, positions: Any) -> None:
             raise BrokerSnapshotInconsistentError(
                 "QMT持仓快照与策略账本/资产不自洽："
                 f"缺失策略代码={missing_codes or sorted(missing_aliases)} "
-                f"总资产={total:.2f} 可用资金={cash:.2f} 已返回持仓市值={mv:.2f}。"
+                f"总资产={total:.2f} 可用资金={cash:.2f} 已返回持仓市值={mv:.2f} "
+                f"认证冻结资金={recognized_reserved:.2f} "
+                f"未解释差额={unexplained_asset:.2f}。"
                 "本轮禁止清理本地持仓或执行新买入。"
             )
         if implied <= 0:
@@ -15784,8 +15934,13 @@ def _sanitize_account_snapshot(account: Any, positions: Any) -> None:
         )
         logger().error(
             "⚠️ [账户资产脏读] QMT返回总资产%.2f万，与可用资金%.2f万+"
-            "持仓市值%.2f万=%.2f万严重不符；%s。",
-            total / 10000, cash / 10000, mv / 10000, implied / 10000, action_text,
+            "持仓市值%.2f万+认证冻结%.2f万=%.2f万严重不符；%s。",
+            total / 10000,
+            cash / 10000,
+            mv / 10000,
+            recognized_reserved / 10000,
+            implied / 10000,
+            action_text,
         )
         # 持仓市值已返回、但total_asset短暂为0时，可以用cash+mv保守修正。
         # 反向的total>cash+mv可能是冻结资金或持仓列表不完整，绝不再擅自把总资产改小。
@@ -15798,14 +15953,16 @@ def _sanitize_account_snapshot(account: Any, positions: Any) -> None:
             _ASSET_SANITY_ALERT_DAY = today
             _notify(
                 "system_error", "⚠️ 账户资产快照不自洽",
-                f"QMT返回总资产{total / 10000:.2f}万，与可用{cash / 10000:.2f}万+市值{mv / 10000:.2f}万"
+                f"QMT返回总资产{total / 10000:.2f}万，与可用{cash / 10000:.2f}万+"
+                f"市值{mv / 10000:.2f}万+认证冻结{recognized_reserved / 10000:.2f}万"
                 f"={implied / 10000:.2f}万不符，{action_text}。若持续出现请检查QMT终端。",
                 level="timeSensitive",
             )
     except BrokerSnapshotInconsistentError as exc:
         # 必须传递给心跳/业务调用者：本轮只记录失败并下轮重试，
         # 不允许继续把矛盾快照当成空仓、清账或放行新买入。
-        logger().error("❌ 券商快照无效：%s", exc)
+        if log_inconsistent:
+            logger().error("❌ 券商快照无效：%s", exc)
         raise
     except Exception as exc:  # noqa: BLE001
         logger().warning("账户资产自洽性校验异常（不影响主流程）：%s", exc)
@@ -15835,6 +15992,7 @@ _SOCKET_EXHAUSTED_MARKERS = (
     "缓冲区空间不足",
     "队列已满",
     "打开的套接字太多",
+    "WaitingFreeWriter instances exceed maximum limit",
 )
 
 
@@ -16019,6 +16177,61 @@ def _notify_once_per(key: str, interval_sec: float, title: str, body: str, **kwa
         return False
 
 
+def _record_broker_snapshot_inconsistent(
+    error: BrokerSnapshotInconsistentError,
+    log: Any,
+    *,
+    context: str,
+) -> None:
+    """记录业务快照不一致，但绝不重建QMT连接。
+
+    账户、持仓（以及必要时的委托）查询已经有返回，证明传输通道可用。
+    这类错误必须fail-closed阻断本轮派生交易，但若把它当成掉线反复
+    connect，会主动销毁仍正常的持久会话并耗尽xtquant资源。
+    """
+
+    write_broker_health(
+        "snapshot_inconsistent",
+        error=error,
+        failure_count=0,
+    )
+    log.error(
+        "⛔ QMT查询通道仍可用，但券商快照未通过账务认证（%s）：%s。"
+        "本轮禁止持仓清理和新买入，保留原QMT会话，不执行断连/重连。",
+        context,
+        error,
+    )
+    _notify_once_per(
+        "broker_snapshot_inconsistent",
+        300,
+        "⚠️ 账户快照校验未通过",
+        "QMT连接仍可查询，但账户/持仓/委托快照不自洽。"
+        "系统已拒绝本轮持仓清理和新买入，不会重建QMT会话；"
+        "请核对QMT账户、活动委托与持仓。",
+        level="timeSensitive",
+    )
+
+
+def _request_qmt_resource_recovery(error: BaseException) -> bool:
+    """xtquant连接器/套接字已耗尽时，只允许整进程回收一次。"""
+
+    error_text = str(error)
+    if not _is_socket_resource_exhausted(error_text):
+        return False
+    return _request_process_recovery(
+        reason=f"QMT底层连接资源已耗尽:{error_text}",
+        exit_code=EXIT_CODE_SOCKET_EXHAUSTED,
+        heartbeat_status="qmt_resources_exhausted_restarting",
+        title="🔄 QMT资源耗尽，程序自动恢复",
+        body=(
+            "xtquant已报WaitingFreeWriter/套接字资源耗尽。"
+            "daemon已熔断新建会话并退出，keeper将启动全新进程；"
+            "新进程会先核对真实委托、成交和持仓，不会盲目重发。"
+        ),
+        clear_qmt_cache=False,
+    )
+
+
 def _qmt_reset() -> None:
     """通过唯一执行线程断开并清除持久连接。"""
 
@@ -16200,7 +16413,27 @@ def _print_account_status(log: Any) -> None:
                 if qmt_is_critical_window():
                     _notify("connection", "✅ 账户重连成功", "QMT连接已恢复正常。")
                 _qmt_reconnect_count = 0
+        except BrokerSnapshotInconsistentError as snapshot_err:
+            # 账户/持仓/委托查询已经有返回，这是账务语义门失败，
+            # 不是连接断开。原会话必须保留，否则会把可用QMT主动打成掉线。
+            _qmt_reconnect_count = 0
+            _record_broker_snapshot_inconsistent(
+                snapshot_err,
+                log,
+                context="账户心跳",
+            )
+            return
+        except QMTReconnectBackoffError as backoff_err:
+            write_broker_health(
+                "unavailable",
+                error=backoff_err,
+                failure_count=_qmt_reconnect_count,
+            )
+            log.info("QMT连接故障仍在统一退避窗口，本轮不新建会话：%s", backoff_err)
+            return
         except Exception as first_err:
+            if _request_qmt_resource_recovery(first_err):
+                return
             _qmt_reset()
             _qmt_reconnect_count += 1
             write_broker_health(
@@ -16241,9 +16474,12 @@ def _print_account_status(log: Any) -> None:
             try:
                 if critical_window:
                     log.info("QMT自动重连开始（第%d次）", _qmt_reconnect_count)
-                    allow_full_scan = True
+                    # 前两轮只复用最近成功session；第3轮才唯一一次
+                    # 扫备用path/session。之后回到首选session并服从进程级退避，
+                    # 避免一次故障每15秒新建十个XtQuantTrader。
+                    allow_full_scan = _qmt_reconnect_count == 3
                 else:
-                    allow_full_scan = _qmt_reconnect_count >= 3
+                    allow_full_scan = _qmt_reconnect_count == 3
                     scan_desc = "完整扫描备用session/path" if allow_full_scan else "首选session"
                     log.info(
                         "QMT非交易时段后台静默重连开始（第%d次，%s）",
@@ -16262,7 +16498,26 @@ def _print_account_status(log: Any) -> None:
                 if critical_window:
                     _notify("connection", "✅ 账户重连成功", "QMT连接已恢复正常。")
                 _qmt_reconnect_count = 0
+            except BrokerSnapshotInconsistentError as snapshot_err:
+                # connect/query已经恢复，只是快照语义不自洽；结束连接重试计数。
+                _qmt_reconnect_count = 0
+                _record_broker_snapshot_inconsistent(
+                    snapshot_err,
+                    log,
+                    context="连接恢复后快照复核",
+                )
+                return
+            except QMTReconnectBackoffError as backoff_err:
+                write_broker_health(
+                    "unavailable",
+                    error=backoff_err,
+                    failure_count=_qmt_reconnect_count,
+                )
+                log.info("QMT统一退避门拒绝本轮重复建连：%s", backoff_err)
+                return
             except Exception as retry_err:
+                if _request_qmt_resource_recovery(retry_err):
+                    return
                 write_broker_health(
                     "unavailable",
                     error=retry_err,

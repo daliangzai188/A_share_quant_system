@@ -78,6 +78,183 @@ class BrokerPositionSnapshotRecoveryTests(unittest.TestCase):
 
         self.assertEqual(account.total_asset, 278_600.0)
 
+    def test_pending_buy_reported_frozen_cash_does_not_fake_missing_position(self) -> None:
+        """复现2026-09-04：预挂买单冻结6.74万后，不得把资产差额
+        误当成近期策略持仓在QMT中消失。
+        """
+
+        account = SimpleNamespace(
+            total_asset=81_912.70,
+            available_cash=14_520.70,
+            frozen_cash=67_392.00,
+        )
+        recent_ghost = _ghost_position()
+        recent_ghost["sell_date"] = "20260902"
+        recent_ghost["ghost_cleared_at"] = "2026-09-02 11:14:31"
+        with (
+            patch.object(daemon, "load_positions", return_value=[recent_ghost]),
+            patch.object(
+                daemon,
+                "today_beijing",
+                return_value=datetime.date(2026, 9, 4),
+            ),
+        ):
+            daemon._sanitize_account_snapshot(account, [])
+
+        self.assertEqual(account.total_asset, 81_912.70)
+
+    def test_pending_buy_order_fallback_explains_frozen_cash_when_asset_field_missing(self) -> None:
+        account = SimpleNamespace(
+            total_asset=81_912.70,
+            available_cash=14_520.70,
+            frozen_cash=0.0,
+        )
+
+        class Adapter:
+            def __init__(self) -> None:
+                self.order_queries = 0
+
+            def query_account(self):
+                return account
+
+            def query_positions(self):
+                return []
+
+            def query_orders(self):
+                self.order_queries += 1
+                return [
+                    {
+                        "order_status": 50,
+                        "order_type": 23,
+                        "order_volume": 400,
+                        "traded_volume": 0,
+                        "order_price": 168.48,
+                    }
+                ]
+
+        adapter = Adapter()
+        recent_ghost = _ghost_position()
+        recent_ghost["sell_date"] = "20260902"
+        recent_ghost["ghost_cleared_at"] = "2026-09-02 11:14:31"
+        with (
+            patch.object(daemon, "load_positions", return_value=[recent_ghost]),
+            patch.object(
+                daemon,
+                "today_beijing",
+                return_value=datetime.date(2026, 9, 4),
+            ),
+        ):
+            returned_account, returned_positions = daemon._qmt_query_account_positions(
+                adapter
+            )
+
+        self.assertIs(returned_account, account)
+        self.assertEqual(returned_positions, [])
+        self.assertEqual(adapter.order_queries, 1)
+
+    def test_terminal_buy_order_cannot_hide_real_missing_position(self) -> None:
+        account = SimpleNamespace(
+            total_asset=278_600.0,
+            available_cash=50_600.0,
+            frozen_cash=0.0,
+        )
+        terminal_order = {
+            "order_status": 54,
+            "order_type": 23,
+            "order_volume": 11_800,
+            "traded_volume": 0,
+            "order_price": 19.32,
+        }
+        with (
+            patch.object(daemon, "load_positions", return_value=[_ghost_position()]),
+            patch.object(
+                daemon,
+                "today_beijing",
+                return_value=datetime.date(2026, 8, 18),
+            ),
+        ):
+            with self.assertRaises(daemon.BrokerSnapshotInconsistentError):
+                daemon._sanitize_account_snapshot(
+                    account,
+                    [],
+                    active_orders=[terminal_order],
+                )
+
+    def test_snapshot_inconsistency_never_resets_healthy_qmt_session(self) -> None:
+        old_reconnect_count = daemon._qmt_reconnect_count
+        daemon._qmt_reconnect_count = 2
+        log = SimpleNamespace(error=lambda *_args, **_kwargs: None)
+        error = daemon.BrokerSnapshotInconsistentError("模拟账务快照不一致")
+        try:
+            with (
+                patch.object(
+                    daemon,
+                    "load_json_config",
+                    return_value={
+                        "broker_adapter_enabled": True,
+                        "qmt_enabled": True,
+                        "broker": {"enabled": True},
+                    },
+                ),
+                patch.object(daemon, "_qmt_get", return_value=object()),
+                patch.object(
+                    daemon,
+                    "_qmt_query_account_positions",
+                    side_effect=error,
+                ),
+                patch.object(daemon, "_qmt_reset") as reset,
+                patch.object(daemon, "write_broker_health") as health,
+                patch.object(daemon, "_notify_once_per") as notify,
+            ):
+                daemon._print_account_status(log)
+
+            reset.assert_not_called()
+            health.assert_called_once_with(
+                "snapshot_inconsistent",
+                error=error,
+                failure_count=0,
+            )
+            notify.assert_called_once()
+            self.assertEqual(daemon._qmt_reconnect_count, 0)
+        finally:
+            daemon._qmt_reconnect_count = old_reconnect_count
+
+    def test_waiting_free_writer_exits_process_without_another_qmt_reset(self) -> None:
+        """底层连接资源已经耗尽时，再disconnect/connect只会继续泄漏。
+
+        心跳必须直接交给统一进程恢复门，由keeper拉起全新daemon。
+        """
+
+        log = SimpleNamespace(error=lambda *_args, **_kwargs: None)
+        error = RuntimeError("WaitingFreeWriter instances exceed maximum limit")
+        with (
+            patch.object(
+                daemon,
+                "load_json_config",
+                return_value={
+                    "broker_adapter_enabled": True,
+                    "qmt_enabled": True,
+                    "broker": {"enabled": True},
+                },
+            ),
+            patch.object(daemon, "_qmt_get", return_value=object()),
+            patch.object(
+                daemon,
+                "_qmt_query_account_positions",
+                side_effect=error,
+            ),
+            patch.object(
+                daemon,
+                "_request_qmt_resource_recovery",
+                return_value=True,
+            ) as recover,
+            patch.object(daemon, "_qmt_reset") as reset,
+        ):
+            daemon._print_account_status(log)
+
+        recover.assert_called_once_with(error)
+        reset.assert_not_called()
+
     def test_broker_reappearance_restores_strategy_identity_and_exit_plan(self) -> None:
         store = _MemoryPositionStore([_ghost_position()])
         broker = [

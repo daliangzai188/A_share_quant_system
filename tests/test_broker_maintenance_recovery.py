@@ -104,6 +104,46 @@ class BrokerHealthStateTests(unittest.TestCase):
 
         self.assertNotIn("account_id", payload)
 
+    def test_qmt_connect_failures_share_one_process_backoff_gate(self) -> None:
+        old_streak = trading_daemon._qmt_connect_failure_streak
+        old_deadline = trading_daemon._qmt_connect_retry_not_before
+        old_error = trading_daemon._qmt_connect_last_error
+        trading_daemon._qmt_connect_failure_streak = 0
+        trading_daemon._qmt_connect_retry_not_before = 0.0
+        trading_daemon._qmt_connect_last_error = ""
+        try:
+            with patch.object(
+                trading_daemon,
+                "_load_qmt_last_success",
+                return_value={"qmt_path": r"C:\\QMT", "session_id": "1001"},
+            ), patch.object(
+                trading_daemon,
+                "_qmt_connect_once",
+                side_effect=RuntimeError("connect=-1"),
+            ) as connect_once:
+                with self.assertRaisesRegex(RuntimeError, "QMT连接失败"):
+                    trading_daemon._qmt_connect({}, allow_full_scan=False)
+                with self.assertRaises(trading_daemon.QMTReconnectBackoffError):
+                    trading_daemon._qmt_connect({}, allow_full_scan=False)
+
+            self.assertEqual(connect_once.call_count, 1)
+            self.assertEqual(trading_daemon._qmt_connect_failure_streak, 1)
+            self.assertGreater(
+                trading_daemon._qmt_connect_retry_not_before,
+                time.monotonic(),
+            )
+        finally:
+            trading_daemon._qmt_connect_failure_streak = old_streak
+            trading_daemon._qmt_connect_retry_not_before = old_deadline
+            trading_daemon._qmt_connect_last_error = old_error
+
+    def test_waiting_free_writer_is_treated_as_resource_exhaustion(self) -> None:
+        self.assertTrue(
+            trading_daemon._is_socket_resource_exhausted(
+                "RuntimeError: WaitingFreeWriter instances exceed maximum limit"
+            )
+        )
+
     def test_ready_notification_is_sent_only_with_running_heartbeat(self) -> None:
         parent = MagicMock()
         heartbeat = parent.heartbeat
