@@ -2805,10 +2805,9 @@ def _pick_sell_limit_price(
 ) -> tuple[float, str]:
     """按交易阶段选择可执行卖出限价。
 
-    沪深2026版交易规则明确：连续竞价的卖出限价低于价格笼子下限属于无效
-    申报。因此14:55不能再直接报跌停价；连续竞价使用当下动态笼子下限，
-    14:57后收盘集合竞价才使用日跌停价兜底。未成交主单会从14:56:20起
-    撤销，14:57:05仅按真实余量重新申报，避免旧笼子价格卡在集合竞价里。
+    2026-09-07曾直接用动态笼子下限申报，QMT在48毫秒后以“价格错误”
+    返回废单。连续竞价优先报当前买五价，以便吃掉买一至买五的可见买盘；
+    买五缺失或低于合法笼子下限时回退买一。14:57后仍用日跌停价兜底。
     """
     if continuous_auction is None:
         now_t = now_beijing().time()
@@ -2817,9 +2816,30 @@ def _pick_sell_limit_price(
             or datetime.time(13, 0) <= now_t < datetime.time(14, 57)
         )
     if continuous_auction:
+        bids = list(getattr(quote, "bid_prices", None) or []) if quote else []
+        asks = list(getattr(quote, "ask_prices", None) or []) if quote else []
+        best_bid = float(bids[0] or 0.0) if bids else 0.0
+        best_ask = float(asks[0] or 0.0) if asks else 0.0
+        last = float(getattr(quote, "last_price", 0.0) or 0.0) if quote else 0.0
+        pre_close = float(getattr(quote, "pre_close", 0.0) or 0.0) if quote else 0.0
         cage_floor = _sell_price_cage_floor(quote)
-        if cage_floor > 0:
-            return cage_floor, "连续竞价价格笼子下限"
+        bid5 = float(bids[4] or 0.0) if len(bids) >= 5 else 0.0
+        if (
+            best_bid > 0
+            and 0 < bid5 <= best_bid
+            and cage_floor > 0
+            # 不使用恰好贴边的买五；盘口再上移一个价位就可能再次成为废单。
+            and _round_stock_price(bid5) > cage_floor
+        ):
+            return _round_stock_price(bid5), "连续竞价买五价"
+        for value, label in (
+            (best_bid, "连续竞价买一价(买五不可用)"),
+            (best_ask, "连续竞价卖一价(无买盘)"),
+            (last, "连续竞价最新价(无盘口)"),
+            (pre_close, "连续竞价前收盘价(无盘口)"),
+        ):
+            if value > 0:
+                return _round_stock_price(value), label
 
     lower_limit = float(getattr(quote, "lower_limit", 0.0) or 0.0) if quote else 0.0
     if lower_limit > 0:
@@ -3021,18 +3041,8 @@ def _abc_place_sell_order_direct_locked(
     with _qmt_lock:
         adapter = _qmt_get(broker_cfg)
         _cancel_own_takeprofit_orders(adapter, {ts_code})
-        quote_map = adapter.get_full_tick([ts_code])
         broker_total, broker_can_use = _broker_position_quantities(adapter, ts_code)
         orders = adapter.query_orders()
-
-    quote = quote_map.get(ts_code)
-    price, price_label = _pick_sell_limit_price(quote)
-    if price <= 0:
-        log.warning("ABC平仓：%s 无法获取价格，跳过本次。", ts_code)
-        _notify("sell_fail", "❌ ABC平仓无报价",
-                f"{ts_code} {name} 无法获取有效卖出价格，平仓未提交，请立即回终端核对。",
-                level="critical", call=True)
-        return False
 
     if broker_total <= 0:
         log.error("ABC平仓：%s 本地%d股但券商查询不到实际持仓，拒绝盲目回写，请核对。", ts_code, shares)
@@ -3073,14 +3083,18 @@ def _abc_place_sell_order_direct_locked(
         )
         return False
 
-    log.warning("⏳ [ABC平仓] %s %s  %d股  %s=%.2f元", ts_code, name, shares, price_label, price)
-
     chunks = _split_sell_order_quantities(ts_code, shares)
     submitted: list[tuple[str, int, str]] = []
     rejected_chunks = 0
+    price = 0.0
+    price_label = ""
     with _qmt_lock:
         adapter = _qmt_get(broker_cfg)
-        for chunk_no, chunk in enumerate(chunks, start=1):
+        # 持仓、活跃委托和安全数量检查完成后，紧邻真正申报重新取行情。
+        # 避免用前面多次QMT查询之前的旧买一计算动态价格。
+        quote = adapter.get_full_tick([ts_code]).get(ts_code)
+        price, price_label = _pick_sell_limit_price(quote)
+        for chunk_no, chunk in enumerate(chunks if price > 0 else [], start=1):
             blocked = _exit_order_submission_block_reason()
             if blocked:
                 rejected_chunks += len(chunks) - chunk_no + 1
@@ -3125,6 +3139,13 @@ def _abc_place_sell_order_direct_locked(
                     ts_code, name, chunk_no, len(chunks), chunk, result.message,
                 )
 
+    if price <= 0:
+        log.warning("ABC平仓：%s 提交前无法获取价格，跳过本次。", ts_code)
+        _notify("sell_fail", "❌ ABC平仓无报价",
+                f"{ts_code} {name} 提交前无法获取有效卖出价格，平仓未提交，请立即回终端核对。",
+                level="critical", call=True)
+        return False
+
     if not submitted:
         _notify("sell_fail", "❌ ABC平仓提交失败",
                 f"{ts_code} {name} 全部平仓子单均提交失败，请立即回终端处理。",
@@ -3133,8 +3154,8 @@ def _abc_place_sell_order_direct_locked(
 
     submitted_qty = sum(qty for _, qty, _ in submitted)
     log.info(
-        "✅ [ABC平仓] %s %s %d股拆%d张 @%.2f 已受理（拒绝%d张，待成交确认）",
-        ts_code, name, submitted_qty, len(submitted), price, rejected_chunks,
+        "✅ [ABC平仓] %s %s %d股拆%d张 %s@%.2f 委托号已返回（拒绝%d张，待成交确认）",
+        ts_code, name, submitted_qty, len(submitted), price_label, price, rejected_chunks,
     )
     confirmation_budget_sec = 60 + max(len(submitted) - 1, 0) * 5 + 10
     now_for_confirm = now_beijing()

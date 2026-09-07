@@ -219,18 +219,52 @@ class PovDepthLimitTest(unittest.TestCase):
             last_price=10.00,
             pre_close=9.90,
             lower_limit=8.91,
-            bid_prices=[10.00],
+            bid_prices=[10.00, 9.99, 9.98, 9.97, 9.96],
             ask_prices=[10.01],
         )
 
         self.assertEqual(trading_daemon._sell_price_cage_floor(quote), 9.80)
         self.assertEqual(
             trading_daemon._pick_sell_limit_price(quote, continuous_auction=True),
-            (9.80, "连续竞价价格笼子下限"),
+            (9.96, "连续竞价买五价"),
         )
         self.assertEqual(
             trading_daemon._pick_sell_limit_price(quote, continuous_auction=False),
             (8.91, "集合竞价跌停限价"),
+        )
+
+    def test_continuous_sell_falls_back_to_best_bid_when_bid5_is_not_legal(self) -> None:
+        for bid5 in (9.79, 9.80):
+            with self.subTest(bid5=bid5):
+                quote = QuoteSnapshot(
+                    ts_code="002800.SZ",
+                    broker_code="002800.SZ",
+                    last_price=10.00,
+                    pre_close=9.90,
+                    lower_limit=8.91,
+                    # 买五低于或贴着动态笼子下限9.80时，不以边界价格申报。
+                    bid_prices=[10.00, 9.99, 9.98, 9.97, bid5],
+                    ask_prices=[10.01],
+                )
+                self.assertEqual(
+                    trading_daemon._pick_sell_limit_price(quote, continuous_auction=True),
+                    (10.00, "连续竞价买一价(买五不可用)"),
+                )
+
+    def test_continuous_sell_ignores_stale_bid5_when_best_bid_is_missing(self) -> None:
+        quote = QuoteSnapshot(
+            ts_code="002800.SZ",
+            broker_code="002800.SZ",
+            last_price=10.00,
+            pre_close=9.90,
+            lower_limit=8.91,
+            bid_prices=[0.0, 9.99, 9.98, 9.97, 9.96],
+            ask_prices=[10.01],
+        )
+
+        self.assertEqual(
+            trading_daemon._pick_sell_limit_price(quote, continuous_auction=True),
+            (10.01, "连续竞价卖一价(无买盘)"),
         )
 
     def test_bse_sell_price_uses_five_percent_cage(self) -> None:
@@ -560,9 +594,11 @@ class ExitExecutionSafetyStateTest(unittest.TestCase):
         frozen_now = datetime.datetime(
             2026, 7, 16, 14, 54, 0, tzinfo=trading_daemon.BEIJING_TZ
         )
+        events: list[str] = []
 
         class _DirectAdapter:
             def get_full_tick(self, _codes: list[str]) -> dict[str, QuoteSnapshot]:
+                events.append("fresh_quote")
                 return {
                     "688001.SH": QuoteSnapshot(
                         ts_code="688001.SH",
@@ -574,9 +610,18 @@ class ExitExecutionSafetyStateTest(unittest.TestCase):
                 }
 
             def query_orders(self) -> list[object]:
+                events.append("orders")
                 return []
 
         submitted: list[int] = []
+
+        def broker_position_quantities(*_args: object) -> tuple[int, int]:
+            events.append("positions")
+            return 1_000_000, 1_000_000
+
+        def safe_quantity(*_args: object, **_kwargs: object) -> int:
+            events.append("safe_quantity")
+            return 1_000_000
 
         def place_without_confirm(
             _adapter: object,
@@ -585,6 +630,7 @@ class ExitExecutionSafetyStateTest(unittest.TestCase):
             phase: str,
             local_order_id: str = "",
         ) -> tuple[SimpleNamespace, str]:
+            events.append("place")
             submitted.append(int(getattr(request, "quantity")))
             index = len(submitted)
             return (
@@ -602,9 +648,9 @@ class ExitExecutionSafetyStateTest(unittest.TestCase):
         ), patch.object(
             trading_daemon, "_cancel_own_takeprofit_orders"
         ), patch.object(
-            trading_daemon, "_broker_position_quantities", return_value=(1_000_000, 1_000_000)
+            trading_daemon, "_broker_position_quantities", side_effect=broker_position_quantities
         ), patch.object(
-            trading_daemon, "_safe_new_exit_order_quantity", return_value=1_000_000
+            trading_daemon, "_safe_new_exit_order_quantity", side_effect=safe_quantity
         ), patch.object(
             trading_daemon, "_pick_sell_limit_price", return_value=(9.98, "价格笼子下限")
         ), patch.object(
@@ -633,6 +679,10 @@ class ExitExecutionSafetyStateTest(unittest.TestCase):
         # 并立即释放锁，不能逐张等待而饿死14:56:20撤单交接。
         self.assertFalse(completed)
         self.assertEqual(submitted, [100_000] * 10)
+        self.assertEqual(
+            events,
+            ["positions", "orders", "safe_quantity", "fresh_quote"] + ["place"] * 10,
+        )
         confirm_fill.assert_not_called()
         self.assertEqual(len(pending), 1)
         self.assertEqual(len(pending[0][1]), 10)
