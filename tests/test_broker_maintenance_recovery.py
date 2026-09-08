@@ -9,7 +9,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from unittest.mock import ANY, MagicMock, call, patch
 
 # 单元测试不得向正式 Bark 地址发任何通知。
@@ -45,6 +45,39 @@ class BrokerHealthStateTests(unittest.TestCase):
             self.assertEqual(payload["pid"], os.getpid())
             self.assertEqual(payload["account"], "****78")
             self.assertNotIn("12345678", health_path.read_text(encoding="utf-8"))
+            self.assertFalse(list(health_path.parent.glob("*.tmp")))
+
+    def test_broker_health_replace_retries_windows_sharing_violation(self) -> None:
+        real_replace = os.replace
+        replace_calls = 0
+
+        def flaky_replace(source, destination):
+            nonlocal replace_calls
+            replace_calls += 1
+            if replace_calls == 1:
+                raise PermissionError("模拟Windows同步程序短暂占用")
+            return real_replace(source, destination)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            health_path = Path(temp_dir) / "broker_health.json"
+            with patch.object(
+                trading_daemon,
+                "BROKER_HEALTH_FILE",
+                health_path,
+            ), patch.object(
+                trading_daemon.os,
+                "replace",
+                side_effect=flaky_replace,
+            ), patch.object(
+                trading_daemon.time,
+                "sleep",
+            ) as sleep:
+                trading_daemon.write_broker_health("verified", account_id="12345678")
+
+            payload = json.loads(health_path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["status"], "verified")
+            self.assertEqual(replace_calls, 2)
+            sleep.assert_called_once_with(0.05)
             self.assertFalse(list(health_path.parent.glob("*.tmp")))
 
     def test_process_heartbeat_contains_current_pid_and_keeper_parses_it(self) -> None:
@@ -136,6 +169,168 @@ class BrokerHealthStateTests(unittest.TestCase):
             trading_daemon._qmt_connect_failure_streak = old_streak
             trading_daemon._qmt_connect_retry_not_before = old_deadline
             trading_daemon._qmt_connect_last_error = old_error
+
+    def test_full_scan_uses_one_adapter_and_starts_from_cached_session(self) -> None:
+        old_streak = trading_daemon._qmt_connect_failure_streak
+        old_deadline = trading_daemon._qmt_connect_retry_not_before
+        old_error = trading_daemon._qmt_connect_last_error
+        trading_daemon._qmt_connect_failure_streak = 0
+        trading_daemon._qmt_connect_retry_not_before = 0.0
+        trading_daemon._qmt_connect_last_error = ""
+        adapter = SimpleNamespace(
+            _active_qmt_path=r"C:\QMT\userdata_mini",
+            _active_session_id=1002,
+        )
+        try:
+            with patch.object(
+                trading_daemon,
+                "_load_qmt_last_success",
+                return_value={
+                    "qmt_path": r"C:\QMT\userdata_mini",
+                    "session_id": "31001",
+                },
+            ), patch.object(
+                trading_daemon,
+                "_qmt_connect_once",
+                return_value=adapter,
+            ) as connect_once, patch.object(
+                trading_daemon,
+                "_save_qmt_last_success",
+            ):
+                result = trading_daemon._qmt_connect({}, allow_full_scan=True)
+
+            self.assertIs(result, adapter)
+            connect_once.assert_called_once_with(
+                {},
+                preferred_only=False,
+                timeout_sec=55.0,
+                qmt_path=r"C:\QMT\userdata_mini",
+                session_id="31001",
+            )
+        finally:
+            trading_daemon._qmt_connect_failure_streak = old_streak
+            trading_daemon._qmt_connect_retry_not_before = old_deadline
+            trading_daemon._qmt_connect_last_error = old_error
+
+    def test_third_real_connect_attempt_is_promoted_to_full_scan(self) -> None:
+        old_adapter = trading_daemon._qmt_adapter
+        old_streak = trading_daemon._qmt_connect_failure_streak
+        trading_daemon._qmt_adapter = None
+        trading_daemon._qmt_connect_failure_streak = 2
+        adapter = object()
+        try:
+            with patch.object(
+                trading_daemon,
+                "_qmt_connect",
+                return_value=adapter,
+            ) as connect:
+                result = trading_daemon._qmt_get_raw({"enabled": True})
+
+            self.assertIs(result, adapter)
+            connect.assert_called_once_with(
+                {"enabled": True},
+                allow_full_scan=True,
+            )
+        finally:
+            trading_daemon._qmt_adapter = old_adapter
+            trading_daemon._qmt_connect_failure_streak = old_streak
+
+    def test_transient_account_none_is_retried_on_same_connection(self) -> None:
+        account = SimpleNamespace(
+            account_id="TEST",
+            cash=86_600.0,
+            available_cash=86_600.0,
+            total_asset=86_600.0,
+            market_value=0.0,
+            frozen_cash=0.0,
+        )
+        adapter = MagicMock()
+        adapter.query_account.side_effect = [
+            RuntimeError("QMT账户查询返回None（结果未知）"),
+            account,
+        ]
+        adapter.query_positions.return_value = []
+
+        with patch.object(trading_daemon.time, "sleep") as sleep:
+            actual_account, positions = trading_daemon._qmt_query_account_positions(adapter)
+
+        self.assertIs(actual_account, account)
+        self.assertEqual(positions, [])
+        self.assertEqual(adapter.query_account.call_count, 2)
+        adapter.query_positions.assert_called_once_with()
+        sleep.assert_called_once_with(0.2)
+
+    def test_cold_connect_failure_does_not_retry_inside_its_own_backoff(self) -> None:
+        old_adapter = trading_daemon._qmt_adapter
+        old_reconnect_count = trading_daemon._qmt_reconnect_count
+        old_connect_streak = trading_daemon._qmt_connect_failure_streak
+        trading_daemon._qmt_adapter = None
+        trading_daemon._qmt_reconnect_count = 0
+        trading_daemon._qmt_connect_failure_streak = 1
+        try:
+            with patch.object(
+                trading_daemon,
+                "load_json_config",
+                return_value={
+                    "broker_adapter_enabled": True,
+                    "qmt_enabled": True,
+                    "broker": {"enabled": True},
+                },
+            ), patch.object(
+                trading_daemon,
+                "_qmt_get",
+                side_effect=RuntimeError("QMT连接失败: connect=-1"),
+            ) as qmt_get, patch.object(
+                trading_daemon,
+                "_qmt_reset",
+            ), patch.object(
+                trading_daemon,
+                "qmt_is_critical_window",
+                return_value=True,
+            ), patch.object(
+                trading_daemon,
+                "_request_qmt_resource_recovery",
+                return_value=False,
+            ), patch.object(
+                trading_daemon,
+                "_request_qmt_reconnect_stalled_recovery",
+                return_value=False,
+            ), patch.object(
+                trading_daemon,
+                "write_broker_health",
+            ), patch.object(
+                trading_daemon,
+                "_notify",
+            ):
+                trading_daemon._print_account_status(MagicMock())
+
+            qmt_get.assert_called_once_with({"enabled": True})
+        finally:
+            trading_daemon._qmt_adapter = old_adapter
+            trading_daemon._qmt_reconnect_count = old_reconnect_count
+            trading_daemon._qmt_connect_failure_streak = old_connect_streak
+
+    def test_three_failed_connects_request_clean_process_recovery(self) -> None:
+        old_streak = trading_daemon._qmt_connect_failure_streak
+        trading_daemon._qmt_connect_failure_streak = 3
+        try:
+            with patch.object(
+                trading_daemon,
+                "_request_process_recovery",
+                return_value=True,
+            ) as recover:
+                requested = trading_daemon._request_qmt_reconnect_stalled_recovery(
+                    RuntimeError("QMT连接失败: session=31001 connect=-1")
+                )
+
+            self.assertTrue(requested)
+            self.assertEqual(
+                recover.call_args.kwargs["exit_code"],
+                trading_daemon.EXIT_CODE_QMT_RECONNECT_STALLED,
+            )
+            self.assertFalse(recover.call_args.kwargs["clear_qmt_cache"])
+        finally:
+            trading_daemon._qmt_connect_failure_streak = old_streak
 
     def test_waiting_free_writer_is_treated_as_resource_exhaustion(self) -> None:
         self.assertTrue(

@@ -523,6 +523,7 @@ _TRADE_CALENDAR_CACHE: dict[str, Any] = {
 }
 _pending_buy_lock = threading.RLock()
 _premarket_buy_monitor_thread: threading.Thread | None = None
+_broker_health_write_lock = threading.Lock()
 # positions.json 会被POV、14:55主平仓、看门狗和账户心跳并发读改写。
 # 原子replace只能防半文件，不能防“两个线程各自读旧值后相互覆盖”。
 _positions_file_lock = threading.RLock()
@@ -611,31 +612,50 @@ def write_broker_health(
     当前进程 PID、账户查询结果与更新时间，keeper 只有在 PID 匹配且 status=verified
     时才允许发送“程序与账户均恢复”通知，避免沿用上个进程的成功状态产生假恢复。
     """
+    temp_path: Path | None = None
     try:
-        mkdir_p(BROKER_HEALTH_FILE.parent)
-        error_text = " ".join(str(error or "").split())[:500]
-        payload = {
-            "updated_at": now_beijing().isoformat(),
-            "updated_ts": time.time(),
-            "pid": os.getpid(),
-            "status": str(status or "unknown"),
-            "account": _mask_account(account_id) if account_id else "",
-            "failure_count": max(0, int(failure_count or 0)),
-            "error": error_text,
-        }
-        temp_path = BROKER_HEALTH_FILE.with_name(
-            f"{BROKER_HEALTH_FILE.name}.{os.getpid()}.tmp"
-        )
-        temp_path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        os.replace(temp_path, BROKER_HEALTH_FILE)
+        with _broker_health_write_lock:
+            mkdir_p(BROKER_HEALTH_FILE.parent)
+            error_text = " ".join(str(error or "").split())[:500]
+            payload = {
+                "updated_at": now_beijing().isoformat(),
+                "updated_ts": time.time(),
+                "pid": os.getpid(),
+                "status": str(status or "unknown"),
+                "account": _mask_account(account_id) if account_id else "",
+                "failure_count": max(0, int(failure_count or 0)),
+                "error": error_text,
+            }
+            temp_path = BROKER_HEALTH_FILE.with_name(
+                f".{BROKER_HEALTH_FILE.name}.{os.getpid()}."
+                f"{threading.get_ident()}.{time.time_ns()}.tmp"
+            )
+            temp_path.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            for attempt_no in (1, 2, 3):
+                try:
+                    os.replace(temp_path, BROKER_HEALTH_FILE)
+                    break
+                except OSError as exc:
+                    retryable = isinstance(exc, PermissionError) or getattr(
+                        exc, "winerror", None
+                    ) in {5, 32, 33}
+                    if not retryable or attempt_no == 3:
+                        raise
+                    time.sleep(0.05)
     except Exception as exc:  # noqa: BLE001
         try:
             logger().warning("写入QMT账户健康状态失败（不影响交易主流程）：%s", exc)
         except Exception:
             pass
+    finally:
+        if temp_path is not None:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def _periodic_health_snapshot(
@@ -15573,20 +15593,16 @@ def _qmt_connect(broker_config: dict, *, allow_full_scan: bool | None = None) ->
     attempts: list[dict[str, Any]] = []
 
     if allow_full_scan is True:
-        if cached:
-            attempts.append({
-                "label": "上次成功path/session",
-                "preferred_only": True,
-                "timeout_sec": 18.0,
-                "qmt_path": str(cached.get("qmt_path", "")),
-                "session_id": str(cached.get("session_id", "")),
-            })
+        # 一次完整扫描本身就会先试传入的缓存path/session，再遍历备用
+        # session。旧实现先单独新建一个“缓存session”连接对象，失败后又
+        # 新建第二个完整扫描对象；connect=-1时前一个对象的底层资源可能
+        # 尚未释放，反而会干扰真正的备用session扫描。
         attempts.append({
             "label": "完整备用path/session",
             "preferred_only": False,
             "timeout_sec": 55.0,
-            "qmt_path": "",
-            "session_id": "",
+            "qmt_path": str(cached.get("qmt_path", "")),
+            "session_id": str(cached.get("session_id", "")),
         })
     elif cached:
         attempts.append({
@@ -15667,13 +15683,26 @@ def _qmt_get_raw(broker_config: dict, *, allow_full_scan: bool | None = None) ->
     """仅供唯一执行线程获取原始持久QMT连接。"""
     global _qmt_adapter
     if _qmt_adapter is None:
-        _qmt_adapter = _qmt_connect(broker_config, allow_full_scan=allow_full_scan)
+        effective_full_scan = allow_full_scan
+        if effective_full_scan is None:
+            # 2026-09-08事故：持久连接一次只读查询返回None后被释放，之后
+            # 每轮都先试缓存session并失败；“第3轮完整扫描”在同轮第二次
+            # 调用时又被刚设置的退避门拦截，导致完整扫描永远执行不到。
+            # 在唯一建连入口按真实connect失败次数升级，第3次实际建连直接
+            # 执行一次完整扫描，业务任务与账户心跳都无法绕过这条规则。
+            effective_full_scan = _qmt_connect_failure_streak == 2
+        _qmt_adapter = _qmt_connect(
+            broker_config,
+            allow_full_scan=bool(effective_full_scan),
+        )
     return _qmt_adapter
 
 
 def _qmt_get(broker_config: dict, *, allow_full_scan: bool | None = None) -> Any:
     """返回统一意图执行代理；业务线程永远拿不到原始QMT adapter。"""
 
+    if _PROCESS_RECOVERY_EVENT.is_set():
+        raise RuntimeError("进程级交易恢复已启动，拒绝继续访问QMT")
     service = _get_qmt_execution_service()
     if _qmt_adapter is None:
         service.call_function(
@@ -15766,6 +15795,23 @@ class SharedQMTBrokerProxy:
         return None
 
 
+_TRANSIENT_QMT_READ_ERROR_MARKERS = (
+    "QMT账户查询返回None",
+    "QMT账户查询返回空对象",
+    "QMT持仓查询返回None",
+    "QMT委托查询返回None",
+    "QMT成交查询返回None",
+    "QMT行情查询返回None",
+)
+
+
+def _is_transient_qmt_read_error(error: BaseException | str) -> bool:
+    """只识别QMT明确的瞬时只读空返回，不放宽非法结构或账务矛盾。"""
+
+    text = str(error)
+    return any(marker in text for marker in _TRANSIENT_QMT_READ_ERROR_MARKERS)
+
+
 def _qmt_query_account_positions(adapter: Any, *, timeout_sec: float = 25.0) -> tuple[Any, Any]:
     """账户连接验证：资产和持仓均必须经唯一QMT队列成功返回。
 
@@ -15775,24 +15821,39 @@ def _qmt_query_account_positions(adapter: Any, *, timeout_sec: float = 25.0) -> 
     解释冻结资金。不为每分钟心跳无条件增加QMT查询。
     """
     del timeout_sec  # 业务调用超时由执行服务统一管理，不再额外生成孤儿线程。
-    account = adapter.query_account()
-    positions = adapter.query_positions()
-    try:
-        _sanitize_account_snapshot(
-            account,
-            positions,
-            log_inconsistent=False,
-        )
-    except BrokerSnapshotInconsistentError:
-        # 资产和持仓查询本身已成功；只为识别活动买单冻结金额补查委托。
-        active_orders = adapter.query_orders()
-        _sanitize_account_snapshot(
-            account,
-            positions,
-            active_orders=active_orders,
-            log_inconsistent=True,
-        )
-    return account, positions
+    for attempt_no in (1, 2):
+        try:
+            account = adapter.query_account()
+            positions = adapter.query_positions()
+            try:
+                _sanitize_account_snapshot(
+                    account,
+                    positions,
+                    log_inconsistent=False,
+                )
+            except BrokerSnapshotInconsistentError:
+                # 资产和持仓查询本身已成功；只为识别活动买单冻结金额补查委托。
+                active_orders = adapter.query_orders()
+                _sanitize_account_snapshot(
+                    account,
+                    positions,
+                    active_orders=active_orders,
+                    log_inconsistent=True,
+                )
+            return account, positions
+        except BrokerSnapshotInconsistentError:
+            # 账务语义矛盾不是瞬时传输空返回，必须立即fail-closed。
+            raise
+        except Exception as exc:
+            if attempt_no == 1 and _is_transient_qmt_read_error(exc):
+                logger().warning(
+                    "QMT只读查询瞬时空返回，保留当前持久连接并原会话复查1次：%s",
+                    exc,
+                )
+                time.sleep(0.2)
+                continue
+            raise
+    raise RuntimeError("QMT账户/持仓查询重试流程异常结束")
 
 
 _ASSET_SANITY_ALERT_DAY = ""
@@ -15998,6 +16059,7 @@ EXIT_CODE_QMT_CHANNEL_POISONED = 88
 EXIT_CODE_D_POSITION_RECOVERY = 89
 EXIT_CODE_EXECUTION_STATE_RECOVERY = 90
 EXIT_CODE_BROKER_RESULT_UNKNOWN = 91
+EXIT_CODE_QMT_RECONNECT_STALLED = 92
 _ONCE_PER_STATE: dict[str, float] = {}
 _ONCE_PER_ATTEMPT: dict[str, float] = {}
 _PROCESS_RECOVERY_EVENT = threading.Event()
@@ -16253,6 +16315,31 @@ def _request_qmt_resource_recovery(error: BaseException) -> bool:
     )
 
 
+def _request_qmt_reconnect_stalled_recovery(error: BaseException) -> bool:
+    """完整备用session扫描仍失败时，回收已卡死的当前Python/QMT进程。"""
+
+    if _qmt_connect_failure_streak < 3:
+        return False
+    error_text = str(error)
+    if "connect=-1" not in error_text and "QMT连接失败" not in error_text:
+        return False
+    return _request_process_recovery(
+        reason=(
+            "QMT持久连接丢失且本进程连续建连失败，完整备用session扫描仍未恢复:"
+            f"{error_text}"
+        ),
+        exit_code=EXIT_CODE_QMT_RECONNECT_STALLED,
+        heartbeat_status="qmt_reconnect_stalled_restarting",
+        title="🔄 QMT重连卡死，程序自动恢复",
+        body=(
+            "QMT持久连接丢失后，当前daemon的首选及备用session均未恢复。"
+            "系统已停止继续交易并退出当前进程；keeper拉起全新进程后会先核对"
+            "真实委托、成交和持仓，再恢复调度，禁止盲目重发。"
+        ),
+        clear_qmt_cache=False,
+    )
+
+
 def _qmt_reset() -> None:
     """通过唯一执行线程断开并清除持久连接。"""
 
@@ -16420,6 +16507,7 @@ def _print_account_status(log: Any) -> None:
     account = positions = None
     quote_map: dict = {}
     with _qmt_lock:
+        had_persistent_adapter = _qmt_adapter is not None
         try:
             adapter = _qmt_get(broker_cfg)
             account, positions = _qmt_query_account_positions(adapter)
@@ -16451,6 +16539,8 @@ def _print_account_status(log: Any) -> None:
                 failure_count=_qmt_reconnect_count,
             )
             log.info("QMT连接故障仍在统一退避窗口，本轮不新建会话：%s", backoff_err)
+            if qmt_is_critical_window():
+                _request_qmt_reconnect_stalled_recovery(backoff_err)
             return
         except Exception as first_err:
             if _request_qmt_resource_recovery(first_err):
@@ -16492,6 +16582,14 @@ def _print_account_status(log: Any) -> None:
             if critical_window and _qmt_reconnect_count == 1:
                 _notify("connection", "🔌 账户断连", "QMT连接断开，正在自动重连，请关注。",
                         level="critical", call=False)
+            if not had_persistent_adapter:
+                # 本轮第一次动作已经是真实connect并且失败，_qmt_connect已设置
+                # 统一退避。旧代码紧接着再调用一次_qmt_get，只会100%被自己刚
+                # 设置的退避门拒绝，也让“第3轮完整扫描”永远没有机会成为下一次
+                # 真实连接。等待下一轮；_qmt_get_raw会在第3次真实建连自动升级。
+                if critical_window:
+                    _request_qmt_reconnect_stalled_recovery(first_err)
+                return
             try:
                 if critical_window:
                     log.info("QMT自动重连开始（第%d次）", _qmt_reconnect_count)
@@ -16535,6 +16633,8 @@ def _print_account_status(log: Any) -> None:
                     failure_count=_qmt_reconnect_count,
                 )
                 log.info("QMT统一退避门拒绝本轮重复建连：%s", backoff_err)
+                if critical_window:
+                    _request_qmt_reconnect_stalled_recovery(backoff_err)
                 return
             except Exception as retry_err:
                 if _request_qmt_resource_recovery(retry_err):
@@ -16555,6 +16655,7 @@ def _print_account_status(log: Any) -> None:
                     _notify("system_error", "❌ QMT持续掉线",
                             "QMT连接已连续多次重连失败，实盘下单/平仓可能受影响，请立即检查。",
                             level="critical", call=True)
+                    _request_qmt_reconnect_stalled_recovery(retry_err)
                 return
 
     # 只有账户与持仓查询都通过语义/自洽校验后，才允许用券商真实股数恢复
@@ -16671,7 +16772,10 @@ def _print_account_status(log: Any) -> None:
             buy_price = float(lp.get("buy_price", 0) or 0)
             if buy_price <= 0:
                 buy_price = float(getattr(p, "cost_price", 0.0) or 0.0)
-            buy_time_text = _fmt_position_time(lp.get("buy_time") or lp.get("buy_date"))
+            # 成交回报时间才是复盘开仓时点；buy_time只是本地确认/补登记时刻。
+            buy_time_text = _fmt_position_time(
+                lp.get("traded_at") or lp.get("buy_time") or lp.get("buy_date")
+            )
             exit_time_text = _fmt_position_time(
                 lp.get("planned_exit_time") or lp.get("planned_exit_date"),
                 default_time="14:56",
