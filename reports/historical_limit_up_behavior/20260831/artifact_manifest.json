@@ -1,0 +1,86 @@
+{
+  "schema_version": 1,
+  "config_path": "config/historical_limit_up_behavior_research.json",
+  "config_sha256": "f38534312399da333e7ba8980cf817e9aae7accb058c8c0e760764625803f330",
+  "code_sha256": {
+    "src/historical_limit_up_profile.py": "2ddf4e08bc149b3a0fa919b28ceb49d84c6bc955cef07560b6334d6278f0b8eb",
+    "scripts/research_historical_limit_up_behavior.py": "fe552f3d45e3fda657d6ddcf44e80ccc5d419fd5372421e691f3a585dd04c98b"
+  },
+  "input_fingerprints": {
+    "research_config": {
+      "path": "config/historical_limit_up_behavior_research.json",
+      "size_bytes": 3346,
+      "sha256": "f38534312399da333e7ba8980cf817e9aae7accb058c8c0e760764625803f330"
+    },
+    "trade_calendar": {
+      "path": "data/raw/trade_calendar.csv",
+      "size_bytes": 70171,
+      "sha256": "53978e56252200b2b4f980fc6237dc76834f614410ab8c7a6a7dfa0d53ea39d4"
+    },
+    "limit_events": {
+      "path": "data/research/monthly_acde/20260831/limit_up_merged.csv",
+      "size_bytes": 29445808,
+      "sha256": "a234bda5e1f77dda86f0629b66476a8f991c72c28b5b34c21f81b89f8132e8e8"
+    },
+    "strict_feature_pool": {
+      "path": "data/research/monthly_acde/20260831/strict_feature_pool.csv",
+      "size_bytes": 102848925,
+      "sha256": "bb62c166eb159e4b1d879c95da0917a00857ab7eff83629a1382bc76c963fb00"
+    },
+    "market_sentiment": {
+      "path": "data/research/monthly_acde/20260831/market_sentiment.csv",
+      "size_bytes": 484353,
+      "sha256": "dd2daf6d9f0ac2aa4a4fb02f482315c81c96004d3f195119ad62a56abb5cc8a8"
+    },
+    "monthly_config": {
+      "path": "config/acde_rolling_optimization.json",
+      "size_bytes": 6479,
+      "sha256": "6449f526c61ec9e9f61d7c799610830cf6c76b760ff7044f97a062f0ac3a1150"
+    },
+    "strategy_config": {
+      "path": "config/strategy_config.json",
+      "size_bytes": 38019,
+      "sha256": "24897187e7031a4d2b9f384e76c1acc14d1d604177e1324af2348662d9683caf"
+    },
+    "strategy_e_config": {
+      "path": "config/strategy_e_r1_scenarios.json",
+      "size_bytes": 16254,
+      "sha256": "39d6f7032bd9b2ab43a4286ed2556a4cfe14fae36a9677cd035f8a96d19f5656"
+    },
+    "baseline_a_plan": {
+      "path": "reports/current_portfolio_alignment/acde_c_third_branch_t2_22695_20260902_v16/a_plans.csv",
+      "size_bytes": 33441,
+      "sha256": "30ff331c281f9d8b6bce7ffee9b8944c9f77e2bd38b88e6b5a85f9bbc283b4b5"
+    },
+    "baseline_c_plan": {
+      "path": "reports/current_portfolio_alignment/acde_c_third_branch_t2_22695_20260902_v16/c_plans.csv",
+      "size_bytes": 33835,
+      "sha256": "b9667f3eb1fc2fae3d02d6bdf4bfda37b372a3ef9c5532d2d8aa46f4ed4fa6d0"
+    },
+    "baseline_e_plan": {
+      "path": "reports/current_portfolio_alignment/acde_c_third_branch_t2_22695_20260902_v16/e_plans.csv",
+      "size_bytes": 16153,
+      "sha256": "cf92a8a0a7acbf850e44b00444c6ab7135460dcf4d71c9b4a05d3d7408836496"
+    },
+    "aligned_d_plan": {
+      "path": "reports/entry_alignment_fix_20260902/aligned_d_plans.csv",
+      "size_bytes": 9376,
+      "sha256": "d024b172677b35b4330b431393e694dfab231ac6266b1876b05bdc846f0d47f9"
+    },
+    "aligned_baseline_summary": {
+      "path": "reports/entry_alignment_fix_20260902/summary.json",
+      "size_bytes": 14935,
+      "sha256": "59146d882664be11e848a40b444f0ed77a8d586d7b725894c4cacf7321ac30ed"
+    }
+  },
+  "artifacts": {
+    "decision_report.md": "2eb6d950db408183c3194b1baa733d8bcc56ee7f836968d0ea900b7fbcb3dad6",
+    "factor_bin_diagnostics.csv": "91af9dfe0a37b41ed22e3caabb5bebe7e21f8a44c54e434ddaffa3866348898e",
+    "filter_rule_results.csv": "5a5479e8dbe709eb1e4a6e8e1c41cd4894b9d2fdaf42e8986f71e4cf710d3f6b",
+    "historical_limit_event_outcomes.csv": "11fd51047c3ee0a624958eea319ee675cad9231916fbd7333f10a3a710a03a5b",
+    "intuitive_rule_period_diagnostics.csv": "ae4ad1061b33f9b0c97f9a2f47a3ed0a51935bcfc970f929468afaf32389e1cb",
+    "selected_trade_history_profiles.csv": "c6feb56b54dff4477b530df9098c247a642b0145ac94f64e54ca7b5d05379faa",
+    "strict_signal_pool_history_profiles.csv": "7d1973e159af9ec027fbea331898d8b6a3ce9ccfceb00914d2dba1741e5555aa",
+    "summary.json": "cd5c850e76f8ce1e81f4fc946257f1a0231f5787e23869b8aef3d5e1c914b272"
+  }
+}

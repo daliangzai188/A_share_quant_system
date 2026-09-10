@@ -1,0 +1,103 @@
+{
+  "schema_version": 1,
+  "mode": "research_only",
+  "formal_strategy_auto_apply": false,
+  "cutoff": "20260831",
+  "history_start": "20230901",
+  "training_end": "20250831",
+  "validation_start": "20250901",
+  "priority": [
+    "A",
+    "C",
+    "E",
+    "D"
+  ],
+  "minimum_plan_retention": 0.85,
+  "data": {
+    "trade_calendar": "data/raw/trade_calendar.csv",
+    "daily_dir": "data/raw/daily",
+    "limit_events": "data/research/monthly_acde/20260831/limit_up_merged.csv",
+    "monthly_config": "config/acde_rolling_optimization.json",
+    "strategy_config": "config/strategy_config.json",
+    "strategy_e_config": "config/strategy_e_r1_scenarios.json",
+    "baseline_plan_dir": "reports/current_portfolio_alignment/acde_c_third_branch_t2_22695_20260902_v16",
+    "aligned_d_plan": "reports/entry_alignment_fix_20260902/aligned_d_plans.csv",
+    "aligned_baseline_summary": "reports/entry_alignment_fix_20260902/summary.json"
+  },
+  "output_dir": "reports/historical_limit_up_behavior/20260831",
+  "rules": [
+    {
+      "rule_id": "LAST_D23_LE_M5",
+      "minimum_history_count": 1,
+      "metric": "hist_last_d23_return",
+      "operator": "<=",
+      "threshold": -0.05,
+      "description": "最近一次历史涨停的第2至第3日累计收益不高于-5%"
+    },
+    {
+      "rule_id": "LAST_D3_LE_M5",
+      "minimum_history_count": 1,
+      "metric": "hist_last_d3_return",
+      "operator": "<=",
+      "threshold": -0.05,
+      "description": "最近一次历史涨停的第3日单日收益不高于-5%"
+    },
+    {
+      "rule_id": "N2_ENTRY_T2_LE_M5",
+      "minimum_history_count": 2,
+      "metric": "hist_recent2_entry_to_t2_mean",
+      "operator": "<=",
+      "threshold": -0.05,
+      "description": "最近2次历史涨停的T+1开盘至T+2收盘平均收益不高于-5%"
+    },
+    {
+      "rule_id": "N3_ENTRY_T3_LE_M5",
+      "minimum_history_count": 3,
+      "metric": "hist_recent3_entry_to_t3_mean",
+      "operator": "<=",
+      "threshold": -0.05,
+      "description": "最近3次历史涨停的T+1开盘至T+3收盘平均收益不高于-5%"
+    },
+    {
+      "rule_id": "N3_D23_LE_M5",
+      "minimum_history_count": 3,
+      "metric": "hist_recent3_d23_return_mean",
+      "operator": "<=",
+      "threshold": -0.05,
+      "description": "最近3次历史涨停的第2至第3日累计平均收益不高于-5%"
+    },
+    {
+      "rule_id": "N3_FADE_ALL3",
+      "minimum_history_count": 3,
+      "metric": "hist_recent3_fade_rate",
+      "operator": ">=",
+      "threshold": 1.0,
+      "description": "最近3次历史涨停均在第2至第3日累计回落"
+    },
+    {
+      "rule_id": "N3_BOTH_DOWN_2OF3",
+      "minimum_history_count": 3,
+      "metric": "hist_recent3_both_down_rate",
+      "operator": ">=",
+      "threshold": 0.6666666666666666,
+      "description": "最近3次中至少2次第2日和第3日连续下跌"
+    },
+    {
+      "rule_id": "N3_D23_NEG_FADE_2OF3",
+      "minimum_history_count": 3,
+      "all": [
+        {
+          "metric": "hist_recent3_d23_return_mean",
+          "operator": "<=",
+          "threshold": 0.0
+        },
+        {
+          "metric": "hist_recent3_fade_rate",
+          "operator": ">=",
+          "threshold": 0.6666666666666666
+        }
+      ],
+      "description": "最近3次平均回落，且至少2次在第2至第3日累计回落"
+    }
+  ]
+}
