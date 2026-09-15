@@ -636,10 +636,40 @@ class FillProbabilityEstimator:
 
     @staticmethod
     def build_reliability_flag(data: pd.DataFrame) -> pd.Series:
+        """生成成交评分可靠性标记。
+
+        历史批量评分和盘中实时评分必须同时满足：无计算错误、找到历史分组、
+        实际采用的分组样本数达到配置下限、封单金额正常。过去这里只检查了
+        ``matched_source``，会把``exact_low_sample``或小样本fallback误标为可靠。
+        """
+
         no_score_error = data.get("score_error", pd.Series(index=data.index, dtype=object)).isna()
         has_match = data.get("matched_source", pd.Series(index=data.index, dtype=object)).fillna("none") != "none"
+        sample_enough = (
+            data.get("is_sample_enough", pd.Series(False, index=data.index))
+            .fillna(False)
+            .astype(str)
+            .str.strip()
+            .str.lower()
+            .isin({"true", "1", "yes"})
+        )
         fd_amount_ok = ~data.get("is_fd_amount_abnormal", pd.Series(False, index=data.index)).fillna(False)
-        return no_score_error & has_match & fd_amount_ok
+        return no_score_error & has_match & sample_enough & fd_amount_ok
+
+    @staticmethod
+    def result_is_reliable(result: dict[str, Any]) -> bool:
+        """判断单次实时成交评分是否可用于放行委托。"""
+
+        source = str(result.get("matched_source", "none") or "none")
+        sample_enough = str(result.get("is_sample_enough", False)).strip().lower()
+        score_error = result.get("score_error")
+        abnormal = str(result.get("is_fd_amount_abnormal", False)).strip().lower()
+        return bool(
+            source != "none"
+            and sample_enough in {"true", "1", "yes"}
+            and (score_error is None or str(score_error).strip() == "")
+            and abnormal not in {"true", "1", "yes"}
+        )
 
     def _empty_score(self, row: pd.Series, planned_buy_amount: float, reason: str) -> dict[str, Any]:
         return {

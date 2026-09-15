@@ -144,6 +144,8 @@ class StockState:
     fill_probability: float = 0.0
     fill_reliable: bool = False
     fill_matched_source: str = "none"
+    fill_sample_count: int = 0
+    fill_min_group_samples: int = 0
     fill_reject_reason: str = "尚未计算成交概率"
     pre_close: float = 0.0
     open_price: float = 0.0
@@ -1605,12 +1607,16 @@ class StrategyDMonitor:
             st.fill_probability = 0.0
             st.fill_reliable = False
             st.fill_matched_source = "none"
+            st.fill_sample_count = 0
+            st.fill_min_group_samples = 0
             st.fill_reject_reason = "成交概率模型未就绪"
             return False, st.fill_reject_reason
         if st.circ_mv <= 0 or st.upper_limit <= 0 or st.bid_vol <= 0:
             st.fill_probability = 0.0
             st.fill_reliable = False
             st.fill_matched_source = "none"
+            st.fill_sample_count = 0
+            st.fill_min_group_samples = self.fill_estimator.min_group_samples
             st.fill_reject_reason = "流通市值/涨停价/实时封单缺失"
             return False, st.fill_reject_reason
 
@@ -1627,6 +1633,8 @@ class StrategyDMonitor:
                     st.fill_probability = 0.0
                     st.fill_reliable = False
                     st.fill_matched_source = "none"
+                    st.fill_sample_count = 0
+                    st.fill_min_group_samples = self.fill_estimator.min_group_samples
                     st.fill_reject_reason = f"无法按真实账户计算计划买入金额:{exc}"
                     return False, st.fill_reject_reason
                 planned_buy_amount = capacity.actual_amount
@@ -1637,6 +1645,8 @@ class StrategyDMonitor:
             st.fill_probability = 0.0
             st.fill_reliable = False
             st.fill_matched_source = "none"
+            st.fill_sample_count = 0
+            st.fill_min_group_samples = self.fill_estimator.min_group_samples
             st.fill_reject_reason = "真实计划买入金额或可下单股数为0"
             return False, st.fill_reject_reason
         fd_ratio = self._fd_amount_to_circ_mv(st)
@@ -1649,6 +1659,8 @@ class StrategyDMonitor:
             st.fill_probability = 0.0
             st.fill_reliable = False
             st.fill_matched_source = "none"
+            st.fill_sample_count = 0
+            st.fill_min_group_samples = self.fill_estimator.min_group_samples
             st.fill_reject_reason = (
                 f"封单市值比{fd_ratio:.2%}超过异常阈值{abnormal_threshold:.2%}"
             )
@@ -1674,22 +1686,33 @@ class StrategyDMonitor:
             st.fill_probability = 0.0
             st.fill_reliable = False
             st.fill_matched_source = "none"
+            st.fill_sample_count = 0
+            st.fill_min_group_samples = self.fill_estimator.min_group_samples
             st.fill_reject_reason = f"成交概率复算失败:{exc}"
             return False, st.fill_reject_reason
 
         source = str(result.get("matched_source", "none"))
         probability = float(result.get("fill_probability", 0.0) or 0.0)
-        reliable = source != "none"
+        sample_count = int(result.get("sample_count", 0) or 0)
+        reliable = self.fill_estimator.result_is_reliable(result)
         st.fill_probability = probability
         st.fill_reliable = reliable
         st.fill_matched_source = source
+        st.fill_sample_count = sample_count
+        st.fill_min_group_samples = self.fill_estimator.min_group_samples
         st.fill_planned_buy_amount = float(planned_buy_amount)
         st.fill_estimated_turnover_amount = float(
             result.get("estimated_turnover_amount", 0.0) or 0.0
         )
         st.fill_current_queue_amount = current_queue_amount
         if not reliable:
-            st.fill_reject_reason = "成交概率没有可靠历史匹配"
+            if source == "none":
+                st.fill_reject_reason = "成交概率没有历史匹配"
+            else:
+                st.fill_reject_reason = (
+                    f"成交概率历史分组样本{sample_count}个，低于可靠性下限"
+                    f"{self.fill_estimator.min_group_samples}个"
+                )
             return False, st.fill_reject_reason
         if probability < self.min_fill_probability:
             st.fill_reject_reason = (
@@ -2355,6 +2378,8 @@ class StrategyDMonitor:
             "fill_probability": st.fill_probability,
             "fill_reliable": st.fill_reliable,
             "fill_matched_source": st.fill_matched_source,
+            "fill_sample_count": st.fill_sample_count,
+            "fill_min_group_samples": st.fill_min_group_samples,
             "source": source,
             "factor_release_id": self.factor_release_id,
             "matched_factor_profile_ids": st.matched_factor_profile_ids,
@@ -2468,6 +2493,8 @@ class StrategyDMonitor:
                     "fill_probability": st.fill_probability,
                     "fill_reliable": st.fill_reliable,
                     "fill_matched_source": st.fill_matched_source,
+                    "fill_sample_count": st.fill_sample_count,
+                    "fill_min_group_samples": st.fill_min_group_samples,
                     "fill_planned_buy_amount": st.fill_planned_buy_amount,
                     "fill_estimated_turnover_amount": st.fill_estimated_turnover_amount,
                     "fill_current_queue_amount": st.fill_current_queue_amount,
@@ -2833,6 +2860,43 @@ class StrategyDMonitor:
         status_text = f"QUERY_ERROR:{last_error}" if last_error else "NOT_FOUND_IN_QMT_ORDERS"
         return OrderFill(order_id=str(order_id), status_code=-1, status_text=status_text)
 
+    def _update_signal_order_result(
+        self,
+        order_id: str,
+        *,
+        order_status: str,
+        order_status_text: str,
+        filled_qty: int | None = None,
+        filled_amount: float | None = None,
+        failure_reason: str | None = None,
+    ) -> bool:
+        """把QMT后续成交/撤单事实回写到当天D信号记录。"""
+
+        changed = False
+        for record in reversed(getattr(self, "signal_records", [])):
+            if str(record.get("order_id", "")) != str(order_id):
+                continue
+            updates: dict[str, Any] = {
+                "order_status": str(order_status),
+                "order_status_text": str(order_status_text),
+            }
+            if filled_qty is not None:
+                updates["filled_qty"] = max(int(filled_qty), 0)
+            if filled_amount is not None:
+                updates["filled_amount"] = max(float(filled_amount), 0.0)
+            if failure_reason:
+                updates["failure_reason"] = str(failure_reason)
+            for key, value in updates.items():
+                if record.get(key) != value:
+                    record[key] = value
+                    changed = True
+            if changed:
+                record["order_status_updated_at"] = now_beijing().isoformat()
+            break
+        if changed and hasattr(self, "signal_csv"):
+            self._save_signals()
+        return changed
+
     # ── 14:55 撤单 ────────────────────────────────────────────────────────────
 
     def cancel_all_d_orders(self) -> None:
@@ -2888,10 +2952,30 @@ class StrategyDMonitor:
                 # 部分成交：撤掉未成残单
                 if not getattr(fill, "is_filled", False):
                     ok = self.broker.cancel_order(order_id)
+                    final_status = (
+                        "PARTIAL_FILLED_CANCEL_REQUESTED"
+                        if ok
+                        else "PARTIAL_FILLED_CANCEL_FAILED"
+                    )
+                    self._update_signal_order_result(
+                        order_id,
+                        order_status=final_status,
+                        order_status_text=status_text,
+                        filled_qty=filled_qty,
+                        filled_amount=filled_amount,
+                        failure_reason=(None if ok else "部分成交后的未成残单撤单失败"),
+                    )
                     self.logger.warning("D部分成交 %s 已成%d股(%s)，撤残单%s",
                                         ts_code, filled_qty, status_text,
                                         "已发" if ok else "失败")
                 else:
+                    self._update_signal_order_result(
+                        order_id,
+                        order_status="FILLED",
+                        order_status_text=status_text,
+                        filled_qty=filled_qty,
+                        filled_amount=filled_amount,
+                    )
                     self.logger.info(
                         "D委托已全部成交，无需撤单: %s order_id=%s 持仓%d股 @%.2f",
                         ts_code,
@@ -2902,22 +2986,41 @@ class StrategyDMonitor:
                 continue
 
             ok = self.broker.cancel_order(order_id)
+            fill_was_confirmed = fill is not None
             if ok:
                 cancelled += 1
-                print(f"  {ts_code}  order_id={order_id} → 未成交，撤单已发")
                 detail = self.session_order_details.get(order_id, {})
                 planned_qty = int(detail.get("shares", 0) or 0)
                 planned_amount = float(detail.get("actual_amount", 0.0) or 0.0)
-                self.logger.warning("D委托未成交已撤单: %s order_id=%s 委托%d股 金额=%.2f",
-                                    ts_code, order_id, planned_qty, planned_amount)
+                if fill_was_confirmed:
+                    print(f"  {ts_code}  order_id={order_id} → 未成交，撤单已发")
+                    status = "CANCEL_REQUESTED_NO_FILL"
+                    status_text = str(getattr(fill, "status_text", ""))
+                    notice_text = "已成交0.00万，14:55已撤单。"
+                else:
+                    print(f"  {ts_code}  order_id={order_id} → 成交状态未知，撤单已发")
+                    status = "CANCEL_REQUESTED_FILL_UNKNOWN"
+                    status_text = "QMT成交反查失败，撤单请求已发"
+                    notice_text = "成交数量尚未确认，14:55撤单请求已发，请以QMT成交回报为准。"
+                self._update_signal_order_result(
+                    order_id,
+                    order_status=status,
+                    order_status_text=status_text,
+                    filled_qty=(0 if fill_was_confirmed else None),
+                    filled_amount=(0.0 if fill_was_confirmed else None),
+                )
+                self.logger.warning(
+                    "D委托撤单请求已发: %s order_id=%s 委托%d股 金额=%.2f 成交状态=%s",
+                    ts_code, order_id, planned_qty, planned_amount, status,
+                )
                 try:
                     notify(
                         "buy_result",
                         "⚠️ D开仓未成交已撤单",
                         (
                             f"{ts_code} order_id={order_id} 委托{planned_qty}股，"
-                            f"总委托金额{planned_amount / 10000:.2f}万，已成交0.00万，"
-                            f"14:55已撤单。"
+                            f"总委托金额{planned_amount / 10000:.2f}万，"
+                            f"{notice_text}"
                         ),
                         level="timeSensitive",
                     )
@@ -2927,6 +3030,14 @@ class StrategyDMonitor:
                 failed += 1
                 print(f"  {ts_code}  order_id={order_id} → 撤单失败！请手动检查")
                 self.logger.error("撤单失败: %s order_id=%s", ts_code, order_id)
+                self._update_signal_order_result(
+                    order_id,
+                    order_status="CANCEL_FAILED",
+                    order_status_text="14:55撤单请求失败",
+                    filled_qty=(0 if fill is not None else None),
+                    filled_amount=(0.0 if fill is not None else None),
+                    failure_reason="D未成委托撤单失败，请人工核对QMT",
+                )
                 try:
                     notify(
                         "buy_result",
@@ -3279,6 +3390,24 @@ class StrategyDMonitor:
                     planned_qty,
                     fill_price,
                 )
+
+            filled_amount = filled_qty * fill_price
+            status_text = str(getattr(fill, "status_text", ""))
+            if planned_qty > 0 and filled_qty >= planned_qty:
+                order_status = "FILLED"
+            elif filled_qty > 0:
+                order_status = "PENDING_OR_PARTIAL"
+            elif bool(getattr(fill, "is_terminal", False)):
+                order_status = "TERMINAL_NO_FILL"
+            else:
+                order_status = "PENDING_OR_PARTIAL"
+            self._update_signal_order_result(
+                order_id,
+                order_status=order_status,
+                order_status_text=status_text,
+                filled_qty=filled_qty,
+                filled_amount=filled_amount,
+            )
 
             if planned_qty <= 0 or filled_qty < planned_qty:
                 all_filled = False

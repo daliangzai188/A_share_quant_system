@@ -82,6 +82,8 @@ reports/live_trade/qmt_live_readiness.csv
 reports/live_trade/qmt_live_readiness.md
 # 交易状态查询会持续覆盖，且可能包含当前资金/持仓摘要，只保留在本机。
 reports/live_trade/trading_status_latest.json
+# D实时对齐认证随前向委托/成交持续变化，只保留本机，不作为冻结发布产物。
+reports/strategy_d/runtime_alignment_latest.json
 # QMT迁移现场验收记录含本机路径及当时的账户/持仓摘要，只保留本机审计。
 reports/qmt_inner_migration/
 

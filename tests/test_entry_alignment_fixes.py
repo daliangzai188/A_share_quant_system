@@ -17,7 +17,7 @@ from scripts.monitor_strategy_d_intraday import (
 )
 from scripts.run_paper_ab_filtered_daily_ops import resolve_ac_selected_leg
 from src.acde_rolling_framework import replay_action_date_cash_portfolio
-from src.fill_model import fill_probability_from_amounts
+from src.fill_model import FillProbabilityEstimator, fill_probability_from_amounts
 from src.strategy_d_factor_rules import (
     load_factor_release,
     release_signal_clock,
@@ -35,6 +35,118 @@ class _Logger:
 
 class EntryAlignmentFixTests(unittest.TestCase):
     """回归四个会直接改变开仓结果的修复。"""
+
+    def test_fill_reliability_requires_minimum_group_sample(self) -> None:
+        scores = pd.DataFrame(
+            [
+                {
+                    "matched_source": "fallback_due_to_low_sample",
+                    "is_sample_enough": False,
+                    "score_error": None,
+                    "is_fd_amount_abnormal": False,
+                },
+                {
+                    "matched_source": "fallback_due_to_low_sample",
+                    "is_sample_enough": True,
+                    "score_error": None,
+                    "is_fd_amount_abnormal": False,
+                },
+            ]
+        )
+
+        reliable = FillProbabilityEstimator.build_reliability_flag(scores)
+
+        self.assertEqual(reliable.tolist(), [False, True])
+        self.assertFalse(
+            FillProbabilityEstimator.result_is_reliable(scores.iloc[0].to_dict())
+        )
+        self.assertTrue(
+            FillProbabilityEstimator.result_is_reliable(scores.iloc[1].to_dict())
+        )
+
+    def test_d_signal_record_receives_final_order_result(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            release_path = self._write_d_release(Path(directory) / "release.json")
+            monitor = StrategyDMonitor(
+                broker=None,
+                live_order=False,
+                logger=_Logger(),
+                signal_csv=Path(directory) / "signals.csv",
+                config={"strategy_d": {"factor_release_path": str(release_path)}},
+            )
+            monitor.signal_records = [
+                {
+                    "signal_type": "BUY",
+                    "ts_code": "300001.SZ",
+                    "order_id": "ORDER-1",
+                    "order_status": "PENDING_OR_PARTIAL",
+                    "filled_qty": 0,
+                }
+            ]
+
+            changed = monitor._update_signal_order_result(
+                "ORDER-1",
+                order_status="CANCEL_REQUESTED_NO_FILL",
+                order_status_text="已报待撤",
+                filled_qty=0,
+                filled_amount=0.0,
+            )
+
+            self.assertTrue(changed)
+            row = monitor.signal_records[0]
+            self.assertEqual(row["order_status"], "CANCEL_REQUESTED_NO_FILL")
+            self.assertEqual(row["filled_qty"], 0)
+            self.assertIn("order_status_updated_at", row)
+            persisted = pd.read_csv(Path(directory) / "signals.csv")
+            self.assertEqual(
+                persisted.iloc[0]["order_status"], "CANCEL_REQUESTED_NO_FILL"
+            )
+
+    def test_live_d_fill_gate_rejects_low_sample_match(self) -> None:
+        class _LowSampleEstimator:
+            min_group_samples = 30
+            result_is_reliable = staticmethod(
+                FillProbabilityEstimator.result_is_reliable
+            )
+
+            @staticmethod
+            def estimate(**_kwargs):
+                return {
+                    "matched_source": "fallback_due_to_low_sample",
+                    "sample_count": 12,
+                    "is_sample_enough": False,
+                    "fill_probability": 1.0,
+                    "estimated_turnover_amount": 1_000_000.0,
+                }
+
+        with tempfile.TemporaryDirectory() as directory:
+            release_path = self._write_d_release(Path(directory) / "release.json")
+            monitor = StrategyDMonitor(
+                broker=None,
+                live_order=False,
+                logger=_Logger(),
+                signal_csv=Path(directory) / "signals.csv",
+                config={"strategy_d": {"factor_release_path": str(release_path)}},
+            )
+            monitor.fill_model_ready = True
+            monitor.fill_estimator = _LowSampleEstimator()
+            state = StockState(
+                ts_code="688001.SH",
+                market_segment="star",
+                upper_limit=12.0,
+                bid_vol=1_000,
+                circ_mv=100_000.0,
+                first_seal_hhmm=935,
+            )
+
+            passed, reason = monitor._refresh_fill_gate(
+                state, planned_buy_amount=100_000.0
+            )
+
+            self.assertFalse(passed)
+            self.assertFalse(state.fill_reliable)
+            self.assertEqual(state.fill_sample_count, 12)
+            self.assertIn("低于可靠性下限30个", reason)
 
     @staticmethod
     def _write_d_release(

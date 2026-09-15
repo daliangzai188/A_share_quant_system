@@ -1,5 +1,43 @@
 # 策略 D：V15弱广度第2次回封扩样正式规则
 
+## 2026-09-15实盘对齐加固
+
+本次只修复执行一致性和证据链，没有修改V15的15个因子档位、`A>C>E>D`、
+82.5%目标仓位、85%硬顶、80%成交门、每日最早信号或T+2退出：
+
+1. `FillProbabilityEstimator.build_reliability_flag`和实时
+   `StrategyDMonitor._refresh_fill_gate`现在统一要求实际采用的历史分组样本数达到
+   `fill_model.min_group_samples=30`。只找到分组但样本不足时，回测与实盘都拒绝。
+2. D信号记录新增实际分组样本数、样本下限，并由
+   `StrategyDMonitor._update_signal_order_result`持续回写成交、部分成交和撤单结果。
+3. `scripts/reconcile_strategy_d_forward_evidence.py`可用事务意图账本修复旧信号CSV中
+   停留在`PENDING_OR_PARTIAL`的状态；它只读交易数据库，不连接QMT、不下单。
+4. `scripts/certify_strategy_d_runtime_alignment.py`统一检查正式发布、因子共用模块、
+   信号时钟、排序、仓位、成交门、样本下限、真实委托金额、T+2和前向证据。
+
+2026-09-15认证结果为
+`RUNTIME_RULES_ALIGNED_FORWARD_VALIDATION_IN_PROGRESS`：14项实时规则检查全部通过；
+2026-09-03以来有1个D信号和1笔委托，权威事务意图账本确认最终撤单、成交0股，
+不存在未决委托。该笔使用的fallback分组为48个样本，达到30个下限，但
+`fill_probability=100%`只是成交空间比例上限，并非经概率校准后的必然成交率。
+
+历史收益仍未完成对齐认证：最近三年事件账本缺少信号时
+`estimated_turnover_amount`和`current_queue_amount`，严格口径可认证D成交为0笔；旧28笔、
+75%胜率、4.3391%平均账户收益、2.4843%中位数、3.091072倍复利、-6.9521%最大回撤、
+1.7908盈亏比、21.8826%最大盈利、-6.9521%最大亏损、最长2连亏只保留为失效历史对照。
+费用含佣金、印花税、过户费和双边0.1%滑点；成交概率与历史L2缺失是当前主要限制，
+V15属于同窗`STRICT_DISCOVERY`，过拟合风险仍高。正式参数继续冻结到9月月末，期间只
+累计候选、委托、成交、撤单、费用、滑点和T+2退出的前向证据。
+
+运行方式：
+
+```bash
+python3 scripts/reconcile_strategy_d_forward_evidence.py
+python3 scripts/certify_strategy_d_runtime_alignment.py
+```
+
+本机报告：`reports/strategy_d/runtime_alignment_latest.json`。
+
 > 2026-09-02开仓口径复核：V15旧历史收益认证已失效。原因是V15
 > 历史事件回放没有执行实盘`fill_probability >= 80%`开仓门，且
 > 现有三年1m数据没有信号时L2队列金额，无法准确补算，所以历史回放继续
