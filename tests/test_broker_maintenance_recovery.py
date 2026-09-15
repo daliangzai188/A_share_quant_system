@@ -26,6 +26,75 @@ from src.qmt_adapter import mask_account_id
 
 
 class BrokerHealthStateTests(unittest.TestCase):
+    def test_account_heartbeat_never_requests_optional_market_quote(self) -> None:
+        """账户与持仓已验证后，展示字段不能再阻塞唯一QMT执行通道。"""
+        source = inspect.getsource(trading_daemon._print_account_status)
+        self.assertNotIn("get_full_tick(", source)
+
+    def test_account_status_daily_price_uses_current_pre_close_and_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            daily_dir = root / "data" / "raw" / "daily"
+            daily_dir.mkdir(parents=True)
+            daily_file = daily_dir / "20260915.csv"
+            daily_file.write_text(
+                "ts_code,trade_date,close,pre_close\n"
+                "000001.SZ,20260915,11.82,11.85\n"
+                "600000.SH,20260915,10.10,10.00\n",
+                encoding="utf-8",
+            )
+            old_cache = dict(trading_daemon._ACCOUNT_STATUS_DAILY_CACHE)
+            trading_daemon._ACCOUNT_STATUS_DAILY_CACHE.update(
+                {"path": "", "mtime_ns": None, "price_column": "", "prices": {}}
+            )
+            try:
+                with patch.object(trading_daemon, "PROJECT_ROOT", root):
+                    first = trading_daemon._account_status_pre_close_map(
+                        ["000001.SZ"], datetime.date(2026, 9, 15)
+                    )
+                    # 第二次命中缓存；即使只询问另一只票，也无需再访问QMT行情。
+                    second = trading_daemon._account_status_pre_close_map(
+                        ["600000.SH"], datetime.date(2026, 9, 15)
+                    )
+            finally:
+                trading_daemon._ACCOUNT_STATUS_DAILY_CACHE.clear()
+                trading_daemon._ACCOUNT_STATUS_DAILY_CACHE.update(old_cache)
+
+        self.assertEqual(first, {"000001.SZ": 11.85})
+        self.assertEqual(second, {"600000.SH": 10.0})
+
+    def test_account_status_daily_price_falls_back_to_previous_close(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            daily_dir = root / "data" / "raw" / "daily"
+            daily_dir.mkdir(parents=True)
+            (daily_dir / "20260914.csv").write_text(
+                "ts_code,trade_date,close,pre_close\n"
+                "000001.SZ,20260914,11.85,11.74\n",
+                encoding="utf-8",
+            )
+            old_cache = dict(trading_daemon._ACCOUNT_STATUS_DAILY_CACHE)
+            trading_daemon._ACCOUNT_STATUS_DAILY_CACHE.update(
+                {"path": "", "mtime_ns": None, "price_column": "", "prices": {}}
+            )
+            try:
+                with (
+                    patch.object(trading_daemon, "PROJECT_ROOT", root),
+                    patch.object(
+                        trading_daemon,
+                        "prev_n_trade_days",
+                        return_value=datetime.date(2026, 9, 14),
+                    ),
+                ):
+                    actual = trading_daemon._account_status_pre_close_map(
+                        ["000001.SZ"], datetime.date(2026, 9, 15)
+                    )
+            finally:
+                trading_daemon._ACCOUNT_STATUS_DAILY_CACHE.clear()
+                trading_daemon._ACCOUNT_STATUS_DAILY_CACHE.update(old_cache)
+
+        self.assertEqual(actual, {"000001.SZ": 11.85})
+
     def test_account_mask_never_exposes_full_broker_account(self) -> None:
         self.assertEqual(mask_account_id("1234567890"), "***90")
         self.assertEqual(mask_account_id("7"), "***7")

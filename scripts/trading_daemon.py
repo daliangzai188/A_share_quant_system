@@ -521,6 +521,12 @@ _TRADE_CALENDAR_CACHE: dict[str, Any] = {
     "open_dates": set(),
     "max_date": "",
 }
+_ACCOUNT_STATUS_DAILY_CACHE: dict[str, Any] = {
+    "path": "",
+    "mtime_ns": None,
+    "price_column": "",
+    "prices": {},
+}
 _pending_buy_lock = threading.RLock()
 _premarket_buy_monitor_thread: threading.Thread | None = None
 _broker_health_write_lock = threading.Lock()
@@ -16497,6 +16503,68 @@ def _broker_has_preexisting_strategy_position(
     )
 
 
+def _account_status_pre_close_map(
+    ts_codes: list[str],
+    as_of_date: datetime.date | None = None,
+) -> dict[str, float]:
+    """从本地日线取得昨收，只用于账户状态展示。
+
+    账户心跳的连接结论只能来自账户与持仓查询。旧实现为了展示“今日涨跌幅”，
+    每轮又调用一次同步 ``get_full_tick``；该非必要行情调用一旦卡住，会污染唯一
+    QMT执行通道并触发daemon重启。这里改读收盘流水线已有的日线文件：当日文件
+    已落地时读取 ``pre_close``，盘中尚无当日文件时读取上一交易日 ``close``。
+    文件缺失或格式异常只省略今日涨跌幅，不影响账户验证、风控或交易任务。
+    """
+    requested = {str(code).strip().upper() for code in ts_codes if str(code).strip()}
+    if not requested:
+        return {}
+
+    trade_date = as_of_date or today_beijing()
+    daily_dir = PROJECT_ROOT / "data" / "raw" / "daily"
+    current_path = daily_dir / f"{trade_date:%Y%m%d}.csv"
+    if current_path.exists():
+        source_path = current_path
+        price_column = "pre_close"
+    else:
+        previous_date = prev_n_trade_days(trade_date, 1)
+        source_path = daily_dir / f"{previous_date:%Y%m%d}.csv"
+        price_column = "close"
+
+    try:
+        mtime_ns = source_path.stat().st_mtime_ns
+        cache_hit = (
+            _ACCOUNT_STATUS_DAILY_CACHE.get("path") == str(source_path)
+            and _ACCOUNT_STATUS_DAILY_CACHE.get("mtime_ns") == mtime_ns
+            and _ACCOUNT_STATUS_DAILY_CACHE.get("price_column") == price_column
+        )
+        if cache_hit:
+            all_prices = dict(_ACCOUNT_STATUS_DAILY_CACHE.get("prices") or {})
+        else:
+            all_prices: dict[str, float] = {}
+            with source_path.open("r", encoding="utf-8-sig", newline="") as file:
+                for row in csv.DictReader(file):
+                    code = str(row.get("ts_code", "")).strip().upper()
+                    if not code:
+                        continue
+                    try:
+                        price = float(row.get(price_column, 0.0) or 0.0)
+                    except (TypeError, ValueError):
+                        continue
+                    if price > 0:
+                        all_prices[code] = price
+            _ACCOUNT_STATUS_DAILY_CACHE.update(
+                {
+                    "path": str(source_path),
+                    "mtime_ns": mtime_ns,
+                    "price_column": price_column,
+                    "prices": all_prices,
+                }
+            )
+        return {code: all_prices[code] for code in requested if code in all_prices}
+    except (OSError, csv.Error):
+        return {}
+
+
 def _print_account_status(log: Any) -> None:
     """账户信息轮询（后台线程）：复用持久连接，查询无需重新握手。
     只有 query_account/query_positions 成功返回，才算账户连接已验证可用。
@@ -16523,18 +16591,12 @@ def _print_account_status(log: Any) -> None:
     if datetime.time(14, 54, 30) <= _t < datetime.time(14, 58):
         return
     account = positions = None
-    quote_map: dict = {}
     with _qmt_lock:
         had_persistent_adapter = _qmt_adapter is not None
         try:
             adapter = _qmt_get(broker_cfg)
             account, positions = _qmt_query_account_positions(adapter)
             _qmt_last_verified_at = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
-            live_positions = [p for p in (positions or []) if int(getattr(p, "volume", 0) or 0) > 0]
-            if live_positions:
-                codes = [p.ts_code for p in live_positions]
-                if codes:
-                    quote_map = adapter.get_full_tick(codes)
             if _qmt_reconnect_count > 0:
                 log.info("✅ QMT连接已恢复（第%d次心跳失败后恢复）", _qmt_reconnect_count)
                 if qmt_is_critical_window():
@@ -16654,11 +16716,6 @@ def _print_account_status(log: Any) -> None:
                 adapter = _qmt_get(broker_cfg, allow_full_scan=allow_full_scan)
                 account, positions = _qmt_query_account_positions(adapter)
                 _qmt_last_verified_at = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
-                live_positions = [p for p in (positions or []) if int(getattr(p, "volume", 0) or 0) > 0]
-                if live_positions:
-                    codes = [p.ts_code for p in live_positions]
-                    if codes:
-                        quote_map = adapter.get_full_tick(codes)
                 log.info("✅ QMT重连成功（第%d次恢复）", _qmt_reconnect_count)
                 if critical_window:
                     _notify("connection", "✅ 账户重连成功", "QMT连接已恢复正常。")
@@ -16721,6 +16778,9 @@ def _print_account_status(log: Any) -> None:
     total_asset = float(getattr(account, "total_asset", 0.0) or 0.0)
     _check_capacity_wall_milestone(total_asset, config, log)
     live_positions = [p for p in (positions or []) if int(getattr(p, "volume", 0) or 0) > 0]
+    pre_close_map = _account_status_pre_close_map(
+        [str(getattr(position, "ts_code", "")) for position in live_positions]
+    )
     # 只认策略持仓:打新中签转债/股票等外部持仓不算"有持仓"(2026-07-23 用户重申)
     _last_account_has_position = _broker_has_strategy_position(positions)
     if live_positions:
@@ -16833,9 +16893,8 @@ def _print_account_status(log: Any) -> None:
             if exit_time_text:
                 time_text += f"～{exit_time_text}平 "
 
-            # 今日涨跌幅（相对昨收）
-            quote = quote_map.get(p.ts_code)
-            pre_close = float(getattr(quote, "pre_close", 0.0) or 0.0) if quote else 0.0
+            # 今日涨跌幅只依赖本地日线昨收；账户心跳不得为展示字段同步请求QMT行情。
+            pre_close = float(pre_close_map.get(str(p.ts_code).upper(), 0.0) or 0.0)
             if pre_close > 0:
                 chg_pct = (current_price - pre_close) / pre_close * 100
                 chg_sign = "+" if chg_pct >= 0 else ""
