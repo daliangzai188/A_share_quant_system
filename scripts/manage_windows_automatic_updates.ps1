@@ -1,9 +1,10 @@
-#Requires -RunAsAdministrator
+﻿#Requires -RunAsAdministrator
 <#
 .SYNOPSIS
     管理交易虚拟机的 Windows 自动更新行为。
 
 .DESCRIPTION
+    本文件必须保留 UTF-8 BOM，Windows PowerShell 5.1 才能正确解析中文注释与字符串。
     默认动作会关闭 Windows 自动下载、自动安装和自动重启，并停止/禁用
     Windows Update 服务。这样可以避免无人值守的交易虚拟机在夜间更新后
     停留在登录界面。
@@ -32,7 +33,11 @@ function Set-DwordPolicy {
         [Parameter(Mandatory = $true)][int]$Value
     )
 
-    New-Item -Path $auPolicyPath -Force | Out-Null
+    # Registry Provider 的 New-Item -Force 会重建现有键并清掉此前的值。
+    # 只能在键不存在时创建，否则三次调用最终只剩最后一条禁止重启策略。
+    if (-not (Test-Path -LiteralPath $auPolicyPath)) {
+        New-Item -Path $auPolicyPath -Force | Out-Null
+    }
     New-ItemProperty -Path $auPolicyPath -Name $Name -PropertyType DWord -Value $Value -Force | Out-Null
 }
 
@@ -63,8 +68,15 @@ Set-DwordPolicy -Name "NoAutoRebootWithLoggedOnUsers" -Value 1
 Stop-Service -Name "wuauserv" -Force -ErrorAction SilentlyContinue
 Set-Service -Name "wuauserv" -StartupType Disabled
 
-Write-Host "WINDOWS_AUTOMATIC_UPDATE_DISABLED"
 $appliedPolicy = Get-ItemProperty -Path $auPolicyPath
+$updateService = Get-Service -Name "wuauserv"
+# 必须读回三项策略及服务状态全部通过，才输出成功；防止部分写入冒充完成。
+if ($appliedPolicy.NoAutoUpdate -ne 1 -or $appliedPolicy.AUOptions -ne 2 -or
+    $appliedPolicy.NoAutoRebootWithLoggedOnUsers -ne 1 -or
+    $updateService.StartType -ne "Disabled" -or $updateService.Status -ne "Stopped") {
+    throw "WINDOWS_UPDATE_DISABLE_VERIFICATION_FAILED"
+}
+Write-Host "WINDOWS_AUTOMATIC_UPDATE_DISABLED"
 Write-Host (
     "POLICY_VALUES NoAutoUpdate={0} AUOptions={1} NoAutoRebootWithLoggedOnUsers={2}" -f `
         $appliedPolicy.NoAutoUpdate,

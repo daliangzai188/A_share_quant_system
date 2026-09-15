@@ -9,6 +9,7 @@ import plistlib
 import shutil
 import subprocess
 import sys
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 
@@ -61,6 +62,25 @@ def _detect_vmx(vmrun: Path) -> Path | None:
     return None
 
 
+def _syncthing_heartbeat_config() -> dict:
+    """发现已有本机同步服务；凭据只存于权限0600的本机配置，不进入仓库。"""
+    source = Path.home() / "Library" / "Application Support" / "Syncthing" / "config.xml"
+    root = ET.parse(source).getroot()
+    gui = root.find("gui")
+    if gui is None:
+        raise RuntimeError("Syncthing缺少本机API配置")
+    address = gui.findtext("address", "")
+    if not address.startswith(("127.0.0.1:", "localhost:", "[::1]:")) or gui.get("tls") == "true":
+        raise RuntimeError("心跳检查要求已有的本机HTTP Syncthing接口")
+    matches = [folder for folder in root.findall("folder")
+               if Path(folder.get("path", "")).expanduser().resolve() == PROJECT_ROOT]
+    key = gui.findtext("apikey", "")
+    if len(matches) != 1 or not key:
+        raise RuntimeError("未能唯一识别项目同步目录或本机API密钥")
+    return {"syncthing_url": "http://" + address, "syncthing_api_key": key,
+            "syncthing_folder": matches[0].get("id"), "heartbeat_stale_sec": 900}
+
+
 def install(*, vmx: Path | None, auto_start: bool) -> dict:
     if sys.platform != "darwin":
         raise RuntimeError("Mac独立哨兵只能在macOS安装")
@@ -73,6 +93,7 @@ def install(*, vmx: Path | None, auto_start: bool) -> dict:
     bark_url = _read_bark_url()
     if not bark_url:
         raise RuntimeError(".env中未找到BARK_URL，无法安装独立告警")
+    heartbeat_config = _syncthing_heartbeat_config()
 
     SUPPORT_DIR.mkdir(parents=True, exist_ok=True)
     shutil.copy2(SOURCE, INSTALLED_SCRIPT)
@@ -83,6 +104,7 @@ def install(*, vmx: Path | None, auto_start: bool) -> dict:
         "bark_url": bark_url,
         "alert_gap_sec": 3600,
         "auto_start_weekday_morning": bool(auto_start),
+        **heartbeat_config,
     }
     CONFIG_PATH.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
     os.chmod(CONFIG_PATH, 0o600)
@@ -136,6 +158,7 @@ def install(*, vmx: Path | None, auto_start: bool) -> dict:
         "auto_start_weekday_morning": bool(auto_start),
         "runtime_location": str(INSTALLED_SCRIPT),
         "desktop_tcc_dependency": False,
+        "runtime_heartbeat_checked": True,
     }
 
 
