@@ -37,14 +37,27 @@ if automatic_recovery and manual_stop is not None:
         "如需恢复，请人工运行：py -3.11 start_windows.py"
     )
     sys.exit(0)
-if not automatic_recovery and clear_manual_stop(root):
-    print("已收到人工启动指令：人工停机标记已清除，恢复异常自愈与每日运行兜底。")
 try:
     from src.secret_config import load_local_env
 
     load_local_env(root, override=False)
 except Exception as exc:
     print(f"WARNING: 本地.env加载失败，数据采集会在缺少TUSHARE_TOKEN时安全失败：{exc}")
+if not automatic_recovery:
+    # 先确认内置执行端，再清除人工停机。失败时 stop_windows.py 写下的硬闸
+    # 必须原样保留，避免出现“程序没启动但交易闸已打开”的半启动状态。
+    from src.qmt_inner_start_gate import assert_selected_transport_ready
+
+    try:
+        inner_ready = assert_selected_transport_ready(root)
+    except Exception as exc:
+        print(f"启动被拒绝：{exc}")
+        print("人工停机仍然生效；请先启动并检查 QMT 内置 Python 模型。")
+        sys.exit(1)
+    if inner_ready.get("checked"):
+        print("QMT内置Python执行端已就绪：live；即将恢复原自动化程序。")
+    if clear_manual_stop(root):
+        print("已收到人工启动指令：人工停机标记已清除，恢复异常自愈与每日运行兜底。")
 log = root / "logs" / "trading_daemon.log"
 pid_file = root / ".daemon_pid"
 d_monitor_pid_file = root / "logs" / "strategy_d_monitor.pid"

@@ -88,6 +88,8 @@ def build_report(config: dict[str, Any]) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
     broker_config = config.get("broker", {})
     live_config = config.get("live_trade", {})
+    from src.qmt_market_data import selected_transport
+    inner = selected_transport(config) == "qmt_inner"
 
     rows.append(
         status_row(
@@ -136,34 +138,51 @@ def build_report(config: dict[str, Any]) -> pd.DataFrame:
         )
     )
 
-    for env_name in [
+    env_names = [
         str(broker_config.get("account_id_env", "QMT_ACCOUNT_ID")),
         str(broker_config.get("account_type_env", "QMT_ACCOUNT_TYPE")),
         str(broker_config.get("qmt_path_env", "QMT_PATH")),
         str(broker_config.get("session_id_env", "QMT_SESSION_ID")),
-    ]:
+    ]
+    if inner:
+        env_names = env_names[:2]
+    for env_name in env_names:
         status, detail, blocking = check_env_value(env_name)
         rows.append(status_row(env_name, status, detail, blocking))
 
-    qmt_path = os.getenv(str(broker_config.get("qmt_path_env", "QMT_PATH")), "").strip()
-    rows.append(
-        status_row(
-            "QMT_PATH_EXISTS",
-            "PASS" if qmt_path and Path(qmt_path).expanduser().exists() else "FAIL",
-            "QMT_PATH 路径存在。" if qmt_path and Path(qmt_path).expanduser().exists() else "QMT_PATH 不存在或未配置。",
-            True,
+    if inner:
+        try:
+            from qmt_inner.protocol import FileClient, load_settings
+            settings = load_settings()
+            expected = os.getenv(str(broker_config.get("account_id_env", "QMT_ACCOUNT_ID")), "").strip()
+            if expected != settings['account_id']:
+                raise RuntimeError('账户配置不一致')
+            heartbeat = FileClient(settings).heartbeat()
+            rows.append(status_row('qmt_inner_heartbeat', 'PASS',
+                        '已认证的内置模型心跳；mode=' + heartbeat.get('mode', 'unknown') +
+                        '；账户与真实委托核对仍须运行只读probe/audit。', True))
+        except Exception as exc:
+            rows.append(status_row('qmt_inner_heartbeat', 'FAIL', str(exc), True))
+    else:
+        qmt_path = os.getenv(str(broker_config.get("qmt_path_env", "QMT_PATH")), "").strip()
+        rows.append(
+            status_row(
+                "QMT_PATH_EXISTS",
+                "PASS" if qmt_path and Path(qmt_path).expanduser().exists() else "FAIL",
+                "QMT_PATH 路径存在。" if qmt_path and Path(qmt_path).expanduser().exists() else "QMT_PATH 不存在或未配置。",
+                True,
+            )
         )
-    )
 
-    xtquant_status, xtquant_detail = check_xtquant_import()
-    rows.append(
-        status_row(
-            "xtquant_import",
-            xtquant_status,
-            xtquant_detail,
-            True,
+        xtquant_status, xtquant_detail = check_xtquant_import()
+        rows.append(
+            status_row(
+                "xtquant_import",
+                xtquant_status,
+                xtquant_detail,
+                True,
+            )
         )
-    )
 
     planned = latest_file("reports/paper_trade/ab_filtered_daily_ops/*_planned_orders.csv")
     rows.append(

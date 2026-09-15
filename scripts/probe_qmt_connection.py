@@ -21,10 +21,8 @@ def parse_args() -> argparse.Namespace:
 
 
 def mask_account(account_id: str) -> str:
-    account_id = account_id.strip()
-    if len(account_id) <= 4:
-        return "****"
-    return account_id[:2] + "*" * (len(account_id) - 4) + account_id[-2:]
+    from src.account_privacy import mask_account_id
+    return mask_account_id(account_id)
 
 
 def existing_path(path: str | Path) -> str | None:
@@ -95,6 +93,16 @@ def main() -> None:
         PROJECT_ROOT,
         caller="probe_qmt_connection.py",
     )
+
+    from src.qmt_market_data import selected_transport
+    if selected_transport() == 'qmt_inner':
+        from scripts.prepare_qmt_inner import probe
+        result = probe()
+        output = PROJECT_ROOT / args.output
+        output.parent.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame([result]).to_csv(output, index=False, encoding='utf-8-sig')
+        print('QMT INNER READ_ONLY_CONNECTED: ' + str(output))
+        return
 
     account_id = os.getenv("QMT_ACCOUNT_ID", "").strip()
     account_type = os.getenv("QMT_ACCOUNT_TYPE", "STOCK").strip() or "STOCK"

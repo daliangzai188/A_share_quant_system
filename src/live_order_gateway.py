@@ -352,10 +352,13 @@ class LiveOrderGateway:
             "orders": output_prefix.with_name(output_prefix.name + "_orders.csv"),
             "trades": output_prefix.with_name(output_prefix.name + "_trades.csv"),
         }
-        pd.DataFrame([asdict(account)]).to_csv(paths["account"], index=False, encoding="utf-8-sig")
-        pd.DataFrame([asdict(row) for row in positions]).to_csv(paths["positions"], index=False, encoding="utf-8-sig")
-        pd.DataFrame(orders).to_csv(paths["orders"], index=False, encoding="utf-8-sig")
-        pd.DataFrame(trades).to_csv(paths["trades"], index=False, encoding="utf-8-sig")
+        from src.account_privacy import public_account_data
+        account_display = public_account_data(asdict(account))
+        account_display['account_name'] = '***'
+        pd.DataFrame([account_display]).to_csv(paths["account"], index=False, encoding="utf-8-sig")
+        pd.DataFrame(public_account_data([asdict(row) for row in positions])).to_csv(paths["positions"], index=False, encoding="utf-8-sig")
+        pd.DataFrame(public_account_data(orders)).to_csv(paths["orders"], index=False, encoding="utf-8-sig")
+        pd.DataFrame(public_account_data(trades)).to_csv(paths["trades"], index=False, encoding="utf-8-sig")
         return paths
 
     def preview(self, planned_orders_path: str | Path, output_prefix: str | Path) -> dict[str, Path]:

@@ -27,8 +27,8 @@ from src.qmt_adapter import mask_account_id
 
 class BrokerHealthStateTests(unittest.TestCase):
     def test_account_mask_never_exposes_full_broker_account(self) -> None:
-        self.assertEqual(mask_account_id("1234567890"), "****90")
-        self.assertEqual(mask_account_id("7"), "****7")
+        self.assertEqual(mask_account_id("1234567890"), "***90")
+        self.assertEqual(mask_account_id("7"), "***7")
 
     def test_daemon_health_file_masks_account_and_records_current_pid(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -43,7 +43,7 @@ class BrokerHealthStateTests(unittest.TestCase):
             payload = json.loads(health_path.read_text(encoding="utf-8"))
             self.assertEqual(payload["status"], "verified")
             self.assertEqual(payload["pid"], os.getpid())
-            self.assertEqual(payload["account"], "****78")
+            self.assertEqual(payload["account"], "***78")
             self.assertNotIn("12345678", health_path.read_text(encoding="utf-8"))
             self.assertFalse(list(health_path.parent.glob("*.tmp")))
 

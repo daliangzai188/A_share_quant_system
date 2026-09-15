@@ -565,7 +565,9 @@ class IntentBrokerExecutionService(BrokerExecutionService):
                 reason="进入唯一QMT执行通道",
             )
             try:
-                result = adapter_provider().place_order(request)
+                result = adapter_provider().place_order(replace(
+                    request, metadata={**dict(request.metadata or {}), "_execution_intent_id": intent_id}
+                ))
             except BaseException as exc:
                 try:
                     self.intent_store.transition_intent(

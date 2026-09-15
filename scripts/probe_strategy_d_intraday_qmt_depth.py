@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """只读探测QMT对D完整触板母池的1分钟/tick/五档历史覆盖。
 
-本脚本只调用``xtdata``行情接口：不导入``xttrader``，不读资金账户，
-不查持仓，不下单，不撤单。输出只是数据源能力报告，不是策略收益。
+研究请求仅获取历史行情，不下单、不撤单。内置模式连接时会只读核验账户身份，
+不输出资金数据；旧模式仍使用xtdata。输出只是数据源能力报告，不是策略收益。
 
 Windows/QMT客户端在线时运行：
 
@@ -207,7 +207,10 @@ def main() -> int:
         )
         return 0
 
-    from xtquant import xtdata
+    import sys
+    sys.path.insert(0, str(ROOT))
+    from src.qmt_market_data import get_market_data_client
+    xtdata = get_market_data_client()
 
     rows: list[dict[str, Any]] = []
     for row in probe.itertuples(index=False):

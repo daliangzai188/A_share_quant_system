@@ -20,6 +20,7 @@
 [组合优先级落地记录](docs/portfolio_priority_a_c_e_d_20260824.md)。
 > 当前实盘固定使用单一组合配置，不再提供多模式策略切换；所有计划单仍必须经过 LiveOrderGateway 风控。
 > 实盘接入：QMT / miniQMT 已完成只读连接与守护进程联调，真实下单仍必须先走小资金验证。所有时间以北京时间（Asia/Shanghai）为准。
+> 国金 miniQMT 迁移：内置 Python 执行端、全项目适配及验收步骤见[完整迁移说明](docs/qmt_inner_migration.md)。客户端验收完成前保持只读，原 ACDE 规则与分仓账本保留。
 > 策略 B 删除范围、自动卖出硬拦截和部署检查见 `docs/strategy_b_removal_20260722.md`。
 
 > 当前策略研究目标自2026-09-01起改为“收益高优先”：候选只要因子规则完全可量化、
@@ -481,9 +482,15 @@ Windows 启动脚本会实时转发子进程日志，并强制使用 UTF-8 输�
 cd C:\A_System
 py -3.11 stop_windows.py
 py -3.11 start_windows.py
+py -3.11 scripts\show_trading_status.py
 ```
 
-`start_windows.py` 会先停止旧进程并等待 QMT session 释放，再启动新进程。终端颜色含义：
+`stop_windows.py` 会先写入人工停机硬闸，再关闭 daemon、keeper 和 D 监控；QMT 内置
+Python 即使仍在运行也会拒绝下单和撤单。`start_windows.py` 会先只读确认内置端处于
+`live`，成功后才清除停机硬闸，并按原流程启动 daemon、keeper、终端日志和通知。
+双击 `查看交易状态.cmd` 可只读查看程序、QMT连接、脱敏账号、资金、持仓、委托和成交。
+
+启动终端颜色含义：
 
 - 绿色：QMT 连接成功、程序正常、流水线完成、计划单生成
 - 黄色：警告、暂不开仓、需要关注但不一定阻塞

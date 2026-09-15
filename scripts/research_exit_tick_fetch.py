@@ -28,7 +28,9 @@ def next_trade(d: str, n: int = 1):
 
 
 def main() -> None:
-    from xtquant import xtdata
+    sys.path.insert(0, str(PROJECT_ROOT))
+    from src.qmt_market_data import get_market_data_client
+    xtdata = get_market_data_client()
 
     audit = pd.read_csv(PROJECT_ROOT / "reports" / "current_live_abce2_audit" / "current_live_abce2_detail.csv")
     filled = audit[audit.operation_status == "HISTORICAL_SIM_FILLED"]

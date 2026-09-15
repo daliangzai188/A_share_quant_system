@@ -211,7 +211,9 @@ def main() -> None:
         return
 
     # 延迟导入，确保--dry-run在没有QMT的Mac环境也能执行。
-    from xtquant import xtdata  # type: ignore
+    sys.path.insert(0, str(PROJECT_ROOT))
+    from src.qmt_market_data import get_market_data_client
+    xtdata = get_market_data_client()
 
     existing_5m = load_existing(DEFAULT_5M_PATH)
     existing_1m = load_existing(DEFAULT_1M_PATH)

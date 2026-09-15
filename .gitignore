@@ -80,6 +80,10 @@ reports/paper_trade/ab_filtered_daily_ops/*.csv
 reports/live_trade/qmt_path_candidates.txt
 reports/live_trade/qmt_live_readiness.csv
 reports/live_trade/qmt_live_readiness.md
+# 交易状态查询会持续覆盖，且可能包含当前资金/持仓摘要，只保留在本机。
+reports/live_trade/trading_status_latest.json
+# QMT迁移现场验收记录含本机路径及当时的账户/持仓摘要，只保留本机审计。
+reports/qmt_inner_migration/
 
 # Syncthing
 .stfolder/

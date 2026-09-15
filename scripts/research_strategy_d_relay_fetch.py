@@ -574,7 +574,9 @@ def main() -> None:
         return
 
     # 延迟导入，确保Mac及没有QMT的测试环境可以运行--dry-run和元数据测试。
-    from xtquant import xtdata  # type: ignore
+    sys.path.insert(0, str(PROJECT_ROOT))
+    from src.qmt_market_data import get_market_data_client
+    xtdata = get_market_data_client()
 
     existing_tick = load_existing(TICK_PATH)
     existing_one = load_existing(ONE_MINUTE_PATH)

@@ -37,8 +37,8 @@ def qmt_to_tushare_code(code: str) -> str:
 def mask_account_id(account_id: str) -> str:
     """券商账号日志脱敏：只保留后两位，禁止完整账号进入日志/诊断输出。"""
 
-    value = str(account_id or "")
-    return f"****{value[-2:]}" if len(value) >= 2 else f"****{value}"
+    from src.account_privacy import mask_account_id as display_account
+    return display_account(account_id)
 
 
 # QMT/xtquant 委托状态码（xtconstant.ORDER_*）
@@ -182,6 +182,14 @@ class QMTBrokerAdapter(BrokerAdapter):
         # 如果这里 override=True，会被 .env 里的默认 session_id 覆盖回旧值，
         # 导致日志显示尝试缓存会话，实际仍连接默认 1001，启动被无效失败拖慢。
         load_dotenv(project_root / ".env", override=False)
+
+        # 内置模式必须显式选择；连接失败绝不回退到停服的 miniQMT。
+        transport = os.getenv("QMT_TRANSPORT", str(broker_config.get("transport", "miniqmt"))).lower()
+        if transport == "qmt_inner":
+            from src.qmt_inner_adapter import QMTInnerBrokerAdapter
+            return QMTInnerBrokerAdapter.from_config(broker_config)
+        if transport != "miniqmt":
+            raise ValueError(f"未知QMT transport: {transport}")
 
         account_id = os.getenv(str(broker_config.get("account_id_env", "QMT_ACCOUNT_ID")), "").strip()
         qmt_path = os.getenv(str(broker_config.get("qmt_path_env", "QMT_PATH")), "").strip()

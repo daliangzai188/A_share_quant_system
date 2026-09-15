@@ -191,7 +191,7 @@ def _notify(event: str, title: str, body: str = "", *, level: str = "active",
             call: bool = False) -> bool:
     """告警推送（失败安全，绝不影响交易主流程）。
 
-    正文口径：账号仅显示后2位（****03）；金额用「万」单位2位小数；标的可含代码+名称。
+    正文口径：账号仅显示后2位（***03）；金额用「万」单位2位小数；标的可含代码+名称。
     call=True 为重大错误（崩溃/下单失败/平仓失败/账户断连）：除警报式持续响铃外，
     额外再发一条普通通知。两条独立——即便用户在系统权限里关闭了「重要提醒」（警报不响），
     普通通知仍可见，确保不漏掉。
@@ -276,9 +276,9 @@ def _publish_system_ready() -> None:
 
 
 def _mask_account(account_id: str) -> str:
-    """账号脱敏：前缀4星号 + 后2位。"""
-    acct = str(account_id or "")
-    return f"****{acct[-2:]}" if len(acct) >= 2 else f"****{acct}"
+    """账号展示：统一前缀三星号，只保留后两位。"""
+    from src.account_privacy import mask_account_id
+    return mask_account_id(account_id)
 
 
 def _fmt_wan(amount: float) -> str:
@@ -15564,6 +15564,8 @@ def _qmt_connect_once(
         )
     )
     adapter.connect(preferred_only=preferred_only)
+    if hasattr(adapter, "assert_execution_ready"):
+        adapter.assert_execution_ready()
     return adapter
 
 
@@ -16671,7 +16673,7 @@ def _print_account_status(log: Any) -> None:
     now_str = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
     acct_id = str(account.account_id or "")
     write_broker_health("verified", account_id=acct_id)
-    masked_acct = f"****{acct_id[-2:]}" if len(acct_id) >= 2 else f"****{acct_id}"
+    masked_acct = _mask_account(acct_id)
     total_asset = float(getattr(account, "total_asset", 0.0) or 0.0)
     _check_capacity_wall_milestone(total_asset, config, log)
     live_positions = [p for p in (positions or []) if int(getattr(p, "volume", 0) or 0) > 0]

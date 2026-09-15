@@ -145,6 +145,7 @@ def normalize_broker_orders(values: Iterable[Any]) -> list[dict[str, Any]]:
             {
                 "snapshot_key": order_id or f"NO_ID_{index:08d}",
                 "order_id": order_id,
+                "execution_intent_id": str(raw.get("execution_intent_id", "") or ""),
                 "ts_code": ts_code,
                 "side": _normalize_side(_first_present(raw, _SIDE_FIELDS, "")),
                 "order_qty": max(_to_int(_first_present(raw, _ORDER_QTY_FIELDS, 0)), 0),
@@ -226,6 +227,10 @@ class TradeRecoveryCoordinator:
         order_qty = int(order.get("order_qty", 0) or 0)
         if order_qty > 0 and order_qty != int(intent.get("target_qty", 0) or 0):
             return False
+        # 内置QMT通过持久化标签还原唯一交易意图，避免相同备注的执行片互相认领。
+        broker_intent_id = str(order.get("execution_intent_id", "") or "").strip()
+        if broker_intent_id:
+            return broker_intent_id == str(intent.get("intent_id", ""))
         expected_remark = str((intent.get("metadata") or {}).get("remark", "") or "").strip()
         actual_remark = str(order.get("remark", "") or "").strip()
         return bool(expected_remark and actual_remark and expected_remark == actual_remark)
