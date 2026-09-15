@@ -231,6 +231,54 @@ class TradeRecoveryCoordinator:
         return bool(expected_remark and actual_remark and expected_remark == actual_remark)
 
     @staticmethod
+    def _is_expired_zero_fill_buy(
+        intent: Mapping[str, Any],
+        *,
+        business_date: str,
+        positions: Iterable[Mapping[str, Any]],
+        orders: Iterable[Mapping[str, Any]],
+        trades: Iterable[Mapping[str, Any]],
+    ) -> bool:
+        """严格识别已经跨日失效、且无任何成交迹象的A股买入委托。
+
+        A股普通当日委托不会跨交易日继续有效。QMT的 ``query_orders`` 和
+        ``query_trades`` 通常只返回当日数据，因此昨日已请求撤单的零成交委托
+        到次日会从快照消失。旧逻辑把这种正常终态永久留在恢复门禁中。
+
+        只有同时具备已受理单号、账本零成交、日期确实跨日、同票无持仓、
+        当日无同票委托/成交时才可安全归为 CANCELLED。任何一项存在歧义都继续
+        fail-closed，不能用这条规则吞掉人工成交或真实持仓。
+        """
+
+        intent_date = str(intent.get("business_date", "") or "").strip()
+        current_date = str(business_date or "").strip()
+        ts_code = _normalize_code(intent.get("ts_code", ""))
+        if (
+            str(intent.get("side", "") or "").upper() != "BUY"
+            or str(intent.get("status", "") or "")
+            not in {STATUS_SUBMITTED, STATUS_CANCEL_REQUESTED, STATUS_RECOVERY_REQUIRED}
+            or not str(intent.get("broker_order_id", "") or "").strip()
+            or int(intent.get("filled_qty", 0) or 0) != 0
+            or len(intent_date) != 8
+            or len(current_date) != 8
+            or not intent_date.isdigit()
+            or not current_date.isdigit()
+            or intent_date >= current_date
+            or not ts_code
+        ):
+            return False
+        if any(
+            item.get("ts_code") == ts_code and int(item.get("volume", 0) or 0) > 0
+            for item in positions
+        ):
+            return False
+        if any(item.get("ts_code") == ts_code for item in orders):
+            return False
+        if any(item.get("ts_code") == ts_code for item in trades):
+            return False
+        return True
+
+    @staticmethod
     def _target_status(
         intent: Mapping[str, Any],
         order: Mapping[str, Any],
@@ -403,6 +451,26 @@ class TradeRecoveryCoordinator:
                     broker_order_id=order_id,
                     filled_qty=int(intent["target_qty"]),
                     filled_amount=float(trade.get("filled_amount", 0.0) or 0.0),
+                )
+                recovered += 1
+                continue
+
+            # 券商当日查询在次日不再返回昨日委托。已受理的昨日BUY只有在账本
+            # 零成交、同票零持仓且当日同票也无任何委托/成交时，才能按当日单
+            # 跨日失效归为撤单终态。这样既解除无意义的永久阻断，也不猜测持仓。
+            if self._is_expired_zero_fill_buy(
+                intent,
+                business_date=business_date,
+                positions=normalized_positions,
+                orders=normalized_orders,
+                trades=normalized_trades,
+            ):
+                self.store.transition_intent(
+                    str(intent["intent_id"]),
+                    STATUS_CANCELLED,
+                    expected_statuses={str(intent["status"])},
+                    reason="跨日当日委托已失效：账本零成交且同票无持仓/当日委托/成交",
+                    broker_order_id=order_id,
                 )
                 recovered += 1
                 continue

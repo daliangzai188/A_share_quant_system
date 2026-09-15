@@ -304,7 +304,12 @@ def timestamp() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-print(GREEN + BOLD + f"{timestamp()} | A_System 已启动，默认只显示关键日志；完整日志仍写入文件。" + RESET)
+print(
+    GREEN + BOLD
+    + f"{timestamp()} | A_System 后台守护进程已创建，正在执行启动门禁；"
+      "只有出现“交易恢复门禁通过”后才会进入任务调度。"
+    + RESET
+)
 print(f"{timestamp()} | Ctrl+C 可立即脱离终端，daemon 会继续运行。需要终端显示全部日志可用：py -3.11 start_windows.py --full-log")
 
 
@@ -332,7 +337,9 @@ def color_for_line(text: str) -> str:
     # 只按日志级别标记(❌/ERROR级)判红,不再按"失败/异常"等字面词——
     # 否则说明性日志(如"D规则:买不进就放弃、不用第2名将就")含"失败"会被误标红，
     # 让用户误以为出错。真正的错误由 ERROR 级别前缀(❌/| ERROR |)着色。
-    error_words = ["❌", "| ERROR |"]
+    # CRITICAL/🛑 是阻断交易线程的最高优先级信息，默认模式必须显示；
+    # 2026-09-15 曾因这里只识别ERROR，终端停在连接成功处，看起来像进程卡死。
+    error_words = ["❌", "| ERROR |", "| CRITICAL |", "🛑"]
     if any(word in text for word in error_words):
         return RED
     if any(word in text for word in success_words):
@@ -388,6 +395,7 @@ def should_print_line(text: str) -> bool:
         "QMT账户连接状态",
         "QMT启动连接检查",
         "QMT启动门禁",
+        "交易恢复门禁",
         "QMT快速连接尝试",
         "QMT完整连接尝试",
         "QMT非交易时段",

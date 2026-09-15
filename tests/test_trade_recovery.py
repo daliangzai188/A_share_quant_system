@@ -6,6 +6,7 @@ from pathlib import Path
 
 from src.trade_intent_store import (
     STATUS_CANCELLED,
+    STATUS_CANCEL_REQUESTED,
     STATUS_FILLED,
     STATUS_PREPARED,
     STATUS_RECOVERY_REQUIRED,
@@ -135,6 +136,83 @@ class TradeRecoveryCoordinatorTests(unittest.TestCase):
             recovered = store.get_intent(str(row["intent_id"]))
             self.assertEqual(recovered["status"], STATUS_CANCELLED)
             self.assertEqual(recovered["filled_qty"], 400)
+
+    def test_prior_day_zero_fill_cancel_request_expires_without_permanent_block(self) -> None:
+        """昨日已撤零成交当日单，次日从QMT当日快照消失后应安全闭环。"""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            store = TradeIntentStore(Path(temporary) / "events.sqlite3")
+            row = advance_to_prepared(store, "prior-day-cancel")
+            row = store.transition_intent(str(row["intent_id"]), STATUS_SUBMITTING)
+            row = store.transition_intent(
+                str(row["intent_id"]), STATUS_SUBMITTED, broker_order_id="QMT-OLD"
+            )
+            store.transition_intent(str(row["intent_id"]), STATUS_CANCEL_REQUESTED)
+
+            result = TradeRecoveryCoordinator(store).recover(
+                daemon_boot_id="boot-prior-day",
+                account_fingerprint="acct",
+                business_date="20260818",
+                positions=[],
+                orders=[],
+                trades=[],
+            )
+
+            self.assertEqual(result.status, "PASS")
+            self.assertEqual(result.recovered_count, 1)
+            recovered = store.get_intent(str(row["intent_id"]))
+            self.assertEqual(recovered["status"], STATUS_CANCELLED)
+            self.assertEqual(recovered["filled_qty"], 0)
+
+    def test_prior_day_missing_order_still_blocks_when_same_stock_has_position(self) -> None:
+        """同票仍有持仓时来源可能是旧单，跨日规则不得猜测为撤单。"""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            store = TradeIntentStore(Path(temporary) / "events.sqlite3")
+            row = advance_to_prepared(store, "prior-day-position")
+            row = store.transition_intent(str(row["intent_id"]), STATUS_SUBMITTING)
+            store.transition_intent(
+                str(row["intent_id"]), STATUS_SUBMITTED, broker_order_id="QMT-OLD-POS"
+            )
+
+            result = TradeRecoveryCoordinator(store).recover(
+                daemon_boot_id="boot-prior-day-position",
+                account_fingerprint="acct",
+                business_date="20260818",
+                positions=[{"stock_code": "000001.SZ", "volume": 1000}],
+                orders=[],
+                trades=[],
+            )
+
+            self.assertEqual(result.status, "BLOCKED")
+            self.assertEqual(result.unresolved_count, 1)
+            self.assertEqual(
+                store.get_intent(str(row["intent_id"]))["status"],
+                STATUS_RECOVERY_REQUIRED,
+            )
+
+    def test_same_day_missing_order_never_uses_expiry_rule(self) -> None:
+        """当日快照短暂缺单仍保持fail-closed，不能误清正在提交的委托。"""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            store = TradeIntentStore(Path(temporary) / "events.sqlite3")
+            row = advance_to_prepared(store, "same-day-missing")
+            row = store.transition_intent(str(row["intent_id"]), STATUS_SUBMITTING)
+            store.transition_intent(
+                str(row["intent_id"]), STATUS_SUBMITTED, broker_order_id="QMT-TODAY"
+            )
+
+            result = TradeRecoveryCoordinator(store).recover(
+                daemon_boot_id="boot-same-day",
+                account_fingerprint="acct",
+                business_date="20260817",
+                positions=[],
+                orders=[],
+                trades=[],
+            )
+
+            self.assertEqual(result.status, "BLOCKED")
+            self.assertEqual(result.unresolved_count, 1)
 
     def test_position_alone_never_guesses_intent_attribution(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
