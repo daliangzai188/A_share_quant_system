@@ -17,6 +17,14 @@
 `native_acceptance.json`、`transport_selection.json`、`tests_windows.json`、`migration_status.json`。
 不得将以上只读验收描述为真实委托闭环验收通过。
 
+## 2026-09-15 文件通道断链根因修复
+
+- 现象：账户查询间歇报 `Permission denied`，旧逻辑随即重置适配器；通知有 300 秒节流，界面上表现为约每 5 分钟一次“账户断连”。
+- 根因：QMT 内置端与外部 daemon 同时读取、原子替换 `heartbeat.json` 和请求/响应文件时，Windows 普通 Python 读取句柄未显式声明 `FILE_SHARE_DELETE`，协议双方自身会产生 WinError 5/32/33 文件共享冲突。
+- 源头修复：`qmt_inner.protocol._read_bytes_shared` 在 Windows 使用同时共享读、写、删除的 Win32 句柄读取 JSON，使另一端可以安全 `os.replace`；原子写、读取和清理的有界重试只兜底 Defender/索引器等外部短暂占用，不重放任何券商动作。
+- 会话保护：账户轮询若在全部文件重试后仍遇到内置 spool 占用，本轮交易派生动作保持阻断，但保留现有 QMT 会话，不再调用 `_qmt_reset` 制造逻辑断链；连续 3 次才按“本机通道持续被占用”单独告警。
+- 运行验证：16:52:49 更新后的内置模型与 daemon 启动门禁一次通过；16:52:51—16:58:52 连续 7 轮真实账户、资金、持仓查询均成功，健康状态为 `verified`、失败数 0，未出现文件占用、断链或重连；策略 C 的券商持仓数量在重启前后保持一致。
+
 ## 账户隐私显示
 
 - 项目新增 `mask_account_id/public_account_data`：账户姓名显示 `***`，资金账号显示 `***` 加末两位。

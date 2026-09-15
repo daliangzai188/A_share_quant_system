@@ -10,6 +10,72 @@ from pathlib import Path
 
 PROTOCOL = 1
 
+# Windows Defender、索引器或另一个 Python 进程可能会短暂以不共享删除/读取的
+# 方式打开文件。文件通道本身仍然正常时，这类 sharing violation 不能被上层
+# 解释成 QMT 账户断开。总等待约 1.5 秒，仍失败则保持原异常并 fail-closed。
+_FILE_BUSY_DELAYS = (0.01, 0.02, 0.04, 0.08, 0.12, 0.18, 0.25, 0.35, 0.50)
+
+
+def _is_file_busy(exc):
+    return isinstance(exc, PermissionError) or getattr(exc, 'winerror', None) in (5, 32, 33)
+
+
+def _retry_file_operation(operation):
+    for attempt in range(len(_FILE_BUSY_DELAYS) + 1):
+        try:
+            return operation()
+        except OSError as exc:
+            if not _is_file_busy(exc) or attempt >= len(_FILE_BUSY_DELAYS):
+                raise
+            time.sleep(_FILE_BUSY_DELAYS[attempt])
+
+
+def remove_file(path):
+    """删除协议临时文件；仅重试 Windows 短暂文件占用。"""
+    path = Path(path)
+    try:
+        _retry_file_operation(path.unlink)
+        return True
+    except FileNotFoundError:
+        return False
+
+
+def _read_bytes_shared(path):
+    """Windows 读取句柄显式共享删除，允许服务端同时原子替换心跳文件。"""
+    path = Path(path)
+    if os.name != 'nt':
+        with path.open('rb') as stream:
+            return stream.read()
+
+    # CPython/Windows 的普通 open 在部分版本上没有 FILE_SHARE_DELETE；当另一端
+    # 对 heartbeat.json 做 os.replace 时会产生 WinError 5/32。直接用 Win32
+    # 共享读句柄消除协议双方自身的竞争，外层重试只处理 Defender 等外部占用。
+    import ctypes
+    import msvcrt
+    kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = (
+        ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p,
+        ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p,
+    )
+    create_file.restype = ctypes.c_void_p
+    handle = create_file(
+        str(path), 0x80000000, 0x00000001 | 0x00000002 | 0x00000004,
+        None, 3, 0x00000080, None,
+    )
+    if handle == ctypes.c_void_p(-1).value:
+        error = ctypes.get_last_error()
+        exc = ctypes.WinError(error)
+        exc.filename = str(path)
+        raise exc
+    try:
+        fd = msvcrt.open_osfhandle(handle, os.O_RDONLY | getattr(os, 'O_BINARY', 0))
+    except Exception:
+        kernel32.CloseHandle(ctypes.c_void_p(handle))
+        raise
+    with os.fdopen(fd, 'rb') as stream:
+        return stream.read()
+
 
 def lock_owner(stream):
     """Non-blocking exclusive ownership, shared by engine and installer."""
@@ -43,24 +109,24 @@ def atomic_json(path, value):
             stream.write(canonical(value))
             stream.flush()
             os.fsync(stream.fileno())
-        # Windows readers/Defender can briefly hold the destination without
-        # FILE_SHARE_DELETE. Retry only the atomic rename, never a broker action.
-        for attempt in range(12):
-            try:
-                os.replace(str(tmp), str(path))
-                break
-            except PermissionError:
-                if attempt == 11:
-                    raise
-                time.sleep(0.005 * (attempt + 1))
+        # 这里只重试本地原子换名，绝不重放券商查询、下单或撤单动作。
+        _retry_file_operation(lambda: os.replace(str(tmp), str(path)))
     finally:
         if tmp.exists():
-            tmp.unlink()
+            try:
+                remove_file(tmp)
+            except OSError:
+                # 清理失败不能覆盖真正的写入结果/异常；残留 .tmp 不会被协议消费。
+                pass
 
 
 def read_json(path):
-    with Path(path).open(encoding='utf-8-sig') as stream:
-        return json.load(stream)
+    path = Path(path)
+
+    def _read():
+        return json.loads(_read_bytes_shared(path).decode('utf-8-sig'))
+
+    return _retry_file_operation(_read)
 
 
 def config_path():
@@ -131,7 +197,12 @@ class FileClient:
                     raise RuntimeError('Bridge response authentication failed')
                 if result.get('id') != rid or result.get('instance') != self.instance:
                     raise RuntimeError('Bridge response identity mismatch')
-                response_path.unlink()
+                # 响应已经完成验签并匹配本次请求，清理文件失败不能把一次成功的
+                # 账户查询误报为断链。残留响应使用唯一 rid，不会被后续请求复用。
+                try:
+                    remove_file(response_path)
+                except OSError:
+                    pass
                 if not result.get('ok'):
                     raise RuntimeError('QMT_INNER: ' + str(result.get('error', 'unknown result')))
                 return result['result']

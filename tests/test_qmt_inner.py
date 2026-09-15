@@ -3,6 +3,7 @@ import ast
 from dataclasses import replace
 import datetime as dt
 import json
+import os
 from pathlib import Path
 import tempfile
 import threading
@@ -13,7 +14,7 @@ from unittest.mock import patch
 import pandas as pd
 
 from qmt_inner.engine import Engine, PendingSubmission, side_of
-from qmt_inner.protocol import FileClient, atomic_json, signature
+from qmt_inner.protocol import FileClient, atomic_json, read_json, remove_file, signature
 from src.broker_adapter import OrderRequest, BrokerConnectionConfig
 from src.qmt_inner_adapter import QMTInnerBrokerAdapter
 from src.trade_intent_store import TradeIntentStore
@@ -107,6 +108,94 @@ class InnerTests(unittest.TestCase):
         stack.enter_context(patch.object(self.engine, 'trading_time', return_value='20260915'))
         stack.enter_context(patch.object(self.engine, 'verify_intent'))
         return stack
+
+    def test_protocol_file_operations_retry_windows_sharing_violation(self):
+        target = self.root / 'retry.json'
+        real_replace = os.replace
+        replace_calls = []
+
+        def flaky_replace(source, destination):
+            replace_calls.append((source, destination))
+            if len(replace_calls) == 1:
+                exc = PermissionError('temporary sharing violation')
+                exc.winerror = 32
+                raise exc
+            return real_replace(source, destination)
+
+        with patch('qmt_inner.protocol.os.replace', side_effect=flaky_replace), \
+             patch('qmt_inner.protocol.time.sleep') as sleeper:
+            atomic_json(target, {'ok': True})
+        self.assertEqual(read_json(target), {'ok': True})
+        self.assertEqual(len(replace_calls), 2)
+        sleeper.assert_called_once_with(0.01)
+
+    def test_read_json_and_remove_retry_windows_access_denied(self):
+        target = self.root / 'busy.json'
+        target.write_text('{"ok":true}', encoding='utf-8')
+        real_open = Path.open
+        open_calls = []
+
+        def flaky_open(path, *args, **kwargs):
+            if path == target:
+                open_calls.append(path)
+                if len(open_calls) == 1:
+                    exc = PermissionError('access denied')
+                    exc.winerror = 5
+                    raise exc
+            return real_open(path, *args, **kwargs)
+
+        with patch('qmt_inner.protocol.Path.open', new=flaky_open), \
+             patch('qmt_inner.protocol.time.sleep') as sleeper:
+            self.assertEqual(read_json(target), {'ok': True})
+        self.assertEqual(len(open_calls), 2)
+        sleeper.assert_called_once_with(0.01)
+
+        real_unlink = Path.unlink
+        unlink_calls = []
+
+        def flaky_unlink(path, *args, **kwargs):
+            if path == target:
+                unlink_calls.append(path)
+                if len(unlink_calls) == 1:
+                    exc = PermissionError('sharing violation')
+                    exc.winerror = 33
+                    raise exc
+            return real_unlink(path, *args, **kwargs)
+
+        with patch('qmt_inner.protocol.Path.unlink', new=flaky_unlink), \
+             patch('qmt_inner.protocol.time.sleep') as sleeper:
+            self.assertTrue(remove_file(target))
+        self.assertEqual(len(unlink_calls), 2)
+        sleeper.assert_called_once_with(0.01)
+        self.assertFalse(target.exists())
+
+    def test_successful_response_is_not_lost_when_cleanup_stays_locked(self):
+        stop = threading.Event()
+
+        def pump():
+            while not stop.wait(.01):
+                self.engine.pump()
+
+        thread = threading.Thread(target=pump)
+        thread.start()
+        client = FileClient(self.cfg)
+        client.connect()
+        original_remove = remove_file
+
+        def locked_response_cleanup(path):
+            if Path(path).parent.name == 'responses':
+                exc = PermissionError('response still held by scanner')
+                exc.winerror = 32
+                raise exc
+            return original_remove(path)
+
+        try:
+            with patch('qmt_inner.protocol.remove_file', side_effect=locked_response_cleanup):
+                result = client.call('account', {})
+            self.assertEqual(result['m_dAvailable'], 100000)
+        finally:
+            stop.set()
+            thread.join()
 
     def test_read_only_does_not_call_broker(self):
         result = self.engine.submit(self.request, self.body())

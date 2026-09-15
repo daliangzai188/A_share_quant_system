@@ -17,7 +17,9 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from qmt_inner.protocol import PROTOCOL, atomic_json, canonical, read_json, signature, lock_owner
+from qmt_inner.protocol import (
+    PROTOCOL, atomic_json, canonical, read_json, remove_file, signature, lock_owner,
+)
 
 
 class PendingSubmission(Exception):
@@ -135,7 +137,7 @@ class Engine:
             try:
                 hb = read_json(self.root / 'heartbeat.json')
                 if hb['body']['instance'] == self.instance:
-                    (self.root / 'heartbeat.json').unlink()
+                    remove_file(self.root / 'heartbeat.json')
             except (OSError, ValueError, KeyError):
                 pass
 
@@ -574,6 +576,11 @@ class Engine:
                     if body and re.match(r'^[a-f0-9]{32}$', str(body.get('id', ''))):
                         self.reply(body, error=str(exc))
                 finally:
-                    path.unlink()
+                    # 请求已经被处理后，Windows 短暂文件占用不得中断整个 pump。
+                    # 若重试后仍无法删除，下一轮依靠提交幂等账本避免重复下单。
+                    try:
+                        remove_file(path)
+                    except OSError:
+                        pass
         finally:
             self.lock.release()

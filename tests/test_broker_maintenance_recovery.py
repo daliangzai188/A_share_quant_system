@@ -80,6 +80,39 @@ class BrokerHealthStateTests(unittest.TestCase):
             sleep.assert_called_once_with(0.05)
             self.assertFalse(list(health_path.parent.glob("*.tmp")))
 
+    def test_daemon_heartbeat_replace_retries_windows_sharing_violation(self) -> None:
+        real_replace = os.replace
+        replace_calls = 0
+
+        def flaky_replace(source, destination):
+            nonlocal replace_calls
+            replace_calls += 1
+            if replace_calls == 1:
+                exc = PermissionError("模拟Windows心跳文件短暂占用")
+                exc.winerror = 32
+                raise exc
+            return real_replace(source, destination)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            heartbeat_path = Path(temp_dir) / "daemon_heartbeat.txt"
+            with patch.object(
+                trading_daemon,
+                "HEARTBEAT_FILE",
+                heartbeat_path,
+            ), patch.object(
+                trading_daemon.os,
+                "replace",
+                side_effect=flaky_replace,
+            ), patch.object(
+                trading_daemon.time,
+                "sleep",
+            ) as sleep:
+                trading_daemon.write_heartbeat("running")
+
+            self.assertIn(f"pid={os.getpid()}", heartbeat_path.read_text(encoding="utf-8"))
+            self.assertEqual(replace_calls, 2)
+            sleep.assert_called_once_with(0.05)
+
     def test_process_heartbeat_contains_current_pid_and_keeper_parses_it(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             heartbeat_path = Path(temp_dir) / "daemon_heartbeat.txt"
@@ -123,6 +156,49 @@ class BrokerHealthStateTests(unittest.TestCase):
             error=ANY,
             failure_count=1,
         )
+
+    def test_inner_spool_busy_keeps_live_session_and_fails_closed(self) -> None:
+        busy = PermissionError(
+            r"[Errno 13] Permission denied: 'C:\Users\***\AppData\Local\A_System\qmt_inner\spool\heartbeat.json'"
+        )
+        busy.winerror = 32
+        old_reconnect_count = trading_daemon._qmt_reconnect_count
+        old_busy_count = trading_daemon._qmt_transport_busy_count
+        trading_daemon._qmt_reconnect_count = 0
+        trading_daemon._qmt_transport_busy_count = 0
+        try:
+            with patch.object(
+                trading_daemon,
+                "_qmt_get",
+                return_value=object(),
+            ), patch.object(
+                trading_daemon,
+                "_qmt_query_account_positions",
+                side_effect=busy,
+            ), patch.object(
+                trading_daemon,
+                "_qmt_reset",
+            ) as reset, patch.object(
+                trading_daemon,
+                "write_broker_health",
+            ) as health, patch.object(
+                trading_daemon,
+                "_notify",
+            ) as notify:
+                trading_daemon._print_account_status(MagicMock())
+
+            reset.assert_not_called()
+            notify.assert_not_called()
+            health.assert_called_once_with(
+                "transport_busy",
+                error=busy,
+                failure_count=1,
+            )
+            self.assertEqual(trading_daemon._qmt_reconnect_count, 0)
+            self.assertEqual(trading_daemon._qmt_transport_busy_count, 1)
+        finally:
+            trading_daemon._qmt_reconnect_count = old_reconnect_count
+            trading_daemon._qmt_transport_busy_count = old_busy_count
 
     def test_qmt_success_cache_does_not_persist_account_id(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

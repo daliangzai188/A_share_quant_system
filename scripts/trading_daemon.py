@@ -575,6 +575,21 @@ def active_strategy_mode() -> int:
         return 1
 
 
+def _replace_runtime_file_with_retry(source: Path, destination: Path) -> None:
+    """重试 Windows sharing violation，不把状态文件占用误判为进程/账户异常。"""
+    for attempt in range(12):
+        try:
+            os.replace(source, destination)
+            return
+        except OSError as exc:
+            retryable = isinstance(exc, PermissionError) or getattr(
+                exc, "winerror", None
+            ) in {5, 32, 33}
+            if not retryable or attempt == 11:
+                raise
+            time.sleep(min(0.05 * (attempt + 1), 0.25))
+
+
 def write_heartbeat(status: str = "running") -> None:
     """原子更新daemon心跳，避免keeper读到write_text截断后的空文件。
 
@@ -592,7 +607,7 @@ def write_heartbeat(status: str = "running") -> None:
             f"{now_beijing().isoformat()} pid={os.getpid()} {status}\n",
             encoding="utf-8",
         )
-        os.replace(tmp, HEARTBEAT_FILE)
+        _replace_runtime_file_with_retry(tmp, HEARTBEAT_FILE)
     except Exception:
         pass
     finally:
@@ -634,17 +649,7 @@ def write_broker_health(
                 json.dumps(payload, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
-            for attempt_no in (1, 2, 3):
-                try:
-                    os.replace(temp_path, BROKER_HEALTH_FILE)
-                    break
-                except OSError as exc:
-                    retryable = isinstance(exc, PermissionError) or getattr(
-                        exc, "winerror", None
-                    ) in {5, 32, 33}
-                    if not retryable or attempt_no == 3:
-                        raise
-                    time.sleep(0.05)
+            _replace_runtime_file_with_retry(temp_path, BROKER_HEALTH_FILE)
     except Exception as exc:  # noqa: BLE001
         try:
             logger().warning("写入QMT账户健康状态失败（不影响交易主流程）：%s", exc)
@@ -15438,6 +15443,7 @@ def run_job(scheduled_time: datetime.time) -> None:
 
 
 _qmt_reconnect_count: int = 0       # 累计重连次数，成功后归零
+_qmt_transport_busy_count: int = 0  # 内置文件通道连续占用次数；不等同账户断连
 _qmt_adapter: Any = None             # 持久连接，程序生命周期内保持
 _qmt_execution_service: IntentBrokerExecutionService | None = None
 _trade_intent_store_instance: TradeIntentStore | None = None
@@ -15457,6 +15463,15 @@ _qmt_connect_last_error: str = ""
 
 class QMTReconnectBackoffError(RuntimeError):
     """上一次QMT建连已失败，当前仍在统一退避窗口。"""
+
+
+def _is_qmt_inner_file_transport_busy(error: BaseException) -> bool:
+    """识别内置 spool 的 Windows 文件占用，避免主动拆掉仍正常的QMT会话。"""
+    winerror = getattr(error, "winerror", None)
+    if not isinstance(error, PermissionError) and winerror not in {5, 32, 33}:
+        return False
+    normalized = str(error).lower().replace("\\", "/")
+    return "/qmt_inner/spool/" in normalized
 
 
 def _qmt_connect_backoff_seconds(failure_streak: int) -> float:
@@ -16486,7 +16501,8 @@ def _print_account_status(log: Any) -> None:
     """账户信息轮询（后台线程）：复用持久连接，查询无需重新握手。
     只有 query_account/query_positions 成功返回，才算账户连接已验证可用。
     关键交易窗口账户不可用时立刻重连和告警；非交易时段只做低频恢复尝试。"""
-    global _qmt_reconnect_count, _qmt_last_verified_at, _last_account_has_position
+    global _qmt_reconnect_count, _qmt_transport_busy_count
+    global _qmt_last_verified_at, _last_account_has_position
     now_str = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
     try:
         config = load_json_config(PROJECT_ROOT / "config" / "config.json")
@@ -16524,10 +16540,12 @@ def _print_account_status(log: Any) -> None:
                 if qmt_is_critical_window():
                     _notify("connection", "✅ 账户重连成功", "QMT连接已恢复正常。")
                 _qmt_reconnect_count = 0
+            _qmt_transport_busy_count = 0
         except BrokerSnapshotInconsistentError as snapshot_err:
             # 账户/持仓/委托查询已经有返回，这是账务语义门失败，
             # 不是连接断开。原会话必须保留，否则会把可用QMT主动打成掉线。
             _qmt_reconnect_count = 0
+            _qmt_transport_busy_count = 0
             _record_broker_snapshot_inconsistent(
                 snapshot_err,
                 log,
@@ -16547,6 +16565,32 @@ def _print_account_status(log: Any) -> None:
         except Exception as first_err:
             if _request_qmt_resource_recovery(first_err):
                 return
+            if _is_qmt_inner_file_transport_busy(first_err):
+                # 文件通道本轮确实不可用，所以保持 fail-closed；但内置模型、账户
+                # 和柜台会话并未断开，不能调用 _qmt_reset 主动拆掉持久适配器。
+                _qmt_transport_busy_count += 1
+                write_broker_health(
+                    "transport_busy",
+                    error=first_err,
+                    failure_count=_qmt_transport_busy_count,
+                )
+                log.warning(
+                    "QMT内置文件通道短暂被占用（连续%d次），本轮账户派生动作已阻断；"
+                    "保留现有QMT会话，下轮继续验证：%s",
+                    _qmt_transport_busy_count,
+                    first_err,
+                )
+                if _qmt_transport_busy_count >= 3 and qmt_is_critical_window():
+                    _notify_once_per(
+                        "qmt_inner_transport_busy",
+                        300,
+                        "⚠️ QMT本机通道持续被占用",
+                        "QMT账户仍保持登录，但本机文件通道连续无法读写。"
+                        "系统已阻断本轮开平仓派生动作并保留原会话，请检查Windows文件占用。",
+                        level="timeSensitive",
+                    )
+                return
+            _qmt_transport_busy_count = 0
             _qmt_reset()
             _qmt_reconnect_count += 1
             write_broker_health(
