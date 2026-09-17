@@ -6,6 +6,7 @@ handlebar never submits historical signals. Only the live timer pumps commands.
 """
 import os
 import sys
+import importlib
 from pathlib import Path
 
 # The installer replaces this literal in the generated, GBK-compatible entry.
@@ -14,7 +15,13 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from qmt_inner.protocol import load_settings
-from qmt_inner.engine import Engine
+import qmt_inner.engine as _engine_module
+# QMT keeps imported modules after a strategy stops. Reload the installed
+# engine before binding its class; the owner lock still rejects a second
+# running bridge, and the signed heartbeat proves which revision is active.
+_engine_module = importlib.reload(_engine_module)
+Engine = _engine_module.Engine
+ENGINE_REVISION = _engine_module.ENGINE_REVISION
 
 _ENGINE = None
 
@@ -31,7 +38,7 @@ def init(ContextInfo):
     _ENGINE = Engine(ContextInfo, api, cfg)
     ContextInfo.run_time('a_system_pump', str(cfg.get('poll_interval_ms', 100)) + 'nMilliSecond',
                          '2020-01-01 00:00:00')
-    print('A_SYSTEM QMT INNER STARTED; mode=' + cfg.get('mode', 'read_only'))
+    print('A_SYSTEM QMT INNER STARTED; mode=' + cfg.get('mode', 'read_only') + '; revision=' + ENGINE_REVISION)
 
 
 def a_system_pump(ContextInfo):

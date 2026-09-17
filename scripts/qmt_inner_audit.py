@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 from qmt_inner.protocol import config_path, read_json
 from src.qmt_inner_adapter import QMTInnerBrokerAdapter
 from src.qmt_single_owner import assert_standalone_qmt_allowed
+from src.trade_recovery import normalize_broker_orders, normalize_broker_trades
 
 
 def audit(root=ROOT):
@@ -34,6 +35,7 @@ def audit(root=ROOT):
         broker_positions = adapter.query_positions()
         orders = adapter.query_orders()
         trades = adapter.query_trades()
+        quotes = adapter.get_full_tick([p.ts_code for p in broker_positions]) if broker_positions else {}
         broker_qty = collections.Counter()
         for row in broker_positions:
             broker_qty[row.ts_code] += row.volume
@@ -46,10 +48,17 @@ def audit(root=ROOT):
             pending_intents = conn.execute("SELECT intent_id,status,ts_code,side,broker_order_id FROM trade_intents WHERE status IN ('PREPARED','SUBMITTING','SUBMITTED','PARTIALLY_FILLED','CANCEL_REQUESTED','RECOVERY_REQUIRED')").fetchall()
         report = dict(time=datetime.now().isoformat(), status='READ_ONLY_AUDIT',
                       server=adapter.server_info, account_suffix=account.account_id[-2:],
+                      engine_revision=adapter.client.heartbeat().get('engine_revision', ''),
                       local_active_slices=active, broker_positions=[dict(ts_code=p.ts_code, volume=p.volume,
                           can_use_volume=p.can_use_volume) for p in broker_positions],
                       position_differences=differences, pending_orders=pending_orders,
                       pending_intents=pending_intents, order_count=len(orders), trade_count=len(trades),
+                      order_snapshots=normalize_broker_orders(orders),
+                      trade_snapshots=normalize_broker_trades(trades),
+                      quotes={code: dict(last_price=q.last_price, upper_limit=q.upper_limit,
+                          lower_limit=q.lower_limit, volume=q.raw.get('volume'), amount=q.amount,
+                          timestamp=q.raw.get('time', q.raw.get('timetag', '')))
+                          for code, q in quotes.items()},
                       requires_reconciliation=bool(differences or pending_orders or pending_intents))
         # Private account/state details remain outside the shared project directory.
         output = config_path().parent / 'audits' / (datetime.now().strftime('%Y%m%d_%H%M%S') + '.json')
@@ -57,7 +66,19 @@ def audit(root=ROOT):
         output.write_text(json.dumps(report, ensure_ascii=True, indent=2), encoding='utf-8')
         return dict(status=report['status'], report=str(output), local_active_slices=len(active),
                     differences=len(differences), pending_orders=len(pending_orders),
-                    pending_intents=len(pending_intents), requires_reconciliation=report['requires_reconciliation'])
+                    pending_intents=len(pending_intents), requires_reconciliation=report['requires_reconciliation'],
+                    engine_revision=report['engine_revision'], order_count=len(orders), trade_count=len(trades),
+                    broker_positions=report['broker_positions'],
+                    quotes=report['quotes'],
+                    orders=[{key: row[key] for key in ('order_id', 'ts_code', 'side',
+                        'order_qty', 'filled_qty', 'status_code', 'execution_intent_id')}
+                        for row in report['order_snapshots']],
+                    trades=[{key: row[key] for key in ('order_id', 'ts_code', 'side',
+                        'filled_qty', 'filled_amount', 'trade_count')}
+                        for row in report['trade_snapshots']],
+                    local_positions=[dict(ts_code=p['ts_code'], shares=p['shares'],
+                        strategy_leg=p.get('strategy_leg', ''),
+                        planned_exit_date=p.get('planned_exit_date', '')) for p in active])
     finally:
         adapter.disconnect()
 

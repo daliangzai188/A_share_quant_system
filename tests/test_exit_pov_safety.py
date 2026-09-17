@@ -1840,6 +1840,22 @@ class EntryExitCapacityGateTest(unittest.TestCase):
 
 
 class EntryActualAmountRebalanceTest(unittest.TestCase):
+    def test_e_auction_capacity_and_frozen_cash_are_separate(self) -> None:
+        inputs = dict(capacity_amount=50_000.0, capacity_price=214.34,
+                      limit_price=257.21, hard_cap_amount=58_977.6495,
+                      total_target_qty=200)
+        qty = trading_daemon._e_auction_seed_quantity(**inputs)
+        self.assertEqual(qty, 200)
+        self.assertLessEqual(qty * inputs['capacity_price'], inputs['capacity_amount'])
+        self.assertLessEqual(qty * inputs['limit_price'], inputs['hard_cap_amount'])
+        # 确有容量或冻结资金不足时仍缩到一手，不能为凑足计划突破约束。
+        self.assertEqual(trading_daemon._e_auction_seed_quantity(
+            **dict(inputs, capacity_amount=30_000.0)), 100)
+        self.assertEqual(trading_daemon._e_auction_seed_quantity(
+            **dict(inputs, hard_cap_amount=50_000.0)), 100)
+        self.assertEqual(trading_daemon._e_auction_seed_quantity(
+            **dict(inputs, capacity_price=0.0)), 0)
+
     def test_auction_seed_uses_limit_price_without_crossing_eighty_five_percent(self) -> None:
         """10cm/20cm/30cm涨停预挂均按最坏委托价锁在85%以内。"""
         hard_cap = 850_000.0
@@ -2943,6 +2959,51 @@ class TailExitStateMachineRegressionTest(unittest.TestCase):
             "_wait_for_exit_close_submit_clock_guard(config)",
             inspect.getsource(trading_daemon.check_and_close_positions),
         )
+
+
+class ExpiredPovStartupRecoveryTests(unittest.TestCase):
+    def test_before_cutoff_does_not_finalize_or_query(self):
+        now = datetime.datetime(2026, 9, 17, 10, 29, 59, tzinfo=trading_daemon.BEIJING_TZ)
+        with (patch.object(trading_daemon, 'now_beijing', return_value=now),
+              patch.object(trading_daemon, '_pov_load_state') as load,
+              patch.object(trading_daemon, '_qmt_get', side_effect=AssertionError('No broker'))):
+            self.assertEqual(trading_daemon._finalize_expired_pov_for_startup(), 0)
+            load.assert_not_called()
+
+    def test_confirmed_auction_fill_is_finalized_without_rebuy_and_warns_underfill(self):
+        now = datetime.datetime(2026, 9, 17, 10, 30, tzinfo=trading_daemon.BEIJING_TZ)
+        item = dict(ts_code='301486.SZ', name='测试股', strategy_leg='E',
+                    filled_qty=0, cost_amt=0, target_actual_amount=57243.01275,
+                    min_acceptable_amount=55508.376, hard_cap_amount=58977.6495,
+                    equity_snapshot=69385.47, done=False, exit_n=1)
+        state = dict(date='20260917', items=[item])
+        with (patch.object(trading_daemon, 'now_beijing', return_value=now),
+              patch.object(trading_daemon, '_pov_load_state', return_value=state),
+              patch.object(trading_daemon, '_pov_save_state') as save,
+              patch.object(trading_daemon, '_today_local_entry_cost', return_value=21841),
+              patch.object(trading_daemon, '_track_execution'),
+              patch.object(trading_daemon, 'logger') as log,
+              patch.object(trading_daemon, '_notify') as notify,
+              patch.object(trading_daemon, '_qmt_get', side_effect=AssertionError('No broker')),
+              patch.object(trading_daemon, '_record_live_buy', side_effect=AssertionError('No duplicate fill'))):
+            self.assertEqual(trading_daemon._finalize_expired_pov_for_startup(), 1)
+            self.assertTrue(item['done'])
+            self.assertTrue(item['finalized'])
+            self.assertEqual(item['confirmed_actual_amount'], 21841)
+            self.assertEqual(item['exit_n'], 1)
+            self.assertTrue(any('低于80%' in c.args[1] for c in notify.call_args_list))
+            save.assert_called_once_with(state)
+            self.assertEqual(trading_daemon._finalize_expired_pov_for_startup(), 0)
+            save.assert_called_once()
+
+    def test_stale_date_is_not_rewritten(self):
+        now = datetime.datetime(2026, 9, 17, 12, 0, tzinfo=trading_daemon.BEIJING_TZ)
+        with (patch.object(trading_daemon, 'now_beijing', return_value=now),
+              patch.object(trading_daemon, '_pov_load_state', return_value=dict(
+                  date='20260916', items=[dict(finalized=False)])),
+              patch.object(trading_daemon, '_pov_finalize_item') as finalize):
+            self.assertEqual(trading_daemon._finalize_expired_pov_for_startup(), 0)
+            finalize.assert_not_called()
 
 
 if __name__ == "__main__":

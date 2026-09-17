@@ -20,31 +20,33 @@ from src.trade_intent_store import (
 )
 
 
-def filled_buy(store: TradeIntentStore, *, quantity: int = 1000) -> dict:
+def filled_buy(store: TradeIntentStore, *, quantity: int = 1000,
+               strategy_leg: str = "A", planned_exit_date: str = "20260819",
+               metadata: dict | None = None) -> dict:
     spec = TradeIntentSpec(
         idempotency_key=build_idempotency_key(
             account_fingerprint="acct",
             business_date="20260817",
-            strategy_leg="A",
+            strategy_leg=strategy_leg,
             side="BUY",
             ts_code="000001.SZ",
             purpose="OPEN",
             source_key="projection-test",
         ),
         account_fingerprint="acct",
-        strategy_leg="A",
+        strategy_leg=strategy_leg,
         side="BUY",
         ts_code="000001.SZ",
         business_date="20260817",
         signal_date="20260814",
-        planned_exit_date="20260819",
+        planned_exit_date=planned_exit_date,
         purpose="OPEN",
         source_key="projection-test",
         target_qty=quantity,
         target_amount=10000,
         price_type="FIXED_PRICE",
         limit_price=10,
-        metadata={"name": "平安银行"},
+        metadata={"name": "平安银行", **(metadata or {})},
     )
     row = store.create_intent(spec)
     intent_id = str(row["intent_id"])
@@ -65,6 +67,40 @@ def filled_buy(store: TradeIntentStore, *, quantity: int = 1000) -> dict:
 
 
 class PositionProjectionRecoveryTests(unittest.TestCase):
+    def test_legacy_e_projection_keeps_frozen_one_day_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            store = TradeIntentStore(root / "events.sqlite3")
+            filled_buy(store, quantity=100, strategy_leg="E", planned_exit_date="")
+            state = dict(date="20260817", items=[dict(strategy_leg="E", ts_code="000001.SZ",
+                         signal_date="20260814", exit_n=1)])
+            path = root / "positions.json"
+            with (
+                patch.object(daemon, "POSITIONS_FILE", path),
+                patch.object(daemon, "_trade_intent_store_instance", store),
+                patch.object(daemon, "_exit_account_fingerprint", return_value="acct"),
+                patch.object(daemon, "_track_execution", return_value=None),
+                patch.object(daemon, "_pov_load_state", return_value=state),
+            ):
+                self.assertEqual(daemon._project_recovered_buy_intents([
+                    dict(stock_code="000001.SZ", volume=100, cost_price=10.2)]), 1)
+            position = json.loads(path.read_text())[0]
+            self.assertEqual(position['shares'], 100)
+            self.assertEqual(position['planned_exit_date'], '20260818')
+
+    def test_e_projection_does_not_guess_exit_when_evidence_missing_or_conflicts(self) -> None:
+        intent = dict(strategy_leg='E', business_date='20260817', signal_date='20260814',
+                      ts_code='000001.SZ', planned_exit_date='', metadata={})
+        item = dict(strategy_leg='E', ts_code='000001.SZ', signal_date='20260814', exit_n=1)
+        states = [{}, dict(date='20260818', items=[item]),
+                  dict(date='20260817', items=[item, dict(item, exit_n=2)])]
+        for state in states:
+            with patch.object(daemon, '_pov_load_state', return_value=state):
+                with self.assertRaises(RuntimeError):
+                    daemon._recovered_buy_exit_n_days(intent)
+        with patch.object(daemon, '_pov_load_state', side_effect=AssertionError('无需读当前状态')):
+            self.assertEqual(daemon._recovered_buy_exit_n_days(dict(intent, metadata={'exit_n_days':1})), 1)
+
     def test_daemon_periodic_alert_throttles_only_successful_delivery(self) -> None:
         daemon._ONCE_PER_STATE.clear()
         daemon._ONCE_PER_ATTEMPT.clear()

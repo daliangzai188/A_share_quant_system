@@ -31,6 +31,7 @@ import csv
 import glob
 import hashlib
 import json
+import math
 import os
 import signal
 import subprocess
@@ -8789,13 +8790,24 @@ def _e_auction_buy_worker(e_rows: list[Any], broker_cfg: dict, today_str: str) -
                     )
                     log.warning("E竞价买入：%s 无法取得涨停价，跳过。", ts_code)
                     continue
-                # E竞价容量仍保持原逻辑，但提交股数同时按涨停委托价受85%最坏
-                # 委托金额硬顶约束；最终82.5%仓位由开盘后实际成交额校准。
-                qty = min(
-                    _floor_buy_quantity_by_amount(cap, price, 100),
-                    _floor_buy_quantity_by_amount(hard_cap_amount, price, 100),
+                # 容量按撮合参考价计算股数；涨停委托价只计算冻结资金硬顶。
+                # 竞价金额不可得时，5万元是参考成交金额兜底，不能再除以
+                # 20%涨停委托价导致额外少一手。实际成交额仍由原POV校准。
+                capacity_price = (
+                    float(getattr(quote, "last_price", 0.0) or 0.0)
+                    if auction_amt > 0 and quote is not None else reference_price
                 )
-                pov_target_amount = max(planned_amt - cap, 0.0) if pov_enabled_e else 0.0
+                qty = _e_auction_seed_quantity(
+                    capacity_amount=cap, capacity_price=capacity_price,
+                    limit_price=price, hard_cap_amount=hard_cap_amount,
+                    total_target_qty=total_target_qty,
+                )
+                expected_auction_amount = qty * capacity_price
+                log.info("[E竞价定量] %s 目标%.2f元 容量%.2f元 参考价%.2f元 "
+                         "委托价%.2f元 股数%d 参考成交额%.2f元 最坏冻结额%.2f元 硬顶%.2f元",
+                         ts_code, planned_amt, cap, capacity_price, price, qty,
+                         expected_auction_amount, qty * price, hard_cap_amount)
+                pov_target_amount = max(planned_amt - expected_auction_amount, 0.0) if pov_enabled_e else 0.0
                 pov_planned_qty = (
                     int(pov_target_amount // reference_price // 100) * 100
                     if pov_enabled_e and reference_price > 0 else 0
@@ -8865,8 +8877,16 @@ def _e_auction_buy_worker(e_rows: list[Any], broker_cfg: dict, today_str: str) -
                         _notify("buy_result", "⚠️ E流动性不足放弃开仓",
                                 f"{ts_code} {name_s} 竞价盘过小（{src}），动态仓位不足一手，今日放弃。", level="timeSensitive")
                     continue
-                log.warning("⏳ [E竞价买入] %s %s %d股 %s=%.2f元（动态仓位：%s → %.1f万）",
-                            ts_code, name_s, qty, price_label, price, src, qty * price / 1e4)
+                log.warning("⏳ [E竞价买入] %s %s %d股 %s=%.2f元（%s；参考成交额%.2f万，最坏冻结额%.2f万）",
+                            ts_code, name_s, qty, price_label, price, src,
+                            expected_auction_amount / 1e4, qty * price / 1e4)
+                raw_exit_n = row.get("exit_n_days", None)
+                exit_n = int(float(raw_exit_n)) if raw_exit_n is not None and str(raw_exit_n) not in {"", "nan"} else 1
+                planned_exit = str(row.get("planned_exit_date", "") or "")
+                if not planned_exit:
+                    planned_exit = next_n_trade_days(
+                        datetime.datetime.strptime(today_str, "%Y%m%d").date(), n=exit_n
+                    ).strftime("%Y%m%d")
                 request = OrderRequest(
                     ts_code=ts_code, broker_code=str(row.get("broker_code", ts_code)),
                     side="BUY", quantity=qty, price_type="FIXED_PRICE", price=price,
@@ -8875,17 +8895,16 @@ def _e_auction_buy_worker(e_rows: list[Any], broker_cfg: dict, today_str: str) -
                     strategy_leg="E",
                     business_date=today_str,
                     signal_date=signal_date_s,
-                    planned_exit_date=str(row.get("planned_exit_date", "")),
+                    planned_exit_date=planned_exit,
                     purpose="OPEN",
                     source_key=f"E_AUCTION|{today_str}|{ts_code}",
-                    metadata={"execution_channel": "E竞价动态", "name": name_s},
+                    metadata={"execution_channel": "E竞价动态", "name": name_s,
+                              "exit_n_days": exit_n},
                 )
                 with _qmt_lock:
                     adapter = _qmt_get(broker_cfg)
                     result = adapter.place_order(request)
                 if result.accepted:
-                    raw_exit_n = row.get("exit_n_days", None)
-                    exit_n = int(float(raw_exit_n)) if raw_exit_n is not None and str(raw_exit_n) not in {"", "nan"} else 1
                     pending_order = {
                         "order_id": str(result.order_id or f"eauction-{today_str}-{ts_code}"),
                         "ts_code": ts_code, "name": name_s,
@@ -8948,6 +8967,19 @@ def _pov_auction_share_for(sig_amt: float, lt: dict) -> float:
         return float(tiers[-1][1])
     except Exception:
         return fallback
+
+
+def _e_auction_seed_quantity(*, capacity_amount: float, capacity_price: float,
+                             limit_price: float, hard_cap_amount: float,
+                             total_target_qty: int, lot_size: int = 100) -> int:
+    """E竞价股数：参考成交容量、最坏冻结资金和原计划股数分别约束。"""
+    if capacity_price <= 0 or limit_price <= 0 or lot_size <= 0:
+        return 0
+    return min(
+        _floor_buy_quantity_by_amount(capacity_amount, capacity_price, lot_size),
+        _floor_buy_quantity_by_amount(hard_cap_amount, limit_price, lot_size),
+        max(int(total_target_qty), 0) // lot_size * lot_size,
+    )
 
 
 def _pov_auction_seed_quantity(
@@ -9699,6 +9731,27 @@ def _pov_finalize_item(it: dict[str, Any], log: Any, reason: str) -> None:
             f"{min_acceptable_amount / 1e4:.2f}万。原因：{reason}；系统不会突破+2%追价保护强补。",
             level="timeSensitive",
         )
+
+
+def _finalize_expired_pov_for_startup() -> int:
+    """交易对账及持仓投影成功后，对超时的当天POV按真实成交收口。
+
+    原工作线程异常退出后，10:30之后重启不会再恢复买入线程。这里仅调用
+    原收口及少仓告警路径，不查询券商，不补买，不撤单，不改持仓退出规则。
+    """
+    now = now_beijing()
+    if now.time() < datetime.time(10, 30):
+        return 0
+    state = _pov_load_state()
+    if state.get("date") != now.strftime("%Y%m%d"):
+        return 0
+    pending = [it for it in state.get("items", []) if not it.get("finalized")]
+    for it in pending:
+        _pov_finalize_item(it, logger(), "故障恢复已超过10:30，按已确认成交收口，放弃剩余买入")
+    if pending:
+        _pov_save_state(state)
+        logger().warning("[POV恢复收口] 已结算%d项，不补买、不撤单。", len(pending))
+    return len(pending)
 
 
 def _pov_worker() -> None:
@@ -17161,6 +17214,31 @@ def _recover_trade_execution_state_once() -> RecoveryOutcome:
     return outcome
 
 
+def _recovered_buy_exit_n_days(intent: dict[str, Any]) -> int:
+    """恢复冻结退出周期；旧E竞价意图必须有原POV证据，不能套用两天默认值。"""
+    metadata = dict(intent.get("metadata") or {})
+    raw = metadata.get("exit_n_days")
+    if raw is None and not intent.get("planned_exit_date") and str(intent.get("strategy_leg", "")).upper() == "E":
+        state = _pov_load_state()
+        matching = [item for item in state.get("items", [])
+                    if str(state.get("date", "")) == str(intent.get("business_date", ""))
+                    and str(item.get("strategy_leg", "")).upper() == "E"
+                    and _normalize_ts_code(item.get("ts_code", "")) == _normalize_ts_code(intent.get("ts_code", ""))
+                    and str(item.get("signal_date", "")) == str(intent.get("signal_date", ""))]
+        if not matching or any(item.get("exit_n") is None for item in matching):
+            raise RuntimeError("E已成意图缺少冻结退出周期，禁止按默认两天回写持仓")
+        periods = {str(item["exit_n"]) for item in matching}
+        if len(periods) != 1:
+            raise RuntimeError("E已成意图冻结退出周期存在分歧")
+        raw = next(iter(periods))
+    if raw is None:
+        return 2  # 有明确退出日期时不会使用此值；其他旧意图保持原恢复行为。
+    value = float(raw)
+    if not math.isfinite(value) or value < 1 or not value.is_integer():
+        raise RuntimeError("已成意图冻结退出周期非法")
+    return int(value)
+
+
 def _project_recovered_buy_intents(broker_positions: Any) -> int:
     """将已由QMT确认成交的BUY意图补写到positions.json。
 
@@ -17237,7 +17315,7 @@ def _project_recovered_buy_intents(broker_positions: Any) -> int:
             shares=filled_qty,
             buy_price=average_price,
             strategy_leg=str(intent.get("strategy_leg", "") or "").upper(),
-            exit_n_days=2,
+            exit_n_days=_recovered_buy_exit_n_days(intent),
             traded_at=str(metadata.get("traded_at", "") or ""),
             execution_channel="启动交易恢复",
             planned_order_qty=int(intent.get("target_qty", 0) or filled_qty),
@@ -17456,6 +17534,10 @@ def main() -> None:
     except Exception as e:
         log.critical("孤儿D成交恢复异常：%s", e)
         raise RuntimeError("孤儿D成交恢复未完成，禁止启动交易线程") from e
+
+    # 原生交易对账、分仓投影及孤儿成交恢复成功后，超出买入时段的POV也必须
+    # 写入终态和真实金额；不能把异常退出留下的任务永久展示为仍在执行。
+    _finalize_expired_pov_for_startup()
 
     # ── 启动时立刻执行平仓检查 ────────────────────────────────────────────────
     log.info("启动检查：扫描逾期/待平仓持仓...")

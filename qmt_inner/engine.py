@@ -26,6 +26,9 @@ class PendingSubmission(Exception):
     pass
 
 
+ENGINE_REVISION = '20260917-order-tag-limits-v3'
+
+
 def plain(value):
     if isinstance(value, dict):
         return {str(k): plain(v) for k, v in value.items()}
@@ -44,7 +47,21 @@ def plain(value):
     result = {}
     for key in dir(value):
         if key.startswith('m_'):
-            item = getattr(value, key)
+            try:
+                item = getattr(value, key)
+            except (TypeError, RuntimeError) as exc:
+                # Some QMT builds expose an internal CXtOrderTag shared_ptr
+                # without a Boost.Python converter. It is opaque metadata,
+                # not the scalar m_strRemark used for intent reconciliation.
+                # Boost.Python raises TypeError; the transport wraps it as
+                # RuntimeError outside QMT. Catch the original getter type.
+                message = str(exc)
+                if ('No to_python (by-value) converter found' in message
+                        and 'boost::shared_ptr' in message and 'CXtOrderTag' in message
+                        and key not in ('m_strAccountID', 'm_strRemark', 'm_strOrderSysID',
+                                        'm_strOrderRef', 'm_strInstrumentID', 'm_strExchangeID')):
+                    continue
+                raise type(exc)('Broker property ' + key + ' [' + type(exc).__name__ + ']: ' + message)
             if not callable(item):
                 try:
                     result[key] = plain(item)
@@ -105,6 +122,7 @@ class Engine:
         self.callback_fault = ""
         self.subscriptions = {}
         self.downloaded_windows = set()
+        self.instrument_limits = {}
         self.db = sqlite3.connect(str(self.root / 'journal.sqlite3'), check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.db.execute('PRAGMA journal_mode=WAL')
@@ -120,7 +138,8 @@ class Engine:
     def heartbeat(self):
         body = dict(protocol=PROTOCOL, instance=self.instance, account_id=self.account,
                     mode=self.cfg.get('mode', 'read_only'), time=time.time(),
-                    pending=len(self.pending), python=__import__('sys').version.split()[0])
+                    pending=len(self.pending), python=__import__('sys').version.split()[0],
+                    engine_revision=ENGINE_REVISION)
         atomic_json(self.root / 'heartbeat.json', dict(body=body, signature=signature(body, self.cfg['token'])))
 
     def close(self):
@@ -142,10 +161,16 @@ class Engine:
                 pass
 
     def query(self, kind):
-        rows = self.api['get_trade_detail_data'](self.account, 'stock', kind)
+        try:
+            rows = self.api['get_trade_detail_data'](self.account, 'stock', kind)
+        except Exception as exc:
+            raise RuntimeError('Native query ' + kind + ' [' + type(exc).__name__ + ']: ' + str(exc))
         if rows is None or not isinstance(rows, (list, tuple)):
             raise RuntimeError('Broker query failed, not an empty account: ' + kind)
-        result = [plain(row) for row in rows]
+        try:
+            result = [plain(row) for row in rows]
+        except Exception as exc:
+            raise RuntimeError('Native serialization ' + kind + ' [' + type(exc).__name__ + ']: ' + str(exc))
         for row in result:
             if row.get('m_strAccountID') != self.account:
                 raise RuntimeError('Broker account identity missing or mismatched')
@@ -261,6 +286,40 @@ class Engine:
                 row['time'] = int(stamp.replace(tzinfo=dt.timezone(dt.timedelta(hours=8))).timestamp() * 1000)
             if 'suspendFlag' not in row and 'openInt' in row:
                 row['suspendFlag'] = int(row['openInt']) in (1, 17, 20)
+            # Inner full ticks can omit daily price bands. Obtain the broker's
+            # actual bands, including ST/corporate-action differences, rather
+            # than estimating them with a fixed percentage.
+            upper = row.get('upperLimit', row.get('limitUp', row.get('up_limit', 0)))
+            lower = row.get('lowerLimit', row.get('limitDown', row.get('down_limit', 0)))
+            if not upper or not lower:
+                day = dt.datetime.now(dt.timezone(dt.timedelta(hours=8))).strftime('%Y%m%d')
+                previous = float(row.get('lastClose', row.get('preClose', 0)) or 0)
+                key = (day, code, previous)
+                if key not in self.instrument_limits:
+                    getter = getattr(self.C, 'get_instrument_detail', None)
+                    if getter is None:
+                        getter = getattr(self.C, 'get_instrumentdetail', None)
+                    if getter is None:
+                        raise RuntimeError('Missing broker instrument detail API for price bands')
+                    detail = getter(code)
+                    if not isinstance(detail, dict):
+                        raise RuntimeError('Invalid instrument detail for ' + code)
+                    expected_code, expected_exchange = code.split('.')
+                    if (str(detail.get('InstrumentID', '')) != expected_code
+                            or str(detail.get('ExchangeID', '')).upper() != expected_exchange):
+                        raise RuntimeError('Instrument price band identity mismatch for ' + code)
+                    up = float(detail.get('UpStopPrice', 0) or 0)
+                    down = float(detail.get('DownStopPrice', 0) or 0)
+                    close = float(detail.get('PreClose', 0) or 0)
+                    if (not all(math.isfinite(v) for v in (up, down, close))
+                            or not 0 < down < up or close <= 0
+                            or (previous > 0 and abs(close - previous) > 0.011)):
+                        raise RuntimeError('Missing or inconsistent broker price bands for ' + code)
+                    self.instrument_limits = {k: v for k, v in self.instrument_limits.items() if k[0] == day}
+                    self.instrument_limits[key] = (up, down)
+                up, down = self.instrument_limits[key]
+                row['upperLimit'] = float(upper) if upper else up
+                row['lowerLimit'] = float(lower) if lower else down
             result[code] = row
         return result
 

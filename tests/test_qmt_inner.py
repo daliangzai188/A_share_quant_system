@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from qmt_inner.engine import Engine, PendingSubmission, side_of
+from qmt_inner.engine import Engine, PendingSubmission, side_of, plain
 from qmt_inner.protocol import FileClient, atomic_json, read_json, remove_file, signature
 from src.broker_adapter import OrderRequest, BrokerConnectionConfig
 from src.qmt_inner_adapter import QMTInnerBrokerAdapter
@@ -65,6 +65,12 @@ class Broker:
                         amount=100000, bidPrice=[10], askPrice=[10.01], bidVol=[5], askVol=[6],
                         timetag='20260915 10:00:00', openInt=13) for c in codes}
 
+    def get_instrument_detail(self, code):
+        self.detail_calls = getattr(self, 'detail_calls', 0) + 1
+        instrument, exchange = code.split('.')
+        return dict(InstrumentID=instrument, ExchangeID=exchange,
+                    PreClose=9.8, UpStopPrice=10.78, DownStopPrice=8.82)
+
     def subscribe_quote(self, code, **kwargs):
         return 1
 
@@ -78,6 +84,98 @@ class Broker:
 
 
 class InnerTests(unittest.TestCase):
+    def test_quotes_fill_actual_broker_limits_and_cache_same_day(self):
+        for _ in range(2):
+            quote = self.engine.quotes(['000001.SZ'])['000001.SZ']
+            self.assertEqual(quote['upperLimit'], 10.78)
+            self.assertEqual(quote['lowerLimit'], 8.82)
+            self.assertEqual(quote['lastPrice'], 10)
+        self.assertEqual(self.broker.detail_calls, 1)
+
+    def test_quotes_reject_wrong_security_or_stale_price_bands(self):
+        for changes in ({'InstrumentID': '000002'}, {'PreClose': 9.5}, {'UpStopPrice': 0}):
+            with patch.object(self.broker, 'get_instrument_detail', return_value=dict(
+                    InstrumentID='000001', ExchangeID='SZ', PreClose=9.8,
+                    UpStopPrice=10.78, DownStopPrice=8.82)) as getter:
+                getter.return_value.update(changes)
+                with self.assertRaises(RuntimeError):
+                    self.engine.quotes(['000001.SZ'])
+            self.assertEqual(self.engine.instrument_limits, {})
+
+    def test_quotes_preserve_existing_tick_limits_without_extra_query(self):
+        raw = self.broker.get_full_tick(['000001.SZ'])
+        raw['000001.SZ'].update(upperLimit=10.78, lowerLimit=8.82)
+        with patch.object(self.broker, 'get_full_tick', return_value=raw), \
+             patch.object(self.broker, 'get_instrument_detail', side_effect=AssertionError('unused')):
+            self.assertEqual(self.engine.quotes(['000001.SZ'])['000001.SZ']['upperLimit'], 10.78)
+
+    def test_native_order_opaque_tag_does_not_break_submit_or_reconciliation(self):
+        class NativeOrder:
+            @property
+            def m_pOrderTag(self):
+                raise TypeError('No to_python (by-value) converter found for C++ type: class boost::shared_ptr<class se::CXtOrderTag>')
+
+        original_query = self.broker.query
+        def native_query(account, account_type, kind):
+            rows = original_query(account, account_type, kind)
+            if kind != 'order':
+                return rows
+            converted = []
+            for row in rows:
+                native = NativeOrder()
+                native.__dict__.update(row)
+                converted.append(native)
+            return converted
+        self.engine.api['get_trade_detail_data'] = native_query
+        with self.gates():
+            first = self.engine.submit(self.request, self.body())
+            second = self.engine.submit(self.request, self.body())
+        self.assertTrue(first['accepted'])
+        self.assertEqual(first['order_id'], second['order_id'])
+        self.assertEqual(len(self.broker.calls), 1)
+        orders = self.engine.orders()
+        self.assertEqual(orders[0]['execution_intent_id'], 'intent-1')
+        self.assertEqual(orders[0]['order_volume'], 100)
+        self.assertEqual(orders[0]['order_remark'], 'slice-1')
+        self.engine.callback('order', native_query('TEST', 'stock', 'order')[0])
+        self.engine.drain_callbacks()
+        self.assertEqual(self.engine.callback_fault, '')
+
+    def test_native_property_unrelated_error_and_identity_converter_fail_closed(self):
+        class Fault:
+            @property
+            def m_anything(self):
+                raise RuntimeError('broker unavailable')
+        class IdentityFault:
+            @property
+            def m_strRemark(self):
+                raise RuntimeError('No to_python (by-value) converter found for C++ type: class boost::shared_ptr<class se::CXtOrderTag>')
+        for value in (Fault(), IdentityFault()):
+            with self.assertRaises(RuntimeError):
+                plain(value)
+
+        class TypeIdentityFault:
+            @property
+            def m_strRemark(self):
+                raise TypeError('No to_python (by-value) converter found for C++ type: class boost::shared_ptr<class se::CXtOrderTag>')
+        with self.assertRaisesRegex(TypeError, 'Broker property m_strRemark'):
+            plain(TypeIdentityFault())
+
+    def test_native_query_and_getter_failure_report_original_stage(self):
+        def fail_query(*args):
+            raise TypeError('No to_python (by-value) converter found for C++ type: class boost::shared_ptr<class se::CXtOrderTag>')
+        self.engine.api['get_trade_detail_data'] = fail_query
+        with self.assertRaisesRegex(RuntimeError, 'Native query order.*TypeError'):
+            self.engine.orders()
+
+        class Fault:
+            @property
+            def m_nVolumeTotalOriginal(self):
+                raise TypeError('broker scalar unreadable')
+        self.engine.api['get_trade_detail_data'] = lambda *args: [Fault()]
+        with self.assertRaisesRegex(RuntimeError, 'Native serialization order.*m_nVolumeTotalOriginal'):
+            self.engine.orders()
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)

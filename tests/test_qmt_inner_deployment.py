@@ -2,6 +2,8 @@ import json
 from contextlib import closing
 from pathlib import Path
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -15,6 +17,21 @@ from src.qmt_inner_start_gate import assert_selected_transport_ready
 
 
 class DeploymentTests(unittest.TestCase):
+    def test_entry_reloads_cached_engine_missing_revision(self):
+        root = Path(__file__).resolve().parents[1]
+        program = """
+import runpy
+import qmt_inner.engine as cached
+old_class = cached.Engine
+del cached.ENGINE_REVISION
+entry = runpy.run_path('qmt_inner/entry.py')
+assert entry['ENGINE_REVISION'] == '20260917-order-tag-limits-v3'
+assert entry['Engine'] is not old_class
+"""
+        result = subprocess.run([sys.executable, '-c', program], cwd=root,
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_live_stage_keeps_manual_stop_and_removes_only_migration_cap(self):
         with tempfile.TemporaryDirectory() as temporary:
             project = Path(temporary) / 'project'
@@ -59,9 +76,26 @@ class DeploymentTests(unittest.TestCase):
                  'spool_dir': 'unused', 'token': 'x' * 64, 'account_id': 'TEST'}), \
              patch('qmt_inner.protocol.FileClient') as client:
             client.return_value.connect.return_value = {'mode': 'live'}
+            client.return_value.call.return_value = []
             result = assert_selected_transport_ready(Path.cwd())
         self.assertTrue(result['checked'])
         self.assertEqual(result['mode'], 'live')
+
+    def test_start_gate_rejects_order_failure_even_when_account_is_live(self):
+        import os
+        with patch.dict(os.environ, {'QMT_TRANSPORT': 'qmt_inner'}), \
+             patch('qmt_inner.protocol.load_settings', return_value={
+                 'runtime_config': str(Path.cwd() / 'config/config.json'),
+                 'spool_dir': 'unused', 'token': 'x' * 64, 'account_id': 'TEST'}), \
+             patch('qmt_inner.protocol.FileClient') as client:
+            client.return_value.connect.return_value = {'mode': 'live'}
+            def query(method, params):
+                if method == 'orders':
+                    raise RuntimeError('CXtOrderTag conversion failed')
+                return []
+            client.return_value.call.side_effect = query
+            with self.assertRaisesRegex(RuntimeError, 'CXtOrderTag'):
+                assert_selected_transport_ready(Path.cwd())
 
     def test_inner_readiness_does_not_require_xtquant_or_mini_path(self):
         import os

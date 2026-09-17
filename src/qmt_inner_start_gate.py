@@ -9,7 +9,7 @@ from typing import Any
 def assert_selected_transport_ready(project_root: str | Path) -> dict[str, Any]:
     """内置通道未就绪时拒绝清除人工停机标记。
 
-    这里只读取内置端心跳并调用 hello/account 查询，不会下单或撤单。
+    这里只读取内置端心跳并调用账户、持仓、委托和成交查询，不会下单或撤单。
     miniQMT 配置保留原来的启动流程。
     """
 
@@ -31,9 +31,17 @@ def assert_selected_transport_ready(project_root: str | Path) -> dict[str, Any]:
     hello = client.connect()
     if hello.get("mode") != "live":
         raise RuntimeError("QMT内置端仍为只读模式，人工停机标记保持不变")
+    counts = {}
+    for method in ("positions", "orders", "trades"):
+        rows = client.call(method, {})
+        if not isinstance(rows, list):
+            raise RuntimeError("QMT内置端" + method + "查询返回非法，人工停机标记保持不变")
+        counts[method] = len(rows)
     return {
         "transport": "qmt_inner",
         "checked": True,
         "mode": "live",
         "instance": str(hello.get("instance", client.instance or "")),
+        "snapshot_counts": counts,
+        "engine_revision": str(client.heartbeat().get("engine_revision", "")),
     }
