@@ -1,0 +1,122 @@
+{
+  "scenario": "acde_plan_jia_stop_gate_20260919",
+  "release_id": "ACDE_PLAN_JIA_STOP_GATE_20260919",
+  "window": {
+    "start": "20230901",
+    "end": "20260831",
+    "trade_days": 725
+  },
+  "method_id": "shadow_nav_lag6_below_ma60_blocks_new_entries_v1",
+  "stop_parameters": {
+    "ma_window": 60,
+    "lag_trading_days": 6,
+    "history_start": "20190101"
+  },
+  "stop_days_in_window": 7,
+  "stop_day_ratio_in_window": 0.009655172413793104,
+  "gated_combo_metrics": {
+    "trade_count": 179,
+    "win_rate": 0.7094972067039106,
+    "avg_account_return": 0.05207858790989536,
+    "median_account_return": 0.03132265631336639,
+    "equity_multiple": 4369.036737559196,
+    "max_drawdown": -0.20953309682221255,
+    "max_drawdown_peak_date": "20260126",
+    "max_drawdown_trough_date": "20260326",
+    "max_profit": 0.47625292237585115,
+    "max_loss": -0.17603419610450732,
+    "profit_loss_ratio": 2.177308937224374,
+    "max_consecutive_losses": 4,
+    "leg_counts": {
+      "A": 92,
+      "C": 62,
+      "E": 25
+    },
+    "buy_commission": 15682817.973682858,
+    "sell_commission": 16356133.62612574,
+    "transfer_fee": 1067965.0533269534,
+    "stamp_tax": 27260222.710209567,
+    "total_fees": 60367139.36334511,
+    "buy_slippage": 52223836.076194316,
+    "sell_slippage": 54575020.440860316,
+    "total_slippage": 106798856.51705465
+  },
+  "ungated_combo_metrics_same_rules": {
+    "trade_count": 180,
+    "win_rate": 0.7111111111111111,
+    "avg_account_return": 0.05229016377482048,
+    "median_account_return": 0.0316919978382042,
+    "equity_multiple": 4762.958269867702,
+    "max_drawdown": -0.20953309682221255,
+    "max_drawdown_peak_date": "20260126",
+    "max_drawdown_trough_date": "20260326",
+    "max_profit": 0.47625292237585115,
+    "max_loss": -0.17603437753859363,
+    "profit_loss_ratio": 2.177263215815053,
+    "max_consecutive_losses": 4,
+    "leg_counts": {
+      "A": 93,
+      "C": 62,
+      "E": 25
+    },
+    "buy_commission": 16799337.138616025,
+    "sell_commission": 17533040.43636261,
+    "transfer_fee": 1144412.5858326214,
+    "stamp_tax": 29221734.06060435,
+    "total_fees": 64698524.22141562,
+    "buy_slippage": 55941848.61343394,
+    "sell_slippage": 58501970.09130032,
+    "total_slippage": 114443818.70473427
+  },
+  "plan_counts": {
+    "A": 144,
+    "C": 98,
+    "E": 68
+  },
+  "plan_signatures": {
+    "A": "d64676dce69564e72779666c8b13805163eeb996cfe9a2774497df91f565a1d6",
+    "C": "f6e53f42776c71619adf0931462c1f450cdfc6cd689b4c8fea645e65c17d39bf",
+    "E": "7a085c2993eee63d96d7728bfeb2e6fbb2d31ee288a7713dd30273e087b05613"
+  },
+  "d_historical_policy": "FAIL_CLOSED_ZERO_TRADES_NO_SIGNAL_TIME_L2",
+  "rule_checks": {
+    "a_release_id": true,
+    "a_three_core_profiles_fd_0_1_to_1pct": true,
+    "a_profiles_keep_lt5_chain8_15": true,
+    "a_fallback_unchanged": true,
+    "e_release_id": true,
+    "e_limit_up_gate_120_180_and_lt_30": true,
+    "e_gate_after_first_pick_no_fallback": true,
+    "stop_enabled": true,
+    "stop_ma60_lag6": true,
+    "stop_history_start_20190101": true,
+    "certification_release_id": true,
+    "certification_expected_scenario": true,
+    "priority_a_c_e_d": true
+  },
+  "live_decision_equals_certification_every_window_day": true,
+  "no_entry_on_stop_days": true,
+  "deterministic_double_build_and_replay": true,
+  "baseline_v16_d_fail_closed": {
+    "scenario": "acde_entry_alignment_fail_closed_20260902",
+    "strict_asof_window": "20230901~20260831",
+    "strict_asof_trade_count": 174,
+    "strict_asof_equity_multiple": 10848.794220535914,
+    "strict_asof_win_rate": 0.735632183908046,
+    "strict_asof_avg_account_return": 0.059041737337179954,
+    "strict_asof_median_account_return": 0.04053638027625017,
+    "strict_asof_max_drawdown": -0.19877368185390087,
+    "strict_asof_max_profit": 0.47625300044860985,
+    "strict_asof_max_loss": -0.17603458841064734,
+    "strict_asof_profit_loss_ratio": 2.413000141610678,
+    "strict_asof_max_consecutive_losses": 3,
+    "strict_asof_leg_counts": {
+      "A": 84,
+      "C": 63,
+      "E": 27,
+      "D": 0
+    },
+    "compound_standard_id": "A_SYSTEM_MECHANICAL_COMPOUND_V1",
+    "note": "开仓口径缺陷修复后的失败关闭重算：固定A>C>E>D、82.5%目标仓位、费用、滑点和退出日占资不变。由于现有D三年数据没有信号时L2队列金额，D不可验证样本全部不计成交；组合174笔、10848.794221倍、最大回撤-19.8774%，分腿A84/C63/E27/D0。该结果不是未来收益承诺，也不代表D策略收益为0；它表示当前没有可认证的D历史成交样本。"
+  }
+}

@@ -30,6 +30,7 @@ class StrategyAFdExpansionLiveChainTests(unittest.TestCase):
         first_time_bucket: str = "midday",
     ) -> dict[str, object]:
         fd_ratio = {
+            "lt_0_1pct": 0.0005,
             "0_1pct_0_3pct": 0.002,
             "0_3pct_0_5pct": 0.004,
             "0_5pct_1pct": 0.007,
@@ -57,36 +58,41 @@ class StrategyAFdExpansionLiveChainTests(unittest.TestCase):
             "amount": 100000.0,
         }
 
-    def test_primary_generator_accepts_both_frozen_a_profiles(self) -> None:
+    def test_primary_generator_accepts_three_formal_a_profiles(self) -> None:
+        """方案甲：主池封单比例0.1%-1%三档都属于正式A，低于0.1%仍被拒绝。"""
         generator = PaperCandidateGenerator.__new__(PaperCandidateGenerator)
         generator.config = self.config
         frame = pd.DataFrame([
             self.candidate("000001.SZ", "0_5pct_1pct", 2),
             self.candidate("000002.SZ", "0_3pct_0_5pct", 3),
             self.candidate("000003.SZ", "0_1pct_0_3pct", 4),
+            self.candidate("000004.SZ", "lt_0_1pct", 5),
         ])
 
         selected = generator.apply_include_conditions(frame)
 
-        self.assertEqual(selected["ts_code"].tolist(), ["000001.SZ", "000002.SZ"])
+        self.assertEqual(selected["ts_code"].tolist(), ["000001.SZ", "000002.SZ", "000003.SZ"])
         self.assertEqual(selected["matched_condition_profile_ids"].tolist(), [
             "A_FD_0_5PCT_1PCT",
             "A_FD_0_3PCT_0_5PCT",
+            "A_FD_0_1PCT_0_3PCT",
         ])
 
-    def test_live_limit_pool_fallback_accepts_new_fd_branch(self) -> None:
+    def test_live_limit_pool_accepts_plan_jia_fd_branch(self) -> None:
+        """实盘涨停池链路与正式A同口径：0.1%-0.3%进入主池，低于0.1%不进入。"""
         frame = pd.DataFrame([
             self.candidate("000002.SZ", "0_3pct_0_5pct", 3),
             self.candidate("000003.SZ", "0_1pct_0_3pct", 4),
+            self.candidate("000004.SZ", "lt_0_1pct", 9),
         ])
 
         strategy_leg, selected = select_candidates(frame, self.config, top_n=10)
 
         self.assertEqual(strategy_leg, "LIVE_LIMIT_POOL_A")
-        self.assertEqual(selected["ts_code"].tolist(), ["000002.SZ"])
+        self.assertEqual(selected["ts_code"].tolist(), ["000003.SZ", "000002.SZ"])
         self.assertEqual(
             selected["matched_condition_profile_ids"].tolist(),
-            ["A_FD_0_3PCT_0_5PCT"],
+            ["A_FD_0_1PCT_0_3PCT", "A_FD_0_3PCT_0_5PCT"],
         )
 
     def test_primary_a_prevents_fd_1_2_fallback_from_competing(self) -> None:

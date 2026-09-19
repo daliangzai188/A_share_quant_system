@@ -49,16 +49,20 @@ class CurrentPortfolioAlignmentTests(unittest.TestCase):
         self.assertFalse(current["release_eligible"])
         self.assertFalse(current["independent_oos_certified"])
         self.assertFalse(current["capacity_certified"])
-        self.assertEqual(current["scenario"], "acde_c_third_branch_t2_22695_20260902_v16")
-        self.assertEqual(current["release_id"], "ACDE_C_THIRD_BRANCH_T2_22695_20260902_V16")
-        self.assertEqual(current["combo_metrics"]["trade_count"], 184)
+        # 方案甲（2026-09-19）：A封单0.1%-1%、E全市场涨停<=30只空仓、60日影子净值停手；
+        # D历史按0笔失败关闭。
+        self.assertEqual(current["scenario"], "acde_plan_jia_stop_gate_20260919")
+        self.assertEqual(current["release_id"], "ACDE_PLAN_JIA_STOP_GATE_20260919")
+        self.assertEqual(current["combo_metrics"]["trade_count"], 179)
         self.assertAlmostEqual(
-            current["combo_metrics"]["equity_multiple"], 22695.89224525786
+            current["combo_metrics"]["equity_multiple"], 4369.036737559196
         )
         self.assertEqual(
             current["combo_metrics"]["leg_counts"],
-            {"A": 84, "C": 62, "D": 11, "E": 27},
+            {"A": 92, "C": 62, "E": 25},
         )
+        self.assertEqual(current["stop_days_in_window"], 7)
+        self.assertTrue(current["live_decision_equals_certification"])
         self.assertTrue(current["deterministic_double_replay"])
 
     def test_legacy_leg_breakdown_stays_archived(self) -> None:

@@ -62,6 +62,7 @@ from typing import Any
 import pandas as pd
 from pandas.errors import EmptyDataError
 
+from src.equity_curve_stop import LiveGateCheck, live_gate
 from src.live_order_gateway import LiveOrderGateway
 from src.rolling_signal_store import latest_signal_for_buy_date, signal_by_signal_date
 from src.strategy_identity import (
@@ -116,6 +117,10 @@ class CombinedLiveEngine:
         self.positions_path = self.project_root / "data" / "processed" / "positions.json"
         self.output_dir = self.project_root / "reports" / "live_trade" / "combined"
         mkdir_p(self.output_dir)
+
+    def equity_curve_stop_check(self, today: str) -> LiveGateCheck:
+        """方案甲停手门禁；判定定义只在 src.equity_curve_stop，这里不做任何二次计算。"""
+        return live_gate(self.config, self.project_root, today)
 
     def is_b_new_entry_enabled(self) -> bool:
         """读取退役标记；当前配置必须返回False，阻断全部B新增买入。"""
@@ -533,6 +538,7 @@ class CombinedLiveEngine:
         # 有旧持仓的两个分支一律阻断新开仓，所以只有空仓分支会写这个变量；
         # 函数末尾的 E 状态播报要靠它区分"E被前面的腿挡住"和"E自己没信号"。
         opened_leg: str | None = None
+        stop_gate = self.equity_curve_stop_check(today)
         if open_d_positions:
             due_d = [
                 p for p in open_d_positions
@@ -604,6 +610,21 @@ class CombinedLiveEngine:
                 reason="存在尚未实际清空的旧策略仓，D盘中策略跳过；确认清仓后才允许下一次正常开仓。",
                 source="positions.json",
             ))
+
+        elif not stop_gate.allowed:
+            # ── 方案甲停手：账户空仓但影子净值低于均线（或判定缺失/过期，fail-closed）──
+            # A/C/E/D四条腿今日都不开新仓，也不启动D盘中监控。
+            for action, leg in (
+                ("BLOCK_ABC_BUY", "A+C"),
+                ("BLOCK_E_BUY", "E"),
+                ("BLOCK_D_INTRADAY_MONITOR", "D"),
+            ):
+                decisions.append(CombinedLiveDecision(
+                    action=action,
+                    strategy_leg=leg,
+                    reason=stop_gate.reason,
+                    source=stop_gate.source,
+                ))
 
         else:
             # ── 账户无旧策略仓：按可执行腿序 A > C > E > D 决定今日开仓 ───
@@ -746,6 +767,9 @@ class CombinedLiveEngine:
         elif open_positions:
             e_status_action = "BLOCK_E"
             e_status_reason = f"账户有 {len(open_positions)} 个未平仓头寸，E 不触发。"
+        elif not stop_gate.allowed:
+            e_status_action = "BLOCK_E"
+            e_status_reason = f"方案甲停手门禁：{stop_gate.reason}"
         elif has_abc_buy:
             e_status_action = "BLOCK_E"
             e_status_reason = (

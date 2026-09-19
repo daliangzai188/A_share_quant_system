@@ -557,6 +557,7 @@ TIMEOUT_DATA_STEP = 600      # 数据采集/清洗步骤：10 分钟
 TIMEOUT_SIGNAL_STEP = 900    # 信号生成步骤：15 分钟；A/C 首次加载特征较慢，不能误杀导致旧信号
 TIMEOUT_ORDER_STEP = 60      # 下单预览步骤：1 分钟
 TIMEOUT_COMBINED_PLAN_STEP = 180  # 组合状态机生成：Windows/QMT环境下首次加载特征较慢
+TIMEOUT_EQUITY_CURVE_STOP_STEP = 1800  # 方案甲停手门禁：2019起全量重建研究池+影子回放，Mac约4分钟
 
 
 def setup() -> None:
@@ -9865,6 +9866,23 @@ def _new_buy_execution_gate() -> tuple[bool, str]:
         return False, str(exc)
 
 
+def _equity_curve_stop_block_reason(action_date: str) -> str:
+    """方案甲停手门禁（只读）；返回空串=允许开仓，否则为停手原因。
+
+    判定定义只在 src.equity_curve_stop；组合状态机与播报/核查共用同一结果，
+    保证推送的明日计划、09:20/09:30真实下单和开仓核查三处口径一致。
+    """
+
+    try:
+        from src.equity_curve_stop import live_gate
+
+        config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+        check = live_gate(config, PROJECT_ROOT, str(action_date))
+        return "" if check.allowed else check.reason
+    except Exception as exc:
+        return f"方案甲停手门禁读取失败，按fail-closed不开新仓：{exc}"
+
+
 def _notify_new_buy_gate_block(stage: str, reason: str) -> None:
     message = (
         f"{stage}发现正式候选，但新增BUY安全门禁未通过：{reason}。"
@@ -13125,8 +13143,55 @@ def snapshot_realized_strategy_equity(signal_date: str) -> None:
             )
         if not snapshot.ledger_ready:
             logger().warning("全策略净值账本有待补全成交，账户级风险状态保持fail-closed。")
+        _maybe_alert_strategy_drawdown(snapshot, drawdown, cfg)
     except Exception as exc:
         logger().warning("全策略净值账本更新失败：%s（账户级风险状态保持fail-closed）", exc)
+
+
+def _maybe_alert_strategy_drawdown(snapshot: Any, drawdown: float, cfg: dict[str, Any]) -> None:
+    """全策略净值从高点回撤达到阈值时推送一次，提醒用户发起"甲·临时复核"。
+
+    净值来自全策略净值账本（券商总资产一次基线+本系统完整平仓盈亏），入金、出金
+    不影响回撤。同一个峰值只推送一次；创出新高后重新计数。只提醒，不改变任何下单。
+    """
+
+    section = cfg.get("drawdown_alert", {}) or {}
+    if not bool(section.get("enabled", False)):
+        return
+    threshold = float(section.get("threshold", -0.30))
+    if drawdown > threshold:
+        return
+    state_path = PROJECT_ROOT / str(section.get("state_path", "data/state/drawdown_alert.json"))
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
+    except (OSError, ValueError):
+        state = {}
+    peak = float(snapshot.peak_equity)
+    if abs(float(state.get("alerted_peak_equity", -1.0)) - peak) < 0.01:
+        return
+    pending = int(getattr(snapshot, "pending_incomplete_trade_count", 0) or 0)
+    body = (
+        f"全策略净值{snapshot.equity:.0f}元，较峰值{peak:.0f}元回撤{drawdown:.1%}，"
+        f"超过{abs(threshold):.0%}报警线。请在Claude发送：甲·临时复核，原因：实盘回撤超过{abs(threshold):.0%}。"
+    )
+    if pending:
+        body += f"（账本另有{pending}笔成交待补全，实际回撤可能更大）"
+    sent = _notify("risk_drawdown", f"⚠️ 实盘回撤{drawdown:.0%}：请发起甲·临时复核", body, level="timeSensitive")
+    if sent:
+        mkdir_p(state_path.parent)
+        state_path.write_text(
+            json.dumps(
+                {
+                    "alerted_peak_equity": peak,
+                    "alerted_equity": float(snapshot.equity),
+                    "alerted_drawdown": float(drawdown),
+                    "alerted_at": now_beijing().strftime("%Y-%m-%d %H:%M:%S"),
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
 
 
 def job_post_market(end_date: str | None = None) -> None:
@@ -13162,6 +13227,9 @@ def job_post_market(end_date: str | None = None) -> None:
         ("update_execution_completion.py",     "⑩ 真实成交完成率汇总（逐片+一笔一行）", TIMEOUT_DATA_STEP, "约5秒"),
         ("report_rolling_live_performance.py", "⑪ 真实收益/容量/TCA滚动报告（只监控）", TIMEOUT_DATA_STEP, "约5秒"),
         ("update_release_oos_observation.py", "⑫ 全策略影子候选/反事实收益（只观察）", TIMEOUT_DATA_STEP, "约5秒"),
+        # 必须在最终开仓计划播报之前：播报与次日组合状态机读取同一份停手判定。
+        # 失败不停止流水线；次日判定缺失时组合状态机按fail-closed不开新仓。
+        ("update_equity_curve_stop.py", "⑬ 方案甲停手门禁（影子净值→次日判定）", TIMEOUT_EQUITY_CURVE_STOP_STEP, "约5分钟"),
     ]
     extra_args: dict[str, list[str]] = {
         "collect_all_data.py": ["--start-date", recent_start, "--end-date", target_str, "--require-end-date-limit"],
@@ -13193,6 +13261,7 @@ def job_post_market(end_date: str | None = None) -> None:
         ],
         "run_strategy_e_signal.py": ["--signal-date", target_str],
         "update_release_oos_observation.py": ["--signal-date", target_str],
+        "update_equity_curve_stop.py": ["--signal-date", target_str],
     }
     critical_scripts = {
         "collect_all_data.py",
@@ -14556,10 +14625,15 @@ def _log_decision_chain_summary(signal_date: str) -> None:
         if execution_expired:
             final_buy = None
         execution_block_reason = ""
+        equity_curve_stop_reason = ""
         if final_buy:
             buy_gate_ok, buy_gate_reason = _new_buy_execution_gate()
             if not buy_gate_ok:
                 execution_block_reason = buy_gate_reason
+                final_buy = None
+        if final_buy:
+            equity_curve_stop_reason = _equity_curve_stop_block_reason(str(action_date))
+            if equity_curve_stop_reason:
                 final_buy = None
 
         hold_line = _describe_holdings(positions, with_quote=False) if positions else ""
@@ -14585,6 +14659,8 @@ def _log_decision_chain_summary(signal_date: str) -> None:
                 status_text = "不触发（已过执行窗口）"
             elif execution_block_reason and leg == selected_leg:
                 status_text = "不触发（新增BUY安全门禁）"
+            elif equity_curve_stop_reason and leg == selected_leg:
+                status_text = "不触发（方案甲停手）"
             elif leg == actual_leg:
                 status_text = "成立"
             elif leg in readonly_candidates:
@@ -14651,6 +14727,12 @@ def _log_decision_chain_summary(signal_date: str) -> None:
                 f"{_format_strategy_candidate(str(original_final_buy.get('strategy', '?')), original_final_buy)}"
                 f"已被新增BUY安全门禁阻断｜{execution_block_reason}"
             )
+        elif equity_curve_stop_reason and original_final_buy:
+            lines.append(
+                "┃ ★ 不开新仓：方案甲停手，候选"
+                f"{_format_strategy_candidate(str(original_final_buy.get('strategy', '?')), original_final_buy)}"
+                f"不执行，D也不启动｜{equity_curve_stop_reason}"
+            )
         elif final_buy:
             lines.append(f"┃ ★ 开仓计划：{_format_live_plan_line(final_buy, live_sizing)}")
         else:
@@ -14668,6 +14750,7 @@ def _log_decision_chain_summary(signal_date: str) -> None:
             "signal_date": str(signal_date),
             "execution_expired": execution_expired,
             "execution_block_reason": execution_block_reason,
+            "equity_curve_stop_reason": equity_curve_stop_reason,
             "computed_at": now_beijing().strftime("%Y-%m-%d %H:%M:%S"),
         }
     except Exception as exc:
@@ -14795,7 +14878,14 @@ def push_open_plan_notification(occasion: str) -> None:
         hold = plan.get("hold_line") or ""
         execution_expired = bool(plan.get("execution_expired", False))
         execution_block_reason = str(plan.get("execution_block_reason", "") or "")
-        if fb and execution_expired:
+        equity_curve_stop_reason = str(plan.get("equity_curve_stop_reason", "") or "")
+        if fb and equity_curve_stop_reason:
+            title = f"⏸ {label}方案甲停手:不开新仓"
+            body = (
+                f"{_format_strategy_candidate(str(fb.get('strategy', '?')), fb)}入选但不执行，"
+                f"D也不启动。{equity_curve_stop_reason}。"
+            )
+        elif fb and execution_expired:
             title = f"⚠️ {label}原候选已错过执行窗口:{fb.get('name','')}"
             body = (
                 f"{_format_strategy_candidate(str(fb.get('strategy', '?')), fb)}零成交且补仓窗口已结束；"
@@ -14955,6 +15045,9 @@ def job_open_plan_fill_check() -> None:
         fb = plan.get("final_buy")
         if not fb:
             log.info("[开仓核查] 今日本来就无开仓计划，无需核查。")
+            return
+        if str(plan.get("equity_curve_stop_reason", "") or ""):
+            log.info("[开仓核查] 今日方案甲停手，候选按规则不执行，无需核查：%s", plan.get("equity_curve_stop_reason"))
             return
         # 实际成交优先于播报缓存：认证可能在08:50播报后、09:20执行前完成更新。
         # 若券商成交已登记，绝不能拿旧的execution_block_reason误报成“未执行”。

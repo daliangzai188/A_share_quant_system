@@ -138,7 +138,7 @@ class StrategyEAlignmentTests(unittest.TestCase):
         )
         self.assertEqual(
             spec["entry_gate"]["exclude_values"]["limit_up_count_bucket"],
-            ["120_180"],
+            ["120_180", "lt_30"],  # 方案甲新增全市场涨停不超过30只空仓
         )
         self.assertEqual(
             spec["entry_gate"]["exclude_values"]["fd_ratio_bucket"],
@@ -290,6 +290,12 @@ class StrategyEAlignmentTests(unittest.TestCase):
         trades = pd.read_csv(path, dtype={"trade_date": str}, low_memory=False)
         spec = load_e_spec(PROJECT_ROOT)
         spec["entry_gate"].pop("exclude_all_conditions", None)
+        # 方案甲新增的全市场涨停<=30只门禁不属于V13归档口径，复现V13时剔除。
+        spec["entry_gate"]["exclude_values"]["limit_up_count_bucket"] = [
+            value
+            for value in spec["entry_gate"]["exclude_values"]["limit_up_count_bucket"]
+            if value != "lt_30"
+        ]
         eligible = apply_e_entry_gate(trades, spec)
         returns = pd.to_numeric(eligible["net_return"], errors="raise") * 0.825
         equity = (1 + returns).cumprod()

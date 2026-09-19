@@ -61,7 +61,7 @@ class StrictAsOfConfigPolicyTests(unittest.TestCase):
         self.assertEqual(certification["certification_required_status"], "PASS")
         self.assertEqual(
             certification["certification_expected_scenario"],
-            "acde_c_third_branch_t2_22695_20260902_v16",
+            "acde_plan_jia_stop_gate_20260919",
         )
         self.assertTrue(certification["certification_require_hashes"])
         self.assertFalse(certification["certification_require_strict_asof"])

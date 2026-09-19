@@ -36,6 +36,23 @@
     "full_sample_gate_risk_accepted": true,
     "full_sample_gate_risk_acceptance_note": "V14改用换手率高与封单比例低的等权分位排序，并在保留V13四项单独门禁基础上新增成交额倍率1.2~2且炸板2~3次时直接空仓、不回补。最近三年E独立59笔、30.818622倍、最大回撤-9.62%；结果属于STRICT_DISCOVERY，不得据此扩大资金。"
   },
+  "equity_curve_stop": {
+    "file_role": "方案甲组合层停手门禁（2026-09-19用户批准）。影子账=正式A/C/E规则、不含D、从不停手的A>C>E单账户回放净值；行动日取滞后lag_trading_days个交易日的影子净值，低于其ma_window日均线则A/C/E/D当天都不开新仓，持仓照常退出。定义唯一实现于src/equity_curve_stop.py，研究、认证、实盘共用；收盘流水线⑬每天重算并写出次日判定，判定缺失或过期时按fail-closed不开新仓。",
+    "enabled": true,
+    "ma_window": 60,
+    "lag_trading_days": 6,
+    "parameter_note": "60日均线与滞后6个交易日为2026-09-19研究前写死的参数；年度复核也不得调整（见docs/equity_curve_stop.md）。",
+    "history_start": "20190101",
+    "decision_path": "data/state/equity_curve_stop_decision.json",
+    "shadow_nav_path": "reports/equity_curve_stop/shadow_nav_latest.csv",
+    "work_dir": ""
+  },
+  "drawdown_alert": {
+    "file_role": "只提醒不交易：全策略净值账本（券商总资产一次基线+本系统完整平仓盈亏，入金出金不影响）从峰值回撤达到threshold时Bark推送一次，提醒用户发起“甲·临时复核”。同一峰值只推送一次。",
+    "enabled": true,
+    "threshold": -0.30,
+    "state_path": "data/state/drawdown_alert.json"
+  },
   "portfolio_certification": {
     "file_role": "A>C>E>D真实开仓日组合资金和研究统计口径；旧V16认证因D历史开仓口径不对齐继续作废。D历史收益认证与实时BUY权限分开：实时BUY由strategy_d_factor_release.entry_alignment授权，并逐单执行完整1m路径、真实委托金额及可靠成交概率>=80%的fail-closed门禁。",
     "initial_equity": 500000,
@@ -46,13 +63,13 @@
     "certification_summary_path": "reports/current_portfolio_alignment/return_first_live_certification.json",
     "certification_report_path": "reports/current_portfolio_alignment/return_first_portfolio_report.md",
     "certification_required_status": "PASS",
-    "certification_expected_scenario": "acde_c_third_branch_t2_22695_20260902_v16",
+    "certification_expected_scenario": "acde_plan_jia_stop_gate_20260919",
     "certification_require_hashes": true,
     "certification_require_strict_asof": false,
     "require_strategy_release_freeze": false,
-    "release_id": "ACDE_C_THIRD_BRANCH_T2_22695_20260902_V16",
-    "effective_from": "20260902",
-    "user_risk_acceptance": "用户于2026-09-02审核C第3分支逐笔收益后明确授权落地，C规则保留，原C的同窗过拟合风险披露继续有效。后续开仓口径复核发现D回测没有执行实盘fill_probability>=80%门，旧V16组合指标因此作废；本记录不表示用户已审核或接受新的D=0失败关闭组合指标。",
+    "release_id": "ACDE_PLAN_JIA_STOP_GATE_20260919",
+    "effective_from": "20260921",
+    "user_risk_acceptance": "用户于2026-09-19审核后批准落地方案甲（稳妥版+60日影子净值停手，D一起停手），并接受：样本外合理预期约每月3%、最大回撤按-55%准备、约四成交易日处于停手；2018-2019为开盘啦+分钟线补出数据；年度复核按写死硬门槛执行；方案甲从一万多个组合中筛出，过拟合风险仍然存在，实盘表现可能明显弱于回测。V16的C第3分支与D实时门禁规则保留；D历史回放继续按0笔失败关闭披露。",
     "strategy_priority_order": [
       "A",
       "C",
@@ -61,8 +78,8 @@
     ],
     "rolling_live_report_path": "reports/live_performance/rolling_live_status.json",
     "rolling_min_trades_for_decision": 20,
-    "selected_rule_name": "acde_c_third_branch_t2_22695_20260902_v16",
-    "selected_rule_description": "当前生产顺序固定A>C>E>D。A/C/E规则保持V16口径；C风险候选在最终排序前剔除，合格下一名可递补，不得因同日存在其他被拒C候选就整日空仓。D历史回放因缺少信号时L2继续按0笔披露；实盘仅在V15因子、完整1m路径、实时封单、真实82.5%委托金额和可靠成交概率>=80%全部通过时允许新BUY。",
+    "selected_rule_name": "acde_plan_jia_stop_gate_20260919",
+    "selected_rule_description": "当前生产顺序固定A>C>E>D，外加方案甲组合层停手门禁（config.equity_curve_stop）。A核心分支扩为封单0.1%-1%，E新增全市场涨停不超过30只空仓，C保持V16口径；C风险候选在最终排序前剔除，合格下一名可递补，不得因同日存在其他被拒C候选就整日空仓。D历史回放因缺少信号时L2继续按0笔披露；实盘仅在V15因子、完整1m路径、实时封单、真实82.5%委托金额和可靠成交概率>=80%全部通过时允许新BUY。",
     "entry_alignment_remediation": {
       "status": "D_HISTORICAL_FAIL_CLOSED_RUNTIME_REALTIME_GATED",
       "report_path": "reports/entry_alignment_fix_20260902/summary.json",

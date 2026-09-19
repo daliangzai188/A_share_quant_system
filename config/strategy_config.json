@@ -2,9 +2,9 @@
   "file_role": "A/C两条实盘腿的选股规则源。⚠️本文件确实驱动实盘：守护进程trading_daemon.py 与 run_paper_ab_filtered_daily_ops.py 都从这里加载A/C的入选条件。顶层enabled/live_trading_enabled/broker_adapter_enabled/qmt_enabled 是研究期遗留的占位开关，实盘总闸在 config/config.json，不要据此判断本文件是否生效。",
   "strategy_name": "acde_d_active_lt20_open2_a_c_e_v15",
   "enabled": false,
-  "description": "A收益优先正式版。保留原A的0.3%-1%两条核心分支、1%-2%非一字补位、排序和T+2退出；每日第一名若首次封板属于下午时段则当日A空仓，不回补第二名。",
-  "version": "2026-09-01",
-  "release_id": "A_RISK_EXCLUDE_AFTERNOON_FIRST_SEAL_20260831_V13",
+  "description": "A方案甲正式版（2026-09-19）。核心分支由0.3%-1%两条扩为0.1%-1%三条（新增0.1%-0.3%），1%-2%非一字补位、排序和T+2退出不变；每日第一名若首次封板属于下午时段则当日A空仓，不回补第二名。组合层另受方案甲影子净值停手门禁约束（config.json equity_curve_stop）。",
+  "version": "2026-09-19",
+  "release_id": "A_FD_0_1PCT_EXTENSION_20260919_JIA",
   "effective_from": "20260902",
   "trade_mode": "paper",
   "live_trading_enabled": false,
@@ -122,6 +122,31 @@
             "operator": "==",
             "value": "0_3pct_0_5pct",
             "description": "封单金额/流通市值在0.3%-0.5%，为本次新增区间。"
+          }
+        ]
+      },
+      {
+        "profile_id": "A_FD_0_1PCT_0_3PCT",
+        "priority": 3,
+        "description": "方案甲（2026-09-19）：封单金额/流通市值再向下放宽到0.1%-0.3%，其他A条件完全不变；主池合计0.1%-1%。",
+        "conditions": [
+          {
+            "column": "segment_limit_up_count_bucket",
+            "operator": "==",
+            "value": "lt_5",
+            "description": "所属市场分段涨停数量小于5，偏冰点/低热度环境。"
+          },
+          {
+            "column": "market_chain_count_bucket",
+            "operator": "==",
+            "value": "8_15",
+            "description": "全市场连板数量在8到15之间，保留有一定连板情绪但不过热的环境。"
+          },
+          {
+            "column": "fd_ratio_bucket",
+            "operator": "==",
+            "value": "0_1pct_0_3pct",
+            "description": "封单金额/流通市值在0.1%-0.3%，方案甲新增区间。"
           }
         ]
       }
@@ -419,7 +444,7 @@
       "description": "A/C策略来自完整 limit_list_d 历史口径。若当天仅有 stk_limit 基础涨停名单，不允许生成开仓计划。"
     },
     "a_strategy": {
-      "release_id": "A_RISK_EXCLUDE_AFTERNOON_FIRST_SEAL_20260831_V13",
+      "release_id": "A_FD_0_1PCT_EXTENSION_20260919_JIA",
       "description": "A使用顶层两条核心OR分支、补位和排序；每日第一名确定后执行rolling_research_post_pick_exclude，下午首次封板时空仓且不回补第二名。"
     },
     "b_strategy": {

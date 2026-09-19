@@ -207,6 +207,12 @@ class StrategyConfigSectionTests(unittest.TestCase):
                 "market_chain_count_bucket": "8_15",
                 "fd_ratio_bucket": "0_3pct_0_5pct",
             },
+            # 方案甲（2026-09-19）新增的封单0.1%-0.3%核心分支。
+            "A_FD_0_1PCT_0_3PCT": {
+                "segment_limit_up_count_bucket": "lt_5",
+                "market_chain_count_bucket": "8_15",
+                "fd_ratio_bucket": "0_1pct_0_3pct",
+            },
         })
         fallback = a_filters["fallback_when_primary_empty"]
         self.assertTrue(fallback["enabled"])
