@@ -338,10 +338,234 @@ def live_gate(config: Mapping[str, Any], project_root: Path, action_date: str) -
     return LiveGateCheck(False, "方案甲停手判定缺少allowed字段，按fail-closed不开新仓", source, payload)
 
 
-def next_open_date(calendar_path: Path, after: str) -> str:
+WEEKLY_WINDOW_3M = 63
+WEEKLY_WINDOW_6M = 126
+
+
+@dataclass(frozen=True)
+class WeeklyReportSettings:
+    """空仓期周报与失败条件；阈值来自2026-09-21影子账样本外分布，事先写死。"""
+
+    enabled: bool
+    window_3m: int
+    window_6m: int
+    shadow_3m_fail: float
+    shadow_6m_fail: float
+    worst_stop_missed_gain: float
+
+
+def load_weekly_report_settings(config: Mapping[str, Any]) -> WeeklyReportSettings:
+    section = dict((config.get("equity_curve_stop", {}) or {}).get("weekly_report", {}) or {})
+    return WeeklyReportSettings(
+        enabled=bool(section.get("enabled", False)),
+        window_3m=int(section.get("window_3m", WEEKLY_WINDOW_3M)),
+        window_6m=int(section.get("window_6m", WEEKLY_WINDOW_6M)),
+        shadow_3m_fail=float(section.get("shadow_3m_fail", -0.241)),
+        shadow_6m_fail=float(section.get("shadow_6m_fail", -0.194)),
+        worst_stop_missed_gain=float(section.get("worst_stop_missed_gain", 0.269)),
+    )
+
+
+def _iso_week(date: str) -> tuple[int, int]:
+    day = dt.date(int(str(date)[:4]), int(str(date)[4:6]), int(str(date)[6:8]))
+    year, week, _ = day.isocalendar()
+    return int(year), int(week)
+
+
+def is_week_last_open_day(open_dates: Sequence[str], signal_date: str) -> bool:
+    """收盘日是否为所在自然周的最后一个开市日；遇假期自动前移到实际最后一天。"""
+
+    dates = sorted(str(date) for date in open_dates)
+    signal = str(signal_date)
+    if signal not in dates:
+        return False
+    later = [date for date in dates if date > signal]
+    if not later:
+        return True
+    return _iso_week(later[0]) != _iso_week(signal)
+
+
+def current_stop_episode(
+    dates: Sequence[str],
+    nav: Sequence[float],
+    *,
+    ma_window: int,
+    lag: int,
+) -> dict[str, Any] | None:
+    """最新行动日仍在停手时，返回本段停手的起点、交易日数与期间影子账涨跌。
+
+    ``shadow_return`` 为正表示这段停手踏空了行情，为负表示躲掉了下跌。
+    """
+
+    flags = allowed_flags(nav, ma_window=ma_window, lag=lag)
+    if len(flags) == 0 or bool(flags[-1]):
+        return None
+    start = len(flags) - 1
+    while start > 0 and not bool(flags[start - 1]):
+        start -= 1
+    values = np.asarray(nav, dtype=float)
+    base = float(values[start - 1]) if start > 0 else float(values[start])
+    return {
+        "start_date": str(dates[start]),
+        "trading_days": int(len(flags) - start),
+        "shadow_return": float(values[-1] / base - 1.0) if base else 0.0,
+    }
+
+
+def earliest_resume_if_flat(
+    nav: Sequence[float],
+    future_open_dates: Sequence[str],
+    *,
+    ma_window: int,
+    lag: int,
+    max_days: int = 120,
+) -> str | None:
+    """影子账此后原地不动时，最早恢复开仓的行动日；窗口内不会恢复则返回None。
+
+    只用于周报里给等待时间一个下限：影子账上涨会提前，继续下跌会更晚。
+    """
+
+    values = [float(x) for x in np.asarray(nav, dtype=float)]
+    for date in list(future_open_dates)[: int(max_days)]:
+        values.append(values[-1])
+        lagged = len(values) - 1 - int(lag)
+        if lagged >= int(ma_window):
+            window = values[lagged - int(ma_window) + 1: lagged + 1]
+            if values[lagged] >= float(np.mean(window)):
+                return str(date)
+    return None
+
+
+def weekly_report_payload(
+    dates: Sequence[str],
+    nav: Sequence[float],
+    decision: Mapping[str, Any],
+    settings: WeeklyReportSettings,
+    *,
+    ma_window: int,
+    lag: int,
+    future_open_dates: Sequence[str] = (),
+) -> dict[str, Any]:
+    """空仓期周报的全部数字；失败条件逐条比对事先写死的阈值。"""
+
+    labels = [str(date) for date in dates]
+    values = np.asarray(nav, dtype=float)
+    if not labels:
+        raise ValueError("影子净值为空，无法生成周报")
+
+    def _change(offset: int) -> float | None:
+        return float(values[-1] / values[-1 - offset] - 1.0) if len(values) > offset else None
+
+    def _change_from(index: int | None) -> float | None:
+        return float(values[-1] / values[index] - 1.0) if index is not None else None
+
+    last = labels[-1]
+    week_start = next(
+        (i for i in range(len(labels) - 1, -1, -1) if labels[i] < last and _iso_week(labels[i]) != _iso_week(last)),
+        None,
+    )
+    month_start = next(
+        (i for i in range(len(labels) - 1, -1, -1) if labels[i][:6] < last[:6]),
+        None,
+    )
+    return_3m = _change(settings.window_3m)
+    return_6m = _change(settings.window_6m)
+    episode = current_stop_episode(labels, values, ma_window=ma_window, lag=lag)
+    lag_nav = decision.get("lag_nav")
+    lag_ma = decision.get("lag_ma")
+    gap_to_resume = (
+        float(lag_ma) / float(lag_nav) - 1.0
+        if isinstance(lag_nav, (int, float)) and isinstance(lag_ma, (int, float)) and float(lag_nav) > 0
+        else None
+    )
+
+    failures: list[str] = []
+    if return_3m is not None and return_3m <= settings.shadow_3m_fail:
+        failures.append(
+            f"影子账近3个月{return_3m:+.1%}，跌破失败线{settings.shadow_3m_fail:+.1%}（选股逻辑可能失效）"
+        )
+    if return_6m is not None and return_6m <= settings.shadow_6m_fail:
+        failures.append(
+            f"影子账近6个月{return_6m:+.1%}，跌破失败线{settings.shadow_6m_fail:+.1%}（选股逻辑可能失效）"
+        )
+    if episode and episode["shadow_return"] >= settings.worst_stop_missed_gain:
+        failures.append(
+            f"本段停手踏空{episode['shadow_return']:+.1%}，超过历史最差{settings.worst_stop_missed_gain:+.1%}"
+            "（停手参数留待年度复核，当年不改）"
+        )
+    return {
+        "signal_date": last,
+        "next_action_date": str(decision.get("action_date", "")),
+        "earliest_resume_if_flat": (
+            earliest_resume_if_flat(values, future_open_dates, ma_window=ma_window, lag=lag)
+            if episode and len(future_open_dates)
+            else None
+        ),
+        "allowed": bool(decision.get("allowed", False)),
+        "week_return": _change_from(week_start),
+        "month_to_date_return": _change_from(month_start),
+        "return_3m": return_3m,
+        "return_6m": return_6m,
+        "stop_episode": episode,
+        "gap_to_resume": gap_to_resume,
+        "failures": failures,
+        "thresholds": {
+            "shadow_3m_fail": settings.shadow_3m_fail,
+            "shadow_6m_fail": settings.shadow_6m_fail,
+            "worst_stop_missed_gain": settings.worst_stop_missed_gain,
+        },
+    }
+
+
+def format_weekly_report(payload: Mapping[str, Any]) -> tuple[str, str]:
+    """把周报数字排成Bark的标题与正文。"""
+
+    def _pct(value: Any) -> str:
+        return f"{float(value):+.1%}" if isinstance(value, (int, float)) else "数据不足"
+
+    episode = payload.get("stop_episode")
+    if episode:
+        title = f"📄 方案甲周报 {payload['signal_date']}：停手第{episode['trading_days']}个交易日"
+    else:
+        title = f"📄 方案甲周报 {payload['signal_date']}：正常开仓中"
+    lines = [
+        "影子账（同一套规则、从不停手）："
+        f"本周{_pct(payload.get('week_return'))}，本月{_pct(payload.get('month_to_date_return'))}，"
+        f"近3个月{_pct(payload.get('return_3m'))}，近6个月{_pct(payload.get('return_6m'))}。",
+    ]
+    if episode:
+        missed = float(episode["shadow_return"])
+        lines.append(
+            f"本段停手自{episode['start_date']}起{episode['trading_days']}个交易日，期间影子账{missed:+.1%}"
+            f"（{'踏空' if missed > 0 else '躲掉下跌' if missed < 0 else '持平'}）。"
+        )
+        gap = payload.get("gap_to_resume")
+        if isinstance(gap, (int, float)):
+            lines.append(f"恢复开仓还差：滞后6日口径的影子净值需再涨{float(gap):+.1%}。")
+        flat = payload.get("earliest_resume_if_flat")
+        lines.append(
+            f"影子账若原地不动，最早{flat}恢复开仓；它上涨会提前，继续下跌会更晚。"
+            if flat
+            else "影子账若原地不动，未来120个交易日内都不会恢复开仓；要靠它自己涨回均线上方。"
+        )
+    else:
+        lines.append(f"当前允许开仓，下一个行动日{payload.get('next_action_date', '')}。")
+    lines.append(
+        "失败条件：" + ("；".join(payload["failures"]) + "。请在Claude发送：甲·临时复核。"
+                    if payload.get("failures")
+                    else "未触发（连续3个月不赚钱属于正常范围）。")
+    )
+    return title, "".join(lines)
+
+
+def open_dates_from_calendar(calendar_path: Path) -> list[str]:
     calendar = pd.read_csv(calendar_path, dtype={"cal_date": str}, low_memory=False)
     opened = calendar[pd.to_numeric(calendar["is_open"], errors="coerce").eq(1)]["cal_date"].astype(str)
-    later = sorted(date for date in opened if date > str(after))
+    return sorted(str(date) for date in opened)
+
+
+def next_open_date(calendar_path: Path, after: str) -> str:
+    later = [date for date in open_dates_from_calendar(calendar_path) if date > str(after)]
     if not later:
         raise RuntimeError(f"交易日历中没有{after}之后的开市日")
     return later[0]

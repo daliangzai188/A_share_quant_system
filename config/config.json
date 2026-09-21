@@ -45,7 +45,17 @@
     "history_start": "20190101",
     "decision_path": "data/state/equity_curve_stop_decision.json",
     "shadow_nav_path": "reports/equity_curve_stop/shadow_nav_latest.csv",
-    "work_dir": ""
+    "work_dir": "",
+    "weekly_report": {
+      "file_role": "空仓期周报与失败条件：每周最后一个开市日推送影子账表现、本段停手踏空或躲掉多少、离恢复开仓还差多少，并逐条比对事先写死的失败线。周报只读已算好的影子净值，不参与任何门禁。",
+      "enabled": true,
+      "window_3m": 63,
+      "window_6m": 126,
+      "shadow_3m_fail": -0.241,
+      "shadow_6m_fail": -0.194,
+      "worst_stop_missed_gain": 0.269,
+      "threshold_note": "失败线取2026-09-21影子账样本外窗口分布：滚动3个月10%分位-24.1%、滚动6个月10%分位-19.4%；停手踏空线取历史最差一段+26.9%（2022-11）。触发只说明要做临时复核或把证据留给年度复核，不自动改规则。"
+    }
   },
   "drawdown_alert": {
     "file_role": "只提醒不交易：全策略净值账本（券商总资产一次基线+本系统完整平仓盈亏，入金出金不影响）从峰值回撤达到threshold时Bark推送一次，提醒用户发起“甲·临时复核”。同一峰值只推送一次。",

@@ -24,10 +24,16 @@ from src.combined_live_engine import CombinedLiveEngine
 from src.equity_curve_stop import (
     METHOD_ID,
     allowed_flags,
+    current_stop_episode,
     decision_for_next_action_date,
+    earliest_resume_if_flat,
     filter_plans_to_allowed_dates,
+    format_weekly_report,
+    is_week_last_open_day,
     live_gate,
+    load_weekly_report_settings,
     shadow_nav_from_detail,
+    weekly_report_payload,
 )
 
 
@@ -275,6 +281,161 @@ class DaemonStopAndDrawdownTests(unittest.TestCase):
             snapshot = SimpleNamespace(equity=90_000.0, peak_equity=100_000.0, pending_incomplete_trade_count=0)
             trading_daemon._maybe_alert_strategy_drawdown(
                 snapshot, -0.10, {"drawdown_alert": {"enabled": True, "threshold": -0.30}}
+            )
+            notify.assert_not_called()
+
+
+
+class WeeklyReportTests(unittest.TestCase):
+    """空仓期周报：只读已算好的影子净值，逐条比对写死的失败线。"""
+
+    def setUp(self) -> None:
+        self.settings = load_weekly_report_settings(
+            {"equity_curve_stop": {"weekly_report": {"enabled": True, "window_3m": 3, "window_6m": 5}}}
+        )
+
+    @staticmethod
+    def _stopped_series(length: int = 200) -> tuple[list[str], np.ndarray]:
+        """前段稳步上涨、后段持续下跌，保证最后一天处于停手。"""
+        calendar = pd.bdate_range("2026-01-01", periods=length).strftime("%Y%m%d").tolist()
+        nav = np.concatenate([np.linspace(1.0, 3.0, length - 40), np.linspace(3.0, 1.8, 40)])
+        return calendar, nav
+
+    def test_week_last_open_day_detects_friday_and_holiday_short_week(self) -> None:
+        opens = ["20260921", "20260922", "20260923", "20260924", "20260925", "20260928"]
+        self.assertTrue(is_week_last_open_day(opens, "20260925"))
+        self.assertFalse(is_week_last_open_day(opens, "20260924"))
+        # 周五休市时自动前移到本周实际最后一个开市日
+        short = ["20260921", "20260922", "20260923", "20260924", "20260928"]
+        self.assertTrue(is_week_last_open_day(short, "20260924"))
+        self.assertFalse(is_week_last_open_day(short, "20260923"))
+        self.assertFalse(is_week_last_open_day(opens, "20260926"))
+
+    def test_current_stop_episode_counts_days_and_shadow_move(self) -> None:
+        dates, nav = self._stopped_series()
+        episode = current_stop_episode(dates, nav, ma_window=60, lag=6)
+        self.assertIsNotNone(episode)
+        flags = allowed_flags(nav, ma_window=60, lag=6)
+        expected_days = 0
+        for flag in reversed(flags):
+            if flag:
+                break
+            expected_days += 1
+        self.assertEqual(episode["trading_days"], expected_days)
+        self.assertEqual(episode["start_date"], dates[len(flags) - expected_days])
+        self.assertLess(episode["shadow_return"], 0.0)  # 本段影子账下跌=躲掉下跌
+
+    def test_no_episode_when_entries_allowed(self) -> None:
+        dates = pd.bdate_range("2026-01-01", periods=200).strftime("%Y%m%d").tolist()
+        nav = np.linspace(1.0, 4.0, 200)
+        self.assertIsNone(current_stop_episode(dates, nav, ma_window=60, lag=6))
+
+    def test_payload_reports_returns_gap_and_no_failure(self) -> None:
+        dates, nav = self._stopped_series()
+        decision = {"action_date": "20261231", "allowed": False, "lag_nav": 100.0, "lag_ma": 110.0}
+        future = pd.bdate_range("2027-01-01", periods=200).strftime("%Y%m%d").tolist()
+        payload = weekly_report_payload(
+            dates, nav, decision, self.settings, ma_window=60, lag=6, future_open_dates=future
+        )
+        self.assertEqual(
+            payload["earliest_resume_if_flat"],
+            earliest_resume_if_flat(nav, future, ma_window=60, lag=6),
+        )
+        self.assertAlmostEqual(payload["return_3m"], nav[-1] / nav[-4] - 1.0)
+        self.assertAlmostEqual(payload["return_6m"], nav[-1] / nav[-6] - 1.0)
+        self.assertAlmostEqual(payload["gap_to_resume"], 0.10)
+        self.assertEqual(payload["failures"], [])
+        self.assertFalse(payload["allowed"])
+        title, body = format_weekly_report(payload)
+        self.assertIn("停手第", title)
+        self.assertIn("恢复开仓还差", body)
+        self.assertIn("原地不动", body)
+        self.assertIn("未触发", body)
+
+    def test_failure_lines_use_frozen_thresholds(self) -> None:
+        settings = load_weekly_report_settings(
+            {
+                "equity_curve_stop": {
+                    "weekly_report": {
+                        "enabled": True,
+                        "window_3m": 3,
+                        "window_6m": 5,
+                        "shadow_3m_fail": -0.10,
+                        "shadow_6m_fail": -0.15,
+                        "worst_stop_missed_gain": 0.05,
+                    }
+                }
+            }
+        )
+        dates = pd.bdate_range("2026-01-01", periods=200).strftime("%Y%m%d").tolist()
+        nav = np.concatenate([np.linspace(1.0, 3.0, 160), np.linspace(3.0, 1.2, 40)])
+        payload = weekly_report_payload(dates, nav, {"action_date": "20261231", "allowed": False},
+                                        settings, ma_window=60, lag=6)
+        self.assertTrue(any("近3个月" in item for item in payload["failures"]))
+        self.assertTrue(any("近6个月" in item for item in payload["failures"]))
+        body = format_weekly_report(payload)[1]
+        self.assertIn("甲·临时复核", body)
+
+    def test_missed_rally_during_stop_is_flagged(self) -> None:
+        dates = pd.bdate_range("2026-01-01", periods=200).strftime("%Y%m%d").tolist()
+        nav = np.concatenate([np.linspace(1.0, 3.0, 150), np.linspace(3.0, 1.5, 30), np.linspace(1.5, 2.6, 20)])
+        settings = load_weekly_report_settings(
+            {
+                "equity_curve_stop": {
+                    "weekly_report": {"enabled": True, "window_3m": 3, "window_6m": 5, "worst_stop_missed_gain": 0.05}
+                }
+            }
+        )
+        payload = weekly_report_payload(dates, nav, {"action_date": "20261231", "allowed": False},
+                                        settings, ma_window=60, lag=6)
+        episode = payload["stop_episode"]
+        self.assertIsNotNone(episode)
+        self.assertGreater(episode["shadow_return"], 0.0)
+        self.assertTrue(any("踏空" in item for item in payload["failures"]))
+
+    def test_earliest_resume_if_flat_matches_flag_definition(self) -> None:
+        dates, nav = self._stopped_series()
+        future = pd.bdate_range("2027-01-01", periods=200).strftime("%Y%m%d").tolist()
+        resume = earliest_resume_if_flat(nav, future, ma_window=60, lag=6)
+        self.assertIsNotNone(resume)
+        index = future.index(resume)
+        # 把"原地不动"的净值补齐到该日，用唯一定义重算，应当正好在这天放行
+        extended = np.concatenate([nav, np.repeat(nav[-1], index + 1)])
+        flags = allowed_flags(extended, ma_window=60, lag=6)
+        self.assertTrue(bool(flags[-1]))
+        self.assertFalse(bool(flags[-2]))
+
+    def test_no_resume_within_window_returns_none(self) -> None:
+        dates = pd.bdate_range("2026-01-01", periods=200).strftime("%Y%m%d").tolist()
+        nav = np.concatenate([np.linspace(1.0, 6.0, 190), np.linspace(6.0, 2.0, 10)])
+        self.assertIsNone(
+            earliest_resume_if_flat(nav, dates[:5], ma_window=60, lag=6, max_days=5)
+        )
+
+    def test_formal_config_enables_weekly_report_with_frozen_thresholds(self) -> None:
+        config = json.loads((ROOT / "config" / "config.json").read_text(encoding="utf-8"))
+        settings = load_weekly_report_settings(config)
+        self.assertTrue(settings.enabled)
+        self.assertEqual((settings.window_3m, settings.window_6m), (63, 126))
+        self.assertAlmostEqual(settings.shadow_3m_fail, -0.241)
+        self.assertAlmostEqual(settings.shadow_6m_fail, -0.194)
+        self.assertAlmostEqual(settings.worst_stop_missed_gain, 0.269)
+
+    def test_report_failure_never_breaks_the_gate(self) -> None:
+        spec = importlib.util.spec_from_file_location(
+            "update_equity_curve_stop", ROOT / "scripts" / "update_equity_curve_stop.py"
+        )
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(module)
+        config = {"equity_curve_stop": {"weekly_report": {"enabled": True}}}
+        settings = SimpleNamespace(ma_window=60, lag_trading_days=6)
+        broken = SimpleNamespace(index=[], to_numpy=lambda: np.array([]))
+        with patch.object(module, "notify") as notify:
+            self.assertFalse(
+                module.push_weekly_report(
+                    config, settings, broken, {}, ROOT / "data" / "raw" / "missing.csv", "20260925"
+                )
             )
             notify.assert_not_called()
 

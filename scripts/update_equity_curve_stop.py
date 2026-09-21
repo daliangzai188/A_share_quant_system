@@ -6,7 +6,9 @@
    ``history_start`` 起重建严格as-of研究池（输出到本机临时目录，不进同步盘）；
 2. 用正式A/C/E规则回放影子账（不含D、不停手），得到影子净值；
 3. 按 ``src.equity_curve_stop`` 的唯一定义判定下一个行动日是否停手；
-4. 写出判定文件与影子净值；停手/恢复状态变化时推送Bark。
+4. 写出判定文件与影子净值；停手/恢复状态变化时推送Bark；
+5. 每周最后一个开市日推送空仓期周报（影子账表现、停手踏空/躲掉、离恢复还差多少、
+   失败条件是否触发）。周报只读已算好的影子净值，失败不影响判定。
 
 任何一步失败都不写判定文件：次日组合状态机会因判定缺失或过期按fail-closed
 不开新仓，并由本脚本推送失败告警。
@@ -27,10 +29,15 @@ if str(PROJECT_ROOT) not in sys.path:
 from src.equity_curve_stop import (  # noqa: E402
     build_shadow_nav,
     decision_for_next_action_date,
+    format_weekly_report,
+    is_week_last_open_day,
     load_decision,
     load_settings,
+    load_weekly_report_settings,
     next_open_date,
+    open_dates_from_calendar,
     utc_now_iso,
+    weekly_report_payload,
     write_decision,
     write_shadow_nav,
 )
@@ -67,6 +74,42 @@ def notify(title: str, body: str, *, level: str = "active") -> None:
         _notify("equity_curve_stop", title, body, level=level)
     except Exception:
         pass
+
+
+def push_weekly_report(
+    config,
+    settings,
+    nav,
+    decision,
+    calendar_path: Path,
+    signal_date: str,
+) -> bool:
+    """每周最后一个开市日推送周报；任何异常只记录，不影响已写出的判定。"""
+
+    try:
+        weekly = load_weekly_report_settings(config)
+        if not weekly.enabled:
+            return False
+        opens = open_dates_from_calendar(calendar_path)
+        if not is_week_last_open_day(opens, signal_date):
+            return False
+        payload = weekly_report_payload(
+            list(nav.index),
+            nav.to_numpy(),
+            decision,
+            weekly,
+            ma_window=settings.ma_window,
+            lag=settings.lag_trading_days,
+            future_open_dates=[date for date in opens if date > str(signal_date)],
+        )
+        title, body = format_weekly_report(payload)
+        notify(title, body, level="timeSensitive" if payload["failures"] else "active")
+        print(f"EQUITY_CURVE_STOP_WEEKLY {signal_date} failures={len(payload['failures'])}", flush=True)
+        return True
+    except Exception:
+        traceback.print_exc()
+        print(f"EQUITY_CURVE_STOP_WEEKLY_FAILED {signal_date}", flush=True)
+        return False
 
 
 def main() -> int:
@@ -129,6 +172,7 @@ def main() -> int:
                 f"{decision['reason']}。已有持仓照常到期卖出；影子净值回到均线上方后自动恢复。",
                 level="timeSensitive",
             )
+    push_weekly_report(config, settings, nav, decision, calendar_path, signal_date)
     return 0
 
 
