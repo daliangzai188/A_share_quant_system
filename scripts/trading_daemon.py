@@ -14119,6 +14119,20 @@ def _log_final_decision_summary(signal_date: str, action_date_compact: str, buy_
         readable = f"{action_date_compact[:4]}-{action_date_compact[4:6]}-{action_date_compact[6:]}" \
             if len(action_date_compact) == 8 else action_date_compact
 
+        # 最终汇总必须与正式组合共用停手门禁；候选不等于可执行计划。
+        # 在预演定仓之前短路，避免停手日仍查券商并显示名义股数/准备下单时间。
+        stop_reason = _equity_curve_stop_block_reason(action_date_compact)
+        if stop_reason:
+            logger().info("\n".join([
+                "======================== 最终结果 ========================",
+                f"操作日({readable})  正式组合：{mode_name}",
+                f"判定：{stop_reason}",
+                "开仓计划：⏸ 无 —— 方案甲停手门禁阻断新增买入；A/C/E候选仅供审计，D不启动",
+                "已有持仓的退出仍按原规则执行，须通过账户及成交核验。",
+                "=" * 60,
+            ]))
+            return
+
         # ── mode1 候选：A/C 计划单优先，否则 E；内部abc变量名为兼容旧接口保留 ──
         abc_rows: list[dict[str, Any]] = []
         if buy_orders is not None and not buy_orders.empty:
@@ -14619,23 +14633,23 @@ def _log_decision_chain_summary(signal_date: str) -> None:
         blocked = _local_position_blocks_open_plan_broadcast(positions, action_date)
         final_buy = None if blocked else selected
         original_final_buy = final_buy
-        execution_expired = bool(
-            final_buy and _ordinary_open_plan_expired(final_buy, action_date)
+        # 停手日候选本来就不应成交，必须先判停手再判“错过窗口”。
+        # 否则上午故障恢复后会把正常空仓误报为漏单，并丢失停手原因。
+        equity_curve_stop_reason = (
+            _equity_curve_stop_block_reason(str(action_date)) if final_buy else ""
         )
-        if execution_expired:
+        execution_expired = bool(
+            final_buy and not equity_curve_stop_reason
+            and _ordinary_open_plan_expired(final_buy, action_date)
+        )
+        if execution_expired or equity_curve_stop_reason:
             final_buy = None
         execution_block_reason = ""
-        equity_curve_stop_reason = ""
         if final_buy:
             buy_gate_ok, buy_gate_reason = _new_buy_execution_gate()
             if not buy_gate_ok:
                 execution_block_reason = buy_gate_reason
                 final_buy = None
-        if final_buy:
-            equity_curve_stop_reason = _equity_curve_stop_block_reason(str(action_date))
-            if equity_curve_stop_reason:
-                final_buy = None
-
         hold_line = _describe_holdings(positions, with_quote=False) if positions else ""
         live_sizing = (
             _live_plan_sizing(final_buy, action_date, signal_date) if final_buy else None
@@ -14814,6 +14828,11 @@ def _notify_missed_open_window_if_needed(source: str) -> None:
     plan = _last_final_plan
     today_str = now.strftime("%Y%m%d")
     if not plan or str(plan.get("action_date", "")) != today_str:
+        return
+    # 即便拿到故障前缓存的候选，也必须重读当日停手判定。合规空仓不属于
+    # 错过开仓窗口；此检查只读本地门禁，不查询账户，也不改变真实交易规则。
+    if (plan.get("equity_curve_stop_reason") or plan.get("execution_block_reason")
+            or _equity_curve_stop_block_reason(today_str)):
         return
     final_buy = plan.get("final_buy")
     if (
@@ -15624,6 +15643,38 @@ def _is_qmt_inner_file_transport_busy(error: BaseException) -> bool:
         return False
     normalized = str(error).lower().replace("\\", "/")
     return "/qmt_inner/spool/" in normalized
+
+
+def _is_qmt_inner_heartbeat_stale(error: BaseException | str) -> bool:
+    """兼容原始错误及连接退避包装；心跳失效不能推断为客户端崩溃或未登录。"""
+    return "qmt inner bridge heartbeat is stale" in str(error).lower()
+
+
+def _record_qmt_inner_heartbeat_stale(error: BaseException, log: Any) -> bool:
+    """内置模型无新心跳时明确告警，保留现场，等待本机模型恢复。
+
+    重启外部daemon无法启动客户端内的模型，更不能代替登录。此处只记录
+    不可用状态和限频告警，不启动/停止客户端，不放宽交易门禁。
+    夜间也必须提示一次，避免失联整夜直到次日开盘才暴露。
+    """
+    if not _is_qmt_inner_heartbeat_stale(error):
+        return False
+    write_broker_health("unavailable", error=error, failure_count=_qmt_reconnect_count)
+    log.error(
+        "🛑 QMT内置桥接心跳已过期：账户尚不可验证；等待内置模型恢复。"
+        "不因该错误重启客户端或daemon；外部进程存活不代表交易连接恢复。"
+        "请核对客户端登录和A_SYSTEM_QMT_INNER运行状态；"
+        "客户端退出/模型停止的触发原因尚需另查。原始错误：%s", error,
+    )
+    _notify_once_per(
+        "qmt_inner_heartbeat_stale", 1800,
+        "🛑 内置桥接失联，交易连接未恢复",
+        "内置模型心跳已过期，系统无法验证账户，交易调用继续阻断。"
+        "外部进程重启无法解决此问题；请核对客户端登录和A_SYSTEM_QMT_INNER运行状态。"
+        "系统不会因此自动退出或重启客户端。",
+        level="timeSensitive",
+    )
+    return True
 
 
 def _qmt_connect_backoff_seconds(failure_streak: int) -> float:
@@ -16485,7 +16536,12 @@ def _request_qmt_resource_recovery(error: BaseException) -> bool:
 
 
 def _request_qmt_reconnect_stalled_recovery(error: BaseException) -> bool:
-    """完整备用session扫描仍失败时，回收已卡死的当前Python/QMT进程。"""
+    """旧miniQMT多次建连失败时只回收daemon，绝不重启客户端。"""
+
+    # 内置模型属于客户端进程；重启daemon不能恢复其心跳。包括统一退避
+    # 包装中的同一错误都应保持原进程等待，不能误用miniQMT资源回收路径。
+    if _is_qmt_inner_heartbeat_stale(error):
+        return False
 
     if _qmt_connect_failure_streak < 3:
         return False
@@ -16761,6 +16817,8 @@ def _print_account_status(log: Any) -> None:
             )
             return
         except QMTReconnectBackoffError as backoff_err:
+            if _record_qmt_inner_heartbeat_stale(backoff_err, log):
+                return
             write_broker_health(
                 "unavailable",
                 error=backoff_err,
@@ -16771,6 +16829,12 @@ def _print_account_status(log: Any) -> None:
                 _request_qmt_reconnect_stalled_recovery(backoff_err)
             return
         except Exception as first_err:
+            if _is_qmt_inner_heartbeat_stale(first_err):
+                _qmt_reconnect_count += 1
+                # 仅丢弃外部适配器引用，使模型恢复后能重新握手；不操作客户端。
+                _qmt_reset()
+                _record_qmt_inner_heartbeat_stale(first_err, log)
+                return
             if _request_qmt_resource_recovery(first_err):
                 return
             if _is_qmt_inner_file_transport_busy(first_err):
@@ -17169,8 +17233,10 @@ def check_qmt_connection(*, allow_full_scan: bool | None = None) -> bool:
     except Exception as e:
         global _LAST_QMT_ERROR_TEXT
         _LAST_QMT_ERROR_TEXT = str(e)   # 供门禁判断是否为套接字资源耗尽
+        inner_stale = _record_qmt_inner_heartbeat_stale(e, log)
         write_broker_health("unavailable", error=e)
-        log.error("❌ QMT主连接验证失败：%s", e)
+        if not inner_stale:
+            log.error("❌ QMT主连接验证失败：%s", e)
         try:
             with _qmt_lock:
                 _qmt_reset()
@@ -17229,7 +17295,8 @@ def wait_for_qmt_startup_gate() -> None:
             log.info("QMT启动门禁：账户连接已验证，继续启动流程。")
             return
         write_heartbeat("qmt_blocked")
-        if time.monotonic() - blocked_since >= startup_alert_after:
+        if (not _is_qmt_inner_heartbeat_stale(_LAST_QMT_ERROR_TEXT)
+                and time.monotonic() - blocked_since >= startup_alert_after):
             _notify_once_per(
                 "qmt_startup_blocked",
                 1800,

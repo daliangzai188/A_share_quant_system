@@ -746,6 +746,9 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
                 patch.object(trading_daemon, "load_positions", return_value=[]),
                 patch.object(trading_daemon, "today_beijing", return_value=frozen_now.date()),
                 patch.object(trading_daemon, "now_beijing", return_value=frozen_now),
+                # 本例专门验证发布认证失败；停手门禁独立设为允许，避免依赖
+                # 当前生产日期的判定文件。停手优先级另有故障回归用例覆盖。
+                patch.object(trading_daemon, "_equity_curve_stop_block_reason", return_value=""),
                 patch.object(
                     trading_daemon,
                     "_new_buy_execution_gate",
