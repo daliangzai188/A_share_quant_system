@@ -31,7 +31,10 @@ from src.equity_curve_stop import (
     format_weekly_report,
     is_week_last_open_day,
     live_gate,
+    load_regime_buckets,
     load_weekly_report_settings,
+    monthly_limit_up_mean,
+    regime_calibration,
     shadow_nav_from_detail,
     weekly_report_payload,
 )
@@ -438,6 +441,77 @@ class WeeklyReportTests(unittest.TestCase):
                 )
             )
             notify.assert_not_called()
+
+
+class RegimeCalibrationTests(unittest.TestCase):
+    """行情校准：把"行情不好"和"策略变坏"分开；只报告，不参与门禁。"""
+
+    def setUp(self) -> None:
+        self.config = json.loads((ROOT / "config" / "config.json").read_text(encoding="utf-8"))
+        self.buckets, self.min_months = load_regime_buckets(self.config)
+
+    def test_formal_config_freezes_four_buckets(self) -> None:
+        self.assertEqual([b.label for b in self.buckets], ["0~40", "40~60", "60~80", "80以上"])
+        self.assertEqual(self.min_months, 5)
+        sixty = self.buckets[2]
+        self.assertEqual(sixty.oos_months, 16)
+        self.assertAlmostEqual(sixty.oos_median, 0.0229)
+        self.assertAlmostEqual(sixty.oos_win_rate, 0.562)
+
+    def test_bucket_edges_are_left_closed_right_open(self) -> None:
+        self.assertEqual(regime_calibration(39.9, 0.0, self.buckets, min_months=5)["bucket"], "0~40")
+        self.assertEqual(regime_calibration(40.0, 0.0, self.buckets, min_months=5)["bucket"], "40~60")
+        self.assertEqual(regime_calibration(79.9, 0.0, self.buckets, min_months=5)["bucket"], "60~80")
+        self.assertEqual(regime_calibration(300.0, 0.0, self.buckets, min_months=5)["bucket"], "80以上")
+
+    def test_gap_is_actual_minus_bucket_median(self) -> None:
+        out = regime_calibration(70.0, 0.10, self.buckets, min_months=5)
+        self.assertTrue(out["sufficient_sample"])
+        self.assertAlmostEqual(out["gap"], 0.10 - 0.0229)
+
+    def test_thin_bucket_reports_regime_without_comparison(self) -> None:
+        out = regime_calibration(150.0, 0.10, self.buckets, min_months=5)
+        self.assertFalse(out["sufficient_sample"])
+        self.assertIsNone(out["gap"])
+
+    def test_missing_inputs_return_none(self) -> None:
+        self.assertIsNone(regime_calibration(None, 0.1, self.buckets, min_months=5))
+        self.assertIsNone(regime_calibration(70.0, 0.1, [], min_months=5))
+
+    def test_monthly_limit_up_mean_reads_only_that_month(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "market_sentiment.csv"
+            pd.DataFrame(
+                {
+                    "trade_date": ["20260831", "20260901", "20260902", "20261001"],
+                    "limit_up_count": [100, 60, 80, 10],
+                }
+            ).to_csv(path, index=False)
+            self.assertAlmostEqual(monthly_limit_up_mean(path, "202609"), 70.0)
+            self.assertIsNone(monthly_limit_up_mean(Path(tmp) / "missing.csv", "202609"))
+
+    def test_report_line_shows_expectation_and_gap(self) -> None:
+        dates = pd.bdate_range("2026-01-01", periods=200).strftime("%Y%m%d").tolist()
+        nav = np.concatenate([np.linspace(1.0, 3.0, 160), np.linspace(3.0, 2.4, 40)])
+        settings = load_weekly_report_settings(self.config)
+        payload = weekly_report_payload(
+            dates, nav, {"action_date": "20261231", "allowed": False}, settings,
+            ma_window=60, lag=6,
+            regime=regime_calibration(70.0, -0.05, self.buckets, min_months=5),
+        )
+        body = format_weekly_report(payload)[1]
+        self.assertIn("行情校准", body)
+        self.assertIn("60~80档", body)
+        self.assertIn("+2.3%", body)
+
+    def test_report_without_regime_keeps_old_shape(self) -> None:
+        dates = pd.bdate_range("2026-01-01", periods=200).strftime("%Y%m%d").tolist()
+        nav = np.linspace(1.0, 4.0, 200)
+        settings = load_weekly_report_settings(self.config)
+        payload = weekly_report_payload(dates, nav, {"action_date": "20261231", "allowed": True},
+                                        settings, ma_window=60, lag=6)
+        self.assertIsNone(payload["regime"])
+        self.assertNotIn("行情校准", format_weekly_report(payload)[1])
 
 
 class ReviewReminderTests(unittest.TestCase):

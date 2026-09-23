@@ -366,6 +366,90 @@ def load_weekly_report_settings(config: Mapping[str, Any]) -> WeeklyReportSettin
     )
 
 
+@dataclass(frozen=True)
+class RegimeBucket:
+    """按当月全市场平均涨停数分档的样本外期望；档位与数值事先写死。"""
+
+    limit_up_min: float
+    limit_up_max: float | None
+    oos_months: int
+    oos_median: float | None
+    oos_win_rate: float | None
+
+    @property
+    def label(self) -> str:
+        return f"{self.limit_up_min:.0f}~{self.limit_up_max:.0f}" if self.limit_up_max else f"{self.limit_up_min:.0f}以上"
+
+    def contains(self, count: float) -> bool:
+        if count < self.limit_up_min:
+            return False
+        return True if self.limit_up_max is None else count < self.limit_up_max
+
+
+def load_regime_buckets(config: Mapping[str, Any]) -> tuple[list[RegimeBucket], int]:
+    section = dict((config.get("equity_curve_stop", {}) or {}).get("weekly_report", {}) or {})
+    buckets = []
+    for row in section.get("regime_buckets", []) or []:
+        item = dict(row)
+        upper = item.get("limit_up_max")
+        buckets.append(
+            RegimeBucket(
+                limit_up_min=float(item.get("limit_up_min", 0.0)),
+                limit_up_max=None if upper is None else float(upper),
+                oos_months=int(item.get("oos_months", 0)),
+                oos_median=None if item.get("oos_median") is None else float(item["oos_median"]),
+                oos_win_rate=None if item.get("oos_win_rate") is None else float(item["oos_win_rate"]),
+            )
+        )
+    return buckets, int(section.get("regime_min_months", 5))
+
+
+def monthly_limit_up_mean(sentiment_path: Path, month: str) -> float | None:
+    """当月至今的全市场平均涨停数；文件缺失或该月无数据时返回None。"""
+
+    try:
+        frame = pd.read_csv(sentiment_path, dtype={"trade_date": str}, low_memory=False)
+    except (OSError, ValueError):
+        return None
+    if "trade_date" not in frame.columns or "limit_up_count" not in frame.columns:
+        return None
+    rows = frame[frame["trade_date"].astype(str).str[:6] == str(month)[:6]]
+    counts = pd.to_numeric(rows["limit_up_count"], errors="coerce").dropna()
+    return float(counts.mean()) if len(counts) else None
+
+
+def regime_calibration(
+    limit_up_mean: float | None,
+    shadow_month_return: float | None,
+    buckets: Sequence[RegimeBucket],
+    *,
+    min_months: int,
+) -> dict[str, Any] | None:
+    """把"行情好不好"和"策略行不行"分开：当月涨停数落在哪一档、该档样本外期望、实际差多少。"""
+
+    if limit_up_mean is None or not buckets:
+        return None
+    bucket = next((item for item in buckets if item.contains(float(limit_up_mean))), None)
+    if bucket is None:
+        return None
+    enough = bucket.oos_months >= int(min_months) and bucket.oos_median is not None
+    gap = (
+        float(shadow_month_return) - float(bucket.oos_median)
+        if enough and isinstance(shadow_month_return, (int, float))
+        else None
+    )
+    return {
+        "limit_up_mean": float(limit_up_mean),
+        "bucket": bucket.label,
+        "oos_months": bucket.oos_months,
+        "oos_median": bucket.oos_median,
+        "oos_win_rate": bucket.oos_win_rate,
+        "actual": shadow_month_return,
+        "gap": gap,
+        "sufficient_sample": bool(enough),
+    }
+
+
 def _iso_week(date: str) -> tuple[int, int]:
     day = dt.date(int(str(date)[:4]), int(str(date)[4:6]), int(str(date)[6:8]))
     year, week, _ = day.isocalendar()
@@ -445,6 +529,7 @@ def weekly_report_payload(
     ma_window: int,
     lag: int,
     future_open_dates: Sequence[str] = (),
+    regime: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """空仓期周报的全部数字；失败条件逐条比对事先写死的阈值。"""
 
@@ -509,6 +594,7 @@ def weekly_report_payload(
         "stop_episode": episode,
         "gap_to_resume": gap_to_resume,
         "failures": failures,
+        "regime": dict(regime) if regime else None,
         "thresholds": {
             "shadow_3m_fail": settings.shadow_3m_fail,
             "shadow_6m_fail": settings.shadow_6m_fail,
@@ -550,6 +636,19 @@ def format_weekly_report(payload: Mapping[str, Any]) -> tuple[str, str]:
         )
     else:
         lines.append(f"当前允许开仓，下一个行动日{payload.get('next_action_date', '')}。")
+    regime = payload.get("regime")
+    if regime:
+        head = f"行情校准：本月全市场平均涨停{float(regime['limit_up_mean']):.0f}只（{regime['bucket']}档）"
+        if regime.get("sufficient_sample"):
+            lines.append(
+                head
+                + f"，该档样本外月收益中位数{float(regime['oos_median']):+.1%}、赚钱月{float(regime['oos_win_rate']):.0%}"
+                + (f"；影子账本月{float(regime['actual']):+.1%}，差{float(regime['gap']):+.1%}。"
+                   if isinstance(regime.get("gap"), (int, float))
+                   else "。")
+            )
+        else:
+            lines.append(head + f"，该档样本外只有{regime['oos_months']}个月，样本不足，不做对比。")
     lines.append(
         "失败条件：" + ("；".join(payload["failures"]) + "。请在Claude发送：甲·临时复核。"
                     if payload.get("failures")

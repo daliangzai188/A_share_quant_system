@@ -32,10 +32,13 @@ from src.equity_curve_stop import (  # noqa: E402
     format_weekly_report,
     is_week_last_open_day,
     load_decision,
+    load_regime_buckets,
+    monthly_limit_up_mean,
     load_settings,
     load_weekly_report_settings,
     next_open_date,
     open_dates_from_calendar,
+    regime_calibration,
     utc_now_iso,
     weekly_report_payload,
     write_decision,
@@ -83,6 +86,7 @@ def push_weekly_report(
     decision,
     calendar_path: Path,
     signal_date: str,
+    sentiment_path: Path | None = None,
 ) -> bool:
     """每周最后一个开市日推送周报；任何异常只记录，不影响已写出的判定。"""
 
@@ -93,6 +97,20 @@ def push_weekly_report(
         opens = open_dates_from_calendar(calendar_path)
         if not is_week_last_open_day(opens, signal_date):
             return False
+        regime = None
+        if sentiment_path is not None:
+            buckets, min_months = load_regime_buckets(config)
+            labels = [str(date) for date in nav.index]
+            month = str(signal_date)[:6]
+            start = next((i for i in range(len(labels) - 1, -1, -1) if labels[i][:6] < month), None)
+            values = nav.to_numpy()
+            shadow_month = float(values[-1] / values[start] - 1.0) if start is not None else None
+            regime = regime_calibration(
+                monthly_limit_up_mean(sentiment_path, month),
+                shadow_month,
+                buckets,
+                min_months=min_months,
+            )
         payload = weekly_report_payload(
             list(nav.index),
             nav.to_numpy(),
@@ -101,6 +119,7 @@ def push_weekly_report(
             ma_window=settings.ma_window,
             lag=settings.lag_trading_days,
             future_open_dates=[date for date in opens if date > str(signal_date)],
+            regime=regime,
         )
         title, body = format_weekly_report(payload)
         notify(title, body, level="timeSensitive" if payload["failures"] else "active")
@@ -172,7 +191,15 @@ def main() -> int:
                 f"{decision['reason']}。已有持仓照常到期卖出；影子净值回到均线上方后自动恢复。",
                 level="timeSensitive",
             )
-    push_weekly_report(config, settings, nav, decision, calendar_path, signal_date)
+    push_weekly_report(
+        config,
+        settings,
+        nav,
+        decision,
+        calendar_path,
+        signal_date,
+        sentiment_path=dataset_root / "market_sentiment.csv",
+    )
     return 0
 
 
