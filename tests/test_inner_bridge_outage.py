@@ -139,5 +139,68 @@ class InnerBridgeOutageTests(unittest.TestCase):
             self.assertIn("方案甲停手", logger.return_value.info.call_args.args[0])
 
 
+
+class OutageRecoveryPairingTests(unittest.TestCase):
+    """🛑失联告警与✅恢复必须成对：2026-09-23 08:51告警、08:52恢复却没推，用户等了71分钟。"""
+
+    def setUp(self) -> None:
+        daemon._qmt_inner_outage.clear()
+        self.addCleanup(daemon._qmt_inner_outage.clear)
+
+    def test_alert_marks_outage_and_recovery_pushes_once_with_duration(self):
+        with patch.object(daemon, "_notify_once_per", return_value=True):
+            self.assertTrue(daemon._record_qmt_inner_heartbeat_stale(RuntimeError(STALE), MagicMock()))
+        self.assertTrue(daemon._qmt_inner_outage.get("alerted"))
+        daemon._qmt_inner_outage["since_ts"] = daemon.time.time() - 900  # 15分钟前失联
+        with patch.object(daemon, "_notify", return_value=True) as notify:
+            self.assertTrue(daemon._notify_qmt_inner_outage_recovered(MagicMock()))
+            body = notify.call_args.args[2]
+            self.assertIn("15分钟", body)
+            self.assertIn("交易调用已放行", body)
+            self.assertEqual(notify.call_args.args[0], "connection")
+        self.assertEqual(daemon._qmt_inner_outage, {})
+        with patch.object(daemon, "_notify") as again:
+            self.assertFalse(daemon._notify_qmt_inner_outage_recovered(MagicMock()))
+            again.assert_not_called()
+
+    def test_short_outage_reads_naturally(self):
+        with patch.object(daemon, "_notify_once_per", return_value=True):
+            daemon._record_qmt_inner_heartbeat_stale(RuntimeError(STALE), MagicMock())
+        with patch.object(daemon, "_notify", return_value=True) as notify:
+            daemon._notify_qmt_inner_outage_recovered(MagicMock())
+        self.assertIn("不到1分钟", notify.call_args.args[2])
+
+    def test_throttled_alert_never_produces_lonely_recovery(self):
+        with patch.object(daemon, "_notify_once_per", return_value=False):
+            daemon._record_qmt_inner_heartbeat_stale(RuntimeError(STALE), MagicMock())
+        self.assertFalse(daemon._qmt_inner_outage.get("alerted"))
+        with patch.object(daemon, "_notify") as notify:
+            self.assertFalse(daemon._notify_qmt_inner_outage_recovered(MagicMock()))
+            notify.assert_not_called()
+
+    def test_recovery_notice_fires_outside_critical_window(self):
+        """08:52这种盘前恢复，旧逻辑因不在关键窗口而静默；现在必须推送。"""
+        account = MagicMock(account_id="12345603", total_asset=100000.0)
+        with patch.object(daemon, "_notify_once_per", return_value=True):
+            daemon._record_qmt_inner_heartbeat_stale(RuntimeError(STALE), MagicMock())
+        with patch.object(daemon, "load_json_config", return_value=CONFIG), patch.object(
+                daemon, "now_beijing", return_value=datetime.datetime(2026, 9, 23, 8, 52)), patch.object(
+                daemon, "qmt_is_critical_window", return_value=False), patch.object(
+                daemon, "_qmt_get", return_value=MagicMock()), patch.object(
+                daemon, "_qmt_query_account_positions", return_value=(account, [])), patch.object(
+                daemon, "_qmt_reconnect_count", 1), patch.object(
+                daemon, "restore_ghost_cleared_strategy_positions"), patch.object(
+                daemon, "write_broker_health") as health, patch.object(
+                daemon, "_check_capacity_wall_milestone"), patch.object(
+                daemon, "_broker_has_strategy_position", return_value=False), patch.object(
+                daemon, "_notify", return_value=True) as notify:
+            daemon._print_account_status(MagicMock())
+        self.assertEqual(health.call_args_list[-1].args[0], "verified")
+        titles = [call.args[1] for call in notify.call_args_list]
+        self.assertEqual(titles.count("✅ 内置桥接已恢复，交易连接正常"), 1)
+        self.assertNotIn("✅ 账户重连成功", titles)
+        self.assertEqual(daemon._qmt_inner_outage, {})
+
+
 if __name__ == "__main__":
     unittest.main()

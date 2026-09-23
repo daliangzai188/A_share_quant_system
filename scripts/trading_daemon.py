@@ -15645,6 +15645,12 @@ def _is_qmt_inner_file_transport_busy(error: BaseException) -> bool:
     return "/qmt_inner/spool/" in normalized
 
 
+# 内置桥接失联告警与恢复必须成对：推过🛑就一定要推✅，否则用户只看到失联、
+# 看不到自愈（2026-09-23 08:51告警、08:52恢复却静默，用户等了71分钟才看到例行播报）。
+# 进程内保存即可：daemon若在失联期间重启，keeper会另外推“程序与账户已恢复正常”。
+_qmt_inner_outage: dict[str, Any] = {}
+
+
 def _is_qmt_inner_heartbeat_stale(error: BaseException | str) -> bool:
     """兼容原始错误及连接退避包装；心跳失效不能推断为客户端崩溃或未登录。"""
     return "qmt inner bridge heartbeat is stale" in str(error).lower()
@@ -15666,15 +15672,43 @@ def _record_qmt_inner_heartbeat_stale(error: BaseException, log: Any) -> bool:
         "请核对客户端登录和A_SYSTEM_QMT_INNER运行状态；"
         "客户端退出/模型停止的触发原因尚需另查。原始错误：%s", error,
     )
-    _notify_once_per(
+    _qmt_inner_outage.setdefault("since_ts", time.time())
+    if _notify_once_per(
         "qmt_inner_heartbeat_stale", 1800,
         "🛑 内置桥接失联，交易连接未恢复",
         "内置模型心跳已过期，系统无法验证账户，交易调用继续阻断。"
         "外部进程重启无法解决此问题；请核对客户端登录和A_SYSTEM_QMT_INNER运行状态。"
         "系统不会因此自动退出或重启客户端。",
         level="timeSensitive",
-    )
+    ):
+        _qmt_inner_outage["alerted"] = True
     return True
+
+
+def _notify_qmt_inner_outage_recovered(log: Any) -> bool:
+    """账户重新可验证后，与🛑告警成对推送一次恢复；未推过告警则只清状态。
+
+    必须在QMT锁外调用：推送走网络，不能占用唯一券商通道。
+    """
+    if not _qmt_inner_outage:
+        return False
+    alerted = bool(_qmt_inner_outage.get("alerted"))
+    since_ts = float(_qmt_inner_outage.get("since_ts") or 0.0)
+    _qmt_inner_outage.clear()
+    if not alerted:
+        return False
+    minutes = max(0.0, (time.time() - since_ts) / 60.0) if since_ts else 0.0
+    span = f"{minutes:.0f}分钟" if minutes >= 1 else "不到1分钟"
+    log.info("内置桥接已恢复，失联%s，推送恢复通知。", span)
+    return bool(
+        _notify(
+            "connection",
+            "✅ 内置桥接已恢复，交易连接正常",
+            f"内置模型心跳恢复，本次失联{span}，账户可验证，交易调用已放行。"
+            "失联期间系统未发送任何委托。",
+            level="timeSensitive",
+        )
+    )
 
 
 def _qmt_connect_backoff_seconds(failure_streak: int) -> float:
@@ -16801,7 +16835,8 @@ def _print_account_status(log: Any) -> None:
             _qmt_last_verified_at = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
             if _qmt_reconnect_count > 0:
                 log.info("✅ QMT连接已恢复（第%d次心跳失败后恢复）", _qmt_reconnect_count)
-                if qmt_is_critical_window():
+                # 已推过内置桥接失联告警时，统一由锁外的成对恢复通知发送，避免重复推送。
+                if qmt_is_critical_window() and not _qmt_inner_outage.get("alerted"):
                     _notify("connection", "✅ 账户重连成功", "QMT连接已恢复正常。")
                 _qmt_reconnect_count = 0
             _qmt_transport_busy_count = 0
@@ -16927,7 +16962,7 @@ def _print_account_status(log: Any) -> None:
                 account, positions = _qmt_query_account_positions(adapter)
                 _qmt_last_verified_at = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
                 log.info("✅ QMT重连成功（第%d次恢复）", _qmt_reconnect_count)
-                if critical_window:
+                if critical_window and not _qmt_inner_outage.get("alerted"):
                     _notify("connection", "✅ 账户重连成功", "QMT连接已恢复正常。")
                 _qmt_reconnect_count = 0
             except BrokerSnapshotInconsistentError as snapshot_err:
@@ -16984,6 +17019,7 @@ def _print_account_status(log: Any) -> None:
     now_str = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
     acct_id = str(account.account_id or "")
     write_broker_health("verified", account_id=acct_id)
+    _notify_qmt_inner_outage_recovered(log)
     masked_acct = _mask_account(acct_id)
     total_asset = float(getattr(account, "total_asset", 0.0) or 0.0)
     _check_capacity_wall_milestone(total_asset, config, log)
