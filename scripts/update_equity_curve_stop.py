@@ -32,6 +32,7 @@ from src.equity_curve_stop import (  # noqa: E402
     format_weekly_report,
     is_week_last_open_day,
     load_decision,
+    completed_month_returns,
     load_regime_buckets,
     monthly_limit_up_mean,
     load_settings,
@@ -39,6 +40,7 @@ from src.equity_curve_stop import (  # noqa: E402
     next_open_date,
     open_dates_from_calendar,
     regime_calibration,
+    regime_stall_streak,
     utc_now_iso,
     weekly_report_payload,
     write_decision,
@@ -98,6 +100,7 @@ def push_weekly_report(
         if not is_week_last_open_day(opens, signal_date):
             return False
         regime = None
+        stall = None
         if sentiment_path is not None:
             buckets, min_months = load_regime_buckets(config)
             labels = [str(date) for date in nav.index]
@@ -111,6 +114,21 @@ def push_weekly_report(
                 buckets,
                 min_months=min_months,
             )
+            section = dict((config.get("equity_curve_stop", {}) or {}).get("weekly_report", {}) or {})
+            need_months = int(section.get("regime_stall_months", 3))
+            rows = [
+                {
+                    "ym": ym,
+                    "shadow_return": ret,
+                    "limit_up_mean": monthly_limit_up_mean(sentiment_path, ym),
+                }
+                for ym, ret in completed_month_returns(labels, values, count=need_months + 1)
+            ]
+            stall = regime_stall_streak(
+                rows,
+                min_limit_up=float(section.get("regime_stall_min_limit_up", 40)),
+                need_months=need_months,
+            )
         payload = weekly_report_payload(
             list(nav.index),
             nav.to_numpy(),
@@ -120,6 +138,7 @@ def push_weekly_report(
             lag=settings.lag_trading_days,
             future_open_dates=[date for date in opens if date > str(signal_date)],
             regime=regime,
+            regime_stall=stall,
         )
         title, body = format_weekly_report(payload)
         notify(title, body, level="timeSensitive" if payload["failures"] else "active")

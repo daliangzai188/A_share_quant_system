@@ -418,6 +418,63 @@ def monthly_limit_up_mean(sentiment_path: Path, month: str) -> float | None:
     return float(counts.mean()) if len(counts) else None
 
 
+def completed_month_returns(
+    dates: Sequence[str],
+    nav: Sequence[float],
+    *,
+    count: int,
+) -> list[tuple[str, float]]:
+    """最近 ``count`` 个已结束自然月的影子账月收益（不含当前未结束的月）。"""
+
+    labels = [str(date) for date in dates]
+    values = np.asarray(nav, dtype=float)
+    if not labels:
+        return []
+    current = labels[-1][:6]
+    months: list[str] = []
+    for label in labels:
+        if label[:6] != current and (not months or months[-1] != label[:6]):
+            months.append(label[:6])
+    result: list[tuple[str, float]] = []
+    for month in months[-int(count):]:
+        index = [i for i, label in enumerate(labels) if label[:6] == month]
+        if not index or index[0] == 0:
+            continue
+        result.append((month, float(values[index[-1]] / values[index[0] - 1] - 1.0)))
+    return result
+
+
+def regime_stall_streak(
+    month_rows: Sequence[Mapping[str, Any]],
+    *,
+    min_limit_up: float,
+    need_months: int,
+) -> dict[str, Any]:
+    """行情正常却连续不赚钱的月数。
+
+    只数最近连续的月份：某月行情属于冰点（涨停数低于 ``min_limit_up``）或影子账为正，
+    计数即归零——冰点亏损是这套规则的已知常态，不能算失效证据。
+    """
+
+    streak: list[str] = []
+    for row in reversed(list(month_rows)):
+        limit_up = row.get("limit_up_mean")
+        shadow = row.get("shadow_return")
+        if limit_up is None or shadow is None:
+            break
+        if float(limit_up) < float(min_limit_up) or float(shadow) > 0:
+            break
+        streak.append(str(row.get("ym", "")))
+    streak.reverse()
+    return {
+        "streak": len(streak),
+        "need_months": int(need_months),
+        "months": streak,
+        "min_limit_up": float(min_limit_up),
+        "triggered": len(streak) >= int(need_months),
+    }
+
+
 def regime_calibration(
     limit_up_mean: float | None,
     shadow_month_return: float | None,
@@ -530,6 +587,7 @@ def weekly_report_payload(
     lag: int,
     future_open_dates: Sequence[str] = (),
     regime: Mapping[str, Any] | None = None,
+    regime_stall: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """空仓期周报的全部数字；失败条件逐条比对事先写死的阈值。"""
 
@@ -578,6 +636,12 @@ def weekly_report_payload(
             f"本段停手踏空{episode['shadow_return']:+.1%}，超过历史最差{settings.worst_stop_missed_gain:+.1%}"
             "（停手参数留待年度复核，当年不改）"
         )
+    if regime_stall and regime_stall.get("triggered"):
+        months = "、".join(str(m) for m in regime_stall.get("months", []))
+        failures.append(
+            f"行情正常（涨停≥{float(regime_stall['min_limit_up']):.0f}）却连续{int(regime_stall['streak'])}个月不赚钱：{months}"
+            "（选股规则可能已钝化）"
+        )
     return {
         "signal_date": last,
         "next_action_date": str(decision.get("action_date", "")),
@@ -595,6 +659,7 @@ def weekly_report_payload(
         "gap_to_resume": gap_to_resume,
         "failures": failures,
         "regime": dict(regime) if regime else None,
+        "regime_stall": dict(regime_stall) if regime_stall else None,
         "thresholds": {
             "shadow_3m_fail": settings.shadow_3m_fail,
             "shadow_6m_fail": settings.shadow_6m_fail,
@@ -649,6 +714,12 @@ def format_weekly_report(payload: Mapping[str, Any]) -> tuple[str, str]:
             )
         else:
             lines.append(head + f"，该档样本外只有{regime['oos_months']}个月，样本不足，不做对比。")
+    stall = payload.get("regime_stall")
+    if stall and not stall.get("triggered"):
+        lines.append(
+            f"正常行情连续不赚钱：{int(stall['streak'])}/{int(stall['need_months'])}个月"
+            + (f"（{'、'.join(str(m) for m in stall.get('months', []))}）。" if stall.get("months") else "。")
+        )
     lines.append(
         "失败条件：" + ("；".join(payload["failures"]) + "。请在Claude发送：甲·临时复核。"
                     if payload.get("failures")

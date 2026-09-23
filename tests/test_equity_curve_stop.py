@@ -24,6 +24,7 @@ from src.combined_live_engine import CombinedLiveEngine
 from src.equity_curve_stop import (
     METHOD_ID,
     allowed_flags,
+    completed_month_returns,
     current_stop_episode,
     decision_for_next_action_date,
     earliest_resume_if_flat,
@@ -35,6 +36,7 @@ from src.equity_curve_stop import (
     load_weekly_report_settings,
     monthly_limit_up_mean,
     regime_calibration,
+    regime_stall_streak,
     shadow_nav_from_detail,
     weekly_report_payload,
 )
@@ -512,6 +514,73 @@ class RegimeCalibrationTests(unittest.TestCase):
                                         settings, ma_window=60, lag=6)
         self.assertIsNone(payload["regime"])
         self.assertNotIn("行情校准", format_weekly_report(payload)[1])
+
+
+
+class RegimeStallAlertTests(unittest.TestCase):
+    """行情正常却连续不赚钱：2026-09-23回测74个月只触发1次（2021-08~10）。"""
+
+    def setUp(self) -> None:
+        self.config = json.loads((ROOT / "config" / "config.json").read_text(encoding="utf-8"))
+        section = self.config["equity_curve_stop"]["weekly_report"]
+        self.min_limit_up = float(section["regime_stall_min_limit_up"])
+        self.need = int(section["regime_stall_months"])
+
+    def _rows(self, spec):
+        return [{"ym": ym, "limit_up_mean": lu, "shadow_return": ret} for ym, lu, ret in spec]
+
+    def test_formal_config_freezes_threshold_and_months(self) -> None:
+        self.assertEqual((self.min_limit_up, self.need), (40.0, 3))
+
+    def test_three_normal_months_without_profit_trigger(self) -> None:
+        rows = self._rows([("202608", 63.0, -0.05), ("202609", 61.0, -0.13), ("202610", 70.0, 0.0)])
+        out = regime_stall_streak(rows, min_limit_up=self.min_limit_up, need_months=self.need)
+        self.assertTrue(out["triggered"])
+        self.assertEqual(out["months"], ["202608", "202609", "202610"])
+
+    def test_ice_point_month_resets_the_chain(self) -> None:
+        rows = self._rows([("202608", 63.0, -0.05), ("202609", 30.0, -0.13), ("202610", 70.0, -0.02)])
+        out = regime_stall_streak(rows, min_limit_up=self.min_limit_up, need_months=self.need)
+        self.assertFalse(out["triggered"])
+        self.assertEqual(out["streak"], 1)
+
+    def test_any_profitable_month_resets_the_chain(self) -> None:
+        rows = self._rows([("202608", 63.0, -0.05), ("202609", 61.0, 0.02), ("202610", 70.0, -0.02)])
+        out = regime_stall_streak(rows, min_limit_up=self.min_limit_up, need_months=self.need)
+        self.assertEqual(out["streak"], 1)
+
+    def test_trigger_becomes_a_failure_line_and_prompts_review(self) -> None:
+        dates = pd.bdate_range("2026-01-01", periods=200).strftime("%Y%m%d").tolist()
+        nav = np.linspace(1.0, 3.0, 200)
+        settings = load_weekly_report_settings(self.config)
+        stall = regime_stall_streak(
+            self._rows([("202608", 63.0, -0.05), ("202609", 61.0, -0.13), ("202610", 70.0, -0.01)]),
+            min_limit_up=self.min_limit_up, need_months=self.need,
+        )
+        payload = weekly_report_payload(dates, nav, {"action_date": "20261231", "allowed": True},
+                                        settings, ma_window=60, lag=6, regime_stall=stall)
+        self.assertTrue(any("连续3个月不赚钱" in item for item in payload["failures"]))
+        body = format_weekly_report(payload)[1]
+        self.assertIn("甲·临时复核", body)
+
+    def test_progress_is_shown_before_trigger(self) -> None:
+        dates = pd.bdate_range("2026-01-01", periods=200).strftime("%Y%m%d").tolist()
+        nav = np.linspace(1.0, 3.0, 200)
+        settings = load_weekly_report_settings(self.config)
+        stall = regime_stall_streak(
+            self._rows([("202609", 61.0, -0.13)]), min_limit_up=self.min_limit_up, need_months=self.need
+        )
+        payload = weekly_report_payload(dates, nav, {"action_date": "20261231", "allowed": True},
+                                        settings, ma_window=60, lag=6, regime_stall=stall)
+        self.assertEqual(payload["failures"], [])
+        self.assertIn("正常行情连续不赚钱：1/3个月", format_weekly_report(payload)[1])
+
+    def test_completed_months_exclude_the_running_month(self) -> None:
+        dates = ["20260828", "20260831", "20260901", "20260930", "20261009", "20261012"]
+        nav = [1.0, 1.1, 1.2, 0.9, 1.0, 1.05]
+        out = completed_month_returns(dates, nav, count=3)
+        self.assertEqual([ym for ym, _ in out], ["202609"])
+        self.assertAlmostEqual(dict(out)["202609"], 0.9 / 1.1 - 1.0)
 
 
 class ReviewReminderTests(unittest.TestCase):
