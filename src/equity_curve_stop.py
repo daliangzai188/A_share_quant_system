@@ -588,6 +588,7 @@ def weekly_report_payload(
     future_open_dates: Sequence[str] = (),
     regime: Mapping[str, Any] | None = None,
     regime_stall: Mapping[str, Any] | None = None,
+    factor_health: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """空仓期周报的全部数字；失败条件逐条比对事先写死的阈值。"""
 
@@ -642,6 +643,13 @@ def weekly_report_payload(
             f"行情正常（涨停≥{float(regime_stall['min_limit_up']):.0f}）却连续{int(regime_stall['streak'])}个月不赚钱：{months}"
             "（选股规则可能已钝化）"
         )
+    for leg, item in sorted((factor_health or {}).items()):
+        if item and item.get("triggered"):
+            failures.append(
+                f"{leg}腿条件集滚动12个月优势{float(item['value']):+.2%}，"
+                f"连续{int(item['months_below'])}个月跌破历史最低{float(item['line']):+.2%}"
+                f"（{int(item['samples'])}个样本，选股土壤可能已退化）"
+            )
     return {
         "signal_date": last,
         "next_action_date": str(decision.get("action_date", "")),
@@ -660,6 +668,7 @@ def weekly_report_payload(
         "failures": failures,
         "regime": dict(regime) if regime else None,
         "regime_stall": dict(regime_stall) if regime_stall else None,
+        "factor_health": {k: dict(v) for k, v in (factor_health or {}).items() if v},
         "thresholds": {
             "shadow_3m_fail": settings.shadow_3m_fail,
             "shadow_6m_fail": settings.shadow_6m_fail,
@@ -714,6 +723,19 @@ def format_weekly_report(payload: Mapping[str, Any]) -> tuple[str, str]:
             )
         else:
             lines.append(head + f"，该档样本外只有{regime['oos_months']}个月，样本不足，不做对比。")
+    health = payload.get("factor_health") or {}
+    if health:
+        parts = []
+        for leg, item in sorted(health.items()):
+            if item.get("value") is None:
+                parts.append(f"{leg}样本不足")
+                continue
+            parts.append(
+                f"{leg}{float(item['value']):+.2%}"
+                + (f"（跌破线{int(item['months_below'])}/{int(item['need_months'])}个月）"
+                   if item.get("months_below") else "")
+            )
+        lines.append("因子健康（条件集滚动12个月优势）：" + "，".join(parts) + "。")
     stall = payload.get("regime_stall")
     if stall and not stall.get("triggered"):
         lines.append(

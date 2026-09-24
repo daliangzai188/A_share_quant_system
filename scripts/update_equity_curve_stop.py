@@ -16,10 +16,13 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 from pathlib import Path
 import sys
 import time
 import traceback
+
+import pandas as pd
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -45,6 +48,14 @@ from src.equity_curve_stop import (  # noqa: E402
     weekly_report_payload,
     write_decision,
     write_shadow_nav,
+)
+from src.factor_health import (  # noqa: E402
+    attach_forward_returns,
+    condition_mask,
+    load_settings as load_factor_health_settings,
+    monthly_edge,
+    parse_condition_profiles,
+    rolling_health,
 )
 from src.utils.config import load_json_config  # noqa: E402
 
@@ -79,6 +90,58 @@ def notify(title: str, body: str, *, level: str = "active") -> None:
         _notify("equity_curve_stop", title, body, level=level)
     except Exception:
         pass
+
+
+def compute_factor_health(config, dataset_root: Path, calendar_path: Path) -> dict:
+    """用整个涨停池算各腿条件集的滚动优势；任何异常都只记录，返回空表不影响周报。"""
+
+    try:
+        settings = load_factor_health_settings(config)
+        if not settings.enabled:
+            return {}
+        pool_path = dataset_root / "strict_feature_pool.csv"
+        if not pool_path.exists():
+            return {}
+        pool = pd.read_csv(pool_path, dtype={"trade_date": str, "ts_code": str}, low_memory=False)
+        months_back = int((config.get("factor_health", {}) or {}).get("months_back", 15))
+        if len(pool):
+            last_month = str(pool["trade_date"].astype(str).max())[:6]
+            start = (
+                dt.datetime.strptime(last_month + "01", "%Y%m%d") - dt.timedelta(days=31 * months_back)
+            ).strftime("%Y%m")
+            pool = pool[pool["trade_date"].astype(str).str[:6] >= start]
+        calendar = pd.read_csv(calendar_path, dtype={"cal_date": str}, low_memory=False)
+        dates = sorted(
+            calendar[pd.to_numeric(calendar["is_open"], errors="coerce").eq(1)]["cal_date"].astype(str)
+        )
+        frame = attach_forward_returns(
+            pool,
+            calendar_dates=dates,
+            daily_dir=PROJECT_ROOT / "data" / "raw" / "daily",
+            adj_dir=PROJECT_ROOT / "data" / "raw" / "adj_factor",
+        )
+        strategy_config = load_json_config(PROJECT_ROOT / "config" / "strategy_config.json")
+        profiles = parse_condition_profiles(strategy_config)
+        out = {}
+        for leg, branches in profiles.items():
+            if not branches:
+                continue
+            mask, used = condition_mask(frame, branches)
+            item = rolling_health(
+                monthly_edge(frame, mask),
+                window=settings.window,
+                min_periods=settings.min_periods,
+                min_samples=settings.min_samples,
+                line=settings.lines.get(leg),
+                consecutive_months=settings.consecutive_months,
+            )
+            item.update(branches_used=used, branches_total=len(branches))
+            out[leg] = item
+        return out
+    except Exception:
+        traceback.print_exc()
+        print("FACTOR_HEALTH_FAILED", flush=True)
+        return {}
 
 
 def push_weekly_report(
@@ -139,6 +202,11 @@ def push_weekly_report(
             future_open_dates=[date for date in opens if date > str(signal_date)],
             regime=regime,
             regime_stall=stall,
+            factor_health=compute_factor_health(
+                config,
+                sentiment_path.parent if sentiment_path is not None else PROJECT_ROOT,
+                calendar_path,
+            ),
         )
         title, body = format_weekly_report(payload)
         notify(title, body, level="timeSensitive" if payload["failures"] else "active")

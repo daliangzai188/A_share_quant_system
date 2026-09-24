@@ -3,7 +3,7 @@
   "status": "PASS",
   "scenario": "acde_plan_jia_stop_gate_20260919",
   "release_id": "ACDE_PLAN_JIA_STOP_GATE_20260919",
-  "generated_at": "2026-09-23T09:44:50.519077+00:00",
+  "generated_at": "2026-09-24T08:55:43.747852+00:00",
   "certification_scope": "FORMAL_RULE_STOP_GATE_AND_BACKTEST_ALIGNMENT",
   "current_executable": true,
   "release_eligible": false,
@@ -91,7 +91,7 @@
     "scripts/update_equity_curve_stop.py",
     "scripts/certify_plan_jia_release.py"
   ],
-  "code_sha256": "5829a9ad0e25a15116e16511a756b507f9211d181efefb8a34f94a77d4d7592d",
+  "code_sha256": "123263993338b5a7309ae84800880bc2de5a32ef3369bb118e70b696c80ef9da",
   "input_files": [
     "data/research/monthly_acde/20260831/strict_feature_pool.csv",
     "data/research/monthly_acde/20260831/market_sentiment.csv",
