@@ -761,7 +761,13 @@ def replay_action_date_cash_portfolio(
     if not executed.empty:
         compound = mechanical_compound(executed["account_return"].to_numpy(dtype=float))
         cash_multiple = float(detail.iloc[-1]["equity_after"]) / float(initial_cash)
-        if abs(compound.equity_multiple - cash_multiple) > 1e-10:
+        # 两条路径（逐笔复利 vs 现金流水）只差浮点舍入，舍入误差随倍数和笔数增长。
+        # 原绝对容差1e-10在影子账复利到数万倍时只剩几倍余量（2026-09实测33,396倍时差
+        # 1.5e-11），再涨会误报→收盘流水线⑬失败→次日判定缺失按fail-closed停手。
+        # 改为相对容差：真实账务错误至少是1e-6量级的相对偏差，1e-12仍能稳稳抓住，
+        # 同时给浮点误差留约千倍余量（实测相对误差约1e-15）。
+        tolerance = max(1e-10, 1e-12 * abs(cash_multiple))
+        if abs(compound.equity_multiple - cash_multiple) > tolerance:
             raise RuntimeError("精确现金流水与逐笔复利不一致")
     return detail
 
