@@ -28,6 +28,7 @@ class FactorHealthSettings:
     min_periods: int
     min_samples: int
     consecutive_months: int
+    min_month_samples: int
     lines: dict[str, float]
 
 
@@ -39,6 +40,7 @@ def load_settings(config: Mapping[str, Any]) -> FactorHealthSettings:
         min_periods=int(section.get("min_periods", 10)),
         min_samples=int(section.get("min_samples", 60)),
         consecutive_months=int(section.get("consecutive_months", 2)),
+        min_month_samples=int(section.get("min_month_samples", 3)),
         lines={str(k).upper(): float(v) for k, v in (section.get("lines", {}) or {}).items()},
     )
 
@@ -172,13 +174,19 @@ def rolling_health(
     min_samples: int,
     line: float | None,
     consecutive_months: int,
+    min_month_samples: int = 3,
 ) -> dict[str, Any]:
-    """滚动窗口差额、当前值、连续跌破月数与是否触发。"""
+    """滚动窗口差额、当前值、连续跌破月数与是否触发。
+
+    只有当月自身的匹配样本不少于 ``min_month_samples`` 时，该月才算"有新证据"：
+    新月份刚开始、还没有样本时，滚动值只是把最老的月份挤出窗口，不能算作又一个
+    月跌破（2026-09-30发现：否则10月第一份周报会凭空触发2/2报警）。
+    """
 
     rolled = monthly["edge"].rolling(window, min_periods=min_periods).mean()
     counts = monthly["n"].rolling(window, min_periods=min_periods).sum()
-    valid = pd.DataFrame({"edge": rolled, "n": counts}).dropna()
-    valid = valid[valid["n"] >= int(min_samples)]
+    valid = pd.DataFrame({"edge": rolled, "n": counts, "month_n": monthly["n"]}).dropna(subset=["edge", "n"])
+    valid = valid[(valid["n"] >= int(min_samples)) & (valid["month_n"] >= int(min_month_samples))]
     if valid.empty:
         return {"value": None, "samples": 0, "months_below": 0, "triggered": False,
                 "line": line, "months": []}

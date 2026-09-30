@@ -134,6 +134,7 @@ def compute_factor_health(config, dataset_root: Path, calendar_path: Path) -> di
                 min_samples=settings.min_samples,
                 line=settings.lines.get(leg),
                 consecutive_months=settings.consecutive_months,
+                min_month_samples=settings.min_month_samples,
             )
             item.update(branches_used=used, branches_total=len(branches))
             out[leg] = item

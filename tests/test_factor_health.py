@@ -109,6 +109,26 @@ class RollingHealthTests(unittest.TestCase):
         self.assertEqual(out["months_below"], 2)
         self.assertTrue(out["triggered"])
 
+    def test_new_month_without_samples_does_not_advance_streak(self) -> None:
+        """2026-09-30发现：10月刚开始、还没有A样本时，滚动值只是把老月份挤出窗口，不能算又跌破一个月。"""
+        monthly = self._monthly([0.04, 0.04, 0.04, 0.03, 0.03, 0.03, 0.00, -0.02, -0.03, -0.05, -0.06, -0.07])
+        before = rolling_health(monthly, window=12, min_periods=10, min_samples=60,
+                                line=0.002, consecutive_months=2, min_month_samples=3)
+        empty = pd.DataFrame({"n": [0], "hit": [np.nan], "miss": [0.001], "edge": [np.nan]}, index=["202701"])
+        after = rolling_health(pd.concat([monthly, empty]), window=12, min_periods=10, min_samples=60,
+                               line=0.002, consecutive_months=2, min_month_samples=3)
+        self.assertEqual(before["months_below"], after["months_below"])
+        self.assertEqual(after["as_of"], before["as_of"])
+        self.assertFalse(after["triggered"])
+
+    def test_thin_month_is_skipped_not_counted(self) -> None:
+        monthly = self._monthly([0.04] * 10 + [-0.60, -0.60])
+        monthly.loc[monthly.index[-1], "n"] = 2   # 最后一个月只有2只样本
+        out = rolling_health(monthly, window=12, min_periods=10, min_samples=60,
+                             line=0.0, consecutive_months=2, min_month_samples=3)
+        self.assertEqual(out["months_below"], 1)
+        self.assertFalse(out["triggered"])
+
     def test_thin_samples_report_nothing(self) -> None:
         monthly = self._monthly([-0.5] * 12, n=1)
         out = rolling_health(monthly, window=12, min_periods=10, min_samples=60,
@@ -124,7 +144,8 @@ class FormalConfigTests(unittest.TestCase):
         self.assertTrue(settings.enabled)
         self.assertEqual((settings.window, settings.min_periods, settings.min_samples), (12, 10, 60))
         self.assertEqual(settings.consecutive_months, 2)
-        self.assertAlmostEqual(settings.lines["A"], 0.0018567462365949444)
+        self.assertEqual(settings.min_month_samples, 3)
+        self.assertAlmostEqual(settings.lines["A"], 0.00539085585714336)
         self.assertAlmostEqual(settings.lines["C"], -0.004743001882088658)
 
 
