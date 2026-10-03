@@ -196,14 +196,16 @@ def describe_processes(processes: list[dict[str, Any]] | None) -> str:
 
 # 属性值里允许出现“>”（XML合法）；按引号跳过值，避免把元素截断丢掉后面的属性。
 _TRADE_SETTING = re.compile(r'<TradeSetting\b(?:[^>"]|"[^"]*")*>', re.S)
-_ATTR = re.compile(r'\b(restart|restarttimelist)="([^"]*)"')
+# 开关的真实属性名是modrestart（2026-10-03在Windows上逐字核对：账号配置modrestart="0"，
+# QMT模板modrestart="1"）；restarttime只是旧单点时间，实际按restarttimelist执行。
+_ATTR = re.compile(r'\b(modrestart|restarttimelist)="([^"]*)"')
 
 
 def parse_scheduled_restart(text: str) -> dict[str, Any]:
     """从一份Config.xml文本里读出全部TradeSetting的定时重启设置。"""
 
     elements = [dict(_ATTR.findall(match.group(0))) for match in _TRADE_SETTING.finditer(text)]
-    values = [attrs["restart"] for attrs in elements if "restart" in attrs]
+    values = [attrs["modrestart"] for attrs in elements if "modrestart" in attrs]
     if "1" in values:
         restart = "1"
     elif "0" in values:
@@ -224,7 +226,7 @@ def read_scheduled_restart_settings(qmt_root: Path, account_id: str = "") -> lis
 
     2026-10-03查明：QMT每天按TradeSetting的restarttimelist整进程重启并自动重新登录；
     自动登录失败（节假日券商服务器不可用、需要验证码）时停在登录框，内置模型不再运行，
-    桥接一直断到人工登录。restart="0"才是关闭；没写这一项时按模板默认（开启）处理。
+    桥接一直断到人工登录。modrestart="0"才是关闭；没写这一项时按模板默认（开启）处理。
     给出account_id时只核对实盘正在使用的账号目录。
     """
     users = Path(qmt_root) / "userdata" / "users"
@@ -261,6 +263,6 @@ def scheduled_restart_problem(rows: list[dict[str, Any]]) -> str:
             problems.append(
                 f"账号{row['account']}定时重启未明确关闭（按默认开启），每天{times}整进程重启"
                 f"（找到{row.get('trade_setting_count', 0)}个TradeSetting，"
-                f"其中{row.get('with_restart_count', 0)}个写了restart）"
+                f"其中{row.get('with_restart_count', 0)}个写了modrestart）"
             )
     return "；".join(problems)

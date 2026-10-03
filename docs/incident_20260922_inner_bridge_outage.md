@@ -69,7 +69,7 @@ A_SYSTEM_DISABLE_NOTIFICATIONS=1 python3 scripts/certify_plan_jia_release.py
 （`reports/runtime/qmt_client_restart_diagnosis.json`、`qmt_restart_setting.txt`，不入git）。
 
 - 资金账号 `userdata\users\<账号>\Config.xml` 的 `TradeSetting` 有客户端定时重启：
-  `restarttimelist="085019|205204|"`；QMT模板 `config\xtuserconfig.xml` 默认 `restart="1"`。
+  `restarttimelist="085019|205204|"`；QMT模板 `config\xtuserconfig.xml` 默认 `modrestart="1"`。
 - 2026-09-15~09-28 每天到点，客户端日志依次记录 `client restart`、登出、
   `Rready to restart`、`wait suicide`，约7秒后新进程弹出登录框并 `start relogin`，
   登录成功后内置模型按“登录后自动运行”重新启动（`doRun` → `PyTimer init`）。这就是每天约1分钟的失联。
@@ -77,13 +77,16 @@ A_SYSTEM_DISABLE_NOTIFICATIONS=1 python3 scripts/certify_plan_jia_release.py
   （“登录失败 End of file”“服务重连失败”），08:50定时重启后新进程登不上，至9/26 10:43人工登录；
   9/26 20:52同样卡住，至9/28；9/21晚现场为带验证码的登录页。
 - 9/14以来QMT程序文件无变化（无自动更新）；Windows事件日志无QMT崩溃。
-- 当前账号配置 `restart="0"`（已关闭），9/28 10:46以后11个定时点零重启；不重启时交易日照常切换
+- 当前账号配置 `modrestart="0"`（已关闭），9/28 10:46以后11个定时点零重启；不重启时交易日照常切换
   （9/30零点账户交易日已为20260929）。
 
 ### 处理
 
-- 环境要求：QMT客户端定时重启必须保持关闭（账号Config.xml `restart="0"`）。
+- 环境要求：QMT客户端定时重启必须保持关闭（账号Config.xml `modrestart="0"`）。
 - daemon每天08:30晨检（含节假日）和每次启动时只读核对该设置；打开、缺省（按模板默认开启）
   或无法读取都推送“⚠️ QMT客户端定时重启没有关闭”（`_check_qmt_scheduled_restart`）。
 - 客户端需要重启时（每月维护：Windows更新后），在有人值守时手动登录，不交给定时重启。
 - 内置桥接失联时daemon记录客户端现场（进程启动时间、窗口标题）并写进告警（提交 `6e56f8e`）。
+- 2026-10-03补正：开关的真实属性名是 `modrestart`（交易机逐字导出：账号 `modrestart="0"`，模板
+  `modrestart="1"`，均在 `TradeSetting` 上）。最初按 `restart` 读取导致daemon误报“未明确关闭”，
+  已改为读取 `modrestart` 并用导出原文做回归测试。

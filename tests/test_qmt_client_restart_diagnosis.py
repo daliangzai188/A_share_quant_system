@@ -152,7 +152,7 @@ class ScheduledRestartSettingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self._tree(root, {
-                "8881234503": '<TradeSetting blacklist="" restarttimelist="085019|205204|" restarttime="085000" restart="0" m_bUseOrderId="1"/>',
+                "8881234503": '<TradeSetting blacklist="" restarttimelist="085019|205204|" restarttime="085000" modrestart="0" m_bUseOrderId="1"/>',
             })
             rows = read_scheduled_restart_settings(root)
         self.assertEqual(rows, [{"account": "***03", "restart": "0", "restarttimelist": "085019|205204|",
@@ -175,7 +175,7 @@ class ScheduledRestartSettingTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            self._tree(root, {"8881234503": '<TradeSetting restarttimelist="085019|205204|" restart="1"/>'})
+            self._tree(root, {"8881234503": '<TradeSetting restarttimelist="085019|205204|" modrestart="1"/>'})
             with patch.object(daemon, "_running_on_windows", return_value=True), patch.object(daemon, "_qmt_install_root", return_value=root), \
                     patch.object(daemon, "_live_qmt_account_id", return_value="8881234503"), \
                     patch.object(daemon, "_notify_once_per", return_value=True) as alert:
@@ -184,7 +184,7 @@ class ScheduledRestartSettingTests(unittest.TestCase):
             self.assertEqual(alert.call_args.args[0], "qmt_scheduled_restart_on")
             self.assertIn("08:50:19、20:52:04", alert.call_args.args[3])
             (root / "userdata" / "users" / "8881234503" / "Config.xml").write_text(
-                '<root><TradeSetting restarttimelist="085019|205204|" restart="0"/></root>', encoding="utf-8")
+                '<root><TradeSetting restarttimelist="085019|205204|" modrestart="0"/></root>', encoding="utf-8")
             with patch.object(daemon, "_running_on_windows", return_value=True), patch.object(daemon, "_qmt_install_root", return_value=root), \
                     patch.object(daemon, "_live_qmt_account_id", return_value="8881234503"), \
                     patch.object(daemon, "_notify_once_per") as alert:
@@ -203,10 +203,10 @@ class ScheduledRestartSettingTests(unittest.TestCase):
 
 
 class ScheduledRestartParsingTests(unittest.TestCase):
-    """2026-10-03误报：账号配置明确restart="0"，daemon却报“未明确关闭”。"""
+    """2026-10-03误报：账号配置是modrestart="0"，daemon按restart这个错名字找不到，报“未明确关闭”。"""
 
     REAL_SHAPE = ('<TradeSetting blacklist="" restarttimelist="085019|205204|" '
-                  'trdparamstring="市价#15.00.30#TWAP->分批" restarttime="085000" restart="0" m_bUseOrderId="1"/>')
+                  'trdparamstring="市价#15.00.30#TWAP->分批" restarttime="085000" modrestart="0" m_bUseOrderId="1"/>')
 
     def test_value_containing_gt_does_not_hide_later_attributes(self):
         from src.qmt_client_probe import parse_scheduled_restart
@@ -215,16 +215,16 @@ class ScheduledRestartParsingTests(unittest.TestCase):
         self.assertEqual(parsed["restart"], "0")
         self.assertEqual(parsed["restarttimelist"], "085019|205204|")
         naive = re.search(r"<TradeSetting\b[^>]*>", self.REAL_SHAPE).group(0)
-        self.assertNotIn('restart="0"', naive, "旧读法在属性值里的“>”处截断，正是误报原因")
+        self.assertNotIn('modrestart="0"', naive, "按“>”截断会丢掉后面的属性")
 
     def test_multiple_trade_settings(self):
         from src.qmt_client_probe import parse_scheduled_restart
 
-        closed = parse_scheduled_restart('<TradeSetting a="1"/><x/><TradeSetting restart="0" restarttimelist="085019|"/>')
+        closed = parse_scheduled_restart('<TradeSetting a="1"/><x/><TradeSetting modrestart="0" restarttimelist="085019|"/>')
         self.assertEqual((closed["restart"], closed["trade_setting_count"], closed["with_restart_count"]), ("0", 2, 1))
-        opened = parse_scheduled_restart('<TradeSetting restart="0"/><TradeSetting restart="1"/>')
+        opened = parse_scheduled_restart('<TradeSetting modrestart="0"/><TradeSetting modrestart="1"/>')
         self.assertEqual(opened["restart"], "1", "任何一处开启都按开启报警")
-        self.assertEqual(parse_scheduled_restart('<TradeSettings restart="0"/>')["trade_setting_count"], 0)
+        self.assertEqual(parse_scheduled_restart('<TradeSettings modrestart="0"/>')["trade_setting_count"], 0)
 
     def test_only_live_account_is_checked_and_missing_file_is_reported(self):
         from src.qmt_client_probe import read_scheduled_restart_settings, scheduled_restart_problem
@@ -238,6 +238,25 @@ class ScheduledRestartParsingTests(unittest.TestCase):
             self.assertEqual(scheduled_restart_problem(live), "")
             everyone = read_scheduled_restart_settings(Path(tmp))
             self.assertIn("***99", scheduled_restart_problem(everyone))
-            self.assertIn("找到1个TradeSetting，其中0个写了restart", scheduled_restart_problem(everyone))
+            self.assertIn("找到1个TradeSetting，其中0个写了modrestart", scheduled_restart_problem(everyone))
             missing = read_scheduled_restart_settings(Path(tmp), "5550000011")
             self.assertIn("不存在", scheduled_restart_problem(missing))
+
+    def test_real_attribute_lines_from_windows(self):
+        """2026-10-03用户在交易机上逐字导出的三项属性（同在TradeSetting上）。"""
+        from src.qmt_client_probe import parse_scheduled_restart, scheduled_restart_problem
+
+        account = parse_scheduled_restart(
+            '<TradeSetting blacklist="" restarttimelist="085019|205204|" m_bUseOrderId="1" '
+            'restarttime="085000" hint_randVolumn="1" modrestart="0"/>'
+        )
+        self.assertEqual((account["restart"], account["restarttimelist"]), ("0", "085019|205204|"))
+        template = parse_scheduled_restart(
+            '<TradeSetting restarttime="085000" modrestart="1" restarttimelist="085000|205000|"/>'
+        )
+        self.assertEqual(template["restart"], "1")
+        self.assertEqual(scheduled_restart_problem([{"account": "***03", **account}]), "")
+        self.assertIn("已开启", scheduled_restart_problem([{"account": "***03", **template}]))
+        self.assertIn("08:50:00、20:50:00", scheduled_restart_problem([{"account": "***03", **template}]))
+        wrong_name = parse_scheduled_restart('<TradeSetting restarttimelist="085019|205204|" restart="0"/>')
+        self.assertEqual(wrong_name["restart"], "", "名字不对的属性不能当成开关")
