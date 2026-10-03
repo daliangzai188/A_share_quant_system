@@ -203,6 +203,44 @@ def build_shadow_nav(
 ) -> pd.Series:
     """在给定严格as-of研究池上计算影子净值（正式A/C/E、不含D、不停手）。"""
 
+    return build_shadow_replay(
+        project_root=project_root,
+        feature_path=feature_path,
+        sentiment_path=sentiment_path,
+        calendar_path=calendar_path,
+        start=start,
+        end=end,
+        work_dir=work_dir,
+    )["nav"]
+
+
+def gated_replay(shadow: Mapping[str, Any], *, ma_window: int, lag: int) -> pd.DataFrame:
+    """按停手判定剔除停手日计划后重放，即实盘账户按正式规则应有的逐笔开平仓。"""
+
+    from src.acde_rolling_framework import FIXED_PRIORITY, replay_action_date_cash_portfolio
+
+    nav = shadow["nav"]
+    allowed = allowed_action_dates(list(nav.index), nav.to_numpy(), ma_window=ma_window, lag=lag)
+    return replay_action_date_cash_portfolio(
+        filter_plans_to_allowed_dates(shadow["legs"], allowed),
+        action_dates=shadow["action_dates"],
+        priority=FIXED_PRIORITY,
+        **shadow["execution"],
+    )
+
+
+def build_shadow_replay(
+    *,
+    project_root: Path,
+    feature_path: Path,
+    sentiment_path: Path,
+    calendar_path: Path,
+    start: str,
+    end: str,
+    work_dir: Path,
+) -> dict[str, Any]:
+    """影子账完整回放：净值、各腿计划、行动日和执行参数（供停手判定与逐笔对账共用）。"""
+
     from scripts.optimize_acde_rolling_three_year import build_variant_plan
     from src.acde_monthly_research import (
         _context,
@@ -260,11 +298,18 @@ def build_shadow_nav(
         priority=FIXED_PRIORITY,
         **execution,
     )
-    return shadow_nav_from_detail(
+    nav = shadow_nav_from_detail(
         detail,
         context["action_dates"],
         initial_cash=float(execution["initial_cash"]),
     )
+    return {
+        "nav": nav,
+        "legs": legs,
+        "action_dates": list(context["action_dates"]),
+        "execution": execution,
+        "detail": detail,
+    }
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
@@ -589,8 +634,12 @@ def weekly_report_payload(
     regime: Mapping[str, Any] | None = None,
     regime_stall: Mapping[str, Any] | None = None,
     factor_health: Mapping[str, Any] | None = None,
+    acknowledged: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
-    """空仓期周报的全部数字；失败条件逐条比对事先写死的阈值。"""
+    """空仓期周报的全部数字；失败条件逐条比对事先写死的阈值。
+
+    acknowledged：已做完临时复核、登记为“仍在观察”的条件，单列不再要求复核。
+    """
 
     labels = [str(date) for date in dates]
     values = np.asarray(nav, dtype=float)
@@ -623,33 +672,29 @@ def weekly_report_payload(
         else None
     )
 
-    failures: list[str] = []
-    if return_3m is not None and return_3m <= settings.shadow_3m_fail:
-        failures.append(
-            f"影子账近3个月{return_3m:+.1%}，跌破失败线{settings.shadow_3m_fail:+.1%}（选股逻辑可能失效）"
+    # 失败条件的唯一定义在 src.review_triggers；⑬每天用同一套判定单独推送临时复核提醒。
+    from src.review_triggers import factor_health_triggers, regime_stall_triggers, shadow_triggers
+
+    acknowledged = dict(acknowledged or {})
+    triggers = (
+        shadow_triggers(
+            values,
+            window_3m=settings.window_3m,
+            window_6m=settings.window_6m,
+            fail_3m=settings.shadow_3m_fail,
+            fail_6m=settings.shadow_6m_fail,
+            stop_episode=episode,
+            worst_missed_gain=settings.worst_stop_missed_gain,
         )
-    if return_6m is not None and return_6m <= settings.shadow_6m_fail:
-        failures.append(
-            f"影子账近6个月{return_6m:+.1%}，跌破失败线{settings.shadow_6m_fail:+.1%}（选股逻辑可能失效）"
-        )
-    if episode and episode["shadow_return"] >= settings.worst_stop_missed_gain:
-        failures.append(
-            f"本段停手踏空{episode['shadow_return']:+.1%}，超过历史最差{settings.worst_stop_missed_gain:+.1%}"
-            "（停手参数留待年度复核，当年不改）"
-        )
-    if regime_stall and regime_stall.get("triggered"):
-        months = "、".join(str(m) for m in regime_stall.get("months", []))
-        failures.append(
-            f"行情正常（涨停≥{float(regime_stall['min_limit_up']):.0f}）却连续{int(regime_stall['streak'])}个月不赚钱：{months}"
-            "（选股规则可能已钝化）"
-        )
-    for leg, item in sorted((factor_health or {}).items()):
-        if item and item.get("triggered"):
-            failures.append(
-                f"{leg}腿条件集滚动12个月优势{float(item['value']):+.2%}，"
-                f"连续{int(item['months_below'])}个月跌破历史最低{float(item['line']):+.2%}"
-                f"（{int(item['samples'])}个样本，选股土壤可能已退化）"
-            )
+        + regime_stall_triggers(regime_stall)
+        + factor_health_triggers(factor_health)
+    )
+    failures = [trigger.detail for trigger in triggers if trigger.key not in acknowledged]
+    watched = [
+        f"{trigger.detail}（{acknowledged[trigger.key]}）"
+        for trigger in triggers
+        if trigger.key in acknowledged
+    ]
     return {
         "signal_date": last,
         "next_action_date": str(decision.get("action_date", "")),
@@ -666,6 +711,7 @@ def weekly_report_payload(
         "stop_episode": episode,
         "gap_to_resume": gap_to_resume,
         "failures": failures,
+        "watched": watched,
         "regime": dict(regime) if regime else None,
         "regime_stall": dict(regime_stall) if regime_stall else None,
         "factor_health": {k: dict(v) for k, v in (factor_health or {}).items() if v},
@@ -745,8 +791,10 @@ def format_weekly_report(payload: Mapping[str, Any]) -> tuple[str, str]:
     lines.append(
         "失败条件：" + ("；".join(payload["failures"]) + "。请在Claude发送：甲·临时复核。"
                     if payload.get("failures")
-                    else "未触发（连续3个月不赚钱属于正常范围）。")
+                    else "未触发新的条件（连续3个月不赚钱属于正常范围）。")
     )
+    if payload.get("watched"):
+        lines.append("已复核、仍在观察：" + "；".join(payload["watched"]) + "。")
     return title, "".join(lines)
 
 

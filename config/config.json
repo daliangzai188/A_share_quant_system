@@ -92,6 +92,23 @@
     "state_path": "data/state/drawdown_alert.json",
     "ledger_incomplete_state_path": "data/state/equity_ledger_pending_alert.json"
   },
+  "review_triggers": {
+    "file_role": "临时复核触发检查（src/review_triggers.py，收盘流水线⑬每个交易日一次）：影子账3/6个月失败线、正常行情连续不赚钱、因子健康、实盘账户连续亏损、实盘与停手过滤后正式规则逐笔对账、检查本身是否算成；命中即单独推送“请发起甲·临时复核”，持续中每remind_every_open_days个交易日重复，全部解除推送一次；推送失败下个交易日重发。阈值沿用equity_curve_stop.weekly_report与factor_health。",
+    "enabled": true,
+    "alignment_start_date": "20260921",
+    "live_loss_months": 3,
+    "remind_every_open_days": 5,
+    "state_path": "data/state/review_trigger_state.json",
+    "acknowledged_note": "已完成临时复核且结论为维持的条件登记于此：不再单独重复提醒，其他条件推送时附带列出；到recheck_by当天恢复提醒。条件解除后再次出现的同名key仍按登记处理，直到recheck_by。",
+    "acknowledged": [
+      {
+        "key": "factor_health:A",
+        "reviewed_on": "2026-09-30",
+        "conclusion": "A腿因子健康连续2个月跌破，临时复核维持甲（去A及15个A变体均未过硬门槛），年度复核用新数据重建A条件集",
+        "recheck_by": "2027-01-02"
+      }
+    ]
+  },
   "strategy_equity_ledger": {
     "file_role": "全策略净值账本口径：券商总资产一次基线（建基线时必须空仓）+基线日及以后买入、已完整平仓交易的真实盈亏（扣估算费用），不分腿，每次从成交汇总整体重算；任何一笔缺成交即未就绪并推送缺哪几笔。",
     "legacy_v2_baseline_cutoff_entry_date": "20260810",

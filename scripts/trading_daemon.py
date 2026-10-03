@@ -13331,8 +13331,11 @@ def job_post_market(end_date: str | None = None) -> None:
     signal_retry_scripts = {
         "run_paper_ab_filtered_daily_ops.py",
         "run_strategy_e_signal.py",
+        # ⑬既写次日停手判定，也做每日临时复核触发检查；超时/失败就地重试一次。
+        "update_equity_curve_stop.py",
     }
 
+    failed_steps: list[str] = []
     total_steps = len(steps)
     for step_index, (script, desc, timeout, eta) in enumerate(steps, 1):
         try:
@@ -13360,6 +13363,7 @@ def job_post_market(end_date: str | None = None) -> None:
                     return False
                 if not ok:
                     logger().error("%s 失败，继续后续步骤", desc)
+                    failed_steps.append(desc)
                     _log_post_market_step_brief(script, target_str)
                     continue
             logger().info("收盘流水线进度：%d/%d %s 完成", step_index, total_steps, desc)
@@ -13369,6 +13373,9 @@ def job_post_market(end_date: str | None = None) -> None:
                 logger().error("❌ %s 异常：%s，本次收盘流水线停止；不生成计划单，避免使用旧信号", desc, e)
                 return False
             logger().error("%s 异常：%s，继续后续步骤", desc, e)
+            failed_steps.append(desc)
+
+    _alert_if_stop_decision_stale(target_str, failed_steps)
 
     # 所有策略步骤结束后只读当日产物，明确区分“候选0只”和“产物未生成/未知”。
     # D是盘中策略，这里只统计其已有BUY/WATCH记录，不在收盘时补跑D。
@@ -13444,11 +13451,71 @@ def job_post_market(end_date: str | None = None) -> None:
                              f"总资产{_fmt_wan(getattr(account, 'total_asset', 0.0))} ")
         except Exception as acct_exc:
             logger().warning("收盘汇总查询账户失败：%s", acct_exc)
-        _notify("daily_summary", "📊 今日收盘汇总",
-                f"{acct_part}持仓{open_cnt}笔，收盘流水线已完成，明日计划已生成。")
+        if failed_steps:
+            _notify("daily_summary", "⚠️ 今日收盘汇总：有步骤失败",
+                    f"{acct_part}持仓{open_cnt}笔，收盘流水线跑完但有{len(failed_steps)}步失败："
+                    f"{'、'.join(failed_steps)}。明日计划已生成；失败步骤的产物可能是旧的，请让Claude排查。",
+                    level="timeSensitive")
+        else:
+            _notify("daily_summary", "📊 今日收盘汇总",
+                    f"{acct_part}持仓{open_cnt}笔，收盘流水线已完成，明日计划已生成。")
     except Exception as exc:
         logger().warning("收盘汇总推送异常：%s", exc)
     return True
+
+
+def _equity_curve_stop_decision_fresh(target_str: str) -> tuple[bool, str]:
+    """⑬是否已写出紧接着的下一个行动日的判定；未启用门禁时视为正常。"""
+    from src.equity_curve_stop import load_decision, load_settings, next_open_date
+
+    settings = load_settings(load_json_config(PROJECT_ROOT / "config" / "config.json"), PROJECT_ROOT)
+    if not settings.enabled:
+        return True, ""
+    expected = next_open_date(PROJECT_ROOT / "data" / "raw" / "trade_calendar.csv", target_str)
+    payload = load_decision(settings)
+    return bool(payload) and str(payload.get("action_date", "")) == expected, expected
+
+
+def _alert_if_stop_decision_stale(target_str: str, failed_steps: list[str]) -> None:
+    """⑬被超时杀掉或没跑到时脚本自己发不出告警，由daemon按判定文件补报。
+
+    判定没更新=次日按fail-closed停手，且当天的临时复核触发检查也没有执行，
+    两件事都必须让用户知道，不能只写日志。
+    """
+    try:
+        fresh, expected = _equity_curve_stop_decision_fresh(target_str)
+    except Exception as exc:
+        fresh, expected = False, f"未知（{exc}）"
+    if fresh:
+        return
+    failed = "、".join(failed_steps) or "无（判定文件仍是旧的）"
+    logger().error("⛔ 方案甲停手判定没有更新到%s；失败步骤：%s", expected, failed)
+    # 因子未就绪时流水线会每5分钟整趟重跑；同一收盘日只推一次，避免重复轰炸。
+    _notify_once_per(
+        f"equity_curve_stop_decision_stale:{target_str}",
+        6 * 3600,
+        "⛔ 方案甲停手判定没有更新",
+        f"收盘流水线没有写出{expected}的停手判定（失败步骤：{failed}）。"
+        f"{expected}将按fail-closed不开新仓；今天的临时复核触发检查也没有执行。"
+        "请在Claude发送：甲·临时复核（先修收盘流水线）。",
+        level="timeSensitive",
+    )
+
+
+def _alert_post_market_not_completed(date_str: str, cutoff_hour: int) -> None:
+    """收盘流水线到截止时间仍未完成：停手判定和临时复核检查可能都没跑。"""
+    try:
+        fresh, expected = _equity_curve_stop_decision_fresh(date_str)
+    except Exception as exc:
+        fresh, expected = False, f"未知（{exc}）"
+    state = "已更新" if fresh else f"没有更新，{expected}将按fail-closed不开新仓"
+    _notify(
+        "system_error",
+        f"⛔ {date_str}收盘流水线到{cutoff_hour}:00仍未完成",
+        f"今天的收盘流水线没有完成（数据或因子未就绪，或中途失败）。停手判定{state}；"
+        "今天的临时复核触发检查可能没有执行。请在Claude发送：甲·临时复核（先修收盘流水线）。",
+        level="timeSensitive",
+    )
 
 
 def _run_post_market_with_retry(end_date: str | None = None) -> None:
@@ -13467,6 +13534,7 @@ def _run_post_market_with_retry(end_date: str | None = None) -> None:
         now = now_beijing()
         if now.hour >= cutoff_hour:
             logger().warning("已过 %d:00，停止等待 Tushare %s 数据，今日收盘流水线结束", cutoff_hour, date_str)
+            _alert_post_market_not_completed(date_str, cutoff_hour)
             break
         next_retry = now + datetime.timedelta(seconds=retry_seconds)
         logger().warning(
