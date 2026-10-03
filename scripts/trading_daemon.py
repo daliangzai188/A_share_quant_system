@@ -13508,6 +13508,16 @@ def _running_on_windows() -> bool:
     return os.name == "nt"
 
 
+def _live_qmt_account_id() -> str:
+    """实盘正在使用的资金账号（内置执行端配置）；读不到时返回空串，改为核对全部账号目录。"""
+    try:
+        from qmt_inner.protocol import load_settings
+
+        return str(load_settings().get("account_id", "") or "")
+    except Exception:
+        return ""
+
+
 def _qmt_install_root() -> Path | None:
     """QMT安装目录 = QMT_PATH（userdata_mini）的上一级；未配置时返回None。"""
     try:
@@ -13536,7 +13546,7 @@ def _check_qmt_scheduled_restart(log: Any) -> bool:
         problem = (
             "未配置QMT_PATH，无法找到QMT安装目录确认定时重启已关闭"
             if root is None
-            else scheduled_restart_problem(read_scheduled_restart_settings(root))
+            else scheduled_restart_problem(read_scheduled_restart_settings(root, _live_qmt_account_id()))
         )
     except Exception as exc:
         problem = f"读取QMT定时重启设置失败：{exc}"

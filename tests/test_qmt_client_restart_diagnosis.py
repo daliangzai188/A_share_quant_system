@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -154,7 +155,8 @@ class ScheduledRestartSettingTests(unittest.TestCase):
                 "8881234503": '<TradeSetting blacklist="" restarttimelist="085019|205204|" restarttime="085000" restart="0" m_bUseOrderId="1"/>',
             })
             rows = read_scheduled_restart_settings(root)
-        self.assertEqual(rows, [{"account": "***03", "restart": "0", "restarttimelist": "085019|205204|"}])
+        self.assertEqual(rows, [{"account": "***03", "restart": "0", "restarttimelist": "085019|205204|",
+                                 "trade_setting_count": 1, "with_restart_count": 1}])
 
     def test_problem_text_for_enabled_missing_and_absent(self):
         from src.qmt_client_probe import scheduled_restart_problem
@@ -175,6 +177,7 @@ class ScheduledRestartSettingTests(unittest.TestCase):
             root = Path(tmp)
             self._tree(root, {"8881234503": '<TradeSetting restarttimelist="085019|205204|" restart="1"/>'})
             with patch.object(daemon, "_running_on_windows", return_value=True), patch.object(daemon, "_qmt_install_root", return_value=root), \
+                    patch.object(daemon, "_live_qmt_account_id", return_value="8881234503"), \
                     patch.object(daemon, "_notify_once_per", return_value=True) as alert:
                 self.assertFalse(daemon._check_qmt_scheduled_restart(MagicMock()))
             alert.assert_called_once()
@@ -183,6 +186,7 @@ class ScheduledRestartSettingTests(unittest.TestCase):
             (root / "userdata" / "users" / "8881234503" / "Config.xml").write_text(
                 '<root><TradeSetting restarttimelist="085019|205204|" restart="0"/></root>', encoding="utf-8")
             with patch.object(daemon, "_running_on_windows", return_value=True), patch.object(daemon, "_qmt_install_root", return_value=root), \
+                    patch.object(daemon, "_live_qmt_account_id", return_value="8881234503"), \
                     patch.object(daemon, "_notify_once_per") as alert:
                 self.assertTrue(daemon._check_qmt_scheduled_restart(MagicMock()))
             alert.assert_not_called()
@@ -196,3 +200,44 @@ class ScheduledRestartSettingTests(unittest.TestCase):
                 patch.object(daemon, "_notify_once_per", return_value=True) as alert:
             self.assertFalse(daemon._check_qmt_scheduled_restart(MagicMock()))
         self.assertIn("QMT_PATH", alert.call_args.args[3])
+
+
+class ScheduledRestartParsingTests(unittest.TestCase):
+    """2026-10-03误报：账号配置明确restart="0"，daemon却报“未明确关闭”。"""
+
+    REAL_SHAPE = ('<TradeSetting blacklist="" restarttimelist="085019|205204|" '
+                  'trdparamstring="市价#15.00.30#TWAP->分批" restarttime="085000" restart="0" m_bUseOrderId="1"/>')
+
+    def test_value_containing_gt_does_not_hide_later_attributes(self):
+        from src.qmt_client_probe import parse_scheduled_restart
+
+        parsed = parse_scheduled_restart(f"<root>{self.REAL_SHAPE}</root>")
+        self.assertEqual(parsed["restart"], "0")
+        self.assertEqual(parsed["restarttimelist"], "085019|205204|")
+        naive = re.search(r"<TradeSetting\b[^>]*>", self.REAL_SHAPE).group(0)
+        self.assertNotIn('restart="0"', naive, "旧读法在属性值里的“>”处截断，正是误报原因")
+
+    def test_multiple_trade_settings(self):
+        from src.qmt_client_probe import parse_scheduled_restart
+
+        closed = parse_scheduled_restart('<TradeSetting a="1"/><x/><TradeSetting restart="0" restarttimelist="085019|"/>')
+        self.assertEqual((closed["restart"], closed["trade_setting_count"], closed["with_restart_count"]), ("0", 2, 1))
+        opened = parse_scheduled_restart('<TradeSetting restart="0"/><TradeSetting restart="1"/>')
+        self.assertEqual(opened["restart"], "1", "任何一处开启都按开启报警")
+        self.assertEqual(parse_scheduled_restart('<TradeSettings restart="0"/>')["trade_setting_count"], 0)
+
+    def test_only_live_account_is_checked_and_missing_file_is_reported(self):
+        from src.qmt_client_probe import read_scheduled_restart_settings, scheduled_restart_problem
+
+        with tempfile.TemporaryDirectory() as tmp:
+            users = Path(tmp) / "userdata" / "users"
+            for account, body in {"8881234503": self.REAL_SHAPE, "7770000099": '<TradeSetting a="1"/>'}.items():
+                (users / account).mkdir(parents=True)
+                (users / account / "Config.xml").write_text(f"<root>{body}</root>", encoding="utf-8")
+            live = read_scheduled_restart_settings(Path(tmp), "8881234503")
+            self.assertEqual(scheduled_restart_problem(live), "")
+            everyone = read_scheduled_restart_settings(Path(tmp))
+            self.assertIn("***99", scheduled_restart_problem(everyone))
+            self.assertIn("找到1个TradeSetting，其中0个写了restart", scheduled_restart_problem(everyone))
+            missing = read_scheduled_restart_settings(Path(tmp), "5550000011")
+            self.assertIn("不存在", scheduled_restart_problem(missing))

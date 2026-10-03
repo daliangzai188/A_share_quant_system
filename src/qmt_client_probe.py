@@ -194,42 +194,73 @@ def describe_processes(processes: list[dict[str, Any]] | None) -> str:
 
 # ---------------------------------------------------------------- 客户端定时重启设置
 
-_TRADE_SETTING = re.compile(r"<TradeSetting\b[^>]*>", re.S)
+# 属性值里允许出现“>”（XML合法）；按引号跳过值，避免把元素截断丢掉后面的属性。
+_TRADE_SETTING = re.compile(r'<TradeSetting\b(?:[^>"]|"[^"]*")*>', re.S)
 _ATTR = re.compile(r'\b(restart|restarttimelist)="([^"]*)"')
 
 
-def read_scheduled_restart_settings(qmt_root: Path) -> list[dict[str, str]]:
-    """读取各资金账号Config.xml里的客户端定时重启设置（只读）。
+def parse_scheduled_restart(text: str) -> dict[str, Any]:
+    """从一份Config.xml文本里读出全部TradeSetting的定时重启设置。"""
+
+    elements = [dict(_ATTR.findall(match.group(0))) for match in _TRADE_SETTING.finditer(text)]
+    values = [attrs["restart"] for attrs in elements if "restart" in attrs]
+    if "1" in values:
+        restart = "1"
+    elif "0" in values:
+        restart = "0"
+    else:
+        restart = ""
+    times = next((attrs["restarttimelist"] for attrs in elements if attrs.get("restarttimelist")), "")
+    return {
+        "restart": restart,
+        "restarttimelist": times,
+        "trade_setting_count": len(elements),
+        "with_restart_count": len(values),
+    }
+
+
+def read_scheduled_restart_settings(qmt_root: Path, account_id: str = "") -> list[dict[str, Any]]:
+    """读取资金账号Config.xml里的客户端定时重启设置（只读）。
 
     2026-10-03查明：QMT每天按TradeSetting的restarttimelist整进程重启并自动重新登录；
     自动登录失败（节假日券商服务器不可用、需要验证码）时停在登录框，内置模型不再运行，
-    桥接一直断到人工登录。restart="0"才是关闭；账号配置里缺这一项时按模板默认（开启）处理。
+    桥接一直断到人工登录。restart="0"才是关闭；没写这一项时按模板默认（开启）处理。
+    给出account_id时只核对实盘正在使用的账号目录。
     """
-    rows: list[dict[str, str]] = []
-    for path in sorted((Path(qmt_root) / "userdata" / "users").glob("*/Config.xml")):
-        text = path.read_text(encoding="utf-8", errors="replace")
-        match = _TRADE_SETTING.search(text)
-        attrs = dict(_ATTR.findall(match.group(0))) if match else {}
-        rows.append({
-            "account": mask_title(path.parent.name),
-            "restart": attrs.get("restart", ""),
-            "restarttimelist": attrs.get("restarttimelist", ""),
-        })
+    users = Path(qmt_root) / "userdata" / "users"
+    paths = [users / str(account_id) / "Config.xml"] if account_id else sorted(users.glob("*/Config.xml"))
+    rows: list[dict[str, Any]] = []
+    for path in paths:
+        if not path.exists():
+            rows.append({"account": mask_title(path.parent.name), "restart": "", "restarttimelist": "",
+                         "trade_setting_count": 0, "with_restart_count": 0, "missing_file": True})
+            continue
+        parsed = parse_scheduled_restart(path.read_text(encoding="utf-8", errors="replace"))
+        rows.append({"account": mask_title(path.parent.name), **parsed})
     return rows
 
 
-def scheduled_restart_problem(rows: list[dict[str, str]]) -> str:
+def scheduled_restart_problem(rows: list[dict[str, Any]]) -> str:
     """返回需要报警的说明；全部明确关闭时返回空串。纯函数，便于离线测试。"""
 
     if not rows:
         return "没有找到QMT资金账号配置（userdata/users/*/Config.xml），无法确认定时重启已关闭"
     problems = []
     for row in rows:
+        if row.get("missing_file"):
+            problems.append(f"账号{row['account']}的Config.xml不存在，无法确认定时重启已关闭")
+            continue
         if row["restart"] == "0":
             continue
         times = "、".join(
             f"{value[:2]}:{value[2:4]}:{value[4:6]}" for value in row["restarttimelist"].split("|") if len(value) >= 6
         ) or "默认时间"
-        state = "已开启" if row["restart"] == "1" else "未明确关闭（按默认开启）"
-        problems.append(f"账号{row['account']}定时重启{state}，每天{times}整进程重启")
+        if row["restart"] == "1":
+            problems.append(f"账号{row['account']}定时重启已开启，每天{times}整进程重启")
+        else:
+            problems.append(
+                f"账号{row['account']}定时重启未明确关闭（按默认开启），每天{times}整进程重启"
+                f"（找到{row.get('trade_setting_count', 0)}个TradeSetting，"
+                f"其中{row.get('with_restart_count', 0)}个写了restart）"
+            )
     return "；".join(problems)
