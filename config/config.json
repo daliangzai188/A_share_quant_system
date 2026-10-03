@@ -89,7 +89,13 @@
     "file_role": "只提醒不交易：全策略净值账本（券商总资产一次基线+本系统完整平仓盈亏，入金出金不影响）从峰值回撤达到threshold时Bark推送一次，提醒用户发起“甲·临时复核”。同一峰值只推送一次。",
     "enabled": true,
     "threshold": -0.30,
-    "state_path": "data/state/drawdown_alert.json"
+    "state_path": "data/state/drawdown_alert.json",
+    "ledger_incomplete_state_path": "data/state/equity_ledger_pending_alert.json"
+  },
+  "strategy_equity_ledger": {
+    "file_role": "全策略净值账本口径：券商总资产一次基线（建基线时必须空仓）+基线日及以后买入、已完整平仓交易的真实盈亏（扣估算费用），不分腿，每次从成交汇总整体重算；任何一笔缺成交即未就绪并推送缺哪几笔。",
+    "legacy_v2_baseline_cutoff_entry_date": "20260810",
+    "legacy_note": "旧v2账本基线270818.58元=2026-08-07收盘后空仓总资产（日志8/9~8/10均为27.08万），8/10厦工股份是基线后第一笔；账户风险影子同口径把厦工计为新增。旧v2按交易编号增量累加，E2改名E后把基线前7笔E交易重复计入约4.85万，并因按在用腿过滤漏掉N腿亨迪药业。"
   },
   "portfolio_certification": {
     "file_role": "A>C>E>D真实开仓日组合资金和研究统计口径；旧V16认证因D历史开仓口径不对齐继续作废。D历史收益认证与实时BUY权限分开：实时BUY由strategy_d_factor_release.entry_alignment授权，并逐单执行完整1m路径、真实委托金额及可靠成交概率>=80%的fail-closed门禁。",

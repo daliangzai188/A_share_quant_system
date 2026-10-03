@@ -13142,10 +13142,68 @@ def snapshot_realized_strategy_equity(signal_date: str) -> None:
                 "入金、出金和系统外持仓不再改变策略峰值。"
             )
         if not snapshot.ledger_ready:
-            logger().warning("全策略净值账本有待补全成交，账户级风险状态保持fail-closed。")
+            logger().warning(
+                "全策略净值账本有待补全成交，账户级风险状态保持fail-closed：%s",
+                "、".join(snapshot.pending_trade_keys) or "未知",
+            )
+        _maybe_alert_ledger_incomplete(snapshot, cfg)
         _maybe_alert_strategy_drawdown(snapshot, drawdown, cfg)
     except Exception as exc:
         logger().warning("全策略净值账本更新失败：%s（账户级风险状态保持fail-closed）", exc)
+
+
+def _describe_ledger_trade_key(trade_key: str) -> str:
+    parts = str(trade_key).split("|")
+    if len(parts) >= 3 and len(parts[0]) == 8:
+        return f"{parts[0][4:6]}/{parts[0][6:8]}买入 {parts[1]}（{parts[2]}腿）"
+    return str(trade_key)
+
+
+def _maybe_alert_ledger_incomplete(snapshot: Any, cfg: dict[str, Any]) -> None:
+    """净值账本缺成交时推送一次缺哪几笔；同一组缺口只推一次，补齐后清除。
+
+    2026-09-30复核发现账本漏记4笔、回撤报警因此从未触发，用户毫不知情。
+    缺成交时回撤只按已确认交易计算，必须让用户知道并补录券商成交记录。
+    """
+    section = cfg.get("drawdown_alert", {}) or {}
+    if not bool(section.get("enabled", False)):
+        return
+    state_path = PROJECT_ROOT / str(
+        section.get("ledger_incomplete_state_path", "data/state/equity_ledger_pending_alert.json")
+    )
+    pending = sorted(str(key) for key in getattr(snapshot, "pending_trade_keys", ()) or ())
+    if not pending:
+        if state_path.exists():
+            try:
+                state_path.unlink()
+            except OSError:
+                pass
+        return
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
+    except (OSError, ValueError):
+        state = {}
+    if sorted(state.get("alerted_pending_trade_keys", [])) == pending:
+        return
+    body = (
+        f"基线日后有{len(pending)}笔交易缺真实卖出成交："
+        + "；".join(_describe_ledger_trade_key(key) for key in pending)
+        + "。回撤报警目前只按已确认的交易计算，实际回撤可能更大。"
+        "请把这些股票的券商成交记录截图发给Claude补录。"
+    )
+    if _notify("risk_drawdown", "⚠️ 净值账本缺成交，回撤报警暂时不准", body, level="timeSensitive"):
+        mkdir_p(state_path.parent)
+        state_path.write_text(
+            json.dumps(
+                {
+                    "alerted_pending_trade_keys": pending,
+                    "alerted_at": now_beijing().strftime("%Y-%m-%d %H:%M:%S"),
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
 
 
 def _maybe_alert_strategy_drawdown(snapshot: Any, drawdown: float, cfg: dict[str, Any]) -> None:

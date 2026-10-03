@@ -60,6 +60,10 @@ def _print_plan(plans: list[dict[str, Any]]) -> None:
             f"{evidence.name} {evidence.strategy_leg} | {evidence.filled_qty}股 | "
             f"截图均价{evidence.displayed_fill_price} | 成交金额{evidence.fill_amount:.2f} | "
             f"委托编号:{order_status}"
+            + (
+                f" | 替换账上未核验金额{evidence.replaces_recorded_exit_amount}"
+                if evidence.replaces_recorded_exit_amount is not None else ""
+            )
         )
 
 

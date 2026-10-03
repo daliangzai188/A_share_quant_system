@@ -2,6 +2,9 @@
 
 本模块只处理已经平仓、但退出金额缺失的历史记录。所有记录必须按买入日、
 股票、策略腿、卖出日和总股数严格匹配；券商截图未提供的委托编号不得补造。
+
+已有退出金额但未经券商核验（例如2026-08-18共进股份按买入价占位）时，证据必须用
+replaces_recorded_exit_amount 写明账上现有金额，逐分核对一致才允许替换，并留审计。
 """
 from __future__ import annotations
 
@@ -88,6 +91,7 @@ class NormalizedExitEvidence:
     evidence_file: str
     evidence_sha256: str
     broker_order_id: str
+    replaces_recorded_exit_amount: Decimal | None = None
 
     @property
     def effective_fill_price(self) -> Decimal:
@@ -118,6 +122,13 @@ def normalize_exit_evidence(raw: Mapping[str, Any]) -> NormalizedExitEvidence:
     evidence_id = _text(raw.get("evidence_id"))
     if not evidence_id:
         evidence_id = f"{exit_date}-{ts_code}-{quantity}-{fill_amount:.2f}"
+    replaces_raw = raw.get("replaces_recorded_exit_amount")
+    replaces = (
+        None if replaces_raw in (None, "")
+        else _money(replaces_raw, "replaces_recorded_exit_amount").quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+    )
     digest = _text(raw.get("evidence_sha256")).lower()
     if digest and (len(digest) != 64 or any(ch not in "0123456789abcdef" for ch in digest)):
         raise BrokerExitEvidenceError("evidence_sha256格式错误")
@@ -140,6 +151,18 @@ def normalize_exit_evidence(raw: Mapping[str, Any]) -> NormalizedExitEvidence:
         evidence_file=_text(raw.get("evidence_file")),
         evidence_sha256=digest,
         broker_order_id=_text(raw.get("broker_order_id")),
+        replaces_recorded_exit_amount=replaces,
+    )
+
+
+def _recorded_exit_amount(position: Mapping[str, Any]) -> Decimal:
+    ledger = position.get("exit_fills_by_date")
+    if not isinstance(ledger, Mapping):
+        return Decimal("0")
+    return sum(
+        (Decimal(str(float(value.get("amount", 0) or 0)))
+         for value in ledger.values() if isinstance(value, Mapping)),
+        Decimal("0"),
     )
 
 
@@ -192,20 +215,32 @@ def build_broker_evidence_plan(
             known_names = {_text(item.get("name")) for item in group if _text(item.get("name"))}
             if known_names and known_names != {evidence.name}:
                 raise BrokerExitEvidenceError(f"股票名称与证据不一致：{evidence.evidence_id}")
+        already_applied = False
         for item in group:
             old = item.get("manual_exit_evidence")
             if isinstance(old, Mapping) and _text(old.get("evidence_id")) not in {"", evidence.evidence_id}:
                 raise BrokerExitEvidenceError(f"持仓已有其他人工证据：{evidence.evidence_id}")
-            ledger = item.get("exit_fills_by_date")
-            if isinstance(ledger, Mapping):
-                old_amount = sum(
-                    float(value.get("amount", 0) or 0)
-                    for value in ledger.values() if isinstance(value, Mapping)
+            already_applied = already_applied or (
+                isinstance(old, Mapping) and _text(old.get("evidence_id")) == evidence.evidence_id
+            )
+        recorded = sum((_recorded_exit_amount(item) for item in group), Decimal("0")).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+        if recorded > 0 and not already_applied:
+            if evidence.replaces_recorded_exit_amount is None:
+                raise BrokerExitEvidenceError(
+                    f"持仓已有非零退出金额：{evidence.evidence_id}（账上{recorded}；"
+                    "若该金额未经券商核验，证据须写明replaces_recorded_exit_amount）"
                 )
-                if old_amount > 0 and not (
-                    isinstance(old, Mapping) and _text(old.get("evidence_id")) == evidence.evidence_id
-                ):
-                    raise BrokerExitEvidenceError(f"持仓已有非零退出金额：{evidence.evidence_id}")
+            if abs(recorded - evidence.replaces_recorded_exit_amount) > Decimal("0.02"):
+                raise BrokerExitEvidenceError(
+                    f"待替换金额与账上不一致：{evidence.evidence_id}，"
+                    f"账上{recorded}/证据{evidence.replaces_recorded_exit_amount}"
+                )
+        elif evidence.replaces_recorded_exit_amount is not None and not already_applied:
+            raise BrokerExitEvidenceError(
+                f"账上没有可替换的退出金额：{evidence.evidence_id}，请删除replaces_recorded_exit_amount"
+            )
         plans.append({"evidence": evidence, "position_indices": indices})
         used_indices.update(indices)
     return plans
@@ -255,6 +290,10 @@ def apply_broker_evidence_plan(
                 "group_fill_amount": float(evidence.fill_amount),
                 "fee": float(evidence.fee),
                 "net_sell_amount": float(evidence.net_sell_amount),
+                "replaced_recorded_exit_amount": (
+                    float(evidence.replaces_recorded_exit_amount)
+                    if evidence.replaces_recorded_exit_amount is not None else None
+                ),
                 "exit_time": evidence.exit_time,
                 "applied_at": applied_at,
             }

@@ -279,6 +279,29 @@ class DaemonStopAndDrawdownTests(unittest.TestCase):
                 trading_daemon._maybe_alert_strategy_drawdown(new_peak, -0.333, cfg)
                 self.assertEqual(notify.call_count, 2)
 
+    def test_incomplete_ledger_is_announced_once_per_gap_and_cleared(self) -> None:
+        """2026-09-30复核：账本漏记4笔，回撤报警从未触发而用户毫不知情。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = {"drawdown_alert": {"enabled": True, "ledger_incomplete_state_path": "state/pending.json"}}
+            gap = SimpleNamespace(pending_trade_keys=("20260820|301211.SZ|N|20260819",
+                                                      "20260901|603139.SH|C|20260831"))
+            with patch.object(trading_daemon, "PROJECT_ROOT", root), \
+                    patch.object(trading_daemon, "_notify", return_value=True) as notify:
+                trading_daemon._maybe_alert_ledger_incomplete(gap, cfg)
+                trading_daemon._maybe_alert_ledger_incomplete(gap, cfg)
+                self.assertEqual(notify.call_count, 1)
+                body = notify.call_args[0][2]
+                self.assertIn("08/20买入 301211.SZ（N腿）", body)
+                self.assertIn("截图", body)
+                smaller = SimpleNamespace(pending_trade_keys=("20260901|603139.SH|C|20260831",))
+                trading_daemon._maybe_alert_ledger_incomplete(smaller, cfg)
+                self.assertEqual(notify.call_count, 2)
+                trading_daemon._maybe_alert_ledger_incomplete(SimpleNamespace(pending_trade_keys=()), cfg)
+                self.assertFalse((root / "state/pending.json").exists())
+                trading_daemon._maybe_alert_ledger_incomplete(smaller, cfg)
+                self.assertEqual(notify.call_count, 3)
+
     def test_drawdown_above_threshold_is_silent(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, \
                 patch.object(trading_daemon, "PROJECT_ROOT", Path(tmp)), \

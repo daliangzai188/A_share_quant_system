@@ -119,5 +119,48 @@ class BrokerExitEvidenceTest(unittest.TestCase):
             build_broker_evidence_plan(positions, [self.record])
 
 
+class UnverifiedExitReplacementTest(unittest.TestCase):
+    """2026-08-18共进股份卖出价按买入价19.26占位，必须能用券商记录显式替换。"""
+
+    def setUp(self) -> None:
+        self.positions = [{
+            "order_id": "l-1", "buy_date": "20260817", "ts_code": "603118.SH", "name": "共进股份",
+            "signal_date": "20260814", "strategy_leg": "L", "entry_shares": 11800, "shares": 0,
+            "status": "closed", "sell_date": "20260818", "sell_price": 19.26,
+            "exit_fills_by_date": {"20260818": {"qty": 11800, "amount": 227268.00000000003}},
+        }]
+        self.record = {
+            "evidence_id": "broker-20260818-603118", "entry_date": "20260817", "ts_code": "603118.SH",
+            "name": "共进股份", "strategy_leg": "L", "signal_date": "20260814", "exit_date": "20260818",
+            "exit_time": "14:55:01", "filled_qty": 11800, "displayed_fill_price": 18.910,
+            "fill_amount": 223138.00, "fee": 290.08, "net_sell_amount": 222847.92,
+        }
+
+    def test_recorded_amount_is_not_replaced_silently(self) -> None:
+        with self.assertRaisesRegex(BrokerExitEvidenceError, "replaces_recorded_exit_amount"):
+            build_broker_evidence_plan(self.positions, [self.record])
+
+    def test_replacement_must_name_the_exact_recorded_amount(self) -> None:
+        wrong = {**self.record, "replaces_recorded_exit_amount": 227000.00}
+        with self.assertRaisesRegex(BrokerExitEvidenceError, "待替换金额与账上不一致"):
+            build_broker_evidence_plan(self.positions, [wrong])
+
+    def test_exact_replacement_writes_broker_amount_and_audit(self) -> None:
+        record = {**self.record, "replaces_recorded_exit_amount": 227268.00}
+        plans = build_broker_evidence_plan(self.positions, [record])
+        updated = apply_broker_evidence_plan(self.positions, plans, applied_at="2026-10-03T12:00:00+08:00")
+        self.assertEqual(updated[0]["exit_fills_by_date"], {"20260818": {"qty": 11800, "amount": 223138.0}})
+        self.assertAlmostEqual(updated[0]["sell_price"], 18.91)
+        self.assertEqual(updated[0]["manual_exit_evidence"]["replaced_recorded_exit_amount"], 227268.0)
+        again = build_broker_evidence_plan(updated, [record])
+        self.assertEqual(len(again), 1, "同一证据重复演练必须幂等")
+
+    def test_replacement_field_rejected_when_nothing_recorded(self) -> None:
+        self.positions[0]["exit_fills_by_date"] = {}
+        record = {**self.record, "replaces_recorded_exit_amount": 227268.00}
+        with self.assertRaisesRegex(BrokerExitEvidenceError, "没有可替换"):
+            build_broker_evidence_plan(self.positions, [record])
+
+
 if __name__ == "__main__":
     unittest.main()
