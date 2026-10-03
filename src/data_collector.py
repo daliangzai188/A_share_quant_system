@@ -29,6 +29,7 @@ class DataCollector:
         data_config = self.config["data"]
         self.daily_dir = self.project_root / data_config.get("daily_dir", "data/raw/daily")
         self.daily_basic_dir = self.project_root / data_config.get("daily_basic_dir", "data/raw/daily_basic")
+        self.daily_basic_incomplete_dates: list[str] = []
         self.adj_factor_dir = self.project_root / data_config.get(
             "adj_factor_dir", "data/raw/adj_factor"
         )
@@ -145,11 +146,45 @@ class DataCollector:
         self.logger.info("保存日线行情: %s, 行数: %s, 用时 %.1f 秒", output_path, len(daily), time.monotonic() - started)
         return True
 
+    def daily_basic_null_ratios(self, frame: pd.DataFrame) -> dict[str, float]:
+        """每日基本面关键字段的空值率；字段整列不存在按100%计。"""
+
+        required = self.config.get("collection", {}).get(
+            "daily_basic_required_complete", ["volume_ratio", "turnover_rate_f", "free_share"]
+        )
+        if frame.empty:
+            return {str(column): 1.0 for column in required}
+        return {
+            str(column): (float(frame[column].isna().mean()) if column in frame.columns else 1.0)
+            for column in required
+        }
+
+    def daily_basic_is_complete(self, frame: pd.DataFrame) -> bool:
+        """Tushare 当日 daily_basic 先发布换手率等字段，量比/自由流通字段约16:00后才填充。
+
+        只看"有没有数据行"会把15:52拉到的半成品永久留在本地（2026-07-31~09-30量比全空）。
+        关键字段空值率不超过阈值才算完整。
+        """
+
+        limit = float(self.config.get("collection", {}).get("daily_basic_max_null_ratio", 0.05))
+        return all(ratio <= limit for ratio in self.daily_basic_null_ratios(frame).values())
+
+    def _should_skip_daily_basic_file(self, output_path: Path, overwrite: bool) -> bool:
+        """与涨停明细同一口径：文件存在且关键字段完整才跳过，半成品下次运行自动重拉。"""
+
+        if not self._should_skip(output_path, overwrite):
+            return False
+        try:
+            existing = pd.read_csv(output_path, dtype={"ts_code": str})
+        except (OSError, pd.errors.EmptyDataError, ValueError):
+            return False
+        return self.daily_basic_is_complete(existing)
+
     def collect_daily_basic_by_date(self, trade_date: str, overwrite: bool = False) -> bool:
         output_path = self.daily_basic_dir / f"{trade_date}.csv"
         self.logger.info("检查本地每日基本面文件: %s", output_path)
-        if self._should_skip(output_path, overwrite):
-            self.logger.info("跳过每日基本面: %s 已存在且有数据", output_path)
+        if self._should_skip_daily_basic_file(output_path, overwrite):
+            self.logger.info("跳过每日基本面: %s 已存在且关键字段完整", output_path)
             return False
 
         fields = self.config["collection"].get("daily_basic_fields")
@@ -165,6 +200,14 @@ class DataCollector:
             return False
         self._save_dataframe(daily_basic, output_path)
         self.logger.info("保存每日基本面: %s, 行数: %s, 用时 %.1f 秒", output_path, len(daily_basic), time.monotonic() - started)
+        if not self.daily_basic_is_complete(daily_basic):
+            ratios = {key: f"{value:.0%}" for key, value in self.daily_basic_null_ratios(daily_basic).items()}
+            self.daily_basic_incomplete_dates.append(str(trade_date))
+            self.logger.warning(
+                "每日基本面 %s 关键字段尚未填充完整 %s（Tushare约16:00后补齐），已先保存，下次运行会自动重拉",
+                trade_date,
+                ratios,
+            )
         return True
 
     def collect_adj_factor_data(

@@ -43,6 +43,7 @@
     "lag_trading_days": 6,
     "parameter_note": "60日均线与滞后6个交易日为2026-09-19研究前写死的参数；年度复核也不得调整（见docs/equity_curve_stop.md）。",
     "history_start": "20190101",
+    "research_max_volume_ratio_null": 0.5,
     "decision_path": "data/state/equity_curve_stop_decision.json",
     "shadow_nav_path": "reports/equity_curve_stop/shadow_nav_latest.csv",
     "work_dir": "",
@@ -441,6 +442,9 @@
   "collection": {
     "daily_fields": "ts_code,trade_date,open,high,low,close,pre_close,change,pct_chg,vol,amount",
     "daily_basic_fields": "ts_code,trade_date,turnover_rate,turnover_rate_f,volume_ratio,pe,pe_ttm,pb,ps,ps_ttm,dv_ratio,dv_ttm,total_share,float_share,free_share,total_mv,circ_mv",
+    "daily_basic_required_complete": ["volume_ratio", "turnover_rate_f", "free_share"],
+    "daily_basic_max_null_ratio": 0.05,
+    "daily_basic_completeness_note": "Tushare当日daily_basic先发布换手率等字段，量比与自由流通字段约16:00后才填充；收盘流水线15:52采集到的是半成品。关键字段空值率超过daily_basic_max_null_ratio的文件不算完整，下次运行自动重拉（2026-10-03修复：2026-06-16起自由流通字段、07-31起量比长期为空）。",
     "limit_list_fields": "trade_date,ts_code,name,close,pct_chg,amp,fc_ratio,fl_ratio,fd_amount,first_time,last_time,open_times,strth,limit,limit_order,limit_amount,turnover_rate,free_float,lu_desc,limit_times",
     "limit_type": "U",
     "enable_stk_limit_fallback": false,

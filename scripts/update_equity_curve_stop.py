@@ -71,15 +71,67 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def refresh_recent_daily_basic(signal_date: str, days: int = 10) -> list[str]:
+    """重拉最近几个交易日中关键字段不完整的每日基本面（完整的文件会被跳过）。
+
+    收盘流水线①在15:52左右采集，此时Tushare的量比尚未填充；⑬约在17:50运行，
+    这里再拉一次，让研究池与影子账用上已经发布的完整数据。
+    """
+
+    from src.data_collector import DataCollector
+    from src.data_source import TushareDataSource
+
+    config_path = PROJECT_ROOT / "config" / "config.json"
+    collector = DataCollector(data_source=TushareDataSource(config_path=config_path), config_path=config_path)
+    calendar_path = PROJECT_ROOT / "data" / "raw" / "trade_calendar.csv"
+    recent = [date for date in open_dates_from_calendar(calendar_path) if date <= str(signal_date)][-int(days):]
+    for date in recent:
+        collector.collect_daily_basic_by_date(trade_date=date, overwrite=False)
+    return list(collector.daily_basic_incomplete_dates)
+
+
+def check_volume_ratio_coverage(feature_path: Path, signal_date: str, max_null_ratio: float) -> list[str]:
+    """研究池量比覆盖率门禁：除最新信号日外，任何一天整列缺失都直接报错。
+
+    2026-07-31~09-30 量比全空却无人察觉，影子账因此缺了依赖量比的E腿规则。
+    最新信号日若Tushare仍未发布只告警：它只影响6个交易日之后的停手判定，下次运行会补齐。
+    """
+
+    pool = pd.read_csv(feature_path, usecols=["trade_date", "volume_ratio"], dtype={"trade_date": str})
+    ratios = pool.groupby(pool["trade_date"].astype(str))["volume_ratio"].apply(lambda s: float(s.isna().mean()))
+    bad = [date for date, ratio in ratios.items() if ratio > float(max_null_ratio) and date != str(signal_date)]
+    if bad:
+        raise RuntimeError(
+            f"研究池量比缺失{len(bad)}个交易日（{bad[0]}~{bad[-1]}），影子账会漏算依赖量比的E腿规则；"
+            "请先补齐 data/raw/daily_basic 后重跑⑬"
+        )
+    latest = ratios.get(str(signal_date))
+    if latest is not None and latest > float(max_null_ratio):
+        print(f"EQUITY_CURVE_STOP_VOLUME_RATIO_PENDING {signal_date} 空值率{latest:.0%}，下次运行补齐", flush=True)
+        return [str(signal_date)]
+    return []
+
+
 def build_dataset(settings, signal_date: str) -> Path:
     from src.five_year_research import FiveYearResearchDatasetBuilder
 
     config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+    try:
+        pending = refresh_recent_daily_basic(signal_date)
+        if pending:
+            print(f"EQUITY_CURVE_STOP_DAILY_BASIC_INCOMPLETE {','.join(pending)}", flush=True)
+    except Exception as exc:  # 重拉失败不阻断：由下面的覆盖率门禁决定能否继续
+        print(f"EQUITY_CURVE_STOP_DAILY_BASIC_REFRESH_FAILED {type(exc).__name__}: {exc}", flush=True)
     amount = float(config.get("fill_model", {}).get("default_planned_buy_amount", 412_500))
     root = settings.work_dir / "dataset"
     builder = FiveYearResearchDatasetBuilder(research_root=root)
     builder.build_base_tables(start_date=settings.history_start, end_date=signal_date, overwrite=True)
     builder.build_strict_features(amount)
+    check_volume_ratio_coverage(
+        root / "strict_feature_pool.csv",
+        signal_date,
+        float((config.get("equity_curve_stop", {}) or {}).get("research_max_volume_ratio_null", 0.5)),
+    )
     return root
 
 
