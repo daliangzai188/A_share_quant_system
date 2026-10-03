@@ -17,6 +17,13 @@
 `native_acceptance.json`、`transport_selection.json`、`tests_windows.json`、`migration_status.json`。
 不得将以上只读验收描述为真实委托闭环验收通过。
 
+## 环境要求：关闭QMT客户端定时重启（2026-10-03）
+
+QMT默认每天按资金账号 `Config.xml` 的 `TradeSetting restarttimelist` 整进程重启并自动登录；
+自动登录失败（节假日券商服务器不可用、需要验证码）时停在登录框，内置模型不运行，桥接断到人工登录
+（2026-09-15~09-28共4次，两次跨过开盘，详见 `docs/incident_20260922_inner_bridge_outage.md`）。
+必须保持 `restart="0"`；daemon每天08:30晨检和启动时核对，打开或无法确认即推送告警。
+
 ## 2026-09-15 文件通道断链根因修复
 
 - 现象：账户查询间歇报 `Permission denied`，旧逻辑随即重置适配器；通知有 300 秒节流，界面上表现为约每 5 分钟一次“账户断连”。

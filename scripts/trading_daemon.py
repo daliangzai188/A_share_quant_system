@@ -6386,6 +6386,8 @@ def _daily_calendar_sentinel() -> None:
                     log.info("✅ 晨检(08:30)：今天 %s 是交易日（真实日历确认），今日交易任务照常。", today_str)
                 else:
                     log.info("💤 晨检(08:30)：今天 %s 非交易日（周末/节假日休市），全天交易任务自动跳过。", today_str)
+                # 节假日也查：定时重启叠加券商服务器停机正是长时间掉线的场景。
+                _check_qmt_scheduled_restart(log)
         except Exception as e:
             logger().error("晨检线程异常：%s", e)
         # 睡到下一个08:30（当天已过则次日），上限1小时防时钟跳变
@@ -13502,6 +13504,58 @@ def _alert_if_stop_decision_stale(target_str: str, failed_steps: list[str]) -> N
     )
 
 
+def _running_on_windows() -> bool:
+    return os.name == "nt"
+
+
+def _qmt_install_root() -> Path | None:
+    """QMT安装目录 = QMT_PATH（userdata_mini）的上一级；未配置时返回None。"""
+    try:
+        config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+        env_name = str(config.get("broker", {}).get("qmt_path_env", "QMT_PATH") or "QMT_PATH")
+    except Exception:
+        env_name = "QMT_PATH"
+    raw = os.getenv(env_name, "").strip()
+    return Path(raw).parent if raw else None
+
+
+def _check_qmt_scheduled_restart(log: Any) -> bool:
+    """每天晨检和daemon启动时核对QMT客户端定时重启必须关闭；打开或无法确认就报警。
+
+    2026-09-15~09-28 QMT按定时重启设置每天08:50/20:52整进程重启并自动登录，
+    节假日券商服务器不可用或需要验证码时停在登录框，内置桥接4次断到人工登录
+    （两次跨过开盘）。9/28后该设置为关闭，再未发生。QMT升级或误操作可能把它
+    重新打开，必须第一时间知道。返回是否确认已关闭。
+    """
+    if not _running_on_windows():
+        return True
+    try:
+        from src.qmt_client_probe import read_scheduled_restart_settings, scheduled_restart_problem
+
+        root = _qmt_install_root()
+        problem = (
+            "未配置QMT_PATH，无法找到QMT安装目录确认定时重启已关闭"
+            if root is None
+            else scheduled_restart_problem(read_scheduled_restart_settings(root))
+        )
+    except Exception as exc:
+        problem = f"读取QMT定时重启设置失败：{exc}"
+    if not problem:
+        log.info("✅ QMT客户端定时重启已关闭（不会在08:50/20:52自行重启）。")
+        return True
+    log.error("⚠️ %s", problem)
+    _notify_once_per(
+        "qmt_scheduled_restart_on",
+        12 * 3600,
+        "⚠️ QMT客户端定时重启没有关闭",
+        f"{problem}。重启后自动登录一旦失败（节假日服务器不可用、需要验证码），"
+        "客户端会停在登录框、内置桥接一直断开。请在QMT设置里关闭定时重启，"
+        "并告诉Claude核对。",
+        level="timeSensitive",
+    )
+    return False
+
+
 def _alert_post_market_not_completed(date_str: str, cutoff_hour: int) -> None:
     """收盘流水线到截止时间仍未完成：停手判定和临时复核检查可能都没跑。"""
     try:
@@ -17906,6 +17960,8 @@ def main() -> None:
     # 原生交易对账、分仓投影及孤儿成交恢复成功后，超出买入时段的POV也必须
     # 写入终态和真实金额；不能把异常退出留下的任务永久展示为仍在执行。
     _finalize_expired_pov_for_startup()
+
+    _check_qmt_scheduled_restart(log)
 
     # ── 启动时立刻执行平仓检查 ────────────────────────────────────────────────
     log.info("启动检查：扫描逾期/待平仓持仓...")

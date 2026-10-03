@@ -132,3 +132,67 @@ class DiagnosisScriptTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ScheduledRestartSettingTests(unittest.TestCase):
+    """2026-10-03查明：QMT按TradeSetting定时整进程重启，自动登录失败就停在登录框。"""
+
+    def _tree(self, root: Path, accounts: dict[str, str]) -> None:
+        for account, trade_setting in accounts.items():
+            folder = root / "userdata" / "users" / account
+            folder.mkdir(parents=True)
+            (folder / "Config.xml").write_text(
+                f'<root><QuoterServers reconnectonlost="0"/>{trade_setting}<Page id="opt"/></root>', encoding="utf-8"
+            )
+
+    def test_reads_restart_switch_and_times_per_account_masked(self):
+        from src.qmt_client_probe import read_scheduled_restart_settings
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._tree(root, {
+                "8881234503": '<TradeSetting blacklist="" restarttimelist="085019|205204|" restarttime="085000" restart="0" m_bUseOrderId="1"/>',
+            })
+            rows = read_scheduled_restart_settings(root)
+        self.assertEqual(rows, [{"account": "***03", "restart": "0", "restarttimelist": "085019|205204|"}])
+
+    def test_problem_text_for_enabled_missing_and_absent(self):
+        from src.qmt_client_probe import scheduled_restart_problem
+
+        self.assertEqual(scheduled_restart_problem([{"account": "***03", "restart": "0", "restarttimelist": "085019|205204|"}]), "")
+        enabled = scheduled_restart_problem([{"account": "***03", "restart": "1", "restarttimelist": "085019|205204|"}])
+        self.assertIn("已开启", enabled)
+        self.assertIn("08:50:19、20:52:04", enabled)
+        self.assertIn("未明确关闭", scheduled_restart_problem([{"account": "***03", "restart": "", "restarttimelist": ""}]))
+        self.assertIn("没有找到", scheduled_restart_problem([]))
+
+    def test_daemon_alerts_when_switch_is_on_and_stays_quiet_when_off(self):
+        from unittest.mock import MagicMock, patch
+        import src.qmt_client_probe as probe
+        from scripts import trading_daemon as daemon
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._tree(root, {"8881234503": '<TradeSetting restarttimelist="085019|205204|" restart="1"/>'})
+            with patch.object(daemon, "_running_on_windows", return_value=True), patch.object(daemon, "_qmt_install_root", return_value=root), \
+                    patch.object(daemon, "_notify_once_per", return_value=True) as alert:
+                self.assertFalse(daemon._check_qmt_scheduled_restart(MagicMock()))
+            alert.assert_called_once()
+            self.assertEqual(alert.call_args.args[0], "qmt_scheduled_restart_on")
+            self.assertIn("08:50:19、20:52:04", alert.call_args.args[3])
+            (root / "userdata" / "users" / "8881234503" / "Config.xml").write_text(
+                '<root><TradeSetting restarttimelist="085019|205204|" restart="0"/></root>', encoding="utf-8")
+            with patch.object(daemon, "_running_on_windows", return_value=True), patch.object(daemon, "_qmt_install_root", return_value=root), \
+                    patch.object(daemon, "_notify_once_per") as alert:
+                self.assertTrue(daemon._check_qmt_scheduled_restart(MagicMock()))
+            alert.assert_not_called()
+        self.assertTrue(probe.scheduled_restart_problem([]))
+
+    def test_unconfigured_path_is_reported_not_ignored(self):
+        from unittest.mock import MagicMock, patch
+        from scripts import trading_daemon as daemon
+
+        with patch.object(daemon, "_running_on_windows", return_value=True), patch.object(daemon, "_qmt_install_root", return_value=None), \
+                patch.object(daemon, "_notify_once_per", return_value=True) as alert:
+            self.assertFalse(daemon._check_qmt_scheduled_restart(MagicMock()))
+        self.assertIn("QMT_PATH", alert.call_args.args[3])

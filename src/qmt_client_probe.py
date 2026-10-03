@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import os
+from pathlib import Path
 import re
 from typing import Any
 
@@ -189,3 +190,46 @@ def describe_processes(processes: list[dict[str, Any]] | None) -> str:
         titles = "、".join(item.get("window_titles") or []) or "无可见窗口"
         parts.append(f"pid={item.get('pid')} 启动={started_text} 窗口=[{titles}]")
     return "；".join(parts)
+
+
+# ---------------------------------------------------------------- 客户端定时重启设置
+
+_TRADE_SETTING = re.compile(r"<TradeSetting\b[^>]*>", re.S)
+_ATTR = re.compile(r'\b(restart|restarttimelist)="([^"]*)"')
+
+
+def read_scheduled_restart_settings(qmt_root: Path) -> list[dict[str, str]]:
+    """读取各资金账号Config.xml里的客户端定时重启设置（只读）。
+
+    2026-10-03查明：QMT每天按TradeSetting的restarttimelist整进程重启并自动重新登录；
+    自动登录失败（节假日券商服务器不可用、需要验证码）时停在登录框，内置模型不再运行，
+    桥接一直断到人工登录。restart="0"才是关闭；账号配置里缺这一项时按模板默认（开启）处理。
+    """
+    rows: list[dict[str, str]] = []
+    for path in sorted((Path(qmt_root) / "userdata" / "users").glob("*/Config.xml")):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        match = _TRADE_SETTING.search(text)
+        attrs = dict(_ATTR.findall(match.group(0))) if match else {}
+        rows.append({
+            "account": mask_title(path.parent.name),
+            "restart": attrs.get("restart", ""),
+            "restarttimelist": attrs.get("restarttimelist", ""),
+        })
+    return rows
+
+
+def scheduled_restart_problem(rows: list[dict[str, str]]) -> str:
+    """返回需要报警的说明；全部明确关闭时返回空串。纯函数，便于离线测试。"""
+
+    if not rows:
+        return "没有找到QMT资金账号配置（userdata/users/*/Config.xml），无法确认定时重启已关闭"
+    problems = []
+    for row in rows:
+        if row["restart"] == "0":
+            continue
+        times = "、".join(
+            f"{value[:2]}:{value[2:4]}:{value[4:6]}" for value in row["restarttimelist"].split("|") if len(value) >= 6
+        ) or "默认时间"
+        state = "已开启" if row["restart"] == "1" else "未明确关闭（按默认开启）"
+        problems.append(f"账号{row['account']}定时重启{state}，每天{times}整进程重启")
+    return "；".join(problems)
