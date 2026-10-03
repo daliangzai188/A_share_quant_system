@@ -15649,11 +15649,47 @@ def _is_qmt_inner_file_transport_busy(error: BaseException) -> bool:
 # 看不到自愈（2026-09-23 08:51告警、08:52恢复却静默，用户等了71分钟才看到例行播报）。
 # 进程内保存即可：daemon若在失联期间重启，keeper会另外推“程序与账户已恢复正常”。
 _qmt_inner_outage: dict[str, Any] = {}
+# 客户端现场与失联告警同频刷新：首次失联立即查，之后每次重复告警前更新一次。
+_QMT_CLIENT_DIAGNOSIS_INTERVAL_SEC = 1800
 
 
 def _is_qmt_inner_heartbeat_stale(error: BaseException | str) -> bool:
     """兼容原始错误及连接退避包装；心跳失效不能推断为客户端崩溃或未登录。"""
     return "qmt inner bridge heartbeat is stale" in str(error).lower()
+
+
+def _qmt_client_processes() -> list[dict[str, Any]] | None:
+    from src.qmt_client_probe import list_qmt_client_processes
+
+    return list_qmt_client_processes()
+
+
+def _diagnose_qmt_client(log: Any) -> dict[str, str]:
+    """只读查看客户端进程现场并写日志，作为每次失联的证据。
+
+    2026-09-15~09-28客户端每天08:51/20:52自行重启，遇到验证码时停在登录页，
+    桥接一直断到人工登录。告警必须说清是"要人工登录"还是"模型没在运行"。
+    查询失败只记日志，不影响原有阻断和告警。
+    """
+    try:
+        from src.qmt_client_probe import classify_qmt_client_state, describe_processes
+
+        processes = _qmt_client_processes()
+        last_verified = None
+        if _qmt_last_verified_at:
+            last_verified = datetime.datetime.strptime(
+                _qmt_last_verified_at, "%Y-%m-%d %H:%M:%S"
+            ).replace(tzinfo=BEIJING_TZ)
+        diagnosis = classify_qmt_client_state(processes, last_verified_at=last_verified)
+        log.warning(
+            "QMT客户端现场：%s。%s（%s；最后验证成功=%s）",
+            diagnosis["summary"], diagnosis["action"],
+            describe_processes(processes), _qmt_last_verified_at or "本进程尚未验证成功",
+        )
+        return diagnosis
+    except Exception as exc:
+        log.warning("QMT客户端现场查询失败（不影响交易阻断）：%s", exc)
+        return {}
 
 
 def _record_qmt_inner_heartbeat_stale(error: BaseException, log: Any) -> bool:
@@ -15672,12 +15708,22 @@ def _record_qmt_inner_heartbeat_stale(error: BaseException, log: Any) -> bool:
         "请核对客户端登录和A_SYSTEM_QMT_INNER运行状态；"
         "客户端退出/模型停止的触发原因尚需另查。原始错误：%s", error,
     )
-    _qmt_inner_outage.setdefault("since_ts", time.time())
+    now_ts = time.time()
+    since_ts = float(_qmt_inner_outage.setdefault("since_ts", now_ts))
+    if now_ts - float(_qmt_inner_outage.get("diagnosed_ts") or 0.0) >= _QMT_CLIENT_DIAGNOSIS_INTERVAL_SEC:
+        _qmt_inner_outage["diagnosis"] = _diagnose_qmt_client(log)
+        _qmt_inner_outage["diagnosed_ts"] = now_ts
+    diagnosis = _qmt_inner_outage.get("diagnosis") or {}
+    if diagnosis.get("summary"):
+        scene = f"{diagnosis['summary']}。{diagnosis['action']}"
+    else:
+        scene = "请核对客户端登录和A_SYSTEM_QMT_INNER运行状态。"
+    minutes = (now_ts - since_ts) / 60.0
+    span = f"已失联{minutes:.0f}分钟" if minutes >= 1 else "刚刚失联"
     if _notify_once_per(
         "qmt_inner_heartbeat_stale", 1800,
         "🛑 内置桥接失联，交易连接未恢复",
-        "内置模型心跳已过期，系统无法验证账户，交易调用继续阻断。"
-        "外部进程重启无法解决此问题；请核对客户端登录和A_SYSTEM_QMT_INNER运行状态。"
+        f"内置模型心跳已过期（{span}），系统无法验证账户，交易调用继续阻断。{scene}"
         "系统不会因此自动退出或重启客户端。",
         level="timeSensitive",
     ):

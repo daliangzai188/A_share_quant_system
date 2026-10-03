@@ -18,6 +18,14 @@ CONFIG = {"broker_adapter_enabled": True, "qmt_enabled": True,
 
 
 class InnerBridgeOutageTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # 客户端现场只读查询在Windows上会读真实进程；这里固定为"无法查看"，结果与平台无关。
+        probe = patch.object(daemon, "_qmt_client_processes", return_value=None)
+        probe.start()
+        self.addCleanup(probe.stop)
+        daemon._qmt_inner_outage.clear()
+        self.addCleanup(daemon._qmt_inner_outage.clear)
+
     def test_stale_and_wrapped_backoff_never_request_process_restart(self):
         for error in (RuntimeError(STALE), daemon.QMTReconnectBackoffError(
                 "QMT连接失败: 完整备用path/session: " + STALE)):
@@ -144,6 +152,9 @@ class OutageRecoveryPairingTests(unittest.TestCase):
     """🛑失联告警与✅恢复必须成对：2026-09-23 08:51告警、08:52恢复却没推，用户等了71分钟。"""
 
     def setUp(self) -> None:
+        probe = patch.object(daemon, "_qmt_client_processes", return_value=None)
+        probe.start()
+        self.addCleanup(probe.stop)
         daemon._qmt_inner_outage.clear()
         self.addCleanup(daemon._qmt_inner_outage.clear)
 
@@ -200,6 +211,88 @@ class OutageRecoveryPairingTests(unittest.TestCase):
         self.assertEqual(titles.count("✅ 内置桥接已恢复，交易连接正常"), 1)
         self.assertNotIn("✅ 账户重连成功", titles)
         self.assertEqual(daemon._qmt_inner_outage, {})
+
+
+class OutageClientSceneTests(unittest.TestCase):
+    """2026-09-21 20:52客户端自行重启后停在验证码登录页，告警必须说清要人工登录。"""
+
+    def setUp(self) -> None:
+        health = patch.object(daemon, "write_broker_health")
+        health.start()
+        self.addCleanup(health.stop)
+        daemon._qmt_inner_outage.clear()
+        self.addCleanup(daemon._qmt_inner_outage.clear)
+
+    def test_alert_names_login_page_and_logs_process_scene(self):
+        processes = [{
+            "pid": 7, "exe": "XtItClient.exe",
+            "started_at": datetime.datetime(2026, 9, 21, 20, 52, 24, tzinfo=daemon.BEIJING_TZ),
+            "window_titles": ["国金证券QMT交易端 登录"],
+        }]
+        log = MagicMock()
+        with patch.object(daemon, "_qmt_client_processes", return_value=processes), patch.object(
+                daemon, "_qmt_last_verified_at", "2026-09-21 20:51:50"), patch.object(
+                daemon, "_notify_once_per", return_value=True) as alert:
+            self.assertTrue(daemon._record_qmt_inner_heartbeat_stale(RuntimeError(STALE), log))
+        body = alert.call_args.args[3]
+        self.assertIn("停在登录窗口", body)
+        self.assertIn("手动登录", body)
+        self.assertIn("刚刚失联", body)
+        self.assertIn("交易调用继续阻断", body)
+        scene = [c for c in log.warning.call_args_list if "QMT客户端现场" in c.args[0]]
+        self.assertEqual(len(scene), 1)
+        self.assertIn("pid=7", scene[0].args[3])
+        self.assertIn("2026-09-21 20:52:24", scene[0].args[3])
+
+    def test_restarted_client_is_named_with_restart_time(self):
+        processes = [{
+            "pid": 8, "exe": "XtItClient.exe",
+            "started_at": datetime.datetime(2026, 9, 23, 8, 50, 40, tzinfo=daemon.BEIJING_TZ),
+            "window_titles": ["国金证券QMT交易端"],
+        }]
+        with patch.object(daemon, "_qmt_client_processes", return_value=processes), patch.object(
+                daemon, "_qmt_last_verified_at", "2026-09-23 08:50:01"), patch.object(
+                daemon, "_notify_once_per", return_value=True) as alert:
+            daemon._record_qmt_inner_heartbeat_stale(RuntimeError(STALE), MagicMock())
+        self.assertIn("08:50:40重新启动", alert.call_args.args[3])
+
+    def test_scene_refreshes_with_alert_cadence_not_every_minute(self):
+        probe = MagicMock(return_value=[])
+        with patch.object(daemon, "_qmt_client_processes", probe), patch.object(
+                daemon, "_notify_once_per", return_value=False):
+            daemon._record_qmt_inner_heartbeat_stale(RuntimeError(STALE), MagicMock())
+            daemon._record_qmt_inner_heartbeat_stale(RuntimeError(STALE), MagicMock())
+            self.assertEqual(probe.call_count, 1)
+            daemon._qmt_inner_outage["diagnosed_ts"] -= daemon._QMT_CLIENT_DIAGNOSIS_INTERVAL_SEC
+            daemon._record_qmt_inner_heartbeat_stale(RuntimeError(STALE), MagicMock())
+            self.assertEqual(probe.call_count, 2)
+
+    def test_repeat_alert_reports_outage_duration(self):
+        with patch.object(daemon, "_qmt_client_processes", return_value=None), patch.object(
+                daemon, "_notify_once_per", return_value=True) as alert:
+            daemon._record_qmt_inner_heartbeat_stale(RuntimeError(STALE), MagicMock())
+            daemon._qmt_inner_outage["since_ts"] -= 95 * 60
+            daemon._record_qmt_inner_heartbeat_stale(RuntimeError(STALE), MagicMock())
+        self.assertIn("已失联95分钟", alert.call_args.args[3])
+
+    def test_probe_failure_never_breaks_blocking_or_alert(self):
+        with patch.object(daemon, "_qmt_client_processes", side_effect=OSError("access denied")), patch.object(
+                daemon, "write_broker_health") as health, patch.object(
+                daemon, "_notify_once_per", return_value=True) as alert:
+            self.assertTrue(daemon._record_qmt_inner_heartbeat_stale(RuntimeError(STALE), MagicMock()))
+        self.assertEqual(health.call_args.args[0], "unavailable")
+        self.assertIn("核对客户端登录", alert.call_args.args[3])
+        self.assertTrue(daemon._qmt_inner_outage.get("alerted"))
+
+    def test_recovery_clears_scene_so_next_outage_probes_again(self):
+        probe = MagicMock(return_value=None)
+        with patch.object(daemon, "_qmt_client_processes", probe), patch.object(
+                daemon, "_notify_once_per", return_value=True), patch.object(
+                daemon, "_notify", return_value=True):
+            daemon._record_qmt_inner_heartbeat_stale(RuntimeError(STALE), MagicMock())
+            daemon._notify_qmt_inner_outage_recovered(MagicMock())
+            daemon._record_qmt_inner_heartbeat_stale(RuntimeError(STALE), MagicMock())
+        self.assertEqual(probe.call_count, 2)
 
 
 if __name__ == "__main__":
