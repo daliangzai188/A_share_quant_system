@@ -162,5 +162,40 @@ class UnverifiedExitReplacementTest(unittest.TestCase):
             build_broker_evidence_plan(self.positions, [record])
 
 
+class FeeNotVisibleTest(unittest.TestCase):
+    """2026-10-03用户提供的同花顺“按股票”历史成交只显示均价、数量、成交额。"""
+
+    def setUp(self) -> None:
+        self.positions = [{
+            "order_id": "c-1", "buy_date": "20260915", "ts_code": "600876.SH", "name": "凯盛新能",
+            "signal_date": "20260914", "strategy_leg": "C", "entry_shares": 8000, "shares": 8000,
+            "status": "closed", "sell_date": "20260916", "sell_price": 0.0, "exit_fills_by_date": {},
+        }]
+        self.record = {
+            "evidence_id": "ths-history-20260916-600876-8000", "entry_date": "20260915",
+            "ts_code": "600876.SH", "name": "凯盛新能", "strategy_leg": "C", "signal_date": "20260914",
+            "exit_date": "20260916", "exit_time": "", "filled_qty": 8000,
+            "displayed_fill_price": 8.571, "fill_amount": 68570.00,
+        }
+
+    def test_fee_and_net_may_both_be_absent_and_are_marked_not_visible(self) -> None:
+        plans = build_broker_evidence_plan(self.positions, [self.record])
+        updated = apply_broker_evidence_plan(self.positions, plans, applied_at="2026-10-03T13:00:00+08:00")
+        evidence = updated[0]["manual_exit_evidence"]
+        self.assertIsNone(evidence["fee"])
+        self.assertIsNone(evidence["net_sell_amount"])
+        self.assertEqual(evidence["fee_status"], "NOT_VISIBLE_IN_SCREENSHOT")
+        self.assertEqual(updated[0]["exit_fills_by_date"], {"20260916": {"qty": 8000, "amount": 68570.0}})
+
+    def test_only_one_of_fee_and_net_is_rejected(self) -> None:
+        with self.assertRaisesRegex(BrokerExitEvidenceError, "同时"):
+            build_broker_evidence_plan(self.positions, [{**self.record, "fee": 70.0}])
+
+    def test_provided_fee_is_still_checked(self) -> None:
+        bad = {**self.record, "fee": 70.0, "net_sell_amount": 68000.0}
+        with self.assertRaisesRegex(BrokerExitEvidenceError, "不一致"):
+            build_broker_evidence_plan(self.positions, [bad])
+
+
 if __name__ == "__main__":
     unittest.main()

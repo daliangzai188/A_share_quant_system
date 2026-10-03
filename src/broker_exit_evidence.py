@@ -5,6 +5,9 @@
 
 已有退出金额但未经券商核验（例如2026-08-18共进股份按买入价占位）时，证据必须用
 replaces_recorded_exit_amount 写明账上现有金额，逐分核对一致才允许替换，并留审计。
+
+券商App“按股票”视图只显示成交均价、成交量、成交额时，手续费和发生金额可以同时
+缺省，记为“截图未显示”，不得补造；账本盈亏本来就按统一费率估算费用。
 """
 from __future__ import annotations
 
@@ -85,8 +88,8 @@ class NormalizedExitEvidence:
     displayed_fill_price: Decimal
     displayed_price_decimals: int
     fill_amount: Decimal
-    fee: Decimal
-    net_sell_amount: Decimal
+    fee: Decimal | None
+    net_sell_amount: Decimal | None
     source: str
     evidence_file: str
     evidence_sha256: str
@@ -111,11 +114,17 @@ def normalize_exit_evidence(raw: Mapping[str, Any]) -> NormalizedExitEvidence:
     if decimals < 0 or decimals > 6:
         raise BrokerExitEvidenceError("displayed_price_decimals必须在0到6之间")
     fill_amount = _money(raw.get("fill_amount"), "fill_amount")
-    fee = _money(raw.get("fee", 0), "fee", allow_zero=True)
-    net_amount = _money(raw.get("net_sell_amount"), "net_sell_amount")
-    money_tolerance = Decimal("0.02")
-    if abs(fill_amount - fee - net_amount) > money_tolerance:
-        raise BrokerExitEvidenceError("成交金额-税费与累计卖出金额不一致")
+    fee_missing = raw.get("fee") in (None, "")
+    net_missing = raw.get("net_sell_amount") in (None, "")
+    if fee_missing != net_missing:
+        raise BrokerExitEvidenceError("手续费与发生金额必须同时提供，或截图都未显示时同时缺省")
+    if fee_missing:
+        fee = net_amount = None
+    else:
+        fee = _money(raw.get("fee"), "fee", allow_zero=True)
+        net_amount = _money(raw.get("net_sell_amount"), "net_sell_amount")
+        if abs(fill_amount - fee - net_amount) > Decimal("0.02"):
+            raise BrokerExitEvidenceError("成交金额-税费与累计卖出金额不一致")
     price_tolerance = Decimal("0.5") * (Decimal(10) ** -decimals)
     if abs(fill_amount / Decimal(quantity) - displayed_price) > price_tolerance:
         raise BrokerExitEvidenceError("截图显示均价与成交金额/数量不符合显示精度")
@@ -145,8 +154,11 @@ def normalize_exit_evidence(raw: Mapping[str, Any]) -> NormalizedExitEvidence:
         displayed_fill_price=displayed_price,
         displayed_price_decimals=decimals,
         fill_amount=fill_amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
-        fee=fee.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
-        net_sell_amount=net_amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
+        fee=None if fee is None else fee.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
+        net_sell_amount=(
+            None if net_amount is None
+            else net_amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        ),
         source=_text(raw.get("source")) or "券商成交截图",
         evidence_file=_text(raw.get("evidence_file")),
         evidence_sha256=digest,
@@ -288,8 +300,11 @@ def apply_broker_evidence_plan(
                 "displayed_price_decimals": evidence.displayed_price_decimals,
                 "group_filled_qty": evidence.filled_qty,
                 "group_fill_amount": float(evidence.fill_amount),
-                "fee": float(evidence.fee),
-                "net_sell_amount": float(evidence.net_sell_amount),
+                "fee": None if evidence.fee is None else float(evidence.fee),
+                "net_sell_amount": (
+                    None if evidence.net_sell_amount is None else float(evidence.net_sell_amount)
+                ),
+                "fee_status": "PROVIDED" if evidence.fee is not None else "NOT_VISIBLE_IN_SCREENSHOT",
                 "replaced_recorded_exit_amount": (
                     float(evidence.replaces_recorded_exit_amount)
                     if evidence.replaces_recorded_exit_amount is not None else None
