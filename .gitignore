@@ -115,3 +115,20 @@ reports/runtime_state_backup/
 
 # Windows/Mac运行守护状态由本机定时任务持续覆盖，包含本机路径和任务状态
 reports/runtime/
+
+# 干净克隆所需的小型历史参考输入；仅放行这些具名文件，不放行实盘账本或大量行情。
+!data/raw/trade_calendar.csv
+!data/processed/fill_rate_table.csv
+!data/processed/fill_rate_fallback.csv
+!data/raw/stock_basic/
+data/raw/stock_basic/*
+!data/raw/stock_basic/stock_basic_all.csv
+!data/research/strategy_d_intraday/minute_target_manifest.csv
+!data/research/strategy_d_intraday/mother_pool.csv
+!data/research/strategy_d_intraday/mother_pool_full_window.csv
+!data/research/strategy_d_intraday/minute_target_manifest_full_window.csv
+!reports/ac_daily_candidates/ac_daily_candidates.csv
+!reports/strategy_expansion/abcd_expansion_selected_e2_equity_curve.csv
+!reports/strategy_d/d_daily_candidates.csv
+!reports/strategy_e_samples/e_r1_daily_candidates_full.csv
+!reports/current_portfolio_alignment/strict_asof_portfolio_report.md

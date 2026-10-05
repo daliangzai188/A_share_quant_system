@@ -1,0 +1,14 @@
+# 克隆参考输入保持原始字节，避免 Windows 自动换行转换改变冻结文件哈希。
+data/raw/trade_calendar.csv -text
+data/processed/fill_rate_table.csv -text
+data/processed/fill_rate_fallback.csv -text
+data/raw/stock_basic/stock_basic_all.csv -text
+data/research/strategy_d_intraday/minute_target_manifest.csv -text
+data/research/strategy_d_intraday/mother_pool.csv -text
+data/research/strategy_d_intraday/mother_pool_full_window.csv -text
+data/research/strategy_d_intraday/minute_target_manifest_full_window.csv -text
+reports/ac_daily_candidates/ac_daily_candidates.csv -text
+reports/strategy_expansion/abcd_expansion_selected_e2_equity_curve.csv -text
+reports/strategy_d/d_daily_candidates.csv -text
+reports/strategy_e_samples/e_r1_daily_candidates_full.csv -text
+reports/current_portfolio_alignment/strict_asof_portfolio_report.md -text
