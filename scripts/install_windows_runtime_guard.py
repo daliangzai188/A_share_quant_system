@@ -18,6 +18,13 @@ REPORT_PATH = PROJECT_ROOT / "reports" / "runtime" / "windows_runtime_guard.json
 
 
 def _powershell(script: str) -> subprocess.CompletedProcess[str]:
+    # Windows PowerShell 5.1 uses the console code page for redirected output.
+    # Match the UTF-8 decoder below before emitting Chinese errors or JSON.
+    script = (
+        "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)\n"
+        "$OutputEncoding = [Console]::OutputEncoding\n"
+        + script
+    )
     return subprocess.run(
         [
             "powershell.exe",
@@ -153,6 +160,12 @@ $sessionInfo = Get-ScheduledTaskInfo -TaskName {session_name}
 
 
 def main() -> int:
+    # The parent launcher captures this process with a UTF-8 decoder. Without
+    # this, a GBK stdout pipe can raise while printing the original exception.
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="backslashreplace")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--status", action="store_true", help="只检查，不安装或修改")
     args = parser.parse_args()

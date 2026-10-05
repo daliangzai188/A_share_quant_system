@@ -13,7 +13,21 @@ def assert_selected_transport_ready(project_root: str | Path) -> dict[str, Any]:
     miniQMT 配置保留原来的启动流程。
     """
 
-    transport = (os.getenv("QMT_TRANSPORT", "miniqmt") or "miniqmt").strip().lower()
+    explicit_transport = os.getenv("QMT_TRANSPORT", "").strip().lower()
+    if not explicit_transport:
+        from qmt_inner.protocol import config_path
+
+        try:
+            inner_configured = config_path().is_file()
+        except RuntimeError:
+            inner_configured = False
+        if inner_configured:
+            raise RuntimeError(
+                "本机已有QMT内置配置，但未明确设置QMT_TRANSPORT。"
+                "请恢复原项目.env并设置QMT_TRANSPORT=qmt_inner；"
+                "人工停机标记保持不变。"
+            )
+    transport = explicit_transport or "miniqmt"
     if transport != "qmt_inner":
         return {"transport": transport, "checked": False}
 
