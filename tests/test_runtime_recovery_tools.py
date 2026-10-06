@@ -123,9 +123,10 @@ class EnsureWindowsRuntimeTest(unittest.TestCase):
             / "install_windows_runtime_guard.py"
         ).read_text(encoding="utf-8")
         self.assertIn("A_System_SessionStabilityGuard", installer)
-        self.assertIn("configure_windows_session_stability.ps1", installer)
+        self.assertIn("windows_session_awake_guard.py", installer)
+        self.assertNotIn("configure_windows_session_stability.ps1", installer)
         self.assertIn("Daily -At '07:50'", installer)
-        self.assertIn("-RunLevel Highest", installer)
+        self.assertIn("-RunLevel Limited", installer)
         self.assertIn('automatic_recovery = "--automatic-recovery" in sys.argv', source)
         self.assertIn("clear_manual_stop(root)", source)
 

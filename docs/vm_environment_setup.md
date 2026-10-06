@@ -2,6 +2,8 @@
 
 > 适用场景:①新 Mac 搬家(拷贝虚拟机 或 从零重建);②Fusion/UTM 宿主对比实验;③灾难恢复。
 > 2026-07-10 首版。核心原则:**代码与数据都在 Syncthing 同步网里,虚拟机只是可重建的壳**。
+> 2026-10 当前重建入口以 [新 Mac 重建与迁移](new_mac_rebuild_migration.md) 第八节和 [配置清单](../config/new_machine_profile.json) 为准。
+> 当前使用完整 QMT 的 `qmt_inner`；外部 Python 不要求 xtquant。首次部署只读，锁屏与息屏允许，使用独立防空闲休眠守护。
 
 ---
 
@@ -37,14 +39,14 @@
 
 ### Windows 通用初始化
 - 本地账户即可;时区 **UTC+8 北京**,勾选自动同步时间(交易系统对时间敏感!);
-- 电源设置:永不睡眠、永不关屏;
+- 电源设置:允许锁屏和关屏，按新机重建说明安装防空闲休眠守护;
 - Windows Update 打完补丁(Prism x86 转译层随系统更新,对 QMT 稳定性重要)。
 
 ---
 
 ## 二、Python 3.11(⚠️ 必须 x64 版,不是 ARM64!)
 
-xtquant 只发布 x86/x64 版,ARM64 Python 装不了。ARM Windows 会用 Prism 自动转译运行 x64 Python。
+本次验证使用 x64 Python 3.11。当前 `qmt_inner` 在 QMT 内置 Python 调用券商，不在外部环境导入 xtquant；旧 miniQMT 接口才需要相应平台的 xtquant。
 
 1. python.org → 下载 **Windows installer (64-bit)**(x64,不要选 ARM64)3.11.x;
 2. 安装勾选 "Add python.exe to PATH";
@@ -54,6 +56,8 @@ xtquant 只发布 x86/x64 版,ARM64 Python 装不了。ARM Windows 会用 Prism 
 ---
 
 ## 三、QMT / miniQMT
+
+当前完整 QMT 内置通道请直接执行 [只读模型部署](qmt_inner_migration.md)。下面的 `userdata_mini` 配置仅用于旧 miniQMT 接口，不能替代本次内置模型部署。
 
 1. 国金证券官网/营业部渠道下载 QMT 交易端安装包(x86 程序,Prism 转译运行);
 2. 安装到默认路径,记下 `userdata_mini` 目录位置(如 `C:\Users\<用户>\国金证券QMT交易端\userdata_mini`);
@@ -124,7 +128,7 @@ py -3.11 start_windows.py
 
 - [ ] Windows 时间 = 北京时间,自动同步开启
 - [ ] `py -3.11 -c "import platform;print(platform.machine())"` → AMD64
-- [ ] `py -3.11 -c "import xtquant"` 无报错
+- [ ] `QMT_TRANSPORT=qmt_inner`，内置模型心跳和只读账户核对通过；旧 miniQMT 模式才检查外部 xtquant
 - [ ] QMT 模拟盘登录成功,行情正常
 - [ ] Syncthing 两端状态"最新",改一个文件 10 秒内出现在对面
 - [ ] `cd C:\A_System && py -3.11 start_windows.py` 门禁秒级通过、账户验证成功

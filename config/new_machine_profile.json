@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "verified_on": "2026-10-07",
+  "purpose": "重建参考，安装步骤见 docs/new_mac_rebuild_migration.md；不覆盖正式策略或直接启用交易",
+  "virtual_machine": {
+    "hypervisor": "VMware Fusion",
+    "reference_version": "26H1u1",
+    "guest": "Windows 11 Pro ARM64",
+    "cpu_cores": 4,
+    "memory_mb": 6144,
+    "network": "nat",
+    "vmware_tools_required": true,
+    "vmware_tools_time_sync": true,
+    "windows_timezone": "China Standard Time",
+    "local_account_supported": true,
+    "mouse": "默认 USB 鼠标，关闭游戏捕获模式"
+  },
+  "windows_runtime": {
+    "python": "3.11 x64",
+    "reference_project_path": "C:/A_System",
+    "dependencies": "requirements.txt",
+    "credentials": ".env；真实凭据禁止提交 Git"
+  },
+  "qmt": {
+    "client": "国金证券完整 QMT",
+    "reference_version": "2.1.19.0",
+    "transport": "qmt_inner",
+    "reference_userdata": "C:/QMT/GJQMT/userdata",
+    "private_config": "%LOCALAPPDATA%/A_System/qmt_inner/config.json",
+    "initial_mode": "read_only",
+    "model": "A_SYSTEM_QMT_INNER",
+    "external_xtquant_required": false,
+    "scheduled_restart_modrestart": "0"
+  },
+  "syncthing": {
+    "folder_id": "a-system",
+    "gui_url_each_machine": "http://127.0.0.1:8384",
+    "reference_mac_path": "~/Desktop/A_System",
+    "reference_windows_path": "C:/A_System",
+    "verified_mac_folder_type": "sendonly",
+    "migration_receiver_type": "receiveonly",
+    "local_discovery": true,
+    "global_discovery": false,
+    "relays": false,
+    "file_watcher": true,
+    "reference_mac_rescan_seconds": 300,
+    "ignore_template": ".stignore；需分别在两端配置",
+    "private_qmt_spool_synced": false
+  },
+  "notifications": {
+    "channel": "bark",
+    "credential_env": "BARK_URL",
+    "event_settings": "config/config.json:notify",
+    "health_beacon": "config/config.json:notify.health_beacon",
+    "phone_test_confirmed": true
+  },
+  "awake": {
+    "screen_lock_allowed": true,
+    "display_sleep_allowed": true,
+    "mac_launch_agent": "com.eass.a-system.fusion-awake",
+    "mac_flags": "caffeinate -i -w <VM进程PID>",
+    "windows_task": "A_System_SessionStabilityGuard",
+    "windows_flags": "0x80000001",
+    "windows_privilege": "Limited",
+    "windows_execution_limit": "PT0S",
+    "closed_lid_supported": false,
+    "manual_sleep_supported": false,
+    "reference_lock_test_seconds": 70.8,
+    "reference_lock_vm_qmt_sync_result": "PASS"
+  }
+}

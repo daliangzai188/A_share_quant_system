@@ -2,6 +2,10 @@
 
 本流程重新创建 VMware Windows 11 ARM，通过网络同步项目，单独迁移运行账本，不传输完整虚拟机包、不使用移动硬盘。旧系统继续运行到新环境基础准备完成；最终切换必须使用旧系统停机后的最新快照。
 
+**2026-10 重建后的配置入口**：[机器配置清单](../config/new_machine_profile.json)、[凭据模板](../.env.example)、本文第八节。
+清单保存本次实际版本、资源、接口、路径、同步和防休眠设置；路径与版本是重建参考，换机时须按新机实际安装位置核对。
+完整 QMT 内置通道为 `qmt_inner`，外部 Python 不需要安装 `xtquant`。不要沿旧 miniQMT 排查步骤反复换 Python 或安装 xtquant。
+
 ## 一、克隆能取得什么
 
 ```sh
@@ -23,7 +27,7 @@ git clone https://github.com/daliangzai188/A_share_quant_system.git A_System
 
 **当前正式配置可能是 `live`。克隆完成不代表可以直接运行 `start_windows.py`。** 新环境先保持 QMT 内置端 `mode=read_only`，不安装会自动启动交易的计划任务。不能在新机修改正在同步的正式策略配置来试验，否则可能影响旧机。
 
-当前运行接口以旧机实际 `.env` 为准。本次迁移使用 `QMT_TRANSPORT=qmt_inner`；`.env.example` 中的 `miniqmt` 是旧接口模板，不能直接当成本次迁移的最终接口。
+当前运行接口以旧机实际 `.env` 为准。本次迁移使用 `QMT_TRANSPORT=qmt_inner`；`.env.example` 已与本次重建方案一致。旧环境若仍使用 miniQMT，迁移时必须明确选择接口，不能自动猜测或失败后回退。
 
 以下小型文件原先被通用 CSV/报告忽略规则排除，干净克隆的部分研究导入和历史回归会因此缺文件；已按具名例外纳入版本控制。它们不包含真实账户、委托号或密钥，历史样本只供原有口径的复现，不是当前实盘计划。
 
@@ -132,7 +136,7 @@ py -3.11 scripts\export_runtime_migration.py verify "收到的快照目录"
 
 ## 六、最终切换与验收
 
-完成模拟柜台验证后，旧交易端退出，旧机自动恢复任务及 Mac 自动启动虚拟机守护停用，旧设备退出生产同步拓扑。新拓扑收敛后，再恢复发送与接收，配置新 Mac/Windows 的监控与定时任务。禁止两套执行系统同时启用。
+完成模拟柜台验证后，旧交易端退出，旧机自动恢复任务及 Mac 自动启动虚拟机守护停用，旧设备退出生产同步拓扑。新拓扑收敛后，再按确认的数据方向配置同步、监控与定时任务。2026-10 当前 Mac 为 `sendonly`，Windows 接收项目并保留本机额外运行文件；不要擅自改双向或点击“还原本地更改”删除本机账本。禁止两套执行系统同时启用。
 
 迁移保持现行 `A>C>E>D` 与方案甲规则，不扩大资金或修改策略参数。恢复实盘前先小资金验证。最终账本导出、Windows 停机门禁、恢复、客户端对账和模拟验收均须在真实新旧 Windows 现场完成；Mac 上的隔离测试不能代替这些步骤。
 
@@ -145,3 +149,167 @@ python3 -B -m unittest discover -s tests -p 'test_export_runtime_migration.py' -
 ```
 
 测试使用临时目录与模拟账本，覆盖 WAL 事务、私有执行账本、篡改检测、运行中模型锁、缺少必需文件、缺少停机标记、导出目录越界和路径穿越，不访问生产账本或真实券商。
+
+## 八、下一次换机直接使用的配置流程
+
+### 8.1 下载与基础环境
+
+本次通过验证的组合是 Fusion 26H1u1、Windows 11 专业版 ARM64、国金完整 QMT 2.1.19.0、外部 Python 3.11 x64。
+Fusion 使用 4 核、6144MB 内存、NAT 网络、VMware Tools 时间同步；Windows 使用北京时间和本地账户。
+这些是已用版本，不代表未来最新版。优先从 Broadcom、微软、Python 和券商官网下载兼容版本；Broadcom 登录是下载环节，不是程序运行依赖。
+若官方下载暂时不可用，备份已校验的安装包可用于重建；其他来源安装包必须匹配官方 SHA-256，并核验 VMware 签名和苹果公证后才能安装。安装包留在私有备份，不放进 Git。
+
+安装 VMware Tools 后保留默认 USB 鼠标，关闭 Fusion 的游戏鼠标捕获模式。若鼠标被捕获，先用 Control + Command 释放，再核对这两项；不要先改交易程序。
+虚拟机关闭、暂停、主动睡眠、合盖或断电都会影响后台运行。本文防空闲休眠配置不支持合盖运行。
+
+### 8.2 新建本机凭据，选择正确接口
+
+新 Windows 的项目路径为 `C:\A_System`，在普通 PowerShell 安装依赖并确认 Python：
+
+```powershell
+cd C:\A_System
+py -3.11 -c "import platform; print(platform.machine())"
+py -3.11 -m pip install -r requirements.txt
+```
+
+应输出 `AMD64`。先保持人工停机，再创建本机 `.env`，已有文件不覆盖：
+
+```powershell
+py -3.11 stop_windows.py
+if (!(Test-Path .env)) { Copy-Item .env.example .env }
+notepad .env
+```
+
+填写 `TUSHARE_TOKEN`、真实 `QMT_ACCOUNT_ID`、`BARK_URL` 和实际 `QMT_PATH`。
+本次路径是 `C:/QMT/GJQMT/userdata`；其他安装位置用自己的 `userdata`。明确保留 `QMT_TRANSPORT=qmt_inner`。
+`QMT_INNER_CONFIG` 留空注释即可使用默认私有路径，不需要 `QMT_SESSION_ID`。
+真实 `.env` 不在 Git；旧电脑不可访问时也可以重新填写，无需等待“原来的 .env”。旧交易账本仍须另外恢复，不能把重新填写配置当作完成账本迁移。
+
+按第三节部署只读模型。若本机已有只读 QMT 私有配置，可运行这次已验证过并保存到项目的工具：
+
+```powershell
+py -3.11 scripts\configure_new_windows_env.py --qmt-path C:/QMT/GJQMT/userdata
+```
+
+它从本机私有配置读取账号，备份已有 `.env`、填写内置通道和本机路径，然后打开文件供填写 Token 和 Bark 地址；保留已有其他字段、人工停机和只读模式，不启动交易、不重置账本。
+配置处于 `live`、停机标记缺失或账号不一致时会拒绝，不能用它重配运行中的系统。
+
+### 8.3 QMT 模型与定时重启
+
+使用第三节及 [内置迁移说明](qmt_inner_migration.md) 的完整模型入口，不把普通 `.py` 文件作为 `.rzrk` 策略包导入。
+先看到 `A_SYSTEM QMT INNER STARTED; mode=read_only`，再执行只读探测和账本核对。
+保存模型“终端启动后自动运行”，本次采用账户登录后延迟 10 秒；退出并重新登录后确认模型定时回调确实恢复。
+在客户端关闭定时重启，并核验 `userdata/users/<本机账号>/Config.xml` 的 `TradeSetting modrestart="0"`。
+不要改整个账户配置，不提交该文件。项目 `QMT_PATH` 必须指向实际 userdata，否则启动时无法确认定时重启设置。
+
+`start_windows.py` 会拒绝只读端启动正式程序，这是验收门禁。
+只读对账、模拟验证和第六节切换完成后，才按内置迁移说明预置 `live` 并由人工启动；不要为了消除报错删除门禁。
+日志应依次出现“账户已验证”和“交易恢复门禁通过”，只看到 PID 或后台守护已创建不能算启动成功。实盘继续先小资金验证。
+
+### 8.4 浏览器查看同步状态与登录自启
+
+两端分别打开 `http://127.0.0.1:8384/`，文件夹 ID 使用 `a-system`，Mac 指向项目目录，Windows 指向 `C:\A_System`。
+保留本地发现，关闭全局发现和中继；两端单独配置仓库 `.stignore`。新设备生成自己的设备 ID 和密钥，重新配对。
+QMT 私有 `spool` 放在 `%LOCALAPPDATA%`，不能加入同步。设备 ID、API Key、IP 地址和 Windows 用户路径不从旧电脑硬复制。
+
+Windows 可将 Syncthing 原生 ARM64 安装包解压到 `%LOCALAPPDATA%\Programs\Syncthing`，确保该目录包含 `syncthing.exe`；已有 PATH 安装也可复用。
+在新 Windows 运行：
+
+```powershell
+py -3.11 scripts\open_sync_status.py --install-shortcuts
+py -3.11 scripts\open_sync_status.py
+```
+
+安装命令把入口复制到本机私有目录，创建桌面“A_System 同步状态”和登录自启快捷方式。
+桌面入口先检测服务，停止时启动 Syncthing，再打开浏览器；服务正常时直接复用。自启入口只启动服务，不打开网页。
+如果网页提示连接被拒绝，先看 `%LOCALAPPDATA%\A_System\sync_tools\last_launch.json` 和 Syncthing 日志；这次出现过的原因是服务退出，不是交易数据文件权限。
+验收要求网页远程设备已连接且“最新”，待同步项为 0；用无执行含义的临时文本文件验证 Mac 到 Windows 的实际传输，再删除并确认同步收敛。
+“本地添加”是接收端自己的额外文件，不能据此点击还原或删除账本。
+
+### 8.5 通知配置与验收
+
+在 Windows `.env` 填入 `BARK_URL=https://api.day.app/<自己的设备Key>/`。
+事件开关和每两小时健康通知沿用 `config/config.json` 的 `notify`，不要把整个通知配置留在聊天或临时脚本里。
+通知测试命令：
+
+```powershell
+py -3.11 scripts\send_notify.py system_error "A_System 新电脑通知测试" "请确认手机收到；本次仅测试通知。"
+```
+
+命令成功后仍须确认手机收到；HTTP 成功不能单独代替送达验收。
+若出现“未配置 BARK_URL”，检查运行程序所在 Windows 的 `.env`，不能只在 Mac 填写。
+运行中的 daemon 不会自动重读所有环境变量，应在确认允许业务重启后停、启一次加载新配置。
+当前健康通知为北京时间偶数小时的第 2 分钟，读取本地心跳和现有账户健康快照，不主动查询券商。
+
+### 8.6 允许锁屏、息屏，防止空闲休眠
+
+Mac 在项目目录运行：
+
+```sh
+python3 scripts/install_mac_fusion_awake.py
+```
+
+省略参数时必须只有一台运行中的虚拟机；否则用 `--vmx "/实际路径/目标.vmwarevm/目标.vmx"` 指定。
+工具把完整守护复制到用户 `Library/Application Support/A_System/fusion_awake`，安装登录 LaunchAgent `com.eass.a-system.fusion-awake`。
+目标 VM 的 `vmware-vmx` 进程存在时执行 `caffeinate -i -w <PID>`，进程退出时释放断言；不会启动 VM。
+它没有 `-d` 参数，屏幕可以熄灭，也允许 Control + Command + Q 锁屏。
+验收：`launchctl print gui/$(id -u)/com.eass.a-system.fusion-awake` 显示任务运行，`pmset -g assertions` 中本守护有系统空闲休眠断言、没有显示常亮断言。
+
+第六节最终切换后，在 Windows 安装运行兜底任务：
+
+```powershell
+py -3.11 scripts\install_windows_runtime_guard.py
+py -3.11 scripts\install_windows_runtime_guard.py --status
+```
+
+安装器创建两项普通用户任务：
+
+| 任务 | 时间 | 功能 |
+|---|---|---|
+| `A_System_SessionStabilityGuard` | 登录及每日 07:50 | 私有 pythonw 守护，`0x80000001` 只阻止系统空闲休眠，允许息屏和锁屏；运行时间无限制 |
+| `A_System_RuntimeGuard` | 登录及每日 08:15 | 沿用缺失进程恢复；人工停机时不启动业务 |
+
+安装过程只立即启动防休眠任务，不立即启动交易兜底任务或 daemon。
+不使用管理员 `Highest`，不禁用锁屏、密码认证或 Windows Update。
+旧 `configure_windows_session_stability.ps1` 是历史处理，当前安装器已取消调用，不能作为新机设置步骤。
+检查 `%LOCALAPPDATA%\A_System\runtime_tools\session_awake_status.json`：`status=AWAKE`、`execution_state=0x80000001`、API 返回非零。
+`--status` 会识别旧任务动作、权限、执行时限和旧私有代码，返回 `OUTDATED`，避免仅凭同名任务误判为已配置。
+
+本次 2026-10-07 实际锁屏约 70.8 秒：Windows 采样、QMT 定时回调、daemon 心跳均继续推进；Mac 锁屏期间新建的临时文本传到 Windows，删除后同步收敛。
+测试只读取本地认证心跳，没有发送券商请求或委托。它验证本次运行环境，不能替代将来新机的验收。
+新机应插电、保持盖子打开，实际锁屏至少一分钟后再解锁，核对上述心跳和同步文件。
+
+### 8.7 必须私下备份的东西
+
+Git 已保存可复用代码、无密钥配置和操作流程；私下另备份真实 `.env`、虚拟机加密密码、已验证安装包，以及最终停机交易账本。
+设备同步密钥与 QMT Token 在新设备重新生成，不把旧私有执行队列直接当作活动队列恢复。
+旧电脑无法访问且无账本备份时，必须核对券商持仓和未完成委托并处理恢复差异，不能宣称已恢复全部历史。
+
+### 8.8 本次保存进代码的文件与验证方法
+
+完整可运行代码已保存在下列链接，不需要手工拼接片段。新增工具来自本次私有目录中已使用的配置操作，增加了跨用户名路径处理及隔离回归测试。
+
+| 文件 | 方法/位置 | 操作、原因 |
+|---|---|---|
+| [configure_new_windows_env.py](../scripts/configure_new_windows_env.py) | `configure/main` 全文件 | 新增：从本机只读配置重建 .env，保留其他凭据，备份、校验后打开编辑；避免依赖旧电脑 .env |
+| [open_sync_status.py](../scripts/open_sync_status.py) | `gui_listening/ensure_running/install_shortcuts/main` 全文件 | 新增：服务检测、复用或启动、浏览器入口及私有快捷方式；修复服务退出后的网页连接拒绝 |
+| [windows_session_awake_guard.py](../scripts/windows_session_awake_guard.py) | `main` 全文件 | 新增：系统空闲防休眠、单实例锁、状态报告及退出释放；没有显示常亮标志，允许锁屏 |
+| [guard_fusion_awake.sh](../scripts/guard_fusion_awake.sh) | 主循环与 `cleanup` 全文件 | 新增：按目标 VM 进程持有/释放 `caffeinate -i`；进程匹配由安装器传入，移除固定 VM 名称 |
+| [install_mac_fusion_awake.py](../scripts/install_mac_fusion_awake.py) | `detect_vmx/process_pattern/install/main` 全文件 | 新增：检测唯一 VM、转义路径、复制私有守护、登录自启；无需固定 Mac 用户名 |
+| [install_windows_runtime_guard.py](../scripts/install_windows_runtime_guard.py) | `_session_paths/install/status` | 替换会话任务的旧 PS 动作与 Highest 权限为私有 pythonw、Limited、无限执行；删除默认防锁屏/更新脚本调用；状态检查新增旧配置识别 |
+| [.env.example](../.env.example) | QMT 配置段 | 替换默认通道为本次 qmt_inner，说明 userdata 路径和旧 session 用途；没有真实凭据 |
+| [new_machine_profile.json](../config/new_machine_profile.json) | 全文件 | 新增本次无密钥参考配置；不自动覆盖交易配置或激活交易 |
+| [test_lock_friendly_runtime_guards.py](../tests/test_lock_friendly_runtime_guards.py) | 三个测试类 | 新增 API 标志、失败释放、重复实例、旧任务、私有安装和 VM 路径匹配测试 |
+| [test_new_windows_env_setup.py](../tests/test_new_windows_env_setup.py) | `NewWindowsEnvironmentTest` | 新增凭据保留、不同账号拒绝、只读/人工停机保护测试 |
+| [test_sync_status_entry.py](../tests/test_sync_status_entry.py) | `SyncthingEntryTest` | 新增冷/热启动及私有快捷方式测试，不改设备身份 |
+| [test_runtime_recovery_tools.py](../tests/test_runtime_recovery_tools.py) | `test_normal_startup_auto_checks_and_installs_runtime_guard` | 替换旧 Highest/PS 调用断言，验证新默认入口与人工停机纪律 |
+| 本文、[旧搭建手册](vm_environment_setup.md)、[历史事故记录](incident_20260915_windows_restart.md)、[README](../README.md) | 当前配置说明处 | 新增统一入口及历史配置失效说明，修正旧 miniQMT 和强制常亮指引 |
+
+运行安装与现场验收命令见 8.2—8.6。代码回归只能在同步目录之外的仓库副本执行：
+
+```sh
+python3 -B -m unittest discover -s tests
+sh -n scripts/guard_fusion_awake.sh
+```
+
+测试使用临时目录和模拟 Win32/计划任务/快捷方式接口，不启动生产程序。Mac 上 Windows PowerShell 实机输出测试会跳过，计划任务现场验收仍按 8.6 执行。
