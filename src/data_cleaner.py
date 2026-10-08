@@ -175,6 +175,18 @@ class DataCleaner:
             return pd.DataFrame()
         if limit_up.empty:
             return pd.DataFrame()
+        from src.limit_source_quality import suspended_placeholder_mask
+
+        # 只在发现完整零价占位形态时读取原始日线，避免把基本面缺行误认成停牌。
+        if suspended_placeholder_mask(limit_up, set()).any():
+            raw_daily = self._read_csv(self.daily_dir / f"{trade_date}.csv")
+            placeholders = suspended_placeholder_mask(limit_up, set(raw_daily["ts_code"].astype(str)))
+            if placeholders.any():
+                self.logger.warning("%s：排除无当日日线报价的涨停源占位记录 %s；原始CSV保留", trade_date,
+                                    ",".join(limit_up.loc[placeholders, "ts_code"].astype(str)))
+                limit_up = limit_up.loc[~placeholders].copy()
+            if limit_up.empty:
+                return pd.DataFrame()
 
         limit_up = self._normalize_trade_date(limit_up)
         if self.exclude_bj:
@@ -264,7 +276,7 @@ class DataCleaner:
                 **quality,
             }
             row.update(self.build_segment_sentiment_fields(daily_merged, limit_up_merged))
-            return row
+            return self._apply_historical_limit_count(trade_date, row)
 
         pct_chg = daily_merged["pct_chg"].fillna(0)
         limit_times = limit_up_merged.get("limit_times", pd.Series(dtype=float))
@@ -293,6 +305,31 @@ class DataCleaner:
             **quality,
         }
         row.update(self.build_segment_sentiment_fields(daily_merged, limit_up_merged))
+        return self._apply_historical_limit_count(trade_date, row)
+
+    def _apply_historical_limit_count(self, trade_date: str, row: dict[str, object]) -> dict[str, object]:
+        """早期只有可信涨停数；不把缺失的炸板、连板或封单字段当成完整模型输入。"""
+        if str(trade_date) >= self.limit_list_start_date:
+            return row
+        from src.historical_limit_counts import load_historical_limit_count
+
+        history = load_historical_limit_count(self.project_root, str(trade_date))
+        row.update(limit_up_count=history.count, limit_data_source=history.source,
+                   limit_data_quality="counts_only", strategy_compatible=False,
+                   market_sentiment_level=self.classify_market_sentiment(history.count))
+        for field in ("limit_up_max_height", "one_word_limit_count", "opened_limit_count", "limit_up_fd_amount_sum"):
+            row[field] = None
+        for segment in ("sh_main", "sz_main", "chi_next", "star", "bj", "other"):
+            count = sum(self.classify_market_segment(code) == segment for code in history.codes)
+            stock_count = int(row.get(f"{segment}_stock_count", 0))
+            row[f"{segment}_limit_up_count"] = count
+            row[f"{segment}_limit_up_ratio"] = count / stock_count if stock_count else 0.0
+            row[f"{segment}_market_sentiment_level"] = self.classify_segment_sentiment(count, stock_count)
+        row["main_board_limit_up_count"] = row["sh_main_limit_up_count"] + row["sz_main_limit_up_count"]
+        row["growth_board_limit_up_count"] = row["chi_next_limit_up_count"] + row["star_limit_up_count"]
+        # 涨跌幅制度会随日期变化，计数来源不足以重构每只股票当日涨停幅度。
+        for field in ("limit_5cm_count", "limit_10cm_count", "limit_20cm_count", "limit_30cm_count"):
+            row[field] = None
         return row
 
     @staticmethod

@@ -10,19 +10,19 @@
     "available_date_count": 1859,
     "first_date": "20190102",
     "last_date": "20260831",
-    "daily_rows": 8811147,
-    "limit_rows": 101484,
+    "daily_rows": 8811482,
+    "limit_rows": 101481,
     "skipped_daily_dates": []
   },
   "strict_features": {
-    "strict_fill_rows": 101484,
+    "strict_fill_rows": 101481,
     "strict_reliable_rows": 91462,
     "strict_allow_rows": 76016,
     "feature_pool_rows": 76016,
     "strict_asof_audit": {
       "standard_id": "A_SYSTEM_STRICT_ASOF_V1",
       "dataset_name": "five_year_research_fill_source",
-      "row_count": 101484,
+      "row_count": 101481,
       "signal_date_count": 1639,
       "first_signal_date": "20191128",
       "last_signal_date": "20260831",
@@ -49,43 +49,43 @@
   "files": {
     "compact_daily": {
       "path": "data/research/monthly_acde/20260831/daily_factor_history.csv",
-      "size_bytes": 384258470,
-      "sha256": "608b0e4520e36e54a0be69ef1a377b1969d535fe5cdbda5cca8128a9e91a69b1"
+      "size_bytes": 384272329,
+      "sha256": "20aae6340aa2bd577c1068931f24eb4b4a0f6541719d6e1b8a90f05c9a4ab743"
     },
     "limit_up_merged": {
       "path": "data/research/monthly_acde/20260831/limit_up_merged.csv",
-      "size_bytes": 29445808,
-      "sha256": "a234bda5e1f77dda86f0629b66476a8f991c72c28b5b34c21f81b89f8132e8e8"
+      "size_bytes": 29513248,
+      "sha256": "32841300ea0ac246a8b77c1e594546b79d3b2c6ed1a92361193b2b642d75ccc1"
     },
     "market_sentiment": {
       "path": "data/research/monthly_acde/20260831/market_sentiment.csv",
-      "size_bytes": 484353,
-      "sha256": "dd2daf6d9f0ac2aa4a4fb02f482315c81c96004d3f195119ad62a56abb5cc8a8"
+      "size_bytes": 518422,
+      "sha256": "85f5908f068a613426219659f68ae53e2c5b1a0d7b814536e7855f65de0f590c"
     },
     "market_emotion": {
       "path": "data/research/monthly_acde/20260831/market_emotion_features.csv",
-      "size_bytes": 2750837,
-      "sha256": "d1bfbaf79cd2bcbe133c8283b60c307d37660a17197dc73d1871f5b4663344dd"
+      "size_bytes": 2751035,
+      "sha256": "d20c9f8fc5e9690c9399c1b2226c26dd45ce6f97817ebd8c307913308cdc2c6f"
     },
     "theme_heat": {
       "path": "data/research/monthly_acde/20260831/theme_heat_features.csv",
-      "size_bytes": 11286182,
-      "sha256": "d861bae7dfaea5a64465eb821dd994405974d5733e500cb30c22f2984eb01de3"
+      "size_bytes": 5581751,
+      "sha256": "21e2d6829e62de1621de7ec2d52e256bcc89f5dc26d04704e9b603ebe5146751"
     },
     "strict_fill": {
       "path": "data/research/monthly_acde/20260831/limit_up_fill_scored_asof.csv",
-      "size_bytes": 75268580,
-      "sha256": "9880136120d04898e3379f15192f6bb3ced32d9837ae8baf92eedbc0db70de46"
+      "size_bytes": 76704715,
+      "sha256": "a525e40ceef73d40b6475c6c22ddce4fd080b191029ecd1b2d9770cc75c18e18"
     },
     "feature_pool": {
       "path": "data/research/monthly_acde/20260831/strict_feature_pool.csv",
-      "size_bytes": 102848925,
-      "sha256": "bb62c166eb159e4b1d879c95da0917a00857ab7eff83629a1382bc76c963fb00"
+      "size_bytes": 100649873,
+      "sha256": "33e59845b4638beec364aca37a14ac5dc996ec7754fb5c6f6828473dbf1aaa0f"
     },
     "strict_audit": {
       "path": "data/research/monthly_acde/20260831/strict_asof_audit.json",
       "size_bytes": 610,
-      "sha256": "56630f1e7297a4d98e03d879a31255dbc4ffd9236df6cc064458b91c48976f6a"
+      "sha256": "743bd443bf92de4af45907dca4098d49f5d79883972c84dfcf22347133d95732"
     }
   }
 }

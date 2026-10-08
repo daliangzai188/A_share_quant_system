@@ -3,7 +3,7 @@
   "status": "PASS",
   "scenario": "acde_plan_jia_stop_gate_20260919",
   "release_id": "ACDE_PLAN_JIA_STOP_GATE_20260919",
-  "generated_at": "2026-10-03T09:28:53.704769+00:00",
+  "generated_at": "2026-10-08T13:45:34.024035+00:00",
   "certification_scope": "FORMAL_RULE_STOP_GATE_AND_BACKTEST_ALIGNMENT",
   "current_executable": true,
   "release_eligible": false,
@@ -78,6 +78,10 @@
     "src/combined_live_engine.py",
     "src/equity_curve_stop.py",
     "src/five_year_research.py",
+    "src/data_cleaner.py",
+    "src/historical_limit_counts.py",
+    "src/limit_source_quality.py",
+    "src/equity_curve_stop_history.py",
     "src/live_order_gateway.py",
     "src/live_certification.py",
     "src/strategy_e.py",
@@ -91,7 +95,7 @@
     "scripts/update_equity_curve_stop.py",
     "scripts/certify_plan_jia_release.py"
   ],
-  "code_sha256": "085bfc47e500d4d8df4a84b23497aa0f21b6fda20116312e9d32ca51b103edd4",
+  "code_sha256": "748a2ff919e40d633a1b6be1326641e48b55f4e597ee519cb231aaecf1eb016a",
   "input_files": [
     "data/research/monthly_acde/20260831/strict_feature_pool.csv",
     "data/research/monthly_acde/20260831/market_sentiment.csv",
@@ -102,7 +106,7 @@
     "reports/current_portfolio_alignment/acde_plan_jia_20260919/combo_trades.csv",
     "reports/current_portfolio_alignment/acde_plan_jia_20260919/shadow_nav_and_gate.csv"
   ],
-  "input_sha256": "b0bdd3ce83625fba0e896b39ac6138b6be5a9df89f033fb4b1968509157398c8",
-  "source_summary_sha256": "13117224a134edff9c16a3c6e6c25863da5fa968f0b03908033d5487cdbf1ff4",
+  "input_sha256": "aede0481b70fc2d27b8dcd9525fa508e3365978861fdf2cc0d0c96010c30892a",
+  "source_summary_sha256": "a97f3da56f6b487dbbf4160938bf15fa813fca230c3a799ba8edd9c03b9c7ac5",
   "risk_note": "认证只证明方案甲正式规则、停手门禁与回测逻辑逐笔对齐；2023-09~2026-08属于同窗研究，2018-04~2026-09连续样本外研究见docs/equity_curve_stop.md，均不承诺未来收益。D历史按0笔失败关闭，实盘D另受实时门禁约束。"
 }

@@ -71,12 +71,12 @@
   "plan_counts": {
     "A": 144,
     "C": 98,
-    "E": 68
+    "E": 69
   },
   "plan_signatures": {
     "A": "d64676dce69564e72779666c8b13805163eeb996cfe9a2774497df91f565a1d6",
     "C": "f6e53f42776c71619adf0931462c1f450cdfc6cd689b4c8fea645e65c17d39bf",
-    "E": "7a085c2993eee63d96d7728bfeb2e6fbb2d31ee288a7713dd30273e087b05613"
+    "E": "b9f7ab33b92e9009c747bf89754279bdff6bd0b3a7c1eadfe181210452272882"
   },
   "d_historical_policy": "FAIL_CLOSED_ZERO_TRADES_NO_SIGNAL_TIME_L2",
   "rule_checks": {

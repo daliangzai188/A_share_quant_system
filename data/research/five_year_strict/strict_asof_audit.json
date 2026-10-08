@@ -1,10 +1,10 @@
 {
   "standard_id": "A_SYSTEM_STRICT_ASOF_V1",
   "dataset_name": "five_year_research_fill_source",
-  "row_count": 101020,
-  "signal_date_count": 1632,
+  "row_count": 102743,
+  "signal_date_count": 1661,
   "first_signal_date": "20191128",
-  "last_signal_date": "20260820",
+  "last_signal_date": "20261008",
   "duplicate_key_count": 0,
   "invalid_signal_date_count": 0,
   "invalid_as_of_date_count": 0,

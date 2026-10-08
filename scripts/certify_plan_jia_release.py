@@ -106,6 +106,10 @@ CODE_FILES = [
     "src/combined_live_engine.py",
     "src/equity_curve_stop.py",
     "src/five_year_research.py",
+    "src/data_cleaner.py",
+    "src/historical_limit_counts.py",
+    "src/limit_source_quality.py",
+    "src/equity_curve_stop_history.py",
     "src/live_order_gateway.py",
     "src/live_certification.py",
     "src/strategy_e.py",
@@ -196,6 +200,21 @@ def rule_checks(runtime: Mapping[str, Any], strategy: Mapping[str, Any], e_spec:
     }
 
 
+def formal_context(monthly, paths, window):
+    """正式认证固定D历史失败关闭，不要求丢失的D研究事件作为无用输入。"""
+    with tempfile.TemporaryDirectory(prefix="jia_d_fail_closed_") as work:
+        empty_d = Path(work) / "empty_d_events.csv"
+        pd.DataFrame(columns=["trade_date", "ts_code"]).to_csv(empty_d, index=False)
+        return _context(
+            window=window,
+            feature_path=paths["strict_feature_pool"],
+            sentiment_path=paths["market_sentiment"],
+            d_event_path=empty_d,
+            calendar_path=paths["trade_calendar"],
+            minimum_limit_up_count=int(monthly["market_controller"]["minimum_limit_up_count"]),
+        )
+
+
 def run(measure_only: bool) -> dict[str, Any]:
     runtime = load_json_config(ROOT / "config/config.json")
     strategy = load_json_config(ROOT / "config/strategy_config.json")
@@ -208,14 +227,7 @@ def run(measure_only: bool) -> dict[str, Any]:
     monthly = load_monthly_config(ROOT / "config/acde_rolling_optimization.json")
     paths = monthly_paths(monthly, CUTOFF)
     window = build_monthly_research_window(CUTOFF)
-    context = _context(
-        window=window,
-        feature_path=paths["strict_feature_pool"],
-        sentiment_path=paths["market_sentiment"],
-        d_event_path=paths["d_event_source"],
-        calendar_path=paths["trade_calendar"],
-        minimum_limit_up_count=int(monthly["market_controller"]["minimum_limit_up_count"]),
-    )
+    context = formal_context(monthly, paths, window)
     execution = _execution_kwargs(monthly)
 
     # ① 影子净值：同一份定义，从history_start回放到截止日。

@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -134,6 +135,21 @@ class MarketDataBackupTests(unittest.TestCase):
         result = backup.audit(self.root, "20261008", "20261009")
         self.assertEqual(result["groups"]["kpl_limit_list"]["expected_dates"], 0)
         self.assertEqual(result["status"], "BACKUP_COMPLETE")
+
+    def test_standalone_cli_reports_missing_early_source_without_import_error(self) -> None:
+        self.csv("data/raw/trade_calendar.csv", ["cal_date", "is_open"],
+                 [["20190101", "0"], ["20190102", "1"]])
+        result = subprocess.run(
+            [sys.executable, "-I", str(EXPORT / "scripts/market_data_backup.py"), "audit",
+             "--project-root", str(self.root), "--start-date", "20190101",
+             "--end-date", "20190102"],
+            cwd=self.root, text=True, capture_output=True,
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stderr, "")
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["status"], "INCOMPLETE")
+        self.assertIn("data/raw/kpl_limit_list/20190102.csv", payload["problems"])
 
 
 if __name__ == "__main__":

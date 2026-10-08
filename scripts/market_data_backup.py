@@ -8,9 +8,12 @@ import datetime as dt
 import hashlib
 import json
 from pathlib import Path
+import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 POLICY_PATH = Path("config/market_data_backup.json")
 LFS_PREFIX = b"version https://git-lfs.github.com/spec/v1"
 

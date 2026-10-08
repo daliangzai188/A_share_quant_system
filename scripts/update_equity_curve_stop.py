@@ -76,6 +76,7 @@ from src.review_triggers import (  # noqa: E402
     shadow_triggers,
 )
 from src.utils.config import load_json_config  # noqa: E402
+from src.equity_curve_stop_history import require_history  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
@@ -141,6 +142,7 @@ def build_dataset(settings, signal_date: str) -> Path:
     except Exception as exc:  # 重拉失败不阻断：由下面的覆盖率门禁决定能否继续
         print(f"EQUITY_CURVE_STOP_DAILY_BASIC_REFRESH_FAILED {type(exc).__name__}: {exc}", flush=True)
     amount = float(config.get("fill_model", {}).get("default_planned_buy_amount", 412_500))
+    require_history(PROJECT_ROOT, config, settings.history_start, signal_date)
     root = settings.work_dir / "dataset"
     builder = FiveYearResearchDatasetBuilder(research_root=root)
     builder.build_base_tables(start_date=settings.history_start, end_date=signal_date, overwrite=True)

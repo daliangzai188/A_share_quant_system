@@ -137,6 +137,7 @@ class ResearchCoverageGateTests(unittest.TestCase):
 
         settings = SimpleNamespace(work_dir=root, history_start="20190101")
         with patch.object(self.module, "refresh_recent_daily_basic", side_effect=RuntimeError("tushare down")), \
+                patch.object(self.module, "require_history", return_value={"status": "PASS"}), \
                 patch("src.five_year_research.FiveYearResearchDatasetBuilder", FakeBuilder):
             with self.assertRaisesRegex(RuntimeError, "研究池量比缺失"):
                 self.module.build_dataset(settings, "20260930")
