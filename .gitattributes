@@ -12,3 +12,22 @@ reports/strategy_expansion/abcd_expansion_selected_e2_equity_curve.csv -text
 reports/strategy_d/d_daily_candidates.csv -text
 reports/strategy_e_samples/e_r1_daily_candidates_full.csv -text
 reports/current_portfolio_alignment/strict_asof_portfolio_report.md -text
+
+# 完整市场行情与正式研究输入使用 LFS，保持 Windows/Mac 原始字节一致。
+data/raw/daily/*.csv filter=lfs diff=lfs merge=lfs -text
+data/raw/daily_basic/*.csv filter=lfs diff=lfs merge=lfs -text
+data/raw/adj_factor/*.csv filter=lfs diff=lfs merge=lfs -text
+data/raw/limit_list/*.csv filter=lfs diff=lfs merge=lfs -text
+data/processed/daily_merged.csv filter=lfs diff=lfs merge=lfs -text
+data/processed/daily_merged_by_date/*.csv filter=lfs diff=lfs merge=lfs -text
+data/processed/limit_up_merged.csv filter=lfs diff=lfs merge=lfs -text
+data/processed/market_sentiment.csv filter=lfs diff=lfs merge=lfs -text
+data/processed/market_emotion_features.csv filter=lfs diff=lfs merge=lfs -text
+data/processed/theme_heat_features.csv filter=lfs diff=lfs merge=lfs -text
+data/processed/limit_up_fill_scored_asof.csv filter=lfs diff=lfs merge=lfs -text
+data/research/five_year_strict/*.csv filter=lfs diff=lfs merge=lfs -text
+
+data/raw/minute/**/*.csv filter=lfs diff=lfs merge=lfs -text
+data/raw/minute_d/**/*.csv filter=lfs diff=lfs merge=lfs -text
+data/processed/minute_bars.csv filter=lfs diff=lfs merge=lfs -text
+data/processed/strategy_d_minute_features.csv filter=lfs diff=lfs merge=lfs -text

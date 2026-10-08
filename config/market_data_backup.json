@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "manifest_path": "data/market_backup/manifest.json",
+  "start_date": "20190101",
+  "daily_groups": {
+    "daily": {
+      "path": "data/raw/daily",
+      "required_columns": [
+        "trade_date",
+        "ts_code",
+        "open",
+        "high",
+        "low",
+        "close",
+        "pre_close",
+        "vol",
+        "amount",
+        "pct_chg"
+      ]
+    },
+    "daily_basic": {
+      "path": "data/raw/daily_basic",
+      "required_columns": [
+        "trade_date",
+        "ts_code",
+        "turnover_rate",
+        "turnover_rate_f",
+        "volume_ratio",
+        "free_share",
+        "circ_mv"
+      ]
+    },
+    "adj_factor": {
+      "path": "data/raw/adj_factor",
+      "required_columns": [
+        "trade_date",
+        "ts_code",
+        "adj_factor"
+      ]
+    },
+    "limit_list": {
+      "path": "data/raw/limit_list",
+      "start_date": "20191128",
+      "required_columns": [
+        "trade_date",
+        "ts_code",
+        "first_time",
+        "last_time",
+        "open_times",
+        "fd_amount",
+        "limit_times",
+        "limit"
+      ]
+    }
+  },
+  "required_files": [
+    "data/raw/trade_calendar.csv",
+    "data/raw/stock_basic/stock_basic_all.csv",
+    "data/processed/fill_rate_table.csv",
+    "data/processed/fill_rate_fallback.csv",
+    "data/research/five_year_strict/market_sentiment.csv",
+    "data/research/five_year_strict/strict_feature_pool.csv"
+  ],
+  "optional_market_patterns": [
+    "data/processed/daily_merged.csv",
+    "data/processed/daily_merged_by_date/*.csv",
+    "data/processed/limit_up_merged.csv",
+    "data/processed/market_sentiment.csv",
+    "data/processed/market_emotion_features.csv",
+    "data/processed/theme_heat_features.csv",
+    "data/processed/limit_up_fill_scored_asof.csv",
+    "data/research/five_year_strict/*.csv",
+    "data/research/five_year_strict/dataset_manifest.json",
+    "data/research/five_year_strict/strict_asof_audit.json",
+    "data/raw/daily/manifest.json",
+    "data/raw/daily_basic/manifest.json",
+    "data/raw/adj_factor/manifest.json",
+    "data/raw/limit_list/manifest.json",
+    "data/raw/minute/**/*.csv",
+    "data/raw/minute_d/**/*.csv",
+    "data/processed/minute_bars.csv",
+    "data/processed/strategy_d_minute_features.csv"
+  ],
+  "note": "只备份行情及研究输入，不包含密钥、账户、成交、持仓或执行账本。原始日线与复权因子配套保存；备份通过不等于策略认证或允许交易。早期涨停明细不可用时仍需保存有来源的历史情绪表，不能填0冒充。"
+}
