@@ -23,6 +23,18 @@ def sample(kind: str, date: str) -> pd.DataFrame:
 
 
 class HistoricalRecollectionTests(unittest.TestCase):
+    def test_legacy_bj_missing_quote_does_not_reject_configured_sh_sz_history(self) -> None:
+        sh_sz = sample("daily", "20190116")
+        bj = sh_sz.assign(ts_code="920299.BJ", pre_close=None)
+        raw = pd.concat([sh_sz, bj], ignore_index=True)
+        self.assertEqual(collect.validate(raw, "20190116", "daily"), 2)
+        self.assertTrue(raw.loc[1, "pre_close"] is None or pd.isna(raw.loc[1, "pre_close"]))
+        self.assertEqual(collect.validate(raw, "20190116", "daily", exclude_bj=False), 2)
+        with self.assertRaisesRegex(ValueError, "invalid pre_close"):
+            collect.validate(raw.assign(trade_date="20211115"), "20211115", "daily", exclude_bj=False)
+        with self.assertRaisesRegex(ValueError, "invalid pre_close"):
+            collect.validate(sh_sz.assign(pre_close=None), "20190116", "daily")
+
     def test_invalid_day_duplicate_and_empty_response_are_rejected(self) -> None:
         for kind in collect.ENDPOINTS:
             frame = sample(kind, "20261008")

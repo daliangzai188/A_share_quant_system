@@ -51,6 +51,17 @@
         "limit_times",
         "limit"
       ]
+    },
+    "kpl_limit_list": {
+      "path": "data/raw/kpl_limit_list",
+      "start_date": "20190101",
+      "end_date": "20191127",
+      "required_columns": [
+        "trade_date",
+        "ts_code",
+        "name",
+        "tag"
+      ]
     }
   },
   "required_files": [
@@ -59,7 +70,10 @@
     "data/processed/fill_rate_table.csv",
     "data/processed/fill_rate_fallback.csv",
     "data/research/five_year_strict/market_sentiment.csv",
-    "data/research/five_year_strict/strict_feature_pool.csv"
+    "data/research/five_year_strict/strict_feature_pool.csv",
+    "data/raw/market_limit_counts.csv",
+    "data/research/monthly_acde/20260831/strict_feature_pool.csv",
+    "data/research/monthly_acde/20260831/market_sentiment.csv"
   ],
   "optional_market_patterns": [
     "data/processed/daily_merged.csv",
@@ -79,7 +93,10 @@
     "data/raw/minute/**/*.csv",
     "data/raw/minute_d/**/*.csv",
     "data/processed/minute_bars.csv",
-    "data/processed/strategy_d_minute_features.csv"
+    "data/processed/strategy_d_minute_features.csv",
+    "data/raw/kpl_limit_list/manifest.json",
+    "data/research/monthly_acde/20260831/dataset_manifest.json",
+    "data/research/monthly_acde/20260831/strict_asof_audit.json"
   ],
   "note": "只备份行情及研究输入，不包含密钥、账户、成交、持仓或执行账本。原始日线与复权因子配套保存；备份通过不等于策略认证或允许交易。早期涨停明细不可用时仍需保存有来源的历史情绪表，不能填0冒充。"
 }

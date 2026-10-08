@@ -48,9 +48,11 @@ Windows相同命令使用 `py -3.11 -X utf8` 替换 `python3`。日期必须填�
 ```sh
 git add .gitattributes .gitignore config/market_data_backup.json scripts/market_data_backup.py
 git add data/raw/daily data/raw/daily_basic data/raw/adj_factor data/raw/limit_list
+git add data/raw/kpl_limit_list data/raw/market_limit_counts.csv
 git add data/raw/trade_calendar.csv data/raw/stock_basic/stock_basic_all.csv
 git add data/processed/fill_rate_table.csv data/processed/fill_rate_fallback.csv
-git add data/research/five_year_strict data/market_backup/manifest.json
+git add data/research/five_year_strict data/research/monthly_acde/20260831/strict_feature_pool.csv
+git add data/research/monthly_acde/20260831/market_sentiment.csv data/market_backup/manifest.json
 git diff --cached --stat
 git lfs fsck
 git commit -m "backup: retain verified market inputs for machine rebuild"
@@ -84,3 +86,13 @@ py -3.11 -X utf8 scripts\market_data_backup.py verify
 清单不存在说明该版本尚未完成完整行情备份，不能认为克隆已经恢复历史。清单日期是备份截止日；晚于该日期的数据正常增量采集，并重新验收、提交和推送。
 
 行情恢复成功后，按[新电脑重建说明](new_mac_rebuild_migration.md)填写本机凭据、部署只读 QMT、核对运行账本及恢复门禁。正式配置可能为live，不直接运行交易启动器。恢复实盘仍先小资金验证。
+
+## 2026-10-08 早期涨停证据与冻结认证输入
+
+早期 `limit_list_d` 不提供 2019-01-02 至 2019-11-27 数据，现用官方 `kpl_list` 原始涨停榜单恢复市场计数。已采集 220 个开市日、12,647 条非ST沪深涨停记录，逐日核验榜单 SHA-256、计数和日线代码交集。2019-01-02 为31只。该证据只能恢复计数，不重构炸板次数、连板天数或封单成交概率字段。低于9%的涨停记录可能来自历史S类5%制度或低价股票的最小报价单位取整，不能直接按涨幅阈值删除。
+
+`config/market_data_backup.json` 的早期组通过 `end_date=20191127` 限定源覆盖；`scripts/market_data_backup.py::audit` 新增榜单哈希及计数回溯。`src/historical_limit_counts.py::load_historical_limit_count` 只读取行情证据，缺失、错日、重复、哈希不符或计数不一致均报错。`scripts/rebuild_historical_limit_counts.py::main` 提供隔离采集和断点续传。上述为新增功能；未删除任何交易风控。
+
+另将现行冻结认证使用的 `data/research/monthly_acde/20260831/strict_feature_pool.csv` 和 `market_sentiment.csv` 纳入必需恢复清单。冻结输入缺失不能用一个新的哈希冒充原认证成功，必须重建并按原锁定指标独立复现。
+
+分批上传期间没有完整 `data/market_backup/manifest.json`，验收应返回 INCOMPLETE；只有全部原始、派生和冻结输入到位、create/verify成功且Git LFS实体上传后，才可宣称换机恢复完成。

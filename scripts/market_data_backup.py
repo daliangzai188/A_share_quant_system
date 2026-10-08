@@ -105,7 +105,8 @@ def audit(root: Path, start: str, end: str) -> dict:
             problems[relative] = str(exc)
 
     for kind, group in policy["daily_groups"].items():
-        selected = [date for date in dates if date >= group.get("start_date", start)]
+        selected = [date for date in dates
+                    if group.get("start_date", start) <= date <= group.get("end_date", end)]
         for date in selected:
             add(f"{group['path']}/{date}.csv", group["required_columns"], date)
         groups[kind] = {"expected_dates": len(selected), "valid_dates": sum(
@@ -117,6 +118,17 @@ def audit(root: Path, start: str, end: str) -> dict:
         safe_path(root, pattern)
         for path in sorted(root.glob(pattern)):
             add(path.relative_to(root).as_posix())
+
+    # 早期计数必须能追溯到原始榜单，不能只备份一个人工填写的整数。
+    early_dates = [date for date in dates if date < "20191128"]
+    if early_dates:
+        from src.historical_limit_counts import load_historical_limit_count
+
+        for date in early_dates:
+            try:
+                load_historical_limit_count(root, date)
+            except (OSError, ValueError, RuntimeError, csv.Error) as exc:
+                problems[f"data/raw/kpl_limit_list/{date}.csv"] = str(exc)
 
     # 原始涨停起点晚于2019；缺少早期有来源的市场涨停计数时不能宣称换机输入完整。
     sentiment_relative = "data/research/five_year_strict/market_sentiment.csv"

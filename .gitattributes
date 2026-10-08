@@ -31,3 +31,8 @@ data/raw/minute/**/*.csv filter=lfs diff=lfs merge=lfs -text
 data/raw/minute_d/**/*.csv filter=lfs diff=lfs merge=lfs -text
 data/processed/minute_bars.csv filter=lfs diff=lfs merge=lfs -text
 data/processed/strategy_d_minute_features.csv filter=lfs diff=lfs merge=lfs -text
+
+data/raw/market_limit_counts.csv filter=lfs diff=lfs merge=lfs -text
+data/raw/kpl_limit_list/*.csv filter=lfs diff=lfs merge=lfs -text
+data/research/monthly_acde/*/strict_feature_pool.csv filter=lfs diff=lfs merge=lfs -text
+data/research/monthly_acde/*/market_sentiment.csv filter=lfs diff=lfs merge=lfs -text

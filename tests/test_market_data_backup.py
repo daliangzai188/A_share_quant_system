@@ -114,6 +114,9 @@ class MarketDataBackupTests(unittest.TestCase):
                    "data/raw/daily_basic/20261008.csv", "data/raw/limit_list/20261008.csv",
                    "data/processed/daily_merged.csv", "data/processed/daily_merged_by_date/20261008.csv",
                    "data/raw/minute/000001.SZ/20261008.csv", "data/raw/minute_d/000001_20261008.csv",
+                   "data/raw/kpl_limit_list/20190102.csv", "data/raw/market_limit_counts.csv",
+                   "data/research/monthly_acde/20260831/strict_feature_pool.csv",
+                   "data/research/monthly_acde/20260831/market_sentiment.csv",
                    "data/research/five_year_strict/strict_feature_pool.csv", "data/market_backup/manifest.json"]
         excluded = [".env", ".env.local", "data/state/positions.json", "data/database/execution_events.sqlite3",
                     "logs/trading_daemon.log", "data/research/strategy_d_l2_vendor_sample/book.csv"]
@@ -126,6 +129,11 @@ class MarketDataBackupTests(unittest.TestCase):
         reference = subprocess.run(["git", "check-attr", "filter", "--", "data/raw/trade_calendar.csv"],
                                    cwd=self.root, text=True, capture_output=True, check=True)
         self.assertIn("unspecified", reference.stdout)
+
+    def test_early_group_is_bounded_by_its_actual_source_range(self) -> None:
+        result = backup.audit(self.root, "20261008", "20261009")
+        self.assertEqual(result["groups"]["kpl_limit_list"]["expected_dates"], 0)
+        self.assertEqual(result["status"], "BACKUP_COMPLETE")
 
 
 if __name__ == "__main__":

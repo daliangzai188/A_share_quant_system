@@ -165,3 +165,12 @@ data/market_backup/*
 !data/raw/minute_d/**/*.csv
 !data/processed/minute_bars.csv
 !data/processed/strategy_d_minute_features.csv
+
+# 早期涨停计数的原始证据与现行冻结认证输入，换机必须同时恢复。
+!data/raw/market_limit_counts.csv
+!data/raw/kpl_limit_list/
+data/raw/kpl_limit_list/*
+!data/raw/kpl_limit_list/*.csv
+!data/raw/kpl_limit_list/manifest.json
+!data/research/monthly_acde/*/strict_feature_pool.csv
+!data/research/monthly_acde/*/market_sentiment.csv
