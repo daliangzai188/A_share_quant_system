@@ -44,6 +44,15 @@ class HistoricalRecollectionTests(unittest.TestCase):
                 with self.subTest(kind=kind, issue=label), self.assertRaises(ValueError):
                     collect.validate(bad, "20261008", kind)
 
+    def test_mapped_neeq_quote_requires_evidence_before_individual_bj_listing(self) -> None:
+        frame = sample("daily", "20211215").assign(ts_code="920132.BJ", pre_close=None)
+        with self.assertRaisesRegex(ValueError, "invalid pre_close"):
+            collect.validate(frame, "20211215", "daily", exclude_bj=False)
+        listing = {"920132.BJ": "20231116"}
+        self.assertEqual(collect.validate(frame, "20211215", "daily", exclude_bj=False, listing_dates=listing), 1)
+        with self.assertRaisesRegex(ValueError, "invalid pre_close"):
+            collect.validate(frame.assign(trade_date="20231116"), "20231116", "daily", exclude_bj=False, listing_dates=listing)
+
     def test_incomplete_basic_cannot_be_recorded_as_collected(self) -> None:
         for column in ["volume_ratio", "turnover_rate_f", "free_share"]:
             with self.subTest(column=column), self.assertRaisesRegex(ValueError, "incomplete basic"):

@@ -4,6 +4,10 @@ import argparse, concurrent.futures, datetime as dt, hashlib, json, os, sys, thr
 import pandas as pd
 import tushare as ts
 
+MODULE_ROOT=Path(__file__).resolve().parents[1]
+if str(MODULE_ROOT) not in sys.path:sys.path.insert(0,str(MODULE_ROOT))
+from src.limit_source_quality import suspended_placeholder_mask
+
 
 ENDPOINTS={
  'daily': ('daily', ['trade_date','ts_code','open','high','low','close','pre_close','vol','amount','pct_chg'],6000),
@@ -12,7 +16,15 @@ ENDPOINTS={
  'limit_list': ('limit_list_d',['trade_date','ts_code','name','close','pct_chg','fd_amount','first_time','last_time','open_times','limit_times','limit'],2500),
 }
 
-def validate(frame,date,kind,max_null_ratio=0.05,exclude_bj=True):
+def mapped_pre_listing_quotes(frame, listing_dates=None):
+ # 北交所上市前的新三板历史被供应商映射为现行股票代码，可能没有前次报价。
+ # 有个股上市日期时按该日期判断；未知股票只能使用北交所正式开市日期。
+ boundaries=frame['ts_code'].map(listing_dates or {}).fillna('20211115').astype(str)
+ return (frame['ts_code'].astype(str).str.endswith('.BJ') &
+         frame['trade_date'].astype(str).lt(boundaries) &
+         pd.to_numeric(frame['pre_close'],errors='coerce').isna())
+
+def validate(frame,date,kind,max_null_ratio=0.05,exclude_bj=True,listing_dates=None,daily_codes=None):
  required=set(ENDPOINTS[kind][1]); missing=required-set(frame.columns)
  if missing: raise ValueError('missing columns '+','.join(sorted(missing)))
  if frame.empty: raise ValueError('API returned no rows')
@@ -22,14 +34,15 @@ def validate(frame,date,kind,max_null_ratio=0.05,exclude_bj=True):
  # 保留供应商原始行；数值质量闸门使用与研究清洗器相同的市场范围。
  # 北交所代码映射到早期新三板历史时，pre_close可能为空，不能据此否决沪深整日数据。
  scoped=frame.loc[~frame['ts_code'].astype(str).str.endswith('.BJ')] if exclude_bj else frame
+ if kind=='limit_list' and daily_codes is not None:
+  scoped=scoped.loc[~suspended_placeholder_mask(scoped,daily_codes)]
  if scoped.empty: raise ValueError('API returned no rows in configured market scope')
  positive={'daily':['open','high','low','close','pre_close'],'adj_factor':['adj_factor'],'daily_basic':[],'limit_list':['close']}
  for col in positive[kind]:
   values=pd.to_numeric(scoped[col],errors='coerce')
   # 供应商把开市前的新三板行情映射为现行.BJ代码，昨收可能确实没有记录。
   # 只原样保留这一明确的历史缺口，不补价格；沪深及北交所开市后的缺口仍失败。
-  known_legacy_missing=(scoped['ts_code'].astype(str).str.endswith('.BJ') &
-                        scoped['trade_date'].astype(str).lt('20211115') & values.isna()) if kind=='daily' and col=='pre_close' else pd.Series(False,index=scoped.index)
+  known_legacy_missing=mapped_pre_listing_quotes(scoped,listing_dates) if kind=='daily' and col=='pre_close' else pd.Series(False,index=scoped.index)
   if (values.isna() & ~known_legacy_missing).any() or values.le(0).any(): raise ValueError('invalid '+col)
  if kind=='daily_basic':
   ratios={c:float(pd.to_numeric(scoped[c],errors='coerce').isna().mean()) for c in ['volume_ratio','turnover_rate_f','free_share']}
@@ -55,6 +68,12 @@ def main():
  if target==ROOT or ROOT in target.parents: raise RuntimeError('output must be outside production')
  target.mkdir(parents=True,exist_ok=True)
  config=json.loads((ROOT/'config/config.json').read_text(encoding='utf-8'))
+ reference=ROOT/'data/raw/stock_basic/stock_basic_all.csv'
+ listing_dates={}
+ if reference.exists():
+  stock=pd.read_csv(reference,dtype=str)
+  if {'ts_code','list_date'}.issubset(stock.columns):
+   listing_dates={str(row.ts_code):str(row.list_date) for row in stock.itertuples() if isinstance(row.list_date,str) and len(row.list_date)==8 and row.list_date.isdigit()}
  token=load_tushare_token(config,project_root=ROOT)
  if not token:raise RuntimeError('TUSHARE_TOKEN missing')
  calendar=pd.read_csv(ROOT/'data/raw/trade_calendar.csv',dtype={'cal_date':str})
@@ -63,7 +82,7 @@ def main():
  if not dates or dates[-1]!=args.end_date:raise RuntimeError('calendar does not cover requested end')
  lock=threading.Lock()
  exclude_bj=bool(config.get('cleaning',{}).get('exclude_bj',True))
- state={'status':'RUNNING','broker_calls_sent':False,'production_writes':False,'requested_start':args.start_date,'requested_end':args.end_date,'output':str(target),'expected_trade_days':len(dates),'started_at':dt.datetime.now().astimezone().isoformat(),'kinds':{},'probes':{},'validation_market_scope':'SH/SZ; BJ raw rows preserved without imputation' if exclude_bj else 'all raw markets','known_source_gap_policy':'Pre-20211115 .BJ mapped historical quotes may have unknown pre_close. Preserve original missing values and record affected days; no price imputation.'}
+ state={'status':'RUNNING','broker_calls_sent':False,'production_writes':False,'requested_start':args.start_date,'requested_end':args.end_date,'output':str(target),'expected_trade_days':len(dates),'started_at':dt.datetime.now().astimezone().isoformat(),'kinds':{},'probes':{},'validation_market_scope':'SH/SZ; BJ raw rows preserved without imputation' if exclude_bj else 'all raw markets','known_source_gap_policy':'BJ mapped pre-listing NEEQ quotes may have unknown pre_close. Validate against stock_basic listing dates; preserve raw missing values and record affected days. No price imputation.','stock_reference_sha256':hashlib.sha256(reference.read_bytes()).hexdigest() if reference.exists() else None}
  def save():
   with lock:
    state['updated_at']=dt.datetime.now().astimezone().isoformat();body=json.dumps(state,ensure_ascii=False,indent=2)
@@ -100,6 +119,11 @@ def main():
   fields=','.join(dict.fromkeys([*str(fields or '').split(','),*required]));fields=fields.strip(',')
   record={'saved':0,'reused':0,'checked':0,'failed':{},'unsupported_dates':[], 'api':api,'last_date':None,'last_rows':None,'known_source_gap_days':{}}
   manifest={}
+  def daily_quote_codes(frame,date):
+   if kind!='limit_list' or not suspended_placeholder_mask(frame,set()).any():return None
+   daily_path=target/'data/raw/daily'/(date+'.csv')
+   if daily_path.exists():return set(pd.read_csv(daily_path,usecols=['ts_code'],dtype=str).ts_code)
+   return None
   def publish():
    snapshot=json.loads(json.dumps({k:v for k,v in record.items() if k!='manifest'}))
    with lock:state['kinds'][kind]=snapshot
@@ -113,22 +137,32 @@ def main():
     try:
      reused=path.exists()
      max_null_ratio=float(config.get('collection',{}).get('daily_basic_max_null_ratio',0.05))
+     daily_codes=None
      if reused:
       try:
        frame=pd.read_csv(path,dtype={'trade_date':str,'ts_code':str})
-       validate(frame,date,kind,max_null_ratio,exclude_bj)
+       daily_codes=daily_quote_codes(frame,date)
+       validate(frame,date,kind,max_null_ratio,exclude_bj,listing_dates,daily_codes)
       except (ValueError,UnicodeError,pd.errors.ParserError,pd.errors.EmptyDataError):
        rejected=target/'rejected_cache'/kind;rejected.mkdir(parents=True,exist_ok=True)
        path.replace(rejected/(date+'_'+str(time.time_ns())+'.csv'))
        reused=False
      if not reused:frame=query(pro,api,date,fields,cap,**({'limit_type':'U'} if kind=='limit_list' else {}))
-     rows=validate(frame,date,kind,max_null_ratio,exclude_bj)
-     if kind=='daily' and date<'20211115':
-      missing=frame['ts_code'].astype(str).str.endswith('.BJ') & pd.to_numeric(frame['pre_close'],errors='coerce').isna()
-      if missing.any():record['known_source_gap_days'][date]={'pre_bse_unknown_pre_close':int(missing.sum())}
+     daily_codes=daily_quote_codes(frame,date)
+     rows=validate(frame,date,kind,max_null_ratio,exclude_bj,listing_dates,daily_codes)
+     if kind=='daily':
+      missing=mapped_pre_listing_quotes(frame,listing_dates)
+      if missing.any():record['known_source_gap_days'][date]={'pre_listing_unknown_pre_close':int(missing.sum())}
+     if kind=='limit_list' and daily_codes is not None:
+      placeholder=suspended_placeholder_mask(frame,daily_codes)
+      if placeholder.any():record['known_source_gap_days'][date]={'untradable_source_placeholder_codes':frame.loc[placeholder,'ts_code'].astype(str).tolist()}
      if not reused:
       if kind=='limit_list':
        frame['limit_data_source']='limit_list_d';frame['limit_data_quality']='full';frame['strategy_compatible']=True
+       if daily_codes is not None:
+        placeholder=suspended_placeholder_mask(frame,daily_codes)
+        frame.loc[placeholder,'limit_data_quality']='untradable_source_placeholder'
+        frame.loc[placeholder,'strategy_compatible']=False
       tmp=path.with_suffix('.csv.tmp');frame.to_csv(tmp,index=False,encoding='utf-8-sig');tmp.replace(path)
      digest=hashlib.sha256(path.read_bytes()).hexdigest()
      manifest[date]={'rows':rows,'sha256':digest,'bytes':path.stat().st_size}
