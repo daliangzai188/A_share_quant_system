@@ -7764,6 +7764,16 @@
     "sha256": "b256ef18a579db0de9b79398efafb3a1fa442c18c84e47a9d731bbe3d7dfce2c",
     "bytes": 6497
   },
+  "20260428": {
+    "rows": 60,
+    "sha256": "f3560c798433fa1234f6082132eb9dd37a6264d50fd13248d515a9b8c85f70bb",
+    "bytes": 6003,
+    "known_source_gaps": {
+      "untradable_source_placeholder_codes": [
+        "603272.SH"
+      ]
+    }
+  },
   "20260429": {
     "rows": 100,
     "sha256": "ee80996915f844087ba2092448d5c1fc3df694a41efd8141fdd5dea7ace7e9c5",
@@ -7788,6 +7798,26 @@
     "rows": 98,
     "sha256": "b824b789773605b4b274c54753ac745298916cde502b5bf04e145f4e039c1b32",
     "bytes": 9728
+  },
+  "20260511": {
+    "rows": 95,
+    "sha256": "5b7d8d347cb01c49f7755d78ae44bb38973386ef21fc596963dbea3501422e50",
+    "bytes": 9454,
+    "known_source_gaps": {
+      "untradable_source_placeholder_codes": [
+        "603311.SH"
+      ]
+    }
+  },
+  "20260512": {
+    "rows": 58,
+    "sha256": "2a8bd9f52197ab1a3fe271a18ce8c1254f53e3e684e88b1c080f39e626cf79e7",
+    "bytes": 5837,
+    "known_source_gaps": {
+      "untradable_source_placeholder_codes": [
+        "603311.SH"
+      ]
+    }
   },
   "20260513": {
     "rows": 113,
@@ -8288,38 +8318,5 @@
     "rows": 43,
     "sha256": "125d8d87817fbee5fa9944850f9211c243717815159fc469df1b0b0de925318b",
     "bytes": 4329
-  },
-  "20260428": {
-    "rows": 60,
-    "bytes": 6003,
-    "sha256": "f3560c798433fa1234f6082132eb9dd37a6264d50fd13248d515a9b8c85f70bb",
-    "known_source_gaps": {
-      "untradable_source_placeholder_codes": [
-        "603272.SH"
-      ]
-    },
-    "independent_daily_and_kpl_absence_confirmed": true
-  },
-  "20260511": {
-    "rows": 95,
-    "bytes": 9454,
-    "sha256": "5b7d8d347cb01c49f7755d78ae44bb38973386ef21fc596963dbea3501422e50",
-    "known_source_gaps": {
-      "untradable_source_placeholder_codes": [
-        "603311.SH"
-      ]
-    },
-    "independent_daily_and_kpl_absence_confirmed": true
-  },
-  "20260512": {
-    "rows": 58,
-    "bytes": 5837,
-    "sha256": "2a8bd9f52197ab1a3fe271a18ce8c1254f53e3e684e88b1c080f39e626cf79e7",
-    "known_source_gaps": {
-      "untradable_source_placeholder_codes": [
-        "603311.SH"
-      ]
-    },
-    "independent_daily_and_kpl_absence_confirmed": true
   }
 }
