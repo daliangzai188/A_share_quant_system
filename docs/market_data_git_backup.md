@@ -51,6 +51,7 @@ git add data/raw/daily data/raw/daily_basic data/raw/adj_factor data/raw/limit_l
 git add data/raw/kpl_limit_list data/raw/market_limit_counts.csv
 git add data/raw/trade_calendar.csv data/raw/stock_basic/stock_basic_all.csv
 git add data/processed/fill_rate_table.csv data/processed/fill_rate_fallback.csv
+git add data/processed/daily_merged_by_date
 git add data/research/five_year_strict data/research/monthly_acde/20260831/strict_feature_pool.csv
 git add data/research/monthly_acde/20260831/market_sentiment.csv data/market_backup/manifest.json
 git diff --cached --stat
@@ -96,3 +97,12 @@ py -3.11 -X utf8 scripts\market_data_backup.py verify
 另将现行冻结认证使用的 `data/research/monthly_acde/20260831/strict_feature_pool.csv` 和 `market_sentiment.csv` 纳入必需恢复清单。冻结输入缺失不能用一个新的哈希冒充原认证成功，必须重建并按原锁定指标独立复现。
 
 分批上传期间没有完整 `data/market_backup/manifest.json`，验收应返回 INCOMPLETE；只有全部原始、派生和冻结输入到位、create/verify成功且Git LFS实体上传后，才可宣称换机恢复完成。
+
+
+## 2026-10-08 完整恢复验收
+
+截至20261008，完整行情备份清单包含7551个文件、2892607107字节，覆盖1881个开市日。代码、原始数据、清洗日线分片、全历史派生底座和冻结认证输入已上传现有GitHub仓库，仓库可见性保持原设置。
+
+已从GitHub独立冷克隆并拉取实际Git LFS对象，最终执行`market_data_backup.py verify`得到`RESTORE_VERIFIED`、退出码0、问题清单为空。本次故障根因、具体文件/方法修改和Windows⑪/⑬实际退出码见[收盘流水线修复记录](close_pipeline_repair_20261008.md)。
+
+Windows新增的`daily_merged_by_date`分片同样必须核对来源并纳入提交；如果验证器报“文件未登记在备份清单”，应验收新增文件、重新生成清单并提交，不能删文件或放宽哈希检查。后续新交易日数据仍须增量验收和推送，Git不会自动提交运行中生成的数据。
