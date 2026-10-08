@@ -26,9 +26,33 @@
       "valid_dates": 220
     }
   },
-  "file_count": 7547,
-  "total_bytes": 2887392665,
+  "file_count": 7551,
+  "total_bytes": 2892607107,
   "files": [
+    {
+      "path": "data/processed/daily_merged_by_date/20260928.csv",
+      "bytes": 1307453,
+      "sha256": "b3b5ca23a2e51e7bce4201bd1167118fd7b61362c5ce64a9776b2557b767f5f9",
+      "rows": 5557
+    },
+    {
+      "path": "data/processed/daily_merged_by_date/20260929.csv",
+      "bytes": 1300159,
+      "sha256": "f399587ebbc9fb4829956cb3cf9f44641f53995069bd5786dcae4eea02f4e82d",
+      "rows": 5559
+    },
+    {
+      "path": "data/processed/daily_merged_by_date/20260930.csv",
+      "bytes": 1302506,
+      "sha256": "630e5c9ff61b051daadceb625c9be3614b1972ca42455faab99eb9550eed5317",
+      "rows": 5561
+    },
+    {
+      "path": "data/processed/daily_merged_by_date/20261008.csv",
+      "bytes": 1304324,
+      "sha256": "4210ac4cdec5d9232eb0048fd81bd02a23d23f7a429a82852785c215c1e531bc",
+      "rows": 5557
+    },
     {
       "path": "data/processed/fill_rate_fallback.csv",
       "bytes": 77050,
@@ -45314,5 +45338,5 @@
   ],
   "problems": {},
   "note": "只验证行情备份；不代表数据源口径、策略认证、交易账本迁移或交易许可已通过。",
-  "created_at_utc": "2026-10-08T14:04:16.617024+00:00"
+  "created_at_utc": "2026-10-08T14:59:54.668414+00:00"
 }
