@@ -109,6 +109,9 @@ def completed_live_trades(
     }
     trades = frame[frame["data_complete"]].copy()
     if trades.empty:
+        # 下游影子总闸及导出的CSV仍需要统一的收益schema；空样本不是零收益成交。
+        for column in ("estimated_fees", "net_pnl", "net_return"):
+            trades[column] = pd.Series(index=trades.index, dtype=float)
         return trades, quality
 
     commission = float(config.get("commission_rate") or 0.0003)

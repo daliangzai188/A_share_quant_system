@@ -15,6 +15,13 @@ from src.strategy_identity import normalize_strategy_frame, normalize_strategy_l
 
 
 ACTIVE_LEGS = {"A", "C", "D", "E"}
+DETAIL_COLUMNS = [
+    "trade_key", "entry_date", "planned_exit_date", "exit_date", "ts_code", "name",
+    "strategy_leg", "entry_plan_source", "execution_status", "entry_filled_qty",
+    "entry_fill_amount", "exit_filled_qty", "exit_fill_amount", "gap_category",
+    "severity", "is_data_gap", "is_normal_open", "recoverability", "reason",
+    "recommended_action",
+]
 
 
 def _text(value: Any) -> str:
@@ -330,7 +337,7 @@ def analyze_execution_data_quality(
             }
         )
 
-    detail = pd.DataFrame(rows)
+    detail = pd.DataFrame(rows, columns=DETAIL_COLUMNS)
     normal_open_count = int(detail["is_normal_open"].sum()) if len(detail) else 0
     gap_count = int(detail["is_data_gap"].sum()) if len(detail) else 0
     complete_count = int(detail["gap_category"].eq("COMPLETE").sum()) if len(detail) else 0
@@ -359,7 +366,10 @@ def analyze_execution_data_quality(
         reason = f"仅有{normal_open_count}笔正常持仓尚未退出，没有已结算数据缺口。"
     else:
         status = "PASS"
-        reason = "全部当前策略成交记录均已完整闭合。"
+        reason = (
+            "全部当前策略成交记录均已完整闭合。" if len(detail)
+            else "当前策略成交记录0笔；暂无可检查的数据缺口，收益和容量仍需等待真实样本。"
+        )
     summary = {
         "status": status,
         "reason": reason,

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import unittest
+import tempfile
+import json
+from pathlib import Path
 
 import pandas as pd
 
@@ -13,6 +16,41 @@ from src.live_performance import (
 
 
 class LivePerformanceTests(unittest.TestCase):
+    def test_no_completed_samples_can_feed_shadow_risk_without_fabricating_trades(self) -> None:
+        from src.account_risk_shadow import update_account_risk_shadow
+
+        columns = [
+            "trade_key", "entry_date", "exit_date", "ts_code", "strategy_leg",
+            "entry_filled_qty", "entry_fill_amount", "exit_filled_qty", "exit_fill_amount",
+        ]
+        pending = {
+            "trade_key": "pending", "entry_date": "20261008", "exit_date": "",
+            "ts_code": "000001.SZ", "strategy_leg": "A", "entry_filled_qty": 100,
+            "entry_fill_amount": 1000, "exit_filled_qty": 0, "exit_fill_amount": 0,
+        }
+        policy = json.loads(
+            (Path(__file__).resolve().parents[1] / "config/account_risk_shadow.json").read_text(encoding="utf-8")
+        )
+        for rows in ([], [pending]):
+            with self.subTest(pending=bool(rows)), tempfile.TemporaryDirectory() as directory:
+                trades, quality = completed_live_trades(pd.DataFrame(rows, columns=columns), {})
+                self.assertTrue(trades.empty)
+                self.assertEqual(quality["complete_trade_rows"], 0)
+                for column in ("estimated_fees", "net_pnl", "net_return"):
+                    self.assertIn(column, trades.columns)
+                    self.assertTrue(pd.api.types.is_float_dtype(trades[column]))
+                status = update_account_risk_shadow(
+                    state_path=Path(directory) / "state.json",
+                    latest_status_path=Path(directory) / "status.json",
+                    policy=policy, complete_trades=trades,
+                    bootstrap_equity=10000.0, as_of_date="20261008",
+                )
+                self.assertFalse(status["enforce_live_gate"])
+                state = json.loads((Path(directory) / "state.json").read_text())
+                self.assertEqual(state["current_equity"], 10000.0)
+                self.assertEqual(state["processed_trade_keys"], [])
+                self.assertEqual(state["observed_complete_trade_count"], 0)
+
     def test_incomplete_trade_is_excluded_and_fees_are_deducted(self) -> None:
         raw = pd.DataFrame(
             [
