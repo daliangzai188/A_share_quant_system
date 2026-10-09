@@ -37,6 +37,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--top-n", type=int, default=10, help="输出候选数量。")
     parser.add_argument("--strategy-config", default="config/strategy_config.json")
     parser.add_argument("--runtime-config", default="config/config.json")
+    parser.add_argument("--input-path", default="data/processed/limit_up_fill_scored.csv", help="成交概率文件；收盘流水线传入当日live分片。")
     parser.add_argument("--output-prefix", default=OUTPUT_PREFIX)
     return parser.parse_args()
 
@@ -539,12 +540,12 @@ def main() -> None:
     strategy_config = load_json_config(args.strategy_config)
     assert_safe_runtime(runtime_config, strategy_config)
 
-    input_path = PROJECT_ROOT / "data" / "processed" / "limit_up_fill_scored.csv"
+    input_path = PROJECT_ROOT / args.input_path
     if not input_path.exists():
         raise FileNotFoundError(f"缺少当日成交概率文件: {input_path}")
     data = pd.read_csv(input_path, dtype={"trade_date": str, "ts_code": str}, low_memory=False)
     if data.empty:
-        raise RuntimeError("limit_up_fill_scored.csv 为空。")
+        raise RuntimeError(f"{input_path.name} 为空。")
     data["trade_date"] = data["trade_date"].map(normalize_date)
     latest_date = str(data["trade_date"].max())
     if args.signal_date:

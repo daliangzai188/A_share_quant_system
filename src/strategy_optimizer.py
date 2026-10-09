@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from itertools import combinations, product
 from pathlib import Path
 
@@ -322,11 +323,23 @@ class StrategyConditionOptimizer:
             return pd.DataFrame(columns=columns)
         return pd.concat(frames, ignore_index=True, sort=False)
 
+    @staticmethod
+    def is_daily_partition_date(value: str) -> bool:
+        """只将有效的 YYYYMMDD 文件识别为日线分片，保留冲突副本供审计。"""
+        if len(value) != 8 or not value.isascii() or not value.isdigit():
+            return False
+        try:
+            datetime.strptime(value, "%Y%m%d")
+        except ValueError:
+            return False
+        return True
+
     def expand_needed_daily_dates(self, trade_dates: list[str]) -> list[str]:
         available_dates = sorted(
             {
                 path.stem
                 for path in list(self.daily_merged_by_date_dir.glob("*.csv")) + list(self.raw_daily_dir.glob("*.csv"))
+                if self.is_daily_partition_date(path.stem)
             }
         )
         if not available_dates:
@@ -343,6 +356,8 @@ class StrategyConditionOptimizer:
         return sorted(needed)
 
     def load_daily_one_date(self, trade_date: str, columns: list[str]) -> pd.DataFrame:
+        if not self.is_daily_partition_date(trade_date):
+            raise ValueError(f"日线分片日期必须为有效YYYYMMDD：{trade_date}")
         partition_path = self.daily_merged_by_date_dir / f"{trade_date}.csv"
         if partition_path.exists():
             available = pd.read_csv(partition_path, nrows=0).columns.tolist()

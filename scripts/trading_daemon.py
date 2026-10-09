@@ -13400,6 +13400,8 @@ def job_post_market(end_date: str | None = None) -> None:
         def _run_limit_pool_fallback() -> bool:
             return run_script(
                 "generate_live_limit_pool_daily_ops.py",
+                "--input-path",
+                live_fill_scored_path,
                 "--signal-date",
                 target_str,
                 "--top-n",
