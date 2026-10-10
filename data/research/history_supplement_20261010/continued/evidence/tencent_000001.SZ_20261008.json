@@ -1,0 +1,18 @@
+{
+  "provider": "tencent",
+  "code": "000001.SZ",
+  "trade_date": "20261008",
+  "url": "https://stock.gtimg.cn/data/index.php?appn=detail&action=download&c=sz000001&d=20261008",
+  "queried_at_utc": "2026-10-10T05:36:21.472396+00:00",
+  "request_authenticated": false,
+  "source_rows_accepted_for_strategy": 0,
+  "repaired_price_conflicts": 0,
+  "http_status": 200,
+  "final_url": "https://stock.gtimg.cn/data/index.php?appn=detail&action=download&c=sz000001&d=20261008",
+  "content_type": "text/html; charset=utf-8",
+  "raw_bytes": 8,
+  "raw_file": "raw/tencent_000001.SZ_20261008.response",
+  "raw_sha256": "0524b365862de1816c434cc7c3a53e4453a4f63d9d784d62fc5b20c5fb250215",
+  "status": "PROVIDER_NO_DATA",
+  "parsed_tick_rows": 0
+}

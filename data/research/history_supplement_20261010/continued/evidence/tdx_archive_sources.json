@@ -1,0 +1,57 @@
+{
+  "index_requests": [
+    {
+      "url": "https://www.tdx.com.cn/downit.zip",
+      "queried_at_utc": "2026-10-10T05:40:43.371508+00:00",
+      "http_status": 200,
+      "final_url": "https://www.tdx.com.cn/downit.zip",
+      "content_type": "application/zip",
+      "file": "raw/tdx_download_index_0.response",
+      "sha256": "126c62275d7771f6df923cc262f96c5263c780b06cb611669ae06f94bd8afe91",
+      "bytes": 563,
+      "status": "PUBLIC_ARCHIVE_CAPTURED",
+      "entries": [
+        "downit5.cfg",
+        "ADVERT.TXT"
+      ]
+    }
+  ],
+  "market_requests": [],
+  "production_writes": false,
+  "credentials_used": false,
+  "strategy_rows_accepted": 0,
+  "source_rows_certified": 0,
+  "historical_tick_index_sections": [
+    [
+      "PATH01=",
+      "FILE01=",
+      "",
+      "TYPE02=1",
+      "PATH02=products/data/data/2ktic/",
+      "FILE02=YYYYMMDD.zip",
+      "",
+      "TYPE03=2",
+      "PATH03=",
+      "FILE03=",
+      "",
+      "TYPE04=3"
+    ],
+    [
+      "PATH08=products/data/data/g3day/",
+      "FILE08=YYYYMMDD.zip",
+      "",
+      "TYPE09=8",
+      "PATH09=products/data/data/g3tic/",
+      "FILE09=YYYYMMDD.zip",
+      "",
+      "TYPE10=9",
+      "PATH10=products/data/data/newday/",
+      "FILE10=YYYYMMDD.zip",
+      "",
+      "TYPE11=10"
+    ]
+  ],
+  "index_configuration_sha256": "27921b60cd31c18571581d012e9c0f4d9d4b66f96247b3519226381e7d3192d0",
+  "status": "INDEX_CAPTURED_REQUIRES_RANGE_VERIFICATION",
+  "completed_at_utc": "2026-10-10T05:40:49.263974+00:00"
+}

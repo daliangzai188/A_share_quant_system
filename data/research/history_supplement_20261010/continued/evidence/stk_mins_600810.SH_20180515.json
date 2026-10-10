@@ -1,0 +1,15 @@
+{
+  "api": "stk_mins",
+  "trade_date_requested": "20180515",
+  "ts_code": "600810.SH",
+  "params": {
+    "freq": "1min",
+    "start_date": "2018-05-15 09:00:00",
+    "end_date": "2018-05-15 16:00:00"
+  },
+  "queried_at_utc": "2026-10-10T05:46:27.584068+00:00",
+  "status": "RAW_CAPTURED",
+  "rows": 241,
+  "file": "raw/stk_mins_600810.SH_20180515.csv",
+  "sha256": "8aeae01f9f877e306e1d7f35f884fdbfcf670efa75f266bb1da4c1f90cb06d74"
+}

@@ -1,0 +1,13 @@
+{
+  "api": "stock_basic",
+  "trade_date_requested": "",
+  "ts_code": "603629.SH",
+  "params": {
+    "list_status": "L"
+  },
+  "queried_at_utc": "2026-10-10T05:46:27.238724+00:00",
+  "status": "RAW_CAPTURED",
+  "rows": 1,
+  "file": "raw/stock_basic_603629.SH_metadata.csv",
+  "sha256": "9d2f279751ff784de68d88e98f5f46a2cfefb77c18f4aaee8c2b79b477a54ab5"
+}

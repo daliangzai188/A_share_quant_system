@@ -1,0 +1,11 @@
+{
+  "observed_at_utc": "2026-10-10T05:40:43.502147+00:00",
+  "status_sha256": "b817e10f84e968f6b7f7378c76b2ed39fa0452c6b3c19e5a34a12a87899025e1",
+  "state": "waiting_captcha",
+  "source_time": "2026-10-10T13:40:07.097183+08:00",
+  "broker_online": false,
+  "sends_orders": false,
+  "credentials_file_exists": false,
+  "guest_disk_access": "read_only",
+  "broker_history_query_executed": false
+}

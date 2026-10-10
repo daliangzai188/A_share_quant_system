@@ -1,0 +1,75 @@
+{
+  "status": "PARTIAL_SUPPLEMENT_WITH_EXPLICIT_NOT_APPLICABLE_FIELDS",
+  "checked_at_utc": "2026-10-10T05:55:47.798665+00:00",
+  "new_official_source_rows_captured": 940,
+  "new_official_price_controls": 2,
+  "new_official_listing_controls": 1,
+  "existing_target_stock_days_checked": 20552,
+  "target_ratios_previously_null": 837,
+  "new_ratio_values_written": 0,
+  "ipo_ratio_not_applicable_stock_days": 837,
+  "ipo_ratio_not_applicable_unique_stocks": 186,
+  "ipo_prior_days_distribution": {
+    "1": 178,
+    "3": 163,
+    "2": 172,
+    "0": 174,
+    "4": 150
+  },
+  "ipo_reason_file": "evidence/ipo_ratio_not_applicable.csv",
+  "ipo_reason_file_sha256": "c42e039e2b8f38809146f6422c029da0c7dcbb8436bb10ece04b5ce440b94320",
+  "stock_listing_source_sha256": "239545140efcbd4b51612f58f4b3f1d165dfd7003e3cba09c6c7a9bf1defe23a",
+  "stock_metadata_used_for_strategy_factors": false,
+  "official_known_ratio_controls": 19673,
+  "official_known_ratio_matches": 19673,
+  "source_dependency_files_verified": 867,
+  "compatible_historical_close_rule_cases": 2,
+  "exact_final_trade_window_certified": false,
+  "remaining_low_difference_stock_days": 4765,
+  "historical_seal_measurement_certified": false,
+  "historical_broker_deals_recovered": 0,
+  "broker_history_query_executed": false,
+  "broker_state_at_latest_read": "waiting_captcha",
+  "broker_online_at_latest_read": false,
+  "broker_status_observed_at_utc": "2026-10-10T05:40:43.502147+00:00",
+  "historical_equity_ledger_restored": false,
+  "user_paid_data_preference": "DO_NOT_PURCHASE_CONTINUE_WITH_EXISTING_PERMISSIONS",
+  "paid_data_purchased": false,
+  "orders_or_cancellations_sent": false,
+  "production_writes": false,
+  "production_worktree_clean": true,
+  "formal_baseline_certified": false,
+  "full_review_status": "DATA_INCOMPLETE_NOT_READY",
+  "script_files": [
+    {
+      "file": "tdx_history_sources.py",
+      "sha256": "ec299c7bcb8847f85bacfab6590e935ecbb529ed655c502ade25da28ee18efab",
+      "syntax_valid": true
+    },
+    {
+      "file": "verify_supplement.py",
+      "sha256": "b0e0c1051dff35296bb8ec25d318e1466a22edaaa50cc7c6a9b18fe475285f9a",
+      "syntax_valid": true
+    },
+    {
+      "file": "supplement_remaining_ratios.py",
+      "sha256": "ad4ed36a5ac1374e626326e5a9902bf827477d6d988c9b9152d031043fdd2a3c",
+      "syntax_valid": true
+    },
+    {
+      "file": "existing_permission_checks.py",
+      "sha256": "1ccce873e639a8a6be7b0a37b403801c1a10d5c5267f73930668e9f195f44305",
+      "syntax_valid": true
+    },
+    {
+      "file": "legacy_tick_sources.py",
+      "sha256": "3ae52dcecf948ec1552bf5d7d323be429f1b4291318511c3236500f240e25ff9",
+      "syntax_valid": true
+    },
+    {
+      "file": "tdx_archive_sources.py",
+      "sha256": "a09254c6b193dbda484fc78f010b42c2a6434f2485dadce3a8dd8ad98ddf358b",
+      "syntax_valid": true
+    }
+  ]
+}

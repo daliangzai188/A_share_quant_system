@@ -1,0 +1,47 @@
+{
+  "server_attempts": [
+    {
+      "name": "上海电信主站Z1",
+      "host": "180.153.18.170",
+      "port": 7709,
+      "status": "CONNECTION_OR_MARKET_CONTROL_FAILED",
+      "error_type": "TimeoutError",
+      "elapsed_seconds": 6.128
+    },
+    {
+      "name": "招商证券深圳行情",
+      "host": "119.147.212.81",
+      "port": 7709,
+      "status": "CONNECTION_OR_MARKET_CONTROL_FAILED",
+      "error_type": "TdxConnectionError",
+      "elapsed_seconds": 3.004
+    },
+    {
+      "name": "上证云成都电信一",
+      "host": "218.6.170.47",
+      "port": 7709,
+      "status": "CONNECTION_OR_MARKET_CONTROL_FAILED",
+      "error_type": "TimeoutError",
+      "elapsed_seconds": 4.444
+    },
+    {
+      "name": "上海电信主站Z80",
+      "host": "180.153.18.172",
+      "port": 80,
+      "status": "CONNECTION_OR_MARKET_CONTROL_FAILED",
+      "error_type": "TimeoutError",
+      "elapsed_seconds": 6.305
+    }
+  ],
+  "server_used": null,
+  "queries": [],
+  "documentation": "https://github.com/rainx/pytdx/blob/master/docs/pytdx_hq.md",
+  "dependency_sha256": "91ccac0919cc28a9f8c4aee19d770fab06d38da9503148dfe78bdc200706afad",
+  "source_parser_sha256": "207c496eb1d35e2b90a8665439c0d56303d5b03375b17f4a484b6af0c2c1ff62",
+  "production_writes": false,
+  "broker_account_queries_sent": false,
+  "orders_or_cancellations_sent": false,
+  "strategy_rows_accepted": 0,
+  "status": "NO_USABLE_MARKET_CONNECTION",
+  "completed_at_utc": "2026-10-10T05:39:03.341900+00:00"
+}

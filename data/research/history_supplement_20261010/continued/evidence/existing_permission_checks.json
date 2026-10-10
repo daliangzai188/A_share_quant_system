@@ -1,0 +1,124 @@
+{
+  "queries": [
+    {
+      "api": "bak_daily",
+      "trade_date_requested": "20180409",
+      "ts_code": "603598.SH",
+      "params": {},
+      "queried_at_utc": "2026-10-10T05:46:23.173337+00:00",
+      "status": "RAW_CAPTURED",
+      "rows": 1,
+      "file": "raw/bak_daily_603598.SH_20180409.csv",
+      "sha256": "791a625c36d936166659f7b68292f34fa8156cd164e94cbf141c573f6f3ffed0"
+    },
+    {
+      "api": "bak_daily",
+      "trade_date_requested": "20180515",
+      "ts_code": "600810.SH",
+      "params": {},
+      "queried_at_utc": "2026-10-10T05:46:26.325597+00:00",
+      "status": "RAW_CAPTURED",
+      "rows": 1,
+      "file": "raw/bak_daily_600810.SH_20180515.csv",
+      "sha256": "3901523100658aaee4e124514fceaee23009450423acdba94f2ca16d3cbbd85d"
+    },
+    {
+      "api": "stock_basic",
+      "trade_date_requested": "",
+      "ts_code": "603629.SH",
+      "params": {
+        "list_status": "L"
+      },
+      "queried_at_utc": "2026-10-10T05:46:27.238724+00:00",
+      "status": "RAW_CAPTURED",
+      "rows": 1,
+      "file": "raw/stock_basic_603629.SH_metadata.csv",
+      "sha256": "9d2f279751ff784de68d88e98f5f46a2cfefb77c18f4aaee8c2b79b477a54ab5"
+    },
+    {
+      "api": "stk_mins",
+      "trade_date_requested": "20180515",
+      "ts_code": "600810.SH",
+      "params": {
+        "freq": "1min",
+        "start_date": "2018-05-15 09:00:00",
+        "end_date": "2018-05-15 16:00:00"
+      },
+      "queried_at_utc": "2026-10-10T05:46:27.584068+00:00",
+      "status": "RAW_CAPTURED",
+      "rows": 241,
+      "file": "raw/stk_mins_600810.SH_20180515.csv",
+      "sha256": "8aeae01f9f877e306e1d7f35f884fdbfcf670efa75f266bb1da4c1f90cb06d74"
+    }
+  ],
+  "closing_price_diagnostic": {
+    "cases": [
+      {
+        "ts_code": "603598.SH",
+        "trade_date": "20180409",
+        "minute_last_price": 14.66,
+        "official_daily_close": 14.67,
+        "last_clock_minute_vwap": 14.668884192730346,
+        "rounded_clock_minute_vwap": 14.67,
+        "primary_daily_sha256": "0687585171535e44cf97f1c4626930bfe4ac5c45368e57cf2e25ae17420c5098",
+        "tick_window_verified": false,
+        "prices_rewritten": false,
+        "formal_price_certified": false,
+        "original_minute_source_sha256": "46450456eb3887fc98b19ff61309542fc366f063f441ac89dbf2b3b8b6ed2027",
+        "backup_daily_close": 14.67,
+        "backup_matches_primary_close": true,
+        "backup_source_sha256": "791a625c36d936166659f7b68292f34fa8156cd164e94cbf141c573f6f3ffed0",
+        "old_shanghai_close_rule_applies": true,
+        "compatible_with_historical_close_rule": true,
+        "status": "RULE_COMPATIBLE_CLOCK_MINUTE_NOT_EXACT_FINAL_TRADE_WINDOW"
+      },
+      {
+        "ts_code": "600810.SH",
+        "trade_date": "20180515",
+        "minute_last_price": 12.85,
+        "official_daily_close": 12.86,
+        "last_clock_minute_vwap": 12.855073746312684,
+        "rounded_clock_minute_vwap": 12.86,
+        "primary_daily_sha256": "99304bdb1e496038d3f53a758f4c68651673c4e95f0133454cea0ef5a7475511",
+        "tick_window_verified": false,
+        "prices_rewritten": false,
+        "formal_price_certified": false,
+        "original_minute_source_sha256": "47ac203a2a4807106fccfc298879171fbd9837fd0f12a8f5f32aa45a709a94e1",
+        "fresh_minute_reply_matches_original_day": true,
+        "fresh_minute_source_sha256": "8aeae01f9f877e306e1d7f35f884fdbfcf670efa75f266bb1da4c1f90cb06d74",
+        "backup_daily_close": 12.86,
+        "backup_matches_primary_close": true,
+        "backup_source_sha256": "3901523100658aaee4e124514fceaee23009450423acdba94f2ca16d3cbbd85d",
+        "old_shanghai_close_rule_applies": true,
+        "compatible_with_historical_close_rule": true,
+        "status": "RULE_COMPATIBLE_CLOCK_MINUTE_NOT_EXACT_FINAL_TRADE_WINDOW"
+      }
+    ],
+    "source_diagnostic_sha256": "60379318bdfeffb4bd9cbce50a27f81965e10617ca4bca8380b28184f07746b4",
+    "official_rule_sources": [
+      "https://www.sse.com.cn/lawandrules/sselawsrules/repeal/rules/c/c_20210531_5478084.shtml",
+      "https://www.sse.com.cn/lawandrules/sselawsrules2025/repeal/rules/c/c_20180806_10784917.shtml",
+      "https://www.sse.com.cn/aboutus/mediacenter/hotandd/c/c_20180806_4607055.shtml"
+    ],
+    "limitation": "最后时钟分钟不一定等于最后一笔成交向前推一分钟；没有逐笔时戳，不能认定已严格复原官方收盘价。",
+    "remaining_low_difference_stock_days": 4765,
+    "formal_price_differences_repaired": 0
+  },
+  "first_day_ratio_diagnostic": {
+    "ts_code": "603629.SH",
+    "trade_date": "20181224",
+    "ratio_written": false,
+    "eligibility_filter_changed": false,
+    "point_in_time_factor_input_written": false,
+    "official_list_date": "20181224",
+    "metadata_sha256": "9d2f279751ff784de68d88e98f5f46a2cfefb77c18f4aaee8c2b79b477a54ab5",
+    "prior_observed_days": 0,
+    "status": "NOT_APPLICABLE_FIRST_LISTING_DAY_NO_PRIOR_VOLUME_BASELINE",
+    "reason": "上市首日没有该证券此前五个有成交交易日的平均成交量；不填零，不视为可恢复的量比原件。"
+  },
+  "captured_source_rows": 244,
+  "source_rows_restoring_previous_missing_fields": 0,
+  "production_writes": false,
+  "paid_data_purchased": false,
+  "completed_at_utc": "2026-10-10T05:51:30.886709+00:00"
+}

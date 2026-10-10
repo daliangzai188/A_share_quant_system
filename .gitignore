@@ -174,3 +174,15 @@ data/raw/kpl_limit_list/*
 !data/raw/kpl_limit_list/manifest.json
 !data/research/monthly_acde/*/strict_feature_pool.csv
 !data/research/monthly_acde/*/market_sentiment.csv
+
+# 2026-10-10具名历史补充研究附件；不放行账户状态或其他研究输出。
+!data/research/history_supplement_20261010/continued/evidence/ipo_ratio_not_applicable.csv
+!data/research/history_supplement_20261010/continued/evidence/remaining_price_discrepancies.csv
+!data/research/history_supplement_20261010/continued/evidence/remaining_ratio_controls.csv
+!data/research/history_supplement_20261010/continued/raw/bak_daily_600810.SH_20180515.csv
+!data/research/history_supplement_20261010/continued/raw/bak_daily_603598.SH_20180409.csv
+!data/research/history_supplement_20261010/continued/raw/stk_mins_600810.SH_20180515.csv
+!data/research/history_supplement_20261010/continued/raw/stock_basic_603629.SH_metadata.csv
+!data/research/history_supplement_20261010/continued/raw/trade_calendar_20180101_/20191127.csv
+!data/research/history_supplement_20261010/evidence/target_stock_days.csv
+!data/research/history_supplement_20261010/market/verified_derived/daily_basic/20181224.csv

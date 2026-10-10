@@ -36,3 +36,10 @@ data/raw/market_limit_counts.csv filter=lfs diff=lfs merge=lfs -text
 data/raw/kpl_limit_list/*.csv filter=lfs diff=lfs merge=lfs -text
 data/research/monthly_acde/*/strict_feature_pool.csv filter=lfs diff=lfs merge=lfs -text
 data/research/monthly_acde/*/market_sentiment.csv filter=lfs diff=lfs merge=lfs -text
+
+# 冻结研究证据保持原件字节，跨设备换行转换不得改变SHA256。
+data/research/history_supplement_20261010/** -text
+# 两份公开回包原本采用CRLF；目标原清单保留供应商股票名尾部空格。
+data/research/history_supplement_20261010/continued/raw/netease_601011.SH_20180807.response whitespace=cr-at-eol
+data/research/history_supplement_20261010/continued/raw/tdx_downit5.cfg whitespace=cr-at-eol
+data/research/history_supplement_20261010/evidence/target_stock_days.csv whitespace=-blank-at-eol

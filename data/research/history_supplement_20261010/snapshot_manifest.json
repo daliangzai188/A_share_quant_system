@@ -1,0 +1,402 @@
+{
+  "schema_version": 1,
+  "artifact_type": "FROZEN_RESEARCH_EVIDENCE_NOT_PRODUCTION_INPUT",
+  "base_commit": "4896b80e636a9d7d371b3ce82facdc37594a507e",
+  "upstream_acceptance_time_utc": "2026-10-10T05:55:47.798665+00:00",
+  "upstream_delivery_archive_sha256": "381a928c97313e75666cde0f8b2f6037c8e69d781614d132013761feeb1d79cf",
+  "original_receipts_and_scripts_byte_preserved": true,
+  "receipt_status_fields_describe_pre_commit_collection": true,
+  "paid_product_pages_or_scripts_included": false,
+  "third_party_pytdx_source_included": false,
+  "external_daily_and_basic_source_records": 867,
+  "official_rows_captured_this_round": 940,
+  "ratio_values_added_this_round": 0,
+  "prior_isolated_20181224_derived_values": 516,
+  "ipo_ratio_not_applicable_stock_days": 837,
+  "official_ratio_control_samples": 19673,
+  "low_price_discrepancies_remaining": 4765,
+  "formal_baseline_certified": false,
+  "full_review_status": "DATA_INCOMPLETE_NOT_READY",
+  "files": [
+    {
+      "file": "continued/evidence/bak_daily_600810.SH_20180515.json",
+      "bytes": 332,
+      "sha256": "c847832c1d67449c2ce86d1e1d71d633214f85452524ac63e404709103f4cec9"
+    },
+    {
+      "file": "continued/evidence/bak_daily_603598.SH_20180409.json",
+      "bytes": 332,
+      "sha256": "7a5e5daf8f687131624fe683816ba56682233dac95d1f754bd1815f51a1758cf"
+    },
+    {
+      "file": "continued/evidence/broker_entry_refresh.json",
+      "bytes": 395,
+      "sha256": "6d664b741a1f903d1b39f07e4a7e44a1da64e5e543ef8e3b832adafca996086c"
+    },
+    {
+      "file": "continued/evidence/existing_permission_checks.json",
+      "bytes": 5261,
+      "sha256": "775f5117db140f051516547d5d48ab98534500f3480ed1f759a31cd0418c5554"
+    },
+    {
+      "file": "continued/evidence/ipo_ratio_not_applicable.csv",
+      "bytes": 141359,
+      "sha256": "c42e039e2b8f38809146f6422c029da0c7dcbb8436bb10ece04b5ce440b94320",
+      "columns": [
+        "ts_code",
+        "trade_date",
+        "official_list_date",
+        "prior_traded_days",
+        "prior_traded_dates",
+        "current_volume_hands",
+        "classification",
+        "ratio_value",
+        "source_daily_basic_sha256"
+      ],
+      "rows": 837
+    },
+    {
+      "file": "continued/evidence/legacy_tick_sources.json",
+      "bytes": 4354,
+      "sha256": "2438fcddf65afc649d7cd9db4c2a035e6f4cdffe4820ba27b6366abdf3de507a"
+    },
+    {
+      "file": "continued/evidence/netease_601011.SH_20180807.json",
+      "bytes": 659,
+      "sha256": "a5db16499806859121c180d76b93588aeb1d6d9fa66b260bd20c3c5b99b2db1d"
+    },
+    {
+      "file": "continued/evidence/ratio_calendar_source.json",
+      "bytes": 305,
+      "sha256": "6239d8cd24d3a53cb9c598248a917e205ae0db4314e7d54a7a76e716b519ae25"
+    },
+    {
+      "file": "continued/evidence/remaining_price_discrepancies.csv",
+      "bytes": 1027614,
+      "sha256": "1c762c8eba68dffa600a7c4080839667d165d8e3fba812708e3515011f4ac6bc",
+      "columns": [
+        "trade_date",
+        "ts_code",
+        "first_traded_time",
+        "zero_volume_bars",
+        "minute_source_sha256",
+        "open_traded_difference",
+        "high_traded_difference",
+        "low_traded_difference",
+        "close_traded_difference",
+        "traded_ohlc_match",
+        "daily_low",
+        "minimum_traded_low",
+        "last_minute_vwap",
+        "daily_close",
+        "raw_minute_open",
+        "daily_open",
+        "certification_status"
+      ],
+      "rows": 4865
+    },
+    {
+      "file": "continued/evidence/remaining_ratio_controls.csv",
+      "bytes": 1714811,
+      "sha256": "94547e08ad9956d867765d77e82ec1512eafaaa7685c1f7de283afcfa947f10a",
+      "columns": [
+        "trade_date",
+        "ts_code",
+        "official_ratio",
+        "computed_ratio",
+        "difference",
+        "match",
+        "control_source"
+      ],
+      "rows": 19673
+    },
+    {
+      "file": "continued/evidence/remaining_ratio_gaps.json",
+      "bytes": 374953,
+      "sha256": "75bb712072992884044f167eb278ff30873b2354a9215ec997cd7732f9fdb98a"
+    },
+    {
+      "file": "continued/evidence/remaining_ratio_supplement.json",
+      "bytes": 229809,
+      "sha256": "70a05f4a48d8bcad50edda0e2a115dc43bf4daf1e6a73533108ce9487c485b31"
+    },
+    {
+      "file": "continued/evidence/sina_000001.SZ_20261008.json",
+      "bytes": 704,
+      "sha256": "d9ec72164f973d0c9fe5edb526f60ad5786722adf0298c76b063a26cfea96d0d"
+    },
+    {
+      "file": "continued/evidence/sina_601011.SH_20180807.json",
+      "bytes": 704,
+      "sha256": "b4936e931046434125d7c80b50586c29e01131aad75c54ae14747f93fa9ac67a"
+    },
+    {
+      "file": "continued/evidence/stk_mins_600810.SH_20180515.json",
+      "bytes": 434,
+      "sha256": "17405d2b3d165dda43485609155c93a1bed2464c9f688c8487796a477e29141f"
+    },
+    {
+      "file": "continued/evidence/stock_basic_603629.SH_metadata.json",
+      "bytes": 354,
+      "sha256": "ac8d8bd5abc423d33a22259989fd16550d7b04fefe8ded9130f3615caf054841"
+    },
+    {
+      "file": "continued/evidence/tdx_archive_current_format_sources.json",
+      "bytes": 1402,
+      "sha256": "68737999249c8a293dfcdcbc2683882594aa2332499f36c97127d72b5264b26c"
+    },
+    {
+      "file": "continued/evidence/tdx_archive_market_sources.json",
+      "bytes": 2344,
+      "sha256": "89afc43510f82551c6ecc519c1ea8f918a27b6e6af80249679b791db0ed17f96"
+    },
+    {
+      "file": "continued/evidence/tdx_archive_sources.json",
+      "bytes": 1493,
+      "sha256": "4b032dfe812fdda19177679326458583441e1f28793ff953e68114e5df21102a"
+    },
+    {
+      "file": "continued/evidence/tdx_history_sources.json",
+      "bytes": 1491,
+      "sha256": "4e94db544a001317aeeb3fb9a5b7ebeb8e4f4aaaed12ea07ca67074a9e651234"
+    },
+    {
+      "file": "continued/evidence/tencent_000001.SZ_20261008.json",
+      "bytes": 734,
+      "sha256": "20f445450fa99c90ae8db349cb0a6634ae22f434f3450ea39a583908ef117bb4"
+    },
+    {
+      "file": "continued/evidence/tencent_601011.SH_20180807.json",
+      "bytes": 734,
+      "sha256": "d5c8e8bd2a10937d14b6de0c034a21eabb3381abaed92f64c1d8081ef972508b"
+    },
+    {
+      "file": "continued/evidence/继续补充验收.json",
+      "bytes": 2831,
+      "sha256": "8ecbc7cc63ce7a919cdd7d93f980315d1faaca703e51dab863b40bbaffcabd77"
+    },
+    {
+      "file": "continued/existing_permission_checks.py",
+      "bytes": 10472,
+      "sha256": "1ccce873e639a8a6be7b0a37b403801c1a10d5c5267f73930668e9f195f44305"
+    },
+    {
+      "file": "continued/legacy_tick_sources.py",
+      "bytes": 8717,
+      "sha256": "3ae52dcecf948ec1552bf5d7d323be429f1b4291318511c3236500f240e25ff9"
+    },
+    {
+      "file": "continued/raw/bak_daily_600810.SH_20180515.csv",
+      "bytes": 132,
+      "sha256": "3901523100658aaee4e124514fceaee23009450423acdba94f2ca16d3cbbd85d",
+      "columns": [
+        "ts_code",
+        "trade_date",
+        "name",
+        "open",
+        "high",
+        "low",
+        "close",
+        "vol",
+        "amount"
+      ],
+      "rows": 1
+    },
+    {
+      "file": "continued/raw/bak_daily_603598.SH_20180409.csv",
+      "bytes": 130,
+      "sha256": "791a625c36d936166659f7b68292f34fa8156cd164e94cbf141c573f6f3ffed0",
+      "columns": [
+        "ts_code",
+        "trade_date",
+        "name",
+        "open",
+        "high",
+        "low",
+        "close",
+        "vol",
+        "amount"
+      ],
+      "rows": 1
+    },
+    {
+      "file": "continued/raw/netease_601011.SH_20180807.response",
+      "bytes": 166,
+      "sha256": "c79255f6cb550eaa07d6e90d859b8c1abe81658115ae8175e74b67ac22c7ed87"
+    },
+    {
+      "file": "continued/raw/sina_000001.SZ_20261008.response",
+      "bytes": 10,
+      "sha256": "8a62daf3829a44400b306922fae958abdd98d5dd28c4912c05b554dfee10d9b9"
+    },
+    {
+      "file": "continued/raw/sina_601011.SH_20180807.response",
+      "bytes": 10,
+      "sha256": "8a62daf3829a44400b306922fae958abdd98d5dd28c4912c05b554dfee10d9b9"
+    },
+    {
+      "file": "continued/raw/stk_mins_600810.SH_20180515.csv",
+      "bytes": 17239,
+      "sha256": "8aeae01f9f877e306e1d7f35f884fdbfcf670efa75f266bb1da4c1f90cb06d74",
+      "columns": [
+        "ts_code",
+        "trade_time",
+        "open",
+        "high",
+        "low",
+        "close",
+        "vol",
+        "amount"
+      ],
+      "rows": 241
+    },
+    {
+      "file": "continued/raw/stock_basic_603629.SH_metadata.csv",
+      "bytes": 98,
+      "sha256": "9d2f279751ff784de68d88e98f5f46a2cfefb77c18f4aaee8c2b79b477a54ab5",
+      "columns": [
+        "ts_code",
+        "name",
+        "exchange",
+        "list_status",
+        "list_date",
+        "delist_date"
+      ],
+      "rows": 1
+    },
+    {
+      "file": "continued/raw/tdx_archive_02_20180409.response",
+      "bytes": 1480,
+      "sha256": "cb0eb1e09c4781635722eb062c93efbbf0e1854d06fbfc7c0ec17a81b03e7f70"
+    },
+    {
+      "file": "continued/raw/tdx_archive_02_20180807.response",
+      "bytes": 1480,
+      "sha256": "cb0eb1e09c4781635722eb062c93efbbf0e1854d06fbfc7c0ec17a81b03e7f70"
+    },
+    {
+      "file": "continued/raw/tdx_archive_09_20180807.response",
+      "bytes": 1480,
+      "sha256": "cb0eb1e09c4781635722eb062c93efbbf0e1854d06fbfc7c0ec17a81b03e7f70"
+    },
+    {
+      "file": "continued/raw/tdx_archive_12_20180807.response",
+      "bytes": 1480,
+      "sha256": "cb0eb1e09c4781635722eb062c93efbbf0e1854d06fbfc7c0ec17a81b03e7f70"
+    },
+    {
+      "file": "continued/raw/tdx_downit5.cfg",
+      "bytes": 725,
+      "sha256": "27921b60cd31c18571581d012e9c0f4d9d4b66f96247b3519226381e7d3192d0"
+    },
+    {
+      "file": "continued/raw/tdx_download_index_0.response",
+      "bytes": 563,
+      "sha256": "126c62275d7771f6df923cc262f96c5263c780b06cb611669ae06f94bd8afe91"
+    },
+    {
+      "file": "continued/raw/tencent_000001.SZ_20261008.response",
+      "bytes": 8,
+      "sha256": "0524b365862de1816c434cc7c3a53e4453a4f63d9d784d62fc5b20c5fb250215"
+    },
+    {
+      "file": "continued/raw/tencent_601011.SH_20180807.response",
+      "bytes": 8,
+      "sha256": "0524b365862de1816c434cc7c3a53e4453a4f63d9d784d62fc5b20c5fb250215"
+    },
+    {
+      "file": "continued/raw/trade_calendar_20180101_/20191127.csv",
+      "bytes": 16747,
+      "sha256": "7e2a763b0e6827f078f8adb107b13725b2bb3d6a402c9a1521f69fa767693304",
+      "columns": [
+        "exchange",
+        "cal_date",
+        "is_open",
+        "pretrade_date"
+      ],
+      "rows": 696
+    },
+    {
+      "file": "continued/supplement_remaining_ratios.py",
+      "bytes": 12552,
+      "sha256": "ad4ed36a5ac1374e626326e5a9902bf827477d6d988c9b9152d031043fdd2a3c"
+    },
+    {
+      "file": "continued/tdx_archive_sources.py",
+      "bytes": 7371,
+      "sha256": "a09254c6b193dbda484fc78f010b42c2a6434f2485dadce3a8dd8ad98ddf358b"
+    },
+    {
+      "file": "continued/tdx_history_sources.py",
+      "bytes": 7479,
+      "sha256": "ec299c7bcb8847f85bacfab6590e935ecbb529ed655c502ade25da28ee18efab"
+    },
+    {
+      "file": "continued/verify_supplement.py",
+      "bytes": 6765,
+      "sha256": "b0e0c1051dff35296bb8ec25d318e1466a22edaaa50cc7c6a9b18fe475285f9a"
+    },
+    {
+      "file": "continued/继续补充说明.txt",
+      "bytes": 7540,
+      "sha256": "f346accdeb10b85fca8f54b7b57b3a4ef24669d9e7f26f6cce7395c1bb78530c"
+    },
+    {
+      "file": "evidence/early_basic_supplement_acceptance.json",
+      "bytes": 35130,
+      "sha256": "7c089d18b96191ee182f4c6f96aac9c4a74ef0ccec3ed109c72a87d71d40d428"
+    },
+    {
+      "file": "evidence/target_stock_days.csv",
+      "bytes": 651364,
+      "sha256": "a4c4154315a7ac0edaed3fac404676d0e6c254dea036b0cef9537e7a8218deea",
+      "columns": [
+        "ts_code",
+        "trade_date",
+        "name"
+      ],
+      "rows": 20552
+    },
+    {
+      "file": "market/verified_derived/daily_basic/20181224.csv",
+      "bytes": 614918,
+      "sha256": "8cf7b595f84c4ed737c97c516184af6943ed41bac6be0ba28f98d3b0c1064120",
+      "columns": [
+        "ts_code",
+        "trade_date",
+        "turnover_rate",
+        "turnover_rate_f",
+        "volume_ratio",
+        "pe",
+        "pe_ttm",
+        "pb",
+        "ps",
+        "ps_ttm",
+        "dv_ratio",
+        "dv_ttm",
+        "total_share",
+        "float_share",
+        "free_share",
+        "total_mv",
+        "circ_mv",
+        "volume_ratio_source"
+      ],
+      "rows": 3581
+    },
+    {
+      "file": "validate_and_supplement_early_basic.py",
+      "bytes": 5919,
+      "sha256": "142f47683664f62bf05c810de2ed962b039e844e510c183e5484e9964785dc8b"
+    },
+    {
+      "file": "verify_snapshot.py",
+      "bytes": 11042,
+      "sha256": "7cc75cee387917ab5a1b908ed3906ab94ea7aa0bdcdcefb81b6da143a8de8ed5"
+    },
+    {
+      "file": "README.md",
+      "bytes": 6569,
+      "sha256": "16c3100dd01d33db96b82ad7c42a21bb2eae54dc286cf32ff3578bbdf9de2d48"
+    }
+  ]
+}

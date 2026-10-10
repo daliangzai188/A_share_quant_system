@@ -1,0 +1,36 @@
+{
+  "queries": [
+    {
+      "url": "https://www.tdx.com.cn/products/data/data/g4tic/20180807.zip",
+      "queried_at_utc": "2026-10-10T05:42:07.111275+00:00",
+      "http_status": 404,
+      "final_url": "https://www.tdx.com.cn/products/data/data/g4tic/20180807.zip",
+      "content_type": "text/html",
+      "file": "raw/tdx_archive_12_20180807.response",
+      "sha256": "cb0eb1e09c4781635722eb062c93efbbf0e1854d06fbfc7c0ec17a81b03e7f70",
+      "bytes": 1480,
+      "status": "HTTP_ERROR",
+      "trade_date_requested": "20180807",
+      "index_declared_path": "products/data/data/g4tic/",
+      "parsed_tick_rows": 0,
+      "strategy_rows_accepted": 0,
+      "price_semantics_certified": false
+    },
+    {
+      "url": "https://www.tdx.com.cn/products/data/data/g4tic/20261008.zip",
+      "queried_at_utc": "2026-10-10T05:42:07.112134+00:00",
+      "status": "NETWORK_OR_ARCHIVE_ERROR",
+      "error_type": "ReadTimeout",
+      "trade_date_requested": "20261008",
+      "index_declared_path": "products/data/data/g4tic/",
+      "parsed_tick_rows": 0,
+      "strategy_rows_accepted": 0,
+      "price_semantics_certified": false
+    }
+  ],
+  "download_index_sha256": "126c62275d7771f6df923cc262f96c5263c780b06cb611669ae06f94bd8afe91",
+  "production_writes": false,
+  "strategy_rows_accepted": 0,
+  "historical_price_conflicts_repaired": 0,
+  "completed_at_utc": "2026-10-10T05:42:12.394964+00:00"
+}

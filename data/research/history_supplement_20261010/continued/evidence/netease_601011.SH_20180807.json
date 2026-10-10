@@ -1,0 +1,18 @@
+{
+  "provider": "netease",
+  "code": "601011.SH",
+  "trade_date": "20180807",
+  "url": "https://quotes.money.163.com/cjmx/2018/20180807/0601011.xls",
+  "queried_at_utc": "2026-10-10T05:36:21.626511+00:00",
+  "request_authenticated": false,
+  "source_rows_accepted_for_strategy": 0,
+  "repaired_price_conflicts": 0,
+  "http_status": 502,
+  "final_url": "https://quotes.money.163.com/cjmx/2018/20180807/0601011.xls",
+  "content_type": "text/html",
+  "raw_bytes": 166,
+  "raw_file": "raw/netease_601011.SH_20180807.response",
+  "raw_sha256": "c79255f6cb550eaa07d6e90d859b8c1abe81658115ae8175e74b67ac22c7ed87",
+  "status": "HTTP_ERROR",
+  "parsed_tick_rows": 0
+}

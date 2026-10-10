@@ -1,0 +1,18 @@
+{
+  "provider": "sina",
+  "code": "000001.SZ",
+  "trade_date": "20261008",
+  "url": "https://market.finance.sina.com.cn/downxls.php?date=2026-10-08&symbol=sz000001",
+  "queried_at_utc": "2026-10-10T05:36:20.979696+00:00",
+  "request_authenticated": false,
+  "source_rows_accepted_for_strategy": 0,
+  "repaired_price_conflicts": 0,
+  "http_status": 200,
+  "final_url": "https://market.finance.sina.com.cn/downxls.php?date=2026-10-08&symbol=sz000001",
+  "content_type": "text/html",
+  "raw_bytes": 10,
+  "raw_file": "raw/sina_000001.SZ_20261008.response",
+  "raw_sha256": "8a62daf3829a44400b306922fae958abdd98d5dd28c4912c05b554dfee10d9b9",
+  "status": "PROVIDER_SERVICE_RETIRED",
+  "parsed_tick_rows": 0
+}

@@ -1,0 +1,11 @@
+{
+  "api": "bak_daily",
+  "trade_date_requested": "20180409",
+  "ts_code": "603598.SH",
+  "params": {},
+  "queried_at_utc": "2026-10-10T05:46:23.173337+00:00",
+  "status": "RAW_CAPTURED",
+  "rows": 1,
+  "file": "raw/bak_daily_603598.SH_20180409.csv",
+  "sha256": "791a625c36d936166659f7b68292f34fa8156cd164e94cbf141c573f6f3ffed0"
+}

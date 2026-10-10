@@ -1,0 +1,111 @@
+继续补充结果（使用现有权限，不购买新数据）
+
+本轮实际完成：
+1. 直接从已有Tushare权限取得940行新核验原件：2行备用日线、1行上市资料、
+   241行分钟行情、696行官方历史交易日历。不是940个旧缺口被填补。
+2. 扫描2018-04-02至2019-11-27的20,552个早期涨停股票日。
+   先前已补的2018-12-24衍生量比继续沿用；其余837处量比空值涉及186只股票。
+   核对上市日期、连续交易日日线和此前成交日后，这837处均没有满五个此前成交日。
+   已保存逐项“不适用”依据，没有用0、其他证券量比或不足五日的均量冒充五日量比。
+3. 19,673个拥有完整历史基准的已知官方量比，按当日成交量/此前五个有成交日均量复算，
+   全部落在官方两位小数舍入容差内（差额不超过0.0050001）。
+   审计输入867份原件的哈希已重新核验。16个先前衍生值已排除出官方对照，防止循环验证。
+   新增量比数值为0，837处保留空值。
+4. 2个沪市早期收盘价差异，与2018年8月20日前的成交量加权收盘规则相容。
+   备用日线均与主日线相同，600810.SH/2018-05-15的分钟回包与已保存原件逐格一致。
+   最后一个时钟分钟不一定等于“最后一笔成交向前一分钟”，所以仅列为口径相容，
+   没有把它们记成精确逐笔复原成功，也没有改动任何原始价格。
+
+仍未解决：
+1. 4,765个股票日的有成交分钟最低价与日线最低价不一致。精确开板次数和早期封单
+   观察时点/量纲问题也尚未取得足够原件认证。涨停全基准没有通过认证。
+2. 历史真实成交和原账户净值账本仍未恢复。QMT最新只读观察仍为waiting_captcha、
+   broker_online=false，未执行券商历史查询；没有把空本地成交文件当成券商无历史成交。
+3. 新浪公开下载入口返回“服务已下线”，腾讯返回“暂无数据”，网易回包为502错误页。
+   通达信4个连接没有通过行情控制核验；公开索引已取得，但4个2018压缩包请求404，
+   另1个近期对照请求超时。未把HTTP 200错误提示、404页面或下载索引当成行情数据。
+4. 用户已选择“不购买，继续用已有权限”。付费候选流程停止，没有注册、发送邮件、
+   下单购买、付款或修改数据源授权。
+
+当前完整复核仍为DATA_INCOMPLETE / NOT_READY。
+837处IPO量比是“不适用”，不应继续列为可通过重复拉取恢复的数值缺口。
+依赖量比的研究仍需遵守原有缺失字段和IPO过滤；本轮没有放宽策略门槛。
+
+完整代码与本次修改位置：所有文件都在同步目录外的continued目录，不是正式部署。
+
+文件：legacy_tick_sources.py
+方法：urls、parse_text、daily_compare、fetch、main
+操作：新增完整文件；parse_text新增“服务已下线/暂无数据”识别，fetch新增已留存回包
+的离线重新分类；保留原请求时间和哈希，不重复请求来制造新增行数。
+原因：检查旧公开下载源，并拒绝错误页、无数据提示被误认成股票成交。
+
+文件：tdx_history_sources.py
+方法：select_server、query、main
+操作：新增完整文件，使用隔离目录的pytdx源码，仅调用公开行情读取方法。
+原因：尝试替代历史分笔源；分页原件、日期、重复页、证券控制均独立记录。
+结果：连接控制未通过，本次未发出历史分笔查询，未查询私人券商账户。
+
+文件：tdx_archive_sources.py
+方法：download、query_market_samples、main
+操作：新增完整文件；main新增--market-samples和--current-format两种探测方式。
+原因：按官方公开索引实际声明的路径请求历史压缩包，核验ZIP/CRC，拒绝HTML错误页。
+
+文件：existing_permission_checks.py
+方法：capture、closing_diagnostics、ipo_diagnostic、main
+操作：新增完整文件，包含针对性补采、原件重放、首日量比和历史收盘口径核验。
+原因：使用现有权限核验真实缺口，区分分钟末笔价与历史官方收盘价。
+
+文件：supplement_remaining_ratios.py
+方法：calendar、source_path、analyze、build、main
+操作：新增完整文件。按完整交易日历流式建立每个证券此前五个成交日的成交量基准，
+今日成交量在当日计算结束后才加入历史；只有日期内已知官方控制全部通过才允许填空。
+保存时逐格保护其他原字段，衍生值单独标来源。
+原因：检查单日补充以外的完整早期样本。本次837处全部基准不足，故没有生成数值替换。
+
+文件：verify_supplement.py
+方法：verify_file、main
+操作：新增完整文件，核验867个输入、IPO上市日期、前史日期、舍入控制、回包和语法；
+生成ipo_ratio_not_applicable.csv及继续补充验收.json。
+原因：给837处保留空值提供可追溯依据，并明确标记仍然没有通过的正式认证和账本恢复。
+
+正式工作区没有添加、替换或删除代码/配置；未提交代码；策略方案甲、A>C>E>D、仓位、
+费用、滑点和停手规则没有改动；没有发出交易委托或撤单。
+
+运行方式（本机完整路径，已实际运行）：
+PY=/Users/eass/A_System_Rebuild/2026-10-06/test_venv/bin/python
+DIR=/Users/eass/A_System_修复/2026-10-10_历史原件与行情补充/continued
+"$PY" "$DIR/legacy_tick_sources.py"
+"$PY" "$DIR/tdx_history_sources.py"
+"$PY" "$DIR/tdx_archive_sources.py"
+"$PY" "$DIR/tdx_archive_sources.py" --market-samples
+"$PY" "$DIR/tdx_archive_sources.py" --current-format
+"$PY" "$DIR/existing_permission_checks.py"
+"$PY" "$DIR/supplement_remaining_ratios.py"
+"$PY" "$DIR/verify_supplement.py"
+
+复跑默认使用已留存原件，不再次调用已失败的公开入口。不要对错误页盲目循环请求。
+pytdx依赖仅保存在隔离目录dependencies中，没有安装到正式环境。
+若在别处解包，需要保持目录结构并具备上述历史原件；清单包含完整路径及SHA256，
+不具备这些原件时不能声称在别处复现了全部历史核验。
+
+验证结果：
+evidence/继续补充验收.json：new_official_source_rows_captured=940；
+official_known_ratio_controls=official_known_ratio_matches=19673；
+ipo_ratio_not_applicable_stock_days=837；source_dependency_files_verified=867；
+paid_data_purchased=false；production_worktree_clean=true；
+full_review_status=DATA_INCOMPLETE_NOT_READY。
+
+evidence/ipo_ratio_not_applicable.csv：837个唯一股票日，ratio_value为空，保留上市日期、
+过去实际成交日数、成交日列表和原每日指标文件哈希。
+evidence/remaining_ratio_controls.csv：19,673条已知官方值与复算值逐项对照。
+evidence/remaining_ratio_supplement.json：完整历史依赖清单及没有填值的准确原因。
+
+如果再次验收失败，先检查原件SHA256、历史交易日历覆盖和股票主键；不要直接覆盖原件，
+不要把量比基准不足、分钟价格差异或券商未认证改写成PASS。
+
+官方规则依据：
+https://www.sse.com.cn/lawandrules/sselawsrules/repeal/rules/c/c_20210531_5478084.shtml
+https://www.sse.com.cn/lawandrules/sselawsrules2025/repeal/rules/c/c_20180806_10784917.shtml
+https://www.sse.com.cn/aboutus/mediacenter/hotandd/c/c_20180806_4607055.shtml
+
+本轮仅查询和核验数据。后续恢复券商连接或进入实盘时，仍须先做模拟与小资金验证。
