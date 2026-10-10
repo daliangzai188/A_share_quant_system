@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+# ⚠️ 已废弃（2026-10-10 标注）：本脚本依赖 UTM 的 utmctl，而当前宿主是 VMware Fusion，
+# 在现环境下只会报"找不到 UTM 命令行工具"而不生效。
+# 现行的防休眠/保活守护是 launchd 的 com.eass.a-system.fusion-awake
+#   → ~/Library/LaunchAgents/com.eass.a-system.fusion-awake.plist
+#   → ~/A_System_Rebuild/2026-10-07/lock_screen_runtime/guard_fusion_awake.sh
+# 保留本文件仅作 UTM 分支的历史参考，勿在生产用它守护交易虚拟机。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

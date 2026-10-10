@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# ⚠️ 已废弃（2026-10-10 标注）：仅适用于 UTM 宿主（utmctl + *.utm config.plist）。
+# 当前宿主为 VMware Fusion，本脚本不适用；Fusion 的显示问题请在 Fusion 虚拟机设置里调整。
+# 保留仅作 UTM 分支的历史参考。参见 docs/vm_environment_setup.md 的双宿主分支。
 set -euo pipefail
 
 VM_NAME="${1:-Windows}"
