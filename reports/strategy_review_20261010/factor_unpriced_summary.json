@@ -1,0 +1,26 @@
+{
+  "samples": 82,
+  "checked_stock_days": 164,
+  "counts": {
+    "OFFICIAL_FULL_DAY_SUSPENSION": 129,
+    "QUOTE_PRESENT": 29,
+    "AFTER_RECORDED_DELISTING": 4,
+    "BSE_NOTICE_AND_CALENDAR_SUSPENSION_INFERENCE": 2
+  },
+  "unexplained_stock_days": 0,
+  "unknown_rows": [],
+  "status": "ALL_NO_QUOTES_EXPLAINED",
+  "official_documentation": [
+    "https://tushare.pro/document/2?doc_id=214",
+    "https://tushare.pro/document/2?doc_id=27"
+  ],
+  "historic_code_primary_evidence": [
+    "https://www.bse.cn/disclosure/2025/2025-07-23/1493e8a1141c41758be3d7fc313a752f.pdf",
+    "https://www.bse.cn/disclosure/2025/2025-12-26/c0744890832f4ba98ac837c26dc05087.pdf"
+  ],
+  "historic_code_mapping_used_only_for_exclusion_classification": true,
+  "notice_inference_rows_explicitly_not_api_returned": 2,
+  "formal_raw_replaced": false,
+  "invented_prices": false,
+  "production_writes": false
+}

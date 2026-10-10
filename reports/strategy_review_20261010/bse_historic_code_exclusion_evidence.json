@@ -1,0 +1,18 @@
+{
+  "issuer": "深圳市广道数字技术股份有限公司",
+  "dataset_code": "920680.BJ",
+  "historic_code": "839680.BJ",
+  "source_urls": [
+    "https://www.bse.cn/disclosure/2025/2025-07-23/1493e8a1141c41758be3d7fc313a752f.pdf",
+    "https://www.bse.cn/disclosure/2025/2025-12-26/c0744890832f4ba98ac837c26dc05087.pdf"
+  ],
+  "source_observed_method": "官方交易所公告的网页检索返回内容；未冒称已经下载原始PDF",
+  "paraphrased_evidence": "7月23日公告披露该发行人于7月4日进行停牌核查、核查期5个交易日，并列示旧代码839680。12月26日同一发行人的公告列示代码920680。",
+  "inference": "按冻结交易日历，7月4日起5个交易日为7月4日、7日、8日、9日、10日，因此7月7日、8日位于该公告披露的停牌区间。此处是公告与日历推断，不冒充停复牌接口返回。",
+  "quote_dates_explained": ["20250707", "20250708"],
+  "historic_code_api_succeeded": false,
+  "historic_code_api_failure": "两次尝试发生TLS握手超时或连接重置；未关闭TLS证书验证，未改走HTTP",
+  "prices_reconstructed": false,
+  "frozen_market_data_changed": false,
+  "only_exclusion_classification": true
+}

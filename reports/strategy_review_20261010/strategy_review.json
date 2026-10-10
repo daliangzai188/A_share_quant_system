@@ -1,0 +1,436 @@
+{
+  "status": "COMPLETE_STRATEGY_ONLY_RECENT_REVIEW",
+  "conclusion": "②需观察：维持甲规则，A条件优势继续报警，按MA60滞后6日停手",
+  "as_of": "20261009",
+  "base_commit": "0773ed30ea4dc83279a1844c302e134770e726c1",
+  "scope": "仅策略历史与冻结前向假设复核，不要求私人真实成交或账户净值",
+  "producer_identity": {
+    "schema_version": 1,
+    "signal_date": "20261009",
+    "source_sha256": "88a078119efc5985a0d4657bd163fa6fc7e2d16c569b3a715ba2573885b7ebe6",
+    "raw_inventory_sha256": "e2a72c902b55f542a74017d86a1dbd56bc07b032337628bcbf7608062c524324",
+    "raw_inventory_file_count": 7310
+  },
+  "source_and_research_pool_verified": true,
+  "independent_ma_flag_differences": 0,
+  "rolling_returns": [
+    {
+      "trading_days": 63,
+      "base_date": "20260706",
+      "end_date": "20261009",
+      "failure_line": -0.241,
+      "triggered": false,
+      "return": -0.1377759096581641
+    },
+    {
+      "trading_days": 126,
+      "base_date": "20260401",
+      "end_date": "20261009",
+      "failure_line": -0.194,
+      "triggered": false,
+      "return": 2.499856881842212
+    }
+  ],
+  "completed_months": [
+    {
+      "ym": "202606",
+      "shadow_return": 0.4832686723268582,
+      "limit_up_mean": 94.38095238095238
+    },
+    {
+      "ym": "202607",
+      "shadow_return": 0.15006340240460658,
+      "limit_up_mean": 74.0
+    },
+    {
+      "ym": "202608",
+      "shadow_return": 0.07393973951925359,
+      "limit_up_mean": 76.38095238095238
+    },
+    {
+      "ym": "202609",
+      "shadow_return": -0.21697136857345845,
+      "limit_up_mean": 58.04761904761905
+    }
+  ],
+  "regime_stall": {
+    "streak": 1,
+    "need_months": 3,
+    "months": [
+      "202609"
+    ],
+    "min_limit_up": 40.0,
+    "triggered": false
+  },
+  "current_stop_episode": {
+    "start_date": "20260916",
+    "trading_days": 12,
+    "shadow_return": -0.13712177590783214
+  },
+  "stop_missed_gain_triggered": false,
+  "formal_forward": {
+    "start": "20260921",
+    "end": "20261009",
+    "trading_days": 9,
+    "stop_days": 9,
+    "blocked_new_entry_legs": [
+      "A",
+      "C",
+      "E",
+      "D"
+    ],
+    "assumed_initial_positions": 0,
+    "hypothetical_new_buys": 0,
+    "hypothetical_trade_return": 0.0,
+    "hypothetical_drawdown": 0.0
+  },
+  "next_action": {
+    "action_date": "20261012",
+    "ma_window": 60,
+    "lag_trading_days": 6,
+    "shadow_last_date": "20261009",
+    "shadow_last_nav": 23815.68083058247,
+    "allowed": false,
+    "lag_date": "20260924",
+    "lag_nav": 25556.917167304455,
+    "lag_ma": 29087.1281111658,
+    "reason": "影子净值20260924=25556.9172，低于其60日均线29087.1281，方案甲停手：A/C/E/D今日都不开新仓"
+  },
+  "factor_diagnostics": {
+    "health": {
+      "A": {
+        "value": 0.0005177044397685421,
+        "samples": 224,
+        "as_of": "202609",
+        "line": 0.00539085585714336,
+        "months_below": 2,
+        "months": [
+          "202608",
+          "202609"
+        ],
+        "need_months": 2,
+        "triggered": true,
+        "branches_used": 3,
+        "branches_total": 3
+      },
+      "C": {
+        "value": 0.01665685857097071,
+        "samples": 192,
+        "as_of": "202609",
+        "line": -0.004743001882088658,
+        "months_below": 0,
+        "months": [],
+        "need_months": 2,
+        "triggered": false,
+        "branches_used": 5,
+        "branches_total": 5
+      }
+    },
+    "pool_rows_in_diagnostic_window": 19291,
+    "return_observed_rows": 19106,
+    "not_yet_matured_rows": 103,
+    "matured_rows_without_both_forward_quotes_excluded": 82,
+    "unpriced_excluded_matches_A": 1,
+    "unpriced_excluded_matches_C": 1,
+    "observed_signal_start": "20250603",
+    "observed_signal_end": "20260930",
+    "observed_exit_end": "20261009",
+    "verified_actual_adjustment_stock_days": 35757,
+    "adjustment_fallbacks_in_retained_samples": 0,
+    "metric": "月度匹配均值减不匹配均值，再对最近12个月差额等权平均；T+1开盘至T+2收盘复权毛收益",
+    "tradeable_net_return_metric": false
+  },
+  "forward_fill_probability": {
+    "sample_count": 3,
+    "minimum": 1.0,
+    "maximum": 1.0,
+    "mean": 1.0,
+    "scope": "冻结历史换手率代理评分，不是实际排队概率"
+  },
+  "unpriced_exclusion_classification": {
+    "samples": 82,
+    "checked_stock_days": 164,
+    "counts": {
+      "OFFICIAL_FULL_DAY_SUSPENSION": 129,
+      "QUOTE_PRESENT": 29,
+      "AFTER_RECORDED_DELISTING": 4,
+      "BSE_NOTICE_AND_CALENDAR_SUSPENSION_INFERENCE": 2
+    },
+    "unexplained_stock_days": 0,
+    "unknown_rows": [],
+    "status": "ALL_NO_QUOTES_EXPLAINED",
+    "official_documentation": [
+      "https://tushare.pro/document/2?doc_id=214",
+      "https://tushare.pro/document/2?doc_id=27"
+    ],
+    "historic_code_primary_evidence": [
+      "https://www.bse.cn/disclosure/2025/2025-07-23/1493e8a1141c41758be3d7fc313a752f.pdf",
+      "https://www.bse.cn/disclosure/2025/2025-12-26/c0744890832f4ba98ac837c26dc05087.pdf"
+    ],
+    "historic_code_mapping_used_only_for_exclusion_classification": true,
+    "notice_inference_rows_explicitly_not_api_returned": 2,
+    "formal_raw_replaced": false,
+    "invented_prices": false,
+    "production_writes": false
+  },
+  "period_statistics": [
+    {
+      "gated_ace": {
+        "start": "20260710",
+        "end": "20261009",
+        "sample_count": 14,
+        "win_rate": 0.35714285714285715,
+        "average_account_return": -0.006053597430232498,
+        "median_account_return": -0.016418546589894334,
+        "compound_return": -0.11672407003243179,
+        "max_drawdown": -0.19877378489337294,
+        "max_trade_profit": 0.1787976611205626,
+        "max_trade_loss": -0.17603468708658843,
+        "profit_loss_ratio": 1.4243097953767354,
+        "maximum_consecutive_losses": 7,
+        "fees_relative_to_entry_equity_sum": 0.012877780886631007,
+        "slippage_relative_to_entry_equity_sum": 0.023028074427660288,
+        "actual_account_statistics": false,
+        "scope": "正式A/C/E影子回放；不含D，版本上线前仅为现行规则反事实。"
+      },
+      "shadow": {
+        "start": "20260710",
+        "end": "20261009",
+        "sample_count": 18,
+        "win_rate": 0.3333333333333333,
+        "average_account_return": -0.012649578072697207,
+        "median_account_return": -0.024923475597556366,
+        "compound_return": -0.23784041140633438,
+        "max_drawdown": -0.3023624848625449,
+        "max_trade_profit": 0.17879764324226688,
+        "max_trade_loss": -0.17603466328162176,
+        "profit_loss_ratio": 1.1794877214068127,
+        "maximum_consecutive_losses": 10,
+        "fees_relative_to_entry_equity_sum": 0.016460898974223762,
+        "slippage_relative_to_entry_equity_sum": 0.029488580490657494,
+        "actual_account_statistics": false,
+        "scope": "正式A/C/E影子回放；不含D，版本上线前仅为现行规则反事实。"
+      }
+    },
+    {
+      "gated_ace": {
+        "start": "20260921",
+        "end": "20261009",
+        "sample_count": 0,
+        "win_rate": null,
+        "average_account_return": null,
+        "median_account_return": null,
+        "compound_return": 0.0,
+        "max_drawdown": 0.0,
+        "max_trade_profit": null,
+        "max_trade_loss": null,
+        "profit_loss_ratio": null,
+        "maximum_consecutive_losses": 0,
+        "fees_relative_to_entry_equity_sum": 0.0,
+        "slippage_relative_to_entry_equity_sum": 0.0,
+        "actual_account_statistics": false,
+        "scope": "正式A/C/E影子回放；不含D，版本上线前仅为现行规则反事实。"
+      },
+      "shadow": {
+        "start": "20260921",
+        "end": "20261009",
+        "sample_count": 3,
+        "win_rate": 0.3333333333333333,
+        "average_account_return": -0.030425914710032014,
+        "median_account_return": -0.023588509302257754,
+        "compound_return": -0.09011308877582769,
+        "max_drawdown": -0.0955436243553679,
+        "max_trade_profit": 0.006004198461943222,
+        "max_trade_loss": -0.07369343328978151,
+        "profit_loss_ratio": 0.12343911525538462,
+        "maximum_consecutive_losses": 2,
+        "fees_relative_to_entry_equity_sum": 0.0027002520704399154,
+        "slippage_relative_to_entry_equity_sum": 0.0048613385043013,
+        "actual_account_statistics": false,
+        "scope": "正式A/C/E影子回放；不含D，版本上线前仅为现行规则反事实。"
+      }
+    },
+    {
+      "gated_ace": {
+        "start": "20260701",
+        "end": "20260731",
+        "sample_count": 8,
+        "win_rate": 0.75,
+        "average_account_return": 0.02156242512477212,
+        "median_account_return": 0.046304433362198916,
+        "compound_return": 0.15006345394778253,
+        "max_drawdown": -0.19877378489337294,
+        "max_trade_profit": 0.13129077444203752,
+        "max_trade_loss": -0.17603468708658843,
+        "profit_loss_ratio": 0.6157046951287559,
+        "maximum_consecutive_losses": 2,
+        "fees_relative_to_entry_equity_sum": 0.007537829371415229,
+        "slippage_relative_to_entry_equity_sum": 0.01338022924571419,
+        "actual_account_statistics": false,
+        "scope": "正式A/C/E影子回放；不含D，版本上线前仅为现行规则反事实。"
+      },
+      "shadow": {
+        "start": "20260701",
+        "end": "20260731",
+        "sample_count": 8,
+        "win_rate": 0.75,
+        "average_account_return": 0.021562418013913398,
+        "median_account_return": 0.04630443350070068,
+        "compound_return": 0.15006340240460658,
+        "max_drawdown": -0.1987737629494789,
+        "max_trade_profit": 0.1312907470373874,
+        "max_trade_loss": -0.17603466328162176,
+        "profit_loss_ratio": 0.6157046329916109,
+        "maximum_consecutive_losses": 2,
+        "fees_relative_to_entry_equity_sum": 0.007537828405911604,
+        "slippage_relative_to_entry_equity_sum": 0.013380227547367977,
+        "actual_account_statistics": false,
+        "scope": "正式A/C/E影子回放；不含D，版本上线前仅为现行规则反事实。"
+      }
+    },
+    {
+      "gated_ace": {
+        "start": "20260801",
+        "end": "20260831",
+        "sample_count": 5,
+        "win_rate": 0.4,
+        "average_account_return": 0.017644848481131237,
+        "median_account_return": -0.02625844463869287,
+        "compound_return": 0.07393974541791426,
+        "max_drawdown": -0.1090523644381376,
+        "max_trade_profit": 0.1787976611205626,
+        "max_trade_loss": -0.049695674848058924,
+        "profit_loss_ratio": 2.6697451871445836,
+        "maximum_consecutive_losses": 3,
+        "fees_relative_to_entry_equity_sum": 0.004695264007810487,
+        "slippage_relative_to_entry_equity_sum": 0.008343019353966613,
+        "actual_account_statistics": false,
+        "scope": "正式A/C/E影子回放；不含D，版本上线前仅为现行规则反事实。"
+      },
+      "shadow": {
+        "start": "20260801",
+        "end": "20260831",
+        "sample_count": 5,
+        "win_rate": 0.4,
+        "average_account_return": 0.017644846757148926,
+        "median_account_return": -0.026258441892854978,
+        "compound_return": 0.07393973951925381,
+        "max_drawdown": -0.10905235499948285,
+        "max_trade_profit": 0.17879764324226688,
+        "max_trade_loss": -0.049695672434003746,
+        "profit_loss_ratio": 2.6697451783094293,
+        "maximum_consecutive_losses": 3,
+        "fees_relative_to_entry_equity_sum": 0.004695263602831725,
+        "slippage_relative_to_entry_equity_sum": 0.008343018634809478,
+        "actual_account_statistics": false,
+        "scope": "正式A/C/E影子回放；不含D，版本上线前仅为现行规则反事实。"
+      }
+    },
+    {
+      "gated_ace": {
+        "start": "20260901",
+        "end": "20260930",
+        "sample_count": 4,
+        "win_rate": 0.0,
+        "average_account_return": -0.022322475567783773,
+        "median_account_return": -0.018385775969047446,
+        "compound_return": -0.08709008891057157,
+        "max_drawdown": -0.08709008891057157,
+        "max_trade_profit": -0.001640978634720125,
+        "max_trade_loss": -0.05087737169832007,
+        "profit_loss_ratio": null,
+        "maximum_consecutive_losses": 4,
+        "fees_relative_to_entry_equity_sum": 0.0036266118373614064,
+        "slippage_relative_to_entry_equity_sum": 0.0065142559580542965,
+        "actual_account_statistics": false,
+        "scope": "正式A/C/E影子回放；不含D，版本上线前仅为现行规则反事实。"
+      },
+      "shadow": {
+        "start": "20260901",
+        "end": "20260930",
+        "sample_count": 7,
+        "win_rate": 0.0,
+        "average_account_return": -0.03403373623401423,
+        "median_account_return": -0.030192895229673278,
+        "compound_return": -0.21697136857345856,
+        "max_drawdown": -0.21697136857345856,
+        "max_trade_profit": -0.0016409781244713928,
+        "max_trade_loss": -0.07369343328978151,
+        "profit_loss_ratio": null,
+        "maximum_consecutive_losses": 7,
+        "fees_relative_to_entry_equity_sum": 0.006280114173667451,
+        "slippage_relative_to_entry_equity_sum": 0.01131782076094792,
+        "actual_account_statistics": false,
+        "scope": "正式A/C/E影子回放；不含D，版本上线前仅为现行规则反事实。"
+      }
+    },
+    {
+      "gated_ace": {
+        "start": "20261001",
+        "end": "20261009",
+        "sample_count": 0,
+        "win_rate": null,
+        "average_account_return": null,
+        "median_account_return": null,
+        "compound_return": 0.0,
+        "max_drawdown": 0.0,
+        "max_trade_profit": null,
+        "max_trade_loss": null,
+        "profit_loss_ratio": null,
+        "maximum_consecutive_losses": 0,
+        "fees_relative_to_entry_equity_sum": 0.0,
+        "slippage_relative_to_entry_equity_sum": 0.0,
+        "actual_account_statistics": false,
+        "scope": "正式A/C/E影子回放；不含D，版本上线前仅为现行规则反事实。"
+      },
+      "shadow": {
+        "start": "20261001",
+        "end": "20261009",
+        "sample_count": 1,
+        "win_rate": 1.0,
+        "average_account_return": 0.006004198461943222,
+        "median_account_return": 0.006004198461943222,
+        "compound_return": 0.006004198461943222,
+        "max_drawdown": 0.0,
+        "max_trade_profit": 0.006004198461943222,
+        "max_trade_loss": 0.006004198461943222,
+        "profit_loss_ratio": null,
+        "maximum_consecutive_losses": 0,
+        "fees_relative_to_entry_equity_sum": 0.000929616310263967,
+        "slippage_relative_to_entry_equity_sum": 0.0016569422632050329,
+        "actual_account_statistics": false,
+        "scope": "正式A/C/E影子回放；不含D，版本上线前仅为现行规则反事实。"
+      }
+    }
+  ],
+  "limitations": [
+    "A/C/E影子账不含D，历史停手后诊断不代表完整ACDE收益",
+    "2018起完整旧基准未重新认证，不妨碍本次近期策略判断",
+    "因子健康是条件诊断毛收益口径，不是可交易净收益",
+    "当前版本前向样本少，存在过拟合风险"
+  ],
+  "inputs_sha256": {
+    "/Users/eass/A_System_复核/2026-10-10_继续补齐复核数据/replay/shadow_nav_recomputed.csv": "ddee0a1aeb56228bc6ec0507cc0f96c9e6c2f7035c9c187e1cccc7fe8a77ee57",
+    "/Users/eass/A_System_复核/2026-10-10_继续补齐复核数据/replay/shadow_detail.csv": "9c113cb9b3fe5f493036d89ca1a9074207a6132974be05d2bd1db57bde22df98",
+    "/Users/eass/A_System_复核/2026-10-10_继续补齐复核数据/replay/gated_ace_detail.csv": "7efa4ba38abcdf553b88d0b810c1371c89e0410798e782f47e11a93d9722614c",
+    "/Users/eass/A_System_复核/2026-10-10_继续补齐复核数据/code/data/research/review_refresh_20261010/strict_feature_pool.csv": "7dee63707fdae3f9cd7fa8ad060b16bb05256d7dd5f87db9b750d7df91d8e862",
+    "/Users/eass/A_System_复核/2026-10-10_继续补齐复核数据/code/config/config.json": "ab282275038564853701f6c212a5927127990f76532dd6bad4cd2f59adfae2ae",
+    "/Users/eass/A_System_复核/2026-10-10_继续补齐复核数据/code/config/strategy_config.json": "2f66f6a0ea04f47f1b46c650adafe471027babd2cb2ca089cd4650150b063530",
+    "/Users/eass/A_System_复核/2026-10-10_继续补齐复核数据/code/config/acde_rolling_optimization.json": "6449f526c61ec9e9f61d7c799610830cf6c76b760ff7044f97a062f0ac3a1150",
+    "/Users/eass/A_System_复核/2026-10-10_甲临时复核_仅策略/review_strategy_only.py": "a9fe7094abdeec8f49900a449ea5133cce2bb42b7e737604978f867afc4bee77",
+    "/Users/eass/A_System_复核/2026-10-10_继续补齐复核数据/evidence/completed_input_replay.json": "9d0561e3b9722302b6bb6aabd569081d384db046e8b87c54a1107b587c0af047",
+    "/Users/eass/A_System_复核/2026-10-10_继续补齐复核数据/evidence/rebuilt_current_dataset.json": "5fc319c90ef2c98ab86ae558e6f0f8f31dbee3dddb5fddcec8775a83c3990ef6",
+    "/Users/eass/A_System_复核/2026-10-10_继续补齐复核数据/base_commit.json": "c3f0efd6d84eb84b1eeaf1c0703d229bc0c777f1ec32a8abe0a33107ddc20872",
+    "/Users/eass/A_System_复核/2026-10-10_继续补齐复核数据/code/data/raw/stock_basic/stock_basic_all.csv": "239545140efcbd4b51612f58f4b3f1d165dfd7003e3cba09c6c7a9bf1defe23a",
+    "/Users/eass/A_System_复核/2026-10-10_甲临时复核_仅策略/verify_unpriced_samples.py": "56eafe9040f0fa4070038bd1e802ee26d23a93eba7b060ab77fdf66ac9d50eca",
+    "/Users/eass/A_System_复核/2026-10-10_甲临时复核_仅策略/factor_exclusion_context.csv": "e38adc375e574f6872a579a5c21ef214621aeaaa690a21207ba66ebeff060edc",
+    "/Users/eass/A_System_复核/2026-10-10_甲临时复核_仅策略/factor_unpriced_classification.csv": "e450e62b3c7f2cd330879363ec3ba1cb9d05e9204faec4ac702aef56c8a33dc6",
+    "/Users/eass/A_System_复核/2026-10-10_甲临时复核_仅策略/suspend_d_raw.csv": "a53250467c586670c1c592586b7917ce56e321c45521643378b29eec72b5d9fd",
+    "/Users/eass/A_System_复核/2026-10-10_甲临时复核_仅策略/suspend_d_receipt.json": "90bf5fef642ff3bcdd1d0a3b671f6e977cda82ea7c56b44ddf200710af143bab",
+    "/Users/eass/A_System_复核/2026-10-10_甲临时复核_仅策略/bse_historic_code_exclusion_evidence.json": "e6f04d3a707379aa0ba6fbe68bf77e9252338d8940b74a1b56cc25e7e1268680"
+  },
+  "requires_actual_account_trades": false,
+  "production_writes": false,
+  "broker_calls_sent": false,
+  "notifications_sent": false
+}

@@ -1,0 +1,51 @@
+本目录保存2026-10-10仅策略临时复核的具名快照和完整源码。
+
+用户已确认维持方案甲稳定版，并要求提交代码。结论：需观察，正式规则维持，继续按MA60、滞后6个交易日停手。
+本次判断现行策略本身，以没有历史持仓、没有真实成交为账户假设；旧真实成交、私人净值账本和券商登录不是这个范围的前提。
+历史模型仍保留费用、滑点、T+1、涨跌停、成交判定和退出日资金占用。
+
+结果与范围：
+1. 行情截至2026-10-09；冻结输入代码基准0773ed30ea4dc83279a1844c302e134770e726c1。
+2. 不停手A/C/E影子账滚动63交易日−13.78%、126交易日+249.99%，未触发冻结失败线；这些窗口含训练期，不整体作为独立样本外。
+3. A的滚动12个月条件优势+0.052%，低于+0.539%冻结线，8/9月连续两个月跌破，匹配样本224；C+1.666%，样本192，未报警。
+4. 甲上线后9个交易日全部停手，假设此前空仓则无新买入；同期不停手A/C/E影子账3笔净收益−9.01%。
+5. 条件诊断成熟样本19,106，35,757股票日原件复权逐项核验，保留样本复权兜底0。
+6. 82条无双边后续报价样本查清停牌/退市；2个股票日明确列为北交所公告与交易日历推断，不冒充接口返回。
+7. A/C/E影子账定义不含D。本次近期策略判断不等于重新认证2018起完整旧基准或证明长期稳定；完整指标、费用和过拟合风险见报告。
+
+文件与方法：
+- 策略临时复核报告.txt：本轮完整结论、统计口径、限制、源码位置与运行方式。
+- strategy_review.json：机器可读结果及18份原隔离输入的SHA256。
+- review_strategy_only.py：完整可运行源码。main核对验收来源/净值、重算均线失败线和空仓假设；factor_evidence复算A/C条件优势、校验复权与排除样本；render_report生成报告。
+- verify_unpriced_samples.py：完整源码。capture_suspensions通过现有权限HTTPS采集官方停复牌、核验缓存；main按股票日说明无报价排除。
+- factor_monthly_A.csv、factor_monthly_C.csv：逐月条件样本与优势。
+- hypothetical_shadow_forward_trades.csv：3笔模型交易；不是真实成交记录。
+- factor_exclusion_context.csv、factor_matured_unpriced_exclusions.csv、factor_unpriced_classification.csv、factor_unpriced_summary.json：无法按固定T+2计算收益的样本及停牌/退市依据。
+- suspend_d_raw.csv、suspend_d_receipt.json：已有权限补采的官方停复牌原件与回执，不含凭据。
+- bse_historic_code_exclusion_evidence.json：两条北交所旧代码记录的公告和日历推断依据，明确记录旧代码接口查询未成功。
+- snapshot_manifest.json：14份原件的文件大小与SHA256，保持原生成字节。
+- verify_snapshot.py：新增只读快照核验器；verify核对原件、范围及3笔模型净收益与汇总的一致性，main是命令入口。
+
+新增位置：本具名报告目录；docs/equity_curve_stop.md第八节第3小节补充范围，第九节第3/7小节追加复核记录与最新因子观察。
+正式src、scripts、config和行情输入没有替换或删除。目录不会被日常流水线自动运行；未提交凭据、生产账本、日志或Python缓存。
+原报告里“未提交Git”和绝对路径描述的是生成报告时的现场；本目录保留原件，不事后重写生成时的证据。
+
+核验快照（只读、仅标准库、不需要账号或网络）：
+python reports/strategy_review_20261010/verify_snapshot.py
+
+本机原隔离输入仍在时，额外核验18份输入：
+python reports/strategy_review_20261010/verify_snapshot.py --verify-source-inputs
+
+验证应输出PASS_STRATEGY_REVIEW_SNAPSHOT、snapshot_files_verified=14、hypothetical_trades_verified=3。
+指定--verify-source-inputs时，应输出source_inputs_verified=18；其他机器没有原绝对路径则不指定该选项。
+任何哈希不符都停止验收，先检查冻结输入或快照是否被改动，不人工改写收益数字。
+
+重跑研究（只在同步目录外执行）：
+先把本目录整体复制到同步目录外；用Python3.10+及项目依赖安装环境运行review_strategy_only.py。
+保留生成时的同级目录布局：复核源码目录的父目录下须存在“2026-10-10_继续补齐复核数据”；辅助无报价核验工具也从该同级目录读取code。--input与辅助工具应指向这一份冻结输入，不能只挪动主脚本或混入另一版本。
+--input指向已验收补充目录：需要code（冻结源码、正式配置、已补日线/复权及review_refresh_20261010研究池）、evidence（rebuilt_current_dataset.json、completed_input_replay.json）、replay（影子净值与明细）及base_commit.json。
+原隔离输入目录：/Users/eass/A_System_复核/2026-10-10_继续补齐复核数据。
+原重跑命令：
+/Users/eass/A_System_Rebuild/2026-10-06/test_venv/bin/python /Users/eass/A_System_复核/2026-10-10_甲临时复核_仅策略/review_strategy_only.py --input /Users/eass/A_System_复核/2026-10-10_继续补齐复核数据
+本次不把2GB输入副本装入报告目录；它们的来源身份、路径和哈希保留在strategy_review.json中。初次重建输入请沿用原补充流程，不用当前生产配置替换冻结版本。
+已有停牌缓存完整，重跑不需要再次联网；如主动删除缓存后需补采，从TUSHARE_TOKEN环境变量或A_SYSTEM_MARKET_CREDENTIAL_FILE指定的本机.env读取现有凭据，不将凭据入库。

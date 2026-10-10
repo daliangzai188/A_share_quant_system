@@ -43,3 +43,6 @@ data/research/history_supplement_20261010/** -text
 data/research/history_supplement_20261010/continued/raw/netease_601011.SH_20180807.response whitespace=cr-at-eol
 data/research/history_supplement_20261010/continued/raw/tdx_downit5.cfg whitespace=cr-at-eol
 data/research/history_supplement_20261010/evidence/target_stock_days.csv whitespace=-blank-at-eol
+
+# 仅策略复核快照保持原件字节，跨设备换行转换不得改变哈希。
+reports/strategy_review_20261010/** -text

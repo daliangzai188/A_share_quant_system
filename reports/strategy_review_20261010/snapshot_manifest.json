@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "source_base_commit": "0773ed30ea4dc83279a1844c302e134770e726c1",
+  "captured_as_of": "20261009",
+  "created_at_utc": "2026-10-10T07:35:54.702869+00:00",
+  "scope": "仅策略近期临时复核；无私人真实成交或账户净值输入",
+  "source_directory": "/Users/eass/A_System_复核/2026-10-10_甲临时复核_仅策略",
+  "snapshot_files": [
+    {
+      "path": "bse_historic_code_exclusion_evidence.json",
+      "bytes": 1213,
+      "sha256": "e6f04d3a707379aa0ba6fbe68bf77e9252338d8940b74a1b56cc25e7e1268680"
+    },
+    {
+      "path": "factor_exclusion_context.csv",
+      "bytes": 5716,
+      "sha256": "e38adc375e574f6872a579a5c21ef214621aeaaa690a21207ba66ebeff060edc"
+    },
+    {
+      "path": "factor_matured_unpriced_exclusions.csv",
+      "bytes": 2612,
+      "sha256": "3cba2b0bbfe56273458e1182147340bb191780ea95588f005a4f9f2eb05a9e22"
+    },
+    {
+      "path": "factor_monthly_A.csv",
+      "bytes": 1220,
+      "sha256": "11e83d4ee0fa90fad24af3c9d42f9a59745f1e9952f1d2bde26d65bfc29bbdfe"
+    },
+    {
+      "path": "factor_monthly_C.csv",
+      "bytes": 1204,
+      "sha256": "f1f3eaf0c0a45dccff40519baa67a3a557a812593f6eaf2fe7f09bb0b96957bb"
+    },
+    {
+      "path": "factor_unpriced_classification.csv",
+      "bytes": 18045,
+      "sha256": "e450e62b3c7f2cd330879363ec3ba1cb9d05e9204faec4ac702aef56c8a33dc6"
+    },
+    {
+      "path": "factor_unpriced_summary.json",
+      "bytes": 888,
+      "sha256": "2303c46c45f98869b2bb08e44ff017ba397f3b73b5ff4e04672d0062b4c59c4e"
+    },
+    {
+      "path": "hypothetical_shadow_forward_trades.csv",
+      "bytes": 2033,
+      "sha256": "0d2914f2f6bb753156fb552d019388969f6be48c94e0f4cd50e8d463521263a3"
+    },
+    {
+      "path": "review_strategy_only.py",
+      "bytes": 27032,
+      "sha256": "a9fe7094abdeec8f49900a449ea5133cce2bb42b7e737604978f867afc4bee77"
+    },
+    {
+      "path": "strategy_review.json",
+      "bytes": 18400,
+      "sha256": "d3cb2df3beadc4c53f914d2aec208de3c701fc14ba422c62ce26c1efc3d0d94d"
+    },
+    {
+      "path": "suspend_d_raw.csv",
+      "bytes": 16855,
+      "sha256": "a53250467c586670c1c592586b7917ce56e321c45521643378b29eec72b5d9fd"
+    },
+    {
+      "path": "suspend_d_receipt.json",
+      "bytes": 1072,
+      "sha256": "90bf5fef642ff3bcdd1d0a3b671f6e977cda82ea7c56b44ddf200710af143bab"
+    },
+    {
+      "path": "verify_unpriced_samples.py",
+      "bytes": 7847,
+      "sha256": "56eafe9040f0fa4070038bd1e802ee26d23a93eba7b060ab77fdf66ac9d50eca"
+    },
+    {
+      "path": "策略临时复核报告.txt",
+      "bytes": 10215,
+      "sha256": "208c409d645c866098df83e266515be40a2822002d33468c1e91baee4cd1f92b"
+    }
+  ],
+  "runtime_source_or_config_changes": false,
+  "official_strategy_rule_changes": false,
+  "git_push_requested": false,
+  "exclusions": [
+    "__pycache__",
+    "凭据文件",
+    "真实账户流水",
+    "生产意图账本"
+  ]
+}

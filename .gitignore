@@ -186,3 +186,6 @@ data/raw/kpl_limit_list/*
 !data/research/history_supplement_20261010/continued/raw/trade_calendar_20180101_/20191127.csv
 !data/research/history_supplement_20261010/evidence/target_stock_days.csv
 !data/research/history_supplement_20261010/market/verified_derived/daily_basic/20181224.csv
+
+# 2026-10-10仅策略复核的具名冻结证据，不放行其他运行报表。
+!reports/strategy_review_20261010/*.csv
