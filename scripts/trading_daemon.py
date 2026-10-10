@@ -7099,23 +7099,28 @@ def _maybe_resume_pipeline_after_trade() -> None:
         _resume_pipeline_after_trade("未检测到仍需执行的平仓计划")
 
 
-def _start_post_market_pipeline(end_date: str | None = None, *, reason: str = "") -> None:
+def _start_post_market_pipeline(end_date: str | None = None, *, reason: str = "",
+                                offline: bool = False, stop_event: threading.Event | None = None) -> bool:
     """后台启动收盘/补采流水线。主调度继续运行；流水线遇到交易暂停门禁会等待。"""
     global _pipeline_thread
     with _pipeline_thread_lock:
         if _pipeline_thread is not None and _pipeline_thread.is_alive():
             logger().warning("收盘/采集流水线已在运行，本次不重复启动：%s", reason or "未指定原因")
-            return
+            return False
 
         def _target() -> None:
             try:
-                _run_post_market_with_retry(end_date)
+                if offline:
+                    _run_post_market_with_retry(end_date, offline=True, stop_event=stop_event)
+                else:
+                    _run_post_market_with_retry(end_date)
             finally:
                 logger().info("收盘/采集流水线线程结束：%s", reason or "正常结束")
 
         _pipeline_thread = threading.Thread(target=_target, daemon=True, name="post-market-pipeline")
         _pipeline_thread.start()
         logger().info("收盘/采集流水线已后台启动：%s", reason or "未指定原因")
+        return True
 
 
 def run_script(name: str, *args: str, timeout: int = TIMEOUT_DATA_STEP) -> bool:
@@ -13085,7 +13090,7 @@ def _log_post_market_step_brief(script: str, signal_date: str) -> None:
         _log_e_signal_status(signal_date)
 
 
-def snapshot_realized_strategy_equity(signal_date: str) -> None:
+def snapshot_realized_strategy_equity(signal_date: str, *, allow_broker_bootstrap: bool = True) -> None:
     """空仓时更新全策略已实现净值；详细账务逻辑位于独立模块。"""
     try:
         cfg = load_json_config(PROJECT_ROOT / "config" / "config.json")
@@ -13103,6 +13108,9 @@ def snapshot_realized_strategy_equity(signal_date: str) -> None:
         path = PROJECT_ROOT / "reports" / "account_risk_shadow" / "equity_ledger.json"
         bootstrap_equity: float | None = None
         if equity_ledger_requires_bootstrap(path):
+            if not allow_broker_bootstrap:
+                logger().warning("离线净值检查：原账本未初始化，保持未就绪；不查询券商、不新建资金基线。")
+                return
             if not (cfg.get("broker_adapter_enabled") and cfg.get("qmt_enabled")):
                 logger().warning("全策略净值账本尚未初始化且券商适配未启用，保持未就绪状态。")
                 return
@@ -13288,12 +13296,12 @@ def _maybe_alert_strategy_drawdown(snapshot: Any, drawdown: float, cfg: dict[str
         )
 
 
-def job_post_market(end_date: str | None = None) -> None:
+def job_post_market(end_date: str | None = None, *, offline: bool = False) -> bool:
     target_str = end_date or today_beijing().strftime("%Y%m%d")
     target_date = datetime.datetime.strptime(target_str, "%Y%m%d").date()
     logger().info("===== 收盘流水线（目标日期 %s）=====", target_str)
 
-    snapshot_realized_strategy_equity(target_str)
+    snapshot_realized_strategy_equity(target_str, allow_broker_bootstrap=not offline)
 
     cfg = load_json_config(PROJECT_ROOT / "config" / "config.json")
     live_window_days = max(1, int(cfg.get("cleaning", {}).get("live_signal_window_trade_days", 3)))
@@ -13423,7 +13431,8 @@ def job_post_market(end_date: str | None = None) -> None:
             "⚠️ Tushare %s 数据尚未就绪（live_limit_up_fill_scored.csv 无该日记录），流水线步骤已完成但需等数据",
             target_str,
         )
-        report_next_day_candidates()
+        if not offline:
+            report_next_day_candidates()
         return False  # 通知调用方稍后重试
 
     if not _has_signal_for_date(target_date):
@@ -13458,9 +13467,20 @@ def job_post_market(end_date: str | None = None) -> None:
             "⚠️ %s 只有基础涨停口径，A/C 已阻断开仓；继续等待完整 limit_list_d，稍后自动重试",
             target_str,
         )
-        report_next_day_candidates()
+        if not offline:
+            report_next_day_candidates()
         report_signal_readiness_summary(target_str)
         return False
+
+    if offline:
+        fresh, _ = _equity_curve_stop_decision_fresh(target_str)
+        report_signal_readiness_summary(target_str)
+        if failed_steps or not fresh or not report_next_trade_factor_readiness(target_str):
+            logger().warning("离线数据维护未完成：失败步骤=%s，最新停手判定=%s；交易门禁保持关闭。", failed_steps, fresh)
+            return False
+        mark_post_market_done(target_date)
+        logger().info("离线数据维护完成：%s 数据/影子停手判定已更新；账户未验证，不生成真实定仓播报，不启动交易。", target_str)
+        return True
 
     report_next_day_candidates()
     # 决策链 summary 必须先于收盘推送：它设置 _last_final_plan（推送的唯一数据源）。
@@ -13506,12 +13526,18 @@ def _equity_curve_stop_decision_fresh(target_str: str) -> tuple[bool, str]:
     """⑬是否已写出紧接着的下一个行动日的判定；未启用门禁时视为正常。"""
     from src.equity_curve_stop import load_decision, load_settings, next_open_date
 
-    settings = load_settings(load_json_config(PROJECT_ROOT / "config" / "config.json"), PROJECT_ROOT)
+    from src.post_market_freshness import decision_producer_fresh
+
+    config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+    settings = load_settings(config, PROJECT_ROOT)
     if not settings.enabled:
         return True, ""
     expected = next_open_date(PROJECT_ROOT / "data" / "raw" / "trade_calendar.csv", target_str)
     payload = load_decision(settings)
-    return bool(payload) and str(payload.get("action_date", "")) == expected, expected
+    fresh = (bool(payload) and str(payload.get("signal_date", "")) == target_str
+             and str(payload.get("action_date", "")) == expected
+             and decision_producer_fresh(PROJECT_ROOT, target_str, config, payload))
+    return fresh, expected
 
 
 def _alert_if_stop_decision_stale(target_str: str, failed_steps: list[str]) -> None:
@@ -13618,14 +13644,16 @@ def _alert_post_market_not_completed(date_str: str, cutoff_hour: int) -> None:
     )
 
 
-def _run_post_market_with_retry(end_date: str | None = None) -> None:
+def _run_post_market_with_retry(end_date: str | None = None, *, offline: bool = False,
+                                stop_event: threading.Event | None = None) -> None:
     """运行收盘流水线，若收盘数据或明日开盘因子未就绪则每5分钟重试，直到23:00。"""
     cutoff_hour = 23
     retry_seconds = 300
     date_str = end_date or today_beijing().strftime("%Y%m%d")
-    while True:
+    while stop_event is None or not stop_event.is_set():
         try:
-            data_ready = job_post_market(end_date=end_date)
+            data_ready = (job_post_market(end_date=end_date, offline=True) if offline
+                          else job_post_market(end_date=end_date))
         except Exception as _e:
             logger().error("收盘流水线异常：%s", _e)
             data_ready = False
@@ -13643,7 +13671,41 @@ def _run_post_market_with_retry(end_date: str | None = None) -> None:
             retry_seconds // 60,
             next_retry.strftime("%H:%M"),
         )
-        time.sleep(retry_seconds)
+        if stop_event is not None:
+            stop_event.wait(retry_seconds)
+        else:
+            time.sleep(retry_seconds)
+
+
+def _offline_data_fresh(date_str: str) -> bool:
+    date = datetime.datetime.strptime(date_str, "%Y%m%d").date()
+    fresh, _ = _equity_curve_stop_decision_fresh(date_str)
+    return _has_signal_for_date(date) and _processed_data_ready_for_date(date) and fresh
+
+
+def _start_offline_data_maintenance(stop: threading.Event) -> threading.Thread | None:
+    from src.offline_data_maintenance import MaintenanceSettings, run_maintenance
+
+    config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+    settings = MaintenanceSettings.from_config(config)
+    if not settings.enabled:
+        return None
+    worker = threading.Thread(
+        target=run_maintenance,
+        kwargs={
+            "stop": stop, "settings": settings,
+            "expected_date": lambda: _expected_signal_date().strftime("%Y%m%d"),
+            "refresh_ledger": lambda date: snapshot_realized_strategy_equity(date, allow_broker_bootstrap=False),
+            "data_fresh": _offline_data_fresh,
+            "start_pipeline": lambda date: _start_post_market_pipeline(
+                date, reason="账户门禁等待期间补齐后台数据", offline=True, stop_event=stop),
+            "on_error": lambda exc: logger().error("离线数据维护异常（不绕过交易门禁）：%s", exc),
+        },
+        daemon=True, name="offline-data-maintenance",
+    )
+    worker.start()
+    logger().info("账户门禁等待期间已启动仅数据/本地账本维护；交易线程仍等待账户认证及成交恢复。")
+    return worker
 
 
 def _segment_label(ts_code: str, market_segment: str = "") -> str:
@@ -17929,7 +17991,10 @@ def main() -> None:
     # 启动即覆盖上个进程遗留的 verified，防 keeper 在本进程尚未验证账户时误报恢复。
     write_broker_health("starting")
 
+    offline_stop = threading.Event()
+
     def _exit(signum, _frame):
+        offline_stop.set()
         log.info("收到信号 %d，退出", signum)
         _notify("system_error", "🔌 守护进程已停止",
                 "守护进程被主动停止，实盘自动交易已暂停。如需恢复请重新启动。")
@@ -17941,12 +18006,16 @@ def main() -> None:
     signal.signal(signal.SIGTERM, _exit)
     signal.signal(signal.SIGINT, _exit)
 
-    # 启动硬门禁：QMT账户没有验证成功前，不做任何交易/数据/候选/调度动作。
+    # 仅数据维护在门禁前运行；任何交易/真实账户定仓/持续交易线程仍在门禁后。
+    offline_worker = _start_offline_data_maintenance(offline_stop)
     wait_for_qmt_startup_gate()
 
     # QMT连接成功不等于可以启动交易。必须先用券商真实仓位、委托、
     # 成交恢复事务意图；没有唯一证据时停在这里，不让任何定时函数抢跑。
     wait_for_trade_recovery_gate()
+    offline_stop.set()
+    if offline_worker is not None:
+        offline_worker.join(timeout=2)
 
     ensure_trade_calendar_fresh()
 
@@ -18103,8 +18172,8 @@ def main() -> None:
     if not _has_signal_for_date(expected):
         log.warning("未找到 %s 收盘数据缓存，后台启动收盘/采集流水线补齐；若遇到平仓窗口会自动暂停让路。", expected_str)
         _start_post_market_pipeline(expected_str, reason=f"启动补齐缺失收盘信号 {expected_str}")
-    elif not _processed_data_ready_for_date(expected):
-        log.warning("已有 %s 收盘信号缓存，但 processed 审计数据缺失该日期，后台启动流水线补齐；raw缓存命中会直接跳过采集。", expected_str)
+    elif not _offline_data_fresh(expected_str):
+        log.warning("已有 %s 收盘信号缓存，但审计数据/停手产物来源尚未更新，后台启动流水线补齐；raw缓存命中会直接跳过采集。", expected_str)
         _start_post_market_pipeline(expected_str, reason=f"启动补齐processed审计数据 {expected_str}")
     else:
         log.info("缓存命中：已有 %s 收盘数据缓存且 processed 数据齐全，直接使用缓存，不重复采集/计算。", expected_str)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import math
 from pathlib import Path
 import sys
 from zoneinfo import ZoneInfo
@@ -23,6 +24,7 @@ from src.live_performance import (  # noqa: E402
 )
 from src.execution_data_quality import analyze_execution_data_quality  # noqa: E402
 from src.account_risk_shadow import (  # noqa: E402
+    AccountRiskShadowError,
     load_json_object as load_risk_json,
     update_account_risk_shadow,
     validate_shadow_policy,
@@ -35,6 +37,38 @@ SELL_EVENTS_SOURCE = PROJECT_ROOT / "reports" / "execution_tracking" / "sell_exe
 POSITIONS_SOURCE = PROJECT_ROOT / "data" / "processed" / "positions.json"
 OUTPUT_DIR = PROJECT_ROOT / "reports" / "live_performance"
 ACCOUNT_RISK_POLICY_PATH = PROJECT_ROOT / "config" / "account_risk_shadow.json"
+
+
+def account_risk_status(trades: pd.DataFrame, as_of_date: str) -> dict:
+    """账本缺失/历史未就绪时仍写风险状态与绩效报告，不重置原影子资金基线。"""
+    latest_path = PROJECT_ROOT / "reports/account_risk_shadow/latest_status.json"
+    try:
+        policy = load_risk_json(ACCOUNT_RISK_POLICY_PATH)
+        normalized = validate_shadow_policy(policy)
+        latest_path = PROJECT_ROOT / normalized["latest_status_path"]
+        ledger = load_risk_json(PROJECT_ROOT / normalized["bootstrap_equity_path"])
+        if ledger.get("ledger_ready") is not True or ledger.get("historical_coverage_ready") is not True:
+            raise AccountRiskShadowError("真实净值账本或历史成交覆盖未就绪；不能认证净值、峰值和回撤")
+        equity = float(ledger.get("last_equity", 0.0) or 0.0)
+        if not math.isfinite(equity) or equity <= 0:
+            raise AccountRiskShadowError("真实净值账本资金基线无效")
+        return update_account_risk_shadow(
+            state_path=PROJECT_ROOT / normalized["state_path"], latest_status_path=latest_path,
+            policy=policy, complete_trades=trades, bootstrap_equity=equity, as_of_date=as_of_date,
+        )
+    except (AccountRiskShadowError, OSError, TypeError, ValueError) as exc:
+        payload = {
+            "status": "NOT_READY", "reason": str(exc), "as_of_date": as_of_date,
+            "mode": "SHADOW_ONLY", "enforce_live_gate": False, "changes_live_orders": False,
+            "historical_coverage_ready": False, "current_equity": None,
+            "peak_equity": None, "account_drawdown": None, "activation_review_eligible": False,
+            "suggested_action": "UNKNOWN_UNTIL_LEDGER_RESTORED", "triggers": [],
+        }
+        latest_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = latest_path.with_suffix(latest_path.suffix + ".tmp")
+        temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        temporary.replace(latest_path)
+        return payload
 
 
 def _markdown(frame: pd.DataFrame) -> str:
@@ -151,21 +185,7 @@ def main() -> None:
     trades, quality = completed_live_trades(raw, report_config)
     capacity_metrics = execution_capacity_metrics(raw, report_config)
     capacity_status = capacity_monitor_status(capacity_metrics, report_config)
-    risk_policy = load_risk_json(ACCOUNT_RISK_POLICY_PATH)
-    normalized_risk_policy = validate_shadow_policy(risk_policy)
-    risk_bootstrap = load_risk_json(
-        PROJECT_ROOT / normalized_risk_policy["bootstrap_equity_path"]
-    )
-    bootstrap_equity = float(risk_bootstrap.get("last_equity", 0.0) or 0.0)
-    account_risk_shadow = update_account_risk_shadow(
-        state_path=PROJECT_ROOT / normalized_risk_policy["state_path"],
-        latest_status_path=PROJECT_ROOT
-        / normalized_risk_policy["latest_status_path"],
-        policy=risk_policy,
-        complete_trades=trades,
-        bootstrap_equity=bootstrap_equity,
-        as_of_date=now_shanghai.strftime("%Y%m%d"),
-    )
+    account_risk_shadow = account_risk_status(trades, now_shanghai.strftime("%Y%m%d"))
     windows = [int(value) for value in report_config.get("windows", [20, 60, 120])]
     metrics = rolling_metrics(trades, windows)
     minimum = int(report_config.get("minimum_samples_for_decision", 20))
@@ -179,6 +199,9 @@ def main() -> None:
     else:
         status = "PASS"
         reason = "滚动真实成交样本达到门槛且平均净收益为正。"
+    if account_risk_shadow["status"] == "NOT_READY":
+        status = "DATA_INCOMPLETE"
+        reason += " 真实账本/历史覆盖未恢复，账户净值与回撤暂不可认证；明细指标只代表现有完整成交子集。"
 
     mkdir_p(OUTPUT_DIR)
     trades.to_csv(OUTPUT_DIR / "rolling_live_trades.csv", index=False, encoding="utf-8-sig")

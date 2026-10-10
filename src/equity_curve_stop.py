@@ -376,6 +376,15 @@ def live_gate(config: Mapping[str, Any], project_root: Path, action_date: str) -
     ):
         return LiveGateCheck(False, "方案甲停手判定参数与正式配置不一致，按fail-closed不开新仓", source, payload)
     allowed = payload.get("allowed")
+    if bool((config.get("equity_curve_stop", {}) or {}).get("require_producer_identity", False)):
+        from src.post_market_freshness import decision_producer_fresh
+
+        try:
+            fresh = decision_producer_fresh(project_root, str(payload.get("signal_date", "")), config, payload)
+        except (OSError, ValueError, TypeError):
+            fresh = False
+        if not fresh or payload.get("diagnostic_dataset_reused") is True:
+            return LiveGateCheck(False, "方案甲停手产物来自旧代码/旧输入或诊断复用，按fail-closed不开新仓，等待⑬重算", source, payload)
     if allowed is True:
         return LiveGateCheck(True, str(payload.get("reason", "")), source, payload)
     if allowed is False:

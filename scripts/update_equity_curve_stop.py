@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -453,11 +454,17 @@ def main() -> int:
         print("EQUITY_CURVE_STOP_DISABLED", flush=True)
         return 0
     started = time.time()
+    from src.post_market_freshness import producer_identity
+
+    started_identity = producer_identity(PROJECT_ROOT, signal_date, config)
     calendar_path = PROJECT_ROOT / "data" / "raw" / "trade_calendar.csv"
     next_date = next_open_date(calendar_path, signal_date)
     dataset_root = settings.work_dir / "dataset"
     if not (args.reuse_dataset and (dataset_root / "strict_feature_pool.csv").exists()):
         dataset_root = build_dataset(settings, signal_date)
+    built_identity = producer_identity(PROJECT_ROOT, signal_date, config)
+    if started_identity["source_sha256"] != built_identity["source_sha256"]:
+        raise RuntimeError("影子账重建期间代码/配置发生变化，拒绝写判定，下一趟重新计算")
     shadow = build_shadow_replay(
         project_root=PROJECT_ROOT,
         feature_path=dataset_root / "strict_feature_pool.csv",
@@ -486,6 +493,13 @@ def main() -> int:
         history_start=settings.history_start,
         elapsed_seconds=round(time.time() - started, 1),
     )
+    finished_identity = producer_identity(PROJECT_ROOT, signal_date, config)
+    if finished_identity != built_identity:
+        raise RuntimeError("影子账回放期间代码/输入发生变化，拒绝写判定，下一趟重新计算")
+    decision["producer_identity"] = finished_identity
+    decision["research_pool_sha256"] = hashlib.sha256(
+        (dataset_root / "strict_feature_pool.csv").read_bytes()).hexdigest()
+    decision["diagnostic_dataset_reused"] = bool(args.reuse_dataset)
     write_shadow_nav(settings, nav)
     write_decision(settings, decision)
     state = "允许开仓" if decision["allowed"] else "停手"

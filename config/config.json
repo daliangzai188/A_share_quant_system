@@ -4,7 +4,10 @@
     "standard_id": "A_SYSTEM_STRICT_ASOF_V1",
     "default_mode": "STRICT",
     "default_research_protocol": "STRICT_DISCOVERY",
-    "formal_protocols": ["LOCKED_OOS", "WALK_FORWARD"],
+    "formal_protocols": [
+      "LOCKED_OOS",
+      "WALK_FORWARD"
+    ],
     "fill_probability_method": "asof_turnover_space_proxy_v2",
     "mechanical_compound_standard_id": "A_SYSTEM_MECHANICAL_COMPOUND_V1",
     "official_portfolio_certifier": "scripts/certify_strategy_c_third_branch_release.py",
@@ -28,7 +31,9 @@
     "strategy_variant": "E_CURRENT",
     "strategy_version": "E_R1_V14_TURNOVER_FD_SCORE_AMOUNT12_OPEN23_NO_TRADE",
     "ranking_config_path": "config/strategy_e_r1_scenarios.json",
-    "legacy_read_aliases": ["E2"],
+    "legacy_read_aliases": [
+      "E2"
+    ],
     "live_order_enabled": true,
     "complete_sample_path": "reports/strategy_e_samples/e_current_daily_candidates_full.csv",
     "pre_gate_sample_path": "reports/strategy_e_samples/e_r1_daily_candidates_full.csv",
@@ -57,17 +62,42 @@
       "worst_stop_missed_gain": 0.269,
       "regime_min_months": 5,
       "regime_buckets": [
-        {"limit_up_min": 0, "limit_up_max": 40, "oos_months": 8, "oos_median": -0.0548, "oos_win_rate": 0.125},
-        {"limit_up_min": 40, "limit_up_max": 60, "oos_months": 13, "oos_median": -0.018, "oos_win_rate": 0.462},
-        {"limit_up_min": 60, "limit_up_max": 80, "oos_months": 16, "oos_median": 0.0229, "oos_win_rate": 0.562},
-        {"limit_up_min": 80, "limit_up_max": null, "oos_months": 1, "oos_median": 0.1687, "oos_win_rate": 1.0}
+        {
+          "limit_up_min": 0,
+          "limit_up_max": 40,
+          "oos_months": 8,
+          "oos_median": -0.0548,
+          "oos_win_rate": 0.125
+        },
+        {
+          "limit_up_min": 40,
+          "limit_up_max": 60,
+          "oos_months": 13,
+          "oos_median": -0.018,
+          "oos_win_rate": 0.462
+        },
+        {
+          "limit_up_min": 60,
+          "limit_up_max": 80,
+          "oos_months": 16,
+          "oos_median": 0.0229,
+          "oos_win_rate": 0.562
+        },
+        {
+          "limit_up_min": 80,
+          "limit_up_max": null,
+          "oos_months": 1,
+          "oos_median": 0.1687,
+          "oos_win_rate": 1.0
+        }
       ],
       "regime_stall_min_limit_up": 40,
       "regime_stall_months": 3,
       "regime_stall_note": "行情正常却连续不赚钱的报警：某自然月全市场平均涨停数不低于regime_stall_min_limit_up（非冰点）且影子账当月收益不为正，连续regime_stall_months个月即触发，提示发\"甲·临时复核\"。冰点月或任一月为正都会清零——冰点亏损是本规则已知常态。2026-09-23回测2020-08起74个月只触发1次（2021-08~10，涨停63、三个月合计-34.8%），用涨停≥60的严格版则一次都不触发，故取40。",
       "regime_note": "行情校准只用于把\"行情不好\"和\"策略变坏\"分开，不参与任何门禁。档位期望取2026-09-23重建研究池（2019起）里影子账月收益、只用样本外月份（2020-08~2023-07与2026-08起）的中位数与赚钱月比例；样本外月数少于regime_min_months的档位只报行情、不做对比。换版或年度复核时随基准一起重算。",
       "threshold_note": "失败线取2026-09-21影子账样本外窗口分布：滚动3个月10%分位-24.1%、滚动6个月10%分位-19.4%；停手踏空线取历史最差一段+26.9%（2022-11）。触发只说明要做临时复核或把证据留给年度复核，不自动改规则。"
-    }
+    },
+    "require_producer_identity": true
   },
   "factor_health": {
     "file_role": "因子健康监控：用整个涨停池衡量A/C条件集是否还有优势。实盘每月只有约5笔成交，等成交攒证据太慢；满足条件的涨停股每月十几到几十只，条件集的优势会先于成交结果垮掉。指标=滚动12个月的\"匹配均值-不匹配均值\"（差额已剔除行情好坏），只出数字与报警，不参与任何门禁。",
@@ -88,7 +118,7 @@
   "drawdown_alert": {
     "file_role": "只提醒不交易：全策略净值账本（券商总资产一次基线+本系统完整平仓盈亏，入金出金不影响）从峰值回撤达到threshold时Bark推送一次，提醒用户发起“甲·临时复核”。同一峰值只推送一次。",
     "enabled": true,
-    "threshold": -0.30,
+    "threshold": -0.3,
     "state_path": "data/state/drawdown_alert.json",
     "ledger_incomplete_state_path": "data/state/equity_ledger_pending_alert.json"
   },
@@ -465,7 +495,11 @@
   "collection": {
     "daily_fields": "ts_code,trade_date,open,high,low,close,pre_close,change,pct_chg,vol,amount",
     "daily_basic_fields": "ts_code,trade_date,turnover_rate,turnover_rate_f,volume_ratio,pe,pe_ttm,pb,ps,ps_ttm,dv_ratio,dv_ttm,total_share,float_share,free_share,total_mv,circ_mv",
-    "daily_basic_required_complete": ["volume_ratio", "turnover_rate_f", "free_share"],
+    "daily_basic_required_complete": [
+      "volume_ratio",
+      "turnover_rate_f",
+      "free_share"
+    ],
     "daily_basic_max_null_ratio": 0.05,
     "daily_basic_completeness_note": "Tushare当日daily_basic先发布换手率等字段，量比与自由流通字段约16:00后才填充；收盘流水线15:52采集到的是半成品。关键字段空值率超过daily_basic_max_null_ratio的文件不算完整，下次运行自动重拉（2026-10-03修复：2026-06-16起自由流通字段、07-31起量比长期为空）。",
     "limit_list_fields": "trade_date,ts_code,name,close,pct_chg,amp,fc_ratio,fl_ratio,fd_amount,first_time,last_time,open_times,strth,limit,limit_order,limit_amount,turnover_rate,free_float,lu_desc,limit_times",
@@ -523,8 +557,16 @@
     "commission_rate": 0.0003,
     "stamp_tax_rate": 0.0005,
     "stamp_tax_schedule": [
-      {"start_date": "19000101", "end_date": "20230827", "rate": 0.001},
-      {"start_date": "20230828", "end_date": "99991231", "rate": 0.0005}
+      {
+        "start_date": "19000101",
+        "end_date": "20230827",
+        "rate": 0.001
+      },
+      {
+        "start_date": "20230828",
+        "end_date": "99991231",
+        "rate": 0.0005
+      }
     ],
     "minimum_commission": 5.0,
     "transfer_fee_rate": 1e-05,
@@ -2709,8 +2751,16 @@
     "commission_rate": 0.0003,
     "stamp_tax_rate": 0.0005,
     "stamp_tax_schedule": [
-      {"start_date": "19000101", "end_date": "20230827", "rate": 0.001},
-      {"start_date": "20230828", "end_date": "99991231", "rate": 0.0005}
+      {
+        "start_date": "19000101",
+        "end_date": "20230827",
+        "rate": 0.001
+      },
+      {
+        "start_date": "20230828",
+        "end_date": "99991231",
+        "rate": 0.0005
+      }
     ],
     "minimum_commission": 5.0,
     "transfer_fee_rate": 1e-05,
@@ -2722,5 +2772,11 @@
     "exclude_suspended": true,
     "exclude_limit_up_unfillable": true,
     "exclude_limit_down_unsellable": true
+  },
+  "offline_data_maintenance": {
+    "enabled": true,
+    "poll_seconds": 30,
+    "ledger_seconds": 300,
+    "retry_seconds": 300
   }
 }

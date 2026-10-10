@@ -113,6 +113,8 @@ CODE_FILES = [
     "src/historical_limit_counts.py",
     "src/limit_source_quality.py",
     "src/equity_curve_stop_history.py",
+    "src/offline_data_maintenance.py",
+    "src/post_market_freshness.py",
     "src/live_order_gateway.py",
     "src/live_certification.py",
     "src/strategy_e.py",
@@ -125,6 +127,7 @@ CODE_FILES = [
     "scripts/monitor_strategy_d_intraday.py",
     "scripts/trading_daemon.py",
     "scripts/update_equity_curve_stop.py",
+    "scripts/report_rolling_live_performance.py",
     "scripts/certify_plan_jia_release.py",
 ]
 
