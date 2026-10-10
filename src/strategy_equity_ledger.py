@@ -44,6 +44,10 @@ class StrategyEquitySnapshot:
     source: str
     pending_trade_keys: tuple[str, ...] = field(default_factory=tuple)
     peak_date: str = ""
+    historical_coverage_ready: bool = True
+    historical_coverage_reasons: tuple[str, ...] = field(default_factory=tuple)
+    missing_previously_included_trade_keys: tuple[str, ...] = field(default_factory=tuple)
+    missing_previously_observed_trade_keys: tuple[str, ...] = field(default_factory=tuple)
 
 
 def load_equity_ledger(path: Path) -> dict[str, Any]:
@@ -149,6 +153,14 @@ def _equity_path(baseline: float, complete: pd.DataFrame) -> tuple[float, float,
     return float(path.iloc[-1]), peak_value, peak_date
 
 
+def _trade_identity(key: str) -> str:
+    """兼容E2→E编号迁移；日期、股票与信号日仍逐项区分。"""
+    parts = str(key).split("|")
+    if len(parts) >= 3:
+        parts[2] = normalize_strategy_leg(parts[2])
+    return "|".join(parts)
+
+
 def update_strategy_equity_ledger(
     *,
     state_path: Path,
@@ -164,6 +176,12 @@ def update_strategy_equity_ledger(
 
     with _ledger_lock:
         state = load_equity_ledger(state_path)
+        previous_pending = {
+            str(key) for key in (
+                list(state.get("pending_incomplete_trade_keys", []) or [])
+                + list(state.get("missing_previously_observed_trade_keys", []) or [])
+            )
+        }
         version = int(state.get("schema_version", 0) or 0)
         initialized_now = False
         if version in LEGACY_SCHEMA_VERSIONS:
@@ -174,6 +192,14 @@ def update_strategy_equity_ledger(
             cutoff = _date8(signal_date)
             if baseline <= 0 or not cutoff:
                 raise ValueError("策略净值账本首次建立需要有效的券商总资产基线和日期")
+            legacy_cutoff = _date8((config.get("strategy_equity_ledger", {}) or {}).get(
+                "legacy_v2_baseline_cutoff_entry_date"
+            ))
+            if legacy_cutoff and cutoff > legacy_cutoff:
+                raise ValueError(
+                    "已有旧系统基线依据，拒绝以当前券商余额重建历史净值；"
+                    "请恢复原净值账本及完整成交，不能用空表认证历史已恢复"
+                )
             # 建基线时账户空仓：之前买入的交易都已平仓并含在总资产里，基线日及以后买入的才计入。
             state = {
                 "schema_version": LEDGER_SCHEMA_VERSION,
@@ -198,9 +224,63 @@ def update_strategy_equity_ledger(
         scoped_keys = set(scoped.get("trade_key", pd.Series(dtype=str)).astype(str))
         complete_keys = set(complete.get("trade_key", pd.Series(dtype=str)).astype(str))
         pending_keys = sorted(scoped_keys - complete_keys)
+        completed_identities = {_trade_identity(key) for key in complete_keys}
+        if version in LEGACY_SCHEMA_VERSIONS:
+            # v2的基线前交易已含在基线中；只核查其基线后已入账成交。
+            missing_legacy = sorted(
+                key for key in previous_included
+                if _date8(key.split("|", 1)[0]) >= cutoff
+                and _trade_identity(key) not in completed_identities
+            )
+            if missing_legacy:
+                # 不覆盖原件，保留v2编号供补齐后再次迁移。
+                raise ValueError("旧账本基线后成交缺失或不完整，拒绝迁移：" + "、".join(missing_legacy))
+        section = config.get("strategy_equity_ledger", {}) or {}
+        required_cutoff = _date8(section.get("legacy_v2_baseline_cutoff_entry_date"))
+        history_reasons: list[str] = []
+        if required_cutoff and cutoff > required_cutoff:
+            history_reasons.append("BASELINE_NEWER_THAN_CONFIGURED_LEGACY_CUTOFF")
+        missing_previous = sorted(
+            key for key in previous_included
+            if version == LEDGER_SCHEMA_VERSION and _trade_identity(key) not in completed_identities
+        )
+        if missing_previous:
+            history_reasons.append("PREVIOUSLY_INCLUDED_TRADES_NOT_COMPLETE")
+        scoped_identities = {_trade_identity(key) for key in scoped_keys}
+        missing_observed = sorted(
+            key for key in previous_pending
+            if _trade_identity(key) not in scoped_identities
+        )
+        if missing_observed:
+            history_reasons.append("PREVIOUSLY_OBSERVED_TRADES_MISSING")
+        if missing_previous or missing_observed:
+            # 保存最后有成交依据的净值与峰值，绝不拿残缺表重算出假0%回撤。
+            state.update(
+                ledger_ready=False, historical_coverage_ready=False,
+                historical_coverage_reasons=history_reasons,
+                missing_previously_included_trade_keys=missing_previous,
+                missing_previously_observed_trade_keys=missing_observed,
+                pending_incomplete_trade_keys=pending_keys,
+                pending_incomplete_trade_count=len(pending_keys),
+                last_new_trade_count=0, updated_signal_date=str(signal_date),
+            )
+            _atomic_write(state_path, state)
+            return StrategyEquitySnapshot(
+                equity=float(state.get("last_equity", baseline)),
+                peak_equity=float(state.get("peak_equity", baseline)),
+                realized_pnl=float(state.get("realized_pnl", 0.0)),
+                new_trade_count=0, pending_incomplete_trade_count=len(pending_keys),
+                initialized_now=False, ledger_ready=False,
+                source="策略净值账本（历史成交缺失，保留最后已核验快照；未就绪）",
+                pending_trade_keys=tuple(pending_keys), peak_date=str(state.get("peak_date", "")),
+                historical_coverage_ready=False, historical_coverage_reasons=tuple(history_reasons),
+                missing_previously_included_trade_keys=tuple(missing_previous),
+                missing_previously_observed_trade_keys=tuple(missing_observed),
+            )
         equity, peak, peak_date = _equity_path(baseline, complete)
         realized = equity - baseline
-        ledger_ready = not pending_keys and equity > 0 and peak > 0
+        historical_coverage_ready = not history_reasons
+        ledger_ready = historical_coverage_ready and not pending_keys and equity > 0 and peak > 0
         new_keys = complete_keys - previous_included
         state.update(
             {
@@ -215,6 +295,10 @@ def update_strategy_equity_ledger(
                 "last_new_trade_count": len(new_keys),
                 "updated_signal_date": str(signal_date),
                 "ledger_ready": ledger_ready,
+                "historical_coverage_ready": historical_coverage_ready,
+                "historical_coverage_reasons": history_reasons,
+                "missing_previously_included_trade_keys": missing_previous,
+                "missing_previously_observed_trade_keys": missing_observed,
             }
         )
         _atomic_write(state_path, state)
@@ -223,6 +307,8 @@ def update_strategy_equity_ledger(
             if initialized_now
             else "策略净值账本（基线+真实完整平仓盈亏，整体重算）"
         )
+        if not historical_coverage_ready:
+            source += "（新基线晚于旧系统基线，历史覆盖未恢复；未就绪）"
         return StrategyEquitySnapshot(
             equity,
             peak,
@@ -234,4 +320,8 @@ def update_strategy_equity_ledger(
             source,
             tuple(pending_keys),
             peak_date,
+            historical_coverage_ready,
+            tuple(history_reasons),
+            tuple(missing_previous),
+            tuple(missing_observed),
         )

@@ -6,7 +6,8 @@
 """
 from __future__ import annotations
 
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP
+import re
 from typing import Iterable
 
 
@@ -40,6 +41,13 @@ def market_segment(ts_code: object) -> str:
 def is_st_name(name: object) -> bool:
     text = str(name or "").upper().replace(" ", "")
     return "ST" in text or "退" in text or "PT" in text
+
+
+def is_unreformed_name(name: object) -> bool:
+    """识别未股改S标记，普通ST名称不能被误当成S股。"""
+
+    text = str(name or "").upper().replace(" ", "")
+    return re.match(r"^S(?=(?:\*?ST)?[\u4e00-\u9fff])", text) is not None
 
 
 def listing_trade_day_number(
@@ -89,6 +97,13 @@ def price_limit_pct(
     if segment == "chi_next":
         # 创业板注册制涨跌幅规则自2020-08-24起改为20%。
         return 0.20 if not day or day >= "20200824" else 0.10
+    if segment in {"sh_main", "sz_main"} and is_unreformed_name(name):
+        # 未股改S股仍为5%，不能套用2026年普通风险警示股的10%变更。
+        return 0.05
+    if is_st_name(name) and segment in {"sh_main", "sz_main"}:
+        # 沪深2026年交易规则：主板风险警示股自2026-07-06起改为10%。
+        # 无日期的实时调用使用现行口径；历史回放必须传入行动日。
+        return 0.10 if not day or day >= "20260706" else 0.05
     if is_st_name(name):
         return 0.05
     return 0.10
@@ -101,13 +116,20 @@ def round_stock_price(value: float) -> float:
 def limit_up_price(pre_close: float, limit_pct: float | None) -> float | None:
     if limit_pct is None:
         return None
-    return round_stock_price(float(pre_close) * (1.0 + float(limit_pct)))
+    rate = Decimal(str(limit_pct))
+    value = Decimal(str(pre_close)) * (Decimal("1") + rate)
+    # A股30%口径对应北交所；有效报价不得超过30%边界，向内取分。
+    rounding = ROUND_FLOOR if rate == Decimal("0.30") else ROUND_HALF_UP
+    return float(value.quantize(Decimal("0.01"), rounding=rounding))
 
 
 def limit_down_price(pre_close: float, limit_pct: float | None) -> float | None:
     if limit_pct is None:
         return None
-    return round_stock_price(float(pre_close) * (1.0 - float(limit_pct)))
+    rate = Decimal(str(limit_pct))
+    value = Decimal(str(pre_close)) * (Decimal("1") - rate)
+    rounding = ROUND_CEILING if rate == Decimal("0.30") else ROUND_HALF_UP
+    return float(value.quantize(Decimal("0.01"), rounding=rounding))
 
 
 def fixed_open_buy_executable(

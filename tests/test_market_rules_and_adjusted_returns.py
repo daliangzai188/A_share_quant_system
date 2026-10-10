@@ -18,10 +18,43 @@ from src.trading_fees import stamp_tax_rate_for_date
 class MarketRulesTests(unittest.TestCase):
     def test_board_and_st_limits(self) -> None:
         self.assertEqual(price_limit_pct("000001.SZ", trade_date="20260820"), 0.10)
-        self.assertEqual(price_limit_pct("600001.SH", name="*ST测试", trade_date="20260820"), 0.05)
+        self.assertEqual(price_limit_pct("600001.SH", name="*ST测试", trade_date="20260820"), 0.10)
         self.assertEqual(price_limit_pct("301001.SZ", name="ST测试", trade_date="20260820"), 0.20)
         self.assertEqual(price_limit_pct("688001.SH", trade_date="20260820"), 0.20)
         self.assertEqual(price_limit_pct("920001.BJ", trade_date="20260820"), 0.30)
+
+    def test_mainboard_st_rule_effective_date_on_both_exchanges(self) -> None:
+        for code in ["600001.SH", "000016.SZ"]:
+            with self.subTest(code=code):
+                self.assertEqual(price_limit_pct(code, name="*ST测试", trade_date="20260703"), .05)
+                self.assertEqual(price_limit_pct(code, name="*ST测试", trade_date="20260706"), .10)
+                self.assertEqual(price_limit_pct(code, name="*ST测试"), .10)
+
+    def test_decimal_multiplication_preserves_half_cent_ties(self) -> None:
+        # 2022-09-30兰州黄河真实行情：昨收11.95、收盘10.76，必须判为跌停。
+        self.assertEqual(limit_down_price(11.95, .10), 10.76)
+        self.assertFalse(fixed_close_sell_executable(pre_close=11.95, close_price=10.76, limit_pct=.10))
+        self.assertEqual(limit_down_price(2.30, .05), 2.19)
+        self.assertEqual(limit_up_price(5.10, .05), 5.36)
+        self.assertEqual(limit_up_price(1.90, .05), 2.00)
+
+    def test_unreformed_s_marker_keeps_five_percent_limit(self) -> None:
+        for name in ["S佳通", "S 佳通", "S*ST前锋", "SST测试"]:
+            for day in ["20180604", "20260706", "20261008"]:
+                with self.subTest(name=name, day=day):
+                    self.assertEqual(price_limit_pct("600182.SH", name=name, trade_date=day), .05)
+        self.assertEqual(price_limit_pct("600001.SH", name="ST测试", trade_date="20261008"), .10)
+
+    def test_s_share_limit_blocks_falsely_assumed_open_fill(self) -> None:
+        rate = price_limit_pct("600182.SH", name="S佳通", trade_date="20180604")
+        self.assertEqual(limit_up_price(24.66, rate), 25.89)
+        self.assertFalse(fixed_open_buy_executable(pre_close=24.66, open_price=25.89, limit_pct=rate))
+
+    def test_bse_limits_round_inside_thirty_percent_boundary(self) -> None:
+        self.assertEqual(limit_up_price(2.85, .30), 3.70)
+        self.assertEqual(limit_down_price(3.92, .30), 2.75)
+        self.assertFalse(fixed_open_buy_executable(pre_close=2.85, open_price=3.70, limit_pct=.30))
+        self.assertFalse(fixed_close_sell_executable(pre_close=3.92, close_price=2.75, limit_pct=.30))
 
     def test_listing_no_limit_windows(self) -> None:
         self.assertIsNone(

@@ -108,6 +108,8 @@ CODE_FILES = [
     "src/equity_curve_stop.py",
     "src/five_year_research.py",
     "src/data_cleaner.py",
+    "src/market_rules.py",
+    "src/strategy_equity_ledger.py",
     "src/historical_limit_counts.py",
     "src/limit_source_quality.py",
     "src/equity_curve_stop_history.py",

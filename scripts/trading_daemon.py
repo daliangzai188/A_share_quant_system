@@ -13128,16 +13128,19 @@ def snapshot_realized_strategy_equity(signal_date: str) -> None:
             if snapshot.peak_equity > 0
             else 0.0
         )
-        logger().info(
-            "全策略净值账本：净值%.2f元，峰值%.2f元，已实现盈亏%.2f元，"
-            "新增完整交易%d笔，待补全%d笔，回撤%.2f%%。",
-            snapshot.equity,
-            snapshot.peak_equity,
-            snapshot.realized_pnl,
-            snapshot.new_trade_count,
-            snapshot.pending_incomplete_trade_count,
-            drawdown * 100,
-        )
+        if not getattr(snapshot, "historical_coverage_ready", True):
+            logger().warning("全策略净值账本：历史覆盖未恢复，净值、峰值和回撤不可认证；保留待恢复快照。")
+        else:
+            logger().info(
+                "全策略净值账本：净值%.2f元，峰值%.2f元，已实现盈亏%.2f元，"
+                "新增完整交易%d笔，待补全%d笔，回撤%.2f%%。",
+                snapshot.equity,
+                snapshot.peak_equity,
+                snapshot.realized_pnl,
+                snapshot.new_trade_count,
+                snapshot.pending_incomplete_trade_count,
+                drawdown * 100,
+            )
         if snapshot.initialized_now:
             logger().warning(
                 "全策略净值账本已用一次券商总资产建立基线；后续只累计本系统完整平仓盈亏，"
@@ -13145,8 +13148,9 @@ def snapshot_realized_strategy_equity(signal_date: str) -> None:
             )
         if not snapshot.ledger_ready:
             logger().warning(
-                "全策略净值账本有待补全成交，账户级风险状态保持fail-closed：%s",
-                "、".join(snapshot.pending_trade_keys) or "未知",
+                "全策略净值账本未就绪，账户级风险状态保持fail-closed：%s；历史覆盖原因=%s",
+                "、".join(snapshot.pending_trade_keys) or snapshot.source,
+                "、".join(getattr(snapshot, "historical_coverage_reasons", ()) or ()) or "无",
             )
         _maybe_alert_ledger_incomplete(snapshot, cfg)
         _maybe_alert_strategy_drawdown(snapshot, drawdown, cfg)
@@ -13174,7 +13178,11 @@ def _maybe_alert_ledger_incomplete(snapshot: Any, cfg: dict[str, Any]) -> None:
         section.get("ledger_incomplete_state_path", "data/state/equity_ledger_pending_alert.json")
     )
     pending = sorted(str(key) for key in getattr(snapshot, "pending_trade_keys", ()) or ())
-    if not pending:
+    history_missing = not bool(getattr(snapshot, "historical_coverage_ready", True))
+    history_reasons = sorted(getattr(snapshot, "historical_coverage_reasons", ()) or ())
+    missing_previous = sorted(getattr(snapshot, "missing_previously_included_trade_keys", ()) or ())
+    missing_observed = sorted(getattr(snapshot, "missing_previously_observed_trade_keys", ()) or ())
+    if not pending and not history_missing:
         if state_path.exists():
             try:
                 state_path.unlink()
@@ -13185,20 +13193,43 @@ def _maybe_alert_ledger_incomplete(snapshot: Any, cfg: dict[str, Any]) -> None:
         state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
     except (OSError, ValueError):
         state = {}
-    if sorted(state.get("alerted_pending_trade_keys", [])) == pending:
+    if (sorted(state.get("alerted_pending_trade_keys", [])) == pending
+            and bool(state.get("alerted_history_missing", False)) == history_missing
+            and sorted(state.get("alerted_history_coverage_reasons", [])) == history_reasons
+            and sorted(state.get("alerted_missing_previously_included_trade_keys", [])) == missing_previous
+            and sorted(state.get("alerted_missing_previously_observed_trade_keys", [])) == missing_observed):
         return
-    body = (
-        f"基线日后有{len(pending)}笔交易缺真实卖出成交："
-        + "；".join(_describe_ledger_trade_key(key) for key in pending)
-        + "。回撤报警目前只按已确认的交易计算，实际回撤可能更大。"
-        "请把这些股票的券商成交记录截图发给Claude补录。"
-    )
-    if _notify("risk_drawdown", "⚠️ 净值账本缺成交，回撤报警暂时不准", body, level="timeSensitive"):
+    if history_missing:
+        reason_text = {
+            "BASELINE_NEWER_THAN_CONFIGURED_LEGACY_CUTOFF": "当前基线晚于旧系统基线，旧净值与成交未迁回",
+            "PREVIOUSLY_INCLUDED_TRADES_NOT_COMPLETE": "以前已计入的真实成交现在缺失或不完整",
+            "PREVIOUSLY_OBSERVED_TRADES_MISSING": "以前已发现的待补成交现在整行丢失",
+        }
+        body = "历史成交覆盖未恢复：" + "；".join(reason_text.get(x, x) for x in history_reasons)
+        if missing_previous:
+            body += "。缺失：" + "；".join(_describe_ledger_trade_key(x) for x in missing_previous)
+        if missing_observed:
+            body += "。丢失待补成交：" + "；".join(_describe_ledger_trade_key(x) for x in missing_observed)
+        body += "。待补全0笔或当前回撤0%都不能证明历史完整；需要恢复原账本与完整券商成交后再认证回撤。"
+        title = "⚠️ 历史净值账本未恢复，回撤暂不可认证"
+    else:
+        body = (
+            f"基线日后有{len(pending)}笔交易缺真实卖出成交："
+            + "；".join(_describe_ledger_trade_key(key) for key in pending)
+            + "。回撤报警目前只按已确认的交易计算，实际回撤可能更大。"
+            "请把这些股票的券商成交记录截图发给Claude补录。"
+        )
+        title = "⚠️ 净值账本缺成交，回撤报警暂时不准"
+    if _notify("risk_drawdown", title, body, level="timeSensitive"):
         mkdir_p(state_path.parent)
         state_path.write_text(
             json.dumps(
                 {
                     "alerted_pending_trade_keys": pending,
+                    "alerted_history_missing": history_missing,
+                    "alerted_history_coverage_reasons": history_reasons,
+                    "alerted_missing_previously_included_trade_keys": missing_previous,
+                    "alerted_missing_previously_observed_trade_keys": missing_observed,
                     "alerted_at": now_beijing().strftime("%Y-%m-%d %H:%M:%S"),
                 },
                 ensure_ascii=False,
@@ -13217,6 +13248,9 @@ def _maybe_alert_strategy_drawdown(snapshot: Any, drawdown: float, cfg: dict[str
 
     section = cfg.get("drawdown_alert", {}) or {}
     if not bool(section.get("enabled", False)):
+        return
+    # 缺少历史基线时数值不可认证；仅有待补成交时保留原有带缺口说明的报警。
+    if not bool(getattr(snapshot, "historical_coverage_ready", True)):
         return
     threshold = float(section.get("threshold", -0.30))
     if drawdown > threshold:

@@ -238,6 +238,116 @@ class RecomputedLedgerTests(unittest.TestCase):
         self._update()
         self.assertFalse(equity_ledger_requires_bootstrap(self.state))
 
+    def test_missing_old_ledger_cannot_silently_bootstrap_later_baseline(self) -> None:
+        self._write_summary([])
+        with self.assertRaisesRegex(ValueError, "拒绝"):
+            update_strategy_equity_ledger(
+                state_path=self.state, completion_summary_path=self.summary,
+                signal_date="20261008", config=self.CONFIG, bootstrap_equity=68907.78,
+            )
+        self.assertFalse(self.state.exists())
+
+    def test_new_machine_zero_trade_baseline_is_not_history_ready(self) -> None:
+        self.state.write_text(json.dumps({
+            "schema_version": 3, "baseline_equity": 68907.78,
+            "baseline_cutoff_entry_date": "20261006", "included_trade_keys": [],
+            "last_equity": 68907.78, "peak_equity": 68907.78,
+        }))
+        self._write_summary([])
+        snapshot = self._update()
+        self.assertFalse(snapshot.ledger_ready)
+        self.assertFalse(snapshot.historical_coverage_ready)
+        self.assertIn("BASELINE_NEWER_THAN_CONFIGURED_LEGACY_CUTOFF", snapshot.historical_coverage_reasons)
+        self.assertEqual(snapshot.pending_incomplete_trade_count, 0)
+
+    def test_loss_of_included_trade_preserves_last_verified_equity_and_peak(self) -> None:
+        self._write_v2([], last_equity=270_000)
+        self._write_summary([_row("20260810|600815.SH|D|20260810", "D", "20260810", "20260812", 3.6, 3.7, 61800)])
+        verified = self._update()
+        previous = json.loads(self.state.read_text())
+        self._write_summary([])
+        lost = self._update()
+        self.assertFalse(lost.ledger_ready)
+        self.assertEqual(lost.equity, verified.equity)
+        self.assertEqual(lost.peak_equity, verified.peak_equity)
+        self.assertEqual(json.loads(self.state.read_text())["included_trade_keys"], previous["included_trade_keys"])
+        self.assertEqual(lost.missing_previously_included_trade_keys, ("20260810|600815.SH|D|20260810",))
+
+    def test_restoring_missing_trade_clears_history_gap_without_rebaselining(self) -> None:
+        self._write_v2([], last_equity=270_000)
+        rows = [_row("20260810|600815.SH|D|20260810", "D", "20260810", "20260812", 3.6, 3.7, 61800)]
+        self._write_summary(rows)
+        original = self._update()
+        self._write_summary([])
+        self.assertFalse(self._update().ledger_ready)
+        self._write_summary(rows)
+        restored = self._update()
+        self.assertTrue(restored.ledger_ready)
+        self.assertTrue(restored.historical_coverage_ready)
+        self.assertEqual(restored.equity, original.equity)
+        self.assertEqual(restored.peak_equity, original.peak_equity)
+
+    def test_included_e2_alias_is_not_reported_as_a_missing_trade(self) -> None:
+        self._write_v2([], last_equity=270_000)
+        rows = [_row("20260811|001358.SZ|E2|20260810", "E2", "20260811", "20260812", 20, 21)]
+        self._write_summary(rows)
+        self._update()
+        rows[0]["trade_key"] = "20260811|001358.SZ|E|20260810"
+        rows[0]["strategy_leg"] = "E"
+        self._write_summary(rows)
+        self.assertTrue(self._update().ledger_ready)
+
+    def test_partial_history_loss_preserves_peak_and_original_trade_set(self) -> None:
+        self._write_v2([], last_equity=270_000)
+        rows = [
+            _row("20260810|600815.SH|D|20260810", "D", "20260810", "20260812", 3.6, 3.7),
+            _row("20260817|603118.SH|L|20260814", "L", "20260817", "20260818", 19.26, 18.91),
+        ]
+        self._write_summary(rows)
+        verified = self._update()
+        self._write_summary(rows[1:])
+        lost = self._update()
+        self.assertFalse(lost.ledger_ready)
+        self.assertEqual((lost.equity, lost.peak_equity), (verified.equity, verified.peak_equity))
+        self.assertEqual(json.loads(self.state.read_text())["included_trade_count"], 2)
+
+    def test_disappearing_pending_row_stays_blocked_until_restored(self) -> None:
+        self._write_v2([], last_equity=270_000)
+        key = "20260820|301211.SZ|N|20260819"
+        row = _row(key, "N", "20260820", "20260821", 14.5, 0.0)
+        self._write_summary([row])
+        self.assertFalse(self._update().ledger_ready)
+        self._write_summary([])
+        for _ in range(2):
+            lost = self._update()
+            self.assertFalse(lost.ledger_ready)
+            self.assertEqual(lost.missing_previously_observed_trade_keys, (key,))
+        row["exit_fill_amount"] = 12.43 * 1000
+        self._write_summary([row])
+        restored = self._update()
+        self.assertTrue(restored.ledger_ready)
+        self.assertEqual(restored.missing_previously_observed_trade_keys, ())
+
+    def test_legacy_post_baseline_missing_trade_refuses_migration_without_overwriting(self) -> None:
+        key = "20260820|301211.SZ|N|20260819"
+        self._write_v2([key], last_equity=260_000)
+        original = self.state.read_bytes()
+        self._write_summary([])
+        with self.assertRaisesRegex(ValueError, "拒绝迁移"):
+            self._update()
+        self.assertEqual(self.state.read_bytes(), original)
+
+    def test_corrupt_existing_ledger_cannot_rebase_legacy_account(self) -> None:
+        self.state.write_text('{"schema_version":', encoding="utf-8")
+        original = self.state.read_bytes()
+        self._write_summary([])
+        with self.assertRaisesRegex(ValueError, "拒绝"):
+            update_strategy_equity_ledger(
+                state_path=self.state, completion_summary_path=self.summary,
+                signal_date="20261009", config=self.CONFIG, bootstrap_equity=68907.78,
+            )
+        self.assertEqual(self.state.read_bytes(), original)
+
 
 if __name__ == "__main__":
     unittest.main()
