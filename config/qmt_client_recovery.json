@@ -1,0 +1,16 @@
+{
+  "enabled": true,
+  "login_mode": "native_only",
+  "preferred_login_server": {
+    "name": "国金QMT联通2",
+    "host": "114.28.170.219",
+    "port": 56001,
+    "verified_on": "2026-10-11",
+    "source": "QMT原生官方服务器列表；两次重启握手及原生账户登录通过"
+  },
+  "native_server_failover": true,
+  "check_interval_seconds": 30,
+  "retry_delays_seconds": [60, 180, 600, 1800],
+  "log_scan_bytes_per_check": 8388608,
+  "monitor_inner_bridge": true
+}

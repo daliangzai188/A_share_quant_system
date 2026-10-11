@@ -9,7 +9,7 @@ sys.path.insert(0, str(SCRIPTS))
 from qmt_client_guard import RecoveryState, choose_action, record_attempt, broker_online_from_log
 from qmt_win32_login import password_is_masked, same_field
 
-SETTINGS = dict(enabled=True, retry_delays_seconds=[60, 180, 600, 1800])
+SETTINGS = dict(enabled=True, retry_delays_seconds=[60, 180, 600, 1800], login_mode='local_credentials')
 
 
 class RecoveryTests(unittest.TestCase):

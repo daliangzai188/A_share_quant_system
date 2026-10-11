@@ -3,14 +3,16 @@
 """QMT 客户端守护。仅拉起客户端和普通登录，不操作交易程序或委托。
 
 Windows: python qmt_client_guard.py --install --project C:\\A_System
-凭据由 --configure 弹出的本机窗口加密保存，绝不经过参数、日志或同步目录。
+默认沿用 QMT 原生登录，不额外保存密码。旧凭据后端必须明确选择才启用。
 """
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 import json
+import hashlib
+import math
 import logging
 from logging.handlers import RotatingFileHandler
 import os
@@ -59,6 +61,7 @@ class RecoveryState:
     next_attempt: float = 0
     password_error: bool = False
     credential_version: int = 0
+    connection: dict = field(default_factory=dict)
 
 
 def choose_action(observed, state, now, settings):
@@ -96,6 +99,8 @@ def choose_action(observed, state, now, settings):
         return "window_unverified"
     if observed.get("captcha"):
         return "waiting_captcha"
+    if settings.get("login_mode", "native_only") == "native_only":
+        return "waiting_native_login"
     if not observed.get("credentials_ready"):
         return "waiting_credentials"
     if not observed.get("controls_supported"):
@@ -115,38 +120,182 @@ def validate_settings(settings):
         raise ValueError("Only the full QMT XtItClient.exe is supported")
     interval = float(settings.get("check_interval_seconds", 30))
     delays = settings.get("retry_delays_seconds", [])
-    if not 10 <= interval <= 300 or not delays or any(float(x) < 60 for x in delays):
+    if (not isinstance(settings.get("enabled"), bool) or not 10 <= interval <= 300
+            or not isinstance(delays, list) or not delays
+            or any(not math.isfinite(float(x)) or not 60 <= float(x) <= 86400 for x in delays)):
         raise ValueError("Invalid recovery intervals")
     if not settings.get("project_root"):
         raise ValueError("project_root is required")
+    if settings.get("login_mode", "native_only") not in ("native_only", "local_credentials"):
+        raise ValueError("Invalid login mode")
+    budget = int(settings.get("log_scan_bytes_per_check", 8 * 1024 * 1024))
+    if not 65536 <= budget <= 64 * 1024 * 1024:
+        raise ValueError("Invalid log scan budget")
+    preferred = settings.get("preferred_login_server", {})
+    if preferred and (not isinstance(preferred, dict)
+                      or not re.fullmatch(r"[a-zA-Z0-9.:[\]-]+", str(preferred.get("host", "")))
+                      or not 1 <= int(preferred.get("port", 0)) <= 65535):
+        raise ValueError("Invalid preferred login server")
     return settings
 
 
-def broker_online_from_log(qmt_root, started_at):
-    """读取最近会话状态，脱机成功和 TCP 连通不算登录。仅返回布尔值。"""
-    latest = []
-    current = datetime.now(BEIJING).date()
-    for day in (current - timedelta(days=1), current):
-        log = Path(qmt_root) / "userdata" / "log" / ("XtClient_" + day.strftime("%Y%m%d") + ".log")
+_LOG_STAMP = re.compile(r"(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:[,.]\d{1,6})?)")
+
+
+def decode_log(raw):
+    try:
+        return raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return raw.decode("gb18030", errors="replace")
+
+
+def parse_connection_event(line, started_at, now, login_port=56001):
+    """只返回公开连接字段；Qt statusNow 与旧 status 兼容，不保存日志正文。"""
+    stamp = _LOG_STAMP.search(line)
+    if not stamp:
+        return None
+    try:
+        at = datetime.fromisoformat(stamp.group(1).replace(",", ".")).replace(tzinfo=BEIJING).timestamp()
+    except ValueError:
+        return None
+    if at < float(started_at) or at > now + 5:
+        return None
+    status = re.search(r"\bCProxyClient::slot_loginStatus\][^\r\n]*?\bstatusNow\s*=\s*(\d+)", line)
+    if not status:
+        status = re.search(r"\b(?:onRelogin|onUserStatus)\b[^\r\n]*?\bstatus\s*[:=]\s*(\d+)", line)
+    if status:
+        return dict(at=at, status=int(status.group(1)), source="session_status")
+    remote = re.search(r"\bremote[ _]addr\s*[:=]\s*(\[[0-9a-fA-F:]+\]|[a-zA-Z0-9.-]+):(\d+)\b", line)
+    if remote and int(remote.group(2)) == int(login_port):
+        endpoint = dict(host=remote.group(1).strip("[]"), port=int(remote.group(2)))
+        if re.search(r"\[(?:handleRecvData|(?:\w+::)*onDisconnected)\]", line):
+            return dict(at=at, status=22, source="login_connection_lost", endpoint=endpoint)
+        if re.search(r"\[(?:\w+::)*onConnected\]", line):
+            # TCP 成功只确认线路，不得把账户标记在线。
+            return dict(at=at, status=None, source="login_tcp_connected", endpoint=endpoint)
+    return None
+
+
+def connection_from_log(qmt_root, started_at, cache, *, session_id="", now=None,
+                        scan_budget=8 * 1024 * 1024, login_port=56001):
+    """增量读取，持久化游标；重启、截断、轮转均重新验证，预算未扫完时不报在线。
+
+    日志的十六进制字段是线程字段，不用它冒充 PID。会话绑定来自独立窗口观察。
+    """
+    now = time.time() if now is None else float(now)
+    start = float(started_at)
+    if not math.isfinite(start) or start <= 0 or start > now + 5:
+        cache.clear()
+        return dict(online=False, state="unverified", caught_up=False)
+    key = [str(session_id), start]
+    if cache.get("session") != key:
+        cache.clear()
+        cache.update(session=key, files={}, latest=None, endpoint=None)
+    current = datetime.fromtimestamp(now, BEIJING).date()
+    paths = [Path(qmt_root) / "userdata" / "log" / ("XtClient_" + day.strftime("%Y%m%d") + ".log")
+             for day in (current - timedelta(days=1), current)]
+    caught_up = True
+    budget = int(scan_budget)
+    for path in paths:
+        name = path.name
+        previous = cache["files"].get(name, {})
         try:
-            with log.open("rb") as stream:
-                stream.seek(max(0, log.stat().st_size - 262144))
-                lines = stream.read().decode("utf-8", errors="replace").splitlines()
+            with path.open("rb") as stream:
+                stat = os.fstat(stream.fileno())
+                identity = [stat.st_dev, stat.st_ino]
+                offset = int(previous.get("offset", 0))
+                rotated = bool(previous and (previous.get("identity") != identity or stat.st_size < offset))
+                if offset and not rotated:
+                    stream.seek(max(0, offset - 64))
+                    anchor = hashlib.sha256(stream.read(min(64, offset))).hexdigest()
+                    rotated = anchor != previous.get("anchor")
+                if rotated:
+                    # 老文件里的成功不能盖住新文件尚未读取的断线。
+                    cache["latest"] = None
+                    cache["endpoint"] = None
+                    offset = 0
+                if budget <= 0 and stat.st_size > offset:
+                    caught_up = False
+                    continue
+                stream.seek(offset)
+                chunk = stream.read(max(0, budget))
+                if offset + len(chunk) < stat.st_size or (chunk and not chunk.endswith(b"\n")):
+                    end = chunk.rfind(b"\n") + 1
+                    chunk = chunk[:end]
+                budget -= len(chunk)
+                for line in decode_log(chunk).splitlines():
+                    event = parse_connection_event(line, start, now, login_port)
+                    if event is None:
+                        continue
+                    if "endpoint" in event:
+                        cache["endpoint"] = event["endpoint"]
+                    if "status" in event and (not cache["latest"] or event["at"] >= cache["latest"]["at"]):
+                        cache["latest"] = {k: event[k] for k in ("at", "status", "source")}
+                offset += len(chunk)
+                stream.seek(max(0, offset - 64))
+                cache["files"][name] = dict(identity=identity, offset=offset,
+                    anchor=hashlib.sha256(stream.read(min(64, offset))).hexdigest())
+                if offset < os.fstat(stream.fileno()).st_size:
+                    caught_up = False
+        except FileNotFoundError:
+            if previous:
+                cache["latest"] = None
+                cache["endpoint"] = None
+                cache["files"].pop(name, None)
         except OSError:
-            continue
-        for line in lines:
-            stamp = re.search(r"(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})", line)
-            status = re.search(r"(?:onRelogin|onUserStatus)[^\r\n]*?status\s*[:=]\s*(\d+)", line)
-            if not stamp or not status:
-                continue
-            try:
-                at = datetime.fromisoformat(stamp.group(1)).replace(tzinfo=BEIJING).timestamp()
-            except ValueError:
-                continue
-            if at >= float(started_at):
-                latest.append((at, int(status.group(1))))
-    # 12: 在线；22: 断开。没有正面证据时保持“未验证”。
-    return bool(latest and max(enumerate(latest), key=lambda item: (item[1][0], item[0]))[1][1] == 12)
+            caught_up = False
+    cache["files"] = {p.name: cache["files"][p.name] for p in paths if p.name in cache["files"]}
+    latest = cache.get("latest") or {}
+    online = bool(caught_up and latest.get("status") == 12)
+    return dict(online=online, state="online" if online else
+                "offline" if caught_up and latest.get("status") is not None else "unverified",
+                caught_up=caught_up, last_status=latest.get("status"),
+                last_status_at=latest.get("at"), source=latest.get("source"),
+                endpoint=cache.get("endpoint"))
+
+
+def broker_online_from_log(qmt_root, started_at):
+    """兼容旧调用者；没有本次会话的明确在线事件就返回 False。"""
+    return connection_from_log(qmt_root, started_at, {})["online"]
+
+
+def inner_bridge_health(settings):
+    """只读验签心跳，不连接柜台、不写 RPC、不启动模型或业务进程。"""
+    if not settings.get("monitor_inner_bridge", True):
+        return dict(state="not_monitored", healthy=False)
+    try:
+        project = str(Path(settings["project_root"]))
+        if project not in sys.path:
+            sys.path.insert(0, project)
+        from qmt_inner.protocol import FileClient, load_settings
+        from qmt_inner.engine import ENGINE_REVISION
+        hb = FileClient(load_settings()).heartbeat()
+        if hb.get("engine_revision") != ENGINE_REVISION or not hb.get("instance"):
+            return dict(state="revision_unverified", healthy=False)
+        return dict(state="heartbeat_verified", healthy=True, mode=hb.get("mode", ""))
+    except FileNotFoundError:
+        return dict(state="not_configured_or_not_running", healthy=False)
+    except Exception as exc:
+        # 不回显配置、token、账户或任意第三方异常正文。
+        return dict(state="heartbeat_unavailable", healthy=False, error_type=type(exc).__name__)
+
+
+def status_payload(observed, state, settings, action, now=None):
+    connection = observed.get("connection", {})
+    preferred = settings.get("preferred_login_server", {})
+    actual = connection.get("endpoint") or {}
+    endpoint_match = (actual.get("host") == preferred.get("host")
+                      and actual.get("port") == preferred.get("port")) if actual and preferred else None
+    return dict(time=datetime.fromtimestamp(time.time() if now is None else now, BEIJING).isoformat(),
+                pid=os.getpid(), enabled=settings["enabled"], state=action,
+                client_pid=observed.get("pid"), broker_online=bool(observed.get("broker_online")),
+                next_attempt_at=state.next_attempt, attempts=state.failures,
+                manual_stop=bool(observed.get("manual_stop")), sends_orders=False,
+                login_mode=settings.get("login_mode", "native_only"),
+                preferred_login_server=preferred, connection=connection,
+                endpoint_matches_preferred=endpoint_match,
+                inner_bridge=observed.get("inner_bridge", {}), starts_trading_daemon=False,
+                requires_business_verification=True)
 
 
 def helper(home, settings, action="inspect"):
@@ -161,22 +310,27 @@ def helper(home, settings, action="inspect"):
     return json.loads(result.stdout.strip().splitlines()[-1])
 
 
-def observe(home, settings):
+def observe(home, settings, state=None):
     observed = helper(home, settings)
     observed["manual_stop"] = (Path(settings["project_root"]) / ".manual_stop.json").exists()
     credential = home / "credentials.json"
-    observed["credentials_ready"] = credential.is_file()
-    observed["credential_version"] = credential.stat().st_mtime_ns if credential.is_file() else 0
-    observed["broker_online"] = bool(
-        observed.get("kind") == "main" and broker_online_from_log(
-            Path(settings["qmt_exe"]).parent.parent, observed.get("started_at", time.time()))
-    )
+    local_login = settings.get("login_mode", "native_only") == "local_credentials"
+    observed["credentials_ready"] = local_login and credential.is_file()
+    observed["credential_version"] = credential.stat().st_mtime_ns if observed["credentials_ready"] else 0
+    state = state if state is not None else RecoveryState()
+    observed["connection"] = connection_from_log(
+        Path(settings["qmt_exe"]).parent.parent, observed.get("started_at", time.time()),
+        state.connection, session_id=str(observed.get("pid", "")),
+        scan_budget=settings.get("log_scan_bytes_per_check", 8 * 1024 * 1024),
+        login_port=settings.get("preferred_login_server", {}).get("port", 56001))
+    observed["broker_online"] = bool(observed.get("kind") == "main" and observed["connection"]["online"])
+    observed["inner_bridge"] = inner_bridge_health(settings)
     # 只检查当前会话中明确的密码错误文字，既不输出整条日志也不抓取密码。
     log = Path(settings["qmt_exe"]).parent.parent / "userdata" / "log" / ("XtClient_" + datetime.now(BEIJING).strftime("%Y%m%d") + ".log")
     try:
         with log.open("rb") as stream:
             stream.seek(max(0, log.stat().st_size - 65536))
-            lines = stream.read().decode("utf-8", errors="replace").splitlines()
+            lines = decode_log(stream.read()).splitlines()
         for line in lines:
             if not re.search(r"密码错误|密码不正确|密码.{0,12}锁定|账户.{0,12}锁定", line):
                 continue
@@ -222,7 +376,7 @@ def run_guard(home):
     while True:
         settings = validate_settings(json.loads((home / "config.json").read_text(encoding="utf-8-sig")))
         try:
-            observed = observe(home, settings)
+            observed = observe(home, settings, state)
         except Exception as exc:
             observed = {"kind": "observation_error", "error_type": type(exc).__name__}
         now = time.time()
@@ -251,11 +405,7 @@ def run_guard(home):
                 action = "attempt_failed"
                 logger.warning("attempt_failed type=%s", type(exc).__name__)
         atomic_json(home / "state.json", vars(state))
-        status = dict(time=datetime.now(BEIJING).isoformat(), pid=os.getpid(), enabled=settings["enabled"],
-                      state=action, client_pid=observed.get("pid"),
-                      broker_online=bool(observed.get("broker_online")),
-                      next_attempt_at=state.next_attempt, attempts=state.failures,
-                      manual_stop=bool(observed.get("manual_stop")), sends_orders=False)
+        status = status_payload(observed, state, settings, action, now)
         atomic_json(home / "status.json", status)
         if action != last_action:
             logger.info("state=%s client_pid=%s", action, observed.get("pid"))
@@ -265,8 +415,39 @@ def run_guard(home):
         time.sleep(float(settings["check_interval_seconds"]))
 
 
+def build_install_settings(project, exe, existing=None):
+    """重装保留用户的启停、退避、登录方式和线路；公开项目配置作为首次安装默认。"""
+    cfg = dict(enabled=True, check_interval_seconds=30,
+               retry_delays_seconds=[60, 180, 600, 1800], login_mode="native_only",
+               log_scan_bytes_per_check=8 * 1024 * 1024, monitor_inner_bridge=True)
+    profile_path = Path(project) / "config" / "qmt_client_recovery.json"
+    if profile_path.exists():
+        profile = json.loads(profile_path.read_text(encoding="utf-8-sig"))
+        cfg.update(profile)
+    if existing:
+        cfg.update(existing)
+    # 显式安装参数决定本机路径；不得沿用其他机器的旧目录。
+    cfg.update(project_root=str(Path(project).resolve()), qmt_exe=str(exe))
+    return validate_settings(cfg)
+
+
+def public_connection_profile(settings):
+    """只备份恢复参数和公开线路；不复制 QMT 账号配置、密码缓存或凭据。"""
+    names = ("preferred_login_server", "native_server_failover", "login_mode",
+             "check_interval_seconds", "retry_delays_seconds", "monitor_inner_bridge")
+    return {name: settings[name] for name in names if name in settings}
+
+
 def install(home, project, exe):
     home.mkdir(parents=True, exist_ok=True)
+    config_path = home / "config.json"
+    existing = json.loads(config_path.read_text(encoding="utf-8-sig")) if config_path.exists() else None
+    cfg = build_install_settings(project, exe, existing)
+    if not Path(exe).is_file():
+        raise FileNotFoundError("QMT executable was not found")
+    pythonw = Path(sys.executable).with_name("pythonw.exe")
+    if not pythonw.is_file():
+        raise FileNotFoundError("pythonw.exe was not found")
     # 只停止旧版客户端守护，避免替换文件后旧 Python 实例仍占单例锁。
     stopped = powershell(["-Command", "$ErrorActionPreference='Stop'; $task=Get-ScheduledTask -TaskName " + ps_quote(TASK_NAME) + " -ErrorAction SilentlyContinue; if($null -ne $task){ $task | Stop-ScheduledTask -ErrorAction Stop }; exit 0"], timeout=20)
     if stopped.returncode:
@@ -276,15 +457,10 @@ def install(home, project, exe):
         source, target = here / name, home / name
         if source.resolve() != target.resolve():
             shutil.copyfile(source, target)
-    cfg = {"enabled": True, "project_root": str(Path(project).resolve()), "qmt_exe": str(exe),
-           "check_interval_seconds": 30, "retry_delays_seconds": [60, 180, 600, 1800]}
-    validate_settings(cfg)
-    if not Path(exe).is_file():
-        raise FileNotFoundError("QMT executable was not found")
+    if config_path.exists():
+        shutil.copyfile(config_path, home / "config.before_install.json")
     atomic_json(home / "config.json", cfg)
-    pythonw = Path(sys.executable).with_name("pythonw.exe")
-    if not pythonw.is_file():
-        raise FileNotFoundError("pythonw.exe was not found")
+    atomic_json(home / "connection_profile.json", public_connection_profile(cfg))
     command = f"""
 $ErrorActionPreference='Stop'
 $user=[System.Security.Principal.WindowsIdentity]::GetCurrent().Name

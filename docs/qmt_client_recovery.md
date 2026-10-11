@@ -1,56 +1,83 @@
-# QMT 客户端自动恢复
+# QMT 客户端连接保存与自动恢复
 
-本次新增四个完整脚本，独立于策略与交易 daemon：
+2026-10-11 已通过原生 QMT 实际登录；新增守护修复仍在同步目录外验证，尚未发布。
 
-- `scripts/qmt_client_guard.py`：`choose_action` 决定恢复动作；`run_guard` 每30秒观察，进程退出时拉起完整 QMT，登录失败按60/180/600/1800秒退避；`install` 注册用户登录和08:00触发的常驻任务。单例锁、密码错误停试及重试时间跨重启保留。
-- `scripts/qmt_login_controls.ps1`：检查指定安装目录的客户端和登录控件；支持 UI Automation 时直接填写。国金当前版本 Qt 不暴露控件时，交给原生后端验证。
-- `scripts/qmt_win32_login.py`：`NativeLogin.login` 验证进程路径、前台、桌面、输入框边框、公开字符0显示为密码掩码之后，才输入本机凭据；`decrypt_credentials` 解密当前 Windows 用户的凭据。仅支持数字账号和数字密码。
-- `scripts/configure_qmt_credentials.ps1`：本机弹窗；由用户点击“加密保存”后，通过 DPAPI 保存到 `%LOCALAPPDATA%\A_System\qmt_client_recovery\credentials.json`。密码不写入同步目录、命令参数或日志；脚本不保存密码框截图。
+## 本次故障与已保存的线路
 
-未替换或删除原策略、交易 daemon、旧 keeper 代码。新增原因：原 `win_daemon_keeper.py` 仅恢复 Python daemon，不恢复 QMT 登录。
+原电信 `114.141.171.138:56001` 和电信2 `162.14.133.107:56001` 在请求登录参数、
+验证码或模块配置时出现 EOF/超时，未填写密码时也能复现，没有收到密码错误响应。
+切换原生官方服务器列表中的 **联通2 `114.28.170.219:56001`** 后，两次重启都取得
+实际协议回复。用户在 QMT 原生窗口输入密码后进入主界面，交易与行情均显示绿色。
+这说明本次失败发生在登录通信阶段；券商原服务器与中间链路的具体责任仍不能区分。
+未检索到能确认本次 QMT 维护的官方公告。
 
-安装核验中修正了新脚本的两处兼容问题：`qmt_client_guard.py` 的 `install` 在同名任务不存在时直接继续首次安装；`qmt_login_controls.ps1` 的原生后端版本识别兼容 Windows 返回的 `2,1,19,0`，同时保留点号版本格式。
+默认联通2已在原生通信设置保存，重启后再次确认；“交易服务器断线自动切换地址”
+保持开启。`config/qmt_client_recovery.json` 另存公开线路和恢复参数，安装后还会写入
+`%LOCALAPPDATA%\A_System\qmt_client_recovery\connection_profile.json`。
+公开配置不包含账号、密码、Token，也不复制客户端密码缓存。
 
-安装（在 Windows 使用现有 Python）：
+这个 JSON 记录已验证的原生设置和守护参数，**不会擅自重写 QMT 内部账号配置**。
+原生自动切线可合法转到其他官方线路；守护在状态中记录实际登录端点及是否与首选一致，
+不会为强制首选而断开一个已经在线的会话。
 
-```powershell
-& "$env:LOCALAPPDATA\Programs\Python\Python311\python.exe" C:\A_System\scripts\qmt_client_guard.py --install --project C:\A_System
-```
+## 掉线恢复流程
 
-第一次配置凭据（只在本机弹窗填写）：
-
-```powershell
-& "$env:LOCALAPPDATA\Programs\Python\Python311\python.exe" C:\A_System\scripts\qmt_client_guard.py --configure
-```
-
-检查和停用：
-
-```powershell
-& "$env:LOCALAPPDATA\Programs\Python\Python311\python.exe" C:\A_System\scripts\qmt_client_guard.py --status
-& "$env:LOCALAPPDATA\Programs\Python\Python311\python.exe" C:\A_System\scripts\qmt_client_guard.py --disable
-```
-
-验证：任务 `A_System_QmtClientGuard` 应 Running，私有 `status.json` 时间应持续推进。`client_launched_unverified` 和 `login_submitted_unverified` 仅表示尝试；`client_online` 还要求本次客户端启动之后最近会话日志明确 status=12。账户和模型最终可用性仍由现有业务程序核验，进程或本地端口不能作为账户在线证明。
-
-当前客户端已在验证码页时，状态为 `waiting_captcha`；验证码必须用户完成。锁屏无法自动输入密码。主窗口存在但券商离线时等待终端自身重连，不按未知原因强杀客户端。人工停机标记存在则暂停拉起和认证。服务端故障无法通过自动重启保证恢复。
-
-测试在同步目录外执行：14项状态机、日志会话隔离、掩码拒绝与字段变更测试通过；这些不是 Windows 登录实测。Windows 安装及运行结果如下。
-
-恢复后如需验证实盘接口，先小资金验证。
-
-
-2026-10-10 Windows 实机核验（北京时间）：
-
-| 核验项目 | 实际结果 |
+| 现场 | 动作与判定 |
 |---|---|
-| 安装命令 | `installed: true`，任务名 `A_System_QmtClientGuard` |
-| 任务计划程序 | `Running` |
-| 状态更新时间 | 02:00:12 → 02:01:57 → 02:06:03 → 02:07:13，守护 PID 10312 |
-| 四个安装脚本 | Windows 私有安装目录、同步项目目录、外部验证副本的 SHA-256 全部一致 |
-| 两个 PowerShell 脚本 | Windows 解析错误均为 0 |
-| QMT 控件检查 | 2,1,19,0；识别原生后端；当前有验证码 |
-| 本机凭据弹窗 | 已实际打开，等待用户填写并点击“加密保存” |
-| 目前客户端状态 | `waiting_captcha`，QMT PID 9268，`broker_online: false` |
-| 自动登录实测 | 尚未完成；截至 02:07:13，本机凭据文件尚未生成 |
+| 客户端主界面仍在、账户断线 | 保留客户端，等待 QMT 原生重连与官方线路切换；不强杀正在运行的交易终端 |
+| 客户端进程退出 | 每30秒检查，按60/180/600/1800秒退避拉起原安装目录的完整 QMT；重试不会因为守护重启而归零 |
+| QMT 自身能自动登录 | 沿用原生功能，收到本次会话 `statusNow=12` 或旧格式 `status:12` 才确认客户端在线 |
+| 原生密码框为空、需要验证码、桌面锁定 | 等待原生登录完成，不能承诺无凭据也能完成认证，不启动额外密码保存弹窗 |
+| 客户端在线、内置模型心跳过期 | 状态单独报告内置模型问题，不把客户端在线冒充自动交易可用 |
+| 人工停机标记存在 | 客户端守护保留运行，但暂停拉起和认证，不解除停机，不启动业务 daemon |
 
-结论：后台守护已经启用并持续运行；自动拉起和登录重试逻辑已部署。仍需在本机保存凭据并完成当前验证码，才能继续验证真实登录。以上证据不能代表客户端已经恢复在线。核验过程中只检查凭据文件是否存在，没有读取其内容。
+默认 `login_mode=native_only`，符合用户取消额外凭据工具后的选择。只有明确配置为
+`local_credentials` 才会使用历史 DPAPI 后端；存在旧凭据文件本身不会启用它。
+恢复程序从不发送下单或撤单，不启动自动交易，不绕过验证码。
+
+内置端 `A_SYSTEM_QMT_INNER` 的原生“终端启动后自动运行”仍需冷启动验收。当前
+内置模型心跳过期尚未恢复；本补丁只读验签心跳并准确报告，不用启动模型、清除人工
+停机或启动真实交易来制造通过结果。外部业务进程继续沿用原启动器、keeper及逐笔对账门禁。
+
+## 修复内容
+
+| 文件 / 方法 | 操作与原因 |
+|---|---|
+| `scripts/qmt_client_guard.py` / `parse_connection_event` | 新增 Qt `statusNow`、真实 `remote_addr` 格式和登录端口断线解析；旧代码漏判了本次真实在线状态 |
+| 同文件 / `connection_from_log`、`broker_online_from_log` | 替换固定256KB尾部扫描为可持久化游标的增量扫描；预算未扫完、文件截断/轮转、客户端重启时重新验证，避免旧成功掩盖新断线 |
+| 同文件 / `observe`、`inner_bridge_health`、`status_payload` | 分别记录客户端在线、首选线路匹配和经签名验证的内置心跳；不调用柜台或写入RPC请求 |
+| 同文件 / `choose_action` | 新增原生登录方式分支；取消额外保存工具后仍然能拉起客户端，账户认证交给原生 QMT |
+| 同文件 / `build_install_settings`、`install` | 安装前校验路径，保留启停、退避和线路设置，备份旧守护配置及公开线路，避免重装把成功设置覆盖 |
+| `config/qmt_client_recovery.json` | 新增已验证线路与恢复默认参数，账号密码不写入项目 |
+| `tests/test_qmt_client_connection_recovery.py` | 新增真实日志格式、断线覆盖、跨日、重启、部分扫描、轮转、原生登录与人工停机回归 |
+| `tests/test_qmt_client_guard.py` | 旧凭据后端测试显式选择 `local_credentials`；默认后端由新增测试确认不会接触旧凭据 |
+
+未修改 A/C/E/D 策略、正式交易配置、内置执行引擎、启动器、keeper、委托及恢复账本。
+
+## 发布后的安装与核对
+
+代码需先在同步目录外认证，通过后按 AGENTS.md 等用户“提交”再拷回工作区。
+拷回并同步完成后，在 Windows 更新已有守护：
+
+```powershell
+py -3.11 C:\A_System\scripts\qmt_client_guard.py --install --project C:\A_System
+py -3.11 C:\A_System\scripts\qmt_client_guard.py --status
+```
+
+安装只替换客户端守护，不停止 Python 业务程序或 QMT，也不弹密码配置窗口。
+核对任务 `A_System_QmtClientGuard`、`status.json` 时间持续推进，以及：
+
+- `preferred_login_server` 为已验证联通2；`connection.endpoint` 为当前日志所确认的线路；
+- 在线需 `broker_online=true`、`connection.caught_up=true`，拉起进程和TCP连通不算在线；
+- `inner_bridge.healthy` 独立于客户端在线，仍需原业务门禁核对账户与持仓；
+- 人工停机时应保持 `state=manual_stop`、`manual_stop=true`；
+- 所有状态均保持 `sends_orders=false`、`starts_trading_daemon=false`。
+
+## 验证口径与限制
+
+测试只在同步目录外执行，使用临时目录和模拟服务；真实连接日志另经只读重放。
+原生客户端实际登录已通过，新守护的状态机与日志修复经过回归；没有故意断开当前
+已登录客户端，也没有做自动登录冷启动或真实委托验收。因此不能宣称所有断线场景
+已在实机通过。原生密码为空或有验证码时仍可能需要本机完成认证。
+
+正式恢复资金接口后继续先模拟、小资金验证。
