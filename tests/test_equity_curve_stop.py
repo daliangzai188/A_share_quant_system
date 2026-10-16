@@ -380,6 +380,40 @@ class WeeklyReportTests(unittest.TestCase):
         self.assertIn("原地不动", body)
         self.assertIn("未触发", body)
 
+    def test_short_calendar_horizon_is_reported_without_claiming_120_days(self) -> None:
+        dates, nav = self._stopped_series()
+        future = pd.bdate_range("2026-10-19", periods=54).strftime("%Y%m%d").tolist()
+        payload = weekly_report_payload(
+            dates,
+            nav,
+            {"action_date": "20261019", "allowed": False},
+            self.settings,
+            ma_window=60,
+            lag=6,
+            future_open_dates=future,
+        )
+        body = format_weekly_report(payload)[1]
+        self.assertIsNone(payload["earliest_resume_if_flat"])
+        self.assertEqual(payload["resume_projection_checked_days"], 54)
+        self.assertEqual(payload["resume_projection_end_date"], future[-1])
+        self.assertFalse(payload["resume_projection_horizon_complete"])
+        self.assertIn(f"仅覆盖未来54个交易日（截至{future[-1]}）", body)
+        self.assertIn("更后日期未知", body)
+        self.assertNotIn("未来120个交易日内都不会恢复", body)
+
+    def test_missing_calendar_is_reported_as_unavailable(self) -> None:
+        dates, nav = self._stopped_series()
+        payload = weekly_report_payload(
+            dates,
+            nav,
+            {"action_date": "20261019", "allowed": False},
+            self.settings,
+            ma_window=60,
+            lag=6,
+        )
+        body = format_weekly_report(payload)[1]
+        self.assertIn("缺少未来交易日历，无法推演恢复日期", body)
+
     def test_failure_lines_use_frozen_thresholds(self) -> None:
         settings = load_weekly_report_settings(
             {

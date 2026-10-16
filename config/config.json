@@ -60,6 +60,7 @@
       "shadow_3m_fail": -0.241,
       "shadow_6m_fail": -0.194,
       "worst_stop_missed_gain": 0.269,
+      "resume_projection_max_days": 120,
       "regime_min_months": 5,
       "regime_buckets": [
         {

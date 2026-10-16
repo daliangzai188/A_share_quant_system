@@ -406,6 +406,7 @@ class WeeklyReportSettings:
     shadow_3m_fail: float
     shadow_6m_fail: float
     worst_stop_missed_gain: float
+    resume_projection_max_days: int
 
 
 def load_weekly_report_settings(config: Mapping[str, Any]) -> WeeklyReportSettings:
@@ -417,6 +418,7 @@ def load_weekly_report_settings(config: Mapping[str, Any]) -> WeeklyReportSettin
         shadow_3m_fail=float(section.get("shadow_3m_fail", -0.241)),
         shadow_6m_fail=float(section.get("shadow_6m_fail", -0.194)),
         worst_stop_missed_gain=float(section.get("worst_stop_missed_gain", 0.269)),
+        resume_projection_max_days=max(1, int(section.get("resume_projection_max_days", 120))),
     )
 
 
@@ -673,6 +675,19 @@ def weekly_report_payload(
     return_3m = _change(settings.window_3m)
     return_6m = _change(settings.window_6m)
     episode = current_stop_episode(labels, values, ma_window=ma_window, lag=lag)
+    projection_limit = max(1, int(settings.resume_projection_max_days))
+    projection_dates = list(future_open_dates)[:projection_limit]
+    flat_resume = (
+        earliest_resume_if_flat(
+            values,
+            projection_dates,
+            ma_window=ma_window,
+            lag=lag,
+            max_days=projection_limit,
+        )
+        if episode and projection_dates
+        else None
+    )
     lag_nav = decision.get("lag_nav")
     lag_ma = decision.get("lag_ma")
     gap_to_resume = (
@@ -707,11 +722,11 @@ def weekly_report_payload(
     return {
         "signal_date": last,
         "next_action_date": str(decision.get("action_date", "")),
-        "earliest_resume_if_flat": (
-            earliest_resume_if_flat(values, future_open_dates, ma_window=ma_window, lag=lag)
-            if episode and len(future_open_dates)
-            else None
-        ),
+        "earliest_resume_if_flat": flat_resume,
+        "resume_projection_checked_days": len(projection_dates),
+        "resume_projection_end_date": str(projection_dates[-1]) if projection_dates else None,
+        "resume_projection_max_days": projection_limit,
+        "resume_projection_horizon_complete": len(projection_dates) >= projection_limit,
         "allowed": bool(decision.get("allowed", False)),
         "week_return": _change_from(week_start),
         "month_to_date_return": _change_from(month_start),
@@ -758,11 +773,25 @@ def format_weekly_report(payload: Mapping[str, Any]) -> tuple[str, str]:
         if isinstance(gap, (int, float)):
             lines.append(f"恢复开仓还差：滞后6日口径的影子净值需再涨{float(gap):+.1%}。")
         flat = payload.get("earliest_resume_if_flat")
-        lines.append(
-            f"影子账若原地不动，最早{flat}恢复开仓；它上涨会提前，继续下跌会更晚。"
-            if flat
-            else "影子账若原地不动，未来120个交易日内都不会恢复开仓；要靠它自己涨回均线上方。"
-        )
+        if flat:
+            lines.append(f"影子账若原地不动，最早{flat}恢复开仓；它上涨会提前，继续下跌会更晚。")
+        else:
+            checked = int(payload.get("resume_projection_checked_days", 0) or 0)
+            end_date = payload.get("resume_projection_end_date")
+            horizon = int(payload.get("resume_projection_max_days", 120) or 120)
+            complete = bool(payload.get("resume_projection_horizon_complete", False))
+            if checked <= 0:
+                lines.append("影子账若原地不动，缺少未来交易日历，无法推演恢复日期。")
+            elif not complete:
+                lines.append(
+                    f"影子账若原地不动，现有交易日历仅覆盖未来{checked}个交易日"
+                    f"（截至{end_date}），期间未恢复；更后日期未知。"
+                )
+            else:
+                lines.append(
+                    f"影子账若原地不动，完整推演未来{horizon}个交易日仍未找到恢复日期；"
+                    "请核查影子净值和交易日历。"
+                )
     else:
         lines.append(f"当前允许开仓，下一个行动日{payload.get('next_action_date', '')}。")
     regime = payload.get("regime")
