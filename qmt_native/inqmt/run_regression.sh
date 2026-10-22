@@ -18,6 +18,7 @@ echo "== process kill";   (cd inqmt && $PY test_process_kill.py qn_core_full.py 
 echo "== daemon crash";   $PY inqmt/test_daemon_crash.py "$S" > "$O/daemon_crash.txt" 2>&1; grep -E "RESULT|restarted" "$O/daemon_crash.txt"
 echo "== state store";    (cd inqmt && $PY test_state_store.py qn_host.py > "../$O/state_store.txt" 2>&1); grep -E "^[ABCD]\.|RESULT" "$O/state_store.txt"
 echo "== save stall";     PYTHONIOENCODING=utf-8 $PY inqmt/test_save_stall.py "$S" > "$O/save_stall.txt" 2>&1; grep -E "RESULT|hang lasted|bridge-lost" "$O/save_stall.txt"
+echo "== gil yield";      PYTHONIOENCODING=utf-8 $PY inqmt/test_gil_yield.py "$S" > "$O/gil_yield.txt" 2>&1; grep -E "^[0-9]\.|RESULT" "$O/gil_yield.txt"
 echo "== tracebacks";     grep -c Traceback "$O"/*.txt
 [ -n "$SKIP_DRILL" ] && exit 0
 echo "== drill 10-13 15:25 -> 10-15 15:15"

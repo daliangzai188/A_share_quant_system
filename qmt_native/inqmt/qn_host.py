@@ -275,6 +275,8 @@ class QnHost(object):
         self.persist_lock = _hthr.RLock()
         self.persist_thread = None
         self.status_last = 0.0
+        self.bg_lag = []        # how late a background thread woke from a 20 ms sleep (seconds)
+        self.yield_ticks = [0, 0]  # [ticks that handed the lock to background threads, ticks]
         self.boot_pending = False
         self.boot_retry_at = 0.0
         if deploy.get('store_day_hours'):  # tests only
@@ -418,6 +420,8 @@ class QnHost(object):
         if self.deploy.get('cache_keeper', True):
             self.cache_thread = QnThread(target=self._cache_keeper_loop, name='a-system-cache', daemon=True)
             self.cache_thread.start()
+        self.probe_thread = QnThread(target=self._gil_probe_loop, name='a-system-gil-probe', daemon=True)
+        self.probe_thread.start()
 
     def _seed_vfs(self):
         # Deterministic mtimes for everything shipped in the strategy file, so the file
@@ -809,9 +813,46 @@ class QnHost(object):
             self._export_files()
             self._report_silent_scripts(now)
             leftover = self.end_leftover_threads()
-            self.log('status: daemon_alive=%s log_lines=%d data_jobs_waiting=%d leftover_threads=%d last="%s" daemon_at=%s' % (
+            self.log('status: daemon_alive=%s log_lines=%d data_jobs_waiting=%d leftover_threads=%d %s last="%s" daemon_at=%s' % (
                 bool(self.daemon_thread and self.daemon_thread.is_alive()), len(QN_LOG_LINES),
-                QN_NATIVE_SERVICE.waiting(), len(leftover), last[0][-120:], where))
+                QN_NATIVE_SERVICE.waiting(), len(leftover), self._gil_report(), last[0][-120:], where))
+        self._yield_to_background()
+
+    # In 模型交易 QMT keeps Python's lock (GIL) between our timer callbacks, so background threads
+    # only run while a callback runs. Measured 10-22 evening: the close pipeline ran 4-35x slower
+    # than in the editor's run mode while the QMT process idled (step 13 hit its 30-minute limit).
+    # While pipeline work is pending, each tick sleeps this long at its end, releasing the lock.
+    YIELD_SECONDS = 0.08
+    PROBE_SLEEP = 0.02
+
+    def _gil_probe_loop(self):
+        while not self.stopped and not QN_SHUTDOWN[0]:
+            t0 = _htime.monotonic()
+            _qn_sleep(self.PROBE_SLEEP)
+            self.bg_lag.append(_htime.monotonic() - t0 - self.PROBE_SLEEP)
+            if len(self.bg_lag) > 2000:
+                del self.bg_lag[:1000]
+
+    def _background_busy(self):
+        if QN_NATIVE_SERVICE.waiting():
+            return True
+        for proc in list(QN_PROCESSES.values()):
+            thread = getattr(proc, '_thread', None)
+            if thread is not None and thread.is_alive():
+                return True
+        return False
+
+    def _yield_to_background(self):
+        self.yield_ticks[1] += 1
+        if self._background_busy():
+            self.yield_ticks[0] += 1
+            _htime.sleep(self.YIELD_SECONDS)
+
+    def _gil_report(self):
+        lag, self.bg_lag = self.bg_lag, []
+        ticks, self.yield_ticks = self.yield_ticks, [0, 0]
+        avg = sum(lag) / len(lag) if lag else 0.0
+        return 'bg_lag=%dms/%dms n=%d yield=%d/%d' % (avg * 1000, max(lag or [0]) * 1000, len(lag), ticks[0], ticks[1])
 
     SILENT_SCRIPT_SECONDS = 300.0
 
