@@ -20,25 +20,23 @@
 3. 第⑬步：停手判定、停手/恢复开仓推送、计算失败推送、周报（每周最后一个交易日）、临时复核检查中的影子账失败线/正常行情连续不赚钱/实盘连续亏损，与生产相同（调用生产原函数）。临时复核中的“因子健康”（需 15 个月研究池和全市场历史日线）和“实盘与正式规则逐笔对账”（需 2019 年起全量重放）QMT 内算不了，改由 QMT 外的 `qmt_external_checks.py` 每个交易日 18:40 后用生产原代码计算（Tushare 采集 + 研究池重建 + 生产检查函数，实盘成交由 QMT 日志导出），命中按生产规则推送。周报里不含因子健康段落。
 4. QMT 重启后，行情类数据由守护进程自动用 QMT 数据补跑；持仓、委托意图、净值账本、停手状态等关键状态从 QMT 状态存储恢复。补跑要读最近 15 个交易日的全市场日线，QMT 本身不维护这份缓存，所以宿主里的“日线缓存维护”线程在 15:35–23:00、05:00–09:05 把前一交易日的全市场日线下载进 QMT 缓存（交易时段不运行；当天日线仍按 15:00 快照生成）。首次全量约 5000 只、每只约 1 秒；之后每天只补一天。
 
-## 切换步骤（周四收盘后，约 18:00 生产流水线完成后）
+## 切换步骤（2026-10-22 晚实际执行）
 
-1. 确认生产当天收盘流水线已完成（日志有“收盘流水线完成”），并且当前**无持仓、无未完成委托**。
-2. 上传生产最新状态和⑬数据集：在虚拟机运行 `upload_eq_dataset.ps1` 和 `state_inventory.ps1`。
-3. Mac 端生成实盘版：
-   - `build_eq_seed.py`：以周四为 D0，用生产数据集生成⑬种子；
-   - `build_qmt_strategy.py live <资金账号> 0 A_SYSTEM_QMT_NATIVE_live.py`（设置环境变量 `QN_EQ_SEED` 指向种子目录）；
-   - 本地加载测试通过后，同步到虚拟机。
-4. 停止旧系统和影子版：
-   - 虚拟机：`cd C:\A_System; py -3.11 stop_windows.py`（停止外部守护进程和 keeper，并登记人工停机，计划任务 `A_System_RuntimeGuard` 之后不会再拉起旧守护进程）；
-   - QMT：模型交易里停止 `A_SYSTEM_QMT_INNER`；
-   - QMT：策略编辑器里停止影子版（`A_SYSTEM_QMT_NATIVE_shadow`）。忘了停也不会出错：实盘版启动时会接管并结束影子版的全部线程，影子版从此不再保存状态。
-5. 启动新系统：QMT 新建 Python 策略，粘贴 `A_SYSTEM_QMT_NATIVE_live.py` 全部内容，编译；在**模型交易**里绑定账户 <资金账号>，运行。
-6. 推送转发（QMT 外）：计划任务 `A_System_QmtNotifyForwarder`（`install_notify_forwarder.ps1` 安装，登录自启、崩溃 1 分钟后重启）。确认 `C:\A_System\logs\qmt_notify_forwarder.log` 有 `bark=configured`；实盘版启动后出现 `export rebuilt: …trade_completion_summary.csv`，之后每个交易日 18:40 后出现 `external checks started`。
-7. 验收：QMT 日志出现 `[A_SYSTEM] started: mode=live`，守护进程日志依次出现账户门禁通过、交易恢复门禁通过；当晚自动补跑周四收盘流水线并生成周五计划，⑬判定与生产一致。
+1. 生产当天收盘流水线完成（日志“收盘流水线完成”），账户无持仓、无未完成委托。
+2. 虚拟机：`powershell -ep bypass -f C:\A_System\qmt_native_phase0\upload_for_live.ps1`（上传⑬数据集、原始数据、生产状态快照）。
+3. Mac：`sh prepare_live.sh <信号日>`（资金账号读 `local.env`）。必须看到：种子净值与生产 0 差异、打包环境内⑬与生产判定逐位一致、接管测试 PASS、已复制到虚拟机目录。
+4. 停影子版（编辑器“停止”）；虚拟机 `cd C:\A_System; py -3.11 stop_windows.py`（停守护进程与 keeper，登记人工停机）；QMT 模型交易里停 `A_SYSTEM`（`A_SYSTEM_QMT_INNER`）。
+5. 复用模型交易里原有的 `A_SYSTEM` 配置（已绑定资金账号、实盘模式）：
+   - 备份旧引导文件：`C:\QMT\GJQMT\python\A_SYSTEM_QMT_INNER.py` → `C:\A_System_backup\A_SYSTEM_QMT_INNER_20261022.py`；
+   - 模型研究 → `A_SYSTEM_QMT_INNER` → 编辑：全选、粘贴 `A_SYSTEM_QMT_NATIVE_live.py` 全部内容 → 编译（保存）。**编辑器里不要点“运行”**；
+   - 模型交易 → `A_SYSTEM` 行“操作”点 ▶ → 提示“已修改该策略，是否继续运行”点确定。
+6. 推送转发：计划任务 `A_System_QmtNotifyForwarder`（`install_notify_forwarder.ps1`）常驻。
+7. 验收：QMT 策略日志出现 `started: mode=live`、`[trade]start trading mode`、`[A_SYSTEM_EXPORT live]`；`C:\A_System\logs\qmt_notify_forwarder.log` 出现 `export rebuilt`、`forwarded …`（手机收到“✅ 程序与账户已恢复正常”）、18:40 后 `external checks started`；之后收盘流水线补跑完成、⑬判定与生产一致。
 
 ## 回退
 
-周五之前随时可以回退：在 QMT 停止新策略，重新运行 `A_SYSTEM_QMT_INNER`，执行 `py -3.11 start_qmt_inner_windows.py`。周五起旧桥接无法使用，只能停用新策略并改为人工处理。
+10-23 前：模型交易停 `A_SYSTEM`，把 `C:\A_System_backup\A_SYSTEM_QMT_INNER_20261022.py` 的内容粘回 `A_SYSTEM_QMT_INNER` 并编译，运行；删除 `C:\A_System\.manual_stop.json` 后执行 `py -3.11 start_qmt_inner_windows.py`。10-23 起旧桥接无法使用。
+重新部署实盘版（改代码后）：编辑 `A_SYSTEM_QMT_INNER` 粘贴新文件 → 编译 → 模型交易停止再 ▶。状态在 QMT 状态存储（`AS_QNL`）里，重启后自动恢复；新副本会接管并结束旧副本的线程。
 
 ## 安全设计
 
