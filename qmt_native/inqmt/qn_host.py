@@ -75,6 +75,8 @@ class QnStateStore(object):
         self.known = {}  # sha -> number of chunks already stored
         self.previous = {}
         self.slot = ''
+        self.pointer = ''
+        self.protected = set()  # bodies of a snapshot whose pointer write did not confirm
 
     def _get(self, key):
         result = self.getter(key)
@@ -145,26 +147,53 @@ class QnStateStore(object):
         slot = 'B' if self.slot == 'A' else 'A'
         chunks = self._put_text_chunks('%s_M%s' % (self.prefix, slot), packed)
         pointer = '%s:%d:%s' % (slot, chunks, _hsha.sha256(packed.encode('ascii')).hexdigest()[:32])
-        self._set(self.prefix + '_PTR', pointer)
-        if self._get(self.prefix + '_PTR') != pointer:
-            raise RuntimeError('state pointer did not read back')
+        bodies = set((v[0], v[3]) for v in manifest.values() if v[0])
+        if self.pointer:
+            # the snapshot in use until now stays loadable if the new one ever is not
+            self._set(self.prefix + '_PTRPREV', self.pointer)
+        try:
+            self._set(self.prefix + '_PTR', pointer)
+            if self._get(self.prefix + '_PTR') != pointer:
+                raise RuntimeError('state pointer did not read back')
+        except Exception:
+            self.protected |= bodies  # the pointer may already name this snapshot
+            raise
         self.slot = slot
-        live = set((v[0], v[3]) for v in manifest.values() if v[0]) | set(
-            (v[0], v[3]) for v in self.previous.values() if v[0])
-        for sha, chunks in list(self.known.items()):
-            if (sha, chunks) not in live:
-                for key in self._body_keys(sha, chunks):
+        self.pointer = pointer
+        older, self.previous = self.previous, manifest
+        live = bodies | self.protected | set((v[0], v[3]) for v in older.values() if v[0])
+        # Clear unreferenced bodies. Forget a body before clearing it: if a clear fails half way
+        # the body is written again the next time some file has that content.
+        for sha, n in list(self.known.items()):
+            if (sha, n) in live:
+                continue
+            del self.known[sha]
+            try:
+                for key in self._body_keys(sha, n):
                     self._set(key, '')
-                del self.known[sha]
-        self.previous = manifest
+            except Exception:
+                break  # clean-up only; leftovers are harmless
         return dict(meta_extra, inventory=len(meta_extra.get('inventory') or {}), files=len(manifest),
                     bodies=len(self.known), bytes=len(packed),
                     saved_at=_bj_now().strftime('%Y-%m-%d %H:%M:%S'))
 
     def load(self):
+        """The latest snapshot, or the one before it when the latest cannot be read completely."""
         pointer = self._get(self.prefix + '_PTR')
         if not pointer:
             return None, None
+        try:
+            return self._load_pointer(pointer)
+        except Exception as exc:
+            previous = self._get(self.prefix + '_PTRPREV')
+            if not previous or previous == pointer:
+                raise
+            self.known, self.previous = {}, {}
+            files, meta = self._load_pointer(previous)
+            meta['restored_from'] = 'previous snapshot (latest unreadable: %s: %s)' % (type(exc).__name__, exc)
+            return files, meta
+
+    def _load_pointer(self, pointer):
         slot, chunks, digest = pointer.split(':')
         packed = ''.join(self._get('%s_M%s_%d' % (self.prefix, slot, i)) for i in range(int(chunks)))
         if _hsha.sha256(packed.encode('ascii')).hexdigest()[:32] != digest:
@@ -179,6 +208,7 @@ class QnStateStore(object):
                 files[rel] = (self._get_body(sha, chunks), mtime, size)
                 self.known[sha] = chunks
         self.previous = meta['files']
+        self.pointer = pointer
         return files, dict((k, v) for k, v in meta.items() if k != 'files')
 
 
@@ -387,6 +417,8 @@ class QnHost(object):
                 inventory = meta.get('inventory') or {}
                 QN_VFS.prev_inventory = dict((QN_VFS.abspath(rel), tuple(v)) for rel, v in inventory.items())
                 self.persist_meta = dict(meta, inventory=len(inventory))
+                if meta.get('restored_from'):
+                    self.log('state restored from the %s' % meta['restored_from'])
         for key, value in self.deploy.get('config_overrides', {}).items():
             self._override_config(key, value)
         self.log('in-memory files ready: seed=%d restored=%d (state saved at %s)' % (
@@ -446,7 +478,17 @@ class QnHost(object):
 
     # ------------------------------------------------------------------ daemon thread
     def _start_daemon(self):
+        token = [False]
+
         def target():
+            try:
+                run()
+            finally:
+                # like a daemon process exiting: the threads and scripts it started end too,
+                # so a restarted daemon never runs beside its predecessor's pipeline
+                token[0] = True
+
+        def run():
             self.log('trading daemon thread starting (restart #%d)' % self.daemon_restarts)
             try:
                 QnLoader(self.codebase).run_main('scripts.trading_daemon', [], raise_on_exit=False)
@@ -459,6 +501,7 @@ class QnHost(object):
                 else:
                     self.log('trading daemon crashed:\n' + _htb.format_exc()[-3000:])
         self.daemon_thread = QnThread(target=target, name='a-system-daemon', daemon=True)
+        self.daemon_thread._qn_kill = tuple(self.daemon_thread._qn_kill) + (token,)
         self.daemon_thread.start()
 
     def _supervise(self):

@@ -1105,9 +1105,13 @@ def qn_is_stopped(exc):
 
 
 def qn_foreign_thread():
-    """True on a thread of this system that belongs to a stopped or replaced run."""
+    """True on a thread of this system that belongs to a stopped or replaced run, or to an
+    embedded script its parent has killed (a timed-out child process)."""
     t = _threading.current_thread()
-    return bool(getattr(t, '_qn_system', False)) and (QN_SHUTDOWN[0] or getattr(t, '_qn_run', None) != QN_RUN[0])
+    if not getattr(t, '_qn_system', False):
+        return False
+    kill = getattr(t, '_qn_kill', None) or ()
+    return bool(QN_SHUTDOWN[0] or getattr(t, '_qn_run', None) != QN_RUN[0] or any(k[0] for k in kill))
 
 
 def qn_check_alive():
@@ -1667,6 +1671,8 @@ class QnProcess(object):
         QN_PROCESSES[self.pid] = self
         self._thread = QnThread(target=self._run, args=(codebase, module, argv),
                                 name='qn-script-%s' % module.rsplit('.', 1)[-1], daemon=True)
+        self._kill_token = [False]  # shared with the threads this script starts
+        self._thread._qn_kill = tuple(self._thread._qn_kill) + (self._kill_token,)
         self._thread.start()
 
     def _emit(self, line):
@@ -1738,9 +1744,10 @@ class QnProcess(object):
         return self.read(), None
 
     def kill(self):
-        # A thread cannot be killed. The script keeps running to its end, but the caller
-        # sees the same result as a killed child: non-zero exit and output discarded.
+        # Like killing a child process: the script's threads end at their next checked wait
+        # (sleep, QMT data call, pipe read; at most 0.5 s) and its queued QMT calls are dropped.
         self.killed = True
+        self._kill_token[0] = True
         if not self._done.is_set():
             self.returncode = -9
 
@@ -2051,6 +2058,8 @@ class QnThread(_threading.Thread):
         _threading.Thread.__init__(self, *args, **kwargs)
         parent = _threading.current_thread()
         self._qn_run = getattr(parent, '_qn_run', None) if getattr(parent, '_qn_system', False) else QN_RUN[0]
+        # kill tokens of every owner up the chain (daemon thread, embedded script)
+        self._qn_kill = getattr(parent, '_qn_kill', None) or () if getattr(parent, '_qn_system', False) else ()
         self._qn_system = True
         QN_THREADS.append(self)
         if len(QN_THREADS) > 500:
@@ -2101,11 +2110,21 @@ class QnNativeService(object):
         box = {}
         with self._lock:
             self._jobs.append((fn, args, kwargs, done, box))
-        if not _qn_wait(done, timeout):
+        try:
+            finished = _qn_wait(done, timeout)
+        except BaseException:
+            self._drop(done)  # the caller is gone (stopped or killed): do not run its call later
+            raise
+        if not finished:
+            self._drop(done)
             raise RuntimeError('QMT data call timed out: %s' % getattr(fn, '__name__', fn))
         if 'error' in box:
             raise RuntimeError('QMT data call failed: %s: %s' % (getattr(fn, '__name__', fn), box['error']))
         return box['result']
+
+    def _drop(self, done):
+        with self._lock:
+            self._jobs = [job for job in self._jobs if job[3] is not done]
 
     def pump(self, budget_seconds=0.08):
         deadline = _time.time() + budget_seconds
