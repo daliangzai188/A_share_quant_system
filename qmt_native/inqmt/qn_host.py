@@ -77,9 +77,22 @@ class QnStateStore(object):
         self.slot = ''
         self.pointer = ''
         self.protected = set()  # bodies of a snapshot whose pointer write did not confirm
+        # A key-value call blocks QMT's whole Python until the trade server answers (up to about
+        # a minute when it is flaky). The caller reports each call's duration in
+        # last_call_seconds; during a save, one call slower than slow_limit gives the save up.
+        self.slow_limit = 0.0
+        self.last_call_seconds = 0.0
+        self.saving = False
+
+    def _check_slow(self, what):
+        if self.saving and self.slow_limit and self.last_call_seconds > self.slow_limit:
+            raise RuntimeError('%s took %.0fs (broker trade server slow); save given up' % (
+                what, self.last_call_seconds))
 
     def _get(self, key):
+        self.last_call_seconds = 0.0
         result = self.getter(key)
+        self._check_slow('get_py_key(%s)' % key)
         if isinstance(result, (tuple, list)):
             if len(result) == 3 and result[1] != 0:
                 message = str(result[2])
@@ -92,7 +105,9 @@ class QnStateStore(object):
         return result or ''
 
     def _set(self, key, value):
+        self.last_call_seconds = 0.0
         result = self.saver(key, value)
+        self._check_slow('save_py_key(%s)' % key)
         if isinstance(result, (tuple, list)) and len(result) >= 1 and result[0] not in (0, None):
             raise RuntimeError('save_py_key(%s, %d chars) rejected: %r' % (key, len(value), result))
         return result
@@ -134,6 +149,13 @@ class QnStateStore(object):
     def save(self, files, meta_extra):
         """files: {path: (bytes or None for a stub, mtime, size)}; meta_extra may carry an
         'inventory' {path: [mtime, size, sha]} of rebuilt files (no bodies)."""
+        self.saving = True
+        try:
+            return self._save(files, meta_extra)
+        finally:
+            self.saving = False
+
+    def _save(self, files, meta_extra):
         manifest = {}
         for rel, (data, mtime, size) in sorted(files.items()):
             if data is None:
@@ -224,6 +246,8 @@ class QnHost(object):
     STORE_DAY_START = 8
     STORE_DAY_END = 20
     STORE_BACKOFF_MAX = 1800.0
+    # every call blocks the QMT callback thread (and the engine's bridge heartbeat with it)
+    STORE_SLOW_CALL = 5.0
 
     def __init__(self, C, qmt_globals, deploy, modules, static_files, market=None, broker=None, store=None):
         self.C = C
@@ -236,6 +260,8 @@ class QnHost(object):
         self.market = market
         self.broker = broker
         self.store = store
+        if store is not None:
+            store.slow_limit = self.STORE_SLOW_CALL
         self.engine = None
         self.daemon_thread = None
         self.daemon_restarts = 0
@@ -444,7 +470,13 @@ class QnHost(object):
                         trade_calendar=QN_ROOT + '/data/raw/trade_calendar.csv',
                         manual_stop_path=QN_ROOT + '/.manual_stop.json', max_order_notional=0,
                         buy_fee_reserve_rate=0.001, minimum_fee_reserve=5, poll_interval_ms=self.PUMP_MS,
-                        request_timeout_seconds=8, query_timeout_seconds=20, heartbeat_max_age_seconds=5,
+                        # In one process the engine's heartbeat only stops while a QMT call blocks the
+                        # callback thread, and such a call (a broker key-value write while the trade
+                        # server is flaky) freezes every thread, the daemon too, for up to about a
+                        # minute. With the external bridge's 5 s the daemon then read the old heartbeat
+                        # as a lost bridge and pushed an alarm (10-22 19:07). A stopped engine still
+                        # shows within 90 s; a stopped strategy removes the heartbeat at once.
+                        request_timeout_seconds=8, query_timeout_seconds=20, heartbeat_max_age_seconds=90,
                         max_minute_subscriptions=50)
         QN_VFS.put_text('runtime/qmt_inner/config.json', _hjson.dumps(settings))
         QN_ENVIRON.update({'QMT_INNER_CONFIG': QN_ROOT + '/runtime/qmt_inner/config.json',
@@ -775,10 +807,38 @@ class QnHost(object):
             except Exception as exc:
                 where = 'stack unavailable: %s' % exc
             self._export_files()
+            self._report_silent_scripts(now)
             leftover = self.end_leftover_threads()
             self.log('status: daemon_alive=%s log_lines=%d data_jobs_waiting=%d leftover_threads=%d last="%s" daemon_at=%s' % (
                 bool(self.daemon_thread and self.daemon_thread.is_alive()), len(QN_LOG_LINES),
                 QN_NATIVE_SERVICE.waiting(), len(leftover), last[0][-120:], where))
+
+    SILENT_SCRIPT_SECONDS = 300.0
+
+    def _report_silent_scripts(self, now):
+        """A pipeline script that printed nothing for 5 minutes: log where its thread is (every
+        5 minutes while it lasts), so a hang shows its place in the QMT log (10-22 step 13 hung
+        without output or CPU until its 30-minute limit)."""
+        try:
+            import sys as _hsys
+            frames = _hsys._current_frames()
+            for proc in list(QN_PROCESSES.values()):
+                thread = getattr(proc, '_thread', None)
+                if thread is None or not thread.is_alive():
+                    continue
+                quiet = now - getattr(proc, 'last_output', now)
+                if quiet < self.SILENT_SCRIPT_SECONDS or now - getattr(proc, '_qn_reported', 0.0) < self.SILENT_SCRIPT_SECONDS:
+                    continue
+                proc._qn_reported = now
+                frame = frames.get(thread.ident)
+                stack = _htb.extract_stack(frame)[-12:] if frame is not None else []
+                where = ' <- '.join('%s:%s %s' % (f[0].replace('\\', '/').rsplit('/', 1)[-1], f[1], f[2])
+                                    for f in reversed(stack))
+                self.log('script %s silent for %ds (running %ds%s); at: %s' % (
+                    thread.name, quiet, now - getattr(proc, 'started', now), ', killed' if proc.killed else '',
+                    where or 'no frame'))
+        except Exception as exc:
+            self.log('silent-script report failed: %s' % exc)
 
     def callback(self, kind, value):
         if self.engine is not None:

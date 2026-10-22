@@ -1662,6 +1662,7 @@ class QnProcess(object):
         self.args = argv
         self.returncode = None
         self.killed = False
+        self.started = self.last_output = _time.time()
         self._text = text
         self._lines = _queue.Queue()
         self._done = _threading.Event()
@@ -1676,6 +1677,7 @@ class QnProcess(object):
         self._thread.start()
 
     def _emit(self, line):
+        self.last_output = _time.time()
         self._lines.put(line if self._text else (line + '\n').encode('utf-8'))
 
     def _run(self, codebase, module, argv):

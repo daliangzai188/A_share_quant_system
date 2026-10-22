@@ -126,11 +126,22 @@ def init(ContextInfo):
         import threading as _qn_th
         callback_thread = _qn_th.get_ident()
 
+        import time as _qn_tm
+
+        def _timed(name, args):
+            # time the broker call itself, not the wait for the callback thread
+            t0 = _qn_tm.time()
+            try:
+                return g[name](*args)
+            finally:
+                if store is not None:
+                    store.last_call_seconds = _qn_tm.time() - t0
+
         def _on_callback_thread(name, *args):
             # QMT's key-value API only works on the strategy callback thread
             if _qn_th.get_ident() == callback_thread:
-                return g[name](*args)
-            return QN_NATIVE_SERVICE.call(lambda C, gg: gg[name](*args), _timeout=60.0)
+                return _timed(name, args)
+            return QN_NATIVE_SERVICE.call(lambda C, gg: _timed(name, args), _timeout=60.0)
         store = QnStateStore(lambda k: _on_callback_thread('get_py_key', k),
                              lambda k, v: _on_callback_thread('save_py_key', k, v), prefix)
     host = QnHost(ContextInfo, g, deploy, QN_MODULES, QN_STATIC_FILES, broker=broker, store=store)

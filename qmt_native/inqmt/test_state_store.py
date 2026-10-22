@@ -3,7 +3,8 @@
 server, which drops connections):
   A. a clean-up interrupted half way, then a file returns to the cleared content: still readable;
   B. latest snapshot unreadable: load falls back to the snapshot before it;
-  C. pointer write not confirmed: that snapshot's bodies are never cleared.
+  C. pointer write not confirmed: that snapshot's bodies are never cleared;
+  D. one call slower than the limit gives the save up (QMT is frozen during such a call).
 
 Usage: python test_state_store.py HOST_PY   (default qn_host.py)
 """
@@ -103,6 +104,34 @@ def main():
     c_ok = bool(kv.data.get(b_key))
     print('C. unconfirmed pointer: its bodies kept:', c_ok)
     ok &= c_ok
+
+    kv = KV()
+    st = Store(kv.get, kv.save, 'T')
+    st.slow_limit = 5.0
+    st.save({'f': (A, 1.0, len(A))}, {})
+
+    def slow_pointer(key, value):
+        result = kv.save(key, value)
+        if key == 'T_PTR':
+            st.last_call_seconds = 12.0  # written, but the call hung: QMT was frozen meanwhile
+        return result
+    st.saver = slow_pointer
+    try:
+        st.save({'f': (B, 2.0, len(B))}, {})
+        given_up = False
+    except RuntimeError as exc:
+        given_up = 'given up' in str(exc)
+    st.saver = kv.save
+    C4 = blob(4)
+    st.save({'f': (C4, 3.0, len(C4))}, {})
+    reader = Store(lambda k: kv.get(k), kv.save, 'T')
+    reader.slow_limit = 5.0
+    reader.last_call_seconds = 30.0  # slow reads at start-up are waited for, not given up
+    files, meta = reader.load()
+    b_kept = bool(kv.data.get('T_F_%s_0' % hashlib.sha256(B).hexdigest()[:32]))
+    d_ok = given_up and files['f'][0] == C4 and b_kept
+    print('D. slow call gives the save up; next save and load fine; its bodies kept:', d_ok)
+    ok &= d_ok
     print('RESULT', 'PASS' if ok else 'FAIL')
 
 
