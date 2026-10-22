@@ -7,8 +7,10 @@
 #   * close-pipeline step 1 reads QMT data through QN_NATIVE_SERVICE on the callback thread;
 #   * state survives restarts through QMT's get_py_key/save_py_key (no files, no network).
 import base64 as _hb64
+import csv as _hcsv
 import datetime as _hdt
 import hashlib as _hsha
+import io as _hio
 import json as _hjson
 import os as _hos
 import re as _hre
@@ -225,6 +227,8 @@ class QnHost(object):
         self.persist_retry_at = 0.0
         self.persist_night_logged = ''
         self.exported = {}
+        self.cache_thread = None
+        self.cache_done = ''
 
     # ------------------------------------------------------------------ boot
     def log(self, text):
@@ -355,6 +359,9 @@ class QnHost(object):
         if self.store is not None:
             self.persist_thread = QnThread(target=self._persist_loop, name='a-system-state', daemon=True)
             self.persist_thread.start()
+        if self.deploy.get('cache_keeper', True):
+            self.cache_thread = QnThread(target=self._cache_keeper_loop, name='a-system-cache', daemon=True)
+            self.cache_thread.start()
 
     def _seed_vfs(self):
         # Deterministic mtimes for everything shipped in the strategy file, so the file
@@ -502,6 +509,62 @@ class QnHost(object):
             for i, chunk in enumerate(chunks):
                 print('[A_SYSTEM_EXPORT %s] %s %s %d/%d %s' % (mode, rel, ident, i + 1, len(chunks), chunk))
             self.exported[rel] = (sha, _htime.time())
+
+    # ------------------------------------------------------------------ QMT daily-bar cache
+    # QMT does not keep the whole market's daily history in its local cache by itself. The close
+    # pipeline reads 15 days of it after every QMT restart (the old system kept those files on
+    # disk), so the cache is kept current here: outside trading hours, every stock gets the
+    # previous trading day's bar. The current day is left alone: the pipeline builds it from the
+    # 15:00 snapshot, as validated.
+    CACHE_WINDOWS = (('0500', '0905'), ('1535', '2300'))
+    CACHE_HISTORY_DAYS = 80  # the collector reads ENSURE_DAYS + HISTORY_DAYS open days back
+
+    def _cache_allowed(self):
+        hm = _bj_now().strftime('%H%M')
+        return any(a <= hm < b for a, b in self.CACHE_WINDOWS)
+
+    def _cache_keeper_loop(self):
+        while not self.stopped and not QN_SHUTDOWN[0]:
+            try:
+                self._cache_keeper_pass()
+            except Exception as exc:
+                self.log('daily cache keeper: %s: %s' % (type(exc).__name__, exc))
+            for _ in range(120):  # ten minutes, in steps that notice a stop
+                if self.stopped or QN_SHUTDOWN[0]:
+                    return
+                _htime.sleep(5)
+
+    def _cache_keeper_pass(self):
+        if not self._cache_allowed():
+            return
+        text = QN_VFS.get_text('data/raw/trade_calendar.csv')
+        days = sorted(r['cal_date'] for r in _hcsv.DictReader(_hio.StringIO(text))
+                      if str(r.get('is_open', '')).strip() in ('1', '1.0'))
+        today = _bj_now().strftime('%Y%m%d')
+        past = [d for d in days if d < today]
+        if not past or self.cache_done == past[-1]:
+            return
+        target = past[-1]
+        start = days[max(0, days.index(target) - self.CACHE_HISTORY_DAYS)]
+        native = QnLoader(self.codebase).load('qn.native')
+        universe = QN_NATIVE_SERVICE.call(native.qmt_universe)
+        stale = []
+        for i in range(0, len(universe), 200):
+            part = universe[i:i + 200]
+            bars = QN_NATIVE_SERVICE.call(native.qmt_daily_bars, part, start, target)
+            stale.extend(c for c in part if not bars.get(c) or bars[c][-1]['date'] < target)
+        self.log('daily cache keeper: %d of %d stocks lack %s in QMT\'s cache' % (len(stale), len(universe), target))
+        t0 = _htime.time()
+        for n, code in enumerate(stale, 1):
+            if self.stopped or QN_SHUTDOWN[0] or not self._cache_allowed():
+                self.log('daily cache keeper: paused after %d of %d downloads' % (n - 1, len(stale)))
+                return
+            QN_NATIVE_SERVICE.call(native.qmt_download_daily, code, start, target)
+            if n % 500 == 0:
+                self.log('daily cache keeper: %d of %d downloaded (%.0fs)' % (n, len(stale), _htime.time() - t0))
+        self.cache_done = target
+        self.log('daily cache keeper: cache current through %s (%d downloads, %.0fs)' % (
+            target, len(stale), _htime.time() - t0))
 
     def _persist_inventory(self):
         out = {}

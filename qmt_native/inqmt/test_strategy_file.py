@@ -16,6 +16,7 @@ def main():
     t0 = time.time()
     exec(compile(open(path, encoding='gbk').read(), path, 'exec'), ns)
     ns['QN_ENVIRON']['QN_TEST_MISSING_TICKS_ARE_UNSEALED'] = '1'
+    ns['QN_DEPLOY']['cache_keeper'] = False
     ns['QN_DEPLOY']['debug_export_dir'] = os.environ.get('QN_TEST_EXPORT', ''); ns['QN_SQLITE_NATIVE_UPSERT'][0] = os.environ.get('QN_OLD_SQLITE') != '1'
     print('loaded %.1fs' % (time.time() - t0))
     ns['init'](C)

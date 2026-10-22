@@ -32,7 +32,7 @@ def main():
     g['get_py_key'] = lambda key: (kv.get(key, ''), 0, '')
     g['save_py_key'] = lambda key, value: kv.__setitem__(key, value)
     deploy = {'release': 'restart-test', 'account_id': '8880000001', 'mode': 'shadow', 'seed': rs.seed_files(),
-              'store_day_hours': [0, 24]}
+              'store_day_hours': [0, 24], 'cache_keeper': False}
     def boot():
         broker = ns['QnPaperBroker']('8880000001', 1000000.0, C.quote)
         store = ns['QnStateStore'](g['get_py_key'], g['save_py_key'])

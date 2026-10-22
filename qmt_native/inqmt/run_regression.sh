@@ -13,6 +13,7 @@ echo "== notify outbox";  (cd inqmt && PYTHONIOENCODING=utf-8 $PY test_notify_ou
 echo "== step 13 pushes"; (cd inqmt && PYTHONIOENCODING=utf-8 $PY test_eq_advisory.py qn_core_full.py > "../$O/eq_advisory.txt" 2>&1); grep -E "RESULT|equal|weekly" "$O/eq_advisory.txt"
 echo "== forwarder";       python3 inqmt/test_forwarder.py > "$O/forwarder.txt" 2>&1; grep -E "RESULT|identical" "$O/forwarder.txt"
 echo "== export";         $PY inqmt/test_export.py "$S" > "$O/export.txt" 2>&1; grep -E "RESULT|identical" "$O/export.txt"
+echo "== cache keeper";   $PY inqmt/test_cache_keeper.py "$S" > "$O/cache_keeper.txt" 2>&1; grep -E "RESULT|keeper downloads" "$O/cache_keeper.txt"
 echo "== tracebacks";     grep -c Traceback "$O"/*.txt
 [ -n "$SKIP_DRILL" ] && exit 0
 echo "== drill 10-13 15:25 -> 10-15 15:15"

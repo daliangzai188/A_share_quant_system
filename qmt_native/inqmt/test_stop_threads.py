@@ -19,6 +19,7 @@ def load(path, kv):
     ns['QN_ENVIRON']['QN_TEST_MISSING_TICKS_ARE_UNSEALED'] = '1'
     ns['QN_DEPLOY']['debug_export_dir'] = ''
     ns['QN_DEPLOY']['store_day_hours'] = [0, 24]
+    ns['QN_DEPLOY']['cache_keeper'] = False  # its own test: test_cache_keeper.py
     return ns
 
 
