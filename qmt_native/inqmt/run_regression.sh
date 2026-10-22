@@ -1,0 +1,21 @@
+#!/bin/sh
+# Full regression of the packaged QMT-native strategy (QMT's Python 3.6 / pandas 0.22).
+# Usage: sh inqmt/run_regression.sh SHADOW_FILE LIVE_FILE OUT_DIR
+cd "$(dirname "$0")/.."
+PY="arch -x86_64 $(pwd)/tools/qmt36/bin/python"
+S=$1; L=$2; O=$3; mkdir -p "$O"
+export QN_OLD_SQLITE=1
+echo "== restart";        $PY inqmt/test_restart.py qn_core_full.py 90 > "$O/restart.txt" 2>&1; grep -E "identity equal|rebuilt|persistent files" "$O/restart.txt"
+echo "== stop threads";   $PY inqmt/test_stop_threads.py "$S" "$S" 40 45 > "$O/stop.txt" 2>&1; grep RESULT "$O/stop.txt"
+echo "== takeover";       $PY inqmt/test_takeover.py "$S" "$L" > "$O/takeover.txt" 2>&1; grep RESULT "$O/takeover.txt"
+echo "== night store";    $PY inqmt/test_night_store.py "$S" > "$O/night.txt" 2>&1; grep RESULT "$O/night.txt"
+echo "== notify outbox";  (cd inqmt && PYTHONIOENCODING=utf-8 $PY test_notify_outbox.py qn_core_full.py > "../$O/notify.txt" 2>&1); grep RESULT "$O/notify.txt"
+echo "== step 13 pushes"; (cd inqmt && PYTHONIOENCODING=utf-8 $PY test_eq_advisory.py qn_core_full.py > "../$O/eq_advisory.txt" 2>&1); grep -E "RESULT|equal|weekly" "$O/eq_advisory.txt"
+echo "== forwarder";       python3 inqmt/test_forwarder.py > "$O/forwarder.txt" 2>&1; grep -E "RESULT|identical" "$O/forwarder.txt"
+echo "== export";         $PY inqmt/test_export.py "$S" > "$O/export.txt" 2>&1; grep -E "RESULT|identical" "$O/export.txt"
+echo "== tracebacks";     grep -c Traceback "$O"/*.txt
+[ -n "$SKIP_DRILL" ] && exit 0
+echo "== drill 10-13 15:25 -> 10-15 15:15"
+rm -rf "$O/vday"; mkdir -p "$O/vday"
+$PY inqmt/run_vday.py "$S" 202610131525 202610151515 60 "$O/vday" > "$O/vday.log" 2>&1
+echo "drill exit $?"; tail -2 "$O/vday.log"

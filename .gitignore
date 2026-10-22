@@ -189,3 +189,7 @@ data/raw/kpl_limit_list/*
 
 # 2026-10-10仅策略复核的具名冻结证据，不放行其他运行报表。
 !reports/strategy_review_20261010/*.csv
+
+# QMT 原生版：生成的 QMT 策略文件内含资金账号和生产状态（规则第 11 条），只在本机生成，不进 Git
+qmt_native/inqmt/A_SYSTEM_QMT_NATIVE_*.py
+qmt_native_phase0/A_SYSTEM_QMT_NATIVE_*.py

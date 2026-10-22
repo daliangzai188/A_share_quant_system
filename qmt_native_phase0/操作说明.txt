@@ -1,0 +1,20 @@
+阶段0：QMT 原生数据导出（只读，不下单）
+
+用途：趁 10月23日 前 QMT 内置 Python 还能写文件，把 QMT 自己的逐笔、日线、股本数据导出来，
+和现在用的 Tushare 数据逐只对比，确定新系统在 QMT 里怎么算涨停字段。
+
+这个脚本：
+- 只读行情数据，不调用任何账户、下单、撤单接口，脚本里没有 set_account。
+- 交易时段 09:00-15:30 自动暂停，不影响正在运行的正式 A_SYSTEM 模型；收盘后自动继续。
+- 中途停了重开会接着跑，已导出的不会重复。
+- 结果写到 C:\A_System\qmt_native_phase0\out\，会自动同步回 Mac。
+
+操作（只需做一次）：
+1. 在虚拟机里用「记事本」打开 C:\A_System\qmt_native_phase0\PHASE0_EXPORT.py，
+   Ctrl+A 全选、Ctrl+C 复制（在虚拟机内部复制，不要从 Mac 粘贴过去）。
+2. 打开 QMT → 模型研究 → 新建 Python 策略，Ctrl+V 粘贴，保存，名字填 PHASE0_EXPORT。
+3. 点「运行」（不要点「回测」）。周期选日线，股票随便选一只（如 600000）。不需要选资金账号。
+4. 日志里出现 PHASE0 STARTED 就可以不管了。
+5. 日志出现 PHASE0 COMPLETE 表示完成（非交易时段约 30-60 分钟），之后点停止即可。
+
+进度：C:\A_System\qmt_native_phase0\out\progress.json（Mac 端会自动看到）。

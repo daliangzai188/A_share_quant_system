@@ -1,0 +1,22 @@
+# Everything that is code is tracked. Left out: data sets and Python environments (outside the
+# allow-list below), test outputs, and files that hold the broker account or production state.
+/*
+!/.gitignore
+!/*.py
+!/*.sh
+!/*.md
+!/inqmt/
+/inqmt/*
+!/inqmt/*.py
+!/inqmt/*.sh
+!/inqmt/replacements/
+!/vm_scripts/
+# QMT strategy files embed the broker account and production state (AGENTS.md rule 11):
+# rebuild them with build_qmt_strategy.py / prepare_live.sh, never commit them
+/inqmt/A_SYSTEM_QMT_NATIVE_*.py
+# test builds and an old build kept only as a test fixture
+/inqmt/test_live_tmp.py
+/inqmt/old_*.py
+# local secrets (account id, paper cash) for prepare_live.sh
+/local.env
+__pycache__/
