@@ -69,7 +69,7 @@ mkdir -p "$SEED/data/processed" "$SEED/data/raw/stock_basic" "$SEED/data/state" 
 cp "$W/state/shadow_nav_latest.csv" "$SEED/reports/equity_curve_stop/"
 cp "$W/state/equity_curve_stop_decision.json" "$SEED/data/state/"
 cp "$REPO"/data/processed/fill_rate_*.csv "$SEED/data/processed/"
-cp "$W/raw/data/processed/stock_theme_reference.csv" "$SEED/data/processed/" 2>/dev/null || cp ref15/data/processed/stock_theme_reference.csv "$SEED/data/processed/"
+[ -f "$W/raw/data/processed/stock_theme_reference.csv" ] && cp "$W/raw/data/processed/stock_theme_reference.csv" "$SEED/data/processed/"
 cp "$W/raw/data/raw/stock_basic/stock_basic_all.csv" "$SEED/data/raw/stock_basic/"
 
 echo "== 4. step 13 for $D0 inside the bundle vs production"

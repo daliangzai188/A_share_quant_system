@@ -57,7 +57,11 @@ def seed_files():
         add('data/raw/limit_list/' + name, lists[name])
     for f in ('fill_rate_table.csv', 'fill_rate_fallback.csv'):
         add('data/processed/' + f, REPO / 'data/processed' / f)
-    add('data/processed/stock_theme_reference.csv', HERE / 'ref15/data/processed/stock_theme_reference.csv')
+    # theme reference only when production has one (10-22: it has none, so theme features are
+    # unavailable there; shipping an old copy would make the theme columns differ from production)
+    theme = HERE / 'vm_raw_latest_unz/data/processed/stock_theme_reference.csv'
+    if theme.exists():
+        add('data/processed/stock_theme_reference.csv', theme)
     basic = HERE / 'vm_raw_latest_unz/data/raw/stock_basic/stock_basic_all.csv'
     add('data/raw/stock_basic/stock_basic_all.csv', basic if basic.exists() else HERE / 'vm_raw/data/raw/stock_basic/stock_basic_all.csv')
     state = HERE / 'vm_state/files'

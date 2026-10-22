@@ -41,7 +41,7 @@ def main():
     base, day = Path(sys.argv[1]), sys.argv[2]
     p, s = base / 'production', base / 'shadow'
     print('== raw limit list')
-    print(cmp_table('limit_list', rd(p / 'data/raw/limit_list/%s.csv' % day), rd(s / 'data/raw/limit_list/%s.csv' % day),
+    print(cmp_table('limit_list', rd(p / ('data/raw/limit_list/%s.csv' % day)), rd(s / ('data/raw/limit_list/%s.csv' % day)),
                     ['ts_code'], ['first_time', 'last_time', 'open_times', 'fd_amount', 'limit_times', 'close']))
     print('== live processed')
     for name in ('live_limit_up_merged.csv', 'live_limit_up_fill_scored.csv', 'live_theme_heat_features.csv'):
@@ -59,7 +59,7 @@ def main():
         cols = [c for c in (a.columns if a is not None else []) if c not in key][:60]
         print(cmp_table(f.name.replace('a_strict_plus_c_hold3_', ''), a, b, key, cols))
     print('== E')
-    f = 'reports/strategy_e/e_signal_%s_candidates.csv' % day
+    f = ('reports/strategy_e/e_signal_%s_candidates.csv' % day)
     a, b = rd(p / f), rd(s / f)
     print(cmp_table('e_candidates', a, b, ['ts_code'] if a is not None and 'ts_code' in a.columns else ['trade_date'],
                     [c for c in (a.columns if a is not None else []) if c != 'ts_code'][:60]))
