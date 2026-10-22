@@ -115,7 +115,8 @@ def init(ContextInfo):
             except Exception:
                 return None
         broker = QnPaperBroker(deploy['account_id'], deploy['paper_cash'], _quote)
-    prefix = 'AS_QNL' if deploy['mode'] == 'live' else 'AS_QNS'  # shadow state never leaks into live
+    # shadow state never leaks into live; a validation run may start from a fresh prefix
+    prefix = deploy.get('state_prefix') or ('AS_QNL' if deploy['mode'] == 'live' else 'AS_QNS')
     store = None
     if callable(g.get('get_py_key')):
         import threading as _qn_th
@@ -173,6 +174,10 @@ def stop(ContextInfo):
 def main():
     mode, account, cash, out = sys.argv[1], sys.argv[2], float(sys.argv[3]), Path(sys.argv[4])
     assert mode in ('shadow', 'live')
+    custom = os.environ.get('QN_STATE_PREFIX', '')
+    # live always keeps its state under AS_QNL (a different prefix would lose it on the next build)
+    if custom and (mode == 'live' or not custom.startswith('AS_QNS') or not custom.isalnum() and '_' not in custom):
+        raise SystemExit('QN_STATE_PREFIX is for shadow validation runs only and must start with AS_QNS')
     parts = []
     for name in ('qn_runtime.py', 'qn_core_full.py', 'qn_paper_broker.py', 'qn_host.py'):
         parts.append('# ===== %s =====\n' % name + (INQMT / name).read_text(encoding='utf-8'))
@@ -180,6 +185,7 @@ def main():
     digest = hashlib.sha256(source.encode('utf-8')).hexdigest()[:12]
     release = '%s-%s' % (datetime.datetime.now().strftime('%Y%m%d%H%M'), digest)
     deploy = {'release': release, 'account_id': account, 'mode': mode, 'paper_cash': cash, 'seed': seed_files(),
+              'state_prefix': os.environ.get('QN_STATE_PREFIX', ''),
               'debug_export_dir': r'C:\qn_shadow_out' if mode == 'shadow' else ''}
     blob = pack(source.encode('utf-8'))
     lines = ['# coding: gbk',
