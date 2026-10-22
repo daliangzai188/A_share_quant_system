@@ -822,7 +822,11 @@ class QnHost(object):
     # only run while a callback runs. Measured 10-22 evening: the close pipeline ran 4-35x slower
     # than in the editor's run mode while the QMT process idled (step 13 hit its 30-minute limit).
     # While pipeline work is pending, each tick sleeps this long at its end, releasing the lock.
+    # Otherwise a short window per tick still lets the daemon finish its small steps (each sqlite
+    # call or sleep gives the lock up and waited a whole tick to get it back: bg_lag 80-100 ms
+    # idle on 10-22) and read the engine's reply in the same tick.
     YIELD_SECONDS = 0.08
+    YIELD_IDLE_SECONDS = 0.02
     PROBE_SLEEP = 0.02
 
     def _gil_probe_loop(self):
@@ -847,6 +851,8 @@ class QnHost(object):
         if self._background_busy():
             self.yield_ticks[0] += 1
             _htime.sleep(self.YIELD_SECONDS)
+        else:
+            _htime.sleep(self.YIELD_IDLE_SECONDS)
 
     def _gil_report(self):
         lag, self.bg_lag = self.bg_lag, []

@@ -3,7 +3,7 @@
 threads (daemon, pipeline scripts) then only run while a callback runs. Here the "QMT thread"
 holds the lock between ticks with a C loop (builtin sum over range never releases it) while a
 CPU-bound pipeline script counts its progress:
-  1. without pending pipeline work a tick does not sleep (the engine keeps its pace);
+  1. without pending pipeline work a tick only opens a short window (the engine keeps its pace);
   2. with a script running, ticks hand the lock over: several times more script work;
   3. the running strategy reports the background wake-up lag in its status line.
 
@@ -53,9 +53,13 @@ def main():
     host.yield_ticks, host.bg_lag = [0, 0], []
     loops = hold_loops(0.095)
 
+    t = time.time()
+    host._yield_to_background()
+    idle_tick = time.time() - t
     qmt_loop(host, 2, loops, True)
-    print('1. idle: ticks that slept %d of %d' % tuple(host.yield_ticks))
-    ok = host.yield_ticks[0] == 0 and host.yield_ticks[1] > 0
+    print('1. idle: long yields %d of %d ticks; idle window %.0f ms' % (
+        host.yield_ticks[0], host.yield_ticks[1], idle_tick * 1000))
+    ok = host.yield_ticks[0] == 0 and host.yield_ticks[1] > 0 and idle_tick < 0.04
 
     results = {}
     for label, use_host in (('off', False), ('on', True)):
