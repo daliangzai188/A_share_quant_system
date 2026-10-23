@@ -120,7 +120,10 @@ def init(ContextInfo):
                 return None
         broker = QnPaperBroker(deploy['account_id'], deploy['paper_cash'], _quote)
     # shadow state never leaks into live; a validation run may start from a fresh prefix
-    prefix = deploy.get('state_prefix') or ('AS_QNL' if deploy['mode'] == 'live' else 'AS_QNS')
+    # live moved from AS_QNL to AS_QNL2 on 2026-10-23: both AS_QNL snapshots were damaged by the
+    # trade server's afternoon of 5-60 s calls (no trade had happened since go-live, so the seed of
+    # 10-22 plus the automatic 10-23 catch-up equals what was lost). Keep this prefix from now on.
+    prefix = deploy.get('state_prefix') or ('AS_QNL2' if deploy['mode'] == 'live' else 'AS_QNS')
     store = None
     if callable(g.get('get_py_key')):
         import threading as _qn_th
@@ -192,7 +195,7 @@ def main():
     mode, account, cash, out = sys.argv[1], sys.argv[2], float(sys.argv[3]), Path(sys.argv[4])
     assert mode in ('shadow', 'live')
     custom = os.environ.get('QN_STATE_PREFIX', '')
-    # live always keeps its state under AS_QNL (a different prefix would lose it on the next build)
+    # live always keeps its state under AS_QNL2 (a different prefix would lose it on the next build)
     if custom and (mode == 'live' or not custom.startswith('AS_QNS') or not custom.isalnum() and '_' not in custom):
         raise SystemExit('QN_STATE_PREFIX is for shadow validation runs only and must start with AS_QNS')
     parts = []

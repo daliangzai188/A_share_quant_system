@@ -266,6 +266,29 @@ class QnStateStore(object):
                 return pointer, meta, str(meta.get('saved_at', ''))
         raise RuntimeError('no complete manifest in slot %s' % slot)
 
+    def verify(self, pointer=None):
+        """Read the committed snapshot back completely without touching this store's state.
+        Returns '' when it loads, else the reason."""
+        pointer = pointer or self.pointer
+        if not pointer:
+            return ''
+        try:
+            slot, chunks, digest = pointer.split(':')
+            packed = ''.join(self._get('%s_M%s_%d' % (self.prefix, slot, i)) for i in range(int(chunks)))
+            if _hsha.sha256(packed.encode('ascii')).hexdigest()[:32] != digest:
+                return 'manifest checksum mismatch'
+            meta = _hjson.loads(_hzlib.decompress(_hb64.b64decode(packed)).decode('utf-8'))
+            for rel, (sha, mtime, size, n) in sorted(meta['files'].items()):
+                if sha is not None:
+                    self._get_body(sha, n)
+            return ''
+        except Exception as exc:
+            return '%s: %s' % (type(exc).__name__, exc)
+
+    def forget_bodies(self):
+        """The next save writes every file body again (repairs a damaged committed snapshot)."""
+        self.known = {}
+
     def _load_pointer(self, pointer):
         slot, chunks, digest = pointer.split(':')
         packed = ''.join(self._get('%s_M%s_%d' % (self.prefix, slot, i)) for i in range(int(chunks)))
@@ -294,6 +317,10 @@ class QnHost(object):
     # While a pipeline script runs its files are intermediate, and each key-value call holds the
     # GIL: on 10-23 15:56 saves took 12.7 s of every 20 s and slowed the pipeline (bg_lag up to 10 s).
     PERSIST_INTERVAL_BUSY = 300.0
+    # Outside the trading session and the pipeline, the committed snapshot is read back in full now
+    # and then; damage (10-23: a body chunk of both snapshots no longer decoded) is repaired by
+    # writing every body again with the next save, long before a restart would need the snapshot.
+    VERIFY_INTERVAL = 7200.0
     DAEMON_RESTART_DELAY = 60.0
     BOOT_RETRY_SECONDS = 60.0
     # QMT's key-value store goes through the broker's trade server, which disconnects at night
@@ -339,6 +366,7 @@ class QnHost(object):
         self.bg_lag = []        # how late a background thread woke from a 20 ms sleep (seconds)
         self.yield_ticks = [0, 0]  # [ticks that handed the lock to background threads, ticks]
         self.save_stats = [0, 0]   # [state saves completed, attempted] since the last status line
+        self.verified_at = 0.0
         self.save_seconds_mark = 0.0
         self.boot_pending = False
         self.boot_retry_at = 0.0
@@ -789,6 +817,22 @@ class QnHost(object):
         finally:
             self.persist_lock.release()
 
+    def _verify_store(self, force):
+        if force or self._background_busy() or self.periodic_slow_limit() == self.STORE_SLOW_CALL:
+            return  # not before an order, not during the pipeline, not in the trading session
+        now = _htime.time()
+        if now - self.verified_at < self.VERIFY_INTERVAL:
+            return
+        self.verified_at = now
+        problem = self.store.verify()
+        if problem:
+            self.store.forget_bodies()
+            self.persist_clock = None
+            self.persist_last = 0.0
+            self.log('STATE CHECK FAILED (%s): every file is written again with the next save' % problem)
+        else:
+            self.log('state check: committed snapshot reads back completely')
+
     def periodic_slow_limit(self):
         hm = _bj_now().strftime('%H%M')
         if self.TRADING_SESSION[0] <= hm < self.TRADING_SESSION[1]:
@@ -840,6 +884,7 @@ class QnHost(object):
                 self.log('state save works again after %d failed attempts' % self.persist_failures)
             self.persist_failures = 0
             self.persist_retry_at = 0.0
+            self._verify_store(force)
         except Exception as exc:
             self.persist_error = '%s: %s' % (type(exc).__name__, exc)
             self.persist_failures += 1

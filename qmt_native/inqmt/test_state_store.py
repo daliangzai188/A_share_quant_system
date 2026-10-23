@@ -7,7 +7,8 @@ server, which drops connections):
   D. one call slower than the limit gives the save up (QMT is frozen during such a call);
   E. both pointers broken: the manifest slot that is complete on its own is used;
   F. an empty pointer read while a state exists is retried, never a start from the seed;
-  G. an empty store starts fresh; a store with nothing complete is refused.
+  G. an empty store starts fresh; a store with nothing complete is refused;
+  H. a damaged body of the committed snapshot is found by the read-back check and rewritten.
 
 Usage: python test_state_store.py HOST_PY   (default qn_host.py)
 """
@@ -182,6 +183,22 @@ def main():
         g_ok &= 'no complete state snapshot' in str(exc)
     print('G. empty store -> fresh; nothing complete -> refused:', g_ok)
     ok &= g_ok
+
+    # H. a body chunk of the committed snapshot is damaged after its save (10-23: a chunk no longer
+    #    decoded): the read-back check finds it, the next save writes every body again.
+    kv = KV()
+    st = Store(kv.get, kv.save, 'T')
+    st.save({'f': (A, 1.0, len(A)), 'g': (B, 1.0, len(B))}, {})
+    clean = st.verify()
+    b_key = 'T_F_%s_1' % hashlib.sha256(B).hexdigest()[:32]
+    kv.data[b_key] = kv.data[b_key][:-30]
+    problem = st.verify()
+    st.forget_bodies()
+    st.save({'f': (A, 2.0, len(A)), 'g': (B, 2.0, len(B))}, {})
+    files, meta = Store(kv.get, kv.save, 'T').load()
+    h_ok = clean == '' and bool(problem) and st.verify() == '' and files['g'][0] == B
+    print('H. damaged body found by the read-back check and rewritten by the next save:', h_ok, '|', problem[:60])
+    ok &= h_ok
     print('RESULT', 'PASS' if ok else 'FAIL')
 
 
