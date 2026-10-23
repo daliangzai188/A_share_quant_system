@@ -4,7 +4,10 @@ server, which drops connections):
   A. a clean-up interrupted half way, then a file returns to the cleared content: still readable;
   B. latest snapshot unreadable: load falls back to the snapshot before it;
   C. pointer write not confirmed: that snapshot's bodies are never cleared;
-  D. one call slower than the limit gives the save up (QMT is frozen during such a call).
+  D. one call slower than the limit gives the save up (QMT is frozen during such a call);
+  E. both pointers broken: the manifest slot that is complete on its own is used;
+  F. an empty pointer read while a state exists is retried, never a start from the seed;
+  G. an empty store starts fresh; a store with nothing complete is refused.
 
 Usage: python test_state_store.py HOST_PY   (default qn_host.py)
 """
@@ -132,6 +135,53 @@ def main():
     d_ok = given_up and files['f'][0] == C4 and b_kept
     print('D. slow call gives the save up; next save and load fine; its bodies kept:', d_ok)
     ok &= d_ok
+
+    # E. both pointers name broken manifests (a late write landed on one slot, a half-written save
+    #    on the other's pointer); the slot still holding a complete manifest is used.
+    kv = KV()
+    st = Store(kv.get, kv.save, 'T')
+    st.save({'f': (A, 1.0, len(A))}, {})            # slot A
+    st.save({'f': (B, 2.0, len(B))}, {})            # slot B, PTR -> B, PTRPREV -> A
+    ptr_b = kv.data['T_PTR']
+    kv.data['T_PTRPREV'] = ptr_b                    # PTRPREV now names B as well
+    kv.data['T_MB_0'] = kv.data['T_MB_0'][:-40] + 'x' * 40   # B's manifest broken
+    try:
+        files, meta = Store(kv.get, kv.save, 'T').load()
+        e_ok = files['f'][0] == A and 'manifest slot A' in meta.get('restored_from', '')
+        print('E. both pointers broken -> complete slot used:', e_ok, '|', meta.get('restored_from', '')[:80])
+    except Exception as exc:
+        e_ok = False
+        print('E. error:', exc)
+    ok &= e_ok
+
+    # F. pointer reads empty while a saved state exists (flaky server): not a fresh start
+    real_get = kv.get
+    kv.get = lambda key: ('', -1, 'KeyError: not exist') if key == 'T_PTR' else real_get(key)
+    try:
+        Store(kv.get, kv.save, 'T').load()
+        f_ok = False
+    except RuntimeError as exc:
+        f_ok = 'not starting from the seed' in str(exc)
+    kv.get = real_get
+    print('F. empty pointer but state present -> retried, not a seed start:', f_ok)
+    ok &= f_ok
+
+    # G. nothing stored at all, and nothing complete anywhere
+    files, meta = Store(KV().get, KV().save, 'T').load()
+    g_ok = files is None and meta is None
+    kv2 = KV()
+    st2 = Store(kv2.get, kv2.save, 'T')
+    st2.save({'f': (A, 1.0, len(A))}, {})
+    for key in list(kv2.data):
+        if key.startswith('T_M'):
+            kv2.data[key] = kv2.data[key][:-10]
+    try:
+        Store(kv2.get, kv2.save, 'T').load()
+        g_ok = False
+    except RuntimeError as exc:
+        g_ok &= 'no complete state snapshot' in str(exc)
+    print('G. empty store -> fresh; nothing complete -> refused:', g_ok)
+    ok &= g_ok
     print('RESULT', 'PASS' if ok else 'FAIL')
 
 

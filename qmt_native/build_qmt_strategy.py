@@ -141,7 +141,9 @@ def init(ContextInfo):
             # QMT's key-value API only works on the strategy callback thread
             if _qn_th.get_ident() == callback_thread:
                 return _timed(name, args)
-            return QN_NATIVE_SERVICE.call(lambda C, gg: _timed(name, args), _timeout=60.0)
+            # Wait for the call itself (QMT gives up on the trade server after about a minute, 62 s
+            # seen on 10-22): a write that outlives its caller lands after later saves and breaks them.
+            return QN_NATIVE_SERVICE.call(lambda C, gg: _timed(name, args), _timeout=600.0)
         store = QnStateStore(lambda k: _on_callback_thread('get_py_key', k),
                              lambda k, v: _on_callback_thread('save_py_key', k, v), prefix)
     host = QnHost(ContextInfo, g, deploy, QN_MODULES, QN_STATIC_FILES, broker=broker, store=store)

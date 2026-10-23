@@ -8,7 +8,8 @@ Here the hanging call is a C loop that holds the GIL, like the real one:
      and the save that hit the slow call is given up and backs off (no second hang in it);
   2. forced save (the one before an order, or on stop): a slow call does not give it up,
      the save completes;
-  3. periodic saves give up after 5 s in the trading session, 30 s outside it.
+  3. periodic saves wait 5 minutes while a pipeline script runs, and give up after a 5 s call in
+     the trading session, 30 s outside it.
 
 Usage: python test_save_stall.py STRATEGY_FILE [STALL_SECONDS]   (QMT's Python 3.6, ~4 minutes)
 """
@@ -50,7 +51,7 @@ def main():
     host = ns['QN_HOST'][0]
     drive(ns, C, 30)
     print('daemon up before the stall:', bool(host.daemon_thread and host.daemon_thread.is_alive()))
-    host.PERSIST_INTERVAL = 1e9  # the state thread's own periodic saves stay out of the way
+    host.PERSIST_INTERVAL = host.PERSIST_INTERVAL_BUSY = 1e9  # the state thread's own saves stay out of the way
 
     def run_save(force, seconds, settle):
         result = {}
@@ -91,6 +92,18 @@ def main():
     result, _ = run_save(True, 8.0, 10)
     print('2. forced: hang %.0fs; calls after it: %d; result %s' % (state['hung'], state['calls_after'], result))
     ok &= result.get('ok') is True and state['calls_after'] > 0 and state['hung'] > 5.0
+    host.PERSIST_INTERVAL, host.PERSIST_INTERVAL_BUSY = 30.0, 300.0
+    script = type('P', (), {})()
+    script._thread = threading.Thread(target=time.sleep, args=(3,), daemon=True)
+    script._thread.start()
+    ns['QN_PROCESSES'][-1] = script
+    host.persist_last, host.persist_retry_at = time.time() - 60, 0.0
+    saves_before = host.save_stats[1]
+    host.persist(reason='test busy')            # a script runs: 60 s since the last save is too soon
+    busy_skipped = host.save_stats[1] == saves_before
+    del ns['QN_PROCESSES'][-1]
+    print('3a. periodic save skipped while a script runs (60 s after the last):', busy_skipped)
+    ok &= busy_skipped
     session = host.TRADING_SESSION
     host.TRADING_SESSION = ('0000', '2400')
     inside = host.periodic_slow_limit()

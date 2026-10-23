@@ -201,21 +201,70 @@ class QnStateStore(object):
                     bodies=len(self.known), bytes=len(packed),
                     saved_at=_bj_now().strftime('%Y-%m-%d %H:%M:%S'))
 
+    MAX_MANIFEST_CHUNKS = 200
+
     def load(self):
-        """The latest snapshot, or the one before it when the latest cannot be read completely."""
+        """The latest snapshot, or the one before it when the latest cannot be read completely, or
+        else the newest manifest slot that is complete on its own (zlib stream and JSON intact,
+        every file body matching its checksum). Never a partial state."""
         pointer = self._get(self.prefix + '_PTR')
+        previous = self._get(self.prefix + '_PTRPREV')
         if not pointer:
-            return None, None
-        try:
-            return self._load_pointer(pointer)
-        except Exception as exc:
-            previous = self._get(self.prefix + '_PTRPREV')
-            if not previous or previous == pointer:
-                raise
-            self.known, self.previous = {}, {}
-            files, meta = self._load_pointer(previous)
-            meta['restored_from'] = 'previous snapshot (latest unreadable: %s: %s)' % (type(exc).__name__, exc)
-            return files, meta
+            # A flaky trade server can hand back an empty value (10-23 15:53: a start from the seed
+            # right after three reads of the same pointer). Only a store with no pointer and no
+            # manifest at all is new; anything else is unreadable for now and is retried.
+            leftovers = [k for k in ('_PTRPREV', '_MA_0', '_MB_0') if self._get(self.prefix + k)]
+            if not previous and not leftovers:
+                return None, None
+            raise RuntimeError('state pointer empty but %s present; not starting from the seed' % ', '.join(leftovers))
+        errors = []
+        candidates = [('latest', pointer)] + ([('previous snapshot', previous)] if previous and previous != pointer else [])
+        for label, candidate in candidates:
+            try:
+                files, meta = self._load_pointer(candidate)
+                if errors:
+                    meta['restored_from'] = '%s (%s)' % (label, '; '.join(errors))
+                return files, meta
+            except Exception as exc:
+                errors.append('%s %s unreadable: %s: %s' % (label, candidate[:1], type(exc).__name__, exc))
+                self.known, self.previous = {}, {}
+        # Neither pointer names a complete snapshot: a write that outlived its save's wait can land
+        # after a later save (10-23: both snapshots broken after an afternoon of 5-60 s calls).
+        best = None
+        for slot in ('A', 'B'):
+            try:
+                found = self._scan_slot(slot)
+                if best is None or found[2] > best[2]:
+                    best = found
+            except Exception as exc:
+                errors.append('slot %s: %s' % (slot, exc))
+        if best is not None:
+            try:
+                files, meta = self._load_pointer(best[0])
+                meta['restored_from'] = 'manifest slot %s saved at %s (%s)' % (best[0][:1], best[2], '; '.join(errors))
+                return files, meta
+            except Exception as exc:
+                errors.append('slot %s files: %s: %s' % (best[0][:1], type(exc).__name__, exc))
+                self.known, self.previous = {}, {}
+        raise RuntimeError('no complete state snapshot; refusing a partial state (%s)' % '; '.join(errors))
+
+    def _scan_slot(self, slot):
+        """Read a manifest slot chunk by chunk until the chunks read so far form a complete zlib
+        stream holding a manifest. Chunks of two different saves never decode together."""
+        packed = ''
+        for i in range(self.MAX_MANIFEST_CHUNKS):
+            chunk = self._get('%s_M%s_%d' % (self.prefix, slot, i))
+            if not chunk:
+                break
+            packed += chunk
+            try:
+                meta = _hjson.loads(_hzlib.decompress(_hb64.b64decode(packed)).decode('utf-8'))
+            except Exception:
+                continue
+            if isinstance(meta, dict) and isinstance(meta.get('files'), dict):
+                pointer = '%s:%d:%s' % (slot, i + 1, _hsha.sha256(packed.encode('ascii')).hexdigest()[:32])
+                return pointer, meta, str(meta.get('saved_at', ''))
+        raise RuntimeError('no complete manifest in slot %s' % slot)
 
     def _load_pointer(self, pointer):
         slot, chunks, digest = pointer.split(':')
@@ -238,7 +287,13 @@ class QnStateStore(object):
 
 class QnHost(object):
     PUMP_MS = 100
-    PERSIST_INTERVAL = 30.0
+    # Orders are covered by the forced save before each one; periodic saves only bound what a QMT
+    # crash can lose. Each key-value call holds the GIL, 1-5 s apiece on a slow afternoon (10-23:
+    # a save every 30 s froze QMT a third of the time with only health files changing).
+    PERSIST_INTERVAL = 120.0
+    # While a pipeline script runs its files are intermediate, and each key-value call holds the
+    # GIL: on 10-23 15:56 saves took 12.7 s of every 20 s and slowed the pipeline (bg_lag up to 10 s).
+    PERSIST_INTERVAL_BUSY = 300.0
     DAEMON_RESTART_DELAY = 60.0
     BOOT_RETRY_SECONDS = 60.0
     # QMT's key-value store goes through the broker's trade server, which disconnects at night
@@ -761,7 +816,8 @@ class QnHost(object):
                     self.log('night: periodic state saves paused until %02d:00 (broker trade server '
                              'disconnects at night)' % self.STORE_DAY_START)
                 return
-            if now < self.persist_retry_at or now - self.persist_last < self.PERSIST_INTERVAL:
+            interval = self.PERSIST_INTERVAL_BUSY if self._background_busy() else self.PERSIST_INTERVAL
+            if now < self.persist_retry_at or now - self.persist_last < interval:
                 return
         try:
             qn_sqlite_persist_all()
