@@ -202,6 +202,8 @@ class QnStateStore(object):
                     saved_at=_bj_now().strftime('%Y-%m-%d %H:%M:%S'))
 
     MAX_MANIFEST_CHUNKS = 200
+    EMPTY_CONFIRM_ROUNDS = 3
+    EMPTY_CONFIRM_WAIT = 2.0
 
     def load(self):
         """The latest snapshot, or the one before it when the latest cannot be read completely, or
@@ -209,14 +211,21 @@ class QnStateStore(object):
         every file body matching its checksum). Never a partial state."""
         pointer = self._get(self.prefix + '_PTR')
         previous = self._get(self.prefix + '_PTRPREV')
+        for attempt in range(self.EMPTY_CONFIRM_ROUNDS):
+            if pointer:
+                break
+            # A flaky trade server can hand back empty values (10-23 15:53 and 16:31: starts from the
+            # seed right after reads of the same pointer). Only a store with no pointer and no
+            # manifest, read so several times, is new; anything else is retried later.
+            leftovers = [k for k in ('_MA_0', '_MB_0') if self._get(self.prefix + k)] + (['_PTRPREV'] if previous else [])
+            if leftovers:
+                raise RuntimeError('state pointer empty but %s present; not starting from the seed' % ', '.join(leftovers))
+            if attempt + 1 < self.EMPTY_CONFIRM_ROUNDS:
+                _htime.sleep(self.EMPTY_CONFIRM_WAIT)
+                pointer = self._get(self.prefix + '_PTR')
+                previous = self._get(self.prefix + '_PTRPREV')
         if not pointer:
-            # A flaky trade server can hand back an empty value (10-23 15:53: a start from the seed
-            # right after three reads of the same pointer). Only a store with no pointer and no
-            # manifest at all is new; anything else is unreadable for now and is retried.
-            leftovers = [k for k in ('_PTRPREV', '_MA_0', '_MB_0') if self._get(self.prefix + k)]
-            if not previous and not leftovers:
-                return None, None
-            raise RuntimeError('state pointer empty but %s present; not starting from the seed' % ', '.join(leftovers))
+            return None, None
         errors = []
         candidates = [('latest', pointer)] + ([('previous snapshot', previous)] if previous and previous != pointer else [])
         for label, candidate in candidates:

@@ -7,7 +7,8 @@ server, which drops connections):
   D. one call slower than the limit gives the save up (QMT is frozen during such a call);
   E. both pointers broken: the manifest slot that is complete on its own is used;
   F. an empty pointer read while a state exists is retried, never a start from the seed;
-  G. an empty store starts fresh; a store with nothing complete is refused;
+  G. an empty store (read three times) starts fresh, a pointer that reads empty once is still found;
+     a store with nothing complete is refused;
   H. a damaged body of the committed snapshot is found by the read-back check and rewritten.
 
 Usage: python test_state_store.py HOST_PY   (default qn_host.py)
@@ -22,6 +23,7 @@ class KV(object):
         self.fail_clear, self.clears = None, 0
 
     def get(self, key):
+        self.reads = getattr(self, 'reads', 0) + 1
         return (self.data[key], 0, '') if key in self.data else ('', -1, 'KeyError: not exist')
 
     def save(self, key, value):
@@ -46,6 +48,7 @@ def main():
     for name in ('qn_runtime.py', sys.argv[1] if len(sys.argv) > 1 else 'qn_host.py'):
         exec(compile(open(os.path.join(HERE, name), encoding='utf-8').read(), name, 'exec'), ns)
     Store = ns['QnStateStore']
+    Store.EMPTY_CONFIRM_WAIT = 0.0
     A, B = blob(1), blob(2)
     ok = True
 
@@ -167,9 +170,23 @@ def main():
     print('F. empty pointer but state present -> retried, not a seed start:', f_ok)
     ok &= f_ok
 
-    # G. nothing stored at all, and nothing complete anywhere
-    files, meta = Store(KV().get, KV().save, 'T').load()
-    g_ok = files is None and meta is None
+    # G. nothing stored at all (read three times), and nothing complete anywhere; a pointer that
+    #    reads empty once and then appears is used
+    empty = KV()
+    files, meta = Store(empty.get, empty.save, 'T').load()
+    g_ok = files is None and meta is None and empty.reads >= 6
+    blink = KV()
+    Store(blink.get, blink.save, 'T').save({'f': (A, 1.0, len(A))}, {})
+    first = {'n': 0}
+    real_blink = blink.get
+
+    def blinking(key):
+        if key in ('T_PTR', 'T_MA_0', 'T_MB_0', 'T_PTRPREV') and first['n'] < 4:
+            first['n'] += 1
+            return ('', -1, 'KeyError: not exist')
+        return real_blink(key)
+    files, meta = Store(blinking, blink.save, 'T').load()
+    g_ok &= files is not None and files['f'][0] == A
     kv2 = KV()
     st2 = Store(kv2.get, kv2.save, 'T')
     st2.save({'f': (A, 1.0, len(A))}, {})
