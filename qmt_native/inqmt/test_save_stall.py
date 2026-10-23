@@ -7,7 +7,8 @@ Here the hanging call is a C loop that holds the GIL, like the real one:
   1. periodic save: no bridge-lost alarm after the stall, daemon alive, account checks continue,
      and the save that hit the slow call is given up and backs off (no second hang in it);
   2. forced save (the one before an order, or on stop): a slow call does not give it up,
-     the save completes.
+     the save completes;
+  3. periodic saves give up after 5 s in the trading session, 30 s outside it.
 
 Usage: python test_save_stall.py STRATEGY_FILE [STALL_SECONDS]   (QMT's Python 3.6, ~4 minutes)
 """
@@ -90,6 +91,14 @@ def main():
     result, _ = run_save(True, 8.0, 10)
     print('2. forced: hang %.0fs; calls after it: %d; result %s' % (state['hung'], state['calls_after'], result))
     ok &= result.get('ok') is True and state['calls_after'] > 0 and state['hung'] > 5.0
+    session = host.TRADING_SESSION
+    host.TRADING_SESSION = ('0000', '2400')
+    inside = host.periodic_slow_limit()
+    host.TRADING_SESSION = ('0000', '0000')
+    outside = host.periodic_slow_limit()
+    host.TRADING_SESSION = session
+    print('3. periodic slow limit: trading session %.0fs, outside %.0fs' % (inside, outside))
+    ok &= inside == 5.0 and outside == 30.0
     ns['stop'](C)
     print('RESULT', 'PASS' if ok else 'FAIL')
 

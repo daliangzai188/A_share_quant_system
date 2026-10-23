@@ -251,7 +251,11 @@ class QnHost(object):
     # every call blocks the QMT callback thread (and the engine's bridge heartbeat with it)
     # Periodic saves only: the save before an order and the save on stop must complete (an order
     # is refused when its save fails; 10-23 morning single calls took 5-18 s several times an hour).
+    # Outside the trading session a frozen QMT costs nothing, and on 10-23 afternoon calls took 5-7 s
+    # for hours (nothing saved after the close pipeline), so the limit is looser there.
     STORE_SLOW_CALL = 5.0
+    STORE_SLOW_CALL_OFF_HOURS = 30.0
+    TRADING_SESSION = ('0910', '1505')
 
     def __init__(self, C, qmt_globals, deploy, modules, static_files, market=None, broker=None, store=None):
         self.C = C
@@ -730,6 +734,12 @@ class QnHost(object):
         finally:
             self.persist_lock.release()
 
+    def periodic_slow_limit(self):
+        hm = _bj_now().strftime('%H%M')
+        if self.TRADING_SESSION[0] <= hm < self.TRADING_SESSION[1]:
+            return self.STORE_SLOW_CALL
+        return self.STORE_SLOW_CALL_OFF_HOURS
+
     def store_daytime(self):
         hour = _bj_now().hour
         return self.STORE_DAY_START <= hour < self.STORE_DAY_END
@@ -762,7 +772,7 @@ class QnHost(object):
             if not force and fingerprint == self.persist_clock:
                 self.persist_last = now
                 return
-            self.store.slow_limit = 0.0 if force else self.STORE_SLOW_CALL
+            self.store.slow_limit = 0.0 if force else self.periodic_slow_limit()
             self.save_stats[1] += 1
             self.persist_meta = self.store.save(files, dict(release=self.deploy.get('release'), reason=reason,
                                                             inventory=inventory))
