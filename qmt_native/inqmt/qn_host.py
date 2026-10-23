@@ -13,6 +13,7 @@ import hashlib as _hsha
 import io as _hio
 import json as _hjson
 import os as _hos
+import random as _hrandom
 import re as _hre
 import threading as _hthr
 import time as _htime
@@ -63,19 +64,24 @@ def _bj_now():
 class QnStateStore(object):
     """Content-addressed VFS snapshot in QMT's key-value store.
 
-    Each file body is stored once under a key derived from its SHA-256 (zlib + base64,
-    split into chunks); a manifest maps path -> (sha, mtime, size). The manifest is
-    written last and read back, so a snapshot only counts once complete. Bodies no
-    longer referenced by the current or previous manifest are cleared."""
+    Each file body is stored once (zlib + base64, split into chunks) under a body id: its
+    SHA-256 prefix plus a fresh tag per write; a manifest maps path -> (body id, mtime, size,
+    chunks) and gets a fresh id per save too. The manifest is written last and read back, so a
+    snapshot only counts once complete. Bodies and manifests no longer referenced by the
+    current or previous snapshot are cleared, and a cleared key is never written again: on
+    10-23 a clear that the trade server delivered late landed on a key written again since,
+    and broke both snapshots. Body ids without a tag and the manifest slots A/B of older
+    releases still load."""
 
     def __init__(self, getter, saver, prefix=QN_STATE_PREFIX):
         self.getter = getter
         self.saver = saver
         self.prefix = prefix
-        self.known = {}  # sha -> number of chunks already stored
+        self.known = {}  # sha -> (body id, chunks) stored and referenced by a snapshot
         self.previous = {}
         self.slot = ''
         self.pointer = ''
+        self.prev_pointer = ''  # the snapshot before self.pointer (PTRPREV)
         self.protected = set()  # bodies of a snapshot whose pointer write did not confirm
         # A key-value call blocks QMT's whole Python until the trade server answers (up to about
         # a minute when it is flaky). The caller reports each call's duration in
@@ -119,29 +125,34 @@ class QnStateStore(object):
             raise RuntimeError('save_py_key(%s, %d chars) rejected: %r' % (key, len(value), result))
         return result
 
-    def _body_keys(self, sha, chunks):
-        return ['%s_F_%s_%d' % (self.prefix, sha, i) for i in range(chunks)]
+    @staticmethod
+    def _tag():
+        return '%08x' % _hrandom.getrandbits(32)
+
+    def _body_keys(self, bid, chunks):
+        return ['%s_F_%s_%d' % (self.prefix, bid, i) for i in range(chunks)]
 
     def _put_body(self, data):
         sha = _hsha.sha256(data).hexdigest()[:32]
         if sha in self.known:
-            return sha, self.known[sha]
+            return self.known[sha]
         packed = _hb64.b64encode(_hzlib.compress(data, 6)).decode('ascii')
         chunks = [packed[i:i + QN_STATE_CHUNK] for i in range(0, len(packed), QN_STATE_CHUNK)] or ['']
-        keys = self._body_keys(sha, len(chunks))
+        bid = sha + 'x' + self._tag()
+        keys = self._body_keys(bid, len(chunks))
         for key, chunk in zip(keys, chunks):
             self._set(key, chunk)
         for key, chunk in zip(keys, chunks):
             if self._get(key) != chunk:
                 raise RuntimeError('state body %s did not read back' % key)
-        self.known[sha] = len(chunks)
-        return sha, len(chunks)
+        self.known[sha] = (bid, len(chunks))
+        return bid, len(chunks)
 
-    def _get_body(self, sha, chunks):
-        packed = ''.join(self._get(k) for k in self._body_keys(sha, chunks))
+    def _get_body(self, bid, chunks):
+        packed = ''.join(self._get(k) for k in self._body_keys(bid, chunks))
         data = _hzlib.decompress(_hb64.b64decode(packed))
-        if _hsha.sha256(data).hexdigest()[:32] != sha:
-            raise RuntimeError('persisted state body %s checksum mismatch' % sha)
+        if _hsha.sha256(data).hexdigest()[:32] != bid[:32]:
+            raise RuntimeError('persisted state body %s checksum mismatch' % bid)
         return data
 
     def _put_text_chunks(self, base, text):
@@ -168,14 +179,14 @@ class QnStateStore(object):
             if data is None:
                 manifest[rel] = [None, mtime, size, 0]
             else:
-                sha, chunks = self._put_body(data)
-                manifest[rel] = [sha, mtime, size, chunks]
+                bid, chunks = self._put_body(data)
+                manifest[rel] = [bid, mtime, size, chunks]
         text = _hjson.dumps(dict(meta_extra, files=manifest, saved_at=_bj_now().strftime('%Y-%m-%d %H:%M:%S')),
                             sort_keys=True)
         packed = _hb64.b64encode(_hzlib.compress(text.encode('utf-8'), 9)).decode('ascii')
-        slot = 'B' if self.slot == 'A' else 'A'
-        chunks = self._put_text_chunks('%s_M%s' % (self.prefix, slot), packed)
-        pointer = '%s:%d:%s' % (slot, chunks, _hsha.sha256(packed.encode('ascii')).hexdigest()[:32])
+        mid = 'g' + self._tag()  # a fresh manifest id per save, never one of an earlier save
+        chunks = self._put_text_chunks('%s_M%s' % (self.prefix, mid), packed)
+        pointer = '%s:%d:%s' % (mid, chunks, _hsha.sha256(packed.encode('ascii')).hexdigest()[:32])
         bodies = set((v[0], v[3]) for v in manifest.values() if v[0])
         if self.pointer:
             # the snapshot in use until now stays loadable if the new one ever is not
@@ -187,21 +198,28 @@ class QnStateStore(object):
         except Exception:
             self.protected |= bodies  # the pointer may already name this snapshot
             raise
-        self.slot = slot
-        self.pointer = pointer
+        retired = self.prev_pointer
+        self.slot = mid
+        self.prev_pointer, self.pointer = self.pointer, pointer
         older, self.previous = self.previous, manifest
         live = bodies | self.protected | set((v[0], v[3]) for v in older.values() if v[0])
-        # Clear unreferenced bodies. Forget a body before clearing it: if a clear fails half way
-        # the body is written again the next time some file has that content.
-        for sha, n in list(self.known.items()):
-            if (sha, n) in live:
-                continue
-            del self.known[sha]
-            try:
-                for key in self._body_keys(sha, n):
+        # Clear what neither the new nor the previous snapshot references: bodies, and the
+        # manifest of the snapshot before the previous one. Forget a body before clearing it;
+        # a cleared key is never written again (a content needed later gets a new body id).
+        try:
+            for sha, (bid, n) in list(self.known.items()):
+                if (bid, n) in live:
+                    continue
+                del self.known[sha]
+                for key in self._body_keys(bid, n):
                     self._set(key, '')
-            except Exception:
-                break  # clean-up only; leftovers are harmless
+            if retired and retired not in (self.prev_pointer, self.pointer):
+                slot, n, _ = retired.split(':')
+                if slot not in ('A', 'B'):
+                    for i in range(int(n)):
+                        self._set('%s_M%s_%d' % (self.prefix, slot, i), '')
+        except Exception:
+            pass  # clean-up only; leftovers are harmless
         return dict(meta_extra, inventory=len(meta_extra.get('inventory') or {}), files=len(manifest),
                     bodies=len(self.known), bytes=len(packed),
                     saved_at=_bj_now().strftime('%Y-%m-%d %H:%M:%S'))
@@ -236,11 +254,12 @@ class QnStateStore(object):
         for label, candidate in candidates:
             try:
                 files, meta = self._load_pointer(candidate)
+                self.prev_pointer = previous if label == 'latest' and previous != pointer else ''
                 if errors:
                     meta['restored_from'] = '%s (%s)' % (label, '; '.join(errors))
                 return files, meta
             except Exception as exc:
-                errors.append('%s %s unreadable: %s: %s' % (label, candidate[:1], type(exc).__name__, exc))
+                errors.append('%s %s unreadable: %s: %s' % (label, candidate.split(':')[0], type(exc).__name__, exc))
                 self.known, self.previous = {}, {}
         # Neither pointer names a complete snapshot: a write that outlived its save's wait can land
         # after a later save (10-23: both snapshots broken after an afternoon of 5-60 s calls).
@@ -292,9 +311,9 @@ class QnStateStore(object):
             if _hsha.sha256(packed.encode('ascii')).hexdigest()[:32] != digest:
                 return 'manifest checksum mismatch'
             meta = _hjson.loads(_hzlib.decompress(_hb64.b64decode(packed)).decode('utf-8'))
-            for rel, (sha, mtime, size, n) in sorted(meta['files'].items()):
-                if sha is not None:
-                    self._get_body(sha, n)
+            for rel, (bid, mtime, size, n) in sorted(meta['files'].items()):
+                if bid is not None:
+                    self._get_body(bid, n)
             return ''
         except Exception as exc:
             return '%s: %s' % (type(exc).__name__, exc)
@@ -311,17 +330,17 @@ class QnStateStore(object):
         meta = _hjson.loads(_hzlib.decompress(_hb64.b64decode(packed)).decode('utf-8'))
         self.slot = slot
         files = {}
-        for rel, (sha, mtime, size, chunks) in meta['files'].items():
-            if sha is None:
+        for rel, (bid, mtime, size, chunks) in meta['files'].items():
+            if bid is None:
                 files[rel] = (None, mtime, size)
             else:
                 try:
-                    data = self._get_body(sha, chunks)
-                    self.known[sha] = chunks
+                    data = self._get_body(bid, chunks)
+                    self.known[bid[:32]] = (bid, chunks)
                 except Exception:
                     # 10-23: one body of both snapshots read back empty (a clear of the same key
                     # landed after its rewrite). Not in known: the next save writes it again.
-                    data = self.fallback_bodies(sha, rel) if self.fallback_bodies else None
+                    data = self.fallback_bodies(bid[:32], rel) if self.fallback_bodies else None
                     if data is None:
                         raise
                     self.repaired.append(rel)
