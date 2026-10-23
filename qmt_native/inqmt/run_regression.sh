@@ -16,7 +16,7 @@ echo "== export";         $PY inqmt/test_export.py "$S" > "$O/export.txt" 2>&1; 
 echo "== cache keeper";   $PY inqmt/test_cache_keeper.py "$S" > "$O/cache_keeper.txt" 2>&1; grep -E "RESULT|keeper downloads" "$O/cache_keeper.txt"
 echo "== process kill";   (cd inqmt && $PY test_process_kill.py qn_core_full.py > "../$O/kill.txt" 2>&1); grep -E "RESULT|queued" "$O/kill.txt"
 echo "== daemon crash";   $PY inqmt/test_daemon_crash.py "$S" > "$O/daemon_crash.txt" 2>&1; grep -E "RESULT|restarted" "$O/daemon_crash.txt"
-echo "== state store";    (cd inqmt && $PY test_state_store.py qn_host.py > "../$O/state_store.txt" 2>&1); grep -E "^[A-H]\.|RESULT" "$O/state_store.txt"
+echo "== state store";    (cd inqmt && $PY test_state_store.py qn_host.py > "../$O/state_store.txt" 2>&1); grep -E "^[A-J]\.|RESULT" "$O/state_store.txt"
 echo "== save stall";     PYTHONIOENCODING=utf-8 $PY inqmt/test_save_stall.py "$S" > "$O/save_stall.txt" 2>&1; grep -E "RESULT|hang lasted|bridge-lost" "$O/save_stall.txt"
 echo "== gil yield";      PYTHONIOENCODING=utf-8 $PY inqmt/test_gil_yield.py "$S" > "$O/gil_yield.txt" 2>&1; grep -E "^[0-9]\.|RESULT" "$O/gil_yield.txt"
 echo "== tracebacks";     grep -c Traceback "$O"/*.txt

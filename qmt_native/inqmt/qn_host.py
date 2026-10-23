@@ -84,6 +84,11 @@ class QnStateStore(object):
         self.last_call_seconds = 0.0
         self.saving = False
         self.call_seconds = 0.0  # running total, for the host's status line
+        # (sha, path) -> bytes or None: a body lost in the store whose content is shipped in the
+        # strategy file (same checksum), or a file an operator named for this one start, is taken
+        # from the seed and written again by the next save
+        self.fallback_bodies = None
+        self.repaired = []
 
     def _check_slow(self, what):
         self.call_seconds += self.last_call_seconds
@@ -310,8 +315,18 @@ class QnStateStore(object):
             if sha is None:
                 files[rel] = (None, mtime, size)
             else:
-                files[rel] = (self._get_body(sha, chunks), mtime, size)
-                self.known[sha] = chunks
+                try:
+                    data = self._get_body(sha, chunks)
+                    self.known[sha] = chunks
+                except Exception:
+                    # 10-23: one body of both snapshots read back empty (a clear of the same key
+                    # landed after its rewrite). Not in known: the next save writes it again.
+                    data = self.fallback_bodies(sha, rel) if self.fallback_bodies else None
+                    if data is None:
+                        raise
+                    self.repaired.append(rel)
+                    size = len(data)
+                files[rel] = (data, mtime, size)
         self.previous = meta['files']
         self.pointer = pointer
         return files, dict((k, v) for k, v in meta.items() if k != 'files')
@@ -536,7 +551,22 @@ class QnHost(object):
             QN_VFS.put_stub(rel, size, mtime)
         restored = 0
         if self.store is not None:
+            by_sha, by_rel = {}, {}
+            for rel, packed in self.deploy.get('seed', {}).items():
+                data = _hzlib.decompress(_hb64.b64decode(packed))
+                by_sha[_hsha.sha256(data).hexdigest()[:32]] = by_rel[rel] = data
+            for rel, text in self.static_files.items():
+                data = text.encode('utf-8')
+                by_sha[_hsha.sha256(data).hexdigest()[:32]] = data
+            # an operator may name files whose seed version may stand in when their body is lost
+            # (set per build with QN_REPAIR_FROM_SEED; normal builds name none and stay strict)
+            named = set(self.deploy.get('repair_from_seed') or ())
+            self.store.fallback_bodies = lambda sha, rel: by_sha.get(sha) or (by_rel.get(rel) if rel in named else None)
+            self.store.repaired = []
             files, meta = self.store.load()
+            if self.store.repaired:
+                self.log('state store: lost file bodies taken from the shipped seed and written again with the next '
+                         'save: %s' % ', '.join(self.store.repaired))
             if files:
                 for rel, (data, mtime, size) in files.items():
                     if data is None:

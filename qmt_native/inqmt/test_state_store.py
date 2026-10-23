@@ -9,7 +9,9 @@ server, which drops connections):
   F. an empty pointer read while a state exists is retried, never a start from the seed;
   G. an empty store (read three times) starts fresh, a pointer that reads empty once is still found;
      a store with nothing complete is refused;
-  H. a damaged body of the committed snapshot is found by the read-back check and rewritten.
+  H. a damaged body of the committed snapshot is found by the read-back check and rewritten;
+  I. a lost body whose content is shipped in the strategy file is taken from there and rewritten;
+  J. a lost body of an operator-named file stands in from its seed version; others still refuse.
 
 Usage: python test_state_store.py HOST_PY   (default qn_host.py)
 """
@@ -216,6 +218,53 @@ def main():
     h_ok = clean == '' and bool(problem) and st.verify() == '' and files['g'][0] == B
     print('H. damaged body found by the read-back check and rewritten by the next save:', h_ok, '|', problem[:60])
     ok &= h_ok
+
+    # I. a body of both snapshots reads back empty but its content is shipped in the strategy file
+    #    (10-23: equity_ledger.json): taken from there, and written again by the next save
+    kv = KV()
+    st = Store(kv.get, kv.save, 'T')
+    st.save({'f': (A, 1.0, len(A)), 'g': (B, 1.0, len(B))}, {})
+    st.save({'f': (A, 2.0, len(A)), 'g': (B, 2.0, len(B))}, {})
+    b_key = 'T_F_%s_0' % hashlib.sha256(B).hexdigest()[:32]
+    kv.data[b_key] = ''
+    reader = Store(kv.get, kv.save, 'T')
+    try:
+        reader.load()
+        no_seed = False
+    except Exception:
+        no_seed = True
+    reader = Store(kv.get, kv.save, 'T')
+    reader.fallback_bodies = lambda sha, rel: {hashlib.sha256(B).hexdigest()[:32]: B}.get(sha)
+    files, meta = reader.load()
+    repaired = list(reader.repaired)
+    reader.save({'f': (A, 3.0, len(A)), 'g': (B, 3.0, len(B))}, {})
+    i_ok = no_seed and files['g'][0] == B and repaired == ['g'] and bool(kv.data.get(b_key))
+    files, meta = Store(kv.get, kv.save, 'T').load()
+    i_ok &= files['g'][0] == B
+    print('I. lost body with seed content restored from the seed and written again:', i_ok)
+    ok &= i_ok
+
+    # J. a lost body of a file an operator named stands in from the seed version (other content);
+    #    an unnamed file with no seed copy still refuses the start
+    kv = KV()
+    st = Store(kv.get, kv.save, 'T')
+    st.save({'f': (A, 1.0, len(A)), 'g': (B, 1.0, len(B))}, {})
+    st.save({'f': (A, 2.0, len(A)), 'g': (B, 2.0, len(B))}, {})
+    kv.data['T_F_%s_0' % hashlib.sha256(B).hexdigest()[:32]] = ''
+    old_seed = b'seed version of g'
+    reader = Store(kv.get, kv.save, 'T')
+    reader.fallback_bodies = lambda sha, rel: old_seed if rel == 'g' else None
+    files, meta = reader.load()
+    j_ok = files['g'][0] == old_seed and files['g'][2] == len(old_seed) and files['f'][0] == A
+    reader = Store(kv.get, kv.save, 'T')
+    reader.fallback_bodies = lambda sha, rel: None
+    try:
+        reader.load()
+        j_ok = False
+    except RuntimeError:
+        pass
+    print('J. operator-named file stands in from its seed version; unnamed loss still refused:', j_ok)
+    ok &= j_ok
     print('RESULT', 'PASS' if ok else 'FAIL')
 
 
