@@ -83,8 +83,10 @@ class QnStateStore(object):
         self.slow_limit = 0.0
         self.last_call_seconds = 0.0
         self.saving = False
+        self.call_seconds = 0.0  # running total, for the host's status line
 
     def _check_slow(self, what):
+        self.call_seconds += self.last_call_seconds
         if self.saving and self.slow_limit and self.last_call_seconds > self.slow_limit:
             raise RuntimeError('%s took %.0fs (broker trade server slow); save given up' % (
                 what, self.last_call_seconds))
@@ -247,6 +249,8 @@ class QnHost(object):
     STORE_DAY_END = 20
     STORE_BACKOFF_MAX = 1800.0
     # every call blocks the QMT callback thread (and the engine's bridge heartbeat with it)
+    # Periodic saves only: the save before an order and the save on stop must complete (an order
+    # is refused when its save fails; 10-23 morning single calls took 5-18 s several times an hour).
     STORE_SLOW_CALL = 5.0
 
     def __init__(self, C, qmt_globals, deploy, modules, static_files, market=None, broker=None, store=None):
@@ -260,8 +264,6 @@ class QnHost(object):
         self.market = market
         self.broker = broker
         self.store = store
-        if store is not None:
-            store.slow_limit = self.STORE_SLOW_CALL
         self.engine = None
         self.daemon_thread = None
         self.daemon_restarts = 0
@@ -277,6 +279,8 @@ class QnHost(object):
         self.status_last = 0.0
         self.bg_lag = []        # how late a background thread woke from a 20 ms sleep (seconds)
         self.yield_ticks = [0, 0]  # [ticks that handed the lock to background threads, ticks]
+        self.save_stats = [0, 0]   # [state saves completed, attempted] since the last status line
+        self.save_seconds_mark = 0.0
         self.boot_pending = False
         self.boot_retry_at = 0.0
         if deploy.get('store_day_hours'):  # tests only
@@ -758,8 +762,11 @@ class QnHost(object):
             if not force and fingerprint == self.persist_clock:
                 self.persist_last = now
                 return
+            self.store.slow_limit = 0.0 if force else self.STORE_SLOW_CALL
+            self.save_stats[1] += 1
             self.persist_meta = self.store.save(files, dict(release=self.deploy.get('release'), reason=reason,
                                                             inventory=inventory))
+            self.save_stats[0] += 1
             self.persist_clock = fingerprint
             self.persist_last = now
             self.persist_error = ''
@@ -858,7 +865,13 @@ class QnHost(object):
         lag, self.bg_lag = self.bg_lag, []
         ticks, self.yield_ticks = self.yield_ticks, [0, 0]
         avg = sum(lag) / len(lag) if lag else 0.0
-        return 'bg_lag=%dms/%dms n=%d yield=%d/%d' % (avg * 1000, max(lag or [0]) * 1000, len(lag), ticks[0], ticks[1])
+        text = 'bg_lag=%dms/%dms n=%d yield=%d/%d' % (avg * 1000, max(lag or [0]) * 1000, len(lag), ticks[0], ticks[1])
+        if self.store is not None:
+            spent = self.store.call_seconds - self.save_seconds_mark
+            self.save_seconds_mark = self.store.call_seconds
+            saves, self.save_stats = self.save_stats, [0, 0]
+            text += ' saves=%d/%d kv=%.1fs' % (saves[0], saves[1], spent)
+        return text
 
     SILENT_SCRIPT_SECONDS = 300.0
 
