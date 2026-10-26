@@ -1,17 +1,21 @@
 # coding: utf-8
 """vm_scripts/qmt_notify_forwarder.py against fake QMT logs (GBK) and a fake Bark server:
 backlog skipped on first start, live lines sent once, shadow lines ignored, half-written lines
-waited for, next day's file picked up, exported files rebuilt byte for byte.
+waited for, next day's file picked up, exported files rebuilt byte for byte; no status line of the
+live copy for 10 minutes -> one alarm (none for another strategy's lines), then one recovery push.
 
 Usage: python3 test_forwarder.py   (Mac Python 3, no QMT needed)
 """
 import base64
+import datetime
 import http.server
+import json
 import os
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 import urllib.parse
 import zlib
 
@@ -75,6 +79,65 @@ def main():
     same = os.path.exists(rebuilt) and open(rebuilt, 'rb').read() == data
     print('export parts', len(parts), 'rebuilt identical:', same)
     ok &= same
+
+    state_file = os.path.join(local, 'A_System', 'qmt_native', 'qmt_notify_forwarder.json')
+    day2 = os.path.join(logs, 'XtClient_FormulaOutput_20261023.log')
+
+    def status(strategy):
+        with open(day2, 'ab') as f:
+            f.write(('2026-10-23 18:04:02,425 [INFO] [0x00001f48] reqid = 0C:\\QMT\\GJQMT\\python\\%s.py_000300119, '
+                     'output = [A_SYSTEM] 18:04:02 status: daemon_alive=True 中文\r\n' % strategy).encode('gbk'))
+
+    def edit_state(**values):
+        state = json.load(open(state_file, encoding='utf-8'))
+        state.update(values)
+        json.dump(state, open(state_file, 'w', encoding='utf-8'))
+        return state
+
+    def titles():
+        return [g.split('/')[2] for g in GOT[len(want):]]
+
+    status('A_SYSTEM_QMT_INNER')
+    run()
+    fresh = time.time() - json.load(open(state_file, encoding='utf-8'))['alive_at'] < 30
+    edit_state(alive_at=time.time() - 700)  # 11+ minutes without a status line
+    run()
+    run()
+    status('A_SYSTEM_SHADOW')              # another strategy's status line is no sign of life
+    run()
+    alarm = titles()
+    print('stall: alive_at fresh after a status line:', fresh, '| pushes while silent:', alarm)
+    ok &= fresh and alarm == ['🛑 A_System策略已停止输出'] and '11分钟' in GOT[-1]
+    edit_state(stall_alarm_at=time.time() - 3700)  # an hour later: a reminder, except at night (Beijing)
+    run()
+    hhmm = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8))).strftime('%H%M')
+    reminder = ['🛑 A_System策略已停止输出'] if '0700' <= hhmm < '2300' else []
+    print('reminder after an hour (Beijing %s):' % hhmm, titles()[1:])
+    ok &= titles()[1:] == reminder and (not reminder or '第2次提醒' in GOT[-1])
+    status('A_SYSTEM_QMT_INNER')
+    run()
+    run()
+    print('after output resumes:', titles()[1 + len(reminder):])
+    ok &= titles()[1 + len(reminder):] == ['✅ A_System策略已恢复输出']
+    # reminders by the Beijing clock, independent of when this test runs
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('fwd', FORWARDER)
+    fwd = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fwd)
+    pushed = []
+    fwd.send = lambda base, path: pushed.append(urllib.parse.unquote(path)) or True
+    fwd.log = lambda text: None
+    bj = datetime.timezone(datetime.timedelta(hours=8))
+    day = datetime.datetime(2026, 10, 27, 10, 0, tzinfo=bj).timestamp()
+    night = datetime.datetime(2026, 10, 27, 0, 30, tzinfo=bj).timestamp()
+    for label, now, want_n in (('10:00', day, 2), ('00:30', night, 1)):
+        pushed[:] = []
+        state = {'alive_at': now - 700}
+        fwd.check_stall(state, 'http://b', now, 600)
+        fwd.check_stall(state, 'http://b', now + 1800, 600)   # half an hour later: nothing new
+        fwd.check_stall(state, 'http://b', now + 3700, 600)   # an hour later: reminder unless at night
+        print('stall at %s: %d pushes, last: %s' % (label, len(pushed), pushed[-1][:60]))
+        ok &= len(pushed) == want_n and ('第2次提醒' in pushed[-1]) == (want_n == 2)
     print('RESULT', 'PASS' if ok else 'FAIL')
 
 
