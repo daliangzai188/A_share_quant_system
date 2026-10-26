@@ -16,6 +16,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.qmt_native_mode import native_settings, status_lines, task_state
 from src.runtime_stop_state import load_manual_stop
 
 
@@ -73,6 +74,15 @@ def ensure_runtime() -> int:
     if sys.platform != "win32":
         print("本脚本只在 Windows 虚拟机内运行。")
         return 2
+
+    native = native_settings(PROJECT_ROOT)
+    if native is not None:
+        # QMT 原生版：A_System 在 QMT 内置 Python 里运行，这里绝不启动 daemon/keeper；
+        # 只补启动 QMT 外的推送转发计划任务（转发推送、策略停摆时报警）。
+        _, lines = status_lines(native, ensure_forwarder=True)
+        for line in lines:
+            print(line)
+        return 0 if task_state(str(native.get("forwarder_task") or "A_System_QmtNotifyForwarder")) == "Running" else 1
 
     manual_stop = load_manual_stop(PROJECT_ROOT)
     if manual_stop is not None:

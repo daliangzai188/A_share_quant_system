@@ -23,6 +23,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from dotenv import load_dotenv
 
 from src.account_privacy import mask_account_id, public_account_data
+from src.qmt_native_mode import live_status, native_settings, status_lines
 from src.qmt_adapter import QMTBrokerAdapter, first_present, to_float, to_int
 from src.utils.config import load_json_config
 
@@ -233,6 +234,25 @@ def print_report(report: dict[str, Any]) -> None:
     print("说明：本工具全程只读，没有下单、撤单或发送通知。")
 
 
+def native_report(settings: dict[str, Any], output: Path) -> int:
+    """QMT 原生版：程序在 QMT 内置 Python 里，状态来自 QMT 的策略日志（旧 daemon/桥接已不使用）。"""
+    healthy, lines = status_lines(settings)
+    live = live_status(settings)
+    report = {
+        "checked_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "mode": "qmt_native",
+        "healthy": healthy,
+        "lines": lines,
+        "live": {k: (v.isoformat(sep=" ") if isinstance(v, datetime) else v) for k, v in live.items()},
+    }
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print("A_System 运行在 QMT 内置 Python 里（原生版，%s 起）" % settings.get("since", "2026-10-22"))
+    for line in lines:
+        print(line)
+    return 0 if healthy else 1
+
+
 def main() -> int:
     args = parse_args()
     load_dotenv(PROJECT_ROOT / ".env", override=True)
@@ -240,6 +260,9 @@ def main() -> int:
     output = Path(args.output)
     if not output.is_absolute():
         output = PROJECT_ROOT / output
+    native = native_settings(PROJECT_ROOT)
+    if native is not None:
+        return native_report(native, output)
     report: dict[str, Any] = {
         "checked_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "runtime": local_runtime_status(config),

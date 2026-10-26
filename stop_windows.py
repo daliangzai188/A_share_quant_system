@@ -10,7 +10,11 @@ ROOT = Path(__file__).absolute().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from src.qmt_native_mode import native_settings, status_lines
 from src.runtime_stop_state import write_manual_stop
+
+# QMT 原生版下本命令只清理旧系统（外部守护进程）的残留；QMT 里的 A_System 要在 QMT 里停。
+NATIVE = native_settings(ROOT)
 
 pid_file = ROOT / ".daemon_pid"
 d_monitor_pid_file = ROOT / "logs" / "strategy_d_monitor.pid"
@@ -307,6 +311,17 @@ except Exception as exc:
     )
     raise SystemExit(1)
 
+if NATIVE is not None:
+    print(
+        YELLOW
+        + f"{timestamp()} | 注意：A_System 现在运行在 QMT 内置 Python 里。本命令只清理旧系统（外部守护进程）"
+        "的残留，不会停止 QMT 里的 A_System，也不影响交易。"
+        + RESET,
+        flush=True,
+    )
+    for line in status_lines(NATIVE)[1]:
+        print(f"{timestamp()} | {line}", flush=True)
+
 # 目标进程集合：pid 文件（精确、毫秒级）优先；子进程由 _stop_and_verify 的
 # 进程树清理带走。只有 pid 文件找不到任何存活进程时，才用命令行扫描兜底找孤儿——
 # 全盘 CIM 扫描要十几秒且吃CPU/IO，每次都跑曾把停止拖到 62 秒、虚拟机卡到重启。
@@ -353,7 +368,7 @@ keeper_pid_file.unlink(missing_ok=True)
 
 if all_ok:
     print(GREEN + f"{timestamp()} | 已清理 {cleared} 个进程，全部停止确认，可安全重启。" + RESET, flush=True)
-    if cleared > 0:
+    if cleared > 0 and NATIVE is None:  # 原生版下交易并未暂停，不能推送“实盘自动交易已暂停”
         _notify_stopped_async()
 else:
     print(YELLOW + f"{timestamp()} | 部分进程未确认停止；先看任务管理器或再次执行 stop，勿立即启动。" + RESET, flush=True)

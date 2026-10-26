@@ -38,6 +38,28 @@ class WindowsPowerAuditTest(unittest.TestCase):
 
 
 class EnsureWindowsRuntimeTest(unittest.TestCase):
+    def setUp(self) -> None:
+        # the legacy daemon/keeper paths below; the QMT-native path has its own test
+        legacy = patch.object(ensure_windows_runtime, "native_settings", return_value=None)
+        legacy.start()
+        self.addCleanup(legacy.stop)
+
+    def test_qmt_native_never_starts_daemon_and_keeps_forwarder_running(self) -> None:
+        settings = {"enabled": True, "forwarder_task": "A_System_QmtNotifyForwarder"}
+        with patch.object(ensure_windows_runtime, "native_settings", return_value=settings), patch.object(
+            ensure_windows_runtime, "status_lines", return_value=(True, ["ok"])
+        ) as status, patch.object(ensure_windows_runtime, "task_state", return_value="Running"), patch.object(
+            ensure_windows_runtime, "runtime_status", return_value=(False, False, None, None)
+        ), patch.object(ensure_windows_runtime.subprocess, "run") as run, patch.object(
+            ensure_windows_runtime.subprocess, "Popen"
+        ) as popen, patch.object(ensure_windows_runtime.sys, "platform", "win32"):
+            result = ensure_windows_runtime.ensure_runtime()
+
+        self.assertEqual(result, 0)
+        status.assert_called_once_with(settings, ensure_forwarder=True)
+        run.assert_not_called()
+        popen.assert_not_called()
+
     def test_healthy_runtime_never_restarts(self) -> None:
         with patch.object(
             ensure_windows_runtime,
