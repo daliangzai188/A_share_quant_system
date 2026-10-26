@@ -2159,6 +2159,30 @@ class _SysProxy(_types.ModuleType):
         return getattr(_sys, name)
 
 
+# ---------------------------------------------------------------- source lines (no disk)
+# Tracebacks, warnings and stack summaries fetch source lines through linecache, which opens the
+# file named in the code object. The embedded modules are compiled as /A_System/<rel>; on the VM
+# that path is the old production checkout, so every status line opened
+# C:/A_System/scripts/trading_daemon.py, which QMT logs as "python open file" since the broker's
+# file/network restriction (in force from the QMT restart of 10-27). Source lines now come from the
+# embedded sources; any other file shows no source line instead of being read from disk.
+import linecache as _linecache
+
+QN_SOURCE_LINES = {}
+
+
+def _qn_updatecache(filename, module_globals=None):
+    lines = QN_SOURCE_LINES.get(filename)
+    if lines is None:
+        _linecache.cache.pop(filename, None)
+        return []
+    _linecache.cache[filename] = (sum(len(line) for line in lines), None, lines, filename)  # mtime None: never re-checked
+    return lines
+
+
+_linecache.updatecache = _qn_updatecache
+
+
 # ---------------------------------------------------------------- module loader
 class QnCodeBase(object):
     """Embedded sources compiled once and shared by every module set."""
@@ -2169,6 +2193,7 @@ class QnCodeBase(object):
         self.codes = {}
         for name, (rel, is_pkg, src) in modules.items():
             self.codes[name] = compile(src, root + '/' + rel, 'exec')
+            QN_SOURCE_LINES[root + '/' + rel] = src.splitlines(True)
         self.by_path = dict((root + '/' + rel, name) for name, (rel, is_pkg, src) in modules.items())
 
 

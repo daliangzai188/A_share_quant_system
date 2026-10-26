@@ -20,6 +20,8 @@ echo "== state store";    (cd inqmt && $PY test_state_store.py qn_host.py > "../
 echo "== save stall";     PYTHONIOENCODING=utf-8 $PY inqmt/test_save_stall.py "$S" > "$O/save_stall.txt" 2>&1; grep -E "RESULT|hang lasted|bridge-lost" "$O/save_stall.txt"
 echo "== gil yield";      PYTHONIOENCODING=utf-8 $PY inqmt/test_gil_yield.py "$S" > "$O/gil_yield.txt" 2>&1; grep -E "^[0-9]\.|RESULT" "$O/gil_yield.txt"
 echo "== state reset";    PYTHONIOENCODING=utf-8 $PY inqmt/test_state_reset.py "$S" > "$O/state_reset.txt" 2>&1; grep -E "^[0-9]\. |^RESULT" "$O/state_reset.txt"
+echo "== no disk reads";  PYTHONIOENCODING=utf-8 $PY inqmt/test_no_disk_reads.py "$S" > "$O/no_disk_reads.txt" 2>&1; grep -E "^[0-9]\. |^RESULT" "$O/no_disk_reads.txt"
+echo "== store link";     PYTHONIOENCODING=utf-8 $PY inqmt/test_store_link.py "$S" > "$O/store_link.txt" 2>&1; grep -E "^[0-9]\. |^RESULT" "$O/store_link.txt"
 echo "== tracebacks";     grep -c Traceback "$O"/*.txt
 [ -n "$SKIP_DRILL" ] && exit 0
 echo "== drill 10-13 15:25 -> 10-15 15:15"

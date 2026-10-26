@@ -61,6 +61,21 @@ def _bj_now():
     return _hdt.datetime.now(_hdt.timezone(_hdt.timedelta(hours=8)))
 
 
+def _status_text(status):
+    return ', '.join('%s=%s' % kv for kv in status) or 'no status field'
+
+
+def _qn_where(frame, depth):
+    """'file:line function' of the innermost frames, read from the frames alone (traceback's
+    stack summaries look up source lines, which may read files from disk)."""
+    out = []
+    while frame is not None and len(out) < depth:
+        code = frame.f_code
+        out.append('%s:%s %s' % (code.co_filename.replace('\\', '/').rsplit('/', 1)[-1], frame.f_lineno, code.co_name))
+        frame = frame.f_back
+    return ' <- '.join(out)
+
+
 class QnStateStore(object):
     """Content-addressed VFS snapshot in QMT's key-value store.
 
@@ -393,6 +408,14 @@ class QnHost(object):
     STORE_SLOW_CALL = 5.0
     STORE_SLOW_CALL_OFF_HOURS = 30.0
     TRADING_SESSION = ('0910', '1505')
+    # 10-24: the trade server dropped at 17:48; periodic saves failed at once ("200000 未建立连接")
+    # and were retried 1, 2, 4 and 8 minutes apart; the fifth call (18:04:06) never returned and
+    # froze QMT's Python (output, pushes, orders) until QMT itself was restarted on 10-27. A call
+    # that does not return cannot be undone from Python, so after a failure that says the trade
+    # server is unreachable, periodic saves wait 30 minutes, then 1 and 2 hours (a call that was
+    # merely slow keeps the short backoff). Matched on the error text, not on key names.
+    STORE_LINK_ERRORS = ('(200000,', u'未建立连接', '(10060,', 'timed out', 'End of file')
+    STORE_LINK_BACKOFF = (1800.0, 3600.0, 7200.0)
 
     def __init__(self, C, qmt_globals, deploy, modules, static_files, market=None, broker=None, store=None):
         self.C = C
@@ -431,6 +454,12 @@ class QnHost(object):
         self.persist_failures = 0
         self.persist_retry_at = 0.0
         self.persist_night_logged = ''
+        # status fields of the broker account object (read from the engine's own queries): the
+        # values seen while the key-value store works mean "trade server reachable"
+        self.account_status = None
+        self.account_status_good = set()
+        self.account_status_learn = False
+        self.store_waits_for_link = False
         self.exported = {}
         self.cache_thread = None
         self.cache_done = ''
@@ -549,6 +578,7 @@ class QnHost(object):
                 type(exc).__name__, exc, self.BOOT_RETRY_SECONDS))
             return
         self.boot_pending = False
+        self.account_status_learn = self.store is not None  # the store was just read: link is up
         settings = self._write_runtime_config()
         QN_NOTIFY_MODE[0] = 'live' if self.deploy.get('mode') == 'live' else 'shadow'
         if not QN_ENVIRON.get('BARK_URL'):
@@ -678,7 +708,15 @@ class QnHost(object):
             api = dict(get_trade_detail_data=self.broker.get_trade_detail_data, passorder=self.broker.passorder,
                        cancel=self.broker.cancel, download_history_data=self.g['download_history_data'])
         real_passorder = api['passorder']
+        real_query = api['get_trade_detail_data']
         host = self
+
+        def get_trade_detail_data(account, market, kind, *rest):
+            rows = real_query(account, market, kind, *rest)
+            if str(kind).lower() == 'account':
+                host._note_account_status(rows)
+            return rows
+        api['get_trade_detail_data'] = get_trade_detail_data
 
         def passorder(*args, **kwargs):
             if host.stopped or QN_SHUTDOWN[0]:
@@ -689,6 +727,31 @@ class QnHost(object):
             return real_passorder(*args, **kwargs)
         api['passorder'] = passorder
         return api
+
+    def _note_account_status(self, rows):
+        """Status fields of the account object the engine queries every minute anyway (no extra
+        QMT call): logged when they change; periodic saves wait while they differ from the
+        values seen when the key-value store last worked."""
+        try:
+            row = rows[0] if rows else None
+            if row is None:
+                return
+            names = sorted(n for n in dir(row) if n.startswith('m_') and 'status' in n.lower())
+            status = tuple((n, str(getattr(row, n, ''))) for n in names)
+        except Exception:
+            return
+        if status != self.account_status:
+            self.log('trade account status: %s%s' % (
+                _status_text(status), '' if self.account_status is None else ' (was %s)' % _status_text(self.account_status)))
+            self.account_status = status
+        if self.account_status_learn:
+            self.account_status_learn = False
+            self.account_status_good.add(status)
+
+    def store_link_down(self):
+        """True while the account shows a status the key-value store has not worked with."""
+        return bool(self.account_status and self.account_status_good
+                    and self.account_status not in self.account_status_good)
 
     # ------------------------------------------------------------------ daemon thread
     def _start_daemon(self):
@@ -947,6 +1010,15 @@ class QnHost(object):
                     self.log('night: periodic state saves paused until %02d:00 (broker trade server '
                              'disconnects at night)' % self.STORE_DAY_START)
                 return
+            if self.store_link_down():
+                if not self.store_waits_for_link:
+                    self.store_waits_for_link = True
+                    self.log('periodic state saves wait: trade account shows %s; the state store worked with %s' % (
+                        _status_text(self.account_status), ' / '.join(sorted(_status_text(g) for g in self.account_status_good))))
+                return
+            if self.store_waits_for_link:
+                self.store_waits_for_link = False
+                self.log('trade account status back to %s: periodic state saves resume' % _status_text(self.account_status))
             interval = self.PERSIST_INTERVAL_BUSY if self._background_busy() else self.PERSIST_INTERVAL
             if now < self.persist_retry_at or now - self.persist_last < interval:
                 return
@@ -970,12 +1042,16 @@ class QnHost(object):
             if self.persist_failures:
                 self.log('state save works again after %d failed attempts' % self.persist_failures)
             self.persist_failures = 0
+            if self.account_status is not None:
+                self.account_status_good.add(self.account_status)  # the store works with this status
             self.persist_retry_at = 0.0
             self._verify_store(force)
         except Exception as exc:
             self.persist_error = '%s: %s' % (type(exc).__name__, exc)
             self.persist_failures += 1
             delay = min(self.STORE_BACKOFF_MAX, 60.0 * (2 ** min(self.persist_failures - 1, 6)))
+            if any(mark in self.persist_error for mark in self.STORE_LINK_ERRORS):
+                delay = self.STORE_LINK_BACKOFF[min(self.persist_failures, len(self.STORE_LINK_BACKOFF)) - 1]
             self.persist_retry_at = _htime.time() + delay
             self.log('STATE SAVE FAILED (%s, attempt %d, next periodic try in %ds): %s' % (
                 reason, self.persist_failures, delay, self.persist_error))
@@ -1011,8 +1087,7 @@ class QnHost(object):
                 import sys as _hsys
                 frame = _hsys._current_frames().get(self.daemon_thread.ident) if self.daemon_thread else None
                 if frame is not None:
-                    stack = _htb.extract_stack(frame)[-4:]
-                    where = ' <- '.join('%s:%s %s' % (f[0].rsplit('/', 1)[-1], f[1], f[2]) for f in reversed(stack))
+                    where = _qn_where(frame, 4)
             except Exception as exc:
                 where = 'stack unavailable: %s' % exc
             self._export_files()
@@ -1089,9 +1164,7 @@ class QnHost(object):
                     continue
                 proc._qn_reported = now
                 frame = frames.get(thread.ident)
-                stack = _htb.extract_stack(frame)[-12:] if frame is not None else []
-                where = ' <- '.join('%s:%s %s' % (f[0].replace('\\', '/').rsplit('/', 1)[-1], f[1], f[2])
-                                    for f in reversed(stack))
+                where = _qn_where(frame, 12) if frame is not None else ''
                 self.log('script %s silent for %ds (running %ds%s); at: %s' % (
                     thread.name, quiet, now - getattr(proc, 'started', now), ', killed' if proc.killed else '',
                     where or 'no frame'))
