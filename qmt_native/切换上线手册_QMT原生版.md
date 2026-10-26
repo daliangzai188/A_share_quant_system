@@ -59,7 +59,11 @@
   - 引擎每分钟本来就查一次资金账号；宿主顺带读账号对象里名字含 status 的字段（不多调用 QMT），变化时记日志 `trade account status: …`。状态存储能读写时出现过的状态视为“交易服务器可用”；账号显示其他状态时，定时保存一次键值调用都不做（日志 `periodic state saves wait`），恢复后继续（`periodic state saves resume`）。下单前的保存不受影响（失败照旧不下单）。真实断线时字段取什么值还要等下一次断线确认，确认前若字段不变化，这一层不起作用，仍有上面的长退避。
 - 券商限制生效核查（10-27 00:05 QMT 重启登录后弹出《关于QMT系统内置Python部分功能调整的通知》，10-24 发布）：重启后 QMT 的 `XtClient_Formula_YYYYMMDD.log` 逐条记录内置 Python 打开的文件（`python open file: …`），账户权限多了 `m_nPythonOpFile` / `m_nPythonConnectNet`；10-22 起一直运行的旧 QMT 进程没有这些记录。我们的程序没有联网记录、没有“非法IP”提示，但每 20 秒的状态行（取后台线程调用栈）经 linecache 读源码，打开了 `C:/A_System/scripts/trading_daemon.py`（虚拟机上旧系统的同名文件），出错信息和警告也会这样读。修复（release 202610262343 起）：源码行一律取策略文件内嵌的源码（`QN_SOURCE_LINES`），其他文件不再从磁盘读源码行；状态行直接读调用栈帧。测试 `inqmt/test_no_disk_reads.py`（模拟虚拟机上存在 `C:\A_System`）：旧版 45 秒读 9 次文件，新版 0 次。部署后核查方法：`XtClient_Formula_YYYYMMDD.log` 里策略启动后不再出现 `python open file: C:/A_System/…`。`rzrkModuleCheckError: py.path` 是 pandas 0.22 每次读写表格时试探可选模块 `py.path`（未安装）被 QMT 模块检查记下，10-24 旧进程里就有，不涉及文件或网络。
 - 停摆报警（QMT 外）：`qmt_notify_forwarder.py` 监视实盘副本（策略文件 `A_SYSTEM_QMT_INNER`）每 20 秒一行的状态行，10 分钟没有就自己推送“🛑 A_System策略已停止输出”，之后每小时提醒一次（23:00–07:00 不提醒），恢复输出时推送“✅ A_System策略已恢复输出”。其他推送都从 QMT 里发出，QMT 卡死时原本完全没有提示。更新转发程序后执行 `Stop-ScheduledTask A_System_QmtNotifyForwarder; Start-ScheduledTask A_System_QmtNotifyForwarder`。
-- 旧架构的 `stop_windows.py` / `start_windows.py`（外部守护进程 + 文件桥）10-22 起不再使用，也无法在禁令下工作；原生版只需 QMT 登录后 `A_SYSTEM` 自动运行（已设随 QMT 启动）。
+- Windows 上的旧入口已适配原生版（主仓库 `config/qmt_native.json` 的 `enabled: true`，代码 `src/qmt_native_mode.py`，10-27 起）：
+  - `py -3.11 start_windows.py`：不再启动外部守护进程（含 keeper/计划任务的自动恢复），改为报告 QMT 是否在运行、QMT 里 A_SYSTEM 最后一次状态行（超过 10 分钟没有即判异常）、最近的账户检查、推送转发计划任务（没在运行就启动它）；
+  - `py -3.11 stop_windows.py`：照旧清理旧系统残留并登记人工停机，同时说明它不会停止 QMT 里的 A_System，不再推送“实盘自动交易已暂停”；
+  - `查看交易状态.cmd`（`scripts/show_trading_status.py`）与登录/每日 08:15 的 `scripts/ensure_windows_runtime.py`：显示同样的原生版状态，后者只补启动推送转发。
+  - 停止/恢复 QMT 里的 A_System：QMT →“模型交易”→ `A_SYSTEM` 行点 ■ / ▶；QMT 卡住时退出 QMT 重新登录（策略随 QMT 自动启动）。
 - 模型交易（实盘运行）下，后台线程拿到 Python 全局锁的机会远少于编辑器“运行”模式（10-22 晚实测收盘流水线慢 4–35 倍、QMT 进程几乎空闲，第⑬步两次 30 分钟超时）。宿主在有收盘脚本或数据任务时，每个节拍末尾休眠 80 毫秒把锁让给后台线程，其余时间每节拍让出 20 毫秒（空闲时后台线程每次拿锁要等约 80–100 毫秒，守护进程每次 sqlite 调用、与引擎的每次往返都要多等一个节拍）；状态行 `bg_lag=均值/最大 yield=让出次数/节拍数` 可直接看到后台是否被饿住。
 - 收盘脚本 5 分钟没有输出时，宿主每 5 分钟把它的调用栈写进策略日志（`script … silent for …; at: …`），卡在哪里一看便知。超时终止的采集脚本会在下一个检查点（每 500 只股票）退出，不再在后台与重试并行。
 - QMT 夜间断线时，内置 Python 可能整体暂停（10-20 03:00 生产桥自行恢复；10-21 21:19 起暂停）。交易日 08:30 前确认 QMT 已登录、交易连接为绿色。
