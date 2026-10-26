@@ -205,6 +205,8 @@ def main():
               'state_prefix': os.environ.get('QN_STATE_PREFIX', ''),
               # one-off operator repair: files whose seed version may replace a lost state body
               'repair_from_seed': [p for p in os.environ.get('QN_REPAIR_FROM_SEED', '').split(',') if p],
+              # one-off operator reset: start from the seed after 3 starts found no complete snapshot
+              'reset_if_broken': int(os.environ.get('QN_RESET_STATE_IF_BROKEN', '') == '1'),  # JSON-safe
               'debug_export_dir': r'C:\qn_shadow_out' if mode == 'shadow' else ''}
     blob = pack(source.encode('utf-8'))
     lines = ['# coding: gbk',

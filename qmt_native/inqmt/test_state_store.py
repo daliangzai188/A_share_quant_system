@@ -13,7 +13,8 @@ server, which drops connections):
   I. a lost body whose content is shipped in the strategy file is taken from there and rewritten;
   J. a lost body of an operator-named file stands in from its seed version; others still refuse;
   K. a cleared key is never written again: content that comes back gets a new body id, and a
-     clear landing late on the old key leaves the snapshot intact; each save has its own manifest.
+     clear landing late on the old key leaves the snapshot intact; each save has its own manifest;
+  L. a read the server does not answer is "unreadable for now", never a broken snapshot.
 
 Usage: python test_state_store.py HOST_PY   (default qn_host.py)
 """
@@ -300,6 +301,23 @@ def main():
     k_ok &= kv.data.get('T_M%s_0' % first_mid) == '' and len(mids) == 2
     print('K. cleared keys never written again; late clear harmless; old manifests cleared:', k_ok, '| live manifests', len(mids))
     ok &= k_ok
+
+    # L. the server does not answer while a snapshot is read: "unreadable for now" (retried),
+    #    never reported as a broken snapshot (which an operator reset may act on)
+    kv = KV()
+    st = Store(kv.get, kv.save, 'T')
+    st.save({'f': (A, 1.0, len(A))}, {})
+    st.save({'f': (B, 2.0, len(B))}, {})
+    real_get = kv.get
+    kv.get = lambda key: ('', 200000, u'未建立连接') if key.startswith('T_F_') else real_get(key)
+    try:
+        Store(kv.get, kv.save, 'T').load()
+        l_ok = False
+    except RuntimeError as exc:
+        l_ok = str(exc).startswith('get_py_key(') and 'no complete state snapshot' not in str(exc)
+    kv.get = real_get
+    print('L. read failure while loading -> retried, not a broken snapshot:', l_ok)
+    ok &= l_ok
     print('RESULT', 'PASS' if ok else 'FAIL')
 
 

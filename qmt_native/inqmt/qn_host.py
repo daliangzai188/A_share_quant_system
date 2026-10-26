@@ -259,6 +259,8 @@ class QnStateStore(object):
                     meta['restored_from'] = '%s (%s)' % (label, '; '.join(errors))
                 return files, meta
             except Exception as exc:
+                if self._read_failure(exc):
+                    raise  # the server did not answer: unreadable for now, not a broken snapshot
                 errors.append('%s %s unreadable: %s: %s' % (label, candidate.split(':')[0], type(exc).__name__, exc))
                 self.known, self.previous = {}, {}
         # Neither pointer names a complete snapshot: a write that outlived its save's wait can land
@@ -270,6 +272,8 @@ class QnStateStore(object):
                 if best is None or found[2] > best[2]:
                     best = found
             except Exception as exc:
+                if self._read_failure(exc):
+                    raise
                 errors.append('slot %s: %s' % (slot, exc))
         if best is not None:
             try:
@@ -277,9 +281,16 @@ class QnStateStore(object):
                 meta['restored_from'] = 'manifest slot %s saved at %s (%s)' % (best[0][:1], best[2], '; '.join(errors))
                 return files, meta
             except Exception as exc:
+                if self._read_failure(exc):
+                    raise
                 errors.append('slot %s files: %s: %s' % (best[0][:1], type(exc).__name__, exc))
                 self.known, self.previous = {}, {}
         raise RuntimeError('no complete state snapshot; refusing a partial state (%s)' % '; '.join(errors))
+
+    @staticmethod
+    def _read_failure(exc):
+        text = str(exc)
+        return text.startswith('get_py_key(') or 'QMT data call' in text
 
     def _scan_slot(self, slot):
         """Read a manifest slot chunk by chunk until the chunks read so far form a complete zlib
@@ -366,6 +377,7 @@ class QnHost(object):
     VERIFY_INTERVAL = 7200.0
     DAEMON_RESTART_DELAY = 60.0
     BOOT_RETRY_SECONDS = 60.0
+    RESET_AFTER_BROKEN_BOOTS = 3
     # QMT's key-value store goes through the broker's trade server, which disconnects at night
     # (calls then fail, time out, or may not return at all). Periodic saves run in the day only,
     # back off after a failure, and night-time state (the evening pipeline catch-up) is either
@@ -413,6 +425,7 @@ class QnHost(object):
         self.save_seconds_mark = 0.0
         self.boot_pending = False
         self.boot_retry_at = 0.0
+        self.broken_boots = 0
         if deploy.get('store_day_hours'):  # tests only
             self.STORE_DAY_START, self.STORE_DAY_END = deploy['store_day_hours']
         self.persist_failures = 0
@@ -582,7 +595,23 @@ class QnHost(object):
             named = set(self.deploy.get('repair_from_seed') or ())
             self.store.fallback_bodies = lambda sha, rel: by_sha.get(sha) or (by_rel.get(rel) if rel in named else None)
             self.store.repaired = []
-            files, meta = self.store.load()
+            try:
+                files, meta = self.store.load()
+                self.broken_boots = 0
+            except RuntimeError as exc:
+                # Set per build with QN_RESET_STATE_IF_BROKEN (10-26: no trade since go-live, so the
+                # shipped seed of 10-22 plus the automatic catch-up equals the lost state). Only a
+                # snapshot that is broken in content counts, never a store that cannot be read.
+                if 'no complete state snapshot' not in str(exc) or not self.deploy.get('reset_if_broken'):
+                    raise
+                self.broken_boots += 1
+                if self.broken_boots < self.RESET_AFTER_BROKEN_BOOTS:
+                    raise
+                self.log('STATE RESET (operator-approved for this build): %d starts in a row found no complete '
+                         'snapshot; starting from the shipped seed (%s)' % (self.broken_boots, str(exc)[:300]))
+                self.store.known, self.store.previous = {}, {}
+                self.store.pointer = self.store.prev_pointer = ''
+                files, meta = None, None
             if self.store.repaired:
                 self.log('state store: lost file bodies taken from the shipped seed and written again with the next '
                          'save: %s' % ', '.join(self.store.repaired))
