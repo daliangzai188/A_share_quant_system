@@ -23,7 +23,8 @@ from an open handle.
 The live copy prints a status line every 20 s. When none arrives for 10 minutes (QMT's Python
 frozen, the strategy stopped, or QMT closed) this program pushes an alarm itself, repeats it
 hourly (not 23:00-07:00) and reports the recovery: every other push comes out of QMT, so a frozen
-QMT is otherwise silent (10-24 18:04 to 10-27 00:05 passed without a single push).
+QMT is otherwise silent (10-24 18:04 to 10-27 00:05 passed without a single push). A stop by the
+user (stop_windows.py leaves C:\\A_System\\.manual_stop.json until start_windows.py) raises no alarm.
 
 Usage: py -3.11 qmt_notify_forwarder.py [--logs GLOB] [--mode live] [--from-start] [--once]
                                         [--strategy A_SYSTEM_QMT_INNER] [--stall-minutes 10]
@@ -187,11 +188,20 @@ def stall_path(title: str, body: str) -> str:
     return '/%s/%s%s' % (urllib.parse.quote(title), urllib.parse.quote(body), STALL_QUERY)
 
 
-def check_stall(state: dict, base: str, now: float, stall_seconds: float) -> None:
-    """Push an alarm when the live copy has printed no status line for stall_seconds."""
+def check_stall(state: dict, base: str, now: float, stall_seconds: float, stopped_at: float | None = None) -> None:
+    """Push an alarm when the live copy has printed no status line for stall_seconds.
+
+    stopped_at: time of C:\\A_System\\.manual_stop.json (written by stop_windows.py, removed by
+    start_windows.py). A stop by the user is no stall; once status lines come again well after
+    it (strategy restarted some other way), alarms apply again."""
     alive = state.setdefault('alive_at', now)  # first start: count from now
     alarm = state.get('stall_alarm_at')
     silent = now - alive
+    if stopped_at is not None and stopped_at >= alive - 60:
+        if state.get('stall_quiet') != stopped_at:
+            state['stall_quiet'] = stopped_at
+            log('strategy stopped by the user at %s (Beijing): no stall alarm until it runs again' % bj_clock(stopped_at))
+        return
     if silent < stall_seconds:
         if alarm and base:
             body = 'QMT内A_SYSTEM在%s（北京时间）后停止输出，%s恢复，期间%d分钟。' % (
@@ -285,7 +295,9 @@ def main() -> None:
              alive=alive)
         first = False
         if watch:
-            check_stall(state, base, time.time(), args.stall_minutes * 60)
+            marker = ROOT / '.manual_stop.json'
+            check_stall(state, base, time.time(), args.stall_minutes * 60,
+                        marker.stat().st_mtime if marker.is_file() else None)
         save_state(state)
         if not args.once:
             maybe_run_checks(args.mode, runner)

@@ -130,6 +130,14 @@ def main():
     bj = datetime.timezone(datetime.timedelta(hours=8))
     day = datetime.datetime(2026, 10, 27, 10, 0, tzinfo=bj).timestamp()
     night = datetime.datetime(2026, 10, 27, 0, 30, tzinfo=bj).timestamp()
+    pushed[:] = []
+    state = {'alive_at': day - 700}
+    fwd.check_stall(state, 'http://b', day, 600, stopped_at=day - 690)      # stop_windows.py just after the last line
+    stopped_quiet = not pushed
+    state = {'alive_at': day - 700}
+    fwd.check_stall(state, 'http://b', day, 600, stopped_at=day - 5000)     # old marker, strategy ran again since
+    print('stall after a user stop: %d pushes; with an old stop marker: %d' % (0 if stopped_quiet else 1, len(pushed)))
+    ok &= stopped_quiet and len(pushed) == 1
     for label, now, want_n in (('10:00', day, 2), ('00:30', night, 1)):
         pushed[:] = []
         state = {'alive_at': now - 700}
