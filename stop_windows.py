@@ -10,10 +10,10 @@ ROOT = Path(__file__).absolute().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.qmt_native_mode import native_settings, native_stop
+from src.qmt_native_mode import native_settings, status_lines
 from src.runtime_stop_state import write_manual_stop
 
-# QMT 原生版：stop = 关闭 QMT（A_SYSTEM 和全部自动交易随之停止），随后照旧清理旧系统残留。
+# QMT 原生版下本命令只清理旧系统（外部守护进程）的残留；QMT 里的 A_System 要在 QMT 里停。
 NATIVE = native_settings(ROOT)
 
 pid_file = ROOT / ".daemon_pid"
@@ -35,10 +35,7 @@ PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 STILL_ACTIVE = 259
 
 
-def _notify_stopped_async(
-    title: str = "🔌 守护进程已停止",
-    body: str = "守护进程已手动停止，实盘自动交易已暂停。如需恢复请重新启动。",
-) -> None:
+def _notify_stopped_async() -> None:
     """后台发停止通知，不能阻塞停止脚本。
 
     Bark/网络偶发慢响应时，同步 notify 会让 stop_windows.py 看起来卡住。
@@ -55,8 +52,8 @@ def _notify_stopped_async(
                 sys.executable,
                 str(ROOT / "scripts" / "send_notify.py"),
                 "system_error",
-                title,
-                body,
+                "🔌 守护进程已停止",
+                "守护进程已手动停止，实盘自动交易已暂停。如需恢复请重新启动。",
             ],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -315,17 +312,15 @@ except Exception as exc:
     raise SystemExit(1)
 
 if NATIVE is not None:
-    # 人工停机标记已写好：QMT 客户端守护不会再把 QMT 拉起来，推送转发不报“策略停止输出”
-    native_code = native_stop(
-        NATIVE,
-        out=lambda line: print(f"{timestamp()} | {line}", flush=True),
-        notify=lambda: _notify_stopped_async(
-            "⏹ A_System 已停止",
-            "已按 stop_windows.py 关闭 QMT，A_SYSTEM 实盘自动交易已全部停止。恢复：py -3.11 start_windows.py",
-        ),
+    print(
+        YELLOW
+        + f"{timestamp()} | 注意：A_System 现在运行在 QMT 内置 Python 里。本命令只清理旧系统（外部守护进程）"
+        "的残留，不会停止 QMT 里的 A_System，也不影响交易。"
+        + RESET,
+        flush=True,
     )
-    if native_code != 0:
-        raise SystemExit(native_code)
+    for line in status_lines(NATIVE)[1]:
+        print(f"{timestamp()} | {line}", flush=True)
 
 # 目标进程集合：pid 文件（精确、毫秒级）优先；子进程由 _stop_and_verify 的
 # 进程树清理带走。只有 pid 文件找不到任何存活进程时，才用命令行扫描兜底找孤儿——
