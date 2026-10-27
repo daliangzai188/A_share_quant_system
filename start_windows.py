@@ -29,13 +29,13 @@ STILL_ACTIVE = 259
 
 root = Path(__file__).absolute().parent
 # QMT 原生版（2026-10-22 起，见 src/qmt_native_mode.py 与 config/qmt_native.json）：A_System 运行在
-# QMT 内置 Python 里。这里绝不再启动外部守护进程（含 keeper/计划任务的自动恢复，两套系统不能同时
-# 管一个账户），只报告 QMT 里的运行状态，并确认推送转发计划任务在运行。
-from src.qmt_native_mode import native_settings, start_report
+# QMT 内置 Python 里，随 QMT 自动运行。人工 start = 启动 QMT（必要时先关闭再打开）并确认 A_SYSTEM
+# 开始输出；绝不再启动外部守护进程（keeper/计划任务调用时什么也不做，两套系统不能同时管一个账户）。
+from src.qmt_native_mode import native_settings, native_start
 
 native = native_settings(root)
 if native is not None:
-    sys.exit(start_report(native, automatic=automatic_recovery))
+    sys.exit(native_start(native, root, automatic=automatic_recovery))
 from src.runtime_stop_state import clear_manual_stop, load_manual_stop
 
 manual_stop = load_manual_stop(root)

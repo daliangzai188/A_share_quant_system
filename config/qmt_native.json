@@ -1,9 +1,11 @@
 {
   "enabled": true,
   "since": "2026-10-22",
-  "note": "A_System runs inside QMT's built-in Python (qmt_native/). start_windows.py / stop_windows.py / show_trading_status.py never start the old external daemon; they report the QMT copy's status from QMT's strategy log.",
+  "note": "A_System runs inside QMT's built-in Python (qmt_native/). stop_windows.py closes QMT (A_SYSTEM stops with it); start_windows.py launches QMT (A_SYSTEM autoruns after login) and checks its output in QMT's strategy log. Neither ever starts the old external daemon.",
   "strategy_file": "A_SYSTEM_QMT_INNER",
   "qmt_log_dir": "C:\\QMT\\GJQMT\\userdata\\log",
   "forwarder_task": "A_System_QmtNotifyForwarder",
-  "stale_minutes": 10
+  "stale_minutes": 10,
+  "qmt_exe": "C:\\QMT\\GJQMT\\bin.x64\\XtItClient.exe",
+  "start_wait_minutes": 15
 }

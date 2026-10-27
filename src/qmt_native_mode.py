@@ -16,6 +16,7 @@ import datetime as dt
 import json
 import re
 import subprocess
+import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -154,14 +155,98 @@ def status_lines(settings: dict[str, Any], ensure_forwarder: bool = False, now: 
     return healthy, lines
 
 
-def start_report(settings: dict[str, Any], automatic: bool, out: Callable[[str], None] = print, **kwargs: Any) -> int:
-    """start_windows.py 在原生版下的全部动作；返回进程退出码。"""
+def _clear_manual_stop(root: str | Path) -> None:
+    # 人工停机标记：stop 写下后，QMT 客户端守护不再拉起 QMT、推送转发不报“策略停止输出”
+    from src.runtime_stop_state import clear_manual_stop
+
+    clear_manual_stop(root)
+
+
+def native_start(settings: dict[str, Any], root: str | Path, automatic: bool, out: Callable[[str], None] = print,
+                 control: Any = None, clock: Callable[[], dt.datetime] = dt.datetime.now,
+                 sleep: Callable[[float], None] = time.sleep, **status_kwargs: Any) -> int:
+    """start_windows.py 在原生版下：启动 QMT（A_SYSTEM 随 QMT 自动运行），等它真的开始输出；返回退出码。"""
     if automatic:
-        out("A_System 已改为在 QMT 内置 Python 中运行：keeper/计划任务不再启动外部守护进程。")
+        out("A_System 运行在 QMT 内置 Python 中：keeper/计划任务不启动外部守护进程。")
         return 0
-    out("A_System 已改为在 QMT 内置 Python 中运行（%s 起），不需要、也不会再启动外部守护进程。"
-        % settings.get("since", "2026-10-22"))
-    healthy, lines = status_lines(settings, ensure_forwarder=True, **kwargs)
-    for line in lines:
-        out(line)
-    return 0 if healthy else 1
+    if control is None:
+        from src.qmt_process_control import ProcessControl
+
+        control = ProcessControl(settings.get("qmt_exe") or r"C:\QMT\GJQMT\bin.x64\XtItClient.exe")
+    out("启动 A_System：A_System 运行在 QMT 内置 Python 中，随 QMT 自动运行。")
+    pids = control.pids()
+    if pids is None:
+        out("❌ 无法查询 QMT 进程（tasklist 失败）。")
+        return 1
+    last = live_status(settings, clock())
+    fresh = last["last_status_at"] is not None and last["age_seconds"] <= 60
+    if pids and fresh:
+        _clear_manual_stop(root)
+        healthy, lines = status_lines(settings, ensure_forwarder=True, **status_kwargs)
+        for line in lines:
+            out(line)
+        out("A_System 本来就在运行，无需启动。")
+        return 0 if healthy else 1
+    if pids and control.main_window():
+        when = last["last_status_at"].strftime("%m-%d %H:%M:%S") if last["last_status_at"] else "（今天没有）"
+        out("QMT 已登录，但 A_SYSTEM 没有在运行（最后一次输出 %s）：先关闭 QMT，再重新打开。" % when)
+        ok, message = control.close()
+        out(("✅ " if ok else "❌ ") + message)
+        if not ok:
+            return 1
+        pids = []
+    if not pids:
+        ok, message = control.launch()
+        out(("✅ " if ok else "❌ ") + message)
+        if not ok:
+            return 1
+    started = clock()
+    _clear_manual_stop(root)
+    wait = float(settings.get("start_wait_minutes") or 15) * 60
+    hinted = False
+    out("等待 QMT 登录、A_SYSTEM 开始输出（最多 %d 分钟）……" % (wait // 60))
+    while (clock() - started).total_seconds() < wait:
+        sleep(5)
+        now = clock()
+        at = live_status(settings, now)["last_status_at"]
+        if at is not None and at >= started.replace(microsecond=0):
+            healthy, lines = status_lines(settings, ensure_forwarder=True, now=now, **status_kwargs)
+            for line in lines:
+                out(line)
+            out("✅ A_System 已开始运行：启动后自动补跑数据，手机会收到“✅ 程序与账户已恢复正常”。")
+            return 0 if healthy else 1
+        if not hinted and (now - started).total_seconds() >= 15 and not control.main_window():
+            hinted = True
+            out("请在 QMT 登录窗口登录（QMT 没有开启自动登录）；登录后 A_SYSTEM 会自动运行。")
+    out("❌ %d 分钟内 A_SYSTEM 没有开始输出：确认 QMT 已登录、“模型交易”里 A_SYSTEM 为运行中；"
+        "若 QMT 已登录仍无输出，再运行一次 start_windows.py（会重启 QMT）。" % (wait // 60))
+    return 1
+
+
+def native_stop(settings: dict[str, Any], out: Callable[[str], None] = print, control: Any = None,
+                notify: Callable[[], None] | None = None, clock: Callable[[], dt.datetime] = dt.datetime.now) -> int:
+    """stop_windows.py 在原生版下：关闭 QMT，A_SYSTEM 和全部自动交易随之停止；返回退出码。
+    调用前必须已写好人工停机标记（否则 QMT 客户端守护会把 QMT 重新拉起来）。"""
+    if control is None:
+        from src.qmt_process_control import ProcessControl
+
+        control = ProcessControl(settings.get("qmt_exe") or r"C:\QMT\GJQMT\bin.x64\XtItClient.exe")
+    last = live_status(settings, clock())
+    pids = control.pids()
+    if pids is None:
+        out("❌ 无法查询 QMT 进程（tasklist 失败）。")
+        return 1
+    if not pids:
+        out("QMT 没有运行：A_SYSTEM 本来就是停止状态。")
+        return 0
+    out("停止 A_System：关闭 QMT（A_SYSTEM 和全部自动交易随之停止）……")
+    ok, message = control.close()
+    out(("✅ " if ok else "❌ ") + message)
+    if not ok:
+        return 1
+    if notify is not None:
+        notify()
+    if last["account"]:
+        out("停止前最后一次账户检查：%s" % last["account"])
+    out("A_System 已全部停止。恢复：py -3.11 start_windows.py（会打开 QMT，需要你登录）。")
+    return 0
