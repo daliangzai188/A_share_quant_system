@@ -7,16 +7,19 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src.qmt_native_mode import live_status, native_settings, start_report, status_lines
+from src.qmt_native_mode import live_status, native_settings, native_start, native_stop, status_lines
 
 ROOT = Path(__file__).resolve().parents[1]
 NOW = dt.datetime(2026, 10, 27, 2, 33, 0)
 
 
-def status_line(at, alive='True', last='2026-10-27 02:31:28 | ✅ [账户] 2026-10-27 02:31:28 | 账户***90 总资产6.89万 | 无持仓'):
+def status_line(at, alive='True', last='2026-10-27 02:31:28 | ✅ [账户] 2026-10-27 02:31:28 | 账户***90 总资产6.89万 | 无持仓',
+                trading='run'):
+    switch = 'trading=%s ' % trading if trading else ''   # builds before the trading switch print none
     return ('%s,425 [INFO] [0x00001f48] reqid = 0C:\\QMT\\GJQMT\\python\\A_SYSTEM_QMT_INNER.py_00030017, '
-            'output = [A_SYSTEM] %s status: daemon_alive=%s log_lines=414 saves=0/0 kv=0.0s last="%s" '
-            'daemon_at=trading_daemon.py:10769 main\r\n' % (at.strftime('%Y-%m-%d %H:%M:%S'), at.strftime('%H:%M:%S'), alive, last))
+            'output = [A_SYSTEM] %s status: %sdaemon_alive=%s log_lines=414 saves=0/0 kv=0.0s last="%s" '
+            'daemon_at=trading_daemon.py:10769 main\r\n' % (at.strftime('%Y-%m-%d %H:%M:%S'), at.strftime('%H:%M:%S'),
+                                                               switch, alive, last))
 
 
 class QmtNativeModeTests(unittest.TestCase):
@@ -68,7 +71,7 @@ class QmtNativeModeTests(unittest.TestCase):
         self.write('20261027', status_line(NOW - dt.timedelta(seconds=20)))
         ok, lines = status_lines(self.settings, now=NOW, qmt=lambda: True, task=lambda n: 'Running')
         self.assertTrue(ok, lines)
-        self.assertTrue(any('在运行' in l and '20 秒前' in l for l in lines))
+        self.assertTrue(any('在交易' in l and '20 秒前' in l for l in lines))
         states, started = ['Ready', 'Running'], []
         ok, lines = status_lines(self.settings, ensure_forwarder=True, now=NOW, qmt=lambda: True,
                                  task=lambda n: states.pop(0), start=lambda n: started.append(n) or True)
@@ -82,20 +85,79 @@ class QmtNativeModeTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertTrue(any('没有运行' in l for l in lines) and any('未找到' in l for l in lines))
 
-    def test_automatic_recovery_never_reports_or_starts_anything(self):
-        def boom(*args):
-            raise AssertionError('no status calls for keeper/scheduled starts')
+    def test_automatic_recovery_never_touches_the_switch(self):
+        def boom(*args, **kwargs):
+            raise AssertionError('keeper/scheduled starts must not change the trading switch')
         out = []
-        code = start_report(self.settings, automatic=True, out=out.append, qmt=boom, task=boom, start=boom)
+        code = native_start(self.settings, self.dir, automatic=True, out=out.append, switch=boom, logged_in=boom)
         self.assertEqual(code, 0)
-        self.assertIn('不再启动外部守护进程', out[0])
+        self.assertIn('不改变交易开关', out[0])
+
+    def flow(self, run, after, logged_in=True, **kwargs):
+        """run start/stop with a fake clock; `after` = status line kwargs written once the switch changed."""
+        clock = [NOW]
+        switched, written = [], []
+
+        def sleep(seconds):
+            clock[0] += dt.timedelta(seconds=seconds)
+            if switched and after is not None:   # QMT prints a status line every 20 s
+                if not written or (clock[0] - written[-1]).total_seconds() >= 20:
+                    self.write('20261027', status_line(clock[0], **after))
+                    written.append(clock[0])
+        out = []
+        code = run(self.settings, out=out.append, switch=lambda value, by: switched.append(value),
+                   logged_in=lambda: logged_in, clock=lambda: clock[0], sleep=sleep, **kwargs)
+        return code, switched, out
+
+    def start(self, after, logged_in=True):
+        (self.dir / '.manual_stop.json').write_text('{}', encoding='utf-8')
+        return self.flow(lambda settings, **kw: native_start(settings, self.dir, False, qmt=lambda: True,
+                                                             task=lambda n: 'Running', **kw), after, logged_in)
+
+    def test_start_sets_run_and_waits_for_the_trading_thread(self):
+        code, switched, out = self.start(dict(trading='run', alive='True'))
+        self.assertEqual((code, switched), (0, ['run']), out)
+        self.assertFalse((self.dir / '.manual_stop.json').exists())
+        self.assertIn('已开始交易', out[-1])
+
+    def test_start_before_login_sets_run_and_asks_to_log_in(self):
+        code, switched, out = self.start(None, logged_in=False)
+        self.assertEqual((code, switched), (1, ['run']))
+        self.assertIn('请先打开并登录国金 QMT', out[-1])
+
+    def test_start_reports_an_old_build_without_the_switch(self):
+        code, _, out = self.start(dict(trading=None, alive='True'))
+        self.assertEqual(code, 1)
+        self.assertIn('旧版本', out[-1])
+
+    def test_stop_sets_pause_confirms_and_pushes_once(self):
+        pushes = []
+        code, switched, out = self.flow(native_stop, dict(trading='pause', alive='False'), notify=lambda: pushes.append(1))
+        self.assertEqual((code, switched, len(pushes)), (0, ['pause'], 1), out)
+        self.assertTrue(any('已暂停：交易线程已结束' in line for line in out))
+        self.assertTrue(any('账户***90 总资产6.89万' in line for line in out))
+        code, _, out = self.flow(native_stop, None, logged_in=False, notify=lambda: pushes.append(1))
+        self.assertEqual((code, len(pushes)), (0, 2))
+        self.write('20261027', status_line(NOW + dt.timedelta(seconds=1), trading=None))
+        code, _, out = self.flow(native_stop, dict(trading=None, alive='True'), notify=lambda: pushes.append(1))
+        self.assertEqual((code, len(pushes)), (1, 2))   # an old build ignores the switch: tell how to stop by hand
+        self.assertIn('点 A_SYSTEM 的 ■', out[-1])
+
+    def test_paused_status_is_healthy_and_shows_the_switch(self):
+        self.write('20261027', status_line(NOW - dt.timedelta(seconds=10), trading='pause', alive='False'))
+        ok, lines = status_lines(self.settings, now=NOW, qmt=lambda: True, task=lambda n: 'Running',
+                                 switch=lambda: {'Trading': 'pause', 'ChangedAt': '2026-10-27 08:30:00', 'ChangedBy': 'stop_windows.py'})
+        self.assertTrue(ok, lines)
+        self.assertTrue(lines[0].startswith('交易开关：pause'))
+        self.assertTrue(any(line.startswith('⏸') for line in lines))
 
     def test_start_windows_never_starts_the_old_daemon(self):
         repo = self.dir / 'repo'
         (repo / 'src').mkdir(parents=True)
         (repo / 'config').mkdir()
         shutil.copy(ROOT / 'start_windows.py', repo)
-        shutil.copy(ROOT / 'src' / 'qmt_native_mode.py', repo / 'src')
+        for name in ('qmt_native_mode.py', 'runtime_stop_state.py'):
+            shutil.copy(ROOT / 'src' / name, repo / 'src')
         (repo / 'src' / '__init__.py').write_text('', encoding='utf-8')
         (repo / 'config' / 'qmt_native.json').write_text(
             '{"enabled": true, "qmt_log_dir": "%s"}' % str(self.dir).replace('\\', '\\\\'), encoding='utf-8')
@@ -103,8 +165,8 @@ class QmtNativeModeTests(unittest.TestCase):
         for args in (['--no-tail', '--automatic-recovery'], []):
             done = subprocess.run([sys.executable, str(repo / 'start_windows.py')] + args, cwd=str(repo), env=env,
                                   capture_output=True, text=True, encoding='utf-8', timeout=120)
-            self.assertIn('QMT 内置 Python 中运行', done.stdout, done.stderr)
-            self.assertEqual(done.returncode, 0 if args else 1, done.stdout)  # no QMT here: reported, not started
+            self.assertIn('不改变交易开关' if args else '无法写入交易开关', done.stdout, done.stderr)
+            self.assertEqual(done.returncode, 0 if args else 1, done.stdout)  # no registry here: nothing started
             self.assertFalse((repo / '.daemon_pid').exists())
             self.assertFalse((repo / 'logs').exists())
 
