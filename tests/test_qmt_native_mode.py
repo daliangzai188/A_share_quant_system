@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src.qmt_native_mode import live_status, native_settings, native_start, native_stop, status_lines
+from src.qmt_native_mode import LogFollower, live_status, native_settings, native_start, native_stop, status_lines
 
 ROOT = Path(__file__).resolve().parents[1]
 NOW = dt.datetime(2026, 10, 27, 2, 33, 0)
@@ -150,6 +150,31 @@ class QmtNativeModeTests(unittest.TestCase):
         self.assertTrue(ok, lines)
         self.assertTrue(lines[0].startswith('交易开关：pause'))
         self.assertTrue(any(line.startswith('⏸') for line in lines))
+
+    def test_log_follower_shows_daemon_lines_pushes_and_switch_changes(self):
+        def qmt(at, payload, strategy='A_SYSTEM_QMT_INNER'):
+            return ('2026-10-27 %s,100 [INFO] [0x00001f48] reqid = 0C:\\QMT\\GJQMT\\python\\%s.py_1, output = %s\r\n'
+                    % (at, strategy, payload)).encode('utf-8')
+        out = []
+        follower = LogFollower(self.settings, out.append)
+        self.write('20261027', qmt('09:00:02', '[A_SYSTEM] 09:00:02 status: trading=run daemon_alive=True last="旧行"'))
+        follower.start_at_end(NOW.date(), history=5)
+        self.assertEqual(out, ['▶ 交易中（交易开关 = run）', '旧行'])   # a build without echo: status shows the latest line
+        out[:] = []
+        self.write('20261027', qmt('09:00:05', '[A_SYSTEM_LOG] 2026-10-27 09:00:05 | ✅ [账户] 账户***90 总资产6.89万 | 无持仓')
+                   + qmt('09:00:06', '[A_SYSTEM_LOG] 最终开仓计划') + '┃ ★ 明日A/C/E均无开仓计划\r\n'.encode('utf-8')
+                   + qmt('09:00:07', '[A_SYSTEM_NOTIFY live] 1a-5 /%E2%9C%85%20A_System%E8%BF%90%E8%A1%8C%E6%AD%A3%E5%B8%B8/x?y=1')
+                   + qmt('09:00:08', '[A_SYSTEM_EXPORT live] a b 1/1 x')
+                   + qmt('09:00:09', '[A_SYSTEM_LOG] 其他策略的行', strategy='OTHER')
+                   + qmt('09:00:41', '[A_SYSTEM] 09:00:41 trading switch: pause (stop_windows.py)')
+                   + qmt('09:00:42', '[A_SYSTEM] 09:00:42 status: trading=pause daemon_alive=False last="x"')
+                   + qmt('09:00:43', '[A_SYSTEM_LOG] half'))
+        with open(self.dir / 'XtClient_FormulaOutput_20261027.log', 'ab') as handle:
+            handle.write(b'2026-10-27 09:00:44,1 [INFO] partial line without end')
+        follower.poll(NOW.date())
+        self.assertEqual(out, ['2026-10-27 09:00:05 | ✅ [账户] 账户***90 总资产6.89万 | 无持仓', '最终开仓计划',
+                               '┃ ★ 明日A/C/E均无开仓计划', '📣 推送：✅ A_System运行正常',
+                               '[A_SYSTEM] 09:00:41 trading switch: pause (stop_windows.py)', '⏸ 交易已暂停（交易开关 = pause）', 'half'])
 
     def test_start_windows_never_starts_the_old_daemon(self):
         repo = self.dir / 'repo'

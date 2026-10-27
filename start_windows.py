@@ -31,11 +31,19 @@ root = Path(__file__).absolute().parent
 # QMT 原生版（2026-10-22 起，见 src/qmt_native_mode.py 与 config/qmt_native.json）：A_System 运行在
 # QMT 内置 Python 里。人工 start = 交易开关设为 run（QMT 没登录时提示先登录）并确认交易线程启动；
 # 绝不再启动外部守护进程（keeper/计划任务调用时什么也不改，两套系统不能同时管一个账户）。
-from src.qmt_native_mode import native_settings, native_start
+from src.qmt_native_mode import follow_log, native_settings, native_start
 
 native = native_settings(root)
 if native is not None:
-    sys.exit(native_start(native, root, automatic=automatic_recovery))
+    native_code = native_start(native, root, automatic=automatic_recovery)
+    if native_code == 0 and not automatic_recovery and not no_tail:
+        # 像以前一样在终端跟随交易日志（候选、计划、账户/持仓、流水线、推送）；Ctrl+C 只退出显示
+        print("—— 正在显示 QMT 里 A_System 的交易日志（Ctrl+C 退出显示，交易在 QMT 里继续运行）——")
+        try:
+            follow_log(native)
+        except KeyboardInterrupt:
+            print("已退出日志显示；A_System 仍在 QMT 里按交易开关运行。")
+    sys.exit(native_code)
 from src.runtime_stop_state import clear_manual_stop, load_manual_stop
 
 manual_stop = load_manual_stop(root)

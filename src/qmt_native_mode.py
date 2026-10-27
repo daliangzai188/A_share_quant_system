@@ -21,6 +21,7 @@ import json
 import re
 import subprocess
 import time
+import urllib.parse
 from pathlib import Path
 from typing import Any, Callable
 
@@ -312,3 +313,100 @@ def native_stop(settings: dict[str, Any], out: Callable[[str], None] = print,
     if live["account"]:
         out("暂停前最后一次账户检查：%s" % live["account"])
     return 0
+
+
+QMT_LINE = re.compile(rb"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d+ \[\w+\] ")
+
+
+def _text(raw: bytes) -> str:
+    for encoding in ("utf-8", "gbk"):
+        try:
+            return raw.decode(encoding).rstrip("\r")
+        except UnicodeDecodeError:
+            pass
+    return raw.decode("utf-8", "replace").rstrip("\r")
+
+
+class LogFollower:
+    """像以前 start_windows.py 跟随 logs/trading_daemon.log 一样，在终端显示 QMT 里 A_SYSTEM 的日志：
+    交易程序的每一行（QMT 日志里的 “[A_SYSTEM_LOG] …”）、宿主消息、推送标题、暂停/交易切换。"""
+
+    def __init__(self, settings: dict[str, Any], out: Callable[[str], None] = print):
+        self.log_dir = Path(settings.get("qmt_log_dir") or DEFAULT_LOG_DIR)
+        self.name = str(settings.get("strategy_file") or "A_SYSTEM_QMT_INNER")
+        self.out = out
+        self.path: Path | None = None
+        self.offset = 0
+        self.in_block = False
+        self.trading: str | None = None
+        self.last = ""
+        self.echo_seen = False
+
+    def feed(self, raw: bytes) -> None:
+        if not QMT_LINE.match(raw):
+            if self.in_block:            # 多行记录（如开仓计划的方框）的后续行
+                self.out(_text(raw))
+            return
+        text = _text(raw)
+        self.in_block = False
+        if self.name not in text:
+            return
+        payload = text.split("output = ", 1)[1] if "output = " in text else text
+        if payload.startswith("[A_SYSTEM_LOG] "):
+            self.echo_seen = self.in_block = True
+            self.out(payload[len("[A_SYSTEM_LOG] "):])
+        elif payload.startswith("[A_SYSTEM_NOTIFY"):
+            parts = payload.split(" ", 3)
+            title = urllib.parse.unquote(parts[3].split("/")[1]) if len(parts) > 3 and "/" in parts[3] else payload
+            self.out("📣 推送：%s" % title)
+        elif payload.startswith("[A_SYSTEM_EXPORT"):
+            return
+        elif " status: " in payload:
+            m = re.search(r"trading=(\w+)", payload)
+            if m and m.group(1) != self.trading:
+                self.trading = m.group(1)
+                self.out("⏸ 交易已暂停（交易开关 = pause）" if self.trading == "pause" else "▶ 交易中（交易开关 = run）")
+            last = re.search(r'last="([^"]*)', payload)
+            if not self.echo_seen and last and last.group(1) != self.last:   # 旧版本没有逐行日志：显示状态里的最新一行
+                self.last = last.group(1)
+                self.out(self.last)
+        elif payload.startswith("[A_SYSTEM] "):
+            self.out(payload)
+
+    def poll(self, today: dt.date) -> None:
+        path = self.log_dir / ("XtClient_FormulaOutput_%s.log" % today.strftime("%Y%m%d"))
+        if path != self.path:
+            self.path, self.offset = path, 0
+        try:
+            with open(path, "rb") as handle:
+                size = handle.seek(0, 2)
+                if size < self.offset:
+                    self.offset = 0
+                handle.seek(self.offset)
+                chunk = handle.read(size - self.offset)
+        except OSError:
+            return
+        end = chunk.rfind(b"\n") + 1     # 只处理完整的行
+        self.offset += end
+        for raw in chunk[:end].split(b"\n")[:-1]:
+            self.feed(raw)
+
+    def start_at_end(self, today: dt.date, history: int = 30) -> None:
+        """从文件末尾开始跟随，先显示最近 history 行交易日志作为上下文。"""
+        lines: list[str] = []
+        keep, self.out = self.out, lines.append
+        self.poll(today)
+        self.out = keep
+        for line in lines[-history:]:
+            self.out(line)
+
+
+def follow_log(settings: dict[str, Any], out: Callable[[str], None] = print,
+               clock: Callable[[], dt.datetime] = dt.datetime.now, sleep: Callable[[float], None] = time.sleep,
+               stop: Callable[[], bool] = lambda: False) -> None:
+    follower = LogFollower(settings, out)
+    follower.start_at_end(clock().date())
+    while not stop():
+        sleep(1)
+        follower.poll(clock().date())
+
