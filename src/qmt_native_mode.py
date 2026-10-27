@@ -341,17 +341,25 @@ class LogFollower:
         self.trading: str | None = None
         self.last = ""
         self.echo_seen = False
+        self.other = False
 
     def feed(self, raw: bytes) -> None:
-        if not QMT_LINE.match(raw):
-            if self.in_block:            # 多行记录（如开仓计划的方框）的后续行
-                self.out(_text(raw))
-            return
         text = _text(raw)
-        self.in_block = False
-        if self.name not in text:
+        if not QMT_LINE.match(raw):
+            if not text.strip() or self.other:
+                return
+            if text.startswith("[A_SYSTEM"):   # QMT 把同一次刷新里的几次打印放在一个标题下
+                self._payload(text)
+            elif self.in_block:                # 多行记录（如开仓计划的方框）或被折行的长行
+                self.out(text)
             return
-        payload = text.split("output = ", 1)[1] if "output = " in text else text
+        self.in_block = False
+        self.other = self.name not in text
+        if not self.other:
+            self._payload(text.split("output = ", 1)[1] if "output = " in text else text)
+
+    def _payload(self, payload: str) -> None:
+        self.in_block = False
         if payload.startswith("[A_SYSTEM_LOG] "):
             self.echo_seen = self.in_block = True
             self.out(payload[len("[A_SYSTEM_LOG] "):])

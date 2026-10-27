@@ -168,13 +168,19 @@ class QmtNativeModeTests(unittest.TestCase):
                    + qmt('09:00:09', '[A_SYSTEM_LOG] 其他策略的行', strategy='OTHER')
                    + qmt('09:00:41', '[A_SYSTEM] 09:00:41 trading switch: pause (stop_windows.py)')
                    + qmt('09:00:42', '[A_SYSTEM] 09:00:42 status: trading=pause daemon_alive=False last="x"')
-                   + qmt('09:00:43', '[A_SYSTEM_LOG] half'))
+                   + qmt('09:00:43', '[A_SYSTEM_LOG] half')
+                   + b'\r\n'
+                   + qmt('09:00:44', '[A_SYSTEM_NOTIFY live] 1a-6 /%E2%9C%85/x')
+                   + b'%E4%B8%8E%E6%8C%81 wrapped rest of a long push\r\n'
+                   + '[A_SYSTEM_LOG] 2026-10-27 09:00:45 | 同一次刷新里的下一行\r\n'.encode('utf-8')
+                   + b'[A_SYSTEM] 09:00:46 status: trading=run daemon_alive=True last="y"\r\n')
         with open(self.dir / 'XtClient_FormulaOutput_20261027.log', 'ab') as handle:
             handle.write(b'2026-10-27 09:00:44,1 [INFO] partial line without end')
         follower.poll(NOW.date())
         self.assertEqual(out, ['2026-10-27 09:00:05 | ✅ [账户] 账户***90 总资产6.89万 | 无持仓', '最终开仓计划',
                                '┃ ★ 明日A/C/E均无开仓计划', '📣 推送：✅ A_System运行正常',
-                               '[A_SYSTEM] 09:00:41 trading switch: pause (stop_windows.py)', '⏸ 交易已暂停（交易开关 = pause）', 'half'])
+                               '[A_SYSTEM] 09:00:41 trading switch: pause (stop_windows.py)', '⏸ 交易已暂停（交易开关 = pause）', 'half',
+                               '📣 推送：✅', '2026-10-27 09:00:45 | 同一次刷新里的下一行', '▶ 交易中（交易开关 = run）'])
 
     def test_start_windows_never_starts_the_old_daemon(self):
         repo = self.dir / 'repo'
