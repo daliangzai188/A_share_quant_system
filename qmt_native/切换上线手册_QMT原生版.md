@@ -63,6 +63,8 @@
   - QMT 里的 A_SYSTEM 随 QMT 加载，每 2 秒读一次开关：为 `run` 才运行交易守护线程（查账户、跑流水线、下单、推送）；不在 / `pause` / 读不到时只待命。`run`→`pause` 时结束交易守护线程（它启动的流水线脚本随之结束），不做 keeper 式自动重启；QMT、引擎、状态保存、推送转发照常。状态行带 `trading=run|pause`。测试 `inqmt/test_trading_switch.py`。
   - `py -3.11 start_windows.py`：开关设为 `run`（一直有效：QMT 卡住、断线、电脑重启后重新登录也继续，直到 stop），清除 `.manual_stop.json`；QMT 没打开或没登录（看有没有标题含“QMT交易端”的窗口）就提示先打开并登录；登录着就等 QMT 日志里出现 `trading=run` 且交易线程在运行（最多 90 秒），再显示状态、账户/持仓、推送转发。
   - `py -3.11 stop_windows.py`：先写 `.manual_stop.json`（QMT 客户端守护不再拉起 QMT），开关设为 `pause`，等 QMT 日志里出现 `trading=pause` 且交易线程已结束（最多 60 秒），推送“⏸ A_System 已暂停”，然后照旧清理旧系统残留。QMT 保持打开、保持登录。
+  - 交易日志：QMT 里的交易程序每写一行日志，宿主就在 QMT 策略日志里打印一行 `[A_SYSTEM_LOG] …`（每个节拍最多 40 行，release 202610270822 起）。`start_windows.py` 启动成功后像 10-23 之前一样在终端跟随显示（交易日志、宿主消息、推送标题、暂停/交易切换；Ctrl+C 只退出显示，`--no-tail` 不跟随）；旧版本没有逐行日志时显示每 20 秒状态行里的最新一行。
+  - QMT“模型交易”里的“策略状态：运行中”和左下角“执行中策略：1”指的是 A_SYSTEM 外壳（必须一直运行才能收到 start）；暂停时外壳仍显示运行中，但状态行为 `trading=pause daemon_alive=False`，交易日志行数不再增长，不会有新委托。
   - keeper/计划任务（`--automatic-recovery`）调用 start 时不改开关；`查看交易状态.cmd` 与登录/每日 08:15 的 `scripts/ensure_windows_runtime.py` 只显示状态（含开关），后者只补启动推送转发。
   - 也可直接在 QMT 里操作“模型交易”→ `A_SYSTEM` 行 ■ / ▶（■ 停的是整个策略，▶ 后仍按开关决定是否交易）。QMT 卡住时退出 QMT 重新登录（策略随 QMT 自动加载，开关为 `run` 就继续交易）。
 - 断线保护实测（10-27 08:00）：交易服务器断开，早上第一次定时保存返回 `(300000, ... "End of file", isNetError: true)`，按断线类错误退避 30 分钟；账号状态由 `m_strStatus=登录成功` 变为 `登录失败`，定时保存随即暂停（`periodic state saves wait`），策略照常运行、健康播报照常推送。

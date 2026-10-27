@@ -417,6 +417,11 @@ class QnHost(object):
     VERIFY_INTERVAL = 7200.0
     DAEMON_RESTART_DELAY = 60.0
     SWITCH_POLL_SECONDS = 2.0
+    # Every trading-daemon log line (candidates, plans, account/position checks, pipeline progress,
+    # pushes) is echoed to QMT's strategy log as "[A_SYSTEM_LOG] <line>", so start_windows.py can
+    # follow it in the terminal as it followed logs/trading_daemon.log before 10-23. Printing is the
+    # strategy's normal output, not file access. At most this many lines per tick (100 ms).
+    ECHO_LINES_PER_TICK = 40
     BOOT_RETRY_SECONDS = 60.0
     RESET_AFTER_BROKEN_BOOTS = 3
     # QMT's key-value store goes through the broker's trade server, which disconnects at night
@@ -810,6 +815,19 @@ class QnHost(object):
         self.daemon_thread._qn_kill = tuple(self.daemon_thread._qn_kill) + (token,)
         self.daemon_thread.start()
 
+    def _echo_daemon_log(self):
+        if not self.deploy.get('echo_daemon_log', True):
+            return
+        for _ in range(self.ECHO_LINES_PER_TICK):
+            try:
+                line = QN_LOG_ECHO.popleft()
+            except IndexError:
+                return
+            try:
+                print('[A_SYSTEM_LOG] ' + line)
+            except UnicodeEncodeError:
+                print('[A_SYSTEM_LOG] ' + line.encode('ascii', 'backslashreplace').decode('ascii'))
+
     def _poll_switch(self, force=False):
         """Follow the trading switch: start the trading daemon on "run", end it on anything else
         (its pipeline scripts end with it). The engine, state saves and QMT stay as they are."""
@@ -1140,6 +1158,7 @@ class QnHost(object):
         QN_NATIVE_SERVICE.pump()
         self._poll_switch()
         self._supervise()
+        self._echo_daemon_log()
         now = _htime.time()
         if now - self.status_last >= 20:
             self.status_last = now

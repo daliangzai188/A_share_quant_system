@@ -4,11 +4,13 @@ registry; the live copy loads with QMT but runs its trading daemon only on "run"
   1. switch not set: A_System waits (no trading daemon), status lines say trading=pause;
   2. "run": the trading daemon starts;
   3. "pause": it ends (its scripts with it), no keeper-style restart, QMT/strategy stay up;
-  4. "run" again: it starts again.
+  4. "run" again: it starts again;
+  5. every trading-daemon log line is echoed to QMT's log as "[A_SYSTEM_LOG] <line>" (start_windows.py
+     follows those in the terminal, as it followed logs/trading_daemon.log before 10-23).
 
 Usage: python test_trading_switch.py STRATEGY_FILE   (QMT's Python 3.6)
 """
-import os, sys, time
+import io, os, sys, time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import run_system_local as rs
@@ -52,10 +54,20 @@ def main():
         any('restarting in' in m for m in host.messages)))
     ok &= paused and not any('restarting in' in m for m in host.messages)
     switch['value'] = 'run'
-    drive(ns, C, 25)
+    captured, real_stdout = io.StringIO(), sys.stdout
+    sys.stdout = captured
+    try:
+        drive(ns, C, 25)
+    finally:
+        sys.stdout = real_stdout
     again = alive()
     print('4. run again: daemon alive=%s' % again)
     ok &= again
+    echoed = [l for l in captured.getvalue().splitlines() if l.startswith('[A_SYSTEM_LOG] ')]
+    sample = [l for l in ns['QN_LOG_LINES'] if l][-3:]
+    print('5. daemon lines echoed to the QMT log: %d; recent ones present: %s' % (
+        len(echoed), all(any(x in e for e in echoed) for x in sample)))
+    ok &= len(echoed) > 3 and all(any(x in e for e in echoed) for x in sample)
     ns['stop'](C)
     print('RESULT', 'PASS' if ok else 'FAIL')
 

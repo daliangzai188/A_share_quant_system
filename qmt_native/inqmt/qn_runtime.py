@@ -566,6 +566,7 @@ qn_shutil = _module('shutil', {'copyfile': _copyfile, 'copy': _copyfile, 'copy2'
 
 # ---------------------------------------------------------------- logging / zoneinfo / dataclasses
 QN_LOG_LINES = []
+QN_LOG_ECHO = __import__('collections').deque(maxlen=20000)  # the host echoes these to QMT's log (thread-safe)
 
 
 class _MemoryFileHandler(_logging.Handler):
@@ -580,7 +581,9 @@ class _MemoryFileHandler(_logging.Handler):
         if qn_foreign_thread():
             return
         try:
-            QN_LOG_LINES.append(self.format(record))
+            line = self.format(record)
+            QN_LOG_LINES.append(line)
+            QN_LOG_ECHO.append(line)
             if len(QN_LOG_LINES) > 5000:
                 del QN_LOG_LINES[:1000]
         except Exception:
