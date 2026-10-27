@@ -22,6 +22,7 @@ echo "== gil yield";      PYTHONIOENCODING=utf-8 $PY inqmt/test_gil_yield.py "$S
 echo "== state reset";    PYTHONIOENCODING=utf-8 $PY inqmt/test_state_reset.py "$S" > "$O/state_reset.txt" 2>&1; grep -E "^[0-9]\. |^RESULT" "$O/state_reset.txt"
 echo "== no disk reads";  PYTHONIOENCODING=utf-8 $PY inqmt/test_no_disk_reads.py "$S" > "$O/no_disk_reads.txt" 2>&1; grep -E "^[0-9]\. |^RESULT" "$O/no_disk_reads.txt"
 echo "== store link";     PYTHONIOENCODING=utf-8 $PY inqmt/test_store_link.py "$S" > "$O/store_link.txt" 2>&1; grep -E "^[0-9]\. |^RESULT" "$O/store_link.txt"
+echo "== trading switch"; PYTHONIOENCODING=utf-8 $PY inqmt/test_trading_switch.py "$S" > "$O/trading_switch.txt" 2>&1; grep -E "^[0-9]\. |^RESULT" "$O/trading_switch.txt"
 echo "== tracebacks";     grep -c Traceback "$O"/*.txt
 [ -n "$SKIP_DRILL" ] && exit 0
 echo "== drill 10-13 15:25 -> 10-15 15:15"

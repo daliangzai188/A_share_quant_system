@@ -61,6 +61,31 @@ def _bj_now():
     return _hdt.datetime.now(_hdt.timezone(_hdt.timedelta(hours=8)))
 
 
+# Trading switch (10-27, the user's decision): QMT's built-in Python may not read files or use the
+# network, so start_windows.py / stop_windows.py (outside QMT) leave the switch in the Windows
+# registry: HKCU\\Software\\A_System\\QmtNative, value Trading = "run" / "pause". The live copy loads
+# with QMT but runs its trading daemon only while the switch says "run"; anything else (not set,
+# "pause", unreadable) keeps it paused. QMT itself stays open either way. QN_SWITCH_READER[0] may be
+# replaced in tests; without winreg (not Windows) the switch reads "run".
+QN_SWITCH_KEY = r'Software\A_System\QmtNative'
+QN_SWITCH_READER = [None]
+
+
+def _qn_read_switch():
+    if QN_SWITCH_READER[0] is not None:
+        return QN_SWITCH_READER[0]()
+    try:
+        import winreg
+    except ImportError:
+        return 'run'
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, QN_SWITCH_KEY) as key:
+            value, _kind = winreg.QueryValueEx(key, 'Trading')
+        return str(value).strip().lower()
+    except OSError:
+        return ''
+
+
 def _status_text(status):
     return ', '.join('%s=%s' % kv for kv in status) or 'no status field'
 
@@ -391,6 +416,7 @@ class QnHost(object):
     # writing every body again with the next save, long before a restart would need the snapshot.
     VERIFY_INTERVAL = 7200.0
     DAEMON_RESTART_DELAY = 60.0
+    SWITCH_POLL_SECONDS = 2.0
     BOOT_RETRY_SECONDS = 60.0
     RESET_AFTER_BROKEN_BOOTS = 3
     # QMT's key-value store goes through the broker's trade server, which disconnects at night
@@ -456,6 +482,8 @@ class QnHost(object):
         self.persist_night_logged = ''
         # status fields of the broker account object (read from the engine's own queries): the
         # values seen while the key-value store works mean "trade server reachable"
+        self.trading = None          # 'run' / 'pause' from the trading switch (live copy)
+        self.switch_checked = 0.0
         self.account_status = None
         self.account_status_good = set()
         self.account_status_learn = False
@@ -590,7 +618,7 @@ class QnHost(object):
         api = self._trading_api()
         self.engine = Engine(self.C, api, settings)
         self.log('engine started; mode=%s release=%s' % (settings['mode'], self.deploy.get('release')))
-        self._start_daemon()
+        self._poll_switch(force=True)
         if self.store is not None:
             self.persist_thread = QnThread(target=self._persist_loop, name='a-system-state', daemon=True)
             self.persist_thread.start()
@@ -774,14 +802,47 @@ class QnHost(object):
                 self.log('trading daemon exited: %r' % (exc.code,))
             except BaseException as exc:
                 if qn_is_stopped(exc):
-                    self.log('trading daemon thread ended (strategy run stopped)')
+                    self.log('trading daemon thread ended (%s)' % (
+                        'paused by the trading switch' if self.trading == 'pause' else 'strategy run stopped'))
                 else:
                     self.log('trading daemon crashed:\n' + _htb.format_exc()[-3000:])
         self.daemon_thread = QnThread(target=target, name='a-system-daemon', daemon=True)
         self.daemon_thread._qn_kill = tuple(self.daemon_thread._qn_kill) + (token,)
         self.daemon_thread.start()
 
+    def _poll_switch(self, force=False):
+        """Follow the trading switch: start the trading daemon on "run", end it on anything else
+        (its pipeline scripts end with it). The engine, state saves and QMT stay as they are."""
+        now = _htime.time()
+        if not force and now - self.switch_checked < self.SWITCH_POLL_SECONDS:
+            return
+        self.switch_checked = now
+        if not self.deploy.get('trading_switch', self.deploy.get('mode') == 'live'):
+            want = 'run'  # shadow/validation copies always run
+        else:
+            try:
+                want = 'run' if _qn_read_switch() == 'run' else 'pause'
+            except Exception:
+                want = 'pause'
+        if want == self.trading and not force:
+            return
+        before, self.trading = self.trading, want
+        alive = bool(self.daemon_thread and self.daemon_thread.is_alive())
+        if want == 'run':
+            if not alive:
+                self.daemon_next_start = 0.0
+                self.log('trading switch: run (start_windows.py) - trading daemon starts')
+                self._start_daemon()
+        else:
+            if alive:
+                self.log('trading switch: pause (stop_windows.py) - trading daemon ends; QMT stays open')
+                self._kill_thread(self.daemon_thread)
+            elif before is None:
+                self.log('trading switch: pause - A_System waits; run start_windows.py to begin trading')
+
     def _supervise(self):
+        if self.trading != 'run':
+            return  # paused by the trading switch: no keeper-style restart
         if self.stopped or self.daemon_thread is None or self.daemon_thread.is_alive():
             return
         now = _htime.time()
@@ -1077,6 +1138,7 @@ class QnHost(object):
                 self.log('paper broker error: %s' % exc)
         self.engine.pump()
         QN_NATIVE_SERVICE.pump()
+        self._poll_switch()
         self._supervise()
         now = _htime.time()
         if now - self.status_last >= 20:
@@ -1093,8 +1155,8 @@ class QnHost(object):
             self._export_files()
             self._report_silent_scripts(now)
             leftover = self.end_leftover_threads()
-            self.log('status: daemon_alive=%s log_lines=%d data_jobs_waiting=%d leftover_threads=%d %s last="%s" daemon_at=%s' % (
-                bool(self.daemon_thread and self.daemon_thread.is_alive()), len(QN_LOG_LINES),
+            self.log('status: trading=%s daemon_alive=%s log_lines=%d data_jobs_waiting=%d leftover_threads=%d %s last="%s" daemon_at=%s' % (
+                self.trading, bool(self.daemon_thread and self.daemon_thread.is_alive()), len(QN_LOG_LINES),
                 QN_NATIVE_SERVICE.waiting(), len(leftover), self._gil_report(), last[0][-120:], where))
         self._yield_to_background()
 
