@@ -43,6 +43,22 @@ def main():
           any('trading daemon crashed' in m for m in host.messages), '| pipeline threads now:', names(pipelines))
     ok &= second is not first and second.is_alive()
     ok &= all(getattr(second, '_qn_kill', ())[-1] in getattr(t, '_qn_kill', ()) for t in pipelines)
+    # 10-28: the daemon's process recovery calls os._exit from a helper thread. In QMT that must
+    # end the daemon (and restart it), never the QMT process (this test process stands for it).
+    import threading
+    loader_os = ns['QnLoader'](ns['QnCodeBase'](ns['QN_MODULES'])).shims['os']
+    victim = host.daemon_thread
+    restarts = host.daemon_restarts
+    helper = threading.Thread(target=lambda: loader_os._exit(70))
+    helper.start()
+    helper.join(5)
+    pump(4)
+    print('os._exit(70) from a helper thread: process alive True | daemon ended:', not victim.is_alive(),
+          '| logged:', any('requested a process exit' in m for m in host.messages))
+    ok &= not victim.is_alive() and any('requested a process exit' in m for m in host.messages)
+    pump(12)
+    print('fresh daemon after os._exit:', host.daemon_restarts > restarts and host.daemon_thread.is_alive())
+    ok &= host.daemon_restarts > restarts and host.daemon_thread is not victim and host.daemon_thread.is_alive()
     ns['stop'](C)
     print('RESULT', 'PASS' if ok else 'FAIL')
 

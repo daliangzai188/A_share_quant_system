@@ -644,6 +644,7 @@ class QnHost(object):
         api = self._trading_api()
         self.engine = Engine(self.C, api, settings)
         self.log('engine started; mode=%s release=%s' % (settings['mode'], self.deploy.get('release')))
+        QN_PROCESS_EXIT[0] = self._daemon_process_exit
         self._poll_switch(force=True)
         if self.store is not None:
             self.persist_thread = QnThread(target=self._persist_loop, name='a-system-state', daemon=True)
@@ -892,6 +893,17 @@ class QnHost(object):
                 self._kill_thread(self.daemon_thread)
             elif before is None:
                 self.log('trading switch: pause - A_System waits; run start_windows.py to begin trading')
+
+    def _daemon_process_exit(self, code):
+        """The trading daemon asked for a process exit (os._exit): end it and its scripts; the
+        keeper-style supervisor starts a fresh one after DAEMON_RESTART_DELAY (QMT stays up)."""
+        if self.stopped or QN_SHUTDOWN[0]:
+            return
+        self.log('trading daemon requested a process exit (os._exit(%s)): ending it and its scripts; QMT stays '
+                 'up, a fresh daemon starts in %ds (keeper behaviour)' % (code, self.DAEMON_RESTART_DELAY))
+        thread = self.daemon_thread
+        if thread is not None and thread is not _hthr.current_thread():
+            self._kill_thread(thread)
 
     def _supervise(self):
         if self.trading != 'run':

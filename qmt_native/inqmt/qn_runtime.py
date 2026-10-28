@@ -1825,6 +1825,24 @@ def _qn_kill(pid, sig):
 
 qn_os.kill = _qn_kill
 
+# 10-28 16:06: the trading daemon's process recovery (poisoned broker channel: "程序将退出，由keeper
+# 启动全新进程") called os._exit, which here is QMT's own process: QMT died, the client guard
+# relaunched it to its login window and nothing traded until someone logged in. In QMT, exiting
+# "the process" means ending the trading daemon thread and its scripts; the host restarts a fresh
+# daemon (fresh module state) after its keeper delay, as the old keeper started a fresh process.
+QN_PROCESS_EXIT = [None]   # set by the host: callable(code)
+
+
+def _qn_os_exit(code=0):
+    hook = QN_PROCESS_EXIT[0]
+    if hook is not None:
+        hook(code)
+    raise QnStopped('os._exit(%r): trading daemon restart requested' % (code,))
+
+
+qn_os._exit = _qn_os_exit
+qn_os.abort = lambda: _qn_os_exit('abort')
+
 
 # ---------------------------------------------------------------- signal / network / misc stubs
 import signal as _signal
