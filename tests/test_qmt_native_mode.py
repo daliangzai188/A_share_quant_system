@@ -134,7 +134,8 @@ class QmtNativeModeTests(unittest.TestCase):
         pushes = []
         code, switched, out = self.flow(native_stop, dict(trading='pause', alive='False'), notify=lambda: pushes.append(1))
         self.assertEqual((code, switched, len(pushes)), (0, ['pause'], 1), out)
-        self.assertTrue(any('已暂停：交易线程已结束' in line for line in out))
+        self.assertTrue(any('已暂停：交易执行程序已结束' in line for line in out))
+        self.assertTrue(any('既不开仓也不平仓' in line for line in out))
         self.assertTrue(any('账户***90 总资产6.89万' in line for line in out))
         code, _, out = self.flow(native_stop, None, logged_in=False, notify=lambda: pushes.append(1))
         self.assertEqual((code, len(pushes)), (0, 2))

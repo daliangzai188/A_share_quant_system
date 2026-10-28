@@ -198,8 +198,8 @@ def status_lines(settings: dict[str, Any], ensure_forwarder: bool = False, now: 
             lines.append("❌ QMT 里的 A_SYSTEM 最后一次输出在 %s（%d 分钟前）：若“模型交易”里仍显示运行中，"
                          "说明 QMT 内置 Python 卡住了，请退出 QMT 再登录。" % (when, live["age_seconds"] // 60))
         elif live["trading"] == "pause":
-            lines.append("⏸ QMT 里的 A_SYSTEM 处于暂停：最后状态 %s（%d 秒前），交易线程未运行（不查账户、不跑流水线、"
-                         "不下单），版本 %s。" % (when, live["age_seconds"], live["release"] or "?"))
+            lines.append("⏸ QMT 里的 A_SYSTEM 处于暂停：最后状态 %s（%d 秒前），交易执行程序未运行（不开仓、不平仓、不查账户、"
+                         "不跑流水线；QMT 里那一行仍显示“运行中”属正常），版本 %s。" % (when, live["age_seconds"], live["release"] or "?"))
         else:
             lines.append("✅ QMT 里的 A_SYSTEM 在交易：最后状态 %s（%d 秒前），交易线程%s，版本 %s。" % (
                 when, live["age_seconds"], "正常" if live["daemon_alive"] else "未运行",
@@ -309,7 +309,11 @@ def native_stop(settings: dict[str, Any], out: Callable[[str], None] = print,
         return 1
     if notify is not None:
         notify()
-    out("✅ QMT 里的 A_SYSTEM 已暂停：交易线程已结束（不查账户、不跑流水线、不下单），QMT 保持登录。")
+    out("✅ QMT 里的 A_SYSTEM 已暂停：交易执行程序已结束，QMT 保持登录。")
+    out("   暂停期间既不开仓也不平仓：止损、止盈、到期卖出都不会执行，也不查账户、不跑收盘流水线；"
+        "暂停前已经报到券商的委托不会被撤销。有持仓时暂停，请自己盯住持仓。")
+    out("   QMT“模型交易”里 A_SYSTEM 这一行仍会显示“运行中”，这是正常的：那是外壳，要一直运行才能接收 start；"
+        "暂停期间 QMT 策略日志每分钟写一行“⏸ 交易已暂停”。")
     if live["account"]:
         out("暂停前最后一次账户检查：%s" % live["account"])
     return 0
