@@ -957,6 +957,19 @@ class QnHost(object):
         hm = _bj_now().strftime('%H%M')
         return any(a <= hm < b for a, b in self.CACHE_WINDOWS)
 
+    def _cache_target(self, days, today):
+        """The open day whose daily bars the keeper keeps in QMT's cache. 10-28: the keeper only
+        cached the previous open day, so day T's bars waited for the 05:00-09:05 window of T+1; QMT
+        stopped the strategy at 02:58 (false "illegal IP"), the morning window was lost, and the
+        catch-up of T after the 08:53 restart found only 2092 of ~5400 bars of T. Now, once today's
+        close pipeline has written today's raw daily table (so the cache cannot change today's
+        result), today's bars are cached the same evening."""
+        past = [d for d in days if d < today]
+        if (today in days and _bj_now().strftime('%H%M') >= '1535'
+                and QN_VFS.isfile(QN_ROOT + '/data/raw/daily/%s.csv' % today)):
+            return today
+        return past[-1] if past else None
+
     def _cache_keeper_loop(self):
         while not self.stopped and not QN_SHUTDOWN[0]:
             try:
@@ -975,10 +988,9 @@ class QnHost(object):
         days = sorted(r['cal_date'] for r in _hcsv.DictReader(_hio.StringIO(text))
                       if str(r.get('is_open', '')).strip() in ('1', '1.0'))
         today = _bj_now().strftime('%Y%m%d')
-        past = [d for d in days if d < today]
-        if not past or self.cache_done == past[-1]:
+        target = self._cache_target(days, today)
+        if target is None or self.cache_done == target:
             return
-        target = past[-1]
         start = days[max(0, days.index(target) - self.CACHE_HISTORY_DAYS)]
         native = QnLoader(self.codebase).load('qn.native')
         universe = QN_NATIVE_SERVICE.call(native.qmt_universe)
@@ -988,6 +1000,15 @@ class QnHost(object):
             bars = QN_NATIVE_SERVICE.call(native.qmt_daily_bars, part, start, target)
             stale.extend(c for c in part if not bars.get(c) or bars[c][-1]['date'] < target)
         self.log('daily cache keeper: %d of %d stocks lack %s in QMT\'s cache' % (len(stale), len(universe), target))
+        if target == today and stale:
+            # today's bars only exist on QMT's data server some time after the close: try a few first
+            probe = stale[:3]
+            for code in probe:
+                QN_NATIVE_SERVICE.call(native.qmt_download_daily, code, start, target)
+            again = QN_NATIVE_SERVICE.call(native.qmt_daily_bars, probe, start, target)
+            if not any(again.get(c) and again[c][-1]['date'] >= target for c in probe):
+                self.log('daily cache keeper: QMT has no %s daily bars yet; trying again in 10 minutes' % target)
+                return
         t0 = _htime.time()
         for n, code in enumerate(stale, 1):
             if self.stopped or QN_SHUTDOWN[0] or not self._cache_allowed():

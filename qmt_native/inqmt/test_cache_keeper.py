@@ -58,6 +58,26 @@ def main():
     before = len(callers)
     host._cache_keeper_pass()  # returns before any QMT call outside the allowed hours
     ok &= len(callers) == before and host.cache_done == ''
+    # which day is kept: the previous open day; today only after 15:35 once today's raw daily
+    # table exists (today's close pipeline is done, the cache can no longer change its result)
+    days = ['20261026', '20261027', '20261028']
+    vfs, root = ns['QN_VFS'], ns['QN_ROOT']
+    clock = {'hm': '1600'}
+    real_now = ns['_bj_now']
+    ns['_bj_now'] = lambda: type('T', (), {'strftime': lambda self, f: clock['hm'] if f == '%H%M' else real_now().strftime(f)})()
+    try:
+        before_file = host._cache_target(days, '20261028')
+        vfs.put_text('data/raw/daily/20261028.csv', 'ts_code,trade_date\n000001.SZ,20261028\n')
+        after_file = host._cache_target(days, '20261028')
+        clock['hm'] = '1520'
+        before_1535 = host._cache_target(days, '20261028')
+        clock['hm'] = '0600'
+        morning = host._cache_target(days, '20261029')
+    finally:
+        ns['_bj_now'] = real_now
+    print('target: before the close table %s, after it %s, at 15:20 %s, next morning %s' % (
+        before_file, after_file, before_1535, morning))
+    ok &= (before_file, after_file, before_1535, morning) == ('20261027', '20261028', '20261027', '20261028')
     thread = host.cache_thread
     ns['stop'](C)
     time.sleep(6)
