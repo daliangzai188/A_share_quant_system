@@ -950,7 +950,9 @@ class QnHost(object):
     # disk), so the cache is kept current here: outside trading hours, every stock gets the
     # previous trading day's bar. The current day is left alone: the pipeline builds it from the
     # 15:00 snapshot, as validated.
-    CACHE_WINDOWS = (('0500', '0905'), ('1535', '2300'))
+    # outside trading hours only; the lunch break lets a restart in the night still finish the
+    # previous day before the close pipeline (10-28: 2131 bars of 10-27 were missing at 09:49)
+    CACHE_WINDOWS = (('0500', '0905'), ('1135', '1255'), ('1535', '2300'))
     CACHE_HISTORY_DAYS = 80  # the collector reads ENSURE_DAYS + HISTORY_DAYS open days back
 
     def _cache_allowed(self):

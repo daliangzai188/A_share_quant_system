@@ -59,13 +59,14 @@ def main():
     sys.stdout = captured
     try:
         drive(ns, C, 25)
+        sample = [l for l in ns['QN_LOG_LINES'] if l][-3:]   # taken while still capturing,
+        drive(ns, C, 2)                                        # then the echo queue drains
     finally:
         sys.stdout = real_stdout
     again = alive()
     print('4. run again: daemon alive=%s' % again)
     ok &= again
     echoed = [l for l in captured.getvalue().splitlines() if l.startswith('[A_SYSTEM_LOG] ')]
-    sample = [l for l in ns['QN_LOG_LINES'] if l][-3:]
     print('5. daemon lines echoed to the QMT log: %d; recent ones present: %s' % (
         len(echoed), all(any(x in e for e in echoed) for x in sample)))
     ok &= len(echoed) > 3 and all(any(x in e for e in echoed) for x in sample)

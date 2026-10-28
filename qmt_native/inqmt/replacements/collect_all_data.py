@@ -161,6 +161,16 @@ def main():
         daily_rows = build_daily_rows(bars, day)
         if len(daily_rows) < 4000:
             raise RuntimeError('%s 日线只有 %d 行，数据不完整，拒绝生成' % (day, len(daily_rows)))
+        if day < today:
+            # A past day comes only from QMT's local cache (today's snapshot cannot fill it). 10-28:
+            # the cache held 3447 of ~5400 bars of 10-27; with up to 400 downloads per attempt a
+            # retry would have passed the 4000-row floor and stored a table missing ~1100 stocks
+            # for good (a stored past day is never rebuilt). It must match the previous days.
+            prior = calendar[max(0, calendar.index(day) - 5):calendar.index(day)]
+            expected = max([len(build_daily_rows(bars, d)) for d in prior] or [0])
+            if len(daily_rows) < 0.98 * expected:
+                raise RuntimeError('%s 日线只有 %d 行（前 5 个交易日最多 %d 行），QMT 本地缓存未补全，拒绝生成' % (
+                    day, len(daily_rows), expected))
         write_frame(daily_rows, DAILY_COLUMNS, RAW / 'daily' / ('%s.csv' % day))
         write_frame(build_daily_basic_rows(bars, details, day), BASIC_COLUMNS, RAW / 'daily_basic' / ('%s.csv' % day))
         if day != end and has_rows(RAW / 'limit_list' / ('%s.csv' % day)):
