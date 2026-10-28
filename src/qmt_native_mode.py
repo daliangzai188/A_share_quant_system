@@ -51,26 +51,52 @@ def _tail(path: Path, limit: int = TAIL_BYTES) -> bytes:
         return b""
 
 
+HEADER = re.compile(rb"^(\d{4}-\d\d-\d\d) \d\d:\d\d:\d\d,\d+ ")
+STATUS = re.compile(rb"^\[A_SYSTEM\] (\d\d:\d\d:\d\d) status: (.*)$")
+
+
+def _last_status(data: bytes, name: bytes) -> tuple[dt.datetime, bytes] | None:
+    """最后一行状态行的时间和内容。QMT 会把同一时刻的几次打印合并在一个带时间的标题下，
+    状态行可能是标题行，也可能是标题下面没有时间前缀的续行（时间取状态行自己的时分秒）。"""
+    found = None
+    day, mine = None, False
+    for raw in data.split(b"\n"):
+        raw = raw.rstrip(b"\r")
+        header = HEADER.match(raw)
+        if header:
+            day, mine = header.group(1), name in raw
+            payload = raw.split(b"output = ", 1)[1] if b"output = " in raw else b""
+        elif mine:
+            payload = raw
+        else:
+            continue
+        if not mine or day is None:
+            continue
+        m = STATUS.match(payload)
+        if m:
+            found = (day, m.group(1), m.group(2))
+    if found is None:
+        return None
+    at = dt.datetime.strptime((found[0] + b" " + found[1]).decode("ascii"), "%Y-%m-%d %H:%M:%S")
+    return at, found[2]
+
+
 def live_status(settings: dict[str, Any], now: dt.datetime | None = None) -> dict[str, Any]:
     """QMT 里实盘副本最后一次状态行（每 20 秒一行）的时间、版本、守护线程和最近的账户检查。"""
     now = now or dt.datetime.now()
     log_dir = Path(settings.get("qmt_log_dir") or DEFAULT_LOG_DIR)
     name = str(settings.get("strategy_file") or "A_SYSTEM_QMT_INNER").encode("ascii")
-    status = re.compile(
-        rb"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d),\d+ [^\n]*" + re.escape(name)
-        + rb"[^\n]*\[A_SYSTEM\] \d\d:\d\d:\d\d status: ([^\n]*)", re.M)
     result: dict[str, Any] = {"log": None, "last_status_at": None, "age_seconds": None, "trading": None,
                               "daemon_alive": None, "release": None, "account": None}
     for day in (now.date(), now.date() - dt.timedelta(days=1)):
         path = log_dir / ("XtClient_FormulaOutput_%s.log" % day.strftime("%Y%m%d"))
         data = _tail(path)
-        found = list(status.finditer(data))
-        if not found:
+        last = _last_status(data, name)
+        if last is None:
             continue
-        last = found[-1]
-        at = dt.datetime.strptime(last.group(1).decode("ascii"), "%Y-%m-%d %H:%M:%S")
-        alive = re.search(rb"daemon_alive=(\w+)", last.group(2))
-        trading = re.search(rb"trading=(\w+)", last.group(2))  # 有交易开关的版本才有
+        at, body = last
+        alive = re.search(rb"daemon_alive=(\w+)", body)
+        trading = re.search(rb"trading=(\w+)", body)  # 有交易开关的版本才有
         releases = re.findall(rb"started: mode=live release=([0-9A-Za-z-]+)", data)
         result.update(log=str(path), last_status_at=at, age_seconds=max(0.0, (now - at).total_seconds()),
                       daemon_alive=(alive.group(1) == b"True") if alive else None,
@@ -294,9 +320,9 @@ def native_stop(settings: dict[str, Any], out: Callable[[str], None] = print,
         if notify is not None:
             notify()
         return 0
-    out("等待 QMT 里的 A_SYSTEM 结束交易线程（最多 60 秒）……")
+    out("等待 QMT 里的 A_SYSTEM 结束交易线程（最多 100 秒）……")
     started = clock()
-    live = _wait(settings, started, 60, lambda l: l["trading"] == "pause" and l["daemon_alive"] is False, clock, sleep)
+    live = _wait(settings, started, 100, lambda l: l["trading"] == "pause" and l["daemon_alive"] is False, clock, sleep)
     if live is None:
         last = live_status(settings, clock())
         if last["last_status_at"] is None or last["age_seconds"] > 60:
@@ -304,7 +330,7 @@ def native_stop(settings: dict[str, Any], out: Callable[[str], None] = print,
             if notify is not None:
                 notify()
             return 0
-        out("❌ 60 秒内没有确认暂停%s：请在 QMT“模型交易”里点 A_SYSTEM 的 ■ 停止。" % (
+        out("❌ 100 秒内没有确认暂停%s：请在 QMT“模型交易”里点 A_SYSTEM 的 ■ 停止。" % (
             "（QMT 里运行的 A_SYSTEM 还是旧版本，不认识交易开关）" if last["trading"] is None else ""))
         return 1
     if notify is not None:

@@ -61,6 +61,21 @@ class QmtNativeModeTests(unittest.TestCase):
         self.assertEqual(live['release'], '202610262343-15e8b81fd88e')
         self.assertEqual(live['account'], '✅ [账户] 2026-10-27 02:31:28 | 账户***90 总资产6.89万 | 无持仓')
 
+    def test_status_line_merged_under_another_print_is_found(self):
+        # QMT puts prints of the same moment under one header: the status line is then a continuation line
+        self.write('20261028', ('2026-10-28 09:37:12,894 [INFO] [0x1] reqid = 0C:\\QMT\\GJQMT\\python\\A_SYSTEM_QMT_INNER.py_1, '
+                                'output = [A_SYSTEM] 09:37:12 trading switch: pause (stop_windows.py)\r\n'
+                                '[A_SYSTEM] 09:37:12 ⏸ 交易已暂停（交易开关 pause）\r\n'
+                                '[A_SYSTEM] 09:37:12 status: trading=pause daemon_alive=True log_lines=38\r\n'
+                                '2026-10-28 09:38:12,906 [INFO] [0x1] reqid = 0C:\\QMT\\GJQMT\\python\\A_SYSTEM_QMT_INNER.py_1, '
+                                'output = [A_SYSTEM] 09:38:12 ⏸ 交易已暂停（交易开关 pause）\r\n'
+                                '[A_SYSTEM] 09:38:12 status: trading=pause daemon_alive=False log_lines=38\r\n'
+                                '2026-10-28 09:38:20,1 [INFO] [0x1] reqid = 0C:\\QMT\\GJQMT\\python\\OTHER.py_1, output = x\r\n'
+                                '[A_SYSTEM] 09:38:20 status: trading=run daemon_alive=True\r\n').encode('utf-8'))
+        live = live_status(self.settings, dt.datetime(2026, 10, 28, 9, 38, 30))
+        self.assertEqual((live['last_status_at'], live['trading'], live['daemon_alive']),
+                         (dt.datetime(2026, 10, 28, 9, 38, 12), 'pause', False))
+
     def test_after_midnight_yesterdays_log_counts(self):
         self.write('20261026', status_line(dt.datetime(2026, 10, 26, 23, 59, 50)))
         live = live_status(self.settings, dt.datetime(2026, 10, 27, 0, 0, 5))
