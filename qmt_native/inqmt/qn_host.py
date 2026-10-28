@@ -86,6 +86,20 @@ def _qn_read_switch():
         return ''
 
 
+def _qn_switch_detail():
+    """When and by whom the trading switch was last set (written by start/stop_windows.py)."""
+    if QN_SWITCH_READER[0] is not None:
+        return ''
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, QN_SWITCH_KEY) as key:
+            at = str(winreg.QueryValueEx(key, 'ChangedAt')[0])
+            by = str(winreg.QueryValueEx(key, 'ChangedBy')[0])
+        return '%s 由 %s 设置' % (at[5:] if len(at) > 5 else at, by)
+    except Exception:
+        return ''
+
+
 def _status_text(status):
     return ', '.join('%s=%s' % kv for kv in status) or 'no status field'
 
@@ -417,6 +431,12 @@ class QnHost(object):
     VERIFY_INTERVAL = 7200.0
     DAEMON_RESTART_DELAY = 60.0
     SWITCH_POLL_SECONDS = 2.0
+    # QMT's 模型交易 row keeps showing 运行中 while trading is paused (the strategy shell must keep
+    # running to receive start). While paused, QMT's log says so in plain Chinese every minute;
+    # status lines then come every 60 s instead of 20 s so that notice stays visible.
+    STATUS_SECONDS = 20.0
+    STATUS_PAUSED_SECONDS = 60.0
+    TRADING_NOTE_SECONDS = 600.0
     # Every trading-daemon log line (candidates, plans, account/position checks, pipeline progress,
     # pushes) is echoed to QMT's strategy log as "[A_SYSTEM_LOG] <line>", so start_windows.py can
     # follow it in the terminal as it followed logs/trading_daemon.log before 10-23. Printing is the
@@ -489,6 +509,7 @@ class QnHost(object):
         # values seen while the key-value store works mean "trade server reachable"
         self.trading = None          # 'run' / 'pause' from the trading switch (live copy)
         self.switch_checked = 0.0
+        self.trading_note_last = 0.0
         self.account_status = None
         self.account_status_good = set()
         self.account_status_learn = False
@@ -828,6 +849,18 @@ class QnHost(object):
             except UnicodeEncodeError:
                 print('[A_SYSTEM_LOG] ' + line.encode('ascii', 'backslashreplace').decode('ascii'))
 
+    def _trading_notice(self, now):
+        if not self.deploy.get('trading_switch', self.deploy.get('mode') == 'live') or self.trading is None:
+            return
+        detail = _qn_switch_detail()
+        if self.trading == 'pause':
+            self.log('⏸ 交易已暂停（交易开关 pause%s）：不开仓也不平仓（止损、止盈、到期卖出都不执行），不查账户、不跑流水线。QMT“模型交易”里这一行仍显示'
+                     '“运行中”是正常的（外壳要一直运行才能接收 start）。恢复交易：py -3.11 start_windows.py'
+                     % ('，' + detail if detail else ''))
+        elif now - self.trading_note_last >= self.TRADING_NOTE_SECONDS:
+            self.trading_note_last = now
+            self.log('▶ 交易中（交易开关 run%s）。暂停：py -3.11 stop_windows.py' % ('，' + detail if detail else ''))
+
     def _poll_switch(self, force=False):
         """Follow the trading switch: start the trading daemon on "run", end it on anything else
         (its pipeline scripts end with it). The engine, state saves and QMT stay as they are."""
@@ -845,6 +878,8 @@ class QnHost(object):
         if want == self.trading and not force:
             return
         before, self.trading = self.trading, want
+        self.status_last = 0.0        # a status line (and the plain-language notice) right away
+        self.trading_note_last = 0.0
         alive = bool(self.daemon_thread and self.daemon_thread.is_alive())
         if want == 'run':
             if not alive:
@@ -1160,8 +1195,10 @@ class QnHost(object):
         self._supervise()
         self._echo_daemon_log()
         now = _htime.time()
-        if now - self.status_last >= 20:
+        interval = self.STATUS_PAUSED_SECONDS if self.trading == 'pause' else self.STATUS_SECONDS
+        if now - self.status_last >= interval:
             self.status_last = now
+            self._trading_notice(now)
             last = list(QN_LOG_LINES)[-1:] or list(QN_PRINT_LINES)[-1:] or ['']
             where = ''
             try:

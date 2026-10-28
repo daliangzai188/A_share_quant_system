@@ -36,13 +36,14 @@ def main():
         return lines[-1] if lines else ''
 
     drive(ns, C, 25)
-    waiting = not alive() and 'trading=pause' in last_status() and any('A_System waits' in m for m in host.messages)
-    print('1. switch not set: daemon alive=%s, status says pause=%s, waits logged=%s' % (
+    waiting = not alive() and 'trading=pause' in last_status() and any('A_System waits' in m for m in host.messages) \
+        and any('⏸ 交易已暂停' in m and '仍显示“运行中”是正常的' in m for m in host.messages)
+    print('1. switch not set: daemon alive=%s, status says pause=%s, waits + plain notice logged=%s' % (
         alive(), 'trading=pause' in last_status(), waiting))
     ok = waiting
     switch['value'] = 'run'
     drive(ns, C, 25)
-    started = alive() and 'trading=run' in last_status()
+    started = alive() and 'trading=run' in last_status() and any('▶ 交易中' in m for m in host.messages)
     print('2. run: daemon alive=%s, status says run=%s' % (alive(), 'trading=run' in last_status()))
     ok &= started
     switch['value'] = 'pause'
