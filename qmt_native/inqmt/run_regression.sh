@@ -24,6 +24,7 @@ echo "== no disk reads";  PYTHONIOENCODING=utf-8 $PY inqmt/test_no_disk_reads.py
 echo "== store link";     PYTHONIOENCODING=utf-8 $PY inqmt/test_store_link.py "$S" > "$O/store_link.txt" 2>&1; grep -E "^[0-9]\. |^RESULT" "$O/store_link.txt"
 echo "== trading switch"; PYTHONIOENCODING=utf-8 $PY inqmt/test_trading_switch.py "$S" > "$O/trading_switch.txt" 2>&1; grep -E "^[0-9]\. |^RESULT" "$O/trading_switch.txt"
 echo "== partial day";    (cd inqmt && PYTHONIOENCODING=utf-8 $PY test_partial_day.py > "../$O/partial_day.txt" 2>&1); grep -E "^partial|^bars|^RESULT" "$O/partial_day.txt"
+echo "== freeze";         PYTHONIOENCODING=utf-8 $PY inqmt/test_freeze.py "$S" > "$O/freeze.txt" 2>&1; grep -E "^[0-9]\. |^RESULT" "$O/freeze.txt"
 echo "== tracebacks";     grep -c Traceback "$O"/*.txt
 [ -n "$SKIP_DRILL" ] && exit 0
 echo "== drill 10-13 15:25 -> 10-15 15:15"

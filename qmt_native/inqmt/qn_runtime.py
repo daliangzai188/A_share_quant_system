@@ -1235,6 +1235,60 @@ def __qn_fromisoformat__(cls, text):
 qn_time = _copy_module(_time, 'time', {'sleep': _qn_sleep})
 
 
+# ---------------------------------------------------------------- freezes of QMT's whole Python
+# A broker key-value call that hangs while the trade server is slow holds the GIL: every thread of
+# QMT's Python stands still (10-28 16:05: 52 s, 10-30 15:21: 60 s). The trading daemon's broker
+# commands wait 35 s; after such a freeze the waiting thread woke with its 35 s used up and
+# treated a query as an unknown result: "执行通道超时中毒" -> process restart. In the old
+# architecture nothing else ran on QMT's callback thread, so a freeze never ate into that budget.
+# The host's probe thread beats every 20 ms; a gap longer than QN_FREEZE_GAP is a freeze. Broker
+# command waits do not count freezes (each wait gets at most QN_FREEZE_CAP extra seconds).
+QN_FREEZE = [(None, 0.0)]   # (last beat, frozen seconds before it), replaced as a whole
+QN_FREEZE_GAP = 3.0
+QN_FREEZE_CAP = 600.0
+
+
+def qn_freeze_beat():
+    now = _time.monotonic()
+    beat, frozen = QN_FREEZE[0]
+    if beat is not None and now - beat > QN_FREEZE_GAP:
+        frozen += now - beat
+    QN_FREEZE[0] = (now, frozen)
+
+
+def qn_frozen_seconds():
+    beat, frozen = QN_FREEZE[0]
+    if beat is None:
+        return frozen
+    gap = _time.monotonic() - beat   # a freeze that just ended, before the probe thread ran again
+    return frozen + (gap if gap > QN_FREEZE_GAP else 0.0)
+
+
+import concurrent.futures as _cf
+
+
+class QnFuture(_cf.Future):
+    """Future whose result(timeout) counts only the time QMT's Python could run."""
+
+    def result(self, timeout=None):
+        if timeout is None:
+            return _cf.Future.result(self)
+        start, frozen0 = _time.monotonic(), qn_frozen_seconds()
+        while True:
+            used = (_time.monotonic() - start) - min(qn_frozen_seconds() - frozen0, QN_FREEZE_CAP)
+            remaining = timeout - used
+            if remaining <= 0:
+                return _cf.Future.result(self, timeout=0)
+            try:
+                return _cf.Future.result(self, timeout=min(remaining, 1.0))
+            except _cf.TimeoutError:
+                continue
+
+
+qn_concurrent_futures = _copy_module(_cf, 'concurrent.futures', {'Future': QnFuture})
+qn_concurrent = _module('concurrent', {'futures': qn_concurrent_futures})
+
+
 def _qn_checked_queue(base):
     class _QnQueue(base):
         """A blocking get() waits in short slices so a stopped run's worker ends."""
@@ -2243,7 +2297,7 @@ class QnLoader(object):
                       'urllib.error': _urllib_error, 'tushare': qn_tushare, 'dotenv': qn_dotenv,
                       'getpass': qn_getpass, 'fcntl': qn_fcntl, 'tenacity': qn_tenacity, 'importlib': self._importlib(),
                       'importlib.util': self._importlib().util, 'qn_host': qn_host_module, 'time': qn_time, 'queue': qn_queue,
-                      'threading': qn_threading}
+                      'threading': qn_threading, 'concurrent': qn_concurrent, 'concurrent.futures': qn_concurrent_futures}
         builtins = dict(_builtins.__dict__)
         builtins.update({'open': qn_open, '__import__': self._import, '__qn_to_csv__': __qn_to_csv__,
                          '__qn_to_markdown__': __qn_to_markdown__, '__qn_to_numpy__': __qn_to_numpy__,

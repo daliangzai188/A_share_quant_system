@@ -1266,6 +1266,7 @@ class QnHost(object):
         while not self.stopped and not QN_SHUTDOWN[0]:
             t0 = _htime.monotonic()
             _qn_sleep(self.PROBE_SLEEP)
+            qn_freeze_beat()
             self.bg_lag.append(_htime.monotonic() - t0 - self.PROBE_SLEEP)
             if len(self.bg_lag) > 2000:
                 del self.bg_lag[:1000]
