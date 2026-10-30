@@ -5,8 +5,11 @@ holding the GIL, so all of QMT's Python stood still. The trading daemon's accoun
 before the os._exit fix, took QMT down). Here the engine's account query holds the GIL for 45 s
 (a builtin sum over range never releases it) while the daemon waits for it:
   1. the freeze is seen (probe gap) and does not count against the 35 s broker command timeout;
-  2. no poisoned channel, no process restart, the same daemon keeps running;
-  3. account checks continue after the freeze.
+  2. no poisoned channel, no process restart, the same daemon keeps running, and no "account
+     unverified / 断连" either (read-only bridge requests that ran out during the freeze are resent);
+  3. account checks continue after the freeze;
+  4. the 10-30 shape: the freeze comes from a hanging state save (save_py_key on the callback
+     thread) while account checks run: same result.
 
 Usage: python test_freeze.py STRATEGY_FILE [FREEZE_SECONDS]   (QMT's Python 3.6, ~2.5 minutes)
 """
@@ -51,7 +54,8 @@ def main():
         drive(ns, C, 1)
     drive(ns, C, 75)
     after = list(ns['QN_LOG_LINES'])[mark_log:] + host.messages[mark_msg:]
-    poisoned = [l for l in after if u'中毒' in l or 'process exit' in l or u'进程级交易恢复' in l]
+    poisoned = [l for l in after if u'中毒' in l or 'process exit' in l or u'进程级交易恢复' in l
+                or u'未验证/不可用' in l or u'账户断连' in l or 'timed out' in l]
     accounts = [l for l in after if u'[账户]' in l]
     print('1. freeze %.0fs; frozen seconds seen by the probe: %.0f' % (state['hung'], ns['qn_frozen_seconds']()))
     print('2. poisoned/restart lines: %d; same daemon alive: %s; restarts %d -> %d' % (
@@ -62,6 +66,34 @@ def main():
     ok = state['hung'] >= freeze * 0.8 and ns['qn_frozen_seconds']() >= freeze * 0.8
     ok &= not poisoned and host.daemon_thread is daemon and daemon.is_alive() and host.daemon_restarts == restarts
     ok &= len(accounts) >= 1
+
+    # 4. the hang inside a state save, as on 10-30 15:21
+    kv_state = dict(armed=True, hung=0.0)
+    real_save = ns['save_py_key']
+
+    def hanging_save(k, v):
+        if kv_state['armed'] and not kv_state['hung']:
+            t1 = time.time()
+            sum(range(state['loops']))
+            kv_state['hung'] = time.time() - t1
+        return real_save(k, v)
+    ns['save_py_key'] = hanging_save
+    mark_log, mark_msg = len(ns['QN_LOG_LINES']), len(host.messages)
+    with host.persist_lock:
+        ns['QN_VFS'].put_text('logs/broker_health.json', '{"freeze": %r}' % time.time())
+        host.persist_last, host.persist_retry_at = -1e10, 0.0
+    t0 = time.time()
+    while not kv_state['hung'] and time.time() - t0 < 200:
+        drive(ns, C, 1)
+    drive(ns, C, 75)
+    after = list(ns['QN_LOG_LINES'])[mark_log:] + host.messages[mark_msg:]
+    bad = [l for l in after if u'中毒' in l or 'process exit' in l or u'未验证/不可用' in l or u'账户断连' in l]
+    accounts = [l for l in after if u'[账户]' in l]
+    print('4. hanging state save %.0fs: poisoned/unverified lines %d, same daemon alive %s, account checks after %d' % (
+        kv_state['hung'], len(bad), host.daemon_thread is daemon and daemon.is_alive(), len(accounts)))
+    for l in bad[:3]:
+        print('   ', l[:150].encode('ascii', 'backslashreplace').decode())
+    ok &= kv_state['hung'] >= freeze * 0.8 and not bad and host.daemon_thread is daemon and len(accounts) >= 1
     ns['stop'](C)
     print('RESULT', 'PASS' if ok else 'FAIL')
 

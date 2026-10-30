@@ -1286,6 +1286,38 @@ class QnFuture(_cf.Future):
 
 
 qn_concurrent_futures = _copy_module(_cf, 'concurrent.futures', {'Future': QnFuture})
+
+# The daemon talks to the engine through qmt_inner.protocol: a request file with a 20 s deadline
+# (8 s for orders). A freeze of QMT's Python makes such a request run out of time although nothing
+# failed (the engine rejects it as expired, or the client's wait ends), and the daemon then reports
+# "账户断连" and blocks that round. Read-only requests that ran out of time while a freeze happened
+# are sent once more (up to twice); orders and cancels are never resent (result unknown -> broker-fact
+# recovery, unchanged).
+QN_PROTOCOL_READ_ONLY = ('hello', 'account', 'positions', 'orders', 'trades', 'quotes', 'minutes', 'history')
+
+
+def _qn_patch_protocol(mod):
+    client = getattr(mod, 'FileClient', None)
+    if client is None or getattr(client, '_qn_freeze_retry', False):
+        return
+    real_call = client.call
+
+    def call(self, method, params):
+        for attempt in range(3):
+            frozen0 = qn_frozen_seconds()
+            try:
+                return real_call(self, method, params)
+            except Exception as exc:
+                text = str(exc)
+                ran_out = isinstance(exc, TimeoutError) or 'Expired or invalid request deadline' in text
+                froze = qn_frozen_seconds() - frozen0 > 0
+                if method not in QN_PROTOCOL_READ_ONLY or not ran_out or not froze or attempt == 2:
+                    raise
+    client.call = call
+    client._qn_freeze_retry = True
+
+
+QN_MODULE_PATCHES = {'qmt_inner.protocol': _qn_patch_protocol}
 qn_concurrent = _module('concurrent', {'futures': qn_concurrent_futures})
 
 
@@ -2386,6 +2418,8 @@ class QnLoader(object):
         except BaseException:
             self.loaded.pop(name, None)
             raise
+        if name in QN_MODULE_PATCHES:
+            QN_MODULE_PATCHES[name](mod)
         if parent:
             setattr(self.loaded[parent], name.rpartition('.')[2], mod)
         return mod
