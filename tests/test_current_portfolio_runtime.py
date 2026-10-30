@@ -674,6 +674,51 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
         self.assertIn("② C强势龙头：已计算｜候选0只", message)
         self.assertIn("③ E策略：已计算｜候选0只", message)
 
+    def test_close_pipeline_candidate_summary_pushed_once_per_signal_date(self) -> None:
+        """候选统计每个信号日推送一次；推送失败下次再推；补跑同一日不重复推送。"""
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            ac_dir = root / "reports" / "paper_trade" / "ab_filtered_daily_ops"
+            e_dir = root / "reports" / "strategy_e"
+            ac_dir.mkdir(parents=True)
+            e_dir.mkdir(parents=True)
+            pd.DataFrame([
+                {"candidate_rank": 1, "ts_code": "301132.SZ", "name": "满坤科技"},
+                {"candidate_rank": 2, "ts_code": "300002.SZ", "name": "A第二名"},
+            ]).to_csv(ac_dir / "profile_20261030_a_candidates.csv", index=False)
+            (ac_dir / "profile_20261030_c_candidates.csv").write_text("", encoding="utf-8")
+            pd.DataFrame([
+                {"candidate_rank": 1, "ts_code": "300030.SZ", "name": "阳普医疗"},
+            ]).to_csv(e_dir / "e_signal_20261030_candidates.csv", index=False)
+            sent: list[tuple[str, str]] = []
+            results = [False, True, True]
+
+            def fake_notify(event, title, body="", **kwargs):
+                sent.append((title, body))
+                return results[len(sent) - 1]
+
+            with (
+                patch.object(trading_daemon, "PROJECT_ROOT", root),
+                patch.object(trading_daemon, "logger", return_value=MagicMock()),
+                patch.object(trading_daemon, "_notify", side_effect=fake_notify),
+            ):
+                trading_daemon._log_close_pipeline_candidate_summary("20261030")  # 推送失败
+                trading_daemon._log_close_pipeline_candidate_summary("20261030")  # 再推，成功
+                trading_daemon._log_close_pipeline_candidate_summary("20261030")  # 补跑：不再推
+            pushed = json.loads((root / "data" / "state" / "close_candidate_summary_pushed.json")
+                                .read_text(encoding="utf-8"))
+
+        self.assertEqual(len(sent), 2)
+        title, body = sent[-1]
+        self.assertEqual(title, "📋 收盘候选统计 20261030")
+        self.assertIn("① A主策略：已计算｜候选2只｜第一名 301132.SZ 满坤科技", body)
+        self.assertIn("② C强势龙头：已计算｜候选0只", body)
+        self.assertIn("③ E策略：已计算｜候选1只｜第一名 300030.SZ 阳普医疗", body)
+        self.assertIn("④ D盘中兜底：未完成统计", body)
+        self.assertNotIn("┃", body)
+        self.assertEqual(pushed["signal_dates"], ["20261030"])
+
     def test_d_shared_proxy_checks_release_certification_before_buy(self) -> None:
         proxy = trading_daemon.SharedQMTBrokerProxy({"adapter": "qmt"})
         with (

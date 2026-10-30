@@ -13032,6 +13032,34 @@ def _read_close_candidate_artifact(strategy: str, signal_date: str) -> dict[str,
     return result
 
 
+_CLOSE_CANDIDATE_PUSHED_FILE = "close_candidate_summary_pushed.json"
+
+
+def _push_close_candidate_summary_once(signal_date: str, body: str) -> None:
+    """每个信号日把候选统计推送一次（用户 2026-10-30 要求）。
+
+    已推送的信号日记在 data/state/ 下；推送成功才记下，失败的下次收盘流水线
+    再推。QMT 重启后补跑同一信号日不会重复推送。只推送，不影响任何交易。
+    """
+    path = PROJECT_ROOT / "data" / "state" / _CLOSE_CANDIDATE_PUSHED_FILE
+    try:
+        pushed = list(json.loads(path.read_text(encoding="utf-8")).get("signal_dates", []))
+    except (OSError, ValueError, AttributeError):
+        pushed = []
+    if signal_date in pushed:
+        return
+    if not _notify("daily_summary", f"📋 收盘候选统计 {signal_date}", body):
+        return
+    pushed = (pushed + [signal_date])[-60:]
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps({"signal_dates": pushed}, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError as exc:
+        logger().warning("候选统计推送记录写入失败（下次可能重复推送）：%s", exc)
+
+
 def _log_close_pipeline_candidate_summary(signal_date: str) -> None:
     """汇总ACDE已有产物；本函数严格只读，不改变任何策略执行结果。"""
 
@@ -13069,6 +13097,11 @@ def _log_close_pipeline_candidate_summary(signal_date: str) -> None:
             lines.append(f"┃ {labels[leg]}：{content}")
         lines.append("┃━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         logger().info("\n".join(lines))
+        _push_close_candidate_summary_once(
+            signal_date,
+            "\n".join(line[2:] for line in lines[3:-1])
+            + "\n只读统计，不参与下单；执行层按A>C>E>D互斥。",
+        )
     except Exception as exc:
         logger().warning("收盘流水线候选产物统计失败（不影响信号和下单）：%s", exc)
 
