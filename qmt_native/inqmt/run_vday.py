@@ -130,6 +130,16 @@ def main():
     clock = qn_vclock.QnVirtualClock(bj_epoch(start), speed)
     kv = {}
     C = VMarket(clock)
+    if os.environ.get('QN_TEST_GUARD_READ_CSV'):
+        # QMT 2.1.33: the name pandas.read_csv refuses every call, even on an in-memory buffer.
+        class _guard_funcwrap(object):
+            def __init__(self, wrapped):
+                self.__wrapped__ = wrapped
+                self.__qualname__ = 'pandas.read_csv'
+
+            def __call__(self, *a, **k):
+                raise PermissionError('calling pandas.read_csv not allowed')
+        pd.read_csv = _guard_funcwrap(pd.read_csv)
     ns = {'__name__': '__main__', 'download_history_data': lambda *a: None,
           'get_py_key': lambda k: (kv.get(k, ''), 0, ''),
           'save_py_key': lambda k, v: (kv.__setitem__(k, v) or (0, '')) if len(v) <= 5000 else (-1, 'too long')}

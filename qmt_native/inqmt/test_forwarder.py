@@ -146,6 +146,35 @@ def main():
         fwd.check_stall(state, 'http://b', now + 3700, 600)   # an hour later: reminder unless at night
         print('stall at %s: %d pushes, last: %s' % (label, len(pushed), pushed[-1][:60]))
         ok &= len(pushed) == want_n and ('第2次提醒' in pushed[-1]) == (want_n == 2)
+    # QMT 2.1.33's network monitor stopping the strategy (lines as in QMT's own log of 11-04): pushed
+    # once at once; backlog, a stop while not running and a stop clicked by the user are not pushed
+    client = os.path.join(logs, 'XtClient_20261104.log')
+
+    def qline(clock, thread, text):
+        return ('2026-11-04 %s,231 [INFO] [0x00002f30] [%s] [%s,230] %s\r\n' % (clock, thread, clock, text)).encode('utf-8')
+    mon, ui = '0x00000fcc', '0x00002b4c'
+    tcp = '[monitor]TCP - PID:5364 remoteIP:[142.250.198.131:80], localIP:[172.16.136.128:56309]'
+    stop = ('[0x1f9d7b085d0] [TC::CTradeStrategyData::writeStrategyRunLog] [TradeStrategy]try stop : ID:1, '
+            'fromula:A_SYSTEM_QMT_INNER, gbkfromula:A_SYSTEM_QMT_INNER, account:1234567890, log:')
+    done = '[0x1f9d7b085d0] [TC::CTradeStrategyData::doStop] [CTradeStrategyData]stop success, m_qsRequestID:x.py_0003007'
+    fail = '[0x1f9d7b085d0] [TC::CTradeStrategyData::doStop] [CTradeStrategyData]stop error, m_qsRequestID:'
+    open(client, 'wb').write(qline('21:00:00', mon, tcp) + qline('21:00:00', mon, stop) + qline('21:00:00', mon, done))
+    pattern = [os.path.join(logs, 'XtClient_2*.log')]
+    pushed[:] = []
+    st = {}
+    fwd.watch_client_stops(pattern, 'A_SYSTEM_QMT_INNER', st, 'http://b', start_at_end=True)
+    backlog_quiet = not pushed
+    with open(client, 'ab') as f:
+        f.write(qline('22:48:24', mon, tcp) + qline('22:48:24', mon, stop) + qline('22:48:24', mon, fail)
+                + qline('22:48:24', mon, '[monitor] illegal ip: 142.250.198.131:80')
+                + qline('22:48:40', ui, '[TradeStrategy]try run : ID:1, fromula:A_SYSTEM_QMT_INNER, log:auto run timeout')
+                + qline('22:48:42', mon, tcp) + qline('22:48:42', mon, stop) + qline('22:48:42', mon, done)
+                + qline('23:51:42', ui, stop) + qline('23:51:42', ui, done))
+    fwd.watch_client_stops(pattern, 'A_SYSTEM_QMT_INNER', st, 'http://b', start_at_end=False)
+    fwd.watch_client_stops(pattern, 'A_SYSTEM_QMT_INNER', st, 'http://b', start_at_end=False)
+    print('QMT monitor stop: backlog quiet %s, pushes %s' % (backlog_quiet, [p[:70] for p in pushed]))
+    ok &= (backlog_quiet and len(pushed) == 1 and pushed[0].startswith('/⛔ QMT误判非法IP')
+           and '11-04 22:48:42' in pushed[0] and '142.250.198.131:80' in pushed[0])
     print('RESULT', 'PASS' if ok else 'FAIL')
 
 

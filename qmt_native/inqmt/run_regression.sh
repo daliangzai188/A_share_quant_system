@@ -25,9 +25,10 @@ echo "== store link";     PYTHONIOENCODING=utf-8 $PY inqmt/test_store_link.py "$
 echo "== trading switch"; PYTHONIOENCODING=utf-8 $PY inqmt/test_trading_switch.py "$S" > "$O/trading_switch.txt" 2>&1; grep -E "^[0-9]\. |^RESULT" "$O/trading_switch.txt"
 echo "== partial day";    (cd inqmt && PYTHONIOENCODING=utf-8 $PY test_partial_day.py > "../$O/partial_day.txt" 2>&1); grep -E "^partial|^bars|^RESULT" "$O/partial_day.txt"
 echo "== freeze";         PYTHONIOENCODING=utf-8 $PY inqmt/test_freeze.py "$S" > "$O/freeze.txt" 2>&1; grep -E "^[0-9]\. |^RESULT" "$O/freeze.txt"
+echo "== read_csv guard";  PYTHONIOENCODING=utf-8 $PY inqmt/test_read_csv_guard.py "$S" > "$O/read_csv_guard.txt" 2>&1; grep -E "^[0-9]\. |^RESULT" "$O/read_csv_guard.txt"
 echo "== tracebacks";     grep -c Traceback "$O"/*.txt
 [ -n "$SKIP_DRILL" ] && exit 0
 echo "== drill 10-13 15:25 -> 10-15 15:15"
 rm -rf "$O/vday"; mkdir -p "$O/vday"
-$PY inqmt/run_vday.py "$S" 202610131525 202610151515 60 "$O/vday" > "$O/vday.log" 2>&1
+QN_TEST_GUARD_READ_CSV=1 $PY inqmt/run_vday.py "$S" 202610131525 202610151515 60 "$O/vday" > "$O/vday.log" 2>&1  # QMT 2.1.33 read_csv guard on
 echo "drill exit $?"; tail -2 "$O/vday.log"

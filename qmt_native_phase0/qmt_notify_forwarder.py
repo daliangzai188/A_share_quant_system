@@ -20,6 +20,9 @@ QMT writes strategy output to userdata\\log\\XtClient_FormulaOutput_YYYYMMDD.log
 file open: the size and time shown in the directory lag behind, so the real length is taken
 from an open handle.
 
+QMT 2.1.33 stops every Python strategy while its own process holds a connection outside its
+whitelist; such a stop (in QMT's own log XtClient_YYYYMMDD.log) is pushed at once with what to do.
+
 The live copy prints a status line every 20 s. When none arrives for 10 minutes (QMT's Python
 frozen, the strategy stopped, or QMT closed) this program pushes an alarm itself, repeats it
 hourly (not 23:00-07:00) and reports the recovery: every other push comes out of QMT, so a frozen
@@ -184,6 +187,71 @@ def bj_clock(seconds: float) -> str:
     return dt.datetime.fromtimestamp(seconds, BJ).strftime('%m-%d %H:%M')
 
 
+CLIENT_LINE = re.compile(rb'^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d),\d+ \[\w+\] \[0x[0-9a-fA-F]+\] \[(0x[0-9a-fA-F]+)\] (.*)$')
+ILLEGAL = re.compile(rb'\[monitor\] illegal ip: (\S+)')
+REMOTE = re.compile(rb'\[monitor\]TCP - PID:\d+ remoteIP:\[([^\]]+)\]')
+
+
+def watch_client_stops(patterns: list[str], strategy: str, state: dict, base: str, start_at_end: bool) -> int:
+    """QMT 2.1.33 watches the TCP connections of its own process every 3 s and stops every Python
+    strategy while one goes to an address outside its whitelist (11-04 22:48: Windows fetched a
+    certificate from i.pki.goog inside QMT, the starting A_SYSTEM was stopped 2 s later). The stop
+    and its reason are in QMT's own log (XtClient_YYYYMMDD.log): push at once with what to do,
+    instead of only the stall alarm 10 minutes later. A stop clicked by the user comes from the
+    UI thread, not from the monitor thread, and is not reported."""
+    offsets = state.setdefault('client_offsets', {})
+    watch = state.setdefault('client_watch', {})
+    threads = set(watch.get('monitor_threads', []))
+    target = b'fromula:' + strategy.encode('ascii') + b','
+    pushed = 0
+    files = sorted(set(f for p in patterns for f in glob.glob(p)))[-3:]
+    for name in files:
+        try:
+            with open(name, 'rb') as handle:
+                size = handle.seek(0, os.SEEK_END)
+                if name not in offsets:
+                    offsets[name] = size if start_at_end else 0
+                start = offsets[name] if offsets[name] <= size else 0
+                if start == size:
+                    continue
+                handle.seek(start)
+                chunk = handle.read(size - start)
+        except OSError:
+            continue
+        end = chunk.rfind(b'\n') + 1
+        for raw in chunk[:end].splitlines():
+            match = CLIENT_LINE.match(raw.rstrip(b'\r'))
+            if not match:
+                continue
+            stamp, thread, rest = match.group(1).decode('ascii'), match.group(2).decode('ascii'), match.group(3)
+            if b'[monitor]' in rest:
+                threads.add(thread)
+                ip = ILLEGAL.search(rest) or REMOTE.search(rest)  # the flagged connection is logged every 3 s
+                if ip:
+                    watch['illegal_ip'] = ip.group(1).decode('ascii', 'replace')
+                    watch['illegal_at'] = stamp
+            elif b'[TradeStrategy]try stop' in rest and target in rest and thread in threads:
+                watch['stop'] = {'thread': thread, 'at': stamp}
+            elif b'stop success' in rest and watch.get('stop', {}).get('thread') == thread:
+                stop = watch.pop('stop')
+                if watch.get('pushed_at') == stop['at']:
+                    continue
+                body = ('QMT新版网络监控在%s（北京时间）以“非法IP %s”停止了A_SYSTEM：是QMT自己的连接被误判，不是stop，'
+                        '交易开关不变。处理：在QMT“模型交易”的A_SYSTEM行点 ▶；若2秒内又被停，等2-3分钟那条连接断开后再点。'
+                        '启动后自动补跑。' % (stop['at'][5:], watch.get('illegal_ip', '?')))
+                if not base:
+                    log('BARK_URL missing; QMT monitor stop at %s not pushed' % stop['at'])
+                elif send(base, stall_path('⛔ QMT误判非法IP，停止了A_SYSTEM', body)):
+                    log('QMT monitor stop pushed: %s illegal ip %s' % (stop['at'], watch.get('illegal_ip', '?')))
+                    watch['pushed_at'] = stop['at']
+                    pushed += 1
+        offsets[name] = start + end
+    watch['monitor_threads'] = sorted(threads)[-8:]
+    for name in [n for n in offsets if n not in files]:
+        del offsets[name]
+    return pushed
+
+
 def stall_path(title: str, body: str) -> str:
     return '/%s/%s%s' % (urllib.parse.quote(title), urllib.parse.quote(body), STALL_QUERY)
 
@@ -279,10 +347,12 @@ def main() -> None:
     parser.add_argument('--interval', type=float, default=3.0)
     parser.add_argument('--strategy', default='A_SYSTEM_QMT_INNER', help='QMT file name of the live copy')
     parser.add_argument('--stall-minutes', type=float, default=10.0, help='alarm after this long without output; 0 = off')
+    parser.add_argument('--client-logs', action='append', help="glob of QMT's own logs (strategy stops by its network monitor)")
     args = parser.parse_args()
     watch = args.mode == 'live' and args.stall_minutes > 0
     alive = alive_pattern(args.strategy) if watch else None
     args.logs = args.logs or [r'C:\QMT\GJQMT\userdata\log\XtClient_FormulaOutput_*.log']
+    args.client_logs = args.client_logs or [r'C:\QMT\GJQMT\userdata\log\XtClient_2*.log']
     state = load_state()
     first = not state.get('offsets')
     log('notification forwarder started: mode=%s logs=%s bark=%s' % (
@@ -293,6 +363,9 @@ def main() -> None:
         base = bark_base()
         scan(args.logs, args.mode, state, base, start_at_end=first and not args.from_start, pending=pending,
              alive=alive)
+        if watch:
+            watch_client_stops(args.client_logs, args.strategy, state, base,
+                               start_at_end='client_offsets' not in state and not args.from_start)
         first = False
         if watch:
             marker = ROOT / '.manual_stop.json'
