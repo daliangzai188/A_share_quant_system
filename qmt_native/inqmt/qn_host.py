@@ -492,6 +492,7 @@ class QnHost(object):
         self.persist_lock = _hthr.RLock()
         self.persist_thread = None
         self.status_last = 0.0
+        self.daemon_was_alive = False
         self.bg_lag = []        # how late a background thread woke from a 20 ms sleep (seconds)
         self.yield_ticks = [0, 0]  # [ticks that handed the lock to background threads, ticks]
         self.save_stats = [0, 0]   # [state saves completed, attempted] since the last status line
@@ -514,6 +515,7 @@ class QnHost(object):
         self.account_status_good = set()
         self.account_status_learn = False
         self.store_waits_for_link = False
+        self.store_rewrite_pending = False
         self.exported = {}
         self.cache_thread = None
         self.cache_done = ''
@@ -798,6 +800,12 @@ class QnHost(object):
         if status != self.account_status:
             self.log('trade account status: %s%s' % (
                 _status_text(status), '' if self.account_status is None else ' (was %s)' % _status_text(self.account_status)))
+            if (self.account_status is not None and self.account_status_good
+                    and self.account_status not in self.account_status_good and status in self.account_status_good):
+                # 11-05: bodies saved at 08:19 read back empty from 11:01 on, after the trade server
+                # reconnected at 08:38 and 08:49; later snapshots kept referencing them. After a
+                # reconnect the next save writes every file body again instead of reusing them.
+                self.store_rewrite_pending = True
             self.account_status = status
         if self.account_status_learn:
             self.account_status_learn = False
@@ -1172,6 +1180,12 @@ class QnHost(object):
             if now < self.persist_retry_at or now - self.persist_last < interval:
                 return
         try:
+            if self.store_rewrite_pending:
+                self.store_rewrite_pending = False
+                self.store.forget_bodies()
+                self.persist_clock = None
+                self.log('trade server reconnected: this save writes every file body again (bodies stored '
+                         'before a reconnect were lost on 11-05)')
             qn_sqlite_persist_all()
             files = self._persist_files()
             inventory = self._persist_inventory()
@@ -1230,6 +1244,12 @@ class QnHost(object):
         self._supervise()
         self._echo_daemon_log()
         now = _htime.time()
+        alive_now = bool(self.daemon_thread and self.daemon_thread.is_alive())
+        if alive_now != self.daemon_was_alive:
+            # the trading daemon started or ended (e.g. ~0.3 s after a pause): report it right away,
+            # stop_windows.py / start_windows.py wait for this line (11-05: stop waited 60 s for it)
+            self.daemon_was_alive = alive_now
+            self.status_last = 0.0
         interval = self.STATUS_PAUSED_SECONDS if self.trading == 'pause' else self.STATUS_SECONDS
         if now - self.status_last >= interval:
             self.status_last = now
@@ -1341,6 +1361,13 @@ class QnHost(object):
                 self.log('strategy stop at night: last saved state (%s) kept; night changes are rebuilt '
                          'on the next start' % (self.persist_meta or {}).get('saved_at', 'never'))
             else:
+                # 11-05 11:49: this save took minutes (slow trade server) while the trading daemon kept
+                # running; it saw the engine heartbeat stop and pushed false "bridge lost" alarms. End
+                # trading first (as a pause does), then save.
+                daemon = self.daemon_thread
+                if self._kill_thread(daemon):
+                    daemon.join(5)
+                    self.log('strategy stop: trading daemon ended before the final state save')
                 try:
                     self.persist_on_callback_thread(reason='strategy stop')
                 except Exception:

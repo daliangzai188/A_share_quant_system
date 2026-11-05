@@ -3,7 +3,8 @@
 registry; the live copy loads with QMT but runs its trading daemon only on "run":
   1. switch not set: A_System waits (no trading daemon), status lines say trading=pause;
   2. "run": the trading daemon starts;
-  3. "pause": it ends (its scripts with it), no keeper-style restart, QMT/strategy stay up;
+  3. "pause": it ends (its scripts with it), no keeper-style restart, QMT/strategy stay up, and a
+     status line "trading=pause daemon_alive=False" follows within seconds (stop_windows.py waits for it);
   4. "run" again: it starts again;
   5. every trading-daemon log line is echoed to QMT's log as "[A_SYSTEM_LOG] <line>" (start_windows.py
      follows those in the terminal, as it followed logs/trading_daemon.log before 10-23).
@@ -47,13 +48,17 @@ def main():
     print('2. run: daemon alive=%s, status says run=%s' % (alive(), 'trading=run' in last_status()))
     ok &= started
     switch['value'] = 'pause'
-    drive(ns, C, 30)  # longer than the restart delay
+    mark, t0, confirmed = len(host.messages), time.time(), None
+    while time.time() - t0 < 30:  # longer than the restart delay
+        drive(ns, C, 0.5)
+        if confirmed is None and any('status: trading=pause daemon_alive=False' in m for m in host.messages[mark:]):
+            confirmed = time.time() - t0  # what stop_windows.py waits for (11-05: 60 s, the paused status period)
     paused = not alive() and 'trading=pause' in last_status() and \
         any('paused by the trading switch' in m for m in host.messages)
-    print('3. pause: daemon alive=%s, ended by the switch=%s, restarted=%s' % (
+    print('3. pause: daemon alive=%s, ended by the switch=%s, restarted=%s, status "pause + daemon ended" after %s s' % (
         alive(), any('paused by the trading switch' in m for m in host.messages),
-        any('restarting in' in m for m in host.messages)))
-    ok &= paused and not any('restarting in' in m for m in host.messages)
+        any('restarting in' in m for m in host.messages), None if confirmed is None else round(confirmed, 1)))
+    ok &= paused and not any('restarting in' in m for m in host.messages) and confirmed is not None and confirmed < 5
     switch['value'] = 'run'
     captured, real_stdout = io.StringIO(), sys.stdout
     sys.stdout = captured
