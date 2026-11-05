@@ -15513,6 +15513,16 @@ def _load_ab_checklist(signal_date: str):
         return pd.DataFrame()
 
 
+# 与历史回测 limit_list_d/full 口径一致的涨停池来源。qmt_native：2026-10-23 券商禁止 QMT 内置 Python
+# 联网后，按 limit_list_d 规则从 QMT 行情重建的涨停池（上线前逐日核对与 limit_list_d 一致）。
+LIMIT_SOURCES_MATCHING_BACKTEST = ("limit_list_d", "qmt_native")
+
+
+def _limit_sources_match_backtest(values) -> bool:
+    values = [str(value) for value in values]
+    return bool(values) and all(value in LIMIT_SOURCES_MATCHING_BACKTEST for value in values)
+
+
 def report_signal_readiness_summary(signal_date: str) -> None:
     """启动/收盘后播报数据口径、字段完整性和 A/C 筛选结果。"""
     try:
@@ -15557,7 +15567,7 @@ def report_signal_readiness_summary(signal_date: str) -> None:
         )
         is_limit_list_d = (
             "limit_data_source" in daily.columns
-            and daily["limit_data_source"].fillna("").astype(str).eq("limit_list_d").all()
+            and _limit_sources_match_backtest(daily["limit_data_source"].fillna("").astype(str))
         )
         is_compatible = (
             "strategy_compatible" in daily.columns

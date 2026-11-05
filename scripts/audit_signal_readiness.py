@@ -20,6 +20,10 @@ from scripts.run_paper_ab_filtered_daily_ops import (
 from src.paper_candidate_generator import PaperCandidateGenerator
 from src.utils.config import load_json_config
 
+# 与历史回测 limit_list_d/full 口径一致的涨停池来源（同 trading_daemon.LIMIT_SOURCES_MATCHING_BACKTEST）：
+# qmt_native 为券商禁止 QMT 内置 Python 联网后按 limit_list_d 规则从 QMT 行情重建、逐日核对一致的涨停池。
+LIMIT_SOURCES_MATCHING_BACKTEST = ("limit_list_d", "qmt_native")
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="审计指定信号日的数据口径、必需字段和 A/C 候选筛选结果。")
@@ -484,7 +488,7 @@ def main() -> None:
     source_ok = (
         not scored_daily.empty
         and "limit_data_source" in scored_daily.columns
-        and scored_daily["limit_data_source"].fillna("").astype(str).eq("limit_list_d").all()
+        and scored_daily["limit_data_source"].fillna("").astype(str).isin(LIMIT_SOURCES_MATCHING_BACKTEST).all()
     )
     compatible_ok = (
         not scored_daily.empty
@@ -493,7 +497,7 @@ def main() -> None:
     )
     print(f"fill_scored: exists={fill_path.exists()} signal_rows={len(scored_daily)} path={fill_path}")
     print(f"完整历史口径: {yes_no(full_quality)}")
-    print(f"来源为 limit_list_d: {yes_no(source_ok)}")
+    print(f"来源为 limit_list_d（或按其规则重建并核对一致的 QMT 原生涨停池）: {yes_no(source_ok)}")
     print(f"策略兼容: {yes_no(compatible_ok)}")
     print(f"缺少必需字段: {missing or '无'}")
     print(f"必需字段全为空: {empty or '无'}")
