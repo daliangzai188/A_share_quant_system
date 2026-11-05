@@ -7,8 +7,8 @@ and were retried 1, 2, 4, 8 minutes apart; the fifth call never returned and fro
      the status is back;
   3. after an "unreachable" failure the next periodic try waits 30 minutes, then 1 hour; a call
      that was merely slow keeps the short backoff;
-  4. the first save after the link is back writes every file body again (11-05: bodies stored
-     before a reconnect were lost), so the snapshot loads even if all earlier bodies are gone.
+  4. a reconnect on the same trade server writes only changed bodies (server changes:
+     test_store_switch.py).
 
 Usage: python test_store_link.py STRATEGY_FILE   (QMT's Python 3.6)
 """
@@ -75,9 +75,8 @@ def main():
         print('   ', m[:140].encode('ascii', 'backslashreplace').decode())
     ok &= up > 0 and down == 0 and back > 0 and forced > 0 and learned > 0 and len(waits) == 2
 
-    # 4. 11-05: bodies stored at 08:19 read back empty after the trade server reconnected (08:38,
-    #    08:49) while later snapshots kept reusing them. A save after a reconnect writes every body
-    #    again, so the snapshot loads even when everything stored before the reconnect is lost.
+    # 4. a reconnect that stays on the same trade server costs nothing extra: only changed bodies are
+    #    written (a change of server is test_store_switch.py)
     def body_writes(fn):
         keys, real = [], ns['save_py_key']
         ns['save_py_key'] = lambda k, v: (keys.append(k) if '_F_' in k and v else None) or real(k, v)
@@ -86,24 +85,20 @@ def main():
         finally:
             ns['save_py_key'] = real
         return keys
-    plain = body_writes(periodic)              # one changed file, the link stayed up
-    host._note_account_status([Row(u'登录失败')])  # a status the store has not worked with (连接断开 has: step 2)
+    plain = body_writes(periodic)
+    host._note_account_status([Row(u'登录失败')])
     host._note_account_status([Row(u'正常')])
-    old_bodies = [k for k in kv if '_F_' in k and kv[k]]
     relinked = body_writes(periodic)
-    with_bodies = sum(1 for v in host.store.previous.values() if v[0])
-    for k in old_bodies:
-        kv[k] = ''                             # what the trade server lost at the reconnect
     fresh = ns['QnStateStore'](lambda k: ns['get_py_key'](k), lambda k, v: ns['save_py_key'](k, v), host.store.prefix)
     try:
         files, meta = fresh.load()
         loads = '%d files' % len(files)
     except Exception as exc:
         files, loads = None, '%s: %s' % (type(exc).__name__, str(exc)[:80])
-    print('4. body writes: plain save %d, first save after a reconnect %d of %d bodies; load after losing '
-          'every earlier body: %s' % (len(plain), len(relinked), with_bodies, loads))
-    ok &= len(plain) < 5 and len(relinked) >= with_bodies > 3 and files is not None
-    ok &= any('writes every file body again' in m for m in host.messages)
+    print('4. body writes: plain save %d, first save after a reconnect on the same server %d; snapshot loads: %s' % (
+        len(plain), len(relinked), loads))
+    ok &= len(plain) < 5 and len(relinked) < 5 and files is not None
+    ok &= not any('trade server changed' in m for m in host.messages)
 
     delays = []
     state['fail'] = (200000, u'未建立连接')

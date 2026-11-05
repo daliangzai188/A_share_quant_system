@@ -134,6 +134,21 @@ def _qn_parse_calendar_feed(text):
     return days, ''
 
 
+QN_SWITCH_CHANGED_READER = [None]
+
+
+def _qn_switch_changed_at():
+    """'YYYY-MM-DD HH:MM:SS' (Beijing) of the last start/stop_windows.py, or ''."""
+    if QN_SWITCH_CHANGED_READER[0] is not None:
+        return QN_SWITCH_CHANGED_READER[0]()
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, QN_SWITCH_KEY) as key:
+            return str(winreg.QueryValueEx(key, 'ChangedAt')[0])
+    except Exception:
+        return ''
+
+
 def _qn_switch_detail():
     """When and by whom the trading switch was last set (written by start/stop_windows.py)."""
     if QN_SWITCH_READER[0] is not None:
@@ -197,6 +212,8 @@ class QnStateStore(object):
         # from the seed and written again by the next save
         self.fallback_bodies = None
         self.repaired = []
+        # bodies the current trade server already holds, from its own last snapshot (follow_server)
+        self.candidates = {}
 
     def _check_slow(self, what):
         self.call_seconds += self.last_call_seconds
@@ -234,10 +251,60 @@ class QnStateStore(object):
     def _body_keys(self, bid, chunks):
         return ['%s_F_%s_%d' % (self.prefix, bid, i) for i in range(chunks)]
 
+    def follow_server(self):
+        """QMT keeps one key-value store per trade server and switches between its servers on
+        failures; nothing is replicated (11-05: five servers; at 08:47 a switch made the next saves
+        write snapshots whose earlier bodies only existed on the first server, at 16:42 a start read
+        that server's 08:44 snapshot). Before every save: read this server's pointer. Our own pointer
+        means the same server. Anything else means another server: nothing is known to be on it any
+        more; its own last snapshot names the bodies it holds, and a body is reused after a full read
+        that matches its checksum, so only missing or changed bodies are written. Returns a log line
+        when the server changed, else ''."""
+        here = self._get(self.prefix + '_PTR')
+        if not here and self.pointer:
+            here = self._get(self.prefix + '_PTR')  # one empty read may be a flaky answer
+        if here == self.pointer:
+            return ''
+        candidates, files_here = {}, {}
+        if here:
+            try:
+                slot, chunks, digest = here.split(':')
+                packed = ''.join(self._get('%s_M%s_%d' % (self.prefix, slot, i)) for i in range(int(chunks)))
+                if _hsha.sha256(packed.encode('ascii')).hexdigest()[:32] == digest:
+                    meta = _hjson.loads(_hzlib.decompress(_hb64.b64decode(packed)).decode('utf-8'))
+                    files_here = meta.get('files') or {}
+                    for rel, (bid, mtime, size, n) in files_here.items():
+                        if bid:
+                            candidates[bid[:32]] = (bid, n)
+            except Exception as exc:
+                if self._read_failure(exc):
+                    raise
+                files_here = {}
+        ours = self.pointer
+        self.known = {}
+        self.protected = set()
+        self.candidates = candidates
+        self.previous = files_here  # its own last snapshot stays loadable until ours is complete here
+        self.prev_pointer = ''      # the manifest before ours lives on the other server: not cleared here
+        self.pointer = here         # becomes this server's PTRPREV with our next snapshot
+        return ('trade server changed: its last snapshot %s, ours %s; %d bodies held there are checked and '
+                'reused, the rest written again' % (here.split(':')[0] or 'none', ours.split(':')[0] or 'none',
+                                                    len(candidates)))
+
     def _put_body(self, data):
         sha = _hsha.sha256(data).hexdigest()[:32]
         if sha in self.known:
             return self.known[sha]
+        held = self.candidates.get(sha)
+        if held is not None:
+            try:
+                self._get_body(*held)  # every chunk read back and the checksum compared
+                self.known[sha] = held
+                return held
+            except Exception as exc:
+                if self._read_failure(exc):
+                    raise
+                self.candidates.pop(sha, None)  # incomplete on this server: written again below
         packed = _hb64.b64encode(_hzlib.compress(data, 6)).decode('ascii')
         chunks = [packed[i:i + QN_STATE_CHUNK] for i in range(0, len(packed), QN_STATE_CHUNK)] or ['']
         bid = sha + 'x' + self._tag()
@@ -461,6 +528,7 @@ class QnStateStore(object):
                 files[rel] = (data, mtime, size)
         self.previous = meta['files']
         self.pointer = pointer
+        self.candidates = {}
         return files, dict((k, v) for k, v in meta.items() if k != 'files')
 
 
@@ -551,6 +619,11 @@ class QnHost(object):
         self.broken_boots = 0
         self.broken_store_pushed = set()
         self.calendar_checked = 0.0
+        # restored state vs the broker (11-05): '' = checked, else why trading waits
+        self.state_hold = ''
+        self.state_hold_at = ''
+        self.state_hold_pushed = ''
+        self.state_checked = 0.0
         self.calendar_warned = ''
         self.calendar_problem = ''
         if deploy.get('store_day_hours'):  # tests only
@@ -567,7 +640,6 @@ class QnHost(object):
         self.account_status_good = set()
         self.account_status_learn = False
         self.store_waits_for_link = False
-        self.store_rewrite_pending = False
         self.exported = {}
         self.cache_thread = None
         self.cache_done = ''
@@ -687,6 +759,7 @@ class QnHost(object):
             return
         self.boot_pending = False
         self._poll_calendar()  # before the daemon starts: it checks the calendar at once
+        self._hold_check()     # restored state vs the broker, before trading can start
         self.account_status_learn = self.store is not None  # the store was just read: link is up
         settings = self._write_runtime_config()
         QN_NOTIFY_MODE[0] = 'live' if self.deploy.get('mode') == 'live' else 'shadow'
@@ -878,6 +951,102 @@ class QnHost(object):
         except Exception as exc:
             self._calendar_note('trade calendar merge failed: %s: %s' % (type(exc).__name__, exc))
 
+    STATE_CHECK_RETRY_SECONDS = 60.0
+
+    def _journal_tags(self):
+        """Order tags (remarks) of every submission the restored state knows."""
+        path = 'runtime/qmt_inner/spool/journal.sqlite3'
+        if not QN_VFS.isfile(path):
+            return set()
+        data = QN_VFS.read(path)
+        if not data.startswith(QN_SQLITE_DUMP_MAGIC):
+            return set()
+        import sqlite3 as _hsql
+        db = _hsql.connect(':memory:')
+        try:
+            db.executescript(data[len(QN_SQLITE_DUMP_MAGIC):].decode('utf-8'))
+            return set(str(r[0]) for r in db.execute('SELECT tag FROM submissions'))
+        except Exception:
+            return set()
+        finally:
+            db.close()
+
+    def _last_close_before_today(self):
+        try:
+            days = sorted(l.split(',')[1] for l in QN_VFS.get_text(self.CALENDAR_PATH).splitlines()[1:]
+                          if l.count(',') >= 3 and l.split(',')[2].strip() in ('1', '1.0'))
+        except Exception:
+            return ''
+        today = _bj_now().strftime('%Y%m%d')
+        before = [d for d in days if d < today]
+        return '%s-%s-%s 15:00:00' % (before[-1][:4], before[-1][4:6], before[-1][6:]) if before else ''
+
+    def _check_restored_state(self):
+        """QMT's key-value store is per trade server and not replicated (11-05), so a start may
+        restore an older snapshot from another server. Before trading starts, compare with the
+        broker itself: an order of this system today (remark = our tag) that the restored journal
+        does not know, or positions held while the snapshot predates the last trading day's close,
+        mean the state may be out of date: trading waits and a person is asked (running
+        start_windows.py afterwards confirms). A flat account without such orders always passes.
+        Returns '' when checked and fine, 'pending' when the broker could not be asked yet, else
+        the reason trading waits."""
+        account = str(self.deploy['account_id'])
+        query = self.g['get_trade_detail_data'] if self.deploy.get('mode') == 'live' else self.broker.get_trade_detail_data
+        try:
+            accounts = query(account, 'stock', 'account')
+            orders = query(account, 'stock', 'order')
+            positions = query(account, 'stock', 'position')
+        except Exception as exc:
+            self.log('restored state check waits for the broker (%s: %s)' % (type(exc).__name__, exc))
+            return 'pending'
+        if not isinstance(accounts, (list, tuple)) or not accounts or not isinstance(orders, (list, tuple)) \
+                or not isinstance(positions, (list, tuple)):
+            return 'pending'
+        known = self._journal_tags()
+        ours = sorted(set(str(getattr(o, 'm_strRemark', '') or '') for o in orders) - set(['']))
+        ours = [t for t in ours if t.startswith('AS') and len(t) == 30]
+        unknown = [t for t in ours if t not in known]
+        held = sorted('%s%s' % (getattr(p, 'm_strInstrumentID', ''), '.' + str(getattr(p, 'm_strExchangeID', '')))
+                      for p in positions if int(getattr(p, 'm_nVolume', 0) or 0) > 0)
+        saved_at = str((self.persist_meta or {}).get('saved_at', ''))
+        last_close = self._last_close_before_today()
+        if unknown:
+            return ('今天有 %d 笔本系统委托不在恢复的状态里（状态保存于 %s，可能来自另一台券商服务器的旧快照）'
+                    % (len(unknown), saved_at or '未知'))
+        if held and saved_at and last_close and saved_at < last_close:
+            return ('账户有持仓 %s，但恢复的状态保存于 %s，早于上一交易日收盘 %s（可能来自另一台券商服务器的旧快照）'
+                    % (','.join(held[:5]), saved_at, last_close))
+        return ''
+
+    def _hold_check(self):
+        """Run the restored-state check until it could be done; keep trading waiting meanwhile."""
+        if not self.deploy.get('state_check', self.deploy.get('mode') == 'live') or self.store is None:
+            return
+        if self.state_hold not in ('pending', '') or self.state_checked < 0:
+            return
+        now = _htime.time()
+        if self.state_hold == 'pending' and now - self.state_checked < self.STATE_CHECK_RETRY_SECONDS:
+            return
+        self.state_checked = now
+        result = self._check_restored_state()
+        if result == 'pending':
+            if self.state_hold != 'pending':
+                self.log('trading waits until the broker can be asked about the restored state')
+            self.state_hold = 'pending'
+            return
+        self.state_checked = -1.0  # done for this run
+        if not result:
+            if self.state_hold == 'pending':
+                self.log('restored state checked against the broker: consistent')
+            self.state_hold = ''
+            return
+        self.state_hold = result
+        self.state_hold_at = _bj_now().strftime('%Y-%m-%d %H:%M:%S')
+        self.log('⛔ trading held: %s' % result)
+        self._push('🛑 A_System恢复的状态可能不是最新，交易未启动',
+                   '%s。请在QMT核对持仓和今天的委托；确认无误后在终端运行 py -3.11 start_windows.py，交易随即启动。'
+                   % result)
+
     TERMINAL_ORDER_STATUS = (53, 54, 56, 57)  # cancelled, part-cancelled, rejected, filled
 
     def _broker_flat(self):
@@ -1011,12 +1180,6 @@ class QnHost(object):
         if status != self.account_status:
             self.log('trade account status: %s%s' % (
                 _status_text(status), '' if self.account_status is None else ' (was %s)' % _status_text(self.account_status)))
-            if (self.account_status is not None and self.account_status_good
-                    and self.account_status not in self.account_status_good and status in self.account_status_good):
-                # 11-05: bodies saved at 08:19 read back empty from 11:01 on, after the trade server
-                # reconnected at 08:38 and 08:49; later snapshots kept referencing them. After a
-                # reconnect the next save writes every file body again instead of reusing them.
-                self.store_rewrite_pending = True
             self.account_status = status
         if self.account_status_learn:
             self.account_status_learn = False
@@ -1073,7 +1236,10 @@ class QnHost(object):
         if not self.deploy.get('trading_switch', self.deploy.get('mode') == 'live') or self.trading is None:
             return
         detail = _qn_switch_detail()
-        if self.trading == 'pause':
+        if self.trading == 'pause' and self.state_hold:
+            self.log('⛔ 交易未启动：%s' % ('正在等券商连接，核对恢复的状态后才启动交易' if self.state_hold == 'pending'
+                                          else self.state_hold + '。核对后运行 py -3.11 start_windows.py 启动'))
+        elif self.trading == 'pause':
             self.log('⏸ 交易已暂停（交易开关 pause%s）：不开仓也不平仓（止损、止盈、到期卖出都不执行），不查账户、不跑流水线。QMT“模型交易”里这一行仍显示'
                      '“运行中”是正常的（外壳要一直运行才能接收 start）。恢复交易：py -3.11 start_windows.py'
                      % ('，' + detail if detail else ''))
@@ -1095,6 +1261,12 @@ class QnHost(object):
                 want = 'run' if _qn_read_switch() == 'run' else 'pause'
             except Exception:
                 want = 'pause'
+            if want == 'run' and self.state_hold:
+                if self.state_hold != 'pending' and _qn_switch_changed_at() > self.state_hold_at:
+                    self.log('restored state confirmed by start_windows.py after the hold: trading starts')
+                    self.state_hold = ''
+                else:
+                    want = 'pause'
         if want == self.trading and not force:
             return
         before, self.trading = self.trading, want
@@ -1391,13 +1563,16 @@ class QnHost(object):
             if now < self.persist_retry_at or now - self.persist_last < interval:
                 return
         try:
-            if self.store_rewrite_pending:
-                self.store_rewrite_pending = False
-                self.store.forget_bodies()
-                self.persist_clock = None
-                self.verified_at = 0.0  # read the rewritten snapshot back right after (outside the session)
-                self.log('trade server reconnected: this save writes every file body again (bodies stored '
-                         'before a reconnect were lost on 11-05)')
+            self.store.slow_limit = 0.0 if force else self.periodic_slow_limit()
+            self.store.saving = True
+            try:
+                switched = self.store.follow_server()
+            finally:
+                self.store.saving = False
+            if switched:
+                self.persist_clock = None   # this server needs our snapshot even if no file changed
+                self.verified_at = 0.0      # and it is read back right after (outside the session)
+                self.log(switched)
             qn_sqlite_persist_all()
             files = self._persist_files()
             inventory = self._persist_inventory()
@@ -1452,6 +1627,7 @@ class QnHost(object):
                 self.log('paper broker error: %s' % exc)
         self.engine.pump()
         QN_NATIVE_SERVICE.pump()
+        self._hold_check()
         self._poll_switch()
         self._poll_calendar()
         self._supervise()
