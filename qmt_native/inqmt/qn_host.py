@@ -18,6 +18,7 @@ import re as _hre
 import threading as _hthr
 import time as _htime
 import traceback as _htb
+import urllib.parse as _hurlparse
 import zlib as _hzlib
 
 QN_STATE_PREFIX = 'AS_QN'
@@ -501,6 +502,7 @@ class QnHost(object):
         self.boot_pending = False
         self.boot_retry_at = 0.0
         self.broken_boots = 0
+        self.broken_store_pushed = set()
         if deploy.get('store_day_hours'):  # tests only
             self.STORE_DAY_START, self.STORE_DAY_END = deploy['store_day_hours']
         self.persist_failures = 0
@@ -686,16 +688,35 @@ class QnHost(object):
                 files, meta = self.store.load()
                 self.broken_boots = 0
             except RuntimeError as exc:
-                # Set per build with QN_RESET_STATE_IF_BROKEN (10-26: no trade since go-live, so the
-                # shipped seed of 10-22 plus the automatic catch-up equals the lost state). Only a
-                # snapshot that is broken in content counts, never a store that cannot be read.
-                if 'no complete state snapshot' not in str(exc) or not self.deploy.get('reset_if_broken'):
+                # Only a snapshot that is broken in content counts, never a store that cannot be read.
+                # 10-26 an operator build (QN_RESET_STATE_IF_BROKEN) started from the shipped seed; 11-05
+                # the broker's key-value store lost the bodies of both snapshots and that took a manual
+                # build again. Now a live copy does it by itself when the broker itself shows the
+                # account flat (no position, no unfinished order): then the shipped seed plus the
+                # automatic catch-up is the whole trading state (11-05: identical results). With a
+                # position or an open order it never guesses; it waits and asks for a person.
+                if 'no complete state snapshot' not in str(exc):
+                    raise
+                operator = bool(self.deploy.get('reset_if_broken'))
+                auto = bool(self.deploy.get('auto_reset_when_flat', self.deploy.get('mode') == 'live'))
+                if not operator and not auto:
                     raise
                 self.broken_boots += 1
                 if self.broken_boots < self.RESET_AFTER_BROKEN_BOOTS:
+                    self._notify_broken_store('checking')
                     raise
-                self.log('STATE RESET (operator-approved for this build): %d starts in a row found no complete '
-                         'snapshot; starting from the shipped seed (%s)' % (self.broken_boots, str(exc)[:300]))
+                if operator:
+                    reason = 'operator-approved for this build'
+                else:
+                    flat, detail = self._broker_flat()
+                    if not flat:
+                        self._notify_broken_store('blocked', detail)
+                        raise RuntimeError('%s; not reset automatically: the broker does not show a flat '
+                                           'account (%s)' % (exc, detail))
+                    reason = 'the broker shows the account flat: %s' % detail
+                self.log('STATE RESET (%s): %d starts in a row found no complete snapshot; starting from the '
+                         'shipped seed (%s)' % (reason, self.broken_boots, str(exc)[:300]))
+                self._notify_broken_store('reset')
                 self.store.known, self.store.previous = {}, {}
                 self.store.pointer = self.store.prev_pointer = ''
                 files, meta = None, None
@@ -718,6 +739,58 @@ class QnHost(object):
             self._override_config(key, value)
         self.log('in-memory files ready: seed=%d restored=%d (state saved at %s)' % (
             len(self.deploy.get('seed', {})), restored, (self.persist_meta or {}).get('saved_at', 'never')))
+
+    TERMINAL_ORDER_STATUS = (53, 54, 56, 57)  # cancelled, part-cancelled, rejected, filled
+
+    def _broker_flat(self):
+        """(flat, detail) read from the broker itself, never from our own state: no position with a
+        volume and no order that is not finished. A failed or empty answer is never "flat"."""
+        account = str(self.deploy['account_id'])
+        query = self.g['get_trade_detail_data'] if self.deploy.get('mode') == 'live' else self.broker.get_trade_detail_data
+        try:
+            rows = dict((kind, query(account, 'stock', kind)) for kind in ('account', 'position', 'order'))
+        except Exception as exc:
+            return False, 'broker query failed (%s: %s)' % (type(exc).__name__, exc)
+        for kind, value in rows.items():
+            if not isinstance(value, (list, tuple)):
+                return False, 'broker query %s returned %s' % (kind, type(value).__name__)
+        if not rows['account']:
+            return False, 'broker returned no account row (trade server not connected?)'
+        for kind, value in rows.items():
+            if any(str(getattr(r, 'm_strAccountID', account)) != account for r in value):
+                return False, 'broker %s rows belong to another account' % kind
+        held = [r for r in rows['position'] if int(getattr(r, 'm_nVolume', 0) or 0) > 0]
+        unfinished = [r for r in rows['order'] if int(getattr(r, 'm_nOrderStatus', 0) or 0) not in self.TERMINAL_ORDER_STATUS]
+        return (not held and not unfinished), 'positions with volume %d, unfinished orders %d' % (len(held), len(unfinished))
+
+    def _push(self, title, body):
+        """A phone push from the host itself (the trading daemon is not running yet)."""
+        QN_NOTIFY_MODE[0] = 'live' if self.deploy.get('mode') == 'live' else 'shadow'
+        query = _hurlparse.urlencode({'group': 'A股实盘', 'level': 'timeSensitive', 'sound': 'alarm'})
+        try:
+            _qn_urlopen(QN_NOTIFY_BASE + '/' + _hurlparse.quote(title, safe='') + '/'
+                        + _hurlparse.quote(body, safe='') + '?' + query)
+        except Exception as exc:
+            self.log('push failed: %s: %s' % (type(exc).__name__, exc))
+
+    def _notify_broken_store(self, stage, detail=''):
+        """One push per stage and strategy run: checking -> reset, or checking -> blocked."""
+        if stage in self.broken_store_pushed:
+            return
+        self.broken_store_pushed.add(stage)
+        if stage == 'checking':
+            self._push('⛔ A_System状态读不全，交易未启动',
+                       'QMT状态存储里没有完整的保存状态（券商键值服务丢了数据），交易程序不启动、不下单。约%d分钟内再确认几次：'
+                       '券商账户空仓且无未完成委托时自动从策略自带的初始状态重建并补跑数据；否则保持停止，等人工处理。'
+                       % (int(self.RESET_AFTER_BROKEN_BOOTS * self.BOOT_RETRY_SECONDS / 60) + 1))
+        elif stage == 'blocked':
+            self._push('🛑 A_System状态丢失且账户非空仓，需人工处理',
+                       '保存的状态读不全，券商账户显示：%s。有持仓或未完成委托时不自动重建（不知道入场日期和平仓计划），'
+                       '交易程序保持停止，请人工处理。' % detail)
+        else:
+            self._push('♻️ A_System已从初始状态自动重建',
+                       '保存的状态读不全；券商账户确认空仓且无未完成委托，已从策略自带的初始状态重建，接着自动补跑最近交易日数据，'
+                       '然后照常运行（交易开关不变）。')
 
     def _override_config(self, dotted, value):
         path = 'config/config.json'
@@ -1184,6 +1257,7 @@ class QnHost(object):
                 self.store_rewrite_pending = False
                 self.store.forget_bodies()
                 self.persist_clock = None
+                self.verified_at = 0.0  # read the rewritten snapshot back right after (outside the session)
                 self.log('trade server reconnected: this save writes every file body again (bodies stored '
                          'before a reconnect were lost on 11-05)')
             qn_sqlite_persist_all()
