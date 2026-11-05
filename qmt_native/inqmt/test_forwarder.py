@@ -212,6 +212,18 @@ def main():
         feed_ok, refused, seq, calls['n'], no_token, len(written)))
     ok &= feed_ok and len(refused) == 2 and seq == [True, False, False, True] and calls['n'] == 3 and \
         not no_token and written == [feed, feed]
+    # QMT's process watch (11-05 23:29: QMT closed, first push 5 minutes later)
+    pushed[:] = []
+    st, t = {}, 1_800_000_000.0
+    seq = [True, False, False, False, False, None, True, True]
+    for i, running in enumerate(seq):
+        fwd.watch_qmt_process(st, 'http://b', t + 10 * i, running, manual_stop=False)
+    titles2 = [p.split('/')[1] for p in pushed]
+    st2 = {}
+    fwd.watch_qmt_process(st2, 'http://b', t, False, manual_stop=True)
+    fwd.watch_qmt_process(st2, 'http://b', t + 10, False, manual_stop=True)
+    print('QMT process watch: pushes %s; with a manual stop marker: %s' % (titles2, '暂停' in pushed[-1]))
+    ok &= titles2 == ['⛔ QMT已关闭', '🔑 QMT已重新打开，请登录'] and '暂停' in pushed[-1]
     print('RESULT', 'PASS' if ok else 'FAIL')
 
 

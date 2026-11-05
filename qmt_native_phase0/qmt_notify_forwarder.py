@@ -27,6 +27,9 @@ the trading switch (value TradeCalendar); the strategy merges the future days.
 QMT 2.1.33 stops every Python strategy while its own process holds a connection outside its
 whitelist; such a stop (in QMT's own log XtClient_YYYYMMDD.log) is pushed at once with what to do.
 
+QMT's process is checked every 10 s: when it is gone, "⛔ QMT已关闭" is pushed at once, and
+"🔑 QMT已重新打开，请登录" when it is back.
+
 The live copy prints a status line every 20 s. When none arrives for 10 minutes (QMT's Python
 frozen, the strategy stopped, or QMT closed) this program pushes an alarm itself, repeats it
 hourly (not 23:00-07:00) and reports the recovery: every other push comes out of QMT, so a frozen
@@ -158,6 +161,50 @@ def refresh_calendar(state: dict, now: float, fetch=fetch_calendar, write=write_
     last_open = max(d for d, o in rows if o)
     log('trade calendar written for QMT: %d days from %s, open days through %s' % (len(rows), min(d for d, _ in rows), last_open))
     return True
+
+
+QMT_IMAGE = 'XtItClient.exe'
+QMT_CHECK_SECONDS = 10
+
+
+def qmt_running():
+    """True/False whether QMT's process exists (tasklist sees elevated processes too), None if unknown."""
+    try:
+        out = subprocess.run(['tasklist', '/FI', 'IMAGENAME eq ' + QMT_IMAGE, '/FO', 'CSV', '/NH'],
+                             capture_output=True, text=True, timeout=20,
+                             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0)).stdout
+    except Exception:
+        return None
+    return QMT_IMAGE.lower() in out.lower()
+
+
+def watch_qmt_process(state: dict, base: str, now: float, running, manual_stop: bool) -> None:
+    """11-05 23:29: QMT was closed and the first push came 5 minutes later. Push at once when QMT's
+    process is gone (two checks in a row, 10 s apart) and again when it is back."""
+    if running is None:
+        return
+    if running:
+        state['qmt_absent'] = 0
+        closed_at = state.pop('qmt_closed_at', None)
+        if closed_at is not None and base:
+            body = ('QMT在 %s（北京时间）重新打开，之前关闭了 %d 分钟。请在虚拟机里登录（新版要先点“用户账户控制”的“是”），'
+                    '登录后A_SYSTEM会自动启动；已经登录就不用管。' % (bj_clock(now), max(0, now - closed_at) / 60))
+            if send(base, stall_path('🔑 QMT已重新打开，请登录', body)):
+                log('QMT reopened push sent')
+        return
+    state['qmt_absent'] = state.get('qmt_absent', 0) + 1
+    if state['qmt_absent'] < 2 or 'qmt_closed_at' in state:
+        return
+    state['qmt_closed_at'] = now
+    if not base:
+        log('BARK_URL missing; QMT closed push not sent')
+        return
+    body = ('QMT交易端在 %s（北京时间）关闭或退出，A_System不在运行：不交易，也不执行止损、止盈、到期卖出。守护程序会自动重新打开QMT：'
+            '请在虚拟机里点“用户账户控制”的“是”，再输入密码登录；登录后A_SYSTEM自动启动。' % bj_clock(now))
+    if manual_stop:
+        body += '（之前执行过 stop_windows.py，交易处于暂停。）'
+    if send(base, stall_path('⛔ QMT已关闭', body)):
+        log('QMT closed push sent')
 
 
 def bark_base() -> str:
@@ -447,6 +494,9 @@ def main() -> None:
         base = bark_base()
         scan(args.logs, args.mode, state, base, start_at_end=first and not args.from_start, pending=pending,
              alive=alive)
+        if watch and time.time() - state.get('qmt_checked', 0) >= QMT_CHECK_SECONDS:
+            state['qmt_checked'] = time.time()
+            watch_qmt_process(state, base, time.time(), qmt_running(), (ROOT / '.manual_stop.json').is_file())
         if watch:
             refresh_calendar(state, time.time())
             watch_client_stops(args.client_logs, args.strategy, state, base,

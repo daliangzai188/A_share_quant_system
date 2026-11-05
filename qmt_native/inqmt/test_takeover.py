@@ -27,8 +27,9 @@ def main():
     s1['QN_DEPLOY']['store_day_hours'] = [0, 24]  # saves allowed, so 'stop saved nothing' is a real check
     s1['init'](C)
     drive(s1, C, 25)
-    paper = s1['QnPaperBroker']('8880000001', 1000000.0, C.quote)
     live = load(live_path, kv)
+    # the broker answers for the live copy's own account (its start check asks the broker before trading)
+    paper = s1['QnPaperBroker'](str(live['QN_DEPLOY']['account_id']), 1000000.0, C.quote)
     live['QN_DEPLOY']['store_day_hours'] = [0, 24]
     live.update(get_trade_detail_data=paper.get_trade_detail_data, passorder=paper.passorder, cancel=paper.cancel)
     live['init'](C)

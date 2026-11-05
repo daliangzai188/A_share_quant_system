@@ -1741,6 +1741,13 @@ class QnHost(object):
     def stop(self):
         taken_over = QN_SHUTDOWN[0]
         self.stopped = True
+        if not taken_over and self.deploy.get('stop_push', self.deploy.get('mode') == 'live'):
+            # 11-05 23:29: QMT was closed and nothing was pushed (the stall alarm comes 10 minutes later).
+            # Say so at once, before the final save that can take minutes.
+            self._push('⏹ A_System策略已停止',
+                       'QMT里的A_SYSTEM在 %s（北京时间）停止运行：在“模型交易”点了■，或QMT被关闭/退出。停止期间不交易，'
+                       '也不执行止损、止盈、到期卖出。恢复：QMT开着就在“模型交易”的A_SYSTEM行点▶；QMT关了就重新打开并登录，'
+                       'A_SYSTEM会自动启动（交易开关不变）。' % _bj_now().strftime('%m-%d %H:%M'))
         try:
             if taken_over:
                 self.log('strategy stop: this copy was taken over earlier; state left to the running copy')
