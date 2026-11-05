@@ -20,6 +20,10 @@ QMT writes strategy output to userdata\\log\\XtClient_FormulaOutput_YYYYMMDD.log
 file open: the size and time shown in the directory lag behind, so the real length is taken
 from an open handle.
 
+QMT's built-in Python cannot see future trading days nor reach Tushare, so every 6 hours this
+program writes the SSE trade calendar (Tushare, TUSHARE_TOKEN from .env) into the registry key of
+the trading switch (value TradeCalendar); the strategy merges the future days.
+
 QMT 2.1.33 stops every Python strategy while its own process holds a connection outside its
 whitelist; such a stop (in QMT's own log XtClient_YYYYMMDD.log) is pushed at once with what to do.
 
@@ -38,6 +42,7 @@ import argparse
 import base64
 import datetime as dt
 import glob
+import hashlib
 import json
 import os
 import re
@@ -74,6 +79,85 @@ def log(text: str) -> None:
             handle.write(line + '\n')
     except OSError:
         pass
+
+
+CAL_KEY = r'Software\A_System\QmtNative'
+CAL_VALUE = 'TradeCalendar'
+CAL_REFRESH_SECONDS = 6 * 3600
+CAL_RETRY_SECONDS = 3600
+
+
+def env_value(name: str) -> str:
+    env = ROOT / '.env'
+    if env.is_file():
+        for raw in env.read_text(encoding='utf-8-sig', errors='replace').splitlines():
+            key, sep, val = raw.strip().partition('=')
+            if sep and key.strip() == name:
+                return val.strip().strip('"').strip("'")
+    return ''
+
+
+def calendar_feed(rows) -> str:
+    """QMT's built-in Python knows no future trading day and may not use the network (11-05), so
+    this program hands it the SSE calendar through the registry key of the trading switch:
+    "v1|SSE|<first day>|<one 0/1 per consecutive calendar day>|<sha256[:8]>"."""
+    days = dict((str(d), bool(o)) for d, o in rows)
+    ordered = sorted(days)
+    if len(ordered) < 120:
+        raise ValueError('calendar too short: %d days' % len(ordered))
+    first = dt.datetime.strptime(ordered[0], '%Y%m%d').date()
+    bits = []
+    for i in range(len(ordered)):
+        day = first + dt.timedelta(days=i)
+        key = day.strftime('%Y%m%d')
+        if key not in days:
+            raise ValueError('calendar has a gap at %s' % key)
+        if days[key] and day.weekday() >= 5:
+            raise ValueError('weekend %s marked open' % key)
+        bits.append('1' if days[key] else '0')
+    for year in sorted(set(d[:4] for d in ordered)):
+        if ordered[0] <= year + '0101' and year + '1231' <= ordered[-1]:
+            opens = sum(1 for d in ordered if d.startswith(year) and days[d])
+            if not 230 <= opens <= 255:
+                raise ValueError('%s has %d trading days' % (year, opens))
+    text = ''.join(bits)
+    return 'v1|SSE|%s|%s|%s' % (ordered[0], text, hashlib.sha256((ordered[0] + text).encode('ascii')).hexdigest()[:8])
+
+
+def fetch_calendar(token: str, today: dt.date) -> list:
+    import tushare as ts
+    frame = ts.pro_api(token).trade_cal(exchange='SSE', start_date=(today - dt.timedelta(days=90)).strftime('%Y%m%d'),
+                                         end_date=(today + dt.timedelta(days=400)).strftime('%Y%m%d'))
+    return [(str(d), str(o).strip() in ('1', '1.0')) for d, o in zip(frame['cal_date'], frame['is_open'])]
+
+
+def write_calendar_registry(value: str) -> None:
+    import winreg
+    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, CAL_KEY) as key:
+        winreg.SetValueEx(key, CAL_VALUE, 0, winreg.REG_SZ, value)
+        winreg.SetValueEx(key, CAL_VALUE + 'At', 0, winreg.REG_SZ, dt.datetime.now(BJ).strftime('%Y-%m-%d %H:%M:%S'))
+
+
+def refresh_calendar(state: dict, now: float, fetch=fetch_calendar, write=write_calendar_registry) -> bool:
+    """Every 6 hours (an hour after a failure) write the SSE trade calendar for QMT."""
+    if now < state.get('calendar_next', 0):
+        return False
+    state['calendar_next'] = now + CAL_RETRY_SECONDS
+    token = env_value('TUSHARE_TOKEN') or os.environ.get('TUSHARE_TOKEN', '')
+    if not token:
+        log('trade calendar: TUSHARE_TOKEN missing in %s; QMT calendar not refreshed' % (ROOT / '.env'))
+        return False
+    try:
+        rows = fetch(token, dt.datetime.fromtimestamp(now, BJ).date())
+        value = calendar_feed(rows)
+        write(value)
+    except Exception as exc:
+        log('trade calendar refresh failed (retry in 1 h): %s: %s' % (type(exc).__name__, str(exc)[:200]))
+        return False
+    state['calendar_next'] = now + CAL_REFRESH_SECONDS
+    last_open = max(d for d, o in rows if o)
+    log('trade calendar written for QMT: %d days from %s, open days through %s' % (len(rows), min(d for d, _ in rows), last_open))
+    return True
 
 
 def bark_base() -> str:
@@ -364,6 +448,7 @@ def main() -> None:
         scan(args.logs, args.mode, state, base, start_at_end=first and not args.from_start, pending=pending,
              alive=alive)
         if watch:
+            refresh_calendar(state, time.time())
             watch_client_stops(args.client_logs, args.strategy, state, base,
                                start_at_end='client_offsets' not in state and not args.from_start)
         first = False

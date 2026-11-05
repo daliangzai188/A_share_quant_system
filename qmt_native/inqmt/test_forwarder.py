@@ -175,6 +175,43 @@ def main():
     print('QMT monitor stop: backlog quiet %s, pushes %s' % (backlog_quiet, [p[:70] for p in pushed]))
     ok &= (backlog_quiet and len(pushed) == 1 and pushed[0].startswith('/⛔ QMT误判非法IP')
            and '11-04 22:48:42' in pushed[0] and '142.250.198.131:80' in pushed[0])
+    # trade calendar for QMT (11-05): Tushare rows -> registry feed, every 6 h, an hour after a failure,
+    # never with a token missing; a gap or a weekend marked open is refused
+    def cal_rows(first, last, holidays=()):
+        d, rows = datetime.date(*first), []
+        while d <= datetime.date(*last):
+            key = d.strftime('%Y%m%d')
+            rows.append((key, d.weekday() < 5 and key not in holidays))
+            d += datetime.timedelta(days=1)
+        return rows
+    rows = cal_rows((2026, 8, 7), (2027, 12, 10), ('20261001', '20261002', '20270101', '20270211', '20270212'))
+    feed = fwd.calendar_feed(rows)
+    head, kind, first, bits, digest = feed.split('|')
+    import hashlib
+    feed_ok = (head, kind, first) == ('v1', 'SSE', '20260807') and len(bits) == len(rows) and \
+        digest == hashlib.sha256((first + bits).encode()).hexdigest()[:8] and bits[rows.index(('20270101', False))] == '0'
+    refused = []
+    for bad in (rows[:100] + rows[101:], [(d, True) for d, _ in rows]):
+        try:
+            fwd.calendar_feed(bad)
+        except ValueError as exc:
+            refused.append(str(exc)[:30])
+    written, calls = [], {'n': 0}
+
+    def fetch(token, today):
+        calls['n'] += 1
+        if calls['n'] == 2:
+            raise RuntimeError('tushare down')
+        return rows
+    fwd.env_value = lambda name: 'TOKEN' if name == 'TUSHARE_TOKEN' else ''
+    st, t0 = {}, 1_800_000_000.0
+    seq = [fwd.refresh_calendar(st, t0 + dt_, fetch=fetch, write=written.append) for dt_ in (0, 60, 6 * 3600 + 1, 7 * 3600 + 2)]
+    fwd.env_value = lambda name: ''
+    no_token = fwd.refresh_calendar({}, t0, fetch=fetch, write=written.append)
+    print('calendar feed: format ok %s; refused %s; refreshes %s (fetches %d); without token %s; writes %d' % (
+        feed_ok, refused, seq, calls['n'], no_token, len(written)))
+    ok &= feed_ok and len(refused) == 2 and seq == [True, False, False, True] and calls['n'] == 3 and \
+        not no_token and written == [feed, feed]
     print('RESULT', 'PASS' if ok else 'FAIL')
 
 

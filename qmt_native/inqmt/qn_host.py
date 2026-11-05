@@ -87,6 +87,53 @@ def _qn_read_switch():
         return ''
 
 
+# Trade calendar feed (11-05). QMT's built-in Python only knows trading days up to today
+# (get_trading_dates returns nothing after it), and from 10-23 it may not reach Tushare, so the
+# calendar shipped in the strategy file (to 20261231) would run out: from 12-02 the daemon's refresh
+# fails and it guesses weekdays, from 2027 the collector finds no day to collect. The notification
+# forwarder (outside QMT, network allowed) writes Tushare's SSE calendar into the same registry key
+# as the trading switch: "v1|SSE|<first day YYYYMMDD>|<one 0/1 per calendar day>|<sha256[:8]>".
+QN_CALENDAR_VALUE = 'TradeCalendar'
+QN_CALENDAR_READER = [None]
+
+
+def _qn_read_calendar_feed():
+    if QN_CALENDAR_READER[0] is not None:
+        return QN_CALENDAR_READER[0]()
+    try:
+        import winreg
+    except ImportError:
+        return ''
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, QN_SWITCH_KEY) as key:
+            return str(winreg.QueryValueEx(key, QN_CALENDAR_VALUE)[0])
+    except OSError:
+        return ''
+
+
+def _qn_parse_calendar_feed(text):
+    """{YYYYMMDD: is_open} from a feed, or (None, reason). Weekends are never open."""
+    parts = str(text).strip().split('|')
+    if len(parts) != 5 or parts[0] != 'v1' or parts[1] != 'SSE':
+        return None, 'unknown format'
+    start, bits, digest = parts[2], parts[3], parts[4]
+    if _hsha.sha256((start + bits).encode('ascii', 'replace')).hexdigest()[:8] != digest:
+        return None, 'checksum mismatch'
+    if not 60 <= len(bits) <= 1200 or set(bits) - set('01'):
+        return None, 'bad day flags'
+    try:
+        first = _hdt.datetime.strptime(start, '%Y%m%d').date()
+    except ValueError:
+        return None, 'bad first day'
+    days = {}
+    for i, flag in enumerate(bits):
+        day = first + _hdt.timedelta(days=i)
+        if flag == '1' and day.weekday() >= 5:
+            return None, 'weekend %s marked open' % day.strftime('%Y%m%d')
+        days[day.strftime('%Y%m%d')] = flag == '1'
+    return days, ''
+
+
 def _qn_switch_detail():
     """When and by whom the trading switch was last set (written by start/stop_windows.py)."""
     if QN_SWITCH_READER[0] is not None:
@@ -503,6 +550,9 @@ class QnHost(object):
         self.boot_retry_at = 0.0
         self.broken_boots = 0
         self.broken_store_pushed = set()
+        self.calendar_checked = 0.0
+        self.calendar_warned = ''
+        self.calendar_problem = ''
         if deploy.get('store_day_hours'):  # tests only
             self.STORE_DAY_START, self.STORE_DAY_END = deploy['store_day_hours']
         self.persist_failures = 0
@@ -636,6 +686,7 @@ class QnHost(object):
                 type(exc).__name__, exc, self.BOOT_RETRY_SECONDS))
             return
         self.boot_pending = False
+        self._poll_calendar()  # before the daemon starts: it checks the calendar at once
         self.account_status_learn = self.store is not None  # the store was just read: link is up
         settings = self._write_runtime_config()
         QN_NOTIFY_MODE[0] = 'live' if self.deploy.get('mode') == 'live' else 'shadow'
@@ -739,6 +790,93 @@ class QnHost(object):
             self._override_config(key, value)
         self.log('in-memory files ready: seed=%d restored=%d (state saved at %s)' % (
             len(self.deploy.get('seed', {})), restored, (self.persist_meta or {}).get('saved_at', 'never')))
+
+    CALENDAR_PATH = 'data/raw/trade_calendar.csv'
+    CALENDAR_POLL_SECONDS = 1800.0
+    CALENDAR_WARN_DAYS = 40
+
+    def _merge_calendar_feed(self):
+        """Days after today from the forwarder's feed replace the shipped calendar's; days up to
+        today are never changed and must agree with the feed (a feed that disagrees about the past
+        is rejected). The merged file gets an mtime derived from its content, so a restart with the
+        same calendar does not change step 13's input inventory."""
+        today = _bj_now().strftime('%Y%m%d')
+        try:
+            text = QN_VFS.get_text(self.CALENDAR_PATH)
+        except Exception as exc:
+            return self._calendar_note('calendar unreadable: %s' % exc)
+        lines = text.splitlines()
+        header, rows = lines[0], [l for l in lines[1:] if l.strip()]
+        current = {}
+        for line in rows:
+            cells = line.split(',')
+            if len(cells) >= 4:
+                current[cells[1]] = (cells[2].strip() in ('1', '1.0'), line)
+        raw = _qn_read_calendar_feed()
+        if raw:
+            feed, problem = _qn_parse_calendar_feed(raw)
+            if feed is not None:
+                past = [d for d in feed if d <= today and d in current]
+                wrong = [d for d in past if feed[d] != current[d][0]]
+                if len(past) < 20:
+                    problem = 'feed overlaps the known past by %d days only' % len(past)
+                elif wrong:
+                    problem = 'feed disagrees with the known past on %s' % ', '.join(wrong[:5])
+            if problem:
+                self._calendar_note('trade calendar feed rejected: %s' % problem)
+            else:
+                merged = dict((d, v[0]) for d, v in current.items())
+                merged.update((d, v) for d, v in feed.items() if d > today)
+                opens = sorted(d for d, v in merged.items() if v)
+                out, prev = [], ''
+                pre = {}
+                for d in sorted(merged):
+                    pre[d] = prev
+                    if merged[d]:
+                        prev = d
+                for d in sorted(merged, reverse=True):
+                    if d <= today and d in current:
+                        out.append(current[d][1])
+                    else:
+                        out.append('SSE,%s,%d,%s' % (d, 1 if merged[d] else 0, pre[d]))
+                new_text = '\n'.join([header] + out) + '\n'
+                if new_text.replace('\r', '') != text.replace('\r', ''):
+                    data = new_text.encode('utf-8')
+                    mtime = QN_SEED_MTIME + 1 + int(_hsha.sha256(data).hexdigest()[:6], 16) / 1000.0
+                    QN_VFS.put_restored(self.CALENDAR_PATH, data, mtime)
+                    self.log('trade calendar extended from the forwarder feed: open days through %s (was %s)' % (
+                        opens[-1] if opens else '-', max((d for d, v in current.items() if v[0]), default='-')))
+        last_open = max((d for d, v in current.items() if v[0]), default='')
+        try:
+            text2 = QN_VFS.get_text(self.CALENDAR_PATH)
+            last_open = max((l.split(',')[1] for l in text2.splitlines()[1:] if l.count(',') >= 3
+                             and l.split(',')[2].strip() in ('1', '1.0')), default=last_open)
+        except Exception:
+            pass
+        warn_days = int(self.deploy.get('calendar_warn_days', self.CALENDAR_WARN_DAYS))  # < 0: off (tests)
+        horizon = (_bj_now() + _hdt.timedelta(days=max(warn_days, 0))).strftime('%Y%m%d')
+        if warn_days >= 0 and last_open < horizon and self.calendar_warned != today:
+            self.calendar_warned = today
+            self.log('trade calendar only reaches %s (needs %s)' % (last_open or '-', horizon))
+            self._push('⚠️ 交易日历快用完了',
+                       'QMT里的交易日历只到 %s。日历由QMT外的推送转发程序每天从Tushare取来写入注册表；请检查推送转发'
+                       '（计划任务 A_System_QmtNotifyForwarder）和Tushare令牌。日历用完后无法判断交易日、收盘流水线会停。'
+                       % (last_open or '无'))
+
+    def _calendar_note(self, message):
+        if self.calendar_problem != message:
+            self.calendar_problem = message
+            self.log(message)
+
+    def _poll_calendar(self):
+        now = _htime.time()
+        if now - self.calendar_checked < self.CALENDAR_POLL_SECONDS:
+            return
+        self.calendar_checked = now
+        try:
+            self._merge_calendar_feed()
+        except Exception as exc:
+            self._calendar_note('trade calendar merge failed: %s: %s' % (type(exc).__name__, exc))
 
     TERMINAL_ORDER_STATUS = (53, 54, 56, 57)  # cancelled, part-cancelled, rejected, filled
 
@@ -1315,6 +1453,7 @@ class QnHost(object):
         self.engine.pump()
         QN_NATIVE_SERVICE.pump()
         self._poll_switch()
+        self._poll_calendar()
         self._supervise()
         self._echo_daemon_log()
         now = _htime.time()

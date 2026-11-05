@@ -148,6 +148,35 @@ def main():
     ns['QN_DEPLOY']['debug_export_dir'] = out
     overrides = ns['QN_DEPLOY'].setdefault('config_overrides', {})
     overrides['equity_curve_stop.enabled'] = False  # drill: exercise entries regardless of the stop
+    blocked = []
+    if os.environ.get('QN_TEST_GUARD_FILES'):
+        # QMT 2.1.33 replaces open / io.open / os.open / os.remove with guards (_guard_filefunc). Refuse
+        # every real file access of the strategy here; only this harness's own output folder and the
+        # Python installation (lazy stdlib data) stay reachable. Each refusal is recorded with its caller.
+        import builtins, io, traceback
+        # the mock market reads its recorded QMT exports lazily (gzip.open): this harness's data folder
+        allowed = (os.path.abspath(out), os.path.abspath(sys.prefix), os.path.abspath(sys.base_prefix),
+                   os.path.dirname(HERE) + os.sep)
+
+        def guard(name, real):
+            def call(file, *a, **k):
+                target = os.path.abspath(file) if isinstance(file, (str, bytes, os.PathLike)) else ''
+                if isinstance(target, bytes):
+                    target = target.decode('utf-8', 'replace')
+                if target and target.startswith(allowed):
+                    return real(file, *a, **k)
+                if not target:  # a file descriptor: no path to judge
+                    return real(file, *a, **k)
+                where = ' <- '.join('%s:%s' % (os.path.basename(f.filename), f.lineno)
+                                    for f in traceback.extract_stack()[-6:-1])
+                blocked.append('%s(%s) at %s' % (name, target, where))
+                print('FILE GUARD refused %s' % blocked[-1], flush=True)
+                raise PermissionError('calling %s not allowed' % name)
+            return call
+        builtins.open = guard('open', builtins.open)
+        io.open = guard('io.open', io.open)
+        os.open = guard('os.open', os.open)
+        os.remove = guard('os.remove', os.remove)
     qn_vclock.install_virtual_clock(ns['QnLoader'], clock)
     old_factory = logging.getLogRecordFactory()
 
@@ -158,10 +187,22 @@ def main():
     logging.setLogRecordFactory(factory)
     real_paper = ns['QnPaperBroker']
 
+    fault = os.environ.get('QN_TEST_PASSORDER_FAULT', '')  # raise | silent: the first order only
+    faults = []
+
     class VPaper(real_paper):
         def __init__(self, *a, **k):
             k['now_fn'] = lambda: dt.datetime.fromtimestamp(clock.now(), BJ)
             real_paper.__init__(self, *a, **k)
+
+        def passorder(self, *a, **k):
+            if fault and not faults:
+                faults.append((dt.datetime.fromtimestamp(clock.now(), BJ).strftime('%m-%d %H:%M:%S'), a[3], a[6]))
+                print('TEST FAULT passorder %s: %s' % (fault, faults[-1]), flush=True)
+                if fault == 'raise':
+                    raise RuntimeError('passorder failed (test fault)')
+                return None  # silent: nothing reaches the broker
+            return real_paper.passorder(self, *a, **k)
     ns['QnPaperBroker'] = VPaper
     # Accelerated time only: run QMT data jobs on their own thread so a slow mock call does not
     # freeze the engine heartbeat (1 real second = 1 virtual minute here).
@@ -193,6 +234,10 @@ def main():
                   'daemon_alive', host.daemon_thread.is_alive(), 'log', len(ns['QN_LOG_LINES']), flush=True)
     host = ns['QN_HOST'][0]
     host._debug_export()
+    if os.environ.get('QN_TEST_GUARD_FILES'):
+        print('file accesses refused by the guard: %d' % len(blocked))
+        for line in sorted(set(blocked))[:20]:
+            print('  ', line)
     print('broker', host.broker.snapshot()['cash'], host.broker.positions)
     ns['stop'](C)
 
