@@ -15,10 +15,28 @@ public static class QmtWindowInfo {
   [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr h,System.Text.StringBuilder b,int n);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h,out Rect r);
   public struct Rect { public int left,top,right,bottom; }
+  [DllImport("kernel32.dll",SetLastError=true)] public static extern IntPtr OpenProcess(int access,bool inherit,int pid);
+  [DllImport("kernel32.dll",SetLastError=true,CharSet=CharSet.Unicode)] public static extern bool QueryFullProcessImageName(IntPtr h,int flags,System.Text.StringBuilder b,ref int n);
+  [DllImport("kernel32.dll")] public static extern bool GetProcessTimes(IntPtr h,out long created,out long exited,out long kernel,out long user);
+  [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr h);
+  // QMT 2.1.33 runs elevated: Process.Path and StartTime need rights a normal process lacks,
+  // PROCESS_QUERY_LIMITED_INFORMATION (0x1000) is granted across elevation.
+  public static string ImagePath(int pid){
+    IntPtr h=OpenProcess(0x1000,false,pid); if(h==IntPtr.Zero){ return null; }
+    try { var b=new System.Text.StringBuilder(1024); int n=b.Capacity; return QueryFullProcessImageName(h,0,b,ref n)?b.ToString():null; }
+    finally { CloseHandle(h); }
+  }
+  public static long StartedAt(int pid){
+    IntPtr h=OpenProcess(0x1000,false,pid); if(h==IntPtr.Zero){ return 0; }
+    try { long c,e,k,u; if(!GetProcessTimes(h,out c,out e,out k,out u)){ return 0; }
+          return (DateTime.FromFileTimeUtc(c)-new DateTime(1970,1,1,0,0,0,DateTimeKind.Utc)).Ticks/TimeSpan.TicksPerSecond; }
+    finally { CloseHandle(h); }
+  }
 }
 '@
 try {
-    $all = @(Get-Process -Name XtItClient -ErrorAction SilentlyContinue)
+    $all = @(Get-Process -Name XtItClient -ErrorAction SilentlyContinue | ForEach-Object {
+        [pscustomobject]@{ Process=$_; Path=[QmtWindowInfo]::ImagePath($_.Id) } })
     $unreadable = @($all | Where-Object { -not $_.Path })
     $matches = @($all | Where-Object { $_.Path -and [string]::Equals($_.Path,$ExePath,[StringComparison]::OrdinalIgnoreCase) })
     if($unreadable.Count -gt 0 -or $matches.Count -gt 1){
@@ -26,7 +44,9 @@ try {
         exit 0
     }
     if($matches.Count -eq 0){ @{kind='missing'} | ConvertTo-Json -Compress; exit 0 }
-    $client = $matches[0]
+    $client = $matches[0].Process
+    $startedAt = [QmtWindowInfo]::StartedAt($client.Id)
+    if($startedAt -le 0){ throw 'START_TIME_UNREADABLE' }
     $hwnd = $client.MainWindowHandle
     $className = New-Object System.Text.StringBuilder 256
     [void][QmtWindowInfo]::GetClassName($hwnd,$className,256)
@@ -41,28 +61,34 @@ try {
     }
     $payload = @{
         kind=$kind; pid=$client.Id; hwnd=$hwnd.ToInt64()
-        started_at=([DateTimeOffset]$client.StartTime).ToUnixTimeSeconds()
+        started_at=$startedAt
         width=($rectangle.right-$rectangle.left); height=($rectangle.bottom-$rectangle.top)
         controls_supported=$false; captcha=$false; password_error=$false
         backend='none'; file_version=(Get-Item -LiteralPath $ExePath).VersionInfo.FileVersion
     }
     if($kind -eq 'login'){
-        $root = [System.Windows.Automation.AutomationElement]::FromHandle($hwnd)
-        $nodes = @($root.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition))
-        $edits = @($nodes | Where-Object { $_.Current.ControlType -eq [System.Windows.Automation.ControlType]::Edit -and -not $_.Current.IsOffscreen })
-        $passwords = @($edits | Where-Object { $_.Current.IsPassword })
-        $users = @($edits | Where-Object { -not $_.Current.IsPassword })
-        $buttons = @($nodes | Where-Object { $_.Current.ControlType -eq [System.Windows.Automation.ControlType]::Button -and $_.Current.Name -eq '登录' -and -not $_.Current.IsOffscreen })
-        $payload.captcha = $edits.Count -gt 2
-        $payload.password_error = @($nodes | Where-Object {
-            $_.Current.ControlType -ne [System.Windows.Automation.ControlType]::Edit -and
-            $_.Current.Name -match '密码错误|密码不正确|密码.*锁定|账户.*锁定|账号.*锁定'
-        }).Count -gt 0
-        $supported = ($passwords.Count -eq 1 -and $users.Count -eq 1 -and $buttons.Count -eq 1)
-        if($supported){
-            $supported = $passwords[0].GetSupportedPatterns().ProgrammaticName -contains 'ValuePatternIdentifiers.Pattern'
-            $supported = $supported -and ($users[0].GetSupportedPatterns().ProgrammaticName -contains 'ValuePatternIdentifiers.Pattern')
-            $supported = $supported -and ($buttons[0].GetSupportedPatterns().ProgrammaticName -contains 'InvokePatternIdentifiers.Pattern')
+        try {
+            $root = [System.Windows.Automation.AutomationElement]::FromHandle($hwnd)
+            $nodes = @($root.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition))
+            $edits = @($nodes | Where-Object { $_.Current.ControlType -eq [System.Windows.Automation.ControlType]::Edit -and -not $_.Current.IsOffscreen })
+            $passwords = @($edits | Where-Object { $_.Current.IsPassword })
+            $users = @($edits | Where-Object { -not $_.Current.IsPassword })
+            $buttons = @($nodes | Where-Object { $_.Current.ControlType -eq [System.Windows.Automation.ControlType]::Button -and $_.Current.Name -eq '登录' -and -not $_.Current.IsOffscreen })
+            $payload.captcha = $edits.Count -gt 2
+            $payload.password_error = @($nodes | Where-Object {
+                $_.Current.ControlType -ne [System.Windows.Automation.ControlType]::Edit -and
+                $_.Current.Name -match '密码错误|密码不正确|密码.*锁定|账户.*锁定|账号.*锁定'
+            }).Count -gt 0
+            $supported = ($passwords.Count -eq 1 -and $users.Count -eq 1 -and $buttons.Count -eq 1)
+            if($supported){
+                $supported = $passwords[0].GetSupportedPatterns().ProgrammaticName -contains 'ValuePatternIdentifiers.Pattern'
+                $supported = $supported -and ($users[0].GetSupportedPatterns().ProgrammaticName -contains 'ValuePatternIdentifiers.Pattern')
+                $supported = $supported -and ($buttons[0].GetSupportedPatterns().ProgrammaticName -contains 'InvokePatternIdentifiers.Pattern')
+            }
+        } catch {
+            # 2.1.33 以管理员身份运行，普通进程读不到它的控件：仍是登录窗口，只是不能自动输入。
+            $supported = $false
+            $payload.result = 'controls_unreadable'
         }
         if($supported){ $payload.controls_supported=$true; $payload.backend='uia' }
         # 国金当前版本 Qt 未暴露控件时，由 Python 原生后端进一步验证实际像素。

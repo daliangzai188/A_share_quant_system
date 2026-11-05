@@ -66,6 +66,17 @@ class RecoveryTests(unittest.TestCase):
     def test_launch_is_not_online(self):
         self.assertEqual(self.action(kind='missing'), 'launch')
 
+    def test_launch_goes_through_the_windows_shell(self):
+        # QMT 2.1.33 requires elevation: CreateProcess fails with WinError 740, the shell asks the user (UAC).
+        import qmt_client_guard
+        from unittest import mock
+        exe = Path('C:/QMT/GJQMT/bin.x64/XtItClient.exe')
+        with mock.patch.object(qmt_client_guard.os, 'startfile', create=True) as startfile, \
+                mock.patch.object(qmt_client_guard.subprocess, 'Popen') as popen:
+            qmt_client_guard.launch_client(exe)
+        startfile.assert_called_once_with(str(exe), cwd=str(exe.parent))
+        popen.assert_not_called()
+
     def test_offline_and_old_log_success_are_not_online(self):
         import datetime as dt
         from qmt_client_guard import BEIJING

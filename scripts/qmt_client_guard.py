@@ -358,6 +358,13 @@ def acquire_mutex():
     return mutex
 
 
+def launch_client(exe):
+    """QMT 2.1.33 的 XtItClient.exe 要求管理员权限：CreateProcess（subprocess）直接报 WinError 740。
+    经 Windows 外壳启动会弹出“用户账户控制”，由用户点“是”后打开到登录窗口；拒绝或超时抛 OSError，按退避重试。
+    旧版（asInvoker）同样可用，不弹窗。"""
+    os.startfile(str(exe), cwd=str(exe.parent))
+
+
 def run_guard(home):
     mutex = acquire_mutex()
     if mutex is None:
@@ -390,9 +397,7 @@ def run_guard(home):
                     exe = Path(settings["qmt_exe"])
                     if not exe.is_file():
                         raise FileNotFoundError("QMT_EXE_MISSING")
-                    subprocess.Popen([str(exe)], cwd=str(exe.parent),
-                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                     creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP)
+                    launch_client(exe)
                     action = "client_launched_unverified"
                 else:
                     if observed.get("backend") == "native":
@@ -403,7 +408,7 @@ def run_guard(home):
                     action = outcome.get("result", "login_unverified")
             except Exception as exc:
                 action = "attempt_failed"
-                logger.warning("attempt_failed type=%s", type(exc).__name__)
+                logger.warning("attempt_failed type=%s winerror=%s", type(exc).__name__, getattr(exc, "winerror", None))
         atomic_json(home / "state.json", vars(state))
         status = status_payload(observed, state, settings, action, now)
         atomic_json(home / "status.json", status)
