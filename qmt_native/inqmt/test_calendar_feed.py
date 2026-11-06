@@ -7,7 +7,10 @@ the collector finds no day to collect). The forwarder writes the SSE calendar in
   2. the same feed again, or after a restart, gives the same file and the same mtime (step 13's
      input inventory does not change);
   3. a feed that disagrees about the past, or with a wrong checksum, changes nothing;
-  4. with no feed and the calendar ending within 40 days: one push per day.
+  4. with no feed and the calendar ending within 40 days: one push per day;
+  5. the feed moving on by a day (the forwarder asks Tushare for today+400 days) rewrites the file but
+     leaves step 13's decision valid (11-06: rewritten at 04:15, the 00:50 decision was taken for stale
+     at 09:00); closing the next action day still invalidates it.
 
 Usage: python test_calendar_feed.py STRATEGY_FILE   (QMT's Python 3.6)
 """
@@ -27,6 +30,13 @@ def calendar(ns):
         if len(cells) >= 4:
             rows[cells[1]] = (cells[2] in ('1', '1.0'), cells[3], line)
     return rows
+
+
+def identity(ns, signal):
+    import json
+    pmf = ns['QnLoader'](ns['QnCodeBase'](ns['QN_MODULES'])).load('src.post_market_freshness')
+    cfg = json.loads(ns['QN_VFS'].get_text('config/config.json'))
+    return pmf.producer_identity(ns['QnPath']('/A_System'), signal, cfg)
 
 
 def make_feed(known, first, last, flip=None, digest=None):
@@ -74,10 +84,24 @@ def main():
         opens[-1], past_same, merged['20270104'][1]))
     host._merge_calendar_feed()
     again = ns['QN_VFS'].mtimes[ns['QN_VFS'].abspath('data/raw/trade_calendar.csv')]
+    text1 = ns['QN_VFS'].get_text('data/raw/trade_calendar.csv')
+    decided = identity(ns, TODAY)
+    feed[0] = make_feed(shipped, first + datetime.timedelta(days=1), last + datetime.timedelta(days=1))
+    host._merge_calendar_feed()
+    moved = ns['QN_VFS'].mtimes[ns['QN_VFS'].abspath('data/raw/trade_calendar.csv')] != again
+    still = identity(ns, TODAY) == decided
+    next_open = min(d for d, v in calendar(ns).items() if v[0] and d > TODAY)
+    feed[0] = make_feed(shipped, first + datetime.timedelta(days=1), last + datetime.timedelta(days=1), flip=next_open)
+    host._merge_calendar_feed()
+    closed = not calendar(ns)[next_open][0] and identity(ns, TODAY) != decided
+    ok5 = moved and still and closed
+    print('5. feed one day later: file rewritten %s, decision still valid %s; next action day %s closed: '
+          'decision invalid %s' % (moved, still, next_open, closed))
+    feed[0] = make_feed(shipped, first, last)
     ns['stop'](rs.MockContext())
     ns2, host2 = boot(path, feed)
     restarted = ns2['QN_VFS'].mtimes[ns2['QN_VFS'].abspath('data/raw/trade_calendar.csv')]
-    same_text = ns2['QN_VFS'].get_text('data/raw/trade_calendar.csv') == ns['QN_VFS'].get_text('data/raw/trade_calendar.csv')
+    same_text = ns2['QN_VFS'].get_text('data/raw/trade_calendar.csv') == text1
     ok2 = again == mtime == restarted and same_text
     print('2. same feed again: mtime unchanged %s; after a restart: same file %s, same mtime %s' % (
         again == mtime, same_text, restarted == mtime))
@@ -102,7 +126,7 @@ def main():
     pushes = [l for l in ns4['QN_PRINT_LINES'] if '[A_SYSTEM_NOTIFY' in l and '%E4%BA%A4%E6%98%93%E6%97%A5%E5%8E%86' in l]
     print('4. no feed on 2026-12-01: calendar warning pushes %d' % len(pushes))
     ns4['stop'](rs.MockContext())
-    ok = ok1 and ok2 and all(results) and len(pushes) == 1
+    ok = ok1 and ok2 and all(results) and len(pushes) == 1 and ok5
     print('RESULT', 'PASS' if ok else 'FAIL')
 
 
