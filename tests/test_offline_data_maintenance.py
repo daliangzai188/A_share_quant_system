@@ -123,6 +123,27 @@ class ProvenanceTests(unittest.TestCase):
         (self.raw.parent / '20261012.csv').write_text('new day data')
         self.assertTrue(decision_producer_fresh(self.root, '20261009', self.config, self.payload))
 
+    def test_calendar_extension_does_not_invalidate_decision(self):
+        # 2026-11-06：QMT原生版凌晨把日历延长一天，前一晚的判定在09:00被当成旧产物。
+        calendar = self.root / 'data/raw/trade_calendar.csv'
+        rows = [('20261008', 1), ('20261009', 1), ('20261010', 0), ('20261011', 0),
+                ('20261012', 1), ('20261013', 1)]
+
+        def write(rows, crlf=False):
+            lines = ['exchange,cal_date,is_open,pretrade_date']
+            lines += ['SSE,%s,%d,' % row for row in sorted(rows, reverse=True)]
+            calendar.write_text(('\r\n' if crlf else '\n').join(lines) + '\n')
+        write(rows)
+        self.payload['producer_identity'] = producer_identity(self.root, '20261009', self.config)
+        write(rows + [('20261014', 1), ('20261015', 0)], crlf=True)
+        self.assertTrue(decision_producer_fresh(self.root, '20261009', self.config, self.payload))
+        write(rows[:-1] + [('20261013', 0)])  # a day after the next action day
+        self.assertTrue(decision_producer_fresh(self.root, '20261009', self.config, self.payload))
+        write(rows[:4] + [('20261012', 0), ('20261013', 1)])  # the next action day closes
+        self.assertFalse(decision_producer_fresh(self.root, '20261009', self.config, self.payload))
+        write([('20261008', 0)] + rows[1:])  # history changes
+        self.assertFalse(decision_producer_fresh(self.root, '20261009', self.config, self.payload))
+
     def test_live_gate_rejects_legacy_and_diagnostic_decisions(self):
         settings = load_settings(self.config, self.root)
         write_decision(settings, self.payload)
