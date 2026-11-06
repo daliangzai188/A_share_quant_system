@@ -138,6 +138,20 @@ def _migrate_legacy_state(state: dict[str, Any], config: Mapping[str, Any]) -> d
     }
 
 
+def _user_confirmed_rebase(section: Mapping[str, Any], cutoff: str, baseline: float) -> bool:
+    """用户确认旧基线到新基线之间的差额是出金时，新基线就是历史起点。
+
+    2026-11-06用户确认：旧v2基线27.08万（8-07）到新基线6.89万（10-06）的差额是转出资金。
+    日期和金额都必须与配置的确认记录逐一对上；换一个余额重建仍按历史未恢复处理。
+    """
+    rebase = section.get("user_confirmed_rebase") or {}
+    try:
+        return (_date8(rebase.get("baseline_cutoff_entry_date")) == cutoff
+                and abs(float(rebase.get("baseline_equity")) - baseline) < 0.005)
+    except (TypeError, ValueError):
+        return False
+
+
 def _equity_path(baseline: float, complete: pd.DataFrame) -> tuple[float, float, str]:
     """按卖出日先后累计净值，返回（当前净值，历史峰值，峰值日期）。"""
     if complete.empty:
@@ -238,7 +252,7 @@ def update_strategy_equity_ledger(
         section = config.get("strategy_equity_ledger", {}) or {}
         required_cutoff = _date8(section.get("legacy_v2_baseline_cutoff_entry_date"))
         history_reasons: list[str] = []
-        if required_cutoff and cutoff > required_cutoff:
+        if required_cutoff and cutoff > required_cutoff and not _user_confirmed_rebase(section, cutoff, baseline):
             history_reasons.append("BASELINE_NEWER_THAN_CONFIGURED_LEGACY_CUTOFF")
         missing_previous = sorted(
             key for key in previous_included

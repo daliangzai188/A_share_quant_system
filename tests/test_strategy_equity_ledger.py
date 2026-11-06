@@ -260,6 +260,31 @@ class RecomputedLedgerTests(unittest.TestCase):
         self.assertIn("BASELINE_NEWER_THAN_CONFIGURED_LEGACY_CUTOFF", snapshot.historical_coverage_reasons)
         self.assertEqual(snapshot.pending_incomplete_trade_count, 0)
 
+    def test_user_confirmed_rebase_makes_new_baseline_history_ready(self) -> None:
+        # 2026-11-06：用户确认旧基线到新基线的差额是转出资金。
+        def run(amount: float):
+            self.state.write_text(json.dumps({
+                "schema_version": 3, "baseline_equity": 68907.78,
+                "baseline_cutoff_entry_date": "20261006", "included_trade_keys": [],
+                "last_equity": 68907.78, "peak_equity": 68907.78,
+            }))
+            config = json.loads(json.dumps(self.CONFIG))
+            config["strategy_equity_ledger"]["user_confirmed_rebase"] = {
+                "baseline_cutoff_entry_date": "20261006", "baseline_equity": amount}
+            return update_strategy_equity_ledger(
+                state_path=self.state, completion_summary_path=self.summary,
+                signal_date="20261106", config=config, bootstrap_equity=None,
+            )
+        self._write_summary([])
+        confirmed = run(68907.78)
+        self.assertTrue(confirmed.historical_coverage_ready)
+        self.assertTrue(confirmed.ledger_ready)
+        self.assertEqual(confirmed.historical_coverage_reasons, ())
+        self.assertEqual(confirmed.equity, 68907.78)
+        other_amount = run(70000.0)
+        self.assertFalse(other_amount.historical_coverage_ready)
+        self.assertIn("BASELINE_NEWER_THAN_CONFIGURED_LEGACY_CUTOFF", other_amount.historical_coverage_reasons)
+
     def test_loss_of_included_trade_preserves_last_verified_equity_and_peak(self) -> None:
         self._write_v2([], last_equity=270_000)
         self._write_summary([_row("20260810|600815.SH|D|20260810", "D", "20260810", "20260812", 3.6, 3.7, 61800)])
