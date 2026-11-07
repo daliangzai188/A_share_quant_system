@@ -3,8 +3,8 @@
 and were retried 1, 2, 4, 8 minutes apart; the fifth call never returned and froze QMT's Python.
   1. the account status fields of the engine's own account queries are logged (no extra QMT call);
   2. while the account shows a status the store has not worked with, periodic saves wait (no
-     key-value call at all), forced saves (before an order) still run, and saves resume when
-     the status is back;
+     key-value call at all), forced saves still run, and saves resume when the status is back;
+     a status that says the trade server is down (断开/失败/初始化) stays a reason to wait (11-07);
   3. after an "unreachable" failure the next periodic try waits 30 minutes, then 1 hour; a call
      that was merely slow keeps the short backoff;
   4. a reconnect on the same trade server writes only changed bodies (server changes:
@@ -57,23 +57,30 @@ def main():
     host.account_status_learn = True
     host._note_account_status([Row(u'正常')])
     up = periodic()
-    host._note_account_status([Row(u'连接断开')])
+    host._note_account_status([Row(u'切换中')])  # a status the store has not worked with
     down = periodic()
     host._note_account_status([Row(u'正常')])
     back = periodic()
-    host._note_account_status([Row(u'连接断开')])
+    host._note_account_status([Row(u'切换中')])
     with host.persist_lock:
         ns['QN_VFS'].put_text('data/state/test_save_marker.json', '{"forced": %r}' % time.time())
     before = state['calls']
-    host.persist(force=True, reason='before passorder')  # an order: tried whatever the account shows
+    host.persist(force=True, reason='before passorder')  # a forced save: tried whatever the account shows
     forced = state['calls'] - before
     learned = periodic()  # the store worked with that status: no longer a reason to wait
+    # 11-07: a status that says the trade server is down stays a reason to wait even after a forced
+    # save worked (a key-value call while it is down may never return)
+    host._note_account_status([Row(u'连接断开')])
+    host.persist(force=True, reason='forced while down')
+    still_down = periodic()
+    host._note_account_status([Row(u'正常')])
     waits = [m for m in host.messages if 'periodic state saves wait' in m or 'periodic state saves resume' in m]
     print('2. key-value calls of a periodic save: link up %d, account shows another status %d, back %d; '
-          'forced save %d; periodic after it %d' % (up, down, back, forced, learned))
+          'forced save %d; periodic after it %d; status says disconnected (after a forced save) %d' % (
+              up, down, back, forced, learned, still_down))
     for m in waits:
         print('   ', m[:140].encode('ascii', 'backslashreplace').decode())
-    ok &= up > 0 and down == 0 and back > 0 and forced > 0 and learned > 0 and len(waits) == 2
+    ok &= up > 0 and down == 0 and back > 0 and forced > 0 and learned > 0 and still_down == 0 and len(waits) == 3
 
     # 4. a reconnect that stays on the same trade server costs nothing extra: only changed bodies are
     #    written (a change of server is test_store_switch.py)

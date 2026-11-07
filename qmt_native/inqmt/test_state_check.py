@@ -94,7 +94,7 @@ def main():
     slow = lambda acct, kind: (flat(acct, kind) if answering[0] else [])
     ns, C, host = boot(path, slow, changed)
     drive(ns, C, 5)
-    waiting = not alive(host) and host.state_hold == 'pending'
+    waiting = not alive(host) and (host.state_hold == 'pending' or host.boot_pending)  # 11-07: no account row = not connected, the start itself waits
     answering[0] = True
     drive(ns, C, 8)
     print('4. broker not answering: waiting %s; once it answers: daemon alive %s' % (waiting, alive(host)))

@@ -167,6 +167,16 @@ def _status_text(status):
     return ', '.join('%s=%s' % kv for kv in status) or 'no status field'
 
 
+# account statuses that mean the broker's trade server is not connected (seen: 登录失败, 初始化中)
+QN_LINK_DOWN_MARKS = (u'\u5931\u8d25', u'\u521d\u59cb\u5316', u'\u65ad\u5f00', u'\u672a\u8fde\u63a5', u'\u672a\u767b\u5f55')
+
+
+def _status_up(status):
+    """An account status that does not say the trade server is down (no status field: up)."""
+    text = _status_text(status or ())
+    return not any(mark in text for mark in QN_LINK_DOWN_MARKS)
+
+
 def _qn_where(frame, depth):
     """'file:line function' of the innermost frames, read from the frames alone (traceback's
     stack summaries look up source lines, which may read files from disk)."""
@@ -600,6 +610,13 @@ class QnHost(object):
     # server is unreachable, periodic saves wait 30 minutes, then 1 and 2 hours (a call that was
     # merely slow keeps the short backoff). Matched on the error text, not on key names.
     STORE_LINK_ERRORS = ('(200000,', u'未建立连接', '(10060,', 'timed out', 'End of file')
+    # 11-07 11:54: a start retried reading the state store while the trade server was down (11:52
+    # to 11:59); that get_py_key never returned and froze QMT's Python until QMT was restarted (as
+    # on 10-24). No key-value call is made while the account status says the trade server is down:
+    # a start reads the store only after the status has said connected for BOOT_LINK_STABLE seconds,
+    # and the saves before an order and on stop are skipped while it does not.
+    BOOT_LINK_STABLE = 60.0
+    BOOT_LINK_POLL = 10.0
     STORE_LINK_BACKOFF = (1800.0, 3600.0, 7200.0)
 
     def __init__(self, C, qmt_globals, deploy, modules, static_files, market=None, broker=None, store=None):
@@ -660,6 +677,8 @@ class QnHost(object):
         self.trading_note_last = 0.0
         self.account_status = None
         self.account_status_good = set()
+        self.link_up_since = 0.0     # when the account status last turned to connected (0: not connected)
+        self.link_wait_logged = None
         self.account_status_learn = False
         self.store_waits_for_link = False
         self.exported = {}
@@ -771,6 +790,15 @@ class QnHost(object):
     def _boot_state(self):
         """Restore state and start the engine and daemon. Without the persisted state nothing
         may trade, so a state store that cannot be read means: wait and try again."""
+        if self.store is not None and not self.link_ready(self.BOOT_LINK_STABLE):
+            self.boot_pending = True
+            self.boot_retry_at = _htime.time() + self.BOOT_LINK_POLL
+            if self.link_wait_logged != self.account_status:
+                self.link_wait_logged = self.account_status
+                self.log('waiting for the trade connection before reading the state store (account %s; '
+                         'reading starts %ds after it says connected)' % (
+                             _status_text(self.account_status or ()), self.BOOT_LINK_STABLE))
+            return
         try:
             self._seed_vfs()
         except Exception as exc:
@@ -830,10 +858,17 @@ class QnHost(object):
             named = set(self.deploy.get('repair_from_seed') or ())
             self.store.fallback_bodies = lambda sha, rel: by_sha.get(sha) or (by_rel.get(rel) if rel in named else None)
             self.store.repaired = []
+            up_since = self.link_up_since
             try:
                 files, meta = self.store.load()
                 self.broken_boots = 0
             except RuntimeError as exc:
+                if 'no complete state snapshot' in str(exc) and (
+                        not self.link_ready() or self.link_up_since != up_since):
+                    # 11-07 11:53: the trade server dropped during a 5-minute read and returned cut
+                    # values; that says nothing about the stored state
+                    raise RuntimeError('the trade connection dropped while the state was read (account %s); '
+                                       'read again once it is back' % _status_text(self.account_status or ()))
                 # Only a snapshot that is broken in content counts, never a store that cannot be read.
                 # 10-26 an operator build (QN_RESET_STATE_IF_BROKEN) started from the shipped seed; 11-05
                 # the broker's key-value store lost the bodies of both snapshots and that took a manual
@@ -1203,15 +1238,51 @@ class QnHost(object):
         if status != self.account_status:
             self.log('trade account status: %s%s' % (
                 _status_text(status), '' if self.account_status is None else ' (was %s)' % _status_text(self.account_status)))
+            if not _status_up(status):
+                self.link_up_since = 0.0
+            elif self.account_status is None or not _status_up(self.account_status) or not self.link_up_since:
+                self.link_up_since = _htime.time()
             self.account_status = status
         if self.account_status_learn:
             self.account_status_learn = False
             self.account_status_good.add(status)
 
     def store_link_down(self):
-        """True while the account shows a status the key-value store has not worked with."""
+        """True while the account shows a status the key-value store has not worked with, or one
+        that says the trade server is not connected."""
+        if self.account_status is not None and not _status_up(self.account_status):
+            return True
         return bool(self.account_status and self.account_status_good
                     and self.account_status not in self.account_status_good)
+
+    def _query_link(self):
+        """Ask the broker's account object for its status (a local read, it does not wait for the
+        trade server; it answered every minute through the 11-07 outage). An empty answer counts
+        as not connected."""
+        account = str(self.deploy.get('account_id', ''))
+        query = self.g.get('get_trade_detail_data') if self.deploy.get('mode') == 'live' else \
+            getattr(self.broker, 'get_trade_detail_data', None)
+        if query is None:
+            return True
+        try:
+            rows = query(account, 'stock', 'account')
+        except Exception:
+            rows = None
+        if not rows:
+            if self.account_status != ((u'account', u'no answer'),):
+                self.log('trade account status: no account row from the broker')
+            self.account_status = ((u'account', u'no answer'),)
+            self.link_up_since = 0.0
+            return False
+        self._note_account_status(rows)
+        return _status_up(self.account_status)
+
+    def link_ready(self, stable_seconds=0.0):
+        if not self._query_link():
+            return False
+        if not self.account_status:  # no status field (paper broker, tests): nothing to wait for
+            return True
+        return _htime.time() - self.link_up_since >= stable_seconds
 
     # ------------------------------------------------------------------ daemon thread
     def _start_daemon(self):
@@ -1536,6 +1607,11 @@ class QnHost(object):
         check against the broker (_check_restored_state), which holds trading until checked."""
         if self.store is None:
             return
+        if not self.link_ready():
+            self.persist_clock = None
+            self.log('order placed without the save before it: trade account shows %s (trade server not '
+                     'connected); the journal goes into the next save' % _status_text(self.account_status or ()))
+            return
         ago = _htime.time() - self.store.last_slow_at
         if self.store.last_slow_at and ago < self.STORE_SLOW_RECENT:
             self.persist_clock = None
@@ -1811,6 +1887,10 @@ class QnHost(object):
             elif not self.store_daytime():
                 self.log('strategy stop at night: last saved state (%s) kept; night changes are rebuilt '
                          'on the next start' % (self.persist_meta or {}).get('saved_at', 'never'))
+            elif self.store is not None and not self.link_ready():
+                self.log('strategy stop: trade account shows %s (trade server not connected); last saved state '
+                         '(%s) kept, later changes are rebuilt on the next start' % (
+                             _status_text(self.account_status or ()), (self.persist_meta or {}).get('saved_at', 'never')))
             else:
                 # 11-05 11:49: this save took minutes (slow trade server) while the trading daemon kept
                 # running; it saw the engine heartbeat stop and pushed false "bridge lost" alarms. End
