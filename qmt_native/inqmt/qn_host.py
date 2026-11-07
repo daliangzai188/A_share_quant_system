@@ -205,6 +205,11 @@ class QnStateStore(object):
         # last_call_seconds; during a save, one call slower than slow_limit gives the save up.
         self.slow_limit = 0.0
         self.last_call_seconds = 0.0
+        # any call slower than slow_mark (set by the host) is remembered: the save before an order
+        # is skipped for a while after one (QnHost.persist_before_order)
+        self.slow_mark = 0.0
+        self.last_slow_at = 0.0
+        self.last_slow_seconds = 0.0
         self.saving = False
         self.call_seconds = 0.0  # running total, for the host's status line
         # (sha, path) -> bytes or None: a body lost in the store whose content is shipped in the
@@ -217,6 +222,9 @@ class QnStateStore(object):
 
     def _check_slow(self, what):
         self.call_seconds += self.last_call_seconds
+        if self.slow_mark and self.last_call_seconds > self.slow_mark:
+            self.last_slow_at = _htime.time()
+            self.last_slow_seconds = self.last_call_seconds
         if self.saving and self.slow_limit and self.last_call_seconds > self.slow_limit:
             raise RuntimeError('%s took %.0fs (broker trade server slow); save given up' % (
                 what, self.last_call_seconds))
@@ -568,13 +576,23 @@ class QnHost(object):
     STORE_DAY_END = 20
     STORE_BACKOFF_MAX = 1800.0
     # every call blocks the QMT callback thread (and the engine's bridge heartbeat with it)
-    # Periodic saves only: the save before an order and the save on stop must complete (an order
-    # is refused when its save fails; 10-23 morning single calls took 5-18 s several times an hour).
-    # Outside the trading session a frozen QMT costs nothing, and on 10-23 afternoon calls took 5-7 s
-    # for hours (nothing saved after the close pipeline), so the limit is looser there.
+    # Periodic saves give up after one slower call; the save on stop must complete (10-23 morning
+    # single calls took 5-18 s several times an hour). Outside the trading session a frozen QMT
+    # costs nothing, and on 10-23 afternoon calls took 5-7 s for hours (nothing saved after the
+    # close pipeline), so the limit is looser there.
     STORE_SLOW_CALL = 5.0
     STORE_SLOW_CALL_OFF_HOURS = 30.0
     TRADING_SESSION = ('0910', '1505')
+    # The save before an order (11-07): on 11-03..11-06 single calls took 5-60 s 21-55 times a
+    # session, and that save makes about 7 calls, so an order could wait minutes (an auction order
+    # or a stop-loss too late). Since 11-05 a start compares the restored journal with the broker
+    # and holds trading for an order of today it does not know, so an order no longer waits for a
+    # slow store: within STORE_SLOW_RECENT of a slow call the save is skipped, otherwise one call
+    # slower than STORE_SLOW_CALL gives it up; the order goes ahead, the journal into the next save.
+    STORE_SLOW_RECENT = 900.0
+    # In the session, while nothing trades, only health files change (logs/broker_health.json every
+    # minute); saving them every 2 minutes cost about 7 calls each. They are saved at most this often.
+    SESSION_LOG_SAVE_SECONDS = 1800.0
     # 10-24: the trade server dropped at 17:48; periodic saves failed at once ("200000 未建立连接")
     # and were retried 1, 2, 4 and 8 minutes apart; the fifth call (18:04:06) never returned and
     # froze QMT's Python (output, pushes, orders) until QMT itself was restarted on 10-27. A call
@@ -595,6 +613,8 @@ class QnHost(object):
         self.market = market
         self.broker = broker
         self.store = store
+        if store is not None:
+            store.slow_mark = self.STORE_SLOW_CALL
         self.engine = None
         self.daemon_thread = None
         self.daemon_restarts = 0
@@ -603,6 +623,8 @@ class QnHost(object):
         self.persist_dirty = False
         self.persist_last = 0.0
         self.persist_clock = 0.0
+        self.persist_core = None    # fingerprint without logs/ of the last committed snapshot
+        self.persist_saved_at = 0.0
         self.persist_meta = None
         self.persist_error = ''
         self.persist_lock = _hthr.RLock()
@@ -1159,8 +1181,9 @@ class QnHost(object):
             if host.stopped or QN_SHUTDOWN[0]:
                 raise RuntimeError('A_System copy stopped or taken over; order refused')
             # The engine's submission journal is committed just before this call. Make it durable
-            # in QMT's key-value store before the order can exist at the broker.
-            host.persist_on_callback_thread(reason='before passorder')
+            # in QMT's key-value store before the order can exist at the broker, unless the trade
+            # server is slow (persist_before_order).
+            host.persist_before_order()
             return real_passorder(*args, **kwargs)
         api['passorder'] = passorder
         return api
@@ -1493,7 +1516,7 @@ class QnHost(object):
         with self.persist_lock:
             return self._persist_locked(force, reason)
 
-    def persist_on_callback_thread(self, reason=''):
+    def persist_on_callback_thread(self, reason='', slow_limit=None):
         """Forced save from the QMT callback thread. The state thread may hold the lock while
         it waits for this very thread to run its py_key calls, so keep serving those jobs
         until the lock is free instead of blocking on it."""
@@ -1503,9 +1526,28 @@ class QnHost(object):
             QN_NATIVE_SERVICE.pump(0.5)
             _htime.sleep(0.01)
         try:
-            return self._persist_locked(True, reason)
+            return self._persist_locked(True, reason, slow_limit)
         finally:
             self.persist_lock.release()
+
+    def persist_before_order(self):
+        """The save before an order, bounded by the trade server's speed (STORE_SLOW_RECENT).
+        It never refuses the order: a journal that misses the order is caught by the start-up
+        check against the broker (_check_restored_state), which holds trading until checked."""
+        if self.store is None:
+            return
+        ago = _htime.time() - self.store.last_slow_at
+        if self.store.last_slow_at and ago < self.STORE_SLOW_RECENT:
+            self.persist_clock = None
+            self.log('order placed without the save before it: a key-value call took %.0fs %.0fs ago '
+                     '(trade server slow); the journal goes into the next save' % (self.store.last_slow_seconds, ago))
+            return
+        try:
+            self.persist_on_callback_thread(reason='before passorder', slow_limit=self.STORE_SLOW_CALL)
+        except Exception as exc:
+            self.persist_clock = None
+            self.log('order placed although the save before it did not complete (%s); the journal goes '
+                     'into the next save' % str(exc)[:160])
 
     def _verify_store(self, force):
         if force or self._background_busy() or self.periodic_slow_limit() == self.STORE_SLOW_CALL:
@@ -1533,7 +1575,11 @@ class QnHost(object):
         hour = _bj_now().hour
         return self.STORE_DAY_START <= hour < self.STORE_DAY_END
 
-    def _persist_locked(self, force, reason):
+    def _persist_core(self, files, inventory):
+        return _hsha.sha256(_hjson.dumps([sorted((k, v[1], v[2]) for k, v in files.items() if not k.startswith('logs/')),
+                                          sorted(inventory.items())]).encode()).hexdigest()
+
+    def _persist_locked(self, force, reason, slow_limit=None):
         if QN_SHUTDOWN[0]:
             # a stopped or taken-over copy must never overwrite the state of the copy that runs now
             if force:
@@ -1562,8 +1608,15 @@ class QnHost(object):
             interval = self.PERSIST_INTERVAL_BUSY if self._background_busy() else self.PERSIST_INTERVAL
             if now < self.persist_retry_at or now - self.persist_last < interval:
                 return
+            if (self.periodic_slow_limit() == self.STORE_SLOW_CALL and self.persist_clock is not None
+                    and now - self.persist_saved_at < self.SESSION_LOG_SAVE_SECONDS):
+                qn_sqlite_persist_all()
+                if self._persist_core(self._persist_files(), self._persist_inventory()) == self.persist_core:
+                    self.persist_last = now  # only health files changed: no key-value call now
+                    return
+        limit = slow_limit if slow_limit is not None else (0.0 if force else self.periodic_slow_limit())
         try:
-            self.store.slow_limit = 0.0 if force else self.periodic_slow_limit()
+            self.store.slow_limit = limit
             self.store.saving = True
             try:
                 switched = self.store.follow_server()
@@ -1581,12 +1634,14 @@ class QnHost(object):
             if not force and fingerprint == self.persist_clock:
                 self.persist_last = now
                 return
-            self.store.slow_limit = 0.0 if force else self.periodic_slow_limit()
+            self.store.slow_limit = limit
             self.save_stats[1] += 1
             self.persist_meta = self.store.save(files, dict(release=self.deploy.get('release'), reason=reason,
                                                             inventory=inventory))
             self.save_stats[0] += 1
             self.persist_clock = fingerprint
+            self.persist_core = self._persist_core(files, inventory)
+            self.persist_saved_at = now
             self.persist_last = now
             self.persist_error = ''
             if self.persist_failures:

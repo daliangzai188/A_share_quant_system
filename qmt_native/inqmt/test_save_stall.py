@@ -63,7 +63,7 @@ def main():
             except Exception as exc:
                 result['error'] = str(exc)
         with host.persist_lock:
-            ns['QN_VFS'].put_text('logs/broker_health.json', '{"test": %r}' % time.time())  # something to save
+            ns['QN_VFS'].put_text('data/state/test_save_marker.json', '{"test": %r}' % time.time())  # something to save
             host.persist_last, host.persist_retry_at = -1e10, 0.0
             state.update(armed=True, loops=gil_hold_loops(seconds), hung=0, calls_after=0)
         mark = len(ns['QN_LOG_LINES'])

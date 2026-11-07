@@ -48,7 +48,7 @@ def main():
 
     def periodic():
         with host.persist_lock:
-            ns['QN_VFS'].put_text('logs/broker_health.json', '{"t": %r}' % time.time())
+            ns['QN_VFS'].put_text('data/state/test_save_marker.json', '{"t": %r}' % time.time())
             host.persist_last, host.persist_retry_at = -1e10, 0.0
         before = state['calls']
         host.persist(reason='test')
@@ -63,7 +63,7 @@ def main():
     back = periodic()
     host._note_account_status([Row(u'连接断开')])
     with host.persist_lock:
-        ns['QN_VFS'].put_text('logs/broker_health.json', '{"forced": %r}' % time.time())
+        ns['QN_VFS'].put_text('data/state/test_save_marker.json', '{"forced": %r}' % time.time())
     before = state['calls']
     host.persist(force=True, reason='before passorder')  # an order: tried whatever the account shows
     forced = state['calls'] - before
