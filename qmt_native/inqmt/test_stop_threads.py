@@ -11,7 +11,7 @@ sys.path.insert(0, HERE)
 import run_system_local as rs
 
 
-def load(path, kv):
+def load(path, kv, store=None):
     ns = {'__name__': '__main__', 'download_history_data': lambda *a: None,
           'get_py_key': lambda k: (kv.get(k, ''), 0, ''),
           'save_py_key': lambda k, v: (kv.__setitem__(k, v) if len(v) <= 5000 else None) or ((0, '') if len(v) <= 5000 else (-1, 'too long'))}
@@ -21,6 +21,13 @@ def load(path, kv):
     ns['QN_DEPLOY']['store_day_hours'] = [0, 24]
     ns['QN_DEPLOY']['cache_keeper'] = False  # its own test: test_cache_keeper.py
     ns['QN_DEPLOY']['calendar_warn_days'] = -1  # its own test: test_calendar_feed.py
+    # the broker key-value store unless a test asks for the log + registry store (production default
+    # from 11-08; QN_TEST_STATE_STORE=log runs every test on it)
+    if (store or os.environ.get('QN_TEST_STATE_STORE', 'broker')) == 'log':
+        import qn_test_state
+        ns['QN_TEST_STATE'] = qn_test_state.attach_log_store(ns, kv)
+    else:
+        ns['QN_DEPLOY']['state_store'] = 'broker'
     return ns
 
 

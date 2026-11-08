@@ -224,6 +224,51 @@ def main():
     fwd.watch_qmt_process(st2, 'http://b', t + 10, False, manual_stop=True)
     print('QMT process watch: pushes %s; with a manual stop marker: %s' % (titles2, '暂停' in pushed[-1]))
     ok &= titles2 == ['⛔ QMT已关闭', '🔑 QMT已重新打开，请登录'] and '暂停' in pushed[-1]
+
+    # 11-08: the strategy's state comes as [A_SYSTEM_STATE live] lines; the forwarder (as a process,
+    # GBK log, CRLF) stores it in the registry stand-in and commits complete snapshots only
+    import hashlib, json as _json
+
+    def state_lines(files, drop=()):
+        out, manifest = [], {}
+        for rel, data in sorted(files.items()):
+            bid = hashlib.sha256(data).hexdigest()[:32]
+            manifest[rel] = [bid, 1.0, len(data), 0]
+            packed_b = base64.b64encode(zlib.compress(data, 9)).decode('ascii')
+            chunks = [packed_b[i:i + 1500] for i in range(0, len(packed_b), 1500)]
+            if rel not in drop:
+                out += ['[A_SYSTEM_STATE live] B %s %d/%d %s' % (bid, i + 1, len(chunks), c) for i, c in enumerate(chunks)]
+        mpacked = base64.b64encode(zlib.compress(_json.dumps(dict(files=manifest, saved_at='x'), sort_keys=True).encode(), 9)).decode('ascii')
+        mid = hashlib.sha256(mpacked.encode('ascii')).hexdigest()[:32]
+        out.append('[A_SYSTEM_STATE live] M %s 1/1 %s' % (mid, mpacked))
+        out.append('[A_SYSTEM_STATE live] C %s' % mid)
+        return mid, ''.join('2026-11-08 10:00:00,000 [INFO] [0x1] reqid = x, output = %s\r\n' % l for l in out).encode('gbk')
+    reg_path = os.path.join(local, 'A_System', 'qmt_native', 'state_registry_live.json')
+    big = b''.join(hashlib.sha256(str(i).encode()).digest() for i in range(3000))  # 96 KB that do not compress
+    mid1, text1 = state_lines({'data/state/a.json': b'{"a": 1}', 'data/state/big.csv': big})
+    day3 = os.path.join(logs, 'XtClient_FormulaOutput_20261108.log')
+    open(day3, 'wb').write(text1)
+    run()
+    reg = _json.load(open(reg_path))
+    first = reg.get('Pointer') == mid1
+    mid2, text2 = state_lines({'data/state/a.json': b'{"a": 2}', 'data/state/big.csv': big}, drop=('data/state/a.json',))
+    with open(day3, 'ab') as f:
+        f.write(text2)
+    run()
+    reg = _json.load(open(reg_path))
+    waits = reg.get('Pointer') == mid1 and (reg.get('Missing') or '').split()[:1] == [mid2]
+    _m, text3 = state_lines({'data/state/a.json': b'{"a": 2}'})
+    with open(day3, 'ab') as f:
+        f.write(text3.split(b'[A_SYSTEM_STATE live] M')[0].rsplit(b'\r\n', 2)[0] + b'\r\n'
+                + ('2026-11-08 10:00:01,000 [INFO] [0x1] reqid = x, output = [A_SYSTEM_STATE live] C %s\r\n' % mid2).encode())
+    run()
+    reg = _json.load(open(reg_path))
+    later = reg.get('Pointer') == mid2 and reg.get('PointerPrev') == mid1 and 'Missing' not in reg
+    disk = os.path.isfile(os.path.join(local, 'A_System', 'qmt_native', 'state', 'live', 'pointer.json'))
+    print('state lines: snapshot 1 committed %s; snapshot 2 with a body lost waits (Missing) %s; body printed again '
+          '-> committed %s; disk copy %s; big body split in the registry %s' % (
+              first, waits, later, disk, any(k.endswith('.0') for k in reg)))
+    ok &= first and waits and later and disk and any(k.endswith('.0') for k in reg)
     print('RESULT', 'PASS' if ok else 'FAIL')
 
 

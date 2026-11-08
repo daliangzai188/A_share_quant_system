@@ -9,7 +9,10 @@ says when the trade server is down:
   3. the connection drops during the read and the read returns cut values: not counted as a
      broken store (no push, no reset count); read again once the connection is back;
   4. an order while the account shows 登录失败: no key-value call before it, the order goes ahead;
-  5. stopping in the day while the account shows 登录失败: no key-value call, saved state kept.
+  5. stopping in the day while the account shows 登录失败: no key-value call, saved state kept;
+  6. the connection drops in the middle of a periodic save (11-08 11:08: that save had passed the
+     check at its start and its next save_py_key never returned): not one more key-value call;
+  7. connected again: periodic saves wait until it has said so for PERIODIC_LINK_STABLE.
 
 Usage: python test_link_gate.py STRATEGY_FILE   (QMT's Python 3.6)
 """
@@ -27,7 +30,7 @@ class Row(object):
         self.__dict__.update(kw)
 
 
-def boot(path, kv, status, calls, cut=None):
+def boot(path, kv, status, calls, cut=None, drop_after=None):
     ns = load(path, kv)
     ns['QN_DEPLOY']['trading_switch'] = True
     ns['QN_DEPLOY']['store_day_hours'] = [0, 24]
@@ -45,6 +48,9 @@ def boot(path, kv, status, calls, cut=None):
 
     def save(k, v):
         calls.append(k)
+        if drop_after and drop_after[0] and len(calls) >= drop_after[0] and status[0] != DOWN:
+            status[0] = DOWN  # the trade server drops during this call
+            drop_after.append(len(calls))
         return real_save(k, v)
     ns['get_py_key'], ns['save_py_key'] = get, save
     real_init = ns['QnHost'].__init__
@@ -52,6 +58,7 @@ def boot(path, kv, status, calls, cut=None):
     def init(self, *a, **k):
         real_init(self, *a, **k)
         self.BOOT_LINK_STABLE, self.BOOT_LINK_POLL, self.BOOT_RETRY_SECONDS = 2.0, 0.5, 1.0
+        self.PERIODIC_LINK_STABLE = 3.0
         acct = str(self.deploy['account_id'])
         self.broker.get_trade_detail_data = lambda account, market, kind, *r: (
             [Row(m_strAccountID=acct, m_strStatus=status[0])] if kind == 'account' else [])
@@ -124,6 +131,39 @@ def main():
     kept = any('trade server not connected' in m for m in host.messages)
     print('5. stop while 登录失败: key-value calls %d, saved state kept %s' % (len(calls) - before, kept))
     ok &= len(calls) == before and kept
+
+    status[0], calls[:] = UP, []
+    drop = [None]
+    ns, C, host = boot(path, kv, status, calls, drop_after=drop)
+    drive(ns, C, 6)
+    host.PERSIST_INTERVAL = host.PERSIST_INTERVAL_BUSY = 1e9
+    for i in range(30):
+        with host.persist_lock:
+            ns['QN_VFS'].put_text('data/state/test_link_big_%02d.json' % i, '{"i": %d, "pad": "%s"}' % (i, 'x' * 6000))
+    drop[0] = len(calls) + 3
+    host.persist_last, host.persist_retry_at = -1e10, 0.0
+    host.persist(reason='periodic')
+    after_drop = len(calls) - drop[-1] if len(drop) > 1 else -1  # calls after the one during which it dropped
+    failed = 'trade connection down' in host.persist_error
+    print('6. drop in the middle of a periodic save: key-value calls after the drop %d, save stopped: %s' % (after_drop, failed))
+    ok &= after_drop == 0 and failed
+    drop[:] = [None]
+    drive(ns, C, 1)
+    host._query_link()
+    status[0] = UP
+    host._query_link()
+    host.persist_last, host.persist_retry_at = -1e10, 0.0
+    before = len(calls)
+    host.persist(reason='periodic')
+    early = len(calls) - before
+    time.sleep(3.2)
+    host._query_link()
+    host.persist_last, host.persist_retry_at = -1e10, 0.0
+    host.persist(reason='periodic')
+    later = len(calls) - before - early
+    print('7. connected again: calls right away %d, after %.0f s %d' % (early, host.PERIODIC_LINK_STABLE, later))
+    ok &= early == 0 and later > 0
+    ns['stop'](C)
     print('RESULT', 'PASS' if ok else 'FAIL')
 
 

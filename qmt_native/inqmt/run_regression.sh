@@ -29,6 +29,12 @@ echo "== stop slow save";  PYTHONIOENCODING=utf-8 $PY inqmt/test_stop_slow_save.
 echo "== store switch";   PYTHONIOENCODING=utf-8 $PY inqmt/test_store_switch.py "$S" > "$O/store_switch.txt" 2>&1; grep -E "^[0-9]\. |^RESULT" "$O/store_switch.txt"
 echo "== order save bound"; PYTHONIOENCODING=utf-8 $PY inqmt/test_order_save_bound.py "$S" > "$O/order_save_bound.txt" 2>&1; grep -E "^[0-9]\. |^RESULT" "$O/order_save_bound.txt"
 echo "== link gate";      PYTHONIOENCODING=utf-8 $PY inqmt/test_link_gate.py "$S" > "$O/link_gate.txt" 2>&1; grep -E "^[0-9]\. |^RESULT" "$O/link_gate.txt"
+echo "== log store";      PYTHONIOENCODING=utf-8 $PY inqmt/test_log_store.py "$S" > "$O/log_store.txt" 2>&1; grep -E "^[0-9]\. |^RESULT" "$O/log_store.txt"
+# 11-08: production keeps its state in the QMT log + registry; the scenario tests again on that store
+for t in stop_threads:"$S $S 40 45" takeover:"$S $L" trading_switch:"$S" state_check:"$S" state_reset:"$S"; do
+  name=${t%%:*}; args=${t#*:}
+  echo "== $name (log store)"; QN_TEST_STATE_STORE=log PYTHONIOENCODING=utf-8 $PY inqmt/test_$name.py $args > "$O/${name}_log.txt" 2>&1; grep -E "^RESULT" "$O/${name}_log.txt"
+done
 echo "== state check";    PYTHONIOENCODING=utf-8 $PY inqmt/test_state_check.py "$S" > "$O/state_check.txt" 2>&1; grep -E "^[0-9]\. |^RESULT" "$O/state_check.txt"
 echo "== calendar feed";  PYTHONIOENCODING=utf-8 $PY inqmt/test_calendar_feed.py "$S" > "$O/calendar_feed.txt" 2>&1; grep -E "^[0-9]\. |^RESULT" "$O/calendar_feed.txt"
 echo "== read_csv guard";  PYTHONIOENCODING=utf-8 $PY inqmt/test_read_csv_guard.py "$S" > "$O/read_csv_guard.txt" 2>&1; grep -E "^[0-9]\. |^RESULT" "$O/read_csv_guard.txt"

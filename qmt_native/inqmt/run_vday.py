@@ -146,6 +146,11 @@ def main():
     exec(compile(open(path, encoding='gbk').read(), path, 'exec'), ns)
     ns['QN_ENVIRON']['QN_TEST_MISSING_TICKS_ARE_UNSEALED'] = '1'
     ns['QN_DEPLOY']['debug_export_dir'] = out
+    if os.environ.get('QN_TEST_STATE_STORE', 'log') == 'log':  # the production store (11-08)
+        import qn_test_state
+        qn_test_state.attach_log_store(ns, kv)
+    else:
+        ns['QN_DEPLOY']['state_store'] = 'broker'
     overrides = ns['QN_DEPLOY'].setdefault('config_overrides', {})
     overrides['equity_curve_stop.enabled'] = False  # drill: exercise entries regardless of the stop
     blocked = []

@@ -171,6 +171,9 @@ def _status_text(status):
 QN_LINK_DOWN_MARKS = (u'\u5931\u8d25', u'\u521d\u59cb\u5316', u'\u65ad\u5f00', u'\u672a\u8fde\u63a5', u'\u672a\u767b\u5f55')
 
 
+QN_LINK_DOWN_TEXT = 'stopped before the call'
+
+
 def _status_up(status):
     """An account status that does not say the trade server is down (no status field: up)."""
     text = _status_text(status or ())
@@ -220,6 +223,10 @@ class QnStateStore(object):
         self.slow_mark = 0.0
         self.last_slow_at = 0.0
         self.last_slow_seconds = 0.0
+        # set by the host: False while the account status says the trade server is down. Asked
+        # before EVERY key-value call (11-08 11:08: the server dropped in the middle of a periodic
+        # save that had passed the check at its start; the next save_py_key never returned)
+        self.link_check = None
         self.saving = False
         self.call_seconds = 0.0  # running total, for the host's status line
         # (sha, path) -> bytes or None: a body lost in the store whose content is shipped in the
@@ -239,8 +246,13 @@ class QnStateStore(object):
             raise RuntimeError('%s took %.0fs (broker trade server slow); save given up' % (
                 what, self.last_call_seconds))
 
+    def _link_down(self, what):
+        if self.link_check is not None and not self.link_check():
+            raise RuntimeError('%s not made: trade connection down (account status); %s' % (what, QN_LINK_DOWN_TEXT))
+
     def _get(self, key):
         self.last_call_seconds = 0.0
+        self._link_down('get_py_key(%s)' % key)
         result = self.getter(key)
         self._check_slow('get_py_key(%s)' % key)
         if isinstance(result, (tuple, list)):
@@ -256,6 +268,7 @@ class QnStateStore(object):
 
     def _set(self, key, value):
         self.last_call_seconds = 0.0
+        self._link_down('save_py_key(%s)' % key)
         result = self.saver(key, value)
         self._check_slow('save_py_key(%s)' % key)
         if isinstance(result, (tuple, list)) and len(result) >= 1 and result[0] not in (0, None):
@@ -550,6 +563,227 @@ class QnStateStore(object):
         return files, dict((k, v) for k, v in meta.items() if k != 'files')
 
 
+# State store without the broker (11-08). QMT's key-value store goes through the broker's trade
+# server: a call made while that server drops may never return, and QMT's Python then stays frozen
+# until QMT is restarted and logged in again (10-24, 11-07 11:54, 11-08 11:08). The state now goes
+# out as marked lines in QMT's own log (a local write that cannot hang):
+#     [A_SYSTEM_STATE live] B <body id> <i>/<n> <base64 zlib chunk>     a file body
+#     [A_SYSTEM_STATE live] M <manifest id> <i>/<n> <base64 zlib chunk> the manifest of a snapshot
+#     [A_SYSTEM_STATE live] C <manifest id>                              commit
+# The notification forwarder (outside QMT) stores bodies and manifests on disk and in the registry
+# key below, and on a commit whose bodies are all there sets Pointer (PointerPrev keeps the one
+# before); bodies a commit lacks are named in Missing and printed again. A start reads the snapshot
+# back from the registry (a local read, like the trading switch). Ids are checksums of the content.
+QN_STATE_REG_KEY = QN_SWITCH_KEY + r'\State'
+QN_STATE_READER = [None]  # tests: function(value name) -> str or None
+QN_STATE_TAP = [None]     # tests: also called with every printed state line
+
+
+def _qn_state_print(line):
+    print(line)
+    if QN_STATE_TAP[0] is not None:
+        QN_STATE_TAP[0](line)
+
+
+def _qn_read_state_value(key_path, name):
+    if QN_STATE_READER[0] is not None:
+        return QN_STATE_READER[0](name)
+    try:
+        import winreg
+    except ImportError:
+        return None
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path) as key:
+            value, _kind = winreg.QueryValueEx(key, name)
+        return value if isinstance(value, str) else str(value)
+    except OSError:
+        return None
+
+
+class QnLogStore(object):
+    log_store = True  # saves never go through the broker
+    CHUNK = 1500
+    RESEND_SECONDS = 30.0
+    RESEND_ALL_SECONDS = 300.0  # no answer at all (the forwarder skipped the lines): print it all again
+    UNACKED_WARN_SECONDS = 600.0
+
+    def __init__(self, mode, legacy=None, printer=None, key=None):
+        self.mode = 'live' if mode == 'live' else 'shadow'
+        self.key = key or (QN_STATE_REG_KEY + ('Live' if self.mode == 'live' else 'Shadow'))
+        self.legacy = legacy          # the broker key-value store, read once to move its state here
+        self.printer = printer or _qn_state_print
+        self.acked = set()            # body ids the registry holds (committed snapshot and the one before)
+        self.committed_bids = set()
+        self.pending = None           # the last snapshot printed and not yet committed
+        self.pointer = ''
+        self.prev_pointer = ''
+        self.warned = False
+        # attributes the host shares with the broker store
+        self.known, self.previous, self.candidates, self.repaired = {}, {}, {}, []
+        self.fallback_bodies = None
+        self.saving = False
+        self.slow_limit = self.slow_mark = 0.0
+        self.last_slow_at = self.last_slow_seconds = 0.0
+        self.last_call_seconds = self.call_seconds = 0.0
+        self.link_check = None
+
+    # ---------------------------------------------------------------- registry (read only)
+    def _read(self, name):
+        return _qn_read_state_value(self.key, name)
+
+    def _read_blob(self, name):
+        """A value written by the forwarder: the packed string, or 'chunks:<n>' and <name>.<i>."""
+        value = self._read(name)
+        if value is None:
+            return None
+        if value.startswith('chunks:'):
+            parts = [self._read('%s.%d' % (name, i)) for i in range(int(value[7:]))]
+            if any(p is None for p in parts):
+                return None
+            value = ''.join(parts)
+        return value
+
+    def uses_broker(self):
+        """True only before the first snapshot of this store is committed: the start then reads
+        the broker key-value store once (with the trade connection checks)."""
+        return self.legacy is not None and not self._read('Pointer')
+
+    # ---------------------------------------------------------------- save
+    def _emit(self, kind, ident, packed):
+        chunks = [packed[i:i + self.CHUNK] for i in range(0, len(packed), self.CHUNK)] or ['']
+        for i, chunk in enumerate(chunks):
+            self.printer('[A_SYSTEM_STATE %s] %s %s %d/%d %s' % (self.mode, kind, ident, i + 1, len(chunks), chunk))
+        return len(chunks)
+
+    def save(self, files, meta_extra):
+        manifest, data_by_bid = {}, {}
+        for rel, (data, mtime, size) in sorted(files.items()):
+            if data is None:
+                manifest[rel] = [None, mtime, size, 0]
+                continue
+            bid = _hsha.sha256(data).hexdigest()[:32]
+            manifest[rel] = [bid, mtime, size, 0]
+            data_by_bid[bid] = data
+        saved_at = _bj_now().strftime('%Y-%m-%d %H:%M:%S')
+        text = _hjson.dumps(dict(meta_extra, files=manifest, saved_at=saved_at), sort_keys=True)
+        mpacked = _hb64.b64encode(_hzlib.compress(text.encode('utf-8'), 9)).decode('ascii')
+        mid = _hsha.sha256(mpacked.encode('ascii')).hexdigest()[:32]
+        printed = 0
+        for bid in sorted(data_by_bid):
+            if bid not in self.acked:
+                printed += 1
+                self._emit('B', bid, _hb64.b64encode(_hzlib.compress(data_by_bid[bid], 9)).decode('ascii'))
+        self._emit('M', mid, mpacked)
+        self.printer('[A_SYSTEM_STATE %s] C %s' % (self.mode, mid))
+        self.pending = dict(mid=mid, data=data_by_bid, manifest=mpacked, at=_htime.time(), sent=_htime.time())
+        return dict(meta_extra, inventory=len(meta_extra.get('inventory') or {}), files=len(manifest),
+                    bodies=printed, bytes=len(mpacked), saved_at=saved_at)
+
+    def service(self):
+        """Called every few seconds: a commit of the pending snapshot updates what the registry
+        holds; bodies the forwarder names missing are printed again. Returns a log line or ''."""
+        pending = self.pending
+        if not pending:
+            return ''
+        pointer = self._read('Pointer')
+        if pointer == pending['mid']:
+            self.acked = set(pending['data']) | self.committed_bids
+            self.committed_bids = set(pending['data'])
+            self.prev_pointer, self.pointer = self.pointer, pointer
+            self.pending = None
+            self.warned = False
+            return ''
+        now = _htime.time()
+        missing = (self._read('Missing') or '').split()
+        if (not missing or missing[0] != pending['mid']) and now - pending['sent'] >= self.RESEND_ALL_SECONDS:
+            missing = [pending['mid'], 'M'] + sorted(b for b in pending['data'] if b not in self.committed_bids)
+            pending['sent'] = 0.0
+        if missing and missing[0] == pending['mid'] and now - pending['sent'] >= self.RESEND_SECONDS:
+            pending['sent'] = now
+            again = [b for b in missing[1:] if b in pending['data']]
+            for bid in again:
+                self.acked.discard(bid)
+                self._emit('B', bid, _hb64.b64encode(_hzlib.compress(pending['data'][bid], 9)).decode('ascii'))
+            if 'M' in missing[1:]:
+                self._emit('M', pending['mid'], pending['manifest'])
+            self.printer('[A_SYSTEM_STATE %s] C %s' % (self.mode, pending['mid']))
+            return 'state store: printed again what the forwarder lacked (%d bodies)' % len(again)
+        if now - pending['at'] > self.UNACKED_WARN_SECONDS and not self.warned:
+            self.warned = True
+            return ('STATE NOT CONFIRMED: snapshot %s printed %.0f min ago is not in the registry yet (is the '
+                    'notification forwarder running?)' % (pending['mid'][:8], (now - pending['at']) / 60))
+        return ''
+
+    def confirmed(self):
+        return self.pending is None
+
+    # ---------------------------------------------------------------- load
+    def _load_mid(self, mid):
+        mpacked = self._read_blob('M_' + mid)
+        if not mpacked or _hsha.sha256(mpacked.encode('ascii')).hexdigest()[:32] != mid:
+            raise RuntimeError('manifest %s missing or damaged' % mid[:8])
+        meta = _hjson.loads(_hzlib.decompress(_hb64.b64decode(mpacked)).decode('utf-8'))
+        files, bids = {}, set()
+        for rel, (bid, mtime, size, _n) in meta['files'].items():
+            if bid is None:
+                files[rel] = (None, mtime, size)
+                continue
+            packed = self._read_blob('B_' + bid)
+            if not packed:
+                raise RuntimeError('body of %s missing' % rel)
+            data = _hzlib.decompress(_hb64.b64decode(packed))
+            if _hsha.sha256(data).hexdigest()[:32] != bid:
+                raise RuntimeError('body of %s damaged' % rel)
+            files[rel] = (data, mtime, size)
+            bids.add(bid)
+        return files, dict((k, v) for k, v in meta.items() if k != 'files'), bids
+
+    def load(self):
+        pointer = self._read('Pointer')
+        if not pointer:
+            if self.legacy is None:
+                return {}, {}
+            files, meta = self.legacy.load()
+            meta = dict(meta or {})
+            meta['restored_from'] = ('broker key-value store (state %s); saved to the QMT log + registry store '
+                                     'from now on' % meta.get('saved_at', '?'))
+            return files, meta
+        errors = []
+        previous = self._read('PointerPrev') or ''
+        for mid in [pointer] + ([previous] if previous and previous != pointer else []):
+            try:
+                files, meta, bids = self._load_mid(mid)
+            except Exception as exc:
+                errors.append('%s: %s' % (mid[:8], exc))
+                continue
+            self.pointer, self.prev_pointer = mid, (previous if mid == pointer else '')
+            self.committed_bids = bids
+            self.acked = set(bids)
+            if mid != pointer:
+                meta['restored_from'] = 'the snapshot before the latest (%s)' % '; '.join(errors)
+            return files, meta
+        raise RuntimeError('no complete state snapshot; refusing a partial state (%s)' % '; '.join(errors))
+
+    def verify(self, pointer=None):
+        """'' when the committed snapshot reads back completely from the registry, else why."""
+        if not self.pointer:
+            return ''
+        try:
+            if self._read('Pointer') not in (self.pointer, (self.pending or {}).get('mid')):
+                return 'registry pointer is %s, ours %s' % ((self._read('Pointer') or 'none')[:8], self.pointer[:8])
+            self._load_mid(self.pointer)
+            return ''
+        except Exception as exc:
+            return '%s: %s' % (type(exc).__name__, exc)
+
+    def forget_bodies(self):
+        """The next save prints every file body again."""
+        self.acked = set()
+
+    def follow_server(self):
+        return ''
+
+
 class QnHost(object):
     PUMP_MS = 100
     # Orders are covered by the forced save before each one; periodic saves only bound what a QMT
@@ -617,6 +851,9 @@ class QnHost(object):
     # and the saves before an order and on stop are skipped while it does not.
     BOOT_LINK_STABLE = 60.0
     BOOT_LINK_POLL = 10.0
+    # 11-08 the account status flapped (08:15-08:17, 11:08); periodic saves start only once it has
+    # said connected for this long
+    PERIODIC_LINK_STABLE = 120.0
     STORE_LINK_BACKOFF = (1800.0, 3600.0, 7200.0)
 
     def __init__(self, C, qmt_globals, deploy, modules, static_files, market=None, broker=None, store=None):
@@ -630,8 +867,10 @@ class QnHost(object):
         self.market = market
         self.broker = broker
         self.store = store
-        if store is not None:
-            store.slow_mark = self.STORE_SLOW_CALL
+        for st in (store, getattr(store, 'legacy', None)):
+            if st is not None:
+                st.slow_mark = self.STORE_SLOW_CALL
+                st.link_check = self._query_link
         self.engine = None
         self.daemon_thread = None
         self.daemon_restarts = 0
@@ -790,7 +1029,7 @@ class QnHost(object):
     def _boot_state(self):
         """Restore state and start the engine and daemon. Without the persisted state nothing
         may trade, so a state store that cannot be read means: wait and try again."""
-        if self.store is not None and not self.link_ready(self.BOOT_LINK_STABLE):
+        if self._store_uses_broker() and not self.link_ready(self.BOOT_LINK_STABLE):
             self.boot_pending = True
             self.boot_retry_at = _htime.time() + self.BOOT_LINK_POLL
             if self.link_wait_logged != self.account_status:
@@ -859,11 +1098,12 @@ class QnHost(object):
             self.store.fallback_bodies = lambda sha, rel: by_sha.get(sha) or (by_rel.get(rel) if rel in named else None)
             self.store.repaired = []
             up_since = self.link_up_since
+            via_broker = self._store_uses_broker()
             try:
                 files, meta = self.store.load()
                 self.broken_boots = 0
             except RuntimeError as exc:
-                if 'no complete state snapshot' in str(exc) and (
+                if 'no complete state snapshot' in str(exc) and via_broker and (
                         not self.link_ready() or self.link_up_since != up_since):
                     # 11-07 11:53: the trade server dropped during a 5-minute read and returned cut
                     # values; that says nothing about the stored state
@@ -1255,6 +1495,17 @@ class QnHost(object):
         return bool(self.account_status and self.account_status_good
                     and self.account_status not in self.account_status_good)
 
+    def _saves_via_broker(self):
+        return self.store is not None and not getattr(self.store, 'log_store', False)
+
+    def _store_uses_broker(self):
+        """True while state reads/writes go through the broker's key-value store (always for the
+        old store; for the log store only until its first snapshot is committed)."""
+        if self.store is None:
+            return False
+        uses = getattr(self.store, 'uses_broker', None)
+        return True if uses is None else bool(uses())
+
     def _query_link(self):
         """Ask the broker's account object for its status (a local read, it does not wait for the
         trade server; it answered every minute through the 11-07 outage). An empty answer counts
@@ -1544,11 +1795,22 @@ class QnHost(object):
     def _persist_loop(self):
         last_export = 0.0
         while not self.stopped and not QN_SHUTDOWN[0]:
-            _htime.sleep(5.0)
+            for _ in range(50):  # 5 s, ending at once when the strategy stops
+                if self.stopped or QN_SHUTDOWN[0]:
+                    return
+                _htime.sleep(0.1)
             try:
                 self.persist(reason='periodic')
             except Exception:
                 pass
+            service = getattr(self.store, 'service', None)
+            if service is not None:
+                try:
+                    note = service()
+                    if note:
+                        self.log(note)
+                except Exception as exc:
+                    self.log('state store check failed: %s' % exc)
             if self.deploy.get('debug_export_dir') and _htime.time() - last_export > 120:
                 last_export = _htime.time()
                 self._debug_export()
@@ -1607,6 +1869,13 @@ class QnHost(object):
         check against the broker (_check_restored_state), which holds trading until checked."""
         if self.store is None:
             return
+        if not self._saves_via_broker():
+            try:
+                self.persist_on_callback_thread(reason='before passorder')
+            except Exception as exc:
+                self.persist_clock = None
+                self.log('order placed although the save before it did not complete (%s)' % str(exc)[:160])
+            return
         if not self.link_ready():
             self.persist_clock = None
             self.log('order placed without the save before it: trade account shows %s (trade server not '
@@ -1664,7 +1933,8 @@ class QnHost(object):
         if self.boot_pending:
             return  # nothing restored yet: saving now would overwrite the real state
         now = _htime.time()
-        if not force:
+        broker = self._saves_via_broker()
+        if not force and broker:
             if not self.store_daytime():
                 night = _bj_now().strftime('%Y%m%d%H')[:8]
                 if self.persist_night_logged != night:
@@ -1678,13 +1948,16 @@ class QnHost(object):
                     self.log('periodic state saves wait: trade account shows %s; the state store worked with %s' % (
                         _status_text(self.account_status), ' / '.join(sorted(_status_text(g) for g in self.account_status_good))))
                 return
+            if self.account_status and self.link_up_since and now - self.link_up_since < self.PERIODIC_LINK_STABLE:
+                return  # connected again (or just started), but not for long enough yet
             if self.store_waits_for_link:
                 self.store_waits_for_link = False
                 self.log('trade account status back to %s: periodic state saves resume' % _status_text(self.account_status))
+        if not force:
             interval = self.PERSIST_INTERVAL_BUSY if self._background_busy() else self.PERSIST_INTERVAL
             if now < self.persist_retry_at or now - self.persist_last < interval:
                 return
-            if (self.periodic_slow_limit() == self.STORE_SLOW_CALL and self.persist_clock is not None
+            if ((not broker or self.periodic_slow_limit() == self.STORE_SLOW_CALL) and self.persist_clock is not None
                     and now - self.persist_saved_at < self.SESSION_LOG_SAVE_SECONDS):
                 qn_sqlite_persist_all()
                 if self._persist_core(self._persist_files(), self._persist_inventory()) == self.persist_core:
@@ -1884,10 +2157,10 @@ class QnHost(object):
                 self.log('strategy stop: this copy was taken over earlier; state left to the running copy')
             elif self.boot_pending:
                 self.log('strategy stop: state was never restored; nothing saved')
-            elif not self.store_daytime():
+            elif self._saves_via_broker() and not self.store_daytime():
                 self.log('strategy stop at night: last saved state (%s) kept; night changes are rebuilt '
                          'on the next start' % (self.persist_meta or {}).get('saved_at', 'never'))
-            elif self.store is not None and not self.link_ready():
+            elif self._saves_via_broker() and not self.link_ready():
                 self.log('strategy stop: trade account shows %s (trade server not connected); last saved state '
                          '(%s) kept, later changes are rebuilt on the next start' % (
                              _status_text(self.account_status or ()), (self.persist_meta or {}).get('saved_at', 'never')))

@@ -54,14 +54,23 @@ def main():
         host.persist(reason='test')
         return state['calls'] - before
 
+    # the broker answers with the status the test sets (a key-value call asks it first, 11-08)
+    shown = [u'正常']
+    host.broker.get_trade_detail_data = lambda account, market, kind, *r: [Row(shown[0])] if kind == 'account' else []
+    host.PERIODIC_LINK_STABLE = 0.0  # its own test: test_link_gate.py case 7
+
+    def show(text):
+        shown[0] = text
+        host._note_account_status([Row(text)])
+
     host.account_status_learn = True
-    host._note_account_status([Row(u'正常')])
+    show(u'正常')
     up = periodic()
-    host._note_account_status([Row(u'切换中')])  # a status the store has not worked with
+    show(u'切换中')  # a status the store has not worked with
     down = periodic()
-    host._note_account_status([Row(u'正常')])
+    show(u'正常')
     back = periodic()
-    host._note_account_status([Row(u'切换中')])
+    show(u'切换中')
     with host.persist_lock:
         ns['QN_VFS'].put_text('data/state/test_save_marker.json', '{"forced": %r}' % time.time())
     before = state['calls']
@@ -70,10 +79,13 @@ def main():
     learned = periodic()  # the store worked with that status: no longer a reason to wait
     # 11-07: a status that says the trade server is down stays a reason to wait even after a forced
     # save worked (a key-value call while it is down may never return)
-    host._note_account_status([Row(u'连接断开')])
-    host.persist(force=True, reason='forced while down')
+    show(u'连接断开')
+    try:
+        host.persist(force=True, reason='forced while down')  # stopped before its first call (11-08)
+    except Exception:
+        pass
     still_down = periodic()
-    host._note_account_status([Row(u'正常')])
+    show(u'正常')
     waits = [m for m in host.messages if 'periodic state saves wait' in m or 'periodic state saves resume' in m]
     print('2. key-value calls of a periodic save: link up %d, account shows another status %d, back %d; '
           'forced save %d; periodic after it %d; status says disconnected (after a forced save) %d' % (
@@ -93,8 +105,8 @@ def main():
             ns['save_py_key'] = real
         return keys
     plain = body_writes(periodic)
-    host._note_account_status([Row(u'登录失败')])
-    host._note_account_status([Row(u'正常')])
+    show(u'登录失败')
+    show(u'正常')
     relinked = body_writes(periodic)
     fresh = ns['QnStateStore'](lambda k: ns['get_py_key'](k), lambda k, v: ns['save_py_key'](k, v), host.store.prefix)
     try:

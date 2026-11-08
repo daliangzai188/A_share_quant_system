@@ -27,6 +27,11 @@ the trading switch (value TradeCalendar); the strategy merges the future days.
 QMT 2.1.33 stops every Python strategy while its own process holds a connection outside its
 whitelist; such a stop (in QMT's own log XtClient_YYYYMMDD.log) is pushed at once with what to do.
 
+The live copy's state (11-08: no longer in the broker's key-value store, whose calls froze QMT when
+the trade server dropped) comes as [A_SYSTEM_STATE live] lines; qn_state_sink.StateSink (same
+folder) stores it in the registry key HKCU\\Software\\A_System\\QmtNative\\StateLive and a disk copy
+under %LOCALAPPDATA%\\A_System\\qmt_native\\state\\, where the strategy reads it back when it starts.
+
 QMT's process is checked every 10 s: when it is gone, "⛔ QMT已关闭" is pushed at once, and
 "🔑 QMT已重新打开，请登录" when it is back.
 
@@ -64,6 +69,9 @@ LOG = ROOT / 'logs' / 'qmt_notify_forwarder.log'
 MARK = re.compile(rb'\[A_SYSTEM_NOTIFY (live|shadow)\] ([0-9A-Za-z]+-[0-9]+) (/[\x21-\x7e]+)')
 EXPORT = re.compile(rb'\[A_SYSTEM_EXPORT (live|shadow)\] ([\x21-\x7e]+) ([0-9A-Za-z]+-[0-9a-f]+) (\d+)/(\d+) ([A-Za-z0-9+/=]*)')
 EXPORT_DIR = BASE / 'qmt_export'
+STATE_DIR = BASE / 'state'
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import qn_state_sink  # noqa: E402
 CHECKS = Path(__file__).resolve().with_name('qmt_external_checks.py')
 CHECKS_DIR = BASE / 'external_checks'
 KEEP_IDS = 5000
@@ -425,8 +433,21 @@ def check_stall(state: dict, base: str, now: float, stall_seconds: float, stoppe
         state.update(stall_alarm_at=now, stall_count=count, stall_since=alive)
 
 
+def make_state_sink(mode: str):
+    try:
+        registry = qn_state_sink.WinRegistry(mode)
+    except ImportError:  # not Windows (tests): a JSON file stands in for the registry key
+        BASE.mkdir(parents=True, exist_ok=True)
+        registry = qn_state_sink.JsonRegistry(str(BASE / ('state_registry_%s.json' % mode)))
+    sink = qn_state_sink.StateSink(registry, mode=mode, disk_dir=str(STATE_DIR), log=log)
+    note = sink.restore_from_disk()
+    if note:
+        log(note)
+    return sink
+
+
 def scan(patterns: list[str], mode: str, state: dict, base: str, start_at_end: bool, pending: dict,
-         alive: re.Pattern | None = None) -> int:
+         alive: re.Pattern | None = None, sink=None) -> int:
     offsets = state.setdefault('offsets', {})
     sent = state.setdefault('sent', [])
     seen = set(sent)
@@ -449,6 +470,12 @@ def scan(patterns: list[str], mode: str, state: dict, base: str, start_at_end: b
         if alive is not None and alive.search(chunk[:end]):
             state['alive_at'] = time.time()
         collect_exports(chunk[:end], mode, pending)
+        if sink is not None:
+            try:
+                for note in sink.feed(chunk[:end]):
+                    log(note)
+            except Exception as exc:  # never let state lines stop the notifications
+                log('state lines in %s not processed: %s: %s' % (os.path.basename(name), type(exc).__name__, exc))
         for match in MARK.finditer(chunk[:end]):
             line_mode, ident, path = (g.decode('ascii') for g in match.groups())
             if line_mode != mode or ident in seen:
@@ -490,10 +517,11 @@ def main() -> None:
         args.mode, args.logs, 'configured' if bark_base() else 'MISSING'))
     beat = 0.0
     pending, runner = {}, {}
+    sink = make_state_sink(args.mode)
     while True:
         base = bark_base()
         scan(args.logs, args.mode, state, base, start_at_end=first and not args.from_start, pending=pending,
-             alive=alive)
+             alive=alive, sink=sink)
         if watch and time.time() - state.get('qmt_checked', 0) >= QMT_CHECK_SECONDS:
             state['qmt_checked'] = time.time()
             watch_qmt_process(state, base, time.time(), qmt_running(), (ROOT / '.manual_stop.json').is_file())

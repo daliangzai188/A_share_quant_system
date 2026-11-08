@@ -146,6 +146,10 @@ def init(ContextInfo):
             return QN_NATIVE_SERVICE.call(lambda C, gg: _timed(name, args), _timeout=600.0)
         store = QnStateStore(lambda k: _on_callback_thread('get_py_key', k),
                              lambda k, v: _on_callback_thread('save_py_key', k, v), prefix)
+    if deploy.get('state_store', 'log') == 'log':
+        # 11-08: state in QMT's log + the registry; the broker key-value store is read once to move
+        # its state over and never written again
+        store = QnLogStore(deploy['mode'], legacy=store)
     host = QnHost(ContextInfo, g, deploy, QN_MODULES, QN_STATIC_FILES, broker=broker, store=store)
     QN_HOST[0] = host
     try:
