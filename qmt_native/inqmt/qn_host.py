@@ -615,6 +615,8 @@ class QnLogStore(object):
         self.acked = set()            # body ids the registry holds (committed snapshot and the one before)
         self.committed_bids = set()
         self.pending = None           # the last snapshot printed and not yet committed
+        self.print_all_next = False   # the next save prints every body (the save on stop: nothing can be
+                                      # printed again after it)
         self.pointer = ''
         self.prev_pointer = ''
         self.warned = False
@@ -669,8 +671,10 @@ class QnLogStore(object):
         mpacked = _hb64.b64encode(_hzlib.compress(text.encode('utf-8'), 9)).decode('ascii')
         mid = _hsha.sha256(mpacked.encode('ascii')).hexdigest()[:32]
         printed = 0
+        print_all, self.print_all_next = self.print_all_next, False
         for bid in sorted(data_by_bid):
-            if bid not in self.acked:
+            # skipped only when the registry holds it (the forwarder may have removed an older piece)
+            if print_all or bid not in self.acked or self._read('B_' + bid) is None:
                 printed += 1
                 self._emit('B', bid, _hb64.b64encode(_hzlib.compress(data_by_bid[bid], 9)).decode('ascii'))
         self._emit('M', mid, mpacked)
@@ -2172,6 +2176,8 @@ class QnHost(object):
                 if self._kill_thread(daemon):
                     daemon.join(5)
                     self.log('strategy stop: trading daemon ended before the final state save')
+                if hasattr(self.store, 'print_all_next'):
+                    self.store.print_all_next = True  # complete on its own: no second chance after a stop
                 try:
                     self.persist_on_callback_thread(reason='strategy stop')
                 except Exception:

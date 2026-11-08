@@ -269,6 +269,33 @@ def main():
           '-> committed %s; disk copy %s; big body split in the registry %s' % (
               first, waits, later, disk, any(k.endswith('.0') for k in reg)))
     ok &= first and waits and later and disk and any(k.endswith('.0') for k in reg)
+
+    # 11-08 21:09: a periodic save and the save on stop came in one read; committing the first
+    # removed a body only the second named. Also: a snapshot's body lines in one read, its manifest
+    # and commit in the next, with an older commit in the first read.
+    sys.path.insert(0, os.path.join(os.path.dirname(HERE), 'vm_scripts'))
+    import qn_state_sink as qs
+    def lines_of(files):
+        return state_lines(files)[1].replace(b'2026-11-08 10:00:00,000 [INFO] [0x1] reqid = x, output = ', b'')
+    base_files = {'data/state/a.json': b'{"a": 1}', 'data/state/b.json': b'{"b": 1}'}
+    sink = qs.StateSink(qs.DictRegistry(), mode='live')
+    sink.feed(lines_of(base_files))
+    s1 = dict(base_files, **{'data/state/a.json': b'{"a": 2}'})
+    s2 = dict(s1, **{'logs/broker_health.json': b'{"t": 9}'})
+    mid_s2 = state_lines(s2)[0]
+    sink.feed(lines_of(s1) + lines_of(s2))
+    together = sink.reg.get('Pointer') == mid_s2 and not sink._lacking(mid_s2)
+    s3 = dict(s2, **{'data/state/c.json': b'{"c": 3}'})
+    mid_s3, text3 = state_lines(s3)
+    raw3 = lines_of(s3)
+    cut = raw3.index(b'[A_SYSTEM_STATE live] M')
+    s2b = dict(s2, **{'data/state/a.json': b'{"a": 4}'})
+    sink.feed(raw3[:cut] + lines_of(s2b))  # s3's bodies, then a whole later-numbered commit
+    sink.feed(raw3[cut:])                   # s3's manifest and commit
+    split = not sink._lacking(mid_s3)
+    print('sink: two snapshots in one read -> latest committed, nothing lacking %s; bodies before their manifest '
+          'survive an earlier commit %s' % (together, split))
+    ok &= together and split
     print('RESULT', 'PASS' if ok else 'FAIL')
 
 

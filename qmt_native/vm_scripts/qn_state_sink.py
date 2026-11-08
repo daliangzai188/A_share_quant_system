@@ -32,6 +32,9 @@ STATE_LINE = re.compile(rb'\[A_SYSTEM_STATE (live|shadow)\] (?:(B|M) ([0-9a-f]{3
                         rb'|C ([0-9a-f]{32}))')
 REG_KEY = r'Software\A_System\QmtNative\State'
 REG_CHUNK = 60000
+# a piece stored this recently is never removed: the manifest that names it may not be read yet
+# (11-08 21:09: a commit removed a body of the next snapshot, whose lines came in the same read)
+FRESH_SECONDS = 600.0
 
 
 class DictRegistry(object):
@@ -136,6 +139,7 @@ class StateSink(object):
         self.seq = 0
         self.committed_seq = 0
         self.done = []        # manifest ids committed lately (a re-read log piece never goes back)
+        self.fresh = {}       # value name -> when this sink stored it
 
     # ---------------------------------------------------------------- values
     def _put_blob(self, name, packed):
@@ -206,6 +210,7 @@ class StateSink(object):
             return False
         if self._get_blob(kind + '_' + ident) != packed:
             self._put_blob(kind + '_' + ident, packed)  # new, or a damaged copy replaced
+        self.fresh[kind + '_' + ident] = time.time()
         return True
 
     def _try_commits(self):
@@ -261,22 +266,25 @@ class StateSink(object):
         self.reg.set('Pointer', mid)
         self.reg.set('CommittedAt', time.strftime('%Y-%m-%d %H:%M:%S'))
         missing = (self.reg.get('Missing') or '').split()
-        if missing and missing[0] == mid:
-            self.reg.delete('Missing')
+        if missing and (missing[0] == mid or missing[0] not in set(m for _s, m in self.waiting if m != mid)):
+            self.reg.delete('Missing')  # answered, or about a snapshot nothing waits for any more
         if self.disk:
             folder = os.path.join(self.disk, self.mode)
             with open(os.path.join(folder, 'pointer.json.tmp'), 'w') as handle:
                 json.dump({'Pointer': mid, 'PointerPrev': old}, handle)
             os.replace(os.path.join(folder, 'pointer.json.tmp'), os.path.join(folder, 'pointer.json'))
         keep = set(['M_' + mid])
-        for m in (mid, old):
+        for m in [mid, old] + [w for _s, w in self.waiting]:  # also what later snapshots name
             manifest = self._manifest(m) if m else None
             if manifest:
                 keep.add('M_' + m)
                 keep.update('B_' + v[0] for v in manifest['files'].values() if v[0])
         waiting = set('M_' + m for _s, m in self.waiting)
+        now = time.time()
+        self.fresh = dict((k, t) for k, t in self.fresh.items() if now - t < FRESH_SECONDS)
         for name in self.reg.names():
-            if name[:2] in ('B_', 'M_') and '.' not in name and name not in keep and name not in waiting:
+            if (name[:2] in ('B_', 'M_') and '.' not in name and name not in keep and name not in waiting
+                    and name not in self.fresh):
                 self._drop_blob(name)
         if self.disk:
             # the disk copy keeps a day of older pieces (a damaged registry can be rebuilt from it)

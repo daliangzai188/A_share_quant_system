@@ -12,7 +12,9 @@ in; 10-24, 11-07 11:54, 11-08 11:08). With vm_scripts/qn_state_sink.py as the fo
      a snapshot not confirmed for long is reported;
   5. lines lost before the forwarder read them: it names what it lacks (Missing), the strategy
      prints those again, the snapshot commits;
-  6. the latest snapshot damaged in the registry: a start takes the one before it.
+  6. the latest snapshot damaged in the registry: a start takes the one before it;
+  7. a body the strategy counts as stored but the registry no longer holds: the next save prints it;
+  8. the save on stop prints every body (nothing can be printed again after a stop).
 
 Usage: python test_log_store.py STRATEGY_FILE   (QMT's Python 3.6)
 """
@@ -182,7 +184,27 @@ def main():
         len(lost), len(missing.split()) - 1, note[:60], host.store.confirmed()))
     ok &= len(lost) > 0 and len(missing.split()) > 1 and 'printed again' in note and host.store.confirmed()
     final = files_of(ns, host)
+
+    # 7. a body gone from the registry is printed again by the next save
+    values = st['values']
+    victim = sorted(host.store.acked)[0]
+    for name in [n for n in list(values) if n == 'B_' + victim or n.startswith('B_' + victim + '.')]:
+        del values[name]
+    before = len(st['lines'])
+    put(ns, host, 'data/state/test_log_marker.json', '{"v": "after removal"}')
+    host.persist_on_callback_thread(reason='body removed')
+    host.store.service()
+    again = any((' B %s ' % victim) in l for l in st['lines'][before:])
+    print('7. body removed from the registry: printed again %s, committed %s' % (again, host.store.confirmed()))
+    ok &= again and host.store.confirmed()
+
+    # 8. the save on stop prints every body
+    before = len(st['lines'])
+    bodies = len([1 for v in host._persist_files().values() if v[0] is not None])
     ns['stop'](C)
+    printed = len(set(l.split()[3] for l in st['lines'][before:] if ' B ' in l))
+    print('8. save on stop: bodies printed %d of %d' % (printed, bodies))
+    ok &= printed >= bodies > 0
 
     # 6. latest snapshot damaged in the registry: the one before it
     values = kv['__registry_shadow__']
