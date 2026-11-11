@@ -12,6 +12,7 @@ echo "== night store";    $PY inqmt/test_night_store.py "$S" > "$O/night.txt" 2>
 echo "== notify outbox";  (cd inqmt && PYTHONIOENCODING=utf-8 $PY test_notify_outbox.py qn_core_full.py > "../$O/notify.txt" 2>&1); grep RESULT "$O/notify.txt"
 echo "== step 13 pushes"; (cd inqmt && PYTHONIOENCODING=utf-8 $PY test_eq_advisory.py qn_core_full.py > "../$O/eq_advisory.txt" 2>&1); grep -E "RESULT|equal|weekly" "$O/eq_advisory.txt"
 echo "== forwarder";       python3 inqmt/test_forwarder.py > "$O/forwarder.txt" 2>&1; grep -E "RESULT|identical" "$O/forwarder.txt"
+echo "== external weekly"; python3 inqmt/test_external_weekly.py > "$O/external_weekly.txt" 2>&1; grep -E "^[0-9]\. |RESULT" "$O/external_weekly.txt"
 echo "== export";         $PY inqmt/test_export.py "$S" > "$O/export.txt" 2>&1; grep -E "RESULT|identical" "$O/export.txt"
 echo "== cache keeper";   $PY inqmt/test_cache_keeper.py "$S" > "$O/cache_keeper.txt" 2>&1; grep -E "RESULT|keeper downloads" "$O/cache_keeper.txt"
 echo "== process kill";   (cd inqmt && $PY test_process_kill.py qn_core_full.py > "../$O/kill.txt" 2>&1); grep -E "RESULT|queued" "$O/kill.txt"

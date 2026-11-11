@@ -11,7 +11,11 @@ Windows VM, outside QMT, where files and the network may still be used:
   2. production step 13's dataset build and shadow replay;
   3. production factor health and alignment checks; live fills come from QMT's export
      (rebuilt by qmt_notify_forwarder.py), else from the old system's file;
-  4. production push planning (acknowledged keys, reminder every N open days) and Bark push.
+  4. production push planning (acknowledged keys, reminder every N open days) and Bark push;
+  5. the results of 3 go to external_checks\\factor_health_latest.json and the run log every day,
+     and on the last open day of each week a "因子健康周报" push shows the values of both legs and
+     the alignment result, acknowledged conditions included (they are not alarmed again, but must
+     stay visible: before 11-11 an acknowledged leg's values were seen by nobody).
 
 It never talks to QMT and never changes the stop decision or any trading state.
 Started by qmt_notify_forwarder.py after 18:40 on trading days.
@@ -73,6 +77,39 @@ def live_trades(config):
     return filled, complete
 
 
+def weekly_health_message(day, health, health_error, ack_entries, alignment, alignment_error):
+    """Title and body of the weekly push of the outside-QMT checks (pure, for tests)."""
+    recheck = {str(e.get('key', '')): str(e.get('recheck_by', ''))
+               for e in (ack_entries or []) if str(e.get('recheck_by', '') or '').replace('-', '') > str(day)}
+    lines = []
+    if health_error:
+        lines.append('因子健康：没算成（%s），已按“检查失效”单独推送' % health_error)
+    for leg, item in sorted((health or {}).items()):
+        if not item:
+            continue
+        text = '%s腿：滚动12个月优势%+.2f%%，冻结线%+.2f%%（%d个样本，截至%s）' % (
+            leg, float(item['value']) * 100, float(item['line']) * 100, int(item['samples']), item.get('as_of', ''))
+        below = int(item.get('months_below', 0) or 0)
+        if item.get('triggered'):
+            key = 'factor_health:%s' % leg
+            text += '，连续%d个月在线下，%s' % (below, ('已复核登记，%s复查' % recheck[key]) if key in recheck else '需临时复核')
+        elif below:
+            text += '，已连续%d个月在线下（%d个月报警）' % (below, int(item.get('need_months', 2) or 2))
+        else:
+            text += '，健康'
+        lines.append(text)
+    if alignment_error:
+        lines.append('实盘与正式规则逐笔对账：没算成（%s），已单独推送' % alignment_error)
+    elif alignment is None:
+        lines.append('实盘与正式规则逐笔对账：未启用')
+    elif alignment:
+        lines.append('实盘与正式规则逐笔对账：%d处不一致，已单独推送' % len(alignment))
+    else:
+        lines.append('实盘与正式规则逐笔对账：一致')
+    lines.append('优势=满足该腿条件的涨停股（T+1开盘买、T+2收盘卖）平均收益减去其余涨停股；只做观察，不影响停手判定。')
+    return '📊 方案甲因子健康周报 %s' % day, '\n'.join(lines)
+
+
 def run(args) -> int:
     try:
         from dotenv import load_dotenv
@@ -80,7 +117,7 @@ def run(args) -> int:
     except ImportError:
         pass
     from src.utils.config import load_json_config
-    from src.equity_curve_stop import allowed_flags, gated_replay, open_dates_from_calendar
+    from src.equity_curve_stop import allowed_flags, gated_replay, is_week_last_open_day, open_dates_from_calendar
     from src.review_triggers import (active_acknowledgements, alignment_triggers, check_failure_trigger,
                                      factor_health_triggers, plan_push)
     import scripts.update_equity_curve_stop as prod
@@ -104,6 +141,7 @@ def run(args) -> int:
         triggers.append(check_failure_trigger('因子健康', error))
     else:
         triggers.extend(factor_health_triggers(health))
+    align, align_error = None, ''
     start = str(section.get('alignment_start_date', '') or '')
     if start:
         try:
@@ -115,12 +153,17 @@ def run(args) -> int:
             nav = shadow['nav']
             labels = [str(d) for d in nav.index]
             flags = allowed_flags(nav.to_numpy(), ma_window=settings.ma_window, lag=settings.lag_trading_days)
-            triggers.extend(alignment_triggers(
+            align = alignment_triggers(
                 gated_replay(shadow, ma_window=settings.ma_window, lag=settings.lag_trading_days), filled,
-                stop_dates={d for d, ok in zip(labels, flags) if not ok}, start=start, end=day))
+                stop_dates={d for d, ok in zip(labels, flags) if not ok}, start=start, end=day)
+            triggers.extend(align)
         except Exception as exc:
             traceback.print_exc()
-            triggers.append(check_failure_trigger('实盘与正式规则逐笔对账', '%s: %s' % (type(exc).__name__, exc)))
+            align_error = '%s: %s' % (type(exc).__name__, exc)
+            triggers.append(check_failure_trigger('实盘与正式规则逐笔对账', align_error))
+    print('FACTOR_HEALTH %s %s' % (day, json.dumps({'health': health, 'error': error, 'alignment_issues': None if align is None
+                                                    else len(align), 'alignment_error': align_error},
+                                                   ensure_ascii=False, default=str)), flush=True)
 
     state_path = WORK / 'review_trigger_state.json'
     try:
@@ -143,6 +186,18 @@ def run(args) -> int:
         tmp = state_path.with_suffix('.tmp')
         tmp.write_text(json.dumps(plan.state, ensure_ascii=False, indent=2), encoding='utf-8')
         os.replace(tmp, state_path)
+        (WORK / 'factor_health_latest.json').write_text(json.dumps({
+            'signal_date': day, 'factor_health': health, 'factor_health_error': error,
+            'alignment_issues': None if align is None else [t.detail for t in align], 'alignment_error': align_error,
+            'finished_at': dt.datetime.now(BJ).isoformat()}, ensure_ascii=False, indent=1, default=str), encoding='utf-8')
+        weekly_flag = WORK / ('weekly_%s.json' % day)
+        if is_week_last_open_day(dates, day) and not weekly_flag.exists():
+            title, body = weekly_health_message(day, health, error, section.get('acknowledged'), align, align_error)
+            print('FACTOR_HEALTH_WEEKLY %s' % body.replace('\n', '；'), flush=True)
+            if not prod.notify(title, body, level='active'):
+                print('FACTOR_HEALTH_WEEKLY_PUSH_FAILED %s（下次重试）' % day, flush=True)
+                return 2
+            weekly_flag.write_text('{}', encoding='utf-8')
         (WORK / ('done_%s.json' % day)).write_text(json.dumps({
             'signal_date': day, 'triggers': [t.key for t in triggers], 'push': plan.kind or '',
             'finished_at': dt.datetime.now(BJ).isoformat()}, ensure_ascii=False), encoding='utf-8')
