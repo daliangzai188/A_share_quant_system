@@ -66,6 +66,15 @@ from src.strategy_equity_ledger import (
     update_strategy_equity_ledger,
 )
 from src.strategy_identity import normalize_strategy_leg, normalize_strategy_record
+from src.portfolio_ace_m import (
+    GATE_BLOCKED as ACE_GATE_BLOCKED,
+    GATE_REDUCED as ACE_GATE_REDUCED,
+    M_LEG,
+    ace_gate_mode,
+    ace_limits,
+    m_budget,
+    position_in_family,
+)
 from src.strategy_d_checkpoint import (
     StrategyDCheckpointCheck,
     clear_strategy_d_intraday_checkpoints,
@@ -1175,7 +1184,7 @@ def save_positions(positions: list[dict[str, Any]]) -> None:
             raise RuntimeError(f"保存持仓文件失败:{e}") from e
 
 
-_ACTIVE_AUTO_STRATEGY_LEGS = frozenset({"A", "C", "D", "E"})
+_ACTIVE_AUTO_STRATEGY_LEGS = frozenset({"A", "C", "D", "E", "M"})
 
 
 def _position_exit_ledger_quantity(position: dict[str, Any]) -> int:
@@ -1243,12 +1252,18 @@ def _strategy_identity_aliases(
     *,
     include_recent_ghost: bool = False,
     preexisting_on: str = "",
+    family: str | None = None,
 ) -> set[str]:
-    """返回本系统策略持仓的代码身份集。"""
+    """返回本系统策略持仓的代码身份集。
+
+    family：None=全部策略；"ACE"=A/C/E/D（不含M）；"M"=只看M（2026-11-12 ACE+M 并行持仓）。
+    """
 
     check_date = str(preexisting_on or "").replace("-", "")[:8]
     aliases: set[str] = set()
     for position in load_positions():
+        if not position_in_family(position, family):
+            continue
         status = str(position.get("status", "")).lower()
         active = status in {"open", "sell_pending"}
         recent_ghost = include_recent_ghost and _is_recent_auto_ghost_clear(
@@ -2139,6 +2154,7 @@ def _execute_orders_inprocess(
         entry_market_value = _strategy_only_market_value(
             positions,
             exclude_due_today=False,
+            family="ACE",
         )
         planned_orders = resize_buy_orders_for_live_account(
             planned_orders=planned_orders,
@@ -2146,6 +2162,7 @@ def _execute_orders_inprocess(
             quote_map=quote_map,
             current_market_value=entry_market_value,
             transition_full_cash=False,
+            m_market_value=_strategy_only_market_value(positions, family=M_LEG),
         )
 
         preview = gateway.validate_planned_orders(
@@ -2458,6 +2475,19 @@ def _large_exit_force_eligible(
     return eligible, reference_amount, signal_amount
 
 
+def _ace_gate_mode_for(action_date: str = "") -> str:
+    """ACE今日执行模式：FULL(82.5%)/REDUCED(方案甲停手期20%)/BLOCKED(判定缺失等fail-closed)。"""
+    day = str(action_date or today_beijing().strftime("%Y%m%d")).replace("-", "")[:8]
+    try:
+        from src.equity_curve_stop import live_gate
+
+        config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+        return ace_gate_mode(live_gate(config, PROJECT_ROOT, day))
+    except Exception as exc:
+        logger().error("读取方案甲判定失败，ACE按fail-closed不开新仓：%s", exc)
+        return ACE_GATE_BLOCKED
+
+
 def resize_buy_orders_for_live_account(
     planned_orders: "pd.DataFrame",
     account: Any,
@@ -2465,6 +2495,8 @@ def resize_buy_orders_for_live_account(
     current_market_value: float,
     transition_full_cash: bool = False,
     log_adjust: bool = True,
+    m_market_value: float = 0.0,
+    action_date: str = "",
 ) -> "pd.DataFrame":
     """按实盘账户资金和风控上限缩放买入计划，避免用回测初始资金生成超额订单。
 
@@ -2487,11 +2519,18 @@ def resize_buy_orders_for_live_account(
         float(live_cfg.get("max_total_position_pct", 0.825)), 0.825
     )
     transition_full_cash = False
-    effective_total_position_pct = max_total_position_pct
     round_lot_size = int(live_cfg.get("round_lot_size", 100))
     cash_buffer = float(live_cfg.get("cash_buffer_amount", 1000))
 
     total_asset = float(getattr(account, "total_asset", 0.0) or getattr(account, "available_cash", 0.0) or 0.0)
+    # 2026-11-12 ACE+M：ACE目标=82.5%（方案甲停手期20%），且不超过99.5%−M当前持仓占比；
+    # 单票硬顶=目标+2.5个百分点（同受99.5%约束）；80%验收线按目标等比例缩放。
+    # current_market_value 由调用方传入ACE族（不含M）策略市值。
+    ace_mode = _ace_gate_mode_for(action_date)
+    ace_cap = ace_limits(ace_mode, total_asset, float(m_market_value or 0.0))
+    max_position_pct = min(max_position_pct, ace_cap["hard_pct"])
+    effective_total_position_pct = min(max_total_position_pct, ace_cap["target_pct"])
+    min_accept_scale = (effective_total_position_pct / max_total_position_pct) if max_total_position_pct > 0 else 0.0
     available_cash = float(getattr(account, "available_cash", 0.0) or 0.0)
     market_value = float(current_market_value or 0.0)
     adjusted = planned_orders.copy()
@@ -2572,7 +2611,7 @@ def resize_buy_orders_for_live_account(
         )
         min_acceptable_amount = max(
             0.0,
-            total_asset * float(live_cfg.get("entry_min_acceptable_position_pct", 0.80))
+            total_asset * float(live_cfg.get("entry_min_acceptable_position_pct", 0.80)) * min_accept_scale
             - market_value,
         )
         pre_liquidity_target = min(
@@ -3305,7 +3344,7 @@ _exit_bypass_day = ""   # 收盘竞价旁路生效日(看门狗14:56岗据此让
 
 # 这里只列“按T+N收盘退出”的策略腿。D接力的计划平仓日仍在T+2，接力日为T+1，
 # 因此不会被下面“planned_exit_date == today”选中，仍由09:23专用流程先卖后买。
-T2_CLOSE_STRATEGY_LEGS = frozenset({"A", "C", "D", "E"})
+T2_CLOSE_STRATEGY_LEGS = frozenset({"A", "C", "D", "E", "M"})
 
 
 def _configured_exit_pov_strategy_legs(live_cfg: dict[str, Any]) -> frozenset[str]:
@@ -9176,9 +9215,10 @@ def _enqueue_opening_pov_from_plan(
             account=account,
             quote_map=quote_map,
             current_market_value=_strategy_only_market_value(
-                positions_live, exclude_due_today=False
+                positions_live, exclude_due_today=False, family="ACE"
             ),
             transition_full_cash=False,
+            m_market_value=_strategy_only_market_value(positions_live, family=M_LEG),
         )
         today_str = today_beijing().strftime("%Y%m%d")
         pov_items: list[dict[str, Any]] = []
@@ -9885,7 +9925,11 @@ def _equity_curve_stop_block_reason(action_date: str) -> str:
 
         config = load_json_config(PROJECT_ROOT / "config" / "config.json")
         check = live_gate(config, PROJECT_ROOT, str(action_date))
-        return "" if check.allowed else check.reason
+        # 2026-11-12 ACE+M：判定有效且明确停手时ACE按20%目标仓位照常开仓，不再算阻断；
+        # 判定缺失/过期等fail-closed情形仍阻断。
+        if check.allowed or ace_gate_mode(check) == ACE_GATE_REDUCED:
+            return ""
+        return check.reason
     except Exception as exc:
         return f"方案甲停手门禁读取失败，按fail-closed不开新仓：{exc}"
 
@@ -9936,7 +9980,7 @@ def job_premarket_buy() -> None:
         )
         return
 
-    if has_position_bought_today():
+    if has_position_bought_today("ACE"):
         logger().info("09:20 今日已有买入成交，跳过集合竞价买入预挂。")
         return
 
@@ -10030,8 +10074,10 @@ def job_premarket_buy() -> None:
         current_market_value=_strategy_only_market_value(
             positions_live,
             exclude_due_today=False,
+            family="ACE",
         ),
         transition_full_cash=False,
+        m_market_value=_strategy_only_market_value(positions_live, family=M_LEG),
     )
 
     lt_cfg = config.get("live_trade", {})
@@ -10309,6 +10355,528 @@ def job_premarket_buy() -> None:
                   len(pending_buys), len(e_rows), len(pov_items))
 
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 策略 M 执行路径（2026-11-12 用户确认上线的 ACE + M）
+# 规则与资金唯一来源：src/strategy_m.py、src/portfolio_ace_m.py；研究回测见 docs/strategy_m.md。
+#   09:20 集合竞价：第一只合格候选按“涨停价-0.01”预挂（开盘涨停不成交，等同回测“开盘涨停买不进”）；
+#   09:26 竞价后：成交即记账；开盘涨停/未成交则撤单换下一只；余量交 M 买入POV；
+#   09:30~10:30 M买入POV：每5分钟一片，价格不超过开盘价+2%、不追涨停，10:30收口；
+#   卖出：planned_exit_date（买入后下一个交易日）随A/C/D/E同一收盘平仓链路执行。
+# M 与 ACE 资金分开：ACE空闲时M用82.5%，ACE持仓或当日开仓时M只用闲置资金（≤17.5%），合计≤99.5%。
+# ══════════════════════════════════════════════════════════════════════════════
+
+M_SIGNAL_RECENT_PATH = PROJECT_ROOT / "reports" / "strategy_m" / "m_signals_recent.json"
+M_EXEC_STATE_PATH = PROJECT_ROOT / "data" / "processed" / "m_execution_state.json"
+M_POV_END_TIME = datetime.time(10, 30)
+M_POV_START_TIME = datetime.time(9, 30, 10)
+_m_state_lock = threading.RLock()
+_m_pov_thread: threading.Thread | None = None
+
+
+def _m_validate_state(state: dict[str, Any]) -> None:
+    if not isinstance(state.get("items", []), list):
+        raise ValueError("items不是list")
+
+
+def _m_load_state() -> dict[str, Any]:
+    return _load_redundant_json_state(
+        M_EXEC_STATE_PATH, label="M执行状态", empty_state={"date": "", "items": []},
+        validator=_m_validate_state,
+    )
+
+
+def _m_save_state(state: dict[str, Any]) -> None:
+    _save_redundant_json_state(M_EXEC_STATE_PATH, state, label="M执行状态", validator=_m_validate_state)
+
+
+def _m_signal_for_today(today_str: str) -> dict[str, Any] | None:
+    from src.rolling_signal_store import latest_signal_for_buy_date
+    from src.strategy_m import M_VERSION
+
+    signal = latest_signal_for_buy_date(M_SIGNAL_RECENT_PATH, today_str)
+    if not signal:
+        return None
+    if str(signal.get("m_version", "")) != M_VERSION:
+        logger().error("M信号版本%s与正式版本%s不一致，按fail-closed今日M不开仓。",
+                       signal.get("m_version", ""), M_VERSION)
+        return None
+    if str(signal.get("status", "")) != "SIGNAL_READY" or not signal.get("candidates"):
+        return None
+    return signal
+
+
+def _m_live_enabled(config: dict[str, Any]) -> bool:
+    return (
+        str(config.get("trade_mode", "")).lower() == "live"
+        and bool(config.get("broker_adapter_enabled"))
+        and bool(config.get("qmt_enabled"))
+        and bool((config.get("strategy_m", {}) or {}).get("enabled", True))
+    )
+
+
+def _m_ace_context(today_str: str, broker_positions: Any, total_asset: float) -> dict[str, Any]:
+    """ACE今日是否占用资金（有可执行开仓动作或已有ACE持仓）、ACE相关股票、需为ACE预留的未成交目标金额。"""
+
+    ace_codes: set[str] = set()
+    plan_active = False
+    combined = read_cached_combined_decisions()
+    decisions = combined[0] if combined is not None else None
+    orders_path = combined[1] if combined is not None else None
+    if decisions is not None and _combined_open_action_for_current_mode(decisions):
+        plan_active = True
+        for _, row in decisions.iterrows():
+            if str(row.get("side", "")).upper() == "BUY" and str(row.get("ts_code", "")):
+                ace_codes.update(_ts_code_aliases(row.get("ts_code", "")))
+        try:
+            import pandas as pd
+
+            if orders_path is not None and Path(orders_path).exists():
+                orders = pd.read_csv(orders_path, dtype={"ts_code": str})
+                for code in orders.get("ts_code", pd.Series(dtype=str)).dropna().astype(str):
+                    ace_codes.update(_ts_code_aliases(code))
+        except Exception as exc:
+            logger().warning("读取ACE今日计划单代码失败（M仍按决策表代码回避）：%s", exc)
+    held_ace = [p for p in load_positions()
+                if str(p.get("status", "")).lower() in {"open", "sell_pending"} and position_in_family(p, "ACE")]
+    for p in held_ace:
+        ace_codes.update(_ts_code_aliases(p.get("ts_code", "")))
+    ace_value = _strategy_only_market_value(broker_positions, family="ACE")
+    m_value = _strategy_only_market_value(broker_positions, family=M_LEG)
+    reserve = 0.0
+    if plan_active:
+        limits = ace_limits(_ace_gate_mode_for(today_str), total_asset, m_value)
+        bought_today = sum(
+            float(p.get("shares", 0) or 0) * float(p.get("buy_price", 0) or 0)
+            for p in held_ace if str(p.get("buy_date", "")) == today_str
+        )
+        reserve = max(0.0, limits["target_amount"] - bought_today)
+    return {"active": plan_active or bool(held_ace), "plan_active": plan_active, "codes": ace_codes,
+            "ace_value": ace_value, "m_value": m_value, "reserve": reserve}
+
+
+def _m_buy_quantity(ts_code: str, amount: float, price: float) -> int:
+    """科创板≥200股且可按1股递增；其余100股整数倍。保证 数量×价格 ≤ 金额。"""
+    if amount <= 0 or price <= 0:
+        return 0
+    if str(ts_code).upper().startswith(("688", "689")):
+        qty = int(Decimal(str(amount)) / Decimal(str(price)))
+        while qty > 0 and qty * price > amount + 1e-6:
+            qty -= 1
+        return qty if qty >= 200 else 0
+    return _floor_buy_quantity_by_amount(amount, price, 100)
+
+
+def _m_upper_limit(quote: Any, ts_code: str, name: str) -> float:
+    upper = float(getattr(quote, "upper_limit", 0.0) or 0.0) if quote is not None else 0.0
+    if upper > 0:
+        return upper
+    pre_close = float(getattr(quote, "pre_close", 0.0) or 0.0) if quote is not None else 0.0
+    if pre_close <= 0:
+        return 0.0
+    return _round_stock_price(pre_close * (1 + _limit_up_pct_for_stock(ts_code, name)))
+
+
+def _m_submit_buy(broker_cfg: dict, *, ts_code: str, name: str, qty: int, price: float, signal_date: str,
+                  today_str: str, exit_date: str, source_key: str, channel: str) -> tuple[bool, str, str]:
+    from src.broker_adapter import OrderRequest
+
+    if st_open_forbidden(ts_code, name):
+        logger().error("⛔ [ST禁买] %s %s 命中ST/风险警示铁律，拦截M开仓委托。", ts_code, name)
+        _notify("buy_result", "⛔ ST股禁买拦截",
+                f"{ts_code} {name} 为ST/风险警示股，全局铁律禁止开仓，已拦截M开仓。", level="timeSensitive")
+        return False, "", "ST禁买"
+    request = OrderRequest(
+        ts_code=ts_code, broker_code=ts_code, side="BUY", quantity=int(qty), price_type="FIXED_PRICE",
+        price=float(price), strategy_name="A_SYSTEM_ABC", remark=f"M{channel}-{today_str}",
+        strategy_leg=M_LEG, business_date=today_str, signal_date=signal_date, planned_exit_date=exit_date,
+        purpose="OPEN", source_key=source_key,
+        metadata={"execution_channel": f"M{channel}", "name": name, "exit_n_days": 1,
+                  "planned_exit_date": exit_date},
+    )
+    with _qmt_lock:
+        adapter = _qmt_get(broker_cfg)
+        result = adapter.place_order(request)
+    if not result.accepted:
+        return False, "", str(result.message)
+    return True, str(result.order_id or ""), ""
+
+
+def _m_exit_date(today_str: str) -> str:
+    return next_n_trade_days(datetime.datetime.strptime(today_str, "%Y%m%d").date(), 1).strftime("%Y%m%d")
+
+
+def _m_pick_candidate(signal: dict[str, Any], quotes: dict[str, Any], skip: set[str], ace_codes: set[str],
+                      *, require_open: bool) -> dict[str, Any] | None:
+    """按信号排名取第一只可买候选；require_open=True 时（竞价后）要求开盘价低于涨停价。"""
+    for cand in sorted(signal.get("candidates", []), key=lambda c: int(c.get("rank", 999))):
+        code = str(cand.get("ts_code", ""))
+        name = str(cand.get("name", ""))
+        if not code or code in skip:
+            continue
+        if any(alias in ace_codes for alias in _ts_code_aliases(code)):
+            logger().info("M候选 %s %s 与ACE今日持仓/计划相同，按规则跳过。", code, name)
+            continue
+        if st_open_forbidden(code, name):
+            logger().warning("M候选 %s %s 名称含ST/退，跳过。", code, name)
+            continue
+        quote = quotes.get(code)
+        if quote is None or bool(getattr(quote, "suspended", False)):
+            logger().info("M候选 %s %s 无行情或停牌，跳过。", code, name)
+            continue
+        upper = _m_upper_limit(quote, code, name)
+        if upper <= 0:
+            continue
+        if require_open:
+            open_px = float(getattr(quote, "open_price", 0.0) or 0.0) or float(getattr(quote, "last_price", 0.0) or 0.0)
+            if open_px <= 0 or open_px >= upper - 1e-6:
+                logger().info("M候选 %s %s 开盘价%.2f已涨停或无开盘价，按回测口径买不进，跳过。", code, name, open_px)
+                continue
+        return dict(cand, upper_limit=upper)
+    return None
+
+
+def job_m_premarket_buy() -> None:
+    """09:20 M集合竞价预挂（在ACE的09:20预挂之后执行）。"""
+    log = logger()
+    today_str = today_beijing().strftime("%Y%m%d")
+    try:
+        config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+        if not _m_live_enabled(config):
+            log.info("[M] 非实盘或M未启用，跳过M集合竞价预挂。")
+            return
+        if now_beijing().time() >= datetime.time(9, 25):
+            log.warning("[M] 执行时已过09:25，M竞价预挂窗口关闭，交09:26竞价后路径处理。")
+            return
+        with _m_state_lock:
+            state = _m_load_state()
+            if str(state.get("date", "")) == today_str and state.get("items"):
+                log.info("[M] 今日M已有执行记录，跳过重复预挂。")
+                return
+        if has_open_local_position(M_LEG):
+            log.info("[M] 仍有M持仓（今日到期收盘卖出），M同一时间最多1只，今日不开新仓。")
+            return
+        signal = _m_signal_for_today(today_str)
+        if signal is None:
+            log.info("[M] 今日无M开仓信号。")
+            return
+        from src.live_order_gateway import LiveOrderGateway
+
+        confirm = str(config.get("live_trade", {}).get("real_order_confirm_text", "A_SYSTEM_REAL_ORDER_CONFIRMED"))
+        LiveOrderGateway(PROJECT_ROOT / "config" / "config.json").assert_real_order_allowed(confirm, side="BUY")
+        broker_cfg = config.get("broker", {})
+        codes = [str(c.get("ts_code", "")) for c in signal.get("candidates", []) if str(c.get("ts_code", ""))]
+        with _qmt_lock:
+            adapter = _qmt_get(broker_cfg)
+            account = adapter.query_account()
+            positions_live = adapter.query_positions()
+            quotes = adapter.get_full_tick(codes)
+        if _broker_has_preexisting_strategy_position(positions_live, today_str, family=M_LEG):
+            log.warning("[M] 券商仍有M旧仓，今日M不开新仓。")
+            return
+        total_asset = float(getattr(account, "total_asset", 0.0) or 0.0)
+        available_cash = float(getattr(account, "available_cash", 0.0) or 0.0)
+        ctx = _m_ace_context(today_str, positions_live, total_asset)
+        budget = m_budget(total_asset=total_asset, available_cash=available_cash, ace_active_today=ctx["active"],
+                          ace_value=ctx["ace_value"], ace_unfilled_target=ctx["reserve"],
+                          cash_buffer=float(config.get("live_trade", {}).get("cash_buffer_amount", 1000)))
+        exit_date = _m_exit_date(today_str)
+        skip: set[str] = set()
+        while True:
+            cand = _m_pick_candidate(signal, quotes, skip, ctx["codes"], require_open=False)
+            if cand is None:
+                log.info("[M] 今日M候选均不可下单（ACE同票/ST/停牌/资金不足）。")
+                return
+            code, name = str(cand["ts_code"]), str(cand.get("name", ""))
+            price = _round_stock_price(float(cand["upper_limit"]) - 0.01)
+            qty = _m_buy_quantity(code, budget["amount"], price)
+            if qty <= 0:
+                log.warning("[M] %s %s 预算%.0f元不足一手（价%.2f），换下一只。", code, name, budget["amount"], price)
+                skip.add(code)
+                continue
+            break
+        item = {"ts_code": code, "name": name, "signal_date": str(signal.get("signal_date", "")),
+                "exit_date": exit_date, "target_amount": budget["amount"], "budget": budget,
+                "ace_active": ctx["active"], "stage": "auction", "order_ids": [], "auction_order_id": "",
+                "auction_qty": qty, "filled_qty": 0, "cost_amt": 0.0, "tried": [code], "slice_no": 0,
+                "open_price": 0.0, "done": False}
+        ok, order_id, message = _m_submit_buy(broker_cfg, ts_code=code, name=name, qty=qty, price=price,
+                                              signal_date=item["signal_date"], today_str=today_str,
+                                              exit_date=exit_date, source_key=f"M_AUCTION|{today_str}|{code}",
+                                              channel="竞价开仓")
+        if not ok:
+            item["stage"] = "pov"
+            item["note"] = f"竞价预挂未受理：{message}"
+            log.error("[M] %s %s 竞价预挂未受理：%s，交09:30 M买入POV。", code, name, message)
+        else:
+            item["auction_order_id"] = order_id
+            item["order_ids"].append(order_id)
+        with _m_state_lock:
+            state = {"date": today_str, "items": [item], "state_revision": int(state.get("state_revision", 0) or 0)}
+            _m_save_state(state)
+        log.warning("⏳ [M竞价开仓] %s %s %d股 @涨停价-0.01=%.2f 预算%.0f元（%s，%.1f%%）",
+                    code, name, qty, price, budget["amount"], "ACE同时开仓/持仓→闲置资金" if ctx["active"] else "ACE空闲",
+                    budget["pct"] * 100)
+        _notify("buy_result", "⏳ M集合竞价预挂",
+                f"策略=M {code} {name} {qty}股 限价{price:.2f}（涨停价-0.01，开盘涨停不成交）；"
+                f"预算{_fmt_wan(budget['amount'])}（{'ACE同时占用，M用闲置资金' if ctx['active'] else 'ACE空闲，M用82.5%'}）；"
+                f"计划{exit_date[4:6]}-{exit_date[6:]}收盘卖出。")
+    except Exception as exc:
+        log.error("[M] 集合竞价预挂异常（M今日不开仓，不影响ACE）：%s", exc)
+
+
+def job_m_after_auction() -> None:
+    """09:26 竞价结果：记账成交；开盘涨停/未成交则撤单换下一只；余量交M买入POV。"""
+    log = logger()
+    today_str = today_beijing().strftime("%Y%m%d")
+    try:
+        config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+        if not _m_live_enabled(config):
+            return
+        broker_cfg = config.get("broker", {})
+        with _m_state_lock:
+            state = _m_load_state()
+        if str(state.get("date", "")) != today_str or not state.get("items"):
+            # 09:20没跑成（重启/延迟）：竞价后直接按开盘价规则交给POV路径选股。
+            if has_open_local_position(M_LEG):
+                return
+            signal = _m_signal_for_today(today_str)
+            if signal is None:
+                return
+            state = {"date": today_str, "items": [{"ts_code": "", "stage": "select", "signal": signal,
+                                                   "order_ids": [], "filled_qty": 0, "cost_amt": 0.0,
+                                                   "tried": [], "slice_no": 0, "done": False}],
+                     "state_revision": int(state.get("state_revision", 0) or 0)}
+        item = state["items"][0]
+        if item.get("done"):
+            return
+        if item.get("stage") == "auction" and item.get("auction_order_id"):
+            fill = None
+            try:
+                with _qmt_lock:
+                    adapter = _qmt_get(broker_cfg)
+                    fill = adapter.get_order_fill(str(item["auction_order_id"]))
+            except Exception as exc:
+                log.warning("[M] 查询竞价委托成交异常：%s", exc)
+            filled = int(getattr(fill, "filled_qty", 0) or 0) if fill is not None else 0
+            avg = float(getattr(fill, "avg_price", 0.0) or 0.0) if fill is not None else 0.0
+            if not (fill is not None and bool(getattr(fill, "is_terminal", False))) and filled < int(item.get("auction_qty", 0)):
+                # 未全部成交的竞价残单（价格=涨停-0.01）不能带进连续竞价，否则可能远高于开盘价成交。
+                _try_cancel_order(broker_cfg, str(item["auction_order_id"]), str(item["ts_code"]))
+                time.sleep(2)
+                try:
+                    with _qmt_lock:
+                        adapter = _qmt_get(broker_cfg)
+                        fill = adapter.get_order_fill(str(item["auction_order_id"]))
+                    filled = int(getattr(fill, "filled_qty", 0) or 0)
+                    avg = float(getattr(fill, "avg_price", 0.0) or 0.0) or avg
+                except Exception as exc:
+                    log.warning("[M] 撤单后复查成交异常：%s", exc)
+            if filled > 0:
+                price = avg if avg > 0 else float(item.get("open_price", 0.0) or 0.0)
+                _record_live_buy(
+                    recovery_context="M竞价开仓", order_id=str(item["auction_order_id"]), ts_code=str(item["ts_code"]),
+                    name=str(item.get("name", "")), signal_date=str(item.get("signal_date", "")), buy_date=today_str,
+                    shares=filled, buy_price=price, strategy_leg=M_LEG, exit_n_days=1,
+                    execution_channel="M竞价开仓", planned_order_qty=int(item.get("auction_qty", filled)),
+                    planned_exit_date_override=str(item.get("exit_date", "")), exit_rule="FIXED_T2_CLOSE",
+                )
+                item["auction_filled_qty"] = filled
+                item["auction_cost"] = filled * price
+                _notify("buy_result", "✅ M竞价成交",
+                        f"策略=M {item['ts_code']} {item.get('name', '')} 成交{filled}股 @{price:.2f}，"
+                        f"金额{_fmt_wan(filled * price)}；计划{str(item.get('exit_date', ''))[4:]}收盘卖出。")
+            # 竞价零成交：回到“按开盘价规则选股”。若该股开盘未涨停仍会被重新选中，在开盘价+2%以内买入
+            # （与回测“开盘价买入”一致）；开盘涨停则跳过换下一只。
+            item["stage"] = "pov" if filled > 0 else "select"
+            if filled <= 0:
+                item["tried"] = []
+        with _m_state_lock:
+            _m_save_state(state)
+        _m_start_pov_worker()
+    except Exception as exc:
+        log.error("[M] 竞价后处理异常（不影响ACE）：%s", exc)
+
+
+def _m_pov_round(state: dict[str, Any], broker_cfg: dict, config: dict, today_str: str) -> None:
+    """M买入POV执行一片：stage=select 时按开盘规则选股；stage=pov 时补足剩余目标金额。"""
+    log = logger()
+    item = state["items"][0]
+    lt = config.get("live_trade", {})
+    chase = float(lt.get("pov_chase_cap", 0.02))
+    part = float(lt.get("pov_participation", 0.10))
+    signal = item.get("signal") or _m_signal_for_today(today_str)
+    if item.get("stage") == "select":
+        if signal is None:
+            item["done"], item["done_reason"] = True, "无M信号"
+            return
+        codes = [str(c.get("ts_code", "")) for c in signal.get("candidates", []) if str(c.get("ts_code", ""))]
+        with _qmt_lock:
+            adapter = _qmt_get(broker_cfg)
+            account = adapter.query_account()
+            positions_live = adapter.query_positions()
+            quotes = adapter.get_full_tick(codes)
+        total_asset = float(getattr(account, "total_asset", 0.0) or 0.0)
+        ctx = _m_ace_context(today_str, positions_live, total_asset)
+        budget = m_budget(total_asset=total_asset, available_cash=float(getattr(account, "available_cash", 0.0) or 0.0),
+                          ace_active_today=ctx["active"], ace_value=ctx["ace_value"], ace_unfilled_target=ctx["reserve"],
+                          cash_buffer=float(lt.get("cash_buffer_amount", 1000)))
+        cand = _m_pick_candidate(signal, quotes, set(item.get("tried", [])), ctx["codes"], require_open=True)
+        if cand is None:
+            item["done"], item["done_reason"] = True, "M候选均开盘涨停/停牌/与ACE同票，今日不买"
+            log.info("[M] %s", item["done_reason"])
+            return
+        quote = quotes.get(str(cand["ts_code"]))
+        item.update({"ts_code": str(cand["ts_code"]), "name": str(cand.get("name", "")),
+                     "signal_date": str(signal.get("signal_date", "")), "exit_date": _m_exit_date(today_str),
+                     "target_amount": budget["amount"], "budget": budget, "ace_active": ctx["active"],
+                     "open_price": float(getattr(quote, "open_price", 0.0) or getattr(quote, "last_price", 0.0) or 0.0),
+                     "stage": "pov"})
+        item.setdefault("tried", []).append(item["ts_code"])
+        item.pop("signal", None)
+    code, name = str(item["ts_code"]), str(item.get("name", ""))
+    with _qmt_lock:
+        adapter = _qmt_get(broker_cfg)
+        quote = adapter.get_full_tick([code]).get(code)
+    if quote is None:
+        return
+    open_px = float(item.get("open_price", 0.0) or 0.0) or float(getattr(quote, "open_price", 0.0) or 0.0)
+    item["open_price"] = open_px
+    upper = _m_upper_limit(quote, code, name)
+    last = float(getattr(quote, "last_price", 0.0) or 0.0)
+    filled_amount = float(item.get("auction_cost", 0.0) or 0.0) + float(item.get("cost_amt", 0.0) or 0.0)
+    remaining = float(item.get("target_amount", 0.0) or 0.0) - filled_amount
+    ask1 = 0.0
+    asks = getattr(quote, "ask_prices", None)
+    if asks and len(asks) >= 1 and float(asks[0] or 0) > 0:
+        ask1 = float(asks[0])
+    price = _round_stock_price(min(x for x in (ask1 or last, open_px * (1 + chase), upper - 0.01) if x > 0))
+    if open_px <= 0 or last <= 0 or upper <= 0:
+        return
+    if last >= upper - 1e-6 or price > open_px * (1 + chase) + 1e-6 or last > open_px * (1 + chase) + 1e-6:
+        log.info("[M POV] %s 现价%.2f超过开盘价+%.0f%%或涨停，本片不追。", code, last, chase * 100)
+        return
+    prev_amt = float(item.get("last_market_amount", 0.0) or 0.0)
+    cum_amt = float(getattr(quote, "amount", 0.0) or 0.0)
+    flow = max(cum_amt - prev_amt, 0.0) if prev_amt > 0 else cum_amt
+    item["last_market_amount"] = cum_amt
+    slice_amount = min(remaining, max(part * flow, 0.0))
+    qty = _m_buy_quantity(code, slice_amount, price)
+    if qty <= 0:
+        if _m_buy_quantity(code, remaining, price) <= 0:
+            item["done"], item["done_reason"] = True, "剩余目标不足一手"
+        return
+    item["slice_no"] = int(item.get("slice_no", 0)) + 1
+    ok, order_id, message = _m_submit_buy(
+        broker_cfg, ts_code=code, name=name, qty=qty, price=price, signal_date=str(item.get("signal_date", "")),
+        today_str=today_str, exit_date=str(item.get("exit_date", "")),
+        source_key=f"M_POV|{today_str}|{code}|{item['slice_no']}", channel="买入POV")
+    if not ok:
+        log.error("[M POV] %s 第%d片未受理：%s", code, item["slice_no"], message)
+        return
+    item.setdefault("order_ids", []).append(order_id)
+    # POV 片单号单独记：收口记账只合并 POV 片（竞价那笔已在09:26单独记账），
+    # 否则组合意图成交量会把竞价成交重复计入，触发持仓对账保护。
+    item.setdefault("pov_order_ids", []).append(order_id)
+    fill = _confirm_fill(broker_cfg, order_id, qty, "M买入POV", timeout_sec=60)
+    if int(getattr(fill, "filled_qty", 0) or 0) < qty and not bool(getattr(fill, "is_terminal", False)):
+        _try_cancel_order(broker_cfg, order_id, code)
+        time.sleep(2)
+        try:
+            with _qmt_lock:
+                adapter = _qmt_get(broker_cfg)
+                fill = adapter.get_order_fill(order_id)
+        except Exception as exc:
+            log.warning("[M POV] 撤单后复查异常：%s", exc)
+    fq = int(getattr(fill, "filled_qty", 0) or 0)
+    if fq > 0:
+        avg = float(getattr(fill, "avg_price", 0.0) or 0.0) or price
+        item["filled_qty"] = int(item.get("filled_qty", 0)) + fq
+        item["cost_amt"] = float(item.get("cost_amt", 0.0)) + fq * avg
+        log.warning("✅ [M POV] %s %s 第%d片成交%d股@%.2f", code, name, item["slice_no"], fq, avg)
+
+
+def _m_pov_finalize(state: dict[str, Any], reason: str) -> None:
+    item = state["items"][0]
+    if item.get("finalized"):
+        return
+    item["done"], item["finalized"], item["done_reason"] = True, True, reason
+    fq = int(item.get("filled_qty", 0) or 0)
+    if fq > 0:
+        today_str = today_beijing().strftime("%Y%m%d")
+        avg = float(item["cost_amt"]) / fq
+        _record_live_buy(
+            recovery_context="M买入POV", order_id=f"mpov-{today_str}-{item['ts_code']}", ts_code=str(item["ts_code"]),
+            name=str(item.get("name", "")), signal_date=str(item.get("signal_date", "")), buy_date=today_str,
+            shares=fq, buy_price=avg, strategy_leg=M_LEG, exit_n_days=1, execution_channel="M买入POV",
+            planned_order_qty=fq, planned_exit_date_override=str(item.get("exit_date", "")),
+            component_order_ids=[str(o) for o in item.get("pov_order_ids", []) if str(o)], exit_rule="FIXED_T2_CLOSE",
+        )
+        _notify("buy_result", "✅ M开仓完成",
+                f"策略=M {item['ts_code']} {item.get('name', '')} POV成交{fq}股 均价{avg:.2f}；"
+                f"累计开仓{_fmt_wan(float(item.get('auction_cost', 0.0) or 0.0) + fq * avg)}（{reason}）。")
+    elif not float(item.get("auction_cost", 0.0) or 0.0):
+        _notify("buy_result", "ℹ️ M今日未开仓", f"M今日未成交：{reason}。")
+
+
+def _m_pov_worker() -> None:
+    log = logger()
+    try:
+        config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+        broker_cfg = config.get("broker", {})
+        today_str = today_beijing().strftime("%Y%m%d")
+        while True:
+            now = now_beijing()
+            with _m_state_lock:
+                state = _m_load_state()
+            if str(state.get("date", "")) != today_str or not state.get("items"):
+                return
+            item = state["items"][0]
+            if item.get("done"):
+                with _m_state_lock:
+                    _m_pov_finalize(state, str(item.get("done_reason", "完成")))
+                    _m_save_state(state)
+                return
+            if now.time() >= M_POV_END_TIME:
+                with _m_state_lock:
+                    _m_pov_finalize(state, "10:30收口")
+                    _m_save_state(state)
+                return
+            if now.time() < M_POV_START_TIME:
+                time.sleep(min((datetime.datetime.combine(now.date(), M_POV_START_TIME, tzinfo=now.tzinfo) - now).total_seconds(), 60))
+                continue
+            with _m_state_lock:
+                _m_pov_round(state, broker_cfg, config, today_str)
+                remaining = float(item.get("target_amount", 0.0) or 0.0) - float(item.get("auction_cost", 0.0) or 0.0) - float(item.get("cost_amt", 0.0) or 0.0)
+                if item.get("stage") == "pov" and item.get("ts_code") and remaining < 1.0:
+                    item["done"], item["done_reason"] = True, "目标金额已买足"
+                _m_save_state(state)
+            now2 = now_beijing()
+            base = datetime.datetime.combine(now2.date(), M_POV_START_TIME, tzinfo=now2.tzinfo)
+            k = int((now2 - base).total_seconds() // 300) + 1
+            nxt = min(base + datetime.timedelta(seconds=k * 300),
+                      datetime.datetime.combine(now2.date(), M_POV_END_TIME, tzinfo=now2.tzinfo))
+            time.sleep(max(1.0, (nxt - now_beijing()).total_seconds()))
+    except Exception as exc:
+        log.error("[M POV] 线程异常退出（不影响ACE；已成交部分以券商为准，收盘对账核对）：%s", exc)
+
+
+def _m_start_pov_worker() -> None:
+    global _m_pov_thread
+    if _m_pov_thread is not None and _m_pov_thread.is_alive():
+        return
+    now = now_beijing().time()
+    if now >= M_POV_END_TIME:
+        with _m_state_lock:
+            state = _m_load_state()
+            if state.get("items") and str(state.get("date", "")) == today_beijing().strftime("%Y%m%d"):
+                _m_pov_finalize(state, "重启时已过10:30，按已成交收口")
+                _m_save_state(state)
+        return
+    _m_pov_thread = threading.Thread(target=_m_pov_worker, name="m-pov", daemon=True)
+    _m_pov_thread.start()
+
+
 def job_morning() -> None:
     logger().info("===== 盘前任务（09:20）=====")
 
@@ -10384,7 +10952,7 @@ def job_opening_buy(*, recovery_only: bool = False) -> None:
         logger().info("===== 开盘买入任务完成 =====")
         return
 
-    if has_position_bought_today():
+    if has_position_bought_today("ACE"):
         logger().info("09:30 检测到今日已有买入成交（09:20盘前买入已成交），跳过重复买入。")
         logger().info("===== 开盘买入任务完成 =====")
         return
@@ -10506,7 +11074,7 @@ def job_opening_buy(*, recovery_only: bool = False) -> None:
 
     if not attempted_buy:
         logger().info("09:30无A/C/E买入计划；D是否扫描已由空仓及全策略候选总门单独判定。")
-    elif not accepted_buy and not has_position_bought_today():
+    elif not accepted_buy and not has_position_bought_today("ACE"):
         if open_action == "ALLOW_E_BUY":
             logger().warning(
                 "09:30 E开仓未提交成功，启动延迟重试（9:31-13:30，相对开盘涨幅≤2%%）。"
@@ -10776,11 +11344,15 @@ def d_intraday_entry_gate(decisions) -> tuple[bool, str]:
     return d_intraday_monitor_gate(decisions)
 
 
-def has_open_local_position() -> bool:
-    return any(str(p.get("status", "")).lower() in {"open", "sell_pending"} for p in load_positions())
+def has_open_local_position(family: str | None = None) -> bool:
+    """family=None 含全部策略（含M）；"ACE" 只看A/C/E/D；"M" 只看M。"""
+    return any(
+        str(p.get("status", "")).lower() in {"open", "sell_pending"} and position_in_family(p, family)
+        for p in load_positions()
+    )
 
 
-def has_position_bought_today() -> bool:
+def has_position_bought_today(family: str | None = None) -> bool:
     """今日已有买入成交的持仓——09:20/09:30 防重复买入的正确判据。
 
     该函数只识别“今天这笔开仓是否已成交”，供集合竞价/POV同一笔防重使用。
@@ -10790,6 +11362,7 @@ def has_position_bought_today() -> bool:
     return any(
         str(p.get("status", "")).lower() in {"open", "sell_pending"}
         and str(p.get("buy_date", "")) == today
+        and position_in_family(p, family)
         for p in load_positions()
     )
 
@@ -12141,10 +12714,16 @@ def _e_place_order_direct(ts_code: str, name: str, planned_qty: int, signal_date
     max_total_position_pct = min(
         float(live_cfg.get("max_total_position_pct", 0.825)), 0.825
     )
+    # 2026-11-12 ACE+M：E延迟开仓同样受方案甲停手期20%目标与M已占资金约束。
+    ace_cap = ace_limits(
+        _ace_gate_mode_for(today_str), total_asset,
+        _strategy_only_market_value(positions_live, family=M_LEG),
+    )
+    ace_value = _strategy_only_market_value(positions_live, family="ACE")
     usable = min(
         available_cash - cash_buffer,
-        total_asset * max_position_pct,
-        total_asset * max_total_position_pct,
+        total_asset * min(max_position_pct, ace_cap["hard_pct"]) - ace_value,
+        total_asset * min(max_total_position_pct, ace_cap["target_pct"]) - ace_value,
         max_single,
     )
     max_qty_by_cash = int(usable / price) if usable > 0 and price > 0 else 0
@@ -12265,7 +12844,7 @@ def _e_delayed_buy_loop(combined_orders_path, decisions) -> None:
         time.sleep(RETRY_INTERVAL_S)
         now = now_beijing()
 
-        if has_position_bought_today():
+        if has_position_bought_today("ACE"):
             log.info("E延迟开仓：今日买入已成交，退出重试线程。")
             return
 
@@ -13060,6 +13639,30 @@ def _push_close_candidate_summary_once(signal_date: str, body: str) -> None:
         logger().warning("候选统计推送记录写入失败（下次可能重复推送）：%s", exc)
 
 
+def _m_close_summary(signal_date: str) -> str:
+    """M当日信号产物摘要（只读）。"""
+    try:
+        from src.rolling_signal_store import signal_by_signal_date, signal_run_by_signal_date
+
+        run = signal_run_by_signal_date(PROJECT_ROOT / "reports" / "strategy_m" / "m_signal_runs_recent.json", signal_date)
+        if not run:
+            return "未完成统计｜无运行记录"
+        if str(run.get("status")) == "ERROR":
+            return f"计算失败（次日M不开仓）｜{run.get('error', '')}"
+        signal = signal_by_signal_date(M_SIGNAL_RECENT_PATH, signal_date) or {}
+        diag = signal.get("diagnostics") or {}
+        mood = diag.get("mood")
+        mood_text = ("%.2f%%" % (float(mood) * 100)) if mood is not None and mood == mood else "无"
+        cands = signal.get("candidates") or []
+        head = f"已计算｜昨日涨停今日平均{mood_text}｜20cm涨停{int(diag.get('n20_limit_up') or 0)}只｜候选{len(cands)}只"
+        if cands:
+            first = sorted(cands, key=lambda c: int(c.get("rank", 999)))[0]
+            head += f"｜第一名 {first.get('name') or ''}({first.get('ts_code')})"
+        return head
+    except Exception as exc:
+        return f"统计失败：{exc}"
+
+
 def _log_close_pipeline_candidate_summary(signal_date: str) -> None:
     """汇总ACDE已有产物；本函数严格只读，不改变任何策略执行结果。"""
 
@@ -13095,12 +13698,13 @@ def _log_close_pipeline_candidate_summary(signal_date: str) -> None:
                 if item["detail"]:
                     content += f"｜{item['detail']}"
             lines.append(f"┃ {labels[leg]}：{content}")
+        lines.append(f"┃ ⑤ M 20cm强势接力（与ACE资金分开）：{_m_close_summary(signal_date)}")
         lines.append("┃━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         logger().info("\n".join(lines))
         _push_close_candidate_summary_once(
             signal_date,
             "\n".join(line[2:] for line in lines[3:-1])
-            + "\n只读统计，不参与下单；执行层按A>C>E>D互斥。",
+            + "\n只读统计，不参与下单；ACE按A>C>E>D互斥，M与ACE并行（资金分开）。",
         )
     except Exception as exc:
         logger().warning("收盘流水线候选产物统计失败（不影响信号和下单）：%s", exc)
@@ -13357,6 +13961,7 @@ def job_post_market(end_date: str | None = None, *, offline: bool = False) -> bo
         ("build_live_enhanced_features.py",    "⑤ 增强因子生成（资金流/龙虎榜/竞价审计）", TIMEOUT_DATA_STEP, "约1分钟"),
         ("run_paper_ab_filtered_daily_ops.py", "⑥ A/C 信号生成（B已删除）",       TIMEOUT_SIGNAL_STEP,"约1分钟"),
         ("run_strategy_e_signal.py",          "⑦ E 信号生成（板块neutral+换手率降序）", TIMEOUT_SIGNAL_STEP,"约30秒"),
+        ("run_strategy_m_signal.py",          "⑦M M 信号生成（20cm强势涨停接力）", TIMEOUT_SIGNAL_STEP,"约30秒"),
         ("strategy_health_monitor.py",         "⑧ 策略健康度监控（滚动20笔期望分位）", TIMEOUT_DATA_STEP, "约10秒"),
         ("live_execution_audit.py",            "⑨ 实盘执行对账（逐笔损耗vs回测基准）", TIMEOUT_DATA_STEP, "约5秒"),
         ("update_execution_completion.py",     "⑩ 真实成交完成率汇总（逐片+一笔一行）", TIMEOUT_DATA_STEP, "约5秒"),
@@ -13395,6 +14000,7 @@ def job_post_market(end_date: str | None = None, *, offline: bool = False) -> bo
             "--theme-heat-features-path", live_theme_heat_path,
         ],
         "run_strategy_e_signal.py": ["--signal-date", target_str],
+        "run_strategy_m_signal.py": ["--signal-date", target_str],
         "update_release_oos_observation.py": ["--signal-date", target_str],
         "update_equity_curve_stop.py": ["--signal-date", target_str],
     }
@@ -13408,6 +14014,7 @@ def job_post_market(end_date: str | None = None, *, offline: bool = False) -> bo
     signal_retry_scripts = {
         "run_paper_ab_filtered_daily_ops.py",
         "run_strategy_e_signal.py",
+        "run_strategy_m_signal.py",
         # ⑬既写次日停手判定，也做每日临时复核触发检查；超时/失败就地重试一次。
         "update_equity_curve_stop.py",
     }
@@ -14247,8 +14854,9 @@ def _live_plan_sizing_uncached(
                 "risk_flags": "EXISTING_STRATEGY_POSITION_BLOCK",
             }
         market_value = _strategy_only_market_value(
-            positions_live, exclude_due_today=False, as_of_date=action_date
+            positions_live, exclude_due_today=False, as_of_date=action_date, family="ACE"
         )
+        m_market_value = _strategy_only_market_value(positions_live, family=M_LEG)
         sized = resize_buy_orders_for_live_account(
             planned_orders=pd.DataFrame([{
                 "ts_code": ts_code,
@@ -14265,6 +14873,8 @@ def _live_plan_sizing_uncached(
             current_market_value=market_value,
             transition_full_cash=False,
             log_adjust=False,   # 播报预演，不打下单路径的"实盘定仓…调整为N股"
+            m_market_value=m_market_value,
+            action_date=action_date,
         )
         row = sized.iloc[0]
         qty = int(row.get("round_lot_shares", 0) or 0)
@@ -14400,8 +15010,8 @@ def _ordinary_open_plan_expired(
     if compact_action == today and now.time() < execution_cutoff and not e_resolved:
         return False
     if (
-        has_position_bought_today()
-        or has_open_local_position()
+        has_position_bought_today("ACE")
+        or has_open_local_position("ACE")
         or bool(load_pending_buys())
         or _pov_active_today()
         or (leg == "E" and _e_retry_running())
@@ -14423,11 +15033,15 @@ def _local_position_blocks_open_plan_broadcast(
     """
 
     return any(
-        str(position.get("status", "")).lower() in {"open", "sell_pending"}
-        or (
-            not bool(position.get("broker_confirmed_absent", False))
-            and _is_recent_auto_ghost_clear(position, as_of_date=action_date)
+        (
+            str(position.get("status", "")).lower() in {"open", "sell_pending"}
+            or (
+                not bool(position.get("broker_confirmed_absent", False))
+                and _is_recent_auto_ghost_clear(position, as_of_date=action_date)
+            )
         )
+        # 2026-11-12 ACE+M：M持仓不阻断ACE开仓计划。
+        and position_in_family(position, "ACE")
         for position in positions
     )
 
@@ -15159,8 +15773,8 @@ def _notify_missed_open_window_if_needed(source: str) -> None:
     if (
         not final_buy
         or not _ordinary_open_plan_expired(final_buy, today_str)
-        or has_position_bought_today()
-        or has_open_local_position()
+        or has_position_bought_today("ACE")
+        or has_open_local_position("ACE")
         or bool(load_pending_buys())
         or _pov_active_today()
         or _d_relay_pair_active_today()
@@ -15188,6 +15802,32 @@ def _notify_missed_open_window_if_needed(source: str) -> None:
             encoding="utf-8",
         )
     logger().error("[开仓窗口审计] %s", body)
+
+
+def _m_plan_line(action_date: str, *, ace_active: bool) -> tuple[str, str]:
+    """M在action_date的开仓计划摘要（推送用）；返回(文字, 第一候选名称)。"""
+    try:
+        from src.rolling_signal_store import latest_signal_for_buy_date
+
+        signal = latest_signal_for_buy_date(M_SIGNAL_RECENT_PATH, str(action_date))
+        if not signal:
+            return "", ""
+        if has_open_local_position(M_LEG):
+            return "M：仍有M持仓（当天收盘卖出），M同一时间最多1只，不开新M。", ""
+        cands = sorted(signal.get("candidates") or [], key=lambda c: int(c.get("rank", 999)))
+        diag = signal.get("diagnostics") or {}
+        if not cands:
+            mood = diag.get("mood")
+            mood_text = ("%.2f%%" % (float(mood) * 100)) if mood is not None and mood == mood else "无"
+            return (f"M：无候选（昨日涨停今日平均{mood_text}，20cm涨停{int(diag.get('n20_limit_up') or 0)}只）。", "")
+        names = "、".join(f"{c.get('name') or c.get('ts_code')}({c.get('ts_code')})" for c in cands[:3])
+        pct = "闲置资金≤17.5%" if ace_active else "总资产82.5%"
+        first = f"{cands[0].get('name') or ''}"
+        return (f"M计划：{names}（按顺序，开盘涨停则换下一只，跳过ACE同票），仓位{pct}，"
+                f"09:20按涨停价-0.01预挂、余量POV补足（≤开盘+2%），买入后下一个交易日收盘卖出。", first)
+    except Exception as exc:
+        logger().warning("M计划摘要生成失败（不影响交易）：%s", exc)
+        return "", ""
 
 
 def push_open_plan_notification(occasion: str) -> None:
@@ -15247,9 +15887,18 @@ def push_open_plan_notification(occasion: str) -> None:
                 title = f"📋 {label}开仓计划:{fb.get('strategy','')} {fb.get('name','')}"
             # 与决策链日志同源：直接用播报时算好的真实账户定仓结果，不重算
             body = _format_live_plan_line(fb, plan.get("live_sizing")) + "。"
+            if _ace_gate_mode_for(action) == ACE_GATE_REDUCED:
+                body += "（方案甲停手期：ACE按20%目标仓位执行，D不启动）"
         else:
             title = f"📋 {label}无新开仓计划"
             body = f"{label}所有收盘计划策略(A/C/E)均无符合条件标的,不开新仓。"
+        # 2026-11-12 ACE+M：附上M的计划（M与ACE资金分开，独立执行）。
+        m_line, m_first = _m_plan_line(action, ace_active=bool(fb) and not equity_curve_stop_reason)
+        if m_line:
+            if not fb and m_first:
+                title = f"📋 {label}开仓计划:M {m_first}"
+                body = f"{label}A/C/E无开仓计划。"
+            body += f" {m_line}"
         if hold:
             body += f" ⚠{hold}"
         sent = _notify("buy_result", title, body, level="timeSensitive")
@@ -15391,7 +16040,7 @@ def job_open_plan_fill_check() -> None:
             return
         # 实际成交优先于播报缓存：认证可能在08:50播报后、09:20执行前完成更新。
         # 若券商成交已登记，绝不能拿旧的execution_block_reason误报成“未执行”。
-        if has_position_bought_today():
+        if has_position_bought_today("ACE"):
             detail = _open_plan_execution_detail(plan)
             log.info("[开仓核查] ✅ 今日已有买入成交，开仓计划已执行（%s）。", detail)
             return
@@ -15893,6 +16542,7 @@ def run_job(scheduled_time: datetime.time) -> None:
         if trade_day:
             job_morning()
             job_premarket_buy()
+            job_m_premarket_buy()   # 2026-11-12 ACE+M：M在ACE预挂之后预挂
         else:
             logger().info("非交易日，跳过盘前复核与买入")
     elif scheduled_time == SCHED_PREMARKET_SELL:   # 09:23
@@ -15916,9 +16566,17 @@ def run_job(scheduled_time: datetime.time) -> None:
         else:
             logger().info("非交易日，跳过集合竞价平仓")
     elif scheduled_time == SCHED_PREMARKET_SYNC:   # 09:26
-        job_premarket_position_sync() if trade_day else logger().info("非交易日，跳过盘前持仓同步")
+        if trade_day:
+            job_premarket_position_sync()
+            job_m_after_auction()   # 2026-11-12 ACE+M：M竞价结果处理/换候选/启动M买入POV
+        else:
+            logger().info("非交易日，跳过盘前持仓同步")
     elif scheduled_time == SCHED_OPENING_BUY:   # 09:30
-        job_opening_buy() if trade_day else logger().info("非交易日，跳过开盘买入任务")
+        if trade_day:
+            job_opening_buy()
+            _m_start_pov_worker()   # 2026-11-12 ACE+M：确保M买入POV在运行（重启恢复）
+        else:
+            logger().info("非交易日，跳过开盘买入任务")
     elif scheduled_time == SCHED_OPEN_PLAN_FILL_CHECK:   # 09:35 开仓计划成交核查
         job_open_plan_fill_check() if trade_day else logger().info("非交易日，跳过开仓核查")
     elif scheduled_time == SCHED_CANCEL_BUY_ORDERS:   # 14:40 独立撤未成交买单
@@ -17042,6 +17700,7 @@ def _strategy_only_market_value(
     *,
     exclude_due_today: bool = False,
     as_of_date: str = "",
+    family: str | None = None,
 ) -> float:
     """QMT持仓中仅属于本策略系统的市值(2026-07-17 用户拍板:打新中签的
     债券/股票、人工买入等一切非策略持仓,不进入交易系统逻辑)。
@@ -17057,7 +17716,8 @@ def _strategy_only_market_value(
     """
     # 近期被自动幽灵清理误关、但券商又返回的持仓仍属于策略仓。
     # 在恢复写盘完成前也要计入市值，不允许短暂降级成外部仓而腾出仓位。
-    local_aliases = _strategy_identity_aliases(include_recent_ghost=True)
+    # family="ACE"/"M" 只计对应策略族（ACE与M资金分开计算仓位上限）。
+    local_aliases = _strategy_identity_aliases(include_recent_ghost=True, family=family)
     total = 0.0
     for p in (broker_positions or []):
         if int(getattr(p, "volume", 0) or 0) <= 0:
@@ -17089,6 +17749,7 @@ def _broker_has_strategy_position(broker_positions: Any) -> bool:
 def _broker_has_preexisting_strategy_position(
     broker_positions: Any,
     as_of_date: str = "",
+    family: str | None = "ACE",
 ) -> bool:
     """券商是否仍实际持有“本次开仓日前已存在”的系统策略仓。
 
@@ -17100,9 +17761,12 @@ def _broker_has_preexisting_strategy_position(
     check_date = as_of_date or today_beijing().strftime("%Y%m%d")
     # 最终买入门禁不能只信status=open。若QMT瞬时空快照曾将真实仓误标closed，
     # 近期自动误清记录仍是策略身份证据；只要券商又返回该票，就必须阻断新仓。
+    # 2026-11-12 ACE+M：ACE的串行单仓门禁只看A/C/E/D旧仓，M持仓不阻断ACE；
+    # M自己的门禁传 family="M"。
     preexisting_aliases = _strategy_identity_aliases(
         include_recent_ghost=True,
         preexisting_on=check_date,
+        family=family,
     )
     if not preexisting_aliases:
         return False
@@ -18145,6 +18809,17 @@ def main() -> None:
     if resume_pov_worker:
         log.warning("全部启动恢复已完成，现恢复普通买入POV执行线程。")
         _start_pov_worker()
+    # 2026-11-12 ACE+M：交易日09:26后重启时恢复M买入POV（10:30后只按已成交收口）。
+    try:
+        _now_m = now_beijing()
+        if is_trade_day(_now_m.date()) and _now_m.time() >= datetime.time(9, 26):
+            _m_state = _m_load_state()
+            if (str(_m_state.get("date", "")) == _now_m.strftime("%Y%m%d") and _m_state.get("items")
+                    and not _m_state["items"][0].get("finalized")):
+                log.warning("全部启动恢复已完成，现恢复M买入POV执行线程。")
+                _m_start_pov_worker()
+    except Exception as e:
+        log.error("恢复M买入POV失败（不影响ACE）：%s", e)
     threading.Thread(
         target=_daily_calendar_sentinel,
         daemon=True,

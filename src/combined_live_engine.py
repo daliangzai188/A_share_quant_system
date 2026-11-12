@@ -64,6 +64,14 @@ from pandas.errors import EmptyDataError
 
 from src.equity_curve_stop import LiveGateCheck, live_gate
 from src.live_order_gateway import LiveOrderGateway
+from src.portfolio_ace_m import (
+    GATE_BLOCKED,
+    GATE_FULL,
+    GATE_REDUCED,
+    ace_base_target_pct,
+    ace_gate_mode,
+    is_m_position,
+)
 from src.rolling_signal_store import latest_signal_for_buy_date, signal_by_signal_date
 from src.strategy_identity import (
     ACTIVE_E_VARIANT,
@@ -207,6 +215,16 @@ class CombinedLiveEngine:
         except (TypeError, ValueError):
             return default
 
+    def has_m_plan_today(self, today: str) -> bool:
+        """M今日是否有开仓候选（2026-11-12 ACE+M）：有则D今日不启动（D只在账户含M空仓时运行）。"""
+        try:
+            signal = latest_signal_for_buy_date(
+                self.project_root / "reports" / "strategy_m" / "m_signals_recent.json", today
+            )
+        except Exception:
+            return False
+        return bool(signal and str(signal.get("status", "")) == "SIGNAL_READY" and signal.get("candidates"))
+
     def load_yesterday_e_signal(self, today: str) -> dict[str, Any] | None:
         """找 today 之前最近的 E 信号，且其 planned_buy_date == today。"""
         signal_dirs = (
@@ -319,7 +337,7 @@ class CombinedLiveEngine:
         signal = normalize_strategy_record(signal, default_e_variant=ACTIVE_E_VARIANT)
         limit_close = float(signal.get("limit_close", 0.0))
         initial_equity = float(self.config.get("position", {}).get("initial_cash", 500_000.0))
-        planned_amount = initial_equity * _E_POSITION_PCT
+        planned_amount = initial_equity * float(getattr(self, "_ace_target_pct", _E_POSITION_PCT) or _E_POSITION_PCT)
         if str(self.config.get("trade_mode", "")).lower() == "live":
             # 0=不限额（82.5%目标仓位接管），>0=单笔限额。
             max_single_order_amount = float(
@@ -458,7 +476,11 @@ class CombinedLiveEngine:
 
     def build_mode1_plan(self, today: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         positions = self.load_positions()
-        open_positions = [p for p in positions if self.is_open_position(p)]
+        # 2026-11-12 ACE+M：M 是独立资金的并行策略，M 持仓不阻断 A/C/E 开仓、不参与本状态机的
+        # 互斥判断；M 的开仓与到期卖出由 daemon 的 M 执行路径负责。只有 D 仍要求账户（含 M）完全空仓。
+        all_open_positions = [p for p in positions if self.is_open_position(p)]
+        open_m_positions = [p for p in all_open_positions if is_m_position(p)]
+        open_positions = [p for p in all_open_positions if not is_m_position(p)]
         open_d_positions = [p for p in open_positions if self.is_d_position(p)]
         open_non_d_positions = [p for p in open_positions if not self.is_d_position(p)]
         open_e_positions = [p for p in open_non_d_positions if self.is_e_position(p)]
@@ -505,6 +527,7 @@ class CombinedLiveEngine:
                 "active_strategy_mode": self.active_strategy_mode(),
                 "active_strategy_name": self.active_strategy_name(),
                 "open_position_count": len(open_positions),
+                "open_m_position_count": len(open_m_positions),
                 "open_d_position_count": len(open_d_positions),
                 "open_non_d_position_count": len(open_non_d_positions),
                 "open_e_position_count": len(open_e_positions),
@@ -539,6 +562,12 @@ class CombinedLiveEngine:
         # 函数末尾的 E 状态播报要靠它区分"E被前面的腿挡住"和"E自己没信号"。
         opened_leg: str | None = None
         stop_gate = self.equity_curve_stop_check(today)
+        # FULL=正常 82.5%；REDUCED=方案甲停手期，ACE 仍按 A>C>E 开仓但目标仓位 20%；
+        # BLOCKED=判定缺失/过期等 fail-closed，不开新仓（与原规则相同）。
+        ace_mode = ace_gate_mode(stop_gate)
+        self._ace_target_pct = ace_base_target_pct(ace_mode)
+        state_rows[0]["ace_gate_mode"] = ace_mode
+        state_rows[0]["ace_mode_target_pct"] = self._ace_target_pct
         if open_d_positions:
             due_d = [
                 p for p in open_d_positions
@@ -611,9 +640,10 @@ class CombinedLiveEngine:
                 source="positions.json",
             ))
 
-        elif not stop_gate.allowed:
-            # ── 方案甲停手：账户空仓但影子净值低于均线（或判定缺失/过期，fail-closed）──
+        elif ace_mode == GATE_BLOCKED:
+            # ── 方案甲判定缺失/过期/版本不符（fail-closed）──
             # A/C/E/D四条腿今日都不开新仓，也不启动D盘中监控。
+            # （2026-11-12 起，判定有效且明确停手时走下方正常分支，按20%目标仓位开仓。）
             for action, leg in (
                 ("BLOCK_ABC_BUY", "A+C"),
                 ("BLOCK_E_BUY", "E"),
@@ -730,7 +760,27 @@ class CombinedLiveEngine:
                     reason="今日没有A/C买入计划。",
                     source=str(abc_path or ""),
                 ))
-            if opened_leg is None:
+            if opened_leg is not None and ace_mode == GATE_REDUCED:
+                decisions.append(CombinedLiveDecision(
+                    action="ACE_REDUCED_POSITION", strategy_leg=opened_leg,
+                    reason=(
+                        f"方案甲停手期（影子净值低于60日均线）：{opened_leg}按停手期目标仓位"
+                        f"{self._ace_target_pct:.1%}开仓（2026-11-12 ACE+M规则）。"
+                    ),
+                    source=stop_gate.source,
+                ))
+            m_plan_today = self.has_m_plan_today(today)
+            if opened_leg is None and (ace_mode != GATE_FULL or open_m_positions or m_plan_today):
+                decisions.append(CombinedLiveDecision(
+                    action="BLOCK_D_INTRADAY_MONITOR", strategy_leg="D",
+                    reason=(
+                        "M持仓或M今日开仓计划占用资金，D今日不启动（D只在账户含M完全空仓时运行）。"
+                        if ace_mode == GATE_FULL
+                        else "方案甲停手期（影子净值低于60日均线），ACE按20%小仓执行，D今日不启动。"
+                    ),
+                    source="combined_state_machine",
+                ))
+            elif opened_leg is None:
                 decisions.append(CombinedLiveDecision(
                     action="ALLOW_D_INTRADAY_MONITOR", strategy_leg="D",
                     reason=(
@@ -767,7 +817,7 @@ class CombinedLiveEngine:
         elif open_positions:
             e_status_action = "BLOCK_E"
             e_status_reason = f"账户有 {len(open_positions)} 个未平仓头寸，E 不触发。"
-        elif not stop_gate.allowed:
+        elif ace_mode == GATE_BLOCKED:
             e_status_action = "BLOCK_E"
             e_status_reason = f"方案甲停手门禁：{stop_gate.reason}"
         elif has_abc_buy:

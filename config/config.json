@@ -225,7 +225,8 @@
       "A",
       "C",
       "D",
-      "E"
+      "E",
+      "M"
     ],
     "windows": [
       20,
@@ -375,7 +376,8 @@
       "A",
       "C",
       "D",
-      "E"
+      "E",
+      "M"
     ],
     "exit_pov_note": "卖出端容量型POV:普通D仅在planned_exit_date=今日的T+2普通退出进入尾盘POV；D在T+1有A/C/E接力时改走独立d_relay_paired_pov，不再09:23跌停价整仓卖。13:00仅当仓位市值>累计成交额×1%才建普通退出跑道，小仓位继续14:55主平仓；14:30/14:45再按实测流速复核。普通退出与D接力状态、资金账和线程完全分离。",
     "exit_pov_participation": 0.25,
@@ -461,6 +463,16 @@
     "sentiment_proxy_note": "历史只取market_sentiment_level=strong(收盘100~150只，不含very_strong)；盘中沿用既有88/100校准比例，故实时当前封板代理区间为88~132只。该代理仍须用分钟快照持续校准。",
     "backtest_input_path": "data/processed/next_day_premium_trades_2y.csv",
     "execution_alignment_note": "D实盘与V15回放共同读取FACTOR_UNION发布：仅在账户无持仓、A/C/E均无正式候选或开仓计划、无在途买单/POV且资金可用时启动。正常路径09:30起记录完整1分钟封板/炸板/回封；daemon晚启动时先恢复75秒内同机同版本原子检查点，检查点不可用则从QMT严格回补09:30至当前全部已完成1m，并通过全市场快照完整性、日内最高价触板目标全集和逐根分钟连续性认证后继续。恢复前已错过的信号不追买，只接受恢复完成后最新分钟新形成的回封。每次命中15条V15 OR profile之一且成交概率>=80%才允许BUY，14:55停止并撤未成交委托；每日最早命中信号只尝试第一名，成交门或二次复核失败均不补选。回补缺根、全市场扫描缺批或任何证据不完整继续fail-closed。"
+  },
+  "strategy_m": {
+    "file_role": "策略M（2026-11-12用户确认上线的ACE+M）。规则唯一来源src/strategy_m.py，资金规则唯一来源src/portfolio_ace_m.py，说明docs/strategy_m.md。M=20cm强势涨停接力+剔除一字板和巨量封单+当天20cm涨停<10只；T+1集合竞价按涨停价-0.01预挂（开盘涨停不成交），余量09:30-10:30按POV补足（≤开盘价+2%），T+2收盘卖出；ACE空闲时用总资产82.5%，ACE持仓或当日开仓时只用闲置资金≤17.5%，ACE+M合计≤99.5%；M不设停手；不买ST、不买ACE持有或计划买入的股票。",
+    "enabled": true,
+    "m_version": "M_20CM_STRONG_RELAY_NO_CONSENSUS_V1_20261112",
+    "position_pct_when_ace_idle": 0.825,
+    "position_pct_beside_ace": 0.175,
+    "total_position_cap_pct": 0.995,
+    "ace_reduced_target_pct_when_stopped": 0.2,
+    "user_risk_acceptance": "用户于2026-11-12审核回测后明确决定上线ACE+M，并要求实盘与回测逻辑（选股、仓位、资金分配）完全一致；已知：全期最大回撤约-31.7%（按日收盘市值），最近3个月弱于只用ACE，M来自约8万条规则挖掘有过拟合风险，账户总仓位最高99.5%。"
   },
   "strategy_s": {
     "file_role": "策略S深市/创业板动量补充策略配置。S 独立于 ACDE，只能在组合空闲且通过实盘口径认证后接入真实下单。",

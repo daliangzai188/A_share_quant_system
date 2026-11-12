@@ -29,6 +29,8 @@ def make_engine(
 ) -> CombinedLiveEngine:
     engine = object.__new__(CombinedLiveEngine)
     engine.project_root = Path(__file__).resolve().parents[1]
+    # 2026-11-12 ACE+M：隔离本机 reports/strategy_m 产物。
+    engine.has_m_plan_today = lambda _today: False
     engine.config = {
         "trade_mode": "backtest",
         "position": {"initial_cash": 500_000},

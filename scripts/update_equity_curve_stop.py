@@ -510,13 +510,16 @@ def main() -> int:
         if decision["allowed"]:
             notify(
                 f"✅ 方案甲恢复开仓：{next_date}",
-                f"{decision['reason']}。{next_date}起A/C/E/D按规则正常开仓。",
+                f"{decision['reason']}。{next_date}起A/C/E/D按82.5%目标仓位正常开仓。",
                 level="timeSensitive",
             )
         else:
             notify(
-                f"⏸ 方案甲停手：{next_date}起不开新仓",
-                f"{decision['reason']}。已有持仓照常到期卖出；影子净值回到均线上方后自动恢复。",
+                f"⏸ 方案甲停手：{next_date}起ACE按20%小仓执行",
+                f"影子净值{decision.get('lag_date', '')}={float(decision.get('lag_nav') or 0):.4f}，"
+                f"低于其60日均线{float(decision.get('lag_ma') or 0):.4f}。"
+                "2026-11-12起停手期A/C/E按20%目标仓位照常开仓（D不启动），M不受影响；"
+                "已有持仓照常到期卖出；影子净值回到均线上方后恢复82.5%。",
                 level="timeSensitive",
             )
     sentiment_path = dataset_root / "market_sentiment.csv"

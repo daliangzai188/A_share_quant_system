@@ -52,6 +52,9 @@ class LiveGateCheck:
     reason: str
     source: str
     payload: dict[str, Any]
+    # 2026-11-12 ACE+M：True 表示判定文件完整有效、且明确判为停手（影子净值低于均线）。
+    # 此时 ACE 按停手期小仓执行；判定缺失/过期/版本不符等 fail-closed 情形保持 False，照旧不开新仓。
+    halt_valid: bool = False
 
 
 def load_settings(config: Mapping[str, Any], project_root: Path) -> EquityCurveStopSettings:
@@ -388,7 +391,7 @@ def live_gate(config: Mapping[str, Any], project_root: Path, action_date: str) -
     if allowed is True:
         return LiveGateCheck(True, str(payload.get("reason", "")), source, payload)
     if allowed is False:
-        return LiveGateCheck(False, str(payload.get("reason", "方案甲停手")), source, payload)
+        return LiveGateCheck(False, str(payload.get("reason", "方案甲停手")), source, payload, halt_valid=True)
     return LiveGateCheck(False, "方案甲停手判定缺少allowed字段，按fail-closed不开新仓", source, payload)
 
 

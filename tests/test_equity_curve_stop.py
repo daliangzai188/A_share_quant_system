@@ -215,6 +215,8 @@ def make_engine(*, allowed: bool, positions: list[dict] | None = None, ac_leg: s
     engine.is_b_strategy_removed = lambda: True
     reason = "影子净值低于60日均线，方案甲停手" if not allowed else "正常开仓"
     engine.equity_curve_stop_check = lambda _today: SimpleNamespace(allowed=allowed, reason=reason, source="test")
+    # 2026-11-12 ACE+M：隔离本机 reports/strategy_m 产物，测试只看组合状态机本身。
+    engine.has_m_plan_today = lambda _today: False
     return engine
 
 
