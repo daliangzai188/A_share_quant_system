@@ -37,6 +37,7 @@ HISTORY_DAYS = 60
 TICK_RETRY_ROUNDS = 6
 TICK_RETRY_WAIT = 30
 ENSURE_DAYS = 15  # recent open days whose raw tables step 13 and strategy E read back
+M_LOOKBACK_DAYS = 20  # strategy M: daily tables of the 19 open days before the signal date (plus E's 5)
 
 
 def parse_args():
@@ -146,14 +147,28 @@ def main():
     print('QMT原生采集：股票 %d 只，日线 %.1fs，%s 无当日日线 %d 只（停牌或缓存滞后），由当日快照补齐 %d 只' % (
         len(universe), time.time() - t0, end, len(missing_end), len(patched)))
 
-    # Strategy E reads the raw daily table of the 5 open days before the signal date; after a
-    # cold start those files may be missing, so they are rebuilt from the same QMT bars.
-    for day in calendar[max(0, calendar.index(targets[0]) - 6):calendar.index(targets[0])]:
+    # Strategy E reads the raw daily table of the 5 open days before the signal date and strategy M
+    # (2026-11-12 ACE+M) the 19 before it (20-day average amount, 5-day return); after a cold start
+    # those files may be missing, so they are rebuilt from the same QMT bars. A rebuilt day must be
+    # complete (>= 4000 rows), otherwise it is not written and M fails closed for the day.
+    for day in calendar[max(0, calendar.index(targets[0]) - M_LOOKBACK_DAYS):calendar.index(targets[0])]:
         if not has_rows(RAW / 'daily' / ('%s.csv' % day)):
-            write_frame(build_daily_rows(bars, day), DAILY_COLUMNS, RAW / 'daily' / ('%s.csv' % day))
+            rows = build_daily_rows(bars, day)
+            if len(rows) < 4000:
+                print('QMT原生采集：%s 日线只有 %d 行，不补写（M当日按数据不完整不开仓）' % (day, len(rows)))
+                continue
+            write_frame(rows, DAILY_COLUMNS, RAW / 'daily' / ('%s.csv' % day))
             write_frame(build_daily_basic_rows(bars, details, day), BASIC_COLUMNS,
                         RAW / 'daily_basic' / ('%s.csv' % day))
-            print('QMT原生采集：补齐 %s 日线（供E策略量比回看）' % day)
+            print('QMT原生采集：补齐 %s 日线（供E量比、M成交额与涨幅回看）' % day)
+    # Strategy M: current names (ST check) and listing dates of the whole universe on the end date.
+    name_rows = []
+    for code in sorted(universe):
+        det = details.get(code) or {}
+        name_rows.append({'ts_code': code, 'name': str(det.get('InstrumentName') or ''),
+                          'list_date': str(det.get('OpenDate') or '')[:8]})
+    if len(name_rows) >= 4000:
+        write_frame(name_rows, ['ts_code', 'name', 'list_date'], RAW / 'stock_names' / ('%s.csv' % end))
 
     previous_days = calendar[max(0, first_idx - HISTORY_DAYS):first_idx]
     streak = streak_state_from_lists(load_limit_lists(previous_days))

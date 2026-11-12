@@ -35,7 +35,7 @@ FULL_ROOTS = ['scripts/trading_daemon.py', 'qmt_inner/engine.py', 'qmt_inner/pro
               'scripts/live_execution_audit.py', 'scripts/update_execution_completion.py',
               'scripts/report_rolling_live_performance.py', 'scripts/update_release_oos_observation.py',
               'scripts/update_equity_curve_stop.py', 'scripts/run_combined_live_plan.py',
-              'scripts/monitor_strategy_d_intraday.py']
+              'scripts/monitor_strategy_d_intraday.py', 'scripts/run_strategy_m_signal.py']
 # Modules that are not in the repo, embedded the same way (name -> local file).
 EXTRA_MODULES = {'qn.native': HERE / 'inqmt' / 'qn_native.py',
                  'qn.prod_equity_curve_stop': REPO / 'scripts' / 'update_equity_curve_stop.py',

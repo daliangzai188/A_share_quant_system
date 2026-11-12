@@ -30,6 +30,7 @@ QN_PERSIST_INCLUDE = (
     _hre.compile(r'^data/processed/[^/]+\.json$'),
     _hre.compile(r'^reports/account_risk_shadow/'),
     _hre.compile(r'^reports/strategy_e/[^/]+\.json$'),
+    _hre.compile(r'^reports/strategy_m/[^/]+\.json$'),
     _hre.compile(r'^reports/equity_curve_stop/'),
     _hre.compile(r'^reports/live_trade/qmt_live_order_submitted_orders\.csv$'),
     _hre.compile(r'^reports/strategy_equity/'),
