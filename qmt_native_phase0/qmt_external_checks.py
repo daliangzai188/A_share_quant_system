@@ -10,7 +10,9 @@ Windows VM, outside QMT, where files and the network may still be used:
   1. production step 1 (Tushare collection) brings C:\\A_System\\data\\raw up to the signal day;
   2. production step 13's dataset build and shadow replay;
   3. production factor health and alignment checks; live fills come from QMT's export
-     (rebuilt by qmt_notify_forwarder.py), else from the old system's file;
+     (rebuilt by qmt_notify_forwarder.py), else from the old system's file. From ACE+M on,
+     M's candidate list is recomputed from the Tushare files of step 1 (QMT's own M signal
+     files are not visible outside QMT);
   4. production push planning (acknowledged keys, reminder every N open days) and Bark push;
   5. the results of 3 go to external_checks\\factor_health_latest.json and the run log every day,
      and on the last open day of each week a "因子健康周报" push shows the values of both legs and
@@ -117,9 +119,8 @@ def run(args) -> int:
     except ImportError:
         pass
     from src.utils.config import load_json_config
-    from src.equity_curve_stop import allowed_flags, gated_replay, is_week_last_open_day, open_dates_from_calendar
-    from src.review_triggers import (active_acknowledgements, alignment_triggers, check_failure_trigger,
-                                     factor_health_triggers, plan_push)
+    from src.equity_curve_stop import is_week_last_open_day, open_dates_from_calendar
+    from src.review_triggers import active_acknowledgements, check_failure_trigger, factor_health_triggers, plan_push
     import scripts.update_equity_curve_stop as prod
 
     day = str(args.signal_date)
@@ -150,12 +151,10 @@ def run(args) -> int:
                 sentiment_path=dataset / 'market_sentiment.csv', calendar_path=calendar,
                 start=settings.history_start, end=day, work_dir=settings.work_dir)
             filled, _complete = live_trades(config)
-            nav = shadow['nav']
-            labels = [str(d) for d in nav.index]
-            flags = allowed_flags(nav.to_numpy(), ma_window=settings.ma_window, lag=settings.lag_trading_days)
-            align = alignment_triggers(
-                gated_replay(shadow, ma_window=settings.ma_window, lag=settings.lag_trading_days), filled,
-                stop_dates={d for d, ok in zip(labels, flags) if not ok}, start=start, end=day)
+            from src.live_alignment import run_alignment
+            align = run_alignment(
+                shadow, filled, ma_window=settings.ma_window, lag=settings.lag_trading_days, start=start, end=day,
+                ace_m_start=str(section.get('ace_m_start_date', '') or ''), raw_dir=ROOT / 'data' / 'raw')
             triggers.extend(align)
         except Exception as exc:
             traceback.print_exc()
