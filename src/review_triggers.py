@@ -3,7 +3,8 @@
 失败条件表（docs/equity_curve_stop.md第九节第6小节）原来分散在周报里，只在每周最后一个
 开市日检查一次，提醒埋在周报末尾；另有几条完全没有自动检查：实盘连续3个月亏损、实盘
 与正式规则逐笔对不上（漏单、多出的单、停手日开仓；ACE+M起还包括M买错、D在不该启动的
-日子开仓）、M实盘滑点超过报警线（ACE+M起）、监控本身没算成。本模块每个交易日由收盘流水线⑬调用一次：
+日子开仓）、M实盘滑点超过报警线（ACE+M起）、监控本身没算成；2026-11-13起又加A/C/E实盘滑点、
+研究池覆盖率和信号断流（数据出错时实盘和规则回放一样不出信号，逐笔对账发现不了）。本模块每个交易日由收盘流水线⑬调用一次：
 - 任何一条命中，单独推送“请发起甲·临时复核”，写明每一条的原因；
 - 同一组条件持续存在时，每隔若干个交易日再提醒一次；新增条件立即推送；
 - 全部解除时推送一次解除，与提醒成对；
@@ -28,6 +29,7 @@ FINAL_STANDARD = (
     "是否带着现行版本恢复由你决定"
 )
 M_LEG = "M"
+ACE_LEGS = ("A", "C", "E")
 
 
 @dataclass(frozen=True)
@@ -498,10 +500,25 @@ def m_slippage_stats(live: pd.DataFrame, *, start: str, trades: int, limit_pct: 
     滑点记为0，不能算进去）；满trades笔才判断是否超过limit_pct。
     """
 
+    return slippage_stats(live, legs=(M_LEG,), start=start, trades=trades, limit_pct=limit_pct)
+
+
+def ace_slippage_stats(live: pd.DataFrame, *, start: str, trades: int, limit_pct: float) -> dict[str, Any]:
+    """A/C/E合在一起最近trades笔已平仓交易的实盘平均双边滑点（%），口径同M（2026-11-13起）。"""
+
+    return slippage_stats(live, legs=ACE_LEGS, start=start, trades=trades, limit_pct=limit_pct)
+
+
+def slippage_stats(
+    live: pd.DataFrame, *, legs: Sequence[str], start: str, trades: int, limit_pct: float
+) -> dict[str, Any]:
+    """legs这几条腿合在一起最近trades笔已平仓交易的实盘平均双边滑点（%），口径见m_slippage_stats。"""
+
+    wanted = {str(leg).upper() for leg in legs}
     done = []
     if start and len(live):
         for record in live.to_dict("records"):
-            if _text(record.get("strategy_leg")).upper() != M_LEG:
+            if _text(record.get("strategy_leg")).upper() not in wanted:
                 continue
             day = _date_text(record.get("entry_date"))
             if not day or day < str(start) or _text(record.get("execution_status")) != "已平仓":
@@ -536,6 +553,63 @@ def m_slippage_triggers(stats: Mapping[str, Any] | None) -> list[ReviewTrigger]:
         "双边约3%%~4%%时加M就不如只用ACE，请查竞价和补单的成交价" % (
             len(window), window[0]["entry_date"], window[-1]["entry_date"],
             float(stats["average_pct"]), float(stats["limit_pct"])),
+    )]
+
+
+def ace_slippage_triggers(stats: Mapping[str, Any] | None) -> list[ReviewTrigger]:
+    """A/C/E实盘滑点超过报警线：ACE比M更怕滑点（回放里双边每多0.5%，只用ACE的样本外月均约少1.1个百分点）。"""
+
+    if not stats or not stats.get("triggered"):
+        return []
+    window = list(stats.get("window") or [])
+    return [ReviewTrigger(
+        "ace_slippage", "实盘执行",
+        "A/C/E最近%d笔（%s~%s买入）实盘平均双边滑点%+.2f%%，超过报警线%.1f%%；回测按双边0.2%%，"
+        "双边1.2%%时只用ACE的样本外月均少一半、约2.2%%时不再赚钱，请查竞价和补单的成交价" % (
+            len(window), window[0]["entry_date"], window[-1]["entry_date"],
+            float(stats["average_pct"]), float(stats["limit_pct"])),
+    )]
+
+
+def pool_coverage_triggers(
+    signal_date: str, pool_rows: int, limit_up_count: float | None, *, min_ratio: float, min_limit_up: float
+) -> list[ReviewTrigger]:
+    """研究池里信号日的涨停股只剩全市场涨停数的一小部分：数据多半出错，A/C/E会悄悄不出信号。
+
+    2020-01~04-20封单金额放大1000倍时这个比例在0~3%，A/C/E/M连续94个交易日没有一个信号，
+    逐笔对账、因子健康都不会报（实盘和规则回放用同一份坏数据）。此后1589个交易日比例最低32%、中位81%。
+    全市场涨停不到min_limit_up只时比例太不稳，不判断。
+    """
+
+    if limit_up_count is None or not float(limit_up_count) >= float(min_limit_up):
+        return []
+    ratio = float(pool_rows) / float(limit_up_count)
+    if ratio >= float(min_ratio):
+        return []
+    return [ReviewTrigger(
+        "pool_coverage", "数据",
+        "%s研究池只有%d只涨停股，全市场%d只（%.0f%%，报警线%.0f%%；数据正常时最低32%%、中位81%%），"
+        "数据可能出错，A/C/E会悄悄不出信号，请先查数据" % (
+            signal_date, int(pool_rows), int(float(limit_up_count)), ratio * 100, float(min_ratio) * 100),
+    )]
+
+
+def signal_drought_triggers(signals: Mapping[str, Any] | None, *, line: int) -> list[ReviewTrigger]:
+    """A/C/E计划和M候选全部断流超过line个行动日（不管停不停手，只看规则有没有选出股票）。
+
+    2020-04-21以后研究回放里最长只有22个行动日完全没有信号（生产数据回放21天，到2024-02-21）；更早那94天是数据错误造成的。
+    断流时实盘和规则回放一样“没有交易”，逐笔对账显示一致，所以要单独看。
+    """
+
+    if not signals or signals.get("gap") is None or int(signals["gap"]) <= int(line):
+        return []
+    last = dict(signals.get("last") or {})
+    legs = "、".join("%s %s" % (leg, last[leg] or "无") for leg in ("A", "C", "E", "M") if leg in last)
+    return [ReviewTrigger(
+        "signal_drought", "数据",
+        "A/C/E和M已连续%d个行动日没有选出一只股票（最近一次%s，历史最长%d天）：先查数据和程序，"
+        "都正常才是行情让条件长期不满足。各腿最近一次：%s" % (
+            int(signals["gap"]), signals.get("last_any") or "无", int(line), legs),
     )]
 
 

@@ -19,6 +19,7 @@ from src.strategy_warnings import (
     escalate,
     leg_trades,
     relative_behind,
+    signal_activity,
     trailing_return,
     warning_report,
     warning_triggers,
@@ -94,6 +95,25 @@ class TriggerTests(unittest.TestCase):
         self.assertEqual({t.key for t in final}, {"warn3:leg:A", "warn3:leg:C", "warn3:all"})
         self.assertTrue(all(t.tier == TIER_FINAL for t in final))
         self.assertIn("建议先暂停交易", final[0].action)
+
+    def test_e_factor_health_middle_has_its_own_key(self) -> None:
+        got = warning_triggers(metrics(factor_health={"A": {"months_below": 0}, "C": {"months_below": 0},
+                                                      "E": {"months_below": 4}}, E=-0.30), SETTINGS)
+        keys = {t.key: t for t in got}
+        self.assertEqual(set(keys), {"warn2:leg:E:health", "warn2:leg:E"}, "E收益中级线与因子健康中级线分开登记")
+        self.assertEqual(keys["warn2:leg:E:health"].scope, "E腿")
+        self.assertIn("E腿选股条件的优势已连续4个月低于冻结线", keys["warn2:leg:E:health"].detail)
+        self.assertEqual(warning_triggers(metrics(), SETTINGS), [], "旧状态里没有E的因子健康也照常判断")
+
+    def test_signal_activity_counts_open_days_since_any_leg_last_picked_a_stock(self) -> None:
+        days = OPEN[:30]
+        legs = {"A": pd.DataFrame({"action_date": [days[2], days[5]]}), "C": pd.DataFrame(),
+                "E": pd.DataFrame({"action_date": [int(days[3])]})}
+        got = signal_activity(legs, {days[4]: ["300001.SZ"], days[9]: []}, days)
+        self.assertEqual(got["last"], {"A": days[5], "C": "", "E": days[3], "M": days[4]})
+        self.assertEqual((got["last_any"], got["gap"], got["as_of"]), (days[5], 24, days[29]))
+        none = signal_activity({}, {}, days)
+        self.assertEqual((none["last_any"], none["gap"]), ("", 30))
 
     def test_whole_combination_and_all_strategies(self) -> None:
         got = {t.key: t for t in warning_triggers(metrics(

@@ -30,6 +30,17 @@ class ConditionParsingTests(unittest.TestCase):
         columns = {column for branch in parsed["A"] for column, _ in branch}
         self.assertIn("fd_ratio_bucket", columns)
 
+    def test_reads_e_rules_when_spec_given(self) -> None:
+        from src.strategy_e import load_e_spec
+
+        config = json.loads((ROOT / "config" / "strategy_config.json").read_text(encoding="utf-8"))
+        self.assertNotIn("E", parse_condition_profiles(config), "没给E规则时只有A/C")
+        parsed = parse_condition_profiles(config, e_spec=load_e_spec(ROOT))
+        self.assertEqual(len(parsed["E"]), 40, "E的40条规则各一个分支")
+        self.assertEqual(parsed["E"][0][0], ("segment_limit_up_count_bucket", ["lt_5"]))
+        toy = parse_condition_profiles({}, e_spec={"scenarios": [{"conditions": {"a": "x", "b": "1"}}, {"conditions": {}}]})
+        self.assertEqual(toy["E"], [[("a", ["x"]), ("b", ["1"])]], "没有条件的规则不算分支")
+
     def test_branches_union_conditions_intersect(self) -> None:
         frame = pd.DataFrame({"a": ["x", "x", "y", "y"], "b": ["1", "2", "1", "2"]})
         mask, used = condition_mask(frame, [[("a", ["x"]), ("b", ["1"])], [("a", ["y"]), ("b", ["2"])]])
@@ -147,6 +158,8 @@ class FormalConfigTests(unittest.TestCase):
         self.assertEqual(settings.min_month_samples, 3)
         self.assertAlmostEqual(settings.lines["A"], 0.00539085585714336)
         self.assertAlmostEqual(settings.lines["C"], -0.004743001882088658)
+        self.assertAlmostEqual(settings.lines["E"], -0.007118661714919691, msg="2026-11-13按同一规则算出（2023-04）")
+        self.assertNotIn("M", settings.lines, "M候选太少，按样本要求一个月都判不了")
 
 
 if __name__ == "__main__":

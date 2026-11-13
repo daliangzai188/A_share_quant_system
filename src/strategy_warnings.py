@@ -9,6 +9,9 @@
 整体组合（仓位分配与ACE+M的组合方式）。所有判定都用规则回放（不受实盘成交影响）；阈值在
 config/config.json 的 strategy_warnings，由2019-12-02~2026-11-10的回放算出后冻结
 （方法见docs/equity_curve_stop.md第九节第8小节），换版时按新版本重算。
+
+另外只有这里同时拿得到A/C/E计划和M候选，所以“信号断流”（初级，src.review_triggers.signal_drought_triggers）
+也在这里算：不管停不停手，规则连续多少个行动日没有选出一只股票。
 """
 from __future__ import annotations
 
@@ -20,11 +23,12 @@ from typing import Any, Callable, Mapping, Sequence
 
 import pandas as pd
 
-from src.review_triggers import FINAL_STANDARD, ReviewTrigger
+from src.review_triggers import FINAL_STANDARD, ReviewTrigger, signal_drought_triggers
 
 TIER_MIDDLE = 2
 TIER_FINAL = 3
 LEGS = ("A", "C", "E")
+FACTOR_HEALTH_LEGS = ("A", "C", "E")  # M的候选一年只有几十只，按因子健康的样本要求一个月都判不了，不算
 SCOPE_NAMES = {"A": "A腿", "C": "C腿", "E": "E腿", "M": "M", "ALL": "全部策略", "COMBO": "整体组合"}
 MIDDLE_CATEGORY = "中级·策略复核"
 FINAL_CATEGORY = "终极·建议停止交易"
@@ -43,6 +47,7 @@ class WarningSettings:
     relative_window: int = 252
     relative_days: int = 20
     escalate_open_days: int = 60
+    signal_gap_days: int = 22
     middle: Mapping[str, float] = field(default_factory=dict)
     final: Mapping[str, float] = field(default_factory=dict)
     reference: Mapping[str, Any] = field(default_factory=dict)
@@ -60,6 +65,7 @@ def load_warning_settings(config: Mapping[str, Any]) -> WarningSettings:
         relative_window=int(section.get("relative_window", 252)),
         relative_days=int(section.get("relative_days", 20)),
         escalate_open_days=int(section.get("escalate_open_days", 60)),
+        signal_gap_days=int(section.get("signal_gap_days", 22)),
         middle={str(k): float(v) for k, v in dict(section.get("middle", {}) or {}).items()},
         final={str(k): float(v) for k, v in dict(section.get("final", {}) or {}).items()},
         reference=dict(section.get("reference", {}) or {}),
@@ -159,12 +165,32 @@ def compute_metrics(
     metrics["factor_health"] = {
         leg: {"months_below": int((health.get(leg) or {}).get("months_below", 0) or 0),
               "value": (health.get(leg) or {}).get("value"), "line": (health.get(leg) or {}).get("line")}
-        for leg in ("A", "C")
+        for leg in FACTOR_HEALTH_LEGS
     }
     metrics["shadow_drawdown"] = drawdown(shadow["nav"])
     metrics["combo_drawdown"] = drawdown(live_equity)
     metrics["combo_relative"] = relative_behind(live_equity, ace_equity, window=settings.relative_window)
     return metrics
+
+
+def signal_activity(legs: Mapping[str, pd.DataFrame], m_candidates: Mapping[str, Sequence[str]],
+                    days: Sequence[str]) -> dict[str, Any]:
+    """A/C/E计划与M候选最近一次出现的行动日，和最近一次之后又过了几个行动日（不管停不停手）。"""
+
+    days = [str(d) for d in days]
+    last: dict[str, str] = {}
+    for leg in LEGS:
+        frame = legs.get(leg)
+        seen = set()
+        if frame is not None and not frame.empty and "action_date" in frame.columns:
+            seen = {str(d) for d in frame["action_date"]}
+        hits = [d for d in days if d in seen]
+        last[leg] = hits[-1] if hits else ""
+    hits = [d for d in days if m_candidates.get(d)]
+    last["M"] = hits[-1] if hits else ""
+    last_any = max(last.values())
+    return {"last": last, "last_any": last_any, "gap": sum(1 for d in days if d > last_any) if days else None,
+            "as_of": days[-1] if days else ""}
 
 
 def _pct(value: float) -> str:
@@ -185,11 +211,13 @@ def warning_triggers(metrics: Mapping[str, Any], settings: WarningSettings) -> l
     triggers: list[ReviewTrigger] = []
     middle_scopes: list[str] = []
     final_scopes: list[str] = []
-    for leg in ("A", "C"):
-        item = metrics["factor_health"][leg]
+    for leg in FACTOR_HEALTH_LEGS:
+        item = metrics["factor_health"].get(leg) or {"months_below": 0}
         if item["months_below"] >= settings.factor_health_months:
             middle_scopes.append(leg)
-            triggers.append(_trigger(TIER_MIDDLE, leg, "warn2:leg:%s" % leg,
+            # A、C沿用warn2:leg:A/C（已登记复核用的就是这个键）；E另有收益中级线warn2:leg:E，因子健康单独一个键
+            key = "warn2:leg:%s" % leg if leg in ("A", "C") else "warn2:leg:%s:health" % leg
+            triggers.append(_trigger(TIER_MIDDLE, leg, key,
                 "%s腿选股条件的优势已连续%d个月低于冻结线（中级线：连续%d个月；临时复核是2个月）" % (
                     leg, item["months_below"], settings.factor_health_months)))
     for leg in ("A", "C", "E", "M"):
@@ -427,6 +455,7 @@ def run_strategy_warnings(
                                            ace_halted_weight=0.0, **fees)
     save()
     metrics = compute_metrics(shadow, health, live_equity, ace_equity, live_trades, settings)
+    metrics["signals"] = dict(signal_activity(shadow["legs"], candidates, days), line=settings.signal_gap_days)
     metrics["replay"] = {
         "start": days[0] if days else "", "end": days[-1] if days else "",
         "ace_m_multiple": float(live_equity.iloc[-1] / live_equity.iloc[0]) if len(live_equity) else None,
@@ -434,4 +463,6 @@ def run_strategy_warnings(
         "m_trades": int((live_trades["family"] == "M").sum()) if len(live_trades) else 0,
         "m_reference_error_days": len(errors), "m_reference_errors_recent": sorted(errors)[-5:],
     }
-    return warning_triggers(metrics, settings), metrics
+    triggers = warning_triggers(metrics, settings) + signal_drought_triggers(
+        metrics["signals"], line=settings.signal_gap_days)
+    return triggers, metrics

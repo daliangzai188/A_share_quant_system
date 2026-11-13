@@ -10,7 +10,8 @@
 5. 每周最后一个开市日推送空仓期周报（影子账表现、停手踏空/躲掉、离恢复还差多少、
    失败条件是否触发）。周报只读已算好的影子净值，失败不影响判定。
 6. 每个交易日做一次临时复核触发检查（src.review_triggers）：影子账失败线、行情停滞、
-   因子健康、实盘连续亏损、实盘与正式规则逐笔对账、M实盘滑点、检查本身是否算成；命中即单独推送
+   因子健康（A/C/E）、实盘连续亏损、实盘与正式规则逐笔对账、M和A/C/E实盘滑点、研究池覆盖率、信号断流、
+   检查本身是否算成；命中即单独推送
    “请发起甲·临时复核”。三级警告（src.strategy_warnings）与逐笔对账同在QMT外计算：中级“策略复核”、
    终极“建议停止交易、优化策略”，只推送和终端打印，不停任何程序。检查失败不影响已写出的判定。
 
@@ -65,6 +66,8 @@ from src.factor_health import (  # noqa: E402
     rolling_health,
 )
 from src.review_triggers import (  # noqa: E402
+    ace_slippage_stats,
+    ace_slippage_triggers,
     active_acknowledgements,
     check_failure_trigger,
     factor_health_triggers,
@@ -73,6 +76,7 @@ from src.review_triggers import (  # noqa: E402
     m_slippage_triggers,
     monthly_realized_pnl,
     plan_push,
+    pool_coverage_triggers,
     regime_stall_triggers,
     shadow_triggers,
 )
@@ -202,7 +206,9 @@ def compute_factor_health_checked(config, dataset_root: Path, calendar_path: Pat
             adj_dir=PROJECT_ROOT / "data" / "raw" / "adj_factor",
         )
         strategy_config = load_json_config(PROJECT_ROOT / "config" / "strategy_config.json")
-        profiles = parse_condition_profiles(strategy_config)
+        from src.strategy_e import load_e_spec
+
+        profiles = parse_condition_profiles(strategy_config, e_spec=load_e_spec(PROJECT_ROOT))
         out = {}
         for leg, branches in profiles.items():
             if not branches:
@@ -224,6 +230,17 @@ def compute_factor_health_checked(config, dataset_root: Path, calendar_path: Pat
         traceback.print_exc()
         print("FACTOR_HEALTH_FAILED", flush=True)
         return {}, f"{type(exc).__name__}: {exc}"
+
+
+def pool_coverage_inputs(dataset_root: Path, signal_date: str) -> tuple[int, float | None]:
+    """信号日研究池里的涨停股只数和全市场涨停数（研究池覆盖率检查用）；没有该日行情统计时后者为None。"""
+
+    pool = pd.read_csv(dataset_root / "strict_feature_pool.csv", usecols=["trade_date"], dtype={"trade_date": str})
+    rows = int((pool["trade_date"].astype(str) == str(signal_date)).sum())
+    sentiment = pd.read_csv(dataset_root / "market_sentiment.csv", dtype={"trade_date": str}, low_memory=False)
+    day = sentiment[sentiment["trade_date"].astype(str) == str(signal_date)]
+    counts = pd.to_numeric(day["limit_up_count"], errors="coerce").dropna()
+    return rows, (float(counts.iloc[-1]) if len(counts) else None)
 
 
 def compute_regime_stall(config, nav, sentiment_path: Path, signal_date: str) -> dict | None:
@@ -427,6 +444,12 @@ def run_review_trigger_check(
                 trades=int(section.get("m_slippage_trades", 10)),
                 limit_pct=float(section.get("m_slippage_limit_pct", 1.5)),
             )))
+            guarded("A/C/E实盘滑点", lambda: ace_slippage_triggers(ace_slippage_stats(
+                filled,
+                start=start,
+                trades=int(section.get("ace_slippage_trades", 10)),
+                limit_pct=float(section.get("ace_slippage_limit_pct", 1.2)),
+            )))
             if (config.get("strategy_warnings") or {}).get("enabled"):
                 def _warnings():
                     # 三级警告（中级=策略复核，终极=建议停止交易、优化策略）：只推送，不停任何程序
@@ -445,6 +468,14 @@ def run_review_trigger_check(
                     warnings_checked.append(True)
                     return found
                 guarded("三级警告（策略复核/停止交易建议）", _warnings)
+
+    if str(section.get("alignment_start_date", "") or ""):
+        # 研究池覆盖率与逐笔对账一样只在QMT外检查（QMT内起始日留空）
+        guarded("研究池覆盖率", lambda: pool_coverage_triggers(
+            str(signal_date), *pool_coverage_inputs(sentiment_path.parent, str(signal_date)),
+            min_ratio=float(section.get("pool_coverage_min_ratio", 0.3)),
+            min_limit_up=float(section.get("pool_coverage_min_limit_up", 10)),
+        ))
 
     state_path = PROJECT_ROOT / str(section.get("state_path", "data/state/review_trigger_state.json"))
     try:

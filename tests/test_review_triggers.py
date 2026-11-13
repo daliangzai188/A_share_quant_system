@@ -24,8 +24,10 @@ from src.review_triggers import (
     live_loss_streak_triggers,
     monthly_realized_pnl,
     plan_push,
+    pool_coverage_triggers,
     regime_stall_triggers,
     shadow_triggers,
+    signal_drought_triggers,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -33,6 +35,26 @@ OPEN_DATES = pd.bdate_range("2026-09-01", "2026-12-31").strftime("%Y%m%d").tolis
 
 
 class ConditionTests(unittest.TestCase):
+    def test_pool_coverage_alarms_only_when_the_pool_has_lost_most_limit_ups(self) -> None:
+        kwargs = {"min_ratio": 0.3, "min_limit_up": 10}
+        self.assertEqual(pool_coverage_triggers("20261112", 50, 60.0, **kwargs), [], "81%是常态")
+        self.assertEqual(pool_coverage_triggers("20200922", 8, 25.0, **kwargs), [], "历史最低32%不报")
+        (trigger,) = pool_coverage_triggers("20200305", 1, 82.0, **kwargs)
+        self.assertEqual((trigger.key, trigger.category), ("pool_coverage", "数据"))
+        self.assertIn("研究池只有1只涨停股，全市场82只（1%", trigger.detail)
+        self.assertEqual(pool_coverage_triggers("20261112", 1, 7.0, **kwargs), [], "全市场不足10只不判断")
+        self.assertEqual(pool_coverage_triggers("20261112", 0, None, **kwargs), [], "没有行情统计不判断")
+
+    def test_signal_drought_after_more_than_the_longest_historical_gap(self) -> None:
+        last = {"A": "20261009", "C": "", "E": "20260930", "M": "20261012"}
+        self.assertEqual(signal_drought_triggers({"gap": 22, "last": last, "last_any": "20261012"}, line=22), [])
+        self.assertEqual(signal_drought_triggers({"gap": None}, line=22), [])
+        self.assertEqual(signal_drought_triggers(None, line=22), [])
+        (trigger,) = signal_drought_triggers({"gap": 23, "last": last, "last_any": "20261012"}, line=22)
+        self.assertEqual((trigger.key, trigger.category, trigger.tier), ("signal_drought", "数据", 1))
+        self.assertIn("已连续23个行动日没有选出一只股票（最近一次20261012，历史最长22天）", trigger.detail)
+        self.assertIn("A 20261009、C 无、E 20260930、M 20261012", trigger.detail)
+
     def test_shadow_windows_and_missed_gain(self) -> None:
         values = np.concatenate([np.linspace(1.0, 2.0, 200), np.linspace(2.0, 1.4, 63)])
         triggers = shadow_triggers(values, window_3m=63, window_6m=126, fail_3m=-0.241, fail_6m=-0.194,
@@ -187,6 +209,9 @@ class DailyCheckTests(unittest.TestCase):
         self.stall = patch.object(self.module, "compute_regime_stall", return_value={"triggered": False})
         self.stall.start()
         self.addCleanup(self.stall.stop)
+        self.coverage = patch.object(self.module, "pool_coverage_inputs", return_value=(50, 60.0))
+        self.coverage_inputs = self.coverage.start()
+        self.addCleanup(self.coverage.stop)
 
     def _run(self, notify_result=True, factor_error=""):
         with patch.object(self.module, "notify", return_value=notify_result) as notify:
@@ -245,6 +270,44 @@ class DailyCheckTests(unittest.TestCase):
         self.assertIn("M最近10笔", notify.call_args.args[1])
         self.assertIn("+3.85%", notify.call_args.args[1])
 
+    def test_ace_slippage_is_checked_with_alignment_from_the_jia_start(self) -> None:
+        self.config["review_triggers"].update(alignment_start_date="20260921", ace_m_start_date="20261113")
+        days = pd.bdate_range("2026-09-21", periods=12).strftime("%Y%m%d").tolist()
+        rows = [{"entry_date": day, "ts_code": "60%04d.SH" % i, "strategy_leg": "ACE"[i % 3],
+                 "execution_status": "已平仓", "entry_vwap": 10.1, "benchmark_open": 10.0,
+                 "exit_vwap": 10.9, "benchmark_close": 11.0, "total_slippage_bps": 150.0}
+                for i, day in enumerate(days)]
+        rows.append(dict(rows[0], strategy_leg="D", total_slippage_bps=900.0))  # D是盘中腿，不算
+        live = pd.DataFrame(rows)
+        empty = pd.DataFrame(columns=["exit_date", "net_pnl"])
+        with patch.object(self.module, "_live_trades", return_value=(live, empty)), \
+                patch("src.live_alignment.run_alignment", return_value=[]):
+            _ok, notify = self._run()
+        body = notify.call_args.args[1]
+        self.assertIn("A/C/E最近10笔（20260923~20261006买入）实盘平均双边滑点+1.50%，超过报警线1.2%", body)
+        self.assertNotIn("M最近", body)
+
+    def test_pool_coverage_is_checked_outside_qmt_only(self) -> None:
+        self.coverage_inputs.return_value = (2, 82.0)
+        self._run()
+        self.coverage_inputs.assert_not_called()  # QMT内（起始日留空）不做
+        self.config["review_triggers"].update(alignment_start_date="20260921")
+        with patch("src.live_alignment.run_alignment", return_value=[]):
+            _ok, notify = self._run()
+        self.coverage_inputs.assert_called_once_with(Path(self.tmp.name), "20261012")
+        self.assertIn("20261012研究池只有2只涨停股，全市场82只", notify.call_args.args[1])
+
+    def test_pool_coverage_inputs_count_the_signal_day(self) -> None:
+        self.coverage.stop()
+        root = Path(self.tmp.name)
+        pd.DataFrame({"trade_date": ["20261009"] * 3 + ["20261012"] * 2, "ts_code": list("abcde")}).to_csv(
+            root / "strict_feature_pool.csv", index=False)
+        pd.DataFrame({"trade_date": ["20261009", "20261012"], "limit_up_count": [70, 64]}).to_csv(
+            root / "market_sentiment.csv", index=False, encoding="utf-8-sig")
+        self.assertEqual(self.module.pool_coverage_inputs(root, "20261012"), (2, 64.0))
+        self.assertEqual(self.module.pool_coverage_inputs(root, "20261013"), (0, None))
+        self.coverage.start()
+
     def test_three_tier_warnings_run_outside_qmt_with_escalation(self) -> None:
         self.config["review_triggers"].update(alignment_start_date="20260921", ace_m_start_date="20260921")
         self.config["strategy_warnings"] = {"enabled": True}
@@ -273,6 +336,8 @@ class DailyCheckTests(unittest.TestCase):
         self.assertEqual(section["alignment_start_date"], "20260921")
         self.assertEqual(section["ace_m_start_date"], "20261113", "ACE+M第一个行动日起按新口径对账")
         self.assertEqual((section["m_slippage_trades"], section["m_slippage_limit_pct"]), (10, 1.5))
+        self.assertEqual((section["ace_slippage_trades"], section["ace_slippage_limit_pct"]), (10, 1.2))
+        self.assertEqual((section["pool_coverage_min_ratio"], section["pool_coverage_min_limit_up"]), (0.3, 10))
         warnings = config["strategy_warnings"]
         self.assertTrue(warnings["enabled"])
         self.assertEqual(warnings["middle"], {"E": -0.255, "M": 0.0, "combo_drawdown": -0.315})
@@ -280,6 +345,7 @@ class DailyCheckTests(unittest.TestCase):
                                              "combo_drawdown": -0.5})
         self.assertEqual((warnings["factor_health_months"], warnings["relative_days"], warnings["escalate_open_days"]),
                          (4, 20, 60))
+        self.assertEqual(warnings["signal_gap_days"], 22, "2020-04-21以后回放里全部腿最长22个行动日没有信号")
         self.assertEqual(section["live_loss_months"], 3)
         ack = active_acknowledgements(section["acknowledged"], "20261012")
         self.assertEqual(list(ack), ["factor_health:A", "shadow_3m", "warn2:leg:A"])

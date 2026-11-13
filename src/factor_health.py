@@ -1,4 +1,4 @@
-"""因子健康监控：用整个涨停池衡量各腿条件集是否还有优势。
+"""因子健康监控：用整个涨停池衡量各腿条件集（A、C，2026-11-13起加E）是否还有优势。
 
 为什么需要它：实盘每月只有约5笔成交，等成交攒够证据太慢；而满足条件的涨停股
 每月有十几到几十只，一年一两百只。条件集的优势先垮，成交结果才会垮，所以它是
@@ -45,8 +45,11 @@ def load_settings(config: Mapping[str, Any]) -> FactorHealthSettings:
     )
 
 
-def parse_condition_profiles(strategy_config: Mapping[str, Any]) -> dict[str, list[list[tuple[str, list[str]]]]]:
-    """从正式策略配置读取A/C的条件分支；换规则后指标自动跟着换。"""
+def parse_condition_profiles(
+    strategy_config: Mapping[str, Any], e_spec: Mapping[str, Any] | None = None
+) -> dict[str, list[list[tuple[str, list[str]]]]]:
+    """从正式策略配置读取A/C的条件分支，给了E规则（src.strategy_e.load_e_spec）时再加E的40条规则
+    （每条规则一个分支，2026-11-13起）；换规则后指标自动跟着换。"""
 
     out: dict[str, list[list[tuple[str, list[str]]]]] = {}
     a_profiles = (strategy_config.get("candidate_filters", {}) or {}).get("condition_profiles", [])
@@ -70,6 +73,12 @@ def parse_condition_profiles(strategy_config: Mapping[str, Any]) -> dict[str, li
             if branch:
                 parsed.append(branch)
         out[leg] = parsed
+    if e_spec is not None:
+        out["E"] = [
+            [(str(column), [str(value)]) for column, value in (scenario.get("conditions", {}) or {}).items()]
+            for scenario in e_spec.get("scenarios", []) or []
+            if scenario.get("conditions")
+        ]
     return out
 
 

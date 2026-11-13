@@ -101,7 +101,7 @@
     "require_producer_identity": true
   },
   "factor_health": {
-    "file_role": "因子健康监控：用整个涨停池衡量A/C条件集是否还有优势。实盘每月只有约5笔成交，等成交攒证据太慢；满足条件的涨停股每月十几到几十只，条件集的优势会先于成交结果垮掉。指标=滚动12个月的\"匹配均值-不匹配均值\"（差额已剔除行情好坏），只出数字与报警，不参与任何门禁。",
+    "file_role": "因子健康监控：用整个涨停池衡量A/C/E条件集是否还有优势。实盘每月只有约5笔成交，等成交攒证据太慢；满足条件的涨停股每月十几到几十只，条件集的优势会先于成交结果垮掉。指标=滚动12个月的\"匹配均值-不匹配均值\"（差额已剔除行情好坏），只出数字与报警，不参与任何门禁。",
     "enabled": true,
     "window_months": 12,
     "min_periods": 10,
@@ -111,9 +111,10 @@
     "min_month_samples": 3,
     "lines": {
       "A": 0.00539085585714336,
-      "C": -0.004743001882088658
+      "C": -0.004743001882088658,
+      "E": -0.007118661714919691
     },
-    "line_note": "失败线=各腿滚动12个月差额在2026-07及之前的历史最低值，只统计当月自身匹配样本≥min_month_samples（3）的月份。A=+0.539%（创于2021-12，可判24个月）、C=-0.474%（创于2021-10，可判44个月）。2026-09-30修正：原A线+0.186%来自2021-09，该月A样本不足3只，按统一规则不计入，故用同一规则重算（新线更严、更早报警）；同时修复\"新月份还没有样本也算作一个月跌破\"的缺陷。重算时A=-0.039%（8、9月当月分别跑输整池4.23%和2.91%），已连续2个月跌破。换规则或年度复核时随基准一起重算。",
+    "line_note": "失败线=各腿滚动12个月差额在2026-07及之前的历史最低值，只统计当月自身匹配样本≥min_month_samples（3）的月份。A=+0.539%（创于2021-12，可判24个月）、C=-0.474%（创于2021-10，可判44个月）。2026-09-30修正：原A线+0.186%来自2021-09，该月A样本不足3只，按统一规则不计入，故用同一规则重算（新线更严、更早报警）；同时修复\"新月份还没有样本也算作一个月跌破\"的缺陷。重算时A=-0.039%（8、9月当月分别跑输整池4.23%和2.91%），已连续2个月跌破。换规则或年度复核时随基准一起重算。2026-11-13加E（条件集=E的40条规则的条件，每条规则一个分支）：按同一规则算出E=-0.712%（创于2023-04，可判66个月，数据截至2026-11-10；滚动优势92%的月份为正）。M的候选一年只有几十只，按min_samples与min_month_samples一个月都判不了，不设。",
     "forward_note": "口径与A腿一致：信号日=涨停日，T+1开盘买入、T+2收盘卖出，前复权；最近两个交易日的样本因为还没到卖出日会自动排除。"
   },
   "drawdown_alert": {
@@ -124,7 +125,7 @@
     "ledger_incomplete_state_path": "data/state/equity_ledger_pending_alert.json"
   },
   "strategy_warnings": {
-    "file_role": "三级警告（2026-11-13用户要求，src/strategy_warnings.py）：初级=临时复核（review_triggers原有条件）；中级=策略复核（某个策略/全部策略/整体组合变差，要研究优化，交易照常）；终极=建议停止交易、优化策略（只推送和终端打印，不停任何程序）。全部按规则回放判定，和逐笔对账同在QMT外每晚计算。阈值由2019-12-02~2026-11-10的生产回放算出后冻结（docs/equity_curve_stop.md第九节第8小节），换版时按新版本重算。",
+    "file_role": "三级警告（2026-11-13用户要求，src/strategy_warnings.py）：初级=临时复核（review_triggers原有条件）；中级=策略复核（某个策略/全部策略/整体组合变差，要研究优化，交易照常）；终极=建议停止交易、优化策略（只推送和终端打印，不停任何程序）。全部按规则回放判定，和逐笔对账同在QMT外每晚计算。阈值由2019-12-02~2026-11-10的生产回放算出后冻结（docs/equity_curve_stop.md第九节第8小节），换版时按新版本重算。另含初级“信号断流”：A/C/E计划和M候选全部连续超过signal_gap_days个行动日没有一只（不管停不停手），2020-04-21以后研究回放最长22天、生产数据回放21天（到2024-02-21）；更早那94天是封单金额放大1000倍的数据错误。",
     "enabled": true,
     "replay_start": "20191202",
     "window_days": 365,
@@ -134,6 +135,7 @@
     "relative_window": 252,
     "relative_days": 20,
     "escalate_open_days": 60,
+    "signal_gap_days": 22,
     "middle": {
       "E": -0.255,
       "M": 0.0,
@@ -153,12 +155,16 @@
     }
   },
   "review_triggers": {
-    "file_role": "临时复核触发检查（src/review_triggers.py，收盘流水线⑬每个交易日一次）：影子账3/6个月失败线、正常行情连续不赚钱、因子健康、实盘账户连续亏损、实盘与正式规则逐笔对账（ace_m_start_date起按ACE+M口径：停手日ACE小仓照常对照，M对照当晚重算的候选单，D在停手日/账户里有M/M当天有候选时不得开仓；之前按停手过滤后的规则）、M实盘滑点（最近m_slippage_trades笔已平仓M的平均双边滑点超过m_slippage_limit_pct%，与逐笔对账同在QMT外检查）、检查本身是否算成；命中即单独推送“请发起甲·临时复核”，持续中每remind_every_open_days个交易日重复，全部解除推送一次；推送失败下个交易日重发。阈值沿用equity_curve_stop.weekly_report与factor_health。",
+    "file_role": "临时复核触发检查（src/review_triggers.py，收盘流水线⑬每个交易日一次）：影子账3/6个月失败线、正常行情连续不赚钱、因子健康、实盘账户连续亏损、实盘与正式规则逐笔对账（ace_m_start_date起按ACE+M口径：停手日ACE小仓照常对照，M对照当晚重算的候选单，D在停手日/账户里有M/M当天有候选时不得开仓；之前按停手过滤后的规则）、M实盘滑点（最近m_slippage_trades笔已平仓M的平均双边滑点超过m_slippage_limit_pct%，与逐笔对账同在QMT外检查）、A/C/E实盘滑点（alignment_start_date起最近ace_slippage_trades笔已平仓A/C/E的平均双边滑点超过ace_slippage_limit_pct%；回放里双边1.2%时只用ACE的样本外月均少一半、约2.2%时不再赚钱）、研究池覆盖率（信号日研究池涨停股不到全市场涨停数的pool_coverage_min_ratio，全市场不足pool_coverage_min_limit_up只不判断；2020年封单金额放大1000倍时为0~3%，此后最低32%）、信号断流（在strategy_warnings里算，见signal_gap_days）、检查本身是否算成；命中即单独推送“请发起甲·临时复核”，持续中每remind_every_open_days个交易日重复，全部解除推送一次；推送失败下个交易日重发。阈值沿用equity_curve_stop.weekly_report与factor_health。",
     "enabled": true,
     "alignment_start_date": "20260921",
     "ace_m_start_date": "20261113",
     "m_slippage_trades": 10,
     "m_slippage_limit_pct": 1.5,
+    "ace_slippage_trades": 10,
+    "ace_slippage_limit_pct": 1.2,
+    "pool_coverage_min_ratio": 0.3,
+    "pool_coverage_min_limit_up": 10,
     "live_loss_months": 3,
     "remind_every_open_days": 5,
     "state_path": "data/state/review_trigger_state.json",
