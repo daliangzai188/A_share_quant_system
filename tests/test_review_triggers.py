@@ -221,11 +221,22 @@ class DailyCheckTests(unittest.TestCase):
             _ok, notify = self._run()
         self.assertIn("实盘成交汇总没算成", notify.call_args.args[1])
 
+    def test_alignment_uses_ace_m_rules_and_raw_data_for_m_reference(self) -> None:
+        self.config["review_triggers"].update(alignment_start_date="20261001", ace_m_start_date="20261113")
+        missed = ReviewTrigger("alignment:missing:20261012:000001.SZ", "实盘执行", "20261012漏单")
+        with patch("src.live_alignment.run_alignment", return_value=[missed]) as run:
+            _ok, notify = self._run()
+        kwargs = run.call_args.kwargs
+        self.assertEqual((kwargs["start"], kwargs["end"], kwargs["ace_m_start"]), ("20261001", "20261012", "20261113"))
+        self.assertEqual(kwargs["raw_dir"], self.module.PROJECT_ROOT / "data" / "raw")
+        self.assertIn("20261012漏单", notify.call_args.args[1])
+
     def test_formal_config_enables_daily_check_and_registers_a_review(self) -> None:
         config = json.loads((ROOT / "config" / "config.json").read_text(encoding="utf-8"))
         section = config["review_triggers"]
         self.assertTrue(section["enabled"])
         self.assertEqual(section["alignment_start_date"], "20260921")
+        self.assertEqual(section["ace_m_start_date"], "20261113", "ACE+M第一个行动日起按新口径对账")
         self.assertEqual(section["live_loss_months"], 3)
         ack = active_acknowledgements(section["acknowledged"], "20261012")
         self.assertEqual(list(ack), ["factor_health:A", "shadow_3m"])

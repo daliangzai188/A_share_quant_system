@@ -124,9 +124,10 @@
     "ledger_incomplete_state_path": "data/state/equity_ledger_pending_alert.json"
   },
   "review_triggers": {
-    "file_role": "临时复核触发检查（src/review_triggers.py，收盘流水线⑬每个交易日一次）：影子账3/6个月失败线、正常行情连续不赚钱、因子健康、实盘账户连续亏损、实盘与停手过滤后正式规则逐笔对账、检查本身是否算成；命中即单独推送“请发起甲·临时复核”，持续中每remind_every_open_days个交易日重复，全部解除推送一次；推送失败下个交易日重发。阈值沿用equity_curve_stop.weekly_report与factor_health。",
+    "file_role": "临时复核触发检查（src/review_triggers.py，收盘流水线⑬每个交易日一次）：影子账3/6个月失败线、正常行情连续不赚钱、因子健康、实盘账户连续亏损、实盘与正式规则逐笔对账（ace_m_start_date起按ACE+M口径：停手日ACE小仓照常对照，M对照当晚重算的候选单，D在停手日/账户里有M/M当天有候选时不得开仓；之前按停手过滤后的规则）、检查本身是否算成；命中即单独推送“请发起甲·临时复核”，持续中每remind_every_open_days个交易日重复，全部解除推送一次；推送失败下个交易日重发。阈值沿用equity_curve_stop.weekly_report与factor_health。",
     "enabled": true,
     "alignment_start_date": "20260921",
+    "ace_m_start_date": "20261113",
     "live_loss_months": 3,
     "remind_every_open_days": 5,
     "state_path": "data/state/review_trigger_state.json",

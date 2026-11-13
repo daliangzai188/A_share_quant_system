@@ -35,10 +35,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.equity_curve_stop import (  # noqa: E402
-    allowed_flags,
     build_shadow_replay,
     current_stop_episode,
-    gated_replay,
     decision_for_next_action_date,
     format_weekly_report,
     is_week_last_open_day,
@@ -67,7 +65,6 @@ from src.factor_health import (  # noqa: E402
 )
 from src.review_triggers import (  # noqa: E402
     active_acknowledgements,
-    alignment_triggers,
     check_failure_trigger,
     factor_health_triggers,
     live_loss_streak_triggers,
@@ -405,13 +402,18 @@ def run_review_trigger_check(
         start = str(section.get("alignment_start_date", "") or "")
         if start:
             def _alignment():
-                flags = allowed_flags(values, ma_window=settings.ma_window, lag=settings.lag_trading_days)
-                return alignment_triggers(
-                    gated_replay(shadow, ma_window=settings.ma_window, lag=settings.lag_trading_days),
+                # 到用时才导入：QMT内不做逐笔对账（起始日留空），不必加载M候选单重算
+                from src.live_alignment import run_alignment
+
+                return run_alignment(
+                    shadow,
                     filled,
-                    stop_dates={date for date, ok in zip(labels, flags) if not ok},
+                    ma_window=settings.ma_window,
+                    lag=settings.lag_trading_days,
                     start=start,
                     end=str(signal_date),
+                    ace_m_start=str(section.get("ace_m_start_date", "") or ""),
+                    raw_dir=PROJECT_ROOT / "data" / "raw",
                 )
             guarded("实盘与正式规则逐笔对账", _alignment)
 

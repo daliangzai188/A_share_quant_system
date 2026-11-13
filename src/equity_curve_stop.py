@@ -7,8 +7,9 @@
    完全同源（``replay_action_date_cash_portfolio``）。
 2. 行动日序列第i天，取第 ``i - lag`` 天的影子净值 v，与截至该天（含）的
    ``ma_window`` 日简单均值比较；该天之前不足 ``ma_window`` 个交易日时视为允许。
-3. v < 均值：该行动日A/C/E/D全部不开新仓；已有持仓照常按原规则退出。
-   影子账停手期间照常记账，用于判断何时恢复。
+3. v < 均值：该行动日是停手日。2026-11-12 ACE+M起，停手日A/C/E按停手期小仓照常
+   开仓、D不启动、M不受影响（仓位见 ``src/portfolio_ace_m.py``）；此前是A/C/E/D
+   全部不开新仓。已有持仓照常按原规则退出。影子账停手期间照常记账，用于判断何时恢复。
 
 参数（60日均线、滞后6个交易日）是2026-09-19研究时事先写死的，研究结论见
 ``docs/equity_curve_stop.md``；年度复核也不得调整。
@@ -217,13 +218,22 @@ def build_shadow_nav(
     )["nav"]
 
 
-def gated_replay(shadow: Mapping[str, Any], *, ma_window: int, lag: int) -> pd.DataFrame:
-    """按停手判定剔除停手日计划后重放，即实盘账户按正式规则应有的逐笔开平仓。"""
+def gated_replay(
+    shadow: Mapping[str, Any], *, ma_window: int, lag: int, ungated_from: str = ""
+) -> pd.DataFrame:
+    """按停手判定剔除停手日计划后重放，即实盘账户按正式规则应有的逐笔开平仓。
+
+    ungated_from：ACE+M生效的第一个行动日。从这天起停手日A/C/E仍按小仓照常开仓
+    （只是仓位变小，哪天开哪一笔不变），所以这天及之后的计划不再剔除；
+    留空则全程剔除停手日计划（ACE+M之前的口径）。
+    """
 
     from src.acde_rolling_framework import FIXED_PRIORITY, replay_action_date_cash_portfolio
 
     nav = shadow["nav"]
     allowed = allowed_action_dates(list(nav.index), nav.to_numpy(), ma_window=ma_window, lag=lag)
+    if ungated_from:
+        allowed |= {str(date) for date in shadow["action_dates"] if str(date) >= str(ungated_from)}
     return replay_action_date_cash_portfolio(
         filter_plans_to_allowed_dates(shadow["legs"], allowed),
         action_dates=shadow["action_dates"],
