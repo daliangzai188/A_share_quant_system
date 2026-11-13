@@ -13,7 +13,9 @@ Windows VM, outside QMT, where files and the network may still be used:
      (rebuilt by qmt_notify_forwarder.py), else from the old system's file. From ACE+M on,
      M's candidate list is recomputed from the Tushare files of step 1 (QMT's own M signal
      files are not visible outside QMT); M's live slippage (average of the last closed M trades)
-     is checked against its alarm line;
+     is checked against its alarm line; the three-tier strategy warnings (src/strategy_warnings.py:
+     middle = strategy review, final = stop trading and optimise is advised; push and terminal only,
+     nothing is ever stopped) replay ACE+M under the live rules and sizing;
   4. production push planning (acknowledged keys, reminder every N open days) and Bark push;
   5. the results of 3 go to external_checks\\factor_health_latest.json and the run log every day,
      and on the last open day of each week a "因子健康周报" push shows the values of both legs and
@@ -81,7 +83,7 @@ def live_trades(config):
 
 
 def weekly_health_message(day, health, health_error, ack_entries, alignment, alignment_error,
-                          slippage=None, slippage_error=''):
+                          slippage=None, slippage_error='', warnings=None, warnings_error='', tiered=()):
     """Title and body of the weekly push of the outside-QMT checks (pure, for tests)."""
     recheck = {str(e.get('key', '')): str(e.get('recheck_by', ''))
                for e in (ack_entries or []) if str(e.get('recheck_by', '') or '').replace('-', '') > str(day)}
@@ -122,6 +124,20 @@ def weekly_health_message(day, health, health_error, ack_entries, alignment, ali
         else:
             lines.append('M实盘滑点：最近%d笔平均双边%+.2f%%（报警线%.1f%%）%s' % (
                 need, average, limit, '，已单独推送' if slippage.get('triggered') else ''))
+    if warnings_error:
+        lines.append('三级警告：没算成（%s），已单独推送' % warnings_error)
+    elif warnings is not None:
+        finals = sorted({t.scope for t in tiered if getattr(t, 'tier', 1) >= 3})
+        middles = sorted({t.scope for t in tiered if getattr(t, 'tier', 1) == 2})
+        state = '终极（%s）' % '、'.join(finals) if finals else ('中级（%s）' % '、'.join(middles) if middles else '无')
+        legs = warnings.get('legs', {})
+        def pct(item):
+            value = (item or {}).get('value')
+            return '不足10笔' if value is None else '%+.1f%%' % (value * 100)
+        combo = (warnings.get('combo_drawdown') or {}).get('value')
+        lines.append('三级警告：%s；ACE+M规则回放回撤%s，最近12个月A%s、C%s、E%s、M%s' % (
+            state, '%.1f%%' % (combo * 100) if combo is not None else '?', pct(legs.get('A')), pct(legs.get('C')),
+            pct(legs.get('E')), pct(legs.get('M'))))
     lines.append('优势=满足该腿条件的涨停股（T+1开盘买、T+2收盘卖）平均收益减去其余涨停股；只做观察，不影响停手判定。')
     return '📊 方案甲因子健康周报 %s' % day, '\n'.join(lines)
 
@@ -158,9 +174,11 @@ def run(args) -> int:
         triggers.extend(factor_health_triggers(health))
     align, align_error = None, ''
     slip, slip_error = None, ''
+    warn_metrics, warn_error = None, ''
     start = str(section.get('alignment_start_date', '') or '')
     if start:
         filled = None
+        shadow = None
         try:
             shadow = prod.build_shadow_replay(
                 project_root=ROOT, feature_path=dataset / 'strict_feature_pool.csv',
@@ -188,6 +206,20 @@ def run(args) -> int:
             traceback.print_exc()
             slip_error = '%s: %s' % (type(exc).__name__, exc)
             triggers.append(check_failure_trigger('M实盘滑点', slip_error))
+        if (config.get('strategy_warnings') or {}).get('enabled'):
+            try:
+                from src.strategy_warnings import run_strategy_warnings
+                if shadow is None:
+                    raise RuntimeError('影子账没建成，三级警告无法回放')
+                found, warn_metrics = run_strategy_warnings(
+                    shadow, health, config, raw_dir=ROOT / 'data' / 'raw',
+                    cache_path=WORK / 'strategy_warning_cache.json', today=day, ma_window=settings.ma_window,
+                    lag=settings.lag_trading_days)
+                triggers.extend(found)
+            except Exception as exc:
+                traceback.print_exc()
+                warn_error = '%s: %s' % (type(exc).__name__, exc)
+                triggers.append(check_failure_trigger('三级警告（策略复核/停止交易建议）', warn_error))
     print('FACTOR_HEALTH %s %s' % (day, json.dumps({'health': health, 'error': error, 'alignment_issues': None if align is None
                                                     else len(align), 'alignment_error': align_error,
                                                     'm_slippage': slip, 'm_slippage_error': slip_error},
@@ -199,6 +231,10 @@ def run(args) -> int:
     except (OSError, ValueError):
         state = {}
     acknowledged = active_acknowledgements(section.get('acknowledged'), day)
+    if warn_metrics is not None:
+        from src.strategy_warnings import escalate, load_warning_settings
+        triggers = escalate(triggers, state, acknowledged=acknowledged, today=day, open_dates=dates,
+                            open_days=load_warning_settings(config).escalate_open_days)
     plan = plan_push(triggers, state, today=day, open_dates=dates,
                      remind_every_open_days=int(section.get('remind_every_open_days', 5)),
                      acknowledged=acknowledged)
@@ -214,15 +250,25 @@ def run(args) -> int:
         tmp = state_path.with_suffix('.tmp')
         tmp.write_text(json.dumps(plan.state, ensure_ascii=False, indent=2), encoding='utf-8')
         os.replace(tmp, state_path)
+        if warn_metrics is not None or warn_error:
+            from src.strategy_warnings import warning_report
+            report = warning_report(triggers, acknowledged, warn_metrics or {}, signal_date=day,
+                                    generated_at=dt.datetime.now(BJ).isoformat())
+            report['error'] = warn_error
+            tmp = WORK / 'strategy_warnings_latest.tmp'
+            tmp.write_text(json.dumps(report, ensure_ascii=False, indent=1, default=str), encoding='utf-8')
+            os.replace(tmp, WORK / 'strategy_warnings_latest.json')
         (WORK / 'factor_health_latest.json').write_text(json.dumps({
             'signal_date': day, 'factor_health': health, 'factor_health_error': error,
             'alignment_issues': None if align is None else [t.detail for t in align], 'alignment_error': align_error,
             'm_slippage': slip, 'm_slippage_error': slip_error,
+            'strategy_warnings_error': warn_error,
             'finished_at': dt.datetime.now(BJ).isoformat()}, ensure_ascii=False, indent=1, default=str), encoding='utf-8')
         weekly_flag = WORK / ('weekly_%s.json' % day)
         if is_week_last_open_day(dates, day) and not weekly_flag.exists():
             title, body = weekly_health_message(day, health, error, section.get('acknowledged'), align, align_error,
-                                                slip, slip_error)
+                                                slip, slip_error, warn_metrics, warn_error,
+                                                [t for t in triggers if getattr(t, 'tier', 1) >= 2])
             print('FACTOR_HEALTH_WEEKLY %s' % body.replace('\n', '；'), flush=True)
             if not prod.notify(title, body, level='active'):
                 print('FACTOR_HEALTH_WEEKLY_PUSH_FAILED %s（下次重试）' % day, flush=True)

@@ -11,7 +11,10 @@ needs no data and no network:
   5. alignment enabled (ACE+M): QMT's exported real buys, the ACE+M start date and the raw data
      folder (for recomputing M's candidates) reach the shared production entry run_alignment, the
      M slippage check gets the same buys with its configured window and line, and what both find
-     is reported.
+     is reported;
+  6. three-tier strategy warnings enabled: the shadow, factor health, raw data folder and cache file
+     reach run_strategy_warnings, a final warning is reported, escalation runs on the push state,
+     and the terminal file strategy_warnings_latest.json is written; the weekly line shows the tier.
 
 Usage: python3 test_external_weekly.py   (Mac Python 3)
 """
@@ -95,6 +98,24 @@ def run_alignment(shadow, live, **kwargs):
     return [SimpleNamespace(key="alignment:m_extra:20261113:300001.SZ", detail="20261113M买入了300001.SZ，不在当天的M候选单里")]
 ''',
     'src/live_performance.py': 'def completed_live_trades(filled, report):\n    return filled, {}\n',
+    'src/strategy_warnings.py': '''
+import json, os
+from pathlib import Path
+from types import SimpleNamespace
+def run_strategy_warnings(shadow, health, config, **kwargs):
+    kwargs.update(raw_dir=str(kwargs["raw_dir"]), cache_path=str(kwargs["cache_path"]), shadow=shadow,
+                  health_legs=sorted(health))
+    json.dump(kwargs, open(Path(os.environ["A_SYSTEM_ROOT"]) / "warnings_call.json", "w"))
+    return [SimpleNamespace(key="warn3:leg:A", detail="A腿单独按规则最近12个月-55.0%，低于历史最差-50.7%", tier=3, scope="A腿",
+                            action="建议先暂停交易")], {"legs": {}, "combo_drawdown": {"value": -0.2}}
+def load_warning_settings(config):
+    return SimpleNamespace(escalate_open_days=60)
+def escalate(triggers, state, **kwargs):
+    open(Path(os.environ["A_SYSTEM_ROOT"]) / "escalate_called", "w").close()
+    return list(triggers)
+def warning_report(triggers, acknowledged, metrics, **kwargs):
+    return {"signal_date": kwargs["signal_date"], "warnings": [t.key for t in triggers if getattr(t, "tier", 1) >= 2]}
+''',
     'src/strategy_equity_ledger.py': 'def _report_config(config):\n    return {}\n',
     'src/strategy_identity.py': 'def normalize_strategy_frame(frame):\n    return frame\n',
 }
@@ -175,8 +196,15 @@ def main():
     _t, b4 = xc.weekly_health_message('20261113', {}, '', [], [], '', {'completed': 3, 'trades': 10, 'limit_pct': 1.5,
                                                                        'average_pct': 0.3})
     _t, b5 = xc.weekly_health_message('20261113', {}, '', [], [], '', None, 'KeyError: x')
+    from types import SimpleNamespace as NS
+    _t, b6 = xc.weekly_health_message('20261113', {}, '', [], [], '', None, '',
+                                      {'legs': {'A': {'value': -0.55}, 'M': {'value': None}}, 'combo_drawdown': {'value': -0.237}},
+                                      '', [NS(tier=3, scope='A腿'), NS(tier=2, scope='M')])
+    _t, b7 = xc.weekly_health_message('20261113', {}, '', [], [], '', None, '', None, 'ValueError: y')
     c4 = c4 and ('M实盘滑点：最近10笔平均双边+0.42%（报警线1.5%）' in b3 and '已平仓3笔，平均双边+0.30%（满10笔后超过1.5%报警）' in b4
-                 and 'M实盘滑点：没算成（KeyError: x）' in b5 and 'M实盘滑点' not in b2)
+                 and 'M实盘滑点：没算成（KeyError: x）' in b5 and 'M实盘滑点' not in b2
+                 and '三级警告：终极（A腿）；ACE+M规则回放回撤-23.7%，最近12个月A-55.0%、C不足10笔、E不足10笔、M不足10笔' in b6
+                 and '三级警告：没算成（ValueError: y）' in b7 and '三级警告' not in b3)
     print('4. expired acknowledgement -> 需临时复核, 2 alignment issues, M slippage lines, failed checks -> %s' % (
         'ok' if c4 else 'FAIL'))
     ok &= c4
@@ -207,6 +235,33 @@ def main():
             call['start'], call['ace_m_start'], call['raw_dir'] == os.path.join(root, 'data', 'raw'), call['live_codes'],
             slip['trades'], slip['limit_pct'], 'ok' if c5 else 'FAIL'))
         ok &= c5
+    with tempfile.TemporaryDirectory() as tmp:
+        root, local = os.path.join(tmp, 'A_System'), os.path.join(tmp, 'local')
+        setup(root)
+        for rel, text in STUBS_ALIGN.items():
+            open(os.path.join(root, rel), 'w', encoding='utf-8').write(text)
+        cfg_path = os.path.join(root, 'config', 'config.json')
+        cfg = json.load(open(cfg_path))
+        cfg['review_triggers'].update(alignment_start_date='20261001', ace_m_start_date='20261113')
+        cfg['strategy_warnings'] = {'enabled': True}
+        json.dump(cfg, open(cfg_path, 'w'))
+        export = os.path.join(local, 'A_System', 'qmt_native', 'qmt_export')
+        os.makedirs(export)
+        open(os.path.join(export, 'trade_completion_summary.csv'), 'w').write(
+            'trade_key,entry_date,ts_code,strategy_leg,entry_filled_qty\nk1,2026-11-13,300001.SZ,M,100\n')
+        code, out = run(root, local, '20261111')
+        call = json.load(open(os.path.join(root, 'warnings_call.json')))
+        work = os.path.join(local, 'A_System', 'qmt_native', 'external_checks')
+        report = json.load(open(os.path.join(work, 'strategy_warnings_latest.json'), encoding='utf-8'))
+        c6 = (code == 0 and call['shadow'] == 'SHADOW' and call['health_legs'] == ['A', 'C'] and call['today'] == '20261111'
+              and call['raw_dir'] == os.path.join(root, 'data', 'raw')
+              and call['cache_path'] == os.path.join(work, 'strategy_warning_cache.json')
+              and (call['ma_window'], call['lag']) == (60, 6) and os.path.exists(os.path.join(root, 'escalate_called'))
+              and report['warnings'] == ['warn3:leg:A'] and '低于历史最差-50.7%' in out)
+        print('6. three-tier warnings: shadow/health/raw/cache passed %s, escalation ran %s, terminal file %s -> %s' % (
+            call['shadow'] == 'SHADOW', os.path.exists(os.path.join(root, 'escalate_called')), report['warnings'],
+            'ok' if c6 else 'FAIL'))
+        ok &= c6
     print('RESULT', 'PASS' if ok else 'FAIL')
     return 0 if ok else 1
 
