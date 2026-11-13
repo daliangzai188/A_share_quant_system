@@ -177,7 +177,7 @@ class DailyCheckTests(unittest.TestCase):
             "review_triggers": {"enabled": True, "alignment_start_date": "", "remind_every_open_days": 5,
                                 "state_path": str(self.state_path), "acknowledged": []},
         }
-        self.settings = SimpleNamespace(ma_window=60, lag_trading_days=6)
+        self.settings = SimpleNamespace(ma_window=60, lag_trading_days=6, work_dir=Path(self.tmp.name))
         self.calendar = Path(self.tmp.name) / "cal.csv"
         pd.DataFrame({"cal_date": dates, "is_open": 1}).to_csv(self.calendar, index=False)
         empty = pd.DataFrame(columns=["exit_date", "net_pnl"])
@@ -245,6 +245,27 @@ class DailyCheckTests(unittest.TestCase):
         self.assertIn("M最近10笔", notify.call_args.args[1])
         self.assertIn("+3.85%", notify.call_args.args[1])
 
+    def test_three_tier_warnings_run_outside_qmt_with_escalation(self) -> None:
+        self.config["review_triggers"].update(alignment_start_date="20260921", ace_m_start_date="20260921")
+        self.config["strategy_warnings"] = {"enabled": True}
+        final = ReviewTrigger("warn3:leg:A", "终极·建议停止交易", "A腿单独按规则最近12个月-55.0%", tier=3, scope="A腿",
+                              action="建议先暂停交易")
+        with patch("src.live_alignment.run_alignment", return_value=[]), \
+                patch("src.strategy_warnings.run_strategy_warnings", return_value=([final], {})) as run, \
+                patch("src.strategy_warnings.escalate", side_effect=lambda t, *a, **k: list(t)) as escalate:
+            _ok, notify = self._run()
+        self.assertEqual(run.call_args.kwargs["raw_dir"], self.module.PROJECT_ROOT / "data" / "raw")
+        self.assertEqual(run.call_args.kwargs["today"], "20261012")
+        escalate.assert_called_once()
+        self.assertEqual(notify.call_args.args[0], "⛔ 终极警告：程序和策略已经走坏，建议停止交易、优化策略（A腿）")
+
+    def test_three_tier_warnings_not_run_when_alignment_is_off(self) -> None:
+        self.config["strategy_warnings"] = {"enabled": True}
+        with patch("src.strategy_warnings.run_strategy_warnings") as run, patch("src.strategy_warnings.escalate") as escalate:
+            self._run()
+        run.assert_not_called()
+        escalate.assert_not_called()
+
     def test_formal_config_enables_daily_check_and_registers_a_review(self) -> None:
         config = json.loads((ROOT / "config" / "config.json").read_text(encoding="utf-8"))
         section = config["review_triggers"]
@@ -252,6 +273,13 @@ class DailyCheckTests(unittest.TestCase):
         self.assertEqual(section["alignment_start_date"], "20260921")
         self.assertEqual(section["ace_m_start_date"], "20261113", "ACE+M第一个行动日起按新口径对账")
         self.assertEqual((section["m_slippage_trades"], section["m_slippage_limit_pct"]), (10, 1.5))
+        warnings = config["strategy_warnings"]
+        self.assertTrue(warnings["enabled"])
+        self.assertEqual(warnings["middle"], {"E": -0.255, "M": 0.0, "combo_drawdown": -0.315})
+        self.assertEqual(warnings["final"], {"A": -0.507, "C": -0.709, "E": -0.39, "shadow_drawdown": -0.547,
+                                             "combo_drawdown": -0.5})
+        self.assertEqual((warnings["factor_health_months"], warnings["relative_days"], warnings["escalate_open_days"]),
+                         (4, 20, 60))
         self.assertEqual(section["live_loss_months"], 3)
         ack = active_acknowledgements(section["acknowledged"], "20261012")
         self.assertEqual(list(ack), ["factor_health:A", "shadow_3m"])

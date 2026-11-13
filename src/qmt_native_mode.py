@@ -13,11 +13,14 @@
 - 绝不再启动旧的外部守护进程；keeper/计划任务调用 start 时什么也不改。
 
 本模块只读 QMT 日志、写/读这一个注册表值、查询进程/窗口标题/计划任务，不下单。
+另外读 QMT 外检查写出的三级警告状态（strategy_warnings_latest.json），在状态显示和日志跟随里醒目打印
+（2026-11-13：只提醒，不停止任何程序）。
 """
 from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import re
 import subprocess
 import time
@@ -29,6 +32,56 @@ CONFIG = Path("config") / "qmt_native.json"
 DEFAULT_LOG_DIR = r"C:\QMT\GJQMT\userdata\log"
 TAIL_BYTES = 3_000_000
 ACCOUNT_MARK = "[账户]".encode("utf-8")
+WARNING_CHECK_SECONDS = 60
+WARNING_REPEAT_SECONDS = 1800
+
+
+def warning_file(settings: dict[str, Any]) -> Path | None:
+    """QMT 外检查（qmt_external_checks.py）写的三级警告状态文件。"""
+    configured = str(settings.get("warning_file") or "")
+    if configured:
+        return Path(configured)
+    base = os.environ.get("LOCALAPPDATA") or ""
+    if not base:
+        return None
+    return Path(base) / "A_System" / "qmt_native" / "external_checks" / "strategy_warnings_latest.json"
+
+
+def warning_banner(settings: dict[str, Any]) -> list[str]:
+    """未处理的中级/终极警告横幅；没有警告、文件缺失或读不了时返回空列表。"""
+    path = warning_file(settings)
+    if path is None:
+        return []
+    try:
+        from src.strategy_warnings import banner_lines, read_report
+    except Exception:
+        return []
+    return banner_lines(read_report(path))
+
+
+class WarningBanner:
+    """日志跟随里的三级警告：开始显示时一次，QMT 外检查写出新结果时一次，终极警告每 30 分钟重复一次。"""
+
+    def __init__(self, settings: dict[str, Any], out: Callable[[str], None], clock: Callable[[], dt.datetime]):
+        self.settings, self.out, self.clock = settings, out, clock
+        self.path = warning_file(settings)
+        self.stamp: float | None = None
+        self.shown_at: dt.datetime | None = None
+
+    def check(self, force: bool = False) -> None:
+        try:
+            stamp = self.path.stat().st_mtime if self.path is not None else None
+        except OSError:
+            stamp = None
+        lines = warning_banner(self.settings)
+        now = self.clock()
+        final = any(line.startswith("⛔") for line in lines)
+        due = final and self.shown_at is not None and (now - self.shown_at).total_seconds() >= WARNING_REPEAT_SECONDS
+        if lines and (force or stamp != self.stamp or due):
+            for line in lines:
+                self.out(line)
+            self.shown_at = now
+        self.stamp = stamp
 
 
 def native_settings(root: str | Path) -> dict[str, Any] | None:
@@ -245,6 +298,7 @@ def status_lines(settings: dict[str, Any], ensure_forwarder: bool = False, now: 
         lines.append("❌ 推送转发（计划任务 %s）状态：%s。手机将收不到推送，请运行 "
                      "powershell -ep bypass -f C:\\A_System\\qmt_native_phase0\\install_notify_forwarder.ps1"
                      % (name, state or "未找到"))
+    lines.extend(warning_banner(settings))
     lines.append("暂停：py -3.11 stop_windows.py；开始：py -3.11 start_windows.py（QMT 保持打开）。")
     return healthy, lines
 
@@ -444,7 +498,13 @@ def follow_log(settings: dict[str, Any], out: Callable[[str], None] = print,
                stop: Callable[[], bool] = lambda: False) -> None:
     follower = LogFollower(settings, out)
     follower.start_at_end(clock().date())
+    banner = WarningBanner(settings, out, clock)
+    banner.check(force=True)
+    checked = clock()
     while not stop():
         sleep(1)
         follower.poll(clock().date())
+        if (clock() - checked).total_seconds() >= WARNING_CHECK_SECONDS:
+            banner.check()
+            checked = clock()
 

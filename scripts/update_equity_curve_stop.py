@@ -11,7 +11,8 @@
    失败条件是否触发）。周报只读已算好的影子净值，失败不影响判定。
 6. 每个交易日做一次临时复核触发检查（src.review_triggers）：影子账失败线、行情停滞、
    因子健康、实盘连续亏损、实盘与正式规则逐笔对账、M实盘滑点、检查本身是否算成；命中即单独推送
-   “请发起甲·临时复核”。检查失败不影响已写出的判定。
+   “请发起甲·临时复核”。三级警告（src.strategy_warnings）与逐笔对账同在QMT外计算：中级“策略复核”、
+   终极“建议停止交易、优化策略”，只推送和终端打印，不停任何程序。检查失败不影响已写出的判定。
 
 任何一步失败都不写判定文件：次日组合状态机会因判定缺失或过期按fail-closed
 不开新仓，并由本脚本推送失败告警。
@@ -360,6 +361,7 @@ def run_review_trigger_check(
     if not section.get("enabled", False):
         return False
     weekly = load_weekly_report_settings(config)
+    warnings_checked = []  # 三级警告只在QMT外（逐笔对账启用时）计算；QMT内这里保持为空，不做任何新事
     nav = shadow["nav"]
     labels = [str(date) for date in nav.index]
     values = nav.to_numpy()
@@ -425,6 +427,24 @@ def run_review_trigger_check(
                 trades=int(section.get("m_slippage_trades", 10)),
                 limit_pct=float(section.get("m_slippage_limit_pct", 1.5)),
             )))
+            if (config.get("strategy_warnings") or {}).get("enabled"):
+                def _warnings():
+                    # 三级警告（中级=策略复核，终极=建议停止交易、优化策略）：只推送，不停任何程序
+                    from src.strategy_warnings import run_strategy_warnings
+
+                    found, _metrics = run_strategy_warnings(
+                        shadow,
+                        factor_health,
+                        config,
+                        raw_dir=PROJECT_ROOT / "data" / "raw",
+                        cache_path=settings.work_dir / "strategy_warning_cache.json",
+                        today=str(signal_date),
+                        ma_window=settings.ma_window,
+                        lag=settings.lag_trading_days,
+                    )
+                    warnings_checked.append(True)
+                    return found
+                guarded("三级警告（策略复核/停止交易建议）", _warnings)
 
     state_path = PROJECT_ROOT / str(section.get("state_path", "data/state/review_trigger_state.json"))
     try:
@@ -432,6 +452,17 @@ def run_review_trigger_check(
     except (OSError, ValueError):
         state = {}
     acknowledged = active_acknowledgements(section.get("acknowledged"), str(signal_date))
+    if warnings_checked:
+        from src.strategy_warnings import escalate, load_warning_settings
+
+        triggers = escalate(
+            triggers,
+            state,
+            acknowledged=acknowledged,
+            today=str(signal_date),
+            open_dates=open_dates_from_calendar(calendar_path),
+            open_days=load_warning_settings(config).escalate_open_days,
+        )
     plan = plan_push(
         triggers,
         state,

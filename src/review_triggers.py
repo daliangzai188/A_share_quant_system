@@ -21,6 +21,12 @@ from src.market_rules import is_st_name
 
 REVIEW_ACTION = "请在Claude发送：甲·临时复核"
 CHECK_REPAIR_ACTION = "请在Claude发送：甲·临时复核（先修好这项检查）"
+FINAL_STANDARD = (
+    "终极警告的优化必须同时达到：①年度复核四条硬门槛（各腿各样本外时段不比现行差、全期最大回撤不超过-50%、"
+    "样本外月均不低于现行、停手参数不动）；②ACE+M样本外月均不低于只用ACE；③触发的那一项按新版本不再触发；"
+    "④新版本全期回放从不触发终极警告；⑤最近12个月回撤不超过历史最深-31.5%（按成本记账）且收益不低于只用ACE。达不到就继续建议停止交易，"
+    "是否带着现行版本恢复由你决定"
+)
 M_LEG = "M"
 
 
@@ -31,6 +37,8 @@ class ReviewTrigger:
     detail: str
     requires_review: bool = True
     action: str = REVIEW_ACTION
+    tier: int = 1    # 1初级（临时复核）、2中级（策略复核）、3终极（建议停止交易、优化策略），见src.strategy_warnings
+    scope: str = ""  # 中级/终极的范围：某个策略、全部策略、整体组合
 
 
 @dataclass(frozen=True)
@@ -602,7 +610,7 @@ def plan_push(
     if not new_keys and not due:
         return PushPlan("", "", "", base_state)
 
-    ordered = sorted(pending, key=lambda t: (not t.requires_review, t.key not in new_keys, t.key))
+    ordered = sorted(pending, key=lambda t: (-t.tier, not t.requires_review, t.key not in new_keys, t.key))
     lines = []
     for index, trigger in enumerate(ordered, 1):
         tag = "新" if trigger.key in new_keys else f"自{next_first_seen[trigger.key]}起"
@@ -612,7 +620,21 @@ def plan_push(
         if trigger.action not in actions:
             actions.append(trigger.action)
     needs_review = any(trigger.requires_review for trigger in pending)
-    if needs_review:
+    tier = max(trigger.tier for trigger in pending)
+    scopes = "、".join(dict.fromkeys(t.scope for t in ordered if t.tier == tier and t.scope))
+    if tier >= 3:
+        title = (
+            f"⛔ 终极警告：程序和策略已经走坏，建议停止交易、优化策略（{scopes}）"
+            if new_keys
+            else f"⛔ 仍是终极警告：建议停止交易、优化策略（{scopes}）"
+        )
+    elif tier == 2:
+        title = (
+            f"⚠️ 中级警告：{scopes}需要策略复核"
+            if new_keys
+            else f"⚠️ 仍有中级警告：{scopes}需要策略复核"
+        )
+    elif needs_review:
         title = (
             f"🚨 请发起甲·临时复核：{len(keys)}项触发"
             if new_keys
@@ -621,6 +643,8 @@ def plan_push(
     else:
         title = f"📝 方案甲需记录事项：{len(keys)}项"
     body = "；".join(lines) + "。处理：" + "；".join(actions) + "。"
+    if tier >= 3:
+        body += FINAL_STANDARD + "。系统不会自己停止交易。"
     if watched:
         body += "另有已复核、仍在观察：" + "；".join(
             f"{trigger.detail}（{acknowledged[trigger.key]}）" for trigger in watched

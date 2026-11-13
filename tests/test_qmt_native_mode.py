@@ -7,7 +7,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src.qmt_native_mode import LogFollower, live_status, native_settings, native_start, native_stop, status_lines
+from src.qmt_native_mode import (LogFollower, follow_log, live_status, native_settings, native_start, native_stop,
+                                  status_lines)
 
 ROOT = Path(__file__).resolve().parents[1]
 NOW = dt.datetime(2026, 10, 27, 2, 33, 0)
@@ -216,6 +217,59 @@ class QmtNativeModeTests(unittest.TestCase):
             self.assertEqual(done.returncode, 0 if args else 1, done.stdout)  # no registry here: nothing started
             self.assertFalse((repo / '.daemon_pid').exists())
             self.assertFalse((repo / 'logs').exists())
+
+
+
+
+class WarningBannerTests(unittest.TestCase):
+    """三级警告（QMT外检查写的状态文件）在状态显示和日志跟随里打印；只提醒，不停任何程序。"""
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        self.file = self.dir / 'strategy_warnings_latest.json'
+        self.settings = {'enabled': True, 'qmt_log_dir': str(self.dir), 'strategy_file': 'A_SYSTEM_QMT_INNER',
+                         'forwarder_task': 'A_System_QmtNotifyForwarder', 'stale_minutes': 10,
+                         'warning_file': str(self.file)}
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def report(self, tier, detail):
+        import json
+        self.file.write_text(json.dumps({'signal_date': '20261120', 'warnings': [
+            {'tier': tier, 'scope': 'A腿', 'key': 'k', 'detail': detail, 'action': '处理办法', 'acknowledged': ''}],
+            'final_standard': '优化标准' if tier >= 3 else ''}, ensure_ascii=False), encoding='utf-8')
+
+    def test_status_lines_show_active_warnings(self):
+        _ok, lines = status_lines(self.settings, now=NOW, qmt=lambda: True, task=lambda n: 'Running')
+        self.assertFalse(any('警告' in line for line in lines))
+        self.report(3, 'A腿最近12个月-55%')
+        _ok, lines = status_lines(self.settings, now=NOW, qmt=lambda: True, task=lambda n: 'Running')
+        self.assertTrue(any(line.startswith('⛔ 终极警告（20261120）：程序和策略已经走坏，建议停止交易、优化策略') for line in lines))
+        self.assertIn('  （系统不会自己停止交易，停不停由你决定）', lines)
+        self.assertTrue(lines[-1].startswith('暂停：py -3.11 stop_windows.py'))
+
+    def test_follow_log_prints_on_start_on_change_and_repeats_final_every_half_hour(self):
+        self.report(3, '第一次')
+        out, clock = [], [NOW]
+        ticks = iter(range(10000))
+
+        def sleep(_seconds):
+            clock[0] += dt.timedelta(seconds=30)
+            if clock[0] == NOW + dt.timedelta(minutes=10):
+                self.report(2, '换成中级')
+
+        def stop():
+            return next(ticks) >= 140   # 70 分钟
+
+        follow_log(self.settings, out=out.append, clock=lambda: clock[0], sleep=sleep, stop=stop)
+        self.assertEqual(sum(1 for line in out if line.startswith('⛔')), 1, '开始时显示一次终极警告')
+        self.assertEqual(sum(1 for line in out if line.startswith('⚠️ 中级警告')), 1, '文件更新后显示新结果；中级不重复')
+        self.report(3, '终极')
+        out.clear()
+        ticks = iter(range(10000))
+        follow_log(self.settings, out=out.append, clock=lambda: clock[0], sleep=sleep, stop=stop)
+        self.assertEqual(sum(1 for line in out if line.startswith('⛔')), 3, '开始一次，之后每30分钟重复')
 
 
 if __name__ == '__main__':
