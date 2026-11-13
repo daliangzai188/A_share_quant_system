@@ -201,10 +201,14 @@ def main():
                                       {'legs': {'A': {'value': -0.55}, 'M': {'value': None}}, 'combo_drawdown': {'value': -0.237}},
                                       '', [NS(tier=3, scope='A腿'), NS(tier=2, scope='M')])
     _t, b7 = xc.weekly_health_message('20261113', {}, '', [], [], '', None, '', None, 'ValueError: y')
+    _t, b8 = xc.weekly_health_message('20261113', {}, '', [{'key': 'warn2:leg:A', 'recheck_by': '2027-01-02'}], [], '', None, '',
+                                      {'legs': {}, 'combo_drawdown': {'value': -0.245}}, '',
+                                      [NS(tier=2, scope='A腿', key='warn2:leg:A'), NS(tier=2, scope='M', key='warn2:leg:M')])
     c4 = c4 and ('M实盘滑点：最近10笔平均双边+0.42%（报警线1.5%）' in b3 and '已平仓3笔，平均双边+0.30%（满10笔后超过1.5%报警）' in b4
                  and 'M实盘滑点：没算成（KeyError: x）' in b5 and 'M实盘滑点' not in b2
                  and '三级警告：终极（A腿）；ACE+M规则回放回撤-23.7%，最近12个月A-55.0%、C不足10笔、E不足10笔、M不足10笔' in b6
-                 and '三级警告：没算成（ValueError: y）' in b7 and '三级警告' not in b3)
+                 and '三级警告：没算成（ValueError: y）' in b7 and '三级警告' not in b3
+                 and '三级警告：中级（A腿，已复核登记，2027-01-02复查；M）；ACE+M规则回放回撤-24.5%' in b8)
     print('4. expired acknowledgement -> 需临时复核, 2 alignment issues, M slippage lines, failed checks -> %s' % (
         'ok' if c4 else 'FAIL'))
     ok &= c4

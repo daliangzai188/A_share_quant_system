@@ -127,9 +127,20 @@ def weekly_health_message(day, health, health_error, ack_entries, alignment, ali
     if warnings_error:
         lines.append('三级警告：没算成（%s），已单独推送' % warnings_error)
     elif warnings is not None:
-        finals = sorted({t.scope for t in tiered if getattr(t, 'tier', 1) >= 3})
-        middles = sorted({t.scope for t in tiered if getattr(t, 'tier', 1) == 2})
-        state = '终极（%s）' % '、'.join(finals) if finals else ('中级（%s）' % '、'.join(middles) if middles else '无')
+        def scopes(final):
+            # 已登记复核的写明复查日，和上面因子健康那行一致（登记只停单独提醒，条件还在）
+            items = []
+            for t in tiered:
+                tier = getattr(t, 'tier', 1)
+                if (tier >= 3) != final or tier < 2:
+                    continue
+                key = str(getattr(t, 'key', ''))
+                text = str(t.scope) + ('，已复核登记，%s复查' % recheck[key] if key in recheck else '')
+                if text not in items:
+                    items.append(text)
+            return '；'.join(sorted(items))
+        finals, middles = scopes(True), scopes(False)
+        state = '终极（%s）' % finals if finals else ('中级（%s）' % middles if middles else '无')
         legs = warnings.get('legs', {})
         def pct(item):
             value = (item or {}).get('value')
