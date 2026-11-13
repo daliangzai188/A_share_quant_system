@@ -282,9 +282,12 @@ class DailyCheckTests(unittest.TestCase):
                          (4, 20, 60))
         self.assertEqual(section["live_loss_months"], 3)
         ack = active_acknowledgements(section["acknowledged"], "20261012")
-        self.assertEqual(list(ack), ["factor_health:A", "shadow_3m"])
-        # 2026-11-11临时复核登记的3个月线到2026-12-11复查日恢复提醒，A腿登记仍在
-        self.assertEqual(list(active_acknowledgements(section["acknowledged"], "20261211")), ["factor_health:A"])
+        self.assertEqual(list(ack), ["factor_health:A", "shadow_3m", "warn2:leg:A"])
+        # 2026-11-11临时复核登记的3个月线到2026-12-11复查日恢复提醒，A腿两项登记仍在
+        self.assertEqual(list(active_acknowledgements(section["acknowledged"], "20261211")),
+                         ["factor_health:A", "warn2:leg:A"])
+        # 2026-11-13策略复核（中级警告A腿）维持现行，到年度复核2027-01-02恢复提醒
+        self.assertEqual(list(active_acknowledgements(section["acknowledged"], "20270104")), [])
 
 
 class WeeklyReportAcknowledgementTests(unittest.TestCase):
