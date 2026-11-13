@@ -34,6 +34,7 @@ Python 里全自动运行。切换步骤见 `切换上线手册_QMT原生版.md`
 ```bash
 venv/bin/python build_inqmt.py /Users/eass/Desktop/A_System inqmt/qn_core_full.py full
 QN_EQ_SEED=$PWD/eqseed_prod_full venv/bin/python build_qmt_strategy.py shadow "$QMT_ACCOUNT_ID" "$QN_PAPER_CASH" inqmt/A_SYSTEM_QMT_NATIVE_shadow.py
+QN_EQ_SEED=$PWD/eqseed_prod_full venv/bin/python build_qmt_strategy.py live "$QMT_ACCOUNT_ID" 0 inqmt/test_live_tmp.py  # 每次回归前重打，旧文件缺日志存储，接管测试会报 KeyError
 sh inqmt/run_regression.sh inqmt/A_SYSTEM_QMT_NATIVE_shadow.py inqmt/test_live_tmp.py inqmt/regress_out
 sh prepare_live.sh 20261022
 sh publish_to_a_system.sh "提交说明"
