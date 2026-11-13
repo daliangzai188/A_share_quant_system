@@ -7,7 +7,11 @@ needs no data and no network:
   2. the week's last open day with a failing push: exit 2, not marked done (retried in 30 min);
   3. the same day again: exactly one weekly push, acknowledged A leg shown with its values and
      recheck date, healthy C leg, alignment disabled; a later rerun does not push again;
-  4. the message text for an unacknowledged breach, alignment issues and a failed check.
+  4. the message text for an unacknowledged breach, alignment issues, M's live slippage and a failed check;
+  5. alignment enabled (ACE+M): QMT's exported real buys, the ACE+M start date and the raw data
+     folder (for recomputing M's candidates) reach the shared production entry run_alignment, the
+     M slippage check gets the same buys with its configured window and line, and what both find
+     is reported.
 
 Usage: python3 test_external_weekly.py   (Mac Python 3)
 """
@@ -49,6 +53,15 @@ def check_failure_trigger(name, err): return SimpleNamespace(key="check_failed:"
 def factor_health_triggers(h):
     return [SimpleNamespace(key="factor_health:" + l, detail=l) for l, i in sorted(h.items()) if i["triggered"]]
 def plan_push(triggers, state, **k): return SimpleNamespace(kind=None, title="", body="", state=dict(state))
+def m_slippage_stats(live, **kwargs):
+    import json, os
+    from pathlib import Path
+    kwargs["live_codes"] = sorted(live["ts_code"])
+    json.dump(kwargs, open(Path(os.environ["A_SYSTEM_ROOT"]) / "slippage_call.json", "w"))
+    return {"completed": 10, "trades": kwargs["trades"], "limit_pct": kwargs["limit_pct"], "average_pct": 2.0,
+            "window": [], "triggered": True}
+def m_slippage_triggers(stats):
+    return [SimpleNamespace(key="m_slippage", detail="M最近10笔实盘平均双边滑点+2.00%")] if stats["triggered"] else []
 ''',
     'scripts/__init__.py': '',
     'scripts/update_equity_curve_stop.py': '''
@@ -60,6 +73,7 @@ class S:
     work_dir: Path; history_start: str = "20190101"; ma_window: int = 60; lag_trading_days: int = 6
 def load_settings(config, root): return S(work_dir=root / "w")
 def build_dataset(settings, day): return settings.work_dir
+def build_shadow_replay(**kwargs): return "SHADOW"
 def compute_factor_health_checked(config, dataset, calendar):
     return json.load(open(ROOT / "health.json")), ""
 def notify(title, body, level="active"):
@@ -68,6 +82,21 @@ def notify(title, body, level="active"):
         f.write(json.dumps({"title": title, "body": body}, ensure_ascii=False) + "\\n")
     return True
 ''',
+}
+
+STUBS_ALIGN = {
+    'src/live_alignment.py': '''
+import json, os
+from pathlib import Path
+from types import SimpleNamespace
+def run_alignment(shadow, live, **kwargs):
+    kwargs.update(raw_dir=str(kwargs["raw_dir"]), shadow=shadow, live_codes=sorted(live["ts_code"]))
+    json.dump(kwargs, open(Path(os.environ["A_SYSTEM_ROOT"]) / "alignment_call.json", "w"))
+    return [SimpleNamespace(key="alignment:m_extra:20261113:300001.SZ", detail="20261113M买入了300001.SZ，不在当天的M候选单里")]
+''',
+    'src/live_performance.py': 'def completed_live_trades(filled, report):\n    return filled, {}\n',
+    'src/strategy_equity_ledger.py': 'def _report_config(config):\n    return {}\n',
+    'src/strategy_identity.py': 'def normalize_strategy_frame(frame):\n    return frame\n',
 }
 
 
@@ -141,8 +170,43 @@ def main():
                                      [object(), object()], '')
     _t, b2 = xc.weekly_health_message('20261113', {}, 'boom', [], None, 'ValueError: x')
     c4 = ('连续4个月在线下，需临时复核' in b and '2处不一致' in b and '没算成（boom）' in b2 and '对账：没算成（ValueError: x）' in b2)
-    print('4. expired acknowledgement -> 需临时复核, 2 alignment issues, failed checks -> %s' % ('ok' if c4 else 'FAIL'))
+    _t, b3 = xc.weekly_health_message('20261113', {}, '', [], [], '', {'completed': 12, 'trades': 10, 'limit_pct': 1.5,
+                                                                       'average_pct': 0.42, 'triggered': False})
+    _t, b4 = xc.weekly_health_message('20261113', {}, '', [], [], '', {'completed': 3, 'trades': 10, 'limit_pct': 1.5,
+                                                                       'average_pct': 0.3})
+    _t, b5 = xc.weekly_health_message('20261113', {}, '', [], [], '', None, 'KeyError: x')
+    c4 = c4 and ('M实盘滑点：最近10笔平均双边+0.42%（报警线1.5%）' in b3 and '已平仓3笔，平均双边+0.30%（满10笔后超过1.5%报警）' in b4
+                 and 'M实盘滑点：没算成（KeyError: x）' in b5 and 'M实盘滑点' not in b2)
+    print('4. expired acknowledgement -> 需临时复核, 2 alignment issues, M slippage lines, failed checks -> %s' % (
+        'ok' if c4 else 'FAIL'))
     ok &= c4
+    with tempfile.TemporaryDirectory() as tmp:
+        root, local = os.path.join(tmp, 'A_System'), os.path.join(tmp, 'local')
+        setup(root)
+        for rel, text in STUBS_ALIGN.items():
+            open(os.path.join(root, rel), 'w', encoding='utf-8').write(text)
+        cfg_path = os.path.join(root, 'config', 'config.json')
+        cfg = json.load(open(cfg_path))
+        cfg['review_triggers'].update(alignment_start_date='20261001', ace_m_start_date='20261113')
+        json.dump(cfg, open(cfg_path, 'w'))
+        export = os.path.join(local, 'A_System', 'qmt_native', 'qmt_export')
+        os.makedirs(export)
+        open(os.path.join(export, 'trade_completion_summary.csv'), 'w').write(
+            'trade_key,entry_date,ts_code,strategy_leg,entry_filled_qty\n'
+            'k1,2026-11-13,300001.SZ,M,100\nk2,20261113,000001.SZ,A,0\n')
+        code, out = run(root, local, '20261111')
+        call = json.load(open(os.path.join(root, 'alignment_call.json')))
+        slip = json.load(open(os.path.join(root, 'slippage_call.json')))
+        c5 = (code == 0 and call['start'] == '20261001' and call['end'] == '20261111' and call['ace_m_start'] == '20261113'
+              and call['raw_dir'] == os.path.join(root, 'data', 'raw') and call['shadow'] == 'SHADOW'
+              and call['live_codes'] == ['300001.SZ'] and (call['ma_window'], call['lag']) == (60, 6)
+              and '不在当天的M候选单里' in out and '"alignment_issues": 1' in out
+              and (slip['start'], slip['trades'], slip['limit_pct'], slip['live_codes']) == ('20261113', 10, 1.5, ['300001.SZ'])
+              and 'M最近10笔实盘平均双边滑点+2.00%' in out and 'active=3' in out)
+        print('5. alignment (ACE+M): start %s, ace_m_start %s, raw dir passed %s, live buys %s; slippage window %s line %s%% -> %s' % (
+            call['start'], call['ace_m_start'], call['raw_dir'] == os.path.join(root, 'data', 'raw'), call['live_codes'],
+            slip['trades'], slip['limit_pct'], 'ok' if c5 else 'FAIL'))
+        ok &= c5
     print('RESULT', 'PASS' if ok else 'FAIL')
     return 0 if ok else 1
 
