@@ -3,7 +3,7 @@
 失败条件表（docs/equity_curve_stop.md第九节第6小节）原来分散在周报里，只在每周最后一个
 开市日检查一次，提醒埋在周报末尾；另有几条完全没有自动检查：实盘连续3个月亏损、实盘
 与正式规则逐笔对不上（漏单、多出的单、停手日开仓；ACE+M起还包括M买错、D在不该启动的
-日子开仓）、监控本身没算成。本模块每个交易日由收盘流水线⑬调用一次：
+日子开仓）、M实盘滑点超过报警线（ACE+M起）、监控本身没算成。本模块每个交易日由收盘流水线⑬调用一次：
 - 任何一条命中，单独推送“请发起甲·临时复核”，写明每一条的原因；
 - 同一组条件持续存在时，每隔若干个交易日再提醒一次；新增条件立即推送；
 - 全部解除时推送一次解除，与提醒成对；
@@ -168,6 +168,14 @@ def _positive(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return number if number == number and number > 0 else None
+
+
+def _number(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number == number and abs(number) != float("inf") else None
 
 
 def _codes_text(codes: Sequence[str], limit: int = 5) -> str:
@@ -472,6 +480,55 @@ def alignment_triggers(
                 f"{date}M一天买了{len(codes)}只（{listed}）；M一天最多买一只",
             ))
     return triggers
+
+
+def m_slippage_stats(live: pd.DataFrame, *, start: str, trades: int, limit_pct: float) -> dict[str, Any]:
+    """M最近trades笔已平仓交易的实盘平均双边滑点（%），即成交汇总的total_slippage_bps/100：
+    买入均价比开盘价高多少加上卖出均价比收盘价低多少，正数表示比回测基准差。
+
+    只算start（ACE+M生效日）起、已平仓、买卖均价和开盘/收盘基准都齐全的M（缺基准时汇总里
+    滑点记为0，不能算进去）；满trades笔才判断是否超过limit_pct。
+    """
+
+    done = []
+    if start and len(live):
+        for record in live.to_dict("records"):
+            if _text(record.get("strategy_leg")).upper() != M_LEG:
+                continue
+            day = _date_text(record.get("entry_date"))
+            if not day or day < str(start) or _text(record.get("execution_status")) != "已平仓":
+                continue
+            prices = [_positive(record.get(c)) for c in ("entry_vwap", "benchmark_open", "exit_vwap", "benchmark_close")]
+            total = _number(record.get("total_slippage_bps"))
+            if None in prices or total is None:
+                continue
+            done.append((day, _text(record.get("ts_code")), total / 100.0))
+    done.sort()
+    window = done[-int(trades):] if int(trades) > 0 else []
+    average = sum(pct for _day, _code, pct in window) / len(window) if window else None
+    return {
+        "completed": len(done),
+        "trades": int(trades),
+        "limit_pct": float(limit_pct),
+        "average_pct": average,
+        "window": [{"entry_date": day, "ts_code": code, "slippage_pct": round(pct, 4)} for day, code, pct in window],
+        "triggered": bool(int(trades) > 0 and len(window) >= int(trades) and average > float(limit_pct)),
+    }
+
+
+def m_slippage_triggers(stats: Mapping[str, Any] | None) -> list[ReviewTrigger]:
+    """M实盘滑点超过报警线：回测按双边0.2%，双边约3%~4%时加M就不如只用ACE。"""
+
+    if not stats or not stats.get("triggered"):
+        return []
+    window = list(stats.get("window") or [])
+    return [ReviewTrigger(
+        "m_slippage", "实盘执行",
+        "M最近%d笔（%s~%s买入）实盘平均双边滑点%+.2f%%，超过报警线%.1f%%；回测按双边0.2%%，"
+        "双边约3%%~4%%时加M就不如只用ACE，请查竞价和补单的成交价" % (
+            len(window), window[0]["entry_date"], window[-1]["entry_date"],
+            float(stats["average_pct"]), float(stats["limit_pct"])),
+    )]
 
 
 def check_failure_trigger(name: str, error: BaseException | str) -> ReviewTrigger:

@@ -10,7 +10,7 @@
 5. 每周最后一个开市日推送空仓期周报（影子账表现、停手踏空/躲掉、离恢复还差多少、
    失败条件是否触发）。周报只读已算好的影子净值，失败不影响判定。
 6. 每个交易日做一次临时复核触发检查（src.review_triggers）：影子账失败线、行情停滞、
-   因子健康、实盘连续亏损、实盘与正式规则逐笔对账、检查本身是否算成；命中即单独推送
+   因子健康、实盘连续亏损、实盘与正式规则逐笔对账、M实盘滑点、检查本身是否算成；命中即单独推送
    “请发起甲·临时复核”。检查失败不影响已写出的判定。
 
 任何一步失败都不写判定文件：次日组合状态机会因判定缺失或过期按fail-closed
@@ -68,6 +68,8 @@ from src.review_triggers import (  # noqa: E402
     check_failure_trigger,
     factor_health_triggers,
     live_loss_streak_triggers,
+    m_slippage_stats,
+    m_slippage_triggers,
     monthly_realized_pnl,
     plan_push,
     regime_stall_triggers,
@@ -416,6 +418,13 @@ def run_review_trigger_check(
                     raw_dir=PROJECT_ROOT / "data" / "raw",
                 )
             guarded("实盘与正式规则逐笔对账", _alignment)
+            # M实盘滑点与逐笔对账一样只在QMT外检查（QMT内起始日留空），两边不会重复推送
+            guarded("M实盘滑点", lambda: m_slippage_triggers(m_slippage_stats(
+                filled,
+                start=str(section.get("ace_m_start_date", "") or ""),
+                trades=int(section.get("m_slippage_trades", 10)),
+                limit_pct=float(section.get("m_slippage_limit_pct", 1.5)),
+            )))
 
     state_path = PROJECT_ROOT / str(section.get("state_path", "data/state/review_trigger_state.json"))
     try:

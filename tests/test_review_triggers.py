@@ -231,12 +231,27 @@ class DailyCheckTests(unittest.TestCase):
         self.assertEqual(kwargs["raw_dir"], self.module.PROJECT_ROOT / "data" / "raw")
         self.assertIn("20261012漏单", notify.call_args.args[1])
 
+    def test_m_slippage_is_checked_with_alignment(self) -> None:
+        self.config["review_triggers"].update(alignment_start_date="20260921", ace_m_start_date="20260921")
+        days = pd.bdate_range("2026-09-21", periods=10).strftime("%Y%m%d").tolist()
+        live = pd.DataFrame([{"entry_date": day, "ts_code": "30%04d.SZ" % i, "strategy_leg": "M",
+                              "execution_status": "已平仓", "entry_vwap": 10.2, "benchmark_open": 10.0,
+                              "exit_vwap": 10.8, "benchmark_close": 11.0, "total_slippage_bps": 385.0}
+                             for i, day in enumerate(days)])
+        empty = pd.DataFrame(columns=["exit_date", "net_pnl"])
+        with patch.object(self.module, "_live_trades", return_value=(live, empty)), \
+                patch("src.live_alignment.run_alignment", return_value=[]):
+            _ok, notify = self._run()
+        self.assertIn("M最近10笔", notify.call_args.args[1])
+        self.assertIn("+3.85%", notify.call_args.args[1])
+
     def test_formal_config_enables_daily_check_and_registers_a_review(self) -> None:
         config = json.loads((ROOT / "config" / "config.json").read_text(encoding="utf-8"))
         section = config["review_triggers"]
         self.assertTrue(section["enabled"])
         self.assertEqual(section["alignment_start_date"], "20260921")
         self.assertEqual(section["ace_m_start_date"], "20261113", "ACE+M第一个行动日起按新口径对账")
+        self.assertEqual((section["m_slippage_trades"], section["m_slippage_limit_pct"]), (10, 1.5))
         self.assertEqual(section["live_loss_months"], 3)
         ack = active_acknowledgements(section["acknowledged"], "20261012")
         self.assertEqual(list(ack), ["factor_health:A", "shadow_3m"])

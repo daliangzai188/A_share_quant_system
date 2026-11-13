@@ -13,7 +13,7 @@ import pandas as pd
 
 from src.equity_curve_stop import allowed_flags, gated_replay
 from src.live_alignment import plan_codes_by_date, run_alignment
-from src.review_triggers import CHECK_REPAIR_ACTION, alignment_triggers
+from src.review_triggers import CHECK_REPAIR_ACTION, alignment_triggers, m_slippage_stats, m_slippage_triggers
 from src.strategy_m_reference import MReference
 
 START = "20261113"
@@ -223,6 +223,54 @@ class MLegTests(unittest.TestCase):
     def test_m_before_ace_m_start_is_checked_the_old_way(self) -> None:
         live = _live([("20261112", "301001.SZ", "M", "测试", "已平仓", "20261113", 10000.0)])
         self.assertEqual(_keys(_check(live, FakeReference({}))), ["alignment:extra:20261112:301001.SZ"])
+
+
+SLIP_COLUMNS = ["entry_date", "ts_code", "strategy_leg", "execution_status", "entry_vwap", "benchmark_open",
+                "exit_vwap", "benchmark_close", "total_slippage_bps"]
+
+
+def _slip(day, code, bps, *, leg="M", status="已平仓", benchmark_open=10.0):
+    return (day, code, leg, status, 10.1, benchmark_open, 11.0, 11.05, bps)
+
+
+def _slip_stats(rows, trades=10, limit_pct=1.5):
+    frame = pd.DataFrame([dict(zip(SLIP_COLUMNS, row)) for row in rows], columns=SLIP_COLUMNS)
+    return m_slippage_stats(frame, start=START, trades=trades, limit_pct=limit_pct)
+
+
+class MSlippageTests(unittest.TestCase):
+    DAYS = pd.bdate_range("2026-11-13", periods=12).strftime("%Y%m%d").tolist()
+
+    def test_needs_ten_closed_m_trades_and_strictly_above_the_line(self) -> None:
+        rows = [_slip(day, "30%04d.SZ" % i, 200.0) for i, day in enumerate(self.DAYS[:9])]
+        stats = _slip_stats(rows)
+        self.assertEqual((stats["completed"], stats["triggered"]), (9, False), "不足10笔不判")
+        self.assertEqual(m_slippage_triggers(stats), [])
+        stats = _slip_stats(rows + [_slip(self.DAYS[9], "309999.SZ", 200.0)])
+        self.assertTrue(stats["triggered"])
+        self.assertAlmostEqual(stats["average_pct"], 2.0)
+        trigger = m_slippage_triggers(stats)[0]
+        self.assertEqual((trigger.key, trigger.category), ("m_slippage", "实盘执行"))
+        self.assertIn("平均双边滑点+2.00%，超过报警线1.5%", trigger.detail)
+        self.assertIn("%s~%s买入" % (self.DAYS[0], self.DAYS[9]), trigger.detail)
+        at_line = [_slip(day, "30%04d.SZ" % i, 150.0) for i, day in enumerate(self.DAYS[:10])]
+        self.assertFalse(_slip_stats(at_line)["triggered"], "等于报警线不报")
+
+    def test_only_latest_closed_m_with_benchmarks_since_ace_m_start(self) -> None:
+        rows = [_slip(day, "30%04d.SZ" % i, 900.0 if i < 2 else 100.0) for i, day in enumerate(self.DAYS)]
+        rows += [
+            _slip("20261112", "300900.SZ", 900.0),                       # 生效日之前
+            _slip(self.DAYS[3], "000901.SZ", 900.0, leg="A"),             # 不是M
+            _slip(self.DAYS[4], "300902.SZ", 900.0, status="平仓中"),     # 还没卖完
+            _slip(self.DAYS[5], "300903.SZ", 0.0, benchmark_open=0.0),    # 缺开盘基准，汇总里记0
+        ]
+        stats = _slip_stats(rows)
+        self.assertEqual(stats["completed"], 12)
+        self.assertEqual(stats["window"][0]["entry_date"], self.DAYS[2], "只看最近10笔")
+        self.assertAlmostEqual(stats["average_pct"], 1.0)
+        self.assertFalse(stats["triggered"])
+        frame = pd.DataFrame([dict(zip(SLIP_COLUMNS, row)) for row in rows], columns=SLIP_COLUMNS)
+        self.assertEqual(m_slippage_stats(frame, start="", trades=10, limit_pct=1.5)["completed"], 0)
 
 
 class GatedReplayTests(unittest.TestCase):
