@@ -1825,6 +1825,11 @@ M的去留（2026-11-13起）：M的规则平时不调，只在年度复核决�
    2026-11-14起A_System文件夹两端双向同步（`.git`、`*.tmp`不同步；两端各保留30天被覆盖/删除的旧文件），
    实盘成交汇总和QMT外检查结果另存在`reports/qmt_native/`同步到Mac；虚拟机采集的`data/raw`行情同步回来后不要提交进git。
 3. 全量测试只在导出副本里跑，不在同步工作区跑，避免测试打开生产交易意图账本。
+4. 生产链对照标准（2026-11-14起）：凡是不该改变交易结果的代码改动，提交前在导出副本跑
+   `python tests/golden/golden_master.py check`（约4分钟，用Mac上冻结的`~/A_System_golden_data/20261110`），
+   研究池、影子账、停手判定、实盘组合下单、因子健康、M候选单、三级警告、日报、仓位必须全部逐字节一致；
+   确实应该变的（改规则）单独说明后才`record`。生产代码清单由`tests/test_production_modules.py`锁定，
+   项目优化验收指标用`python tests/golden/project_metrics.py`计算。
 
 数据更新方法继续执行`docs/monthly_three_year_data_update.md`；
 `docs/monthly_acde_optimization_sop.md`保留为研究方法与数据门禁参考，不再用于生产换版。

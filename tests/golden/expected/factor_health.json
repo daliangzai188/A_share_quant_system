@@ -1,0 +1,43 @@
+{
+ "A": {
+  "as_of": "202611",
+  "branches_total": 3,
+  "branches_used": 3,
+  "line": "0.0053908558571433597",
+  "months": [
+   "202608",
+   "202609",
+   "202610",
+   "202611"
+  ],
+  "months_below": 4,
+  "need_months": 2,
+  "samples": 207,
+  "triggered": true,
+  "value": "0.00052106005674763117"
+ },
+ "C": {
+  "as_of": "202609",
+  "branches_total": 5,
+  "branches_used": 5,
+  "line": "-0.0047430018820886584",
+  "months": [],
+  "months_below": 0,
+  "need_months": 2,
+  "samples": 192,
+  "triggered": false,
+  "value": "0.016656858570970708"
+ },
+ "E": {
+  "as_of": "202611",
+  "branches_total": 40,
+  "branches_used": 40,
+  "line": "-0.0071186617149196912",
+  "months": [],
+  "months_below": 0,
+  "need_months": 2,
+  "samples": 606,
+  "triggered": false,
+  "value": "0.012854973338673277"
+ }
+}
