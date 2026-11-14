@@ -15,6 +15,7 @@ from typing import Any, Iterable
 import pandas as pd
 
 from src.strategy_identity import normalize_strategy_frame, normalize_strategy_leg
+from src.portfolio_ace_m import ACE_FULL_TARGET_PCT
 
 
 LEGS = ("A", "C", "E", "D")
@@ -134,7 +135,7 @@ def _base_row(release: dict[str, Any], signal_date: str, leg: str, now: str) -> 
         "planned_exit_date": "",
         "entry_rule": "",
         "exit_rule": "",
-        "position_pct": 0.825,
+        "position_pct": ACE_FULL_TARGET_PCT,
         "account_empty_winner": False,
         "live_selected": False,
         "live_block_reason": "",
@@ -192,7 +193,7 @@ def _candidate_from_file(
             if source_exit_rule
             else f"T+{resolved_hold_offset}_CLOSE"
         ),
-        "position_pct": _float(picked.get("planned_position_pct", picked.get("position_pct", 0.825)), 0.825),
+        "position_pct": _float(picked.get("planned_position_pct", picked.get("position_pct", ACE_FULL_TARGET_PCT)), ACE_FULL_TARGET_PCT),
         "counterfactual_status": "WAITING_ENTRY_DATA",
     })
     return row
@@ -282,7 +283,7 @@ def _collect_d(root: Path, release: dict[str, Any], signal_date: str, now: str,
         "planned_exit_date": offset_trade_date(open_dates, signal_date, 2),
         "entry_rule": "T日盘中回封涨停价",
         "exit_rule": "T+2_CLOSE",
-        "position_pct": 0.825,
+        "position_pct": ACE_FULL_TARGET_PCT,
         "raw_entry_price": entry,
         "entry_price": entry,
         "live_selected": bool(_float(picked.get("filled_qty")) > 0 or str(picked.get("order_status", "")) == "FILLED"),
@@ -471,7 +472,7 @@ def update_counterfactual_outcomes(root: Path, frame: pd.DataFrame) -> pd.DataFr
         raw_exit = _float(exit_row.get("close"))
         entry_price = raw_entry if leg == "D" else raw_entry * (1 + fees["slippage"])
         exit_price = raw_exit * (1 - fees["slippage"])
-        target = fees["initial_equity"] * _float(current.get("position_pct"), 0.825)
+        target = fees["initial_equity"] * _float(current.get("position_pct"), ACE_FULL_TARGET_PCT)
         shares = int(target / entry_price / 100) * 100 if entry_price > 0 else 0
         if shares <= 0:
             result.at[index, "counterfactual_status"] = "INVALID_POSITION_SIZE"

@@ -20,13 +20,14 @@ from src.fixed_rule_execution import (
     fixed_open_entry_details,
     trade_return_details,
 )
-from src.ac_rules import condition_strategy_config, reject_strategy_risk_mask
+from src.ac_rules import c_selection_config, screen_c_candidates
 from src.paper_candidate_generator import apply_no_fallback_post_pick_gate
 from src.paper_candidate_generator import PaperCandidateGenerator
 from src.strategy_c_exit import resolve_c_exit_decision
 from src.strategy_d_factor_rules import add_factor_values, profile_mask
 from src.strategy_d_spec import D_MIN_FILL_PROBABILITY
 from src.trading_fees import account_return_after_fees
+from src.portfolio_ace_m import ACE_FULL_TARGET_PCT
 from src.strategy_e import (
     build_r1_universe_from_pool,
     resolve_exit_offset,
@@ -41,7 +42,7 @@ STRATEGY_CONFIG_PATH = ROOT / "config/strategy_config.json"
 # 2026-11-14 从 scripts/validate_other_live_strategies_strict.py（现移到 research/）原样搬来（原来经由认证脚本在导入时读取同一份配置）。
 _RUNTIME_CONFIG = json.loads((ROOT / "config" / "config.json").read_text(encoding="utf-8"))
 _ANALYSIS_CONFIG = _RUNTIME_CONFIG.get("analysis", {})
-POSITION_PCT = float(_RUNTIME_CONFIG.get("portfolio_certification", {}).get("position_pct", 0.825))
+POSITION_PCT = float(_RUNTIME_CONFIG.get("portfolio_certification", {}).get("position_pct", ACE_FULL_TARGET_PCT))
 COMMISSION_RATE = float(_ANALYSIS_CONFIG.get("commission_rate", 0.0003))
 TRANSFER_FEE_RATE = float(_ANALYSIS_CONFIG.get("transfer_fee_rate", 0.00001))
 STAMP_TAX_SCHEDULE = _ANALYSIS_CONFIG.get("stamp_tax_schedule")
@@ -689,22 +690,12 @@ def c_variants(base_config: dict[str, Any]) -> tuple[VariantDefinition, list[Var
 
 def build_c_picks(pool: pd.DataFrame, config: dict[str, Any]) -> pd.DataFrame:
     c_config = config["paper_ab_filtered_strategy"]["c_strategy"]
-    selected = condition_strategy_config(
-        config,
-        [],
-        "C_ROLLING_RESEARCH",
-        condition_profiles=copy.deepcopy(c_config["condition_profiles"]),
-    )
-    generator = make_generator(selected)
+    generator = make_generator(c_selection_config(config))
     filtered = generator.apply_strategy_filters(pool)
     picks: list[pd.Series] = []
     for _date, group in filtered.groupby("trade_date", sort=True):
-        ranked = generator.rank_candidates(group.copy()).reset_index(drop=True)
-        ranked["risk_flags"] = [
-            generator.build_risk_flags(row) for row in ranked.itertuples(index=False)
-        ]
-        rejected = reject_strategy_risk_mask(ranked, config, "c_strategy")
-        accepted = ranked.loc[~rejected].reset_index(drop=True)
+        ranked, rejected = screen_c_candidates(generator, group.copy(), config)
+        accepted = ranked[~rejected].reset_index(drop=True)
         if not accepted.empty:
             picks.append(accepted.iloc[0])
     if not picks:

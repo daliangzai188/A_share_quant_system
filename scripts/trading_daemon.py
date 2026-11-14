@@ -67,6 +67,8 @@ from src.strategy_equity_ledger import (
 )
 from src.strategy_identity import normalize_strategy_leg, normalize_strategy_record
 from src.portfolio_ace_m import (
+    ACE_FULL_HARD_CAP_PCT,
+    ACE_FULL_TARGET_PCT,
     GATE_BLOCKED as ACE_GATE_BLOCKED,
     GATE_REDUCED as ACE_GATE_REDUCED,
     M_LEG,
@@ -2514,9 +2516,9 @@ def resize_buy_orders_for_live_account(
     # transition_full_cash 仅兼容旧调用签名，不再放宽总仓位上限。
     max_single_order_amount = _effective_single_order_cap(live_cfg)
     # 85%是代码级绝对上限，配置只能收紧不能放宽；82.5%同理固定为本版目标上限。
-    max_position_pct = min(float(live_cfg.get("max_position_pct", 0.85)), 0.85)
+    max_position_pct = min(float(live_cfg.get("max_position_pct", ACE_FULL_HARD_CAP_PCT)), ACE_FULL_HARD_CAP_PCT)
     max_total_position_pct = min(
-        float(live_cfg.get("max_total_position_pct", 0.825)), 0.825
+        float(live_cfg.get("max_total_position_pct", ACE_FULL_TARGET_PCT)), ACE_FULL_TARGET_PCT
     )
     transition_full_cash = False
     round_lot_size = int(live_cfg.get("round_lot_size", 100))
@@ -2803,8 +2805,8 @@ def explain_reject_reasons(row: Any) -> str:
     current_market_value = to_float(row.get("current_market_value", 0.0))
     last_price = to_float(row.get("last_price", 0.0))
     max_cfg = load_json_config(PROJECT_ROOT / "config" / "config.json").get("live_trade", {})
-    max_position_pct = float(max_cfg.get("max_position_pct", 0.85))
-    max_total_position_pct = float(max_cfg.get("max_total_position_pct", 0.825))
+    max_position_pct = float(max_cfg.get("max_position_pct", ACE_FULL_HARD_CAP_PCT))
+    max_total_position_pct = float(max_cfg.get("max_total_position_pct", ACE_FULL_TARGET_PCT))
     effective_total_position_pct = to_float(
         row.get("effective_total_position_pct", max_total_position_pct),
         max_total_position_pct,
@@ -7391,8 +7393,8 @@ def _d_relay_prepare_state(
     if total_asset <= 0 or available_cash < 0:
         raise RuntimeError("QMT总资产或可用余额无效")
     live_cfg = load_json_config(PROJECT_ROOT / "config" / "config.json").get("live_trade", {})
-    target_pct = min(float(live_cfg.get("max_total_position_pct", 0.825)), 0.825)
-    hard_pct = min(float(live_cfg.get("max_position_pct", 0.85)), 0.85)
+    target_pct = min(float(live_cfg.get("max_total_position_pct", ACE_FULL_TARGET_PCT)), ACE_FULL_TARGET_PCT)
+    hard_pct = min(float(live_cfg.get("max_position_pct", ACE_FULL_HARD_CAP_PCT)), ACE_FULL_HARD_CAP_PCT)
     signal_date = str(candidate.get("signal_date", "")).strip().split(".")[0]
     candidate_code = str(candidate.get("ts_code", ""))
     signal_day_amount = _signal_day_amount(candidate_code, signal_date)
@@ -7840,7 +7842,7 @@ def _d_relay_submit_buy(
         return False
 
     current_total_asset = float(getattr(account, "total_asset", 0.0) or 0.0)
-    current_hard_cap = current_total_asset * 0.85 if current_total_asset > 0 else 0.0
+    current_hard_cap = current_total_asset * ACE_FULL_HARD_CAP_PCT if current_total_asset > 0 else 0.0
     snapshot_hard_cap = float(state.get("hard_cap_amount", 0.0) or 0.0)
     hard_cap = min(
         cap for cap in (snapshot_hard_cap, current_hard_cap) if cap > 0
@@ -9457,7 +9459,7 @@ def _pov_execute_slice(
     today_str: str,
     log: Any,
     cash_buffer: float = 1000.0,
-    max_position_pct: float = 0.85,
+    max_position_pct: float = ACE_FULL_HARD_CAP_PCT,
     lot_size: int = 100,
 ) -> None:
     """按累计实际成交额执行一片POV，并在下单前锁死85%最坏委托金额。"""
@@ -9836,7 +9838,7 @@ def _pov_worker() -> None:
         first_share = float(lt.get("pov_first_slice_share", 0.18))
         chase = float(lt.get("pov_chase_cap", 0.02))
         cash_buffer = float(lt.get("cash_buffer_amount", 1000.0))
-        max_position_pct = min(float(lt.get("max_position_pct", 0.85)), 0.85)
+        max_position_pct = min(float(lt.get("max_position_pct", ACE_FULL_HARD_CAP_PCT)), ACE_FULL_HARD_CAP_PCT)
         lot_size = int(lt.get("round_lot_size", 100))
         today_str = today_beijing().strftime("%Y%m%d")
         end_dt = now_beijing().replace(hour=10, minute=30, second=0, microsecond=0)
@@ -11668,7 +11670,7 @@ def _resubmit_premarket_buy(s: dict[str, Any], broker_cfg: dict, config: dict) -
     total_asset = float(getattr(account, "total_asset", 0.0) or available_cash)
     cash_buffer = float(live_cfg.get("cash_buffer_amount", 1000))
     max_single = _effective_single_order_cap(live_cfg)
-    max_position_pct = min(float(live_cfg.get("max_position_pct", 0.85)), 0.85)
+    max_position_pct = min(float(live_cfg.get("max_position_pct", ACE_FULL_HARD_CAP_PCT)), ACE_FULL_HARD_CAP_PCT)
     stored_hard_cap = float(s.get("entry_hard_cap_amount", 0.0) or 0.0)
     hard_cap = min(
         cap for cap in (stored_hard_cap, total_asset * max_position_pct) if cap > 0
@@ -12710,9 +12712,9 @@ def _e_place_order_direct(ts_code: str, name: str, planned_qty: int, signal_date
     live_cfg = config.get("live_trade", {})
     cash_buffer = float(live_cfg.get("cash_buffer_amount", 1000))
     max_single = _effective_single_order_cap(live_cfg)
-    max_position_pct = min(float(live_cfg.get("max_position_pct", 0.85)), 0.85)
+    max_position_pct = min(float(live_cfg.get("max_position_pct", ACE_FULL_HARD_CAP_PCT)), ACE_FULL_HARD_CAP_PCT)
     max_total_position_pct = min(
-        float(live_cfg.get("max_total_position_pct", 0.825)), 0.825
+        float(live_cfg.get("max_total_position_pct", ACE_FULL_TARGET_PCT)), ACE_FULL_TARGET_PCT
     )
     # 2026-11-12 ACE+M：E延迟开仓同样受方案甲停手期20%目标与M已占资金约束。
     ace_cap = ace_limits(
@@ -15106,7 +15108,7 @@ def _log_final_decision_summary(signal_date: str, action_date_compact: str, buy_
                 "strategy": "E",
                 "ts_code": str(e_sig.get("ts_code", "")),
                 "name": str(e_sig.get("name", "")),
-                "shares": _planned_shares_by_equity(e_sig.get("position_pct", 0.825), price),
+                "shares": _planned_shares_by_equity(e_sig.get("position_pct", ACE_FULL_TARGET_PCT), price),
                 "price": price,
                 "exit_date": str(e_sig.get("planned_exit_date", "")),
                 "exit_rule": str(e_sig.get("planned_exit_rule", "T+2_close")),
@@ -15521,7 +15523,7 @@ def _log_decision_chain_summary(signal_date: str) -> None:
             and bool(e_signal.get("allow_buy_reliable", False))
         ):
             price = float(e_signal.get("limit_close", 0.0) or 0.0)
-            shares = _planned_shares_by_equity(e_signal.get("position_pct", 0.825), price)
+            shares = _planned_shares_by_equity(e_signal.get("position_pct", ACE_FULL_TARGET_PCT), price)
             if shares > 0 and price > 0:
                 candidates["E"] = {
                     "strategy": "E",

@@ -198,3 +198,28 @@ def reject_strategy_risk_mask(
                 sub = sub & _apply_numeric_condition(values, operator, float(threshold))
             mask = mask | sub.fillna(False)
     return mask.fillna(False).astype(bool)
+
+
+def c_selection_config(config: dict[str, Any]) -> dict[str, Any]:
+    """正式C的选股配置副本：OR分支取规范化、按优先级排好的 condition_profiles。
+
+    收盘流水线⑥和影子账都用它构造C的候选生成器（2026-11-14 合并两边各自的写法；
+    冻结研究池 2019-01~2026-11 逐日核对，合并前两边选出的C已完全相同）。
+    """
+    return condition_strategy_config(
+        config,
+        configured_c_conditions(config),
+        "backup_strategy_c_current",
+        condition_profiles=configured_c_condition_profiles(config),
+    )
+
+
+def screen_c_candidates(generator: Any, daily: pd.DataFrame, config: dict[str, Any]) -> tuple[pd.DataFrame, pd.Series]:
+    """C当日候选：排序、打风险标记、按C自身风险规则标出要剔除的候选。
+
+    返回（排好序的全部候选，剔除掩码）。剔除后剩下的按原顺序递补，第一名就是当天的C。
+    收盘流水线⑥和影子账共用这一份。
+    """
+    ranked = generator.rank_candidates(daily)
+    ranked["risk_flags"] = [generator.build_risk_flags(row) for row in ranked.itertuples(index=False)]
+    return ranked, reject_strategy_risk_mask(ranked, config, "c_strategy")

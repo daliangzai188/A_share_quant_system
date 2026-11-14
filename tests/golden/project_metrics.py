@@ -15,9 +15,11 @@ from __future__ import annotations
 
 import argparse
 import ast
+import io
 import json
 import subprocess
 import sys
+import tokenize
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
@@ -34,6 +36,8 @@ RESEARCH_PREFIXES = ("research", "optimize", "search", "analyze", "compare", "st
 PRODUCTION_DIRS = ("src", "scripts")
 NON_PRODUCTION_DIRS = ("research", "tools")
 PACKAGE_INITS = ("src", "src.utils", "qmt_inner", "research", "tools")  # 包本身，不算模块
+SIZING_NUMBERS = ("0.825", "0.175", "0.995", "0.85")  # ACE 82.5%/硬顶85%、M 17.5%、合计99.5%
+SIZING_SOURCE = "src.portfolio_ace_m"                   # 仓位规则唯一出处
 
 
 def module_files(root: Path) -> dict[str, Path]:
@@ -147,10 +151,13 @@ def metrics(root: Path = REPO) -> dict:
     research_in_prod = sorted(m for m in prod_scripts if m.split(".", 1)[1].split("_")[0] in RESEARCH_PREFIXES)
     reverse = sorted("%s→%s" % (m, t) for m in prod if m.startswith("src.") for t in imports[m] if t.startswith("scripts."))
     prod_cycles = [c for c in cycles(imports) if any(m in prod for m in c)]
-    long_funcs, swallowed, biggest = 0, 0, (0, "")
+    long_funcs, swallowed, biggest, sizing = 0, 0, (0, ""), 0
     for name in prod:
         path = files[name]
         text = path.read_text(encoding="utf-8", errors="replace")
+        if name != SIZING_SOURCE:
+            sizing += sum(1 for tok in tokenize.generate_tokens(io.StringIO(text).readline)
+                          if tok.type == tokenize.NUMBER and tok.string in SIZING_NUMBERS)
         lines = text.count("\n")
         if lines > biggest[0]:
             biggest = (lines, str(path.relative_to(root)))
@@ -179,6 +186,7 @@ def metrics(root: Path = REPO) -> dict:
         "src反向依赖scripts（生产代码，真实导入）": len(reverse),
         "循环依赖组（含生产模块，真实导入）": len(prod_cycles),
         "最大的生产文件（行）": "%d（%s）" % biggest,
+        "仓位数字写死在唯一出处之外（处）": sizing,
         "生产代码里超过200行的函数": long_funcs,
         "生产代码里捕获错误后直接pass": swallowed,
         "config.json段数（生产在读/全部）": "%d/%d" % (len(used), len(config)),

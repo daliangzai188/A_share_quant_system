@@ -59,6 +59,7 @@ from src.strategy_e import (
     resolve_exit_offset,
 )
 from src.strategy_identity import ACTIVE_E_VARIANT, STRATEGY_E_LEG, normalize_strategy_record
+from src.portfolio_ace_m import ACE_FULL_TARGET_PCT
 from src.e_signal_inputs import (  # 2026-11-14 搬到 src，供实盘组合和流水线⑥共用
     SCORED_PATH,
     compute_segment_retreat_states,
@@ -74,7 +75,7 @@ ROLLING_SIGNAL_PATH = OUTPUT_DIR / "e_signals_recent.json"
 RUN_STATUS_PATH = OUTPUT_DIR / "e_signal_runs_recent.json"
 STRATEGY_D_SIGNAL_DIR = PROJECT_ROOT / "reports" / "strategy_d"
 
-POSITION_PCT = 0.825
+POSITION_PCT = ACE_FULL_TARGET_PCT
 E_MIN_CIRC_MV = 0       # 不设下限
 E_MAX_CIRC_MV = float("inf")
 E_RESEARCH_AUDIT = {

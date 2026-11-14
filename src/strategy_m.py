@@ -29,6 +29,7 @@ from typing import Any, Callable, Iterable
 
 import pandas as pd
 
+from src.portfolio_ace_m import M_PCT_BESIDE_ACE, M_PCT_WHEN_ACE_IDLE, TOTAL_POSITION_CAP_PCT  # 仓位只在这一处定义
 from src.market_rules import (
     is_st_name,
     limit_up_price,
@@ -54,9 +55,9 @@ UNIVERSE_SEGMENTS = ("sh_main", "sz_main", "chi_next", "star")
 TWENTY_CM_SEGMENTS = ("chi_next", "star")
 
 # 仓位与持有（与研究回测一致；仓位以总资产为基数）
-POSITION_PCT_WHEN_ACE_IDLE = 0.825  # ACE 当日无交易且无持仓时
-POSITION_PCT_BESIDE_ACE = 0.175     # ACE 持仓或当日开仓时，M 只用闲置资金
-TOTAL_POSITION_CAP = 0.995          # ACE + M 合计上限
+POSITION_PCT_WHEN_ACE_IDLE = M_PCT_WHEN_ACE_IDLE  # ACE 当日无交易且无持仓时
+POSITION_PCT_BESIDE_ACE = M_PCT_BESIDE_ACE  # ACE 持仓或当日开仓时，M 只用闲置资金
+TOTAL_POSITION_CAP = TOTAL_POSITION_CAP_PCT  # ACE + M 合计上限
 EXIT_RULE = "FIXED_T2_CLOSE"
 HOLD_OFFSET = 2                     # 信号日后第2个交易日收盘卖出（买入日后1个交易日）
 

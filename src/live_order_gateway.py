@@ -10,6 +10,7 @@ from pandas.errors import EmptyDataError
 
 from src.broker_adapter import PositionSnapshot
 from src.qmt_adapter import QMTBrokerAdapter, tushare_to_qmt_code
+from src.portfolio_ace_m import ACE_FULL_HARD_CAP_PCT, ACE_FULL_TARGET_PCT
 from src.qmt_single_owner import assert_standalone_qmt_allowed
 from src.utils.config import get_project_root, load_json_config, mkdir_p
 from src.utils.logger import get_logger, setup_logger
@@ -186,8 +187,8 @@ class LiveOrderGateway:
         # transition_full_cash 参数仅为兼容旧计划文件保留，不再具有放宽仓位的能力；
         # 否则历史调用传 True 会重新打开已经取消的“旧仓未卖先买”衔接口径。
         max_order_amount = float(self.live_config.get("max_single_order_amount", 0) or 0)
-        max_position_pct = float(self.live_config.get("max_position_pct", 0.85))
-        max_total_position_pct = float(self.live_config.get("max_total_position_pct", 0.825))
+        max_position_pct = float(self.live_config.get("max_position_pct", ACE_FULL_HARD_CAP_PCT))
+        max_total_position_pct = float(self.live_config.get("max_total_position_pct", ACE_FULL_TARGET_PCT))
         effective_total_position_pct = max_total_position_pct
         round_lot_size = int(self.live_config.get("round_lot_size", 100))
         limit_tolerance = float(self.live_config.get("limit_price_tolerance", 0.001))

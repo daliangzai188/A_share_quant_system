@@ -44,6 +44,7 @@ from dotenv import load_dotenv
 
 from src.utils.logger import setup_logger
 from src.utils.config import load_json_config
+from src.portfolio_ace_m import ACE_FULL_HARD_CAP_PCT, ACE_FULL_TARGET_PCT
 from src.utils.time_utils import now_beijing, today_beijing
 from src.notify import notify
 from src.data_cleaner import DataCleaner
@@ -109,7 +110,7 @@ POLL_BATCH_SIZE = 500        # 每次 get_full_tick 的股票数量
 POLL_INTERVAL_SEC = 30       # 每批轮询间隔（秒）
 ORDER_FILL_POLL_INTERVAL_SEC = 2  # D活动委托成交事实轮询；不参与策略信号判断
 MONITOR_START_HHMM = D_TRACKING_START_HHMM  # 完整路径从连续竞价开始跟踪
-D_POSITION_PCT = 0.825       # 默认目标仓位82.5%，优先使用 config.json/strategy_d/position_pct
+D_POSITION_PCT = ACE_FULL_TARGET_PCT  # 默认目标仓位82.5%，优先使用 config.json/strategy_d/position_pct
 D_RETRY_TOP_N = 1            # 严格对齐D原始回测口径：只尝试排序第1名，失败不补偿
 MIN_D_VALID_LIMIT_PRICE = 1.0  # D只做正常A股涨停价；QMT异常行情可能返回0.x，必须本地拦截
 MAX_D_INVALID_PRICE_TICKS = 3  # 连续3轮仍异常才判定为行情源有问题，避免单帧脏数据误伤
@@ -635,9 +636,9 @@ def calculate_d_order_capacity(
     available_cash = float(getattr(account, "available_cash", 0.0) or 0.0)
     total_asset = float(getattr(account, "total_asset", 0.0) or available_cash)
     max_order_amount = float(live_config.get("max_single_order_amount", 0) or 0)
-    max_position_pct = float(live_config.get("max_position_pct", 0.85))
+    max_position_pct = float(live_config.get("max_position_pct", ACE_FULL_HARD_CAP_PCT))
     max_total_position_pct = float(
-        live_config.get("max_total_position_pct", 0.825)
+        live_config.get("max_total_position_pct", ACE_FULL_TARGET_PCT)
     )
     cash_buffer = float(live_config.get("cash_buffer_amount", 1000) or 0)
     target_amount = min(

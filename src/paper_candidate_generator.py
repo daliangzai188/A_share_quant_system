@@ -6,6 +6,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from src.portfolio_ace_m import ACE_FULL_TARGET_PCT
 from src.strategy_optimizer import StrategyConditionOptimizer
 from src.utils.config import get_project_root, load_json_config, mkdir_p
 from src.utils.logger import get_logger
@@ -446,7 +447,7 @@ class PaperCandidateGenerator:
             ),
             "market_segment": getattr(row, "market_segment", ""),
             "profit_source_score": float(getattr(row, "profit_source_score", 0.0)),
-            "planned_position_pct": float(self.config.get("position", {}).get("target_position_pct", 0.825))
+            "planned_position_pct": float(self.config.get("position", {}).get("target_position_pct", ACE_FULL_TARGET_PCT))
             if planned_action == self.paper_config.get("planned_action_for_selected", "PLAN_BUY_T1_OPEN")
             else 0.0,
             "selection_reason": self.conditions_text(),

@@ -21,6 +21,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.utils.config import load_json_config, mkdir_p
+from src.portfolio_ace_m import ACE_FULL_TARGET_PCT
 from src.ac_rules import (
     configured_c_condition_profiles,
     reject_strategy_risk_mask,
@@ -385,7 +386,7 @@ def build_outputs(candidates: pd.DataFrame, strategy_leg: str, signal_date: str,
     position = config.get("position", {})
     paper_trade = config.get("paper_trade", {})
     planned_equity = float(position.get("initial_cash", 500000))
-    planned_position_pct = float(position.get("target_position_pct", 0.825))
+    planned_position_pct = float(position.get("target_position_pct", ACE_FULL_TARGET_PCT))
     round_lot = int(paper_trade.get("round_lot_size", 100))
     # 兜底来源不是完整 A/C 历史回放结果，只允许生成观察清单，不生成 BUY 委托。
     selected_count = 0

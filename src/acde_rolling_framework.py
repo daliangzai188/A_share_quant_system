@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 
 from src.fill_model import fill_probability_from_amounts
+from src.portfolio_ace_m import ACE_FULL_HARD_CAP_PCT, ACE_FULL_TARGET_PCT
 from src.mechanical_compound import mechanical_compound
 from src.market_rules import market_segment, orderable_buy_quantity
 from src.trading_fees import stamp_tax_rate_for_date
@@ -396,8 +397,8 @@ def replay_action_date_cash_portfolio(
     action_dates: Sequence[str],
     priority: Sequence[str] = FIXED_PRIORITY,
     initial_cash: float = 500_000.0,
-    position_pct: float = 0.825,
-    max_position_pct: float = 0.85,
+    position_pct: float = ACE_FULL_TARGET_PCT,
+    max_position_pct: float = ACE_FULL_HARD_CAP_PCT,
     commission_rate: float = 0.0003,
     transfer_fee_rate: float = 0.00001,
     minimum_commission: float = 5.0,

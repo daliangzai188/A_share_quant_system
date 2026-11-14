@@ -9,6 +9,7 @@
 1. 影子账：每日净值、A/C/E每条计划（停手判定、逐笔对账、三级警告共用的那条链）；
 2. 停手判定：每个行动日是否允许开仓（60日均线、滞后6日）；
 3. 实盘组合状态机：同一批候选交给 CombinedLiveEngine，每个行动日下哪一笔单、D是否授权；
+   实盘收盘流水线⑥的A/C选股函数逐日跑同一份研究池，选出的股票必须和影子账计划逐日相同；
 4. M候选单（QMT外重算，src.strategy_m_reference）：check时抽查约十分之一的日子加最近30天，--full 全部重算；
 5. 三级警告用到的全部数值（ACE+M按现行规则和仓位的回放、各腿近12个月、回撤、信号断流）和推出来的警告；
 6. 因子健康（A/C/E）；
@@ -227,6 +228,52 @@ def live_engine_rows(legs, action_dates) -> list[dict]:
     return rows
 
 
+def live_selection_text(root: Path, ds: Path, calendar: Path, start: str, shadow, tmp: Path) -> str:
+    """实盘收盘流水线⑥的A/C选股函数逐日跑同一份研究池，选出的股票必须和影子账A/C计划逐日相同。
+
+    2026-11-14 起锁定“实盘和回测用同一套选股”：哪天有人只改了一边，这一项立刻不同。
+    """
+    import copy
+    import pandas as pd
+    from scripts.run_paper_ab_filtered_daily_ops import apply_and_rank, build_c_shadow_candidates, build_generator, selected_candidate
+    from src.acde_plan import load_monthly_config, plan_context, variant_sets
+    from src.acde_rolling_framework import ResearchWindow
+
+    monthly = load_monthly_config(root / "config/acde_rolling_optimization.json")
+    empty_d = tmp / "live_selection_empty_d.csv"
+    pd.DataFrame(columns=["trade_date", "ts_code"]).to_csv(empty_d, index=False)
+    cal = pd.read_csv(calendar, dtype={"cal_date": str}, low_memory=False)
+    opened = sorted(cal[pd.to_numeric(cal["is_open"], errors="coerce").eq(1)]["cal_date"].astype(str))
+    first = [d for d in opened[1:] if d >= str(start)][0]
+    context = plan_context(window=ResearchWindow("GOLDEN_LIVE_SELECTION", first, END, "shadow", False),
+                           feature_path=ds / "strict_feature_pool.csv", sentiment_path=ds / "market_sentiment.csv",
+                           d_event_path=empty_d, calendar_path=calendar,
+                           minimum_limit_up_count=int(monthly["market_controller"]["minimum_limit_up_count"]))
+    pool = context["signal_pool"]
+    config = variant_sets()[0]["A"].payload
+    strategy_path = root / "config" / "strategy_config.json"
+    action = config.get("paper_candidate", {}).get("planned_action_for_selected", "PLAN_BUY_T1_OPEN")
+    a_generator = build_generator(strategy_path, copy.deepcopy(config))
+    a_filtered = a_generator.apply_strategy_filters(pool)
+    live = {"A": set(), "C": set()}
+    for day, frame in pool.groupby(pool["trade_date"].astype(str).str.replace(".0", "", regex=False), sort=True):
+        a = apply_and_rank(a_generator, a_filtered, day, top_n=10)
+        pick = selected_candidate(a_generator.apply_post_pick_entry_gate(a), action) if not a.empty else None
+        if pick is not None:
+            live["A"].add((day, str(pick["ts_code"])))
+        _rules, _cands, pick_c, _rej = build_c_shadow_candidates(strategy_path, config, frame, day, action, top_n=10)
+        if pick_c is not None:
+            live["C"].add((day, str(pick_c["ts_code"])))
+    lines = []
+    for leg in ("A", "C"):
+        plan = shadow["legs"].get(leg)
+        expected = {(str(r["signal_date"]).replace(".0", ""), str(r["ts_code"])) for r in plan.to_dict("records")}
+        diff = sorted(expected ^ live[leg])
+        lines.append("%s：影子账 %d 笔，实盘流水线⑥选股函数 %d 笔，%s" % (
+            leg, len(expected), len(live[leg]), "逐日相同" if not diff else "不同 %d 处：%s" % (len(diff), diff[:10])))
+    return "\n".join(lines) + "\n"
+
+
 def sizing_rows() -> tuple[list[dict], list[dict]]:
     from src import portfolio_ace_m as p
     total = 1_000_000.0
@@ -302,6 +349,10 @@ def build(data: Path, tmp: Path, *, record: bool, full: bool, log, notes: dict) 
     t0 = time.time()
     out["live_engine.csv"] = table(live_engine_rows(shadow["legs"], shadow["action_dates"]), ["action_date", "actions", "buy"])
     log("实盘组合状态机 %.0fs" % (time.time() - t0))
+
+    t0 = time.time()
+    out["live_selection.txt"] = live_selection_text(root, ds, calendar, settings.history_start, shadow, tmp)
+    log("实盘流水线⑥选股逐日对照影子账 %.0fs" % (time.time() - t0))
 
     t0 = time.time()
     health, error = prod.compute_factor_health_checked(config, ds, calendar)

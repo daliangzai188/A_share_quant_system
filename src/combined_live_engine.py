@@ -65,6 +65,7 @@ from pandas.errors import EmptyDataError
 from src.equity_curve_stop import LiveGateCheck, live_gate
 from src.live_order_gateway import LiveOrderGateway
 from src.portfolio_ace_m import (
+    ACE_FULL_TARGET_PCT,
     GATE_BLOCKED,
     GATE_FULL,
     GATE_REDUCED,
@@ -82,7 +83,7 @@ from src.strategy_identity import (
 from src.utils.config import get_project_root, load_json_config, mkdir_p
 from src.utils.time_utils import today_beijing
 
-_E_POSITION_PCT = 0.825
+_E_POSITION_PCT = ACE_FULL_TARGET_PCT
 _E_LOT_SIZE = 100
 
 

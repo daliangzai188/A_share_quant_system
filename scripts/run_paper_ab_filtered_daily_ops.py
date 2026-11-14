@@ -25,14 +25,15 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.e_signal_inputs import next_trade_day
 from src.ac_rules import (
-    condition_strategy_config,
+    c_selection_config,
     condition_text,
     configured_c_condition_profiles,
     configured_c_conditions,
-    reject_strategy_risk_mask,
+    screen_c_candidates,
 )
 from src.paper_candidate_generator import PaperCandidateGenerator
 from src.paper_daily_flow import PaperDailyFlowRunner
+from src.portfolio_ace_m import ACE_FULL_TARGET_PCT
 from src.strategy_c_exit import resolve_c_exit_decision
 from src.trade_replay import ConservativeTradeReplay, ReplayRule
 from src.utils.config import load_json_config, mkdir_p
@@ -480,13 +481,7 @@ def build_c_shadow_candidates(
     configured_rules: list[dict[str, Any]] = profiles or conditions
     if not configured_rules:
         return configured_rules, pd.DataFrame(), None, pd.DataFrame()
-    c_config = condition_strategy_config(
-        config,
-        conditions,
-        "backup_strategy_c_current",
-        condition_profiles=profiles,
-    )
-    c_generator = build_generator(strategy_config_path, c_config)
+    c_generator = build_generator(strategy_config_path, c_selection_config(config))
     c_filtered = c_generator.apply_strategy_filters(all_candidates)
     daily = c_filtered[
         c_filtered["trade_date"].map(normalize_date).eq(signal_date)
@@ -494,13 +489,9 @@ def build_c_shadow_candidates(
     if daily.empty:
         return configured_rules, pd.DataFrame(), None, pd.DataFrame()
 
-    # 与严格回放一致：先为全部命中OR分支的股票计算C自身风险过滤，再在
+    # 与影子账同一份代码：先为全部命中OR分支的股票计算C自身风险过滤，再在
     # 剩余股票中按profit_source_score、turnover_rate排序并允许顺位递补。
-    ranked = c_generator.rank_candidates(daily)
-    ranked["risk_flags"] = [
-        c_generator.build_risk_flags(row) for row in ranked.itertuples(index=False)
-    ]
-    rejected_mask = reject_strategy_risk_mask(ranked, config, "c_strategy")
+    ranked, rejected_mask = screen_c_candidates(c_generator, daily, config)
     rejected = ranked[rejected_mask].copy()
     if not rejected.empty:
         rejected["reject_reason"] = "C_HIT_RISK_REJECT_RULES_BEFORE_FINAL_RANK"
@@ -588,7 +579,7 @@ def estimate_planned_order(
     position = config.get("position", {})
     paper_trade = config.get("paper_trade", {})
     planned_equity = float(position.get("initial_cash", 500000))
-    planned_position_pct = to_float(selected.get("planned_position_pct", position.get("target_position_pct", 0.825)))
+    planned_position_pct = to_float(selected.get("planned_position_pct", position.get("target_position_pct", ACE_FULL_TARGET_PCT)))
     planned_amount = planned_equity * planned_position_pct
     reference_price = to_float(selected.get("historical_reference_next_open", 0.0))
     planned_order_date = str(selected.get("historical_reference_next_trade_date", "") or "")
