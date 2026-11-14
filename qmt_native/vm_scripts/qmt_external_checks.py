@@ -13,9 +13,13 @@ Windows VM, outside QMT, where files and the network may still be used:
      (rebuilt by qmt_notify_forwarder.py), else from the old system's file. From ACE+M on,
      M's candidate list is recomputed from the Tushare files of step 1 (QMT's own M signal
      files are not visible outside QMT); M's live slippage (average of the last closed M trades)
-     is checked against its alarm line; the three-tier strategy warnings (src/strategy_warnings.py:
-     middle = strategy review, final = stop trading and optimise is advised; push and terminal only,
-     nothing is ever stopped) replay ACE+M under the live rules and sizing;
+     is checked against its alarm line, and from 2026-11-13 so is A/C/E's (ACE fears slippage more than M);
+     the research pool's share of the day's market-wide limit-ups is checked (a data error once left it at
+     0~3% and no leg picked a stock for 94 days, while alignment and factor health stayed silent); the
+     three-tier strategy warnings (src/strategy_warnings.py: middle = strategy review, final = stop trading
+     and optimise is advised; push and terminal only, nothing is ever stopped) replay ACE+M under the live
+     rules and sizing, and also report how many open days have passed since any leg last picked a stock
+     (signal drought, a first-tier alarm); factor health covers A, C and, from 2026-11-13, E;
   4. production push planning (acknowledged keys, reminder every N open days) and Bark push;
   5. the results of 3 go to external_checks\\factor_health_latest.json and the run log every day,
      and on the last open day of each week a "因子健康周报" push shows the values of both legs and
@@ -82,8 +86,22 @@ def live_trades(config):
     return filled, complete
 
 
+def _slippage_line(name, stats, error):
+    if error:
+        return '%s实盘滑点：没算成（%s），已单独推送' % (name, error)
+    done, need = int(stats.get('completed', 0)), int(stats.get('trades', 10))
+    limit, average = float(stats.get('limit_pct', 1.5)), stats.get('average_pct')
+    if not done:
+        return '%s实盘滑点：还没有已平仓的%s' % (name, name)
+    if done < need:
+        return '%s实盘滑点：已平仓%d笔，平均双边%+.2f%%（满%d笔后超过%.1f%%报警）' % (name, done, average, need, limit)
+    return '%s实盘滑点：最近%d笔平均双边%+.2f%%（报警线%.1f%%）%s' % (
+        name, need, average, limit, '，已单独推送' if stats.get('triggered') else '')
+
+
 def weekly_health_message(day, health, health_error, ack_entries, alignment, alignment_error,
-                          slippage=None, slippage_error='', warnings=None, warnings_error='', tiered=()):
+                          slippage=None, slippage_error='', warnings=None, warnings_error='', tiered=(),
+                          ace_slippage=None, ace_slippage_error='', coverage=None, coverage_error=''):
     """Title and body of the weekly push of the outside-QMT checks (pure, for tests)."""
     recheck = {str(e.get('key', '')): str(e.get('recheck_by', ''))
                for e in (ack_entries or []) if str(e.get('recheck_by', '') or '').replace('-', '') > str(day)}
@@ -112,18 +130,19 @@ def weekly_health_message(day, health, health_error, ack_entries, alignment, ali
         lines.append('实盘与正式规则逐笔对账：%d处不一致，已单独推送' % len(alignment))
     else:
         lines.append('实盘与正式规则逐笔对账：一致')
-    if slippage_error:
-        lines.append('M实盘滑点：没算成（%s），已单独推送' % slippage_error)
-    elif slippage is not None:
-        done, need = int(slippage.get('completed', 0)), int(slippage.get('trades', 10))
-        limit, average = float(slippage.get('limit_pct', 1.5)), slippage.get('average_pct')
-        if not done:
-            lines.append('M实盘滑点：还没有已平仓的M')
-        elif done < need:
-            lines.append('M实盘滑点：已平仓%d笔，平均双边%+.2f%%（满%d笔后超过%.1f%%报警）' % (done, average, need, limit))
+    if slippage_error or slippage is not None:
+        lines.append(_slippage_line('M', slippage or {}, slippage_error))
+    if ace_slippage_error or ace_slippage is not None:
+        lines.append(_slippage_line('A/C/E', ace_slippage or {}, ace_slippage_error))
+    if coverage_error:
+        lines.append('研究池覆盖率：没算成（%s），已单独推送' % coverage_error)
+    elif coverage is not None:
+        rows, limit_up = int(coverage.get('pool_rows', 0)), coverage.get('limit_up_count')
+        if not limit_up:
+            lines.append('研究池覆盖率：%s没有全市场涨停统计，未判断' % day)
         else:
-            lines.append('M实盘滑点：最近%d笔平均双边%+.2f%%（报警线%.1f%%）%s' % (
-                need, average, limit, '，已单独推送' if slippage.get('triggered') else ''))
+            lines.append('研究池覆盖率：%s研究池%d只/全市场涨停%d只（%.0f%%，低于%.0f%%报警，正常时最低32%%）' % (
+                day, rows, int(limit_up), 100.0 * rows / float(limit_up), 100.0 * float(coverage.get('min_ratio', 0.3))))
     if warnings_error:
         lines.append('三级警告：没算成（%s），已单独推送' % warnings_error)
     elif warnings is not None:
@@ -149,6 +168,12 @@ def weekly_health_message(day, health, health_error, ack_entries, alignment, ali
         lines.append('三级警告：%s；ACE+M规则回放回撤%s，最近12个月A%s、C%s、E%s、M%s' % (
             state, '%.1f%%' % (combo * 100) if combo is not None else '?', pct(legs.get('A')), pct(legs.get('C')),
             pct(legs.get('E')), pct(legs.get('M'))))
+        signals = warnings.get('signals') or {}
+        if signals.get('gap') is not None:
+            last = signals.get('last') or {}
+            lines.append('选股信号：最近一次%s（A %s、C %s、E %s、M %s），之后%d个行动日没有新信号（超过%d天报警）' % (
+                signals.get('last_any') or '无', last.get('A') or '无', last.get('C') or '无', last.get('E') or '无',
+                last.get('M') or '无', int(signals['gap']), int(signals.get('line', 22))))
     lines.append('优势=满足该腿条件的涨停股（T+1开盘买、T+2收盘卖）平均收益减去其余涨停股；只做观察，不影响停手判定。')
     return '📊 方案甲因子健康周报 %s' % day, '\n'.join(lines)
 
@@ -185,6 +210,8 @@ def run(args) -> int:
         triggers.extend(factor_health_triggers(health))
     align, align_error = None, ''
     slip, slip_error = None, ''
+    ace_slip, ace_slip_error = None, ''
+    coverage, coverage_error = None, ''
     warn_metrics, warn_error = None, ''
     start = str(section.get('alignment_start_date', '') or '')
     if start:
@@ -217,6 +244,28 @@ def run(args) -> int:
             traceback.print_exc()
             slip_error = '%s: %s' % (type(exc).__name__, exc)
             triggers.append(check_failure_trigger('M实盘滑点', slip_error))
+        try:
+            from src.review_triggers import ace_slippage_stats, ace_slippage_triggers
+            if filled is None:
+                filled, _complete = live_trades(config)
+            ace_slip = ace_slippage_stats(filled, start=start, trades=int(section.get('ace_slippage_trades', 10)),
+                                          limit_pct=float(section.get('ace_slippage_limit_pct', 1.2)))
+            triggers.extend(ace_slippage_triggers(ace_slip))
+        except Exception as exc:
+            traceback.print_exc()
+            ace_slip_error = '%s: %s' % (type(exc).__name__, exc)
+            triggers.append(check_failure_trigger('A/C/E实盘滑点', ace_slip_error))
+        try:
+            from src.review_triggers import pool_coverage_triggers
+            rows, limit_up = prod.pool_coverage_inputs(dataset, day)
+            coverage = {'pool_rows': rows, 'limit_up_count': limit_up,
+                        'min_ratio': float(section.get('pool_coverage_min_ratio', 0.3))}
+            triggers.extend(pool_coverage_triggers(day, rows, limit_up, min_ratio=coverage['min_ratio'],
+                                                   min_limit_up=float(section.get('pool_coverage_min_limit_up', 10))))
+        except Exception as exc:
+            traceback.print_exc()
+            coverage_error = '%s: %s' % (type(exc).__name__, exc)
+            triggers.append(check_failure_trigger('研究池覆盖率', coverage_error))
         if (config.get('strategy_warnings') or {}).get('enabled'):
             try:
                 from src.strategy_warnings import run_strategy_warnings
@@ -233,7 +282,9 @@ def run(args) -> int:
                 triggers.append(check_failure_trigger('三级警告（策略复核/停止交易建议）', warn_error))
     print('FACTOR_HEALTH %s %s' % (day, json.dumps({'health': health, 'error': error, 'alignment_issues': None if align is None
                                                     else len(align), 'alignment_error': align_error,
-                                                    'm_slippage': slip, 'm_slippage_error': slip_error},
+                                                    'm_slippage': slip, 'm_slippage_error': slip_error,
+                                                    'ace_slippage': ace_slip, 'ace_slippage_error': ace_slip_error,
+                                                    'pool_coverage': coverage, 'pool_coverage_error': coverage_error},
                                                    ensure_ascii=False, default=str)), flush=True)
 
     state_path = WORK / 'review_trigger_state.json'
@@ -273,13 +324,16 @@ def run(args) -> int:
             'signal_date': day, 'factor_health': health, 'factor_health_error': error,
             'alignment_issues': None if align is None else [t.detail for t in align], 'alignment_error': align_error,
             'm_slippage': slip, 'm_slippage_error': slip_error,
+            'ace_slippage': ace_slip, 'ace_slippage_error': ace_slip_error,
+            'pool_coverage': coverage, 'pool_coverage_error': coverage_error,
             'strategy_warnings_error': warn_error,
             'finished_at': dt.datetime.now(BJ).isoformat()}, ensure_ascii=False, indent=1, default=str), encoding='utf-8')
         weekly_flag = WORK / ('weekly_%s.json' % day)
         if is_week_last_open_day(dates, day) and not weekly_flag.exists():
             title, body = weekly_health_message(day, health, error, section.get('acknowledged'), align, align_error,
                                                 slip, slip_error, warn_metrics, warn_error,
-                                                [t for t in triggers if getattr(t, 'tier', 1) >= 2])
+                                                [t for t in triggers if getattr(t, 'tier', 1) >= 2],
+                                                ace_slip, ace_slip_error, coverage, coverage_error)
             print('FACTOR_HEALTH_WEEKLY %s' % body.replace('\n', '；'), flush=True)
             if not prod.notify(title, body, level='active'):
                 print('FACTOR_HEALTH_WEEKLY_PUSH_FAILED %s（下次重试）' % day, flush=True)

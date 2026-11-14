@@ -14,7 +14,10 @@ needs no data and no network:
      is reported;
   6. three-tier strategy warnings enabled: the shadow, factor health, raw data folder and cache file
      reach run_strategy_warnings, a final warning is reported, escalation runs on the push state,
-     and the terminal file strategy_warnings_latest.json is written; the weekly line shows the tier.
+     and the terminal file strategy_warnings_latest.json is written; the weekly line shows the tier;
+  7. (2026-11-13) A/C/E slippage gets the same buys with the A/C/E window, line and the jia start date,
+     the research pool coverage is computed from the day's dataset and reported, both reach the result
+     file; the weekly message shows A/C/E slippage, pool coverage and the signal drought line.
 
 Usage: python3 test_external_weekly.py   (Mac Python 3)
 """
@@ -65,6 +68,20 @@ def m_slippage_stats(live, **kwargs):
             "window": [], "triggered": True}
 def m_slippage_triggers(stats):
     return [SimpleNamespace(key="m_slippage", detail="M最近10笔实盘平均双边滑点+2.00%")] if stats["triggered"] else []
+def ace_slippage_stats(live, **kwargs):
+    import json, os
+    from pathlib import Path
+    kwargs["live_codes"] = sorted(live["ts_code"])
+    json.dump(kwargs, open(Path(os.environ["A_SYSTEM_ROOT"]) / "ace_slippage_call.json", "w"))
+    bad = (Path(os.environ["A_SYSTEM_ROOT"]) / "ace_bad").exists()
+    return {"completed": 10 if bad else 0, "trades": kwargs["trades"], "limit_pct": kwargs["limit_pct"],
+            "average_pct": 1.6 if bad else None, "window": [], "triggered": bad}
+def ace_slippage_triggers(stats):
+    return [SimpleNamespace(key="ace_slippage", detail="A/C/E最近10笔实盘平均双边滑点+1.60%")] if stats["triggered"] else []
+def pool_coverage_triggers(day, rows, limit_up, min_ratio, min_limit_up):
+    if limit_up and limit_up >= min_limit_up and rows / limit_up < min_ratio:
+        return [SimpleNamespace(key="pool_coverage", detail="%s研究池只有%d只涨停股，全市场%d只" % (day, rows, limit_up))]
+    return []
 ''',
     'scripts/__init__.py': '',
     'scripts/update_equity_curve_stop.py': '''
@@ -79,6 +96,9 @@ def build_dataset(settings, day): return settings.work_dir
 def build_shadow_replay(**kwargs): return "SHADOW"
 def compute_factor_health_checked(config, dataset, calendar):
     return json.load(open(ROOT / "health.json")), ""
+def pool_coverage_inputs(dataset, day):
+    json.dump({"dataset": str(dataset), "day": day}, open(ROOT / "coverage_call.json", "w"))
+    return (2, 82.0) if (ROOT / "pool_bad").exists() else (50, 60.0)
 def notify(title, body, level="active"):
     if (ROOT / "fail_push").exists(): return False
     with open(ROOT / "pushes.jsonl", "a", encoding="utf-8") as f:
@@ -204,6 +224,19 @@ def main():
     _t, b8 = xc.weekly_health_message('20261113', {}, '', [{'key': 'warn2:leg:A', 'recheck_by': '2027-01-02'}], [], '', None, '',
                                       {'legs': {}, 'combo_drawdown': {'value': -0.245}}, '',
                                       [NS(tier=2, scope='A腿', key='warn2:leg:A'), NS(tier=2, scope='M', key='warn2:leg:M')])
+    _t, b9 = xc.weekly_health_message('20261113', {}, '', [], [], '', None, '',
+                                      {'legs': {}, 'combo_drawdown': {'value': -0.2},
+                                       'signals': {'gap': 3, 'line': 22, 'last_any': '20261110',
+                                                   'last': {'A': '20261110', 'C': '', 'E': '20261102', 'M': '20261028'}}},
+                                      '', [], {'completed': 4, 'trades': 10, 'limit_pct': 1.2, 'average_pct': 0.35}, '',
+                                      {'pool_rows': 49, 'limit_up_count': 61.0, 'min_ratio': 0.3}, '')
+    _t, b10 = xc.weekly_health_message('20261113', {}, '', [], [], '', None, '', None, '', (),
+                                       {'completed': 0, 'trades': 10, 'limit_pct': 1.2}, '', None, 'OSError: z')
+    c4 = c4 and ('A/C/E实盘滑点：已平仓4笔，平均双边+0.35%（满10笔后超过1.2%报警）' in b9
+                 and '研究池覆盖率：20261113研究池49只/全市场涨停61只（80%，低于30%报警，正常时最低32%）' in b9
+                 and '选股信号：最近一次20261110（A 20261110、C 无、E 20261102、M 20261028），之后3个行动日没有新信号（超过22天报警）' in b9
+                 and 'A/C/E实盘滑点：还没有已平仓的A/C/E' in b10 and '研究池覆盖率：没算成（OSError: z）' in b10
+                 and '研究池覆盖率' not in b3 and 'A/C/E实盘滑点' not in b3 and '选股信号' not in b6)
     c4 = c4 and ('M实盘滑点：最近10笔平均双边+0.42%（报警线1.5%）' in b3 and '已平仓3笔，平均双边+0.30%（满10笔后超过1.5%报警）' in b4
                  and 'M实盘滑点：没算成（KeyError: x）' in b5 and 'M实盘滑点' not in b2
                  and '三级警告：终极（A腿）；ACE+M规则回放回撤-23.7%，最近12个月A-55.0%、C不足10笔、E不足10笔、M不足10笔' in b6
@@ -266,6 +299,36 @@ def main():
             call['shadow'] == 'SHADOW', os.path.exists(os.path.join(root, 'escalate_called')), report['warnings'],
             'ok' if c6 else 'FAIL'))
         ok &= c6
+    with tempfile.TemporaryDirectory() as tmp:
+        root, local = os.path.join(tmp, 'A_System'), os.path.join(tmp, 'local')
+        setup(root)
+        for rel, text in STUBS_ALIGN.items():
+            open(os.path.join(root, rel), 'w', encoding='utf-8').write(text)
+        cfg_path = os.path.join(root, 'config', 'config.json')
+        cfg = json.load(open(cfg_path))
+        cfg['review_triggers'].update(alignment_start_date='20260921', ace_m_start_date='20261113',
+                                      ace_slippage_trades=10, ace_slippage_limit_pct=1.2,
+                                      pool_coverage_min_ratio=0.3, pool_coverage_min_limit_up=10)
+        json.dump(cfg, open(cfg_path, 'w'))
+        export = os.path.join(local, 'A_System', 'qmt_native', 'qmt_export')
+        os.makedirs(export)
+        open(os.path.join(export, 'trade_completion_summary.csv'), 'w').write(
+            'trade_key,entry_date,ts_code,strategy_leg,entry_filled_qty\nk1,2026-11-13,600001.SH,A,100\n')
+        open(os.path.join(root, 'ace_bad'), 'w').close()
+        open(os.path.join(root, 'pool_bad'), 'w').close()
+        code, out = run(root, local, '20261111')
+        slip = json.load(open(os.path.join(root, 'ace_slippage_call.json')))
+        cov = json.load(open(os.path.join(root, 'coverage_call.json')))
+        work = os.path.join(local, 'A_System', 'qmt_native', 'external_checks')
+        latest = json.load(open(os.path.join(work, 'factor_health_latest.json'), encoding='utf-8'))
+        c7 = (code == 0 and (slip['start'], slip['trades'], slip['limit_pct'], slip['live_codes']) == ('20260921', 10, 1.2, ['600001.SH'])
+              and cov == {'dataset': os.path.join(work, 'work'), 'day': '20261111'}
+              and 'A/C/E最近10笔实盘平均双边滑点+1.60%' in out and '20261111研究池只有2只涨停股，全市场82只' in out
+              and latest['ace_slippage']['triggered'] and latest['pool_coverage'] == {'pool_rows': 2, 'limit_up_count': 82.0, 'min_ratio': 0.3}
+              and latest['ace_slippage_error'] == '' and latest['pool_coverage_error'] == '')
+        print('7. A/C/E slippage start %s window %s line %s%%, pool coverage from %s -> %s' % (
+            slip['start'], slip['trades'], slip['limit_pct'], os.path.basename(cov['dataset']), 'ok' if c7 else 'FAIL'))
+        ok &= c7
     print('RESULT', 'PASS' if ok else 'FAIL')
     return 0 if ok else 1
 
