@@ -92,61 +92,40 @@ EXPECTED_GATED_COMBO: dict[str, Any] | None = {
 }
 EXPECTED_STOP_DAYS_IN_WINDOW: int | None = 7
 
-CODE_FILES = [
+CONFIG_FILES = [
     "config/acde_rolling_optimization.json",
     "config/config.json",
+    "config/research/research.json",
     "config/strategy_config.json",
     "config/strategy_e_r1_scenarios.json",
     "config/strategy_d_factor_release.json",
-    "src/paper_candidate_generator.py",
-    "src/strategy_optimizer.py",
-    "src/strategy_c_exit.py",
-    "src/acde_rolling_candidates.py",
-    "src/acde_rolling_framework.py",
-    "research/acde_monthly_research.py",
-    "src/combined_live_engine.py",
-    "src/equity_curve_stop.py",
-    "src/five_year_research.py",
-    "src/data_cleaner.py",
-    "src/market_rules.py",
-    "src/strategy_equity_ledger.py",
-    "src/historical_limit_counts.py",
-    "src/limit_source_quality.py",
-    "src/equity_curve_stop_history.py",
-    "src/offline_data_maintenance.py",
-    "src/post_market_freshness.py",
-    "src/live_order_gateway.py",
-    "research/live_certification.py",
-    "src/strategy_e.py",
-    "src/strategy_d_factor_rules.py",
-    "src/strategy_identity.py",
-    "research/optimize_acde_rolling_three_year.py",
-    "scripts/run_paper_ab_filtered_daily_ops.py",
-    "scripts/generate_live_limit_pool_daily_ops.py",
-    "scripts/run_strategy_e_signal.py",
-    "scripts/monitor_strategy_d_intraday.py",
-    "scripts/trading_daemon.py",
-    "src/daemon/__init__.py",
-    "src/daemon/common.py",
-    "src/daemon/state.py",
-    "src/daemon/plans.py",
-    "src/daemon/qmt.py",
-    "src/daemon/orders.py",
-    "src/daemon/sell.py",
-    "src/daemon/buy.py",
-    "src/daemon/buy_m.py",
-    "src/daemon/sell_pov.py",
-    "src/daemon/close.py",
-    "src/daemon/takeprofit.py",
-    "src/daemon/strategy_d.py",
-    "src/daemon/reports.py",
-    "src/daemon/pipeline.py",
-    "src/daemon/jobs.py",
-    "src/daemon/scheduler.py",
-    "scripts/update_equity_curve_stop.py",
-    "scripts/report_rolling_live_performance.py",
-    "research/certify_plan_jia_release.py",
 ]
+# 认证覆盖的代码（2026-11-15 起自动列出）：认证脚本本身和实盘交易入口（守护进程及它按名字调起的收盘流水线脚本、
+# QMT里的交易引擎）按导入关系能走到的全部模块，加上这些模块所在包的 __init__.py。以前是手写清单，重构拆出的
+# 新模块（ac_rules、acde_plan、e_signal_inputs、portfolio_ace_m 等）没有进清单，改了它们证书也发现不了。
+# tests/test_certification_scope.py 核对证书里的清单和校验码与当前代码一致：代码一改就要重新认证。
+CODE_ROOTS = ("research.certify_plan_jia_release", "scripts.trading_daemon", "qmt_inner.engine", "qmt_inner.protocol")
+# 证书不覆盖的内容（如实写进证书，不能把这张PASS当成ACE+M的完整上线认证）
+NOT_COVERED = [
+    "策略M（规则、候选、预挂与补单执行）",
+    "停手期ACE按20%目标仓位照常开仓（2026-11-12起的现行口径；本认证按方案甲v1停手日不开新仓回放）",
+    "ACE+M资金分配（M只用闲置资金、合计不超过99.5%、单票硬顶）",
+    "独立样本外（2023-09~2026-08是同窗研究）",
+    "资金容量与真实成交（滑点、排队、部分成交）",
+]
+
+
+def certified_code_files(root: Path = ROOT) -> list[str]:
+    """配置文件 + CODE_ROOTS 按导入关系能走到的全部模块及其包的 __init__.py（相对路径，排好序）。"""
+    from tests.golden.project_metrics import closure, import_edges, module_files
+
+    files = module_files(root)
+    paths = {files[name].relative_to(root) for name in closure(import_edges(files), CODE_ROOTS)}
+    for path in list(paths):
+        for parent in path.parents:
+            if (root / parent / "__init__.py").exists() and parent != Path("."):
+                paths.add(parent / "__init__.py")
+    return CONFIG_FILES + sorted(path.as_posix() for path in paths)
 
 
 def parse_args() -> argparse.Namespace:
@@ -370,6 +349,7 @@ def run(measure_only: bool) -> dict[str, Any]:
     write_json(OUTPUT_ROOT / "artifact_manifest.json",
                {p.name: {"sha256": sha256_path(p), "size_bytes": p.stat().st_size} for p in artifacts})
 
+    code_files = certified_code_files()
     input_files = [
         str(Path(paths[key]).relative_to(ROOT))
         for key in ("strict_feature_pool", "market_sentiment", "trade_calendar")
@@ -381,6 +361,8 @@ def run(measure_only: bool) -> dict[str, Any]:
         "release_id": RELEASE_ID,
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "certification_scope": "FORMAL_RULE_STOP_GATE_AND_BACKTEST_ALIGNMENT",
+        "covers": "方案甲A/C/E正式规则、60日影子净值停手判定（停手日不开新仓）、D历史0笔，回测逐笔对齐与两次独立构建一致",
+        "not_covered": NOT_COVERED,
         "current_executable": True,
         "release_eligible": False,
         "strict_asof_standard_id": runtime["strict_asof"]["standard_id"],
@@ -396,8 +378,8 @@ def run(measure_only: bool) -> dict[str, Any]:
         "deterministic_double_replay": True,
         "live_decision_equals_certification": True,
         "config_sha256": certification_config_sha256(runtime),
-        "code_files": CODE_FILES,
-        "code_sha256": certification_files_sha256(ROOT, CODE_FILES),
+        "code_files": code_files,
+        "code_sha256": certification_files_sha256(ROOT, code_files),
         "input_files": input_files,
         "input_sha256": certification_files_sha256(ROOT, input_files),
         "source_summary_sha256": certification_file_sha256(OUTPUT_ROOT / "release_summary.json"),
@@ -421,6 +403,9 @@ def run(measure_only: bool) -> dict[str, Any]:
             "- 实盘逐日预判与认证逐日判定：一致；停手日无新开仓；两次确定性构建与回放：一致",
             "",
             "风险说明：该窗口属于同窗研究，不是独立样本外或资金容量认证，也不承诺未来收益。",
+            "",
+            "不覆盖（不能把这张PASS当成ACE+M的完整上线认证）：",
+            *[f"- {item}" for item in NOT_COVERED],
         ]) + "\n",
         encoding="utf-8",
     )

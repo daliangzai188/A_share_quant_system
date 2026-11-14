@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from src.utils.logger import setup_logger
-from src.config_check import check_production_config
+from src.config_check import block_new_entries, clear_new_entry_block, entry_block_text, production_config_status
 from src.utils.config import load_json_config, mkdir_p
 from src.utils.time_utils import BEIJING_TZ, now_beijing, today_beijing
 from src.daemon.common import (
@@ -567,36 +567,53 @@ def _should_run_startup_signal_audit(now: datetime.datetime) -> bool:
 
 
 def wait_for_config_gate() -> None:
-    """生产配置门禁（2026-11-14）：config/config.json 的结构和关键取值不对就不启动任何交易线程（fail-closed）。
+    """生产配置门禁（2026-11-14 起，2026-11-15 分两档）：结构以 config/production_config_schema.json 为准（src/config_check.py）。
 
-    结构以 config/production_config_schema.json 为准（src/config_check.py）。不通过时推送一次、每分钟复查；
-    多出来的段/键等只需提示的事项写日志，不拦。
+    - 致命问题（配置读不了、trade_mode 不认识、券商连接的结构不对）：不启动任何交易线程（fail-closed），推送、每分钟复查；
+    - 其它结构问题：只禁止开新仓，照常进入账户恢复、启动平仓检查、收盘看门狗和卖出POV，已有持仓按时卖出；
+      统一执行通道拒绝一切 BUY，推送告警，配置改好后自动解除。
+    说明文字缺了、多出来的段/键等只写日志，不拦。
     """
     log = logger()
     round_no = 0
     while True:
         round_no += 1
-        problems, notes = check_production_config(PROJECT_ROOT)
+        status = production_config_status(PROJECT_ROOT)
         if round_no == 1:
-            for note in notes:
+            for note in status.notes:
                 log.warning("配置提示：%s", note)
-        if not problems:
-            if round_no > 1:
-                log.info("✅ 生产配置检查已通过（第%d次检查）。", round_no)
-            return
-        text = "；".join(problems[:5]) + ("；等%d处" % len(problems) if len(problems) > 5 else "")
-        log.critical("🛑 生产配置检查不通过，禁止启动任何交易任务：%s", text)
+        if not status.fatal:
+            break
+        text = "；".join(status.fatal[:5]) + ("；等%d处" % len(status.fatal) if len(status.fatal) > 5 else "")
+        log.critical("🛑 生产配置检查不通过（券商连接/交易模式），禁止启动任何交易任务：%s", text)
         write_heartbeat("config_invalid")
         _notify_once_per(
             "config_invalid",
             1800,
             "🛑 配置检查不通过，交易未启动",
-            "config/config.json 和记下的结构不一致：%s。改好配置（结构确实要变就重新生成"
+            "config/config.json 的券商连接或交易模式不对：%s。改好配置（结构确实要变就重新生成"
             "config/production_config_schema.json）后会自动继续。" % text,
             level="critical",
             call=True,
         )
         time.sleep(60)
+    if status.entry:
+        text = entry_block_text(status)
+        block_new_entries(text, PROJECT_ROOT)
+        log.critical("⚠️ 生产配置有%d处结构问题：只做账户恢复和平仓，禁止开新仓：%s", len(status.entry), text)
+        _notify_once_per(
+            "config_entry_blocked",
+            1800,
+            "⚠️ 配置检查不通过：只平仓，不开新仓",
+            "config/config.json 和记下的结构不一致：%s。已有持仓照常按时卖出，新开仓全部拒绝；改好配置"
+            "（结构确实要变就重新生成 config/production_config_schema.json）后自动恢复开仓。" % text,
+            level="critical",
+            call=True,
+        )
+        return
+    clear_new_entry_block()
+    if round_no > 1:
+        log.info("✅ 生产配置检查已通过（第%d次检查）。", round_no)
 
 
 def _run_schedule_loop(log):

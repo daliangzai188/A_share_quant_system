@@ -116,6 +116,38 @@ class PublishDevCopyTests(unittest.TestCase):
         self.assertIn("资金账号", result.stdout)
         self.assertNotEqual(git(self.origin, "rev-parse", "main"), git(self.dev, "rev-parse", "HEAD"))
 
+    def test_push_rejected_is_an_error_and_next_run_pushes_again(self) -> None:
+        hook = self.origin / "hooks" / "pre-receive"
+        hook.write_text("#!/bin/sh\necho 'rejected by test'\nexit 1\n", encoding="utf-8")
+        hook.chmod(0o755)
+        result = self.run_script()
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("推送失败", result.stdout)
+        self.assertEqual(git(self.sync, "rev-parse", "HEAD"), git(self.dev, "rev-parse", "HEAD"))   # 已落地
+        self.assertNotEqual(git(self.origin, "rev-parse", "main"), git(self.dev, "rev-parse", "HEAD"))
+        hook.unlink()
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("补推", result.stdout)
+        self.assertEqual(git(self.origin, "rev-parse", "main"), git(self.dev, "rev-parse", "HEAD"))
+
+    def test_refuses_account_in_an_intermediate_commit_or_message(self) -> None:
+        (self.dev / "src" / "a.py").write_text("ACCOUNT = '99887766'\n", encoding="utf-8")
+        git(self.dev, "commit", "-q", "-am", "add")
+        (self.dev / "src" / "a.py").write_text("A = 3\n", encoding="utf-8")
+        git(self.dev, "commit", "-q", "-am", "remove")      # 最终差异里已经没有账号，中间提交里有
+        head = git(self.sync, "rev-parse", "HEAD")
+        result = self.run_script()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("资金账号", result.stdout)
+        self.assertEqual(git(self.sync, "rev-parse", "HEAD"), head)
+        git(self.dev, "reset", "-q", "--hard", "HEAD~2")
+        (self.dev / "src" / "a.py").write_text("A = 4\n", encoding="utf-8")
+        git(self.dev, "commit", "-q", "-am", "账户 99887766 的说明")   # 账号在提交说明里
+        result = self.run_script()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("资金账号", result.stdout)
+
     def test_refuses_when_pre_publish_checks_fail(self) -> None:
         head = git(self.sync, "rev-parse", "HEAD")
         result = self.run_script(verify="false")

@@ -9,7 +9,9 @@
 # - 新提交改了、同步工作区里也被改过的文件（比如虚拟机更新的参考表）不覆盖，停下来；
 # - 新提交里“停止跟踪”的文件（git rm --cached）不能从工作区删掉，否则 Syncthing 会把删除同步到虚拟机：
 #   一律用 reset --mixed 落地，再检出新增、修改、改名的文件，删除的文件只删真正被删掉的那些；前后核对 data/ 下没有文件不见；
-# - 推送前检查新提交里没有资金账号（从 QMT 工作目录的 local.env 读，可用 QN_LOCAL_ENV 指定）；
+# - 推送前逐个提交检查：每个新提交新增的行和提交说明里都不能有资金账号（从 QMT 工作目录的 local.env 读，可用
+#   QN_LOCAL_ENV 指定；2026-11-15 起不只看最终差异，“先提交账号再删掉”也拦）；
+# - 推送失败就报错退出（同步工作区已是新版本、GitHub 还旧）；再运行一次即使“没有新提交”也会发现 GitHub 落后并补推；
 # - 2026-11-15 起每次发布前自动在导出副本跑全量测试和生产链对照标准（tools/verify_dev_copy.sh，逐字节比对），
 #   没通过就不发布；同一个提交已经检查通过的不重跑。
 set -e
@@ -24,11 +26,38 @@ dirty=$(git status --porcelain --untracked-files=no | grep -v ' data/' || true)
 git fetch -q "$DEV" main
 OLD=$(git rev-parse HEAD)
 NEW=$(git rev-parse FETCH_HEAD)
-[ "$OLD" != "$NEW" ] || { echo "没有新提交"; exit 0; }
+
+# 区间里每个提交的说明和新增的行都不能出现资金账号（只看新增和修改的文件：删除的内容本来就在历史里，
+# 停止跟踪大批行情时也不用把几百万行旧数据过一遍）
+account_in() {
+  n=$( { git log --format=%B "$1..$2"; git log --no-renames -p --diff-filter=AMT --format= "$1..$2" | grep '^+'; } \
+       | grep -c "$QMT_ACCOUNT_ID" || true)
+  [ "$n" != "0" ]
+}
+# 推送到 GitHub；失败就报错退出，不当成功
+push_main() {
+  if account_in "$1" HEAD; then echo "要推送的提交里出现资金账号，拒绝推送"; exit 1; fi
+  PUSH_LOG=/tmp/publish_push.$$
+  if ! git push origin HEAD:main > "$PUSH_LOG" 2>&1; then
+    cat "$PUSH_LOG"; rm -f "$PUSH_LOG"
+    echo "推送失败：同步工作区已是新版本，GitHub 还停在旧版本。处理好网络或权限后重新运行本脚本，会自动补推。"
+    exit 1
+  fi
+  tail -1 "$PUSH_LOG"; rm -f "$PUSH_LOG"
+}
+if [ "$OLD" = "$NEW" ]; then
+  # 没有新提交：上次可能推送失败，GitHub 落后就补推
+  if git fetch -q origin main 2>/dev/null && [ "$(git rev-parse FETCH_HEAD)" != "$OLD" ] \
+      && git merge-base --is-ancestor FETCH_HEAD "$OLD"; then
+    echo "没有新提交，但 GitHub 还停在旧版本，补推："
+    push_main FETCH_HEAD
+  else
+    echo "没有新提交"
+  fi
+  exit 0
+fi
 git merge-base --is-ancestor "$OLD" "$NEW" || { echo "导出副本不包含同步工作区的全部提交，不能快进"; exit 1; }
-# 只查新增的行：删除的内容本来就在历史里，停止跟踪大批行情时也不用把几百万行旧数据过一遍
-n=$(git diff --no-renames "$OLD" "$NEW" | grep '^+' | grep -c "$QMT_ACCOUNT_ID" || true)
-[ "$n" = "0" ] || { echo "新提交里出现资金账号，拒绝发布"; exit 1; }
+if account_in "$OLD" "$NEW"; then echo "新提交里出现资金账号，拒绝发布"; exit 1; fi
 # 发布前自动检查：导出副本的这个提交跑过全量测试和对照标准才发布（PUBLISH_VERIFY_CMD 只给本脚本的测试用）
 [ "$(git -C "$DEV" rev-parse HEAD)" = "$NEW" ] || { echo "导出副本当前不在 main 最新提交上，先切回 main"; exit 1; }
 VERIFIED=$(cut -d' ' -f1 "$(git -C "$DEV" rev-parse --absolute-git-dir)/a_system_verified" 2>/dev/null || true)
@@ -75,4 +104,5 @@ rm -f "$BEFORE" "$AFTER"
 left=$(git status --porcelain --untracked-files=no | grep -v ' data/' || true)
 [ -z "$left" ] || { echo "落地后还有和新提交不一致的文件（未推送）："; echo "$left"; exit 1; }
 git log --oneline "$OLD..$NEW"
-git push origin HEAD:main 2>&1 | tail -1
+git fetch -q origin main 2>/dev/null || true
+push_main "$(git rev-parse --verify -q FETCH_HEAD || echo "$OLD")"

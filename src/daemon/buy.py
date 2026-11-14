@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from src.config_check import new_entry_block_reason
 from src.utils.config import load_json_config, mkdir_p
 from src.utils.time_utils import now_beijing, today_beijing
 from src.portfolio_ace_m import ACE_FULL_HARD_CAP_PCT, ACE_FULL_TARGET_PCT, M_LEG, ace_limits
@@ -2032,8 +2033,12 @@ def _new_buy_execution_gate() -> tuple[bool, str]:
 
     非实盘/未接券商场景继续保留模拟计划；真正启用QMT实盘时必须经过与最终
     下单完全相同的LiveOrderGateway门禁。该函数不连接QMT、不查账户、不下单。
+    配置检查不通过而禁止开新仓时（src/config_check），这里先说明原因（统一执行通道也会拒绝BUY）。
     """
 
+    blocked = new_entry_block_reason()
+    if blocked:
+        return False, "配置检查不通过，禁止开新仓：%s" % blocked
     try:
         config = load_json_config(PROJECT_ROOT / "config" / "config.json")
         if not (

@@ -13,6 +13,7 @@ from concurrent.futures import Future, TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Mapping
 
+from src.config_check import new_entry_block_reason
 from src.portfolio_ace_m import REMARK_LEG_MATCH_ORDER
 from src.broker_adapter import (
     AccountSnapshot,
@@ -741,6 +742,18 @@ class IntentSerializedBrokerProxy(SerializedBrokerProxy):
         self._intent_service = service
 
     def place_order(self, request: OrderRequest) -> OrderResult:
+        # 配置检查不通过时只禁止开新仓（src/config_check）：一切 BUY 在这里拒绝，不建意图、不碰券商；卖出照常
+        if str(request.side).upper() == "BUY":
+            blocked = new_entry_block_reason()
+            if blocked:
+                return OrderResult(
+                    ts_code=request.ts_code,
+                    broker_code=request.broker_code,
+                    side=request.side,
+                    quantity=request.quantity,
+                    accepted=False,
+                    message="NEW_ENTRY_BLOCKED_BY_CONFIG：配置检查不通过，禁止开新仓：%s" % blocked,
+                )
         return self._intent_service.submit_order(self._adapter_provider, request)
 
     def cancel_order(self, order_id: str) -> bool:

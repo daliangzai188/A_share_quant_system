@@ -110,6 +110,8 @@
 补齐并审计D分钟级事件路径
     ↓
 生成不可变数据清单、哈希、质量报告和就绪结论
+    ↓
+在同步目录外拍数据快照并做恢复演练（2026-11-15起）
 ```
 
 原始数据更新优先复用现有入口：
@@ -126,6 +128,17 @@ python3 scripts/score_limit_up_fill_probability.py --historical-asof
 这些命令只是当前已有基础入口，不代表单独执行后就完成ACDE月度数据更新。系统还必须
 根据策略依赖清单处理严格研究底座、D分钟数据、退出日数据和最终就绪门禁。需要Token
 时只允许从`.env`、配置文件或环境变量读取，禁止写入代码或报告。
+
+行情数据不进git，只在Mac和虚拟机之间双向同步（一边删错或写坏，另一边跟着变）。所以数据更新通过质量门禁后，在同步
+工作区另存一份独立快照并做恢复演练（`tools/data_snapshot.py`）：
+
+```bash
+python3 tools/data_snapshot.py snapshot        # 存到同步目录外 ~/A_System_data_snapshots/，只读，每个文件sha256清单
+python3 tools/data_snapshot.py restore-check   # 完整恢复到临时目录逐个核对，再列出快照之后改过、不见的文件
+```
+
+快照名和`restore-check`结果写进`update_summary.md`。要用旧数据时先`restore 快照名 新目录`恢复到新目录核对，确认后
+再人工换回同步工作区（直接写进去会同步到虚拟机）。
 
 `collect_all_data.py`和`collect_daily_data.py`现已默认同步采集`adj_factor`；只有非月度
 诊断任务才能显式使用`--no-adj-factor`。月度研究若缺任一交易日复权因子，必须失败关闭。
