@@ -193,3 +193,8 @@ data/raw/kpl_limit_list/*
 # QMT 原生版：生成的 QMT 策略文件内含资金账号和生产状态（规则第 11 条），只在本机生成，不进 Git
 qmt_native/inqmt/A_SYSTEM_QMT_NATIVE_*.py
 qmt_native_phase0/A_SYSTEM_QMT_NATIVE_*.py
+
+# 2026-11-14 两端双向同步后，虚拟机产生的这些文件也会同步到Mac：只同步，不进git
+# （publish_to_a_system.sh 会 git add qmt_native_phase0，phase-0导出的84MB行情tick不能被带进公开仓库）
+qmt_native_phase0/out*/
+reports/qmt_native/
