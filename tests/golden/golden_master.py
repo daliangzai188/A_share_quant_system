@@ -17,7 +17,7 @@
 
 以后每一步优化，check 必须全部相同才能提交；确实应该变的（例如改规则）要单独说明并重新 record。
 只读：不联网、不推送、不写生产状态。运行时先把当前代码复制到临时目录，临时目录的 data/raw 指向冻结行情：
-有些模块按自己文件的位置找 data/raw（例如 scripts/build_ac_daily_candidates.py 导入时就读交易日历），
+有些模块按自己文件的位置找 data/raw（例如 research/build_ac_daily_candidates.py 导入时就读交易日历），
 不复制的话会读到仓库里的行情，对照就不可靠。
 
 用法：python tests/golden/golden_master.py check [--full] [--data DIR]
@@ -132,16 +132,86 @@ def runtime_root(data: Path, tmp: Path) -> Path:
     return root
 
 
-def live_engine_rows(legs, action_dates) -> list[dict]:
-    """同一批候选交给实盘组合状态机（与 scripts/verify_live_engine_matches_certify.py 同一做法），记录每日决定。"""
-    import pandas as pd
-    from scripts import validate_other_live_strategies_strict as strict
-    from scripts.verify_live_engine_matches_certify import ac_order, e_signal, make_engine
+# ---- 实盘组合状态机的喂数辅助：与 research/verify_live_engine_matches_certify.py、
+# research/validate_other_live_strategies_strict.py 里的同名函数一字不差（2026-11-14 抄进来，
+# 让对照标准只依赖生产代码，研究代码以后怎么改都不影响它）。
 
-    maps = {leg: (strict.action_candidate_map(legs[leg], leg) if legs.get(leg) is not None and len(legs[leg]) else {})
+
+def action_candidate_map(frame, leg: str) -> dict:
+    """把候选映射到真实资金开仓日：A/C/E 在 buy_date 开盘执行，D 在信号日盘中开仓。"""
+    normalized_leg = str(leg).strip().upper()
+    if normalized_leg not in {"A", "C", "D", "E"}:
+        raise ValueError(f"未知策略腿：{leg}")
+    valid = frame[frame["status"].astype(str).eq("OK")].copy()
+    if valid.empty:
+        return {}
+    entry_column = "signal_date" if normalized_leg == "D" else "buy_date"
+    if entry_column not in valid.columns:
+        raise KeyError(f"{normalized_leg}候选缺少真实开仓日字段{entry_column}")
+    date_text = lambda series: series.astype(str).str.replace(r"\.0$", "", regex=True)
+    valid["signal_date"] = date_text(valid["signal_date"])
+    valid["action_date"] = date_text(valid[entry_column])
+    valid["exit_date"] = date_text(valid["exit_date"])
+    valid["strategy_leg"] = normalized_leg
+    if valid["action_date"].eq("").any() or valid["action_date"].isna().any():
+        raise ValueError(f"{normalized_leg}候选存在空真实开仓日")
+    return {str(row["action_date"]): row.to_dict() for _, row in valid.drop_duplicates("action_date", keep="last").iterrows()}
+
+
+def make_engine(project_root: Path):
+    """只读计划引擎；所有外部状态都由逐日数据显式注入。"""
+    from src.combined_live_engine import CombinedLiveEngine
+    engine = object.__new__(CombinedLiveEngine)
+    engine.project_root = project_root
+    engine.config = {
+        "trade_mode": "backtest",
+        "position": {"initial_cash": 500_000},
+        "live_trade": {"max_single_order_amount": 0},
+        "active_strategy_profile": {"mode": 1, "mode_name": "A_C_E_D"},
+    }
+    engine.load_positions = lambda: []
+    engine.active_strategy_mode = lambda: 1
+    engine.active_strategy_name = lambda: "A_C_E_D"
+    engine.is_b_strategy_removed = lambda: True
+    engine.load_today_e_signal = lambda _today: None
+    engine.compute_e_preview = lambda _today: {"has_candidate": False, "has_scored_data": True, "neutral_segs": []}
+    return engine
+
+
+def ac_order(row: dict, action_date: str) -> dict:
+    return {
+        "paper_order_id": f"VERIFY-{row['strategy_leg']}-{action_date}-{row['ts_code']}",
+        "signal_date": str(row.get("signal_date", "")),
+        "strategy_leg": str(row["strategy_leg"]),
+        "planned_order_date": action_date,
+        "side": "BUY",
+        "ts_code": str(row["ts_code"]),
+        "name": str(row.get("name", "")),
+        "reference_price": 10.0,
+        "round_lot_shares": 10_000,
+        "estimated_shares": 10_000,
+        "planned_position_pct": 0.825,
+    }
+
+
+def e_signal(row: dict) -> dict:
+    return {
+        "signal_date": str(row.get("signal_date", "")),
+        "ts_code": str(row["ts_code"]),
+        "name": str(row.get("name", "")),
+        "limit_close": 10.0,
+        "exit_offset": int(row.get("hold_offset", 2) or 2),
+    }
+
+
+def live_engine_rows(legs, action_dates) -> list[dict]:
+    """同一批候选交给实盘组合状态机（与 research/verify_live_engine_matches_certify.py 同一做法），记录每日决定。"""
+    import pandas as pd
+
+    maps = {leg: (action_candidate_map(legs[leg], leg) if legs.get(leg) is not None and len(legs[leg]) else {})
             for leg in ("A", "C", "E")}
     dates = sorted(set(str(d) for d in action_dates) | {d for m in maps.values() for d in m})
-    engine = make_engine()
+    engine = make_engine(Path(os.getcwd()))
     rows = []
     for action_date in dates:
         ac = pd.DataFrame([ac_order(maps[leg][action_date], action_date) for leg in ("A", "C") if action_date in maps[leg]])

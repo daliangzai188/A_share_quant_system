@@ -190,8 +190,8 @@ selected_rule=""
 
 | 文件 | 作用 |
 |---|---|
-| ``scripts/build_strategy_d_intraday_event_ledger.py`` | 分块流式重放972万分钟K，严格审计缺口和跨源不一致 |
-| ``scripts/research_strategy_d_full_window_features_and_gates.py`` | 重建盘中情绪/板块/量价，统计爆发爆亏，执行47条双门禁 |
+| ``research/build_strategy_d_intraday_event_ledger.py`` | 分块流式重放972万分钟K，严格审计缺口和跨源不一致 |
+| ``research/research_strategy_d_full_window_features_and_gates.py`` | 重建盘中情绪/板块/量价，统计爆发爆亏，执行47条双门禁 |
 | ``config/strategy_d_intraday_known_data_gaps.json`` | 4条空缺和4条价格不一致的精确备案 |
 | ``tests/test_strategy_d_full_window_streaming_replay.py`` | 跨chunk分组、缺口保留分母、未备案缺口fail-fast |
 | ``tests/test_strategy_d_full_window_features_and_gates.py`` | 信号字段白名单、盘中截面、最早信号、先选后成交、午间分钟差 |
@@ -211,12 +211,12 @@ selected_rule=""
 
 ```bash
 PYTHONPATH="$PWD/.venv/lib/python3.9/site-packages" python3 \
-  scripts/build_strategy_d_intraday_event_ledger.py \
+  research/build_strategy_d_intraday_event_ledger.py \
   --minute-bars data/research/strategy_d_intraday/minute_1m_tushare.csv \
   --data-source TUSHARE_STK_MINS_1M_UNADJUSTED
 
 PYTHONPATH="$PWD/.venv/lib/python3.9/site-packages" python3 \
-  scripts/research_strategy_d_full_window_features_and_gates.py
+  research/research_strategy_d_full_window_features_and_gates.py
 ```
 
 ### 8.4 验证

@@ -52,7 +52,7 @@ class StrictPortfolioCertificationPolicyTests(unittest.TestCase):
         self.assertEqual(audit["metrics"]["leg_counts"], EXPECTED_LEG_COUNTS)
 
     def test_legacy_identity_script_cannot_overwrite_official_certificate(self) -> None:
-        source = (ROOT / "scripts/certify_current_executable_portfolio.py").read_text(
+        source = (ROOT / "research/certify_current_executable_portfolio.py").read_text(
             encoding="utf-8"
         )
         self.assertIn('LEGACY_IDENTITY_ALIGNMENT_PATH = OUTPUT_DIR / "legacy_identity_alignment.json"', source)

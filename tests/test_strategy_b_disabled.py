@@ -8,10 +8,8 @@ import pandas as pd
 
 from scripts import trading_daemon
 from scripts.generate_live_limit_pool_daily_ops import select_candidates
-from scripts.run_paper_ab_filtered_observation_window import (
-    is_b_strategy_enabled,
-    reject_strategy_risk_mask,
-)
+from research.run_paper_ab_filtered_observation_window import is_b_strategy_enabled
+from src.ac_rules import reject_strategy_risk_mask
 from scripts.trading_daemon import _position_manual_exit_only
 from src.combined_live_engine import CombinedLiveEngine
 

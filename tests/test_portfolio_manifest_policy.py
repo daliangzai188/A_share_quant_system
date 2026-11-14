@@ -5,14 +5,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from scripts.certify_current_executable_portfolio import lock_or_verify_input_manifest
+from research.certify_current_executable_portfolio import lock_or_verify_input_manifest
 
 
 class PortfolioManifestPolicyTests(unittest.TestCase):
     def test_ac_builder_is_portable_and_certification_has_no_empirical_calibration(self) -> None:
         root = Path(__file__).resolve().parents[1]
-        builder = (root / "scripts" / "build_ac_daily_candidates.py").read_text(encoding="utf-8")
-        certify = (root / "scripts" / "certify_current_executable_portfolio.py").read_text(encoding="utf-8")
+        builder = (root / "research" / "build_ac_daily_candidates.py").read_text(encoding="utf-8")
+        certify = (root / "research" / "certify_current_executable_portfolio.py").read_text(encoding="utf-8")
         self.assertIn("Path(__file__).resolve().parents[1]", builder)
         self.assertNotIn("/Users/user/Desktop/A_System", builder)
         self.assertIn('WINDOW_START = "20240630"', builder)

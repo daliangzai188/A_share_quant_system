@@ -23,12 +23,12 @@ from src.acde_rolling_candidates import (
 )
 from src.strategy_e import load_e_spec
 from src.utils.config import load_json_config
-from scripts.optimize_acde_rolling_three_year import (
+from research.optimize_acde_rolling_three_year import (
     period_breakdown,
     select_main_window_winner,
 )
-from src.acde_monthly_research import load_monthly_config
-from scripts.merge_strategy_d_reseal_event_windows import merge as merge_d_windows
+from research.acde_monthly_research import load_monthly_config
+from research.merge_strategy_d_reseal_event_windows import merge as merge_d_windows
 
 
 ROOT = Path(__file__).resolve().parents[1]

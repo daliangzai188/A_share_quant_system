@@ -531,7 +531,7 @@ def cancel_order(self, order_id: str) -> bool:
 
 ## 九、回测脚本说明
 
-文件：`scripts/backtest_strategy_d.py`
+文件：`research/backtest_strategy_d.py`
 
 关键常量：
 
@@ -549,7 +549,7 @@ D_ELIGIBLE_STATUSES = {"NO_CANDIDATE", "HISTORICAL_SIM_FILLED", "BUY_REJECTED"}
    只取第一名且失败不递补。
 4. D全部按T+2收盘退出，仓位82.5%，成交压力折扣80%，往返费用及滑点0.15%。
 5. 本脚本中的旧A/B/C叠加曲线只保留审计用途；当前组合收益和串行占仓只能以
-   `scripts/certify_current_executable_portfolio.py`只作身份核对；发布标尺只认
+   `research/certify_current_executable_portfolio.py`只作身份核对；发布标尺只认
    `research/certify_strict_asof_portfolio.py`。
 
 输出：
@@ -564,7 +564,7 @@ reports/strategy_d/yearly_comparison.csv  年度对比
 
 ```bash
 cd /Users/user/Desktop/A_System
-.venv/bin/python -B scripts/backtest_strategy_d.py
+.venv/bin/python -B research/backtest_strategy_d.py
 ```
 
 ---
@@ -574,16 +574,16 @@ cd /Users/user/Desktop/A_System
 | 文件 | 核心内容 |
 |---|---|
 | `src/strategy_d_spec.py` | 回测与实盘共用的D不可变候选边界和排序 |
-| `scripts/backtest_strategy_d.py` | 冻结D候选、T+2收益及验证闸门 |
+| `research/backtest_strategy_d.py` | 冻结D候选、T+2收益及验证闸门 |
 | `scripts/monitor_strategy_d_intraday.py` | 09:30全日路径、WATCH/BUY、成交概率和撤单 |
-| `scripts/build_strategy_d_intraday_event_ledger.py` | 建立包含失败收盘的完整首板触板母池，机械重放第一可交易回封、保守排队成交和14:55撤单 |
+| `research/build_strategy_d_intraday_event_ledger.py` | 建立包含失败收盘的完整首板触板母池，机械重放第一可交易回封、保守排队成交和14:55撤单 |
 | `research/research_strategy_d_intraday_1m_paths.py` | 审计6,848个一分钟路径，比较1分钟/5分钟身份，统计爆发、爆亏、失败收盘和样本内候选稳健性 |
 | `research/collect_strategy_d_intraday_baostock.py` | 断点回填沪深不复权5分钟K，仅作盘中路径近似预检 |
-| `scripts/collect_strategy_d_intraday_tushare_1m.py` | 聚合并断点回填历史1分钟价格路径；不含买一队列，不具备正式认证资格 |
+| `research/collect_strategy_d_intraday_tushare_1m.py` | 聚合并断点回填历史1分钟价格路径；不含买一队列，不具备正式认证资格 |
 | `research/probe_strategy_d_intraday_qmt_depth.py` | 只读探测QMT历史1分钟、tick和盘口字段覆盖，不访问账户/订单 |
 | `research/audit_strategy_d_strict_intraday_sources.py` | 审计全市场L2覆盖并控制D/ACDE严格重放门禁 |
 | `scripts/trading_daemon.py` | 组合状态允许时启动D线程，复用主QMT连接 |
-| `scripts/certify_current_executable_portfolio.py` | 旧来源串行身份核对，不生成正式收益认证 |
+| `research/certify_current_executable_portfolio.py` | 旧来源串行身份核对，不生成正式收益认证 |
 | `research/certify_strict_asof_portfolio.py` | 严格as-of单账户机械复利和代码/输入指纹认证 |
 | `src/broker_adapter.py`、`src/qmt_adapter.py` | 委托、成交确认和撤单接口 |
 

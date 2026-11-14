@@ -10,7 +10,7 @@
 5. 同时报告Wilson胜率区间、bootstrap平均收益区间、样本外状态和容量缺口。
 
 运行：
-    python3 scripts/validate_other_live_strategies_strict.py
+    python3 research/validate_other_live_strategies_strict.py
 """
 from __future__ import annotations
 
@@ -29,16 +29,16 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts import certify_current_executable_portfolio as cert  # noqa: E402
-from scripts.backtest_strategy_d import build_daily_candidate_ledger  # noqa: E402
-from scripts.build_ac_daily_candidates import trade_return_details  # noqa: E402
-from scripts.run_paper_ab_filtered_daily_ops import (  # noqa: E402
+from research import certify_current_executable_portfolio as cert  # noqa: E402
+from research.backtest_strategy_d import build_daily_candidate_ledger  # noqa: E402
+from src.fixed_rule_execution import trade_return_details  # noqa: E402
+from src.ac_rules import (  # noqa: E402
     condition_strategy_config,
     configured_c_condition_profiles,
     configured_c_conditions,
     reject_strategy_risk_mask,
 )
-from scripts.verify_strategy_e_alignment import load_historical_bucketed_pool  # noqa: E402
+from research.verify_strategy_e_alignment import load_historical_bucketed_pool  # noqa: E402
 from src.adjusted_returns import linked_forward_adjusted_return  # noqa: E402
 from src.market_rules import (  # noqa: E402
     fixed_close_sell_executable,
@@ -66,7 +66,7 @@ from src.strategy_e import (  # noqa: E402
     select_e_candidates,
     select_e_daily_picks,
 )
-from src.trading_fees import account_return_after_fees  # noqa: E402
+from src.acde_rolling_candidates import account_return  # noqa: E402  账户收益只有一个出处
 from src.utils.config import load_json_config  # noqa: E402
 
 
@@ -178,17 +178,6 @@ def return_metrics(returns: pd.Series, *, seed_offset: int = 0) -> dict[str, Any
         "avg_return_bootstrap_95_lower": float(low),
         "avg_return_bootstrap_95_upper": float(high),
     }
-
-
-def account_return(stock_return: float, exit_date: str, position_pct: float = POSITION_PCT) -> float:
-    return account_return_after_fees(
-        stock_return_before_fees=float(stock_return),
-        exit_date=str(exit_date),
-        position_pct=float(position_pct),
-        commission_rate=COMMISSION_RATE,
-        transfer_fee_rate=TRANSFER_FEE_RATE,
-        stamp_tax_schedule=STAMP_TAX_SCHEDULE,
-    )
 
 
 def build_ac(

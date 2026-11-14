@@ -15,22 +15,24 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 import pandas as pd
 
-from scripts.optimize_acde_rolling_three_year import (
-    build_variant_plan,
+from research.optimize_acde_rolling_three_year import (
     portfolio_decision_change_ledger,
     selected_plan_change_ledger,
     sha256_path,
 )
+from src.acde_plan import (  # 计划生成唯一入口（2026-11-14 从本模块搬出，旧名字保留给研究脚本）
+    build_plans as _build_plans,
+    build_variant_plan,
+    execution_kwargs as _execution_kwargs,
+    load_monthly_config,  # noqa: F401  研究脚本从本模块取
+    plan_context as _context,
+    replay_plans as _replay,
+    variant_sets as _variant_sets,
+)
 from src.acde_rolling_candidates import (
     StaticOutcomeCache,
     VariantDefinition,
-    a_variants,
-    c_variants,
-    d_variants,
-    e_variants,
     plan_signature,
-    previous_close_market_gate,
-    strict_signal_pool,
     variant_catalog_payload,
 )
 from src.acde_rolling_framework import (
@@ -43,9 +45,6 @@ from src.acde_rolling_framework import (
     replay_action_date_cash_portfolio,
 )
 from src.strict_asof import PointInTimeContract, audit_point_in_time_frame
-from src.strategy_d_factor_rules import load_factor_release
-from src.strategy_e import load_e_spec
-from src.utils.config import load_json_config
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -71,24 +70,6 @@ def prediction_month(cutoff: str) -> tuple[str, str]:
         else dt.date(start.year, start.month + 1, 1)
     )
     return start.strftime("%Y%m%d"), (following - dt.timedelta(days=1)).strftime("%Y%m%d")
-
-
-def load_monthly_config(path: Path) -> dict[str, Any]:
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    if int(payload.get("schema_version", 0)) != 2:
-        raise ValueError("月度ACDE配置schema_version必须为2")
-    if payload.get("mode") != "research_only" or bool(
-        payload.get("formal_strategy_auto_apply", True)
-    ):
-        raise ValueError("月度ACDE必须保持research_only且禁止自动落地")
-    if tuple(payload.get("priority", [])) != FIXED_PRIORITY:
-        raise ValueError("月度ACDE腿序必须固定为A>C>E>D")
-    if payload.get("schedule", {}).get("frequency") != "monthly":
-        raise ValueError("月度ACDE配置不得继续使用半年节点")
-    windows = payload.get("windows", {})
-    if windows.get("selection_window") != "main_only" or windows.get("metric_date") != "action_date":
-        raise ValueError("月度ACDE只能按真实action_date使用唯一三年主窗口")
-    return payload
 
 
 def monthly_paths(config: Mapping[str, Any], cutoff: str) -> dict[str, Path]:
@@ -283,114 +264,6 @@ def data_quality_gate(
         },
         "hard_failures": hard_failures,
     }
-
-
-def _execution_kwargs(config: Mapping[str, Any]) -> dict[str, Any]:
-    execution = config["execution"]
-    system = load_json_config(ROOT / "config/config.json")
-    analysis = system["analysis"]
-    if abs(float(execution["commission_rate"]) - float(analysis["commission_rate"])) > TOLERANCE:
-        raise ValueError("月度配置与正式佣金率不一致")
-    if abs(float(execution["transfer_fee_rate"]) - float(analysis["transfer_fee_rate"])) > TOLERANCE:
-        raise ValueError("月度配置与正式过户费率不一致")
-    if abs(float(execution["minimum_commission"]) - float(analysis["minimum_commission"])) > TOLERANCE:
-        raise ValueError("月度配置与正式最低佣金不一致")
-    return {
-        "initial_cash": float(execution["initial_cash"]),
-        "position_pct": float(execution["position_pct"]),
-        "max_position_pct": float(execution["max_position_pct"]),
-        "commission_rate": float(execution["commission_rate"]),
-        "transfer_fee_rate": float(execution["transfer_fee_rate"]),
-        "minimum_commission": float(execution["minimum_commission"]),
-        "stamp_tax_schedule": analysis.get("stamp_tax_schedule"),
-    }
-
-
-def _context(
-    *,
-    window: ResearchWindow,
-    feature_path: Path,
-    sentiment_path: Path,
-    d_event_path: Path,
-    calendar_path: Path,
-    minimum_limit_up_count: int,
-) -> dict[str, Any]:
-    calendar = pd.read_csv(calendar_path, dtype={"cal_date": str}, low_memory=False)
-    dates = open_dates(calendar, window.start, window.end)
-    sentiment = pd.read_csv(sentiment_path, dtype={"trade_date": str}, low_memory=False)
-    allowed_actions, allowed_signals, market_gate = previous_close_market_gate(
-        calendar=calendar,
-        sentiment=sentiment,
-        action_dates=dates,
-        minimum_limit_up_count=minimum_limit_up_count,
-    )
-    pool = pd.read_csv(feature_path, low_memory=False)
-    signal_pool = strict_signal_pool(
-        pool,
-        signal_dates=set(market_gate["state_date"].astype(str)),
-        allowed_signal_dates=allowed_signals,
-    )
-    d_events = pd.read_csv(d_event_path, dtype={"trade_date": str, "ts_code": str}, low_memory=False)
-    d_events["trade_date"] = d_events["trade_date"].map(normalize_date)
-    d_events = d_events[d_events["trade_date"].between(window.start, window.end)].copy()
-    return {
-        "calendar": calendar,
-        "action_dates": dates,
-        "allowed_actions": allowed_actions,
-        "signal_pool": signal_pool,
-        "d_events": d_events,
-        "market_gate": market_gate,
-    }
-
-
-def _variant_sets() -> tuple[dict[str, VariantDefinition], dict[str, list[VariantDefinition]]]:
-    base_config = load_json_config(ROOT / "config/strategy_config.json")
-    e_spec = load_e_spec(ROOT)
-    d_release = load_factor_release(ROOT / "config/strategy_d_factor_release.json")
-    pairs = (
-        a_variants(base_config),
-        c_variants(base_config),
-        e_variants(e_spec),
-        d_variants(d_release),
-    )
-    baselines = {pair[0].strategy_leg: pair[0] for pair in pairs}
-    candidates = {pair[0].strategy_leg: pair[1] for pair in pairs}
-    return baselines, candidates
-
-
-def _build_plans(
-    variants: Mapping[str, VariantDefinition],
-    *,
-    context: Mapping[str, Any],
-    cutoff: str,
-    cache: StaticOutcomeCache | None = None,
-) -> dict[str, pd.DataFrame]:
-    outcome_cache = cache or StaticOutcomeCache()
-    return {
-        leg: build_variant_plan(
-            variants[leg],
-            signal_pool=context["signal_pool"],
-            d_events=context["d_events"],
-            allowed_action_dates=context["allowed_actions"],
-            cutoff=cutoff,
-            outcome_cache=outcome_cache,
-        )
-        for leg in FIXED_PRIORITY
-    }
-
-
-def _replay(
-    legs: Mapping[str, pd.DataFrame],
-    *,
-    action_dates: Sequence[str],
-    execution: Mapping[str, Any],
-) -> pd.DataFrame:
-    return replay_action_date_cash_portfolio(
-        legs,
-        action_dates=action_dates,
-        priority=FIXED_PRIORITY,
-        **execution,
-    )
 
 
 def _standalone(

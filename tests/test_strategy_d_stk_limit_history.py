@@ -6,7 +6,7 @@ import unittest
 
 import pandas as pd
 
-from scripts.collect_strategy_d_stk_limit_history import (
+from research.collect_strategy_d_stk_limit_history import (
     audit_existing,
     collect_missing,
     normalize_stk_limit,

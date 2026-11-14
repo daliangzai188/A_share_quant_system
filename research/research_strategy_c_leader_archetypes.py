@@ -32,14 +32,14 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts import validate_other_live_strategies_strict as strict  # noqa: E402
-from scripts.build_ac_daily_candidates import trade_return_details  # noqa: E402
+from research import validate_other_live_strategies_strict as strict  # noqa: E402
+from src.fixed_rule_execution import trade_return_details  # noqa: E402
 from research.optimize_strategy_d_factor_union import (  # noqa: E402
     build_incumbent_and_other_legs,
     load_events as load_d_events,
     natural_window_start,
 )
-from scripts.run_paper_ab_filtered_daily_ops import (  # noqa: E402
+from src.ac_rules import (  # noqa: E402
     condition_strategy_config,
     reject_strategy_risk_mask,
 )

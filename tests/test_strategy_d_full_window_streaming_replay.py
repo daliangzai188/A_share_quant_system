@@ -6,7 +6,7 @@ import unittest
 
 import pandas as pd
 
-from scripts.build_strategy_d_intraday_event_ledger import (
+from research.build_strategy_d_intraday_event_ledger import (
     iter_minute_groups,
     replay_ledger_streaming,
 )

@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.build_strategy_d_intraday_event_ledger import (  # noqa: E402
+from research.build_strategy_d_intraday_event_ledger import (  # noqa: E402
     ALLOWED_SEGMENTS,
     DAILY_DIR,
     LIMIT_LIST_DIR,

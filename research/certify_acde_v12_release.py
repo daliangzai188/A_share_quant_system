@@ -29,7 +29,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.live_certification import (  # noqa: E402
+from research.live_certification import (  # noqa: E402
     certification_config_sha256,
     certification_files_sha256,
 )
@@ -73,7 +73,7 @@ CODE_FILES = [
     "config/strategy_e_r1_scenarios.json",
     "config/strategy_d_factor_release.json",
     "research/certify_acde_v12_release.py",
-    "scripts/optimize_acde_rolling_three_year.py",
+    "research/optimize_acde_rolling_three_year.py",
     "scripts/run_paper_ab_filtered_daily_ops.py",
     "scripts/run_strategy_e_signal.py",
     "scripts/monitor_strategy_d_intraday.py",
@@ -84,7 +84,7 @@ CODE_FILES = [
     "src/strategy_e.py",
     "src/strategy_d_factor_rules.py",
     "src/live_order_gateway.py",
-    "src/live_certification.py",
+    "research/live_certification.py",
     "src/mechanical_compound.py",
     "src/strict_asof.py",
 ]

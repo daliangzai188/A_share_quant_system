@@ -254,12 +254,12 @@ def build_shadow_replay(
 ) -> dict[str, Any]:
     """影子账完整回放：净值、各腿计划、行动日和执行参数（供停手判定与逐笔对账共用）。"""
 
-    from scripts.optimize_acde_rolling_three_year import build_variant_plan
-    from src.acde_monthly_research import (
-        _context,
-        _execution_kwargs,
-        _variant_sets,
+    from src.acde_plan import (
+        build_variant_plan,
+        execution_kwargs,
         load_monthly_config,
+        plan_context,
+        variant_sets,
     )
     from src.acde_rolling_candidates import StaticOutcomeCache
     from src.acde_rolling_framework import (
@@ -281,7 +281,7 @@ def build_shadow_replay(
     if not eligible:
         raise RuntimeError(f"交易日历中没有不早于{start}且有前一交易日的开市日")
     window = ResearchWindow("EQUITY_CURVE_STOP_SHADOW", eligible[0], str(end), "shadow", False)
-    context = _context(
+    context = plan_context(
         window=window,
         feature_path=feature_path,
         sentiment_path=sentiment_path,
@@ -289,7 +289,7 @@ def build_shadow_replay(
         calendar_path=calendar_path,
         minimum_limit_up_count=int(monthly["market_controller"]["minimum_limit_up_count"]),
     )
-    baselines, _candidates = _variant_sets()
+    baselines, _candidates = variant_sets()
     cache = StaticOutcomeCache()
     legs: dict[str, pd.DataFrame] = {}
     for leg in FIXED_PRIORITY:
@@ -304,7 +304,7 @@ def build_shadow_replay(
             )
         else:
             legs[leg] = pd.DataFrame()
-    execution = _execution_kwargs(monthly)
+    execution = execution_kwargs(monthly)
     detail = replay_action_date_cash_portfolio(
         legs,
         action_dates=context["action_dates"],

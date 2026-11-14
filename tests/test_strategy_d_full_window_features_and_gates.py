@@ -6,7 +6,7 @@ import unittest
 
 import pandas as pd
 
-from scripts.research_strategy_d_full_window_features_and_gates import (
+from research.research_strategy_d_full_window_features_and_gates import (
     CandidateRule,
     FUTURE_OR_NON_ASOF_FIELDS,
     SIGNAL_TIME_ALLOWED_FIELDS,

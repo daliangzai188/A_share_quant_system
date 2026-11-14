@@ -31,8 +31,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.optimize_acde_rolling_three_year import build_variant_plan  # noqa: E402
-from src.acde_monthly_research import (  # noqa: E402
+from src.acde_plan import build_variant_plan  # noqa: E402
+from research.acde_monthly_research import (  # noqa: E402
     _context,
     _execution_kwargs,
     _variant_sets,
@@ -54,7 +54,7 @@ from src.equity_curve_stop import (  # noqa: E402
     filter_plans_to_allowed_dates,
     load_settings,
 )
-from src.live_certification import (  # noqa: E402
+from research.live_certification import (  # noqa: E402
     certification_config_sha256,
     certification_file_sha256,
     certification_files_sha256,
@@ -103,7 +103,7 @@ CODE_FILES = [
     "src/strategy_c_exit.py",
     "src/acde_rolling_candidates.py",
     "src/acde_rolling_framework.py",
-    "src/acde_monthly_research.py",
+    "research/acde_monthly_research.py",
     "src/combined_live_engine.py",
     "src/equity_curve_stop.py",
     "src/five_year_research.py",
@@ -116,11 +116,11 @@ CODE_FILES = [
     "src/offline_data_maintenance.py",
     "src/post_market_freshness.py",
     "src/live_order_gateway.py",
-    "src/live_certification.py",
+    "research/live_certification.py",
     "src/strategy_e.py",
     "src/strategy_d_factor_rules.py",
     "src/strategy_identity.py",
-    "scripts/optimize_acde_rolling_three_year.py",
+    "research/optimize_acde_rolling_three_year.py",
     "scripts/run_paper_ab_filtered_daily_ops.py",
     "scripts/generate_live_limit_pool_daily_ops.py",
     "scripts/run_strategy_e_signal.py",

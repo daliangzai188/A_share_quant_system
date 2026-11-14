@@ -25,7 +25,7 @@ D 不在 pick_by_priority 里：它在信号日盘中就买了，位置由时序
 滑点和容量约束影响；放大资金前必须继续小资金核验真实成交。
 
 运行：
-    python scripts/certify_current_executable_portfolio.py
+    python research/certify_current_executable_portfolio.py
 
 输出：
     reports/current_portfolio_alignment/legacy_identity_alignment.json
@@ -62,7 +62,7 @@ from src.market_rules import (  # noqa: E402
 )
 from src.strategy_e import apply_e_entry_gate, load_e_spec  # noqa: E402
 from src.strict_asof import STRICT_ASOF_STANDARD_ID, STRICT_DISCOVERY  # noqa: E402
-from src.live_certification import (  # noqa: E402
+from research.live_certification import (  # noqa: E402
     certification_file_size,
     certification_file_sha256,
     certification_config_sha256,
@@ -109,16 +109,16 @@ _RUNTIME_CONFIG = json.loads(RUNTIME_CONFIG_PATH.read_text(encoding="utf-8"))
 _CERTIFICATION_CONFIG = _RUNTIME_CONFIG.get("portfolio_certification", {})
 _ANALYSIS_CONFIG = _RUNTIME_CONFIG.get("analysis", {})
 CODE_CERTIFICATION_FILES = [
-    "scripts/build_ac_daily_candidates.py",
-    "scripts/backtest_strategy_d.py",
-    "scripts/certify_current_executable_portfolio.py",
+    "research/build_ac_daily_candidates.py",
+    "research/backtest_strategy_d.py",
+    "research/certify_current_executable_portfolio.py",
     "scripts/monitor_strategy_d_intraday.py",
     "scripts/run_strategy_e_signal.py",
     "scripts/score_limit_up_fill_probability.py",
     "scripts/strategy_health_monitor.py",
     "scripts/trading_daemon.py",
     "src/combined_live_engine.py",
-    "src/live_certification.py",
+    "research/live_certification.py",
     "src/live_order_gateway.py",
     "src/live_performance.py",
     "src/fill_model.py",

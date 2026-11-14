@@ -15,8 +15,8 @@
        b. 若D没打板 → 今晚A/B/C流水线生成信号，明天开盘执行A/B/C
 
 本脚本负责冻结D候选和D单腿T+2收益。当前完整组合的真实串行占仓、A>C>E>D
-时序身份以 scripts/certify_current_executable_portfolio.py 核对；正式收益与发布
-只认 scripts/certify_strict_asof_portfolio.py。
+时序身份以 research/certify_current_executable_portfolio.py 核对；正式收益与发布
+只认 research/certify_strict_asof_portfolio.py。
 
 输出：
   reports/strategy_d/
@@ -27,7 +27,7 @@
     yearly_comparison.csv    - 年度对比
 
 用法：
-    python scripts/backtest_strategy_d.py
+    python research/backtest_strategy_d.py
 
 发布口径固定使用配置文件中的冻结输入、80%成交压力、80%最低成交概率和82.5%仓位；
 命令行参数只用于显式拒绝旧调用，不能覆盖发布标准。

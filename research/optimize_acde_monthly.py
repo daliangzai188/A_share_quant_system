@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.acde_monthly_research import (  # noqa: E402
+from research.acde_monthly_research import (  # noqa: E402
     latest_completed_month_cutoff,
     load_monthly_config,
     run_monthly_research,

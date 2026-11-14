@@ -291,7 +291,7 @@ D复利0.8565倍。它明显依赖前12个月，属于高浓度过拟合候选�
 运行：
 
 ```bash
-python3 scripts/research_strategy_d_explosion_features.py
+python3 research/research_strategy_d_explosion_features.py
 ```
 
 验证要点：

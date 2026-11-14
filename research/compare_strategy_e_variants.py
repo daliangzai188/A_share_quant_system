@@ -47,8 +47,8 @@ PROJECT_ROOT = Path(__file__).absolute().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts import certify_current_executable_portfolio as portfolio  # noqa: E402
-from scripts.verify_strategy_e_alignment import (  # noqa: E402
+from research import certify_current_executable_portfolio as portfolio  # noqa: E402
+from research.verify_strategy_e_alignment import (  # noqa: E402
     load_historical_bucketed_pool,
 )
 from src.strategy_e import (  # noqa: E402

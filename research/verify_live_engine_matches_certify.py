@@ -25,9 +25,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts import certify_acde_return_first_release as certifier  # noqa: E402
-from scripts import validate_other_live_strategies_strict as strict  # noqa: E402
-from src.acde_monthly_research import (  # noqa: E402
+from research import certify_acde_return_first_release as certifier  # noqa: E402
+from research import validate_other_live_strategies_strict as strict  # noqa: E402
+from research.acde_monthly_research import (  # noqa: E402
     _build_plans,
     _context,
     _execution_kwargs,

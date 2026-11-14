@@ -18,7 +18,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts.certify_current_executable_portfolio import (  # noqa: E402
+from research.certify_current_executable_portfolio import (  # noqa: E402
     load_sources,
     replay,
     summarize,
@@ -27,7 +27,7 @@ from research.historical_random_replay import (  # noqa: E402
     build_market_context,
     run_random_windows,
 )
-from src.live_certification import (  # noqa: E402
+from research.live_certification import (  # noqa: E402
     certification_config_sha256,
     certification_files_sha256,
     validate_strategy_release_freeze,

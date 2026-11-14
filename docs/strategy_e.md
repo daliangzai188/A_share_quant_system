@@ -116,8 +116,8 @@ fallback_to_second_candidate = false
 | `config/strategy_e_r1_scenarios.json` | E正式排名、四项单独门禁、V14联合门禁和锁定指标 |
 | `src/strategy_e.py` | 统一构造候选、排序并执行OR单项门禁和AND联合门禁 |
 | `scripts/run_strategy_e_signal.py` | 生成E每日信号及排名、联合门禁审计字段 |
-| `scripts/verify_strategy_e_alignment.py` | 用最近三年冻结特征逐票核对69个正式E计划 |
-| `scripts/certify_acde_return_first_release.py` | 双重重建逐腿计划并精确回放E独立腿和ACDE组合 |
+| `research/verify_strategy_e_alignment.py` | 用最近三年冻结特征逐票核对69个正式E计划 |
+| `research/certify_acde_return_first_release.py` | 双重重建逐腿计划并精确回放E独立腿和ACDE组合 |
 | `reports/current_portfolio_alignment/acde_e_no_trade_v14/` | V14四腿计划、组合逐笔账本和发布摘要 |
 
 ## 五、运行与验证
@@ -131,14 +131,14 @@ python3 scripts/run_strategy_e_signal.py --signal-date YYYYMMDD --dry-run
 逐票验证E计划：
 
 ```bash
-python3 scripts/verify_strategy_e_alignment.py
+python3 research/verify_strategy_e_alignment.py
 ```
 
 正式组合认证：
 
 ```bash
-python3 scripts/certify_acde_return_first_release.py
-python3 scripts/verify_live_engine_matches_certify.py
+python3 research/certify_acde_return_first_release.py
+python3 research/verify_live_engine_matches_certify.py
 ```
 
 验收必须同时满足：40条R1规则完整、无未来字段、V14联合门禁为AND、命中后仓位为0、

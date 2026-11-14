@@ -23,20 +23,20 @@ PROJECT_ROOT = Path(__file__).absolute().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts.audit_backup_strategy_b import (
+from research.audit_backup_strategy_b import (
     replay_selected_b,
     selected_b_signals,
     simulate_a_plus_b_strict,
     simulate_b_strict,
     summarize,
 )
-from scripts.run_paper_ab_filtered_observation_window import (
+from research.run_paper_ab_filtered_observation_window import (
     configured_b_conditions,
     condition_text,
     reject_b_risk_mask,
     resolve_window_dates,
 )
-from scripts.search_paper_backup_strategy_b import (
+from research.search_paper_backup_strategy_b import (
     backup_config,
     build_generator,
     normalize_date,

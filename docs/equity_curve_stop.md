@@ -260,6 +260,7 @@ python scripts/update_equity_curve_stop.py --signal-date YYYYMMDD   # 手动重�
 | 影子净值全序列（逐日判定用它重算） | `reports/equity_curve_stop/shadow_nav_latest.csv` |
 | 周报、行情校准与失败线 | ⑬每周最后一个开市日推送；阈值与档位表在`config/config.json`的`equity_curve_stop.weekly_report` |
 | 停手定义与重算函数 | `src/equity_curve_stop.py`（`allowed_flags`、`build_shadow_nav`） |
+| 影子账各腿计划生成（2026-11-14起唯一入口） | `src/acde_plan.py`（`plan_context`、`variant_sets`、`build_variant_plan`、`execution_kwargs`）；停手判定、QMT内⑬增量版、逐笔对账、三级警告、认证和研究都从这里取，A/C选股规则在`src/ac_rules.py`，开盘买/收盘卖成交在`src/fixed_rule_execution.py` |
 | ⑬重建的研究池（回测同一时期用） | 系统临时目录下`a_system_equity_curve_stop/dataset`；没有就运行`scripts/update_equity_curve_stop.py --signal-date YYYYMMDD`重建 |
 | daemon日志（每日判定、⑬完成/失败、下单、告警） | `logs/a_share_quant.log`，搜"方案甲停手""⑬""收盘流水线进度" |
 | 正式认证窗口结果 | `reports/current_portfolio_alignment/acde_plan_jia_20260919/` |

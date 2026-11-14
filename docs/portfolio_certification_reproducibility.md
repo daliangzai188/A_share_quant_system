@@ -33,7 +33,7 @@
 先重新生成V12三年正式基准：
 
 ```bash
-python3 scripts/optimize_acde_rolling_three_year.py \
+python3 research/optimize_acde_rolling_three_year.py \
   --as-of 20260630 \
   --output-dir reports/acde_rolling_optimization/20260630_v12_formal_baseline_verification
 ```

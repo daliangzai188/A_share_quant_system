@@ -144,7 +144,7 @@ formal_decision = KEEP_CURRENT_D_INTRADAY_CERTIFICATION_INCOMPLETE
 
 ```bash
 PYTHONPATH="$PWD/.venv/lib/python3.9/site-packages" python3 \
-  scripts/build_strategy_d_intraday_event_ledger.py \
+  research/build_strategy_d_intraday_event_ledger.py \
   --minute-bars data/research/strategy_d_intraday/minute_1m_tushare.csv \
   --data-source TUSHARE_STK_MINS_1M_UNADJUSTED
 ```
@@ -201,7 +201,7 @@ stk_limit完整：484/484
 
 ```bash
 PYTHONPATH="$PWD/.venv/lib/python3.9/site-packages" \
-python3 scripts/collect_strategy_d_stk_limit_history.py
+python3 research/collect_strategy_d_stk_limit_history.py
 ```
 
 机器报告：

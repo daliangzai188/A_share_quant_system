@@ -639,7 +639,7 @@ artifact_manifest.json
 截至2026-09-01，月度研究代码现状与新标准的差异为：
 
 1. `config/acde_rolling_optimization.json`使用schema_version=2和每月36个完整自然月；
-2. `scripts/optimize_acde_monthly.py`是正式月度研究入口，旧三窗口入口自动转交；
+2. `research/optimize_acde_monthly.py`是正式月度研究入口，旧三窗口入口自动转交；
 3. 现有标准执行器仍包含旧版单腿、样本和回撤硬门，尚未完全实现本文件规定的四项硬
    条件加全候选笛卡尔组合收益排序；在执行器改造并回归通过前，旧`eligible_winner`
    只能作为风险门禁诊断，不能覆盖全组合`RETURN_FIRST_WINNER`；

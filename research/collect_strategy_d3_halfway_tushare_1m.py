@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.collect_strategy_d_intraday_tushare_1m import (  # noqa: E402
+from research.collect_strategy_d_intraday_tushare_1m import (  # noqa: E402
     CollectionPolicy,
     atomic_write_csv,
     build_cross_section_jobs,

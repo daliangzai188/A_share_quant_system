@@ -619,7 +619,7 @@ class FillProbabilityEstimator:
     @staticmethod
     def _read_table(path: Path) -> pd.DataFrame:
         if not path.exists():
-            raise FileNotFoundError(f"换手率表不存在，请先运行 scripts/build_fill_rate_table.py: {path}")
+            raise FileNotFoundError(f"换手率表不存在，请先运行 research/build_fill_rate_table.py: {path}")
         return pd.read_csv(path, dtype={"limit_times_bucket": str})
 
     def resolve_queue_amount(self, row: pd.Series) -> float:

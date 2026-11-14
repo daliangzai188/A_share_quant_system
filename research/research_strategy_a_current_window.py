@@ -38,8 +38,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from research import certify_strict_asof_portfolio as certifier  # noqa: E402
-from scripts import validate_other_live_strategies_strict as strict  # noqa: E402
-from scripts.build_ac_daily_candidates import trade_return_details  # noqa: E402
+from research import validate_other_live_strategies_strict as strict  # noqa: E402
+from src.fixed_rule_execution import trade_return_details  # noqa: E402
 from src.paper_candidate_generator import PaperCandidateGenerator  # noqa: E402
 from src.strict_asof import STRICT_DISCOVERY, assert_selection_columns_strict  # noqa: E402
 from src.utils.config import load_json_config  # noqa: E402

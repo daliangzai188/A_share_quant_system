@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.acde_monthly_research import (  # noqa: E402
+from research.acde_monthly_research import (  # noqa: E402
     _build_plans,
     _context,
     _execution_kwargs,
@@ -38,7 +38,7 @@ from src.acde_monthly_research import (  # noqa: E402
 )
 from src.acde_rolling_candidates import plan_signature  # noqa: E402
 from src.acde_rolling_framework import build_monthly_research_window  # noqa: E402
-from src.live_certification import (  # noqa: E402
+from research.live_certification import (  # noqa: E402
     certification_config_sha256,
     certification_file_sha256,
     certification_files_sha256,
@@ -93,22 +93,22 @@ CODE_FILES = [
     "src/paper_candidate_generator.py",
     "src/acde_rolling_candidates.py",
     "src/acde_rolling_framework.py",
-    "src/acde_monthly_research.py",
+    "research/acde_monthly_research.py",
     "src/combined_live_engine.py",
-    "src/live_certification.py",
+    "research/live_certification.py",
     "src/strategy_e.py",
     "src/strategy_d_factor_rules.py",
     "src/strategy_identity.py",
-    "scripts/optimize_acde_rolling_three_year.py",
+    "research/optimize_acde_rolling_three_year.py",
     "scripts/run_paper_ab_filtered_daily_ops.py",
     "scripts/run_strategy_e_signal.py",
-    "scripts/verify_strategy_e_alignment.py",
-    "scripts/certify_current_executable_portfolio.py",
+    "research/verify_strategy_e_alignment.py",
+    "research/certify_current_executable_portfolio.py",
     "scripts/generate_live_limit_pool_daily_ops.py",
     "scripts/monitor_strategy_d_intraday.py",
     "scripts/trading_daemon.py",
-    "scripts/verify_live_engine_matches_certify.py",
-    "scripts/certify_acde_return_first_release.py",
+    "research/verify_live_engine_matches_certify.py",
+    "research/certify_acde_return_first_release.py",
 ]
 
 
@@ -489,7 +489,7 @@ def main() -> int:
         raise RuntimeError(
             "该脚本只认证已归档的D-V15，当前正式发布为"
             f"{current_release_id or '未配置'}；拒绝覆盖当前认证文件，请运行"
-            "scripts/certify_strategy_c_third_branch_release.py。"
+            "research/certify_strategy_c_third_branch_release.py。"
         )
     monthly = load_monthly_config(ROOT / "config/acde_rolling_optimization.json")
     window = build_monthly_research_window(CUTOFF)

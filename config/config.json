@@ -10,7 +10,7 @@
     ],
     "fill_probability_method": "asof_turnover_space_proxy_v2",
     "mechanical_compound_standard_id": "A_SYSTEM_MECHANICAL_COMPOUND_V1",
-    "official_portfolio_certifier": "scripts/certify_strategy_c_third_branch_release.py",
+    "official_portfolio_certifier": "research/certify_strategy_c_third_branch_release.py",
     "official_portfolio_certifier_status": "INVALIDATED_BY_D_ENTRY_ALIGNMENT_AUDIT",
     "policy_note": "所有策略收益研究必须使用严格point-in-time数据和单账户逐笔机械复利。候选能由信号时点因子量化、数据审计无异常、回测可成功复现且正式逻辑与回测逐笔对齐时，优先选择固定A>C>E>D组合复利最高者；风险、回撤、样本和过拟合继续完整披露，但不作为先验收益否决门。"
   },

@@ -8,7 +8,7 @@
 5. 单账户收益、资金占用和组合腿序由严格组合认证脚本独立验证。
 
 运行：
-    python scripts/verify_strategy_e_alignment.py
+    python research/verify_strategy_e_alignment.py
 
 输出：
     reports/strategy_e_alignment/e_live_alignment_verification.csv

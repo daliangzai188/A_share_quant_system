@@ -19,7 +19,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from research import certify_strict_asof_portfolio as certifier  # noqa: E402
-from scripts import validate_other_live_strategies_strict as strict  # noqa: E402
+from research import validate_other_live_strategies_strict as strict  # noqa: E402
 from src.mechanical_compound import mechanical_compound_frame  # noqa: E402
 from src.paper_candidate_generator import PaperCandidateGenerator  # noqa: E402
 from src.trading_fees import stamp_tax_rate_for_date  # noqa: E402

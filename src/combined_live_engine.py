@@ -48,9 +48,9 @@ C>A重构扩大执行风险。
 不代表独立样本外或真实资金容量已经认证。所有计划单仍须经过
 LiveOrderGateway fail-closed，已有持仓SELL不得受影响。
 
-身份复现：python scripts/certify_current_executable_portfolio.py
-正式统计：python scripts/certify_acde_return_first_release.py
-执行链核对：python scripts/verify_live_engine_matches_certify.py
+身份复现：python research/certify_current_executable_portfolio.py
+正式统计：python research/certify_acde_return_first_release.py
+执行链核对：python research/verify_live_engine_matches_certify.py
 """
 from __future__ import annotations
 
@@ -276,7 +276,7 @@ class CombinedLiveEngine:
         """
         result: dict[str, Any] = {"data_date": today}
         try:
-            from scripts.run_strategy_e_signal import (
+            from src.e_signal_inputs import (
                 compute_segment_retreat_states,
                 load_e_candidates,
                 SCORED_PATH,

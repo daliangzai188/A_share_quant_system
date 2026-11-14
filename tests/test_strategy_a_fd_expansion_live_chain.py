@@ -7,7 +7,7 @@ import unittest
 import pandas as pd
 
 from scripts.generate_live_limit_pool_daily_ops import add_runtime_buckets, select_candidates
-from scripts.run_paper_ab_filtered_daily_ops import condition_strategy_config
+from src.ac_rules import condition_strategy_config
 from src.paper_candidate_generator import PaperCandidateGenerator
 
 

@@ -18,12 +18,12 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts import validate_other_live_strategies_strict as strict  # noqa: E402
-from scripts.research_strategy_d_reseal_combinations import (  # noqa: E402
+from research import validate_other_live_strategies_strict as strict  # noqa: E402
+from research.research_strategy_d_reseal_combinations import (  # noqa: E402
     attach_outcomes,
     extract_reseal_events,
 )
-from scripts.research_strategy_d_six_schools import OutcomeCache  # noqa: E402
+from research.research_strategy_d_six_schools import OutcomeCache  # noqa: E402
 
 
 LOGGER = logging.getLogger("build_strategy_d_reseal_events_window")

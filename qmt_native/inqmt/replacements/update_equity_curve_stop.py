@@ -207,26 +207,25 @@ def main():
     pool.to_csv(work / 'strict_feature_pool.csv', index=False, encoding='utf-8-sig')
 
     # shadow account restarted at the flat date
-    from scripts.optimize_acde_rolling_three_year import build_variant_plan
-    from src.acde_monthly_research import _context, _execution_kwargs, _variant_sets, load_monthly_config
+    from src.acde_plan import build_variant_plan, execution_kwargs, load_monthly_config, plan_context, variant_sets
     from src.acde_rolling_candidates import StaticOutcomeCache
     from src.acde_rolling_framework import FIXED_PRIORITY, ResearchWindow, replay_action_date_cash_portfolio
     monthly = load_monthly_config(PROJECT_ROOT / 'config/acde_rolling_optimization.json')
     empty_d_events = work / 'empty_d_events.csv'
     pd.DataFrame(columns=['trade_date', 'ts_code']).to_csv(empty_d_events, index=False)
     window = ResearchWindow('EQUITY_CURVE_STOP_SHADOW', replay_start, signal_date, 'shadow', False)
-    context = _context(window=window, feature_path=work / 'strict_feature_pool.csv',
-                       sentiment_path=work / 'market_sentiment.csv', d_event_path=empty_d_events,
-                       calendar_path=calendar_path,
-                       minimum_limit_up_count=int(monthly['market_controller']['minimum_limit_up_count']))
-    baselines, _candidates = _variant_sets()
+    context = plan_context(window=window, feature_path=work / 'strict_feature_pool.csv',
+                           sentiment_path=work / 'market_sentiment.csv', d_event_path=empty_d_events,
+                           calendar_path=calendar_path,
+                           minimum_limit_up_count=int(monthly['market_controller']['minimum_limit_up_count']))
+    baselines, _candidates = variant_sets()
     cache = StaticOutcomeCache()
     legs = {}
     for leg in FIXED_PRIORITY:
         legs[leg] = (build_variant_plan(baselines[leg], signal_pool=context['signal_pool'], d_events=context['d_events'],
                                         allowed_action_dates=context['allowed_actions'], cutoff=signal_date,
                                         outcome_cache=cache) if leg in SHADOW_LEGS else pd.DataFrame())
-    execution = _execution_kwargs(monthly)
+    execution = execution_kwargs(monthly)
     if float(execution['initial_cash']) != float(state['initial_cash']):
         raise RuntimeError('配置的影子账初始资金与种子不一致，拒绝计算')
     replay_execution = dict(execution, initial_cash=float(state['replay_cash']))

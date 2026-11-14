@@ -17,7 +17,7 @@ from typing import Any, Iterable
 import numpy as np
 import pandas as pd
 
-from scripts.run_paper_ab_filtered_daily_ops import (
+from src.ac_rules import (
     condition_strategy_config,
     configured_c_condition_profiles,
     configured_c_conditions,

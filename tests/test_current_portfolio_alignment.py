@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import unittest
 
-from scripts.certify_current_executable_portfolio import (
+from research.certify_current_executable_portfolio import (
     EXPECTED_D_DAILY_CANDIDATE_COUNT,
     load_sources,
 )

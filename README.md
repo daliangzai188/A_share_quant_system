@@ -603,8 +603,8 @@ python scripts/run_strategy_e_signal.py
 对比并等待用户审核，禁止直接提交；只有用户明确要求再次精准校验并在成功后提交，
 才进入最终认证和代码提交阶段。
 
-当前月度入口为`scripts/optimize_acde_monthly.py`；兼容入口
-`scripts/optimize_acde_rolling_three_year.py`读取schema_version=2配置时会自动转交月度
+当前月度入口为`research/optimize_acde_monthly.py`；兼容入口
+`research/optimize_acde_rolling_three_year.py`读取schema_version=2配置时会自动转交月度
 执行器。`config/acde_rolling_optimization.json`已冻结36个完整自然月、真实
 `action_date`、A>C>E>D、精确现金/申报股数和最低佣金。现有执行器中的旧样本、回撤和
 单腿增益门槛尚待按收益高优先标准改造；在此之前旧`eligible_winner`只作风险诊断，
@@ -612,7 +612,7 @@ python scripts/run_strategy_e_signal.py
 不会自动覆盖正式策略或实盘配置。
 
 ```bash
-python3 scripts/optimize_acde_monthly.py --cutoff 20260831
+python3 research/optimize_acde_monthly.py --cutoff 20260831
 ```
 
 当前两年锚点、A/E双复利门槛和复现命令见

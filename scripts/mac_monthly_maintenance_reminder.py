@@ -10,7 +10,7 @@
 方案甲复核提醒(同一个周六再推一条):
   1/4/7/10 月第一个周六提醒发"甲·季度体检"；1 月改为"甲·年度复核"(年度复核已含当季体检)。
 
-运行位置：必须由 scripts/install_mac_maintenance_reminder.py 安装到
+运行位置：必须由 tools/install_mac_maintenance_reminder.py 安装到
 ~/Library/Application Support/A_System/ 后由 launchd 执行。macOS 不允许 launchd 后台进程
 读取 Desktop：旧任务直接执行桌面上的本脚本，每次都以退出码2失败，2026-10-03 第一次季度
 体检提醒因此没有发出。Bark 地址存在同目录权限0600的配置里，不再读桌面上的 .env。

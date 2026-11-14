@@ -12,7 +12,7 @@ from typing import Any, Iterable, Mapping, Sequence
 import numpy as np
 import pandas as pd
 
-from scripts.build_ac_daily_candidates import (
+from src.fixed_rule_execution import (
     DATES,
     DIDX,
     adj_factor_value,
@@ -20,14 +20,13 @@ from scripts.build_ac_daily_candidates import (
     fixed_open_entry_details,
     trade_return_details,
 )
-from scripts.run_paper_ab_filtered_daily_ops import condition_strategy_config
-from scripts.run_paper_ab_filtered_observation_window import reject_strategy_risk_mask
+from src.ac_rules import condition_strategy_config, reject_strategy_risk_mask
 from src.paper_candidate_generator import apply_no_fallback_post_pick_gate
-from scripts.validate_other_live_strategies_strict import account_return
 from src.paper_candidate_generator import PaperCandidateGenerator
 from src.strategy_c_exit import resolve_c_exit_decision
 from src.strategy_d_factor_rules import add_factor_values, profile_mask
 from src.strategy_d_spec import D_MIN_FILL_PROBABILITY
+from src.trading_fees import account_return_after_fees
 from src.strategy_e import (
     build_r1_universe_from_pool,
     resolve_exit_offset,
@@ -37,6 +36,26 @@ from src.strategy_e import (
 
 ROOT = Path(__file__).resolve().parents[1]
 STRATEGY_CONFIG_PATH = ROOT / "config/strategy_config.json"
+
+# 每笔计划的账户收益：正式认证仓位（portfolio_certification.position_pct）和正式费率（analysis）。
+# 2026-11-14 从 scripts/validate_other_live_strategies_strict.py（现移到 research/）原样搬来（原来经由认证脚本在导入时读取同一份配置）。
+_RUNTIME_CONFIG = json.loads((ROOT / "config" / "config.json").read_text(encoding="utf-8"))
+_ANALYSIS_CONFIG = _RUNTIME_CONFIG.get("analysis", {})
+POSITION_PCT = float(_RUNTIME_CONFIG.get("portfolio_certification", {}).get("position_pct", 0.825))
+COMMISSION_RATE = float(_ANALYSIS_CONFIG.get("commission_rate", 0.0003))
+TRANSFER_FEE_RATE = float(_ANALYSIS_CONFIG.get("transfer_fee_rate", 0.00001))
+STAMP_TAX_SCHEDULE = _ANALYSIS_CONFIG.get("stamp_tax_schedule")
+
+
+def account_return(stock_return: float, exit_date: str, position_pct: float = POSITION_PCT) -> float:
+    return account_return_after_fees(
+        stock_return_before_fees=float(stock_return),
+        exit_date=str(exit_date),
+        position_pct=float(position_pct),
+        commission_rate=COMMISSION_RATE,
+        transfer_fee_rate=TRANSFER_FEE_RATE,
+        stamp_tax_schedule=STAMP_TAX_SCHEDULE,
+    )
 
 
 @dataclass(frozen=True)

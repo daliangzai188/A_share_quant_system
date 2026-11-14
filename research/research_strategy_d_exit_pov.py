@@ -37,7 +37,7 @@ PROJECT_ROOT = Path(__file__).absolute().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts.certify_current_executable_portfolio import (  # noqa: E402
+from research.certify_current_executable_portfolio import (  # noqa: E402
     D_FILL_STRESS,
     D_ROUND_TRIP_COST,
     POSITION_PCT,

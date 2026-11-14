@@ -174,7 +174,7 @@ MISMATCH_DAILY_TOUCH_NOT_CONFIRMED=4
 ### 6.1 生成完整母池
 
 ```bash
-python3 scripts/build_strategy_d_intraday_event_ledger.py --targets-only
+python3 research/build_strategy_d_intraday_event_ledger.py --targets-only
 ```
 
 必须看到：
@@ -190,9 +190,9 @@ python3 scripts/build_strategy_d_intraday_event_ledger.py --targets-only
 
 ```bash
 PYTHONPATH="$PWD/.venv/lib/python3.9/site-packages" python3 \
-  scripts/collect_strategy_d_intraday_tushare_1m.py --dry-run
+  research/collect_strategy_d_intraday_tushare_1m.py --dry-run
 PYTHONPATH="$PWD/.venv/lib/python3.9/site-packages" python3 \
-  scripts/collect_strategy_d_intraday_tushare_1m.py
+  research/collect_strategy_d_intraday_tushare_1m.py
 ```
 
 全窗口共1,446个按交易日横截面聚合job，单次最多33只、理论最多7,953行，
@@ -211,7 +211,7 @@ path_layer_complete=false
 ### 6.3 生成事件账本
 
 ```bash
-python3 scripts/build_strategy_d_intraday_event_ledger.py \
+python3 research/build_strategy_d_intraday_event_ledger.py \
   --minute-bars data/research/strategy_d_intraday/minute_1m_tushare.csv \
   --data-source TUSHARE_STK_MINS_1M_UNADJUSTED
 ```

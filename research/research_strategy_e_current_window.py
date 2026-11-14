@@ -36,12 +36,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from research import certify_strict_asof_portfolio as certifier  # noqa: E402
-from scripts import validate_other_live_strategies_strict as strict  # noqa: E402
-from scripts.build_ac_daily_candidates import trade_return_details  # noqa: E402
+from research import validate_other_live_strategies_strict as strict  # noqa: E402
+from src.fixed_rule_execution import trade_return_details  # noqa: E402
 from research.optimize_strict_acde_from_official_baseline import (  # noqa: E402
     FrozenPortfolioReplay,
 )
-from scripts.verify_strategy_e_alignment import (  # noqa: E402
+from research.verify_strategy_e_alignment import (  # noqa: E402
     load_historical_bucketed_pool,
 )
 from src.mechanical_compound import mechanical_compound  # noqa: E402

@@ -167,8 +167,8 @@ fill_probability, fill_reliable
 | 同上 | ``replay_synchronized_d_scans`` | 重建首次封板、炸板、回封、当前封板情绪和同日D排序 |
 | 同上 | ``replay_price_time_queue`` | 重建价格时间优先队列、部分成交和14:55撤余单 |
 | 同上 | ``normalize_event_time`` | 保留``HH:MM:SS.mmm``毫秒，避免破坏逐笔先后顺序 |
-| ``scripts/collect_strategy_d_intraday_tushare_1m.py`` | ``load_collection_policy`` / ``build_cross_section_jobs`` / ``fetch_job_with_retry`` / ``write_summary`` | 付费权限限速、同日最多33股横截面聚合、缺股精确补取、断点状态、已知缺口fail-closed和总表合并 |
-| ``scripts/collect_strategy_d_stk_limit_history.py`` | ``load_window_open_dates`` / ``normalize_stk_limit`` / ``collect_missing`` | 补齐484日官方涨跌停价、内容校验、原子保存和断点续跑 |
+| ``research/collect_strategy_d_intraday_tushare_1m.py`` | ``load_collection_policy`` / ``build_cross_section_jobs`` / ``fetch_job_with_retry`` / ``write_summary`` | 付费权限限速、同日最多33股横截面聚合、缺股精确补取、断点状态、已知缺口fail-closed和总表合并 |
+| ``research/collect_strategy_d_stk_limit_history.py`` | ``load_window_open_dates`` / ``normalize_stk_limit`` / ``collect_missing`` | 补齐484日官方涨跌停价、内容校验、原子保存和断点续跑 |
 | ``research/probe_strategy_d_intraday_qmt_depth.py`` | ``fetch_period`` / ``report_paths`` / ``main`` | 只读探测QMT 1分钟、tick和历史盘口字段；不同批次报告互不覆盖 |
 | ``research/audit_strategy_d_l2_purchase_readiness.py`` | ``build_audit`` | 汇总当前权限、官方候选来源和付款前样本门槛 |
 | ``research/strategy_d_l2_sample_acceptance.py`` | ``validate_sample_package`` | 读取真实供应商样本，校验逐笔序列、委托关联、全市场同步扫描和前50队列 |
@@ -181,7 +181,7 @@ fill_probability, fill_reliable
 ### 7.1 全窗口Tushare分钟数据验收
 
 ```bash
-python3 scripts/collect_strategy_d_intraday_tushare_1m.py --dry-run
+python3 research/collect_strategy_d_intraday_tushare_1m.py --dry-run
 ```
 
 当前必须看到：
@@ -209,7 +209,7 @@ queue_depth_layer_complete=false
 
 ```bash
 PYTHONPATH="$PWD/.venv/lib/python3.9/site-packages" \
-python3 scripts/collect_strategy_d_intraday_tushare_1m.py --limit-jobs 5
+python3 research/collect_strategy_d_intraday_tushare_1m.py --limit-jobs 5
 ```
 
 脚本每个job先原子保存独立分钟分片，再保存目标状态。限频和瞬时网络错误按配置

@@ -18,7 +18,7 @@ if "dotenv" not in sys.modules:
 
 from scripts import run_strategy_e_signal, trading_daemon
 from src.combined_live_engine import CombinedLiveEngine
-from src.live_certification import validate_live_certification
+from research.live_certification import validate_live_certification
 
 
 def make_engine(

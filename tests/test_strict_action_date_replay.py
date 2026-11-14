@@ -4,7 +4,7 @@ import unittest
 
 import pandas as pd
 
-from scripts.validate_other_live_strategies_strict import replay_by_action_date
+from research.validate_other_live_strategies_strict import replay_by_action_date
 
 
 def candidate(

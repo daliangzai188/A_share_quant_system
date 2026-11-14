@@ -6,7 +6,7 @@ from unittest import mock
 
 import pandas as pd
 
-from scripts import audit_signal_readiness
+from tools import audit_signal_readiness
 from scripts import trading_daemon
 
 

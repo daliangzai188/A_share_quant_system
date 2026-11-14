@@ -137,7 +137,7 @@ bootstrap 95%下界仍为负，且最大回撤31.65%，因此即使保留当前D
 python3 research/audit_strategy_d1_auction_data_gate.py
 
 # D2/D4/D5全触板分钟研究
-python3 scripts/research_strategy_d_six_schools.py
+python3 research/research_strategy_d_six_schools.py
 
 # D3完整7%失败分母、断点采集和严格研究
 python3 research/build_strategy_d3_halfway_mother_pool.py

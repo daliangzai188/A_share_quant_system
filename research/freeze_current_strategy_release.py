@@ -19,7 +19,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.live_certification import validate_live_certification  # noqa: E402
+from research.live_certification import validate_live_certification  # noqa: E402
 from research.release_compound_guard import (  # noqa: E402
     REVIEW_WITHIN_FLOOR,
     enforce_release_decision,

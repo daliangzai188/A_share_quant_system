@@ -4,7 +4,7 @@ import unittest
 
 import pandas as pd
 
-from scripts.research_strategy_d_explosion_features import (
+from research.research_strategy_d_explosion_features import (
     RULES,
     research_decision,
     simple_metrics,

@@ -23,7 +23,7 @@ PROJECT_ROOT = Path(__file__).absolute().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts.audit_backup_strategy_b import (
+from research.audit_backup_strategy_b import (
     build_gap_report,
     replay_selected_b,
     selected_b_signals,
@@ -31,13 +31,14 @@ from scripts.audit_backup_strategy_b import (
     simulate_b_strict,
     summarize,
 )
-from scripts.search_paper_backup_strategy_b import (
+from research.search_paper_backup_strategy_b import (
     backup_config,
     build_generator,
     normalize_date,
     scoped_no_candidate_dates,
     simulate_single_strategy,
 )
+from src.ac_rules import reject_strategy_risk_mask
 from src.paper_candidate_generator import PaperCandidateGenerator
 from src.paper_daily_flow import PaperDailyFlowRunner
 from src.utils.config import load_json_config
@@ -109,60 +110,6 @@ def is_b_strategy_enabled(config: dict[str, Any]) -> bool:
 
 def condition_text(conditions: list[dict[str, str]]) -> str:
     return ";".join(f"{condition['column']}={condition['value']}" for condition in conditions)
-
-
-def _apply_numeric_condition(values: pd.Series, operator: str, threshold: float) -> pd.Series:
-    if operator == ">=":
-        return values >= threshold
-    if operator == ">":
-        return values > threshold
-    if operator == "<=":
-        return values <= threshold
-    if operator == "<":
-        return values < threshold
-    if operator == "==":
-        return values == threshold
-    return pd.Series(False, index=values.index)
-
-
-def reject_strategy_risk_mask(
-    replayed: pd.DataFrame,
-    config: dict[str, Any],
-    strategy_key: str,
-) -> pd.Series:
-    """按指定策略自身的风险规则过滤，避免C继续依赖已删除的B配置。"""
-    if replayed.empty:
-        return pd.Series(False, index=replayed.index)
-    ab_config = config.get("paper_ab_filtered_strategy", {})
-    strategy_config = ab_config.get(strategy_key, {})
-    rules = strategy_config.get("risk_reject_rules", [])
-    mask = pd.Series(False, index=replayed.index)
-    risk_flags = replayed.get("risk_flags", pd.Series("", index=replayed.index)).fillna("").astype(str)
-    for rule in rules:
-        for keyword in rule.get("risk_flags_contains_any", []):
-            mask = mask | risk_flags.str.contains(str(keyword), regex=False)
-        for condition in rule.get("numeric_conditions", []):
-            column = str(condition.get("column", ""))
-            operator = str(condition.get("operator", "==")).strip()
-            threshold = pd.to_numeric(condition.get("value", 0), errors="coerce")
-            if not column or pd.isna(threshold):
-                continue
-            values = pd.to_numeric(replayed.get(column, pd.Series(0.0, index=replayed.index)), errors="coerce")
-            mask = mask | _apply_numeric_condition(values, operator, float(threshold))
-        # compound_conditions: list of AND-groups, OR'd together
-        for group in rule.get("compound_conditions", []):
-            sub = pd.Series(True, index=replayed.index)
-            for condition in group:
-                column = str(condition.get("column", ""))
-                operator = str(condition.get("operator", "==")).strip()
-                threshold = pd.to_numeric(condition.get("value", 0), errors="coerce")
-                if not column or pd.isna(threshold):
-                    sub = pd.Series(False, index=replayed.index)
-                    break
-                values = pd.to_numeric(replayed.get(column, pd.Series(0.0, index=replayed.index)), errors="coerce")
-                sub = sub & _apply_numeric_condition(values, operator, float(threshold))
-            mask = mask | sub.fillna(False)
-    return mask.fillna(False).astype(bool)
 
 
 def reject_b_risk_mask(replayed_b: pd.DataFrame, config: dict[str, Any]) -> pd.Series:

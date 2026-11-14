@@ -118,7 +118,7 @@ A股规则与风险门禁
 | 两年近期确认 | `20240701~20260630` | 只做必要确认，不参与排序 |
 | 半年失效检查 | `20260101~20260630` | 只否决唯一胜者，不挑参数 |
 
-统一入口为`scripts/optimize_acde_rolling_three_year.py`，配置为
+统一入口为`research/optimize_acde_rolling_three_year.py`，配置为
 `config/acde_rolling_optimization.json`。该入口固定真实`action_date`、`A>C>E>D`、
 高顺位冻结计划阻挡低顺位、退出日占资、逐腿不可变基线和研究结果不得自动写入生产。
 
@@ -523,9 +523,9 @@ L2队列金额，因此不能事后伪造成交概率。
 冻结规则的信号可以每日重算，但月中不得依据新盈亏修改因子、阈值、排序、退出、腿序
 或仓位。`A>C>E>D`以及真实资金占用、费用、滑点、T+1、涨跌停和成交规则继续冻结。
 
-当前`scripts/optimize_acde_monthly.py`和schema_version=2的
+当前`research/optimize_acde_monthly.py`和schema_version=2的
 `config/acde_rolling_optimization.json`实现月度36个完整自然月流程；兼容入口
-`scripts/optimize_acde_rolling_three_year.py`会转交该月度执行器。执行器中的旧版样本、
+`research/optimize_acde_rolling_three_year.py`会转交该月度执行器。执行器中的旧版样本、
 回撤和单腿增益门槛尚须按新标准改造；改造完成前，其`eligible_winner`只作风险诊断，
 全候选组合复利第一名才是收益高优先研究结论。旧半年函数只用于复现历史证书。月度
 研究仍只产出待审核建议，不自动覆盖正式策略或打开实盘BUY。

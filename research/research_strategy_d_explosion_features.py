@@ -25,7 +25,7 @@
 
 运行：
 
-    python3 scripts/research_strategy_d_explosion_features.py
+    python3 research/research_strategy_d_explosion_features.py
 
 注意：本脚本属于 ``STRICT_DISCOVERY``，输出不是实盘收益承诺，也不取得发布资格。
 """
@@ -48,8 +48,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts import validate_other_live_strategies_strict as strict  # noqa: E402
-from scripts.backtest_strategy_d import build_daily_candidate_ledger  # noqa: E402
+from research import validate_other_live_strategies_strict as strict  # noqa: E402
+from research.backtest_strategy_d import build_daily_candidate_ledger  # noqa: E402
 from src.market_rules import (  # noqa: E402
     is_st_name,
     limit_up_price,

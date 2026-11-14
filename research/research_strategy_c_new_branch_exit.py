@@ -18,10 +18,10 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.build_ac_daily_candidates import trade_return_details
+from src.fixed_rule_execution import trade_return_details
 from research.research_strategy_c_sample_compound import sha256_path
-from scripts.validate_other_live_strategies_strict import account_return
-from src.acde_monthly_research import (
+from research.validate_other_live_strategies_strict import account_return
+from research.acde_monthly_research import (
     _context,
     _execution_kwargs,
     _stress_plans,

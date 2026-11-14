@@ -438,7 +438,7 @@ cd /Users/user/Desktop/A_System
 
 ```bash
 cd /Users/user/Desktop/A_System
-.venv/bin/python -B scripts/run_paper_ab_filtered_observation_window.py --recent-days 120 --end-date 20260518
+.venv/bin/python -B research/run_paper_ab_filtered_observation_window.py --recent-days 120 --end-date 20260518
 ```
 
 B 历史风险过滤压力测试（研究归档，不属于当前发布）：
@@ -460,7 +460,7 @@ cd /Users/user/Desktop/A_System
 | `research/run_strategy_release_validation.py` | 旧A+B发布验证失效保护；当前仍应拒绝运行 |
 | `research/certify_strategy_c_third_branch_release.py` | 当前C第3分支、分支级退出及A>C>E>D真实开仓日严格认证 |
 | `scripts/run_paper_ab_filtered_daily_ops.py` | A/C filtered 每日操作台 |
-| `scripts/run_paper_ab_filtered_observation_window.py` | B历史回放代码；当前配置拒绝运行 |
+| `research/run_paper_ab_filtered_observation_window.py` | B历史回放代码；当前配置拒绝运行 |
 | `research/stress_test_ab_filtered_b_residual_filters.py` | B历史研究归档，不属于当前执行链 |
 | `research/refine_backup_strategy_c_sort_exit.py` | C 备用策略排序和卖出规则精修 |
 | `docs/strategy_b_removal_20260722.md` | B删除范围、验证和部署记录 |
@@ -474,7 +474,7 @@ cd /Users/user/Desktop/A_System
 
 | 文件 | 作用 |
 |---|---|
-| `scripts/backtest_strategy_d.py` | D 历史叠加回测；删除B后必须重新生成当前口径 |
+| `research/backtest_strategy_d.py` | D 历史叠加回测；删除B后必须重新生成当前口径 |
 | `scripts/monitor_strategy_d_intraday.py` | D 策略盘中监控：两档信号 + 14:55 自动撤单 |
 | `research/collect_strategy_d_minute_data.py` | D 候选历史分钟数据采集（辅助人工复核） |
 | `scripts/trading_daemon.py` | 守护进程：13:30 启动 D 监控子进程 |

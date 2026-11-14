@@ -5,7 +5,7 @@ import unittest
 
 import pandas as pd
 
-from scripts.build_strategy_d_intraday_event_ledger import (
+from research.build_strategy_d_intraday_event_ledger import (
     EXPECTED_FAILED_CLOSE_COUNT,
     EXPECTED_LEGACY_STRONG_SUBPOOL_COUNT,
     EXPECTED_MOTHER_POOL_COUNT,

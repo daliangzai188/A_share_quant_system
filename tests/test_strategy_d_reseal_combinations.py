@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from scripts.research_strategy_d_reseal_combinations import (
+from research.research_strategy_d_reseal_combinations import (
     FORBIDDEN_SELECTION_FIELDS,
     SELECTION_FIELDS,
     build_rule_space,

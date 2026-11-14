@@ -9,7 +9,7 @@ from research.research_strategy_d3_halfway_full_denominator import (
     rules as d3_rules,
     select_daily,
 )
-from scripts.research_strategy_d_six_schools import (
+from research.research_strategy_d_six_schools import (
     AFTER_SIGNAL_FIELDS,
     SIGNAL_FIELDS,
     merge_with_d6,

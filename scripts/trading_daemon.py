@@ -16332,8 +16332,8 @@ def _log_abc_filter_funnel(signal_date: str) -> None:
     try:
         import pandas as pd
 
-        from scripts.audit_signal_readiness import filter_trace, stop_point_text
-        from scripts.run_paper_ab_filtered_daily_ops import (
+        from src.ac_filter_trace import filter_trace, stop_point_text
+        from src.ac_rules import (
             condition_strategy_config,
             condition_text,
             configured_c_condition_profiles,

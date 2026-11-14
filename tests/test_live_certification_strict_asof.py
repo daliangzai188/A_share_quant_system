@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src.live_certification import validate_live_certification
+from research.live_certification import validate_live_certification
 from src.strict_asof import LOCKED_OOS, STRICT_ASOF_STANDARD_ID
 
 

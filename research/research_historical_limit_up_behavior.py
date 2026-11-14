@@ -26,12 +26,12 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.optimize_acde_rolling_three_year import build_variant_plan  # noqa: E402
-from scripts.run_paper_ab_filtered_daily_ops import condition_strategy_config  # noqa: E402
-from scripts.run_paper_ab_filtered_observation_window import (  # noqa: E402
+from src.acde_plan import build_variant_plan  # noqa: E402
+from src.ac_rules import condition_strategy_config  # noqa: E402
+from src.ac_rules import (  # noqa: E402
     reject_strategy_risk_mask,
 )
-from src.acde_monthly_research import (  # noqa: E402
+from research.acde_monthly_research import (  # noqa: E402
     _context,
     _execution_kwargs,
     load_monthly_config,

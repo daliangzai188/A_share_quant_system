@@ -37,15 +37,15 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts import validate_other_live_strategies_strict as strict  # noqa: E402
-from scripts.build_ac_daily_candidates import trade_return_details  # noqa: E402
-from scripts.run_paper_ab_filtered_daily_ops import (  # noqa: E402
+from research import validate_other_live_strategies_strict as strict  # noqa: E402
+from src.fixed_rule_execution import trade_return_details  # noqa: E402
+from src.ac_rules import (  # noqa: E402
     condition_strategy_config,
     configured_c_condition_profiles,
     configured_c_conditions,
     reject_strategy_risk_mask,
 )
-from scripts.verify_strategy_e_alignment import load_historical_bucketed_pool  # noqa: E402
+from research.verify_strategy_e_alignment import load_historical_bucketed_pool  # noqa: E402
 from src.paper_candidate_generator import PaperCandidateGenerator  # noqa: E402
 from src.strategy_d_spec import historical_candidate_mask  # noqa: E402
 from src.strategy_e import (  # noqa: E402

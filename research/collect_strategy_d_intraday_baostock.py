@@ -9,7 +9,7 @@
 
 运行：
 
-    python3 scripts/build_strategy_d_intraday_event_ledger.py --targets-only
+    python3 research/build_strategy_d_intraday_event_ledger.py --targets-only
     python3 research/collect_strategy_d_intraday_baostock.py
 
 脚本可断点续传，已成功和已确认无数据的目标不会重复请求。

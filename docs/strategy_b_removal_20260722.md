@@ -78,7 +78,7 @@
 - 当日涨停池兜底顺序改为 A→C→WATCH。
 - 不再生成空的 B 候选和 B 拒绝文件。
 
-`scripts/audit_signal_readiness.py`
+`tools/audit_signal_readiness.py`
 
 - 审计漏斗只展示 A/C。
 - 不再加载 B 条件或输出 B 候选审计。
@@ -118,7 +118,7 @@ POV退出监控
 
 ### 5. 旧脚本失效保护
 
-`scripts/run_paper_ab_filtered_observation_window.py`
+`research/run_paper_ab_filtered_observation_window.py`
 
 - 当前配置下拒绝运行 B 观察回放。
 - 旧代码只为历史报告复现保留，不属于当前策略入口。

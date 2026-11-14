@@ -12,9 +12,9 @@
 
 运行：
 
-    python3 scripts/collect_strategy_d_intraday_tushare_1m.py --dry-run
-    python3 scripts/collect_strategy_d_intraday_tushare_1m.py --limit-jobs 1
-    python3 scripts/collect_strategy_d_intraday_tushare_1m.py
+    python3 research/collect_strategy_d_intraday_tushare_1m.py --dry-run
+    python3 research/collect_strategy_d_intraday_tushare_1m.py --limit-jobs 1
+    python3 research/collect_strategy_d_intraday_tushare_1m.py
 """
 from __future__ import annotations
 

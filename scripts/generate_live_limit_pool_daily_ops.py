@@ -21,7 +21,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.utils.config import load_json_config, mkdir_p
-from scripts.run_paper_ab_filtered_daily_ops import (
+from src.ac_rules import (
     configured_c_condition_profiles,
     reject_strategy_risk_mask,
 )

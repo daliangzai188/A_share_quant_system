@@ -20,8 +20,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.optimize_acde_rolling_three_year import build_variant_plan
-from src.acde_monthly_research import (
+from src.acde_plan import build_variant_plan
+from research.acde_monthly_research import (
     _context,
     _execution_kwargs,
     load_monthly_config,

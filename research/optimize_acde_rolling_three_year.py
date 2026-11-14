@@ -42,19 +42,15 @@ from src.acde_rolling_candidates import (  # noqa: E402
     StaticOutcomeCache,
     VariantDefinition,
     a_variants,
-    build_a_picks,
-    build_c_picks,
-    build_d_plans,
-    build_e_picks,
     c_variants,
     d_variants,
     e_variants,
     plan_signature,
     previous_close_market_gate,
-    static_plan_outcomes,
     strict_signal_pool,
     variant_catalog_payload,
 )
+from src.acde_plan import build_variant_plan  # noqa: E402  计划生成唯一入口
 from src.strict_asof import (  # noqa: E402
     PointInTimeContract,
     audit_point_in_time_frame,
@@ -478,21 +474,21 @@ def write_artifact_manifest(
         ROOT / "config/strategy_d_factor_release.json",
         ROOT / "config/strategy_d_intraday_collection.json",
         ROOT / "config/strategy_d_intraday_known_data_gaps.json",
-        ROOT / "scripts/optimize_acde_rolling_three_year.py",
-        ROOT / "scripts/build_ac_daily_candidates.py",
-        ROOT / "scripts/build_strategy_d_intraday_event_ledger.py",
-        ROOT / "scripts/build_strategy_d_reseal_events_window.py",
-        ROOT / "scripts/certify_current_executable_portfolio.py",
-        ROOT / "scripts/collect_strategy_d_intraday_tushare_1m.py",
-        ROOT / "scripts/collect_strategy_d_stk_limit_history.py",
-        ROOT / "scripts/merge_strategy_d_reseal_event_windows.py",
-        ROOT / "scripts/research_strategy_d_explosion_features.py",
-        ROOT / "scripts/research_strategy_d_full_window_features_and_gates.py",
-        ROOT / "scripts/research_strategy_d_reseal_combinations.py",
-        ROOT / "scripts/research_strategy_d_six_schools.py",
+        ROOT / "research/optimize_acde_rolling_three_year.py",
+        ROOT / "research/build_ac_daily_candidates.py",
+        ROOT / "research/build_strategy_d_intraday_event_ledger.py",
+        ROOT / "research/build_strategy_d_reseal_events_window.py",
+        ROOT / "research/certify_current_executable_portfolio.py",
+        ROOT / "research/collect_strategy_d_intraday_tushare_1m.py",
+        ROOT / "research/collect_strategy_d_stk_limit_history.py",
+        ROOT / "research/merge_strategy_d_reseal_event_windows.py",
+        ROOT / "research/research_strategy_d_explosion_features.py",
+        ROOT / "research/research_strategy_d_full_window_features_and_gates.py",
+        ROOT / "research/research_strategy_d_reseal_combinations.py",
+        ROOT / "research/research_strategy_d_six_schools.py",
         ROOT / "scripts/run_paper_ab_filtered_daily_ops.py",
-        ROOT / "scripts/run_paper_ab_filtered_observation_window.py",
-        ROOT / "scripts/validate_other_live_strategies_strict.py",
+        ROOT / "research/run_paper_ab_filtered_observation_window.py",
+        ROOT / "research/validate_other_live_strategies_strict.py",
         ROOT / "src/acde_rolling_framework.py",
         ROOT / "src/acde_rolling_candidates.py",
         ROOT / "src/adjusted_returns.py",
@@ -580,60 +576,6 @@ def write_artifact_manifest(
         encoding="utf-8",
     )
     return artifact_path
-
-
-def build_variant_plan(
-    variant: VariantDefinition,
-    *,
-    signal_pool: pd.DataFrame,
-    d_events: pd.DataFrame,
-    allowed_action_dates: set[str],
-    cutoff: str,
-    outcome_cache: StaticOutcomeCache,
-) -> pd.DataFrame:
-    leg = variant.strategy_leg
-    if leg == "A":
-        frame = static_plan_outcomes(
-            build_a_picks(signal_pool, variant.payload),
-            leg="A",
-            cutoff=cutoff,
-            cache=outcome_cache,
-        )
-    elif leg == "C":
-        frame = static_plan_outcomes(
-            build_c_picks(signal_pool, variant.payload),
-            leg="C",
-            cutoff=cutoff,
-            cache=outcome_cache,
-        )
-    elif leg == "E":
-        frame = static_plan_outcomes(
-            build_e_picks(signal_pool, variant.payload),
-            leg="E",
-            cutoff=cutoff,
-            cache=outcome_cache,
-            e_spec=variant.payload,
-        )
-    elif leg == "D":
-        frame = build_d_plans(
-            d_events,
-            variant.payload,
-            allowed_action_dates=allowed_action_dates,
-            cutoff=cutoff,
-        )
-    else:
-        raise ValueError(f"未知策略腿：{leg}")
-    frame = frame.copy()
-    if frame.empty:
-        frame["action_date"] = pd.Series(dtype="object")
-        return frame
-    source_column = "signal_date" if leg == "D" else "buy_date"
-    if source_column not in frame.columns:
-        raise RuntimeError(f"{leg}计划缺少显式action_date来源字段{source_column}")
-    frame["action_date"] = frame[source_column].map(normalize_date)
-    if frame["action_date"].eq("").any():
-        raise RuntimeError(f"{leg}计划存在空action_date")
-    return frame
 
 
 def flatten_evaluation(
@@ -1861,7 +1803,7 @@ def main() -> int:
     if int(raw_config.get("schema_version", 0)) == 2:
         if args.readiness_only:
             raise ValueError("月度执行器不支持绕过完整P00~P14流水线的readiness-only旧参数")
-        from scripts.optimize_acde_monthly import main as monthly_main
+        from research.optimize_acde_monthly import main as monthly_main
 
         forwarded = ["--config", str(config_path)]
         if args.as_of:

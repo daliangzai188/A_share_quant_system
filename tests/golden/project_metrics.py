@@ -52,7 +52,9 @@ def module_files(root: Path) -> dict[str, Path]:
     return files
 
 
-def import_edges(files: dict[str, Path]) -> dict[str, set[str]]:
+def import_edges(files: dict[str, Path], *, strings: bool = True) -> dict[str, set[str]]:
+    """模块之间的依赖。strings=True 时把代码里写着的模块名/脚本文件名也算上（按名字调起的脚本），
+    用来圈定生产代码（宁多勿少）；strings=False 只算真正的 import，用来数反向依赖和循环依赖。"""
     edges: dict[str, set[str]] = {name: set() for name in files}
     for name, path in files.items():
         try:
@@ -66,7 +68,7 @@ def import_edges(files: dict[str, Path]) -> dict[str, set[str]]:
                 targets += [node.module + "." + alias.name for alias in node.names]
             elif isinstance(node, ast.Import):
                 targets += [alias.name for alias in node.names]
-            elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            elif strings and isinstance(node, ast.Constant) and isinstance(node.value, str):
                 value = node.value
                 if value.startswith(("scripts.", "src.")):
                     targets.append(value)
@@ -139,10 +141,12 @@ def boundary(root: Path = REPO) -> dict[str, list[str]]:
 def metrics(root: Path = REPO) -> dict:
     files = module_files(root)
     edges = import_edges(files)
+    imports = import_edges(files, strings=False)
     prod = closure(edges, ROOTS)
     prod_scripts = [m for m in prod if m.startswith("scripts.")]
     research_in_prod = sorted(m for m in prod_scripts if m.split(".", 1)[1].split("_")[0] in RESEARCH_PREFIXES)
-    reverse = sorted("%s→%s" % (m, t) for m in files if m.startswith("src.") for t in edges[m] if t.startswith("scripts."))
+    reverse = sorted("%s→%s" % (m, t) for m in prod if m.startswith("src.") for t in imports[m] if t.startswith("scripts."))
+    prod_cycles = [c for c in cycles(imports) if any(m in prod for m in c)]
     long_funcs, swallowed, biggest = 0, 0, (0, "")
     for name in prod:
         path = files[name]
@@ -172,8 +176,8 @@ def metrics(root: Path = REPO) -> dict:
         "src/和scripts/里的非生产模块": len(edge_rules["non_production_in_production_dirs"]),
         "生产代码导入research/tools": len(edge_rules["production_reaching_research_or_tools"]),
         "生产代码依赖的研究/验证类脚本": len(research_in_prod),
-        "src反向依赖scripts": len(reverse),
-        "循环依赖组": len(cycles(edges)),
+        "src反向依赖scripts（生产代码，真实导入）": len(reverse),
+        "循环依赖组（含生产模块，真实导入）": len(prod_cycles),
         "最大的生产文件（行）": "%d（%s）" % biggest,
         "生产代码里超过200行的函数": long_funcs,
         "生产代码里捕获错误后直接pass": swallowed,

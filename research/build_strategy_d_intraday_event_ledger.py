@@ -13,10 +13,10 @@
 运行：
 
     # 第一步：生成40336只次全窗口采集目标
-    python3 scripts/build_strategy_d_intraday_event_ledger.py --targets-only
+    python3 research/build_strategy_d_intraday_event_ledger.py --targets-only
 
     # 第二步：有一分钟数据后重建事件账本
-    python3 scripts/build_strategy_d_intraday_event_ledger.py \
+    python3 research/build_strategy_d_intraday_event_ledger.py \
       --minute-bars data/research/strategy_d_intraday/minute_1m_tushare.csv \
       --data-source TUSHARE_STK_MINS_1M_UNADJUSTED
 
@@ -44,7 +44,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts import validate_other_live_strategies_strict as strict  # noqa: E402
+from research import validate_other_live_strategies_strict as strict  # noqa: E402
 from src.market_rules import (  # noqa: E402
     is_st_name,
     market_segment,

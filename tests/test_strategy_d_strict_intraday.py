@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pandas as pd
 
-from scripts.collect_strategy_d_intraday_tushare_1m import (
+from research.collect_strategy_d_intraday_tushare_1m import (
     CollectionPolicy,
     build_cluster_jobs,
     build_cross_section_jobs,

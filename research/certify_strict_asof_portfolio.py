@@ -28,13 +28,13 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts import certify_current_executable_portfolio as legacy  # noqa: E402
-from scripts import validate_other_live_strategies_strict as strict  # noqa: E402
+from research import certify_current_executable_portfolio as legacy  # noqa: E402
+from research import validate_other_live_strategies_strict as strict  # noqa: E402
 from research.optimize_strategy_d_factor_union import (  # noqa: E402
     build_incumbent_and_other_legs,
     load_events as load_d_events,
 )
-from src.live_certification import (  # noqa: E402
+from research.live_certification import (  # noqa: E402
     certification_config_sha256,
     certification_file_sha256,
     certification_file_size,
@@ -75,19 +75,19 @@ D_RELEASE_PATH = ROOT / "config/strategy_d_factor_release.json"
 
 CODE_FILES = [
     "research/certify_strict_asof_portfolio.py",
-    "scripts/validate_other_live_strategies_strict.py",
-    "scripts/certify_current_executable_portfolio.py",
-    "scripts/backtest_strategy_d.py",
-    "scripts/build_ac_daily_candidates.py",
+    "research/validate_other_live_strategies_strict.py",
+    "research/certify_current_executable_portfolio.py",
+    "research/backtest_strategy_d.py",
+    "research/build_ac_daily_candidates.py",
     "research/optimize_strategy_d_factor_union.py",
     "research/optimize_strict_acde_from_official_baseline.py",
-    "scripts/research_strategy_d_explosion_features.py",
-    "scripts/research_strategy_d_reseal_combinations.py",
+    "research/research_strategy_d_explosion_features.py",
+    "research/research_strategy_d_reseal_combinations.py",
     "scripts/run_paper_ab_filtered_daily_ops.py",
     "scripts/run_strategy_e_signal.py",
-    "scripts/verify_strategy_e_alignment.py",
+    "research/verify_strategy_e_alignment.py",
     "src/adjusted_returns.py",
-    "src/live_certification.py",
+    "research/live_certification.py",
     "src/market_rules.py",
     "src/mechanical_compound.py",
     "src/paper_candidate_generator.py",

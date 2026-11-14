@@ -27,7 +27,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.acde_monthly_research import _execution_kwargs, load_monthly_config
+from research.acde_monthly_research import _execution_kwargs, load_monthly_config
 from src.acde_rolling_framework import (
     FIXED_PRIORITY,
     action_metrics,

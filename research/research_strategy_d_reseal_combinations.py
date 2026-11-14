@@ -26,7 +26,7 @@
 
 运行：
 
-    python3 scripts/research_strategy_d_reseal_combinations.py
+    python3 research/research_strategy_d_reseal_combinations.py
 """
 from __future__ import annotations
 
@@ -48,15 +48,15 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts import validate_other_live_strategies_strict as strict  # noqa: E402
-from scripts.build_strategy_d_intraday_event_ledger import iter_minute_groups  # noqa: E402
-from scripts.research_strategy_d_explosion_features import (  # noqa: E402
+from research import validate_other_live_strategies_strict as strict  # noqa: E402
+from research.build_strategy_d_intraday_event_ledger import iter_minute_groups  # noqa: E402
+from research.research_strategy_d_explosion_features import (  # noqa: E402
     build_current_other_legs,
     combo_replay,
     executed_metrics,
     replay_d_only,
 )
-from scripts.research_strategy_d_full_window_features_and_gates import (  # noqa: E402
+from research.research_strategy_d_full_window_features_and_gates import (  # noqa: E402
     BASELINE_ACDE_LEG_COUNTS,
     BASELINE_ACDE_MULTIPLE,
     BASELINE_ACDE_TRADE_COUNT,
@@ -69,7 +69,7 @@ from scripts.research_strategy_d_full_window_features_and_gates import (  # noqa
     load_ledger,
     trading_minutes_between,
 )
-from scripts.research_strategy_d_six_schools import (  # noqa: E402
+from research.research_strategy_d_six_schools import (  # noqa: E402
     OutcomeCache,
     signal_features,
 )
