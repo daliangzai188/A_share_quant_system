@@ -1846,6 +1846,11 @@ M的去留（2026-11-13起）：M的规则平时不调，只在年度复核决�
    成交概率模型表、D研究参考名单、2026-10-10历史补充证据），清单在`.gitignore`末尾；行情、加工结果、研究底座只在本机，
    Mac和虚拟机由Syncthing双向同步。git里停止跟踪一批文件的提交，在同步工作区不能用`git merge`/`git pull`落地
    （会删掉工作区文件并同步删到虚拟机），要用`git reset --mixed`再检出改动的文件（见提交说明）。
+9. 部署（2026-11-14起）：代码用`sh tools/publish_dev_copy.sh 导出副本路径`一条命令落到同步工作区并推送（只快进、查资金账号、
+   停止跟踪的文件不删、核对data/文件数）；QMT原生版在QMT工作目录用`sh deploy.sh 回归日志`一条命令完成核对回归、打包、
+   Python 3.6检查、生成策略文件和接管测试、旧文件存进`qmt_native_phase0/rollback/`、新文件放进虚拟机目录、提交发布；先用`--check`。
+   QMT里粘贴、编译、重启仍要人在虚拟机上做（脚本打印步骤）。虚拟机脚本在主仓库只放`qmt_native_phase0/`一份，
+   开发在QMT工作目录的`vm_scripts/`，发布时导出过来（`qmt_native/`里不再带）。
 
 数据更新方法继续执行`docs/monthly_three_year_data_update.md`；
 `docs/monthly_acde_optimization_sop.md`保留为研究方法与数据门禁参考，不再用于生产换版。

@@ -33,6 +33,15 @@
 6. 推送转发：计划任务 `A_System_QmtNotifyForwarder`（`install_notify_forwarder.ps1`）常驻。
 7. 验收：QMT 策略日志出现 `started: mode=live`、`[trade]start trading mode`、`[A_SYSTEM_EXPORT live]`；`C:\A_System\logs\qmt_notify_forwarder.log` 出现 `export rebuilt`、`forwarded …`（手机收到“✅ 程序与账户已恢复正常”）、18:40 后 `external checks started`；之后收盘流水线补跑完成、⑬判定与生产一致。
 
+## 部署新版本（2026-11-14 起一条命令）
+
+1. 主仓库改动已在导出副本测试、提交并推送（同步工作区和 GitHub 一致）。
+2. 工作目录：重打核心包和策略文件后跑完整回归，`sh inqmt/run_regression.sh 影子版 实盘版 regress_X > regress_X.log`（约1.5小时）。
+3. `sh deploy.sh regress_X.log`：核对回归日志是这个核心包、各节全部通过、整日演练没有异常 → Python 3.6 编译导入 →
+   生成实盘版、接管测试 → 旧实盘文件存进 `qmt_native_phase0/rollback/`、新文件放进 `qmt_native_phase0/` →
+   核心包提交到工作仓库并发布到主仓库。先用 `--check` 只检查。
+4. 虚拟机 QMT 里按脚本最后打印的步骤换上新文件（■ → 粘贴 → 编译 → ▶），验收日志和推送；回滚就粘贴 `rollback/` 里的旧文件。
+
 ## 回退
 
 10-23 前：模型交易停 `A_SYSTEM`，把 `C:\A_System_backup\A_SYSTEM_QMT_INNER_20261022.py` 的内容粘回 `A_SYSTEM_QMT_INNER` 并编译，运行；删除 `C:\A_System\.manual_stop.json` 后执行 `py -3.11 start_qmt_inner_windows.py`。10-23 起旧桥接无法使用。

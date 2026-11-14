@@ -1,7 +1,8 @@
 #!/bin/sh
 # Publish the committed QMT-native code into the main repository and push it:
-#   A_System/qmt_native/        <- exactly this repository's HEAD (git archive)
-#   A_System/qmt_native_phase0/ <- the VM deployment folder (strategy files stay ignored)
+#   A_System/qmt_native/        <- this repository's HEAD (git archive), without vm_scripts/
+#   A_System/qmt_native_phase0/ <- the VM deployment folder: HEAD:vm_scripts is exported here, the only copy of the
+#                                  VM scripts in the main repository (2026-11-14); strategy files stay ignored
 # Usage: sh publish_to_a_system.sh "commit message"
 set -e
 cd "$(dirname "$0")"
@@ -10,7 +11,8 @@ REPO=/Users/eass/Desktop/A_System
 [ -z "$(git status --porcelain)" ] || { echo "commit the QMT-native changes first"; git status --short; exit 1; }
 rm -rf "$REPO/qmt_native"
 mkdir -p "$REPO/qmt_native"
-git archive --format=tar HEAD | tar -x -C "$REPO/qmt_native"
+git archive --format=tar HEAD -- . ':(exclude)vm_scripts' | tar -x -C "$REPO/qmt_native"
+git archive --format=tar HEAD:vm_scripts | tar -x -C "$REPO/qmt_native_phase0"
 ACC=$(sed -n 's/^QMT_ACCOUNT_ID=//p' local.env 2>/dev/null)
 cd "$REPO"
 git add qmt_native qmt_native_phase0 .gitignore
