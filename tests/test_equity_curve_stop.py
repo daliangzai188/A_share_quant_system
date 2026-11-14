@@ -20,6 +20,7 @@ if "dotenv" not in sys.modules:
     sys.modules["dotenv"] = stub
 
 from scripts import trading_daemon
+from tests.daemon_testing import patch_daemon
 from src.combined_live_engine import CombinedLiveEngine
 from src.equity_curve_stop import (
     METHOD_ID,
@@ -260,7 +261,7 @@ class DaemonStopAndDrawdownTests(unittest.TestCase):
                 json.dumps({"equity_curve_stop": {"enabled": True, "decision_path": "d.json"}}),
                 encoding="utf-8",
             )
-            with patch.object(trading_daemon, "PROJECT_ROOT", root):
+            with patch_daemon("PROJECT_ROOT", root):
                 reason = trading_daemon._equity_curve_stop_block_reason("20260921")
         self.assertIn("fail-closed", reason)
 
@@ -269,8 +270,8 @@ class DaemonStopAndDrawdownTests(unittest.TestCase):
             root = Path(tmp)
             cfg = {"drawdown_alert": {"enabled": True, "threshold": -0.30, "state_path": "state/dd.json"}}
             snapshot = SimpleNamespace(equity=65_000.0, peak_equity=100_000.0, pending_incomplete_trade_count=2)
-            with patch.object(trading_daemon, "PROJECT_ROOT", root), \
-                    patch.object(trading_daemon, "_notify", return_value=True) as notify:
+            with patch_daemon("PROJECT_ROOT", root), \
+                    patch_daemon("_notify", return_value=True) as notify:
                 trading_daemon._maybe_alert_strategy_drawdown(snapshot, -0.35, cfg)
                 trading_daemon._maybe_alert_strategy_drawdown(snapshot, -0.36, cfg)
                 self.assertEqual(notify.call_count, 1)
@@ -288,8 +289,8 @@ class DaemonStopAndDrawdownTests(unittest.TestCase):
             cfg = {"drawdown_alert": {"enabled": True, "ledger_incomplete_state_path": "state/pending.json"}}
             gap = SimpleNamespace(pending_trade_keys=("20260820|301211.SZ|N|20260819",
                                                       "20260901|603139.SH|C|20260831"))
-            with patch.object(trading_daemon, "PROJECT_ROOT", root), \
-                    patch.object(trading_daemon, "_notify", return_value=True) as notify:
+            with patch_daemon("PROJECT_ROOT", root), \
+                    patch_daemon("_notify", return_value=True) as notify:
                 trading_daemon._maybe_alert_ledger_incomplete(gap, cfg)
                 trading_daemon._maybe_alert_ledger_incomplete(gap, cfg)
                 self.assertEqual(notify.call_count, 1)
@@ -306,8 +307,8 @@ class DaemonStopAndDrawdownTests(unittest.TestCase):
 
     def test_drawdown_above_threshold_is_silent(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, \
-                patch.object(trading_daemon, "PROJECT_ROOT", Path(tmp)), \
-                patch.object(trading_daemon, "_notify", return_value=True) as notify:
+                patch_daemon("PROJECT_ROOT", Path(tmp)), \
+                patch_daemon("_notify", return_value=True) as notify:
             snapshot = SimpleNamespace(equity=90_000.0, peak_equity=100_000.0, pending_incomplete_trade_count=0)
             trading_daemon._maybe_alert_strategy_drawdown(
                 snapshot, -0.10, {"drawdown_alert": {"enabled": True, "threshold": -0.30}}

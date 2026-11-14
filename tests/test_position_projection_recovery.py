@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from scripts import trading_daemon as daemon
+from tests.daemon_testing import patch_daemon
 from src.trade_intent_store import (
     STATUS_FILLED,
     STATUS_PREPARED,
@@ -76,11 +77,11 @@ class PositionProjectionRecoveryTests(unittest.TestCase):
                          signal_date="20260814", exit_n=1)])
             path = root / "positions.json"
             with (
-                patch.object(daemon, "POSITIONS_FILE", path),
-                patch.object(daemon, "_trade_intent_store_instance", store),
-                patch.object(daemon, "_exit_account_fingerprint", return_value="acct"),
-                patch.object(daemon, "_track_execution", return_value=None),
-                patch.object(daemon, "_pov_load_state", return_value=state),
+                patch_daemon("POSITIONS_FILE", path),
+                patch_daemon("_trade_intent_store_instance", store),
+                patch_daemon("_exit_account_fingerprint", return_value="acct"),
+                patch_daemon("_track_execution", return_value=None),
+                patch_daemon("_pov_load_state", return_value=state),
             ):
                 self.assertEqual(daemon._project_recovered_buy_intents([
                     dict(stock_code="000001.SZ", volume=100, cost_price=10.2)]), 1)
@@ -95,10 +96,10 @@ class PositionProjectionRecoveryTests(unittest.TestCase):
         states = [{}, dict(date='20260818', items=[item]),
                   dict(date='20260817', items=[item, dict(item, exit_n=2)])]
         for state in states:
-            with patch.object(daemon, '_pov_load_state', return_value=state):
+            with patch_daemon('_pov_load_state', return_value=state):
                 with self.assertRaises(RuntimeError):
                     daemon._recovered_buy_exit_n_days(intent)
-        with patch.object(daemon, '_pov_load_state', side_effect=AssertionError('无需读当前状态')):
+        with patch_daemon('_pov_load_state', side_effect=AssertionError('无需读当前状态')):
             self.assertEqual(daemon._recovered_buy_exit_n_days(dict(intent, metadata={'exit_n_days':1})), 1)
 
     def test_daemon_periodic_alert_throttles_only_successful_delivery(self) -> None:
@@ -106,7 +107,7 @@ class PositionProjectionRecoveryTests(unittest.TestCase):
         daemon._ONCE_PER_ATTEMPT.clear()
         with (
             patch.object(daemon.time, "time", side_effect=[1000.0, 1030.0, 1061.0, 1061.0]),
-            patch.object(daemon, "_notify", side_effect=[False, True]) as notify,
+            patch_daemon("_notify", side_effect=[False, True]) as notify,
         ):
             first = daemon._notify_once_per("qmt", 300, "title", "body")
             second = daemon._notify_once_per("qmt", 300, "title", "body")
@@ -130,10 +131,10 @@ class PositionProjectionRecoveryTests(unittest.TestCase):
         daemon._QMT_FATAL_RESTART_EVENT.clear()
         try:
             with (
-                patch.object(daemon, "write_broker_health") as health,
-                patch.object(daemon, "write_heartbeat") as heartbeat,
-                patch.object(daemon, "_clear_qmt_last_success") as clear_cache,
-                patch.object(daemon, "_notify_async") as notify,
+                patch_daemon("write_broker_health") as health,
+                patch_daemon("write_heartbeat") as heartbeat,
+                patch_daemon("_clear_qmt_last_success") as clear_cache,
+                patch_daemon("_notify_async") as notify,
                 patch.object(daemon.threading, "Thread", ImmediateThread),
                 patch.object(daemon.time, "sleep", return_value=None),
                 patch.object(daemon.os, "_exit", side_effect=lambda code: exits.append(code)),
@@ -155,10 +156,10 @@ class PositionProjectionRecoveryTests(unittest.TestCase):
             row = filled_buy(store)
             positions_path = root / "positions.json"
             with (
-                patch.object(daemon, "POSITIONS_FILE", positions_path),
-                patch.object(daemon, "_trade_intent_store_instance", store),
-                patch.object(daemon, "_exit_account_fingerprint", return_value="acct"),
-                patch.object(daemon, "_track_execution", return_value=None),
+                patch_daemon("POSITIONS_FILE", positions_path),
+                patch_daemon("_trade_intent_store_instance", store),
+                patch_daemon("_exit_account_fingerprint", return_value="acct"),
+                patch_daemon("_track_execution", return_value=None),
             ):
                 projected = daemon._project_recovered_buy_intents([
                     {
@@ -182,10 +183,10 @@ class PositionProjectionRecoveryTests(unittest.TestCase):
             store = TradeIntentStore(root / "events.sqlite3")
             filled_buy(store)
             with (
-                patch.object(daemon, "POSITIONS_FILE", root / "positions.json"),
-                patch.object(daemon, "_trade_intent_store_instance", store),
-                patch.object(daemon, "_exit_account_fingerprint", return_value="acct"),
-                patch.object(daemon, "_track_execution", return_value=None),
+                patch_daemon("POSITIONS_FILE", root / "positions.json"),
+                patch_daemon("_trade_intent_store_instance", store),
+                patch_daemon("_exit_account_fingerprint", return_value="acct"),
+                patch_daemon("_track_execution", return_value=None),
             ):
                 with self.assertRaisesRegex(RuntimeError, "无法唯一投影"):
                     daemon._project_recovered_buy_intents([
@@ -196,8 +197,8 @@ class PositionProjectionRecoveryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "positions.json"
             with (
-                patch.object(daemon, "POSITIONS_FILE", path),
-                patch.object(daemon, "_track_execution", return_value=None),
+                patch_daemon("POSITIONS_FILE", path),
+                patch_daemon("_track_execution", return_value=None),
             ):
                 common = dict(
                     order_id="QMT-PARTIAL",
@@ -221,8 +222,8 @@ class PositionProjectionRecoveryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "positions.json"
             with (
-                patch.object(daemon, "POSITIONS_FILE", path),
-                patch.object(daemon, "_track_execution", return_value=None),
+                patch_daemon("POSITIONS_FILE", path),
+                patch_daemon("_track_execution", return_value=None),
             ):
                 daemon.record_buy(
                     order_id="QMT-C-THIRD",
@@ -256,13 +257,13 @@ class PositionProjectionRecoveryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "positions.json"
             path.write_text("{broken", encoding="utf-8")
-            with patch.object(daemon, "POSITIONS_FILE", path):
+            with patch_daemon("POSITIONS_FILE", path):
                 with self.assertRaisesRegex(RuntimeError, "读取持仓文件失败"):
                     daemon.load_positions()
 
     def test_position_identity_failures_never_become_empty_or_zero(self) -> None:
         broker = [SimpleNamespace(ts_code="000001.SZ", volume=1000, market_value=10200.0)]
-        with patch.object(daemon, "load_positions", side_effect=RuntimeError("ledger corrupt")):
+        with patch_daemon("load_positions", side_effect=RuntimeError("ledger corrupt")):
             with self.assertRaisesRegex(RuntimeError, "ledger corrupt"):
                 daemon._strategy_only_market_value(broker)
             with self.assertRaisesRegex(RuntimeError, "ledger corrupt"):
@@ -279,12 +280,11 @@ class PositionProjectionRecoveryTests(unittest.TestCase):
         }]
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "pending.json"
-            with patch.object(daemon, "PENDING_BUY_FILE", path):
+            with patch_daemon("PENDING_BUY_FILE", path):
                 daemon.save_pending_buys(pending)
                 self.assertEqual(daemon.load_pending_buys(), pending)
                 path.write_text("{broken", encoding="utf-8")
-                with patch.object(
-                    daemon,
+                with patch_daemon(
                     "_critical_execution_state_failure",
                     side_effect=RuntimeError("process recovery requested"),
                 ) as recovery:
@@ -294,9 +294,8 @@ class PositionProjectionRecoveryTests(unittest.TestCase):
 
     def test_live_fill_projection_failure_requests_process_recovery(self) -> None:
         with (
-            patch.object(daemon, "record_buy", side_effect=OSError("disk unavailable")),
-            patch.object(
-                daemon,
+            patch_daemon("record_buy", side_effect=OSError("disk unavailable")),
+            patch_daemon(
                 "_critical_execution_state_failure",
                 side_effect=RuntimeError("process recovery requested"),
             ) as recovery,

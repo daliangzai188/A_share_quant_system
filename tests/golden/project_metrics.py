@@ -35,7 +35,7 @@ RESEARCH_PREFIXES = ("research", "optimize", "search", "analyze", "compare", "st
                      "validate", "certify")
 PRODUCTION_DIRS = ("src", "scripts")
 NON_PRODUCTION_DIRS = ("research", "tools")
-PACKAGE_INITS = ("src", "src.utils", "qmt_inner", "research", "tools")  # 包本身，不算模块
+PACKAGE_INITS = ("src", "src.utils", "src.daemon", "qmt_inner", "research", "tools")  # 包本身，不算模块
 SIZING_NUMBERS = ("0.825", "0.175", "0.995", "0.85")  # ACE 82.5%/硬顶85%、M 17.5%、合计99.5%
 SIZING_SOURCE = "src.portfolio_ace_m"                   # 仓位规则唯一出处
 

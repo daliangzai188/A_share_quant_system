@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from qmt_inner.engine import ENGINE_REVISION
 from tools.repair_qmt_inner_ledger import repair_ledger
+from tests.daemon_testing import patch_daemon
 
 
 class LedgerRepairSafetyTests(unittest.TestCase):
@@ -50,8 +51,8 @@ class LedgerRepairSafetyTests(unittest.TestCase):
                      patch('tools.repair_qmt_inner_ledger.load_settings', return_value={}), \
                      patch('tools.repair_qmt_inner_ledger.FileClient') as client, \
                      patch('tools.repair_qmt_inner_ledger.backup', return_value={'directory': 'backup'}), \
-                     patch.object(daemon, 'setup'), \
-                     patch.object(daemon, '_recover_trade_execution_state_once', side_effect=attempt):
+                     patch_daemon('setup'), \
+                     patch_daemon('_recover_trade_execution_state_once', side_effect=attempt):
                     client.return_value.heartbeat.return_value = {'engine_revision': ENGINE_REVISION}
                     with self.assertRaisesRegex(RuntimeError, 'Financial operation forbidden'):
                         repair_ledger(root)

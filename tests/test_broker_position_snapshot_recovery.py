@@ -16,6 +16,8 @@ if "dotenv" not in sys.modules:
     sys.modules["dotenv"] = dotenv_stub
 
 from scripts import trading_daemon as daemon
+from tests.daemon_testing import patch_daemon
+from src.daemon import qmt as daemon_qmt
 from src.broker_execution_service import BrokerExecutionService
 
 
@@ -63,9 +65,8 @@ class BrokerPositionSnapshotRecoveryTests(unittest.TestCase):
         local = [_ghost_position()]
 
         with (
-            patch.object(daemon, "load_positions", return_value=local),
-            patch.object(
-                daemon,
+            patch_daemon("load_positions", return_value=local),
+            patch_daemon(
                 "today_beijing",
                 return_value=datetime.date(2026, 8, 18),
             ),
@@ -92,9 +93,8 @@ class BrokerPositionSnapshotRecoveryTests(unittest.TestCase):
         recent_ghost["sell_date"] = "20260902"
         recent_ghost["ghost_cleared_at"] = "2026-09-02 11:14:31"
         with (
-            patch.object(daemon, "load_positions", return_value=[recent_ghost]),
-            patch.object(
-                daemon,
+            patch_daemon("load_positions", return_value=[recent_ghost]),
+            patch_daemon(
                 "today_beijing",
                 return_value=datetime.date(2026, 9, 4),
             ),
@@ -137,9 +137,8 @@ class BrokerPositionSnapshotRecoveryTests(unittest.TestCase):
         recent_ghost["sell_date"] = "20260902"
         recent_ghost["ghost_cleared_at"] = "2026-09-02 11:14:31"
         with (
-            patch.object(daemon, "load_positions", return_value=[recent_ghost]),
-            patch.object(
-                daemon,
+            patch_daemon("load_positions", return_value=[recent_ghost]),
+            patch_daemon(
                 "today_beijing",
                 return_value=datetime.date(2026, 9, 4),
             ),
@@ -166,9 +165,8 @@ class BrokerPositionSnapshotRecoveryTests(unittest.TestCase):
             "order_price": 19.32,
         }
         with (
-            patch.object(daemon, "load_positions", return_value=[_ghost_position()]),
-            patch.object(
-                daemon,
+            patch_daemon("load_positions", return_value=[_ghost_position()]),
+            patch_daemon(
                 "today_beijing",
                 return_value=datetime.date(2026, 8, 18),
             ),
@@ -181,14 +179,13 @@ class BrokerPositionSnapshotRecoveryTests(unittest.TestCase):
                 )
 
     def test_snapshot_inconsistency_never_resets_healthy_qmt_session(self) -> None:
-        old_reconnect_count = daemon._qmt_reconnect_count
-        daemon._qmt_reconnect_count = 2
+        old_reconnect_count = daemon_qmt._qmt_reconnect_count
+        daemon_qmt._qmt_reconnect_count = 2
         log = SimpleNamespace(error=lambda *_args, **_kwargs: None)
         error = daemon.BrokerSnapshotInconsistentError("模拟账务快照不一致")
         try:
             with (
-                patch.object(
-                    daemon,
+                patch_daemon(
                     "load_json_config",
                     return_value={
                         "broker_adapter_enabled": True,
@@ -196,15 +193,14 @@ class BrokerPositionSnapshotRecoveryTests(unittest.TestCase):
                         "broker": {"enabled": True},
                     },
                 ),
-                patch.object(daemon, "_qmt_get", return_value=object()),
-                patch.object(
-                    daemon,
+                patch_daemon("_qmt_get", return_value=object()),
+                patch_daemon(
                     "_qmt_query_account_positions",
                     side_effect=error,
                 ),
-                patch.object(daemon, "_qmt_reset") as reset,
-                patch.object(daemon, "write_broker_health") as health,
-                patch.object(daemon, "_notify_once_per") as notify,
+                patch_daemon("_qmt_reset") as reset,
+                patch_daemon("write_broker_health") as health,
+                patch_daemon("_notify_once_per") as notify,
             ):
                 daemon._print_account_status(log)
 
@@ -215,9 +211,9 @@ class BrokerPositionSnapshotRecoveryTests(unittest.TestCase):
                 failure_count=0,
             )
             notify.assert_called_once()
-            self.assertEqual(daemon._qmt_reconnect_count, 0)
+            self.assertEqual(daemon_qmt._qmt_reconnect_count, 0)
         finally:
-            daemon._qmt_reconnect_count = old_reconnect_count
+            daemon_qmt._qmt_reconnect_count = old_reconnect_count
 
     def test_waiting_free_writer_exits_process_without_another_qmt_reset(self) -> None:
         """底层连接资源已经耗尽时，再disconnect/connect只会继续泄漏。
@@ -228,8 +224,7 @@ class BrokerPositionSnapshotRecoveryTests(unittest.TestCase):
         log = SimpleNamespace(error=lambda *_args, **_kwargs: None)
         error = RuntimeError("WaitingFreeWriter instances exceed maximum limit")
         with (
-            patch.object(
-                daemon,
+            patch_daemon(
                 "load_json_config",
                 return_value={
                     "broker_adapter_enabled": True,
@@ -237,18 +232,16 @@ class BrokerPositionSnapshotRecoveryTests(unittest.TestCase):
                     "broker": {"enabled": True},
                 },
             ),
-            patch.object(daemon, "_qmt_get", return_value=object()),
-            patch.object(
-                daemon,
+            patch_daemon("_qmt_get", return_value=object()),
+            patch_daemon(
                 "_qmt_query_account_positions",
                 side_effect=error,
             ),
-            patch.object(
-                daemon,
+            patch_daemon(
                 "_request_qmt_resource_recovery",
                 return_value=True,
             ) as recover,
-            patch.object(daemon, "_qmt_reset") as reset,
+            patch_daemon("_qmt_reset") as reset,
         ):
             daemon._print_account_status(log)
 
@@ -266,11 +259,10 @@ class BrokerPositionSnapshotRecoveryTests(unittest.TestCase):
         ]
 
         with (
-            patch.object(daemon, "load_positions", side_effect=store.load),
-            patch.object(daemon, "save_positions", side_effect=store.save),
-            patch.object(daemon, "_notify", return_value=True),
-            patch.object(
-                daemon,
+            patch_daemon("load_positions", side_effect=store.load),
+            patch_daemon("save_positions", side_effect=store.save),
+            patch_daemon("_notify", return_value=True),
+            patch_daemon(
                 "today_beijing",
                 return_value=datetime.date(2026, 8, 18),
             ),
@@ -294,9 +286,9 @@ class BrokerPositionSnapshotRecoveryTests(unittest.TestCase):
         broker = [SimpleNamespace(ts_code="603118.SH", volume=11_700)]
 
         with (
-            patch.object(daemon, "load_positions", side_effect=store.load),
-            patch.object(daemon, "save_positions", side_effect=store.save) as save,
-            patch.object(daemon, "_notify", return_value=True),
+            patch_daemon("load_positions", side_effect=store.load),
+            patch_daemon("save_positions", side_effect=store.save) as save,
+            patch_daemon("_notify", return_value=True),
         ):
             restored = daemon.restore_ghost_cleared_strategy_positions(
                 broker,
@@ -310,7 +302,7 @@ class BrokerPositionSnapshotRecoveryTests(unittest.TestCase):
     def test_recent_auto_ghost_still_blocks_new_strategy_entry(self) -> None:
         broker = [SimpleNamespace(ts_code="603118.SH", volume=11_800)]
 
-        with patch.object(daemon, "load_positions", return_value=[_ghost_position()]):
+        with patch_daemon("load_positions", return_value=[_ghost_position()]):
             self.assertTrue(
                 daemon._broker_has_preexisting_strategy_position(
                     broker,
@@ -329,9 +321,9 @@ class BrokerPositionSnapshotRecoveryTests(unittest.TestCase):
 
         daemon._broker_missing_streak.clear()
         with (
-            patch.object(daemon, "load_positions", side_effect=store.load),
-            patch.object(daemon, "save_positions", side_effect=store.save),
-            patch.object(daemon, "load_json_config", return_value=config),
+            patch_daemon("load_positions", side_effect=store.load),
+            patch_daemon("save_positions", side_effect=store.save),
+            patch_daemon("load_json_config", return_value=config),
         ):
             first = daemon.clear_local_positions_when_broker_empty(
                 "测试第1轮",
@@ -353,9 +345,9 @@ class BrokerPositionSnapshotRecoveryTests(unittest.TestCase):
         config = {"live_trade": {"broker_missing_confirm_count": 3}}
 
         with (
-            patch.object(daemon, "load_positions", side_effect=store.load),
-            patch.object(daemon, "save_positions", side_effect=store.save),
-            patch.object(daemon, "load_json_config", return_value=config),
+            patch_daemon("load_positions", side_effect=store.load),
+            patch_daemon("save_positions", side_effect=store.save),
+            patch_daemon("load_json_config", return_value=config),
         ):
             for round_no in range(1, 4):
                 changed = daemon.reconcile_missing_local_positions(
@@ -372,7 +364,7 @@ class BrokerPositionSnapshotRecoveryTests(unittest.TestCase):
         store = _MemoryPositionStore([_ghost_position()])
         store.positions[0]["status"] = "open"
 
-        with patch.object(daemon, "load_positions", side_effect=store.load):
+        with patch_daemon("load_positions", side_effect=store.load):
             changed = daemon.reconcile_missing_local_positions(
                 [],
                 "接口异常后的非完整结果",
@@ -388,7 +380,7 @@ class BrokerPositionSnapshotRecoveryTests(unittest.TestCase):
         store.positions[0]["status"] = "open"
         daemon._broker_missing_streak["603118.SH"] = 2
 
-        with patch.object(daemon, "load_positions", side_effect=store.load):
+        with patch_daemon("load_positions", side_effect=store.load):
             changed = daemon.reconcile_missing_local_positions(
                 [SimpleNamespace(ts_code="603118.SH", volume=11_800)],
                 "股票code恢复",
@@ -409,8 +401,8 @@ class BrokerPositionSnapshotRecoveryTests(unittest.TestCase):
         config = {"live_trade": {"broker_missing_confirm_count": 3}}
 
         with (
-            patch.object(daemon, "load_positions", side_effect=store.load),
-            patch.object(daemon, "load_json_config", return_value=config),
+            patch_daemon("load_positions", side_effect=store.load),
+            patch_daemon("load_json_config", return_value=config),
         ):
             changed = daemon.reconcile_missing_local_positions(
                 [],

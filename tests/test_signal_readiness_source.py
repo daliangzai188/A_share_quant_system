@@ -8,6 +8,7 @@ import pandas as pd
 
 from tools import audit_signal_readiness
 from scripts import trading_daemon
+from tests.daemon_testing import patch_daemon
 
 
 class SignalReadinessSourceTests(unittest.TestCase):
@@ -35,10 +36,10 @@ class SignalReadinessSourceTests(unittest.TestCase):
             log = logging.getLogger("signal_readiness_source_test")
             log.addHandler(handler)
             log.setLevel(logging.INFO)
-            with mock.patch.object(trading_daemon, "load_json_config", lambda p: configs[Path(p).name]), \
-                    mock.patch.object(trading_daemon, "_prefer_live_processed_path", lambda *a: path), \
-                    mock.patch.object(trading_daemon, "_log_market_environment", lambda *a: None), \
-                    mock.patch.object(trading_daemon, "logger", lambda: log):
+            with patch_daemon("load_json_config", lambda p: configs[Path(p).name]), \
+                    patch_daemon("_prefer_live_processed_path", lambda *a: path), \
+                    patch_daemon("_log_market_environment", lambda *a: None), \
+                    patch_daemon("logger", lambda: log):
                 trading_daemon.report_signal_readiness_summary("20261104")
             log.removeHandler(handler)
         return [line for line in lines if "数据口径" in line]

@@ -29,6 +29,7 @@ from src.review_triggers import (
     shadow_triggers,
     signal_drought_triggers,
 )
+from tests.daemon_testing import patch_daemon
 
 ROOT = Path(__file__).resolve().parents[1]
 OPEN_DATES = pd.bdate_range("2026-09-01", "2026-12-31").strftime("%Y%m%d").tolist()
@@ -388,8 +389,8 @@ class DaemonPipelineAlertTests(unittest.TestCase):
         self.daemon = trading_daemon
 
     def test_stale_decision_is_alerted_once_with_failed_steps(self) -> None:
-        with patch.object(self.daemon, "_equity_curve_stop_decision_fresh", return_value=(False, "20261013")), \
-                patch.object(self.daemon, "_notify_once_per", return_value=True) as alert:
+        with patch_daemon("_equity_curve_stop_decision_fresh", return_value=(False, "20261013")), \
+                patch_daemon("_notify_once_per", return_value=True) as alert:
             self.daemon._alert_if_stop_decision_stale("20261012", ["⑬ 方案甲停手门禁（影子净值→次日判定）"])
         alert.assert_called_once()
         self.assertEqual(alert.call_args.args[0], "equity_curve_stop_decision_stale:20261012")
@@ -397,14 +398,14 @@ class DaemonPipelineAlertTests(unittest.TestCase):
         self.assertIn("临时复核触发检查也没有执行", alert.call_args.args[3])
 
     def test_fresh_decision_is_silent(self) -> None:
-        with patch.object(self.daemon, "_equity_curve_stop_decision_fresh", return_value=(True, "20261013")), \
-                patch.object(self.daemon, "_notify_once_per") as alert:
+        with patch_daemon("_equity_curve_stop_decision_fresh", return_value=(True, "20261013")), \
+                patch_daemon("_notify_once_per") as alert:
             self.daemon._alert_if_stop_decision_stale("20261012", [])
         alert.assert_not_called()
 
     def test_pipeline_not_completed_by_cutoff_is_alerted(self) -> None:
-        with patch.object(self.daemon, "_equity_curve_stop_decision_fresh", return_value=(False, "20261013")), \
-                patch.object(self.daemon, "_notify", return_value=True) as notify:
+        with patch_daemon("_equity_curve_stop_decision_fresh", return_value=(False, "20261013")), \
+                patch_daemon("_notify", return_value=True) as notify:
             self.daemon._alert_post_market_not_completed("20261012", 23)
         self.assertIn("仍未完成", notify.call_args.args[1])
         self.assertIn("fail-closed", notify.call_args.args[2])

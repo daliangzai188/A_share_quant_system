@@ -1837,6 +1837,11 @@ M的去留（2026-11-13起）：M的规则平时不调，只在年度复核决�
    `tests/test_production_modules.py`检查这条边界。
 6. 吞错（2026-11-14起）：生产代码里`except …: pass`必须在pass那一行写`# 可以忽略：原因`；失败后会让人看不到问题的
    地方不许直接pass，要记一条警告（带上异常）。`tests/golden/project_metrics.py`统计没写原因的处数，应为0。
+7. 守护进程（2026-11-14起）：代码按职责放在`src/daemon/`下16个模块，`scripts/trading_daemon.py`只是启动入口并转出原名字。
+   模块由低到高见`src/daemon/__init__.py`的`LAYERS`，只许高层导入低层（`tests/test_production_modules.py`检查）；
+   被函数用`global`改写的全局变量和用到它的函数放在同一模块，别的模块要读写`模块名.变量`。新代码放进职责对应的模块，
+   不要再往`scripts/trading_daemon.py`里加。测试里替换守护进程的函数、常量用`tests/daemon_testing.py`的`patch_daemon`
+   （守护进程所有模块一起换，等同拆分前的`patch.object(trading_daemon, …)`）。
 
 数据更新方法继续执行`docs/monthly_three_year_data_update.md`；
 `docs/monthly_acde_optimization_sop.md`保留为研究方法与数据门禁参考，不再用于生产换版。

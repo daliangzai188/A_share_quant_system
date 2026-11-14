@@ -3,17 +3,18 @@ from __future__ import annotations
 import ast
 import unittest
 from pathlib import Path
+from tests.daemon_testing import DAEMON_SOURCE_FILES, read_daemon_source
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 class UnifiedExecutionArchitectureTests(unittest.TestCase):
     def test_every_live_order_request_has_strategy_and_idempotency_identity(self) -> None:
-        for relative in (
-            "scripts/trading_daemon.py",
-            "scripts/monitor_strategy_d_intraday.py",
+        for path in (
+            *DAEMON_SOURCE_FILES,
+            PROJECT_ROOT / "scripts/monitor_strategy_d_intraday.py",
         ):
-            path = PROJECT_ROOT / relative
+            relative = path.relative_to(PROJECT_ROOT).as_posix()
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
             missing: list[tuple[int, list[str]]] = []
             for node in ast.walk(tree):
@@ -46,7 +47,7 @@ class UnifiedExecutionArchitectureTests(unittest.TestCase):
             self.assertIn("已退役", methods[name])
 
     def test_daemon_business_qmt_get_returns_only_execution_proxy(self) -> None:
-        source = (PROJECT_ROOT / "scripts/trading_daemon.py").read_text(encoding="utf-8")
+        source = read_daemon_source()
         tree = ast.parse(source)
         functions = {
             node.name: ast.get_source_segment(source, node) or ""
@@ -62,7 +63,7 @@ class UnifiedExecutionArchitectureTests(unittest.TestCase):
         self.assertIn("os._exit(exit_code)", functions["_request_process_recovery"])
 
     def test_qmt_connect_and_account_verification_create_no_orphan_threads(self) -> None:
-        source = (PROJECT_ROOT / "scripts/trading_daemon.py").read_text(encoding="utf-8")
+        source = read_daemon_source()
         tree = ast.parse(source)
         functions = {
             node.name: ast.get_source_segment(source, node) or ""
@@ -74,7 +75,7 @@ class UnifiedExecutionArchitectureTests(unittest.TestCase):
         self.assertIn('operation="connect_qmt"', functions["_qmt_get"])
 
     def test_live_d_uses_daemon_position_transaction_callback(self) -> None:
-        daemon_source = (PROJECT_ROOT / "scripts/trading_daemon.py").read_text(encoding="utf-8")
+        daemon_source = read_daemon_source()
         monitor_source = (
             PROJECT_ROOT / "scripts/monitor_strategy_d_intraday.py"
         ).read_text(encoding="utf-8")
@@ -83,7 +84,7 @@ class UnifiedExecutionArchitectureTests(unittest.TestCase):
         self.assertIn("self.position_recorder(payload)", monitor_source)
 
     def test_recovery_gate_precedes_every_trading_thread(self) -> None:
-        source = (PROJECT_ROOT / "scripts/trading_daemon.py").read_text(encoding="utf-8")
+        source = read_daemon_source()
         tree = ast.parse(source)
         main = next(
             node for node in tree.body
@@ -128,7 +129,7 @@ class UnifiedExecutionArchitectureTests(unittest.TestCase):
             self.assertIn(local_state_reader, validator_source)
 
     def test_local_position_and_order_recovery_precedes_runtime_watchdogs(self) -> None:
-        source = (PROJECT_ROOT / "scripts/trading_daemon.py").read_text(encoding="utf-8")
+        source = read_daemon_source()
         tree = ast.parse(source)
         main = next(
             node for node in tree.body

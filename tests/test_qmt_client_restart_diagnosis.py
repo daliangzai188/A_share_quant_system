@@ -9,6 +9,7 @@ from pathlib import Path
 
 from tools import diagnose_qmt_client_restarts as diag
 from src.qmt_client_probe import BEIJING_TZ, classify_qmt_client_state, describe_processes, mask_title
+from tests.daemon_testing import patch_daemon
 
 
 def _at(hour: int, minute: int, second: int = 0, day: int = 21) -> dt.datetime:
@@ -176,18 +177,18 @@ class ScheduledRestartSettingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self._tree(root, {"8881234503": '<TradeSetting restarttimelist="085019|205204|" modrestart="1"/>'})
-            with patch.object(daemon, "_running_on_windows", return_value=True), patch.object(daemon, "_qmt_install_root", return_value=root), \
-                    patch.object(daemon, "_live_qmt_account_id", return_value="8881234503"), \
-                    patch.object(daemon, "_notify_once_per", return_value=True) as alert:
+            with patch_daemon("_running_on_windows", return_value=True), patch_daemon("_qmt_install_root", return_value=root), \
+                    patch_daemon("_live_qmt_account_id", return_value="8881234503"), \
+                    patch_daemon("_notify_once_per", return_value=True) as alert:
                 self.assertFalse(daemon._check_qmt_scheduled_restart(MagicMock()))
             alert.assert_called_once()
             self.assertEqual(alert.call_args.args[0], "qmt_scheduled_restart_on")
             self.assertIn("08:50:19、20:52:04", alert.call_args.args[3])
             (root / "userdata" / "users" / "8881234503" / "Config.xml").write_text(
                 '<root><TradeSetting restarttimelist="085019|205204|" modrestart="0"/></root>', encoding="utf-8")
-            with patch.object(daemon, "_running_on_windows", return_value=True), patch.object(daemon, "_qmt_install_root", return_value=root), \
-                    patch.object(daemon, "_live_qmt_account_id", return_value="8881234503"), \
-                    patch.object(daemon, "_notify_once_per") as alert:
+            with patch_daemon("_running_on_windows", return_value=True), patch_daemon("_qmt_install_root", return_value=root), \
+                    patch_daemon("_live_qmt_account_id", return_value="8881234503"), \
+                    patch_daemon("_notify_once_per") as alert:
                 self.assertTrue(daemon._check_qmt_scheduled_restart(MagicMock()))
             alert.assert_not_called()
         self.assertTrue(probe.scheduled_restart_problem([]))
@@ -196,8 +197,8 @@ class ScheduledRestartSettingTests(unittest.TestCase):
         from unittest.mock import MagicMock, patch
         from scripts import trading_daemon as daemon
 
-        with patch.object(daemon, "_running_on_windows", return_value=True), patch.object(daemon, "_qmt_install_root", return_value=None), \
-                patch.object(daemon, "_notify_once_per", return_value=True) as alert:
+        with patch_daemon("_running_on_windows", return_value=True), patch_daemon("_qmt_install_root", return_value=None), \
+                patch_daemon("_notify_once_per", return_value=True) as alert:
             self.assertFalse(daemon._check_qmt_scheduled_restart(MagicMock()))
         self.assertIn("QMT_PATH", alert.call_args.args[3])
 

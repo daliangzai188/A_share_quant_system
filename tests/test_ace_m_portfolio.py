@@ -18,6 +18,7 @@ if "dotenv" not in sys.modules:
     sys.modules["dotenv"] = stub
 
 from scripts import trading_daemon as td
+from tests.daemon_testing import patch_daemon
 from src import portfolio_ace_m as PM
 from src import strategy_m as SM
 from src.equity_curve_stop import METHOD_ID, live_gate
@@ -157,7 +158,7 @@ class DaemonFamilyScopeTests(unittest.TestCase):
 
     def test_m_position_invisible_to_ace_guards(self) -> None:
         broker = [SimpleNamespace(ts_code="300001.SZ", volume=100, market_value=1000.0)]
-        with patch.object(td, "load_positions", lambda: list(self.positions)):
+        with patch_daemon("load_positions", lambda: list(self.positions)):
             self.assertTrue(td.has_open_local_position())
             self.assertTrue(td.has_open_local_position("M"))
             self.assertFalse(td.has_open_local_position("ACE"))
@@ -175,9 +176,9 @@ class DaemonFamilyScopeTests(unittest.TestCase):
         orders = pd.DataFrame([{"side": "BUY", "ts_code": "000001.SZ", "strategy_leg": "A", "signal_date": "20260918",
                                 "reference_price": 10.0, "round_lot_shares": 100, "estimated_shares": 100}])
         account = SimpleNamespace(total_asset=100_000.0, available_cash=100_000.0)
-        with patch.object(td, "_ace_gate_mode_for", lambda _d="": mode), \
-                patch.object(td, "_signal_day_amount", lambda *_a: 1e12), \
-                patch.object(td, "load_positions", lambda: []):
+        with patch_daemon("_ace_gate_mode_for", lambda _d="": mode), \
+                patch_daemon("_signal_day_amount", lambda *_a: 1e12), \
+                patch_daemon("load_positions", lambda: []):
             return td.resize_buy_orders_for_live_account(orders, account, {}, market_value, log_adjust=False,
                                                          m_market_value=m_value).iloc[0]
 
@@ -373,20 +374,20 @@ class MExecutionTests(unittest.TestCase):
     def _patches(self, adapter, *, now: datetime.datetime, decisions=None, positions=None):
         tz = td.BEIJING_TZ
         return [
-            patch.object(td, "M_EXEC_STATE_PATH", self.state_path),
-            patch.object(td, "load_json_config", lambda _p: self.config),
-            patch.object(td, "_qmt_get", lambda _cfg: adapter),
-            patch.object(td, "_m_signal_for_today", lambda _d: self.signal),
-            patch.object(td, "read_cached_combined_decisions",
+            patch_daemon("M_EXEC_STATE_PATH", self.state_path),
+            patch_daemon("load_json_config", lambda _p: self.config),
+            patch_daemon("_qmt_get", lambda _cfg: adapter),
+            patch_daemon("_m_signal_for_today", lambda _d: self.signal),
+            patch_daemon("read_cached_combined_decisions",
                          lambda: (decisions, None) if decisions is not None else None),
-            patch.object(td, "load_positions", lambda: list(positions or [])),
-            patch.object(td, "now_beijing", lambda: now.replace(tzinfo=tz)),
-            patch.object(td, "today_beijing", lambda: now.date()),
-            patch.object(td, "_ace_gate_mode_for", lambda _d="": PM.GATE_FULL),
-            patch.object(td, "_m_exit_date", lambda _d: "20260922"),
-            patch.object(td, "_notify", lambda *a, **k: None),
-            patch.object(td, "_record_live_buy", lambda **kw: self.recorded.append(kw)),
-            patch.object(td, "_m_start_pov_worker", lambda: None),
+            patch_daemon("load_positions", lambda: list(positions or [])),
+            patch_daemon("now_beijing", lambda: now.replace(tzinfo=tz)),
+            patch_daemon("today_beijing", lambda: now.date()),
+            patch_daemon("_ace_gate_mode_for", lambda _d="": PM.GATE_FULL),
+            patch_daemon("_m_exit_date", lambda _d: "20260922"),
+            patch_daemon("_notify", lambda *a, **k: None),
+            patch_daemon("_record_live_buy", lambda **kw: self.recorded.append(kw)),
+            patch_daemon("_m_start_pov_worker", lambda: None),
             patch("src.live_order_gateway.LiveOrderGateway.assert_real_order_allowed", lambda *a, **k: None),
         ]
 
@@ -440,7 +441,7 @@ class MExecutionTests(unittest.TestCase):
         for p in ps:
             p.start()
         try:
-            with patch.object(td, "_confirm_fill",
+            with patch_daemon("_confirm_fill",
                               lambda *a, **k: SimpleNamespace(filled_qty=a[2], avg_price=10.82, is_terminal=True)):
                 st = td._m_load_state()
                 td._m_pov_round(st, {}, self.config, "20260921")
@@ -475,7 +476,7 @@ class MExecutionTests(unittest.TestCase):
         for p in ps:
             p.start()
         try:
-            with patch.object(td, "_confirm_fill",
+            with patch_daemon("_confirm_fill",
                               lambda *a, **k: SimpleNamespace(filled_qty=a[2], avg_price=8.68, is_terminal=True)):
                 st = td._m_load_state()
                 td._m_pov_round(st, {}, self.config, "20260921")

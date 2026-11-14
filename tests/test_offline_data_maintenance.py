@@ -21,6 +21,7 @@ spec = importlib.util.spec_from_file_location('offline_test_daemon', ROOT / 'scr
 daemon = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = daemon
 spec.loader.exec_module(daemon)
+from tests.daemon_testing import patch_daemon
 
 
 class OneTickEvent:
@@ -160,44 +161,44 @@ class ProvenanceTests(unittest.TestCase):
 class DaemonIntegrationTests(unittest.TestCase):
     def setUp(self):
         self.log = Mock()
-        self.patch_log = patch.object(daemon, 'logger', return_value=self.log)
+        self.patch_log = patch_daemon('logger', return_value=self.log)
         self.patch_log.start()
         self.addCleanup(self.patch_log.stop)
 
     def test_offline_missing_ledger_never_queries_or_initializes_broker_baseline(self):
-        with patch.object(daemon, 'load_json_config', return_value={}), \
-             patch.object(daemon, 'load_positions', return_value=[]), \
-             patch.object(daemon, 'equity_ledger_requires_bootstrap', return_value=True), \
-             patch.object(daemon, '_qmt_get', side_effect=AssertionError('broker called')), \
-             patch.object(daemon, 'update_strategy_equity_ledger') as update:
+        with patch_daemon('load_json_config', return_value={}), \
+             patch_daemon('load_positions', return_value=[]), \
+             patch_daemon('equity_ledger_requires_bootstrap', return_value=True), \
+             patch_daemon('_qmt_get', side_effect=AssertionError('broker called')), \
+             patch_daemon('update_strategy_equity_ledger') as update:
             daemon.snapshot_realized_strategy_equity('20261009', allow_broker_bootstrap=False)
             update.assert_not_called()
 
     def test_duplicate_pipeline_uses_existing_single_worker_lock(self):
         worker = Mock()
         worker.is_alive.return_value = True
-        with patch.object(daemon, '_pipeline_thread', worker):
+        with patch_daemon('_pipeline_thread', worker):
             self.assertFalse(daemon._start_post_market_pipeline('20261009', offline=True))
 
     def test_offline_pipeline_completes_without_live_sizing_or_broker_calls(self):
-        with patch.object(daemon, 'snapshot_realized_strategy_equity') as ledger, \
-             patch.object(daemon, 'load_json_config', return_value={}), \
-             patch.object(daemon, 'prev_n_trade_days', return_value=datetime.date(2026,10,7)), \
-             patch.object(daemon, 'run_script', return_value=True) as run, \
-             patch.object(daemon, '_log_post_market_step_brief'), \
-             patch.object(daemon, '_alert_if_stop_decision_stale'), \
-             patch.object(daemon, '_log_close_pipeline_candidate_summary'), \
-             patch.object(daemon, '_date_in_scored', return_value=True), \
-             patch.object(daemon, '_has_signal_for_date', return_value=True), \
-             patch.object(daemon, '_checklist_data_quality_blocked', return_value=False), \
-             patch.object(daemon, '_equity_curve_stop_decision_fresh', return_value=(True,'20261012')), \
-             patch.object(daemon, 'report_signal_readiness_summary'), \
-             patch.object(daemon, 'report_next_trade_factor_readiness', return_value=True), \
-             patch.object(daemon, 'mark_post_market_done') as done, \
-             patch.object(daemon, '_qmt_get', side_effect=AssertionError('broker called')), \
-             patch.object(daemon, 'report_next_day_candidates', side_effect=AssertionError('live sizing called')), \
-             patch.object(daemon, '_log_decision_chain_summary', side_effect=AssertionError('live summary called')), \
-             patch.object(daemon, 'push_open_plan_notification', side_effect=AssertionError('live push called')):
+        with patch_daemon('snapshot_realized_strategy_equity') as ledger, \
+             patch_daemon('load_json_config', return_value={}), \
+             patch_daemon('prev_n_trade_days', return_value=datetime.date(2026,10,7)), \
+             patch_daemon('run_script', return_value=True) as run, \
+             patch_daemon('_log_post_market_step_brief'), \
+             patch_daemon('_alert_if_stop_decision_stale'), \
+             patch_daemon('_log_close_pipeline_candidate_summary'), \
+             patch_daemon('_date_in_scored', return_value=True), \
+             patch_daemon('_has_signal_for_date', return_value=True), \
+             patch_daemon('_checklist_data_quality_blocked', return_value=False), \
+             patch_daemon('_equity_curve_stop_decision_fresh', return_value=(True,'20261012')), \
+             patch_daemon('report_signal_readiness_summary'), \
+             patch_daemon('report_next_trade_factor_readiness', return_value=True), \
+             patch_daemon('mark_post_market_done') as done, \
+             patch_daemon('_qmt_get', side_effect=AssertionError('broker called')), \
+             patch_daemon('report_next_day_candidates', side_effect=AssertionError('live sizing called')), \
+             patch_daemon('_log_decision_chain_summary', side_effect=AssertionError('live summary called')), \
+             patch_daemon('push_open_plan_notification', side_effect=AssertionError('live push called')):
             self.assertTrue(daemon.job_post_market('20261009', offline=True))
             ledger.assert_called_once_with('20261009', allow_broker_bootstrap=False)
             self.assertIn('update_equity_curve_stop.py', [c.args[0] for c in run.call_args_list])
@@ -206,7 +207,7 @@ class DaemonIntegrationTests(unittest.TestCase):
     def test_stopped_retry_does_not_launch_another_pipeline(self):
         stop = threading.Event()
         stop.set()
-        with patch.object(daemon, 'job_post_market') as job:
+        with patch_daemon('job_post_market') as job:
             daemon._run_post_market_with_retry('20261009', offline=True, stop_event=stop)
             job.assert_not_called()
 

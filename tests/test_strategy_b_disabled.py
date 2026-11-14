@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 
 from scripts import trading_daemon
+from tests.daemon_testing import patch_daemon
 from scripts.generate_live_limit_pool_daily_ops import select_candidates
 from research.run_paper_ab_filtered_observation_window import is_b_strategy_enabled
 from src.ac_rules import reject_strategy_risk_mask
@@ -120,16 +121,16 @@ class StrategyBDisabledTests(unittest.TestCase):
             "auto_exit_disabled": True,
         }
         fake_log = MagicMock()
-        with patch.object(trading_daemon, "logger", return_value=fake_log), patch.object(
-            trading_daemon, "_abc_place_sell_order_direct"
-        ) as direct_sell, patch.object(trading_daemon, "mark_position_closed") as mark_closed:
+        with patch_daemon("logger", return_value=fake_log), patch_daemon(
+            "_abc_place_sell_order_direct"
+        ) as direct_sell, patch_daemon("mark_position_closed") as mark_closed:
             trading_daemon._do_sell(position, qmt_enabled=True)
             trading_daemon._do_sell(position, qmt_enabled=False)
 
         direct_sell.assert_not_called()
         mark_closed.assert_not_called()
 
-        with patch.object(trading_daemon, "_qmt_get") as qmt_get:
+        with patch_daemon("_qmt_get") as qmt_get:
             submitted = trading_daemon._watchdog_rescue_sell(position, fake_log)
         self.assertEqual(submitted, [])
         qmt_get.assert_not_called()

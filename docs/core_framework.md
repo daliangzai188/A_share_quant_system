@@ -430,6 +430,9 @@ A和E的新排序来自当前两年窗口内269个唯一排序变体搜索。虽
 `scripts/trading_daemon.py`同时承担调度、播报、状态恢复、组合计划、成交确认、持仓
 同步和推送。功能完整，但修改影响面较大，是当前主要维护风险。
 
+2026-11-14 起（项目优化第4步）已按职责纯搬移拆到 `src/daemon/` 下16个模块，只许高层导入低层
+（`tests/test_production_modules.py` 检查）；`scripts/trading_daemon.py` 只剩启动入口。交易行为不变。
+
 ### 4. 真实成交与容量证据不足
 
 集合竞价、分钟成交、盘口排队、极端涨跌停、资金规模变化和连续模拟盘尚未形成完整
@@ -853,7 +856,7 @@ ACDE复利最高的一条作为人工审核候选；全部条件`OR`只保留为
 | D策略 | `scripts/monitor_strategy_d_intraday.py`、`src/strategy_d_spec.py` |
 | E策略 | `config/strategy_e_r1_scenarios.json`、`src/strategy_e.py`、`scripts/run_strategy_e_signal.py` |
 | 组合裁决 | `src/combined_live_engine.py` |
-| 调度/恢复/播报 | `scripts/trading_daemon.py` |
+| 调度/恢复/播报 | `scripts/trading_daemon.py`（入口）、`src/daemon/` |
 | 下单与券商 | `src/live_order_gateway.py`、`src/broker_adapter.py`、`src/qmt_adapter.py` |
 | 持仓与执行审计 | `data/processed/positions.json`、`reports/execution_tracking/` |
 | 严格认证 | `research/certify_strict_asof_portfolio.py`、`reports/current_portfolio_alignment/` |

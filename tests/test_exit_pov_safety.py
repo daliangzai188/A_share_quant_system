@@ -28,6 +28,7 @@ if "dotenv" not in sys.modules:
     sys.modules["dotenv"] = dotenv_stub
 
 from scripts import trading_daemon
+from tests.daemon_testing import patch_daemon, read_daemon_source
 from src.broker_adapter import OrderFill, OrderRequest, OrderResult, QuoteSnapshot
 from src.live_order_gateway import LiveOrderGateway
 
@@ -639,28 +640,27 @@ class ExitExecutionSafetyStateTest(unittest.TestCase):
             )
 
         pending: list[tuple[dict, list[tuple[str, int]]]] = []
-        with patch.object(trading_daemon, "now_beijing", return_value=frozen_now), patch.object(
-            trading_daemon, "today_beijing", return_value=frozen_now
-        ), patch.object(trading_daemon, "is_trade_day", return_value=True), patch(
+        with patch_daemon("now_beijing", return_value=frozen_now), patch_daemon(
+            "today_beijing", return_value=frozen_now
+        ), patch_daemon("is_trade_day", return_value=True), patch(
             "src.live_order_gateway.LiveOrderGateway"
-        ) as gateway_cls, patch.object(
-            trading_daemon, "_qmt_get", return_value=_DirectAdapter()
-        ), patch.object(
-            trading_daemon, "_cancel_own_takeprofit_orders"
-        ), patch.object(
-            trading_daemon, "_broker_position_quantities", side_effect=broker_position_quantities
-        ), patch.object(
-            trading_daemon, "_safe_new_exit_order_quantity", side_effect=safe_quantity
-        ), patch.object(
-            trading_daemon, "_pick_sell_limit_price", return_value=(9.98, "价格笼子下限")
-        ), patch.object(
-            trading_daemon,
+        ) as gateway_cls, patch_daemon(
+            "_qmt_get", return_value=_DirectAdapter()
+        ), patch_daemon(
+            "_cancel_own_takeprofit_orders"
+        ), patch_daemon(
+            "_broker_position_quantities", side_effect=broker_position_quantities
+        ), patch_daemon(
+            "_safe_new_exit_order_quantity", side_effect=safe_quantity
+        ), patch_daemon(
+            "_pick_sell_limit_price", return_value=(9.98, "价格笼子下限")
+        ), patch_daemon(
             "_place_exit_order_with_intent",
             side_effect=place_without_confirm,
-        ), patch.object(
-            trading_daemon, "_confirm_fill"
-        ) as confirm_fill, patch.object(
-            trading_daemon, "_watchdog_pending", pending
+        ), patch_daemon(
+            "_confirm_fill"
+        ) as confirm_fill, patch_daemon(
+            "_watchdog_pending", pending
         ):
             gateway_cls.return_value = SimpleNamespace(
                 assert_real_order_allowed=lambda _confirm, *, side: None
@@ -703,16 +703,15 @@ class ExitExecutionSafetyStateTest(unittest.TestCase):
             def place_order(self, _request: object) -> SimpleNamespace:
                 return SimpleNamespace(accepted=True, order_id="QMT-100", message="OK")
 
-        with tempfile.TemporaryDirectory() as tmp_dir, patch.object(
-            trading_daemon,
+        with tempfile.TemporaryDirectory() as tmp_dir, patch_daemon(
             "EXIT_EXECUTION_STATE_FILE",
             Path(tmp_dir) / "exit_execution_state.json",
-        ), patch.object(
-            trading_daemon, "load_positions", return_value=[local_position]
-        ), patch.object(
-            trading_daemon, "now_beijing", return_value=frozen_now
-        ), patch.object(
-            trading_daemon, "today_beijing", return_value=frozen_now
+        ), patch_daemon(
+            "load_positions", return_value=[local_position]
+        ), patch_daemon(
+            "now_beijing", return_value=frozen_now
+        ), patch_daemon(
+            "today_beijing", return_value=frozen_now
         ):
             safe_qty = trading_daemon._safe_new_exit_order_quantity(
                 "002800.SZ",
@@ -780,7 +779,7 @@ class ExitExecutionSafetyStateTest(unittest.TestCase):
             ],
         }
 
-        with patch.object(trading_daemon, "_load_exit_execution_state", return_value=state):
+        with patch_daemon("_load_exit_execution_state", return_value=state):
             commitment = trading_daemon._exit_commitments_by_code(
                 "002800.SZ",
                 trade_date="20260716",
@@ -821,11 +820,11 @@ class ExitExecutionSafetyStateTest(unittest.TestCase):
             "order_remark": remark,
         }
 
-        with patch.object(
-            trading_daemon, "_exit_account_fingerprint", return_value=account_fingerprint
-        ), patch.object(
-            trading_daemon, "_load_exit_execution_state", return_value=state
-        ), patch.object(trading_daemon, "_save_exit_execution_state"):
+        with patch_daemon(
+            "_exit_account_fingerprint", return_value=account_fingerprint
+        ), patch_daemon(
+            "_load_exit_execution_state", return_value=state
+        ), patch_daemon("_save_exit_execution_state"):
             commitment = trading_daemon._exit_commitments_by_code(
                 "002800.SZ",
                 trade_date="20260716",
@@ -879,11 +878,11 @@ class ExitExecutionSafetyStateTest(unittest.TestCase):
             for order_id in ("QMT-CLAIMED", "QMT-FREE")
         ]
 
-        with patch.object(
-            trading_daemon, "_exit_account_fingerprint", return_value=account_fingerprint
-        ), patch.object(
-            trading_daemon, "_load_exit_execution_state", return_value=state
-        ), patch.object(trading_daemon, "_save_exit_execution_state"):
+        with patch_daemon(
+            "_exit_account_fingerprint", return_value=account_fingerprint
+        ), patch_daemon(
+            "_load_exit_execution_state", return_value=state
+        ), patch_daemon("_save_exit_execution_state"):
             commitment = trading_daemon._exit_commitments_by_code(
                 "002800.SZ",
                 trade_date="20260716",
@@ -922,11 +921,11 @@ class ExitExecutionSafetyStateTest(unittest.TestCase):
             ],
         }
 
-        with patch.object(
-            trading_daemon, "_exit_account_fingerprint", return_value=account_fingerprint
-        ), patch.object(
-            trading_daemon, "_load_exit_execution_state", return_value=state
-        ), patch.object(trading_daemon, "_save_exit_execution_state"):
+        with patch_daemon(
+            "_exit_account_fingerprint", return_value=account_fingerprint
+        ), patch_daemon(
+            "_load_exit_execution_state", return_value=state
+        ), patch_daemon("_save_exit_execution_state"):
             selected = trading_daemon._exit_intent_by_broker_order_id(
                 "REUSED-1001", business_date="20260716"
             )
@@ -959,11 +958,11 @@ class ExitExecutionSafetyStateTest(unittest.TestCase):
             ],
         }
 
-        with patch.object(
-            trading_daemon, "_exit_account_fingerprint", return_value=account_fingerprint
-        ), patch.object(
-            trading_daemon, "_load_exit_execution_state", return_value=state
-        ), patch.object(trading_daemon, "_save_exit_execution_state"):
+        with patch_daemon(
+            "_exit_account_fingerprint", return_value=account_fingerprint
+        ), patch_daemon(
+            "_load_exit_execution_state", return_value=state
+        ), patch_daemon("_save_exit_execution_state"):
             trading_daemon._update_exit_order_intent(
                 "RESOLVED-1",
                 status="SUBMITTED",
@@ -1006,11 +1005,11 @@ class ExitExecutionSafetyStateTest(unittest.TestCase):
             "order_remark": "ABC平仓-延迟成交回报",
         }
 
-        with patch.object(
-            trading_daemon, "_exit_account_fingerprint", return_value=account_fingerprint
-        ), patch.object(
-            trading_daemon, "_load_exit_execution_state", return_value=state
-        ), patch.object(trading_daemon, "_save_exit_execution_state"):
+        with patch_daemon(
+            "_exit_account_fingerprint", return_value=account_fingerprint
+        ), patch_daemon(
+            "_load_exit_execution_state", return_value=state
+        ), patch_daemon("_save_exit_execution_state"):
             commitment = trading_daemon._exit_commitments_by_code(
                 "002800.SZ",
                 trade_date="20260716",
@@ -1036,9 +1035,9 @@ class ExitExecutionSafetyStateTest(unittest.TestCase):
         )
         adapter = SimpleNamespace(place_order=lambda _request: self.fail("不应调用券商下单"))
 
-        with patch.object(trading_daemon, "now_beijing", return_value=frozen_now), patch.object(
-            trading_daemon, "is_trade_day", return_value=True
-        ), patch.object(trading_daemon, "_prepare_exit_order_intent") as prepare:
+        with patch_daemon("now_beijing", return_value=frozen_now), patch_daemon(
+            "is_trade_day", return_value=True
+        ), patch_daemon("_prepare_exit_order_intent") as prepare:
             with self.assertRaisesRegex(RuntimeError, "时间门禁"):
                 trading_daemon._place_exit_order_with_intent(
                     adapter,
@@ -1061,13 +1060,12 @@ class ExitExecutionSafetyStateTest(unittest.TestCase):
         )
         adapter = SimpleNamespace(place_order=lambda _request: self.fail("不应调用券商下单"))
 
-        with patch.object(
-            trading_daemon,
+        with patch_daemon(
             "_exit_order_submission_block_reason",
             side_effect=["", "14:56:20已进入交接窗"],
-        ), patch.object(
-            trading_daemon, "_prepare_exit_order_intent", return_value="PREPARED-TOKEN"
-        ), patch.object(trading_daemon, "_update_exit_order_intent") as update_intent:
+        ), patch_daemon(
+            "_prepare_exit_order_intent", return_value="PREPARED-TOKEN"
+        ), patch_daemon("_update_exit_order_intent") as update_intent:
             with self.assertRaisesRegex(RuntimeError, "发送前被时间门禁阻断"):
                 trading_daemon._place_exit_order_with_intent(
                     adapter,
@@ -1105,12 +1103,12 @@ class ExitExecutionSafetyStateTest(unittest.TestCase):
             "non_target_floor": 0,
         }
 
-        with patch.object(
-            trading_daemon, "_ensure_exit_batch", return_value=batch
-        ), patch.object(
-            trading_daemon, "_exit_commitments_by_code"
-        ) as commitments, patch.object(
-            trading_daemon, "_alert_exit_safety_once"
+        with patch_daemon(
+            "_ensure_exit_batch", return_value=batch
+        ), patch_daemon(
+            "_exit_commitments_by_code"
+        ) as commitments, patch_daemon(
+            "_alert_exit_safety_once"
         ) as alert:
             safe_qty = trading_daemon._safe_new_exit_order_quantity(
                 "002800.SZ",
@@ -1147,14 +1145,14 @@ class ExitExecutionSafetyStateTest(unittest.TestCase):
     def test_first_batch_creation_blocks_broker_and_local_ownership_mismatch(self) -> None:
         empty_state = trading_daemon._empty_exit_execution_state()
 
-        with patch.object(
-            trading_daemon, "_load_exit_execution_state", return_value=empty_state
-        ), patch.object(
-            trading_daemon, "_local_exit_quantities", return_value=(100_000, 100_000)
-        ), patch.object(
-            trading_daemon, "_save_exit_execution_state"
-        ) as save_state, patch.object(
-            trading_daemon, "_alert_exit_safety_once"
+        with patch_daemon(
+            "_load_exit_execution_state", return_value=empty_state
+        ), patch_daemon(
+            "_local_exit_quantities", return_value=(100_000, 100_000)
+        ), patch_daemon(
+            "_save_exit_execution_state"
+        ) as save_state, patch_daemon(
+            "_alert_exit_safety_once"
         ) as alert:
             batch = trading_daemon._ensure_exit_batch(
                 "002800.SZ",
@@ -1170,14 +1168,14 @@ class ExitExecutionSafetyStateTest(unittest.TestCase):
     def test_d_relay_can_build_exit_batch_before_default_due_date_only_with_explicit_target(self) -> None:
         empty_state = trading_daemon._empty_exit_execution_state()
 
-        with patch.object(
-            trading_daemon, "_load_exit_execution_state", return_value=empty_state
-        ), patch.object(
-            trading_daemon, "_local_exit_quantities", return_value=(0, 100_000)
-        ), patch.object(
-            trading_daemon, "_save_exit_execution_state"
-        ), patch.object(
-            trading_daemon, "_exit_account_fingerprint", return_value="TEST-ACCOUNT"
+        with patch_daemon(
+            "_load_exit_execution_state", return_value=empty_state
+        ), patch_daemon(
+            "_local_exit_quantities", return_value=(0, 100_000)
+        ), patch_daemon(
+            "_save_exit_execution_state"
+        ), patch_daemon(
+            "_exit_account_fingerprint", return_value="TEST-ACCOUNT"
         ):
             blocked_without_override = trading_daemon._ensure_exit_batch(
                 "002800.SZ",
@@ -1214,24 +1212,23 @@ class ExitWatchdogLifecycleTest(unittest.TestCase):
         )
         fill = SimpleNamespace(filled_qty=0, avg_price=0.0)
 
-        with patch.object(trading_daemon, "now_beijing", return_value=frozen_now), patch.object(
-            trading_daemon, "is_trade_day", return_value=True
-        ), patch.object(trading_daemon, "load_positions", return_value=[]), patch.object(
-            trading_daemon,
+        with patch_daemon("now_beijing", return_value=frozen_now), patch_daemon(
+            "is_trade_day", return_value=True
+        ), patch_daemon("load_positions", return_value=[]), patch_daemon(
             "load_json_config",
             return_value={
                 "broker_adapter_enabled": True,
                 "qmt_enabled": True,
                 "broker": {"enabled": True},
             },
-        ), patch.object(trading_daemon, "_confirm_fill", return_value=fill), patch.object(
-            trading_daemon, "_qmt_get", return_value=SimpleNamespace()
-        ), patch.object(
-            trading_daemon, "_broker_position_quantities", return_value=(0, 0)
-        ), patch.object(trading_daemon, "mark_position_closed") as mark_closed, patch.object(
-            trading_daemon, "_watchdog_reconcile_after_close"
-        ) as reconcile, patch.object(
-            trading_daemon, "_watchdog_pending", [(position, [("QMT-1", 1_000)])]
+        ), patch_daemon("_confirm_fill", return_value=fill), patch_daemon(
+            "_qmt_get", return_value=SimpleNamespace()
+        ), patch_daemon(
+            "_broker_position_quantities", return_value=(0, 0)
+        ), patch_daemon("mark_position_closed") as mark_closed, patch_daemon(
+            "_watchdog_reconcile_after_close"
+        ) as reconcile, patch_daemon(
+            "_watchdog_pending", [(position, [("QMT-1", 1_000)])]
         ), patch.object(
             trading_daemon.time, "sleep", side_effect=_StopWatchdog
         ):
@@ -1269,16 +1266,15 @@ class ExitWatchdogLifecycleTest(unittest.TestCase):
             acquire=lambda timeout=None: False,
             release=lambda: None,
         )
-        with patch.object(trading_daemon, "now_beijing", return_value=frozen_now), patch.object(
-            trading_daemon, "is_trade_day", return_value=True
-        ), patch.object(trading_daemon, "load_positions", return_value=[due]), patch.object(
-            trading_daemon, "load_json_config", return_value={"broker": {}}
-        ), patch.object(
-            trading_daemon,
+        with patch_daemon("now_beijing", return_value=frozen_now), patch_daemon(
+            "is_trade_day", return_value=True
+        ), patch_daemon("load_positions", return_value=[due]), patch_daemon(
+            "load_json_config", return_value={"broker": {}}
+        ), patch_daemon(
             "_cancel_active_close_orders_for_auction",
             side_effect=[False, True],
-        ) as handoff, patch.object(
-            trading_daemon, "_qmt_lock", busy_qmt_lock
+        ) as handoff, patch_daemon(
+            "_qmt_lock", busy_qmt_lock
         ), patch.object(
             trading_daemon.time, "sleep", side_effect=stop_after_two_loops
         ):
@@ -1292,18 +1288,18 @@ class ExitWatchdogLifecycleTest(unittest.TestCase):
             2026, 7, 16, 14, 58, 10, tzinfo=trading_daemon.BEIJING_TZ
         )
 
-        with patch.object(
-            trading_daemon, "now_beijing", return_value=frozen_now
-        ), patch.object(
-            trading_daemon, "today_beijing", return_value=frozen_now
-        ), patch.object(
-            trading_daemon, "is_trade_day", return_value=True
-        ), patch.object(
-            trading_daemon, "load_positions", return_value=[]
-        ), patch.object(
-            trading_daemon, "logger", return_value=_NoopLog()
-        ), patch.object(
-            trading_daemon, "_notify"
+        with patch_daemon(
+            "now_beijing", return_value=frozen_now
+        ), patch_daemon(
+            "today_beijing", return_value=frozen_now
+        ), patch_daemon(
+            "is_trade_day", return_value=True
+        ), patch_daemon(
+            "load_positions", return_value=[]
+        ), patch_daemon(
+            "logger", return_value=_NoopLog()
+        ), patch_daemon(
+            "_notify"
         ) as notify, patch.object(
             trading_daemon.time, "sleep", side_effect=_StopWatchdog
         ):
@@ -1330,8 +1326,8 @@ class LocalExitAccountingTest(unittest.TestCase):
     def test_same_broker_fill_is_applied_only_once(self) -> None:
         store = _MemoryPositionStore([self._open_position(shares=1_050)])
 
-        with patch.object(trading_daemon, "load_positions", side_effect=store.load), patch.object(
-            trading_daemon, "save_positions", side_effect=store.save
+        with patch_daemon("load_positions", side_effect=store.load), patch_daemon(
+            "save_positions", side_effect=store.save
         ):
             first = trading_daemon._apply_known_exit_fill(
                 "LOCAL-1",
@@ -1370,8 +1366,8 @@ class LocalExitAccountingTest(unittest.TestCase):
         )
         store = _MemoryPositionStore([position])
 
-        with patch.object(trading_daemon, "load_positions", side_effect=store.load), patch.object(
-            trading_daemon, "save_positions", side_effect=store.save
+        with patch_daemon("load_positions", side_effect=store.load), patch_daemon(
+            "save_positions", side_effect=store.save
         ):
             applied = trading_daemon._apply_known_exit_fill(
                 "LOCAL-1",
@@ -1406,8 +1402,8 @@ class LocalExitAccountingTest(unittest.TestCase):
         }
         store = _MemoryPositionStore([position])
 
-        with patch.object(trading_daemon, "load_positions", side_effect=store.load), patch.object(
-            trading_daemon, "save_positions", side_effect=store.save
+        with patch_daemon("load_positions", side_effect=store.load), patch_daemon(
+            "save_positions", side_effect=store.save
         ):
             applied = trading_daemon._apply_known_exit_fill(
                 "LOCAL-1",
@@ -1431,9 +1427,9 @@ class LocalExitAccountingTest(unittest.TestCase):
             2026, 7, 16, 15, 0, 31, tzinfo=trading_daemon.BEIJING_TZ
         )
 
-        with patch.object(trading_daemon, "load_positions", side_effect=store.load), patch.object(
-            trading_daemon, "save_positions", side_effect=store.save
-        ), patch.object(trading_daemon, "today_beijing", return_value=frozen_now):
+        with patch_daemon("load_positions", side_effect=store.load), patch_daemon(
+            "save_positions", side_effect=store.save
+        ), patch_daemon("today_beijing", return_value=frozen_now):
             trading_daemon.reduce_position_shares(
                 "LOCAL-1", 600, fill_price=10.0, fill_date="20260716"
             )
@@ -1456,12 +1452,12 @@ class LocalExitAccountingTest(unittest.TestCase):
             2026, 7, 16, 15, 0, 31, tzinfo=trading_daemon.BEIJING_TZ
         )
 
-        with patch.object(trading_daemon, "load_positions", side_effect=store.load), patch.object(
-            trading_daemon, "save_positions", side_effect=store.save
-        ), patch.object(trading_daemon, "_qmt_get", return_value=adapter), patch.object(
-            trading_daemon, "today_beijing", return_value=frozen_now
-        ), patch.object(trading_daemon, "time", wraps=trading_daemon.time) as time_module, patch.object(
-            trading_daemon, "_notify"
+        with patch_daemon("load_positions", side_effect=store.load), patch_daemon(
+            "save_positions", side_effect=store.save
+        ), patch_daemon("_qmt_get", return_value=adapter), patch_daemon(
+            "today_beijing", return_value=frozen_now
+        ), patch_daemon("time", wraps=trading_daemon.time) as time_module, patch_daemon(
+            "_notify"
         ):
             time_module.sleep.return_value = None
             trading_daemon._watchdog_reconcile_after_close({}, _NoopLog())
@@ -1512,19 +1508,19 @@ class LocalExitAccountingTest(unittest.TestCase):
             ],
         }
 
-        with patch.object(trading_daemon, "load_positions", side_effect=store.load), patch.object(
-            trading_daemon, "save_positions", side_effect=store.save
-        ), patch.object(trading_daemon, "_qmt_get", return_value=adapter), patch.object(
-            trading_daemon, "today_beijing", return_value=frozen_now
-        ), patch.object(
-            trading_daemon, "_exit_account_fingerprint", return_value=account_fingerprint
-        ), patch.object(
-            trading_daemon, "_load_exit_execution_state", return_value=state
-        ), patch.object(
-            trading_daemon, "_save_exit_execution_state"
-        ), patch.object(
-            trading_daemon, "time", wraps=trading_daemon.time
-        ) as time_module, patch.object(trading_daemon, "_notify"):
+        with patch_daemon("load_positions", side_effect=store.load), patch_daemon(
+            "save_positions", side_effect=store.save
+        ), patch_daemon("_qmt_get", return_value=adapter), patch_daemon(
+            "today_beijing", return_value=frozen_now
+        ), patch_daemon(
+            "_exit_account_fingerprint", return_value=account_fingerprint
+        ), patch_daemon(
+            "_load_exit_execution_state", return_value=state
+        ), patch_daemon(
+            "_save_exit_execution_state"
+        ), patch_daemon(
+            "time", wraps=trading_daemon.time
+        ) as time_module, patch_daemon("_notify"):
             time_module.sleep.return_value = None
             trading_daemon._watchdog_reconcile_after_close({}, _NoopLog())
 
@@ -1544,12 +1540,12 @@ class LocalExitAccountingTest(unittest.TestCase):
             2026, 7, 16, 15, 0, 31, tzinfo=trading_daemon.BEIJING_TZ
         )
 
-        with patch.object(trading_daemon, "load_positions", side_effect=store.load), patch.object(
-            trading_daemon, "save_positions", side_effect=store.save
-        ), patch.object(trading_daemon, "_qmt_get", return_value=adapter), patch.object(
-            trading_daemon, "today_beijing", return_value=frozen_now
-        ), patch.object(trading_daemon, "time", wraps=trading_daemon.time) as time_module, patch.object(
-            trading_daemon, "_notify"
+        with patch_daemon("load_positions", side_effect=store.load), patch_daemon(
+            "save_positions", side_effect=store.save
+        ), patch_daemon("_qmt_get", return_value=adapter), patch_daemon(
+            "today_beijing", return_value=frozen_now
+        ), patch_daemon("time", wraps=trading_daemon.time) as time_module, patch_daemon(
+            "_notify"
         ):
             time_module.sleep.return_value = None
             trading_daemon._watchdog_reconcile_after_close({}, _NoopLog())
@@ -1601,9 +1597,9 @@ class EntryExitCapacityGateTest(unittest.TestCase):
     def test_large_entry_is_scaled_to_half_percent_of_signal_day_amount(self) -> None:
         account = SimpleNamespace(total_asset=12_500_000, available_cash=12_500_000)
         quote_map = {"002800.SZ": SimpleNamespace(last_price=10.0)}
-        with patch.object(trading_daemon, "load_json_config", return_value=self._config()), patch.object(
-            trading_daemon, "_signal_day_amount", return_value=100_000_000.0
-        ), patch.object(trading_daemon, "load_positions", return_value=[]):
+        with patch_daemon("load_json_config", return_value=self._config()), patch_daemon(
+            "_signal_day_amount", return_value=100_000_000.0
+        ), patch_daemon("load_positions", return_value=[]):
             result = trading_daemon.resize_buy_orders_for_live_account(
                 self._planned_order(), account, quote_map, 0.0
             )
@@ -1629,9 +1625,9 @@ class EntryExitCapacityGateTest(unittest.TestCase):
     def test_missing_signal_amount_fails_closed(self) -> None:
         account = SimpleNamespace(total_asset=12_500_000, available_cash=12_500_000)
         quote_map = {"002800.SZ": SimpleNamespace(last_price=10.0)}
-        with patch.object(trading_daemon, "load_json_config", return_value=self._config()), patch.object(
-            trading_daemon, "_signal_day_amount", return_value=0.0
-        ), patch.object(trading_daemon, "load_positions", return_value=[]):
+        with patch_daemon("load_json_config", return_value=self._config()), patch_daemon(
+            "_signal_day_amount", return_value=0.0
+        ), patch_daemon("load_positions", return_value=[]):
             result = trading_daemon.resize_buy_orders_for_live_account(
                 self._planned_order(), account, quote_map, 0.0
             )
@@ -1646,10 +1642,10 @@ class EntryExitCapacityGateTest(unittest.TestCase):
         quote_map = {"002800.SZ": SimpleNamespace(last_price=10.0)}
         held = [{"ts_code": "002800.SZ", "status": "open", "shares": 10_000,
                  "order_id": "x", "buy_date": "20260715"}]  # 昨日买入=既有持仓
-        with patch.object(trading_daemon, "load_json_config", return_value=self._config()), patch.object(
-            trading_daemon, "_signal_day_amount", return_value=100_000_000.0
-        ), patch.object(trading_daemon, "load_positions", return_value=held), patch.object(
-            trading_daemon, "_notify"
+        with patch_daemon("load_json_config", return_value=self._config()), patch_daemon(
+            "_signal_day_amount", return_value=100_000_000.0
+        ), patch_daemon("load_positions", return_value=held), patch_daemon(
+            "_notify"
         ):
             result = trading_daemon.resize_buy_orders_for_live_account(
                 self._planned_order(), account, quote_map, 0.0
@@ -1667,10 +1663,10 @@ class EntryExitCapacityGateTest(unittest.TestCase):
         today_s = trading_daemon.today_beijing().strftime("%Y%m%d")
         held = [{"ts_code": "002800.SZ", "status": "open", "shares": 700,
                  "order_id": "pov-auction", "buy_date": today_s}]  # 今日竞价段拆单已成交
-        with patch.object(trading_daemon, "load_json_config", return_value=self._config()), patch.object(
-            trading_daemon, "_signal_day_amount", return_value=100_000_000.0
-        ), patch.object(trading_daemon, "load_positions", return_value=held), patch.object(
-            trading_daemon, "_notify"
+        with patch_daemon("load_json_config", return_value=self._config()), patch_daemon(
+            "_signal_day_amount", return_value=100_000_000.0
+        ), patch_daemon("load_positions", return_value=held), patch_daemon(
+            "_notify"
         ):
             result = trading_daemon.resize_buy_orders_for_live_account(
                 self._planned_order(), account, quote_map, 0.0
@@ -1694,7 +1690,7 @@ class EntryExitCapacityGateTest(unittest.TestCase):
         broker_positions = [SimpleNamespace(
             ts_code="600000.SH", volume=80_000, market_value=800_000.0,
         )]
-        with patch.object(trading_daemon, "load_positions", return_value=held):
+        with patch_daemon("load_positions", return_value=held):
             self.assertEqual(
                 trading_daemon._strategy_only_market_value(
                     broker_positions, exclude_due_today=True
@@ -1708,12 +1704,12 @@ class EntryExitCapacityGateTest(unittest.TestCase):
     def test_normal_empty_account_uses_82_5_pct_target(self) -> None:
         account = SimpleNamespace(total_asset=1_000_000.0, available_cash=1_000_000.0)
         quote_map = {"002800.SZ": SimpleNamespace(last_price=10.0)}
-        with patch.object(
-            trading_daemon, "load_positions", return_value=[]
-        ), patch.object(
-            trading_daemon, "load_json_config", return_value=self._config()
-        ), patch.object(
-            trading_daemon, "_signal_day_amount", return_value=200_000_000.0
+        with patch_daemon(
+            "load_positions", return_value=[]
+        ), patch_daemon(
+            "load_json_config", return_value=self._config()
+        ), patch_daemon(
+            "_signal_day_amount", return_value=200_000_000.0
         ):
             result = trading_daemon.resize_buy_orders_for_live_account(
                 self._planned_order(),
@@ -1732,12 +1728,12 @@ class EntryExitCapacityGateTest(unittest.TestCase):
         """总资产100万但可用现金不足80万时，不生成明显偏小的开仓种子单。"""
         account = SimpleNamespace(total_asset=1_000_000.0, available_cash=790_000.0)
         quote_map = {"002800.SZ": SimpleNamespace(last_price=10.0)}
-        with patch.object(
-            trading_daemon, "load_positions", return_value=[]
-        ), patch.object(
-            trading_daemon, "load_json_config", return_value=self._config()
-        ), patch.object(
-            trading_daemon, "_signal_day_amount", return_value=200_000_000.0
+        with patch_daemon(
+            "load_positions", return_value=[]
+        ), patch_daemon(
+            "load_json_config", return_value=self._config()
+        ), patch_daemon(
+            "_signal_day_amount", return_value=200_000_000.0
         ):
             result = trading_daemon.resize_buy_orders_for_live_account(
                 self._planned_order(), account, quote_map, 0.0
@@ -1754,12 +1750,12 @@ class EntryExitCapacityGateTest(unittest.TestCase):
         config["live_trade"]["max_total_position_pct"] = 0.90
         config["live_trade"]["max_position_pct"] = 0.95
         account = SimpleNamespace(total_asset=1_000_000.0, available_cash=1_000_000.0)
-        with patch.object(
-            trading_daemon, "load_positions", return_value=[]
-        ), patch.object(
-            trading_daemon, "load_json_config", return_value=config
-        ), patch.object(
-            trading_daemon, "_signal_day_amount", return_value=200_000_000.0
+        with patch_daemon(
+            "load_positions", return_value=[]
+        ), patch_daemon(
+            "load_json_config", return_value=config
+        ), patch_daemon(
+            "_signal_day_amount", return_value=200_000_000.0
         ):
             result = trading_daemon.resize_buy_orders_for_live_account(
                 self._planned_order(), account,
@@ -1795,8 +1791,7 @@ class EntryExitCapacityGateTest(unittest.TestCase):
                 "order_id": "must-count",
                 **extra_fields,
             }
-            with self.subTest(extra_fields=extra_fields), patch.object(
-                trading_daemon,
+            with self.subTest(extra_fields=extra_fields), patch_daemon(
                 "load_positions",
                 return_value=[held],
             ):
@@ -1822,7 +1817,7 @@ class EntryExitCapacityGateTest(unittest.TestCase):
                 market_value=1_000.0,
             ),
         ]
-        with patch.object(trading_daemon, "load_positions", return_value=[]):
+        with patch_daemon("load_positions", return_value=[]):
             self.assertFalse(
                 trading_daemon._broker_has_preexisting_strategy_position(external_positions)
             )
@@ -1833,7 +1828,7 @@ class EntryExitCapacityGateTest(unittest.TestCase):
             "ts_code": "002800.SZ", "status": "open", "buy_date": today_str,
         }]
         broker = [SimpleNamespace(ts_code="002800.SZ", volume=500, market_value=5_000.0)]
-        with patch.object(trading_daemon, "load_positions", return_value=local):
+        with patch_daemon("load_positions", return_value=local):
             self.assertFalse(
                 trading_daemon._broker_has_preexisting_strategy_position(broker)
             )
@@ -1916,7 +1911,7 @@ class EntryActualAmountRebalanceTest(unittest.TestCase):
         broker_positions = [SimpleNamespace(
             ts_code="002800.SZ", volume=1_200, cost_price=10.0
         )]
-        with patch.object(trading_daemon, "_today_local_entry_cost", return_value=0.0):
+        with patch_daemon("_today_local_entry_cost", return_value=0.0):
             actual = trading_daemon._confirmed_entry_actual_amount(
                 item, broker_positions
             )
@@ -1983,18 +1978,18 @@ class EntryActualAmountRebalanceTest(unittest.TestCase):
             is_terminal=True,
             is_filled=True,
         )
-        with patch.object(trading_daemon, "_qmt_get", return_value=adapter), patch.object(
-            trading_daemon, "_has_pending_buy_for_code", return_value=False
-        ), patch.object(
-            trading_daemon, "_today_local_entry_cost", return_value=770_000.0
-        ), patch.object(
-            trading_daemon, "_confirm_fill", return_value=fill
-        ), patch.object(
-            trading_daemon, "_pov_log_slice"
-        ), patch.object(
-            trading_daemon, "_track_execution"
-        ), patch.object(
-            trading_daemon, "st_open_forbidden", return_value=False
+        with patch_daemon("_qmt_get", return_value=adapter), patch_daemon(
+            "_has_pending_buy_for_code", return_value=False
+        ), patch_daemon(
+            "_today_local_entry_cost", return_value=770_000.0
+        ), patch_daemon(
+            "_confirm_fill", return_value=fill
+        ), patch_daemon(
+            "_pov_log_slice"
+        ), patch_daemon(
+            "_track_execution"
+        ), patch_daemon(
+            "st_open_forbidden", return_value=False
         ):
             trading_daemon._pov_execute_slice(
                 item, {}, 0.10, 0.18, 0.02, "20260803", _NoopLog(),
@@ -2036,24 +2031,24 @@ class PremarketBuyHandoffTest(unittest.TestCase):
 
     def test_0926_partial_nonterminal_order_keeps_queue_until_open(self) -> None:
         pending = self._pending_order()
-        with patch.object(
-            trading_daemon, "load_pending_buys", return_value=[pending]
-        ), patch.object(
-            trading_daemon, "load_json_config", return_value={"broker": {}}
-        ), patch.object(
-            trading_daemon, "now_beijing",
+        with patch_daemon(
+            "load_pending_buys", return_value=[pending]
+        ), patch_daemon(
+            "load_json_config", return_value={"broker": {}}
+        ), patch_daemon(
+            "now_beijing",
             return_value=datetime.datetime(2026, 8, 3, 9, 26, tzinfo=trading_daemon.BEIJING_TZ),
-        ), patch.object(
-            trading_daemon, "_confirm_fill", return_value=self._fill(qty=5_000, terminal=False)
-        ), patch.object(
-            trading_daemon, "_try_cancel_order"
-        ) as cancel_mock, patch.object(
-            trading_daemon, "record_buy"
-        ) as record_mock, patch.object(
-            trading_daemon, "_replace_pending_buy_order"
-        ) as replace_mock, patch.object(
-            trading_daemon, "_start_premarket_buy_monitor"
-        ), patch.object(trading_daemon, "_notify"):
+        ), patch_daemon(
+            "_confirm_fill", return_value=self._fill(qty=5_000, terminal=False)
+        ), patch_daemon(
+            "_try_cancel_order"
+        ) as cancel_mock, patch_daemon(
+            "record_buy"
+        ) as record_mock, patch_daemon(
+            "_replace_pending_buy_order"
+        ) as replace_mock, patch_daemon(
+            "_start_premarket_buy_monitor"
+        ), patch_daemon("_notify"):
             trading_daemon.confirm_pending_premarket_buys("09:26")
 
         cancel_mock.assert_not_called()
@@ -2064,19 +2059,19 @@ class PremarketBuyHandoffTest(unittest.TestCase):
         pending = self._pending_order()
         first = self._fill(qty=5_000, terminal=False)
         terminal = self._fill(qty=5_000, terminal=True)
-        with patch.object(
-            trading_daemon, "load_pending_buys", return_value=[pending]
-        ), patch.object(
-            trading_daemon, "load_json_config", return_value={"broker": {}}
-        ), patch.object(
-            trading_daemon, "_confirm_fill", side_effect=[first, terminal]
-        ) as confirm_mock, patch.object(
-            trading_daemon, "_try_cancel_order"
-        ) as cancel_mock, patch.object(
-            trading_daemon, "record_buy"
-        ) as record_mock, patch.object(
-            trading_daemon, "_replace_pending_buy_order"
-        ) as replace_mock, patch.object(trading_daemon, "_notify"):
+        with patch_daemon(
+            "load_pending_buys", return_value=[pending]
+        ), patch_daemon(
+            "load_json_config", return_value={"broker": {}}
+        ), patch_daemon(
+            "_confirm_fill", side_effect=[first, terminal]
+        ) as confirm_mock, patch_daemon(
+            "_try_cancel_order"
+        ) as cancel_mock, patch_daemon(
+            "record_buy"
+        ) as record_mock, patch_daemon(
+            "_replace_pending_buy_order"
+        ) as replace_mock, patch_daemon("_notify"):
             trading_daemon.confirm_pending_premarket_buys("09:30")
 
         self.assertEqual(confirm_mock.call_count, 2)
@@ -2249,8 +2244,8 @@ class LargeExitForceEligibilityTest(unittest.TestCase):
             "buy_price": 10.0,
         }
 
-        with patch.object(
-            trading_daemon, "_signal_day_amount", return_value=2_000_000_000.0
+        with patch_daemon(
+            "_signal_day_amount", return_value=2_000_000_000.0
         ) as signal_amount:
             eligible, reference_amount, signal_day_amount = (
                 trading_daemon._large_exit_force_eligible(
@@ -2273,8 +2268,8 @@ class LargeExitForceEligibilityTest(unittest.TestCase):
             "buy_price": 13.66,
         }
 
-        with patch.object(
-            trading_daemon, "_signal_day_amount", return_value=2_000_000_000.0
+        with patch_daemon(
+            "_signal_day_amount", return_value=2_000_000_000.0
         ):
             eligible, reference_amount, signal_day_amount = (
                 trading_daemon._large_exit_force_eligible(
@@ -2295,7 +2290,7 @@ class LargeExitForceEligibilityTest(unittest.TestCase):
             "buy_price": 10.0,
         }
 
-        with patch.object(trading_daemon, "_signal_day_amount", return_value=0.0):
+        with patch_daemon("_signal_day_amount", return_value=0.0):
             eligible, reference_amount, signal_day_amount = (
                 trading_daemon._large_exit_force_eligible(
                     position, last_price=10.0, live_cfg=self._config()
@@ -2400,16 +2395,15 @@ class StrategyDConditionalExitTest(unittest.TestCase):
             if main_sleep_count >= 2:
                 raise _StopWatchdog()
 
-        with patch.object(trading_daemon, "now_beijing", return_value=frozen_now), \
-             patch.object(trading_daemon, "today_beijing", return_value=frozen_now.date()), \
-             patch.object(trading_daemon, "is_trade_day", return_value=True), \
-             patch.object(trading_daemon, "load_json_config", return_value=config), \
-             patch.object(
-                 trading_daemon,
+        with patch_daemon("now_beijing", return_value=frozen_now), \
+             patch_daemon("today_beijing", return_value=frozen_now.date()), \
+             patch_daemon("is_trade_day", return_value=True), \
+             patch_daemon("load_json_config", return_value=config), \
+             patch_daemon(
                  "load_positions",
                  side_effect=[[], [recovered_due]],
              ) as load_positions, \
-             patch.object(trading_daemon, "_qmt_get", return_value=adapter), \
+             patch_daemon("_qmt_get", return_value=adapter), \
              patch.object(
                  trading_daemon.time,
                  "sleep",
@@ -2437,10 +2431,10 @@ class StrategyDConditionalExitTest(unittest.TestCase):
             "live_trade": {"exit_pov_handoff_time": "14:52:00"}
         }
 
-        with patch.object(trading_daemon, "now_beijing", return_value=frozen_now), \
-             patch.object(trading_daemon, "today_beijing", return_value=frozen_now.date()), \
-             patch.object(trading_daemon, "load_json_config", return_value=config), \
-             patch.object(trading_daemon, "_qmt_get") as qmt_get:
+        with patch_daemon("now_beijing", return_value=frozen_now), \
+             patch_daemon("today_beijing", return_value=frozen_now.date()), \
+             patch_daemon("load_json_config", return_value=config), \
+             patch_daemon("_qmt_get") as qmt_get:
             trading_daemon._exit_pov_slice(
                 plan,
                 {},
@@ -2509,10 +2503,10 @@ class StrategyDConditionalExitTest(unittest.TestCase):
             "broker": {"enabled": True},
         }
 
-        with patch.object(
-            trading_daemon, "load_json_config", return_value=config
-        ), patch.object(
-            trading_daemon, "_abc_place_sell_order_direct", return_value=True
+        with patch_daemon(
+            "load_json_config", return_value=config
+        ), patch_daemon(
+            "_abc_place_sell_order_direct", return_value=True
         ) as direct_sell:
             trading_daemon._do_sell(position, qmt_enabled=True)
 
@@ -2612,26 +2606,24 @@ class LargeExitFirstSliceTest(unittest.TestCase):
             self.assertEqual(local_order_id, "LOCAL-1")
             return adapter.place_order(request), "INTENT-FORCE-1415"
 
-        with patch.object(trading_daemon, "now_beijing", return_value=frozen_now), patch.object(
-            trading_daemon, "today_beijing", return_value=frozen_now
-        ), patch.object(trading_daemon, "load_json_config", return_value=config), patch.object(
-            trading_daemon, "_assert_exit_live_allowed"
-        ), patch.object(trading_daemon, "_qmt_get", return_value=_SliceAdapter()), patch.object(
-            trading_daemon, "_broker_position_quantities", return_value=(1_000_000, 1_000_000)
-        ), patch.object(
-            trading_daemon,
+        with patch_daemon("now_beijing", return_value=frozen_now), patch_daemon(
+            "today_beijing", return_value=frozen_now
+        ), patch_daemon("load_json_config", return_value=config), patch_daemon(
+            "_assert_exit_live_allowed"
+        ), patch_daemon("_qmt_get", return_value=_SliceAdapter()), patch_daemon(
+            "_broker_position_quantities", return_value=(1_000_000, 1_000_000)
+        ), patch_daemon(
             "_safe_new_exit_order_quantity",
             side_effect=safe_quantity_passthrough,
-        ) as safe_quantity, patch.object(
-            trading_daemon,
+        ) as safe_quantity, patch_daemon(
             "_place_exit_order_with_intent",
             side_effect=place_with_test_intent,
-        ) as place_with_intent, patch.object(
-            trading_daemon, "_update_exit_order_intent"
-        ) as resolve_intent, patch.object(
-            trading_daemon, "_confirm_fill", return_value=fill
-        ), patch.object(
-            trading_daemon, "reduce_position_shares"
+        ) as place_with_intent, patch_daemon(
+            "_update_exit_order_intent"
+        ) as resolve_intent, patch_daemon(
+            "_confirm_fill", return_value=fill
+        ), patch_daemon(
+            "reduce_position_shares"
         ) as reduce_shares:
             trading_daemon._exit_pov_slice(
                 plan,
@@ -2681,9 +2673,7 @@ class CloseWindowIdentityTest(unittest.TestCase):
     def test_两个调用点都声明了身份且默认为否(self) -> None:
         import inspect
 
-        src = (Path(__file__).absolute().parents[1] / "scripts" / "trading_daemon.py").read_text(
-            encoding="utf-8"
-        )
+        src = read_daemon_source()
         self.assertIn("check_and_close_positions(in_close_window=True)", src)
         self.assertIn("_has_due_close_plan_now(assume_close_window=True)", src)
         for fn, name in ((trading_daemon.check_and_close_positions, "in_close_window"),
@@ -2701,14 +2691,14 @@ class CloseWindowIdentityTest(unittest.TestCase):
             return True
 
         fake_thread = SimpleNamespace(start=lambda: None)
-        with patch.object(trading_daemon, "_wait_for_exit_close_submit_clock_guard", return_value=0.0), \
-             patch.object(trading_daemon, "_has_due_close_plan_now", side_effect=_due), \
-             patch.object(trading_daemon, "_pause_pipeline_for_trade") as pause, \
-             patch.object(trading_daemon, "_resume_pipeline_after_trade") as resume, \
-             patch.object(trading_daemon, "load_json_config", return_value={}), \
-             patch.object(trading_daemon, "check_and_close_positions") as close, \
-             patch.object(trading_daemon, "_exit_auction_bypass_decision", return_value=False), \
-             patch.object(trading_daemon, "_notify") as notify, \
+        with patch_daemon("_wait_for_exit_close_submit_clock_guard", return_value=0.0), \
+             patch_daemon("_has_due_close_plan_now", side_effect=_due), \
+             patch_daemon("_pause_pipeline_for_trade") as pause, \
+             patch_daemon("_resume_pipeline_after_trade") as resume, \
+             patch_daemon("load_json_config", return_value={}), \
+             patch_daemon("check_and_close_positions") as close, \
+             patch_daemon("_exit_auction_bypass_decision", return_value=False), \
+             patch_daemon("_notify") as notify, \
              patch.object(trading_daemon.threading, "Thread", return_value=fake_thread):
             trading_daemon.job_afternoon()
 
@@ -2740,9 +2730,9 @@ class CloseWindowIdentityTest(unittest.TestCase):
         self.assertEqual(event_at.time(), datetime.time(9, 23))
 
     def test_事故时刻仍能识别出到期平仓计划(self) -> None:
-        with patch.object(trading_daemon, "load_positions", return_value=self._DUE), \
-             patch.object(trading_daemon, "now_beijing", return_value=self._ACCIDENT_NOW), \
-             patch.object(trading_daemon, "today_beijing", return_value=self._ACCIDENT_NOW.date()):
+        with patch_daemon("load_positions", return_value=self._DUE), \
+             patch_daemon("now_beijing", return_value=self._ACCIDENT_NOW), \
+             patch_daemon("today_beijing", return_value=self._ACCIDENT_NOW.date()):
             self.assertTrue(trading_daemon._has_due_close_plan_now(assume_close_window=True))
             self.assertFalse(trading_daemon._has_due_close_plan_now())
 
@@ -2759,9 +2749,7 @@ class CloseWindowIdentityTest(unittest.TestCase):
     def test_不引入时间容差且窗口保持1455整(self) -> None:
         """容差会把收盘窗口推到 POV 的 14:53 交接点之前。"""
 
-        src = (Path(__file__).absolute().parents[1] / "scripts" / "trading_daemon.py").read_text(
-            encoding="utf-8"
-        )
+        src = read_daemon_source()
         self.assertNotIn("CLOSE_WINDOW_TOLERANCE_SEC", src)
         self.assertNotIn("_align_deadline", src)
         self.assertEqual(trading_daemon.SCHED_AFTERNOON_CLOSE, datetime.time(14, 55))
@@ -2802,22 +2790,21 @@ class TailExitStateMachineRegressionTest(unittest.TestCase):
         frozen_date = datetime.date(2026, 8, 18)
         fake_log = SimpleNamespace(warning=lambda *args, **kwargs: None)
 
-        with patch.object(trading_daemon, "load_positions", side_effect=store.load), patch.object(
-            trading_daemon, "save_positions", side_effect=store.save
-        ), patch.object(trading_daemon, "today_beijing", return_value=frozen_date), patch.object(
-            trading_daemon, "_qmt_get", return_value=adapter
-        ), patch.object(
-            trading_daemon,
+        with patch_daemon("load_positions", side_effect=store.load), patch_daemon(
+            "save_positions", side_effect=store.save
+        ), patch_daemon("today_beijing", return_value=frozen_date), patch_daemon(
+            "_qmt_get", return_value=adapter
+        ), patch_daemon(
             "_exit_intent_by_broker_order_id",
             return_value={"local_order_id": "LOCAL-1", "price": 18.91},
-        ), patch.object(
-            trading_daemon, "_resolve_exit_intent_by_broker_order_id", return_value=True
-        ), patch.object(
-            trading_daemon, "_watchdog_pending", pending
-        ), patch.object(
-            trading_daemon, "_maybe_resume_pipeline_after_trade"
-        ) as resume, patch.object(
-            trading_daemon, "_notify"
+        ), patch_daemon(
+            "_resolve_exit_intent_by_broker_order_id", return_value=True
+        ), patch_daemon(
+            "_watchdog_pending", pending
+        ), patch_daemon(
+            "_maybe_resume_pipeline_after_trade"
+        ) as resume, patch_daemon(
+            "_notify"
         ) as notify:
             applied = trading_daemon._reconcile_watchdog_pending_once(
                 {}, fake_log, source="尾盘成交即时确认"
@@ -2847,20 +2834,19 @@ class TailExitStateMachineRegressionTest(unittest.TestCase):
             2026, 8, 18, 14, 58, 21, tzinfo=trading_daemon.BEIJING_TZ
         )
         trading_daemon._broker_missing_streak.clear()
-        with patch.object(trading_daemon, "load_positions", side_effect=store.load), patch.object(
-            trading_daemon, "save_positions", side_effect=store.save
-        ), patch.object(
-            trading_daemon,
+        with patch_daemon("load_positions", side_effect=store.load), patch_daemon(
+            "save_positions", side_effect=store.save
+        ), patch_daemon(
             "load_json_config",
             return_value={"live_trade": {"broker_missing_confirm_count": 3}},
-        ), patch.object(
-            trading_daemon, "now_beijing", return_value=frozen_now
-        ), patch.object(
-            trading_daemon, "today_beijing", return_value=frozen_now.date()
-        ), patch.object(
-            trading_daemon, "_track_execution"
-        ), patch.object(
-            trading_daemon, "_maybe_resume_pipeline_after_trade"
+        ), patch_daemon(
+            "now_beijing", return_value=frozen_now
+        ), patch_daemon(
+            "today_beijing", return_value=frozen_now.date()
+        ), patch_daemon(
+            "_track_execution"
+        ), patch_daemon(
+            "_maybe_resume_pipeline_after_trade"
         ) as resume:
             for index in range(3):
                 trading_daemon.reconcile_missing_local_positions(
@@ -2907,18 +2893,18 @@ class TailExitStateMachineRegressionTest(unittest.TestCase):
         frozen_now = datetime.datetime(
             2026, 8, 18, 14, 56, 0, tzinfo=trading_daemon.BEIJING_TZ
         )
-        with patch.object(trading_daemon, "load_json_config", return_value={"broker": {}}), patch.object(
-            trading_daemon, "_qmt_get", return_value=_Adapter()
-        ), patch.object(
-            trading_daemon, "_safe_new_exit_order_quantity", return_value=1_000
-        ), patch.object(
-            trading_daemon, "_pick_sell_limit_price", return_value=(9.98, "价格笼子下限")
-        ), patch.object(
-            trading_daemon, "_place_exit_order_with_intent", side_effect=_place
-        ), patch.object(
-            trading_daemon, "now_beijing", return_value=frozen_now
-        ), patch.object(
-            trading_daemon, "today_beijing", return_value=frozen_now.date()
+        with patch_daemon("load_json_config", return_value={"broker": {}}), patch_daemon(
+            "_qmt_get", return_value=_Adapter()
+        ), patch_daemon(
+            "_safe_new_exit_order_quantity", return_value=1_000
+        ), patch_daemon(
+            "_pick_sell_limit_price", return_value=(9.98, "价格笼子下限")
+        ), patch_daemon(
+            "_place_exit_order_with_intent", side_effect=_place
+        ), patch_daemon(
+            "now_beijing", return_value=frozen_now
+        ), patch_daemon(
+            "today_beijing", return_value=frozen_now.date()
         ):
             first = trading_daemon._watchdog_rescue_sell(
                 position, fake_log, rescue_wave="145600"
@@ -2943,7 +2929,7 @@ class TailExitStateMachineRegressionTest(unittest.TestCase):
             datetime.datetime(2026, 8, 18, 14, 55, 2, tzinfo=tz),
         ]
         config = {"broker": {"exit_close_submit_clock_guard_seconds": 2.0}}
-        with patch.object(trading_daemon, "now_beijing", side_effect=times), patch.object(
+        with patch_daemon("now_beijing", side_effect=times), patch.object(
             trading_daemon.time, "sleep"
         ) as sleep:
             waited = trading_daemon._wait_for_exit_close_submit_clock_guard(config)
@@ -2964,9 +2950,9 @@ class TailExitStateMachineRegressionTest(unittest.TestCase):
 class ExpiredPovStartupRecoveryTests(unittest.TestCase):
     def test_before_cutoff_does_not_finalize_or_query(self):
         now = datetime.datetime(2026, 9, 17, 10, 29, 59, tzinfo=trading_daemon.BEIJING_TZ)
-        with (patch.object(trading_daemon, 'now_beijing', return_value=now),
-              patch.object(trading_daemon, '_pov_load_state') as load,
-              patch.object(trading_daemon, '_qmt_get', side_effect=AssertionError('No broker'))):
+        with (patch_daemon('now_beijing', return_value=now),
+              patch_daemon('_pov_load_state') as load,
+              patch_daemon('_qmt_get', side_effect=AssertionError('No broker'))):
             self.assertEqual(trading_daemon._finalize_expired_pov_for_startup(), 0)
             load.assert_not_called()
 
@@ -2977,15 +2963,15 @@ class ExpiredPovStartupRecoveryTests(unittest.TestCase):
                     min_acceptable_amount=55508.376, hard_cap_amount=58977.6495,
                     equity_snapshot=69385.47, done=False, exit_n=1)
         state = dict(date='20260917', items=[item])
-        with (patch.object(trading_daemon, 'now_beijing', return_value=now),
-              patch.object(trading_daemon, '_pov_load_state', return_value=state),
-              patch.object(trading_daemon, '_pov_save_state') as save,
-              patch.object(trading_daemon, '_today_local_entry_cost', return_value=21841),
-              patch.object(trading_daemon, '_track_execution'),
-              patch.object(trading_daemon, 'logger') as log,
-              patch.object(trading_daemon, '_notify') as notify,
-              patch.object(trading_daemon, '_qmt_get', side_effect=AssertionError('No broker')),
-              patch.object(trading_daemon, '_record_live_buy', side_effect=AssertionError('No duplicate fill'))):
+        with (patch_daemon('now_beijing', return_value=now),
+              patch_daemon('_pov_load_state', return_value=state),
+              patch_daemon('_pov_save_state') as save,
+              patch_daemon('_today_local_entry_cost', return_value=21841),
+              patch_daemon('_track_execution'),
+              patch_daemon('logger') as log,
+              patch_daemon('_notify') as notify,
+              patch_daemon('_qmt_get', side_effect=AssertionError('No broker')),
+              patch_daemon('_record_live_buy', side_effect=AssertionError('No duplicate fill'))):
             self.assertEqual(trading_daemon._finalize_expired_pov_for_startup(), 1)
             self.assertTrue(item['done'])
             self.assertTrue(item['finalized'])
@@ -2998,10 +2984,10 @@ class ExpiredPovStartupRecoveryTests(unittest.TestCase):
 
     def test_stale_date_is_not_rewritten(self):
         now = datetime.datetime(2026, 9, 17, 12, 0, tzinfo=trading_daemon.BEIJING_TZ)
-        with (patch.object(trading_daemon, 'now_beijing', return_value=now),
-              patch.object(trading_daemon, '_pov_load_state', return_value=dict(
+        with (patch_daemon('now_beijing', return_value=now),
+              patch_daemon('_pov_load_state', return_value=dict(
                   date='20260916', items=[dict(finalized=False)])),
-              patch.object(trading_daemon, '_pov_finalize_item') as finalize):
+              patch_daemon('_pov_finalize_item') as finalize):
             self.assertEqual(trading_daemon._finalize_expired_pov_for_startup(), 0)
             finalize.assert_not_called()
 

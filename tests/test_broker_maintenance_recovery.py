@@ -21,6 +21,8 @@ if "dotenv" not in sys.modules:
     sys.modules["dotenv"] = dotenv_stub
 
 from scripts import trading_daemon
+from tests.daemon_testing import patch_daemon
+from src.daemon import qmt as daemon_qmt
 from scripts import win_daemon_keeper as keeper
 from src.qmt_adapter import mask_account_id
 
@@ -48,7 +50,7 @@ class BrokerHealthStateTests(unittest.TestCase):
                 {"path": "", "mtime_ns": None, "price_column": "", "prices": {}}
             )
             try:
-                with patch.object(trading_daemon, "PROJECT_ROOT", root):
+                with patch_daemon("PROJECT_ROOT", root):
                     first = trading_daemon._account_status_pre_close_map(
                         ["000001.SZ"], datetime.date(2026, 9, 15)
                     )
@@ -79,9 +81,8 @@ class BrokerHealthStateTests(unittest.TestCase):
             )
             try:
                 with (
-                    patch.object(trading_daemon, "PROJECT_ROOT", root),
-                    patch.object(
-                        trading_daemon,
+                    patch_daemon("PROJECT_ROOT", root),
+                    patch_daemon(
                         "prev_n_trade_days",
                         return_value=datetime.date(2026, 9, 14),
                     ),
@@ -102,7 +103,7 @@ class BrokerHealthStateTests(unittest.TestCase):
     def test_daemon_health_file_masks_account_and_records_current_pid(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             health_path = Path(temp_dir) / "broker_health.json"
-            with patch.object(trading_daemon, "BROKER_HEALTH_FILE", health_path):
+            with patch_daemon("BROKER_HEALTH_FILE", health_path):
                 trading_daemon.write_broker_health(
                     "verified",
                     account_id="12345678",
@@ -129,8 +130,7 @@ class BrokerHealthStateTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir:
             health_path = Path(temp_dir) / "broker_health.json"
-            with patch.object(
-                trading_daemon,
+            with patch_daemon(
                 "BROKER_HEALTH_FILE",
                 health_path,
             ), patch.object(
@@ -164,8 +164,7 @@ class BrokerHealthStateTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir:
             heartbeat_path = Path(temp_dir) / "daemon_heartbeat.txt"
-            with patch.object(
-                trading_daemon,
+            with patch_daemon(
                 "HEARTBEAT_FILE",
                 heartbeat_path,
             ), patch.object(
@@ -185,7 +184,7 @@ class BrokerHealthStateTests(unittest.TestCase):
     def test_process_heartbeat_contains_current_pid_and_keeper_parses_it(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             heartbeat_path = Path(temp_dir) / "daemon_heartbeat.txt"
-            with patch.object(trading_daemon, "HEARTBEAT_FILE", heartbeat_path):
+            with patch_daemon("HEARTBEAT_FILE", heartbeat_path):
                 trading_daemon.write_heartbeat("sleeping")
                 self.assertFalse(list(heartbeat_path.parent.glob("*.tmp")))
             with patch.object(keeper, "HEARTBEAT", heartbeat_path):
@@ -197,28 +196,24 @@ class BrokerHealthStateTests(unittest.TestCase):
 
     def test_runtime_account_failure_is_recorded_by_daemon_even_on_weekend(self) -> None:
         health_writer = MagicMock()
-        old_reconnect_count = trading_daemon._qmt_reconnect_count
-        trading_daemon._qmt_reconnect_count = 0
+        old_reconnect_count = daemon_qmt._qmt_reconnect_count
+        daemon_qmt._qmt_reconnect_count = 0
         try:
-            with patch.object(
-                trading_daemon,
+            with patch_daemon(
                 "_qmt_get",
                 side_effect=RuntimeError("模拟券商维护"),
-            ), patch.object(
-                trading_daemon,
+            ), patch_daemon(
                 "_qmt_reset",
-            ), patch.object(
-                trading_daemon,
+            ), patch_daemon(
                 "qmt_is_critical_window",
                 return_value=False,
-            ), patch.object(
-                trading_daemon,
+            ), patch_daemon(
                 "write_broker_health",
                 health_writer,
             ):
                 trading_daemon._print_account_status(MagicMock())
         finally:
-            trading_daemon._qmt_reconnect_count = old_reconnect_count
+            daemon_qmt._qmt_reconnect_count = old_reconnect_count
 
         health_writer.assert_any_call(
             "unavailable",
@@ -231,27 +226,22 @@ class BrokerHealthStateTests(unittest.TestCase):
             r"[Errno 13] Permission denied: 'C:\Users\***\AppData\Local\A_System\qmt_inner\spool\heartbeat.json'"
         )
         busy.winerror = 32
-        old_reconnect_count = trading_daemon._qmt_reconnect_count
-        old_busy_count = trading_daemon._qmt_transport_busy_count
-        trading_daemon._qmt_reconnect_count = 0
-        trading_daemon._qmt_transport_busy_count = 0
+        old_reconnect_count = daemon_qmt._qmt_reconnect_count
+        old_busy_count = daemon_qmt._qmt_transport_busy_count
+        daemon_qmt._qmt_reconnect_count = 0
+        daemon_qmt._qmt_transport_busy_count = 0
         try:
-            with patch.object(
-                trading_daemon,
+            with patch_daemon(
                 "_qmt_get",
                 return_value=object(),
-            ), patch.object(
-                trading_daemon,
+            ), patch_daemon(
                 "_qmt_query_account_positions",
                 side_effect=busy,
-            ), patch.object(
-                trading_daemon,
+            ), patch_daemon(
                 "_qmt_reset",
-            ) as reset, patch.object(
-                trading_daemon,
+            ) as reset, patch_daemon(
                 "write_broker_health",
-            ) as health, patch.object(
-                trading_daemon,
+            ) as health, patch_daemon(
                 "_notify",
             ) as notify:
                 trading_daemon._print_account_status(MagicMock())
@@ -263,16 +253,16 @@ class BrokerHealthStateTests(unittest.TestCase):
                 error=busy,
                 failure_count=1,
             )
-            self.assertEqual(trading_daemon._qmt_reconnect_count, 0)
-            self.assertEqual(trading_daemon._qmt_transport_busy_count, 1)
+            self.assertEqual(daemon_qmt._qmt_reconnect_count, 0)
+            self.assertEqual(daemon_qmt._qmt_transport_busy_count, 1)
         finally:
-            trading_daemon._qmt_reconnect_count = old_reconnect_count
-            trading_daemon._qmt_transport_busy_count = old_busy_count
+            daemon_qmt._qmt_reconnect_count = old_reconnect_count
+            daemon_qmt._qmt_transport_busy_count = old_busy_count
 
     def test_qmt_success_cache_does_not_persist_account_id(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             cache_path = Path(temp_dir) / "qmt_last_success.json"
-            with patch.object(trading_daemon, "QMT_LAST_SUCCESS_FILE", cache_path):
+            with patch_daemon("QMT_LAST_SUCCESS_FILE", cache_path):
                 trading_daemon._save_qmt_last_success(
                     qmt_path=r"C:\QMT\userdata_mini",
                     session_id="1002",
@@ -283,19 +273,17 @@ class BrokerHealthStateTests(unittest.TestCase):
         self.assertNotIn("account_id", payload)
 
     def test_qmt_connect_failures_share_one_process_backoff_gate(self) -> None:
-        old_streak = trading_daemon._qmt_connect_failure_streak
-        old_deadline = trading_daemon._qmt_connect_retry_not_before
-        old_error = trading_daemon._qmt_connect_last_error
-        trading_daemon._qmt_connect_failure_streak = 0
-        trading_daemon._qmt_connect_retry_not_before = 0.0
-        trading_daemon._qmt_connect_last_error = ""
+        old_streak = daemon_qmt._qmt_connect_failure_streak
+        old_deadline = daemon_qmt._qmt_connect_retry_not_before
+        old_error = daemon_qmt._qmt_connect_last_error
+        daemon_qmt._qmt_connect_failure_streak = 0
+        daemon_qmt._qmt_connect_retry_not_before = 0.0
+        daemon_qmt._qmt_connect_last_error = ""
         try:
-            with patch.object(
-                trading_daemon,
+            with patch_daemon(
                 "_load_qmt_last_success",
                 return_value={"qmt_path": r"C:\\QMT", "session_id": "1001"},
-            ), patch.object(
-                trading_daemon,
+            ), patch_daemon(
                 "_qmt_connect_once",
                 side_effect=RuntimeError("connect=-1"),
             ) as connect_once:
@@ -305,41 +293,38 @@ class BrokerHealthStateTests(unittest.TestCase):
                     trading_daemon._qmt_connect({}, allow_full_scan=False)
 
             self.assertEqual(connect_once.call_count, 1)
-            self.assertEqual(trading_daemon._qmt_connect_failure_streak, 1)
+            self.assertEqual(daemon_qmt._qmt_connect_failure_streak, 1)
             self.assertGreater(
-                trading_daemon._qmt_connect_retry_not_before,
+                daemon_qmt._qmt_connect_retry_not_before,
                 time.monotonic(),
             )
         finally:
-            trading_daemon._qmt_connect_failure_streak = old_streak
-            trading_daemon._qmt_connect_retry_not_before = old_deadline
-            trading_daemon._qmt_connect_last_error = old_error
+            daemon_qmt._qmt_connect_failure_streak = old_streak
+            daemon_qmt._qmt_connect_retry_not_before = old_deadline
+            daemon_qmt._qmt_connect_last_error = old_error
 
     def test_full_scan_uses_one_adapter_and_starts_from_cached_session(self) -> None:
-        old_streak = trading_daemon._qmt_connect_failure_streak
-        old_deadline = trading_daemon._qmt_connect_retry_not_before
-        old_error = trading_daemon._qmt_connect_last_error
-        trading_daemon._qmt_connect_failure_streak = 0
-        trading_daemon._qmt_connect_retry_not_before = 0.0
-        trading_daemon._qmt_connect_last_error = ""
+        old_streak = daemon_qmt._qmt_connect_failure_streak
+        old_deadline = daemon_qmt._qmt_connect_retry_not_before
+        old_error = daemon_qmt._qmt_connect_last_error
+        daemon_qmt._qmt_connect_failure_streak = 0
+        daemon_qmt._qmt_connect_retry_not_before = 0.0
+        daemon_qmt._qmt_connect_last_error = ""
         adapter = SimpleNamespace(
             _active_qmt_path=r"C:\QMT\userdata_mini",
             _active_session_id=1002,
         )
         try:
-            with patch.object(
-                trading_daemon,
+            with patch_daemon(
                 "_load_qmt_last_success",
                 return_value={
                     "qmt_path": r"C:\QMT\userdata_mini",
                     "session_id": "31001",
                 },
-            ), patch.object(
-                trading_daemon,
+            ), patch_daemon(
                 "_qmt_connect_once",
                 return_value=adapter,
-            ) as connect_once, patch.object(
-                trading_daemon,
+            ) as connect_once, patch_daemon(
                 "_save_qmt_last_success",
             ):
                 result = trading_daemon._qmt_connect({}, allow_full_scan=True)
@@ -353,19 +338,18 @@ class BrokerHealthStateTests(unittest.TestCase):
                 session_id="31001",
             )
         finally:
-            trading_daemon._qmt_connect_failure_streak = old_streak
-            trading_daemon._qmt_connect_retry_not_before = old_deadline
-            trading_daemon._qmt_connect_last_error = old_error
+            daemon_qmt._qmt_connect_failure_streak = old_streak
+            daemon_qmt._qmt_connect_retry_not_before = old_deadline
+            daemon_qmt._qmt_connect_last_error = old_error
 
     def test_third_real_connect_attempt_is_promoted_to_full_scan(self) -> None:
-        old_adapter = trading_daemon._qmt_adapter
-        old_streak = trading_daemon._qmt_connect_failure_streak
-        trading_daemon._qmt_adapter = None
-        trading_daemon._qmt_connect_failure_streak = 2
+        old_adapter = daemon_qmt._qmt_adapter
+        old_streak = daemon_qmt._qmt_connect_failure_streak
+        daemon_qmt._qmt_adapter = None
+        daemon_qmt._qmt_connect_failure_streak = 2
         adapter = object()
         try:
-            with patch.object(
-                trading_daemon,
+            with patch_daemon(
                 "_qmt_connect",
                 return_value=adapter,
             ) as connect:
@@ -377,8 +361,8 @@ class BrokerHealthStateTests(unittest.TestCase):
                 allow_full_scan=True,
             )
         finally:
-            trading_daemon._qmt_adapter = old_adapter
-            trading_daemon._qmt_connect_failure_streak = old_streak
+            daemon_qmt._qmt_adapter = old_adapter
+            daemon_qmt._qmt_connect_failure_streak = old_streak
 
     def test_transient_account_none_is_retried_on_same_connection(self) -> None:
         account = SimpleNamespace(
@@ -406,61 +390,52 @@ class BrokerHealthStateTests(unittest.TestCase):
         sleep.assert_called_once_with(0.2)
 
     def test_cold_connect_failure_does_not_retry_inside_its_own_backoff(self) -> None:
-        old_adapter = trading_daemon._qmt_adapter
-        old_reconnect_count = trading_daemon._qmt_reconnect_count
-        old_connect_streak = trading_daemon._qmt_connect_failure_streak
-        trading_daemon._qmt_adapter = None
-        trading_daemon._qmt_reconnect_count = 0
-        trading_daemon._qmt_connect_failure_streak = 1
+        old_adapter = daemon_qmt._qmt_adapter
+        old_reconnect_count = daemon_qmt._qmt_reconnect_count
+        old_connect_streak = daemon_qmt._qmt_connect_failure_streak
+        daemon_qmt._qmt_adapter = None
+        daemon_qmt._qmt_reconnect_count = 0
+        daemon_qmt._qmt_connect_failure_streak = 1
         try:
-            with patch.object(
-                trading_daemon,
+            with patch_daemon(
                 "load_json_config",
                 return_value={
                     "broker_adapter_enabled": True,
                     "qmt_enabled": True,
                     "broker": {"enabled": True},
                 },
-            ), patch.object(
-                trading_daemon,
+            ), patch_daemon(
                 "_qmt_get",
                 side_effect=RuntimeError("QMT连接失败: connect=-1"),
-            ) as qmt_get, patch.object(
-                trading_daemon,
+            ) as qmt_get, patch_daemon(
                 "_qmt_reset",
-            ), patch.object(
-                trading_daemon,
+            ), patch_daemon(
                 "qmt_is_critical_window",
                 return_value=True,
-            ), patch.object(
-                trading_daemon,
+            ), patch_daemon(
                 "_request_qmt_resource_recovery",
                 return_value=False,
-            ), patch.object(
-                trading_daemon,
+            ), patch_daemon(
                 "_request_qmt_reconnect_stalled_recovery",
                 return_value=False,
-            ), patch.object(
-                trading_daemon,
+            ), patch_daemon(
                 "write_broker_health",
-            ), patch.object(
-                trading_daemon,
+            ), patch_daemon(
                 "_notify",
             ):
                 trading_daemon._print_account_status(MagicMock())
 
             qmt_get.assert_called_once_with({"enabled": True})
         finally:
-            trading_daemon._qmt_adapter = old_adapter
-            trading_daemon._qmt_reconnect_count = old_reconnect_count
-            trading_daemon._qmt_connect_failure_streak = old_connect_streak
+            daemon_qmt._qmt_adapter = old_adapter
+            daemon_qmt._qmt_reconnect_count = old_reconnect_count
+            daemon_qmt._qmt_connect_failure_streak = old_connect_streak
 
     def test_three_failed_connects_request_clean_process_recovery(self) -> None:
-        old_streak = trading_daemon._qmt_connect_failure_streak
-        trading_daemon._qmt_connect_failure_streak = 3
+        old_streak = daemon_qmt._qmt_connect_failure_streak
+        daemon_qmt._qmt_connect_failure_streak = 3
         try:
-            with patch.object(
-                trading_daemon,
+            with patch_daemon(
                 "_request_process_recovery",
                 return_value=True,
             ) as recover:
@@ -475,7 +450,7 @@ class BrokerHealthStateTests(unittest.TestCase):
             )
             self.assertFalse(recover.call_args.kwargs["clear_qmt_cache"])
         finally:
-            trading_daemon._qmt_connect_failure_streak = old_streak
+            daemon_qmt._qmt_connect_failure_streak = old_streak
 
     def test_waiting_free_writer_is_treated_as_resource_exhaustion(self) -> None:
         self.assertTrue(
@@ -488,12 +463,10 @@ class BrokerHealthStateTests(unittest.TestCase):
         parent = MagicMock()
         heartbeat = parent.heartbeat
         notify_retry = parent.notify_retry
-        with patch.object(
-            trading_daemon,
+        with patch_daemon(
             "write_heartbeat",
             heartbeat,
-        ), patch.object(
-            trading_daemon,
+        ), patch_daemon(
             "_notify_with_retry_async",
             notify_retry,
         ):
@@ -626,11 +599,10 @@ class BrokerHealthStateTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            with patch.object(trading_daemon, "HEARTBEAT_FILE", heartbeat), \
-                 patch.object(trading_daemon, "BROKER_HEALTH_FILE", broker_health), \
-                 patch.object(trading_daemon, "_qmt_get") as qmt_get, \
-                 patch.object(
-                     trading_daemon,
+            with patch_daemon("HEARTBEAT_FILE", heartbeat), \
+                 patch_daemon("BROKER_HEALTH_FILE", broker_health), \
+                 patch_daemon("_qmt_get") as qmt_get, \
+                 patch_daemon(
                      "_notify_with_retry_async",
                  ) as notify_async:
                 snapshot = trading_daemon._publish_periodic_health_beacon(

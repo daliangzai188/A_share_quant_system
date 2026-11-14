@@ -184,7 +184,8 @@ A_System/
 ├── AGENTS.md、README.md、requirements.txt
 ├── config/             配置（config.json、strategy_config.json 等，全部打进QMT包）
 ├── src/                生产代码·库：选股、计划、停手判定、仓位、执行、监控、日报
-├── scripts/            生产代码·入口：守护进程 trading_daemon.py、收盘流水线各步、Windows/Mac 启停与守护
+│   └── daemon/         守护进程的代码，按职责分16个模块（各模块职责和分层见 src/daemon/__init__.py）
+├── scripts/            生产代码·入口：守护进程入口 trading_daemon.py、收盘流水线各步、Windows/Mac 启停与守护
 ├── qmt_inner/          生产代码：QMT 里的交易引擎
 ├── qmt_native/         QMT 原生版：打包、虚拟机脚本、上线手册（QMT工作仓库导出）
 ├── qmt_native_phase0/  虚拟机上 QMT 外的检查、推送转发、状态接收
@@ -197,7 +198,8 @@ A_System/
 
 目录约定（2026-11-14起）：`src/`、`scripts/`、`qmt_inner/` 里的每个文件都在实盘入口的导入链上；
 研究代码和运维工具可以导入生产代码，生产代码不得导入 `research/`、`tools/`。`tests/test_production_modules.py`
-检查这条边界和生产代码清单。
+检查这条边界和生产代码清单。守护进程（2026-11-14起）在 `src/daemon/` 下按职责分层，只许高层导入低层，
+同一个测试文件也检查；测试里替换守护进程的函数用 `tests/daemon_testing.py` 的 `patch_daemon`。
 
 ---
 
@@ -408,7 +410,7 @@ a_strict_plus_c_leader_union_hold3
 
 ### 守护进程设计
 
-核心文件：`scripts/trading_daemon.py`
+核心文件：`scripts/trading_daemon.py`（启动入口），代码在 `src/daemon/`（按职责分16个模块，见 `src/daemon/__init__.py`）
 
 每个交易日自动执行四个时间窗口的任务：
 

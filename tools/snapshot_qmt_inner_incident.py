@@ -40,6 +40,10 @@ def snapshot() -> dict:
                         ('installed_engine', cfg_path.parent / 'bundle/qmt_inner/engine.py'),
                         ('daemon', ROOT / 'scripts/trading_daemon.py')]:
         hashes[label] = hashlib.sha256(path.read_bytes()).hexdigest()
+    package = hashlib.sha256()   # 2026-11-14 起守护进程的代码在 src/daemon/
+    for path in sorted((ROOT / 'src' / 'daemon').glob('*.py')):
+        package.update(path.name.encode('utf-8') + b'\0' + path.read_bytes())
+    hashes['daemon_package'] = package.hexdigest()
     class Memory(ctypes.Structure):
         _fields_ = [('length', ctypes.c_ulong), ('load', ctypes.c_ulong)] + [
             (name, ctypes.c_ulonglong) for name in

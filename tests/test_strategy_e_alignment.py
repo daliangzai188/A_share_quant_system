@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import unittest
 from pathlib import Path
+from tests.daemon_testing import DAEMON_SOURCE_FILES
 from types import ModuleType
 import sys
 
@@ -346,7 +347,7 @@ class StrategyEAlignmentTests(unittest.TestCase):
 
         active_runtime_files = (
             PROJECT_ROOT / "scripts" / "run_strategy_e_signal.py",
-            PROJECT_ROOT / "scripts" / "trading_daemon.py",
+            *DAEMON_SOURCE_FILES,
             PROJECT_ROOT / "src" / "combined_live_engine.py",
         )
         forbidden_log_fragments = (

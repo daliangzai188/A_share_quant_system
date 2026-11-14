@@ -17,6 +17,8 @@ if "dotenv" not in sys.modules:
     sys.modules["dotenv"] = stub
 
 from scripts import run_strategy_e_signal, trading_daemon
+from tests.daemon_testing import patch_daemon
+from src.daemon import reports as daemon_reports
 from src.combined_live_engine import CombinedLiveEngine
 from research.live_certification import validate_live_certification
 
@@ -86,8 +88,7 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
         return pd.DataFrame([row])
 
     def test_formal_buy_order_contract_accepts_only_today_t1_plan(self) -> None:
-        with patch.object(
-            trading_daemon,
+        with patch_daemon(
             "today_beijing",
             return_value=datetime.date(2026, 9, 1),
         ):
@@ -123,14 +124,14 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
 
         self.assertFalse(blocked)
         summary_logger = MagicMock()
-        with patch.object(
-            trading_daemon, "load_positions", return_value=[confirmed_closed]
-        ), patch.object(
-            trading_daemon, "_load_e_signal_for_signal_date", return_value=None
-        ), patch.object(
-            trading_daemon, "load_json_config", return_value={}
-        ), patch.object(
-            trading_daemon, "logger", return_value=summary_logger
+        with patch_daemon(
+            "load_positions", return_value=[confirmed_closed]
+        ), patch_daemon(
+            "_load_e_signal_for_signal_date", return_value=None
+        ), patch_daemon(
+            "load_json_config", return_value={}
+        ), patch_daemon(
+            "logger", return_value=summary_logger
         ):
             trading_daemon._log_final_decision_summary(
                 "20260902",
@@ -170,8 +171,7 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
             {"signal_date": "20260901"},
             {"signal_date": ""},
         )
-        with patch.object(
-            trading_daemon,
+        with patch_daemon(
             "today_beijing",
             return_value=datetime.date(2026, 9, 1),
         ):
@@ -192,8 +192,7 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
             ],
             ignore_index=True,
         )
-        with patch.object(
-            trading_daemon,
+        with patch_daemon(
             "today_beijing",
             return_value=datetime.date(2026, 9, 1),
         ):
@@ -244,11 +243,11 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
                 "side": "BUY",
             }])
             with (
-                patch.object(trading_daemon, "has_open_local_position", return_value=False),
-                patch.object(trading_daemon, "has_position_bought_today", return_value=False),
-                patch.object(trading_daemon, "_d_relay_pair_active_today", return_value=False),
-                patch.object(trading_daemon, "load_pending_buys", return_value=[]),
-                patch.object(trading_daemon, "_pov_active_today", return_value=False),
+                patch_daemon("has_open_local_position", return_value=False),
+                patch_daemon("has_position_bought_today", return_value=False),
+                patch_daemon("_d_relay_pair_active_today", return_value=False),
+                patch_daemon("load_pending_buys", return_value=[]),
+                patch_daemon("_pov_active_today", return_value=False),
             ):
                 monitor_allowed, monitor_reason = trading_daemon.d_intraday_monitor_gate(decisions)
                 entry_allowed, entry_reason = trading_daemon.d_intraday_entry_gate(decisions)
@@ -270,11 +269,11 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
             ([], True, "开仓POV"),
         ):
             with (
-                patch.object(trading_daemon, "has_open_local_position", return_value=False),
-                patch.object(trading_daemon, "has_position_bought_today", return_value=False),
-                patch.object(trading_daemon, "_d_relay_pair_active_today", return_value=False),
-                patch.object(trading_daemon, "load_pending_buys", return_value=pending),
-                patch.object(trading_daemon, "_pov_active_today", return_value=pov),
+                patch_daemon("has_open_local_position", return_value=False),
+                patch_daemon("has_position_bought_today", return_value=False),
+                patch_daemon("_d_relay_pair_active_today", return_value=False),
+                patch_daemon("load_pending_buys", return_value=pending),
+                patch_daemon("_pov_active_today", return_value=pov),
             ):
                 monitor_allowed, monitor_reason = trading_daemon.d_intraday_monitor_gate(decisions)
                 entry_allowed, entry_reason = trading_daemon.d_intraday_entry_gate(decisions)
@@ -290,11 +289,11 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
             "strategy_leg": "D",
         }])
         with (
-            patch.object(trading_daemon, "has_open_local_position", return_value=False),
-            patch.object(trading_daemon, "has_position_bought_today", return_value=False),
-            patch.object(trading_daemon, "_d_relay_pair_active_today", return_value=False),
-            patch.object(trading_daemon, "load_pending_buys", return_value=[]),
-            patch.object(trading_daemon, "_pov_active_today", return_value=False),
+            patch_daemon("has_open_local_position", return_value=False),
+            patch_daemon("has_position_bought_today", return_value=False),
+            patch_daemon("_d_relay_pair_active_today", return_value=False),
+            patch_daemon("load_pending_buys", return_value=[]),
+            patch_daemon("_pov_active_today", return_value=False),
         ):
             monitor_allowed, monitor_reason = trading_daemon.d_intraday_monitor_gate(decisions)
             entry_allowed, entry_reason = trading_daemon.d_intraday_entry_gate(decisions)
@@ -313,14 +312,13 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
             "side": "BUY",
         }])
         with (
-            patch.object(trading_daemon, "_strategy_d_monitor_running", return_value=False),
-            patch.object(
-                trading_daemon,
+            patch_daemon("_strategy_d_monitor_running", return_value=False),
+            patch_daemon(
                 "d_intraday_monitor_gate",
                 return_value=(False, "今日存在E候选，D全日关闭"),
             ),
-            patch.object(trading_daemon, "load_json_config") as load_config,
-            patch.object(trading_daemon, "logger", return_value=MagicMock()),
+            patch_daemon("load_json_config") as load_config,
+            patch_daemon("logger", return_value=MagicMock()),
         ):
             trading_daemon.job_strategy_d(decisions)
 
@@ -342,32 +340,29 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
         }])
         orders_path = Path("e_orders.csv")
         with (
-            patch.object(trading_daemon, "now_beijing", return_value=frozen_now),
-            patch.object(trading_daemon, "is_trade_day", return_value=True),
-            patch.object(trading_daemon, "load_pending_buys", return_value=[]),
-            patch.object(trading_daemon, "_d_relay_pair_active_today", return_value=False),
-            patch.object(trading_daemon, "_pov_active_today", return_value=False),
-            patch.object(trading_daemon, "_strategy_d_monitor_running", return_value=False),
-            patch.object(
-                trading_daemon,
+            patch_daemon("now_beijing", return_value=frozen_now),
+            patch_daemon("is_trade_day", return_value=True),
+            patch_daemon("load_pending_buys", return_value=[]),
+            patch_daemon("_d_relay_pair_active_today", return_value=False),
+            patch_daemon("_pov_active_today", return_value=False),
+            patch_daemon("_strategy_d_monitor_running", return_value=False),
+            patch_daemon(
                 "read_cached_combined_decisions",
                 return_value=(decisions, orders_path),
             ),
-            patch.object(trading_daemon, "intraday_history_is_complete", return_value=True),
-            patch.object(
-                trading_daemon,
+            patch_daemon("intraday_history_is_complete", return_value=True),
+            patch_daemon(
                 "_strategy_d_checkpoint_recovery_check",
                 return_value=SimpleNamespace(ok=False, reason="无检查点"),
             ),
-            patch.object(trading_daemon, "_e_retry_running", return_value=False),
-            patch.object(trading_daemon, "_start_e_retry_thread") as start_e,
-            patch.object(
-                trading_daemon,
+            patch_daemon("_e_retry_running", return_value=False),
+            patch_daemon("_start_e_retry_thread") as start_e,
+            patch_daemon(
                 "d_intraday_monitor_gate",
                 return_value=(False, "今日存在E候选，D全日关闭"),
             ),
-            patch.object(trading_daemon, "job_strategy_d") as start_d,
-            patch.object(trading_daemon, "logger", return_value=MagicMock()),
+            patch_daemon("job_strategy_d") as start_d,
+            patch_daemon("logger", return_value=MagicMock()),
         ):
             trading_daemon.startup_catchup_strategy_d()
 
@@ -387,27 +382,24 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
             "strategy_leg": "D",
         }])
         with (
-            patch.object(trading_daemon, "now_beijing", return_value=frozen_now),
-            patch.object(trading_daemon, "is_trade_day", return_value=True),
-            patch.object(trading_daemon, "load_pending_buys", return_value=[]),
-            patch.object(trading_daemon, "_d_relay_pair_active_today", return_value=False),
-            patch.object(trading_daemon, "_pov_active_today", return_value=False),
-            patch.object(trading_daemon, "_strategy_d_monitor_running", return_value=False),
-            patch.object(
-                trading_daemon,
+            patch_daemon("now_beijing", return_value=frozen_now),
+            patch_daemon("is_trade_day", return_value=True),
+            patch_daemon("load_pending_buys", return_value=[]),
+            patch_daemon("_d_relay_pair_active_today", return_value=False),
+            patch_daemon("_pov_active_today", return_value=False),
+            patch_daemon("_strategy_d_monitor_running", return_value=False),
+            patch_daemon(
                 "read_cached_combined_decisions",
                 return_value=(decisions, Path("d_orders.csv")),
             ),
-            patch.object(trading_daemon, "has_position_bought_today", return_value=False),
-            patch.object(trading_daemon, "has_open_local_position", return_value=False),
-            patch.object(trading_daemon, "intraday_history_is_complete", return_value=False),
-            patch.object(
-                trading_daemon,
+            patch_daemon("has_position_bought_today", return_value=False),
+            patch_daemon("has_open_local_position", return_value=False),
+            patch_daemon("intraday_history_is_complete", return_value=False),
+            patch_daemon(
                 "_strategy_d_checkpoint_recovery_check",
                 return_value=SimpleNamespace(ok=False, reason="D策略代码或配置已变化"),
             ),
-            patch.object(
-                trading_daemon,
+            patch_daemon(
                 "_strategy_d_release_signal_clock",
                 return_value=(
                     {
@@ -420,8 +412,8 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
                     ),
                 ),
             ),
-            patch.object(trading_daemon, "job_strategy_d") as start_d,
-            patch.object(trading_daemon, "logger", return_value=MagicMock()),
+            patch_daemon("job_strategy_d") as start_d,
+            patch_daemon("logger", return_value=MagicMock()),
         ):
             trading_daemon.startup_catchup_strategy_d()
 
@@ -439,24 +431,21 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
         }])
         log = MagicMock()
         with (
-            patch.object(trading_daemon, "now_beijing", return_value=frozen_now),
-            patch.object(trading_daemon, "is_trade_day", return_value=True),
-            patch.object(trading_daemon, "load_pending_buys", return_value=[]),
-            patch.object(trading_daemon, "_d_relay_pair_active_today", return_value=False),
-            patch.object(trading_daemon, "_pov_active_today", return_value=False),
-            patch.object(trading_daemon, "_strategy_d_monitor_running", return_value=False),
-            patch.object(
-                trading_daemon,
+            patch_daemon("now_beijing", return_value=frozen_now),
+            patch_daemon("is_trade_day", return_value=True),
+            patch_daemon("load_pending_buys", return_value=[]),
+            patch_daemon("_d_relay_pair_active_today", return_value=False),
+            patch_daemon("_pov_active_today", return_value=False),
+            patch_daemon("_strategy_d_monitor_running", return_value=False),
+            patch_daemon(
                 "read_cached_combined_decisions",
                 return_value=(decisions, Path("d_orders.csv")),
             ),
-            patch.object(
-                trading_daemon,
+            patch_daemon(
                 "d_intraday_monitor_gate",
                 return_value=(True, "无持仓且无非D候选"),
             ),
-            patch.object(
-                trading_daemon,
+            patch_daemon(
                 "_strategy_d_release_signal_clock",
                 return_value=(
                     {
@@ -469,8 +458,8 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
                     ),
                 ),
             ),
-            patch.object(trading_daemon, "job_strategy_d") as start_d,
-            patch.object(trading_daemon, "logger", return_value=log),
+            patch_daemon("job_strategy_d") as start_d,
+            patch_daemon("logger", return_value=log),
         ):
             trading_daemon.startup_catchup_strategy_d()
 
@@ -573,10 +562,10 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
         }
         log = MagicMock()
         with (
-            patch.object(trading_daemon, "_load_e_signal_for_signal_date", return_value=None),
-            patch.object(trading_daemon, "_json_signal_has_date", return_value=False),
-            patch.object(trading_daemon, "signal_run_by_signal_date", return_value=run),
-            patch.object(trading_daemon, "logger", return_value=log),
+            patch_daemon("_load_e_signal_for_signal_date", return_value=None),
+            patch_daemon("_json_signal_has_date", return_value=False),
+            patch_daemon("signal_run_by_signal_date", return_value=run),
+            patch_daemon("logger", return_value=log),
         ):
             trading_daemon._log_e_signal_status("20260821")
 
@@ -595,7 +584,7 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
             "candidate_check_status": "FAILED",
         }
         with (
-            patch.object(trading_daemon, "signal_run_by_signal_date", return_value=run),
+            patch_daemon("signal_run_by_signal_date", return_value=run),
             patch.object(pd, "read_csv") as read_csv,
         ):
             self.assertIsNone(trading_daemon._load_e_candidate_count("20260821"))
@@ -628,7 +617,7 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
                 {"signal_type": "BUY", "ts_code": "600002.SH", "name": "D候选"},
             ]).to_csv(d_dir / "intraday_signals_20260821.csv", index=False)
 
-            with patch.object(trading_daemon, "PROJECT_ROOT", root):
+            with patch_daemon("PROJECT_ROOT", root):
                 a_item = trading_daemon._read_close_candidate_artifact("A", "20260821")
                 c_item = trading_daemon._read_close_candidate_artifact("C", "20260821")
                 e_item = trading_daemon._read_close_candidate_artifact("E", "20260821")
@@ -664,8 +653,8 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
             )
             log = MagicMock()
             with (
-                patch.object(trading_daemon, "PROJECT_ROOT", root),
-                patch.object(trading_daemon, "logger", return_value=log),
+                patch_daemon("PROJECT_ROOT", root),
+                patch_daemon("logger", return_value=log),
             ):
                 trading_daemon._log_close_pipeline_candidate_summary("20260821")
 
@@ -701,9 +690,9 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
                 return results[len(sent) - 1]
 
             with (
-                patch.object(trading_daemon, "PROJECT_ROOT", root),
-                patch.object(trading_daemon, "logger", return_value=MagicMock()),
-                patch.object(trading_daemon, "_notify", side_effect=fake_notify),
+                patch_daemon("PROJECT_ROOT", root),
+                patch_daemon("logger", return_value=MagicMock()),
+                patch_daemon("_notify", side_effect=fake_notify),
             ):
                 trading_daemon._log_close_pipeline_candidate_summary("20261030")  # 推送失败
                 trading_daemon._log_close_pipeline_candidate_summary("20261030")  # 再推，成功
@@ -728,7 +717,7 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
                 "src.live_order_gateway.LiveOrderGateway.assert_real_order_allowed",
                 side_effect=RuntimeError("认证失效"),
             ) as gate,
-            patch.object(trading_daemon, "_qmt_get") as qmt_get,
+            patch_daemon("_qmt_get") as qmt_get,
         ):
             with self.assertRaisesRegex(RuntimeError, "认证失效"):
                 proxy.place_order(SimpleNamespace(side="BUY"))
@@ -739,26 +728,24 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
         decisions = pd.DataFrame([{"action": "ALLOW_ABC_BUY_PREVIEW"}])
         log = MagicMock()
         with (
-            patch.object(trading_daemon, "check_and_close_positions"),
-            patch.object(trading_daemon, "confirm_pending_premarket_buys"),
-            patch.object(trading_daemon, "_d_relay_pair_active_today", return_value=False),
-            patch.object(trading_daemon, "_pov_active_today", return_value=False),
-            patch.object(trading_daemon, "has_position_bought_today", return_value=False),
-            patch.object(trading_daemon, "load_pending_buys", return_value=[]),
-            patch.object(
-                trading_daemon,
+            patch_daemon("check_and_close_positions"),
+            patch_daemon("confirm_pending_premarket_buys"),
+            patch_daemon("_d_relay_pair_active_today", return_value=False),
+            patch_daemon("_pov_active_today", return_value=False),
+            patch_daemon("has_position_bought_today", return_value=False),
+            patch_daemon("load_pending_buys", return_value=[]),
+            patch_daemon(
                 "load_combined_decisions",
                 return_value=(decisions, Path("orders.csv")),
             ),
-            patch.object(trading_daemon, "d_intraday_monitor_gate", return_value=(False, "A占用")),
-            patch.object(
-                trading_daemon,
+            patch_daemon("d_intraday_monitor_gate", return_value=(False, "A占用")),
+            patch_daemon(
                 "_new_buy_execution_gate",
                 return_value=(False, "认证状态=FAIL_STRICT_RELEASE_REQUIRED"),
             ),
-            patch.object(trading_daemon, "_notify_new_buy_gate_block") as blocked_notify,
-            patch.object(trading_daemon, "_enqueue_opening_pov_from_plan") as enqueue,
-            patch.object(trading_daemon, "logger", return_value=log),
+            patch_daemon("_notify_new_buy_gate_block") as blocked_notify,
+            patch_daemon("_enqueue_opening_pov_from_plan") as enqueue,
+            patch_daemon("logger", return_value=log),
         ):
             trading_daemon.job_opening_buy()
 
@@ -784,30 +771,29 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
             2026, 8, 24, 8, 50, tzinfo=trading_daemon.BEIJING_TZ
         )
         log = MagicMock()
-        previous = trading_daemon._last_final_plan
+        previous = daemon_reports._last_final_plan
         try:
             with (
                 patch.object(trading_daemon.glob, "glob", return_value=["orders.csv"]),
                 patch.object(pd, "read_csv", return_value=orders),
-                patch.object(trading_daemon, "_load_e_signal_for_signal_date", return_value=None),
-                patch.object(trading_daemon, "load_positions", return_value=[]),
-                patch.object(trading_daemon, "today_beijing", return_value=frozen_now.date()),
-                patch.object(trading_daemon, "now_beijing", return_value=frozen_now),
+                patch_daemon("_load_e_signal_for_signal_date", return_value=None),
+                patch_daemon("load_positions", return_value=[]),
+                patch_daemon("today_beijing", return_value=frozen_now.date()),
+                patch_daemon("now_beijing", return_value=frozen_now),
                 # 本例专门验证发布认证失败；停手门禁独立设为允许，避免依赖
                 # 当前生产日期的判定文件。停手优先级另有故障回归用例覆盖。
-                patch.object(trading_daemon, "_equity_curve_stop_block_reason", return_value=""),
-                patch.object(
-                    trading_daemon,
+                patch_daemon("_equity_curve_stop_block_reason", return_value=""),
+                patch_daemon(
                     "_new_buy_execution_gate",
                     return_value=(False, "认证状态=FAIL_STRICT_RELEASE_REQUIRED"),
                 ),
-                patch.object(trading_daemon, "_live_plan_sizing") as sizing,
-                patch.object(trading_daemon, "logger", return_value=log),
+                patch_daemon("_live_plan_sizing") as sizing,
+                patch_daemon("logger", return_value=log),
             ):
                 trading_daemon._log_decision_chain_summary("20260821")
         finally:
-            current = trading_daemon._last_final_plan
-            trading_daemon._last_final_plan = previous
+            current = daemon_reports._last_final_plan
+            daemon_reports._last_final_plan = previous
 
         self.assertEqual(
             current["execution_block_reason"],
@@ -823,8 +809,8 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
     def test_plan_notification_calls_blocked_candidate_non_executable(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             state_path = Path(temporary) / "open_plan_push.json"
-            previous = trading_daemon._last_final_plan
-            trading_daemon._last_final_plan = {
+            previous = daemon_reports._last_final_plan
+            daemon_reports._last_final_plan = {
                 "action_date": "20260824",
                 "final_buy": {
                     "strategy": "A",
@@ -836,18 +822,16 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
                 "live_sizing": None,
             }
             try:
-                with patch.object(
-                    trading_daemon,
+                with patch_daemon(
                     "_PLAN_PUSH_STATE",
                     state_path,
-                ), patch.object(
-                    trading_daemon,
+                ), patch_daemon(
                     "_notify",
                     return_value=True,
                 ) as notify:
                     trading_daemon.push_open_plan_notification("早盘")
             finally:
-                trading_daemon._last_final_plan = previous
+                daemon_reports._last_final_plan = previous
 
         _event, title, body = notify.call_args.args[:3]
         self.assertIn("候选不可执行", title)
@@ -857,8 +841,8 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
     def test_expired_candidate_notification_keeps_d_closed_all_day(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             state_path = Path(temporary) / "open_plan_push.json"
-            previous = trading_daemon._last_final_plan
-            trading_daemon._last_final_plan = {
+            previous = daemon_reports._last_final_plan
+            daemon_reports._last_final_plan = {
                 "action_date": "20260824",
                 "final_buy": {
                     "strategy": "F",
@@ -871,18 +855,16 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
                 "live_sizing": None,
             }
             try:
-                with patch.object(
-                    trading_daemon,
+                with patch_daemon(
                     "_PLAN_PUSH_STATE",
                     state_path,
-                ), patch.object(
-                    trading_daemon,
+                ), patch_daemon(
                     "_notify",
                     return_value=True,
                 ) as notify:
                     trading_daemon.push_open_plan_notification("早盘")
             finally:
-                trading_daemon._last_final_plan = previous
+                daemon_reports._last_final_plan = previous
 
         _event, title, body = notify.call_args.args[:3]
         self.assertIn("原候选已错过执行窗口", title)
@@ -933,7 +915,7 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
 
     def test_empty_ac_plan_file_is_treated_as_no_candidate_in_broadcast(self) -> None:
         log = MagicMock()
-        previous = trading_daemon._last_final_plan
+        previous = daemon_reports._last_final_plan
         try:
             with (
                 patch.object(
@@ -946,18 +928,17 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
                     "read_csv",
                     side_effect=pd.errors.EmptyDataError("No columns to parse from file"),
                 ),
-                patch.object(
-                    trading_daemon,
+                patch_daemon(
                     "_load_e_signal_for_signal_date",
                     return_value=None,
                 ),
-                patch.object(trading_daemon, "load_positions", return_value=[]),
-                patch.object(trading_daemon, "logger", return_value=log),
+                patch_daemon("load_positions", return_value=[]),
+                patch_daemon("logger", return_value=log),
             ):
                 trading_daemon._log_decision_chain_summary("20260818")
         finally:
-            current = trading_daemon._last_final_plan
-            trading_daemon._last_final_plan = previous
+            current = daemon_reports._last_final_plan
+            daemon_reports._last_final_plan = previous
 
         self.assertIsNone(current["final_buy"])
         message = str(log.info.call_args.args[0])
@@ -969,7 +950,7 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
 
     def test_e_readonly_candidate_is_shown_when_position_blocks_formal_signal(self) -> None:
         log = MagicMock()
-        previous = trading_daemon._last_final_plan
+        previous = daemon_reports._last_final_plan
 
         def run_status(path: Path, _signal_date: str) -> dict:
             if "strategy_e" in str(path):
@@ -995,23 +976,19 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
                     "read_csv",
                     side_effect=pd.errors.EmptyDataError("No columns to parse from file"),
                 ),
-                patch.object(
-                    trading_daemon,
+                patch_daemon(
                     "_load_e_signal_for_signal_date",
                     return_value=None,
                 ),
-                patch.object(
-                    trading_daemon,
+                patch_daemon(
                     "signal_run_by_signal_date",
                     side_effect=run_status,
                 ),
-                patch.object(
-                    trading_daemon,
+                patch_daemon(
                     "_load_candidate_csv_for_broadcast",
                     return_value=None,
                 ),
-                patch.object(
-                    trading_daemon,
+                patch_daemon(
                     "load_positions",
                     return_value=[{
                         "strategy_leg": "E",
@@ -1022,12 +999,12 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
                         "planned_exit_date": "20260821",
                     }],
                 ),
-                patch.object(trading_daemon, "logger", return_value=log),
+                patch_daemon("logger", return_value=log),
             ):
                 trading_daemon._log_decision_chain_summary("20260820")
         finally:
-            current = trading_daemon._last_final_plan
-            trading_daemon._last_final_plan = previous
+            current = daemon_reports._last_final_plan
+            daemon_reports._last_final_plan = previous
 
         self.assertIsNone(current["final_buy"])
         message = str(log.info.call_args.args[0])
@@ -1070,23 +1047,20 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
                 }, "上游策略占用"
             return None, ""
 
-        previous = trading_daemon._last_final_plan
+        previous = daemon_reports._last_final_plan
         try:
             with (
                 patch.object(trading_daemon.glob, "glob", return_value=["orders.csv"]),
                 patch.object(pd, "read_csv", return_value=orders),
-                patch.object(
-                    trading_daemon,
+                patch_daemon(
                     "_load_e_signal_for_signal_date",
                     return_value=e_signal,
                 ),
-                patch.object(
-                    trading_daemon,
+                patch_daemon(
                     "_load_readonly_candidate_for_broadcast",
                     side_effect=readonly_candidate,
                 ),
-                patch.object(
-                    trading_daemon,
+                patch_daemon(
                     "load_positions",
                     return_value=[{
                         "strategy_leg": "E",
@@ -1096,11 +1070,11 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
                         "planned_exit_date": "20260821",
                     }],
                 ),
-                patch.object(trading_daemon, "logger", return_value=log),
+                patch_daemon("logger", return_value=log),
             ):
                 trading_daemon._log_decision_chain_summary("20260820")
         finally:
-            trading_daemon._last_final_plan = previous
+            daemon_reports._last_final_plan = previous
 
         message = str(log.info.call_args.args[0])
         for expected in (
