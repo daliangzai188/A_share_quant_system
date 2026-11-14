@@ -40,8 +40,11 @@ def main():
                           env=env, stdout=subprocess.DEVNULL)
     out = os.path.join(env['LOCALAPPDATA'], 'A_System', 'qmt_native', 'qmt_export', 'trade_completion_summary.csv')
     same = os.path.exists(out) and open(out, 'rb').read() == data
-    print('export lines', len(lines), 'repeated', len(lines) - first, 'rebuilt identical', same)
-    print('RESULT', 'PASS' if same and len(lines) == first and len(lines) > 1 else 'FAIL')
+    # 2026-11-14：C:\A_System\reports\qmt_native\qmt_export 里再放一份（随双向同步到 Mac），内容逐字节相同
+    mirror = os.path.join(env['A_SYSTEM_ROOT'], 'reports', 'qmt_native', 'qmt_export', 'trade_completion_summary.csv')
+    mirrored = os.path.exists(mirror) and open(mirror, 'rb').read() == data and os.path.exists(mirror + '.json')
+    print('export lines', len(lines), 'repeated', len(lines) - first, 'rebuilt identical', same, 'mirror identical', mirrored)
+    print('RESULT', 'PASS' if same and mirrored and len(lines) == first and len(lines) > 1 else 'FAIL')
 
 
 if __name__ == '__main__':

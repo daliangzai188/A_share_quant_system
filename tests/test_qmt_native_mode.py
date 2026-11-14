@@ -272,5 +272,60 @@ class WarningBannerTests(unittest.TestCase):
         self.assertEqual(sum(1 for line in out if line.startswith('⛔')), 3, '开始一次，之后每30分钟重复')
 
 
+class DailyReportTerminalTests(unittest.TestCase):
+    """2026-11-14起终端显示与手机同一份策略日报；还没有日报时退回旧的三级警告横幅。"""
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        self.daily = self.dir / 'daily_report_latest.json'
+        self.old = self.dir / 'strategy_warnings_latest.json'
+        self.settings = {'enabled': True, 'qmt_log_dir': str(self.dir), 'strategy_file': 'A_SYSTEM_QMT_INNER',
+                         'forwarder_task': 'A_System_QmtNotifyForwarder', 'stale_minutes': 10,
+                         'warning_file': str(self.old), 'daily_report_file': str(self.daily)}
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def write(self, title, lines):
+        import json
+        self.daily.write_text(json.dumps({'signal_date': '20261116', 'level': 'x', 'title': title, 'lines': lines},
+                                         ensure_ascii=False), encoding='utf-8')
+
+    def test_status_shows_the_daily_report_or_falls_back_to_the_old_banner(self):
+        import json
+        self.old.write_text(json.dumps({'signal_date': '20261113', 'warnings': [
+            {'tier': 2, 'scope': 'A腿', 'key': 'k', 'detail': 'd', 'action': 'a', 'acknowledged': ''}]},
+            ensure_ascii=False), encoding='utf-8')
+        _ok, lines = status_lines(self.settings, now=NOW, qmt=lambda: True, task=lambda n: 'Running')
+        self.assertIn('⚠️ 中级警告（20261113）：A腿需要策略复核', lines, '还没有日报时显示旧横幅')
+        self.write('✅ 方案甲策略日报 11-16：一切正常', ['要处理：无', '实盘：逐笔对账一致'])
+        _ok, lines = status_lines(self.settings, now=NOW, qmt=lambda: True, task=lambda n: 'Running')
+        self.assertIn('✅ 方案甲策略日报 11-16：一切正常', lines)
+        self.assertIn('实盘：逐笔对账一致', lines)
+        self.assertFalse(any(line.startswith('⚠️ 中级警告（20261113）') for line in lines), '有日报就只显示日报')
+
+    def test_follow_log_prints_each_new_report_once_and_repeats_final_every_half_hour(self):
+        self.write('✅ 方案甲策略日报 11-16：一切正常', ['要处理：无'])
+        out, clock = [], [NOW]
+        ticks = iter(range(10000))
+
+        def sleep(_seconds):
+            clock[0] += dt.timedelta(seconds=30)
+            if clock[0] == NOW + dt.timedelta(minutes=10):
+                self.write('🚨 方案甲策略日报 11-17：需要临时复核（1项）', ['要处理：', '1.【数据·新】x'])
+
+        def stop():
+            return next(ticks) >= 140   # 70 分钟
+
+        follow_log(self.settings, out=out.append, clock=lambda: clock[0], sleep=sleep, stop=stop)
+        self.assertEqual(sum(1 for line in out if line.startswith('✅ 方案甲策略日报')), 1, '开始时显示一次')
+        self.assertEqual(sum(1 for line in out if line.startswith('🚨 方案甲策略日报')), 1, '新日报显示一次，不重复')
+        self.write('⛔ 方案甲策略日报 11-18：终极警告，建议停止交易、优化策略（A腿）', ['要处理：'])
+        out.clear()
+        ticks = iter(range(10000))
+        follow_log(self.settings, out=out.append, clock=lambda: clock[0], sleep=sleep, stop=stop)
+        self.assertEqual(sum(1 for line in out if line.startswith('⛔')), 3, '终极：开始一次，之后每30分钟重复')
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -74,6 +74,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import qn_state_sink  # noqa: E402
 CHECKS = Path(__file__).resolve().with_name('qmt_external_checks.py')
 CHECKS_DIR = BASE / 'external_checks'
+# 2026-11-14：实盘成交汇总在 C:\A_System 里再放一份，随两端双向同步实时到 Mac（AppData 不在同步文件夹里）
+MIRROR_DIR = ROOT / 'reports' / 'qmt_native' / 'qmt_export'
 KEEP_IDS = 5000
 BJ = dt.timezone(dt.timedelta(hours=8))
 REMIND_SECONDS = 3600
@@ -265,6 +267,14 @@ def store_export(rel: str, ident: str, chunks: dict, total: int) -> None:
     os.replace(tmp, target)
     meta = {'path': rel, 'id': ident, 'bytes': len(data), 'received_at': dt.datetime.now(BJ).isoformat()}
     (EXPORT_DIR / (Path(rel).name + '.json')).write_text(json.dumps(meta), encoding='utf-8')
+    try:  # 同步用的副本写不成不影响原来的导出（检查只读 AppData 那份）
+        MIRROR_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = MIRROR_DIR / (target.name + '.tmp')
+        tmp.write_bytes(data)
+        os.replace(tmp, MIRROR_DIR / target.name)
+        (MIRROR_DIR / (target.name + '.json')).write_text(json.dumps(meta), encoding='utf-8')
+    except OSError as exc:
+        log('export mirror failed: %s' % exc)
 
 
 def collect_exports(chunk: bytes, mode: str, pending: dict) -> None:

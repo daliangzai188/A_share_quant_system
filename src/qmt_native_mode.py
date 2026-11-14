@@ -47,30 +47,55 @@ def warning_file(settings: dict[str, Any]) -> Path | None:
     return Path(base) / "A_System" / "qmt_native" / "external_checks" / "strategy_warnings_latest.json"
 
 
+def daily_report_file(settings: dict[str, Any]) -> Path | None:
+    """QMT 外检查（qmt_external_checks.py）每个交易日写的策略日报（2026-11-14起）。"""
+    configured = str(settings.get("daily_report_file") or "")
+    if configured:
+        return Path(configured)
+    base = os.environ.get("LOCALAPPDATA") or ""
+    if not base:
+        return None
+    return Path(base) / "A_System" / "qmt_native" / "external_checks" / "daily_report_latest.json"
+
+
+def _banner_source(settings: dict[str, Any]) -> Path | None:
+    """有策略日报就显示日报；还没有（新版本第一次跑之前）就显示旧的三级警告横幅。"""
+    daily = daily_report_file(settings)
+    if daily is not None and daily.is_file():
+        return daily
+    return warning_file(settings)
+
+
 def warning_banner(settings: dict[str, Any]) -> list[str]:
-    """未处理的中级/终极警告横幅；没有警告、文件缺失或读不了时返回空列表。"""
-    path = warning_file(settings)
+    """终端显示的最新策略日报（2026-11-14起，与手机上的日报同一份）；还没有日报时显示未处理的中级/终极警告横幅；
+    文件缺失或读不了时返回空列表。"""
+    path = _banner_source(settings)
     if path is None:
         return []
     try:
         from src.strategy_warnings import banner_lines, read_report
     except Exception:
         return []
-    return banner_lines(read_report(path))
+    report = read_report(path)
+    if path == daily_report_file(settings):
+        from src.daily_report import terminal_lines
+        return terminal_lines(report)
+    return banner_lines(report)
 
 
 class WarningBanner:
-    """日志跟随里的三级警告：开始显示时一次，QMT 外检查写出新结果时一次，终极警告每 30 分钟重复一次。"""
+    """日志跟随里的策略日报（没有日报时是三级警告横幅）：开始显示时一次，QMT 外检查写出新结果时一次，
+    终极警告每 30 分钟重复一次。"""
 
     def __init__(self, settings: dict[str, Any], out: Callable[[str], None], clock: Callable[[], dt.datetime]):
         self.settings, self.out, self.clock = settings, out, clock
-        self.path = warning_file(settings)
-        self.stamp: float | None = None
+        self.stamp: tuple[str, float] | None = None
         self.shown_at: dt.datetime | None = None
 
     def check(self, force: bool = False) -> None:
+        path = _banner_source(self.settings)
         try:
-            stamp = self.path.stat().st_mtime if self.path is not None else None
+            stamp = (str(path), path.stat().st_mtime) if path is not None else None
         except OSError:
             stamp = None
         lines = warning_banner(self.settings)

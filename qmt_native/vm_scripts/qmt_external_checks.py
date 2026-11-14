@@ -19,13 +19,20 @@ Windows VM, outside QMT, where files and the network may still be used:
      three-tier strategy warnings (src/strategy_warnings.py: middle = strategy review, final = stop trading
      and optimise is advised; push and terminal only, nothing is ever stopped) replay ACE+M under the live
      rules and sizing, and also report how many open days have passed since any leg last picked a stock
-     (signal drought, a first-tier alarm); factor health covers A, C and, from 2026-11-13, E;
-  4. production push planning (acknowledged keys, reminder every N open days) and Bark push;
-  5. the results of 3 go to external_checks\\factor_health_latest.json and the run log every day,
-     and on the last open day of each week a "因子健康周报" push shows the values of both legs and
-     the alignment result, acknowledged conditions included (they are not alarmed again, but must
-     stay visible: before 11-11 an acknowledged leg's values were seen by nobody).
+     (signal drought, a first-tier alarm); factor health covers A, C and, from 2026-11-13, E. From
+     2026-11-14 the shadow account's 3/6-month lines, the normal-market stall and the live loss streak
+     (checked and pushed inside QMT as before) are also computed here, so the daily report is complete;
+  4. (2026-11-14, user's request) exactly one push per trading day: the strategy daily report
+     (src/daily_report.py). Its title carries the level (✅ all normal, 🚨 first-tier review, ⚠️ middle,
+     ⛔ final), the problems come first with what to do, acknowledged conditions are listed as "观察中"
+     with their recheck dates, then the values. It replaces the separate review pushes, the reminder every
+     N open days and the weekly factor-health push. A failed push is retried (exit 2, not marked done);
+     a sent report is never sent twice for the same day. Escalation of unhandled middle warnings still
+     uses the first-seen dates kept in review_trigger_state.json;
+  5. the report goes to external_checks\\daily_report_latest.json, which the terminal (start_windows.py's
+     log window and status) prints; the old result files are still written.
 
+Morning notices, intraday alerts and everything QMT pushes by itself are not touched.
 It never talks to QMT and never changes the stop decision or any trading state.
 Started by qmt_notify_forwarder.py after 18:40 on trading days.
 
@@ -48,6 +55,7 @@ BASE = Path(os.environ.get('LOCALAPPDATA', str(ROOT / 'runtime'))) / 'A_System' 
 WORK = BASE / 'external_checks'
 EXPORTED_SUMMARY = BASE / 'qmt_export' / 'trade_completion_summary.csv'
 OLD_SUMMARY = ROOT / 'reports' / 'execution_tracking' / 'trade_completion_summary.csv'
+MIRROR = ROOT / 'reports' / 'qmt_native' / 'external_checks'  # 2026-11-14：结果再放一份进 C:\A_System，随双向同步到 Mac
 BJ = dt.timezone(dt.timedelta(hours=8))
 
 sys.path.insert(0, str(ROOT))
@@ -86,96 +94,24 @@ def live_trades(config):
     return filled, complete
 
 
-def _slippage_line(name, stats, error):
-    if error:
-        return '%s实盘滑点：没算成（%s），已单独推送' % (name, error)
-    done, need = int(stats.get('completed', 0)), int(stats.get('trades', 10))
-    limit, average = float(stats.get('limit_pct', 1.5)), stats.get('average_pct')
-    if not done:
-        return '%s实盘滑点：还没有已平仓的%s' % (name, name)
-    if done < need:
-        return '%s实盘滑点：已平仓%d笔，平均双边%+.2f%%（满%d笔后超过%.1f%%报警）' % (name, done, average, need, limit)
-    return '%s实盘滑点：最近%d笔平均双边%+.2f%%（报警线%.1f%%）%s' % (
-        name, need, average, limit, '，已单独推送' if stats.get('triggered') else '')
+def _write_json(path: Path, payload) -> None:
+    tmp = path.with_suffix('.tmp')
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=1, default=str), encoding='utf-8')
+    os.replace(tmp, path)
 
 
-def weekly_health_message(day, health, health_error, ack_entries, alignment, alignment_error,
-                          slippage=None, slippage_error='', warnings=None, warnings_error='', tiered=(),
-                          ace_slippage=None, ace_slippage_error='', coverage=None, coverage_error=''):
-    """Title and body of the weekly push of the outside-QMT checks (pure, for tests)."""
-    recheck = {str(e.get('key', '')): str(e.get('recheck_by', ''))
-               for e in (ack_entries or []) if str(e.get('recheck_by', '') or '').replace('-', '') > str(day)}
-    lines = []
-    if health_error:
-        lines.append('因子健康：没算成（%s），已按“检查失效”单独推送' % health_error)
-    for leg, item in sorted((health or {}).items()):
-        if not item:
-            continue
-        text = '%s腿：滚动12个月优势%+.2f%%，冻结线%+.2f%%（%d个样本，截至%s）' % (
-            leg, float(item['value']) * 100, float(item['line']) * 100, int(item['samples']), item.get('as_of', ''))
-        below = int(item.get('months_below', 0) or 0)
-        if item.get('triggered'):
-            key = 'factor_health:%s' % leg
-            text += '，连续%d个月在线下，%s' % (below, ('已复核登记，%s复查' % recheck[key]) if key in recheck else '需临时复核')
-        elif below:
-            text += '，已连续%d个月在线下（%d个月报警）' % (below, int(item.get('need_months', 2) or 2))
-        else:
-            text += '，健康'
-        lines.append(text)
-    if alignment_error:
-        lines.append('实盘与正式规则逐笔对账：没算成（%s），已单独推送' % alignment_error)
-    elif alignment is None:
-        lines.append('实盘与正式规则逐笔对账：未启用')
-    elif alignment:
-        lines.append('实盘与正式规则逐笔对账：%d处不一致，已单独推送' % len(alignment))
-    else:
-        lines.append('实盘与正式规则逐笔对账：一致')
-    if slippage_error or slippage is not None:
-        lines.append(_slippage_line('M', slippage or {}, slippage_error))
-    if ace_slippage_error or ace_slippage is not None:
-        lines.append(_slippage_line('A/C/E', ace_slippage or {}, ace_slippage_error))
-    if coverage_error:
-        lines.append('研究池覆盖率：没算成（%s），已单独推送' % coverage_error)
-    elif coverage is not None:
-        rows, limit_up = int(coverage.get('pool_rows', 0)), coverage.get('limit_up_count')
-        if not limit_up:
-            lines.append('研究池覆盖率：%s没有全市场涨停统计，未判断' % day)
-        else:
-            lines.append('研究池覆盖率：%s研究池%d只/全市场涨停%d只（%.0f%%，低于%.0f%%报警，正常时最低32%%）' % (
-                day, rows, int(limit_up), 100.0 * rows / float(limit_up), 100.0 * float(coverage.get('min_ratio', 0.3))))
-    if warnings_error:
-        lines.append('三级警告：没算成（%s），已单独推送' % warnings_error)
-    elif warnings is not None:
-        def scopes(final):
-            # 已登记复核的写明复查日，和上面因子健康那行一致（登记只停单独提醒，条件还在）
-            items = []
-            for t in tiered:
-                tier = getattr(t, 'tier', 1)
-                if (tier >= 3) != final or tier < 2:
-                    continue
-                key = str(getattr(t, 'key', ''))
-                text = str(t.scope) + ('，已复核登记，%s复查' % recheck[key] if key in recheck else '')
-                if text not in items:
-                    items.append(text)
-            return '；'.join(sorted(items))
-        finals, middles = scopes(True), scopes(False)
-        state = '终极（%s）' % finals if finals else ('中级（%s）' % middles if middles else '无')
-        legs = warnings.get('legs', {})
-        def pct(item):
-            value = (item or {}).get('value')
-            return '不足10笔' if value is None else '%+.1f%%' % (value * 100)
-        combo = (warnings.get('combo_drawdown') or {}).get('value')
-        lines.append('三级警告：%s；ACE+M规则回放回撤%s，最近12个月A%s、C%s、E%s、M%s' % (
-            state, '%.1f%%' % (combo * 100) if combo is not None else '?', pct(legs.get('A')), pct(legs.get('C')),
-            pct(legs.get('E')), pct(legs.get('M'))))
-        signals = warnings.get('signals') or {}
-        if signals.get('gap') is not None:
-            last = signals.get('last') or {}
-            lines.append('选股信号：最近一次%s（A %s、C %s、E %s、M %s），之后%d个行动日没有新信号（超过%d天报警）' % (
-                signals.get('last_any') or '无', last.get('A') or '无', last.get('C') or '无', last.get('E') or '无',
-                last.get('M') or '无', int(signals['gap']), int(signals.get('line', 22))))
-    lines.append('优势=满足该腿条件的涨停股（T+1开盘买、T+2收盘卖）平均收益减去其余涨停股；只做观察，不影响停手判定。')
-    return '📊 方案甲因子健康周报 %s' % day, '\n'.join(lines)
+def _mirror(names) -> None:
+    """把结果文件复制一份到 C:\\A_System 里（同步到 Mac 用）；复制不成只记日志，不影响检查。"""
+    try:
+        MIRROR.mkdir(parents=True, exist_ok=True)
+        for name in names:
+            source = WORK / name
+            if source.is_file():
+                tmp = MIRROR / (name + '.tmp')
+                tmp.write_bytes(source.read_bytes())
+                os.replace(tmp, MIRROR / name)
+    except OSError as exc:
+        print('MIRROR_FAILED %s' % exc, flush=True)
 
 
 def run(args) -> int:
@@ -185,8 +121,8 @@ def run(args) -> int:
     except ImportError:
         pass
     from src.utils.config import load_json_config
-    from src.equity_curve_stop import is_week_last_open_day, open_dates_from_calendar
-    from src.review_triggers import active_acknowledgements, check_failure_trigger, factor_health_triggers, plan_push
+    from src.equity_curve_stop import open_dates_from_calendar
+    from src.review_triggers import FINAL_STANDARD, active_acknowledgements, check_failure_trigger, factor_health_triggers
     import scripts.update_equity_curve_stop as prod
 
     day = str(args.signal_date)
@@ -213,16 +149,19 @@ def run(args) -> int:
     ace_slip, ace_slip_error = None, ''
     coverage, coverage_error = None, ''
     warn_metrics, warn_error = None, ''
+    shadow_values, shadow_error = None, ''
+    stall, stall_error = None, ''
+    live_loss, live_loss_error = None, ''
     start = str(section.get('alignment_start_date', '') or '')
     if start:
-        filled = None
+        filled = complete = None
         shadow = None
         try:
             shadow = prod.build_shadow_replay(
                 project_root=ROOT, feature_path=dataset / 'strict_feature_pool.csv',
                 sentiment_path=dataset / 'market_sentiment.csv', calendar_path=calendar,
                 start=settings.history_start, end=day, work_dir=settings.work_dir)
-            filled, _complete = live_trades(config)
+            filled, complete = live_trades(config)
             from src.live_alignment import run_alignment
             align = run_alignment(
                 shadow, filled, ma_window=settings.ma_window, lag=settings.lag_trading_days, start=start, end=day,
@@ -235,7 +174,7 @@ def run(args) -> int:
         try:
             from src.review_triggers import m_slippage_stats, m_slippage_triggers
             if filled is None:
-                filled, _complete = live_trades(config)
+                filled, complete = live_trades(config)
             slip = m_slippage_stats(filled, start=str(section.get('ace_m_start_date', '') or ''),
                                     trades=int(section.get('m_slippage_trades', 10)),
                                     limit_pct=float(section.get('m_slippage_limit_pct', 1.5)))
@@ -247,7 +186,7 @@ def run(args) -> int:
         try:
             from src.review_triggers import ace_slippage_stats, ace_slippage_triggers
             if filled is None:
-                filled, _complete = live_trades(config)
+                filled, complete = live_trades(config)
             ace_slip = ace_slippage_stats(filled, start=start, trades=int(section.get('ace_slippage_trades', 10)),
                                           limit_pct=float(section.get('ace_slippage_limit_pct', 1.2)))
             triggers.extend(ace_slippage_triggers(ace_slip))
@@ -280,6 +219,55 @@ def run(args) -> int:
                 traceback.print_exc()
                 warn_error = '%s: %s' % (type(exc).__name__, exc)
                 triggers.append(check_failure_trigger('三级警告（策略复核/停止交易建议）', warn_error))
+        # 2026-11-14起：QMT内照旧检查、推送的影子账失败线、正常行情连续不赚钱、实盘连续亏损也在这里算一遍，写进日报
+        if shadow is not None:
+            try:
+                from src.equity_curve_stop import current_stop_episode, load_weekly_report_settings
+                from src.review_triggers import shadow_triggers
+                weekly = load_weekly_report_settings(config)
+                nav = shadow['nav']
+                navs = nav.to_numpy()
+                triggers.extend(shadow_triggers(
+                    navs, window_3m=weekly.window_3m, window_6m=weekly.window_6m, fail_3m=weekly.shadow_3m_fail,
+                    fail_6m=weekly.shadow_6m_fail,
+                    stop_episode=current_stop_episode([str(d) for d in nav.index], navs, ma_window=settings.ma_window,
+                                                      lag=settings.lag_trading_days),
+                    worst_missed_gain=weekly.worst_stop_missed_gain))
+
+                def change(n):
+                    return float(navs[-1] / navs[-1 - n] - 1.0) if len(navs) > n else None
+                shadow_values = {'r3': change(weekly.window_3m), 'r6': change(weekly.window_6m),
+                                 'fail_3m': weekly.shadow_3m_fail, 'fail_6m': weekly.shadow_6m_fail}
+            except Exception as exc:
+                traceback.print_exc()
+                shadow_error = '%s: %s' % (type(exc).__name__, exc)
+                triggers.append(check_failure_trigger('影子账失败线', shadow_error))
+            try:
+                from src.review_triggers import regime_stall_triggers
+                stall = prod.compute_regime_stall(config, shadow['nav'], dataset / 'market_sentiment.csv', day)
+                triggers.extend(regime_stall_triggers(stall))
+            except Exception as exc:
+                traceback.print_exc()
+                stall_error = '%s: %s' % (type(exc).__name__, exc)
+                triggers.append(check_failure_trigger('正常行情连续不赚钱', stall_error))
+        try:
+            from src.review_triggers import live_loss_streak_triggers, monthly_realized_pnl
+            if complete is None:
+                filled, complete = live_trades(config)
+            need = int(section.get('live_loss_months', 3))
+            monthly = monthly_realized_pnl(complete, prod._completed_months(day))
+            triggers.extend(live_loss_streak_triggers(monthly, need_months=need))
+            streak = 0
+            for _month, pnl, count in reversed(list(monthly)):
+                if count > 0 and pnl < 0:
+                    streak += 1
+                else:
+                    break
+            live_loss = {'months': streak, 'need': need}
+        except Exception as exc:
+            traceback.print_exc()
+            live_loss_error = '%s: %s' % (type(exc).__name__, exc)
+            triggers.append(check_failure_trigger('实盘连续亏损', live_loss_error))
     print('FACTOR_HEALTH %s %s' % (day, json.dumps({'health': health, 'error': error, 'alignment_issues': None if align is None
                                                     else len(align), 'alignment_error': align_error,
                                                     'm_slippage': slip, 'm_slippage_error': slip_error,
@@ -292,56 +280,63 @@ def run(args) -> int:
         state = json.loads(state_path.read_text(encoding='utf-8')) if state_path.exists() else {}
     except (OSError, ValueError):
         state = {}
-    acknowledged = active_acknowledgements(section.get('acknowledged'), day)
+    entries = section.get('acknowledged') or []
+    acknowledged = active_acknowledgements(entries, day)
+    recheck = {str(e.get('key', '')): str(e.get('recheck_by', '')) for e in entries if str(e.get('key', '')) in acknowledged}
     if warn_metrics is not None:
         from src.strategy_warnings import escalate, load_warning_settings
         triggers = escalate(triggers, state, acknowledged=acknowledged, today=day, open_dates=dates,
                             open_days=load_warning_settings(config).escalate_open_days)
-    plan = plan_push(triggers, state, today=day, open_dates=dates,
-                     remind_every_open_days=int(section.get('remind_every_open_days', 5)),
-                     acknowledged=acknowledged)
-    print('REVIEW_TRIGGERS_EXTERNAL %s active=%d acknowledged=%d push=%s：%s' % (
-        day, len(triggers), sum(1 for t in triggers if t.key in acknowledged), plan.kind or 'none',
+    from src.daily_report import build_daily_report, value_lines
+    warn_section = dict(config.get('strategy_warnings', {}) or {})
+    values = {
+        'alignment': None if align is None else [t.detail for t in align], 'alignment_error': align_error,
+        'm_slippage': slip, 'm_slippage_error': slip_error, 'ace_slippage': ace_slip, 'ace_slippage_error': ace_slip_error,
+        'live_loss': live_loss, 'live_loss_error': live_loss_error,
+        'coverage': coverage, 'coverage_error': coverage_error,
+        'signals': (warn_metrics or {}).get('signals'),
+        'health': health, 'health_error': error,
+        'warnings': warn_metrics, 'warnings_error': warn_error,
+        'thresholds': {'combo_middle': (warn_section.get('middle') or {}).get('combo_drawdown', -0.315),
+                       'combo_final': (warn_section.get('final') or {}).get('combo_drawdown', -0.5)},
+        'shadow': shadow_values, 'shadow_error': shadow_error, 'stall': stall, 'stall_error': stall_error,
+    }
+    report = build_daily_report(day, triggers, acknowledged, recheck, state.get('first_seen', {}), value_lines(values),
+                                final_standard=FINAL_STANDARD)
+    print('STRATEGY_DAILY %s level=%s active=%d acknowledged=%d：%s' % (
+        day, report['level'], len(triggers), sum(1 for t in triggers if t.key in acknowledged),
         '；'.join(t.detail for t in triggers) or '无'), flush=True)
-    if plan.kind and not args.no_push:
-        if not prod.notify(plan.title, plan.body, level='timeSensitive'):
-            print('REVIEW_TRIGGERS_EXTERNAL_PUSH_FAILED %s（下次重试）' % day, flush=True)
+    print('STRATEGY_DAILY_REPORT %s\n%s' % (report['title'], report['body']), flush=True)
+    if args.no_push:
+        return 0
+    flag = WORK / ('daily_%s.json' % day)
+    if not flag.exists():
+        if not prod.notify(report['title'], report['body'], level='active' if report['level'] == 'ok' else 'timeSensitive'):
+            print('STRATEGY_DAILY_PUSH_FAILED %s（下次重试）' % day, flush=True)
             return 2
-    if not args.no_push:
-        state_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = state_path.with_suffix('.tmp')
-        tmp.write_text(json.dumps(plan.state, ensure_ascii=False, indent=2), encoding='utf-8')
-        os.replace(tmp, state_path)
-        if warn_metrics is not None or warn_error:
-            from src.strategy_warnings import warning_report
-            report = warning_report(triggers, acknowledged, warn_metrics or {}, signal_date=day,
-                                    generated_at=dt.datetime.now(BJ).isoformat())
-            report['error'] = warn_error
-            tmp = WORK / 'strategy_warnings_latest.tmp'
-            tmp.write_text(json.dumps(report, ensure_ascii=False, indent=1, default=str), encoding='utf-8')
-            os.replace(tmp, WORK / 'strategy_warnings_latest.json')
-        (WORK / 'factor_health_latest.json').write_text(json.dumps({
-            'signal_date': day, 'factor_health': health, 'factor_health_error': error,
-            'alignment_issues': None if align is None else [t.detail for t in align], 'alignment_error': align_error,
-            'm_slippage': slip, 'm_slippage_error': slip_error,
-            'ace_slippage': ace_slip, 'ace_slippage_error': ace_slip_error,
-            'pool_coverage': coverage, 'pool_coverage_error': coverage_error,
-            'strategy_warnings_error': warn_error,
-            'finished_at': dt.datetime.now(BJ).isoformat()}, ensure_ascii=False, indent=1, default=str), encoding='utf-8')
-        weekly_flag = WORK / ('weekly_%s.json' % day)
-        if is_week_last_open_day(dates, day) and not weekly_flag.exists():
-            title, body = weekly_health_message(day, health, error, section.get('acknowledged'), align, align_error,
-                                                slip, slip_error, warn_metrics, warn_error,
-                                                [t for t in triggers if getattr(t, 'tier', 1) >= 2],
-                                                ace_slip, ace_slip_error, coverage, coverage_error)
-            print('FACTOR_HEALTH_WEEKLY %s' % body.replace('\n', '；'), flush=True)
-            if not prod.notify(title, body, level='active'):
-                print('FACTOR_HEALTH_WEEKLY_PUSH_FAILED %s（下次重试）' % day, flush=True)
-                return 2
-            weekly_flag.write_text('{}', encoding='utf-8')
-        (WORK / ('done_%s.json' % day)).write_text(json.dumps({
-            'signal_date': day, 'triggers': [t.key for t in triggers], 'push': plan.kind or '',
-            'finished_at': dt.datetime.now(BJ).isoformat()}, ensure_ascii=False), encoding='utf-8')
+        flag.write_text(json.dumps({'title': report['title'], 'pushed_at': dt.datetime.now(BJ).isoformat()},
+                                   ensure_ascii=False), encoding='utf-8')
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    _write_json(state_path, {'first_seen': report['first_seen'], 'active_keys': sorted(report['first_seen'])})
+    _write_json(WORK / 'daily_report_latest.json', dict(report, generated_at=dt.datetime.now(BJ).isoformat()))
+    if warn_metrics is not None or warn_error:
+        from src.strategy_warnings import warning_report
+        old = warning_report(triggers, acknowledged, warn_metrics or {}, signal_date=day,
+                             generated_at=dt.datetime.now(BJ).isoformat())
+        old['error'] = warn_error
+        _write_json(WORK / 'strategy_warnings_latest.json', old)
+    _write_json(WORK / 'factor_health_latest.json', {
+        'signal_date': day, 'factor_health': health, 'factor_health_error': error,
+        'alignment_issues': None if align is None else [t.detail for t in align], 'alignment_error': align_error,
+        'm_slippage': slip, 'm_slippage_error': slip_error,
+        'ace_slippage': ace_slip, 'ace_slippage_error': ace_slip_error,
+        'pool_coverage': coverage, 'pool_coverage_error': coverage_error,
+        'strategy_warnings_error': warn_error,
+        'finished_at': dt.datetime.now(BJ).isoformat()})
+    _mirror(['daily_report_latest.json', 'factor_health_latest.json', 'strategy_warnings_latest.json'])
+    (WORK / ('done_%s.json' % day)).write_text(json.dumps({
+        'signal_date': day, 'triggers': [t.key for t in triggers], 'level': report['level'],
+        'finished_at': dt.datetime.now(BJ).isoformat()}, ensure_ascii=False), encoding='utf-8')
     return 0
 
 
@@ -360,8 +355,8 @@ def main() -> int:
         flag = WORK / ('failed_%s.json' % args.signal_date)
         if late and not args.no_push and not flag.exists():
             import scripts.update_equity_curve_stop as prod
-            prod.notify('⚠️ 临时复核触发检查没有完成',
-                        '%s: %s。QMT外的因子健康/逐笔对账今天没有被检查，次日停手判定不受影响。'
+            prod.notify('⚠️ 今天的方案甲策略日报没有生成',
+                        '%s: %s。QMT外的策略检查今天没有完成，次日停手判定不受影响。'
                         '请在Claude发送：甲·临时复核（先修好这项检查）。' % (type(exc).__name__, exc),
                         level='timeSensitive')
             flag.write_text('{}', encoding='utf-8')

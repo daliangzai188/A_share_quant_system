@@ -3,6 +3,9 @@
 daemon_pid
 *.pid
 (?d).sync-conflict-*
+// 2026-11-14起两端双向同步：代码版本库只在Mac用，虚拟机那份不能同步回来；写到一半的临时文件不同步
+.git
+*.tmp
 // 系统与缓存杂物
 (?d).DS_Store
 (?d)Thumbs.db
