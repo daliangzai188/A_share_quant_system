@@ -1842,6 +1842,10 @@ M的去留（2026-11-13起）：M的规则平时不调，只在年度复核决�
    被函数用`global`改写的全局变量和用到它的函数放在同一模块，别的模块要读写`模块名.变量`。新代码放进职责对应的模块，
    不要再往`scripts/trading_daemon.py`里加。测试里替换守护进程的函数、常量用`tests/daemon_testing.py`的`patch_daemon`
    （守护进程所有模块一起换，等同拆分前的`patch.object(trading_daemon, …)`）。
+8. 行情数据不进git（2026-11-14起）：`data/`下只跟踪随代码发布的参考表和模型表（交易日历、股票基本表、早期涨停计数、
+   成交概率模型表、D研究参考名单、2026-10-10历史补充证据），清单在`.gitignore`末尾；行情、加工结果、研究底座只在本机，
+   Mac和虚拟机由Syncthing双向同步。git里停止跟踪一批文件的提交，在同步工作区不能用`git merge`/`git pull`落地
+   （会删掉工作区文件并同步删到虚拟机），要用`git reset --mixed`再检出改动的文件（见提交说明）。
 
 数据更新方法继续执行`docs/monthly_three_year_data_update.md`；
 `docs/monthly_acde_optimization_sop.md`保留为研究方法与数据门禁参考，不再用于生产换版。

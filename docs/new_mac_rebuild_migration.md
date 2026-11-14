@@ -9,11 +9,10 @@
 ## 一、克隆能取得什么
 
 ```sh
-git lfs install
 git clone git@github.com:daliangzai188/A_share_quant_system.git A_System
 cd A_System
-git lfs pull
-python3 tools/market_data_backup.py verify
+# 行情不在 git 里（2026-11-14 起）：按第二节配好 Syncthing，data/ 同步完成后检查本机行情是否完整
+python3 tools/market_data_backup.py audit --end-date YYYYMMDD
 ```
 
 | 内容 | 获取方式 | 说明 |
@@ -24,12 +23,12 @@ python3 tools/market_data_backup.py verify
 | `tools/export_runtime_migration.py`、配套测试 | Git 克隆 | 停机后导出与网络传输后的账本校验 |
 | 真实 `.env` | 受控同步或在新机填写 | 包含账号与密钥，禁止提交 Git |
 | 小型交易日历、换手率参考表、历史认证参考样本 | Git 克隆 | 下表具名参考输入；不代表已完成新机数据验收 |
-| 必需原始行情、已采集分钟数据、正式研究底座 | Git + Git LFS | 仅能取得已成功提交和上传的版本；按行情备份清单检查实际文件、哈希及日期覆盖，不能只看占位目录或 LFS 指针 |
+| 原始行情、加工结果、已采集分钟数据、正式研究底座 | Syncthing 从旧机/虚拟机同步 | 2026-11-14 起不进 git；同步完成后用 `tools/market_data_backup.py audit` 检查日期覆盖，缺的按 `docs/monthly_three_year_data_update.md` 重新采集 |
 | 持仓、执行意图、委托成交与停手状态 | 最终停机快照与核对 | 原有业务状态须连续，不能以空账本代替 |
 | Windows 私有 QMT 执行账本 | 单独导出迁移 | 默认在 `%LOCALAPPDATA%\A_System\qmt_inner`，不在项目同步目录 |
 | Python 环境、Windows、QMT、系统任务 | 在新机安装与配置 | 不搬运旧虚拟环境、PID、心跳或进程锁 |
 
-行情的提交范围、换机命令和验收失败处理见[行情备份与克隆验收](market_data_git_backup.md)。`RESTORE_VERIFIED`只表示已提交行情成功恢复；早期涨停数、正式数据口径和策略认证仍须通过。
+行情检查命令见[行情备份与克隆验收](market_data_git_backup.md)（2026-11-14 起只用其中检查本机行情的部分）；早期涨停数、正式数据口径和策略认证仍须通过。
 
 **当前正式配置可能是 `live`。克隆完成不代表可以直接运行 `start_windows.py`。** 新环境先保持 QMT 内置端 `mode=read_only`，不安装会自动启动交易的计划任务。不能在新机修改正在同步的正式策略配置来试验，否则可能影响旧机。
 

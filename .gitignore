@@ -27,46 +27,12 @@ reports/*.xlsx
 reports/**/*.csv
 reports/**/*.xlsx
 reports/**/*.md
-data/state/open_plan_push.json
 reports/strategy_health/state.json
 reports/strategy_e/e_signals_recent.json
 # 旧名称只读兼容；不得再作为正式输出。
 reports/strategy_e2/e2_signals_recent.json
 reports/strategy_e_samples/sample_manifest.json
 !reports/**/.gitkeep
-
-# 运行所需原始行情进入 Git；大文件由 .gitattributes 指定 Git LFS。
-# 只放行明确的市场输入，账户状态/数据库仍单独备份。
-data/raw/*
-!data/raw/daily/
-!data/raw/daily_basic/
-!data/raw/adj_factor/
-!data/raw/limit_list/
-data/raw/daily/*
-data/raw/daily_basic/*
-data/raw/adj_factor/*
-data/raw/limit_list/*
-!data/raw/daily/*.csv
-!data/raw/daily_basic/*.csv
-!data/raw/adj_factor/*.csv
-!data/raw/limit_list/*.csv
-!data/raw/daily/manifest.json
-!data/raw/daily_basic/manifest.json
-!data/raw/adj_factor/manifest.json
-!data/raw/limit_list/manifest.json
-!data/raw/daily/.gitkeep
-!data/raw/daily_basic/.gitkeep
-!data/raw/limit_list/.gitkeep
-data/processed/*
-!data/processed/.gitkeep
-# 一般临时研究输出仍忽略；正式五年研究输入在下面按具名目录放行。
-data/research/**/*.csv
-# 历史L2供应商真实样本可能受授权限制且体积巨大，只提交验收报告和模板。
-data/research/strategy_d_l2_vendor_sample/
-# POV守护进程的本地执行账本，包含委托号并用于防止重复分片下单，禁止入库
-data/state/
-data/database/*
-!data/database/.gitkeep
 
 # OS and editor files
 .DS_Store
@@ -126,66 +92,11 @@ reports/runtime_state_backup/
 reports/runtime/
 
 # 干净克隆所需参考输入；不放行实盘账本。
-!data/raw/trade_calendar.csv
-!data/processed/fill_rate_table.csv
-!data/processed/fill_rate_fallback.csv
-!data/raw/stock_basic/
-data/raw/stock_basic/*
-!data/raw/stock_basic/stock_basic_all.csv
-!data/research/strategy_d_intraday/minute_target_manifest.csv
-!data/research/strategy_d_intraday/mother_pool.csv
-!data/research/strategy_d_intraday/mother_pool_full_window.csv
-!data/research/strategy_d_intraday/minute_target_manifest_full_window.csv
 !reports/ac_daily_candidates/ac_daily_candidates.csv
 !reports/strategy_expansion/abcd_expansion_selected_e2_equity_curve.csv
 !reports/strategy_d/d_daily_candidates.csv
 !reports/strategy_e_samples/e_r1_daily_candidates_full.csv
 !reports/current_portfolio_alignment/strict_asof_portfolio_report.md
-
-# 现行程序所需清洗数据和冻结研究底座，与原始行情一并保存。
-!data/processed/daily_merged.csv
-!data/processed/daily_merged_by_date/
-data/processed/daily_merged_by_date/*
-!data/processed/daily_merged_by_date/*.csv
-!data/processed/limit_up_merged.csv
-!data/processed/market_sentiment.csv
-!data/processed/market_emotion_features.csv
-!data/processed/theme_heat_features.csv
-!data/processed/limit_up_fill_scored_asof.csv
-!data/research/five_year_strict/*.csv
-# 备份覆盖范围与实际数据哈希；不记录账户或凭据。
-!data/market_backup/
-data/market_backup/*
-!data/market_backup/manifest.json
-
-# 已采集的分钟行情也是研究/执行输入，不再依赖旧电脑缓存。
-!data/raw/minute/
-!data/raw/minute_d/
-!data/raw/minute/**/*.csv
-!data/raw/minute_d/**/*.csv
-!data/processed/minute_bars.csv
-!data/processed/strategy_d_minute_features.csv
-
-# 早期涨停计数的原始证据与现行冻结认证输入，换机必须同时恢复。
-!data/raw/market_limit_counts.csv
-!data/raw/kpl_limit_list/
-data/raw/kpl_limit_list/*
-!data/raw/kpl_limit_list/*.csv
-!data/raw/kpl_limit_list/manifest.json
-!data/research/monthly_acde/*/strict_feature_pool.csv
-!data/research/monthly_acde/*/market_sentiment.csv
-
-# 2026-10-10具名历史补充研究附件；不放行账户状态或其他研究输出。
-!data/research/history_supplement_20261010/continued/evidence/ipo_ratio_not_applicable.csv
-!data/research/history_supplement_20261010/continued/evidence/remaining_price_discrepancies.csv
-!data/research/history_supplement_20261010/continued/evidence/remaining_ratio_controls.csv
-!data/research/history_supplement_20261010/continued/raw/bak_daily_600810.SH_20180515.csv
-!data/research/history_supplement_20261010/continued/raw/bak_daily_603598.SH_20180409.csv
-!data/research/history_supplement_20261010/continued/raw/stk_mins_600810.SH_20180515.csv
-!data/research/history_supplement_20261010/continued/raw/stock_basic_603629.SH_metadata.csv
-!data/research/history_supplement_20261010/continued/raw/trade_calendar_20180101_/20191127.csv
-!data/research/history_supplement_20261010/evidence/target_stock_days.csv
-!data/research/history_supplement_20261010/market/verified_derived/daily_basic/20181224.csv
 
 # 2026-10-10仅策略复核的具名冻结证据，不放行其他运行报表。
 !reports/strategy_review_20261010/*.csv
@@ -198,3 +109,34 @@ qmt_native_phase0/A_SYSTEM_QMT_NATIVE_*.py
 # （publish_to_a_system.sh 会 git add qmt_native_phase0，phase-0导出的84MB行情tick不能被带进公开仓库）
 qmt_native_phase0/out*/
 reports/qmt_native/
+
+# 行情数据不进 git（2026-11-14 项目优化第5步）：data/ 下只跟踪随代码发布的参考表和模型表；
+# 行情、加工结果、研究底座、备份清单、运行状态都只在本机（Mac 和虚拟机由 Syncthing 双向同步，换机见
+# docs/new_mac_rebuild_migration.md）。要放行新的参考表就在下面加一行，并说明为什么它要随代码发布。
+data/*
+!data/raw/
+data/raw/*
+!data/raw/trade_calendar.csv
+!data/raw/market_limit_counts.csv
+!data/raw/stock_basic/
+data/raw/stock_basic/*
+!data/raw/stock_basic/stock_basic_all.csv
+!data/processed/
+data/processed/*
+!data/processed/.gitkeep
+!data/processed/fill_rate_table.csv
+!data/processed/fill_rate_fallback.csv
+!data/database/
+data/database/*
+!data/database/.gitkeep
+!data/templates/
+!data/research/
+data/research/*
+# 研究参考名单（测试和历史回归要用）和2026-10-10历史补充研究的冻结证据（带校验码），都是小文件，不是行情
+!data/research/strategy_d_intraday/
+data/research/strategy_d_intraday/*
+!data/research/strategy_d_intraday/minute_target_manifest.csv
+!data/research/strategy_d_intraday/mother_pool.csv
+!data/research/strategy_d_intraday/mother_pool_full_window.csv
+!data/research/strategy_d_intraday/minute_target_manifest_full_window.csv
+!data/research/history_supplement_20261010/

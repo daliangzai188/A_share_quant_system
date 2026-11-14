@@ -107,29 +107,30 @@ class MarketDataBackupTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "重复"):
             backup.audit(self.root, "20261008", "20261008")
 
-    def test_git_rules_keep_required_market_files_and_exclude_runtime(self) -> None:
+    def test_git_rules_track_only_reference_tables_not_market_data(self) -> None:
+        """2026-11-14 起行情数据不进 git：只跟踪随代码发布的参考表和模型表，行情和运行状态都忽略。"""
         for name in (".gitignore", ".gitattributes"):
             shutil.copyfile(EXPORT / name, self.root / name)
         subprocess.run(["git", "init", "-q", str(self.root)], check=True)
-        tracked = ["data/raw/adj_factor/20261008.csv", "data/raw/daily/20261008.csv",
-                   "data/raw/daily_basic/20261008.csv", "data/raw/limit_list/20261008.csv",
-                   "data/processed/daily_merged.csv", "data/processed/daily_merged_by_date/20261008.csv",
-                   "data/raw/minute/000001.SZ/20261008.csv", "data/raw/minute_d/000001_20261008.csv",
-                   "data/raw/kpl_limit_list/20190102.csv", "data/raw/market_limit_counts.csv",
-                   "data/research/monthly_acde/20260831/strict_feature_pool.csv",
-                   "data/research/monthly_acde/20260831/market_sentiment.csv",
-                   "data/research/five_year_strict/strict_feature_pool.csv", "data/market_backup/manifest.json"]
+        tracked = ["data/raw/trade_calendar.csv", "data/raw/market_limit_counts.csv",
+                   "data/raw/stock_basic/stock_basic_all.csv", "data/processed/fill_rate_table.csv",
+                   "data/processed/fill_rate_fallback.csv", "data/templates/minute_bars_template.csv",
+                   "data/research/history_supplement_20261010/README.md",
+                   "data/research/strategy_d_intraday/mother_pool.csv"]
         excluded = [".env", ".env.local", "data/state/positions.json", "data/database/execution_events.sqlite3",
-                    "logs/trading_daemon.log", "data/research/strategy_d_l2_vendor_sample/book.csv"]
+                    "logs/trading_daemon.log", "data/research/strategy_d_l2_vendor_sample/book.csv",
+                    "data/raw/adj_factor/20261008.csv", "data/raw/daily/20261008.csv",
+                    "data/raw/daily_basic/20261008.csv", "data/raw/limit_list/20261008.csv",
+                    "data/processed/daily_merged.csv", "data/processed/daily_merged_by_date/20261008.csv",
+                    "data/raw/minute/000001.SZ/20261008.csv", "data/raw/kpl_limit_list/20190102.csv",
+                    "data/research/monthly_acde/20260831/strict_feature_pool.csv",
+                    "data/research/five_year_strict/strict_feature_pool.csv", "data/market_backup/manifest.json"]
         for relative in tracked + excluded:
             result = subprocess.run(["git", "check-ignore", "-q", relative], cwd=self.root)
             self.assertEqual(result.returncode, 0 if relative in excluded else 1, relative)
-        result = subprocess.run(["git", "check-attr", "filter", "--", *tracked[:-1]],
+        result = subprocess.run(["git", "check-attr", "filter", "--", *tracked],
                                 cwd=self.root, text=True, capture_output=True, check=True)
-        self.assertEqual(result.stdout.count(": filter: lfs"), len(tracked) - 1)
-        reference = subprocess.run(["git", "check-attr", "filter", "--", "data/raw/trade_calendar.csv"],
-                                   cwd=self.root, text=True, capture_output=True, check=True)
-        self.assertIn("unspecified", reference.stdout)
+        self.assertNotIn(": filter: lfs", result.stdout)
 
     def test_early_group_is_bounded_by_its_actual_source_range(self) -> None:
         result = backup.audit(self.root, "20261008", "20261009")
