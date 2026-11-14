@@ -4,7 +4,7 @@ import json
 import unittest
 from pathlib import Path
 
-from scripts.certify_acde_v12_release import (
+from research.certify_acde_v12_release import (
     EXPECTED_EQUITY_MULTIPLE,
     EXPECTED_LEG_COUNTS,
     EXPECTED_TRADE_COUNT,

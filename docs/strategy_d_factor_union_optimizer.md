@@ -161,7 +161,7 @@ config/strategy_d_factor_release_history/D_LEGACY_FORMAL_2026H1.json
 
 ```bash
 cd /Users/user/Desktop/A_System
-python3 scripts/optimize_strategy_d_factor_union.py
+python3 research/optimize_strategy_d_factor_union.py
 ```
 
 脚本自动选择不晚于运行日的最近一个6月30日或12月31日节点；2026-08-24运行时
@@ -178,7 +178,7 @@ reports/strategy_d_factor_optimizer/20260630/best_dual_gate_profile.txt
 只有用户看完报告并明确决定更换时，才再次显式执行：
 
 ```bash
-python3 scripts/optimize_strategy_d_factor_union.py \
+python3 research/optimize_strategy_d_factor_union.py \
   --as-of 20261231 \
   --apply
 ```

@@ -237,7 +237,7 @@ reports/paper_trade/ab_filtered_daily_ops/
 验证 QMT 连接和账户数据是否正常：
 
 ```powershell
-py -3.11 scripts/qmt_account_check.py
+py -3.11 tools/qmt_account_check.py
 ```
 
 生成：
@@ -251,7 +251,7 @@ reports/live_trade/qmt_account_check_trades.csv
 ## 准备度检查
 
 ```powershell
-py -3.11 scripts/check_qmt_live_readiness.py
+py -3.11 tools/check_qmt_live_readiness.py
 ```
 
 所有条目 PASS 后才可开启实盘。

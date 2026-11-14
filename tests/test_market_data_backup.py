@@ -11,7 +11,7 @@ import sys
 import tempfile
 import unittest
 
-from scripts import market_data_backup as backup
+from tools import market_data_backup as backup
 
 
 EXPORT = Path(__file__).resolve().parents[1]
@@ -140,7 +140,7 @@ class MarketDataBackupTests(unittest.TestCase):
         self.csv("data/raw/trade_calendar.csv", ["cal_date", "is_open"],
                  [["20190101", "0"], ["20190102", "1"]])
         result = subprocess.run(
-            [sys.executable, "-I", str(EXPORT / "scripts/market_data_backup.py"), "audit",
+            [sys.executable, "-I", str(EXPORT / "tools/market_data_backup.py"), "audit",
              "--project-root", str(self.root), "--start-date", "20190101",
              "--end-date", "20190102"],
             cwd=self.root, text=True, capture_output=True,

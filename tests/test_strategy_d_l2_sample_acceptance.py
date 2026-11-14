@@ -7,7 +7,7 @@ import unittest
 
 import pandas as pd
 
-from src.strategy_d_l2_sample_acceptance import validate_sample_package
+from research.strategy_d_l2_sample_acceptance import validate_sample_package
 
 
 def write_valid_sample(root: Path, *, trade_date: str = "20240701", exchange: str = "SSE") -> dict[str, object]:

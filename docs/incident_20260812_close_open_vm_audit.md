@@ -129,7 +129,7 @@ py -3.11 start_windows.py
 导出本次虚拟机停止的Windows证据：
 
 ```powershell
-py -3.11 scripts\audit_windows_power_events.py --days 7
+py -3.11 tools\audit_windows_power_events.py --days 7
 ```
 
 报告位置：`C:\A_System\reports\runtime\windows_power_events_latest.json`。

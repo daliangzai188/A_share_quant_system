@@ -656,7 +656,7 @@ artifact_manifest.json
 `ACDE_C_THIRD_BRANCH_T2_22695_20260902_V16`：A/E/D规则冻结，C保留原五个profile并
 按T+3退出，新增第3逻辑分支并按T+2退出。正式配置、分支级退出、逐腿计划签名、
 两次确定性精确现金回放和冻结逐日账本必须继续由
-`scripts/certify_strategy_c_third_branch_release.py`对齐。代码提交仍是单独动作；该认证
+`research/certify_strategy_c_third_branch_release.py`对齐。代码提交仍是单独动作；该认证
 不等于独立样本外或真实资金容量通过。
 
 ## 二十一、2026-09-02开仓口径缺陷处理

@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from scripts import rebuild_equity_curve_stop_inputs as collect
+from tools import rebuild_equity_curve_stop_inputs as collect
 
 
 def sample(kind: str, date: str) -> pd.DataFrame:

@@ -43,7 +43,7 @@ $PYTHON -B scripts/score_limit_up_fill_probability.py >> "$LOG_FILE" 2>&1
 log "④ 完成"
 
 log "⑤ 更新次日溢价因子..."
-$PYTHON -B scripts/analyze_next_day_premium.py >> "$LOG_FILE" 2>&1
+$PYTHON -B research/analyze_next_day_premium.py >> "$LOG_FILE" 2>&1
 log "⑤ 完成"
 
 log "⑥ 生成 A+B+C 每日模拟盘信号..."

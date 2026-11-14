@@ -6,7 +6,7 @@ import sqlite3
 import tempfile
 import unittest
 
-from scripts import export_runtime_migration as migration
+from tools import export_runtime_migration as migration
 
 
 class MigrationTests(unittest.TestCase):

@@ -5,6 +5,9 @@
 QMT里的守护进程和它调起的收盘流水线脚本、虚拟机QMT外的检查和转发程序、Windows/Mac上的启动停止和提醒程序。
 只解析代码，不运行任何东西，几秒钟算完。
 
+目录约定（2026-11-14 第2步起）：src/、scripts/ 只放生产代码；研究代码在 research/，运维工具在 tools/；
+研究和工具可以导入生产代码，生产代码不得导入研究和工具（tests/test_production_modules.py 检查）。
+
 用法：python tests/golden/project_metrics.py            打印验收指标
       python tests/golden/project_metrics.py --modules  打印生产代码清单（tests/golden/expected/production_modules.txt 的内容）
 """
@@ -20,6 +23,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 ROOTS = (
     "scripts.trading_daemon",                 # QMT里的守护进程（收盘流水线脚本由它按名字调起）
+    "qmt_inner.engine", "qmt_inner.protocol",  # QMT里的交易引擎（和守护进程一起打进QMT包）
     "phase0.qmt_external_checks", "phase0.qmt_notify_forwarder", "phase0.qn_state_sink",   # 虚拟机QMT外
     "start_windows", "stop_windows", "setup_windows",
     "scripts.show_trading_status", "scripts.ensure_windows_runtime", "scripts.qmt_client_guard",
@@ -27,11 +31,14 @@ ROOTS = (
 )
 RESEARCH_PREFIXES = ("research", "optimize", "search", "analyze", "compare", "stress", "backtest", "audit",
                      "validate", "certify")
+PRODUCTION_DIRS = ("src", "scripts")
+NON_PRODUCTION_DIRS = ("research", "tools")
+PACKAGE_INITS = ("src", "src.utils", "qmt_inner", "research", "tools")  # 包本身，不算模块
 
 
 def module_files(root: Path) -> dict[str, Path]:
     files = {}
-    for folder in ("src", "scripts"):
+    for folder in ("src", "scripts", "research", "tools", "qmt_inner"):
         for path in (root / folder).rglob("*.py"):
             rel = path.relative_to(root).with_suffix("")
             parts = list(rel.parts)
@@ -119,6 +126,16 @@ def production_modules(root: Path = REPO) -> list[str]:
     return sorted(closure(import_edges(files), ROOTS))
 
 
+def boundary(root: Path = REPO) -> dict[str, list[str]]:
+    """目录边界：src/、scripts/ 里不在生产链上的模块；生产链走到 research/、tools/ 的模块。两项都应为空。"""
+    files = module_files(root)
+    prod = closure(import_edges(files), ROOTS)
+    in_production_dirs = sorted(m for m in files if m.split(".")[0] in PRODUCTION_DIRS and m not in prod
+                                and m not in PACKAGE_INITS)
+    production_outside = sorted(m for m in prod if m.split(".")[0] in NON_PRODUCTION_DIRS)
+    return {"non_production_in_production_dirs": in_production_dirs, "production_reaching_research_or_tools": production_outside}
+
+
 def metrics(root: Path = REPO) -> dict:
     files = module_files(root)
     edges = import_edges(files)
@@ -149,8 +166,11 @@ def metrics(root: Path = REPO) -> dict:
         data_in_git = None
     vm_copies = sum(1 for p in (root / "qmt_native_phase0" / "qmt_external_checks.py",
                                 root / "qmt_native" / "vm_scripts" / "qmt_external_checks.py") if p.exists())
+    edge_rules = boundary(root)
     return {
         "生产代码模块数": len(prod),
+        "src/和scripts/里的非生产模块": len(edge_rules["non_production_in_production_dirs"]),
+        "生产代码导入research/tools": len(edge_rules["production_reaching_research_or_tools"]),
         "生产代码依赖的研究/验证类脚本": len(research_in_prod),
         "src反向依赖scripts": len(reverse),
         "循环依赖组": len(cycles(edges)),

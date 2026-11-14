@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from scripts.probe_strategy_d_intraday_qmt_depth import (
+from research.probe_strategy_d_intraday_qmt_depth import (
     TARGET_PATH,
     explicit_probe_targets,
     load_targets,

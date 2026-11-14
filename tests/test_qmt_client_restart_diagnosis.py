@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from scripts import diagnose_qmt_client_restarts as diag
+from tools import diagnose_qmt_client_restarts as diag
 from src.qmt_client_probe import BEIJING_TZ, classify_qmt_client_state, describe_processes, mask_title
 
 

@@ -5,7 +5,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-from scripts import audit_windows_power_events
+from tools import audit_windows_power_events
 from scripts import ensure_windows_runtime
 from scripts import win_daemon_keeper
 from src.runtime_stop_state import (

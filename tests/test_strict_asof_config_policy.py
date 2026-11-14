@@ -27,6 +27,8 @@ class StrictAsOfConfigPolicyTests(unittest.TestCase):
             policy["mechanical_compound_standard_id"],
             MECHANICAL_COMPOUND_STANDARD_ID,
         )
+        # 该认证脚本已于2026-11-14移到 research/（状态早已是INVALIDATED）；config.json 打进QMT包，
+        # 这一步不改它以保证QMT包逐字节不变，路径在第5步拆分配置时一并更新。
         self.assertEqual(
             policy["official_portfolio_certifier"],
             "scripts/certify_strategy_c_third_branch_release.py",

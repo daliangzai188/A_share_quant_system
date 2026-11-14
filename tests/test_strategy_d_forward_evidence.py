@@ -8,7 +8,7 @@ import unittest
 
 import pandas as pd
 
-from scripts.reconcile_strategy_d_forward_evidence import reconcile
+from research.reconcile_strategy_d_forward_evidence import reconcile
 
 
 class StrategyDForwardEvidenceTests(unittest.TestCase):

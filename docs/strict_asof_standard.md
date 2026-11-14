@@ -48,7 +48,7 @@ limit_up_fill_scored_asof.csv
 
 旧的非 as-of 文件保留用于历史核对，不再是共享研究入口，也不能进入正式发布认证。
 
-正式组合统计只能由 `scripts/certify_strict_asof_portfolio.py` 写入
+正式组合统计只能由 `research/certify_strict_asof_portfolio.py` 写入
 `reports/current_portfolio_alignment/live_certification.json`。旧来源身份脚本只写
 `legacy_identity_alignment.json`；B、L、M、N曾出现的旧来源、算错或结果回看口径
 不得再进入正式收益。
@@ -82,11 +82,11 @@ equity_t = equity_(t-1) × (1 + account_return_t)
 
 ```powershell
 py -3.11 scripts\score_limit_up_fill_probability.py --historical-asof
-py -3.11 scripts\validate_strict_asof_dataset.py
-py -3.11 scripts\analyze_next_day_premium.py
-py -3.11 scripts\generate_candidate_pool.py
-py -3.11 scripts\run_backtest.py
-py -3.11 scripts\certify_strict_asof_portfolio.py
+py -3.11 research\validate_strict_asof_dataset.py
+py -3.11 research\analyze_next_day_premium.py
+py -3.11 research\generate_candidate_pool.py
+py -3.11 research\run_backtest.py
+py -3.11 research\certify_strict_asof_portfolio.py
 ```
 
 审计产物在 `reports/strict_asof/`。共享配置当前是 `STRICT_DISCOVERY`，因此上述回测只能用于开发，不能直接恢复或扩大实盘。

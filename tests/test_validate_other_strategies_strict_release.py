@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from scripts.validate_other_strategies_strict_release import decision
+from research.validate_other_strategies_strict_release import decision
 
 
 class OtherStrategiesStrictReleaseTest(unittest.TestCase):

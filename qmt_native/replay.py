@@ -38,7 +38,10 @@ def build_theme_reference(ws):
     code = (
         "import sys; sys.path.insert(0, '.')\n"
         "import pandas as pd\n"
-        "from scripts.collect_stock_theme_reference import normalize_industry, PROCESSED_OUTPUT, RAW_OUTPUT\n"
+        "try:\n"
+        "    from tools.collect_stock_theme_reference import normalize_industry, PROCESSED_OUTPUT, RAW_OUTPUT\n"
+        "except ImportError:  # workspaces copied before 2026-11-14 still have it under scripts/\n"
+        "    from scripts.collect_stock_theme_reference import normalize_industry, PROCESSED_OUTPUT, RAW_OUTPUT\n"
         "raw = pd.read_csv(RAW_OUTPUT, dtype=str)\n"
         "ref = raw[['ts_code','name','industry','market','list_status','list_date','delist_date']].copy()\n"
         "ref['industry'] = ref['industry'].map(normalize_industry)\n"

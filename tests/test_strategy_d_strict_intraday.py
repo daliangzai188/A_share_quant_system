@@ -18,7 +18,7 @@ from scripts.collect_strategy_d_intraday_tushare_1m import (
     recover_missing_parts_from_output,
     target_status_rows,
 )
-from src.strategy_d_strict_intraday import (
+from research.strategy_d_strict_intraday import (
     REQUIRED_EXCHANGES,
     replay_price_time_queue,
     replay_synchronized_d_scans,

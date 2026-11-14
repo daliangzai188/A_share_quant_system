@@ -55,7 +55,7 @@ Windows 审计数据：`reports/runtime/windows_power_events_latest.json`，生�
 
 ## Windows 更新脚本的两个缺陷与修复
 
-文件：`scripts/manage_windows_automatic_updates.ps1`
+文件：`tools/manage_windows_automatic_updates.ps1`
 
 - Windows PowerShell 5.1 对无 BOM 的中文脚本按本地代码页解码，现场第46行解析失败。
   已补 UTF-8 BOM 和编码注释；Windows 现场已成功解析并执行。
@@ -68,7 +68,7 @@ Windows 审计数据：`reports/runtime/windows_power_events_latest.json`，生�
 
 ## 防自动锁屏、睡眠及退出的现场验收
 
-文件：`scripts/configure_windows_session_stability.ps1`（新增，UTF-8 BOM）
+文件：`tools/configure_windows_session_stability.ps1`（新增，UTF-8 BOM）
 
 - 主流程保存修改前原值，关闭当前用户屏保、屏保锁屏、闲置超时锁屏和动态锁屏；
   通过系统 API 读回当前会话屏保关闭状态。
@@ -91,9 +91,9 @@ Windows 审计数据：`reports/runtime/windows_power_events_latest.json`，生�
 Windows管理员 PowerShell 运行方式：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\A_System\scripts\configure_windows_session_stability.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\A_System\tools\configure_windows_session_stability.ps1
 # 后续只读复核：
-powershell -NoProfile -ExecutionPolicy Bypass -File C:\A_System\scripts\configure_windows_session_stability.ps1 -VerifyOnly
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\A_System\tools\configure_windows_session_stability.ps1 -VerifyOnly
 ```
 
 验收报告：`reports/runtime/windows_session_stability_latest.json`。

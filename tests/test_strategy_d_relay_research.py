@@ -4,7 +4,7 @@ import unittest
 
 import pandas as pd
 
-from scripts.research_strategy_d_relay_capacity import (
+from research.research_strategy_d_relay_capacity import (
     build_capacity_replay,
     build_capacity_replay_from_proxy,
     build_impact_sensitivity,
@@ -13,14 +13,14 @@ from scripts.research_strategy_d_relay_capacity import (
     validate_proxy_inputs,
     validate_inputs,
 )
-from scripts.research_strategy_d_relay_fetch import (
+from research.research_strategy_d_relay_fetch import (
     EXPECTED_RELAY_COUNT,
     complete_one_minute_keys,
     complete_tick_keys,
     load_relay_targets,
     normalize_ticks,
 )
-from scripts.research_strategy_d_relay_tushare_fetch import (
+from research.research_strategy_d_relay_tushare_fetch import (
     build_auction_proxy,
     complete_auction_proxy_keys,
     normalize_tushare_minute,

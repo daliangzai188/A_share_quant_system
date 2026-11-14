@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.backtest_engine import SimpleCandidateBacktester
+from research.backtest_engine import SimpleCandidateBacktester
 from src.strict_asof import (
     LOCKED_OOS,
     PointInTimeContract,

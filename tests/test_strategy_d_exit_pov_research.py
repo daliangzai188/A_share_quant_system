@@ -6,8 +6,8 @@ import unittest
 
 import pandas as pd
 
-from scripts.research_strategy_d_exit_fetch import load_d_exit_targets
-from scripts.research_strategy_d_exit_pov import (
+from research.research_strategy_d_exit_fetch import load_d_exit_targets
+from research.research_strategy_d_exit_pov import (
     EXPECTED_D_COUNT,
     EXPECTED_PORTFOLIO_MULTIPLE,
     load_trade_metadata,

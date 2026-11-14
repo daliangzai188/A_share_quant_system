@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from scripts.audit_strategy_d_l2_purchase_readiness import build_audit
+from research.audit_strategy_d_l2_purchase_readiness import build_audit
 
 
 class StrategyDL2PurchaseReadinessTest(unittest.TestCase):

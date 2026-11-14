@@ -169,58 +169,35 @@ A股龙头战法最核心的问题不是股票涨不涨，而是能不能买到�
 - `src/broker_adapter.py`：统一券商适配器抽象层（含 `place_order` 和 `cancel_order` 接口）。
 - `src/qmt_adapter.py`：QMT / miniQMT 适配器，运行时懒加载 `xtquant`；实现了 `cancel_order_stock` 撤单。
 - `src/live_order_gateway.py`：A/C 计划单转实盘预览和真实下单安全闸门（内部 ABC 命名为历史接口兼容保留）。
-- `scripts/qmt_account_check.py`：QMT 只读账户检查。
-- `scripts/preview_live_orders.py`：读取每日计划单并做实盘执行前校验，不下单。
-- `scripts/submit_live_orders.py`：真实下单入口，默认配置会拒绝执行。
+- `tools/qmt_account_check.py`：QMT 只读账户检查。
+- `tools/preview_live_orders.py`：读取每日计划单并做实盘执行前校验，不下单。
+- `tools/submit_live_orders.py`：真实下单入口，默认配置会拒绝执行。
 
 详细流程见 `docs/qmt_live_integration.md`。
 
 ---
 
-## 四、推荐项目结构
+## 四、项目结构
 
 ```text
 A_System/
-├── AGENTS.md
-├── README.md
-├── requirements.txt
-├── run.sh
-├── .env.example
-├── config/
-│   ├── config.json
-│   └── strategy_config.json
-├── data/
-│   ├── raw/
-│   ├── processed/
-│   └── database/
-├── logs/
-├── reports/
-├── src/
-│   ├── data_source.py
-│   ├── data_collector.py
-│   ├── data_cleaner.py
-│   ├── trading_calendar.py
-│   ├── fill_model.py
-│   ├── factors.py
-│   ├── whitelist.py
-│   ├── strategy_base.py
-│   ├── backtest_engine.py
-│   ├── risk_manager.py
-│   ├── paper_trader.py
-│   ├── broker_adapter.py
-│   ├── qmt_adapter.py
-│   ├── report_generator.py
-│   └── utils.py
-├── scripts/
-│   ├── collect_daily_data.py
-│   ├── collect_limit_data.py
-│   ├── build_fill_rate_table.py
-│   ├── run_backtest.py
-│   └── run_paper_trade.py
-└── web/
-    ├── app.py
-    └── templates/
+├── AGENTS.md、README.md、requirements.txt
+├── config/             配置（config.json、strategy_config.json 等，全部打进QMT包）
+├── src/                生产代码·库：选股、计划、停手判定、仓位、执行、监控、日报
+├── scripts/            生产代码·入口：守护进程 trading_daemon.py、收盘流水线各步、Windows/Mac 启停与守护
+├── qmt_inner/          生产代码：QMT 里的交易引擎
+├── qmt_native/         QMT 原生版：打包、虚拟机脚本、上线手册（QMT工作仓库导出）
+├── qmt_native_phase0/  虚拟机上 QMT 外的检查、推送转发、状态接收
+├── tools/              运维工具：账户查询、数据采集与修复、备份、诊断、安装脚本
+├── research/           研究代码：策略研究、回测、优化、样本外验证、历次版本认证、模拟盘实验
+├── tests/              测试；tests/golden/ 是生产链对照标准
+├── docs/               文档
+└── data/、reports/、logs/  行情数据、报告、日志
 ```
+
+目录约定（2026-11-14起）：`src/`、`scripts/`、`qmt_inner/` 里的每个文件都在实盘入口的导入链上；
+研究代码和运维工具可以导入生产代码，生产代码不得导入 `research/`、`tools/`。`tests/test_production_modules.py`
+检查这条边界和生产代码清单。
 
 ---
 
@@ -297,31 +274,31 @@ cp .env.example .env
 运行数据采集：
 
 ```bash
-python scripts/collect_daily_data.py
+python tools/collect_daily_data.py
 ```
 
 运行涨停池采集：
 
 ```bash
-python scripts/collect_limit_data.py
+python tools/collect_limit_data.py
 ```
 
 构建成交概率表：
 
 ```bash
-python scripts/build_fill_rate_table.py
+python research/build_fill_rate_table.py
 ```
 
 运行回测：
 
 ```bash
-python scripts/run_backtest.py
+python research/run_backtest.py
 ```
 
 运行模拟交易：
 
 ```bash
-python scripts/run_paper_trade.py
+python research/run_paper_trade.py
 ```
 
 当前策略发布验证和后续操作流程见：
@@ -334,7 +311,7 @@ docs/strategy_release_playbook.md
 
 ```bash
 # 旧A+B发布验证已失效；当前脚本会拒绝运行，必须先完成A/C全链路重新回测
-.venv/bin/python -B scripts/run_strategy_release_validation.py
+.venv/bin/python -B research/run_strategy_release_validation.py
 
 # A+C filtered 单日模拟盘操作台
 .venv/bin/python -B scripts/run_paper_ab_filtered_daily_ops.py --top-n 10

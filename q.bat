@@ -24,22 +24,22 @@ goto help
 
 :check
 cd /d "%ROOT%"
-"%PY%" -B scripts\check_qmt_live_readiness.py
+"%PY%" -B tools\check_qmt_live_readiness.py
 goto end
 
 :account
 cd /d "%ROOT%"
-"%PY%" -B scripts\qmt_account_check.py
+"%PY%" -B tools\qmt_account_check.py
 goto end
 
 :probe
 cd /d "%ROOT%"
-"%PY%" -B scripts\probe_qmt_connection.py
+"%PY%" -B tools\probe_qmt_connection.py
 goto end
 
 :preview
 cd /d "%ROOT%"
-"%PY%" -B scripts\preview_live_orders.py --planned-orders latest
+"%PY%" -B tools\preview_live_orders.py --planned-orders latest
 goto end
 
 :plan
@@ -63,7 +63,7 @@ goto end
 
 :scanqmt
 cd /d "%ROOT%"
-powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%scripts\windows_scan_qmt_paths.ps1" -ProjectRoot "%ROOT_NO_SLASH%"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%tools\windows_scan_qmt_paths.ps1" -ProjectRoot "%ROOT_NO_SLASH%"
 goto end
 
 :installxtquant

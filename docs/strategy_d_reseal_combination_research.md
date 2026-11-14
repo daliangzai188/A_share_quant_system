@@ -215,7 +215,7 @@ RESEAL_COMBINATION_CANDIDATE_FOUND_KEEP_FORMAL_D_PENDING_ROBUSTNESS_VALIDATION
 代码：
 
 - `scripts/research_strategy_d_reseal_combinations.py`：提取全部回封、搜索5,944条组合、执行三层复利门禁；
-- `scripts/audit_strategy_d_reseal_candidate_robustness.py`：边界、收益来源和仲裁敏感性审计；
+- `research/audit_strategy_d_reseal_candidate_robustness.py`：边界、收益来源和仲裁敏感性审计；
 - `tests/test_strategy_d_reseal_combinations.py`：规则空间、信号时点字段、日内先后和未知队列阻断测试。
 
 主要输出：
@@ -236,7 +236,7 @@ PYTHONPATH="$PWD/.venv/lib/python3.9/site-packages:$PWD" \
   python3 scripts/research_strategy_d_reseal_combinations.py
 
 PYTHONPATH="$PWD/.venv/lib/python3.9/site-packages:$PWD" \
-  python3 scripts/audit_strategy_d_reseal_candidate_robustness.py
+  python3 research/audit_strategy_d_reseal_candidate_robustness.py
 ```
 
 只有明确需要重新扫描873MB分钟文件时才使用：

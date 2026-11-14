@@ -10,7 +10,7 @@
 | `.gitignore` | 原始数据段、文件末尾 | 替换日线/基本面/涨停 CSV 忽略规则，新增复权因子、分钟行情和正式五年研究输入白名单；防止只提交代码却丢掉运行输入 |
 | `.gitattributes` | 原具名参考输入规则之后 | 新增行情 CSV 的 `filter=lfs diff=lfs merge=lfs -text`，大文件进入 LFS 且保持原始字节；原小型冻结参考文件仍保留普通 Git |
 | `config/market_data_backup.json` | `daily_groups/required_files/optional_market_patterns` | 新增可恢复范围与字段清单，配置不包含凭据 |
-| `scripts/market_data_backup.py` | `audit` | 新增逐开市日覆盖、非空、字段、日期、重复键检查及 SHA-256 清单；早期市场涨停计数仍缺失时返回 `INCOMPLETE` |
+| `tools/market_data_backup.py` | `audit` | 新增逐开市日覆盖、非空、字段、日期、重复键检查及 SHA-256 清单；早期市场涨停计数仍缺失时返回 `INCOMPLETE` |
 | 同文件 | `main` 的 `create` 分支 | 新增完整验收后原子生成清单；不完整时不覆盖原有成功清单 |
 | 同文件 | `verify/file_record/safe_path` | 新增克隆后的字节哈希、LFS实体、路径边界检查；只有指针时提示 `git lfs pull` |
 | `tests/test_market_data_backup.py` | 各测试方法 | 新增复制恢复、哈希篡改、缺日、空池、指针、早期计数缺失、秘密排除和真实Git规则验证 |
@@ -34,8 +34,8 @@ Git忽略与Syncthing忽略用途不同。当前 Mac `sendonly` 不会把 Window
 
 ```sh
 git lfs install --local
-python3 scripts/market_data_backup.py audit --end-date 20261008
-python3 scripts/market_data_backup.py create --end-date 20261008
+python3 tools/market_data_backup.py audit --end-date 20261008
+python3 tools/market_data_backup.py create --end-date 20261008
 ```
 
 Windows相同命令使用 `py -3.11 -X utf8` 替换 `python3`。日期必须填写实际最后收盘日。
@@ -46,7 +46,7 @@ Windows相同命令使用 `py -3.11 -X utf8` 替换 `python3`。日期必须填�
 检查待提交清单，只加入本次已验收的市场数据与备份清单；提交后推送：
 
 ```sh
-git add .gitattributes .gitignore config/market_data_backup.json scripts/market_data_backup.py
+git add .gitattributes .gitignore config/market_data_backup.json tools/market_data_backup.py
 git add data/raw/daily data/raw/daily_basic data/raw/adj_factor data/raw/limit_list
 git add data/raw/kpl_limit_list data/raw/market_limit_counts.csv
 git add data/raw/trade_calendar.csv data/raw/stock_basic/stock_basic_all.csv
@@ -74,13 +74,13 @@ git lfs install
 git clone git@github.com:daliangzai188/A_share_quant_system.git A_System
 cd A_System
 git lfs pull
-python3 scripts/market_data_backup.py verify
+python3 tools/market_data_backup.py verify
 ```
 
 Windows验收为：
 
 ```powershell
-py -3.11 -X utf8 scripts\market_data_backup.py verify
+py -3.11 -X utf8 tools\market_data_backup.py verify
 ```
 
 必须输出 `RESTORE_VERIFIED`，退出码为0。只有Git LFS指针、缺日、空表、重复键、哈希不符、清单不存在均失败。
@@ -92,7 +92,7 @@ py -3.11 -X utf8 scripts\market_data_backup.py verify
 
 早期 `limit_list_d` 不提供 2019-01-02 至 2019-11-27 数据，现用官方 `kpl_list` 原始涨停榜单恢复市场计数。已采集 220 个开市日、12,647 条非ST沪深涨停记录，逐日核验榜单 SHA-256、计数和日线代码交集。2019-01-02 为31只。该证据只能恢复计数，不重构炸板次数、连板天数或封单成交概率字段。低于9%的涨停记录可能来自历史S类5%制度或低价股票的最小报价单位取整，不能直接按涨幅阈值删除。
 
-`config/market_data_backup.json` 的早期组通过 `end_date=20191127` 限定源覆盖；`scripts/market_data_backup.py::audit` 新增榜单哈希及计数回溯。`src/historical_limit_counts.py::load_historical_limit_count` 只读取行情证据，缺失、错日、重复、哈希不符或计数不一致均报错。`scripts/rebuild_historical_limit_counts.py::main` 提供隔离采集和断点续传。上述为新增功能；未删除任何交易风控。
+`config/market_data_backup.json` 的早期组通过 `end_date=20191127` 限定源覆盖；`tools/market_data_backup.py::audit` 新增榜单哈希及计数回溯。`src/historical_limit_counts.py::load_historical_limit_count` 只读取行情证据，缺失、错日、重复、哈希不符或计数不一致均报错。`tools/rebuild_historical_limit_counts.py::main` 提供隔离采集和断点续传。上述为新增功能；未删除任何交易风控。
 
 另将现行冻结认证使用的 `data/research/monthly_acde/20260831/strict_feature_pool.csv` 和 `market_sentiment.csv` 纳入必需恢复清单。冻结输入缺失不能用一个新的哈希冒充原认证成功，必须重建并按原锁定指标独立复现。
 

@@ -13,7 +13,7 @@ git lfs install
 git clone git@github.com:daliangzai188/A_share_quant_system.git A_System
 cd A_System
 git lfs pull
-python3 scripts/market_data_backup.py verify
+python3 tools/market_data_backup.py verify
 ```
 
 | 内容 | 获取方式 | 说明 |
@@ -21,7 +21,7 @@ python3 scripts/market_data_backup.py verify
 | `src/`、`scripts/`、`qmt_inner/`、启动与停止入口 | Git 克隆 | 完整业务代码与 QMT 内置执行包 |
 | `requirements.txt`、`.env.example`、`config/` | Git 克隆 | 依赖清单、凭据模板、正式策略配置 |
 | `AGENTS.md`、`docs/`、`.stignore` | Git 克隆 | 项目纪律、重建说明与同步忽略模板 |
-| `scripts/export_runtime_migration.py`、配套测试 | Git 克隆 | 停机后导出与网络传输后的账本校验 |
+| `tools/export_runtime_migration.py`、配套测试 | Git 克隆 | 停机后导出与网络传输后的账本校验 |
 | 真实 `.env` | 受控同步或在新机填写 | 包含账号与密钥，禁止提交 Git |
 | 小型交易日历、换手率参考表、历史认证参考样本 | Git 克隆 | 下表具名参考输入；不代表已完成新机数据验收 |
 | 必需原始行情、已采集分钟数据、正式研究底座 | Git + Git LFS | 仅能取得已成功提交和上传的版本；按行情备份清单检查实际文件、哈希及日期覆盖，不能只看占位目录或 LFS 指针 |
@@ -83,7 +83,7 @@ py -3.11 -m pip install -r requirements.txt
 
 ```powershell
 cd C:\A_System
-py -3.11 scripts\prepare_qmt_inner.py
+py -3.11 tools\prepare_qmt_inner.py
 ```
 
 确认新私有配置 `mode=read_only`，新 Token 由部署器生成。按照 QMT 内置迁移说明创建 `A_SYSTEM_QMT_INNER` 模型，并完成只读探测。不要复制旧私有配置里的 Windows 用户路径、Token 或 `live` 模式，不运行正式交易启动器。
@@ -103,7 +103,7 @@ py -3.11 stop_windows.py
 
 ```powershell
 cd C:\A_System
-py -3.11 scripts\export_runtime_migration.py export --project C:\A_System
+py -3.11 tools\export_runtime_migration.py export --project C:\A_System
 ```
 
 如果旧环境使用显式的 `QMT_INNER_CONFIG` 自定义路径，需通过 `--private-config` 指定实际旧私有配置文件。默认导出位置是 `%LOCALAPPDATA%\A_System\migration_exports` 下的时间戳子目录，位于项目同步目录之外。预期输出 `EXPORT_PASS`、实际目录和文件数。
@@ -125,7 +125,7 @@ py -3.11 scripts\export_runtime_migration.py export --project C:\A_System
 
 ```powershell
 cd C:\A_System
-py -3.11 scripts\export_runtime_migration.py verify "收到的快照目录"
+py -3.11 tools\export_runtime_migration.py verify "收到的快照目录"
 ```
 
 预期输出 `VERIFY_PASS`。它检查路径、文件大小、SHA-256、JSON 格式、SQLite 完整性及表记录数；失败时禁止恢复。这个工具只有导出和验证入口，没有自动覆盖生产账本的恢复入口。
@@ -194,7 +194,7 @@ notepad .env
 按第三节部署只读模型。若本机已有只读 QMT 私有配置，可运行这次已验证过并保存到项目的工具：
 
 ```powershell
-py -3.11 scripts\configure_new_windows_env.py --qmt-path C:/QMT/GJQMT/userdata
+py -3.11 tools\configure_new_windows_env.py --qmt-path C:/QMT/GJQMT/userdata
 ```
 
 它从本机私有配置读取账号，备份已有 `.env`、填写内置通道和本机路径，然后打开文件供填写 Token 和 Bark 地址；保留已有其他字段、人工停机和只读模式，不启动交易、不重置账本。
@@ -252,7 +252,7 @@ py -3.11 scripts\send_notify.py system_error "A_System 新电脑通知测试" "�
 Mac 在项目目录运行：
 
 ```sh
-python3 scripts/install_mac_fusion_awake.py
+python3 tools/install_mac_fusion_awake.py
 ```
 
 省略参数时必须只有一台运行中的虚拟机；否则用 `--vmx "/实际路径/目标.vmwarevm/目标.vmx"` 指定。
@@ -297,11 +297,11 @@ Git 已保存可复用代码、无密钥配置和操作流程；私下另备份�
 
 | 文件 | 方法/位置 | 操作、原因 |
 |---|---|---|
-| [configure_new_windows_env.py](../scripts/configure_new_windows_env.py) | `configure/main` 全文件 | 新增：从本机只读配置重建 .env，保留其他凭据，备份、校验后打开编辑；避免依赖旧电脑 .env |
+| [configure_new_windows_env.py](../tools/configure_new_windows_env.py) | `configure/main` 全文件 | 新增：从本机只读配置重建 .env，保留其他凭据，备份、校验后打开编辑；避免依赖旧电脑 .env |
 | [open_sync_status.py](../scripts/open_sync_status.py) | `gui_listening/ensure_running/install_shortcuts/main` 全文件 | 新增：服务检测、复用或启动、浏览器入口及私有快捷方式；修复服务退出后的网页连接拒绝 |
 | [windows_session_awake_guard.py](../scripts/windows_session_awake_guard.py) | `main` 全文件 | 新增：系统空闲防休眠、单实例锁、状态报告及退出释放；没有显示常亮标志，允许锁屏 |
-| [guard_fusion_awake.sh](../scripts/guard_fusion_awake.sh) | 主循环与 `cleanup` 全文件 | 新增：按目标 VM 进程持有/释放 `caffeinate -i`；进程匹配由安装器传入，移除固定 VM 名称 |
-| [install_mac_fusion_awake.py](../scripts/install_mac_fusion_awake.py) | `detect_vmx/process_pattern/install/main` 全文件 | 新增：检测唯一 VM、转义路径、复制私有守护、登录自启；无需固定 Mac 用户名 |
+| [guard_fusion_awake.sh](../tools/guard_fusion_awake.sh) | 主循环与 `cleanup` 全文件 | 新增：按目标 VM 进程持有/释放 `caffeinate -i`；进程匹配由安装器传入，移除固定 VM 名称 |
+| [install_mac_fusion_awake.py](../tools/install_mac_fusion_awake.py) | `detect_vmx/process_pattern/install/main` 全文件 | 新增：检测唯一 VM、转义路径、复制私有守护、登录自启；无需固定 Mac 用户名 |
 | [install_windows_runtime_guard.py](../scripts/install_windows_runtime_guard.py) | `_session_paths/install/status` | 替换会话任务的旧 PS 动作与 Highest 权限为私有 pythonw、Limited、无限执行；删除默认防锁屏/更新脚本调用；状态检查新增旧配置识别 |
 | [.env.example](../.env.example) | QMT 配置段 | 替换默认通道为本次 qmt_inner，说明 userdata 路径和旧 session 用途；没有真实凭据 |
 | [new_machine_profile.json](../config/new_machine_profile.json) | 全文件 | 新增本次无密钥参考配置；不自动覆盖交易配置或激活交易 |
@@ -315,7 +315,7 @@ Git 已保存可复用代码、无密钥配置和操作流程；私下另备份�
 
 ```sh
 python3 -B -m unittest discover -s tests
-sh -n scripts/guard_fusion_awake.sh
+sh -n tools/guard_fusion_awake.sh
 ```
 
 测试使用临时目录和模拟 Win32/计划任务/快捷方式接口，不启动生产程序。Mac 上 Windows PowerShell 实机输出测试会跳过，计划任务现场验收仍按 8.6 执行。

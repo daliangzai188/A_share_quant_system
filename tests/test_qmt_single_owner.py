@@ -44,8 +44,8 @@ class QmtSingleOwnerTests(unittest.TestCase):
         root = Path(__file__).absolute().parents[1]
         guarded_files = {
             "src/live_order_gateway.py": "QMTBrokerAdapter.from_config",
-            "scripts/qmt_connection_probe.py": "QMTBrokerAdapter.from_config",
-            "scripts/probe_qmt_connection.py": "XtQuantTrader(",
+            "tools/qmt_connection_probe.py": "QMTBrokerAdapter.from_config",
+            "tools/probe_qmt_connection.py": "XtQuantTrader(",
             "scripts/monitor_strategy_d_intraday.py": "QMTBrokerAdapter.from_config",
         }
         for relative, constructor in guarded_files.items():

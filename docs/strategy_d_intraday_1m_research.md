@@ -153,7 +153,7 @@ PYTHONPATH="$PWD/.venv/lib/python3.9/site-packages" python3 \
 
 ```bash
 PYTHONPATH="$PWD/.venv/lib/python3.9/site-packages" python3 \
-  scripts/research_strategy_d_intraday_1m_paths.py
+  research/research_strategy_d_intraday_1m_paths.py
 ```
 
 输出：

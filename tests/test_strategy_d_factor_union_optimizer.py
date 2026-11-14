@@ -10,7 +10,7 @@ import pandas as pd
 
 from scripts import monitor_strategy_d_intraday as d_monitor
 from scripts.monitor_strategy_d_intraday import StockState, StrategyDMonitor
-from scripts.optimize_strategy_d_factor_union import (
+from research.optimize_strategy_d_factor_union import (
     minimize_profile_union,
     latest_completed_update_node,
     rank_profile_comparisons,

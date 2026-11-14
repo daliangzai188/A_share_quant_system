@@ -129,7 +129,7 @@
 ## 七、验证命令
 
 ```text
-python scripts/certify_plan_jia_release.py        # 正式认证（期望值已锁定，逐位复现才PASS）
+python research/certify_plan_jia_release.py        # 正式认证（期望值已锁定，逐位复现才PASS）
 python -m unittest tests.test_equity_curve_stop    # 停手定义、fail-closed、状态机、报警、提醒
 python scripts/update_equity_curve_stop.py --signal-date YYYYMMDD   # 手动重算次日判定
 ```

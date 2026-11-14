@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from scripts import recover_broker_cash_ledger as recovery
+from tools import recover_broker_cash_ledger as recovery
 
 
 FIELDS = ["资金账号", "发生日期", "发生时间", "流水序号", "业务名称", "发生金额", "剩余金额", "币种"]

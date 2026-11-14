@@ -8,7 +8,7 @@ from pathlib import Path
 def main():
     if os.name != 'nt':
         raise RuntimeError('请在当前 Windows 虚拟机运行')
-    from scripts.prepare_qmt_inner import probe
+    from tools.prepare_qmt_inner import probe
     result = probe()
     if result['mode'] != 'live':
         raise RuntimeError('内置执行端仍为 read_only。只读连接已验证；尚未进入交易运行验收。')

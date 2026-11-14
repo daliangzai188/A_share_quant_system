@@ -5,14 +5,14 @@ import unittest
 from unittest.mock import patch
 
 from qmt_inner.engine import ENGINE_REVISION
-from scripts.repair_qmt_inner_ledger import repair_ledger
+from tools.repair_qmt_inner_ledger import repair_ledger
 
 
 class LedgerRepairSafetyTests(unittest.TestCase):
     def test_requires_manual_stop_before_connection(self):
         with tempfile.TemporaryDirectory() as temporary, \
-             patch('scripts.repair_qmt_inner_ledger.assert_standalone_qmt_allowed'), \
-             patch('scripts.repair_qmt_inner_ledger.FileClient') as client:
+             patch('tools.repair_qmt_inner_ledger.assert_standalone_qmt_allowed'), \
+             patch('tools.repair_qmt_inner_ledger.FileClient') as client:
             with self.assertRaisesRegex(RuntimeError, 'requires manual stop'):
                 repair_ledger(Path(temporary))
             client.assert_not_called()
@@ -23,11 +23,11 @@ class LedgerRepairSafetyTests(unittest.TestCase):
             marker = root / '.manual_stop.json'
             marker.write_text(json.dumps({'status': 'MANUAL_STOP'}))
             before = marker.read_bytes()
-            with patch('scripts.repair_qmt_inner_ledger.assert_standalone_qmt_allowed'), \
-                 patch('scripts.repair_qmt_inner_ledger.load_dotenv'), \
-                 patch('scripts.repair_qmt_inner_ledger.load_settings', return_value={}), \
-                 patch('scripts.repair_qmt_inner_ledger.FileClient') as client, \
-                 patch('scripts.repair_qmt_inner_ledger.backup') as saved:
+            with patch('tools.repair_qmt_inner_ledger.assert_standalone_qmt_allowed'), \
+                 patch('tools.repair_qmt_inner_ledger.load_dotenv'), \
+                 patch('tools.repair_qmt_inner_ledger.load_settings', return_value={}), \
+                 patch('tools.repair_qmt_inner_ledger.FileClient') as client, \
+                 patch('tools.repair_qmt_inner_ledger.backup') as saved:
                 client.return_value.heartbeat.return_value = {'engine_revision': 'OLD'}
                 with self.assertRaisesRegex(RuntimeError, 'revision'):
                     repair_ledger(root)
@@ -45,11 +45,11 @@ class LedgerRepairSafetyTests(unittest.TestCase):
                 before = marker.read_bytes()
                 def attempt():
                     getattr(QMTInnerBrokerAdapter, method)(None, None)
-                with patch('scripts.repair_qmt_inner_ledger.assert_standalone_qmt_allowed'), \
-                     patch('scripts.repair_qmt_inner_ledger.load_dotenv'), \
-                     patch('scripts.repair_qmt_inner_ledger.load_settings', return_value={}), \
-                     patch('scripts.repair_qmt_inner_ledger.FileClient') as client, \
-                     patch('scripts.repair_qmt_inner_ledger.backup', return_value={'directory': 'backup'}), \
+                with patch('tools.repair_qmt_inner_ledger.assert_standalone_qmt_allowed'), \
+                     patch('tools.repair_qmt_inner_ledger.load_dotenv'), \
+                     patch('tools.repair_qmt_inner_ledger.load_settings', return_value={}), \
+                     patch('tools.repair_qmt_inner_ledger.FileClient') as client, \
+                     patch('tools.repair_qmt_inner_ledger.backup', return_value={'directory': 'backup'}), \
                      patch.object(daemon, 'setup'), \
                      patch.object(daemon, '_recover_trade_execution_state_once', side_effect=attempt):
                     client.return_value.heartbeat.return_value = {'engine_revision': ENGINE_REVISION}

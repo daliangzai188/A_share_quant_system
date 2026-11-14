@@ -134,16 +134,16 @@ bootstrap 95%下界仍为负，且最大回撤31.65%，因此即使保留当前D
 
 ```bash
 # D1竞价数据/权限门禁
-python3 scripts/audit_strategy_d1_auction_data_gate.py
+python3 research/audit_strategy_d1_auction_data_gate.py
 
 # D2/D4/D5全触板分钟研究
 python3 scripts/research_strategy_d_six_schools.py
 
 # D3完整7%失败分母、断点采集和严格研究
-python3 scripts/build_strategy_d3_halfway_mother_pool.py
-python3 scripts/collect_strategy_d3_halfway_tushare_1m.py --dry-run
-python3 scripts/collect_strategy_d3_halfway_tushare_1m.py --workers 4
-python3 scripts/research_strategy_d3_halfway_full_denominator.py
+python3 research/build_strategy_d3_halfway_mother_pool.py
+python3 research/collect_strategy_d3_halfway_tushare_1m.py --dry-run
+python3 research/collect_strategy_d3_halfway_tushare_1m.py --workers 4
+python3 research/research_strategy_d3_halfway_full_denominator.py
 ```
 
 机器可读结论：

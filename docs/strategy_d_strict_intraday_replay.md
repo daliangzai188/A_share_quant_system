@@ -163,17 +163,17 @@ fill_probability, fill_reliable
 
 | 文件 | 方法/入口 | 修改内容 |
 |---|---|---|
-| ``src/strategy_d_strict_intraday.py`` | ``strict_l2_manifest_gate`` | 检查全窗口、全交易所、全市场L2日文件完整性 |
+| ``research/strategy_d_strict_intraday.py`` | ``strict_l2_manifest_gate`` | 检查全窗口、全交易所、全市场L2日文件完整性 |
 | 同上 | ``replay_synchronized_d_scans`` | 重建首次封板、炸板、回封、当前封板情绪和同日D排序 |
 | 同上 | ``replay_price_time_queue`` | 重建价格时间优先队列、部分成交和14:55撤余单 |
 | 同上 | ``normalize_event_time`` | 保留``HH:MM:SS.mmm``毫秒，避免破坏逐笔先后顺序 |
 | ``scripts/collect_strategy_d_intraday_tushare_1m.py`` | ``load_collection_policy`` / ``build_cross_section_jobs`` / ``fetch_job_with_retry`` / ``write_summary`` | 付费权限限速、同日最多33股横截面聚合、缺股精确补取、断点状态、已知缺口fail-closed和总表合并 |
 | ``scripts/collect_strategy_d_stk_limit_history.py`` | ``load_window_open_dates`` / ``normalize_stk_limit`` / ``collect_missing`` | 补齐484日官方涨跌停价、内容校验、原子保存和断点续跑 |
-| ``scripts/probe_strategy_d_intraday_qmt_depth.py`` | ``fetch_period`` / ``report_paths`` / ``main`` | 只读探测QMT 1分钟、tick和历史盘口字段；不同批次报告互不覆盖 |
-| ``scripts/audit_strategy_d_l2_purchase_readiness.py`` | ``build_audit`` | 汇总当前权限、官方候选来源和付款前样本门槛 |
-| ``src/strategy_d_l2_sample_acceptance.py`` | ``validate_sample_package`` | 读取真实供应商样本，校验逐笔序列、委托关联、全市场同步扫描和前50队列 |
-| ``scripts/validate_strategy_d_l2_vendor_sample.py`` | ``main`` | 生成付款前样本内容验收报告；九份样本任一缺失即fail-closed |
-| ``scripts/audit_strategy_d_strict_intraday_sources.py`` | ``build_audit`` | 汇总各层覆盖并生成正式认证闸门 |
+| ``research/probe_strategy_d_intraday_qmt_depth.py`` | ``fetch_period`` / ``report_paths`` / ``main`` | 只读探测QMT 1分钟、tick和历史盘口字段；不同批次报告互不覆盖 |
+| ``research/audit_strategy_d_l2_purchase_readiness.py`` | ``build_audit`` | 汇总当前权限、官方候选来源和付款前样本门槛 |
+| ``research/strategy_d_l2_sample_acceptance.py`` | ``validate_sample_package`` | 读取真实供应商样本，校验逐笔序列、委托关联、全市场同步扫描和前50队列 |
+| ``research/validate_strategy_d_l2_vendor_sample.py`` | ``main`` | 生成付款前样本内容验收报告；九份样本任一缺失即fail-closed |
+| ``research/audit_strategy_d_strict_intraday_sources.py`` | ``build_audit`` | 汇总各层覆盖并生成正式认证闸门 |
 | ``tests/test_strategy_d_strict_intraday.py`` | 全文件 | 队列、部成撤单、同步情绪、排名和缺数fail-closed测试 |
 
 ## 七、运行与验证
@@ -219,7 +219,7 @@ python3 scripts/collect_strategy_d_intraday_tushare_1m.py --limit-jobs 5
 ### 7.3 数据源总审计
 
 ```bash
-python3 scripts/audit_strategy_d_strict_intraday_sources.py
+python3 research/audit_strategy_d_strict_intraday_sources.py
 ```
 
 当前必须输出：
@@ -271,6 +271,6 @@ Level-2公开价12万元/年”的口径已撤销。
 本专项没有购买L2、没有联系供应商，也没有启用任何实盘接口。用户已经购买的
 Tushare历史一分钟权限是当前D研究主数据，不属于这里所说的缺失L2。未来只有
 分钟候选通过双复利研究门槛，才取得沪深京九份真实L2样本并运行
-``python3 scripts/validate_strategy_d_l2_vendor_sample.py``；当前结果为``0/9``、
+``python3 research/validate_strategy_d_l2_vendor_sample.py``；当前结果为``0/9``、
 ``BLOCKED_NO_VENDOR_SAMPLE_MANIFEST``。在最终认证前不修改
 ``src/strategy_d_spec.py``或正式配置。

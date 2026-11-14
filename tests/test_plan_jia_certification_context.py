@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from scripts import certify_plan_jia_release as certification
+from research import certify_plan_jia_release as certification
 
 
 class JiaCertificationContextTests(unittest.TestCase):

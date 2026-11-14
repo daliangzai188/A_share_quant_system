@@ -41,7 +41,7 @@ python3 scripts/optimize_acde_rolling_three_year.py \
 然后生成并核验正式证书：
 
 ```bash
-python3 scripts/certify_acde_v12_release.py
+python3 research/certify_acde_v12_release.py
 ```
 
 证书必须输出`status=PASS`、`scenario=acde_ced_v12_6046_formal`、176笔和

@@ -1,6 +1,8 @@
 phase0.qmt_external_checks
 phase0.qmt_notify_forwarder
 phase0.qn_state_sink
+qmt_inner.engine
+qmt_inner.protocol
 scripts.audit_backup_strategy_b
 scripts.audit_signal_readiness
 scripts.backtest_strategy_d

@@ -172,7 +172,7 @@ bid_price_1, bid_volume_1, bid_order_count_1, bid_queue_1
 
 ```bash
 PYTHONPATH="$PWD/.venv/lib/python3.9/site-packages" \
-python3 scripts/validate_strategy_d_l2_vendor_sample.py
+python3 research/validate_strategy_d_l2_vendor_sample.py
 ```
 
 验收器会实际读取CSV并计算SHA-256，不只相信清单声明；它检查：

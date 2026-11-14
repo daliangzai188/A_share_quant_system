@@ -4,7 +4,7 @@ import unittest
 
 import pandas as pd
 
-from scripts.rebuild_equity_curve_stop_inputs import validate
+from tools.rebuild_equity_curve_stop_inputs import validate
 from src.data_cleaner import DataCleaner
 from src.limit_source_quality import suspended_placeholder_mask
 

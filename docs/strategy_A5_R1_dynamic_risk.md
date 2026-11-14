@@ -230,7 +230,7 @@ A5-R1 仍然不是实盘结论。
 
 A5-R1 已经跳过了 `market_sentiment_level = weak` 且 `segment_market_sentiment_level = neutral` 的交易，但剩余交易里仍然存在明显回撤段。
 
-本次新增脚本 `scripts/analyze_a5_r1_failure.py`，专门复盘 A5-R1 实际交易后的：
+本次新增脚本 `research/analyze_a5_r1_failure.py`，专门复盘 A5-R1 实际交易后的：
 
 - 最大回撤区间。
 - 最长连续亏损区间。
@@ -291,7 +291,7 @@ A5-R1 已经跳过了 `market_sentiment_level = weak` 且 `segment_market_sentim
 
 ## 15. 候选过滤回测
 
-本次新增脚本 `scripts/backtest_a5_r1_filter_candidates.py`。
+本次新增脚本 `research/backtest_a5_r1_filter_candidates.py`。
 
 它不会直接修改 A5-R1 正式规则，只把剩余风险归因里暴露出来的候选因子做回测：
 
@@ -367,7 +367,7 @@ A5-R1 收益优先版
 
 ## 17. 分市场与涨停制度复盘
 
-本次新增脚本 `scripts/review_a5_r1_market_structure.py`。
+本次新增脚本 `research/review_a5_r1_market_structure.py`。
 
 它只复盘 A5-R1 收益优先版，统计维度包括：
 
@@ -433,7 +433,7 @@ limit_pct_bucket + limit_times_detail_bucket
 
 ## 18. 沪主板高回撤复盘
 
-本次新增脚本 `scripts/review_a5_r1_sh_main_failure.py`。
+本次新增脚本 `research/review_a5_r1_sh_main_failure.py`。
 
 它只复盘 A5-R1 收益优先版里的沪主板交易：
 
@@ -514,7 +514,7 @@ reports/a5_r1_sh_main_failure_worst_trades.csv
 
 ## 19. 日线成交真实性验证
 
-本次新增脚本 `scripts/validate_a5_r1_daily_execution_reality.py`。
+本次新增脚本 `research/validate_a5_r1_daily_execution_reality.py`。
 
 验证目标：
 
@@ -609,7 +609,7 @@ reports/a5_r1_daily_execution_limit_down_blocked.csv
 
 ## 20. 跌停延迟卖出影响复盘
 
-本次新增脚本 `scripts/review_a5_r1_limit_down_delay.py`。
+本次新增脚本 `research/review_a5_r1_limit_down_delay.py`。
 
 验证目标：
 
@@ -687,7 +687,7 @@ reports/a5_r1_limit_down_delay_detail.csv
 
 ## 21. 1000 万买入流动性与滑点审计
 
-本次新增脚本 `scripts/audit_a5_r1_buy_liquidity.py`。
+本次新增脚本 `research/audit_a5_r1_buy_liquidity.py`。
 
 验证目标：
 
@@ -782,7 +782,7 @@ T+1 开盘涨停买不到：7
 
 ## 22. 1000 万流动性过滤版回测
 
-本次新增脚本 `scripts/backtest_a5_r1_liquidity_filters.py`。
+本次新增脚本 `research/backtest_a5_r1_liquidity_filters.py`。
 
 验证目标：
 
@@ -858,7 +858,7 @@ A5-R1 1000万滑点版
 
 ## 23. 1000 万流动性降仓 / 拆单回测
 
-本次新增脚本 `scripts/backtest_a5_r1_liquidity_sizing.py`。
+本次新增脚本 `research/backtest_a5_r1_liquidity_sizing.py`。
 
 验证目标：
 
@@ -951,7 +951,7 @@ tiered_10m_10m_8m_5m_2m
 
 ## 24. 50 万起步动态复利滑点回测
 
-本次新增脚本 `scripts/backtest_a5_r1_dynamic_capital_slippage.py`。
+本次新增脚本 `research/backtest_a5_r1_dynamic_capital_slippage.py`。
 
 验证目标：
 
@@ -1039,7 +1039,7 @@ single_position_conservative_slippage_cap_5pct
 
 ## 25. 日线止盈止损路径审计
 
-本次新增脚本 `scripts/audit_a5_r1_exit_path.py`。
+本次新增脚本 `research/audit_a5_r1_exit_path.py`。
 
 验证目标：
 
@@ -1134,7 +1134,7 @@ reports/a5_r1_exit_path_audit_detail.csv
 
 ## 26. 真实执行口径重新优化 A5-R2
 
-本次新增脚本 `scripts/optimize_realistic_execution_strategy.py`。
+本次新增脚本 `research/optimize_realistic_execution_strategy.py`。
 
 验证目标：
 

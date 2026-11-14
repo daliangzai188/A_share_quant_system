@@ -11,8 +11,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def _load(name: str):
-    spec = importlib.util.spec_from_file_location(name, ROOT / "scripts" / f"{name}.py")
+def _load(name: str, folder: str = "scripts"):
+    spec = importlib.util.spec_from_file_location(name, ROOT / folder / f"{name}.py")
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(module)
@@ -20,7 +20,7 @@ def _load(name: str):
 
 
 reminder = _load("mac_monthly_maintenance_reminder")
-installer = _load("install_mac_maintenance_reminder")
+installer = _load("install_mac_maintenance_reminder", "tools")
 FIRST_SATURDAY_OCT = datetime.date(2026, 10, 3)
 
 

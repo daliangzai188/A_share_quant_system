@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 import unittest
 
-from src.release_compound_guard import (
+from research.release_compound_guard import (
     PASS_NONINFERIOR,
     REJECT_BELOW_FLOOR,
     REJECT_NOT_COMPARABLE,

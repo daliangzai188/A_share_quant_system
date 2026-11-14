@@ -10,9 +10,9 @@ from unittest.mock import patch
 
 from qmt_inner.engine import Engine
 from qmt_inner.protocol import atomic_json
-from scripts.prepare_qmt_inner import prepare
-from scripts.qmt_inner_backup import backup
-from scripts.stage_qmt_inner_live import stage
+from tools.prepare_qmt_inner import prepare
+from tools.qmt_inner_backup import backup
+from tools.stage_qmt_inner_live import stage
 from src.qmt_inner_start_gate import assert_selected_transport_ready
 
 
@@ -47,7 +47,7 @@ assert entry['Engine'] is not old_class
                             runtime_config=str(project/'config/config.json'),
                             max_order_notional=1000)
             atomic_json(private, settings)
-            with patch('scripts.stage_qmt_inner_live.install_bundle'):
+            with patch('tools.stage_qmt_inner_live.install_bundle'):
                 result = stage(project, private)
             updated = json.loads(private.read_text())
             self.assertEqual(result['status'], 'LIVE_STAGED_MANUAL_STOP_ACTIVE')
@@ -99,11 +99,11 @@ assert entry['Engine'] is not old_class
 
     def test_inner_readiness_does_not_require_xtquant_or_mini_path(self):
         import os
-        from scripts.check_qmt_live_readiness import build_report
-        with patch('src.qmt_market_data.selected_transport', return_value='qmt_inner'), \
+        from tools.check_qmt_live_readiness import build_report
+        with patch('tools.qmt_market_data.selected_transport', return_value='qmt_inner'), \
              patch('qmt_inner.protocol.load_settings', return_value={'account_id':'TEST'}), \
              patch('qmt_inner.protocol.FileClient') as client, \
-             patch('scripts.check_qmt_live_readiness.check_xtquant_import', side_effect=AssertionError('legacy import')), \
+             patch('tools.check_qmt_live_readiness.check_xtquant_import', side_effect=AssertionError('legacy import')), \
              patch.dict(os.environ, {'QMT_ACCOUNT_ID':'TEST', 'QMT_PATH':'does-not-exist'}):
             client.return_value.heartbeat.return_value = {'mode':'read_only'}
             report = build_report({'trade_mode':'paper'})

@@ -1830,6 +1830,10 @@ M的去留（2026-11-13起）：M的规则平时不调，只在年度复核决�
    研究池、影子账、停手判定、实盘组合下单、因子健康、M候选单、三级警告、日报、仓位必须全部逐字节一致；
    确实应该变的（改规则）单独说明后才`record`。生产代码清单由`tests/test_production_modules.py`锁定，
    项目优化验收指标用`python tests/golden/project_metrics.py`计算。
+5. 目录约定（2026-11-14起）：`src/`、`scripts/`、`qmt_inner/`只放生产代码（实盘入口能走到的模块）；
+   研究、回测、优化、版本认证放`research/`，账户查询、数据采集与修复、备份、诊断、安装等运维工具放`tools/`。
+   研究和工具可以导入生产代码，生产代码不得导入`research/`、`tools/`；新写的研究脚本不要放进`scripts/`。
+   `tests/test_production_modules.py`检查这条边界。
 
 数据更新方法继续执行`docs/monthly_three_year_data_update.md`；
 `docs/monthly_acde_optimization_sop.md`保留为研究方法与数据门禁参考，不再用于生产换版。

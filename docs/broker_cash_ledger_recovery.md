@@ -1,12 +1,12 @@
 # 券商原始资金流水恢复
 
-`scripts/recover_broker_cash_ledger.py` 是独立、完整可运行的现金恢复工具，只使用 Python 标准库。
+`tools/recover_broker_cash_ledger.py` 是独立、完整可运行的现金恢复工具，只使用 Python 标准库。
 从已导出的券商原件恢复可核对的现金变化，输出必须放在项目和同步目录之外。
 它不接券商接口，不下单、不撤单，不修改正式净值账本和认证状态。
 
 ## 本次修改
 
-新增文件 `scripts/recover_broker_cash_ledger.py`：
+新增文件 `tools/recover_broker_cash_ledger.py`：
 
 - `restore()`：将现场恢复脚本整理为显式传入原件、输出目录、原件哈希、期初现金及查询期间的工具。
   读入后检查必需字段、单账户、人民币币种、日期、重复记录、金额和业务分类；
@@ -29,7 +29,7 @@
 下面均为示例路径，实际使用时指向已经核验的私有原件与私有目录：
 
 ```powershell
-python scripts/recover_broker_cash_ledger.py --source "C:\Users\eass\AppData\Local\A_System\history\original.txt" --output "C:\Users\eass\AppData\Local\A_System\history\recovered" --expected-sha256 "<已独立核对的64位哈希>" --opening-cash "<已核验的期初现金>" --query-start 20260601 --query-end 20261011
+python tools/recover_broker_cash_ledger.py --source "C:\Users\eass\AppData\Local\A_System\history\original.txt" --output "C:\Users\eass\AppData\Local\A_System\history\recovered" --expected-sha256 "<已独立核对的64位哈希>" --opening-cash "<已核验的期初现金>" --query-start 20260601 --query-end 20261011
 ```
 
 macOS 同样用 `python3` 执行，传入同步目录之外的绝对路径。

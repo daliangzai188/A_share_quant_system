@@ -104,13 +104,13 @@ E 74笔/11.703790倍，D 33笔/2.811240倍。
 - `scripts/run_strategy_e_signal.py`：A或C已有计划时，E只做反事实候选审计；
 - `scripts/trading_daemon.py`：执行入口、决策链和收盘候选统计统一显示A>C>E>D；
 - `scripts/validate_other_live_strategies_strict.py`：`replay_by_action_date()`实现真实开仓日回放；
-- `scripts/certify_strict_asof_portfolio.py`：锁定136笔和1023.791243962826倍；
+- `research/certify_strict_asof_portfolio.py`：锁定136笔和1023.791243962826倍；
 - `config/config.json`：保存当前顺序、分腿样本和人工风险接受说明。
 
 复核命令：
 
 ```bash
-python3 scripts/certify_strict_asof_portfolio.py
+python3 research/certify_strict_asof_portfolio.py
 python3 -m unittest tests.test_strict_action_date_replay tests.test_current_portfolio_runtime
 ```
 

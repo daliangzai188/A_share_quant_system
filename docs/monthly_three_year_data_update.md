@@ -116,8 +116,8 @@
 
 ```bash
 python3 scripts/collect_all_data.py --start-date <YYYYMMDD> --end-date <YYYYMMDD>
-python3 scripts/collect_adj_factor_data.py --start-date <YYYYMMDD> --end-date <YYYYMMDD>
-python3 scripts/validate_collected_data.py --start-date <YYYYMMDD> --end-date <YYYYMMDD>
+python3 tools/collect_adj_factor_data.py --start-date <YYYYMMDD> --end-date <YYYYMMDD>
+python3 tools/validate_collected_data.py --start-date <YYYYMMDD> --end-date <YYYYMMDD>
 python3 scripts/clean_collected_data.py --start-date <YYYYMMDD> --end-date <YYYYMMDD> --incremental-replace
 python3 scripts/build_dynamic_features.py --start-date <YYYYMMDD> --end-date <YYYYMMDD>
 python3 scripts/score_limit_up_fill_probability.py --historical-asof

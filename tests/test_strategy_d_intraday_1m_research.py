@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from scripts.research_strategy_d_intraday_1m_paths import (
+from research.research_strategy_d_intraday_1m_paths import (
     bool_series,
     candidate_rule_diagnostics,
     event_metrics,

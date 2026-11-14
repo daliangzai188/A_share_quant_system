@@ -478,7 +478,7 @@ A和E的新排序来自当前两年窗口内269个唯一排序变体搜索。虽
 09:30～10:00成长板浅炸回封、累计触板少于40且盘中炸板率低于75%。
 
 正式配置重建的逐腿计划签名与冻结候选账本一致，两次独立回放及逐日组合账本对齐；
-认证入口为`scripts/certify_strategy_c_third_branch_release.py`。31项规则、数据与回放
+认证入口为`research/certify_strategy_c_third_branch_release.py`。31项规则、数据与回放
 检查全部通过；旧C的78条计划逐笔保持不变，第3分支20条计划全部按T+2，独立账户
 实际成交14笔、胜率78.57%、平均每笔5.89%、中位每笔2.95%、复利2.100817倍、
 最大回撤-10.69%。该版本仍属于同窗`STRICT_DISCOVERY_POST_REVIEW_STAGE4`，没有
@@ -856,7 +856,7 @@ ACDE复利最高的一条作为人工审核候选；全部条件`OR`只保留为
 | 调度/恢复/播报 | `scripts/trading_daemon.py` |
 | 下单与券商 | `src/live_order_gateway.py`、`src/broker_adapter.py`、`src/qmt_adapter.py` |
 | 持仓与执行审计 | `data/processed/positions.json`、`reports/execution_tracking/` |
-| 严格认证 | `scripts/certify_strict_asof_portfolio.py`、`reports/current_portfolio_alignment/` |
+| 严格认证 | `research/certify_strict_asof_portfolio.py`、`reports/current_portfolio_alignment/` |
 
 ## 十二、当前结论
 

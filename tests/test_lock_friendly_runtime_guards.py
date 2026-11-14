@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-from scripts import install_mac_fusion_awake as mac
+from tools import install_mac_fusion_awake as mac
 from scripts import install_windows_runtime_guard as installer
 from scripts import windows_session_awake_guard as awake
 

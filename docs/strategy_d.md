@@ -10,9 +10,9 @@
    `fill_model.min_group_samples=30`。只找到分组但样本不足时，回测与实盘都拒绝。
 2. D信号记录新增实际分组样本数、样本下限，并由
    `StrategyDMonitor._update_signal_order_result`持续回写成交、部分成交和撤单结果。
-3. `scripts/reconcile_strategy_d_forward_evidence.py`可用事务意图账本修复旧信号CSV中
+3. `research/reconcile_strategy_d_forward_evidence.py`可用事务意图账本修复旧信号CSV中
    停留在`PENDING_OR_PARTIAL`的状态；它只读交易数据库，不连接QMT、不下单。
-4. `scripts/certify_strategy_d_runtime_alignment.py`统一检查正式发布、因子共用模块、
+4. `research/certify_strategy_d_runtime_alignment.py`统一检查正式发布、因子共用模块、
    信号时钟、排序、仓位、成交门、样本下限、真实委托金额、T+2和前向证据。
 
 2026-09-15认证结果为
@@ -32,8 +32,8 @@ V15属于同窗`STRICT_DISCOVERY`，过拟合风险仍高。正式参数继续�
 运行方式：
 
 ```bash
-python3 scripts/reconcile_strategy_d_forward_evidence.py
-python3 scripts/certify_strategy_d_runtime_alignment.py
+python3 research/reconcile_strategy_d_forward_evidence.py
+python3 research/certify_strategy_d_runtime_alignment.py
 ```
 
 本机报告：`reports/strategy_d/runtime_alignment_latest.json`。
@@ -550,7 +550,7 @@ D_ELIGIBLE_STATUSES = {"NO_CANDIDATE", "HISTORICAL_SIM_FILLED", "BUY_REJECTED"}
 4. D全部按T+2收盘退出，仓位82.5%，成交压力折扣80%，往返费用及滑点0.15%。
 5. 本脚本中的旧A/B/C叠加曲线只保留审计用途；当前组合收益和串行占仓只能以
    `scripts/certify_current_executable_portfolio.py`只作身份核对；发布标尺只认
-   `scripts/certify_strict_asof_portfolio.py`。
+   `research/certify_strict_asof_portfolio.py`。
 
 输出：
 ```
@@ -577,14 +577,14 @@ cd /Users/user/Desktop/A_System
 | `scripts/backtest_strategy_d.py` | 冻结D候选、T+2收益及验证闸门 |
 | `scripts/monitor_strategy_d_intraday.py` | 09:30全日路径、WATCH/BUY、成交概率和撤单 |
 | `scripts/build_strategy_d_intraday_event_ledger.py` | 建立包含失败收盘的完整首板触板母池，机械重放第一可交易回封、保守排队成交和14:55撤单 |
-| `scripts/research_strategy_d_intraday_1m_paths.py` | 审计6,848个一分钟路径，比较1分钟/5分钟身份，统计爆发、爆亏、失败收盘和样本内候选稳健性 |
-| `scripts/collect_strategy_d_intraday_baostock.py` | 断点回填沪深不复权5分钟K，仅作盘中路径近似预检 |
+| `research/research_strategy_d_intraday_1m_paths.py` | 审计6,848个一分钟路径，比较1分钟/5分钟身份，统计爆发、爆亏、失败收盘和样本内候选稳健性 |
+| `research/collect_strategy_d_intraday_baostock.py` | 断点回填沪深不复权5分钟K，仅作盘中路径近似预检 |
 | `scripts/collect_strategy_d_intraday_tushare_1m.py` | 聚合并断点回填历史1分钟价格路径；不含买一队列，不具备正式认证资格 |
-| `scripts/probe_strategy_d_intraday_qmt_depth.py` | 只读探测QMT历史1分钟、tick和盘口字段覆盖，不访问账户/订单 |
-| `scripts/audit_strategy_d_strict_intraday_sources.py` | 审计全市场L2覆盖并控制D/ACDE严格重放门禁 |
+| `research/probe_strategy_d_intraday_qmt_depth.py` | 只读探测QMT历史1分钟、tick和盘口字段覆盖，不访问账户/订单 |
+| `research/audit_strategy_d_strict_intraday_sources.py` | 审计全市场L2覆盖并控制D/ACDE严格重放门禁 |
 | `scripts/trading_daemon.py` | 组合状态允许时启动D线程，复用主QMT连接 |
 | `scripts/certify_current_executable_portfolio.py` | 旧来源串行身份核对，不生成正式收益认证 |
-| `scripts/certify_strict_asof_portfolio.py` | 严格as-of单账户机械复利和代码/输入指纹认证 |
+| `research/certify_strict_asof_portfolio.py` | 严格as-of单账户机械复利和代码/输入指纹认证 |
 | `src/broker_adapter.py`、`src/qmt_adapter.py` | 委托、成交确认和撤单接口 |
 
 ---
@@ -629,17 +629,17 @@ cd /Users/user/Desktop/A_System
 
 | 文件 | 作用 |
 |---|---|
-| `scripts/research_strategy_d_exit_fetch.py` | 从当前组合账本提取17笔实际执行D，采集退出日全日5分钟和尾盘1分钟行情 |
-| `scripts/research_strategy_d_exit_pov.py` | 回放动态起点、14:30起点、14:45起点三种卖出方案，并复算D腿及完整组合 |
+| `research/research_strategy_d_exit_fetch.py` | 从当前组合账本提取17笔实际执行D，采集退出日全日5分钟和尾盘1分钟行情 |
+| `research/research_strategy_d_exit_pov.py` | 回放动态起点、14:30起点、14:45起点三种卖出方案，并复算D腿及完整组合 |
 | `tests/test_strategy_d_exit_pov_research.py` | 验证样本隔离、无冲击时保持基准复利、分钟数据不完整时拒绝认证 |
 
 Windows盘后运行：
 
 ```powershell
 cd C:\A_System
-py -3.11 scripts\research_strategy_d_exit_fetch.py --dry-run
-py -3.11 scripts\research_strategy_d_exit_fetch.py
-py -3.11 scripts\research_strategy_d_exit_pov.py
+py -3.11 research\research_strategy_d_exit_fetch.py --dry-run
+py -3.11 research\research_strategy_d_exit_fetch.py
+py -3.11 research\research_strategy_d_exit_pov.py
 ```
 
 ### 12.3 参数研究与后续门禁
@@ -740,8 +740,8 @@ py -3.11 scripts\research_strategy_d_exit_pov.py
 
 | 文件 | 方法/作用 |
 |---|---|
-| `scripts/research_strategy_d_relay_fetch.py` | `load_relay_targets()`精确锁定9笔接力；采集D与新候选共18个角色的09:15~10:30 tick和09:30~10:30一分钟行情，只连接`xtdata`，不创建交易会话、不读取账户、不下单 |
-| `scripts/research_strategy_d_relay_capacity.py` | `validate_inputs()`执行18角色完整性门禁；`infer_book_volume_unit()`自动核验盘口数量是股还是手；`build_capacity_replay()`按不同资金规模分为整仓竞价、竞价安全部分+成对POV、取消接力 |
+| `research/research_strategy_d_relay_fetch.py` | `load_relay_targets()`精确锁定9笔接力；采集D与新候选共18个角色的09:15~10:30 tick和09:30~10:30一分钟行情，只连接`xtdata`，不创建交易会话、不读取账户、不下单 |
+| `research/research_strategy_d_relay_capacity.py` | `validate_inputs()`执行18角色完整性门禁；`infer_book_volume_unit()`自动核验盘口数量是股还是手；`build_capacity_replay()`按不同资金规模分为整仓竞价、竞价安全部分+成对POV、取消接力 |
 | `tests/test_strategy_d_relay_research.py` | 验证9笔样本锁定、两种QMT tick字段格式、时间戳、股/手单位、18角色门禁、大小资金分流、弱竞价取消及收益冲击 |
 
 第一阶段暂用5%虚拟匹配量作为“竞价安全部分”的保守研究上限，同时要求卖方未匹配
@@ -761,13 +761,13 @@ py -3.11 scripts\research_strategy_d_exit_pov.py
 cd C:\A_System
 
 # 第一步只核对目标，不能访问账户，也不会下单
-py -3.11 scripts\research_strategy_d_relay_fetch.py --dry-run
+py -3.11 research\research_strategy_d_relay_fetch.py --dry-run
 
 # 第二步通过QMT行情接口采集8笔×2角色历史行情
-py -3.11 scripts\research_strategy_d_relay_fetch.py
+py -3.11 research\research_strategy_d_relay_fetch.py
 
 # 第三步：只有16/16个tick角色和16/16个一分钟角色完整才会输出容量结论
-py -3.11 scripts\research_strategy_d_relay_capacity.py
+py -3.11 research\research_strategy_d_relay_capacity.py
 ```
 
 采集器同时兼容QMT五档数组和`bidPrice1/askPrice1`平铺字段。盘口单位默认根据
@@ -775,9 +775,9 @@ py -3.11 scripts\research_strategy_d_relay_capacity.py
 100倍。若已通过QMT原始行情人工确认单位，也可以显式运行：
 
 ```powershell
-py -3.11 scripts\research_strategy_d_relay_capacity.py --book-volume-unit 1
+py -3.11 research\research_strategy_d_relay_capacity.py --book-volume-unit 1
 # 或
-py -3.11 scripts\research_strategy_d_relay_capacity.py --book-volume-unit 100
+py -3.11 research\research_strategy_d_relay_capacity.py --book-volume-unit 100
 ```
 
 输出文件：
@@ -809,7 +809,7 @@ reports/strategy_d/relay_capacity/d_relay_capacity_report.md
 | 文件/方法 | 作用 |
 |---|---|
 | `src/data_source.py::get_stock_minute_bars()` | 对官方`stk_mins`做单次、无快速重试调用，避免限频错误被通用重试放大 |
-| `scripts/research_strategy_d_relay_tushare_fetch.py` | 补齐16个一分钟角色；每个成功请求立即落盘；从09:30单一价格bar提取最终竞价容量代理 |
+| `research/research_strategy_d_relay_tushare_fetch.py` | 补齐16个一分钟角色；每个成功请求立即落盘；从09:30单一价格bar提取最终竞价容量代理 |
 | `build_auction_proxy()` | 用成交额÷单一成交价反推成交股数，兼容QMT分钟volume按手、Tushare按股的100倍差异 |
 
 最终竞价容量代理只回答“历史开盘最终匹配量大约能承载多大D仓位”，不能还原09:23
@@ -822,9 +822,9 @@ reports/strategy_d/relay_capacity/d_relay_capacity_report.md
 
 ```powershell
 cd C:\A_System
-py -3.11 scripts\research_strategy_d_relay_tushare_fetch.py --dry-run
-py -3.11 scripts\research_strategy_d_relay_tushare_fetch.py --request-interval 0.15
-py -3.11 scripts\research_strategy_d_relay_capacity.py
+py -3.11 research\research_strategy_d_relay_tushare_fetch.py --dry-run
+py -3.11 research\research_strategy_d_relay_tushare_fetch.py --request-interval 0.15
+py -3.11 research\research_strategy_d_relay_capacity.py
 ```
 
 D全窗口40,336只次触板母池的一分钟价格路径已完整40,332只次，
@@ -897,7 +897,7 @@ ACDE总复利同时提高的分支中，选择ACDE复利最高的一条供人工
 `OR`只作反例诊断，不作为候选。用户于2026-08-24确认后，该最佳项已经发布为
 `D_FACTOR_BEST_20260630_b74c0c03`并接入盘中D。
 
-半年更新入口为`scripts/optimize_strategy_d_factor_union.py`。直接运行会自动生成
+半年更新入口为`research/optimize_strategy_d_factor_union.py`。直接运行会自动生成
 `best_dual_gate_profile.txt`、完整JSON和全部逐组合ACDE比较CSV，默认只研究；人工
 查看报告后才能决定是否再次传入`--apply`。即使传入`--apply`也必须先通过双复利门，
 未通过绝不修改

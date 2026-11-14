@@ -7,7 +7,7 @@ import unittest
 
 import pandas as pd
 
-from scripts.research_strategy_c_leader_archetypes import (
+from research.research_strategy_c_leader_archetypes import (
     LEADER_FACTORS,
     LEADER_VALUE_DOMAINS,
     MARKET_ENV_FACTORS,

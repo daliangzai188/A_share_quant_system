@@ -123,7 +123,7 @@ POV退出监控
 - 当前配置下拒绝运行 B 观察回放。
 - 旧代码只为历史报告复现保留，不属于当前策略入口。
 
-`scripts/run_strategy_release_validation.py`
+`research/run_strategy_release_validation.py`
 
 - 检测到旧发布验证失效后立即拒绝运行，防止旧 A+B 门槛被误当成 A/C 结果。
 

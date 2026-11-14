@@ -21,10 +21,10 @@
 | `src/limit_source_quality.py` | `suspended_placeholder_mask` | 新增严格占位形态与缺失报价的联合判断 | 防止用不完整基本面误判停牌 |
 | `src/equity_curve_stop_history.py` | `audit_history/require_history` | 新增完整历史覆盖前置门禁 | 缺日、空表、字段或源证据异常时先明确报错 |
 | `scripts/update_equity_curve_stop.py` | `build_dataset` 构造Builder之前 | 新增 `require_history` | 防止只用最近行情重建错误影子净值；保留fail-closed |
-| `scripts/certify_plan_jia_release.py` | `formal_context/run/CODE_FILES` | 新增正式D历史失败关闭上下文和数据相关代码哈希；替换通用D研究事件输入调用 | 正式认证D本来固定0笔，不依赖丢失且不使用的D研究事件；原锁定指标不动 |
-| `scripts/rebuild_equity_curve_stop_inputs.py` | `validate/worker/main` | 新增隔离断点续传、schema/日期/重复键、原子落地、源缺口及哈希清单 | 原始数据必须可审计，重试不能写假空成功 |
-| `scripts/rebuild_historical_limit_counts.py` | `main` | 新增官方早期榜单采集与断点续传 | 补足20190102到20191127计数 |
-| `scripts/market_data_backup.py` | `ROOT` 初始化、`audit/create/verify` | 新增项目导入路径、必需行情清单及冷克隆验证 | 换电脑必须能恢复实际数据，不仅代码或LFS指针 |
+| `research/certify_plan_jia_release.py` | `formal_context/run/CODE_FILES` | 新增正式D历史失败关闭上下文和数据相关代码哈希；替换通用D研究事件输入调用 | 正式认证D本来固定0笔，不依赖丢失且不使用的D研究事件；原锁定指标不动 |
+| `tools/rebuild_equity_curve_stop_inputs.py` | `validate/worker/main` | 新增隔离断点续传、schema/日期/重复键、原子落地、源缺口及哈希清单 | 原始数据必须可审计，重试不能写假空成功 |
+| `tools/rebuild_historical_limit_counts.py` | `main` | 新增官方早期榜单采集与断点续传 | 补足20190102到20191127计数 |
+| `tools/market_data_backup.py` | `ROOT` 初始化、`audit/create/verify` | 新增项目导入路径、必需行情清单及冷克隆验证 | 换电脑必须能恢复实际数据，不仅代码或LFS指针 |
 | `.gitignore/.gitattributes/config/market_data_backup.json` | 指定行情白名单与LFS规则 | 替换必需行情忽略规则，新增源证据及冻结认证底座 | 数据随Git恢复，保留原始字节 |
 | 配套测试 | 各测试方法 | 新增缺日/空样本/来源异常/哈希篡改等回归；调整原专用mock | 验证实际故障和失败关闭，全部在同步目录外运行 |
 
@@ -44,12 +44,12 @@ Windows日常⑪与⑬命令（本次由助手直接执行，用户无需手工�
 
 ```powershell
 py -3.11 -X utf8 scripts\report_rolling_live_performance.py
-py -3.11 -X utf8 scripts\check_equity_curve_stop_history.py --signal-date 20261008
+py -3.11 -X utf8 tools\check_equity_curve_stop_history.py --signal-date 20261008
 py -3.11 -X utf8 scripts\update_equity_curve_stop.py --signal-date 20261008
-py -3.11 -X utf8 scripts\market_data_backup.py verify
+py -3.11 -X utf8 tools\market_data_backup.py verify
 ```
 
-Mac对应使用配置了requirements依赖的Python。完整冻结认证在同步外副本执行 `python scripts/certify_plan_jia_release.py`，必须按原锁定指标PASS，不改期望值让恢复结果过关。
+Mac对应使用配置了requirements依赖的Python。完整冻结认证在同步外副本执行 `python research/certify_plan_jia_release.py`，必须按原锁定指标PASS，不改期望值让恢复结果过关。
 
 零样本⑪应成功退出、生成报告并标 `INSUFFICIENT_SAMPLE`。历史检查应覆盖1881个开市日。全量⑬按现有流水线1800秒预算执行；当前6GB ARM虚拟机中的x64 Python全历史重建较慢，必须等待真实完成，不能把启动日志当作成功。⑬应写出真实20261009行动日判定及影子净值，停手或允许都必须来自原MA60/lag6规则。冷克隆执行 `git lfs pull` 后备份验证应为 `RESTORE_VERIFIED`，退出码0。
 

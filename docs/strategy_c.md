@@ -127,7 +127,7 @@ exit_rule_resolution
 认证命令：
 
 ```bash
-python3 scripts/certify_strategy_c_third_branch_release.py
+python3 research/certify_strategy_c_third_branch_release.py
 ```
 
 必须看到：

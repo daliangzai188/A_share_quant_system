@@ -39,7 +39,7 @@
 ```sh
 A_SYSTEM_DISABLE_NOTIFICATIONS=1 python3 -m unittest tests.test_inner_bridge_outage tests.test_broker_maintenance_recovery tests.test_current_portfolio_runtime -q
 A_SYSTEM_DISABLE_NOTIFICATIONS=1 python3 -m unittest discover -s tests -q
-A_SYSTEM_DISABLE_NOTIFICATIONS=1 python3 scripts/certify_plan_jia_release.py
+A_SYSTEM_DISABLE_NOTIFICATIONS=1 python3 research/certify_plan_jia_release.py
 ```
 
 认证研究输入为独立复制的文件，不与生产账本建立链接。测试关闭真实通知。
@@ -65,7 +65,7 @@ A_SYSTEM_DISABLE_NOTIFICATIONS=1 python3 scripts/certify_plan_jia_release.py
 
 ## 2026-10-03 根因查明：QMT客户端定时重启 + 自动登录失败
 
-证据来自 `scripts/diagnose_qmt_client_restarts.py`（只读）与QMT日志、配置摘录
+证据来自 `tools/diagnose_qmt_client_restarts.py`（只读）与QMT日志、配置摘录
 （`reports/runtime/qmt_client_restart_diagnosis.json`、`qmt_restart_setting.txt`，不入git）。
 
 - 资金账号 `userdata\users\<账号>\Config.xml` 的 `TradeSetting` 有客户端定时重启：

@@ -70,8 +70,8 @@ A/C/E均无当日静态计划时才启动盘中路径。A优先表示模型稳�
 
 ```text
 1. 完成训练/测试/样本外、成交、回撤和容量复核
-2. python scripts/certify_strict_asof_portfolio.py
-3. python scripts/freeze_current_strategy_release.py \
+2. python research/certify_strict_asof_portfolio.py
+3. python research/freeze_current_strategy_release.py \
      --release-id <唯一版本号> \
      --change-reason <至少8个字符的发布原因> \
      --oos-start-date <晚于研究截止日的YYYYMMDD> \
@@ -296,14 +296,14 @@ HISTORICAL_SIM_FILLED
 
 ```bash
 cd /Users/user/Desktop/A_System
-.venv/bin/python -B scripts/run_strategy_release_validation.py
+.venv/bin/python -B research/run_strategy_release_validation.py
 ```
 
 当前正式规则身份与机械回放改由以下命令复核：
 
 ```bash
 cd /Users/user/Desktop/A_System
-python3 scripts/certify_strict_asof_portfolio.py
+python3 research/certify_strict_asof_portfolio.py
 ```
 
 它必须复现A独立82笔、94.3984428272倍、E独立74笔、11.7037898965倍、
@@ -417,14 +417,14 @@ LOCKED_OOS_AND_CAPACITY_PENDING
 
 ```bash
 cd /Users/user/Desktop/A_System
-python3 scripts/certify_strict_asof_portfolio.py
+python3 research/certify_strict_asof_portfolio.py
 ```
 
 旧A+B验证器失效保护：
 
 ```bash
 cd /Users/user/Desktop/A_System
-.venv/bin/python -B scripts/run_strategy_release_validation.py
+.venv/bin/python -B research/run_strategy_release_validation.py
 ```
 
 单日 A/C filtered 操作台：
@@ -445,7 +445,7 @@ B 历史风险过滤压力测试（研究归档，不属于当前发布）：
 
 ```bash
 cd /Users/user/Desktop/A_System
-.venv/bin/python -B scripts/stress_test_ab_filtered_b_residual_filters.py --recent-days 120 --end-date 20260518
+.venv/bin/python -B research/stress_test_ab_filtered_b_residual_filters.py --recent-days 120 --end-date 20260518
 ```
 
 ---
@@ -457,12 +457,12 @@ cd /Users/user/Desktop/A_System
 | 文件 | 作用 |
 |---|---|
 | `config/strategy_config.json` | A/C当前参数、B退役墓碑、失效的旧发布标记 |
-| `scripts/run_strategy_release_validation.py` | 旧A+B发布验证失效保护；当前仍应拒绝运行 |
-| `scripts/certify_strategy_c_third_branch_release.py` | 当前C第3分支、分支级退出及A>C>E>D真实开仓日严格认证 |
+| `research/run_strategy_release_validation.py` | 旧A+B发布验证失效保护；当前仍应拒绝运行 |
+| `research/certify_strategy_c_third_branch_release.py` | 当前C第3分支、分支级退出及A>C>E>D真实开仓日严格认证 |
 | `scripts/run_paper_ab_filtered_daily_ops.py` | A/C filtered 每日操作台 |
 | `scripts/run_paper_ab_filtered_observation_window.py` | B历史回放代码；当前配置拒绝运行 |
-| `scripts/stress_test_ab_filtered_b_residual_filters.py` | B历史研究归档，不属于当前执行链 |
-| `scripts/refine_backup_strategy_c_sort_exit.py` | C 备用策略排序和卖出规则精修 |
+| `research/stress_test_ab_filtered_b_residual_filters.py` | B历史研究归档，不属于当前执行链 |
+| `research/refine_backup_strategy_c_sort_exit.py` | C 备用策略排序和卖出规则精修 |
 | `docs/strategy_b_removal_20260722.md` | B删除范围、验证和部署记录 |
 | `docs/strategy_c.md` | C三类逻辑分支、分支级T+2/T+3退出、指标与发布边界 |
 | `reports/strategy_release/` | 发布验证报告 |
@@ -476,7 +476,7 @@ cd /Users/user/Desktop/A_System
 |---|---|
 | `scripts/backtest_strategy_d.py` | D 历史叠加回测；删除B后必须重新生成当前口径 |
 | `scripts/monitor_strategy_d_intraday.py` | D 策略盘中监控：两档信号 + 14:55 自动撤单 |
-| `scripts/collect_strategy_d_minute_data.py` | D 候选历史分钟数据采集（辅助人工复核） |
+| `research/collect_strategy_d_minute_data.py` | D 候选历史分钟数据采集（辅助人工复核） |
 | `scripts/trading_daemon.py` | 守护进程：13:30 启动 D 监控子进程 |
 | `src/broker_adapter.py` | 新增 `cancel_order` 抽象接口 |
 | `src/qmt_adapter.py` | 实现 `cancel_order`（调用 `cancel_order_stock`） |

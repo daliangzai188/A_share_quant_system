@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from scripts.configure_new_windows_env import configure
+from tools.configure_new_windows_env import configure
 
 
 # Other pure strategy tests inject a minimal dotenv stub during discovery.

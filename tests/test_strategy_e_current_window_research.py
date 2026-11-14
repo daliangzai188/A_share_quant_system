@@ -4,7 +4,7 @@ import unittest
 
 import pandas as pd
 
-from scripts.research_strategy_e_current_window import (
+from research.research_strategy_e_current_window import (
     StrategyECurrentWindowResearch,
     TOP_DEVELOPMENT_CANDIDATES,
 )

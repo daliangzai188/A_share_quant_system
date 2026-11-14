@@ -111,31 +111,31 @@ Windows 外部 Python 3.11 继续运行整个业务项目；只有券商接口�
 | `scripts/trading_daemon.py` | `_qmt_connect_once`，连接成功后 | 新增内置端实际运行模式门禁，阻止只读端被当作已就绪实盘端 |
 | `src/account_privacy.py` | `mask_account_id`、`public_account_data` | 新增展示脱敏：姓名统一 `***`，资金账号 `***` 加后两位；生成副本，不修改执行身份 |
 | `src/live_order_gateway.py` | `account_check`，CSV 导出位置 | 替换未脱敏导出；移除展示副本中的 `raw` 扩展字段，保留数值及证券字段 |
-| `scripts/trading_daemon.py`、`src/qmt_adapter.py`、`scripts/probe_qmt_connection.py` | `_mask_account` / `mask_account_id` / `mask_account` | 统一调用展示脱敏函数；旧探测不再显示资金账号前两位 |
+| `scripts/trading_daemon.py`、`src/qmt_adapter.py`、`tools/probe_qmt_connection.py` | `_mask_account` / `mask_account_id` / `mask_account` | 统一调用展示脱敏函数；旧探测不再显示资金账号前两位 |
 | `scripts/trading_daemon.py`、`src/notify.py` | `_print_account_status` 及通知说明 | 替换账户心跳中独立拼接的四星号为统一脱敏函数；更新说明为三星号，通知内容和交易逻辑不变 |
 | `tests/test_account_privacy.py`、`tests/test_broker_maintenance_recovery.py` | 脱敏测试 | 验证不泄露姓名/完整账号，且原始执行对象不变；相关 27 项通过 |
 | `src/qmt_inner_adapter.py` | 全文件 | 新增原接口兼容适配器，复用现有账户、持仓、行情和成交归一化 |
-| `src/qmt_market_data.py` | `selected_transport/InnerMarketData/get_market_data_client` | 新增研究数据接口选择及内置tick、1m、5m、日线历史帧重建；缺失值保持缺失，五档数组保持数组 |
+| `tools/qmt_market_data.py` | `selected_transport/InnerMarketData/get_market_data_client` | 新增研究数据接口选择及内置tick、1m、5m、日线历史帧重建；缺失值保持缺失，五档数组保持数组 |
 | `qmt_inner/protocol.py` | 全文件 | 新增本机签名请求、响应、期限、会话检查及 Windows 原子替换重试 |
 | `qmt_inner/engine.py` | 全文件 | 新增内置账户/持仓/行情/委托/成交/撤单实现、SQLite审计和不确定结果保护 |
 | `qmt_inner/engine.py` | `runtime_gate/_submit` | 新增人工停机硬闸；`max_order_notional=0`恢复原项目仓位口径，正数仍可作为额外迁移限额 |
 | `qmt_inner/entry.py` | `init/handlebar/a_system_pump/*callback/stop` | 新增 QMT 模型入口；历史bar不发单，停止回调不触碰已断开的交易连接 |
-| `scripts/prepare_qmt_inner.py` | `prepare/probe/main` | 新增本机部署和只读联通检查 |
-| `scripts/qmt_inner_environment.py` | `main` | 新增目标 Windows 环境检查和只读部署报告 |
-| `scripts/verify_qmt_inner.py` | `main` | 新增统一迁移测试命令及机器可读报告；使用模拟券商，不发真实委托 |
-| `scripts/accept_qmt_inner.py` | `main` | 新增目标客户端只读验收：连接、原分仓对账、分钟线及研究行情查询，输出验收 JSON |
-| `scripts/select_qmt_inner_transport.py` | `main` | 新增验收后的本机接口选择；要求人工停机、只读连接和零对账差异，备份并核验 `.env` 只改变 `QMT_TRANSPORT`，不打开交易开关 |
-| `scripts/qmt_inner_backup.py` | `backup` | 新增本机状态快照、SQLite在线备份及完整性校验；`--require-stopped`核验停止后快照 |
-| `scripts/qmt_inner_audit.py` | `audit` | 新增真实持仓与策略分仓、未完成委托及待恢复意图的只读核对；完整报告仅存Windows本机 |
+| `tools/prepare_qmt_inner.py` | `prepare/probe/main` | 新增本机部署和只读联通检查 |
+| `tools/qmt_inner_environment.py` | `main` | 新增目标 Windows 环境检查和只读部署报告 |
+| `tools/verify_qmt_inner.py` | `main` | 新增统一迁移测试命令及机器可读报告；使用模拟券商，不发真实委托 |
+| `tools/accept_qmt_inner.py` | `main` | 新增目标客户端只读验收：连接、原分仓对账、分钟线及研究行情查询，输出验收 JSON |
+| `tools/select_qmt_inner_transport.py` | `main` | 新增验收后的本机接口选择；要求人工停机、只读连接和零对账差异，备份并核验 `.env` 只改变 `QMT_TRANSPORT`，不打开交易开关 |
+| `tools/qmt_inner_backup.py` | `backup` | 新增本机状态快照、SQLite在线备份及完整性校验；`--require-stopped`核验停止后快照 |
+| `tools/qmt_inner_audit.py` | `audit` | 新增真实持仓与策略分仓、未完成委托及待恢复意图的只读核对；完整报告仅存Windows本机 |
 | `.env.example` | QMT配置段 | 新增接口选择说明，不修改实际.env |
-| `scripts/probe_qmt_connection.py` | `main`，旧xtquant导入前 | 新增内置模式只读连接探测；不会再遍历mini路径和session |
-| `scripts/check_qmt_live_readiness.py` | `build_report` | 内置模式改查认证心跳与账户配置，跳过不再需要的xtquant/mini路径检查 |
-| `scripts/research_buy_auction_fetch.py`、`research_buy_smooth_fetch.py`、`research_exit_5m_fetch.py`、`research_exit_tick_fetch.py`、`research_exit_vol_fetch.py`、`research_strategy_d_exit_fetch.py`、`research_strategy_d_relay_fetch.py` | 各文件`main`原xtdata导入位置 | 替换为统一行情工厂；原样保留研究筛选、字段、输出、统计与失败记录 |
-| `scripts/probe_strategy_d_intraday_qmt_depth.py` | `main`原xtdata导入位置 | 同上，历史深度探测也支持内置行情 |
+| `tools/probe_qmt_connection.py` | `main`，旧xtquant导入前 | 新增内置模式只读连接探测；不会再遍历mini路径和session |
+| `tools/check_qmt_live_readiness.py` | `build_report` | 内置模式改查认证心跳与账户配置，跳过不再需要的xtquant/mini路径检查 |
+| `research/research_buy_auction_fetch.py`、`research_buy_smooth_fetch.py`、`research_exit_5m_fetch.py`、`research_exit_tick_fetch.py`、`research_exit_vol_fetch.py`、`research_strategy_d_exit_fetch.py`、`research_strategy_d_relay_fetch.py` | 各文件`main`原xtdata导入位置 | 替换为统一行情工厂；原样保留研究筛选、字段、输出、统计与失败记录 |
+| `research/probe_strategy_d_intraday_qmt_depth.py` | `main`原xtdata导入位置 | 同上，历史深度探测也支持内置行情 |
 | `README.md` | 实盘接入说明下方 | 新增完整迁移文档入口 |
 | `start_qmt_inner_windows.py` | `main` | 新增明确选择内置模式的启动入口，启动前联通检查 |
 | `src/qmt_inner_start_gate.py`、`start_windows.py` | `assert_selected_transport_ready`及人工启动入口 | 内置端未运行或仍只读时不清除人工停机；就绪后沿用原启动、日志、通知和keeper流程 |
-| `scripts/stage_qmt_inner_live.py` | `stage/main` | 停机状态下备份私有配置、更新执行包并预置live；不清除人工停机、不启动daemon、不调用券商交易接口 |
+| `tools/stage_qmt_inner_live.py` | `stage/main` | 停机状态下备份私有配置、更新执行包并预置live；不清除人工停机、不启动daemon、不调用券商交易接口 |
 | `scripts/show_trading_status.py`、`查看交易状态.cmd` | 全文件 | 新增只读状态面板：程序、连接、脱敏账号、资金、持仓、委托、成交及脱敏JSON |
 | `tests/test_qmt_inner.py` | 全文件 | 新增协议、恢复、原交易服务端到端和Python3.6兼容测试 |
 | `tests/test_qmt_inner_deployment.py` | 全文件 | 新增WAL在线备份和运行中禁止覆盖执行包的测试 |
@@ -153,9 +153,9 @@ Windows 外部 Python 3.11 继续运行整个业务项目；只有券商接口�
 
 ```powershell
 cd C:\A_System
-python scripts\prepare_qmt_inner.py
+python tools\prepare_qmt_inner.py
 python -m unittest tests.test_qmt_inner -v
-python scripts\verify_qmt_inner.py
+python tools\verify_qmt_inner.py
 ```
 
 部署输出：
@@ -185,9 +185,9 @@ exec(open(__import__('os').path.expandvars('%LOCALAPPDATA%/A_System/qmt_inner/A_
 启动后在独立终端运行：
 
 ```powershell
-python scripts\prepare_qmt_inner.py --probe
-python scripts\qmt_inner_audit.py
-python scripts\accept_qmt_inner.py
+python tools\prepare_qmt_inner.py --probe
+python tools\qmt_inner_audit.py
+python tools\accept_qmt_inner.py
 ```
 
 预期：`status=READ_ONLY_CONNECTED`、`transport=qmt_inner`，能获取账户、持仓、委托、成交和持仓行情。
@@ -200,14 +200,14 @@ python scripts\accept_qmt_inner.py
 1. 核对原客户端持仓、可用数量、策略分仓、未完成委托、真实成交和待平仓计划。
 2. 停止原 daemon/keeper 后备份运行状态及 SQLite。数据库必须通过 SQLite backup 或停机一致副本保存，不能只复制运行中的 `.sqlite3` 而遗漏 WAL。
 
-   运行 `python scripts\qmt_inner_backup.py` 保存停机前现场，执行 `python stop_windows.py`，
-   再运行 `python scripts\qmt_inner_backup.py --require-stopped`。
+   运行 `python tools\qmt_inner_backup.py` 保存停机前现场，执行 `python stop_windows.py`，
+   再运行 `python tools\qmt_inner_backup.py --require-stopped`。
    备份在本机 `%LOCALAPPDATA%\A_System\qmt_inner\backups`，包含逐文件哈希清单，不含.env。
 3. 同一账户只保留一个主动交易模型，避免旧 miniQMT 与新模型双开。
 4. 新内置端先查询并对账。旧 miniQMT 内部委托引用和内置合同编号不是同一概念；本实现保留旧委托内部引用，撤单前解析为内置合同编号。若字段缺失、重复或碰撞，必须停止切换，不能猜编号。
 5. 在模拟柜台完成开仓、部成、撤单、再次查询、平仓、策略分仓核销与冷重启。软件模拟信号模式不等于模拟柜台，不能拿“没有委托”冒充接口成功。
 6. 小资金实际验证须单独安排。正式切换时 `max_order_notional=0`，表示迁移层不再额外限制金额；原项目的单票仓位、总仓位、资金、流动性、T+1、重复委托和退出风控继续生效。需要临时验收限额时可设置正数，但必须同时确认不会误挡到期平仓。
-7. 只读验收通过后运行 `python scripts\select_qmt_inner_transport.py`，把本机 `.env` 的 `QMT_TRANSPORT` 持久化为 `qmt_inner`。原 `.env` 的备份只保存在 Windows 本机备份目录，不能上传或提交；脚本核验其他密钥配置不变，并保留人工停机及 `read_only`。
+7. 只读验收通过后运行 `python tools\select_qmt_inner_transport.py`，把本机 `.env` 的 `QMT_TRANSPORT` 持久化为 `qmt_inner`。原 `.env` 的备份只保存在 Windows 本机备份目录，不能上传或提交；脚本核验其他密钥配置不变，并保留人工停机及 `read_only`。
    当前 Windows 已通过 `stage_qmt_inner_live.py` 预置 `mode=live`，人工停机标记仍在；原 `trade_mode/live_trade/allow_buy/allow_sell` 等风控开关仍必须满足。
 8. 后续继续使用原 `start_windows.py` / `stop_windows.py`。启动器只有在内置端已运行且报告live时才解除人工停机；停止器先写人工停机，内置端会立即拒绝新的下单和撤单，再停止所有外部进程。
 

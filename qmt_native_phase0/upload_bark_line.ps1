@@ -1,5 +1,5 @@
 # Read-only: send the BARK_URL line of C:\A_System\.env to the Mac receiver, so the Mac's monthly
-# maintenance / plan-jia review reminder (scripts/install_mac_maintenance_reminder.py) can be
+# maintenance / plan-jia review reminder (tools/install_mac_maintenance_reminder.py) can be
 # installed. The Mac's synced folder has no .env; the line is never printed here.
 $ErrorActionPreference = 'Stop'
 $line = Select-String -Path 'C:\A_System\.env' -SimpleMatch 'BARK_URL=' | Select-Object -First 1 -ExpandProperty Line

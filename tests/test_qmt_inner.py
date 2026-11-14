@@ -499,7 +499,7 @@ class InnerTests(unittest.TestCase):
             bars = adapter.get_minute_bars(['000001.SZ'], start_time='20260915093000', end_time='20260915103000')
             self.assertEqual(bars['000001.SZ'][0]['hhmm'], 1001)
             self.assertEqual(self.broker.minute_kwargs['dividend_type'], 'none')
-            from src.qmt_market_data import InnerMarketData
+            from tools.qmt_market_data import InnerMarketData
             research = InnerMarketData(self.cfg)
             self.assertTrue(research.download_history_data('000001.SZ', '5m', '20260915', '20260915'))
             frame = research.get_market_data_ex(['close'], ['000001.SZ'], period='5m',

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from src.historical_limit_up_profile import (
+from research.historical_limit_up_profile import (
     attach_point_in_time_profiles,
     build_event_outcomes,
     prepare_event_schedule,

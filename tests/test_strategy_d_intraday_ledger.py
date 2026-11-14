@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from scripts.collect_strategy_d_intraday_baostock import to_baostock_code
+from research.collect_strategy_d_intraday_baostock import to_baostock_code
 from src.strategy_d_intraday_ledger import (
     coverage_status,
     daily_consistency_status,

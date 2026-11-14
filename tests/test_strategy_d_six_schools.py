@@ -3,7 +3,7 @@ from __future__ import annotations
 import pandas as pd
 import unittest
 
-from scripts.research_strategy_d3_halfway_full_denominator import (
+from research.research_strategy_d3_halfway_full_denominator import (
     ALLOWED_SIGNAL_FIELDS,
     add_market_context,
     rules as d3_rules,

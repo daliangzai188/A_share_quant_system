@@ -8,7 +8,7 @@ from pathlib import Path
 import pandas as pd
 
 from src.five_year_research import FiveYearResearchDatasetBuilder
-from src.nested_walk_forward import NestedWalkForwardResearch, return_metrics
+from research.nested_walk_forward import NestedWalkForwardResearch, return_metrics
 
 
 class FiveYearNestedWalkForwardTests(unittest.TestCase):

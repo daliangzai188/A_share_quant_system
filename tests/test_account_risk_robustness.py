@@ -5,8 +5,8 @@ import unittest
 import pandas as pd
 from pandas.testing import assert_frame_equal
 
-from src.account_risk_historical import RiskOverlaySpec, validate_inputs
-from src.account_risk_robustness import (
+from research.account_risk_historical import RiskOverlaySpec, validate_inputs
+from research.account_risk_robustness import (
     random_contiguous_window_results,
     summarize_random_windows,
 )
