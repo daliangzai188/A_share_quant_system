@@ -61,7 +61,7 @@ from src.strategy_e import build_r1_universe_from_pool, load_e_spec  # noqa: E40
 from src.utils.config import load_json_config  # noqa: E402
 
 
-DEFAULT_CONFIG = ROOT / "config/historical_limit_up_behavior_research.json"
+DEFAULT_CONFIG = ROOT / "config/research/historical_limit_up_behavior_research.json"
 PROFILE_COLUMNS = (
     "hist_limit_event_count",
     "hist_last_event_date",

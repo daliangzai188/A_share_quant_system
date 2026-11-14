@@ -46,6 +46,7 @@ src.adjusted_returns
 src.broker_adapter
 src.broker_execution_service
 src.combined_live_engine
+src.config_check
 src.daemon
 src.daemon.buy
 src.daemon.buy_m

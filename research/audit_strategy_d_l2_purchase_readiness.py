@@ -203,7 +203,7 @@ def build_audit(
                 "同步scan_id股票宇宙一致，覆盖09:30和14:55并含买一前50队列",
             ],
             "validator_command": "python3 research/validate_strategy_d_l2_vendor_sample.py",
-            "manifest_template": "config/strategy_d_l2_vendor_sample_manifest.example.json",
+            "manifest_template": "config/research/strategy_d_l2_vendor_sample_manifest.example.json",
         },
         "contract_acceptance": [
             "覆盖2024-07-01至2026-06-30全部484个交易日，不按现有候选裁剪",

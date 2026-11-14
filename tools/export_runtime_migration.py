@@ -128,7 +128,7 @@ ConvertTo-Json -InputObject $rows -Compress
 
 def source_files(root, private_config):
     """按正式备份清单收集必需文件，并补齐全部小型运行状态和私有执行日志。"""
-    cfg = json.loads((root / 'config/runtime_state_backup.json').read_text(encoding='utf-8-sig'))
+    cfg = json.loads((root / 'config/tools/runtime_state_backup.json').read_text(encoding='utf-8-sig'))
     result = {}
     for item in cfg['items']:
         rel = safe_relative(item['path'])

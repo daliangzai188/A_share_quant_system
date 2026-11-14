@@ -39,7 +39,7 @@ from src.acde_rolling_framework import (
 from src.utils.config import load_json_config
 
 
-DEFAULT_SPEC = ROOT / "config/strategy_c_new_branch_quality_research.json"
+DEFAULT_SPEC = ROOT / "config/research/strategy_c_new_branch_quality_research.json"
 
 
 def write_json(path: Path, payload: Mapping[str, Any]) -> None:

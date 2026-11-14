@@ -31,7 +31,7 @@ def parser() -> argparse.ArgumentParser:
     )
     result.add_argument(
         "--research-config",
-        default="config/five_year_strategy_research.json",
+        default="config/research/five_year_strategy_research.json",
     )
     return result
 

@@ -32,9 +32,24 @@ def mkdir_p(path: Path) -> None:
 
 
 def load_json_config(path: str | Path) -> dict[str, Any]:
-    """读取 JSON 配置文件。"""
+    """读取 JSON 配置文件。
+
+    读 config/config.json 时，如果同目录下有 research/research.json（研究用的段，2026-11-14 从 config.json 拆出），
+    就把这些段并进来返回：研究和测试读到的和拆分前一样。QMT 包里只有 config/*.json，没有这个文件，
+    所以 QMT 里的生产代码只看到生产段。两份里有同名段说明拆错了，直接报错。
+    """
     config_path = Path(path)
     if not config_path.is_absolute():
         config_path = get_project_root() / config_path
     with config_path.open("r", encoding="utf-8") as file:
-        return json.load(file)
+        config = json.load(file)
+    if config_path.name == "config.json" and config_path.parent.name == "config" and isinstance(config, dict):
+        research_path = config_path.parent / "research" / "research.json"
+        if research_path.exists():
+            with research_path.open("r", encoding="utf-8") as file:
+                research = json.load(file)
+            overlap = sorted(set(config) & set(research))
+            if overlap:
+                raise ValueError("config.json 和 research/research.json 有同名段：%s" % overlap)
+            config.update(research)
+    return config

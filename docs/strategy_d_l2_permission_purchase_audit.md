@@ -147,7 +147,7 @@ data/research/strategy_d_l2_vendor_sample/
 ```
 
 ``manifest.json``从
-``config/strategy_d_l2_vendor_sample_manifest.example.json``复制后填写。每个日期、
+``config/research/strategy_d_l2_vendor_sample_manifest.example.json``复制后填写。每个日期、
 市场都必须有三类标准化文件：
 
 ```text

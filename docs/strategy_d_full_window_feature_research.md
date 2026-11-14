@@ -57,7 +57,7 @@ D是A股主流盘中打板流派。本轮不是从收盘涨停赢家中继续调
 | 分钟K与官方涨停价/日线价格不一致 | 4 | 保留分母、无信号、不插值 |
 
 8条数据问题精确记录在
-``config/strategy_d_intraday_known_data_gaps.json``。脚本会拒绝任何未备案缺口、
+``config/research/strategy_d_intraday_known_data_gaps.json``。脚本会拒绝任何未备案缺口、
 额外股票日、重复/非连续股票日或新的价格不一致。已有备案若突然恢复正常，也会
 要求先重新复核备案，不能静默改变历史结果。
 
@@ -192,7 +192,7 @@ selected_rule=""
 |---|---|
 | ``research/build_strategy_d_intraday_event_ledger.py`` | 分块流式重放972万分钟K，严格审计缺口和跨源不一致 |
 | ``research/research_strategy_d_full_window_features_and_gates.py`` | 重建盘中情绪/板块/量价，统计爆发爆亏，执行47条双门禁 |
-| ``config/strategy_d_intraday_known_data_gaps.json`` | 4条空缺和4条价格不一致的精确备案 |
+| ``config/research/strategy_d_intraday_known_data_gaps.json`` | 4条空缺和4条价格不一致的精确备案 |
 | ``tests/test_strategy_d_full_window_streaming_replay.py`` | 跨chunk分组、缺口保留分母、未备案缺口fail-fast |
 | ``tests/test_strategy_d_full_window_features_and_gates.py`` | 信号字段白名单、盘中截面、最早信号、先选后成交、午间分钟差 |
 

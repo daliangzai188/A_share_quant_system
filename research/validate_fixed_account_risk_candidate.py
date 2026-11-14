@@ -28,7 +28,7 @@ from research.account_risk_robustness import (  # noqa: E402
 from research.release_compound_guard import evaluate_certification_candidate  # noqa: E402
 
 
-CONFIG_PATH = PROJECT_ROOT / "config" / "account_risk_robustness.json"
+CONFIG_PATH = PROJECT_ROOT / "config" / "research" / "account_risk_robustness.json"
 
 
 def load_json(path: Path, *, required: bool = True) -> dict[str, Any]:

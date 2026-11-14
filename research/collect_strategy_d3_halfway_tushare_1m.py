@@ -46,7 +46,7 @@ PARTS_DIR = BASE_DIR / "minute_1m_tushare_new_parts"
 STATUS_PATH = BASE_DIR / "minute_1m_tushare_new_status.csv"
 JOB_STATUS_PATH = BASE_DIR / "minute_1m_tushare_new_job_status.csv"
 SUMMARY_PATH = ROOT / "reports/strategy_d3_halfway/minute_collection_summary.json"
-CONFIG_PATH = ROOT / "config/strategy_d_intraday_collection.json"
+CONFIG_PATH = ROOT / "config/research/strategy_d_intraday_collection.json"
 
 
 class RawTushareMinuteSource:

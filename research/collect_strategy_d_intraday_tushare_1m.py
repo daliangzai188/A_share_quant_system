@@ -42,8 +42,8 @@ from src.utils.config import load_json_config  # noqa: E402
 
 TARGET_PATH = ROOT / "data/research/strategy_d_intraday/minute_target_manifest_full_window.csv"
 CALENDAR_PATH = ROOT / "data/raw/trade_calendar.csv"
-COLLECTION_CONFIG_PATH = ROOT / "config/strategy_d_intraday_collection.json"
-KNOWN_GAPS_PATH = ROOT / "config/strategy_d_intraday_known_data_gaps.json"
+COLLECTION_CONFIG_PATH = ROOT / "config/research/strategy_d_intraday_collection.json"
+KNOWN_GAPS_PATH = ROOT / "config/research/strategy_d_intraday_known_data_gaps.json"
 OUTPUT_PATH = ROOT / "data/research/strategy_d_intraday/minute_1m_tushare.csv"
 PARTS_DIR = ROOT / "data/research/strategy_d_intraday/minute_1m_tushare_parts"
 STATUS_PATH = ROOT / "data/research/strategy_d_intraday/tushare_1m_status.csv"

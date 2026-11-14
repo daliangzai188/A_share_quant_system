@@ -27,7 +27,7 @@ from research.release_compound_guard import (  # noqa: E402
 )
 
 
-CONFIG_PATH = PROJECT_ROOT / "config" / "account_risk_research.json"
+CONFIG_PATH = PROJECT_ROOT / "config" / "research" / "account_risk_research.json"
 
 
 def load_json(path: Path) -> dict[str, Any]:

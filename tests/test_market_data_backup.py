@@ -22,8 +22,8 @@ class MarketDataBackupTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
-        (self.root / "config").mkdir()
-        shutil.copyfile(EXPORT / "config/market_data_backup.json", self.root / backup.POLICY_PATH)
+        (self.root / "config" / "tools").mkdir(parents=True)
+        shutil.copyfile(EXPORT / "config/tools/market_data_backup.json", self.root / backup.POLICY_PATH)
         self.policy = json.loads((self.root / backup.POLICY_PATH).read_text())
         self.csv("data/raw/trade_calendar.csv", ["cal_date", "is_open"],
                  [["20261008", "1"], ["20261009", "1"]])

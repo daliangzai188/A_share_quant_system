@@ -21,7 +21,7 @@ from research.release_compound_guard import (  # noqa: E402
 )
 
 
-DEFAULT_POLICY = PROJECT_ROOT / "config" / "release_compound_floor.json"
+DEFAULT_POLICY = PROJECT_ROOT / "config" / "research" / "release_compound_floor.json"
 DEFAULT_CERTIFICATION = (
     PROJECT_ROOT / "reports" / "current_portfolio_alignment" / "live_certification.json"
 )

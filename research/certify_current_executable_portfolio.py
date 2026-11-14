@@ -92,8 +92,7 @@ E_PATH = (
 )
 NO_B_RESELECTION_PATH = (
     PROJECT_ROOT
-    / "config"
-    / "strategy_no_b_historical_reselection.csv"
+    / "config" / "research" / "strategy_no_b_historical_reselection.csv"
 )
 AC_DAILY_PATH = (
     PROJECT_ROOT / "reports" / "ac_daily_candidates" / "ac_daily_candidates.csv"

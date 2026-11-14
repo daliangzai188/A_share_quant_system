@@ -2,7 +2,7 @@
 
 本流程重新创建 VMware Windows 11 ARM，通过网络同步项目，单独迁移运行账本，不传输完整虚拟机包、不使用移动硬盘。旧系统继续运行到新环境基础准备完成；最终切换必须使用旧系统停机后的最新快照。
 
-**2026-10 重建后的配置入口**：[机器配置清单](../config/new_machine_profile.json)、[凭据模板](../.env.example)、本文第八节。
+**2026-10 重建后的配置入口**：[机器配置清单](../config/tools/new_machine_profile.json)、[凭据模板](../.env.example)、本文第八节。
 清单保存本次实际版本、资源、接口、路径、同步和防休眠设置；路径与版本是重建参考，换机时须按新机实际安装位置核对。
 完整 QMT 内置通道为 `qmt_inner`，外部 Python 不需要安装 `xtquant`。不要沿旧 miniQMT 排查步骤反复换 Python 或安装 xtquant。
 
@@ -110,7 +110,7 @@ py -3.11 tools\export_runtime_migration.py export --project C:\A_System
 
 导出包括：
 
-- 正式 `config/runtime_state_backup.json` 清单中的必需文件，以及补充的 JSON 运行状态和执行报告；缺少必需文件即失败。
+- 正式 `config/tools/runtime_state_backup.json` 清单中的必需文件，以及补充的 JSON 运行状态和执行报告；缺少必需文件即失败。
 - 项目 `execution_events.sqlite3`、持仓与执行状态、账户风险与影子净值停手数据。
 - 私有 `spool/journal.sqlite3`，通过 SQLite backup API 合并未落入主库的 WAL 事务，再检查完整性与各表记录数。
 - 旧请求/响应证据，单独放在 `evidence/`，用于核对结果未知的委托，不能恢复成活动请求。
@@ -304,7 +304,7 @@ Git 已保存可复用代码、无密钥配置和操作流程；私下另备份�
 | [install_mac_fusion_awake.py](../tools/install_mac_fusion_awake.py) | `detect_vmx/process_pattern/install/main` 全文件 | 新增：检测唯一 VM、转义路径、复制私有守护、登录自启；无需固定 Mac 用户名 |
 | [install_windows_runtime_guard.py](../scripts/install_windows_runtime_guard.py) | `_session_paths/install/status` | 替换会话任务的旧 PS 动作与 Highest 权限为私有 pythonw、Limited、无限执行；删除默认防锁屏/更新脚本调用；状态检查新增旧配置识别 |
 | [.env.example](../.env.example) | QMT 配置段 | 替换默认通道为本次 qmt_inner，说明 userdata 路径和旧 session 用途；没有真实凭据 |
-| [new_machine_profile.json](../config/new_machine_profile.json) | 全文件 | 新增本次无密钥参考配置；不自动覆盖交易配置或激活交易 |
+| [new_machine_profile.json](../config/tools/new_machine_profile.json) | 全文件 | 新增本次无密钥参考配置；不自动覆盖交易配置或激活交易 |
 | [test_lock_friendly_runtime_guards.py](../tests/test_lock_friendly_runtime_guards.py) | 三个测试类 | 新增 API 标志、失败释放、重复实例、旧任务、私有安装和 VM 路径匹配测试 |
 | [test_new_windows_env_setup.py](../tests/test_new_windows_env_setup.py) | `NewWindowsEnvironmentTest` | 新增凭据保留、不同账号拒绝、只读/人工停机保护测试 |
 | [test_sync_status_entry.py](../tests/test_sync_status_entry.py) | `SyncthingEntryTest` | 新增冷/热启动及私有快捷方式测试，不改设备身份 |

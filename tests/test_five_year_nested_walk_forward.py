@@ -14,7 +14,7 @@ from research.nested_walk_forward import NestedWalkForwardResearch, return_metri
 class FiveYearNestedWalkForwardTests(unittest.TestCase):
     def test_research_config_cannot_release_live(self) -> None:
         config = json.loads(
-            Path("config/five_year_strategy_research.json").read_text(encoding="utf-8")
+            Path("config/research/five_year_strategy_research.json").read_text(encoding="utf-8")
         )
         self.assertEqual(config["mode"], "research_only")
         self.assertFalse(config["live_release_allowed"])

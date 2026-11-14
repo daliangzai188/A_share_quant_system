@@ -64,7 +64,7 @@ from src.strict_asof import STRICT_DISCOVERY  # noqa: E402
 
 
 LOGGER = logging.getLogger("optimize_strategy_d_factor_union")
-DEFAULT_CONFIG = ROOT / "config/strategy_d_factor_optimizer.json"
+DEFAULT_CONFIG = ROOT / "config/research/strategy_d_factor_optimizer.json"
 DEFAULT_EVENTS = ROOT / "reports/strategy_d_reseal_combinations/all_reseal_signal_events.csv"
 CURRENT_OFFICIAL_START = "20240630"
 CURRENT_OFFICIAL_END = "20260630"
@@ -938,7 +938,7 @@ def apply_release(
     incumbent: Mapping[str, Any],
     candidate: Mapping[str, Any],
 ) -> Path:
-    history = release_path.parent / "strategy_d_factor_release_history"
+    history = release_path.parent / "research" / "strategy_d_factor_release_history"
     history.mkdir(parents=True, exist_ok=True)
     incumbent_id = str(incumbent.get("release_id", "D_UNKNOWN"))
     archive = history / f"{incumbent_id}.json"

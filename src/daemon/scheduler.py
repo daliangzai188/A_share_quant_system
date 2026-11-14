@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from src.utils.logger import setup_logger
+from src.config_check import check_production_config
 from src.utils.config import load_json_config, mkdir_p
 from src.utils.time_utils import BEIJING_TZ, now_beijing, today_beijing
 from src.daemon.common import (
@@ -565,6 +566,39 @@ def _should_run_startup_signal_audit(now: datetime.datetime) -> bool:
     return datetime.time(8, 50) <= now.time() <= datetime.time(9, 35)
 
 
+def wait_for_config_gate() -> None:
+    """生产配置门禁（2026-11-14）：config/config.json 的结构和关键取值不对就不启动任何交易线程（fail-closed）。
+
+    结构以 config/production_config_schema.json 为准（src/config_check.py）。不通过时推送一次、每分钟复查；
+    多出来的段/键等只需提示的事项写日志，不拦。
+    """
+    log = logger()
+    round_no = 0
+    while True:
+        round_no += 1
+        problems, notes = check_production_config(PROJECT_ROOT)
+        if round_no == 1:
+            for note in notes:
+                log.warning("配置提示：%s", note)
+        if not problems:
+            if round_no > 1:
+                log.info("✅ 生产配置检查已通过（第%d次检查）。", round_no)
+            return
+        text = "；".join(problems[:5]) + ("；等%d处" % len(problems) if len(problems) > 5 else "")
+        log.critical("🛑 生产配置检查不通过，禁止启动任何交易任务：%s", text)
+        write_heartbeat("config_invalid")
+        _notify_once_per(
+            "config_invalid",
+            1800,
+            "🛑 配置检查不通过，交易未启动",
+            "config/config.json 和记下的结构不一致：%s。改好配置（结构确实要变就重新生成"
+            "config/production_config_schema.json）后会自动继续。" % text,
+            level="critical",
+            call=True,
+        )
+        time.sleep(60)
+
+
 def main() -> None:
     setup()
     log = logger()
@@ -598,6 +632,8 @@ def main() -> None:
     signal.signal(signal.SIGTERM, _exit)
     signal.signal(signal.SIGINT, _exit)
 
+    # 配置不对时什么都不启动（含数据维护），先停在这里。
+    wait_for_config_gate()
     # 仅数据维护在门禁前运行；任何交易/真实账户定仓/持续交易线程仍在门禁后。
     offline_worker = _start_offline_data_maintenance(offline_stop)
     wait_for_qmt_startup_gate()

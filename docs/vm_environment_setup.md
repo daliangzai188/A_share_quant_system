@@ -2,7 +2,7 @@
 
 > 适用场景:①新 Mac 搬家(拷贝虚拟机 或 从零重建);②Fusion/UTM 宿主对比实验;③灾难恢复。
 > 2026-07-10 首版。核心原则:**代码与数据都在 Syncthing 同步网里,虚拟机只是可重建的壳**。
-> 2026-10 当前重建入口以 [新 Mac 重建与迁移](new_mac_rebuild_migration.md) 第八节和 [配置清单](../config/new_machine_profile.json) 为准。
+> 2026-10 当前重建入口以 [新 Mac 重建与迁移](new_mac_rebuild_migration.md) 第八节和 [配置清单](../config/tools/new_machine_profile.json) 为准。
 > 当前使用完整 QMT 的 `qmt_inner`；外部 Python 不要求 xtquant。首次部署只读，锁屏与息屏允许，使用独立防空闲休眠守护。
 
 ---

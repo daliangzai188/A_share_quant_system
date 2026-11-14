@@ -29,7 +29,7 @@ from research.release_compound_guard import (  # noqa: E402
 
 
 CONFIG_PATH = PROJECT_ROOT / "config" / "config.json"
-COMPOUND_POLICY_PATH = PROJECT_ROOT / "config" / "release_compound_floor.json"
+COMPOUND_POLICY_PATH = PROJECT_ROOT / "config" / "research" / "release_compound_floor.json"
 
 
 def _compact_date(value: str) -> str:

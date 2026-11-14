@@ -146,7 +146,7 @@ config/strategy_d_factor_release.json
 旧版正式D已归档到：
 
 ```text
-config/strategy_d_factor_release_history/D_LEGACY_FORMAL_2026H1.json
+config/research/strategy_d_factor_release_history/D_LEGACY_FORMAL_2026H1.json
 ```
 
 当日最早合格回封一旦被选中就消耗当天D机会；即使成交概率门失败或最终未成交，
@@ -188,7 +188,7 @@ python3 research/optimize_strategy_d_factor_union.py \
 正式替换前会把旧发布文件归档到：
 
 ```text
-config/strategy_d_factor_release_history/
+config/research/strategy_d_factor_release_history/
 ```
 
 输入事件账本必须先覆盖目标两年窗口；否则脚本fail-closed，不会拿旧窗口结果冒充

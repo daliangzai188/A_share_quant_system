@@ -81,7 +81,7 @@ TRADE_CALENDAR_PATH = ROOT / "data/raw/trade_calendar.csv"
 STOCK_BASIC_PATH = ROOT / "data/raw/stock_basic/stock_basic_all.csv"
 STOCK_NAMECHANGE_PATH = ROOT / "data/raw/stock_namechange/stock_namechange.csv"
 HISTORICAL_IDENTITY_OVERRIDES_PATH = (
-    ROOT / "config/strategy_d_historical_identity_overrides.json"
+    ROOT / "config/research/strategy_d_historical_identity_overrides.json"
 )
 STK_LIMIT_DIR = ROOT / "data/raw/stk_limit_history"
 DAILY_DIR = ROOT / "data/raw/daily"
@@ -97,7 +97,7 @@ EVENT_DETAIL_PATH = DATA_DIR / "event_detail_full_window.csv"
 COVERAGE_PATH = DATA_DIR / "minute_coverage_full_window.csv"
 SUMMARY_PATH = REPORT_DIR / "full_window_summary.json"
 WINDOW_MANIFEST_PATH = DATA_DIR / "window_manifest.json"
-KNOWN_DATA_GAPS_PATH = ROOT / "config/strategy_d_intraday_known_data_gaps.json"
+KNOWN_DATA_GAPS_PATH = ROOT / "config/research/strategy_d_intraday_known_data_gaps.json"
 MINUTE_CHUNK_SIZE = 250_000
 WINDOW_MANIFEST_VERIFIED = True
 

@@ -25,7 +25,7 @@
 | `tools/rebuild_equity_curve_stop_inputs.py` | `validate/worker/main` | 新增隔离断点续传、schema/日期/重复键、原子落地、源缺口及哈希清单 | 原始数据必须可审计，重试不能写假空成功 |
 | `tools/rebuild_historical_limit_counts.py` | `main` | 新增官方早期榜单采集与断点续传 | 补足20190102到20191127计数 |
 | `tools/market_data_backup.py` | `ROOT` 初始化、`audit/create/verify` | 新增项目导入路径、必需行情清单及冷克隆验证 | 换电脑必须能恢复实际数据，不仅代码或LFS指针 |
-| `.gitignore/.gitattributes/config/market_data_backup.json` | 指定行情白名单与LFS规则 | 替换必需行情忽略规则，新增源证据及冻结认证底座 | 数据随Git恢复，保留原始字节 |
+| `.gitignore/.gitattributes/config/tools/market_data_backup.json` | 指定行情白名单与LFS规则 | 替换必需行情忽略规则，新增源证据及冻结认证底座 | 数据随Git恢复，保留原始字节 |
 | 配套测试 | 各测试方法 | 新增缺日/空样本/来源异常/哈希篡改等回归；调整原专用mock | 验证实际故障和失败关闭，全部在同步目录外运行 |
 
 本次没有删除交易风控、账户账本或密钥保护。完整可运行代码保存在对应源码文件，不需要复制拼接代码片段。

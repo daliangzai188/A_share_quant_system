@@ -19,7 +19,7 @@ from tools.runtime_state_backup import (  # noqa: E402
 )
 
 
-DEFAULT_CONFIG = PROJECT_ROOT / "config" / "runtime_state_backup.json"
+DEFAULT_CONFIG = PROJECT_ROOT / "config" / "tools" / "runtime_state_backup.json"
 
 
 def _read_config(path: Path) -> dict:

@@ -16,7 +16,7 @@ class MigrationTests(unittest.TestCase):
         self.root = self.base / 'project'
         self.spool = self.base / 'private/spool'
         self.output = self.base / 'exports'
-        (self.root / 'config').mkdir(parents=True)
+        (self.root / 'config' / 'tools').mkdir(parents=True)
         (self.root / 'data/processed').mkdir(parents=True)
         (self.root / 'data/state').mkdir(parents=True)
         self.spool.mkdir(parents=True)
@@ -29,7 +29,7 @@ class MigrationTests(unittest.TestCase):
             {'path': 'data/processed/positions.json', 'required': True},
             {'path': 'data/state/execution_events.sqlite3', 'required': True},
         ]}
-        (self.root / 'config/runtime_state_backup.json').write_text(json.dumps(spec))
+        (self.root / 'config/tools/runtime_state_backup.json').write_text(json.dumps(spec))
         self.active = sqlite3.connect(self.root / 'data/state/execution_events.sqlite3')
         self.active.execute('PRAGMA journal_mode=WAL')
         self.active.execute('PRAGMA wal_autocheckpoint=0')

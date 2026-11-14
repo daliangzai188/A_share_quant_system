@@ -655,6 +655,7 @@ from src.daemon.scheduler import (  # noqa: F401
     next_event_after,
     run_job,
     _should_run_startup_signal_audit,
+    wait_for_config_gate,
     main,
 )
 

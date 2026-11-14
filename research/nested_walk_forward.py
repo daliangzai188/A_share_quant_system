@@ -397,7 +397,7 @@ class NestedWalkForwardResearch:
     def __init__(
         self,
         *,
-        research_config_path: str | Path = "config/five_year_strategy_research.json",
+        research_config_path: str | Path = "config/research/five_year_strategy_research.json",
         runtime_config_path: str | Path = "config/config.json",
         strategy_config_path: str | Path = "config/strategy_config.json",
     ) -> None:

@@ -45,8 +45,9 @@ class FeeConfig:
 
 
 def load_config(path: Path) -> dict[str, Any]:
-    with path.open("r", encoding="utf-8") as file:
-        return json.load(file)
+    from src.utils.config import load_json_config  # 读 config.json 时并入 config/research/research.json 的研究段
+
+    return load_json_config(path)
 
 
 def to_path(relative_path: str) -> Path:

@@ -34,7 +34,7 @@ from research.live_certification import (  # noqa: E402
 )
 
 
-DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "historical_random_replay.json"
+DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "research" / "historical_random_replay.json"
 RUNTIME_CONFIG_PATH = PROJECT_ROOT / "config" / "config.json"
 CERTIFICATION_PATH = (
     PROJECT_ROOT / "reports" / "current_portfolio_alignment" / "live_certification.json"

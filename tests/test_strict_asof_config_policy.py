@@ -6,6 +6,7 @@ from pathlib import Path
 
 from src.mechanical_compound import MECHANICAL_COMPOUND_STANDARD_ID
 from src.strict_asof import STRICT_ASOF_STANDARD_ID
+from src.utils.config import load_json_config
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -14,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class StrictAsOfConfigPolicyTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.config = json.loads((ROOT / "config/config.json").read_text(encoding="utf-8"))
+        cls.config = load_json_config(ROOT / "config/config.json")  # 生产段 + 研究段
 
     def test_global_research_standard_has_no_runtime_switch(self) -> None:
         policy = self.config["strict_asof"]

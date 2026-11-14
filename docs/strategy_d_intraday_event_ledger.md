@@ -198,7 +198,7 @@ PYTHONPATH="$PWD/.venv/lib/python3.9/site-packages" python3 \
 全窗口共1,446个按交易日横截面聚合job，单次最多33只、理论最多7,953行，
 正好覆盖9,720,976个目标分钟槽位，无额外无关日下载放大。实际完成
 40,332只次/9,720,012根，其余4只记入
-``config/strategy_d_intraday_known_data_gaps.json``。机器报告中必须同时看到：
+``config/research/strategy_d_intraday_known_data_gaps.json``。机器报告中必须同时看到：
 
 ```text
 complete_target_count=40332
