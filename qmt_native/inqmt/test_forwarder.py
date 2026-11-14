@@ -1,5 +1,5 @@
 # coding: utf-8
-"""vm_scripts/qmt_notify_forwarder.py against fake QMT logs (GBK) and a fake Bark server:
+"""qmt_native_phase0/qmt_notify_forwarder.py (main repo) against fake QMT logs (GBK) and a fake Bark server:
 backlog skipped on first start, live lines sent once, shadow lines ignored, half-written lines
 waited for, next day's file picked up, exported files rebuilt byte for byte; no status line of the
 live copy for 10 minutes -> one alarm (none for another strategy's lines), then one recovery push.
@@ -20,7 +20,9 @@ import urllib.parse
 import zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-FORWARDER = os.path.join(os.path.dirname(HERE), 'vm_scripts', 'qmt_notify_forwarder.py')
+sys.path.insert(0, HERE)
+from qn_paths import VM_SCRIPTS  # noqa: E402
+FORWARDER = os.path.join(VM_SCRIPTS, 'qmt_notify_forwarder.py')
 GOT = []
 
 
@@ -273,7 +275,7 @@ def main():
     # 11-08 21:09: a periodic save and the save on stop came in one read; committing the first
     # removed a body only the second named. Also: a snapshot's body lines in one read, its manifest
     # and commit in the next, with an older commit in the first read.
-    sys.path.insert(0, os.path.join(os.path.dirname(HERE), 'vm_scripts'))
+    sys.path.insert(0, VM_SCRIPTS)
     import qn_state_sink as qs
     def lines_of(files):
         return state_lines(files)[1].replace(b'2026-11-08 10:00:00,000 [INFO] [0x1] reqid = x, output = ', b'')

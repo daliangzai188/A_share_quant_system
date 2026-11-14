@@ -1,6 +1,6 @@
 # coding: utf-8
 """The host writes reports/execution_tracking/trade_completion_summary.csv to QMT's log as
-marked chunks; vm_scripts/qmt_notify_forwarder.py rebuilds it byte for byte outside QMT.
+marked chunks; qmt_native_phase0/qmt_notify_forwarder.py (main repo) rebuilds it byte for byte outside QMT.
 Unchanged content is not written again within 30 minutes.
 
 Usage: python test_export.py STRATEGY_FILE   (QMT's Python 3.6; the forwarder runs on python3)
@@ -35,7 +35,8 @@ def main():
         u'旧行\r\n'.encode('gbk') + b''.join(l.encode('ascii') + b'\r\n' for l in lines))
     env = dict(os.environ, A_SYSTEM_ROOT=os.path.join(tmp, 'root'), LOCALAPPDATA=os.path.join(tmp, 'local'))
     os.makedirs(env['A_SYSTEM_ROOT'])
-    subprocess.check_call(['/usr/bin/python3', os.path.join(os.path.dirname(HERE), 'vm_scripts', 'qmt_notify_forwarder.py'),
+    from qn_paths import VM_SCRIPTS
+    subprocess.check_call(['/usr/bin/python3', os.path.join(VM_SCRIPTS, 'qmt_notify_forwarder.py'),
                            '--logs', os.path.join(tmp, 'log', '*.log'), '--mode', 'shadow', '--from-start', '--once'],
                           env=env, stdout=subprocess.DEVNULL)
     out = os.path.join(env['LOCALAPPDATA'], 'A_System', 'qmt_native', 'qmt_export', 'trade_completion_summary.csv')

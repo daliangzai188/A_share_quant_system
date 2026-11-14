@@ -1,6 +1,9 @@
 #!/bin/sh
 # QMT原生版部署：Mac 这边一条命令（2026-11-14 项目优化第5步）。
 #
+#   sh deploy.sh auto                一条命令（2026-11-15）：按主仓库打核心包、生成影子版和实盘版、跑完整回归（约1.5小时），
+#                                    再用这份回归日志走下面的正式流程（主仓库的 tools/release.sh --qmt 调的就是它）
+#   sh deploy.sh auto --check        同上，但只检查
 #   sh deploy.sh 回归日志            正式：检查 → 打核心包 → 生成策略文件 → 旧文件进回滚目录、新文件放进虚拟机目录
 #                                    → 核心包提交到本仓库并发布到主仓库 → 打印 QMT 里要做的步骤和回滚办法
 #   sh deploy.sh 回归日志 --check    只检查和生成，不提交、不发布、不动虚拟机目录
@@ -30,6 +33,20 @@ git -C "$REPO" fetch -q origin main
 [ "$(git -C "$REPO" rev-parse HEAD)" = "$(git -C "$REPO" rev-parse origin/main)" ] || { echo "主仓库和 GitHub 不一致：先推送"; exit 1; }
 [ -z "$(git status --porcelain --untracked-files=no)" ] || { echo "QMT工作仓库有未提交的改动："; git status --short; exit 1; }
 echo "主仓库 $(git -C "$REPO" rev-parse --short HEAD)，工作仓库 $(git rev-parse --short HEAD)"
+
+if [ "$LOG" = "auto" ]; then
+  echo "== 1b. 打核心包、生成影子版和实盘版、完整回归（约1.5小时）"
+  venv/bin/python build_inqmt.py "$REPO" inqmt/qn_core_full.py full | tail -1
+  CORE=$(sed '2d' inqmt/qn_core_full.py | shasum | cut -c1-16)
+  RDIR=regress_$CORE
+  S=inqmt/A_SYSTEM_QMT_NATIVE_shadow_regress.py; L=inqmt/A_SYSTEM_QMT_NATIVE_live_regress.py
+  QN_EQ_SEED=$PWD/eqseed_prod_full venv/bin/python build_qmt_strategy.py shadow "$QMT_ACCOUNT_ID" "$QN_PAPER_CASH" "$S" | tail -1
+  QN_EQ_SEED=$PWD/eqseed_prod_full venv/bin/python build_qmt_strategy.py live "$QMT_ACCOUNT_ID" 0 "$L" | tail -1
+  A_SYSTEM_REPO=$REPO sh inqmt/run_regression.sh "$S" "$L" "$RDIR" > "$RDIR.log" 2>&1 || true
+  rm -f "$S" "$L"   # 实盘版含资金账号，用完就删
+  LOG=$RDIR.log
+  echo "回归日志 $LOG：$(grep -c '^RESULT PASS' "$LOG" | tr -d ' ') 节通过，$(grep '^RESULT' "$LOG" | grep -vc '^RESULT PASS' | tr -d ' ') 节其它结果"
+fi
 
 echo "== 2. 打核心包，核对回归日志"
 venv/bin/python build_inqmt.py "$REPO" inqmt/qn_core_full.py full | tail -1

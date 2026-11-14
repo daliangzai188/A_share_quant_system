@@ -1,5 +1,5 @@
 # coding: utf-8
-"""vm_scripts/qmt_external_checks.py: one strategy daily report per trading day (2026-11-14 on).
+"""qmt_native_phase0/qmt_external_checks.py (main repo): one strategy daily report per trading day (2026-11-14 on).
 
 Runs the real program against a stub A_System root (stub production modules record pushes and
 calls), so it needs no data and no network:
@@ -28,7 +28,9 @@ import sys
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-CHECKS = os.path.join(os.path.dirname(HERE), 'vm_scripts', 'qmt_external_checks.py')
+sys.path.insert(0, HERE)
+from qn_paths import VM_SCRIPTS  # noqa: E402
+CHECKS = os.path.join(VM_SCRIPTS, 'qmt_external_checks.py')
 HEALTH = {'A': {'value': 0.00052, 'samples': 207, 'as_of': '202611', 'line': 0.00539, 'months_below': 4,
                 'need_months': 2, 'triggered': True},
           'C': {'value': 0.01666, 'samples': 192, 'as_of': '202609', 'line': -0.00474, 'months_below': 0,

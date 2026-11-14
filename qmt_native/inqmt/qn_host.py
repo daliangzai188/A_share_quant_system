@@ -52,7 +52,7 @@ QN_INVENTORY_INCLUDE = (
     _hre.compile(r'^data/raw/[^/]+\.csv$'),
 )
 # Files a program outside QMT needs (from 2026-10-23 QMT cannot write files): written to QMT's
-# log as marked chunks whenever they change; vm_scripts/qmt_notify_forwarder.py rebuilds them.
+# log as marked chunks whenever they change; qmt_native_phase0/qmt_notify_forwarder.py (main repo) rebuilds them.
 QN_EXPORT_FILES = ('reports/execution_tracking/trade_completion_summary.csv',)
 QN_EXPORT_CHUNK = 1500
 QN_PERSIST_SKIP_TABLES = {'runtime/qmt_inner/spool/journal.sqlite3': ('callbacks',)}

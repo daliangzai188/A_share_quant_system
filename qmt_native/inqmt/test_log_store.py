@@ -1,7 +1,7 @@
 # coding: utf-8
 """State in QMT's log + the registry instead of the broker's key-value store (11-08: a key-value
 call made while the trade server drops can freeze QMT's Python until QMT is restarted and logged
-in; 10-24, 11-07 11:54, 11-08 11:08). With vm_scripts/qn_state_sink.py as the forwarder:
+in; 10-24, 11-07 11:54, 11-08 11:08). With qmt_native_phase0/qn_state_sink.py (main repo) as the forwarder:
   1. moving over: a start with an empty registry reads the broker store once (its state comes
      back unchanged), the next save prints the whole snapshot and the forwarder commits it;
   2. every later start reads the registry only: not one key-value call, even while the account

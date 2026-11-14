@@ -13,7 +13,8 @@
 4. M候选单（QMT外重算，src.strategy_m_reference）：check时抽查约十分之一的日子加最近30天，--full 全部重算；
 5. 三级警告用到的全部数值（ACE+M按现行规则和仓位的回放、各腿近12个月、回撤、信号断流）和推出来的警告；
 6. 因子健康（A/C/E）；
-7. 策略日报全文（按冻结数据，没有实盘成交）；
+7. 策略日报全文（按冻结数据，没有实盘成交）：截止日一份，另外最近 DAILY_REPORT_DAYS 个行动日每天一份
+   （当天的三级警告、研究池覆盖率、影子账3/6个月变化、正常行情连续不赚钱、复核登记；因子健康用截止日那份）；
 8. 实盘仓位规则（src.portfolio_ace_m）在各种情形下给出的目标仓位和M可用金额。
 
 以后每一步优化，check 必须全部相同才能提交；确实应该变的（例如改规则）要单独说明并重新 record。
@@ -43,6 +44,7 @@ MODEL_TABLES = ("data/processed/fill_rate_table.csv", "data/processed/fill_rate_
 EXPECTED = Path(__file__).resolve().parent / "expected"
 DEFAULT_DATA = Path.home() / "A_System_golden_data" / "20261110"
 END = "20261110"
+DAILY_REPORT_DAYS = 20   # 截止日之前、每天都锁定日报的行动日数（每天约7秒；日报2026-11-14起才有）
 MANIFEST_SHA256 = "5a94234bd85a2930db86b2570e1992d6c4fdae6a1390abf963b368dce5043f1a"
 PLAN_COLUMNS = ["action_date", "signal_date", "buy_date", "exit_date", "ts_code", "strategy_leg", "status",
                 "hold_offset", "exit_rule", "entry_price", "exit_price", "stock_return_before_fees", "account_return",
@@ -417,6 +419,38 @@ def build(data: Path, tmp: Path, *, record: bool, full: bool, log, notes: dict) 
     }
     report = build_daily_report(END, triggers, acknowledged, recheck, {}, value_lines(values), final_standard=FINAL_STANDARD)
     out["daily_report.txt"] = report["title"] + "\n" + report["body"] + "\n"
+
+    # 截止日之前每个行动日的日报（2026-11-15起）：三级警告按当天回放（M结果走同一个缓存），其余数值按当天取
+    t0 = time.time()
+    history = []
+    for day in [d for d in days if d < END][-DAILY_REPORT_DAYS:]:
+        day_triggers, day_metrics = run_strategy_warnings(
+            shadow, health, config, raw_dir=raw, cache_path=cache, today=day, ma_window=settings.ma_window,
+            lag=settings.lag_trading_days)
+        day_ack = active_acknowledgements(entries, day)
+        day_recheck = {str(e.get("key", "")): str(e.get("recheck_by", "")) for e in entries
+                       if str(e.get("key", "")) in day_ack}
+        day_nav = nav[[str(i) <= day for i in nav.index]]
+        day_navs = day_nav.to_numpy()
+
+        def day_change(n, v=day_navs):
+            return float(v[-1] / v[-1 - n] - 1.0) if len(v) > n else None
+
+        day_rows, day_limit_up = prod.pool_coverage_inputs(ds, day)
+        day_values = dict(
+            values,
+            coverage={"pool_rows": day_rows, "limit_up_count": day_limit_up,
+                      "min_ratio": float(section.get("pool_coverage_min_ratio", 0.3))},
+            signals=day_metrics.get("signals"), warnings=day_metrics,
+            shadow={"r3": day_change(weekly.window_3m), "r6": day_change(weekly.window_6m),
+                    "fail_3m": weekly.shadow_3m_fail, "fail_6m": weekly.shadow_6m_fail},
+            stall=prod.compute_regime_stall(config, day_nav, ds / "market_sentiment.csv", day),
+        )
+        day_report = build_daily_report(day, day_triggers, day_ack, day_recheck, {}, value_lines(day_values),
+                                        final_standard=FINAL_STANDARD)
+        history.append("==== %s ====\n%s\n%s\n" % (day, day_report["title"], day_report["body"]))
+    out["daily_reports_history.txt"] = "".join(history)
+    log("截止日前%d个行动日的日报 %.0fs" % (len(history), time.time() - t0))
 
     ace, m = sizing_rows()
     out["sizing_ace.csv"] = table(ace, list(ace[0].keys()))

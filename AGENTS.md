@@ -1826,8 +1826,9 @@ M的去留（2026-11-13起）：M的规则平时不调，只在年度复核决�
    实盘成交汇总和QMT外检查结果另存在`reports/qmt_native/`同步到Mac；虚拟机采集的`data/raw`行情同步回来后不要提交进git。
 3. 全量测试只在导出副本里跑，不在同步工作区跑，避免测试打开生产交易意图账本。
 4. 生产链对照标准（2026-11-14起）：凡是不该改变交易结果的代码改动，提交前在导出副本跑
-   `python tests/golden/golden_master.py check`（约4分钟，用Mac上冻结的`~/A_System_golden_data/20261110`），
-   研究池、影子账、停手判定、实盘组合下单、因子健康、M候选单、三级警告、日报、仓位必须全部逐字节一致，
+   `python tests/golden/golden_master.py check`（约7分钟，用Mac上冻结的`~/A_System_golden_data/20261110`；2026-11-15起每次发布
+   由`tools/publish_dev_copy.sh`自动跑，连同全量测试，没通过不发布），研究池、影子账（每天净值、A/C/E每条计划）、停手判定（每天）、
+   实盘组合下单（每天）、因子健康、M候选单、三级警告、日报（截止日和之前20个交易日每天一份）、仓位必须全部逐字节一致，
    实盘收盘流水线⑥的A/C选股函数逐日跑同一份研究池必须和影子账计划逐日相同；
    确实应该变的（改规则）单独说明后才`record`。生产代码清单由`tests/test_production_modules.py`锁定，
    项目优化验收指标用`python tests/golden/project_metrics.py`计算。
@@ -1842,15 +1843,24 @@ M的去留（2026-11-13起）：M的规则平时不调，只在年度复核决�
    被函数用`global`改写的全局变量和用到它的函数放在同一模块，别的模块要读写`模块名.变量`。新代码放进职责对应的模块，
    不要再往`scripts/trading_daemon.py`里加。测试里替换守护进程的函数、常量用`tests/daemon_testing.py`的`patch_daemon`
    （守护进程所有模块一起换，等同拆分前的`patch.object(trading_daemon, …)`）。
+   D盘中监控（2026-11-15起）同样按职责拆在`src/strategy_d_monitor/`（参数与辅助函数、断点续跑、市场环境、选股触发、
+   下单撤单），`scripts/monitor_strategy_d_intraday.py`留主流程和启动入口；测试里替换D的名字用`tests/d_monitor_testing.py`
+   的`patch_d_monitor`/`monkeypatch_d_monitor`。
 8. 行情数据不进git（2026-11-14起）：`data/`下只跟踪随代码发布的参考表和模型表（交易日历、股票基本表、早期涨停计数、
    成交概率模型表、D研究参考名单、2026-10-10历史补充证据），清单在`.gitignore`末尾；行情、加工结果、研究底座只在本机，
    Mac和虚拟机由Syncthing双向同步。git里停止跟踪一批文件的提交，在同步工作区不能用`git merge`/`git pull`落地
    （会删掉工作区文件并同步删到虚拟机），要用`git reset --mixed`再检出改动的文件（见提交说明）。
-9. 部署（2026-11-14起）：代码用`sh tools/publish_dev_copy.sh 导出副本路径`一条命令落到同步工作区并推送（只快进、查资金账号、
-   停止跟踪的文件不删、核对data/文件数）；QMT原生版在QMT工作目录用`sh deploy.sh 回归日志`一条命令完成核对回归、打包、
-   Python 3.6检查、生成策略文件和接管测试、旧文件存进`qmt_native_phase0/rollback/`、新文件放进虚拟机目录、提交发布；先用`--check`。
-   QMT里粘贴、编译、重启仍要人在虚拟机上做（脚本打印步骤）。虚拟机脚本在主仓库只放`qmt_native_phase0/`一份，
-   开发在QMT工作目录的`vm_scripts/`，发布时导出过来（`qmt_native/`里不再带）。
+9. 部署（2026-11-15起一条命令）：在同步工作区`sh tools/release.sh 导出副本路径`——导出副本自动跑全量测试和生产链对照标准
+   （`tools/verify_dev_copy.sh`，没通过不发布；同一提交检查过不重跑），再落到同步工作区并推送（只快进、查资金账号、
+   停止跟踪的文件不删、核对data/文件数）。要换QMT原生版加`--qmt`（先用`--qmt-check`）：按同步工作区打核心包、生成策略文件、
+   完整回归（约1.5小时）、核对回归、Python 3.6编译导入、接管测试，旧实盘文件存进`qmt_native_phase0/rollback/`、新文件放进
+   虚拟机目录、核心包提交发布。QMT里粘贴、编译、重启仍要人在虚拟机上做（脚本打印步骤）。
+   虚拟机脚本只在主仓库`qmt_native_phase0/`放一份，开发也在导出副本里改、随代码发布同步到虚拟机；QMT工作目录不再有
+   `vm_scripts/`，它的测试用`A_SYSTEM_REPO`指定的主仓库里那一份（默认同步工作区）。
+10. 规则出处与代码体量（2026-11-15起）：仓位数字、策略腿和固定腿序A>C>E>D只写在`src/portfolio_ace_m.py`
+   （实盘组合状态机按`ACE_LEG_PRIORITY`依次尝试开仓，影子账回放按它裁决）；交易所规则（板块、涨跌停幅度、6位代码补后缀、
+   申报股数）只写在`src/market_rules.py`；别处一律引用，不许另写一份（`tests/test_rule_single_source.py`检查，生产模块之间
+   也不许循环导入）。生产代码单个文件不超过3000行、函数不超过200行（`tests/test_code_size.py`检查），超了按职责拆。
 
 数据更新方法继续执行`docs/monthly_three_year_data_update.md`；
 `docs/monthly_acde_optimization_sop.md`保留为研究方法与数据门禁参考，不再用于生产换版。

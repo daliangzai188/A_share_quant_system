@@ -9,7 +9,9 @@
 # - 新提交改了、同步工作区里也被改过的文件（比如虚拟机更新的参考表）不覆盖，停下来；
 # - 新提交里“停止跟踪”的文件（git rm --cached）不能从工作区删掉，否则 Syncthing 会把删除同步到虚拟机：
 #   一律用 reset --mixed 落地，再检出新增、修改、改名的文件，删除的文件只删真正被删掉的那些；前后核对 data/ 下没有文件不见；
-# - 推送前检查新提交里没有资金账号（从 QMT 工作目录的 local.env 读，可用 QN_LOCAL_ENV 指定）。
+# - 推送前检查新提交里没有资金账号（从 QMT 工作目录的 local.env 读，可用 QN_LOCAL_ENV 指定）；
+# - 2026-11-15 起每次发布前自动在导出副本跑全量测试和生产链对照标准（tools/verify_dev_copy.sh，逐字节比对），
+#   没通过就不发布；同一个提交已经检查通过的不重跑。
 set -e
 DEV=${1:?"用法: sh tools/publish_dev_copy.sh 导出副本路径"}
 cd "$(dirname "$0")/.."
@@ -27,6 +29,16 @@ git merge-base --is-ancestor "$OLD" "$NEW" || { echo "导出副本不包含同�
 # 只查新增的行：删除的内容本来就在历史里，停止跟踪大批行情时也不用把几百万行旧数据过一遍
 n=$(git diff --no-renames "$OLD" "$NEW" | grep '^+' | grep -c "$QMT_ACCOUNT_ID" || true)
 [ "$n" = "0" ] || { echo "新提交里出现资金账号，拒绝发布"; exit 1; }
+# 发布前自动检查：导出副本的这个提交跑过全量测试和对照标准才发布（PUBLISH_VERIFY_CMD 只给本脚本的测试用）
+[ "$(git -C "$DEV" rev-parse HEAD)" = "$NEW" ] || { echo "导出副本当前不在 main 最新提交上，先切回 main"; exit 1; }
+VERIFIED=$(cut -d' ' -f1 "$(git -C "$DEV" rev-parse --absolute-git-dir)/a_system_verified" 2>/dev/null || true)
+if [ "$VERIFIED" != "$NEW" ]; then
+  if [ -n "$PUBLISH_VERIFY_CMD" ]; then
+    sh -c "$PUBLISH_VERIFY_CMD" || { echo "发布前检查没通过，未发布"; exit 1; }
+  else
+    sh "$DEV/tools/verify_dev_copy.sh" "$DEV" || { echo "发布前检查没通过，未发布"; exit 1; }
+  fi
+fi
 
 list_data() { find data -type f 2>/dev/null | LC_ALL=C sort; }
 BEFORE=/tmp/publish_before.$$; AFTER=/tmp/publish_after.$$

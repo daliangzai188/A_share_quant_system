@@ -1,13 +1,15 @@
 # coding: utf-8
 """Test harness for the QMT log + registry state store (11-08): the registry key is a dict kept in
 the test's key-value dict (so it survives a simulated QMT restart like the broker store does), and
-every printed state line goes straight through vm_scripts/qn_state_sink.py as the forwarder would.
+every printed state line goes straight through qmt_native_phase0/qn_state_sink.py (main repo) as the forwarder would.
 hold[0] = True keeps lines back (a forwarder that is not running); release() feeds them."""
 import os
 import sys
 import threading
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'vm_scripts'))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from qn_paths import VM_SCRIPTS  # noqa: E402  虚拟机脚本只在主仓库 qmt_native_phase0/ 一份
+sys.path.insert(0, VM_SCRIPTS)
 import qn_state_sink
 
 

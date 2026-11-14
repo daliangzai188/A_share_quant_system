@@ -60,8 +60,9 @@ class PublishDevCopyTests(unittest.TestCase):
         (self.sync / "data" / "raw" / "daily" / "20261009.csv").write_text("vm new\n", encoding="utf-8")
         (self.sync / "data" / "raw" / "daily" / "20261008.csv").write_text("vm changed\n", encoding="utf-8")
 
-    def run_script(self) -> subprocess.CompletedProcess:
-        env = dict(os.environ, QN_LOCAL_ENV=str(self.env_file))
+    def run_script(self, verify: str = "true") -> subprocess.CompletedProcess:
+        # 发布前检查（全量测试+对照标准）在临时仓库里跑不了，用 PUBLISH_VERIFY_CMD 换成固定结果
+        env = dict(os.environ, QN_LOCAL_ENV=str(self.env_file), PUBLISH_VERIFY_CMD=verify)
         return subprocess.run(["sh", "tools/publish_dev_copy.sh", str(self.dev)], cwd=self.sync, env=env,
                               capture_output=True, text=True)
 
@@ -114,6 +115,21 @@ class PublishDevCopyTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("资金账号", result.stdout)
         self.assertNotEqual(git(self.origin, "rev-parse", "main"), git(self.dev, "rev-parse", "HEAD"))
+
+    def test_refuses_when_pre_publish_checks_fail(self) -> None:
+        head = git(self.sync, "rev-parse", "HEAD")
+        result = self.run_script(verify="false")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("发布前检查没通过", result.stdout)
+        self.assertEqual(git(self.sync, "rev-parse", "HEAD"), head)
+        self.assertNotEqual(git(self.origin, "rev-parse", "main"), git(self.dev, "rev-parse", "HEAD"))
+
+    def test_verified_commit_is_not_checked_again(self) -> None:
+        stamp = Path(git(self.dev, "rev-parse", "--absolute-git-dir").strip()) / "a_system_verified"
+        stamp.write_text(git(self.dev, "rev-parse", "HEAD").strip() + " 2026-11-15 00:00:00\n", encoding="utf-8")
+        result = self.run_script(verify="false")   # 已检查过的提交不会再调用检查
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(git(self.origin, "rev-parse", "main"), git(self.dev, "rev-parse", "HEAD"))
 
 
 if __name__ == "__main__":
