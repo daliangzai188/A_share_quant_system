@@ -288,7 +288,7 @@ class QMTBrokerAdapter(BrokerAdapter):
                         try:
                             trader.stop()
                         except Exception:
-                            pass
+                            pass  # 可以忽略：连接失败后停止半初始化的交易对象，失败无影响
 
         raise RuntimeError("QMT connect 全部失败: " + " | ".join(errors))
 

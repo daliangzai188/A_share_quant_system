@@ -1835,6 +1835,8 @@ M的去留（2026-11-13起）：M的规则平时不调，只在年度复核决�
    研究、回测、优化、版本认证放`research/`，账户查询、数据采集与修复、备份、诊断、安装等运维工具放`tools/`。
    研究和工具可以导入生产代码，生产代码不得导入`research/`、`tools/`；新写的研究脚本不要放进`scripts/`。
    `tests/test_production_modules.py`检查这条边界。
+6. 吞错（2026-11-14起）：生产代码里`except …: pass`必须在pass那一行写`# 可以忽略：原因`；失败后会让人看不到问题的
+   地方不许直接pass，要记一条警告（带上异常）。`tests/golden/project_metrics.py`统计没写原因的处数，应为0。
 
 数据更新方法继续执行`docs/monthly_three_year_data_update.md`；
 `docs/monthly_acde_optimization_sop.md`保留为研究方法与数据门禁参考，不再用于生产换版。

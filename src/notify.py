@@ -30,7 +30,7 @@ try:
     from dotenv import load_dotenv
     load_dotenv(get_project_root() / ".env")
 except Exception:
-    pass
+    pass  # 可以忽略：没装 python-dotenv 时由环境变量提供推送配置
 _lock = threading.Lock()
 _last_sent: dict[str, float] = {}   # key -> 上次推送的单调时钟时间
 _inflight: set[str] = set()        # 正在网络发送的键，防止并发重复

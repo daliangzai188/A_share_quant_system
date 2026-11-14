@@ -20,12 +20,12 @@ def mkdir_p(path: Path) -> None:
             path.mkdir(parents=True, exist_ok=True)
             return
         except OSError:
-            pass
+            pass  # 可以忽略：重试循环：创建失败后用 iterdir 判断目录是否已可用，最多5次
         try:
             next(iter(path.iterdir()), None)
             return  # iterdir() 成功说明目录已存在且可用
         except OSError:
-            pass
+            pass  # 可以忽略：重试循环：目录仍不可用就等2秒再试，最后一次会抛出原始异常
         if attempt < 4:
             time.sleep(2)
     path.mkdir(parents=True, exist_ok=True)  # 最后一次，抛原始异常

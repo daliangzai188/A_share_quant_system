@@ -716,7 +716,7 @@ class DataCleaner:
                 next(iter(path.iterdir()), None)
                 return  # 能列出目录内容说明目录已存在且可用
             except OSError:
-                pass
+                pass  # 可以忽略：重试循环：目录仍不可用就继续下一次尝试
             if attempt < 4:
                 time.sleep(2)
         if last_error is not None:

@@ -32,7 +32,7 @@ def _read_bark_url() -> str:
             if line.startswith("BARK_URL="):
                 return line.split("=", 1)[1].strip().strip("\"'").rstrip("/")
     except OSError:
-        pass
+        pass  # 可以忽略：.env 读不了按没配置推送处理
     return ""
 
 
@@ -52,7 +52,7 @@ def _detect_vmx(vmrun: Path) -> Path | None:
             if candidate.suffix.lower() == ".vmx" and candidate.exists():
                 return candidate.resolve()
     except Exception:
-        pass
+        pass  # 可以忽略：自动探测虚拟机文件失败时走手工指定路径
     roots = [Path.home() / "Virtual Machines.localized", Path.home() / "Virtual Machines"]
     for root in roots:
         if root.exists():

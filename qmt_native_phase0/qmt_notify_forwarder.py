@@ -91,7 +91,7 @@ def log(text: str) -> None:
         with LOG.open('a', encoding='utf-8') as handle:
             handle.write(line + '\n')
     except OSError:
-        pass
+        pass  # 可以忽略：转发程序自己的日志写不了时不能影响转发
 
 
 CAL_KEY = r'Software\A_System\QmtNative'
@@ -234,7 +234,7 @@ def load_state() -> dict:
         if isinstance(state, dict):
             return state
     except (OSError, ValueError):
-        pass
+        pass  # 可以忽略：状态文件读不了按初始状态重新开始
     return {}
 
 

@@ -160,7 +160,7 @@ def has_ac_planned_order(signal_date: str, legs: tuple[str, ...]) -> bool:
             if bool((legs_in_file.isin(wanted) & legs_in_file.ne("B")).any()):
                 return True
         except Exception:
-            pass
+            pass  # 可以忽略：读不了的计划文件跳过，按没有A/C计划处理；次日组合状态机按真实计划文件再裁决
     return False
 
 
@@ -473,7 +473,7 @@ def resolve_signal_date() -> str:
             if latest and latest != "nan":
                 return latest
         except Exception:
-            pass
+            pass  # 可以忽略：打分文件读不了走下面的兜底取信号日
     return datetime.now().strftime("%Y%m%d")
 
 

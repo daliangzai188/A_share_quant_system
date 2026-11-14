@@ -119,7 +119,7 @@ def run(args) -> int:
         from dotenv import load_dotenv
         load_dotenv(ROOT / '.env', override=False)
     except ImportError:
-        pass
+        pass  # 可以忽略：没装 python-dotenv 时由环境变量提供配置
     from src.utils.config import load_json_config
     from src.equity_curve_stop import open_dates_from_calendar
     from src.review_triggers import FINAL_STANDARD, active_acknowledgements, check_failure_trigger, factor_health_triggers

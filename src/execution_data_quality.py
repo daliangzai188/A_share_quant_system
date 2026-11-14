@@ -31,7 +31,7 @@ def _text(value: Any) -> str:
         if bool(pd.isna(value)):
             return ""
     except (TypeError, ValueError):
-        pass
+        pass  # 可以忽略：非标量值无法判断缺失，按有值处理
     return str(value).strip()
 
 

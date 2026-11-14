@@ -119,7 +119,7 @@ def _print_console_safely(line: str) -> None:
         try:
             print(safe_line, flush=True)
         except Exception:
-            pass
+            pass  # 可以忽略：控制台写不了时不影响文件日志和守护循环
     except Exception:
         # 控制台被关闭或重定向异常时仍继续文件日志和守护循环。
         pass
@@ -131,7 +131,7 @@ def log(msg: str) -> None:
     try:
         _get_file_logger().info(line)
     except Exception:
-        pass
+        pass  # 可以忽略：文件日志写不了时不能让守护循环停下
 
 
 def _log_without_affecting_result(msg: str) -> None:
@@ -139,7 +139,7 @@ def _log_without_affecting_result(msg: str) -> None:
     try:
         log(msg)
     except Exception:
-        pass
+        pass  # 可以忽略：日志异常不能改写通知通道的真实返回值
 
 
 def notify(

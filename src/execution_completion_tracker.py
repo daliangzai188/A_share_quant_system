@@ -761,7 +761,7 @@ class ExecutionCompletionTracker:
             payload = json.loads(capacity_path.read_text(encoding="utf-8"))
             capacity_records = [row for row in payload.get("records", []) if isinstance(row, dict)]
         except (OSError, json.JSONDecodeError, AttributeError):
-            pass
+            pass  # 可以忽略：可选参考文件读不了按没有处理，只影响回填的参考价
 
         e_reference: dict[tuple[str, str], float] = {}
         e_signal_path = self.root / "reports" / "strategy_e" / "e_signals_recent.json"
@@ -774,7 +774,7 @@ class ExecutionCompletionTracker:
                 if isinstance(signal, dict):
                     e_reference[(_date(signal.get("signal_date")), _code(signal.get("ts_code")))] = _float(signal.get("limit_close"))
         except (OSError, json.JSONDecodeError, AttributeError):
-            pass
+            pass  # 可以忽略：可选参考文件读不了按没有处理，只影响回填的参考价
 
         pov_state_items: dict[tuple[str, str], dict[str, Any]] = {}
         try:
@@ -783,7 +783,7 @@ class ExecutionCompletionTracker:
                 if isinstance(item, dict):
                     pov_state_items[(_date(payload.get("date")), _code(item.get("ts_code")))] = item
         except (OSError, json.JSONDecodeError, AttributeError):
-            pass
+            pass  # 可以忽略：可选参考文件读不了按没有处理，只影响回填的参考价
 
         capacity_by_key = {
             (_date(row.get("date")), _code(row.get("ts_code"))): row for row in capacity_records

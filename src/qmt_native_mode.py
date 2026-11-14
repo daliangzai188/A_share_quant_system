@@ -243,7 +243,7 @@ def read_switch() -> dict[str, str] | None:
                 try:
                     out[name] = str(winreg.QueryValueEx(key, name)[0])
                 except OSError:
-                    pass
+                    pass  # 可以忽略：缺的注册表值按未设置处理
     except OSError:
         return {}
     return out
@@ -432,7 +432,7 @@ def _text(raw: bytes) -> str:
         try:
             return raw.decode(encoding).rstrip("\r")
         except UnicodeDecodeError:
-            pass
+            pass  # 可以忽略：依次尝试下一种编码
     return raw.decode("utf-8", "replace").rstrip("\r")
 
 

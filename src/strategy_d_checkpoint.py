@@ -402,7 +402,7 @@ def inspect_strategy_d_checkpoint(
             block_payload = json.loads(recovery_block_path.read_text(encoding="utf-8"))
             block_reason = str(block_payload.get("reason", block_reason))
         except Exception:
-            pass
+            pass  # 可以忽略：阻断原因读不了保留默认说明，不影响阻断判定
         return reject(f"D检查点恢复仍被I/O保护标记阻断:{block_reason}")
     if not path.exists():
         return reject("不存在D盘中路径检查点")

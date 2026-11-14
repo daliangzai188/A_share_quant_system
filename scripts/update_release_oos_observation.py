@@ -69,7 +69,7 @@ def main() -> None:
             f"本周已推送={monitor['weekly_notification_sent']}"
         )
     except ImportError:
-        pass
+        pass  # 可以忽略：样本外报告模块缺失时只跳过报告
     payload = {
         "status": "UPDATED" if rows else "PRE_OOS_SKIPPED",
         "release_id": release["release_id"],

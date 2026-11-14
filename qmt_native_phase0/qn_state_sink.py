@@ -110,7 +110,7 @@ class WinRegistry(object):
             with self._key(True) as key:
                 self.winreg.DeleteValue(key, name)
         except OSError:
-            pass
+            pass  # 可以忽略：要删的注册表值本来就不存在
 
     def names(self):
         out = []
@@ -124,7 +124,7 @@ class WinRegistry(object):
                         break
                     i += 1
         except OSError:
-            pass
+            pass  # 可以忽略：注册表项不存在按空列表处理
         return out
 
 
@@ -296,7 +296,7 @@ class StateSink(object):
                     try:
                         os.remove(path)
                     except OSError:
-                        pass
+                        pass  # 可以忽略：过期旧文件删不掉下次再删
 
     def restore_from_disk(self):
         """The registry key was lost: put the disk copy of the committed snapshot back."""

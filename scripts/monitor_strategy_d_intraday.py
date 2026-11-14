@@ -602,7 +602,7 @@ def load_stock_names() -> dict[str, str]:
         if "name" in df.columns:
             return dict(zip(df["ts_code"], df["name"]))
     except Exception:
-        pass
+        pass  # 可以忽略：股票名称只用于显示，读不了返回空表
     return {}
 
 
@@ -687,7 +687,7 @@ def next_trade_day(date_str: str, n: int = 1) -> str:
             if len(future) >= n:
                 return future[n - 1]
         except Exception:
-            pass
+            pass  # 可以忽略：交易日历读不了走下面按工作日推算的兜底
 
     current = datetime.strptime(date_str, "%Y%m%d").date()
     count = 0
@@ -2612,8 +2612,8 @@ class StrategyDMonitor:
                             level="critical",
                             call=True,
                         )
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        self.logger.warning("D推送内容生成或发送失败（不影响下单流程）：%s", exc)
                     self.session_orders.pop(result.order_id, None)
                     self.session_order_details.pop(result.order_id, None)
                     st.order_id = ""
@@ -2688,8 +2688,8 @@ class StrategyDMonitor:
                             ),
                             level="timeSensitive",
                         )
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        self.logger.warning("D推送内容生成或发送失败（不影响下单流程）：%s", exc)
                 if fill_check.status_code < 0 and fill_check.filled_qty <= 0:
                     self.logger.error(
                         "D委托提交后未在QMT当日委托中确认: %s order_id=%s %d股 %.2f 金额=%.2f",
@@ -2711,8 +2711,8 @@ class StrategyDMonitor:
                             level="critical",
                             call=True,
                         )
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        self.logger.warning("D推送内容生成或发送失败（不影响下单流程）：%s", exc)
                 return True
             else:
                 self.logger.error("D委托被拒: %s %s", st.ts_code, result.message)
@@ -2725,8 +2725,8 @@ class StrategyDMonitor:
                     notify("buy_result", "❌ D开仓委托被拒",
                            f"{st.ts_code} {st.name} 委托被拒：{fail_reason}",
                            level="critical", call=True)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    self.logger.warning("D推送内容生成或发送失败（不影响下单流程）：%s", exc)
                 print(f"  → 委托被拒: {result.message}")
                 self.order_placed = False
                 self.order_locked_ts_code = ""
@@ -2741,8 +2741,8 @@ class StrategyDMonitor:
                 notify("buy_result", "❌ D开仓下单异常",
                        f"{st.ts_code} {st.name} 下单异常：{e}",
                        level="critical", call=True)
-            except Exception:
-                pass
+            except Exception as exc:
+                self.logger.warning("D推送内容生成或发送失败（不影响下单流程）：%s", exc)
             print(f"  → 下单异常: {e}")
             self.order_placed = False
             self.order_locked_ts_code = ""
@@ -3025,8 +3025,8 @@ class StrategyDMonitor:
                         ),
                         level="timeSensitive",
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    self.logger.warning("D推送内容生成或发送失败（不影响下单流程）：%s", exc)
             else:
                 failed += 1
                 print(f"  {ts_code}  order_id={order_id} → 撤单失败！请手动检查")
@@ -3047,8 +3047,8 @@ class StrategyDMonitor:
                         level="critical",
                         call=True,
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    self.logger.warning("D推送内容生成或发送失败（不影响下单流程）：%s", exc)
 
         print(f"  结果: 撤单={cancelled}笔  失败={failed}笔")
         print(f"{'='*55}\n")
@@ -3155,8 +3155,8 @@ class StrategyDMonitor:
                     f"并把D纳入执行对账(开盘价基准)持续跟踪。",
                     level="timeSensitive",
                 )
-        except Exception:
-            pass
+        except Exception as exc:
+            self.logger.warning("D成交后的容量提示生成或发送失败（不影响持仓记录）：%s", exc)
 
     # ── 轮询 ─────────────────────────────────────────────────────────────────
 
@@ -3224,8 +3224,8 @@ class StrategyDMonitor:
                         "今日D只保留监控日志，不会买入。",
                         level="critical",
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    self.logger.warning("D推送内容生成或发送失败（不影响下单流程）：%s", exc)
         self.scan_round += 1
         self.last_scan_updated_count = updated_count
         self.logger.info("完成全市场扫描: round=%d updated=%d states=%d", self.scan_round, updated_count, len(self.states))
@@ -3731,7 +3731,7 @@ def main() -> None:
             try:
                 broker.disconnect()
             except Exception:
-                pass
+                pass  # 可以忽略：退出时断开券商连接失败无影响
 
 
 if __name__ == "__main__":

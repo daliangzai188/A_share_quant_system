@@ -202,7 +202,7 @@ class FileClient:
                 try:
                     remove_file(response_path)
                 except OSError:
-                    pass
+                    pass  # 可以忽略：见上方说明：残留响应用唯一 rid，不会被复用
                 if not result.get('ok'):
                     raise RuntimeError('QMT_INNER: ' + str(result.get('error', 'unknown result')))
                 return result['result']

@@ -301,7 +301,7 @@ class CombinedLiveEngine:
                     tmp = pd.read_csv(SCORED_PATH, usecols=["trade_date"], nrows=500)
                     has_scored = tmp["trade_date"].astype(str).str.replace(r"\.0$", "", regex=True).eq(today).any()
                 except Exception:
-                    pass
+                    pass  # 可以忽略：只用于盘中E预览显示，读不了按没有打分数据
             result["has_scored_data"] = has_scored
 
             if not has_scored:

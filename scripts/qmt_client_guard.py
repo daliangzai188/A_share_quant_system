@@ -338,7 +338,7 @@ def observe(home, settings, state=None):
             if stamp and datetime.fromisoformat(stamp.group()).replace(tzinfo=BEIJING).timestamp() >= max(float(observed.get("started_at", time.time())), observed["credential_version"] / 1e9):
                 observed["password_error"] = True
     except OSError:
-        pass
+        pass  # 可以忽略：QMT日志读不了时本轮不判断密码错误
     return observed
 
 

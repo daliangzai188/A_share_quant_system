@@ -43,7 +43,7 @@ class SafeRotatingFileHandler(RotatingFileHandler):
                     f"[logger] 日志轮转失败(文件被占用),已重开继续写: {exc}\n"
                 )
             except Exception:
-                pass
+                pass  # 可以忽略：日志轮转的提示写不了时不能让记日志的代码出错
 
 
 class _BeijingFormatter(logging.Formatter):

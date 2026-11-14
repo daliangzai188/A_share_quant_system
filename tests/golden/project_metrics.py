@@ -155,6 +155,7 @@ def metrics(root: Path = REPO) -> dict:
     for name in prod:
         path = files[name]
         text = path.read_text(encoding="utf-8", errors="replace")
+        comments = {tok.start[0] for tok in tokenize.generate_tokens(io.StringIO(text).readline) if tok.type == tokenize.COMMENT}
         if name != SIZING_SOURCE:
             sizing += sum(1 for tok in tokenize.generate_tokens(io.StringIO(text).readline)
                           if tok.type == tokenize.NUMBER and tok.string in SIZING_NUMBERS)
@@ -164,8 +165,9 @@ def metrics(root: Path = REPO) -> dict:
         for node in ast.walk(ast.parse(text)):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.end_lineno - node.lineno + 1 > 200:
                 long_funcs += 1
-            if isinstance(node, ast.ExceptHandler) and len(node.body) == 1 and isinstance(node.body[0], ast.Pass):
-                swallowed += 1
+            if (isinstance(node, ast.ExceptHandler) and len(node.body) == 1 and isinstance(node.body[0], ast.Pass)
+                    and not any(node.lineno <= line <= node.body[0].lineno for line in comments)):
+                swallowed += 1  # 捕获后直接 pass、又没写为什么可以忽略
     prod_text = "\n".join(files[m].read_text(encoding="utf-8", errors="replace") for m in prod)
     config = json.loads((root / "config" / "config.json").read_text(encoding="utf-8"))
     used = [k for k in config if ('"%s"' % k) in prod_text or ("'%s'" % k) in prod_text]
@@ -188,7 +190,7 @@ def metrics(root: Path = REPO) -> dict:
         "最大的生产文件（行）": "%d（%s）" % biggest,
         "仓位数字写死在唯一出处之外（处）": sizing,
         "生产代码里超过200行的函数": long_funcs,
-        "生产代码里捕获错误后直接pass": swallowed,
+        "生产代码里捕获错误后直接pass且没写原因": swallowed,
         "config.json段数（生产在读/全部）": "%d/%d" % (len(used), len(config)),
         "git跟踪的行情数据文件": data_in_git,
         "主仓库里的虚拟机检查脚本份数": vm_copies,

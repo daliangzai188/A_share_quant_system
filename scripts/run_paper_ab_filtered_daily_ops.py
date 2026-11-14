@@ -1081,7 +1081,7 @@ def _print_e_status(signal_date: str, planned_orders: pd.DataFrame) -> None:
             raw = _json.loads(positions_path.read_text(encoding="utf-8"))
             open_positions = [p for p in (raw if isinstance(raw, list) else []) if str(p.get("status", "")) == "open"]
         except Exception:
-            pass
+            pass  # 可以忽略：只用于打印E状态，读不了按没有持仓显示
 
     if open_positions:
         occupied = [(p.get("strategy_leg", "?"), p.get("ts_code", "?"), p.get("planned_exit_date", "?"))

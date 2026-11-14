@@ -195,7 +195,7 @@ def _track_execution(method: str, **values: Any) -> Any:
         try:
             get_logger("a_share_quant").warning("成交完成率记录失败（%s，不影响交易）：%s", method, exc)
         except Exception:
-            pass
+            pass  # 可以忽略：记录失败的日志本身写不了时不能再抛，执行审计不能影响交易
         return None
 
 
@@ -222,7 +222,7 @@ def _notify(event: str, title: str, body: str = "", *, level: str = "active",
         try:
             get_logger("a_share_quant").warning("告警推送异常：%s", exc)
         except Exception:
-            pass
+            pass  # 可以忽略：推送异常的日志本身写不了时不能再抛
         return False
 
 
@@ -628,7 +628,7 @@ def write_heartbeat(status: str = "running") -> None:
         )
         _replace_runtime_file_with_retry(tmp, HEARTBEAT_FILE)
     except Exception:
-        pass
+        pass  # 可以忽略：心跳写失败由外部看门狗按心跳过期告警，这里不每分钟刷屏
     finally:
         tmp.unlink(missing_ok=True)
 
@@ -673,13 +673,13 @@ def write_broker_health(
         try:
             logger().warning("写入QMT账户健康状态失败（不影响交易主流程）：%s", exc)
         except Exception:
-            pass
+            pass  # 可以忽略：写健康状态失败的日志本身写不了时不能再抛
     finally:
         if temp_path is not None:
             try:
                 temp_path.unlink(missing_ok=True)
             except OSError:
-                pass
+                pass  # 可以忽略：临时文件清理失败不影响健康状态写入结果
 
 
 def _periodic_health_snapshot(
@@ -1089,7 +1089,7 @@ def _date_in_csv(path: Path, target_date: datetime.date, date_column: str = "tra
                     if td == target_str:
                         return True
     except Exception:
-        pass
+        pass  # 可以忽略：读不了按没有这一天处理，调用方按数据未就绪（fail-closed）
     return False
 
 
@@ -1586,7 +1586,7 @@ def record_buy(order_id: str, ts_code: str, name: str, signal_date: str,
                     int(traded_at), tz=BEIJING_TZ
                 ).strftime("%Y-%m-%d %H:%M:%S")
             except Exception:
-                pass
+                pass  # 可以忽略：成交时间只用于显示，解析不了保留原值
         buy_time = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
         planned_exit_time = datetime.datetime.combine(exit_date, SCHED_AFTERNOON_CLOSE).strftime("%Y-%m-%d %H:%M")
         existing = next(
@@ -2444,7 +2444,7 @@ def _signal_day_amount(ts_code: str, signal_date: str) -> float:
         if ser is not None and ts_code in ser.index:
             return float(ser.loc[ts_code]) * 1000.0   # 日线amount单位为千元
     except Exception:
-        pass
+        pass  # 可以忽略：查不到按缺失返回0，调用方按fail-closed处理
     return 0.0
 
 
@@ -2961,8 +2961,8 @@ def _cancel_own_takeprofit_orders(adapter: Any, ts_codes: set[str], wait_sec: fl
         log.warning("[平仓前置] %s 存在未撤的盘中止盈卖单(order_id=%s)，先撤单释放冻结股份。", code, oid)
         try:
             adapter.cancel_order(oid)
-        except Exception:
-            pass
+        except Exception as exc:
+            log.warning("[平仓前置] 撤止盈卖单失败，继续等待撤单结果：%s", exc)
         deadline = time.time() + wait_sec
         while time.time() < deadline:
             time.sleep(1.0)
@@ -5141,8 +5141,8 @@ def _exit_pov_monitor() -> None:
                                 with _qmt_lock:
                                     adapter = _qmt_get(broker_cfg)
                                     _cancel_own_takeprofit_orders(adapter, {ts_r})
-                            except Exception:
-                                pass
+                            except Exception as exc:
+                                log.warning("[卖出POV] 14:30跑道复查前撤止盈卖单失败：%s", exc)
                             plans.append(dict(pos=pos, prev_cum=cum, last_sample_at=now_beijing(),
                                               start=now_beijing(),
                                               remain_sh=int(pos.get("shares", 0)),
@@ -5186,8 +5186,8 @@ def _exit_pov_monitor() -> None:
                                 with _qmt_lock:
                                     adapter = _qmt_get(broker_cfg)
                                     _cancel_own_takeprofit_orders(adapter, {ts_r})
-                            except Exception:
-                                pass
+                            except Exception as exc:
+                                log.warning("[卖出POV] 撤止盈卖单失败：%s", exc)
                             start_late = now_beijing() + datetime.timedelta(minutes=1)
                             plans.append(dict(pos=pos, prev_cum=cum, last_sample_at=now_beijing(),
                                               start=start_late, remain_sh=int(pos.get("shares", 0)),
@@ -8562,7 +8562,7 @@ def job_premarket_position_sync() -> None:
             if relay_state:
                 _d_relay_block(relay_state, f"09:26竞价确认异常:{exc}")
         except Exception:
-            pass
+            pass  # 可以忽略：上面已记录完整异常；D接力2026-08-07起已关闭，标记阻断失败不影响后续流程
 
     try:
         with _qmt_lock:
@@ -13343,7 +13343,7 @@ def job_cancel_unfilled_buy_orders() -> None:
                 level="timeSensitive" if failed == 0 else "critical",
             )
         except Exception:
-            pass
+            pass  # 可以忽略：_notify 自身已捕获并记录所有异常，这里只防意外
 
     log.info("===== 14:40 撤未成交买单完成 =====")
 
@@ -13834,7 +13834,7 @@ def _maybe_alert_ledger_incomplete(snapshot: Any, cfg: dict[str, Any]) -> None:
             try:
                 state_path.unlink()
             except OSError:
-                pass
+                pass  # 可以忽略：状态文件删不掉下次再删，不影响告警判断
         return
     try:
         state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
@@ -15788,7 +15788,7 @@ def _notify_missed_open_window_if_needed(source: str) -> None:
         if old.get("last_alerted") == key:
             return
     except Exception:
-        pass
+        pass  # 可以忽略：去重记录读不了就当没提醒过，宁可重复提醒也不漏
     title = f"⚠️ 今日开仓窗口已错过:{final_buy.get('name','')}"
     body = (
         f"{source}发现今日原计划为策略{final_buy.get('strategy','')} "
@@ -17400,8 +17400,8 @@ def _request_process_recovery(
     if clear_qmt_cache:
         try:
             _clear_qmt_last_success(reason)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger().warning("清除QMT上次成功缓存失败（不影响进程恢复）：%s", exc)
     _notify_async(
         "system_error",
         title,
@@ -17650,7 +17650,7 @@ def _qmt_reset_raw() -> None:
         try:
             _qmt_adapter.disconnect()
         except Exception:
-            pass
+            pass  # 可以忽略：断线时断开连接常会失败，连接对象随后丢弃重建
         _qmt_adapter = None
 
 
@@ -18320,14 +18320,14 @@ def check_qmt_connection(*, allow_full_scan: bool | None = None) -> bool:
             with _qmt_lock:
                 _qmt_reset()
         except Exception:
-            pass
+            pass  # 可以忽略：已在连接失败处理中，重置失败由下一轮重连处理
         # 失败连接对象可能仍被引用（xtquant 内部持有线程/套接字）。主动触发一次
         # 回收，尽量把 Python 侧能释放的释放掉；底层 C++ 资源仍依赖库自身实现。
         try:
             import gc
             gc.collect()
         except Exception:
-            pass
+            pass  # 可以忽略：只是尽力回收内存，失败无影响
         # 启动门禁会持续重试；外层 keeper 仅在连续不可用达到配置阈值后统一告警，
         # 避免一次瞬时握手失败就发送维护误报，也避免 daemon/keeper 双重重复通知。
         return False
@@ -19003,7 +19003,7 @@ if __name__ == "__main__":
         try:
             get_logger("a_share_quant").exception("守护进程致命错误，即将退出：%s", _fatal)
         except Exception:
-            pass
+            pass  # 可以忽略：致命错误的日志写不了也要继续推送退出通知
         _notify("system_error", "🛑 守护进程异常退出",
                 "守护进程发生致命错误即将退出，实盘自动交易已停止，请立即检查并重启。",
                 level="critical", call=True)

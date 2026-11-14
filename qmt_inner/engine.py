@@ -158,7 +158,7 @@ class Engine:
                 if hb['body']['instance'] == self.instance:
                     remove_file(self.root / 'heartbeat.json')
             except (OSError, ValueError, KeyError):
-                pass
+                pass  # 可以忽略：关闭时心跳文件清理失败无影响，新实例会覆盖
 
     def query(self, kind):
         try:
@@ -640,6 +640,6 @@ class Engine:
                     try:
                         remove_file(path)
                     except OSError:
-                        pass
+                        pass  # 可以忽略：见上方说明：靠提交幂等账本避免重复下单
         finally:
             self.lock.release()

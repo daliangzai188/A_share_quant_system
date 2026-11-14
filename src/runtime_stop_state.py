@@ -29,7 +29,7 @@ def load_manual_stop(project_root: str | Path) -> dict[str, Any] | None:
         if isinstance(payload, dict):
             return payload
     except (OSError, json.JSONDecodeError):
-        pass
+        pass  # 可以忽略：读不了时落到下面，按人工暂停仍生效处理（安全方向）
     return {
         "status": "MANUAL_STOP",
         "reason": "人工停机标记存在但内容不可读；为安全起见继续暂停自动启动",
