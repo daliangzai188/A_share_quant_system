@@ -10,7 +10,8 @@ PROJECT_ROOT = Path(__file__).absolute().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.qmt_adapter import QMTBrokerAdapter, mask_account_id
+from src.qmt_adapter import mask_account_id
+from src.qmt_broker_factory import create_qmt_adapter
 from src.qmt_single_owner import assert_standalone_qmt_allowed
 from src.utils.config import load_json_config
 
@@ -34,7 +35,7 @@ def main() -> int:
             os.environ[str(broker_cfg.get("qmt_path_env", "QMT_PATH"))] = args.qmt_path
         if args.session_id:
             os.environ[str(broker_cfg.get("session_id_env", "QMT_SESSION_ID"))] = args.session_id
-        adapter = QMTBrokerAdapter.from_config(broker_cfg)
+        adapter = create_qmt_adapter(broker_cfg)
         adapter.connect(preferred_only=args.preferred_only)
         account = adapter.query_account()
         positions = adapter.query_positions()

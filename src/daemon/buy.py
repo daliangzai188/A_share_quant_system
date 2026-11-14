@@ -73,6 +73,247 @@ _premarket_buy_monitor_thread: threading.Thread | None = None
 
 # ── 平仓检查（最高优先级，独立运行，绝不因其他错误跳过）────────────────────
 
+def _execute_orders_confirm_results(tag, submitted, accepted_any, broker_cfg, log):
+    """逐笔确认买单成交：记录持仓、通知，部分成交和未成交按规则处理（从 _execute_orders_inprocess 拆出，语句原样）。"""
+    # ── 成交确认 + 持仓回写（在 QMT 锁外执行，避免轮询期间长时间占锁）──
+    today_str = today_beijing().strftime("%Y%m%d")
+    for s in submitted:
+        try:
+            fill = _confirm_fill(broker_cfg, s["order_id"], s["qty"], tag)
+            fill_price = fill.avg_price if fill.avg_price > 0 else s["ref_price"]
+            if s["side"] == "BUY":
+                if fill.filled_qty > 0:
+                    _record_live_buy(
+                        recovery_context=tag,
+                        order_id=s["order_id"],
+                        ts_code=s["ts_code"],
+                        name=s["name"],
+                        signal_date=s["signal_date"],
+                        buy_date=today_str,
+                        shares=fill.filled_qty,
+                        buy_price=fill_price,
+                        strategy_leg=s["strategy_leg"],
+                        exit_n_days=s["exit_n"],
+                        traded_at=getattr(fill, "traded_at", ""),
+                        execution_channel="开盘补买" if "09:30" in tag else "普通买入",
+                        planned_order_qty=s["qty"],
+                        benchmark_open=0.0,
+                        planned_exit_date_override=s.get("planned_exit_date", ""),
+                        strategy_branch_id=s.get("strategy_branch_id", ""),
+                        condition_profile_ids=s.get("condition_profile_ids", ""),
+                        exit_rule=s.get("exit_rule", ""),
+                    )
+                    amount = fill.filled_qty * fill_price
+                    if fill.filled_qty < s["qty"]:
+                        planned_price = float(s.get("ref_price", fill_price) or fill_price)
+                        planned_amount = int(s["qty"]) * planned_price
+                        unfilled_amount = max(planned_amount - amount, 0.0)
+                        log.warning("⚠️ [%s] %s 买入部分成交 %d/%d股 @%.2f，按实际成交记录持仓。",
+                                    tag, s["ts_code"], fill.filled_qty, s["qty"], fill_price)
+                        _notify("buy_result", "⚠️ 开仓部分成交",
+                                f"策略={s['strategy_leg']} {s['ts_code']} {s['name']} 成交{fill.filled_qty}/{s['qty']}股 "
+                                f"@{fill_price:.2f}。总委托金额{_fmt_wan(planned_amount)}，"
+                                f"已成交金额{_fmt_wan(amount)}，未成交金额{_fmt_wan(unfilled_amount)}")
+                    else:
+                        log.info("✅ [%s] 持仓信息：策略=%s %s %s 持仓%d股 成本%.2f 市值%s",
+                                 tag, s["strategy_leg"], s["ts_code"], s["name"],
+                                 fill.filled_qty, fill_price, _fmt_wan(amount))
+                        _notify("buy_result", "✅ 持仓信息",
+                                f"策略={s['strategy_leg']} {s['ts_code']} {s['name']} "
+                                f"持仓{fill.filled_qty}股 成本{fill_price:.2f} 市值{_fmt_wan(amount)}")
+                else:
+                    log.error("❌ [%s] %s 买入未成交（状态=%s），不记录持仓，避免幽灵持仓。",
+                              tag, s["ts_code"], fill.status_text)
+                    _notify("buy_result", "❌ 开仓未成交",
+                            f"{s['ts_code']} {s['name']} 买入委托未成交，未记账，请回终端确认。",
+                            level="critical", call=True)
+            else:  # SELL
+                local_pos = find_open_position_by_code(s["ts_code"], s["strategy_leg"])
+                local_oid = local_pos.get("order_id", "") if local_pos else ""
+                held = int(local_pos.get("shares", s["qty"])) if local_pos else s["qty"]
+                if not local_oid:
+                    log.warning("⚠️ [%s] %s 卖出后未找到本地持仓记录，跳过回写。", tag, s["ts_code"])
+                    _notify("sell_fail", "❌ 平仓回写缺失",
+                            f"{s['ts_code']} {s['name']} 卖出后未找到本地持仓记录，请立即核对QMT和positions.json。",
+                            level="critical", call=True)
+                elif fill.filled_qty >= held:
+                    _mark_live_position_closed(
+                        local_oid, today_str, fill_price, recovery_context=tag
+                    )
+                    log.info("✅ [%s] %s 卖出全部成交 %d股 @%.2f，已平仓。",
+                             tag, s["ts_code"], fill.filled_qty, fill_price)
+                    _notify("sell_success", "✅ 平仓成交",
+                            f"{s['ts_code']} {s['name']} 卖出{fill.filled_qty}股 "
+                            f"@{fill_price:.2f} 金额{_fmt_wan(fill.filled_qty * fill_price)}")
+                elif fill.filled_qty > 0:
+                    _reduce_live_position_shares(
+                        local_oid,
+                        held - fill.filled_qty,
+                        fill_price=fill_price,
+                        recovery_context=tag,
+                    )
+                    log.warning("⚠️ [%s] %s 卖出部分成交 %d/%d股 @%.2f，剩余%d股保留持仓待下次卖出。",
+                                tag, s["ts_code"], fill.filled_qty, held, fill_price, held - fill.filled_qty)
+                    _notify("sell_fail", "⚠️ 平仓部分成交",
+                            f"{s['ts_code']} {s['name']} 卖出{fill.filled_qty}/{held}股 "
+                            f"@{fill_price:.2f}，剩余{held - fill.filled_qty}股仍持有，请回终端查看。",
+                            level="timeSensitive")
+                else:
+                    log.error("❌ [%s] %s 卖出未成交（状态=%s），持仓保留，等待下次重试或手动处理。",
+                              tag, s["ts_code"], fill.status_text)
+                    _notify("sell_fail", "❌ 平仓未成交",
+                            f"{s['ts_code']} {s['name']} 平仓委托未成交，可能被动过夜，请立即回终端处理。",
+                            level="critical", call=True)
+        except Exception as e:
+            log.error("❌ [%s] %s 成交确认/回写异常：%s —— 请手动核对！", tag, s["ts_code"], e)
+            _notify("sell_fail", "❌ 平仓回写异常",
+                    f"{s['ts_code']} {s['name']} 平仓成交确认/回写出现异常，请立即回终端核对持仓。",
+                    level="critical", call=True)
+
+    return accepted_any
+
+
+def _execute_orders_submit_rows(
+    tag, executable, OrderRequest, accepted_any, adapter, results, asdict, now_str, log, submitted, quote_map,
+):
+    """在QMT锁内逐行提交计划单：卖单按买档取价，买单先登记开仓台账，下单后记录结果和待确认委托（从 _execute_orders_inprocess 拆出，语句原样）。"""
+    for _, row in executable.iterrows():
+        side = str(row["side"]).upper()
+        qty = int(row["quantity"])
+        ref_price = float(row.get("last_price", 0.0) or row.get("reference_price", 0.0))
+        order_price_type = str(row["price_type"])
+        order_price = float(row.get("price", 0.0))
+        order_remark = str(row.get("remark", ""))
+        branch_id = str(row.get("matched_strategy_branch_ids", ""))
+        profile_ids = str(row.get("matched_condition_profile_ids", ""))
+        exit_rule = str(row.get("exit_rule", ""))
+        planned_exit_date = str(row.get("planned_exit_date", "")).split(".")[0]
+        if side == "BUY" and str(row.get("strategy_leg", "")).upper() == "C":
+            log.info(
+                "[C分支退出裁决] %s %s 分支=%s profile=%s 规则=%s "
+                "exit_n_days=%s 计划平仓日=%s",
+                row.get("ts_code", ""),
+                row.get("name", ""),
+                branch_id,
+                profile_ids,
+                exit_rule,
+                row.get("exit_n_days", ""),
+                planned_exit_date,
+            )
+        # 卖出（E平仓）改用买10/买5挂限价，确保成交、避免被动过夜
+        if side == "SELL":
+            sell_price, sell_label = _pick_sell_limit_price(quote_map.get(str(row["ts_code"])))
+            if sell_price > 0:
+                order_price_type = "FIXED_PRICE"
+                order_price = sell_price
+                ref_price = sell_price
+                order_remark = f"{order_remark}|平仓{sell_label}".strip("|")
+                log.info("[%s] %s 平仓挂单取价 %s=%.2f", tag, row["ts_code"], sell_label, sell_price)
+        else:
+            _track_execution(
+                "register_entry_plan",
+                entry_date=today_beijing().strftime("%Y%m%d"),
+                ts_code=str(row.get("ts_code", "")),
+                name=str(row.get("name", "")),
+                strategy_leg=str(row.get("strategy_leg", "")),
+                signal_date=str(row.get("signal_date", "")),
+                target_qty=qty,
+                target_amount=qty * ref_price,
+                reference_price=ref_price,
+                auction_planned_qty=0,
+                pov_planned_qty=0,
+                pov_target_amount=0,
+                status="待开盘补买执行",
+            )
+        request = OrderRequest(
+            ts_code=str(row["ts_code"]),
+            broker_code=str(row["broker_code"]),
+            side=side,
+            quantity=qty,
+            price_type=order_price_type,
+            price=order_price,
+            strategy_name=str(row.get("strategy_name", "A_SYSTEM_ABC")),
+            remark=order_remark,
+            strategy_leg=str(row.get("strategy_leg", "")).upper(),
+            business_date=today_beijing().strftime("%Y%m%d"),
+            signal_date=str(row.get("signal_date", "")),
+            planned_exit_date=str(row.get("planned_exit_date", "")),
+            purpose="OPEN" if side == "BUY" else "CLOSE",
+            source_key=(
+                f"{tag}|{today_beijing().strftime('%Y%m%d')}|{side}|"
+                f"{row['ts_code']}|{order_remark}|{qty}"
+            ),
+            metadata={
+                "execution_channel": tag,
+                "name": str(row.get("name", "")),
+                "strategy_branch_id": branch_id,
+                "condition_profile_ids": profile_ids,
+                "exit_rule": exit_rule,
+            },
+        )
+        result = adapter.place_order(request)
+        results.append(asdict(result))
+        if result.accepted:
+            accepted_any = True
+            log.info("✅ [%s] %s 已受理 %s %s %d股 参考价%.2f元 金额%.0f元（待成交确认）",
+                     tag, now_str, side, row["ts_code"], qty, ref_price, qty * ref_price)
+            raw_exit_n = row.get("exit_n_days", None)
+            exit_n = int(float(raw_exit_n)) if raw_exit_n is not None and str(raw_exit_n) not in {"", "nan"} else 2
+            submitted.append({
+                "order_id": str(result.order_id or row.get("paper_order_id", f"live-{now_str}-{row['ts_code']}")),
+                "side": side,
+                "ts_code": str(row["ts_code"]),
+                "name": str(row.get("name", "")),
+                "signal_date": str(row.get("signal_date", "")),
+                "strategy_leg": str(row.get("strategy_leg", "")),
+                "qty": qty,
+                "ref_price": ref_price,
+                "exit_n": exit_n,
+                "planned_exit_date": planned_exit_date,
+                "strategy_branch_id": branch_id,
+                "condition_profile_ids": profile_ids,
+                "exit_rule": exit_rule,
+            })
+        else:
+            log.error("❌ [%s] %s %s %s %d股 失败：%s",
+                      tag, now_str, side, row["ts_code"], qty, result.message)
+    return accepted_any
+
+
+def _execute_orders_drop_t2_close_sells(tag, allow_t2_close_sell_now, planned_orders, pd, log):
+    """去掉T2收盘卖计划（只允许14:55平仓流程执行）（从 _execute_orders_inprocess 拆出，语句原样）。"""
+    if not allow_t2_close_sell_now and {"side", "planned_action"}.issubset(planned_orders.columns):
+        side_text = planned_orders["side"].astype(str).str.upper()
+        action_text = planned_orders["planned_action"].astype(str).str.upper()
+        risk_text = (
+            planned_orders["risk_flags"].astype(str).str.upper()
+            if "risk_flags" in planned_orders.columns
+            else pd.Series("", index=planned_orders.index)
+        )
+        t2_close_sell = (
+            side_text.eq("SELL")
+            & (
+                action_text.eq("PLAN_SELL_T2_CLOSE")
+                | action_text.eq("PLAN_SELL_D_T2_CLOSE")
+                | action_text.eq("PLAN_SELL_L_T2_CLOSE")
+                | risk_text.str.contains("E_SELL_T2_CLOSE", na=False)
+                | risk_text.str.contains("L_SELL_T2_CLOSE", na=False)
+            )
+        )
+        if t2_close_sell.any():
+            skipped = planned_orders[t2_close_sell]
+            for _, row in skipped.iterrows():
+                log.warning(
+                    "⏸️ [%s] 跳过T2收盘卖计划：%s %s planned_action=%s。该类订单只允许14:55平仓流程执行。",
+                    tag,
+                    row.get("ts_code", ""),
+                    row.get("name", ""),
+                    row.get("planned_action", ""),
+                )
+            planned_orders = planned_orders[~t2_close_sell].copy()
+    return planned_orders
+
+
 def _execute_orders_inprocess(
     planned_orders_path: Path | str,
     confirm: str,
@@ -121,35 +362,9 @@ def _execute_orders_inprocess(
         if skipped:
             log.info("[%s] 跳过非本流程方向订单 %d 条，仅允许 side=%s", tag, skipped, sorted(allowed_upper))
 
-    if not allow_t2_close_sell_now and {"side", "planned_action"}.issubset(planned_orders.columns):
-        side_text = planned_orders["side"].astype(str).str.upper()
-        action_text = planned_orders["planned_action"].astype(str).str.upper()
-        risk_text = (
-            planned_orders["risk_flags"].astype(str).str.upper()
-            if "risk_flags" in planned_orders.columns
-            else pd.Series("", index=planned_orders.index)
-        )
-        t2_close_sell = (
-            side_text.eq("SELL")
-            & (
-                action_text.eq("PLAN_SELL_T2_CLOSE")
-                | action_text.eq("PLAN_SELL_D_T2_CLOSE")
-                | action_text.eq("PLAN_SELL_L_T2_CLOSE")
-                | risk_text.str.contains("E_SELL_T2_CLOSE", na=False)
-                | risk_text.str.contains("L_SELL_T2_CLOSE", na=False)
-            )
-        )
-        if t2_close_sell.any():
-            skipped = planned_orders[t2_close_sell]
-            for _, row in skipped.iterrows():
-                log.warning(
-                    "⏸️ [%s] 跳过T2收盘卖计划：%s %s planned_action=%s。该类订单只允许14:55平仓流程执行。",
-                    tag,
-                    row.get("ts_code", ""),
-                    row.get("name", ""),
-                    row.get("planned_action", ""),
-                )
-            planned_orders = planned_orders[~t2_close_sell].copy()
+    planned_orders = _execute_orders_drop_t2_close_sells(
+        tag, allow_t2_close_sell_now, planned_orders, pd, log,
+    )
 
     if planned_orders.empty:
         log.info("[%s] 过滤后无可执行订单，跳过", tag)
@@ -265,106 +480,10 @@ def _execute_orders_inprocess(
         results = []
         accepted_any = False
         submitted: list[dict[str, Any]] = []   # 待成交确认的已受理委托
-        for _, row in executable.iterrows():
-            side = str(row["side"]).upper()
-            qty = int(row["quantity"])
-            ref_price = float(row.get("last_price", 0.0) or row.get("reference_price", 0.0))
-            order_price_type = str(row["price_type"])
-            order_price = float(row.get("price", 0.0))
-            order_remark = str(row.get("remark", ""))
-            branch_id = str(row.get("matched_strategy_branch_ids", ""))
-            profile_ids = str(row.get("matched_condition_profile_ids", ""))
-            exit_rule = str(row.get("exit_rule", ""))
-            planned_exit_date = str(row.get("planned_exit_date", "")).split(".")[0]
-            if side == "BUY" and str(row.get("strategy_leg", "")).upper() == "C":
-                log.info(
-                    "[C分支退出裁决] %s %s 分支=%s profile=%s 规则=%s "
-                    "exit_n_days=%s 计划平仓日=%s",
-                    row.get("ts_code", ""),
-                    row.get("name", ""),
-                    branch_id,
-                    profile_ids,
-                    exit_rule,
-                    row.get("exit_n_days", ""),
-                    planned_exit_date,
-                )
-            # 卖出（E平仓）改用买10/买5挂限价，确保成交、避免被动过夜
-            if side == "SELL":
-                sell_price, sell_label = _pick_sell_limit_price(quote_map.get(str(row["ts_code"])))
-                if sell_price > 0:
-                    order_price_type = "FIXED_PRICE"
-                    order_price = sell_price
-                    ref_price = sell_price
-                    order_remark = f"{order_remark}|平仓{sell_label}".strip("|")
-                    log.info("[%s] %s 平仓挂单取价 %s=%.2f", tag, row["ts_code"], sell_label, sell_price)
-            else:
-                _track_execution(
-                    "register_entry_plan",
-                    entry_date=today_beijing().strftime("%Y%m%d"),
-                    ts_code=str(row.get("ts_code", "")),
-                    name=str(row.get("name", "")),
-                    strategy_leg=str(row.get("strategy_leg", "")),
-                    signal_date=str(row.get("signal_date", "")),
-                    target_qty=qty,
-                    target_amount=qty * ref_price,
-                    reference_price=ref_price,
-                    auction_planned_qty=0,
-                    pov_planned_qty=0,
-                    pov_target_amount=0,
-                    status="待开盘补买执行",
-                )
-            request = OrderRequest(
-                ts_code=str(row["ts_code"]),
-                broker_code=str(row["broker_code"]),
-                side=side,
-                quantity=qty,
-                price_type=order_price_type,
-                price=order_price,
-                strategy_name=str(row.get("strategy_name", "A_SYSTEM_ABC")),
-                remark=order_remark,
-                strategy_leg=str(row.get("strategy_leg", "")).upper(),
-                business_date=today_beijing().strftime("%Y%m%d"),
-                signal_date=str(row.get("signal_date", "")),
-                planned_exit_date=str(row.get("planned_exit_date", "")),
-                purpose="OPEN" if side == "BUY" else "CLOSE",
-                source_key=(
-                    f"{tag}|{today_beijing().strftime('%Y%m%d')}|{side}|"
-                    f"{row['ts_code']}|{order_remark}|{qty}"
-                ),
-                metadata={
-                    "execution_channel": tag,
-                    "name": str(row.get("name", "")),
-                    "strategy_branch_id": branch_id,
-                    "condition_profile_ids": profile_ids,
-                    "exit_rule": exit_rule,
-                },
-            )
-            result = adapter.place_order(request)
-            results.append(asdict(result))
-            if result.accepted:
-                accepted_any = True
-                log.info("✅ [%s] %s 已受理 %s %s %d股 参考价%.2f元 金额%.0f元（待成交确认）",
-                         tag, now_str, side, row["ts_code"], qty, ref_price, qty * ref_price)
-                raw_exit_n = row.get("exit_n_days", None)
-                exit_n = int(float(raw_exit_n)) if raw_exit_n is not None and str(raw_exit_n) not in {"", "nan"} else 2
-                submitted.append({
-                    "order_id": str(result.order_id or row.get("paper_order_id", f"live-{now_str}-{row['ts_code']}")),
-                    "side": side,
-                    "ts_code": str(row["ts_code"]),
-                    "name": str(row.get("name", "")),
-                    "signal_date": str(row.get("signal_date", "")),
-                    "strategy_leg": str(row.get("strategy_leg", "")),
-                    "qty": qty,
-                    "ref_price": ref_price,
-                    "exit_n": exit_n,
-                    "planned_exit_date": planned_exit_date,
-                    "strategy_branch_id": branch_id,
-                    "condition_profile_ids": profile_ids,
-                    "exit_rule": exit_rule,
-                })
-            else:
-                log.error("❌ [%s] %s %s %s %d股 失败：%s",
-                          tag, now_str, side, row["ts_code"], qty, result.message)
+        accepted_any = _execute_orders_submit_rows(
+            tag, executable, OrderRequest, accepted_any, adapter, results, asdict, now_str, log, submitted,
+            quote_map,
+        )
 
         # 保存提交结果 CSV
         result_csv = PROJECT_ROOT / "reports" / "live_trade" / "qmt_live_order_submitted_orders.csv"
@@ -375,102 +494,153 @@ def _execute_orders_inprocess(
         log.error("❌ [%s] 下单异常（已重置连接）：%s", tag, e)
         return False
 
-    # ── 成交确认 + 持仓回写（在 QMT 锁外执行，避免轮询期间长时间占锁）──
-    today_str = today_beijing().strftime("%Y%m%d")
-    for s in submitted:
-        try:
-            fill = _confirm_fill(broker_cfg, s["order_id"], s["qty"], tag)
-            fill_price = fill.avg_price if fill.avg_price > 0 else s["ref_price"]
-            if s["side"] == "BUY":
-                if fill.filled_qty > 0:
-                    _record_live_buy(
-                        recovery_context=tag,
-                        order_id=s["order_id"],
-                        ts_code=s["ts_code"],
-                        name=s["name"],
-                        signal_date=s["signal_date"],
-                        buy_date=today_str,
-                        shares=fill.filled_qty,
-                        buy_price=fill_price,
-                        strategy_leg=s["strategy_leg"],
-                        exit_n_days=s["exit_n"],
-                        traded_at=getattr(fill, "traded_at", ""),
-                        execution_channel="开盘补买" if "09:30" in tag else "普通买入",
-                        planned_order_qty=s["qty"],
-                        benchmark_open=0.0,
-                        planned_exit_date_override=s.get("planned_exit_date", ""),
-                        strategy_branch_id=s.get("strategy_branch_id", ""),
-                        condition_profile_ids=s.get("condition_profile_ids", ""),
-                        exit_rule=s.get("exit_rule", ""),
-                    )
-                    amount = fill.filled_qty * fill_price
-                    if fill.filled_qty < s["qty"]:
-                        planned_price = float(s.get("ref_price", fill_price) or fill_price)
-                        planned_amount = int(s["qty"]) * planned_price
-                        unfilled_amount = max(planned_amount - amount, 0.0)
-                        log.warning("⚠️ [%s] %s 买入部分成交 %d/%d股 @%.2f，按实际成交记录持仓。",
-                                    tag, s["ts_code"], fill.filled_qty, s["qty"], fill_price)
-                        _notify("buy_result", "⚠️ 开仓部分成交",
-                                f"策略={s['strategy_leg']} {s['ts_code']} {s['name']} 成交{fill.filled_qty}/{s['qty']}股 "
-                                f"@{fill_price:.2f}。总委托金额{_fmt_wan(planned_amount)}，"
-                                f"已成交金额{_fmt_wan(amount)}，未成交金额{_fmt_wan(unfilled_amount)}")
-                    else:
-                        log.info("✅ [%s] 持仓信息：策略=%s %s %s 持仓%d股 成本%.2f 市值%s",
-                                 tag, s["strategy_leg"], s["ts_code"], s["name"],
-                                 fill.filled_qty, fill_price, _fmt_wan(amount))
-                        _notify("buy_result", "✅ 持仓信息",
-                                f"策略={s['strategy_leg']} {s['ts_code']} {s['name']} "
-                                f"持仓{fill.filled_qty}股 成本{fill_price:.2f} 市值{_fmt_wan(amount)}")
-                else:
-                    log.error("❌ [%s] %s 买入未成交（状态=%s），不记录持仓，避免幽灵持仓。",
-                              tag, s["ts_code"], fill.status_text)
-                    _notify("buy_result", "❌ 开仓未成交",
-                            f"{s['ts_code']} {s['name']} 买入委托未成交，未记账，请回终端确认。",
-                            level="critical", call=True)
-            else:  # SELL
-                local_pos = find_open_position_by_code(s["ts_code"], s["strategy_leg"])
-                local_oid = local_pos.get("order_id", "") if local_pos else ""
-                held = int(local_pos.get("shares", s["qty"])) if local_pos else s["qty"]
-                if not local_oid:
-                    log.warning("⚠️ [%s] %s 卖出后未找到本地持仓记录，跳过回写。", tag, s["ts_code"])
-                    _notify("sell_fail", "❌ 平仓回写缺失",
-                            f"{s['ts_code']} {s['name']} 卖出后未找到本地持仓记录，请立即核对QMT和positions.json。",
-                            level="critical", call=True)
-                elif fill.filled_qty >= held:
-                    _mark_live_position_closed(
-                        local_oid, today_str, fill_price, recovery_context=tag
-                    )
-                    log.info("✅ [%s] %s 卖出全部成交 %d股 @%.2f，已平仓。",
-                             tag, s["ts_code"], fill.filled_qty, fill_price)
-                    _notify("sell_success", "✅ 平仓成交",
-                            f"{s['ts_code']} {s['name']} 卖出{fill.filled_qty}股 "
-                            f"@{fill_price:.2f} 金额{_fmt_wan(fill.filled_qty * fill_price)}")
-                elif fill.filled_qty > 0:
-                    _reduce_live_position_shares(
-                        local_oid,
-                        held - fill.filled_qty,
-                        fill_price=fill_price,
-                        recovery_context=tag,
-                    )
-                    log.warning("⚠️ [%s] %s 卖出部分成交 %d/%d股 @%.2f，剩余%d股保留持仓待下次卖出。",
-                                tag, s["ts_code"], fill.filled_qty, held, fill_price, held - fill.filled_qty)
-                    _notify("sell_fail", "⚠️ 平仓部分成交",
-                            f"{s['ts_code']} {s['name']} 卖出{fill.filled_qty}/{held}股 "
-                            f"@{fill_price:.2f}，剩余{held - fill.filled_qty}股仍持有，请回终端查看。",
-                            level="timeSensitive")
-                else:
-                    log.error("❌ [%s] %s 卖出未成交（状态=%s），持仓保留，等待下次重试或手动处理。",
-                              tag, s["ts_code"], fill.status_text)
-                    _notify("sell_fail", "❌ 平仓未成交",
-                            f"{s['ts_code']} {s['name']} 平仓委托未成交，可能被动过夜，请立即回终端处理。",
-                            level="critical", call=True)
-        except Exception as e:
-            log.error("❌ [%s] %s 成交确认/回写异常：%s —— 请手动核对！", tag, s["ts_code"], e)
-            _notify("sell_fail", "❌ 平仓回写异常",
-                    f"{s['ts_code']} {s['name']} 平仓成交确认/回写出现异常，请立即回终端核对持仓。",
-                    level="critical", call=True)
+    return _execute_orders_confirm_results(tag, submitted, accepted_any, broker_cfg, log)
 
-    return accepted_any
+
+def _resize_one_buy_order(
+    quote_map, transition_full_cash, log_adjust, total_asset, available_cash, held_aliases,
+    max_single_order_amount, round_lot_size, cash_buffer, max_position_pct, market_value, adjusted, idx, row,
+    effective_total_position_pct, min_accept_scale, live_cfg,
+):
+    """按实时总资产、可用现金、行情和仓位上限给一条买单定股数，写回计划行（从 resize_buy_orders_for_live_account 拆出，语句原样）。"""
+    side = str(row.get("side", "")).upper()
+    if side != "BUY":
+        return
+
+    ts_code = str(row.get("ts_code", "")).upper()
+    if held_aliases and any(al in held_aliases for al in _ts_code_aliases(ts_code)):
+        adjusted.at[idx, "round_lot_shares"] = 0
+        adjusted.at[idx, "estimated_shares"] = 0
+        adjusted.at[idx, "planned_amount_by_equity"] = 0.0
+        adjusted.at[idx, "risk_flags"] = append_risk_flag(
+            row.get("risk_flags", ""), "SAME_STOCK_ALREADY_HELD_SKIP")
+        logger().warning("🚫 [同票防线] %s 今日候选与已持仓相同,放弃买入(防同票连续暴露/黑天鹅集中度)。", ts_code)
+        _notify("buy_result", "🚫 同票候选已放弃",
+                f"{ts_code} 今日候选与当前持仓为同一只票,按集中度防线放弃买入"
+                f"(避免同票连续暴露4天全仓押注)。", level="timeSensitive")
+        return
+    quote = quote_map.get(ts_code)
+    reference_price = to_float(row.get("reference_price", 0.0))
+    last_price = float(getattr(quote, "last_price", 0.0) or reference_price)
+    price = last_price if last_price > 0 else reference_price
+    if price <= 0:
+        adjusted.at[idx, "round_lot_shares"] = 0
+        adjusted.at[idx, "estimated_shares"] = 0
+        adjusted.at[idx, "planned_amount_by_equity"] = 0.0
+        adjusted.at[idx, "risk_flags"] = append_risk_flag(row.get("risk_flags", ""), "LIVE_SIZE_NO_PRICE")
+        return
+
+    cash_cap = max(0.0, available_cash - cash_buffer)
+    single_position_cap = max(0.0, total_asset * max_position_pct)
+    target_position_cap = max(
+        0.0,
+        total_asset * effective_total_position_pct - market_value,
+    )
+    min_acceptable_amount = max(
+        0.0,
+        total_asset * float(live_cfg.get("entry_min_acceptable_position_pct", 0.80)) * min_accept_scale
+        - market_value,
+    )
+    pre_liquidity_target = min(
+        cash_cap, single_position_cap, target_position_cap, max_single_order_amount
+    )
+    pre_liquidity_hard_cap = min(
+        cash_cap, single_position_cap, max_single_order_amount
+    )
+    # 大资金退出容量硬顶。81笔5m/1m回放没有找到可“保证”14:57前退出的
+    # 信号日比例；0.5%仅作为风险上限：1000万仓位要求信号日成交额至少20亿。
+    # 当数据缺失时必须fail-closed，不能让读数失败反而解除千万级门禁。
+    liq_cap = float("inf")
+    signal_day_amount = 0.0
+    _sig_date = str(row.get("signal_date", "")).strip().split(".")[0]
+    if _sig_date and _sig_date.isdigit():
+        signal_day_amount = _signal_day_amount(ts_code, _sig_date)
+    if signal_day_amount > 0:
+        liq_cap = signal_day_amount * float(
+            live_cfg.get("total_liquidity_cap_pct", 0.005)
+        )
+    elif bool(live_cfg.get("liquidity_cap_fail_closed", True)):
+        liq_cap = 0.0
+        adjusted.at[idx, "risk_flags"] = append_risk_flag(
+            adjusted.at[idx, "risk_flags"], "LIQUIDITY_CAP_DATA_MISSING"
+        )
+        logger().error(
+            "实盘开仓拒绝：%s 信号日%s成交额缺失，退出容量门禁fail-closed。",
+            ts_code, _sig_date or "未知",
+        )
+    # target_amount是POV最终要追踪的累计实际成交额；hard_cap_amount是任何时点
+    # “已确认实际成交额 + 新买单最坏成交额”都不得突破的85%绝对红线。
+    target_amount = min(pre_liquidity_target, liq_cap)
+    hard_cap_amount = min(pre_liquidity_hard_cap, liq_cap)
+    if liq_cap < pre_liquidity_target and liq_cap > 0:
+        adjusted.at[idx, "risk_flags"] = append_risk_flag(
+            adjusted.at[idx, "risk_flags"],
+            f"EXIT_CAPACITY_CAP:{liq_cap:.0f}",
+        )
+
+    # 现金/固定单笔限额在下单前就不足80%时直接拒开，避免明知资金不足仍开
+    # 一个明显偏小的仓。退出容量是更高优先级的流动性硬风控：若它低于80%，
+    # 继续沿用既有“按容量缩仓”行为，不能为了凑比例突破可安全退出的上限。
+    if pre_liquidity_target + 0.01 < min_acceptable_amount:
+        adjusted.at[idx, "risk_flags"] = append_risk_flag(
+            adjusted.at[idx, "risk_flags"],
+            f"ENTRY_MIN_80_PCT_UNREACHABLE:{pre_liquidity_target:.0f}<{min_acceptable_amount:.0f}",
+        )
+        target_amount = 0.0
+    elif 0 < target_amount + 0.01 < min_acceptable_amount:
+        adjusted.at[idx, "risk_flags"] = append_risk_flag(
+            adjusted.at[idx, "risk_flags"],
+            f"ENTRY_BELOW_80_BY_EXIT_CAP:{target_amount:.0f}",
+        )
+        min_acceptable_amount = target_amount
+
+    old_qty = to_int(row.get("round_lot_shares", row.get("estimated_shares", 0)))
+    max_qty = _floor_buy_quantity_by_amount(target_amount, price, round_lot_size)
+    # 2026-07-15 起执行层实时定仓（可放大可缩小）：种子股数只承载"买什么"，
+    # "买多少"由下单时刻的 min(现金,单票仓位,总仓位,单笔限额) 决定——
+    # 修复"晚间种子固化+resize只缩不放"导致改限额不生效、需手动重跑的顽疾。
+    # old_qty<=0 保持0（0股占位=策略不买的语义，绝不放大）。
+    new_qty = max_qty if old_qty > 0 else 0
+    if round_lot_size > 0:
+        new_qty -= new_qty % round_lot_size
+    new_qty = max(0, new_qty)
+    new_amount = new_qty * price
+
+    adjusted.at[idx, "estimated_shares"] = new_qty
+    adjusted.at[idx, "round_lot_shares"] = new_qty
+    adjusted.at[idx, "planned_amount_by_equity"] = new_amount
+    adjusted.at[idx, "live_cash_cap"] = cash_cap
+    adjusted.at[idx, "live_target_amount"] = target_amount
+    adjusted.at[idx, "live_min_acceptable_amount"] = min_acceptable_amount
+    adjusted.at[idx, "live_hard_cap_amount"] = hard_cap_amount
+    adjusted.at[idx, "live_equity_snapshot"] = total_asset
+    adjusted.at[idx, "live_available_cash_snapshot"] = available_cash
+    adjusted.at[idx, "planned_equity"] = total_asset
+    if total_asset > 0:
+        adjusted.at[idx, "planned_position_pct"] = new_amount / total_asset
+    adjusted.at[idx, "transition_full_cash"] = transition_full_cash
+
+    if new_qty != old_qty:
+        adjusted.at[idx, "risk_flags"] = append_risk_flag(
+            adjusted.at[idx, "risk_flags"],
+            f"LIVE_SIZE_ADJUSTED:{old_qty}->{new_qty}",
+        )
+    if new_qty != old_qty and log_adjust:
+        logger().warning(
+            "实盘定仓：%s 种子计划%d股，按资金/仓位/单笔/退出容量调整为%d股；"
+            "可用资金%.0f元，总资产%.0f元，当前市值%.0f元，单笔上限%.0f元，"
+            "信号日成交额%.0f元，退出容量上限%.0f元，参考成交价%.2f元",
+            ts_code,
+            old_qty,
+            new_qty,
+            available_cash,
+            total_asset,
+            market_value,
+            max_single_order_amount,
+            signal_day_amount,
+            liq_cap,
+            price,
+        )
 
 
 def resize_buy_orders_for_live_account(
@@ -561,144 +731,11 @@ def resize_buy_orders_for_live_account(
             logger().warning("同票检查读取持仓失败(本轮不拦截):%s", e)
 
     for idx, row in adjusted.iterrows():
-        side = str(row.get("side", "")).upper()
-        if side != "BUY":
-            continue
-
-        ts_code = str(row.get("ts_code", "")).upper()
-        if held_aliases and any(al in held_aliases for al in _ts_code_aliases(ts_code)):
-            adjusted.at[idx, "round_lot_shares"] = 0
-            adjusted.at[idx, "estimated_shares"] = 0
-            adjusted.at[idx, "planned_amount_by_equity"] = 0.0
-            adjusted.at[idx, "risk_flags"] = append_risk_flag(
-                row.get("risk_flags", ""), "SAME_STOCK_ALREADY_HELD_SKIP")
-            logger().warning("🚫 [同票防线] %s 今日候选与已持仓相同,放弃买入(防同票连续暴露/黑天鹅集中度)。", ts_code)
-            _notify("buy_result", "🚫 同票候选已放弃",
-                    f"{ts_code} 今日候选与当前持仓为同一只票,按集中度防线放弃买入"
-                    f"(避免同票连续暴露4天全仓押注)。", level="timeSensitive")
-            continue
-        quote = quote_map.get(ts_code)
-        reference_price = to_float(row.get("reference_price", 0.0))
-        last_price = float(getattr(quote, "last_price", 0.0) or reference_price)
-        price = last_price if last_price > 0 else reference_price
-        if price <= 0:
-            adjusted.at[idx, "round_lot_shares"] = 0
-            adjusted.at[idx, "estimated_shares"] = 0
-            adjusted.at[idx, "planned_amount_by_equity"] = 0.0
-            adjusted.at[idx, "risk_flags"] = append_risk_flag(row.get("risk_flags", ""), "LIVE_SIZE_NO_PRICE")
-            continue
-
-        cash_cap = max(0.0, available_cash - cash_buffer)
-        single_position_cap = max(0.0, total_asset * max_position_pct)
-        target_position_cap = max(
-            0.0,
-            total_asset * effective_total_position_pct - market_value,
+        _resize_one_buy_order(
+            quote_map, transition_full_cash, log_adjust, total_asset, available_cash, held_aliases,
+            max_single_order_amount, round_lot_size, cash_buffer, max_position_pct, market_value, adjusted,
+            idx, row, effective_total_position_pct, min_accept_scale, live_cfg,
         )
-        min_acceptable_amount = max(
-            0.0,
-            total_asset * float(live_cfg.get("entry_min_acceptable_position_pct", 0.80)) * min_accept_scale
-            - market_value,
-        )
-        pre_liquidity_target = min(
-            cash_cap, single_position_cap, target_position_cap, max_single_order_amount
-        )
-        pre_liquidity_hard_cap = min(
-            cash_cap, single_position_cap, max_single_order_amount
-        )
-        # 大资金退出容量硬顶。81笔5m/1m回放没有找到可“保证”14:57前退出的
-        # 信号日比例；0.5%仅作为风险上限：1000万仓位要求信号日成交额至少20亿。
-        # 当数据缺失时必须fail-closed，不能让读数失败反而解除千万级门禁。
-        liq_cap = float("inf")
-        signal_day_amount = 0.0
-        _sig_date = str(row.get("signal_date", "")).strip().split(".")[0]
-        if _sig_date and _sig_date.isdigit():
-            signal_day_amount = _signal_day_amount(ts_code, _sig_date)
-        if signal_day_amount > 0:
-            liq_cap = signal_day_amount * float(
-                live_cfg.get("total_liquidity_cap_pct", 0.005)
-            )
-        elif bool(live_cfg.get("liquidity_cap_fail_closed", True)):
-            liq_cap = 0.0
-            adjusted.at[idx, "risk_flags"] = append_risk_flag(
-                adjusted.at[idx, "risk_flags"], "LIQUIDITY_CAP_DATA_MISSING"
-            )
-            logger().error(
-                "实盘开仓拒绝：%s 信号日%s成交额缺失，退出容量门禁fail-closed。",
-                ts_code, _sig_date or "未知",
-            )
-        # target_amount是POV最终要追踪的累计实际成交额；hard_cap_amount是任何时点
-        # “已确认实际成交额 + 新买单最坏成交额”都不得突破的85%绝对红线。
-        target_amount = min(pre_liquidity_target, liq_cap)
-        hard_cap_amount = min(pre_liquidity_hard_cap, liq_cap)
-        if liq_cap < pre_liquidity_target and liq_cap > 0:
-            adjusted.at[idx, "risk_flags"] = append_risk_flag(
-                adjusted.at[idx, "risk_flags"],
-                f"EXIT_CAPACITY_CAP:{liq_cap:.0f}",
-            )
-
-        # 现金/固定单笔限额在下单前就不足80%时直接拒开，避免明知资金不足仍开
-        # 一个明显偏小的仓。退出容量是更高优先级的流动性硬风控：若它低于80%，
-        # 继续沿用既有“按容量缩仓”行为，不能为了凑比例突破可安全退出的上限。
-        if pre_liquidity_target + 0.01 < min_acceptable_amount:
-            adjusted.at[idx, "risk_flags"] = append_risk_flag(
-                adjusted.at[idx, "risk_flags"],
-                f"ENTRY_MIN_80_PCT_UNREACHABLE:{pre_liquidity_target:.0f}<{min_acceptable_amount:.0f}",
-            )
-            target_amount = 0.0
-        elif 0 < target_amount + 0.01 < min_acceptable_amount:
-            adjusted.at[idx, "risk_flags"] = append_risk_flag(
-                adjusted.at[idx, "risk_flags"],
-                f"ENTRY_BELOW_80_BY_EXIT_CAP:{target_amount:.0f}",
-            )
-            min_acceptable_amount = target_amount
-
-        old_qty = to_int(row.get("round_lot_shares", row.get("estimated_shares", 0)))
-        max_qty = _floor_buy_quantity_by_amount(target_amount, price, round_lot_size)
-        # 2026-07-15 起执行层实时定仓（可放大可缩小）：种子股数只承载"买什么"，
-        # "买多少"由下单时刻的 min(现金,单票仓位,总仓位,单笔限额) 决定——
-        # 修复"晚间种子固化+resize只缩不放"导致改限额不生效、需手动重跑的顽疾。
-        # old_qty<=0 保持0（0股占位=策略不买的语义，绝不放大）。
-        new_qty = max_qty if old_qty > 0 else 0
-        if round_lot_size > 0:
-            new_qty -= new_qty % round_lot_size
-        new_qty = max(0, new_qty)
-        new_amount = new_qty * price
-
-        adjusted.at[idx, "estimated_shares"] = new_qty
-        adjusted.at[idx, "round_lot_shares"] = new_qty
-        adjusted.at[idx, "planned_amount_by_equity"] = new_amount
-        adjusted.at[idx, "live_cash_cap"] = cash_cap
-        adjusted.at[idx, "live_target_amount"] = target_amount
-        adjusted.at[idx, "live_min_acceptable_amount"] = min_acceptable_amount
-        adjusted.at[idx, "live_hard_cap_amount"] = hard_cap_amount
-        adjusted.at[idx, "live_equity_snapshot"] = total_asset
-        adjusted.at[idx, "live_available_cash_snapshot"] = available_cash
-        adjusted.at[idx, "planned_equity"] = total_asset
-        if total_asset > 0:
-            adjusted.at[idx, "planned_position_pct"] = new_amount / total_asset
-        adjusted.at[idx, "transition_full_cash"] = transition_full_cash
-
-        if new_qty != old_qty:
-            adjusted.at[idx, "risk_flags"] = append_risk_flag(
-                adjusted.at[idx, "risk_flags"],
-                f"LIVE_SIZE_ADJUSTED:{old_qty}->{new_qty}",
-            )
-        if new_qty != old_qty and log_adjust:
-            logger().warning(
-                "实盘定仓：%s 种子计划%d股，按资金/仓位/单笔/退出容量调整为%d股；"
-                "可用资金%.0f元，总资产%.0f元，当前市值%.0f元，单笔上限%.0f元，"
-                "信号日成交额%.0f元，退出容量上限%.0f元，参考成交价%.2f元",
-                ts_code,
-                old_qty,
-                new_qty,
-                available_cash,
-                total_asset,
-                market_value,
-                max_single_order_amount,
-                signal_day_amount,
-                liq_cap,
-                price,
-            )
 
     return adjusted
 
@@ -855,6 +892,222 @@ def _record_e_capacity_and_alert(records: list[dict[str, Any]], live_cfg: dict) 
         log.error("E容量档案写入失败：%s", e)
 
 
+def _e_auction_submit(
+    broker_cfg, today_str, OrderRequest, row, log, new_pending, ts_code, qty, price, signal_date_s,
+    planned_exit, name_s, exit_n, total_target_qty, planned_amt, min_acceptable_amount, hard_cap_amount,
+    equity_snapshot, src,
+):
+    """提交E竞价单；受理后立即持久化待确认买单并推送（从 _e_auction_buy_one 拆出，语句原样）。"""
+    request = OrderRequest(
+        ts_code=ts_code, broker_code=str(row.get("broker_code", ts_code)),
+        side="BUY", quantity=qty, price_type="FIXED_PRICE", price=price,
+        strategy_name=str(row.get("strategy_name", "A_SYSTEM_ABC")),
+        remark=f"E竞价动态-{today_str}",
+        strategy_leg="E",
+        business_date=today_str,
+        signal_date=signal_date_s,
+        planned_exit_date=planned_exit,
+        purpose="OPEN",
+        source_key=f"E_AUCTION|{today_str}|{ts_code}",
+        metadata={"execution_channel": "E竞价动态", "name": name_s,
+                  "exit_n_days": exit_n},
+    )
+    with _qmt_lock:
+        adapter = _qmt_get(broker_cfg)
+        result = adapter.place_order(request)
+    if result.accepted:
+        pending_order = {
+            "order_id": str(result.order_id or f"eauction-{today_str}-{ts_code}"),
+            "ts_code": ts_code, "name": name_s,
+            "signal_date": signal_date_s,
+            "strategy_leg": "E", "qty": qty, "ref_price": price, "exit_n": exit_n,
+            "entry_target_qty": total_target_qty,
+            "entry_target_amount": planned_amt,
+            "entry_min_acceptable_amount": min_acceptable_amount,
+            "entry_hard_cap_amount": hard_cap_amount,
+            "entry_equity_snapshot": equity_snapshot,
+        }
+        # 券商受理后立即持久化，不把多标的循环结束当作安全边界。
+        _append_pending_buys([pending_order])
+        new_pending.append(pending_order)
+        log.info("✅ [E竞价买入] %s %s %d股 @%.2f 已受理（待09:30确认）", ts_code, name_s, qty, price)
+        _notify("buy_result", "📋 E竞价动态开仓已挂单",
+                f"{ts_code} {name_s} {qty}股@{price:.2f}（{src}），待09:30确认实际成交额后"
+                "按82.5%目标、85%硬顶由POV校准。", level="timeSensitive")
+    else:
+        log.error("❌ [E竞价买入] %s 提交失败：%s", ts_code, result.message)
+
+
+def _e_auction_buy_one(
+    broker_cfg, today_str, pov_enabled_e, actual_amount_rebalance_e, OrderRequest, row, fallback_amt,
+    capacity_records, log, positions_live, ratio, pov_items_e, new_pending,
+):
+    """09:24按实时竞价撮合量给一只E候选定仓并挂涨停价竞价单，登记台账（从 _e_auction_buy_worker 拆出，语句原样）。"""
+    try:
+        ts_code = str(row["ts_code"]); name_s = str(row.get("name", ""))
+        total_target_qty = int(row.get("round_lot_shares", 0) or 0)
+        reference_price = float(row.get("reference_price", 0.0) or 0.0)
+        planned_amt = to_float(
+            row.get("live_target_amount", total_target_qty * reference_price)
+        )
+        min_acceptable_amount = to_float(
+            row.get("live_min_acceptable_amount", 0.0)
+        )
+        hard_cap_amount = to_float(
+            row.get("live_hard_cap_amount", planned_amt)
+        )
+        equity_snapshot = to_float(row.get("live_equity_snapshot", 0.0))
+        available_cash_snapshot = to_float(
+            row.get("live_available_cash_snapshot", 0.0)
+        )
+        if planned_amt <= 0 or total_target_qty <= 0:
+            log.warning(
+                "E竞价买入：%s 82.5%%目标不可执行或不足一手，跳过竞价与POV。",
+                ts_code,
+            )
+            return
+        signal_date_s = str(row.get("signal_date", ""))
+        with _qmt_lock:
+            adapter = _qmt_get(broker_cfg)
+            quote_map = adapter.get_full_tick([ts_code])
+        quote = quote_map.get(ts_code)
+        auction_amt = float(getattr(quote, "amount", 0.0) or 0.0) if quote else 0.0
+        if auction_amt <= 0 and quote is not None:
+            vol = float(getattr(quote, "volume", 0.0) or 0.0)
+            lp = float(getattr(quote, "last_price", 0.0) or 0.0)
+            auction_amt = vol * lp * 100 if vol > 0 and lp > 0 else 0.0
+        if auction_amt > 0:
+            cap = min(planned_amt, auction_amt * ratio)
+            src = f"竞价额{auction_amt / 1e4:.0f}万×{ratio:.0%}"
+        else:
+            cap = min(planned_amt, fallback_amt)
+            src = f"竞价额不可得,兜底{fallback_amt / 1e4:.0f}万"
+        # 只在内存收集容量记录；落盘和推送在09:24关键窗口结束后统一执行
+        capacity_records.append({
+            "date": today_str, "ts_code": ts_code, "name": name_s,
+            "planned_amt": planned_amt, "auction_amt": auction_amt, "cap": cap,
+            "source": "auction" if auction_amt > 0 else "fallback",
+        })
+        price, price_label = _premarket_buy_price(quote, ts_code, name_s, signal_date_s)
+        if price <= 0:
+            _track_execution(
+                "register_entry_plan",
+                entry_date=today_str, ts_code=ts_code, name=name_s,
+                strategy_leg="E", signal_date=signal_date_s,
+                target_qty=total_target_qty, target_amount=planned_amt,
+                reference_price=reference_price, auction_planned_qty=0,
+                pov_planned_qty=total_target_qty if pov_enabled_e else 0,
+                pov_target_amount=planned_amt if pov_enabled_e else 0,
+                status="价格不可得",
+            )
+            log.warning("E竞价买入：%s 无法取得涨停价，跳过。", ts_code)
+            return
+        # 容量按撮合参考价计算股数；涨停委托价只计算冻结资金硬顶。
+        # 竞价金额不可得时，5万元是参考成交金额兜底，不能再除以
+        # 20%涨停委托价导致额外少一手。实际成交额仍由原POV校准。
+        capacity_price = (
+            float(getattr(quote, "last_price", 0.0) or 0.0)
+            if auction_amt > 0 and quote is not None else reference_price
+        )
+        qty = _e_auction_seed_quantity(
+            capacity_amount=cap, capacity_price=capacity_price,
+            limit_price=price, hard_cap_amount=hard_cap_amount,
+            total_target_qty=total_target_qty,
+        )
+        expected_auction_amount = qty * capacity_price
+        log.info("[E竞价定量] %s 目标%.2f元 容量%.2f元 参考价%.2f元 "
+                 "委托价%.2f元 股数%d 参考成交额%.2f元 最坏冻结额%.2f元 硬顶%.2f元",
+                 ts_code, planned_amt, cap, capacity_price, price, qty,
+                 expected_auction_amount, qty * price, hard_cap_amount)
+        pov_target_amount = max(planned_amt - expected_auction_amount, 0.0) if pov_enabled_e else 0.0
+        pov_planned_qty = (
+            int(pov_target_amount // reference_price // 100) * 100
+            if pov_enabled_e and reference_price > 0 else 0
+        )
+        if st_open_forbidden(ts_code, name_s):
+            log.error("⛔ [ST禁买] %s %s 命中ST/风险警示铁律，拦截E竞价买入委托。", ts_code, name_s)
+            _notify("buy_result", "⛔ ST股禁买拦截",
+                    f"{ts_code} {name_s} 为ST/风险警示股，全局铁律禁止开仓，已拦截E竞价买入。",
+                    level="timeSensitive")
+            return
+
+        if pov_enabled_e and actual_amount_rebalance_e:
+            raw_exit_pov = row.get("exit_n_days", None)
+            exit_n_pov = int(float(raw_exit_pov)) if raw_exit_pov is not None and str(raw_exit_pov) not in {"", "nan"} else 1
+            baseline_qty, baseline_cost = _broker_position_quantity_and_cost(
+                positions_live, ts_code
+            )
+            pov_items_e.append({
+                "ts_code": ts_code, "name": name_s, "strategy_leg": "E",
+                "signal_date": signal_date_s,
+                "broker_code": str(row.get("broker_code", ts_code)),
+                "strategy_name": str(row.get("strategy_name", "A_SYSTEM_ABC")),
+                "exit_n": exit_n_pov,
+                "sig_amt": _signal_day_amount(ts_code, signal_date_s.strip().split(".")[0]),
+                "target_amt": planned_amt, "remain_amt": planned_amt,
+                "target_actual_amount": planned_amt,
+                "min_acceptable_amount": min_acceptable_amount,
+                "hard_cap_amount": hard_cap_amount,
+                "equity_snapshot": equity_snapshot,
+                "available_cash_snapshot": available_cash_snapshot,
+                "broker_baseline_qty": baseline_qty,
+                "broker_baseline_cost_amount": baseline_cost,
+                "total_target_qty": total_target_qty,
+                "total_target_amt": planned_amt,
+                "reference_price": reference_price,
+                "auction_planned_qty": qty,
+                "pov_planned_qty": pov_planned_qty,
+                "filled_qty": 0, "cost_amt": 0.0, "slice_no": 0,
+                "prev_cum_amount": 0.0, "done": False,
+            })
+        _track_execution(
+            "register_entry_plan",
+            entry_date=today_str, ts_code=ts_code, name=name_s,
+            strategy_leg="E", signal_date=signal_date_s,
+            target_qty=total_target_qty, target_amount=planned_amt,
+            reference_price=reference_price, auction_planned_qty=qty,
+            pov_planned_qty=pov_planned_qty,
+            pov_target_amount=pov_target_amount,
+            status="待竞价确认并按实际成交额POV校准",
+        )
+        if qty <= 0:
+            if pov_enabled_e and actual_amount_rebalance_e:
+                _track_execution(
+                    "register_entry_plan",
+                    entry_date=today_str, ts_code=ts_code, name=name_s,
+                    strategy_leg="E", signal_date=signal_date_s,
+                    target_qty=total_target_qty, target_amount=planned_amt,
+                    reference_price=reference_price, auction_planned_qty=0,
+                    pov_planned_qty=total_target_qty,
+                    pov_target_amount=planned_amt,
+                    status="全部转买入POV",
+                )
+                log.warning("E竞价买入：%s 竞价段不足一手（%s），82.5%%目标%.1f万全额转POV平滑段。",
+                            ts_code, src, planned_amt / 1e4)
+            else:
+                log.warning("E竞价买入：%s 动态仓位不足一手（%s，计划%.0f元），放弃本笔。", ts_code, src, planned_amt)
+                _notify("buy_result", "⚠️ E流动性不足放弃开仓",
+                        f"{ts_code} {name_s} 竞价盘过小（{src}），动态仓位不足一手，今日放弃。", level="timeSensitive")
+            return
+        log.warning("⏳ [E竞价买入] %s %s %d股 %s=%.2f元（%s；参考成交额%.2f万，最坏冻结额%.2f万）",
+                    ts_code, name_s, qty, price_label, price, src,
+                    expected_auction_amount / 1e4, qty * price / 1e4)
+        raw_exit_n = row.get("exit_n_days", None)
+        exit_n = int(float(raw_exit_n)) if raw_exit_n is not None and str(raw_exit_n) not in {"", "nan"} else 1
+        planned_exit = str(row.get("planned_exit_date", "") or "")
+        if not planned_exit:
+            planned_exit = next_n_trade_days(
+                datetime.datetime.strptime(today_str, "%Y%m%d").date(), n=exit_n
+            ).strftime("%Y%m%d")
+        _e_auction_submit(
+            broker_cfg, today_str, OrderRequest, row, log, new_pending, ts_code, qty, price, signal_date_s,
+            planned_exit, name_s, exit_n, total_target_qty, planned_amt, min_acceptable_amount,
+            hard_cap_amount, equity_snapshot, src,
+        )
+    except Exception as e:
+        log.error("E竞价买入异常（%s）：%s", row.get("ts_code"), e)
+
+
 def _e_auction_buy_worker(e_rows: list[Any], broker_cfg: dict, today_str: str) -> None:
     """E 竞价动态买入：09:24 读实时竞价撮合量，按参与率上限定仓后挂涨停价。
 
@@ -900,202 +1153,10 @@ def _e_auction_buy_worker(e_rows: list[Any], broker_cfg: dict, today_str: str) -
         pov_items_e: list[dict[str, Any]] = []
         new_pending: list[dict[str, Any]] = []
         for row in e_rows:
-            try:
-                ts_code = str(row["ts_code"]); name_s = str(row.get("name", ""))
-                total_target_qty = int(row.get("round_lot_shares", 0) or 0)
-                reference_price = float(row.get("reference_price", 0.0) or 0.0)
-                planned_amt = to_float(
-                    row.get("live_target_amount", total_target_qty * reference_price)
-                )
-                min_acceptable_amount = to_float(
-                    row.get("live_min_acceptable_amount", 0.0)
-                )
-                hard_cap_amount = to_float(
-                    row.get("live_hard_cap_amount", planned_amt)
-                )
-                equity_snapshot = to_float(row.get("live_equity_snapshot", 0.0))
-                available_cash_snapshot = to_float(
-                    row.get("live_available_cash_snapshot", 0.0)
-                )
-                if planned_amt <= 0 or total_target_qty <= 0:
-                    log.warning(
-                        "E竞价买入：%s 82.5%%目标不可执行或不足一手，跳过竞价与POV。",
-                        ts_code,
-                    )
-                    continue
-                signal_date_s = str(row.get("signal_date", ""))
-                with _qmt_lock:
-                    adapter = _qmt_get(broker_cfg)
-                    quote_map = adapter.get_full_tick([ts_code])
-                quote = quote_map.get(ts_code)
-                auction_amt = float(getattr(quote, "amount", 0.0) or 0.0) if quote else 0.0
-                if auction_amt <= 0 and quote is not None:
-                    vol = float(getattr(quote, "volume", 0.0) or 0.0)
-                    lp = float(getattr(quote, "last_price", 0.0) or 0.0)
-                    auction_amt = vol * lp * 100 if vol > 0 and lp > 0 else 0.0
-                if auction_amt > 0:
-                    cap = min(planned_amt, auction_amt * ratio)
-                    src = f"竞价额{auction_amt / 1e4:.0f}万×{ratio:.0%}"
-                else:
-                    cap = min(planned_amt, fallback_amt)
-                    src = f"竞价额不可得,兜底{fallback_amt / 1e4:.0f}万"
-                # 只在内存收集容量记录；落盘和推送在09:24关键窗口结束后统一执行
-                capacity_records.append({
-                    "date": today_str, "ts_code": ts_code, "name": name_s,
-                    "planned_amt": planned_amt, "auction_amt": auction_amt, "cap": cap,
-                    "source": "auction" if auction_amt > 0 else "fallback",
-                })
-                price, price_label = _premarket_buy_price(quote, ts_code, name_s, signal_date_s)
-                if price <= 0:
-                    _track_execution(
-                        "register_entry_plan",
-                        entry_date=today_str, ts_code=ts_code, name=name_s,
-                        strategy_leg="E", signal_date=signal_date_s,
-                        target_qty=total_target_qty, target_amount=planned_amt,
-                        reference_price=reference_price, auction_planned_qty=0,
-                        pov_planned_qty=total_target_qty if pov_enabled_e else 0,
-                        pov_target_amount=planned_amt if pov_enabled_e else 0,
-                        status="价格不可得",
-                    )
-                    log.warning("E竞价买入：%s 无法取得涨停价，跳过。", ts_code)
-                    continue
-                # 容量按撮合参考价计算股数；涨停委托价只计算冻结资金硬顶。
-                # 竞价金额不可得时，5万元是参考成交金额兜底，不能再除以
-                # 20%涨停委托价导致额外少一手。实际成交额仍由原POV校准。
-                capacity_price = (
-                    float(getattr(quote, "last_price", 0.0) or 0.0)
-                    if auction_amt > 0 and quote is not None else reference_price
-                )
-                qty = _e_auction_seed_quantity(
-                    capacity_amount=cap, capacity_price=capacity_price,
-                    limit_price=price, hard_cap_amount=hard_cap_amount,
-                    total_target_qty=total_target_qty,
-                )
-                expected_auction_amount = qty * capacity_price
-                log.info("[E竞价定量] %s 目标%.2f元 容量%.2f元 参考价%.2f元 "
-                         "委托价%.2f元 股数%d 参考成交额%.2f元 最坏冻结额%.2f元 硬顶%.2f元",
-                         ts_code, planned_amt, cap, capacity_price, price, qty,
-                         expected_auction_amount, qty * price, hard_cap_amount)
-                pov_target_amount = max(planned_amt - expected_auction_amount, 0.0) if pov_enabled_e else 0.0
-                pov_planned_qty = (
-                    int(pov_target_amount // reference_price // 100) * 100
-                    if pov_enabled_e and reference_price > 0 else 0
-                )
-                if st_open_forbidden(ts_code, name_s):
-                    log.error("⛔ [ST禁买] %s %s 命中ST/风险警示铁律，拦截E竞价买入委托。", ts_code, name_s)
-                    _notify("buy_result", "⛔ ST股禁买拦截",
-                            f"{ts_code} {name_s} 为ST/风险警示股，全局铁律禁止开仓，已拦截E竞价买入。",
-                            level="timeSensitive")
-                    continue
-
-                if pov_enabled_e and actual_amount_rebalance_e:
-                    raw_exit_pov = row.get("exit_n_days", None)
-                    exit_n_pov = int(float(raw_exit_pov)) if raw_exit_pov is not None and str(raw_exit_pov) not in {"", "nan"} else 1
-                    baseline_qty, baseline_cost = _broker_position_quantity_and_cost(
-                        positions_live, ts_code
-                    )
-                    pov_items_e.append({
-                        "ts_code": ts_code, "name": name_s, "strategy_leg": "E",
-                        "signal_date": signal_date_s,
-                        "broker_code": str(row.get("broker_code", ts_code)),
-                        "strategy_name": str(row.get("strategy_name", "A_SYSTEM_ABC")),
-                        "exit_n": exit_n_pov,
-                        "sig_amt": _signal_day_amount(ts_code, signal_date_s.strip().split(".")[0]),
-                        "target_amt": planned_amt, "remain_amt": planned_amt,
-                        "target_actual_amount": planned_amt,
-                        "min_acceptable_amount": min_acceptable_amount,
-                        "hard_cap_amount": hard_cap_amount,
-                        "equity_snapshot": equity_snapshot,
-                        "available_cash_snapshot": available_cash_snapshot,
-                        "broker_baseline_qty": baseline_qty,
-                        "broker_baseline_cost_amount": baseline_cost,
-                        "total_target_qty": total_target_qty,
-                        "total_target_amt": planned_amt,
-                        "reference_price": reference_price,
-                        "auction_planned_qty": qty,
-                        "pov_planned_qty": pov_planned_qty,
-                        "filled_qty": 0, "cost_amt": 0.0, "slice_no": 0,
-                        "prev_cum_amount": 0.0, "done": False,
-                    })
-                _track_execution(
-                    "register_entry_plan",
-                    entry_date=today_str, ts_code=ts_code, name=name_s,
-                    strategy_leg="E", signal_date=signal_date_s,
-                    target_qty=total_target_qty, target_amount=planned_amt,
-                    reference_price=reference_price, auction_planned_qty=qty,
-                    pov_planned_qty=pov_planned_qty,
-                    pov_target_amount=pov_target_amount,
-                    status="待竞价确认并按实际成交额POV校准",
-                )
-                if qty <= 0:
-                    if pov_enabled_e and actual_amount_rebalance_e:
-                        _track_execution(
-                            "register_entry_plan",
-                            entry_date=today_str, ts_code=ts_code, name=name_s,
-                            strategy_leg="E", signal_date=signal_date_s,
-                            target_qty=total_target_qty, target_amount=planned_amt,
-                            reference_price=reference_price, auction_planned_qty=0,
-                            pov_planned_qty=total_target_qty,
-                            pov_target_amount=planned_amt,
-                            status="全部转买入POV",
-                        )
-                        log.warning("E竞价买入：%s 竞价段不足一手（%s），82.5%%目标%.1f万全额转POV平滑段。",
-                                    ts_code, src, planned_amt / 1e4)
-                    else:
-                        log.warning("E竞价买入：%s 动态仓位不足一手（%s，计划%.0f元），放弃本笔。", ts_code, src, planned_amt)
-                        _notify("buy_result", "⚠️ E流动性不足放弃开仓",
-                                f"{ts_code} {name_s} 竞价盘过小（{src}），动态仓位不足一手，今日放弃。", level="timeSensitive")
-                    continue
-                log.warning("⏳ [E竞价买入] %s %s %d股 %s=%.2f元（%s；参考成交额%.2f万，最坏冻结额%.2f万）",
-                            ts_code, name_s, qty, price_label, price, src,
-                            expected_auction_amount / 1e4, qty * price / 1e4)
-                raw_exit_n = row.get("exit_n_days", None)
-                exit_n = int(float(raw_exit_n)) if raw_exit_n is not None and str(raw_exit_n) not in {"", "nan"} else 1
-                planned_exit = str(row.get("planned_exit_date", "") or "")
-                if not planned_exit:
-                    planned_exit = next_n_trade_days(
-                        datetime.datetime.strptime(today_str, "%Y%m%d").date(), n=exit_n
-                    ).strftime("%Y%m%d")
-                request = OrderRequest(
-                    ts_code=ts_code, broker_code=str(row.get("broker_code", ts_code)),
-                    side="BUY", quantity=qty, price_type="FIXED_PRICE", price=price,
-                    strategy_name=str(row.get("strategy_name", "A_SYSTEM_ABC")),
-                    remark=f"E竞价动态-{today_str}",
-                    strategy_leg="E",
-                    business_date=today_str,
-                    signal_date=signal_date_s,
-                    planned_exit_date=planned_exit,
-                    purpose="OPEN",
-                    source_key=f"E_AUCTION|{today_str}|{ts_code}",
-                    metadata={"execution_channel": "E竞价动态", "name": name_s,
-                              "exit_n_days": exit_n},
-                )
-                with _qmt_lock:
-                    adapter = _qmt_get(broker_cfg)
-                    result = adapter.place_order(request)
-                if result.accepted:
-                    pending_order = {
-                        "order_id": str(result.order_id or f"eauction-{today_str}-{ts_code}"),
-                        "ts_code": ts_code, "name": name_s,
-                        "signal_date": signal_date_s,
-                        "strategy_leg": "E", "qty": qty, "ref_price": price, "exit_n": exit_n,
-                        "entry_target_qty": total_target_qty,
-                        "entry_target_amount": planned_amt,
-                        "entry_min_acceptable_amount": min_acceptable_amount,
-                        "entry_hard_cap_amount": hard_cap_amount,
-                        "entry_equity_snapshot": equity_snapshot,
-                    }
-                    # 券商受理后立即持久化，不把多标的循环结束当作安全边界。
-                    _append_pending_buys([pending_order])
-                    new_pending.append(pending_order)
-                    log.info("✅ [E竞价买入] %s %s %d股 @%.2f 已受理（待09:30确认）", ts_code, name_s, qty, price)
-                    _notify("buy_result", "📋 E竞价动态开仓已挂单",
-                            f"{ts_code} {name_s} {qty}股@{price:.2f}（{src}），待09:30确认实际成交额后"
-                            "按82.5%目标、85%硬顶由POV校准。", level="timeSensitive")
-                else:
-                    log.error("❌ [E竞价买入] %s 提交失败：%s", ts_code, result.message)
-            except Exception as e:
-                log.error("E竞价买入异常（%s）：%s", row.get("ts_code"), e)
+            _e_auction_buy_one(
+                broker_cfg, today_str, pov_enabled_e, actual_amount_rebalance_e, OrderRequest, row,
+                fallback_amt, capacity_records, log, positions_live, ratio, pov_items_e, new_pending,
+            )
         if new_pending:
             _start_premarket_buy_monitor()
         if pov_items_e:
@@ -1517,6 +1578,91 @@ def _confirmed_entry_actual_amount(it: dict[str, Any], broker_positions: Any) ->
     return local_and_running_cost if local_and_running_cost > 0 else broker_incremental_cost
 
 
+def _pov_submit_buy_slice(
+    it, broker_cfg, today_str, log, lot_size, actual_amount, OrderRequest, qty, last, ts_code, name_s, price,
+    target_amount, slice_no, budget, open_p, order_amount_cap,
+):
+    """提交一片买入POV委托，确认成交（未成撤单再确认终态），累计实际成交额并判断是否完成（从 _pov_execute_slice 拆出，语句原样）。"""
+    request = OrderRequest(
+        ts_code=ts_code, broker_code=str(it.get("broker_code", ts_code)),
+        side="BUY", quantity=qty, price_type="FIXED_PRICE", price=price,
+        strategy_name=str(it.get("strategy_name", "A_SYSTEM_ABC")),
+        remark=f"POV实际金额校准-{today_str}",
+        strategy_leg=str(it.get("strategy_leg", "")).upper(),
+        business_date=today_str,
+        signal_date=str(it.get("signal_date", "")),
+        planned_exit_date=str(it.get("planned_exit_date", "")),
+        purpose="OPEN",
+        source_key=f"BUY_POV|{today_str}|{ts_code}|{slice_no + 1}",
+        metadata={
+            "execution_channel": "买入POV",
+            "name": name_s,
+            "strategy_branch_id": str(it.get("strategy_branch_id", "")),
+            "condition_profile_ids": str(it.get("condition_profile_ids", "")),
+            "exit_rule": str(it.get("exit_rule", "")),
+        },
+    )
+    with _qmt_lock:
+        adapter = _qmt_get(broker_cfg)
+        result = adapter.place_order(request)
+    if not result.accepted:
+        log.error("❌ [POV] %s 片%d提交失败：%s", ts_code, slice_no + 1, result.message)
+        _pov_log_slice(_pov_slice_row(it, last_price=last, order_qty=qty, note=f"提交失败:{result.message}"))
+        return True, None
+    oid = str(result.order_id or "")
+    fill = _confirm_fill(
+        broker_cfg,
+        oid,
+        qty,
+        f"POV片{slice_no + 1}",
+        timeout_sec=90,
+        poll_sec=5,
+    )
+    if fill.filled_qty < qty and not fill.is_terminal:
+        _try_cancel_order(broker_cfg, oid, ts_code)
+        # 撤单成败以订单终态为准(2026-07-10口径),再确认一次拿最终成交数
+        fill = _confirm_fill(
+            broker_cfg,
+            oid,
+            qty,
+            f"POV片{slice_no + 1}终态",
+            timeout_sec=20,
+            poll_sec=3,
+        )
+    fq = int(fill.filled_qty or 0)
+    fp = float(fill.avg_price) if float(getattr(fill, "avg_price", 0) or 0) > 0 else last
+    confirmed_after = actual_amount
+    if fq > 0:
+        it["filled_qty"] = int(it.get("filled_qty", 0)) + fq
+        it["cost_amt"] = float(it.get("cost_amt", 0.0)) + fq * fp
+        confirmed_after = actual_amount + fq * fp
+        it["confirmed_actual_amount"] = confirmed_after
+        it["remain_amt"] = max(target_amount - confirmed_after, 0.0)
+        it.setdefault("order_ids", []).append(oid)
+    log.info(
+        "[POV] %s %s 片%d：累计实际%.2f万/目标%.2f万，预算%.1f万，"
+        "挂%d股@%.2f（最坏%.2f万）成交%d股@%.2f，剩余%.2f万",
+        ts_code, name_s, slice_no + 1, actual_amount / 1e4, target_amount / 1e4,
+        budget / 1e4, qty, price, qty * price / 1e4, fq, fp,
+        float(it["remain_amt"]) / 1e4,
+    )
+    _pov_log_slice(_pov_slice_row(
+        it, event_id=f"买入POV|{today_str}|{ts_code}|{slice_no + 1}|{oid}",
+        order_id=oid, order_price=price,
+        last_price=last, open_price=open_p, budget=round(order_amount_cap, 0),
+        order_amt=round(qty * price, 0), order_qty=qty,
+        filled_qty=fq, fill_price=round(fp, 3),
+        note=f"成交后累计实际{confirmed_after:.2f}元" if fq else "未成撤单",
+    ))
+    if confirmed_after + 0.01 >= target_amount:
+        it["done"] = True
+        it["done_reason"] = "累计实际成交额已达到82.5%目标"
+    elif target_amount - confirmed_after < price * lot_size:
+        it["done"] = True
+        it["done_reason"] = "距82.5%目标不足一手"
+    return False, None
+
+
 def _pov_execute_slice(
     it: dict[str, Any],
     broker_cfg: dict,
@@ -1676,83 +1822,12 @@ def _pov_execute_slice(
                         f"{ts_code} {it.get('name','')} 为ST/风险警示股，全局铁律禁止开仓，POV买入片已全部拦截。",
                         level="timeSensitive")
             return
-        request = OrderRequest(
-            ts_code=ts_code, broker_code=str(it.get("broker_code", ts_code)),
-            side="BUY", quantity=qty, price_type="FIXED_PRICE", price=price,
-            strategy_name=str(it.get("strategy_name", "A_SYSTEM_ABC")),
-            remark=f"POV实际金额校准-{today_str}",
-            strategy_leg=str(it.get("strategy_leg", "")).upper(),
-            business_date=today_str,
-            signal_date=str(it.get("signal_date", "")),
-            planned_exit_date=str(it.get("planned_exit_date", "")),
-            purpose="OPEN",
-            source_key=f"BUY_POV|{today_str}|{ts_code}|{slice_no + 1}",
-            metadata={
-                "execution_channel": "买入POV",
-                "name": name_s,
-                "strategy_branch_id": str(it.get("strategy_branch_id", "")),
-                "condition_profile_ids": str(it.get("condition_profile_ids", "")),
-                "exit_rule": str(it.get("exit_rule", "")),
-            },
+        _done, _value = _pov_submit_buy_slice(
+            it, broker_cfg, today_str, log, lot_size, actual_amount, OrderRequest, qty, last, ts_code, name_s,
+            price, target_amount, slice_no, budget, open_p, order_amount_cap,
         )
-        with _qmt_lock:
-            adapter = _qmt_get(broker_cfg)
-            result = adapter.place_order(request)
-        if not result.accepted:
-            log.error("❌ [POV] %s 片%d提交失败：%s", ts_code, slice_no + 1, result.message)
-            _pov_log_slice(_pov_slice_row(it, last_price=last, order_qty=qty, note=f"提交失败:{result.message}"))
-            return
-        oid = str(result.order_id or "")
-        fill = _confirm_fill(
-            broker_cfg,
-            oid,
-            qty,
-            f"POV片{slice_no + 1}",
-            timeout_sec=90,
-            poll_sec=5,
-        )
-        if fill.filled_qty < qty and not fill.is_terminal:
-            _try_cancel_order(broker_cfg, oid, ts_code)
-            # 撤单成败以订单终态为准(2026-07-10口径),再确认一次拿最终成交数
-            fill = _confirm_fill(
-                broker_cfg,
-                oid,
-                qty,
-                f"POV片{slice_no + 1}终态",
-                timeout_sec=20,
-                poll_sec=3,
-            )
-        fq = int(fill.filled_qty or 0)
-        fp = float(fill.avg_price) if float(getattr(fill, "avg_price", 0) or 0) > 0 else last
-        confirmed_after = actual_amount
-        if fq > 0:
-            it["filled_qty"] = int(it.get("filled_qty", 0)) + fq
-            it["cost_amt"] = float(it.get("cost_amt", 0.0)) + fq * fp
-            confirmed_after = actual_amount + fq * fp
-            it["confirmed_actual_amount"] = confirmed_after
-            it["remain_amt"] = max(target_amount - confirmed_after, 0.0)
-            it.setdefault("order_ids", []).append(oid)
-        log.info(
-            "[POV] %s %s 片%d：累计实际%.2f万/目标%.2f万，预算%.1f万，"
-            "挂%d股@%.2f（最坏%.2f万）成交%d股@%.2f，剩余%.2f万",
-            ts_code, name_s, slice_no + 1, actual_amount / 1e4, target_amount / 1e4,
-            budget / 1e4, qty, price, qty * price / 1e4, fq, fp,
-            float(it["remain_amt"]) / 1e4,
-        )
-        _pov_log_slice(_pov_slice_row(
-            it, event_id=f"买入POV|{today_str}|{ts_code}|{slice_no + 1}|{oid}",
-            order_id=oid, order_price=price,
-            last_price=last, open_price=open_p, budget=round(order_amount_cap, 0),
-            order_amt=round(qty * price, 0), order_qty=qty,
-            filled_qty=fq, fill_price=round(fp, 3),
-            note=f"成交后累计实际{confirmed_after:.2f}元" if fq else "未成撤单",
-        ))
-        if confirmed_after + 0.01 >= target_amount:
-            it["done"] = True
-            it["done_reason"] = "累计实际成交额已达到82.5%目标"
-        elif target_amount - confirmed_after < price * lot_size:
-            it["done"] = True
-            it["done_reason"] = "距82.5%目标不足一手"
+        if _done:
+            return _value
     except Exception as e:
         log.error("POV片执行异常（%s）：%s", ts_code, e)
         _pov_log_slice(_pov_slice_row(it, note=f"异常:{e}"))

@@ -13,6 +13,7 @@ from typing import Any
 
 from src.utils.config import load_json_config
 from src.utils.time_utils import now_beijing, today_beijing
+from src.market_rules import BOARD_LOT_SHARES, STAR_MIN_ORDER_SHARES, market_segment
 from src.portfolio_ace_m import M_LEG, ace_limits, m_budget, position_in_family
 from src.daemon.common import (
     PROJECT_ROOT,
@@ -128,12 +129,12 @@ def _m_buy_quantity(ts_code: str, amount: float, price: float) -> int:
     """科创板≥200股且可按1股递增；其余100股整数倍。保证 数量×价格 ≤ 金额。"""
     if amount <= 0 or price <= 0:
         return 0
-    if str(ts_code).upper().startswith(("688", "689")):
+    if market_segment(ts_code) == "star":
         qty = int(Decimal(str(amount)) / Decimal(str(price)))
         while qty > 0 and qty * price > amount + 1e-6:
             qty -= 1
-        return qty if qty >= 200 else 0
-    return _floor_buy_quantity_by_amount(amount, price, 100)
+        return qty if qty >= STAR_MIN_ORDER_SHARES else 0
+    return _floor_buy_quantity_by_amount(amount, price, BOARD_LOT_SHARES)
 
 
 def _m_upper_limit(quote: Any, ts_code: str, name: str) -> float:

@@ -15,10 +15,10 @@ from typing import Any, Iterable
 import pandas as pd
 
 from src.strategy_identity import normalize_strategy_frame, normalize_strategy_leg
-from src.portfolio_ace_m import ACE_FULL_TARGET_PCT
+from src.portfolio_ace_m import ACE_FULL_TARGET_PCT, ACE_LEG_PRIORITY
 
 
-LEGS = ("A", "C", "E", "D")
+LEGS = ACE_LEG_PRIORITY
 SCHEMA_VERSION = 1
 METHODOLOGY_VERSION = "released_shadow_action_date_fixed_exit_v2"
 LEDGER_COLUMNS = [

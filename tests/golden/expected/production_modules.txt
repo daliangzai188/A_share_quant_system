@@ -94,6 +94,7 @@ src.paper_daily_flow
 src.portfolio_ace_m
 src.post_market_freshness
 src.qmt_adapter
+src.qmt_broker_factory
 src.qmt_client_probe
 src.qmt_inner_adapter
 src.qmt_inner_start_gate
@@ -111,6 +112,11 @@ src.strategy_d_checkpoint
 src.strategy_d_factor_rules
 src.strategy_d_intraday_ledger
 src.strategy_d_minute_alignment
+src.strategy_d_monitor.checkpoint
+src.strategy_d_monitor.market
+src.strategy_d_monitor.orders
+src.strategy_d_monitor.signals
+src.strategy_d_monitor.support
 src.strategy_d_relay_execution
 src.strategy_d_spec
 src.strategy_e

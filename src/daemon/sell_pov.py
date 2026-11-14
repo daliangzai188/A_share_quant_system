@@ -8,6 +8,7 @@ import datetime
 import time
 from typing import Any
 
+from src.portfolio_ace_m import ACE_STATIC_LEGS, ALL_LEGS
 from src.utils.config import load_json_config
 from src.utils.time_utils import BEIJING_TZ, now_beijing, today_beijing
 from src.daemon.common import (
@@ -74,7 +75,7 @@ def _large_exit_force_eligible(
 
 # 这里只列“按T+N收盘退出”的策略腿。D接力的计划平仓日仍在T+2，接力日为T+1，
 # 因此不会被下面“planned_exit_date == today”选中，仍由09:23专用流程先卖后买。
-T2_CLOSE_STRATEGY_LEGS = frozenset({"A", "C", "D", "E", "M"})
+T2_CLOSE_STRATEGY_LEGS = frozenset(ALL_LEGS)
 
 
 def _configured_exit_pov_strategy_legs(live_cfg: dict[str, Any]) -> frozenset[str]:
@@ -96,9 +97,9 @@ def _fixed_large_runway_allowed(position: dict[str, Any], live_cfg: dict[str, An
     普通D明确排除：D只能由实时成交容量触发，不能仅因绝对仓位达到950万元
     就提前卖出，以免在流动性充足时无谓偏离T+2收盘收益口径。
     """
-    raw = live_cfg.get("exit_pov_large_force_strategy_legs", ["A", "C", "E"])
+    raw = live_cfg.get("exit_pov_large_force_strategy_legs", list(ACE_STATIC_LEGS))
     if not isinstance(raw, list):
-        raw = ["A", "C", "E"]
+        raw = list(ACE_STATIC_LEGS)
     allowed = {str(value).strip().upper() for value in raw}
     return str(position.get("strategy_leg", "")).strip().upper() in allowed
 
@@ -327,6 +328,111 @@ def _record_exit_pov_slice(plan: dict[str, Any], **values: Any) -> None:
     )
 
 
+def _exit_pov_submit_slice(
+    plan, broker_cfg, log, confirm_timeout_sec, OrderRequest, qty, price, ts_code, depth_note, today_str,
+    external_flow, budget, depth_qty, late_phase, remain, pos, handoff_time, sampled_at,
+):
+    """提交一片卖出POV委托：意图落盘、时间门禁、下单，确认成交后回写持仓（从 _exit_pov_slice 拆出，语句原样）。"""
+    request = OrderRequest(
+        ts_code=ts_code, broker_code=ts_code, side="SELL",
+        quantity=qty, price_type="FIXED_PRICE", price=price,
+        strategy_name="A_SYSTEM_ABC", remark=f"{_EXIT_POV_REMARK_PREFIX}-{today_str}",
+        strategy_leg=str(pos.get("strategy_leg", "")).upper(),
+        business_date=today_str,
+        signal_date=str(pos.get("signal_date", "")),
+        planned_exit_date=str(pos.get("planned_exit_date", "")),
+        purpose="CLOSE",
+        source_key=(
+            f"EXIT_POV|{today_str}|{pos.get('order_id', '')}|"
+            f"{ts_code}|{plan.get('slice_no', 0)}"
+        ),
+        metadata={"execution_channel": "卖出POV", "name": pos.get("name", "")},
+    )
+    with _qmt_lock:
+        adapter = _qmt_get(broker_cfg)
+        result, intent_token = _place_exit_order_with_intent(
+            adapter,
+            request,
+            phase="卖出POV",
+            local_order_id=str(pos.get("order_id", "")),
+        )
+    if not result.accepted:
+        log.error("❌ [卖出POV] %s提交失败:%s", ts_code, result.message)
+        _record_exit_pov_slice(
+            plan, external_flow=external_flow, budget=budget,
+            depth_limit_qty=depth_qty, depth_note=depth_note,
+            order_price=price, order_qty=qty, status="提交失败", note=result.message,
+        )
+        return True, None
+    oid = str(result.order_id or "")
+    fill = _confirm_fill(
+        broker_cfg, oid, qty, "卖出POV片",
+        timeout_sec=confirm_timeout_sec, poll_sec=3 if late_phase else 5,
+    )
+    if fill.filled_qty < qty and not fill.is_terminal:
+        _try_cancel_order(broker_cfg, oid, ts_code)
+        # 尾段必须在配置时刻前交权，终态确认不再固定等待20秒。
+        seconds_left = max(
+            2.0,
+            (datetime.datetime.combine(sampled_at.date(), handoff_time,
+                                       tzinfo=BEIJING_TZ) - now_beijing()).total_seconds() - 2.0,
+        )
+        fill = _confirm_fill(
+            broker_cfg, oid, qty, "卖出POV片终态",
+            timeout_sec=min(12.0, seconds_left), poll_sec=2,
+        )
+    fq = min(int(fill.filled_qty or 0), qty)
+    fp = float(fill.avg_price) if float(getattr(fill, "avg_price", 0) or 0) > 0 else price
+    if bool(getattr(fill, "is_terminal", False)):
+        _update_exit_order_intent(
+            intent_token,
+            status="RESOLVED",
+            broker_order_id=oid,
+            filled_qty=fq,
+            terminal_known=True,
+        )
+    if fq > 0:
+        plan["remain_sh"] = max(remain - fq, 0)
+        plan["sold_qty"] = int(plan.get("sold_qty", 0)) + fq
+        plan["sold_amt"] = float(plan.get("sold_amt", 0.0)) + fq * fp
+        plan["own_fill_since_sample"] = float(plan.get("own_fill_since_sample", 0.0)) + fq * fp
+        if plan["remain_sh"] == 0:
+            avg = plan["sold_amt"] / max(plan["sold_qty"], 1)
+            _mark_live_position_closed(
+                pos.get("order_id", ""),
+                today_str,
+                avg,
+                recovery_context="卖出POV",
+            )
+            plan["done"] = True
+            log.warning("✅ [卖出POV] %s %s 分批平仓完成:%d股 均价%.2f",
+                        ts_code, pos.get("name", ""), plan["sold_qty"], avg)
+            _notify("sell_success", "✅ 卖出POV分批平仓完成",
+                    f"{ts_code} {pos.get('name','')} 分批卖出{plan['sold_qty']}股 "
+                    f"均价{avg:.2f} 市值{_fmt_wan(plan['sold_amt'])}")
+        else:
+            _reduce_live_position_shares(
+                pos.get("order_id", ""),
+                int(plan["remain_sh"]),
+                fill_price=fp,
+                recovery_context="卖出POV",
+            )
+    log.info(
+        "[卖出POV] %s 外部流量%.1f万 预算%.1f万 %s 挂%d股@%.2f 成%d股@%.2f 剩%d股",
+        ts_code, external_flow / 1e4, budget / 1e4, depth_note,
+        qty, price, fq, fp, int(plan["remain_sh"]),
+    )
+    _record_exit_pov_slice(
+        plan, broker_order_id=oid, external_flow=external_flow, budget=budget,
+        depth_limit_qty=depth_qty, depth_note=depth_note,
+        order_price=price, order_qty=qty, filled_qty=fq, fill_price=fp,
+        remaining_qty=int(plan["remain_sh"]),
+        status="已成交" if fq > 0 else "未成交",
+        note="终态已确认" if bool(getattr(fill, "is_terminal", False)) else "终态待后续核对",
+    )
+    return False, None
+
+
 def _exit_pov_slice(
     plan: dict[str, Any],
     broker_cfg: dict,
@@ -487,106 +593,143 @@ def _exit_pov_slice(
                     order_price=price, status="跳过", note="安全可卖数量不足申报单位",
                 )
                 return
-            request = OrderRequest(
-                ts_code=ts_code, broker_code=ts_code, side="SELL",
-                quantity=qty, price_type="FIXED_PRICE", price=price,
-                strategy_name="A_SYSTEM_ABC", remark=f"{_EXIT_POV_REMARK_PREFIX}-{today_str}",
-                strategy_leg=str(pos.get("strategy_leg", "")).upper(),
-                business_date=today_str,
-                signal_date=str(pos.get("signal_date", "")),
-                planned_exit_date=str(pos.get("planned_exit_date", "")),
-                purpose="CLOSE",
-                source_key=(
-                    f"EXIT_POV|{today_str}|{pos.get('order_id', '')}|"
-                    f"{ts_code}|{plan.get('slice_no', 0)}"
-                ),
-                metadata={"execution_channel": "卖出POV", "name": pos.get("name", "")},
+            _done, _value = _exit_pov_submit_slice(
+                plan, broker_cfg, log, confirm_timeout_sec, OrderRequest, qty, price, ts_code, depth_note,
+                today_str, external_flow, budget, depth_qty, late_phase, remain, pos, handoff_time,
+                sampled_at,
             )
-            with _qmt_lock:
-                adapter = _qmt_get(broker_cfg)
-                result, intent_token = _place_exit_order_with_intent(
-                    adapter,
-                    request,
-                    phase="卖出POV",
-                    local_order_id=str(pos.get("order_id", "")),
-                )
-            if not result.accepted:
-                log.error("❌ [卖出POV] %s提交失败:%s", ts_code, result.message)
-                _record_exit_pov_slice(
-                    plan, external_flow=external_flow, budget=budget,
-                    depth_limit_qty=depth_qty, depth_note=depth_note,
-                    order_price=price, order_qty=qty, status="提交失败", note=result.message,
-                )
-                return
-            oid = str(result.order_id or "")
-            fill = _confirm_fill(
-                broker_cfg, oid, qty, "卖出POV片",
-                timeout_sec=confirm_timeout_sec, poll_sec=3 if late_phase else 5,
-            )
-            if fill.filled_qty < qty and not fill.is_terminal:
-                _try_cancel_order(broker_cfg, oid, ts_code)
-                # 尾段必须在配置时刻前交权，终态确认不再固定等待20秒。
-                seconds_left = max(
-                    2.0,
-                    (datetime.datetime.combine(sampled_at.date(), handoff_time,
-                                               tzinfo=BEIJING_TZ) - now_beijing()).total_seconds() - 2.0,
-                )
-                fill = _confirm_fill(
-                    broker_cfg, oid, qty, "卖出POV片终态",
-                    timeout_sec=min(12.0, seconds_left), poll_sec=2,
-                )
-            fq = min(int(fill.filled_qty or 0), qty)
-            fp = float(fill.avg_price) if float(getattr(fill, "avg_price", 0) or 0) > 0 else price
-            if bool(getattr(fill, "is_terminal", False)):
-                _update_exit_order_intent(
-                    intent_token,
-                    status="RESOLVED",
-                    broker_order_id=oid,
-                    filled_qty=fq,
-                    terminal_known=True,
-                )
-            if fq > 0:
-                plan["remain_sh"] = max(remain - fq, 0)
-                plan["sold_qty"] = int(plan.get("sold_qty", 0)) + fq
-                plan["sold_amt"] = float(plan.get("sold_amt", 0.0)) + fq * fp
-                plan["own_fill_since_sample"] = float(plan.get("own_fill_since_sample", 0.0)) + fq * fp
-                if plan["remain_sh"] == 0:
-                    avg = plan["sold_amt"] / max(plan["sold_qty"], 1)
-                    _mark_live_position_closed(
-                        pos.get("order_id", ""),
-                        today_str,
-                        avg,
-                        recovery_context="卖出POV",
-                    )
-                    plan["done"] = True
-                    log.warning("✅ [卖出POV] %s %s 分批平仓完成:%d股 均价%.2f",
-                                ts_code, pos.get("name", ""), plan["sold_qty"], avg)
-                    _notify("sell_success", "✅ 卖出POV分批平仓完成",
-                            f"{ts_code} {pos.get('name','')} 分批卖出{plan['sold_qty']}股 "
-                            f"均价{avg:.2f} 市值{_fmt_wan(plan['sold_amt'])}")
-                else:
-                    _reduce_live_position_shares(
-                        pos.get("order_id", ""),
-                        int(plan["remain_sh"]),
-                        fill_price=fp,
-                        recovery_context="卖出POV",
-                    )
-            log.info(
-                "[卖出POV] %s 外部流量%.1f万 预算%.1f万 %s 挂%d股@%.2f 成%d股@%.2f 剩%d股",
-                ts_code, external_flow / 1e4, budget / 1e4, depth_note,
-                qty, price, fq, fp, int(plan["remain_sh"]),
-            )
-            _record_exit_pov_slice(
-                plan, broker_order_id=oid, external_flow=external_flow, budget=budget,
-                depth_limit_qty=depth_qty, depth_note=depth_note,
-                order_price=price, order_qty=qty, filled_qty=fq, fill_price=fp,
-                remaining_qty=int(plan["remain_sh"]),
-                status="已成交" if fq > 0 else "未成交",
-                note="终态已确认" if bool(getattr(fill, "is_terminal", False)) else "终态待后续核对",
-            )
+            if _done:
+                return _value
     except Exception as e:
         log.error("卖出POV片异常(%s):%s", ts_code, e)
         _record_exit_pov_slice(plan, status="异常", note=str(e))
+
+
+def _exit_pov_run_due_slices(
+    slice_stop_at, plans, checked_1430, checked_1445, due, late_part, part, broker_cfg, log, cum_1430,
+    planned_ids, buffer_k, late_timeout, cum_1300,
+):
+    """卖出POV分片循环：14:30按午后实际流速复查跑道、容量不够的补进POV，14:45再查一次，到点的任务各执行一片（从 _exit_pov_monitor 拆出，语句原样）。"""
+    while now_beijing() < slice_stop_at:
+        # 14:30按“最近实际流速×剩余分钟”重算跑道。旧版再次比较累计额×1%
+        # 永远无法新增触发（累计额只增），这里改为真正能识别午后缩量的容量条件。
+        if not checked_1430 and now_beijing().time() >= datetime.time(14, 30):
+            checked_1430 = True
+            retry = [p for p in due if str(p.get("order_id", "")) not in planned_ids
+                     and str(p.get("status", "")).lower() == "open"]
+            for pos in retry:
+                try:
+                    ts_r = str(pos.get("ts_code", ""))
+                    with _qmt_lock:
+                        adapter = _qmt_get(broker_cfg)
+                        q = adapter.get_full_tick([ts_r]).get(ts_r)
+                    last = float(getattr(q, "last_price", 0.0) or 0.0) if q else 0.0
+                    cum = float(getattr(q, "amount", 0.0) or 0.0) if q else 0.0
+                    if last <= 0 or cum <= 0:
+                        continue
+                    cum_1430[ts_r] = cum
+                    sell_amt = int(pos.get("shares", 0)) * last
+                    base_1300 = float(cum_1300.get(ts_r, 0.0) or 0.0)
+                    observed = max(cum - base_1300, 0.0)
+                    observed_minutes = 90.0
+                    per_minute = observed / observed_minutes if observed > 0 else 0.0
+                    projected = per_minute * (15.0 * part + 7.0 * late_part)
+                    if projected > 0 and sell_amt * buffer_k <= projected:
+                        continue
+                    try:
+                        with _qmt_lock:
+                            adapter = _qmt_get(broker_cfg)
+                            _cancel_own_takeprofit_orders(adapter, {ts_r})
+                    except Exception as exc:
+                        log.warning("[卖出POV] 14:30跑道复查前撤止盈卖单失败：%s", exc)
+                    plans.append(dict(pos=pos, prev_cum=cum, last_sample_at=now_beijing(),
+                                      start=now_beijing(),
+                                      remain_sh=int(pos.get("shares", 0)),
+                                      sold_qty=0, sold_amt=0.0, done=False, slice_no=0))
+                    planned_ids.add(str(pos.get("order_id", "")))
+                    log.warning("🏃 [卖出POV] 14:30跑道复查触发:%s %s 仓位%.0f万，"
+                                "预计剩余安全容量仅%.0f万，14:35起补充分批。",
+                                ts_r, pos.get("name"), sell_amt / 1e4, projected / 1e4)
+                except Exception as e:
+                    log.error("14:30缩量复查异常(%s):%s", pos.get("ts_code"), e)
+        # 14:45尾段容量复查：即使日累计量足以让θ门禁不触发，也要检查最近
+        # 15分钟流速是否足以承接实际余量。容量不足才加入1分钟卸载，避免
+        # 1000万仓位全部挤到14:55；该阶段不依赖收盘集合竞价。
+        if not checked_1445 and now_beijing().time() >= datetime.time(14, 45):
+            checked_1445 = True
+            fresh_by_id = {str(p.get("order_id", "")): p for p in load_positions()}
+            retry = []
+            for original in due:
+                oid = str(original.get("order_id", ""))
+                current = fresh_by_id.get(oid, original)
+                if oid not in planned_ids and str(current.get("status", "")).lower() == "open":
+                    retry.append(current)
+            for pos in retry:
+                try:
+                    ts_r = str(pos.get("ts_code", ""))
+                    with _qmt_lock:
+                        adapter = _qmt_get(broker_cfg)
+                        q = adapter.get_full_tick([ts_r]).get(ts_r)
+                    last = float(getattr(q, "last_price", 0.0) or 0.0) if q else 0.0
+                    cum = float(getattr(q, "amount", 0.0) or 0.0) if q else 0.0
+                    base = float(cum_1430.get(ts_r, 0.0) or 0.0)
+                    if last <= 0 or cum <= 0:
+                        continue
+                    sell_amt = int(pos.get("shares", 0)) * last
+                    # 守护进程若14:30后重启会缺少基线，此时 projected=0，
+                    # 保守触发尾段卸载，不能因缺数据把整仓拖到14:55。
+                    projected = max(cum - base, 0.0) / 15.0 * 7.0 * late_part if base > 0 else 0.0
+                    if sell_amt * buffer_k <= projected:
+                        continue
+                    try:
+                        with _qmt_lock:
+                            adapter = _qmt_get(broker_cfg)
+                            _cancel_own_takeprofit_orders(adapter, {ts_r})
+                    except Exception as exc:
+                        log.warning("[卖出POV] 撤止盈卖单失败：%s", exc)
+                    start_late = now_beijing() + datetime.timedelta(minutes=1)
+                    plans.append(dict(pos=pos, prev_cum=cum, last_sample_at=now_beijing(),
+                                      start=start_late, remain_sh=int(pos.get("shares", 0)),
+                                      sold_qty=0, sold_amt=0.0, done=False, slice_no=0))
+                    planned_ids.add(str(pos.get("order_id", "")))
+                    log.warning(
+                        "🏃 [卖出POV] 14:45尾段容量触发:%s %s 仓位%.0f万，"
+                        "预计14:46~14:52可平滑承接%.0f万，切1分钟×%.0f%%卸载。",
+                        ts_r, pos.get("name"), sell_amt / 1e4, projected / 1e4,
+                        late_part * 100,
+                    )
+                except Exception as e:
+                    log.error("14:45尾段容量复查异常(%s):%s", pos.get("ts_code"), e)
+        if not plans:
+            time.sleep(30); continue
+        now_time = now_beijing().time()
+        if datetime.time(14, 45) <= now_time < datetime.time(14, 46):
+            time.sleep(min(20, max(1, (now_beijing().replace(
+                hour=14, minute=46, second=5, microsecond=0
+            ) - now_beijing()).total_seconds())))
+            continue
+        late_phase = now_time >= datetime.time(14, 46)
+        active_part = late_part if late_phase else part
+        cadence_sec = 60 if late_phase else 300
+        for plan in plans:
+            if not plan["done"] and now_beijing() >= plan["start"]:
+                _exit_pov_slice(
+                    plan, broker_cfg, active_part, log,
+                    cadence_sec=cadence_sec,
+                    confirm_timeout_sec=late_timeout if late_phase else 60,
+                )
+        # 不能因早期计划已完成就提前退出：仍需等14:45复查此前未触发的
+        # 其他到期仓位。完成尾段复查后，全部完成才可收工。
+        if checked_1445 and all(p["done"] for p in plans):
+            break
+        now2 = now_beijing()
+        step = 60 if now2.time() >= datetime.time(14, 46) else 300
+        nxt = (now2 + datetime.timedelta(seconds=step)).replace(second=10, microsecond=0)
+        if step == 300:
+            nxt -= datetime.timedelta(minutes=nxt.minute % 5)
+        sl = (nxt - now2).total_seconds()
+        if sl > 0:
+            time.sleep(sl)
 
 
 def _exit_pov_monitor() -> None:
@@ -721,126 +864,10 @@ def _exit_pov_monitor() -> None:
             slice_stop_at = datetime.datetime.combine(
                 now.date(), handoff_time, tzinfo=BEIJING_TZ
             ) - datetime.timedelta(seconds=40)
-            while now_beijing() < slice_stop_at:
-                # 14:30按“最近实际流速×剩余分钟”重算跑道。旧版再次比较累计额×1%
-                # 永远无法新增触发（累计额只增），这里改为真正能识别午后缩量的容量条件。
-                if not checked_1430 and now_beijing().time() >= datetime.time(14, 30):
-                    checked_1430 = True
-                    retry = [p for p in due if str(p.get("order_id", "")) not in planned_ids
-                             and str(p.get("status", "")).lower() == "open"]
-                    for pos in retry:
-                        try:
-                            ts_r = str(pos.get("ts_code", ""))
-                            with _qmt_lock:
-                                adapter = _qmt_get(broker_cfg)
-                                q = adapter.get_full_tick([ts_r]).get(ts_r)
-                            last = float(getattr(q, "last_price", 0.0) or 0.0) if q else 0.0
-                            cum = float(getattr(q, "amount", 0.0) or 0.0) if q else 0.0
-                            if last <= 0 or cum <= 0:
-                                continue
-                            cum_1430[ts_r] = cum
-                            sell_amt = int(pos.get("shares", 0)) * last
-                            base_1300 = float(cum_1300.get(ts_r, 0.0) or 0.0)
-                            observed = max(cum - base_1300, 0.0)
-                            observed_minutes = 90.0
-                            per_minute = observed / observed_minutes if observed > 0 else 0.0
-                            projected = per_minute * (15.0 * part + 7.0 * late_part)
-                            if projected > 0 and sell_amt * buffer_k <= projected:
-                                continue
-                            try:
-                                with _qmt_lock:
-                                    adapter = _qmt_get(broker_cfg)
-                                    _cancel_own_takeprofit_orders(adapter, {ts_r})
-                            except Exception as exc:
-                                log.warning("[卖出POV] 14:30跑道复查前撤止盈卖单失败：%s", exc)
-                            plans.append(dict(pos=pos, prev_cum=cum, last_sample_at=now_beijing(),
-                                              start=now_beijing(),
-                                              remain_sh=int(pos.get("shares", 0)),
-                                              sold_qty=0, sold_amt=0.0, done=False, slice_no=0))
-                            planned_ids.add(str(pos.get("order_id", "")))
-                            log.warning("🏃 [卖出POV] 14:30跑道复查触发:%s %s 仓位%.0f万，"
-                                        "预计剩余安全容量仅%.0f万，14:35起补充分批。",
-                                        ts_r, pos.get("name"), sell_amt / 1e4, projected / 1e4)
-                        except Exception as e:
-                            log.error("14:30缩量复查异常(%s):%s", pos.get("ts_code"), e)
-                # 14:45尾段容量复查：即使日累计量足以让θ门禁不触发，也要检查最近
-                # 15分钟流速是否足以承接实际余量。容量不足才加入1分钟卸载，避免
-                # 1000万仓位全部挤到14:55；该阶段不依赖收盘集合竞价。
-                if not checked_1445 and now_beijing().time() >= datetime.time(14, 45):
-                    checked_1445 = True
-                    fresh_by_id = {str(p.get("order_id", "")): p for p in load_positions()}
-                    retry = []
-                    for original in due:
-                        oid = str(original.get("order_id", ""))
-                        current = fresh_by_id.get(oid, original)
-                        if oid not in planned_ids and str(current.get("status", "")).lower() == "open":
-                            retry.append(current)
-                    for pos in retry:
-                        try:
-                            ts_r = str(pos.get("ts_code", ""))
-                            with _qmt_lock:
-                                adapter = _qmt_get(broker_cfg)
-                                q = adapter.get_full_tick([ts_r]).get(ts_r)
-                            last = float(getattr(q, "last_price", 0.0) or 0.0) if q else 0.0
-                            cum = float(getattr(q, "amount", 0.0) or 0.0) if q else 0.0
-                            base = float(cum_1430.get(ts_r, 0.0) or 0.0)
-                            if last <= 0 or cum <= 0:
-                                continue
-                            sell_amt = int(pos.get("shares", 0)) * last
-                            # 守护进程若14:30后重启会缺少基线，此时 projected=0，
-                            # 保守触发尾段卸载，不能因缺数据把整仓拖到14:55。
-                            projected = max(cum - base, 0.0) / 15.0 * 7.0 * late_part if base > 0 else 0.0
-                            if sell_amt * buffer_k <= projected:
-                                continue
-                            try:
-                                with _qmt_lock:
-                                    adapter = _qmt_get(broker_cfg)
-                                    _cancel_own_takeprofit_orders(adapter, {ts_r})
-                            except Exception as exc:
-                                log.warning("[卖出POV] 撤止盈卖单失败：%s", exc)
-                            start_late = now_beijing() + datetime.timedelta(minutes=1)
-                            plans.append(dict(pos=pos, prev_cum=cum, last_sample_at=now_beijing(),
-                                              start=start_late, remain_sh=int(pos.get("shares", 0)),
-                                              sold_qty=0, sold_amt=0.0, done=False, slice_no=0))
-                            planned_ids.add(str(pos.get("order_id", "")))
-                            log.warning(
-                                "🏃 [卖出POV] 14:45尾段容量触发:%s %s 仓位%.0f万，"
-                                "预计14:46~14:52可平滑承接%.0f万，切1分钟×%.0f%%卸载。",
-                                ts_r, pos.get("name"), sell_amt / 1e4, projected / 1e4,
-                                late_part * 100,
-                            )
-                        except Exception as e:
-                            log.error("14:45尾段容量复查异常(%s):%s", pos.get("ts_code"), e)
-                if not plans:
-                    time.sleep(30); continue
-                now_time = now_beijing().time()
-                if datetime.time(14, 45) <= now_time < datetime.time(14, 46):
-                    time.sleep(min(20, max(1, (now_beijing().replace(
-                        hour=14, minute=46, second=5, microsecond=0
-                    ) - now_beijing()).total_seconds())))
-                    continue
-                late_phase = now_time >= datetime.time(14, 46)
-                active_part = late_part if late_phase else part
-                cadence_sec = 60 if late_phase else 300
-                for plan in plans:
-                    if not plan["done"] and now_beijing() >= plan["start"]:
-                        _exit_pov_slice(
-                            plan, broker_cfg, active_part, log,
-                            cadence_sec=cadence_sec,
-                            confirm_timeout_sec=late_timeout if late_phase else 60,
-                        )
-                # 不能因早期计划已完成就提前退出：仍需等14:45复查此前未触发的
-                # 其他到期仓位。完成尾段复查后，全部完成才可收工。
-                if checked_1445 and all(p["done"] for p in plans):
-                    break
-                now2 = now_beijing()
-                step = 60 if now2.time() >= datetime.time(14, 46) else 300
-                nxt = (now2 + datetime.timedelta(seconds=step)).replace(second=10, microsecond=0)
-                if step == 300:
-                    nxt -= datetime.timedelta(minutes=nxt.minute % 5)
-                sl = (nxt - now2).total_seconds()
-                if sl > 0:
-                    time.sleep(sl)
+            _exit_pov_run_due_slices(
+                slice_stop_at, plans, checked_1430, checked_1445, due, late_part, part, broker_cfg, log,
+                cum_1430, planned_ids, buffer_k, late_timeout, cum_1300,
+            )
             # 配置交接点前强制撤净所有POV活单，再把控制权交给14:55主平仓。
             with _exit_sell_lock:
                 _cancel_active_exit_pov_orders(broker_cfg, wait_sec=25)

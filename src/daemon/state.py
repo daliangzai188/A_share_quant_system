@@ -17,7 +17,7 @@ from src.utils.config import load_json_config, mkdir_p
 from src.utils.time_utils import BEIJING_TZ, now_beijing, today_beijing
 from src.trade_intent_store import TradeIntentStore
 from src.strategy_identity import normalize_strategy_leg, normalize_strategy_record
-from src.portfolio_ace_m import position_in_family
+from src.portfolio_ace_m import ALL_LEGS, position_in_family
 from src.daemon.common import (
     D_RELAY_PAIR_STATE_FILE,
     EXIT_EXECUTION_STATE_FILE,
@@ -75,7 +75,7 @@ def save_positions(positions: list[dict[str, Any]]) -> None:
             raise RuntimeError(f"保存持仓文件失败:{e}") from e
 
 
-_ACTIVE_AUTO_STRATEGY_LEGS = frozenset({"A", "C", "D", "E", "M"})
+_ACTIVE_AUTO_STRATEGY_LEGS = frozenset(ALL_LEGS)
 
 
 def _position_exit_ledger_quantity(position: dict[str, Any]) -> int:

@@ -38,6 +38,36 @@ def market_segment(ts_code: object) -> str:
     return "other"
 
 
+def normalize_ts_code(value: object) -> str:
+    """6位代码补交易所后缀：6、9开头→.SH，0、2、3开头→.SZ，4、8开头→.BJ；已带后缀的原样（大写）返回。
+
+    QMT有时返回 002687，有时返回 002687.SZ。2026-11-15 起守护进程、成交跟踪、执行数据质量、
+    交易恢复都调用这里（原来四处各写一份，逻辑相同，原样搬来）。
+    """
+
+    text = str(value or "").strip().upper()
+    if not text or "." in text:
+        return text
+    if text.startswith(("6", "9")):
+        return f"{text}.SH"
+    if text.startswith(("0", "2", "3")):
+        return f"{text}.SZ"
+    if text.startswith(("4", "8")):
+        return f"{text}.BJ"
+    return text
+
+
+# 限价申报股数：科创板单笔不少于200股、超出部分可按1股递增；其他板块按100股（1手）整数倍。
+STAR_MIN_ORDER_SHARES = 200
+BOARD_LOT_SHARES = 100
+
+
+def min_order_shares(ts_code: object) -> int:
+    """单笔买入最少申报股数：科创板200股，其余100股。"""
+
+    return STAR_MIN_ORDER_SHARES if market_segment(ts_code) == "star" else BOARD_LOT_SHARES
+
+
 def is_st_name(name: object) -> bool:
     text = str(name or "").upper().replace(" ", "")
     return "ST" in text or "退" in text or "PT" in text

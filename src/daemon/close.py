@@ -672,6 +672,88 @@ def _watchdog_rescue_sell(
         return []
 
 
+def _watchdog_reconcile_one_fill(
+    log, today_str, short, remaining_rows, remaining_local, orders, first_qty, second_qty, trade_vwap,
+    order_vwap_by_code, row_ids,
+):
+    """收盘后成交明细暂缺时：账户指纹一致、无活跃/未知卖单、两次QMT持仓一致且等于安全批次推算值，才按批次目标补记本地成交（从 _watchdog_reconcile_after_close 拆出，语句原样）。"""
+    # query_trades在收盘后也可能短暂返回空，但委托终态和券商
+    # 持仓已经先更新。若只信成交明细，本地会保留已卖股数，
+    # 翌日又因QMT持仓小于本地账而永久fail-closed。这里只在：
+    # 1) 账户指纹匹配；2) 没有活跃/未知卖单；3) 两次QMT快照一致；
+    # 4) QMT总仓精确等于floor+target-系统已成 时，才用安全批次
+    # 目标补记本地成交。人工买卖/异账户会破坏等式并立即阻断。
+    try:
+        state = _load_exit_execution_state()
+        batch = state.get("batches", {}).get(_exit_batch_key(today_str, short))
+        if (
+            isinstance(batch, dict)
+            and str(batch.get("account_fingerprint", "")) == _exit_account_fingerprint()
+        ):
+            consumed, active_reserved, unknown_reserved = _exit_commitments_by_code(
+                short,
+                trade_date=today_str,
+                orders=orders,
+            )
+            target_qty = max(int(batch.get("target_qty", 0) or 0), 0)
+            floor_qty = max(int(batch.get("non_target_floor", 0) or 0), 0)
+            expected_broker_qty = floor_qty + max(target_qty - consumed, 0)
+            desired_due_remaining = max(target_qty - consumed, 0)
+            correction = max(remaining_local - desired_due_remaining, 0)
+            if (
+                correction > 0
+                and active_reserved == 0
+                and unknown_reserved == 0
+                and first_qty == second_qty == expected_broker_qty
+            ):
+                _, order_vwap = order_vwap_by_code.get(short, (0, 0.0))
+                reconcile_price = trade_vwap if trade_vwap > 0 else order_vwap
+                still_to_apply = correction
+                for pos in remaining_rows:
+                    if still_to_apply <= 0:
+                        break
+                    held = max(int(pos.get("shares", 0) or 0), 0)
+                    apply_qty = min(held, still_to_apply)
+                    if apply_qty <= 0:
+                        continue
+                    if apply_qty >= held:
+                        _mark_live_position_closed(
+                            pos.get("order_id", ""),
+                            today_str,
+                            reconcile_price,
+                            recovery_context="收盘安全批次对账",
+                        )
+                    else:
+                        _reduce_live_position_shares(
+                            pos.get("order_id", ""),
+                            held - apply_qty,
+                            fill_price=reconcile_price,
+                            fill_date=today_str,
+                            recovery_context="收盘安全批次对账",
+                        )
+                    still_to_apply -= apply_qty
+                applied_from_batch = correction - still_to_apply
+                log.warning(
+                    "[平仓看门狗] %s query_trades未完整；两次QMT余仓%d股"
+                    "与安全批次一致，补记已知系统成交%d股，本地到期余仓%d股。",
+                    short,
+                    second_qty,
+                    applied_from_batch,
+                    desired_due_remaining,
+                )
+                remaining_rows = [
+                    pos for pos in load_positions()
+                    if str(pos.get("order_id", "")) in row_ids
+                    and str(pos.get("status", "")).lower() in {"open", "sell_pending"}
+                ]
+                remaining_local = sum(
+                    max(int(pos.get("shares", 0) or 0), 0) for pos in remaining_rows
+                )
+    except Exception as exc:
+        log.error("[平仓看门狗] %s 安全批次收盘对账失败:%s", short, exc)
+    return remaining_local, remaining_rows
+
+
 def _watchdog_reconcile_after_close(broker_cfg: dict, log: Any) -> None:
     """15:00:30 两次核对券商余仓，并回写竞价后才成交的主单/补挂单。
 
@@ -778,80 +860,10 @@ def _watchdog_reconcile_after_close(broker_cfg: dict, log: Any) -> None:
         ]
         remaining_local = sum(max(int(pos.get("shares", 0) or 0), 0) for pos in remaining_rows)
 
-        # query_trades在收盘后也可能短暂返回空，但委托终态和券商
-        # 持仓已经先更新。若只信成交明细，本地会保留已卖股数，
-        # 翌日又因QMT持仓小于本地账而永久fail-closed。这里只在：
-        # 1) 账户指纹匹配；2) 没有活跃/未知卖单；3) 两次QMT快照一致；
-        # 4) QMT总仓精确等于floor+target-系统已成 时，才用安全批次
-        # 目标补记本地成交。人工买卖/异账户会破坏等式并立即阻断。
-        try:
-            state = _load_exit_execution_state()
-            batch = state.get("batches", {}).get(_exit_batch_key(today_str, short))
-            if (
-                isinstance(batch, dict)
-                and str(batch.get("account_fingerprint", "")) == _exit_account_fingerprint()
-            ):
-                consumed, active_reserved, unknown_reserved = _exit_commitments_by_code(
-                    short,
-                    trade_date=today_str,
-                    orders=orders,
-                )
-                target_qty = max(int(batch.get("target_qty", 0) or 0), 0)
-                floor_qty = max(int(batch.get("non_target_floor", 0) or 0), 0)
-                expected_broker_qty = floor_qty + max(target_qty - consumed, 0)
-                desired_due_remaining = max(target_qty - consumed, 0)
-                correction = max(remaining_local - desired_due_remaining, 0)
-                if (
-                    correction > 0
-                    and active_reserved == 0
-                    and unknown_reserved == 0
-                    and first_qty == second_qty == expected_broker_qty
-                ):
-                    _, order_vwap = order_vwap_by_code.get(short, (0, 0.0))
-                    reconcile_price = trade_vwap if trade_vwap > 0 else order_vwap
-                    still_to_apply = correction
-                    for pos in remaining_rows:
-                        if still_to_apply <= 0:
-                            break
-                        held = max(int(pos.get("shares", 0) or 0), 0)
-                        apply_qty = min(held, still_to_apply)
-                        if apply_qty <= 0:
-                            continue
-                        if apply_qty >= held:
-                            _mark_live_position_closed(
-                                pos.get("order_id", ""),
-                                today_str,
-                                reconcile_price,
-                                recovery_context="收盘安全批次对账",
-                            )
-                        else:
-                            _reduce_live_position_shares(
-                                pos.get("order_id", ""),
-                                held - apply_qty,
-                                fill_price=reconcile_price,
-                                fill_date=today_str,
-                                recovery_context="收盘安全批次对账",
-                            )
-                        still_to_apply -= apply_qty
-                    applied_from_batch = correction - still_to_apply
-                    log.warning(
-                        "[平仓看门狗] %s query_trades未完整；两次QMT余仓%d股"
-                        "与安全批次一致，补记已知系统成交%d股，本地到期余仓%d股。",
-                        short,
-                        second_qty,
-                        applied_from_batch,
-                        desired_due_remaining,
-                    )
-                    remaining_rows = [
-                        pos for pos in load_positions()
-                        if str(pos.get("order_id", "")) in row_ids
-                        and str(pos.get("status", "")).lower() in {"open", "sell_pending"}
-                    ]
-                    remaining_local = sum(
-                        max(int(pos.get("shares", 0) or 0), 0) for pos in remaining_rows
-                    )
-        except Exception as exc:
-            log.error("[平仓看门狗] %s 安全批次收盘对账失败:%s", short, exc)
+        remaining_local, remaining_rows = _watchdog_reconcile_one_fill(
+            log, today_str, short, remaining_rows, remaining_local, orders, first_qty, second_qty, trade_vwap,
+            order_vwap_by_code, row_ids,
+        )
 
         if first_qty == 0 and second_qty == 0:
             for pos in remaining_rows:
@@ -912,6 +924,220 @@ def _due_positions_for_close_handoff(
         and str(position.get("planned_exit_date", "99991231")) <= today_str
         and not _position_manual_exit_only(position)
     ]
+
+
+def _watchdog_cover_positions(checkpoints, t, today_str, fired, log):
+    """逐只持仓核对活跃卖单覆盖量，撤余单或补挂未覆盖量（从 _close_position_watchdog 拆出，语句原样）。"""
+    # 15:00后绝不能补发新单；只继续下方15:00:30成交确认/双快照对账。
+    for chk in (() if t >= datetime.time(15, 0) else checkpoints):
+        key = f"{today_str}-{chk}"
+        if key in fired or t < chk:
+            continue
+        if chk == checkpoints[0] and _exit_bypass_day == today_str:
+            # 收盘竞价旁路日:14:55主流程按计划在14:57:05才申报,
+            # 14:56岗此时无委托属正常,不补挂(补挂会即时成交丢右尾)。
+            log.info("[平仓看门狗] 14:56岗:收盘竞价旁路生效,跳过;14:57:40岗核查申报。")
+            fired.add(key)
+            continue
+        if chk == checkpoints[1] and _exit_bypass_day == today_str:
+            log.info("[平仓看门狗] 14:57:05岗:旁路主流程正在申报,留到14:57:40核查。")
+            fired.add(key)
+            continue
+        due = [p for p in load_positions()
+               if str(p.get("status", "")).lower() in {"open", "sell_pending"}
+               and str(p.get("planned_exit_date", "99991231")) <= today_str
+               and not _position_manual_exit_only(p)]
+        if not due:
+            fired.add(key)
+            continue
+        if not _qmt_lock.acquire(timeout=2):
+            log.info("[平仓看门狗] %s QMT忙（主流程可能正在平仓），本次跳过。", chk)
+            continue
+        try:
+            config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+            adapter = _qmt_get(config.get("broker", {}))
+            orders = adapter.query_orders()
+            broker_positions = adapter.query_positions()
+        except Exception as e:
+            log.error("[平仓看门狗] 查询委托失败：%s", e)
+            continue
+        finally:
+            _qmt_lock.release()
+        from src.qmt_adapter import object_to_dict, first_present, to_int
+        active_outstanding = _active_sell_outstanding_by_code(orders)
+        broker_volume: dict[str, int] = {}
+        for bp in broker_positions or []:
+            bd = object_to_dict(bp)
+            code = str(first_present(
+                bd, ["stock_code", "m_strInstrumentID", "ts_code"], ""
+            )).upper().split(".")[0]
+            broker_volume[code] = broker_volume.get(code, 0) + max(
+                to_int(first_present(
+                    bd, ["volume", "m_nVolume", "total_volume"], 0
+                ), 0),
+                0,
+            )
+        uncovered_by_code = _exit_uncovered_by_code(
+            due,
+            broker_volume=broker_volume,
+            active_outstanding=active_outstanding,
+        )
+        due_by_code: dict[str, list[dict[str, Any]]] = {}
+        for pos in due:
+            short = str(pos.get("ts_code", "")).upper().split(".")[0]
+            due_by_code.setdefault(short, []).append(pos)
+        missing: list[tuple[dict[str, Any], int]] = []
+        for short, uncovered in uncovered_by_code.items():
+            remaining_gap = max(int(uncovered or 0), 0)
+            for pos in due_by_code.get(short, []):
+                if remaining_gap <= 0:
+                    break
+                row_qty = max(int(pos.get("shares", 0) or 0), 0)
+                row_gap = min(row_qty, remaining_gap)
+                if row_gap > 0:
+                    missing.append((pos, row_gap))
+                    remaining_gap -= row_gap
+        if missing:
+            codes = "、".join(
+                f"{p.get('ts_code','')} {p.get('name','')}未覆盖{qty}股" for p, qty in missing
+            )
+            log.error("🛑 [平仓看门狗] %s 核查：%s，启动余量补挂！", chk, codes)
+            rescued = []
+            for pos, uncovered in missing:
+                oids = _watchdog_rescue_sell(
+                    pos,
+                    log,
+                    max_qty=uncovered,
+                    rescue_wave=chk.strftime("%H%M%S"),
+                )
+                if oids:
+                    rescued.append((pos, oids))
+            if rescued:
+                for rescued_position, rescued_orders in rescued:
+                    _queue_watchdog_pending(
+                        rescued_position,
+                        rescued_orders,
+                    )
+                _notify("sell_result", "🚑 平仓看门狗已自动补挂",
+                        f"{chk.strftime('%H:%M:%S')}发现{codes}未被活跃卖单覆盖，"
+                        f"已按当前交易阶段的合法限价补挂；成交不作保证，请留意成交确认。",
+                        level="critical")
+            if len(rescued) < len(missing):
+                _notify("sell_fail", "🛑 收盘平仓补挂失败",
+                        f"{chk.strftime('%H:%M')}：{codes} 部分补挂失败，"
+                        f"请立即人工核对并手动平仓（15:00收盘前最后机会）！",
+                        level="critical", call=True)
+        else:
+            due_codes = {
+                str(pos.get("ts_code", "")).upper().split(".")[0]
+                for pos in due
+                if str(pos.get("ts_code", ""))
+            }
+            zero_broker_codes = sorted(
+                code for code in due_codes
+                if max(int(broker_volume.get(code, 0) or 0), 0) == 0
+            )
+            if zero_broker_codes:
+                log.info(
+                    "[平仓看门狗] %s 券商持仓快照已不含%s；"
+                    "本轮不重复卖出，等待成交回报即时回写/收盘双快照确认。",
+                    chk,
+                    "、".join(zero_broker_codes),
+                )
+            else:
+                log.info(
+                    "[平仓看门狗] %s 核查通过：%d笔到期持仓的"
+                    "券商真实余仓均有活跃SELL完整覆盖。",
+                    chk,
+                    len(due),
+                )
+        # 查询、归属核算和补单尝试均已完成后才记为fired。QMT忙/异常
+        # 会保留同一checkpoint重试机会，尤其不能丢掉14:57:05首岗。
+        fired.add(key)
+
+
+def _watchdog_confirm_pending(t, log, today_str):
+    """确认看门狗补挂单的成交并按真实成交量回写（从 _close_position_watchdog 拆出，语句原样）。"""
+    # 15:00:30 对补挂单确认成交并回写（防幽灵账目）
+    if _watchdog_pending and t >= datetime.time(15, 0, 30):
+        config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+        broker_cfg = config.get("broker", {})
+        for pos, oids in list(_watchdog_pending):
+            all_terminal = True
+            processed = False
+            try:
+                total_qty, total_amt, applied_qty_total = 0, 0.0, 0
+                for oid, expected_qty in oids:
+                    fill = _confirm_fill(
+                        broker_cfg, oid, expected_qty, "看门狗补挂确认", timeout_sec=10
+                    )
+                    filled_qty = min(
+                        max(int(fill.filled_qty or 0), 0), expected_qty
+                    )
+                    fill_price_one = max(float(fill.avg_price or 0.0), 0.0)
+                    intent = _exit_intent_by_broker_order_id(oid)
+                    if fill_price_one <= 0:
+                        # 成交状态常比成交均价字段先到；暂用该intent
+                        # 的委托限价作记账代理，后续query_trades可再复核。
+                        fill_price_one = max(
+                            float((intent or {}).get("price", 0.0) or 0.0), 0.0
+                        )
+                    local_order_id = str(
+                        (intent or {}).get("local_order_id", "")
+                        or pos.get("order_id", "")
+                    )
+                    if filled_qty > 0 and local_order_id:
+                        current_row = next(
+                            (
+                                row for row in load_positions()
+                                if str(row.get("order_id", "")) == local_order_id
+                            ),
+                            None,
+                        )
+                        if current_row is not None:
+                            applied_qty_total += _apply_known_exit_fill(
+                                local_order_id,
+                                broker_order_id=oid,
+                                current_shares=max(
+                                    int(current_row.get("shares", 0) or 0), 0
+                                ),
+                                filled_qty=filled_qty,
+                                fill_price=fill_price_one,
+                                fill_date=today_str,
+                            )
+                    if bool(getattr(fill, "is_terminal", False)):
+                        _resolve_exit_intent_by_broker_order_id(
+                            oid,
+                            filled_qty=filled_qty,
+                            terminal_known=True,
+                        )
+                    else:
+                        all_terminal = False
+                    if filled_qty > 0:
+                        total_qty += filled_qty
+                        total_amt += filled_qty * fill_price_one
+                price = total_amt / total_qty if total_qty > 0 else 0.0
+                if total_qty > 0:
+                    log.warning(
+                        "[平仓看门狗] %s 补挂确认成交%d股 均价%.2f；"
+                        "按broker_order_id幂等回写%d股，并继续双快照对账。",
+                        pos.get("ts_code"), total_qty, price, applied_qty_total,
+                    )
+                    _notify(
+                        "sell_result", "✅ 看门狗成交已回写",
+                        f"{pos.get('ts_code')} {pos.get('name','')} 补挂确认成交"
+                        f"{total_qty}股，已幂等回写{applied_qty_total}股并进行双快照复核。",
+                        level="timeSensitive",
+                    )
+                else:
+                    _notify("sell_fail", "🛑 补挂全部未成交",
+                            f"{pos.get('ts_code')} {pos.get('name','')} 余量补挂无成交，"
+                            f"持仓过夜，明日开盘务必人工处理！", level="critical", call=True)
+                processed = True
+            except Exception as e:
+                log.error("[平仓看门狗] 补挂单确认异常：%s", e)
+            if processed and all_terminal:
+                _remove_watchdog_pending(pos, oids)
 
 
 def _close_position_watchdog() -> None:
@@ -1031,212 +1257,8 @@ def _close_position_watchdog() -> None:
                     )
                     time.sleep(1.0)
                     continue
-                # 15:00后绝不能补发新单；只继续下方15:00:30成交确认/双快照对账。
-                for chk in (() if t >= datetime.time(15, 0) else checkpoints):
-                    key = f"{today_str}-{chk}"
-                    if key in fired or t < chk:
-                        continue
-                    if chk == checkpoints[0] and _exit_bypass_day == today_str:
-                        # 收盘竞价旁路日:14:55主流程按计划在14:57:05才申报,
-                        # 14:56岗此时无委托属正常,不补挂(补挂会即时成交丢右尾)。
-                        log.info("[平仓看门狗] 14:56岗:收盘竞价旁路生效,跳过;14:57:40岗核查申报。")
-                        fired.add(key)
-                        continue
-                    if chk == checkpoints[1] and _exit_bypass_day == today_str:
-                        log.info("[平仓看门狗] 14:57:05岗:旁路主流程正在申报,留到14:57:40核查。")
-                        fired.add(key)
-                        continue
-                    due = [p for p in load_positions()
-                           if str(p.get("status", "")).lower() in {"open", "sell_pending"}
-                           and str(p.get("planned_exit_date", "99991231")) <= today_str
-                           and not _position_manual_exit_only(p)]
-                    if not due:
-                        fired.add(key)
-                        continue
-                    if not _qmt_lock.acquire(timeout=2):
-                        log.info("[平仓看门狗] %s QMT忙（主流程可能正在平仓），本次跳过。", chk)
-                        continue
-                    try:
-                        config = load_json_config(PROJECT_ROOT / "config" / "config.json")
-                        adapter = _qmt_get(config.get("broker", {}))
-                        orders = adapter.query_orders()
-                        broker_positions = adapter.query_positions()
-                    except Exception as e:
-                        log.error("[平仓看门狗] 查询委托失败：%s", e)
-                        continue
-                    finally:
-                        _qmt_lock.release()
-                    from src.qmt_adapter import object_to_dict, first_present, to_int
-                    active_outstanding = _active_sell_outstanding_by_code(orders)
-                    broker_volume: dict[str, int] = {}
-                    for bp in broker_positions or []:
-                        bd = object_to_dict(bp)
-                        code = str(first_present(
-                            bd, ["stock_code", "m_strInstrumentID", "ts_code"], ""
-                        )).upper().split(".")[0]
-                        broker_volume[code] = broker_volume.get(code, 0) + max(
-                            to_int(first_present(
-                                bd, ["volume", "m_nVolume", "total_volume"], 0
-                            ), 0),
-                            0,
-                        )
-                    uncovered_by_code = _exit_uncovered_by_code(
-                        due,
-                        broker_volume=broker_volume,
-                        active_outstanding=active_outstanding,
-                    )
-                    due_by_code: dict[str, list[dict[str, Any]]] = {}
-                    for pos in due:
-                        short = str(pos.get("ts_code", "")).upper().split(".")[0]
-                        due_by_code.setdefault(short, []).append(pos)
-                    missing: list[tuple[dict[str, Any], int]] = []
-                    for short, uncovered in uncovered_by_code.items():
-                        remaining_gap = max(int(uncovered or 0), 0)
-                        for pos in due_by_code.get(short, []):
-                            if remaining_gap <= 0:
-                                break
-                            row_qty = max(int(pos.get("shares", 0) or 0), 0)
-                            row_gap = min(row_qty, remaining_gap)
-                            if row_gap > 0:
-                                missing.append((pos, row_gap))
-                                remaining_gap -= row_gap
-                    if missing:
-                        codes = "、".join(
-                            f"{p.get('ts_code','')} {p.get('name','')}未覆盖{qty}股" for p, qty in missing
-                        )
-                        log.error("🛑 [平仓看门狗] %s 核查：%s，启动余量补挂！", chk, codes)
-                        rescued = []
-                        for pos, uncovered in missing:
-                            oids = _watchdog_rescue_sell(
-                                pos,
-                                log,
-                                max_qty=uncovered,
-                                rescue_wave=chk.strftime("%H%M%S"),
-                            )
-                            if oids:
-                                rescued.append((pos, oids))
-                        if rescued:
-                            for rescued_position, rescued_orders in rescued:
-                                _queue_watchdog_pending(
-                                    rescued_position,
-                                    rescued_orders,
-                                )
-                            _notify("sell_result", "🚑 平仓看门狗已自动补挂",
-                                    f"{chk.strftime('%H:%M:%S')}发现{codes}未被活跃卖单覆盖，"
-                                    f"已按当前交易阶段的合法限价补挂；成交不作保证，请留意成交确认。",
-                                    level="critical")
-                        if len(rescued) < len(missing):
-                            _notify("sell_fail", "🛑 收盘平仓补挂失败",
-                                    f"{chk.strftime('%H:%M')}：{codes} 部分补挂失败，"
-                                    f"请立即人工核对并手动平仓（15:00收盘前最后机会）！",
-                                    level="critical", call=True)
-                    else:
-                        due_codes = {
-                            str(pos.get("ts_code", "")).upper().split(".")[0]
-                            for pos in due
-                            if str(pos.get("ts_code", ""))
-                        }
-                        zero_broker_codes = sorted(
-                            code for code in due_codes
-                            if max(int(broker_volume.get(code, 0) or 0), 0) == 0
-                        )
-                        if zero_broker_codes:
-                            log.info(
-                                "[平仓看门狗] %s 券商持仓快照已不含%s；"
-                                "本轮不重复卖出，等待成交回报即时回写/收盘双快照确认。",
-                                chk,
-                                "、".join(zero_broker_codes),
-                            )
-                        else:
-                            log.info(
-                                "[平仓看门狗] %s 核查通过：%d笔到期持仓的"
-                                "券商真实余仓均有活跃SELL完整覆盖。",
-                                chk,
-                                len(due),
-                            )
-                    # 查询、归属核算和补单尝试均已完成后才记为fired。QMT忙/异常
-                    # 会保留同一checkpoint重试机会，尤其不能丢掉14:57:05首岗。
-                    fired.add(key)
-            # 15:00:30 对补挂单确认成交并回写（防幽灵账目）
-            if _watchdog_pending and t >= datetime.time(15, 0, 30):
-                config = load_json_config(PROJECT_ROOT / "config" / "config.json")
-                broker_cfg = config.get("broker", {})
-                for pos, oids in list(_watchdog_pending):
-                    all_terminal = True
-                    processed = False
-                    try:
-                        total_qty, total_amt, applied_qty_total = 0, 0.0, 0
-                        for oid, expected_qty in oids:
-                            fill = _confirm_fill(
-                                broker_cfg, oid, expected_qty, "看门狗补挂确认", timeout_sec=10
-                            )
-                            filled_qty = min(
-                                max(int(fill.filled_qty or 0), 0), expected_qty
-                            )
-                            fill_price_one = max(float(fill.avg_price or 0.0), 0.0)
-                            intent = _exit_intent_by_broker_order_id(oid)
-                            if fill_price_one <= 0:
-                                # 成交状态常比成交均价字段先到；暂用该intent
-                                # 的委托限价作记账代理，后续query_trades可再复核。
-                                fill_price_one = max(
-                                    float((intent or {}).get("price", 0.0) or 0.0), 0.0
-                                )
-                            local_order_id = str(
-                                (intent or {}).get("local_order_id", "")
-                                or pos.get("order_id", "")
-                            )
-                            if filled_qty > 0 and local_order_id:
-                                current_row = next(
-                                    (
-                                        row for row in load_positions()
-                                        if str(row.get("order_id", "")) == local_order_id
-                                    ),
-                                    None,
-                                )
-                                if current_row is not None:
-                                    applied_qty_total += _apply_known_exit_fill(
-                                        local_order_id,
-                                        broker_order_id=oid,
-                                        current_shares=max(
-                                            int(current_row.get("shares", 0) or 0), 0
-                                        ),
-                                        filled_qty=filled_qty,
-                                        fill_price=fill_price_one,
-                                        fill_date=today_str,
-                                    )
-                            if bool(getattr(fill, "is_terminal", False)):
-                                _resolve_exit_intent_by_broker_order_id(
-                                    oid,
-                                    filled_qty=filled_qty,
-                                    terminal_known=True,
-                                )
-                            else:
-                                all_terminal = False
-                            if filled_qty > 0:
-                                total_qty += filled_qty
-                                total_amt += filled_qty * fill_price_one
-                        price = total_amt / total_qty if total_qty > 0 else 0.0
-                        if total_qty > 0:
-                            log.warning(
-                                "[平仓看门狗] %s 补挂确认成交%d股 均价%.2f；"
-                                "按broker_order_id幂等回写%d股，并继续双快照对账。",
-                                pos.get("ts_code"), total_qty, price, applied_qty_total,
-                            )
-                            _notify(
-                                "sell_result", "✅ 看门狗成交已回写",
-                                f"{pos.get('ts_code')} {pos.get('name','')} 补挂确认成交"
-                                f"{total_qty}股，已幂等回写{applied_qty_total}股并进行双快照复核。",
-                                level="timeSensitive",
-                            )
-                        else:
-                            _notify("sell_fail", "🛑 补挂全部未成交",
-                                    f"{pos.get('ts_code')} {pos.get('name','')} 余量补挂无成交，"
-                                    f"持仓过夜，明日开盘务必人工处理！", level="critical", call=True)
-                        processed = True
-                    except Exception as e:
-                        log.error("[平仓看门狗] 补挂单确认异常：%s", e)
-                    if processed and all_terminal:
-                        _remove_watchdog_pending(pos, oids)
+                _watchdog_cover_positions(checkpoints, t, today_str, fired, log)
+            _watchdog_confirm_pending(t, log, today_str)
             if (
                 is_trade_day(now.date())
                 and t >= datetime.time(15, 0, 30)

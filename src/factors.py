@@ -284,68 +284,8 @@ class FactorAnalyzer:
         self.logger.info("因子统计报告已生成: %s, 行数: %s", self.output_factor_report_path, len(report))
         return self.output_factor_report_path
 
-    def add_factor_buckets(self, trades: pd.DataFrame) -> pd.DataFrame:
-        trades = trades.copy()
-        trades["first_time_minutes"] = trades["first_time"].apply(self.parse_time_to_minutes)
-        if "market_segment" not in trades.columns:
-            trades["market_segment"] = "unknown"
-        trades["market_segment"] = trades["market_segment"].fillna("unknown").astype(str)
-        if "limit_pct_bucket" not in trades.columns:
-            trades["limit_pct_bucket"] = self.build_limit_pct_bucket(trades)
-        trades["limit_pct_bucket"] = trades["limit_pct_bucket"].fillna("unknown").astype(str)
-        if "segment_market_sentiment_level" not in trades.columns:
-            trades["segment_market_sentiment_level"] = trades.get(
-                "market_sentiment_level",
-                pd.Series("unknown", index=trades.index, dtype="object"),
-            )
-        trades["segment_market_sentiment_level"] = trades["segment_market_sentiment_level"].fillna("unknown").astype(str)
-        trades["theme_heat_bucket"] = self.cut_or_unknown(
-            trades,
-            source_column="theme_heat_score",
-            bins=[-float("inf"), 1, 3, 5, 10, float("inf")],
-            labels=["unknown_or_1", "2_3", "4_5", "6_10", "gte_11"],
-        )
-        trades["same_theme_limit_count_bucket"] = self.cut_or_unknown(
-            trades,
-            source_column="same_theme_limit_count",
-            bins=[-float("inf"), 1, 3, 5, 10, float("inf")],
-            labels=["unknown_or_1", "2_3", "4_5", "6_10", "gte_11"],
-        )
-        trades["theme_limit_count_bucket"] = self.cut_or_unknown(
-            trades,
-            source_column="theme_limit_count",
-            bins=[-float("inf"), 1, 3, 5, 10, float("inf")],
-            labels=["unknown_or_1", "2_3", "4_5", "6_10", "gte_11"],
-        )
-        trades["theme_limit_height_bucket"] = self.cut_or_unknown(
-            trades,
-            source_column="theme_limit_height",
-            bins=[-float("inf"), 1, 2, 3, 4, float("inf")],
-            labels=["1", "2", "3", "4", "5_plus"],
-        )
-        trades["theme_heat_rank_bucket"] = self.cut_or_unknown(
-            trades,
-            source_column="theme_heat_rank",
-            bins=[-float("inf"), 1, 3, 5, 10, float("inf")],
-            labels=["rank_1", "rank_2_3", "rank_4_5", "rank_6_10", "rank_gt_10"],
-        )
-        trades["theme_leader_rank_bucket"] = self.cut_or_unknown(
-            trades,
-            source_column="theme_leader_rank",
-            bins=[-float("inf"), 1, 3, 10, 30, float("inf")],
-            labels=["rank_1", "rank_2_3", "rank_4_10", "rank_11_30", "rank_gt_30"],
-        )
-        trades["theme_height_rank_bucket"] = self.cut_or_unknown(
-            trades,
-            source_column="theme_height_rank",
-            bins=[-float("inf"), 1, 3, 10, 30, float("inf")],
-            labels=["rank_1", "rank_2_3", "rank_4_10", "rank_11_30", "rank_gt_30"],
-        )
-        if "theme_is_mainline" in trades.columns:
-            theme_is_mainline = trades["theme_is_mainline"].astype(str).str.lower().isin({"true", "1", "yes"})
-            trades["theme_is_mainline_bucket"] = theme_is_mainline.astype(str)
-        else:
-            trades["theme_is_mainline_bucket"] = "unknown"
+    def _add_market_and_flow_buckets(self, trades):
+        """情绪状态、连板与跌停、龙头排名、涨停时间与炸板、成交额/换手/量比/封单比、涨跌幅等因子分档（从 add_factor_buckets 拆出，语句原样）。"""
         trades["market_emotion_state_bucket"] = trades.get(
             "market_emotion_state",
             pd.Series("unknown", index=trades.index, dtype="object"),
@@ -461,6 +401,70 @@ class FactorAnalyzer:
             bins=[-float("inf"), 0.8, 1.2, 2, 3, 5, float("inf")],
             labels=["lt_0_8", "0_8_1_2", "1_2_2", "2_3", "3_5", "gte_5"],
         ).astype(str)
+
+    def add_factor_buckets(self, trades: pd.DataFrame) -> pd.DataFrame:
+        trades = trades.copy()
+        trades["first_time_minutes"] = trades["first_time"].apply(self.parse_time_to_minutes)
+        if "market_segment" not in trades.columns:
+            trades["market_segment"] = "unknown"
+        trades["market_segment"] = trades["market_segment"].fillna("unknown").astype(str)
+        if "limit_pct_bucket" not in trades.columns:
+            trades["limit_pct_bucket"] = self.build_limit_pct_bucket(trades)
+        trades["limit_pct_bucket"] = trades["limit_pct_bucket"].fillna("unknown").astype(str)
+        if "segment_market_sentiment_level" not in trades.columns:
+            trades["segment_market_sentiment_level"] = trades.get(
+                "market_sentiment_level",
+                pd.Series("unknown", index=trades.index, dtype="object"),
+            )
+        trades["segment_market_sentiment_level"] = trades["segment_market_sentiment_level"].fillna("unknown").astype(str)
+        trades["theme_heat_bucket"] = self.cut_or_unknown(
+            trades,
+            source_column="theme_heat_score",
+            bins=[-float("inf"), 1, 3, 5, 10, float("inf")],
+            labels=["unknown_or_1", "2_3", "4_5", "6_10", "gte_11"],
+        )
+        trades["same_theme_limit_count_bucket"] = self.cut_or_unknown(
+            trades,
+            source_column="same_theme_limit_count",
+            bins=[-float("inf"), 1, 3, 5, 10, float("inf")],
+            labels=["unknown_or_1", "2_3", "4_5", "6_10", "gte_11"],
+        )
+        trades["theme_limit_count_bucket"] = self.cut_or_unknown(
+            trades,
+            source_column="theme_limit_count",
+            bins=[-float("inf"), 1, 3, 5, 10, float("inf")],
+            labels=["unknown_or_1", "2_3", "4_5", "6_10", "gte_11"],
+        )
+        trades["theme_limit_height_bucket"] = self.cut_or_unknown(
+            trades,
+            source_column="theme_limit_height",
+            bins=[-float("inf"), 1, 2, 3, 4, float("inf")],
+            labels=["1", "2", "3", "4", "5_plus"],
+        )
+        trades["theme_heat_rank_bucket"] = self.cut_or_unknown(
+            trades,
+            source_column="theme_heat_rank",
+            bins=[-float("inf"), 1, 3, 5, 10, float("inf")],
+            labels=["rank_1", "rank_2_3", "rank_4_5", "rank_6_10", "rank_gt_10"],
+        )
+        trades["theme_leader_rank_bucket"] = self.cut_or_unknown(
+            trades,
+            source_column="theme_leader_rank",
+            bins=[-float("inf"), 1, 3, 10, 30, float("inf")],
+            labels=["rank_1", "rank_2_3", "rank_4_10", "rank_11_30", "rank_gt_30"],
+        )
+        trades["theme_height_rank_bucket"] = self.cut_or_unknown(
+            trades,
+            source_column="theme_height_rank",
+            bins=[-float("inf"), 1, 3, 10, 30, float("inf")],
+            labels=["rank_1", "rank_2_3", "rank_4_10", "rank_11_30", "rank_gt_30"],
+        )
+        if "theme_is_mainline" in trades.columns:
+            theme_is_mainline = trades["theme_is_mainline"].astype(str).str.lower().isin({"true", "1", "yes"})
+            trades["theme_is_mainline_bucket"] = theme_is_mainline.astype(str)
+        else:
+            trades["theme_is_mainline_bucket"] = "unknown"
+        self._add_market_and_flow_buckets(trades)
         trades["limit_up_count_bucket"] = pd.cut(
             trades["limit_up_count"],
             bins=[-float("inf"), 30, 50, 80, 120, 180, float("inf")],

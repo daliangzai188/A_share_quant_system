@@ -17,6 +17,7 @@ import argparse
 import ast
 import io
 import json
+import re
 import subprocess
 import sys
 import tokenize
@@ -35,9 +36,13 @@ RESEARCH_PREFIXES = ("research", "optimize", "search", "analyze", "compare", "st
                      "validate", "certify")
 PRODUCTION_DIRS = ("src", "scripts")
 NON_PRODUCTION_DIRS = ("research", "tools")
-PACKAGE_INITS = ("src", "src.utils", "src.daemon", "qmt_inner", "research", "tools")  # 包本身，不算模块
+PACKAGE_INITS = ("src", "src.utils", "src.daemon", "src.strategy_d_monitor", "qmt_inner", "research", "tools")  # 包本身，不算模块
 SIZING_NUMBERS = ("0.825", "0.175", "0.995", "0.85")  # ACE 82.5%/硬顶85%、M 17.5%、合计99.5%
 SIZING_SOURCE = "src.portfolio_ace_m"                   # 仓位规则唯一出处
+# 交易所板块规则（板块、涨跌停幅度、代码后缀、申报股数）唯一出处；按代码前缀判断板块的写法只许出现在这里（2026-11-15）
+MARKET_RULES_SOURCE = "src.market_rules"
+LEG_LETTERS = {"A", "C", "D", "E", "M"}   # 策略腿；腿和腿序的唯一出处是 SIZING_SOURCE（src.portfolio_ace_m）
+BOARD_PREFIX_CHECK = re.compile(r'startswith\(\(?\s*"(?:4|8|9|6|0|2|3|688|689|300|301|920|830|870|000|001|002|003)"|prefix\[:1\] in')
 
 
 def module_files(root: Path) -> dict[str, Path]:
@@ -151,7 +156,7 @@ def metrics(root: Path = REPO) -> dict:
     research_in_prod = sorted(m for m in prod_scripts if m.split(".", 1)[1].split("_")[0] in RESEARCH_PREFIXES)
     reverse = sorted("%s→%s" % (m, t) for m in prod if m.startswith("src.") for t in imports[m] if t.startswith("scripts."))
     prod_cycles = [c for c in cycles(imports) if any(m in prod for m in c)]
-    long_funcs, swallowed, biggest, sizing = 0, 0, (0, ""), 0
+    long_funcs, swallowed, biggest, sizing, board_rules, leg_literals = 0, 0, (0, ""), 0, 0, 0
     for name in prod:
         path = files[name]
         text = path.read_text(encoding="utf-8", errors="replace")
@@ -159,10 +164,15 @@ def metrics(root: Path = REPO) -> dict:
         if name != SIZING_SOURCE:
             sizing += sum(1 for tok in tokenize.generate_tokens(io.StringIO(text).readline)
                           if tok.type == tokenize.NUMBER and tok.string in SIZING_NUMBERS)
+        if name != MARKET_RULES_SOURCE:
+            board_rules += sum(1 for line in text.splitlines() if BOARD_PREFIX_CHECK.search(line))
         lines = text.count("\n")
         if lines > biggest[0]:
             biggest = (lines, str(path.relative_to(root)))
         for node in ast.walk(ast.parse(text)):
+            if name != SIZING_SOURCE and isinstance(node, (ast.Tuple, ast.List, ast.Set)) and len(node.elts) >= 2 and all(
+                    isinstance(e, ast.Constant) and e.value in LEG_LETTERS for e in node.elts):
+                leg_literals += 1  # 写死的腿组合（如 ("A", "C", "E")），应引用 src.portfolio_ace_m 的名字
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.end_lineno - node.lineno + 1 > 200:
                 long_funcs += 1
             if (isinstance(node, ast.ExceptHandler) and len(node.body) == 1 and isinstance(node.body[0], ast.Pass)
@@ -189,6 +199,8 @@ def metrics(root: Path = REPO) -> dict:
         "循环依赖组（含生产模块，真实导入）": len(prod_cycles),
         "最大的生产文件（行）": "%d（%s）" % biggest,
         "仓位数字写死在唯一出处之外（处）": sizing,
+        "交易所板块规则写在唯一出处之外（处）": board_rules,
+        "策略腿组合写死在唯一出处之外（处）": leg_literals,
         "生产代码里超过200行的函数": long_funcs,
         "生产代码里捕获错误后直接pass且没写原因": swallowed,
         "config.json段数（生产在读/全部）": "%d/%d" % (len(used), len(config)),

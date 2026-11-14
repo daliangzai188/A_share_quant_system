@@ -23,12 +23,13 @@ from typing import Any, Callable, Mapping, Sequence
 
 import pandas as pd
 
+from src.portfolio_ace_m import AC_LEGS, ACE_STATIC_LEGS, REPORT_LEGS
 from src.review_triggers import FINAL_STANDARD, ReviewTrigger, signal_drought_triggers
 
 TIER_MIDDLE = 2
 TIER_FINAL = 3
-LEGS = ("A", "C", "E")
-FACTOR_HEALTH_LEGS = ("A", "C", "E")  # M的候选一年只有几十只，按因子健康的样本要求一个月都判不了，不算
+LEGS = ACE_STATIC_LEGS
+FACTOR_HEALTH_LEGS = ACE_STATIC_LEGS  # M的候选一年只有几十只，按因子健康的样本要求一个月都判不了，不算
 SCOPE_NAMES = {"A": "A腿", "C": "C腿", "E": "E腿", "M": "M", "ALL": "全部策略", "COMBO": "整体组合"}
 MIDDLE_CATEGORY = "中级·策略复核"
 FINAL_CATEGORY = "终极·建议停止交易"
@@ -216,11 +217,11 @@ def warning_triggers(metrics: Mapping[str, Any], settings: WarningSettings) -> l
         if item["months_below"] >= settings.factor_health_months:
             middle_scopes.append(leg)
             # A、C沿用warn2:leg:A/C（已登记复核用的就是这个键）；E另有收益中级线warn2:leg:E，因子健康单独一个键
-            key = "warn2:leg:%s" % leg if leg in ("A", "C") else "warn2:leg:%s:health" % leg
+            key = "warn2:leg:%s" % leg if leg in AC_LEGS else "warn2:leg:%s:health" % leg
             triggers.append(_trigger(TIER_MIDDLE, leg, key,
                 "%s腿选股条件的优势已连续%d个月低于冻结线（中级线：连续%d个月；临时复核是2个月）" % (
                     leg, item["months_below"], settings.factor_health_months)))
-    for leg in ("A", "C", "E", "M"):
+    for leg in REPORT_LEGS:
         item = metrics["legs"][leg]
         value = item["value"]
         if value is None:
@@ -238,7 +239,7 @@ def warning_triggers(metrics: Mapping[str, Any], settings: WarningSettings) -> l
                 "%s最近12个月收益%s（%d笔，截至%s），低于中级线%s%s" % (
                     label, _pct(value), item["trades"], item["as_of"], _pct(middle[leg]),
                     "（%s）" % note if note else "")))
-    middle_scopes = sorted(set(middle_scopes), key=("A", "C", "E", "M").index)
+    middle_scopes = sorted(set(middle_scopes), key=REPORT_LEGS.index)
     if len(middle_scopes) >= 2:
         names = "、".join(SCOPE_NAMES[s] for s in middle_scopes)
         triggers.append(_trigger(TIER_MIDDLE, "ALL", "warn2:all", "%s同时到中级警告" % names))

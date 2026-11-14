@@ -13,6 +13,7 @@ from concurrent.futures import Future, TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Mapping
 
+from src.portfolio_ace_m import REMARK_LEG_MATCH_ORDER
 from src.broker_adapter import (
     AccountSnapshot,
     BrokerAdapter,
@@ -358,7 +359,7 @@ def _infer_strategy_leg(request: OrderRequest) -> str:
     if declared:
         return declared
     text = f"{request.strategy_name}|{request.remark}".upper()
-    for leg in ("E", "D", "A", "C"):
+    for leg in REMARK_LEG_MATCH_ORDER:
         markers = (f"STRATEGY_{leg}", f"A_SYSTEM_{leg}", f"{leg}策略", f"|{leg}|")
         if any(marker in text for marker in markers):
             return leg

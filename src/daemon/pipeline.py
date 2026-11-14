@@ -331,6 +331,111 @@ def _maybe_alert_strategy_drawdown(snapshot: Any, drawdown: float, cfg: dict[str
         )
 
 
+def _post_market_finish(offline, target_str, failed_steps, target_date, live_fill_scored_path):
+    """流水线步骤跑完后：检查停手判定新鲜度、统计候选产物、核对数据入库与兜底观察计划、播报并通知（从 job_post_market 拆出，语句原样）。"""
+    _alert_if_stop_decision_stale(target_str, failed_steps)
+
+    # 所有策略步骤结束后只读当日产物，明确区分“候选0只”和“产物未生成/未知”。
+    # D是盘中策略，这里只统计其已有BUY/WATCH记录，不在收盘时补跑D。
+    _log_close_pipeline_candidate_summary(target_str)
+
+    # 关键检查：今日数据是否真的从 Tushare 入库了
+    if not _date_in_scored(target_date):
+        logger().warning(
+            "⚠️ Tushare %s 数据尚未就绪（live_limit_up_fill_scored.csv 无该日记录），流水线步骤已完成但需等数据",
+            target_str,
+        )
+        if not offline:
+            report_next_day_candidates()
+        return False  # 通知调用方稍后重试
+
+    if not _has_signal_for_date(target_date):
+        logger().warning(
+            "A/C 未生成 %s 计划单，自动使用当日涨停池生成安全模拟观察计划...",
+            target_str,
+        )
+        def _run_limit_pool_fallback() -> bool:
+            return run_script(
+                "generate_live_limit_pool_daily_ops.py",
+                "--input-path",
+                live_fill_scored_path,
+                "--signal-date",
+                target_str,
+                "--top-n",
+                "10",
+                timeout=TIMEOUT_SIGNAL_STEP,
+            )
+
+        fallback_ok = _run_limit_pool_fallback()
+        if not (fallback_ok and _has_signal_for_date(target_date)):
+            logger().warning("兜底涨停池观察计划第一次失败，等待10秒后就地重试一次：signal_date=%s", target_str)
+            time.sleep(10)
+            fallback_ok = _run_limit_pool_fallback()
+        if fallback_ok and _has_signal_for_date(target_date):
+            logger().info("✅ 当日涨停池模拟观察计划已生成：signal_date=%s，live_order_enabled=False", target_str)
+        else:
+            logger().error("❌ 当日涨停池模拟观察计划生成失败：signal_date=%s", target_str)
+
+    if _checklist_data_quality_blocked(target_date):
+        logger().warning(
+            "⚠️ %s 只有基础涨停口径，A/C 已阻断开仓；继续等待完整 limit_list_d，稍后自动重试",
+            target_str,
+        )
+        if not offline:
+            report_next_day_candidates()
+        report_signal_readiness_summary(target_str)
+        return False
+
+    if offline:
+        fresh, _ = _equity_curve_stop_decision_fresh(target_str)
+        report_signal_readiness_summary(target_str)
+        if failed_steps or not fresh or not report_next_trade_factor_readiness(target_str):
+            logger().warning("离线数据维护未完成：失败步骤=%s，最新停手判定=%s；交易门禁保持关闭。", failed_steps, fresh)
+            return False
+        mark_post_market_done(target_date)
+        logger().info("离线数据维护完成：%s 数据/影子停手判定已更新；账户未验证，不生成真实定仓播报，不启动交易。", target_str)
+        return True
+
+    report_next_day_candidates()
+    # 决策链 summary 必须先于收盘推送：它设置 _last_final_plan（推送的唯一数据源）。
+    # 原顺序 push 在前、summary 在后，push 会读到上一次旧计划；必须先生成本次
+    # 串行单仓结论，再推送“82.5%开仓”或“旧仓未清空不买”的准确结果。
+    _log_decision_chain_summary(target_str)
+    push_open_plan_notification("收盘")   # 收盘流水线完成→推明日开仓计划(有则详细/无则明示)
+    report_signal_readiness_summary(target_str)
+    if not report_next_trade_factor_readiness(target_str):
+        logger().warning("⚠️ 明日开盘因子尚未完全就绪，本次不标记收盘完成；5分钟后自动重试")
+        return False
+    logger().info("===== 收盘流水线完成 =====")
+    mark_post_market_done(target_date)
+    # 决策链已在推送前播报并设好 _last_final_plan；
+    # 之后由 _decision_chain_broadcast_loop 每30分钟重播一次。
+    try:
+        open_cnt = sum(1 for p in load_positions() if p.get("status") == "open")
+        acct_part = ""
+        try:
+            cfg = load_json_config(PROJECT_ROOT / "config" / "config.json")
+            if cfg.get("broker_adapter_enabled") and cfg.get("qmt_enabled"):
+                with _qmt_lock:
+                    adapter = _qmt_get(cfg.get("broker", {}))
+                    account = adapter.query_account()
+                acct_part = (f"账户{_mask_account(account.account_id)} "
+                             f"总资产{_fmt_wan(getattr(account, 'total_asset', 0.0))} ")
+        except Exception as acct_exc:
+            logger().warning("收盘汇总查询账户失败：%s", acct_exc)
+        if failed_steps:
+            _notify("daily_summary", "⚠️ 今日收盘汇总：有步骤失败",
+                    f"{acct_part}持仓{open_cnt}笔，收盘流水线跑完但有{len(failed_steps)}步失败："
+                    f"{'、'.join(failed_steps)}。明日计划已生成；失败步骤的产物可能是旧的，请让Claude排查。",
+                    level="timeSensitive")
+        else:
+            _notify("daily_summary", "📊 今日收盘汇总",
+                    f"{acct_part}持仓{open_cnt}笔，收盘流水线已完成，明日计划已生成。")
+    except Exception as exc:
+        logger().warning("收盘汇总推送异常：%s", exc)
+    return True
+
+
 def job_post_market(end_date: str | None = None, *, offline: bool = False) -> bool:
     target_str = end_date or today_beijing().strftime("%Y%m%d")
     target_date = datetime.datetime.strptime(target_str, "%Y%m%d").date()
@@ -457,107 +562,7 @@ def job_post_market(end_date: str | None = None, *, offline: bool = False) -> bo
             logger().error("%s 异常：%s，继续后续步骤", desc, e)
             failed_steps.append(desc)
 
-    _alert_if_stop_decision_stale(target_str, failed_steps)
-
-    # 所有策略步骤结束后只读当日产物，明确区分“候选0只”和“产物未生成/未知”。
-    # D是盘中策略，这里只统计其已有BUY/WATCH记录，不在收盘时补跑D。
-    _log_close_pipeline_candidate_summary(target_str)
-
-    # 关键检查：今日数据是否真的从 Tushare 入库了
-    if not _date_in_scored(target_date):
-        logger().warning(
-            "⚠️ Tushare %s 数据尚未就绪（live_limit_up_fill_scored.csv 无该日记录），流水线步骤已完成但需等数据",
-            target_str,
-        )
-        if not offline:
-            report_next_day_candidates()
-        return False  # 通知调用方稍后重试
-
-    if not _has_signal_for_date(target_date):
-        logger().warning(
-            "A/C 未生成 %s 计划单，自动使用当日涨停池生成安全模拟观察计划...",
-            target_str,
-        )
-        def _run_limit_pool_fallback() -> bool:
-            return run_script(
-                "generate_live_limit_pool_daily_ops.py",
-                "--input-path",
-                live_fill_scored_path,
-                "--signal-date",
-                target_str,
-                "--top-n",
-                "10",
-                timeout=TIMEOUT_SIGNAL_STEP,
-            )
-
-        fallback_ok = _run_limit_pool_fallback()
-        if not (fallback_ok and _has_signal_for_date(target_date)):
-            logger().warning("兜底涨停池观察计划第一次失败，等待10秒后就地重试一次：signal_date=%s", target_str)
-            time.sleep(10)
-            fallback_ok = _run_limit_pool_fallback()
-        if fallback_ok and _has_signal_for_date(target_date):
-            logger().info("✅ 当日涨停池模拟观察计划已生成：signal_date=%s，live_order_enabled=False", target_str)
-        else:
-            logger().error("❌ 当日涨停池模拟观察计划生成失败：signal_date=%s", target_str)
-
-    if _checklist_data_quality_blocked(target_date):
-        logger().warning(
-            "⚠️ %s 只有基础涨停口径，A/C 已阻断开仓；继续等待完整 limit_list_d，稍后自动重试",
-            target_str,
-        )
-        if not offline:
-            report_next_day_candidates()
-        report_signal_readiness_summary(target_str)
-        return False
-
-    if offline:
-        fresh, _ = _equity_curve_stop_decision_fresh(target_str)
-        report_signal_readiness_summary(target_str)
-        if failed_steps or not fresh or not report_next_trade_factor_readiness(target_str):
-            logger().warning("离线数据维护未完成：失败步骤=%s，最新停手判定=%s；交易门禁保持关闭。", failed_steps, fresh)
-            return False
-        mark_post_market_done(target_date)
-        logger().info("离线数据维护完成：%s 数据/影子停手判定已更新；账户未验证，不生成真实定仓播报，不启动交易。", target_str)
-        return True
-
-    report_next_day_candidates()
-    # 决策链 summary 必须先于收盘推送：它设置 _last_final_plan（推送的唯一数据源）。
-    # 原顺序 push 在前、summary 在后，push 会读到上一次旧计划；必须先生成本次
-    # 串行单仓结论，再推送“82.5%开仓”或“旧仓未清空不买”的准确结果。
-    _log_decision_chain_summary(target_str)
-    push_open_plan_notification("收盘")   # 收盘流水线完成→推明日开仓计划(有则详细/无则明示)
-    report_signal_readiness_summary(target_str)
-    if not report_next_trade_factor_readiness(target_str):
-        logger().warning("⚠️ 明日开盘因子尚未完全就绪，本次不标记收盘完成；5分钟后自动重试")
-        return False
-    logger().info("===== 收盘流水线完成 =====")
-    mark_post_market_done(target_date)
-    # 决策链已在推送前播报并设好 _last_final_plan；
-    # 之后由 _decision_chain_broadcast_loop 每30分钟重播一次。
-    try:
-        open_cnt = sum(1 for p in load_positions() if p.get("status") == "open")
-        acct_part = ""
-        try:
-            cfg = load_json_config(PROJECT_ROOT / "config" / "config.json")
-            if cfg.get("broker_adapter_enabled") and cfg.get("qmt_enabled"):
-                with _qmt_lock:
-                    adapter = _qmt_get(cfg.get("broker", {}))
-                    account = adapter.query_account()
-                acct_part = (f"账户{_mask_account(account.account_id)} "
-                             f"总资产{_fmt_wan(getattr(account, 'total_asset', 0.0))} ")
-        except Exception as acct_exc:
-            logger().warning("收盘汇总查询账户失败：%s", acct_exc)
-        if failed_steps:
-            _notify("daily_summary", "⚠️ 今日收盘汇总：有步骤失败",
-                    f"{acct_part}持仓{open_cnt}笔，收盘流水线跑完但有{len(failed_steps)}步失败："
-                    f"{'、'.join(failed_steps)}。明日计划已生成；失败步骤的产物可能是旧的，请让Claude排查。",
-                    level="timeSensitive")
-        else:
-            _notify("daily_summary", "📊 今日收盘汇总",
-                    f"{acct_part}持仓{open_cnt}笔，收盘流水线已完成，明日计划已生成。")
-    except Exception as exc:
-        logger().warning("收盘汇总推送异常：%s", exc)
-    return True
+    return _post_market_finish(offline, target_str, failed_steps, target_date, live_fill_scored_path)
 
 
 def _equity_curve_stop_decision_fresh(target_str: str) -> tuple[bool, str]:

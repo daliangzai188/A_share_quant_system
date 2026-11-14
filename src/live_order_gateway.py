@@ -10,6 +10,7 @@ from pandas.errors import EmptyDataError
 
 from src.broker_adapter import PositionSnapshot
 from src.qmt_adapter import QMTBrokerAdapter, tushare_to_qmt_code
+from src.qmt_broker_factory import create_qmt_adapter
 from src.portfolio_ace_m import ACE_FULL_HARD_CAP_PCT, ACE_FULL_TARGET_PCT
 from src.qmt_single_owner import assert_standalone_qmt_allowed
 from src.utils.config import get_project_root, load_json_config, mkdir_p
@@ -80,7 +81,7 @@ class LiveOrderGateway:
             self.project_root,
             caller="LiveOrderGateway独立诊断/预览入口",
         )
-        return QMTBrokerAdapter.from_config(self.broker_config)
+        return create_qmt_adapter(self.broker_config)
 
     def latest_planned_orders_path(self) -> Path:
         pattern = str(self.project_root / "reports/paper_trade/ab_filtered_daily_ops/*_planned_orders.csv")

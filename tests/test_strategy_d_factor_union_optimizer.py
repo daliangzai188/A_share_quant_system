@@ -8,7 +8,6 @@ from unittest.mock import MagicMock
 import numpy as np
 import pandas as pd
 
-from scripts import monitor_strategy_d_intraday as d_monitor
 from scripts.monitor_strategy_d_intraday import StockState, StrategyDMonitor
 from research.optimize_strategy_d_factor_union import (
     minimize_profile_union,
@@ -26,6 +25,7 @@ from src.strategy_d_factor_rules import (
     matching_profile_ids,
 )
 from src.strategy_d_minute_alignment import StrictMinutePath
+from tests.d_monitor_testing import monkeypatch_d_monitor
 
 
 class DummyLogger:
@@ -257,7 +257,7 @@ def test_factor_union_consumes_earliest_signal_without_later_substitution(
         "000002.SZ": state("000002.SZ", 1),
         "000003.SZ": state("000003.SZ", 2),
     }
-    monkeypatch.setattr(d_monitor, "now_hhmm", lambda: 945)
+    monkeypatch_d_monitor(monkeypatch, "now_hhmm", lambda: 945)
     monitor.strict_minute_refresh_hhmm = 945
     monitor.strict_minute_paths = {
         code: StrictMinutePath(
@@ -375,7 +375,7 @@ def test_best_factor_release_early_reseal_is_not_blocked_by_legacy_tail_gate(
         open_price=10.2,
         session_low_price=10.1,
     )
-    monkeypatch.setattr(d_monitor, "now_hhmm", lambda: 945)
+    monkeypatch_d_monitor(monkeypatch, "now_hhmm", lambda: 945)
     monitor.strict_minute_paths = {
         state.ts_code: StrictMinutePath(
             certifiable=True,

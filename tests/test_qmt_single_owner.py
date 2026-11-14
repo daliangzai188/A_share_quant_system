@@ -43,10 +43,10 @@ class QmtSingleOwnerTests(unittest.TestCase):
     def test_all_standalone_trading_connections_have_owner_gate(self) -> None:
         root = Path(__file__).absolute().parents[1]
         guarded_files = {
-            "src/live_order_gateway.py": "QMTBrokerAdapter.from_config",
-            "tools/qmt_connection_probe.py": "QMTBrokerAdapter.from_config",
+            "src/live_order_gateway.py": "create_qmt_adapter(",
+            "tools/qmt_connection_probe.py": "create_qmt_adapter(",
             "tools/probe_qmt_connection.py": "XtQuantTrader(",
-            "scripts/monitor_strategy_d_intraday.py": "QMTBrokerAdapter.from_config",
+            "scripts/monitor_strategy_d_intraday.py": "create_qmt_adapter(",
         }
         for relative, constructor in guarded_files.items():
             source = (root / relative).read_text(encoding="utf-8")

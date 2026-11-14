@@ -26,6 +26,7 @@ from src.strategy_d_minute_alignment import (
     StrictMinutePath,
     expected_completed_minute_hhmm,
 )
+from tests.d_monitor_testing import patch_d_monitor
 
 
 class _Logger:
@@ -264,8 +265,8 @@ class EntryAlignmentFixTests(unittest.TestCase):
             )
             monitor._invalidate_checkpoint = Mock(return_value=True)
 
-            with patch(
-                "scripts.monitor_strategy_d_intraday.now_hhmm",
+            with patch_d_monitor(
+                "now_hhmm",
                 return_value=1356,
             ):
                 monitor.run()
@@ -496,11 +497,11 @@ class EntryAlignmentFixTests(unittest.TestCase):
 
             # 单元测试只验证部分成交分支，必须隔离真实 Bark/电话通知出口。
             # 否则测试桩中的股票、金额和订单号会被误发成实盘消息。
-            with patch(
-                "scripts.monitor_strategy_d_intraday.check_strategy_position_occupied",
+            with patch_d_monitor(
+                "check_strategy_position_occupied",
                 return_value=(False, ""),
-            ), patch(
-                "scripts.monitor_strategy_d_intraday.notify"
+            ), patch_d_monitor(
+                "notify"
             ) as notify_mock, patch("builtins.print") as print_mock:
                 result = monitor._place_d_order(state, {})
 
@@ -743,7 +744,7 @@ class EntryAlignmentFixTests(unittest.TestCase):
                 for index in range(51)
             }
 
-            with patch("scripts.monitor_strategy_d_intraday.now_hhmm", return_value=930):
+            with patch_d_monitor("now_hhmm", return_value=930):
                 passed = monitor._refresh_strict_minute_paths()
 
             self.assertTrue(passed)
@@ -823,8 +824,8 @@ class EntryAlignmentFixTests(unittest.TestCase):
             self.assertIn("QMT回补09:30至当前", reason)
             self.assertTrue(monitor.minute_history_recovery_required)
 
-            with patch(
-                "scripts.monitor_strategy_d_intraday.now_hhmm",
+            with patch_d_monitor(
+                "now_hhmm",
                 return_value=1044,
             ):
                 self.assertTrue(monitor._refresh_strict_minute_paths())

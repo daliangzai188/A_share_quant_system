@@ -59,7 +59,7 @@ from src.strategy_e import (
     resolve_exit_offset,
 )
 from src.strategy_identity import ACTIVE_E_VARIANT, STRATEGY_E_LEG, normalize_strategy_record
-from src.portfolio_ace_m import ACE_FULL_TARGET_PCT
+from src.portfolio_ace_m import AC_LEGS, ACE_FULL_TARGET_PCT
 from src.e_signal_inputs import (  # 2026-11-14 搬到 src，供实盘组合和流水线⑥共用
     SCORED_PATH,
     compute_segment_retreat_states,
@@ -500,7 +500,7 @@ def run_signal_generation(signal_date: str, *, dry_run: bool) -> None:
     # 可执行腿序A>C>E>D：A/C任一已有今日计划时，E不再生成正式资金信号，
     # 但finish_occupied_without_e_signal仍会独立计算并记录E反事实候选，确保
     # “被上游阻断”和“E本身无候选”在日志中可区分。
-    if has_ac_planned_order(signal_date, legs=("A", "C")):
+    if has_ac_planned_order(signal_date, legs=AC_LEGS):
         finish_occupied_without_e_signal(
             signal_date,
             "A或C今日已生成计划委托（腿序A>C>E），E不触发",

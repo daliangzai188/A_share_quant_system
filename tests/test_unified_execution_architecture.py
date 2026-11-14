@@ -4,15 +4,31 @@ import ast
 import unittest
 from pathlib import Path
 from tests.daemon_testing import DAEMON_SOURCE_FILES, read_daemon_source
+from tests.d_monitor_testing import D_MONITOR_SOURCE_FILES, read_d_monitor_source
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _expanded_main_source(source: str, tree: ast.Module) -> str:
+    """守护进程 main 的源码；2026-11-15 起启动常驻线程、主循环拆成 _start_trading_threads/_run_schedule_loop，
+    按调用位置把它们展开回去，顺序检查的含义不变。"""
+    functions = {
+        node.name: ast.get_source_segment(source, node) or ""
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+    }
+    main_source = functions["main"]
+    for helper in ("_start_trading_threads", "_run_schedule_loop"):
+        call = main_source.index(helper + "(")
+        main_source = main_source[:call] + functions[helper] + main_source[call:]
+    return main_source
 
 
 class UnifiedExecutionArchitectureTests(unittest.TestCase):
     def test_every_live_order_request_has_strategy_and_idempotency_identity(self) -> None:
         for path in (
             *DAEMON_SOURCE_FILES,
-            PROJECT_ROOT / "scripts/monitor_strategy_d_intraday.py",
+            *D_MONITOR_SOURCE_FILES,
         ):
             relative = path.relative_to(PROJECT_ROOT).as_posix()
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -76,9 +92,7 @@ class UnifiedExecutionArchitectureTests(unittest.TestCase):
 
     def test_live_d_uses_daemon_position_transaction_callback(self) -> None:
         daemon_source = read_daemon_source()
-        monitor_source = (
-            PROJECT_ROOT / "scripts/monitor_strategy_d_intraday.py"
-        ).read_text(encoding="utf-8")
+        monitor_source = read_d_monitor_source()
         self.assertIn("position_recorder=_record_d_position", daemon_source)
         self.assertIn("if self.live_order and self.position_recorder is None", monitor_source)
         self.assertIn("self.position_recorder(payload)", monitor_source)
@@ -86,11 +100,7 @@ class UnifiedExecutionArchitectureTests(unittest.TestCase):
     def test_recovery_gate_precedes_every_trading_thread(self) -> None:
         source = read_daemon_source()
         tree = ast.parse(source)
-        main = next(
-            node for node in tree.body
-            if isinstance(node, ast.FunctionDef) and node.name == "main"
-        )
-        main_source = ast.get_source_segment(source, main) or ""
+        main_source = _expanded_main_source(source, tree)
         qmt_gate = main_source.index("wait_for_qmt_startup_gate()")
         recovery_gate = main_source.index("wait_for_trade_recovery_gate()")
         first_thread = main_source.index("threading.Thread(")
@@ -131,11 +141,7 @@ class UnifiedExecutionArchitectureTests(unittest.TestCase):
     def test_local_position_and_order_recovery_precedes_runtime_watchdogs(self) -> None:
         source = read_daemon_source()
         tree = ast.parse(source)
-        main = next(
-            node for node in tree.body
-            if isinstance(node, ast.FunctionDef) and node.name == "main"
-        )
-        main_source = ast.get_source_segment(source, main) or ""
+        main_source = _expanded_main_source(source, tree)
         first_runtime_watchdog = main_source.index('name="close-watchdog"')
         for required_recovery in (
             "_d_relay_pair_active_today()",

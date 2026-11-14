@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from scripts import monitor_strategy_d_intraday as d_monitor
 from scripts.monitor_strategy_d_intraday import (
     StockState,
     StrategyDMonitor,
@@ -13,6 +12,7 @@ from src.strategy_d_minute_alignment import (
     expected_completed_minute_hhmm,
     replay_completed_minute_path,
 )
+from tests.d_monitor_testing import monkeypatch_d_monitor
 
 
 class _Logger:
@@ -217,7 +217,7 @@ def test_live_factor_gate_rejects_today_snapshot_false_reseal(
     )
     state = _growth_state()
     monitor.states = {state.ts_code: state}
-    monkeypatch.setattr(d_monitor, "now_hhmm", lambda: 933)
+    monkeypatch_d_monitor(monkeypatch, "now_hhmm", lambda: 933)
 
     assert monitor._refresh_strict_minute_paths() is True
     matched, reason = monitor._factor_release_match(
@@ -254,7 +254,7 @@ def test_live_factor_gate_accepts_completed_minute_reseal(
     )
     state = _growth_state()
     monitor.states = {state.ts_code: state}
-    monkeypatch.setattr(d_monitor, "now_hhmm", lambda: 933)
+    monkeypatch_d_monitor(monkeypatch, "now_hhmm", lambda: 933)
 
     assert monitor._refresh_strict_minute_paths() is True
     matched, reason = monitor._factor_release_match(
@@ -286,7 +286,7 @@ def test_live_minute_paths_are_queried_in_batches_above_subscription_limit(
         state.ts_code = f"{index:06d}.SZ"
         states[state.ts_code] = state
     monitor.states = states
-    monkeypatch.setattr(d_monitor, "now_hhmm", lambda: 1027)
+    monkeypatch_d_monitor(monkeypatch, "now_hhmm", lambda: 1027)
 
     assert monitor._refresh_strict_minute_paths() is False
     assert "一分钟路径不完整" in monitor.strict_minute_refresh_error

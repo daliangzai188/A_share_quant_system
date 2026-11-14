@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from src.execution_event_store import ExecutionEventStore
+from src.market_rules import normalize_ts_code
 from src.strategy_identity import normalize_strategy_leg, normalize_strategy_record
 
 
@@ -80,18 +81,7 @@ def _date(value: Any) -> str:
 
 
 def _code(value: Any) -> str:
-    text = _text(value).upper()
-    if not text:
-        return ""
-    if "." in text:
-        return text
-    if text.startswith(("6", "9")):
-        return f"{text}.SH"
-    if text.startswith(("0", "2", "3")):
-        return f"{text}.SZ"
-    if text.startswith(("4", "8")):
-        return f"{text}.BJ"
-    return text
+    return normalize_ts_code(_text(value))
 
 
 def _float(value: Any) -> float:
@@ -463,6 +453,113 @@ class ExecutionCompletionTracker:
         except (OSError, json.JSONDecodeError):
             return []
 
+    def _summary_row(
+        self, entry_qty, exit_qty, benchmark_open_den, benchmark_close_den, exit_remaining, plan,
+        entry_amount, exit_amount, benchmark_open_num, benchmark_close_num, group, buy_group, summary, key,
+        target_qty, auction_qty, pov_qty, other_buy_qty, exit_target_qty, exit_pov_qty, today, target_amount,
+        auction_amount, pov_amount, other_buy_amount, exit_pov_amount, exit_dates, seed,
+    ):
+        """按成交均价与基准算滑点、状态和备注，生成一笔交易的汇总行（从 rebuild_summary 拆出，语句原样）。"""
+        entry_vwap = entry_amount / entry_qty if entry_qty else 0.0
+        exit_vwap = exit_amount / exit_qty if exit_qty else 0.0
+        benchmark_open = benchmark_open_num / benchmark_open_den if benchmark_open_den else 0.0
+        benchmark_close = benchmark_close_num / benchmark_close_den if benchmark_close_den else 0.0
+        buy_slippage = (
+            (entry_vwap / benchmark_open - 1.0) * 10000
+            if entry_vwap > 0 and benchmark_open > 0 else 0.0
+        )
+        sell_slippage = (
+            (benchmark_close / exit_vwap - 1.0) * 10000
+            if exit_vwap > 0 and benchmark_close > 0 else 0.0
+        )
+        planned_exit_date = _date(plan.get("planned_exit_date")) or max(
+            [_date(pos.get("planned_exit_date")) for pos in group] or [""]
+        )
+        if entry_qty <= 0:
+            status = _text(plan.get("entry_status")) or "计划中"
+        elif exit_target_qty > 0 and exit_remaining == 0:
+            status = "已平仓"
+        elif exit_qty > 0:
+            status = "平仓中"
+        else:
+            status = "持仓中"
+        overnight = exit_remaining if planned_exit_date and planned_exit_date <= today else 0
+
+        notes: list[str] = []
+        if not plan:
+            notes.append("缺少原始计划，目标股数暂以真实买入股数回填")
+        elif _text(plan.get("entry_status")) == "已回填":
+            notes.append("上线前原始计划未统一留档，目标股数由历史持仓/容量档案回填")
+        entry_plan_source = (
+            "MISSING"
+            if not plan
+            else "BACKFILLED"
+            if _text(plan.get("entry_status")) == "已回填"
+            else "LIVE_FROZEN"
+        )
+        if not group and (buy_group or plan):
+            notes.append("尚无持仓成交账")
+        if benchmark_open <= 0:
+            notes.append("缺少开盘基准，暂不计算买入滑点")
+        if exit_qty > 0 and benchmark_close <= 0:
+            notes.append("缺少收盘基准，暂不计算卖出滑点")
+
+        summary.append({
+            "trade_key": key,
+            "entry_date": _date(plan.get("entry_date")) or _date(seed.get("buy_date", seed.get("entry_date"))),
+            "ts_code": _code(plan.get("ts_code")) or _code(seed.get("ts_code")),
+            "name": _text(plan.get("name")) or _text(seed.get("name")),
+            "strategy_leg": normalize_strategy_leg(plan.get("strategy_leg"))
+            or normalize_strategy_leg(seed.get("strategy_leg")),
+            "signal_date": _date(plan.get("signal_date")) or _date(seed.get("signal_date")),
+            "planned_exit_date": planned_exit_date,
+            "entry_plan_source": entry_plan_source,
+            "entry_target_qty": target_qty,
+            "entry_target_amount": round(target_amount, 2),
+            "auction_planned_qty": _int(plan.get("auction_planned_qty")),
+            "pov_planned_qty": _int(plan.get("pov_planned_qty")),
+            "pov_target_amount": round(_float(plan.get("pov_target_amount")), 2),
+            "auction_filled_qty": auction_qty,
+            "auction_fill_amount": round(auction_amount, 2),
+            "auction_completion_pct": round(
+                auction_qty / _int(plan.get("auction_planned_qty")) * 100, 4
+            ) if _int(plan.get("auction_planned_qty")) else 0.0,
+            "pov_filled_qty": pov_qty,
+            "pov_fill_amount": round(pov_amount, 2),
+            "pov_completion_pct": round(
+                pov_qty / _int(plan.get("pov_planned_qty")) * 100, 4
+            ) if _int(plan.get("pov_planned_qty")) else 0.0,
+            "other_buy_filled_qty": other_buy_qty,
+            "other_buy_fill_amount": round(other_buy_amount, 2),
+            "entry_filled_qty": entry_qty,
+            "entry_fill_amount": round(entry_amount, 2),
+            "entry_unfilled_qty": max(target_qty - entry_qty, 0),
+            "entry_unfilled_amount": round(max(target_amount - entry_amount, 0.0), 2),
+            "entry_qty_completion_pct": round(entry_qty / target_qty * 100, 4) if target_qty else 0.0,
+            "entry_amount_completion_pct": round(entry_amount / target_amount * 100, 4) if target_amount else 0.0,
+            "entry_vwap": round(entry_vwap, 6),
+            "benchmark_open": round(benchmark_open, 6),
+            "buy_slippage_bps": round(buy_slippage, 4),
+            "exit_date": max(exit_dates or [_date(group[0].get("sell_date")) if group else ""]),
+            "exit_target_qty": exit_target_qty,
+            "exit_pov_filled_qty": exit_pov_qty,
+            "exit_pov_fill_amount": round(exit_pov_amount, 2),
+            "exit_other_filled_qty": max(exit_qty - exit_pov_qty, 0),
+            "exit_other_fill_amount": round(max(exit_amount - exit_pov_amount, 0.0), 2),
+            "exit_filled_qty": exit_qty,
+            "exit_fill_amount": round(exit_amount, 2),
+            "exit_completion_pct": round(exit_qty / exit_target_qty * 100, 4) if exit_target_qty else 0.0,
+            "exit_vwap": round(exit_vwap, 6),
+            "benchmark_close": round(benchmark_close, 6),
+            "sell_slippage_bps": round(sell_slippage, 4),
+            "total_slippage_bps": round(buy_slippage + sell_slippage, 4),
+            "exit_remaining_qty": exit_remaining,
+            "overnight_residual_qty": overnight,
+            "execution_status": status,
+            "data_quality_note": "；".join(notes),
+            "updated_at": _now_text(),
+        })
+
     def rebuild_summary(self) -> Path:
         """以持仓成交账为权威口径重建统一汇总，函数可重复执行。"""
         with _tracker_lock:
@@ -624,105 +721,13 @@ class ExecutionCompletionTracker:
                             benchmark_close_num += price * weight
                             benchmark_close_den += weight
 
-                entry_vwap = entry_amount / entry_qty if entry_qty else 0.0
-                exit_vwap = exit_amount / exit_qty if exit_qty else 0.0
-                benchmark_open = benchmark_open_num / benchmark_open_den if benchmark_open_den else 0.0
-                benchmark_close = benchmark_close_num / benchmark_close_den if benchmark_close_den else 0.0
-                buy_slippage = (
-                    (entry_vwap / benchmark_open - 1.0) * 10000
-                    if entry_vwap > 0 and benchmark_open > 0 else 0.0
+                self._summary_row(
+                    entry_qty, exit_qty, benchmark_open_den, benchmark_close_den, exit_remaining, plan,
+                    entry_amount, exit_amount, benchmark_open_num, benchmark_close_num, group, buy_group,
+                    summary, key, target_qty, auction_qty, pov_qty, other_buy_qty, exit_target_qty,
+                    exit_pov_qty, today, target_amount, auction_amount, pov_amount, other_buy_amount,
+                    exit_pov_amount, exit_dates, seed,
                 )
-                sell_slippage = (
-                    (benchmark_close / exit_vwap - 1.0) * 10000
-                    if exit_vwap > 0 and benchmark_close > 0 else 0.0
-                )
-                planned_exit_date = _date(plan.get("planned_exit_date")) or max(
-                    [_date(pos.get("planned_exit_date")) for pos in group] or [""]
-                )
-                if entry_qty <= 0:
-                    status = _text(plan.get("entry_status")) or "计划中"
-                elif exit_target_qty > 0 and exit_remaining == 0:
-                    status = "已平仓"
-                elif exit_qty > 0:
-                    status = "平仓中"
-                else:
-                    status = "持仓中"
-                overnight = exit_remaining if planned_exit_date and planned_exit_date <= today else 0
-
-                notes: list[str] = []
-                if not plan:
-                    notes.append("缺少原始计划，目标股数暂以真实买入股数回填")
-                elif _text(plan.get("entry_status")) == "已回填":
-                    notes.append("上线前原始计划未统一留档，目标股数由历史持仓/容量档案回填")
-                entry_plan_source = (
-                    "MISSING"
-                    if not plan
-                    else "BACKFILLED"
-                    if _text(plan.get("entry_status")) == "已回填"
-                    else "LIVE_FROZEN"
-                )
-                if not group and (buy_group or plan):
-                    notes.append("尚无持仓成交账")
-                if benchmark_open <= 0:
-                    notes.append("缺少开盘基准，暂不计算买入滑点")
-                if exit_qty > 0 and benchmark_close <= 0:
-                    notes.append("缺少收盘基准，暂不计算卖出滑点")
-
-                summary.append({
-                    "trade_key": key,
-                    "entry_date": _date(plan.get("entry_date")) or _date(seed.get("buy_date", seed.get("entry_date"))),
-                    "ts_code": _code(plan.get("ts_code")) or _code(seed.get("ts_code")),
-                    "name": _text(plan.get("name")) or _text(seed.get("name")),
-                    "strategy_leg": normalize_strategy_leg(plan.get("strategy_leg"))
-                    or normalize_strategy_leg(seed.get("strategy_leg")),
-                    "signal_date": _date(plan.get("signal_date")) or _date(seed.get("signal_date")),
-                    "planned_exit_date": planned_exit_date,
-                    "entry_plan_source": entry_plan_source,
-                    "entry_target_qty": target_qty,
-                    "entry_target_amount": round(target_amount, 2),
-                    "auction_planned_qty": _int(plan.get("auction_planned_qty")),
-                    "pov_planned_qty": _int(plan.get("pov_planned_qty")),
-                    "pov_target_amount": round(_float(plan.get("pov_target_amount")), 2),
-                    "auction_filled_qty": auction_qty,
-                    "auction_fill_amount": round(auction_amount, 2),
-                    "auction_completion_pct": round(
-                        auction_qty / _int(plan.get("auction_planned_qty")) * 100, 4
-                    ) if _int(plan.get("auction_planned_qty")) else 0.0,
-                    "pov_filled_qty": pov_qty,
-                    "pov_fill_amount": round(pov_amount, 2),
-                    "pov_completion_pct": round(
-                        pov_qty / _int(plan.get("pov_planned_qty")) * 100, 4
-                    ) if _int(plan.get("pov_planned_qty")) else 0.0,
-                    "other_buy_filled_qty": other_buy_qty,
-                    "other_buy_fill_amount": round(other_buy_amount, 2),
-                    "entry_filled_qty": entry_qty,
-                    "entry_fill_amount": round(entry_amount, 2),
-                    "entry_unfilled_qty": max(target_qty - entry_qty, 0),
-                    "entry_unfilled_amount": round(max(target_amount - entry_amount, 0.0), 2),
-                    "entry_qty_completion_pct": round(entry_qty / target_qty * 100, 4) if target_qty else 0.0,
-                    "entry_amount_completion_pct": round(entry_amount / target_amount * 100, 4) if target_amount else 0.0,
-                    "entry_vwap": round(entry_vwap, 6),
-                    "benchmark_open": round(benchmark_open, 6),
-                    "buy_slippage_bps": round(buy_slippage, 4),
-                    "exit_date": max(exit_dates or [_date(group[0].get("sell_date")) if group else ""]),
-                    "exit_target_qty": exit_target_qty,
-                    "exit_pov_filled_qty": exit_pov_qty,
-                    "exit_pov_fill_amount": round(exit_pov_amount, 2),
-                    "exit_other_filled_qty": max(exit_qty - exit_pov_qty, 0),
-                    "exit_other_fill_amount": round(max(exit_amount - exit_pov_amount, 0.0), 2),
-                    "exit_filled_qty": exit_qty,
-                    "exit_fill_amount": round(exit_amount, 2),
-                    "exit_completion_pct": round(exit_qty / exit_target_qty * 100, 4) if exit_target_qty else 0.0,
-                    "exit_vwap": round(exit_vwap, 6),
-                    "benchmark_close": round(benchmark_close, 6),
-                    "sell_slippage_bps": round(sell_slippage, 4),
-                    "total_slippage_bps": round(buy_slippage + sell_slippage, 4),
-                    "exit_remaining_qty": exit_remaining,
-                    "overnight_residual_qty": overnight,
-                    "execution_status": status,
-                    "data_quality_note": "；".join(notes),
-                    "updated_at": _now_text(),
-                })
 
             _write_csv(self.summary_path, SUMMARY_FIELDS, summary)
             return self.summary_path

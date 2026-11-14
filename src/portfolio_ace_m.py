@@ -16,10 +16,18 @@ M（20cm 强势涨停接力）
 - ACE + M 合计不超过 99.5%；M 不设停手；同一时间最多 1 只；不买 ACE 持有/计划买入的股票。
 """
 
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
-ACE_LEGS = ("A", "C", "E", "D")
+# ── 策略腿（2026-11-15 起唯一出处，其它模块引用这里的名字，不再自己写字母组合）──────────────
+# 固定腿序 A>C>E>D（AGENTS.md 第二十五节）：实盘组合状态机按它依次尝试开仓，影子账、停手判定和认证回放按它裁决。
+ACE_LEG_PRIORITY = ("A", "C", "E", "D")
+ACE_LEGS = ACE_LEG_PRIORITY                                               # ACE 家族（含D）
+ACE_STATIC_LEGS = tuple(leg for leg in ACE_LEG_PRIORITY if leg != "D")    # 收盘后冻结计划的腿；D 走盘中路径
+AC_LEGS = tuple(leg for leg in ACE_STATIC_LEGS if leg != "E")             # 收盘流水线⑥出计划、共用“ABC开仓”动作
 M_LEG = "M"
+ALL_LEGS = ACE_LEG_PRIORITY + (M_LEG,)                                    # 系统会开仓的全部策略腿
+REPORT_LEGS = ACE_STATIC_LEGS + (M_LEG,)                                  # 日报、对账、警告按腿列出的顺序
+REMARK_LEG_MATCH_ORDER = ("E", "D", "A", "C")   # 从委托策略名/备注认腿时的匹配顺序（沿用执行服务原顺序，与开仓腿序无关）
 
 ACE_FULL_TARGET_PCT = 0.825
 ACE_REDUCED_TARGET_PCT = 0.20
@@ -34,6 +42,18 @@ M_PCT_BESIDE_ACE = 0.175
 GATE_FULL = "FULL"
 GATE_REDUCED = "REDUCED"
 GATE_BLOCKED = "BLOCKED"
+
+
+def first_leg_to_open(openers: Mapping[str, Callable[[], bool]]) -> str | None:
+    """按固定腿序 A>C>E>D 依次调用各腿的开仓函数（返回是否开仓），返回第一条开成的腿；之后的腿不再调用。
+
+    没有给出开仓函数的腿跳过（D 走盘中路径，不在收盘计划里）。
+    """
+    for leg in ACE_LEG_PRIORITY:
+        opener = openers.get(leg)
+        if opener is not None and opener():
+            return leg
+    return None
 
 
 def normalize_leg(value: Any) -> str:

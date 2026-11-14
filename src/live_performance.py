@@ -9,11 +9,12 @@ from typing import Any, Mapping
 
 import pandas as pd
 
+from src.portfolio_ace_m import ACE_LEG_PRIORITY
 from src.strategy_identity import normalize_strategy_frame, normalize_strategy_leg
 from src.trading_fees import DEFAULT_STAMP_TAX_SCHEDULE, stamp_tax_rate_for_date
 
 
-ACTIVE_LEGS = {"A", "C", "D", "E"}
+ACTIVE_LEGS = set(ACE_LEG_PRIORITY)
 
 
 def _numeric(frame: pd.DataFrame, column: str) -> pd.Series:

@@ -13,7 +13,9 @@ from typing import Any
 
 from src.utils.config import load_json_config
 from src.utils.time_utils import now_beijing, today_beijing
+from src.market_rules import price_limit_pct
 from src.portfolio_ace_m import (
+    AC_LEGS,
     GATE_BLOCKED as ACE_GATE_BLOCKED,
     GATE_REDUCED as ACE_GATE_REDUCED,
     ace_gate_mode,
@@ -394,7 +396,7 @@ def _combined_open_action_for_current_mode(decisions) -> str:
 
 
 OPEN_ACTION_LEG_PRIORITY: dict[str, tuple[str, ...]] = {
-    "ALLOW_ABC_BUY_PREVIEW": ("A", "C"),
+    "ALLOW_ABC_BUY_PREVIEW": AC_LEGS,
     "ALLOW_E_BUY": ("E",),
 }
 
@@ -610,16 +612,10 @@ def _limit_up_pct_for_stock(ts_code: str, name: str = "") -> float:
 
     这里不用卖一/卖五替代涨停价。盘前预挂的目标是尽量贴近回测的
     “T+1按涨停价排队/成交”口径，QMT行情缺涨停价时只能用昨收价估算。
+    幅度按现行交易规则（规则在 src.market_rules.price_limit_pct；2026-11-15 前这里另写一份，
+    ST一律按5%，现行规则主板风险警示股是10%。系统不买ST股票，非ST股票的结果不变）。
     """
-    code = str(ts_code).upper()
-    name_s = str(name).upper()
-    if "ST" in name_s:
-        return 0.05
-    if code.startswith(("300", "301", "688", "689")):
-        return 0.20
-    if code.startswith(("8", "4", "920", "830", "870")) or code.endswith(".BJ"):
-        return 0.30
-    return 0.10
+    return float(price_limit_pct(ts_code, name=str(name)) or 0.10)
 
 
 def _round_stock_price(value: float) -> float:

@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from src.utils.config import load_json_config, mkdir_p
+from src.market_rules import STAR_MIN_ORDER_SHARES, market_segment
 from src.utils.time_utils import now_beijing, today_beijing
 from src.portfolio_ace_m import ACE_FULL_HARD_CAP_PCT, ACE_FULL_TARGET_PCT
 from src.strategy_d_checkpoint import (
@@ -385,7 +386,7 @@ def _d_relay_prepare_state(
     target_amount = min(total_asset * target_pct, liquidity_cap, fixed_cap)
     hard_cap_amount = min(total_asset * hard_pct, liquidity_cap, fixed_cap)
     candidate_short = candidate_code.upper().split(".")[0]
-    candidate_min_buy = 200 if candidate_short.startswith(("688", "689")) else int(
+    candidate_min_buy = STAR_MIN_ORDER_SHARES if market_segment(candidate_short) == "star" else int(
         live_cfg.get("round_lot_size", 100)
     )
     if reference_price <= 0 or min(target_amount, hard_cap_amount) < reference_price * candidate_min_buy:
@@ -793,9 +794,9 @@ def _d_relay_submit_buy(
     ts_code = str(candidate.get("ts_code", ""))
     name = str(candidate.get("name", ""))
     short_code = ts_code.upper().split(".")[0]
-    is_star_market = short_code.startswith(("688", "689"))
+    is_star_market = market_segment(short_code) == "star"
     buy_step = 1 if is_star_market else lot_size
-    min_buy_qty = 200 if is_star_market else lot_size
+    min_buy_qty = STAR_MIN_ORDER_SHARES if is_star_market else lot_size
     price, gate_reason = relay_buy_limit_price(quote, chase_cap=chase_cap)
     if price <= 0:
         _d_relay_pair_log(state, event="买入跳过", note=gate_reason)
@@ -1045,7 +1046,7 @@ def _d_relay_execute_pair_slice(state: dict[str, Any], broker_cfg: dict) -> None
     )
     next_price, gate_reason = relay_buy_limit_price(next_quote, chase_cap=chase_cap)
     next_short = next_code.upper().split(".")[0]
-    next_min_buy_qty = 200 if next_short.startswith(("688", "689")) else lot_size
+    next_min_buy_qty = STAR_MIN_ORDER_SHARES if market_segment(next_short) == "star" else lot_size
     if outstanding_credit >= max(next_price, 0.0) * next_min_buy_qty and next_price > 0:
         _d_relay_submit_buy(
             state, broker_cfg, account=account, quote=next_quote,
@@ -1212,6 +1213,226 @@ def _start_d_relay_pair_worker() -> None:
         _d_relay_pair_thread.start()
 
 
+def _premarket_sell_d_relay_part(pos, config, force_relay_sell, ts_code, shares, broker_cfg, name):
+    """D接力：锁定唯一接力候选后，只按竞价安全量卖出D并建立成对POV任务（从 _premarket_sell_one_position 拆出，语句原样）。"""
+    if force_relay_sell:
+        # D接力必须先锁定唯一候选。计划缺失或多候选时宁可继续持有D，
+        # 也不能先卖出后才临时决定买什么。
+        try:
+            candidate = _load_d_relay_candidate_order()
+            if candidate is None:
+                raise RuntimeError("组合计划没有唯一PLAN_D_RELAY_PAIRED_BUY候选")
+            with _qmt_lock:
+                adapter = _qmt_get(broker_cfg)
+                account = adapter.query_account()
+                broker_total, broker_can_use = _broker_position_quantities(adapter, ts_code)
+                quote = adapter.get_full_tick([ts_code]).get(ts_code)
+            state = _d_relay_prepare_state(
+                pos, candidate, account=account,
+                broker_total=broker_total, broker_can_use=broker_can_use,
+            )
+            state_status = str(state.get("status", "")).upper()
+            if state_status in {"DONE", "BLOCKED"}:
+                logger().warning(
+                    "[D接力] 当日任务已经%s（%s），09:23重复触发不再提交任何委托。",
+                    state_status, state.get("done_reason", state.get("blocked_reason", "")),
+                )
+                return True, None
+            pending_sell = state.get("pending_sell")
+            if isinstance(pending_sell, dict) and str(pending_sell.get("status", "")).upper() != "RESOLVED":
+                logger().warning(
+                    "[D接力] 已有未终态卖单%s，09:23重复触发不叠单。",
+                    pending_sell.get("order_id", "PREPARED"),
+                )
+                return True, None
+            if bool(state.get("auction_decided", False)):
+                logger().warning("[D接力] 09:23竞价容量已经判定，重复触发不再提交第二张竞价卖单。")
+                return True, None
+            if _ts_code_aliases(ts_code) & _ts_code_aliases(candidate.get("ts_code", "")):
+                _handoff_same_stock_d_relay(state)
+                logger().warning(
+                    "✅ [D接力] %s与候选同票，已直接切换策略归属，不提交卖出/买入委托。",
+                    ts_code,
+                )
+                return True, None
+
+            live_cfg = config.get("live_trade", {})
+            if not bool(live_cfg.get("d_relay_paired_pov_enabled", False)):
+                raise RuntimeError("d_relay_paired_pov_enabled=false，禁止退回旧版整仓竞价卖D")
+            auction_decision = calculate_auction_safe_sell_quantity(
+                quote,
+                position_shares=shares,
+                max_participation=float(live_cfg.get("d_relay_auction_max_participation", 0.025)),
+                max_unmatched_sell_ratio=float(live_cfg.get("d_relay_auction_max_unmatched_sell_ratio", 0.05)),
+                book_volume_unit=int(live_cfg.get("d_relay_auction_book_volume_unit", 1)),
+                lot_size=int(live_cfg.get("round_lot_size", 100)),
+                max_reference_spread_pct=float(live_cfg.get("d_relay_auction_max_reference_spread_pct", 0.001)),
+            )
+            auction_safe_qty = _normalize_exit_slice_quantity(
+                ts_code, auction_decision.quantity, shares
+            )
+            _d_relay_pair_log(
+                state, event="竞价容量判定", order_qty=auction_safe_qty,
+                fill_price=auction_decision.reference_price,
+                note=(f"{auction_decision.reason}；匹配量{auction_decision.matched_quantity}股，"
+                      f"卖方失衡{auction_decision.unmatched_sell_ratio:.2%}"),
+            )
+            state["auction_decided"] = True
+            if auction_safe_qty <= 0:
+                state["status"] = "ACTIVE"
+                state["auction_skip_reason"] = auction_decision.reason
+                _d_relay_pair_save_state(state)
+                logger().warning(
+                    "🛡️ [D接力竞价保护] %s 本次竞价安全卖量为0（%s）；不卖D，"
+                    "09:30后仅按盘口与流量做成对POV。",
+                    ts_code, auction_decision.reason,
+                )
+                return True, None
+            lower_limit = float(getattr(quote, "lower_limit", 0.0) or 0.0) if quote else 0.0
+            if lower_limit <= 0:
+                state["status"] = "ACTIVE"
+                state["auction_skip_reason"] = "跌停申报价缺失"
+                _d_relay_pair_save_state(state)
+                logger().warning(
+                    "🛡️ [D接力竞价保护] %s 跌停申报价缺失，竞价不提交；09:30后成对POV。",
+                    ts_code,
+                )
+                return True, None
+            submitted = _d_relay_submit_sell(
+                state, broker_cfg, quote=quote,
+                requested_qty=auction_safe_qty,
+                limit_price=lower_limit, phase="D接力竞价安全部分",
+            )
+            state["status"] = "AUCTION_SUBMITTED" if submitted else "ACTIVE"
+            _d_relay_pair_save_state(state)
+            if submitted:
+                submitted_qty = int((state.get("pending_sell") or {}).get("quantity", 0) or 0)
+                logger().warning(
+                    "⏳ [D接力竞价安全部分] %s %s 仅提交%d/%d股@跌停申报价%.2f；"
+                    "实际按开盘撮合价成交，09:26确认后才计入可买资金。",
+                    ts_code, name, submitted_qty, shares, lower_limit,
+                )
+            else:
+                logger().warning(
+                    "[D接力竞价安全部分] %s 未提交成功，保留D，09:30后成对POV继续评估。",
+                    ts_code,
+                )
+        except Exception as exc:
+            logger().exception("D接力竞价准备失败（%s）：%s", ts_code, exc)
+            try:
+                state = _d_relay_pair_load_state()
+                if state:
+                    _d_relay_block(state, f"09:23竞价准备失败:{exc}")
+            except Exception:
+                _notify(
+                    "sell_fail", "🛑 D接力竞价准备失败",
+                    f"{ts_code} {name}：{exc}。未执行旧版整仓卖出，请立即核对。",
+                    level="critical", call=True,
+                )
+        return True, None
+    return False, None
+
+
+def _premarket_sell_one_position(force_d_sell_codes, qmt_enabled, pos, today_str, config):
+    """09:23处理一条持仓：只有D的历史sell_pending或接力仓在集合竞价卖安全部分，其余等14:55收盘平仓；异常只记日志（从 job_premarket_sell 拆出，语句原样）。"""
+    try:
+        if pos.get("status") == "closed":
+            return
+        ts_code = pos.get("ts_code", "")
+        name    = pos.get("name", "")
+        shares  = int(pos.get("shares", 0))
+        planned_exit = pos.get("planned_exit_date", "99991231")
+        strategy_leg = str(pos.get("strategy_leg", "")).upper()
+
+        # 只处理 D 策略：E/ABC 回测用收盘价，不在集合竞价提前卖出
+        if strategy_leg != "D":
+            logger().info(
+                "09:23 %s %s 策略=%s，回测用收盘价平仓，跳过集合竞价，等待14:55收盘平仓。",
+                ts_code, name, strategy_leg or "未知",
+            )
+            return
+
+        force_relay_sell = ts_code in force_d_sell_codes
+
+        # 只处理历史 sell_pending，或因A/C/E接力需要T+1开盘先卖的D持仓。
+        # D 默认 T+2 到期日也必须等 14:55 收盘平仓，不在09:23提前卖。
+        if pos.get("status") != "sell_pending" and not force_relay_sell:
+            if planned_exit <= today_str:
+                logger().info(
+                    "09:23 D默认T+2平仓：%s %s 今日到期(%s)，等待14:55收盘平仓，不集合竞价卖出。",
+                    ts_code, name, planned_exit,
+                )
+            else:
+                logger().info("09:23 持仓 %s %s 计划平仓日 %s，今日无需平仓，跳过。", ts_code, name, planned_exit)
+            return
+        if force_relay_sell and planned_exit > today_str:
+            logger().warning(
+                "09:23 D接力准备：%s %s 默认计划平仓日%s，但今日有A/C/E接力候选；只卖竞价安全部分，其余09:30后成对POV。",
+                ts_code, name, planned_exit,
+            )
+
+        if not qmt_enabled:
+            logger().info("[集合竞价平仓] 模拟盘：%s %s 将在开盘时平仓", ts_code, name)
+            return
+
+        broker_cfg = config.get("broker", {})
+
+        _done, _value = _premarket_sell_d_relay_part(
+            pos, config, force_relay_sell, ts_code, shares, broker_cfg, name,
+        )
+        if _done:
+            return _value
+
+        with _qmt_lock:
+            adapter   = _qmt_get(broker_cfg)
+            quote_map = adapter.get_full_tick([ts_code])
+
+        quote       = quote_map.get(ts_code)
+        lower_limit = float(getattr(quote, "lower_limit", 0.0) or 0.0) if quote else 0.0
+
+        if lower_limit <= 0:
+            logger().warning("09:22 %s %s 无法获取跌停价，跳过集合竞价平仓，等待09:30。", ts_code, name)
+            return
+
+        logger().warning("⏳ [集合竞价平仓] %s %s  %d股  跌停价%.2f元", ts_code, name, shares, lower_limit)
+
+        from src.broker_adapter import OrderRequest
+        request = OrderRequest(
+            ts_code=ts_code,
+            broker_code=ts_code,
+            side="SELL",
+            quantity=shares,
+            price_type="FIXED_PRICE",
+            price=lower_limit,
+            strategy_name="A_SYSTEM_PREMARKET_SELL",
+            remark=f"集合竞价平仓-{today_str}",
+            strategy_leg=strategy_leg,
+            business_date=today_str,
+            signal_date=str(pos.get("signal_date", "")),
+            planned_exit_date=str(pos.get("planned_exit_date", "")),
+            purpose="CLOSE",
+            source_key=(
+                f"PREMARKET_CLOSE|{today_str}|{pos.get('order_id', '')}|{ts_code}"
+            ),
+            metadata={"execution_channel": "集合竞价平仓", "name": name},
+        )
+        with _qmt_lock:
+            adapter = _qmt_get(broker_cfg)
+            result  = adapter.place_order(request)
+
+        if result.accepted:
+            # 集合竞价9:25才撮合，此处不立即标记平仓，由09:26持仓同步按实盘实际成交确认
+            logger().info(
+                "✅ [集合竞价平仓] %s %s 委托已受理（order_id=%s），等待09:25撮合，09:26按实盘确认。",
+                ts_code, name, result.order_id,
+            )
+        else:
+            logger().error("❌ [集合竞价平仓] %s %s 提交失败：%s，等待后续平仓任务处理。", ts_code, name, result.message)
+
+    except Exception as e:
+        logger().error("集合竞价平仓异常（%s）：%s", pos.get("ts_code"), e)
+
+
 def job_premarket_sell() -> None:
     """09:23 集合竞价：D接力只卖安全部分；历史sell_pending仍按原应急路径。
 
@@ -1266,212 +1487,7 @@ def job_premarket_sell() -> None:
         force_d_sell_codes = set(rows.get("ts_code", []).dropna().astype(str).tolist())
 
     for pos in positions:
-        try:
-            if pos.get("status") == "closed":
-                continue
-            ts_code = pos.get("ts_code", "")
-            name    = pos.get("name", "")
-            shares  = int(pos.get("shares", 0))
-            planned_exit = pos.get("planned_exit_date", "99991231")
-            strategy_leg = str(pos.get("strategy_leg", "")).upper()
-
-            # 只处理 D 策略：E/ABC 回测用收盘价，不在集合竞价提前卖出
-            if strategy_leg != "D":
-                logger().info(
-                    "09:23 %s %s 策略=%s，回测用收盘价平仓，跳过集合竞价，等待14:55收盘平仓。",
-                    ts_code, name, strategy_leg or "未知",
-                )
-                continue
-
-            force_relay_sell = ts_code in force_d_sell_codes
-
-            # 只处理历史 sell_pending，或因A/C/E接力需要T+1开盘先卖的D持仓。
-            # D 默认 T+2 到期日也必须等 14:55 收盘平仓，不在09:23提前卖。
-            if pos.get("status") != "sell_pending" and not force_relay_sell:
-                if planned_exit <= today_str:
-                    logger().info(
-                        "09:23 D默认T+2平仓：%s %s 今日到期(%s)，等待14:55收盘平仓，不集合竞价卖出。",
-                        ts_code, name, planned_exit,
-                    )
-                else:
-                    logger().info("09:23 持仓 %s %s 计划平仓日 %s，今日无需平仓，跳过。", ts_code, name, planned_exit)
-                continue
-            if force_relay_sell and planned_exit > today_str:
-                logger().warning(
-                    "09:23 D接力准备：%s %s 默认计划平仓日%s，但今日有A/C/E接力候选；只卖竞价安全部分，其余09:30后成对POV。",
-                    ts_code, name, planned_exit,
-                )
-
-            if not qmt_enabled:
-                logger().info("[集合竞价平仓] 模拟盘：%s %s 将在开盘时平仓", ts_code, name)
-                continue
-
-            broker_cfg = config.get("broker", {})
-
-            if force_relay_sell:
-                # D接力必须先锁定唯一候选。计划缺失或多候选时宁可继续持有D，
-                # 也不能先卖出后才临时决定买什么。
-                try:
-                    candidate = _load_d_relay_candidate_order()
-                    if candidate is None:
-                        raise RuntimeError("组合计划没有唯一PLAN_D_RELAY_PAIRED_BUY候选")
-                    with _qmt_lock:
-                        adapter = _qmt_get(broker_cfg)
-                        account = adapter.query_account()
-                        broker_total, broker_can_use = _broker_position_quantities(adapter, ts_code)
-                        quote = adapter.get_full_tick([ts_code]).get(ts_code)
-                    state = _d_relay_prepare_state(
-                        pos, candidate, account=account,
-                        broker_total=broker_total, broker_can_use=broker_can_use,
-                    )
-                    state_status = str(state.get("status", "")).upper()
-                    if state_status in {"DONE", "BLOCKED"}:
-                        logger().warning(
-                            "[D接力] 当日任务已经%s（%s），09:23重复触发不再提交任何委托。",
-                            state_status, state.get("done_reason", state.get("blocked_reason", "")),
-                        )
-                        continue
-                    pending_sell = state.get("pending_sell")
-                    if isinstance(pending_sell, dict) and str(pending_sell.get("status", "")).upper() != "RESOLVED":
-                        logger().warning(
-                            "[D接力] 已有未终态卖单%s，09:23重复触发不叠单。",
-                            pending_sell.get("order_id", "PREPARED"),
-                        )
-                        continue
-                    if bool(state.get("auction_decided", False)):
-                        logger().warning("[D接力] 09:23竞价容量已经判定，重复触发不再提交第二张竞价卖单。")
-                        continue
-                    if _ts_code_aliases(ts_code) & _ts_code_aliases(candidate.get("ts_code", "")):
-                        _handoff_same_stock_d_relay(state)
-                        logger().warning(
-                            "✅ [D接力] %s与候选同票，已直接切换策略归属，不提交卖出/买入委托。",
-                            ts_code,
-                        )
-                        continue
-
-                    live_cfg = config.get("live_trade", {})
-                    if not bool(live_cfg.get("d_relay_paired_pov_enabled", False)):
-                        raise RuntimeError("d_relay_paired_pov_enabled=false，禁止退回旧版整仓竞价卖D")
-                    auction_decision = calculate_auction_safe_sell_quantity(
-                        quote,
-                        position_shares=shares,
-                        max_participation=float(live_cfg.get("d_relay_auction_max_participation", 0.025)),
-                        max_unmatched_sell_ratio=float(live_cfg.get("d_relay_auction_max_unmatched_sell_ratio", 0.05)),
-                        book_volume_unit=int(live_cfg.get("d_relay_auction_book_volume_unit", 1)),
-                        lot_size=int(live_cfg.get("round_lot_size", 100)),
-                        max_reference_spread_pct=float(live_cfg.get("d_relay_auction_max_reference_spread_pct", 0.001)),
-                    )
-                    auction_safe_qty = _normalize_exit_slice_quantity(
-                        ts_code, auction_decision.quantity, shares
-                    )
-                    _d_relay_pair_log(
-                        state, event="竞价容量判定", order_qty=auction_safe_qty,
-                        fill_price=auction_decision.reference_price,
-                        note=(f"{auction_decision.reason}；匹配量{auction_decision.matched_quantity}股，"
-                              f"卖方失衡{auction_decision.unmatched_sell_ratio:.2%}"),
-                    )
-                    state["auction_decided"] = True
-                    if auction_safe_qty <= 0:
-                        state["status"] = "ACTIVE"
-                        state["auction_skip_reason"] = auction_decision.reason
-                        _d_relay_pair_save_state(state)
-                        logger().warning(
-                            "🛡️ [D接力竞价保护] %s 本次竞价安全卖量为0（%s）；不卖D，"
-                            "09:30后仅按盘口与流量做成对POV。",
-                            ts_code, auction_decision.reason,
-                        )
-                        continue
-                    lower_limit = float(getattr(quote, "lower_limit", 0.0) or 0.0) if quote else 0.0
-                    if lower_limit <= 0:
-                        state["status"] = "ACTIVE"
-                        state["auction_skip_reason"] = "跌停申报价缺失"
-                        _d_relay_pair_save_state(state)
-                        logger().warning(
-                            "🛡️ [D接力竞价保护] %s 跌停申报价缺失，竞价不提交；09:30后成对POV。",
-                            ts_code,
-                        )
-                        continue
-                    submitted = _d_relay_submit_sell(
-                        state, broker_cfg, quote=quote,
-                        requested_qty=auction_safe_qty,
-                        limit_price=lower_limit, phase="D接力竞价安全部分",
-                    )
-                    state["status"] = "AUCTION_SUBMITTED" if submitted else "ACTIVE"
-                    _d_relay_pair_save_state(state)
-                    if submitted:
-                        submitted_qty = int((state.get("pending_sell") or {}).get("quantity", 0) or 0)
-                        logger().warning(
-                            "⏳ [D接力竞价安全部分] %s %s 仅提交%d/%d股@跌停申报价%.2f；"
-                            "实际按开盘撮合价成交，09:26确认后才计入可买资金。",
-                            ts_code, name, submitted_qty, shares, lower_limit,
-                        )
-                    else:
-                        logger().warning(
-                            "[D接力竞价安全部分] %s 未提交成功，保留D，09:30后成对POV继续评估。",
-                            ts_code,
-                        )
-                except Exception as exc:
-                    logger().exception("D接力竞价准备失败（%s）：%s", ts_code, exc)
-                    try:
-                        state = _d_relay_pair_load_state()
-                        if state:
-                            _d_relay_block(state, f"09:23竞价准备失败:{exc}")
-                    except Exception:
-                        _notify(
-                            "sell_fail", "🛑 D接力竞价准备失败",
-                            f"{ts_code} {name}：{exc}。未执行旧版整仓卖出，请立即核对。",
-                            level="critical", call=True,
-                        )
-                continue
-
-            with _qmt_lock:
-                adapter   = _qmt_get(broker_cfg)
-                quote_map = adapter.get_full_tick([ts_code])
-
-            quote       = quote_map.get(ts_code)
-            lower_limit = float(getattr(quote, "lower_limit", 0.0) or 0.0) if quote else 0.0
-
-            if lower_limit <= 0:
-                logger().warning("09:22 %s %s 无法获取跌停价，跳过集合竞价平仓，等待09:30。", ts_code, name)
-                continue
-
-            logger().warning("⏳ [集合竞价平仓] %s %s  %d股  跌停价%.2f元", ts_code, name, shares, lower_limit)
-
-            from src.broker_adapter import OrderRequest
-            request = OrderRequest(
-                ts_code=ts_code,
-                broker_code=ts_code,
-                side="SELL",
-                quantity=shares,
-                price_type="FIXED_PRICE",
-                price=lower_limit,
-                strategy_name="A_SYSTEM_PREMARKET_SELL",
-                remark=f"集合竞价平仓-{today_str}",
-                strategy_leg=strategy_leg,
-                business_date=today_str,
-                signal_date=str(pos.get("signal_date", "")),
-                planned_exit_date=str(pos.get("planned_exit_date", "")),
-                purpose="CLOSE",
-                source_key=(
-                    f"PREMARKET_CLOSE|{today_str}|{pos.get('order_id', '')}|{ts_code}"
-                ),
-                metadata={"execution_channel": "集合竞价平仓", "name": name},
-            )
-            with _qmt_lock:
-                adapter = _qmt_get(broker_cfg)
-                result  = adapter.place_order(request)
-
-            if result.accepted:
-                # 集合竞价9:25才撮合，此处不立即标记平仓，由09:26持仓同步按实盘实际成交确认
-                logger().info(
-                    "✅ [集合竞价平仓] %s %s 委托已受理（order_id=%s），等待09:25撮合，09:26按实盘确认。",
-                    ts_code, name, result.order_id,
-                )
-            else:
-                logger().error("❌ [集合竞价平仓] %s %s 提交失败：%s，等待后续平仓任务处理。", ts_code, name, result.message)
-
-        except Exception as e:
-            logger().error("集合竞价平仓异常（%s）：%s", pos.get("ts_code"), e)
+        _premarket_sell_one_position(force_d_sell_codes, qmt_enabled, pos, today_str, config)
 
     logger().info("===== 集合竞价平仓挂单完成 =====")
 

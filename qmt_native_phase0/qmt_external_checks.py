@@ -114,6 +114,70 @@ def _mirror(names) -> None:
         print('MIRROR_FAILED %s' % exc, flush=True)
 
 
+def _shadow_and_stall_checks(
+    shadow, shadow_values, stall, config, shadow_error, day, stall_error, triggers, prod, dataset,
+    check_failure_trigger, settings,
+):
+    """影子账失败线和“正常行情连续不赚钱”两项检查（QMT内照旧推送，这里写进日报）（从 run 拆出，语句原样）。"""
+    # 2026-11-14起：QMT内照旧检查、推送的影子账失败线、正常行情连续不赚钱、实盘连续亏损也在这里算一遍，写进日报
+    if shadow is not None:
+        try:
+            from src.equity_curve_stop import current_stop_episode, load_weekly_report_settings
+            from src.review_triggers import shadow_triggers
+            weekly = load_weekly_report_settings(config)
+            nav = shadow['nav']
+            navs = nav.to_numpy()
+            triggers.extend(shadow_triggers(
+                navs, window_3m=weekly.window_3m, window_6m=weekly.window_6m, fail_3m=weekly.shadow_3m_fail,
+                fail_6m=weekly.shadow_6m_fail,
+                stop_episode=current_stop_episode([str(d) for d in nav.index], navs, ma_window=settings.ma_window,
+                                                  lag=settings.lag_trading_days),
+                worst_missed_gain=weekly.worst_stop_missed_gain))
+
+            def change(n):
+                return float(navs[-1] / navs[-1 - n] - 1.0) if len(navs) > n else None
+            shadow_values = {'r3': change(weekly.window_3m), 'r6': change(weekly.window_6m),
+                             'fail_3m': weekly.shadow_3m_fail, 'fail_6m': weekly.shadow_6m_fail}
+        except Exception as exc:
+            traceback.print_exc()
+            shadow_error = '%s: %s' % (type(exc).__name__, exc)
+            triggers.append(check_failure_trigger('影子账失败线', shadow_error))
+        try:
+            from src.review_triggers import regime_stall_triggers
+            stall = prod.compute_regime_stall(config, shadow['nav'], dataset / 'market_sentiment.csv', day)
+            triggers.extend(regime_stall_triggers(stall))
+        except Exception as exc:
+            traceback.print_exc()
+            stall_error = '%s: %s' % (type(exc).__name__, exc)
+            triggers.append(check_failure_trigger('正常行情连续不赚钱', stall_error))
+    return shadow_error, shadow_values, stall, stall_error
+
+
+def _live_loss_streak_check(
+    live_loss, complete, live_loss_error, config, day, triggers, section, prod, check_failure_trigger,
+):
+    """实盘连续亏损月数检查（从 run 拆出，语句原样）。"""
+    try:
+        from src.review_triggers import live_loss_streak_triggers, monthly_realized_pnl
+        if complete is None:
+            filled, complete = live_trades(config)
+        need = int(section.get('live_loss_months', 3))
+        monthly = monthly_realized_pnl(complete, prod._completed_months(day))
+        triggers.extend(live_loss_streak_triggers(monthly, need_months=need))
+        streak = 0
+        for _month, pnl, count in reversed(list(monthly)):
+            if count > 0 and pnl < 0:
+                streak += 1
+            else:
+                break
+        live_loss = {'months': streak, 'need': need}
+    except Exception as exc:
+        traceback.print_exc()
+        live_loss_error = '%s: %s' % (type(exc).__name__, exc)
+        triggers.append(check_failure_trigger('实盘连续亏损', live_loss_error))
+    return live_loss, live_loss_error
+
+
 def run(args) -> int:
     try:
         from dotenv import load_dotenv
@@ -219,55 +283,13 @@ def run(args) -> int:
                 traceback.print_exc()
                 warn_error = '%s: %s' % (type(exc).__name__, exc)
                 triggers.append(check_failure_trigger('三级警告（策略复核/停止交易建议）', warn_error))
-        # 2026-11-14起：QMT内照旧检查、推送的影子账失败线、正常行情连续不赚钱、实盘连续亏损也在这里算一遍，写进日报
-        if shadow is not None:
-            try:
-                from src.equity_curve_stop import current_stop_episode, load_weekly_report_settings
-                from src.review_triggers import shadow_triggers
-                weekly = load_weekly_report_settings(config)
-                nav = shadow['nav']
-                navs = nav.to_numpy()
-                triggers.extend(shadow_triggers(
-                    navs, window_3m=weekly.window_3m, window_6m=weekly.window_6m, fail_3m=weekly.shadow_3m_fail,
-                    fail_6m=weekly.shadow_6m_fail,
-                    stop_episode=current_stop_episode([str(d) for d in nav.index], navs, ma_window=settings.ma_window,
-                                                      lag=settings.lag_trading_days),
-                    worst_missed_gain=weekly.worst_stop_missed_gain))
-
-                def change(n):
-                    return float(navs[-1] / navs[-1 - n] - 1.0) if len(navs) > n else None
-                shadow_values = {'r3': change(weekly.window_3m), 'r6': change(weekly.window_6m),
-                                 'fail_3m': weekly.shadow_3m_fail, 'fail_6m': weekly.shadow_6m_fail}
-            except Exception as exc:
-                traceback.print_exc()
-                shadow_error = '%s: %s' % (type(exc).__name__, exc)
-                triggers.append(check_failure_trigger('影子账失败线', shadow_error))
-            try:
-                from src.review_triggers import regime_stall_triggers
-                stall = prod.compute_regime_stall(config, shadow['nav'], dataset / 'market_sentiment.csv', day)
-                triggers.extend(regime_stall_triggers(stall))
-            except Exception as exc:
-                traceback.print_exc()
-                stall_error = '%s: %s' % (type(exc).__name__, exc)
-                triggers.append(check_failure_trigger('正常行情连续不赚钱', stall_error))
-        try:
-            from src.review_triggers import live_loss_streak_triggers, monthly_realized_pnl
-            if complete is None:
-                filled, complete = live_trades(config)
-            need = int(section.get('live_loss_months', 3))
-            monthly = monthly_realized_pnl(complete, prod._completed_months(day))
-            triggers.extend(live_loss_streak_triggers(monthly, need_months=need))
-            streak = 0
-            for _month, pnl, count in reversed(list(monthly)):
-                if count > 0 and pnl < 0:
-                    streak += 1
-                else:
-                    break
-            live_loss = {'months': streak, 'need': need}
-        except Exception as exc:
-            traceback.print_exc()
-            live_loss_error = '%s: %s' % (type(exc).__name__, exc)
-            triggers.append(check_failure_trigger('实盘连续亏损', live_loss_error))
+        shadow_error, shadow_values, stall, stall_error = _shadow_and_stall_checks(
+            shadow, shadow_values, stall, config, shadow_error, day, stall_error, triggers, prod, dataset,
+            check_failure_trigger, settings,
+        )
+        live_loss, live_loss_error = _live_loss_streak_check(
+            live_loss, complete, live_loss_error, config, day, triggers, section, prod, check_failure_trigger,
+        )
     print('FACTOR_HEALTH %s %s' % (day, json.dumps({'health': health, 'error': error, 'alignment_issues': None if align is None
                                                     else len(align), 'alignment_error': align_error,
                                                     'm_slippage': slip, 'm_slippage_error': slip_error,

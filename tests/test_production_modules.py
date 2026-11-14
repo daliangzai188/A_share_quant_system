@@ -9,6 +9,9 @@
 
 守护进程分层（2026-11-14 第4步起）：守护进程按职责拆在 src/daemon/ 下，src/daemon/__init__.py 的 LAYERS
 由低到高排列，只许高层导入低层，不许导入 scripts（含启动入口），也不许多出 LAYERS 以外的模块。
+
+D盘中监控分组（2026-11-15 起）：src/strategy_d_monitor/ 下 support 不导入本包其它模块，四个方法组只导入 support，
+彼此不导入，都不导入 scripts；StrategyDMonitor 在 scripts/monitor_strategy_d_intraday.py 里继承四个方法组。
 """
 from __future__ import annotations
 
@@ -65,6 +68,30 @@ class ProductionModulesTests(unittest.TestCase):
                     elif parts[:2] == ["src", "daemon"] and len(parts) > 2 and rank.get(parts[2], len(layers)) >= rank[name]:
                         problems.append("%s 导入了同层或更高层的 %s" % (name, module))
         self.assertEqual(problems, [], "守护进程分层被打破：%s" % problems)
+
+    def test_d_monitor_groups_only_import_support(self) -> None:
+        import src.strategy_d_monitor
+
+        folder = Path(__file__).resolve().parents[1] / "src" / "strategy_d_monitor"
+        names = ("support",) + tuple(src.strategy_d_monitor.MIXIN_MODULES)
+        self.assertEqual(sorted(p.stem for p in folder.glob("*.py") if p.stem != "__init__"), sorted(names),
+                         "src/strategy_d_monitor 下的模块要和 support + MIXIN_MODULES 一一对应")
+        problems = []
+        for name in names:
+            tree = ast.parse((folder / (name + ".py")).read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                modules = []
+                if isinstance(node, ast.ImportFrom) and node.module:
+                    modules = [node.module]
+                elif isinstance(node, ast.Import):
+                    modules = [a.name for a in node.names]
+                for module in modules:
+                    parts = module.split(".")
+                    if parts[0] == "scripts":
+                        problems.append("%s 导入了 %s" % (name, module))
+                    elif parts[:2] == ["src", "strategy_d_monitor"] and (name == "support" or parts[2:] != ["support"]):
+                        problems.append("%s 导入了 %s" % (name, module))
+        self.assertEqual(problems, [], "D盘中监控分组被打破：%s" % problems)
 
 
 if __name__ == "__main__":

@@ -30,6 +30,7 @@ from src.strategy_d_checkpoint import (
     strategy_d_universe_sha256,
     write_strategy_d_checkpoint,
 )
+from tests.d_monitor_testing import patch_d_monitor
 
 
 BEIJING = dt.timezone(dt.timedelta(hours=8))
@@ -139,11 +140,11 @@ class StrategyDCheckpointTests(unittest.TestCase):
         monitor.universe = list(self.universe)
         monitor.universe_sha256 = self.universe_hash
 
-        with patch(
-            "scripts.monitor_strategy_d_intraday.now_beijing",
+        with patch_d_monitor(
+            "now_beijing",
             return_value=self.now,
-        ), patch(
-            "scripts.monitor_strategy_d_intraday.today_beijing",
+        ), patch_d_monitor(
+            "today_beijing",
             return_value=self.now.date(),
         ):
             restored, reason = monitor._restore_ready_checkpoint()
@@ -353,14 +354,14 @@ class StrategyDCheckpointTests(unittest.TestCase):
         monitor.segment_stock_counts = {"sz_main": 1}
         monitor.original_session_start_hhmm = 920
 
-        with patch(
-            "scripts.monitor_strategy_d_intraday.now_beijing",
+        with patch_d_monitor(
+            "now_beijing",
             return_value=self.now,
-        ), patch(
-            "scripts.monitor_strategy_d_intraday.today_beijing",
+        ), patch_d_monitor(
+            "today_beijing",
             return_value=self.now.date(),
-        ), patch(
-            "scripts.monitor_strategy_d_intraday.notify",
+        ), patch_d_monitor(
+            "notify",
             return_value=True,
         ):
             monitor.poll_once()
@@ -373,14 +374,14 @@ class StrategyDCheckpointTests(unittest.TestCase):
         )
 
         monitor.broker = _QuoteBroker({})
-        with patch(
-            "scripts.monitor_strategy_d_intraday.now_beijing",
+        with patch_d_monitor(
+            "now_beijing",
             return_value=self.now + dt.timedelta(seconds=30),
-        ), patch(
-            "scripts.monitor_strategy_d_intraday.today_beijing",
+        ), patch_d_monitor(
+            "today_beijing",
             return_value=self.now.date(),
-        ), patch(
-            "scripts.monitor_strategy_d_intraday.notify",
+        ), patch_d_monitor(
+            "notify",
             return_value=True,
         ):
             monitor.poll_once()
@@ -414,11 +415,11 @@ class StrategyDCheckpointTests(unittest.TestCase):
         monitor.segment_stock_counts = {"sz_main": 1}
         monitor.original_session_start_hhmm = 920
 
-        with patch(
-            "scripts.monitor_strategy_d_intraday.now_beijing",
+        with patch_d_monitor(
+            "now_beijing",
             return_value=self.now,
-        ), patch(
-            "scripts.monitor_strategy_d_intraday.today_beijing",
+        ), patch_d_monitor(
+            "today_beijing",
             return_value=self.now.date(),
         ), patch.object(
             monitor, "_invalidate_checkpoint", return_value=False

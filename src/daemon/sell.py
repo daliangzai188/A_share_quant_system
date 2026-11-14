@@ -13,6 +13,7 @@ from dataclasses import replace
 from typing import Any
 
 from src.utils.time_utils import BEIJING_TZ, now_beijing, today_beijing
+from src.market_rules import BOARD_LOT_SHARES, STAR_MIN_ORDER_SHARES, market_segment
 from src.daemon.common import (
     PROJECT_ROOT,
     SCHED_AFTERNOON_CLOSE,
@@ -58,10 +59,9 @@ def _sell_price_cage_floor(quote: Any) -> float:
     benchmark = next((value for value in (best_bid, best_ask, last, pre_close) if value > 0), 0.0)
     if benchmark <= 0:
         return 0.0
-    code = str(getattr(quote, "ts_code", "") or "").upper()
-    short = code.split(".")[0]
-    is_star = short.startswith(("688", "689"))
-    is_bse = code.endswith(".BJ") or short.startswith(("4", "8", "920"))
+    segment = market_segment(getattr(quote, "ts_code", "") or "")
+    is_star = segment == "star"
+    is_bse = segment == "bj"
     # 科创板规则是纯2%边界；沪深其他股票及北交所还需兼顾十个最小价位。
     ratio = 0.95 if is_bse else 0.98
     exact_floor = benchmark * ratio if is_star else min(benchmark * ratio, benchmark - 0.10)
@@ -206,10 +206,10 @@ def _cancel_own_takeprofit_orders(adapter: Any, ts_codes: set[str], wait_sec: fl
 
 def _max_sell_order_shares(ts_code: str) -> int:
     """交易所限价卖单单笔上限：科创板10万、创业板30万、其余100万股。"""
-    short = str(ts_code).upper().split(".")[0]
-    if short.startswith(("688", "689")):
+    segment = market_segment(ts_code)
+    if segment == "star":
         return 100_000
-    if short.startswith(("300", "301")):
+    if segment == "chi_next":
         return 300_000
     return 1_000_000
 
@@ -218,8 +218,7 @@ def _split_sell_order_quantities(ts_code: str, quantity: int) -> list[int]:
     """把大额卖出拆到交易所单笔上限内，不丢失最终零股余量。"""
     remaining = max(int(quantity), 0)
     limit = _max_sell_order_shares(ts_code)
-    short = str(ts_code).upper().split(".")[0]
-    is_star = short.startswith(("688", "689"))
+    is_star = market_segment(ts_code) == "star"
     chunks: list[int] = []
     while remaining > 0:
         chunk = min(remaining, limit)
@@ -228,10 +227,10 @@ def _split_sell_order_quantities(ts_code: str, quantity: int) -> list[int]:
                 # 科创板限价单最少200股、之后可按1股递增。避免先报满10万后
                 # 留下1~199股尾单（多张同时提交时柜台可能不把它视为余额）。
                 tail = remaining - chunk
-                if 0 < tail < 200:
-                    chunk -= 200 - tail
+                if 0 < tail < STAR_MIN_ORDER_SHARES:
+                    chunk -= STAR_MIN_ORDER_SHARES - tail
             else:
-                chunk = chunk // 100 * 100
+                chunk = chunk // BOARD_LOT_SHARES * BOARD_LOT_SHARES
         if chunk <= 0:
             break
         chunks.append(chunk)
@@ -243,13 +242,12 @@ def _normalize_exit_slice_quantity(ts_code: str, desired_qty: int, remaining_qty
     """把POV单片股数规范到板块卖出申报单位，并保护最后零股余额。"""
     desired = min(max(int(desired_qty or 0), 0), max(int(remaining_qty or 0), 0))
     remaining = max(int(remaining_qty or 0), 0)
-    short = str(ts_code).upper().split(".")[0]
-    if short.startswith(("688", "689")):
-        if remaining < 200:
+    if market_segment(ts_code) == "star":
+        if remaining < STAR_MIN_ORDER_SHARES:
             return remaining if desired >= remaining else 0
-        return desired if desired >= 200 else 0
-    if remaining >= 100:
-        return desired // 100 * 100
+        return desired if desired >= STAR_MIN_ORDER_SHARES else 0
+    if remaining >= BOARD_LOT_SHARES:
+        return desired // BOARD_LOT_SHARES * BOARD_LOT_SHARES
     return remaining if desired >= remaining else 0
 
 
@@ -278,6 +276,125 @@ def _abc_place_sell_order_direct(
             broker_cfg,
             resolved_leg,
         )
+
+
+def _abc_confirm_sell_fills(
+    ts_code, name, order_id, broker_cfg, submitted, price, owned_before, today_str, log,
+):
+    """逐张子单确认成交，按合计成交量平仓、减仓或告警未成交（从 _abc_place_sell_order_direct_locked 拆出，语句原样）。"""
+    total_filled = 0
+    total_amount = 0.0
+    last_status = "UNKNOWN"
+    for idx, (broker_order_id, expected_qty, intent_token) in enumerate(submitted):
+        fill = _confirm_fill(
+            broker_cfg,
+            broker_order_id,
+            expected_qty,
+            f"ABC平仓子单{idx + 1}/{len(submitted)}",
+            timeout_sec=60 if idx == 0 else 5,
+        )
+        filled = min(max(int(fill.filled_qty or 0), 0), expected_qty)
+        fill_price_one = float(fill.avg_price or 0.0) if float(fill.avg_price or 0.0) > 0 else price
+        total_filled += filled
+        total_amount += filled * fill_price_one
+        last_status = fill.status_text
+        if bool(getattr(fill, "is_terminal", False)):
+            _update_exit_order_intent(
+                intent_token,
+                status="RESOLVED",
+                broker_order_id=broker_order_id,
+                filled_qty=filled,
+                terminal_known=True,
+            )
+    fill_price = total_amount / total_filled if total_filled > 0 else price
+    remaining_after = max(owned_before - total_filled, 0)
+    if remaining_after == 0:
+        _mark_live_position_closed(
+            order_id, today_str, fill_price, recovery_context="ABC主平仓"
+        )
+        log.info("✅ [ABC平仓] %s %s 全部成交 %d股 @%.2f，已平仓。", ts_code, name, total_filled, fill_price)
+        _notify("sell_success", "✅ 平仓成交",
+                f"{ts_code} {name} 卖出{total_filled}股 "
+                f"@{fill_price:.2f} 金额{_fmt_wan(total_filled * fill_price)}")
+        return True
+    elif total_filled > 0:
+        _reduce_live_position_shares(
+            order_id,
+            remaining_after,
+            fill_price=fill_price,
+            recovery_context="ABC主平仓",
+        )
+        log.warning("⚠️ [ABC平仓] %s %s 部分成交 %d/%d股 @%.2f，券商预计剩余%d股。",
+                    ts_code, name, total_filled, owned_before, fill_price, remaining_after)
+        _notify("sell_fail", "⚠️ 平仓部分成交",
+                f"{ts_code} {name} 卖出{total_filled}/{owned_before}股 @{fill_price:.2f}，"
+                f"预计剩余{remaining_after}股，请回终端查看。", level="timeSensitive")
+        return False
+    else:
+        log.error("❌ [ABC平仓] %s %s 未成交（状态=%s），持仓保留，等待下次重试或手动处理。",
+                  ts_code, name, last_status)
+        _notify("sell_fail", "❌ 平仓未成交",
+                f"{ts_code} {name} 平仓委托未成交，可能被动过夜，请立即回终端处理。",
+                level="critical", call=True)
+        return False
+
+
+def _abc_submit_sell_chunks(
+    ts_code, name, order_id, broker_cfg, strategy_leg, price, price_label, chunks, rejected_chunks,
+    OrderRequest, today_str, log, submitted,
+):
+    """在QMT锁内重新取行情定价，逐张子单落盘意图后申报卖出（从 _abc_place_sell_order_direct_locked 拆出，语句原样）。"""
+    with _qmt_lock:
+        adapter = _qmt_get(broker_cfg)
+        # 持仓、活跃委托和安全数量检查完成后，紧邻真正申报重新取行情。
+        # 避免用前面多次QMT查询之前的旧买一计算动态价格。
+        quote = adapter.get_full_tick([ts_code]).get(ts_code)
+        price, price_label = _pick_sell_limit_price(quote)
+        for chunk_no, chunk in enumerate(chunks if price > 0 else [], start=1):
+            blocked = _exit_order_submission_block_reason()
+            if blocked:
+                rejected_chunks += len(chunks) - chunk_no + 1
+                log.error(
+                    "[ABC平仓] %s 拆单过程触发时间门禁(%s)，停止提交剩余%d张；"
+                    "已提交部分由intent/看门狗对账。",
+                    ts_code,
+                    blocked,
+                    len(chunks) - chunk_no + 1,
+                )
+                break
+            request = OrderRequest(
+                ts_code=ts_code,
+                broker_code=ts_code,
+                side="SELL",
+                quantity=chunk,
+                price_type="FIXED_PRICE",
+                price=price,
+                strategy_name="A_SYSTEM_ABC",
+                remark=f"ABC平仓-{price_label}-{today_str}-{chunk_no}/{len(chunks)}",
+                strategy_leg=str(strategy_leg or "").upper(),
+                business_date=today_str,
+                purpose="CLOSE",
+                source_key=(
+                    f"ABC_CLOSE|{today_str}|{order_id}|{ts_code}|"
+                    f"{chunk_no}/{len(chunks)}"
+                ),
+                metadata={"execution_channel": "ABC主平仓", "name": name},
+            )
+            result, intent_token = _place_exit_order_with_intent(
+                adapter,
+                request,
+                phase="ABC主平仓",
+                local_order_id=order_id,
+            )
+            if result.accepted:
+                submitted.append((str(result.order_id or ""), chunk, intent_token))
+            else:
+                rejected_chunks += 1
+                log.error(
+                    "❌ [ABC平仓] %s %s 第%d/%d子单%d股提交失败：%s",
+                    ts_code, name, chunk_no, len(chunks), chunk, result.message,
+                )
+    return price, price_label, rejected_chunks
 
 
 def _abc_place_sell_order_direct_locked(
@@ -360,56 +477,10 @@ def _abc_place_sell_order_direct_locked(
     rejected_chunks = 0
     price = 0.0
     price_label = ""
-    with _qmt_lock:
-        adapter = _qmt_get(broker_cfg)
-        # 持仓、活跃委托和安全数量检查完成后，紧邻真正申报重新取行情。
-        # 避免用前面多次QMT查询之前的旧买一计算动态价格。
-        quote = adapter.get_full_tick([ts_code]).get(ts_code)
-        price, price_label = _pick_sell_limit_price(quote)
-        for chunk_no, chunk in enumerate(chunks if price > 0 else [], start=1):
-            blocked = _exit_order_submission_block_reason()
-            if blocked:
-                rejected_chunks += len(chunks) - chunk_no + 1
-                log.error(
-                    "[ABC平仓] %s 拆单过程触发时间门禁(%s)，停止提交剩余%d张；"
-                    "已提交部分由intent/看门狗对账。",
-                    ts_code,
-                    blocked,
-                    len(chunks) - chunk_no + 1,
-                )
-                break
-            request = OrderRequest(
-                ts_code=ts_code,
-                broker_code=ts_code,
-                side="SELL",
-                quantity=chunk,
-                price_type="FIXED_PRICE",
-                price=price,
-                strategy_name="A_SYSTEM_ABC",
-                remark=f"ABC平仓-{price_label}-{today_str}-{chunk_no}/{len(chunks)}",
-                strategy_leg=str(strategy_leg or "").upper(),
-                business_date=today_str,
-                purpose="CLOSE",
-                source_key=(
-                    f"ABC_CLOSE|{today_str}|{order_id}|{ts_code}|"
-                    f"{chunk_no}/{len(chunks)}"
-                ),
-                metadata={"execution_channel": "ABC主平仓", "name": name},
-            )
-            result, intent_token = _place_exit_order_with_intent(
-                adapter,
-                request,
-                phase="ABC主平仓",
-                local_order_id=order_id,
-            )
-            if result.accepted:
-                submitted.append((str(result.order_id or ""), chunk, intent_token))
-            else:
-                rejected_chunks += 1
-                log.error(
-                    "❌ [ABC平仓] %s %s 第%d/%d子单%d股提交失败：%s",
-                    ts_code, name, chunk_no, len(chunks), chunk, result.message,
-                )
+    price, price_label, rejected_chunks = _abc_submit_sell_chunks(
+        ts_code, name, order_id, broker_cfg, strategy_leg, price, price_label, chunks, rejected_chunks,
+        OrderRequest, today_str, log, submitted,
+    )
 
     if price <= 0:
         log.warning("ABC平仓：%s 提交前无法获取价格，跳过本次。", ts_code)
@@ -474,61 +545,9 @@ def _abc_place_sell_order_direct_locked(
             submitted_qty,
         )
         return False
-    total_filled = 0
-    total_amount = 0.0
-    last_status = "UNKNOWN"
-    for idx, (broker_order_id, expected_qty, intent_token) in enumerate(submitted):
-        fill = _confirm_fill(
-            broker_cfg,
-            broker_order_id,
-            expected_qty,
-            f"ABC平仓子单{idx + 1}/{len(submitted)}",
-            timeout_sec=60 if idx == 0 else 5,
-        )
-        filled = min(max(int(fill.filled_qty or 0), 0), expected_qty)
-        fill_price_one = float(fill.avg_price or 0.0) if float(fill.avg_price or 0.0) > 0 else price
-        total_filled += filled
-        total_amount += filled * fill_price_one
-        last_status = fill.status_text
-        if bool(getattr(fill, "is_terminal", False)):
-            _update_exit_order_intent(
-                intent_token,
-                status="RESOLVED",
-                broker_order_id=broker_order_id,
-                filled_qty=filled,
-                terminal_known=True,
-            )
-    fill_price = total_amount / total_filled if total_filled > 0 else price
-    remaining_after = max(owned_before - total_filled, 0)
-    if remaining_after == 0:
-        _mark_live_position_closed(
-            order_id, today_str, fill_price, recovery_context="ABC主平仓"
-        )
-        log.info("✅ [ABC平仓] %s %s 全部成交 %d股 @%.2f，已平仓。", ts_code, name, total_filled, fill_price)
-        _notify("sell_success", "✅ 平仓成交",
-                f"{ts_code} {name} 卖出{total_filled}股 "
-                f"@{fill_price:.2f} 金额{_fmt_wan(total_filled * fill_price)}")
-        return True
-    elif total_filled > 0:
-        _reduce_live_position_shares(
-            order_id,
-            remaining_after,
-            fill_price=fill_price,
-            recovery_context="ABC主平仓",
-        )
-        log.warning("⚠️ [ABC平仓] %s %s 部分成交 %d/%d股 @%.2f，券商预计剩余%d股。",
-                    ts_code, name, total_filled, owned_before, fill_price, remaining_after)
-        _notify("sell_fail", "⚠️ 平仓部分成交",
-                f"{ts_code} {name} 卖出{total_filled}/{owned_before}股 @{fill_price:.2f}，"
-                f"预计剩余{remaining_after}股，请回终端查看。", level="timeSensitive")
-        return False
-    else:
-        log.error("❌ [ABC平仓] %s %s 未成交（状态=%s），持仓保留，等待下次重试或手动处理。",
-                  ts_code, name, last_status)
-        _notify("sell_fail", "❌ 平仓未成交",
-                f"{ts_code} {name} 平仓委托未成交，可能被动过夜，请立即回终端处理。",
-                level="critical", call=True)
-        return False
+    return _abc_confirm_sell_fills(
+        ts_code, name, order_id, broker_cfg, submitted, price, owned_before, today_str, log,
+    )
 
 
 def _broker_position_quantities(adapter: Any, ts_code: str) -> tuple[int, int]:

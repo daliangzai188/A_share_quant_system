@@ -599,6 +599,131 @@ def wait_for_config_gate() -> None:
         time.sleep(60)
 
 
+def _run_schedule_loop(log):
+    """主循环：按SCHEDULE依次等待并执行定时任务，写心跳（从 main 拆出，语句原样）。"""
+    # ── 主循环 ────────────────────────────────────────────────────────────────
+    # 首项按当前墙钟选择；此后严格沿SCHEDULE推进。这样临近任务不会被30秒
+    # 护栏跳过，前一任务稍慢也不会吞掉09:23/09:26/09:30等紧邻节点。
+    scheduled_dt, scheduled_time = next_event(now_beijing())
+    while True:
+        write_heartbeat("running")
+        now = now_beijing()
+        sleep_secs = max((scheduled_dt - now).total_seconds(), 0.0)
+        log.info(
+            "下次任务：%s（%.0f 秒后）",
+            scheduled_dt.strftime("%Y-%m-%d %H:%M"),
+            sleep_secs,
+        )
+
+        # 账户轮询：只有“交易时间 + 有持仓”才高频，其余统一60秒，避免无持仓时刷屏。
+        _ACCT_DEFAULT = 60        # 无持仓、非交易时段、交易日前后：每60秒打印一次
+        _ACCT_POSITION_TRADING = 10  # 交易时间且有持仓：每10秒打印一次
+        _RETRY_INTERVAL = 15      # 关键窗口掉线重连间隔
+        deadline = time.monotonic() + sleep_secs
+        last_acct_ts = time.monotonic()
+        last_trade_check_ts = 0.0  # 交易时段状态每5秒刷新一次，避免频繁计算
+        is_trading = False
+        last_heartbeat_ts = time.monotonic()
+        _acct_thread: threading.Thread | None = None
+        if has_open_local_position() or _daemon_qmt._last_account_has_position:
+            _acct_thread = threading.Thread(
+                target=_print_account_status, args=(log,), daemon=True
+            )
+            _acct_thread.start()
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(2, remaining))
+            now_ts = time.monotonic()
+            if now_ts - last_heartbeat_ts >= 10:
+                write_heartbeat("sleeping")
+                last_heartbeat_ts = now_ts
+            if now_ts - last_trade_check_ts >= 5:
+                is_trading = market_is_open()
+                last_trade_check_ts = now_ts
+            qmt_critical = qmt_is_critical_window()
+            if _daemon_qmt._qmt_reconnect_count == 0:
+                has_position_for_poll = has_open_local_position() or _daemon_qmt._last_account_has_position
+                if is_trading and has_position_for_poll:
+                    interval = _ACCT_POSITION_TRADING
+                else:
+                    interval = _ACCT_DEFAULT
+            else:
+                interval = _RETRY_INTERVAL if qmt_critical else _ACCT_DEFAULT
+            if now_ts - last_acct_ts >= interval:
+                if _acct_thread is None or not _acct_thread.is_alive():
+                    last_acct_ts = now_ts
+                    _acct_thread = threading.Thread(
+                        target=_print_account_status, args=(log,), daemon=True
+                    )
+                    _acct_thread.start()
+
+        # monotonic等待偶尔会比Windows墙钟早数毫秒唤醒；交易任务提交前再按
+        # 北京墙钟对齐一次。任务身份仍会传入具体job，不靠墙钟猜是不是14:55。
+        _sleep_until_beijing(scheduled_time, max_wait=5.0)
+        try:
+            run_job(scheduled_time)
+        except Exception as e:
+            log.exception("任务执行异常（守护进程继续）：%s", e)
+            _notify("system_error", "❌ 定时任务异常",
+                    "守护进程某个定时任务执行异常（进程未退出），请回终端查看日志。",
+                    level="timeSensitive")
+        scheduled_dt, scheduled_time = next_event_after(scheduled_dt, scheduled_time)
+
+
+def _start_trading_threads(resume_d_relay_worker, resume_pov_worker, startup_has_position, log):
+    """启动恢复全部完成后，恢复POV/接力/M线程并启动看门狗、止盈、卖出POV等常驻线程（从 main 拆出，语句原样）。"""
+    # 只有在事务意图、D接力/POV断点、孤儿成交和到期持仓全部完成恢复后，
+    # 才允许启动任何持续交易线程。这个顺序防止重启瞬间看门狗、止盈和POV
+    # 同时抢旧状态，导致重复委托或漏平仓。
+    if resume_d_relay_worker:
+        log.warning("全部启动恢复已完成，现恢复D接力成对POV执行线程。")
+        _start_d_relay_pair_worker()
+    if resume_pov_worker:
+        log.warning("全部启动恢复已完成，现恢复普通买入POV执行线程。")
+        _start_pov_worker()
+    # 2026-11-12 ACE+M：交易日09:26后重启时恢复M买入POV（10:30后只按已成交收口）。
+    try:
+        _now_m = now_beijing()
+        if is_trade_day(_now_m.date()) and _now_m.time() >= datetime.time(9, 26):
+            _m_state = _m_load_state()
+            if (str(_m_state.get("date", "")) == _now_m.strftime("%Y%m%d") and _m_state.get("items")
+                    and not _m_state["items"][0].get("finalized")):
+                log.warning("全部启动恢复已完成，现恢复M买入POV执行线程。")
+                _m_start_pov_worker()
+    except Exception as e:
+        log.error("恢复M买入POV失败（不影响ACE）：%s", e)
+    threading.Thread(
+        target=_daily_calendar_sentinel,
+        daemon=True,
+        name="calendar-sentinel",
+    ).start()
+    threading.Thread(
+        target=_close_position_watchdog,
+        daemon=True,
+        name="close-watchdog",
+    ).start()
+    threading.Thread(
+        target=_intraday_takeprofit_monitor,
+        daemon=True,
+        name="intraday-takeprofit",
+    ).start()
+    threading.Thread(
+        target=_exit_pov_monitor,
+        daemon=True,
+        name="exit-pov",
+    ).start()
+    if startup_has_position:
+        log.info("启动检查：检测到已有持仓，仍会检查/补跑收盘数据与候选信号；仅跳过D/E盘中补开仓逻辑。")
+        threading.Thread(
+            target=_print_account_status,
+            args=(log,),
+            daemon=True,
+            name="startup-account-status",
+        ).start()
+
+
 def main() -> None:
     setup()
     log = logger()
@@ -721,54 +846,7 @@ def main() -> None:
     except Exception as e:
         log.warning("启动时全策略净值快照异常：%s", e)
 
-    # 只有在事务意图、D接力/POV断点、孤儿成交和到期持仓全部完成恢复后，
-    # 才允许启动任何持续交易线程。这个顺序防止重启瞬间看门狗、止盈和POV
-    # 同时抢旧状态，导致重复委托或漏平仓。
-    if resume_d_relay_worker:
-        log.warning("全部启动恢复已完成，现恢复D接力成对POV执行线程。")
-        _start_d_relay_pair_worker()
-    if resume_pov_worker:
-        log.warning("全部启动恢复已完成，现恢复普通买入POV执行线程。")
-        _start_pov_worker()
-    # 2026-11-12 ACE+M：交易日09:26后重启时恢复M买入POV（10:30后只按已成交收口）。
-    try:
-        _now_m = now_beijing()
-        if is_trade_day(_now_m.date()) and _now_m.time() >= datetime.time(9, 26):
-            _m_state = _m_load_state()
-            if (str(_m_state.get("date", "")) == _now_m.strftime("%Y%m%d") and _m_state.get("items")
-                    and not _m_state["items"][0].get("finalized")):
-                log.warning("全部启动恢复已完成，现恢复M买入POV执行线程。")
-                _m_start_pov_worker()
-    except Exception as e:
-        log.error("恢复M买入POV失败（不影响ACE）：%s", e)
-    threading.Thread(
-        target=_daily_calendar_sentinel,
-        daemon=True,
-        name="calendar-sentinel",
-    ).start()
-    threading.Thread(
-        target=_close_position_watchdog,
-        daemon=True,
-        name="close-watchdog",
-    ).start()
-    threading.Thread(
-        target=_intraday_takeprofit_monitor,
-        daemon=True,
-        name="intraday-takeprofit",
-    ).start()
-    threading.Thread(
-        target=_exit_pov_monitor,
-        daemon=True,
-        name="exit-pov",
-    ).start()
-    if startup_has_position:
-        log.info("启动检查：检测到已有持仓，仍会检查/补跑收盘数据与候选信号；仅跳过D/E盘中补开仓逻辑。")
-        threading.Thread(
-            target=_print_account_status,
-            args=(log,),
-            daemon=True,
-            name="startup-account-status",
-        ).start()
+    _start_trading_threads(resume_d_relay_worker, resume_pov_worker, startup_has_position, log)
 
     # ── 启动时先播报当前缓存候选，再按需后台补采 ─────────────────────────────
     try:
@@ -837,72 +915,4 @@ def main() -> None:
         name="periodic-health-beacon",
     ).start()
 
-    # ── 主循环 ────────────────────────────────────────────────────────────────
-    # 首项按当前墙钟选择；此后严格沿SCHEDULE推进。这样临近任务不会被30秒
-    # 护栏跳过，前一任务稍慢也不会吞掉09:23/09:26/09:30等紧邻节点。
-    scheduled_dt, scheduled_time = next_event(now_beijing())
-    while True:
-        write_heartbeat("running")
-        now = now_beijing()
-        sleep_secs = max((scheduled_dt - now).total_seconds(), 0.0)
-        log.info(
-            "下次任务：%s（%.0f 秒后）",
-            scheduled_dt.strftime("%Y-%m-%d %H:%M"),
-            sleep_secs,
-        )
-
-        # 账户轮询：只有“交易时间 + 有持仓”才高频，其余统一60秒，避免无持仓时刷屏。
-        _ACCT_DEFAULT = 60        # 无持仓、非交易时段、交易日前后：每60秒打印一次
-        _ACCT_POSITION_TRADING = 10  # 交易时间且有持仓：每10秒打印一次
-        _RETRY_INTERVAL = 15      # 关键窗口掉线重连间隔
-        deadline = time.monotonic() + sleep_secs
-        last_acct_ts = time.monotonic()
-        last_trade_check_ts = 0.0  # 交易时段状态每5秒刷新一次，避免频繁计算
-        is_trading = False
-        last_heartbeat_ts = time.monotonic()
-        _acct_thread: threading.Thread | None = None
-        if has_open_local_position() or _daemon_qmt._last_account_has_position:
-            _acct_thread = threading.Thread(
-                target=_print_account_status, args=(log,), daemon=True
-            )
-            _acct_thread.start()
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            time.sleep(min(2, remaining))
-            now_ts = time.monotonic()
-            if now_ts - last_heartbeat_ts >= 10:
-                write_heartbeat("sleeping")
-                last_heartbeat_ts = now_ts
-            if now_ts - last_trade_check_ts >= 5:
-                is_trading = market_is_open()
-                last_trade_check_ts = now_ts
-            qmt_critical = qmt_is_critical_window()
-            if _daemon_qmt._qmt_reconnect_count == 0:
-                has_position_for_poll = has_open_local_position() or _daemon_qmt._last_account_has_position
-                if is_trading and has_position_for_poll:
-                    interval = _ACCT_POSITION_TRADING
-                else:
-                    interval = _ACCT_DEFAULT
-            else:
-                interval = _RETRY_INTERVAL if qmt_critical else _ACCT_DEFAULT
-            if now_ts - last_acct_ts >= interval:
-                if _acct_thread is None or not _acct_thread.is_alive():
-                    last_acct_ts = now_ts
-                    _acct_thread = threading.Thread(
-                        target=_print_account_status, args=(log,), daemon=True
-                    )
-                    _acct_thread.start()
-
-        # monotonic等待偶尔会比Windows墙钟早数毫秒唤醒；交易任务提交前再按
-        # 北京墙钟对齐一次。任务身份仍会传入具体job，不靠墙钟猜是不是14:55。
-        _sleep_until_beijing(scheduled_time, max_wait=5.0)
-        try:
-            run_job(scheduled_time)
-        except Exception as e:
-            log.exception("任务执行异常（守护进程继续）：%s", e)
-            _notify("system_error", "❌ 定时任务异常",
-                    "守护进程某个定时任务执行异常（进程未退出），请回终端查看日志。",
-                    level="timeSensitive")
-        scheduled_dt, scheduled_time = next_event_after(scheduled_dt, scheduled_time)
+    return _run_schedule_loop(log)

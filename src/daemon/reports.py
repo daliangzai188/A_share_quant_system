@@ -16,7 +16,11 @@ from typing import Any
 
 from src.utils.config import load_json_config, mkdir_p
 from src.utils.time_utils import now_beijing, today_beijing
+from src.market_rules import market_segment as _code_segment
 from src.portfolio_ace_m import (
+    AC_LEGS,
+    ACE_LEG_PRIORITY,
+    ACE_STATIC_LEGS,
     ACE_FULL_TARGET_PCT,
     GATE_REDUCED as ACE_GATE_REDUCED,
     M_LEG,
@@ -506,7 +510,7 @@ def _read_close_candidate_artifact(strategy: str, signal_date: str) -> dict[str,
     import pandas as pd
 
     leg = str(strategy).strip().upper()
-    if leg in {"A", "C"}:
+    if leg in AC_LEGS:
         paths = sorted(
             (
                 PROJECT_ROOT
@@ -651,7 +655,7 @@ def _log_close_pipeline_candidate_summary(signal_date: str) -> None:
     try:
         summaries = {
             leg: _read_close_candidate_artifact(leg, signal_date)
-            for leg in ("A", "C", "E", "D")
+            for leg in ACE_LEG_PRIORITY
         }
         labels = {
             "A": "① A主策略",
@@ -664,7 +668,7 @@ def _log_close_pipeline_candidate_summary(signal_date: str) -> None:
             f"┃ 信号日：{signal_date}",
             "┃ 口径：只读取当日产物；不重算、不参与下单；执行层按A>C>E>D真实开仓日互斥",
         ]
-        for leg in ("A", "C", "E", "D"):
+        for leg in ACE_LEG_PRIORITY:
             item = summaries[leg]
             count = item["candidate_count"]
             if not item["calculated"]:
@@ -702,15 +706,8 @@ def _segment_label(ts_code: str, market_segment: str = "") -> str:
     }
     if market_segment in seg_map:
         return seg_map[market_segment]
-    code = ts_code.split(".")[0] if "." in ts_code else ts_code
-    suffix = ts_code.split(".")[-1].upper() if "." in ts_code else ""
-    if suffix == "BJ":
-        return "北交所"
-    if suffix == "SH":
-        return "科创板" if code.startswith("688") else "沪市主板"
-    if suffix == "SZ":
-        return "创业板" if code.startswith("3") else "深市主板"
-    return "未知"
+    # 没给板块时按代码判断（规则在 src.market_rules.market_segment），只用于日志里的板块名称。
+    return seg_map.get(_code_segment(ts_code), "未知")
 
 
 def _load_limit_for_codes(ts_codes: list[str]) -> tuple[str, dict[str, dict]]:
@@ -1649,7 +1646,7 @@ def _load_candidate_csv_for_broadcast(
     import pandas as pd
 
     leg = str(strategy).strip().upper()
-    if leg in {"A", "C"}:
+    if leg in AC_LEGS:
         paths = sorted(
             (
                 PROJECT_ROOT
@@ -1703,7 +1700,7 @@ def _load_readonly_candidate_for_broadcast(
     """
 
     leg = str(strategy).strip().upper()
-    if leg in {"A", "C"}:
+    if leg in AC_LEGS:
         candidate = _load_candidate_csv_for_broadcast(leg, signal_date)
         return candidate, "未生成正式计划" if candidate is not None else ""
     if leg != "E":
@@ -1789,6 +1786,80 @@ def _build_candidate_choice_lines(
     return lines
 
 
+def _log_decision_chain_lines(
+    signal_date, blocked, execution_expired, original_final_buy, broadcast_selected, execution_block_reason,
+    action_date, path_tag, d_holding, candidate_text, hold_line, equity_curve_stop_reason, final_buy,
+    selected_leg, day_label, live_sizing,
+):
+    """拼出决策优先级流程图、逐腿决策链和最终开仓计划，作为一条多行日志输出（从 _log_decision_chain_summary 拆出，语句原样）。"""
+    # 流程图、逐腿决策链、最终计划必须作为同一条多行日志原子输出；
+    # 周期播报时三块一起出现，不能只剩最终摘要。
+    bottom = "┃━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    lines = [
+        "┃━━━━━━━━━━━━ 决策优先级流程图 ━━━━━━━━━━━━",
+        f"┃ 信号日：{signal_date}；操作日：{action_date or '未知'}",
+        "┃ 当前互斥顺序：①持仓 > ②非D候选/计划(A>C>E) > ③D盘中",
+        "┃",
+        "┃ 【0】券商仍有本系统策略仓？",
+        f"┃   ├─ 是 → 不开新仓，确认实际清仓后再等待下一候选{path_tag if blocked else ''}",
+        "┃   └─ 否",
+        "┃        ↓",
+        "┃ 【1】今日存在A/C/E正式候选或开仓计划？",
+        "┃   ├─ 是 → 按A>C>E取首个计划执行；D全日不扫描、不记录、不下单",
+        "┃   └─ 否",
+        "┃        ↓",
+        "┃ 【2】D从09:30开始盘中扫描/记录，满足正式条件才允许开仓",
+        f"┃   ├─ D已成交 → 写入持仓并回到【0】{path_tag if d_holding else ''}",
+        f"┃   └─ D未成交/未触发 → 空仓{path_tag if not blocked and not selected_leg else ''}",
+        bottom,
+        "┃",
+        "┃━━━━━━━━━━━━━━ 开仓决策链 ━━━━━━━━━━━━━━",
+        f"┃ ① A主策略：{candidate_text['A']}",
+        f"┃ ② C强势龙头：{candidate_text['C']}",
+        f"┃ ③ E策略：{candidate_text['E']}",
+        f"┃ ④ D盘中兜底：{'已有D策略仓，串行资金门禁生效' if d_holding else '不触发｜无候选'}",
+        "┃ 账户空仓时首选："
+        + (
+            _format_strategy_candidate(
+                str(broadcast_selected.get("strategy", "")),
+                broadcast_selected,
+            )
+            if broadcast_selected
+            else "无"
+        ),
+        bottom,
+        "┃",
+        "┃━━━━━━━━━━━━━━ 最终开仓计划 ━━━━━━━━━━━━━━",
+    ]
+    if blocked:
+        lines.append(f"┃ ★ 不开新仓：券商仍有策略持仓｜{hold_line}")
+    elif execution_expired and original_final_buy:
+        lines.append(
+            "┃ ★ 当前不开仓：原计划"
+            f"{_format_strategy_candidate(str(original_final_buy.get('strategy', '?')), original_final_buy)}"
+            "已过执行窗口且未成交，不追补；该候选仍按全日互斥规则阻断D，"
+            "D今日不扫描也不开仓"
+        )
+    elif execution_block_reason and original_final_buy:
+        lines.append(
+            "┃ ★ 不开新仓：候选"
+            f"{_format_strategy_candidate(str(original_final_buy.get('strategy', '?')), original_final_buy)}"
+            f"已被新增BUY安全门禁阻断｜{execution_block_reason}"
+        )
+    elif equity_curve_stop_reason and original_final_buy:
+        lines.append(
+            "┃ ★ 不开新仓：方案甲停手，候选"
+            f"{_format_strategy_candidate(str(original_final_buy.get('strategy', '?')), original_final_buy)}"
+            f"不执行，D也不启动｜{equity_curve_stop_reason}"
+        )
+    elif final_buy:
+        lines.append(f"┃ ★ 开仓计划：{_format_live_plan_line(final_buy, live_sizing)}")
+    else:
+        lines.append(f"┃ ★ {day_label}A/C/E均无开仓计划")
+    lines.append(bottom)
+    logger().info("\n".join(lines))
+
+
 def _log_decision_chain_summary(signal_date: str) -> None:
     """按当前正式腿序播报下一交易日开仓计划；只做展示，不参与下单。"""
 
@@ -1828,7 +1899,7 @@ def _log_decision_chain_summary(signal_date: str) -> None:
                     leg = str(row.get("strategy_leg", "")).strip().upper()
                     shares = int(float(row.get("round_lot_shares", 0) or 0))
                     price = float(row.get("reference_price", 0.0) or 0.0)
-                    if leg in {"A", "C"} and shares > 0 and price > 0:
+                    if leg in AC_LEGS and shares > 0 and price > 0:
                         candidates[leg] = {
                             "strategy": leg,
                             "ts_code": str(row.get("ts_code", "")),
@@ -1859,7 +1930,7 @@ def _log_decision_chain_summary(signal_date: str) -> None:
 
         readonly_candidates: dict[str, dict[str, Any]] = {}
         readonly_reasons: dict[str, str] = {}
-        for leg in ("A", "C", "E"):
+        for leg in ACE_STATIC_LEGS:
             if leg in candidates:
                 continue
             readonly_candidate, readonly_reason = (
@@ -1874,14 +1945,14 @@ def _log_decision_chain_summary(signal_date: str) -> None:
         broadcast_selected = next(
             (
                 broadcast_candidates[leg]
-                for leg in ("A", "C", "E")
+                for leg in ACE_STATIC_LEGS
                 if leg in broadcast_candidates
             ),
             None,
         )
 
         selected = next(
-            (candidates[leg] for leg in ("A", "C", "E") if leg in candidates),
+            (candidates[leg] for leg in ACE_STATIC_LEGS if leg in candidates),
             None,
         )
         positions = [
@@ -1921,7 +1992,7 @@ def _log_decision_chain_summary(signal_date: str) -> None:
             for position in positions
         )
         candidate_text: dict[str, str] = {}
-        for leg in ("A", "C", "E"):
+        for leg in ACE_STATIC_LEGS:
             candidate = broadcast_candidates.get(leg)
             if candidate is None:
                 candidate_text[leg] = "不触发｜无候选"
@@ -1946,72 +2017,11 @@ def _log_decision_chain_summary(signal_date: str) -> None:
                 f"{status_text}｜候选 {_format_candidate_stock(candidate)}"
             )
 
-        # 流程图、逐腿决策链、最终计划必须作为同一条多行日志原子输出；
-        # 周期播报时三块一起出现，不能只剩最终摘要。
-        bottom = "┃━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        lines = [
-            "┃━━━━━━━━━━━━ 决策优先级流程图 ━━━━━━━━━━━━",
-            f"┃ 信号日：{signal_date}；操作日：{action_date or '未知'}",
-            "┃ 当前互斥顺序：①持仓 > ②非D候选/计划(A>C>E) > ③D盘中",
-            "┃",
-            "┃ 【0】券商仍有本系统策略仓？",
-            f"┃   ├─ 是 → 不开新仓，确认实际清仓后再等待下一候选{path_tag if blocked else ''}",
-            "┃   └─ 否",
-            "┃        ↓",
-            "┃ 【1】今日存在A/C/E正式候选或开仓计划？",
-            "┃   ├─ 是 → 按A>C>E取首个计划执行；D全日不扫描、不记录、不下单",
-            "┃   └─ 否",
-            "┃        ↓",
-            "┃ 【2】D从09:30开始盘中扫描/记录，满足正式条件才允许开仓",
-            f"┃   ├─ D已成交 → 写入持仓并回到【0】{path_tag if d_holding else ''}",
-            f"┃   └─ D未成交/未触发 → 空仓{path_tag if not blocked and not selected_leg else ''}",
-            bottom,
-            "┃",
-            "┃━━━━━━━━━━━━━━ 开仓决策链 ━━━━━━━━━━━━━━",
-            f"┃ ① A主策略：{candidate_text['A']}",
-            f"┃ ② C强势龙头：{candidate_text['C']}",
-            f"┃ ③ E策略：{candidate_text['E']}",
-            f"┃ ④ D盘中兜底：{'已有D策略仓，串行资金门禁生效' if d_holding else '不触发｜无候选'}",
-            "┃ 账户空仓时首选："
-            + (
-                _format_strategy_candidate(
-                    str(broadcast_selected.get("strategy", "")),
-                    broadcast_selected,
-                )
-                if broadcast_selected
-                else "无"
-            ),
-            bottom,
-            "┃",
-            "┃━━━━━━━━━━━━━━ 最终开仓计划 ━━━━━━━━━━━━━━",
-        ]
-        if blocked:
-            lines.append(f"┃ ★ 不开新仓：券商仍有策略持仓｜{hold_line}")
-        elif execution_expired and original_final_buy:
-            lines.append(
-                "┃ ★ 当前不开仓：原计划"
-                f"{_format_strategy_candidate(str(original_final_buy.get('strategy', '?')), original_final_buy)}"
-                "已过执行窗口且未成交，不追补；该候选仍按全日互斥规则阻断D，"
-                "D今日不扫描也不开仓"
-            )
-        elif execution_block_reason and original_final_buy:
-            lines.append(
-                "┃ ★ 不开新仓：候选"
-                f"{_format_strategy_candidate(str(original_final_buy.get('strategy', '?')), original_final_buy)}"
-                f"已被新增BUY安全门禁阻断｜{execution_block_reason}"
-            )
-        elif equity_curve_stop_reason and original_final_buy:
-            lines.append(
-                "┃ ★ 不开新仓：方案甲停手，候选"
-                f"{_format_strategy_candidate(str(original_final_buy.get('strategy', '?')), original_final_buy)}"
-                f"不执行，D也不启动｜{equity_curve_stop_reason}"
-            )
-        elif final_buy:
-            lines.append(f"┃ ★ 开仓计划：{_format_live_plan_line(final_buy, live_sizing)}")
-        else:
-            lines.append(f"┃ ★ {day_label}A/C/E均无开仓计划")
-        lines.append(bottom)
-        logger().info("\n".join(lines))
+        _log_decision_chain_lines(
+            signal_date, blocked, execution_expired, original_final_buy, broadcast_selected,
+            execution_block_reason, action_date, path_tag, d_holding, candidate_text, hold_line,
+            equity_curve_stop_reason, final_buy, selected_leg, day_label, live_sizing,
+        )
 
         global _last_final_plan
         _last_final_plan = {

@@ -24,7 +24,8 @@ from dotenv import load_dotenv
 
 from src.account_privacy import mask_account_id, public_account_data
 from src.qmt_native_mode import live_status, native_settings, status_lines
-from src.qmt_adapter import QMTBrokerAdapter, first_present, to_float, to_int
+from src.qmt_adapter import first_present, to_float, to_int
+from src.qmt_broker_factory import create_qmt_adapter
 from src.utils.config import load_json_config
 
 
@@ -141,7 +142,7 @@ def safe_trade(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def broker_status(config: dict[str, Any]) -> dict[str, Any]:
-    adapter = QMTBrokerAdapter.from_config(config.get("broker", {}))
+    adapter = create_qmt_adapter(config.get("broker", {}))
     try:
         adapter.connect()
         account = adapter.query_account()

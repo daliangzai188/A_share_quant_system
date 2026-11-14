@@ -3,6 +3,7 @@ from __future__ import annotations
 from scripts import monitor_strategy_d_intraday as d_monitor
 from scripts.monitor_strategy_d_intraday import StrategyDMonitor
 from src.broker_adapter import OrderFill
+from tests.d_monitor_testing import monkeypatch_d_monitor
 
 
 class _Logger:
@@ -88,7 +89,7 @@ def test_submit_confirmation_does_not_treat_reported_as_fill_complete(
 
 
 def test_active_order_fill_is_projected_from_same_qmt_order(monkeypatch) -> None:
-    monkeypatch.setattr(d_monitor, "notify", lambda *_args, **_kwargs: True)
+    monkeypatch_d_monitor(monkeypatch, "notify", lambda *_args, **_kwargs: True)
     records: list[dict] = []
     broker = _FillBroker([_reported_zero_fill(), _full_fill()])
     monitor = _monitor(broker, records)
@@ -110,7 +111,7 @@ def test_active_order_fill_is_projected_from_same_qmt_order(monkeypatch) -> None
 def test_repeated_cumulative_fill_does_not_duplicate_position_projection(
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(d_monitor, "notify", lambda *_args, **_kwargs: True)
+    monkeypatch_d_monitor(monkeypatch, "notify", lambda *_args, **_kwargs: True)
     records: list[dict] = []
     partial = OrderFill(
         order_id="OID-D",

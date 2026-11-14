@@ -29,6 +29,7 @@ from src.market_rules import (
 )
 from src.trading_fees import stamp_tax_rate_for_date
 from src.portfolio_ace_m import (  # 仓位只在这一处定义
+    ACE_STATIC_LEGS,
     ACE_FULL_TARGET_PCT,
     ACE_REDUCED_TARGET_PCT,
     M_PCT_BESIDE_ACE,
@@ -42,7 +43,7 @@ M_IDLE_WEIGHT = M_PCT_WHEN_ACE_IDLE
 M_BESIDE_ACE_WEIGHT = M_PCT_BESIDE_ACE
 TOTAL_WEIGHT_CAP = TOTAL_POSITION_CAP_PCT
 M_SLIPPAGE = 0.001
-ACE_LEGS = ("A", "C", "E")
+ACE_LEGS = ACE_STATIC_LEGS  # 只回放收盘计划的三条腿（D不在影子账里）
 M_EXIT_SCAN_DAYS = 60
 
 

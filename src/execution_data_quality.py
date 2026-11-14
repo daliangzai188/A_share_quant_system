@@ -11,10 +11,12 @@ from typing import Any, Iterable, Mapping
 
 import pandas as pd
 
+from src.portfolio_ace_m import ACE_LEG_PRIORITY
+from src.market_rules import normalize_ts_code
 from src.strategy_identity import normalize_strategy_frame, normalize_strategy_leg
 
 
-ACTIVE_LEGS = {"A", "C", "D", "E"}
+ACTIVE_LEGS = set(ACE_LEG_PRIORITY)
 DETAIL_COLUMNS = [
     "trade_key", "entry_date", "planned_exit_date", "exit_date", "ts_code", "name",
     "strategy_leg", "entry_plan_source", "execution_status", "entry_filled_qty",
@@ -41,16 +43,7 @@ def _date(value: Any) -> str:
 
 
 def _code(value: Any) -> str:
-    text = _text(value).upper()
-    if not text or "." in text:
-        return text
-    if text.startswith(("6", "9")):
-        return f"{text}.SH"
-    if text.startswith(("0", "2", "3")):
-        return f"{text}.SZ"
-    if text.startswith(("4", "8")):
-        return f"{text}.BJ"
-    return text
+    return normalize_ts_code(_text(value))
 
 
 def _number(value: Any) -> float:
@@ -170,6 +163,66 @@ def _active_frame(raw: pd.DataFrame, config: Mapping[str, Any]) -> pd.DataFrame:
     for column in ("entry_date", "planned_exit_date", "exit_date"):
         frame[column] = frame[column].map(_date)
     return frame
+
+
+def _execution_quality_report(rows, as_of, clock, cutoff):
+    """汇总明细：正常持仓、数据缺口、可补救程度和P0问题计数，给出总体状态和说明（从 analyze_execution_data_quality 拆出，语句原样）。"""
+    detail = pd.DataFrame(rows, columns=DETAIL_COLUMNS)
+    normal_open_count = int(detail["is_normal_open"].sum()) if len(detail) else 0
+    gap_count = int(detail["is_data_gap"].sum()) if len(detail) else 0
+    complete_count = int(detail["gap_category"].eq("COMPLETE").sum()) if len(detail) else 0
+    settled_count = max(len(detail) - normal_open_count, 0)
+    category_counts = Counter(detail["gap_category"].astype(str)) if len(detail) else Counter()
+    recovery_counts = Counter(
+        detail.loc[detail["is_data_gap"], "recoverability"].astype(str)
+    ) if len(detail) else Counter()
+    has_overdue_position = bool(
+        detail["gap_category"].eq("OPEN_OVERDUE").any()
+    ) if len(detail) else False
+    has_other_p0 = bool(
+        (detail["is_data_gap"] & detail["severity"].eq("P0")).any()
+    ) if len(detail) else False
+    if has_overdue_position:
+        status = "P0_OVERDUE_POSITION"
+        reason = "存在计划退出日已过但仍未闭合的持仓，必须立即核对券商。"
+    elif has_other_p0:
+        status = "P0_EXECUTION_STATE"
+        reason = "存在P0级持仓或成交状态缺口，必须立即核对券商和退出计划。"
+    elif gap_count:
+        status = "DATA_GAP"
+        reason = f"存在{gap_count}笔真实成交数据缺口；正常未到期/今日到期持仓{normal_open_count}笔不算故障。"
+    elif normal_open_count:
+        status = "OPEN_POSITION_ONLY"
+        reason = f"仅有{normal_open_count}笔正常持仓尚未退出，没有已结算数据缺口。"
+    else:
+        status = "PASS"
+        reason = (
+            "全部当前策略成交记录均已完整闭合。" if len(detail)
+            else "当前策略成交记录0笔；暂无可检查的数据缺口，收益和容量仍需等待真实样本。"
+        )
+    summary = {
+        "status": status,
+        "reason": reason,
+        "as_of_date": as_of,
+        "as_of_time": clock,
+        "due_today_cutoff": cutoff,
+        "active_trade_rows": int(len(detail)),
+        "complete_trade_rows": complete_count,
+        "normal_open_trade_rows": normal_open_count,
+        "true_data_gap_rows": gap_count,
+        "settled_trade_rows": int(settled_count),
+        "settled_data_complete_rate": (
+            float(complete_count / settled_count) if settled_count else 1.0
+        ),
+        "auto_rebuild_candidate_rows": int(
+            detail["recoverability"].astype(str).str.startswith("AUTO_REBUILD_").sum()
+        ) if len(detail) else 0,
+        "category_counts": dict(sorted(category_counts.items())),
+        "recovery_counts": dict(sorted(recovery_counts.items())),
+        "automatic_writeback": False,
+        "note": "本报告只分类和给出行动建议，不会猜测卖出价或自动修改权威账本。",
+    }
+    return detail, summary
 
 
 def analyze_execution_data_quality(
@@ -337,59 +390,4 @@ def analyze_execution_data_quality(
             }
         )
 
-    detail = pd.DataFrame(rows, columns=DETAIL_COLUMNS)
-    normal_open_count = int(detail["is_normal_open"].sum()) if len(detail) else 0
-    gap_count = int(detail["is_data_gap"].sum()) if len(detail) else 0
-    complete_count = int(detail["gap_category"].eq("COMPLETE").sum()) if len(detail) else 0
-    settled_count = max(len(detail) - normal_open_count, 0)
-    category_counts = Counter(detail["gap_category"].astype(str)) if len(detail) else Counter()
-    recovery_counts = Counter(
-        detail.loc[detail["is_data_gap"], "recoverability"].astype(str)
-    ) if len(detail) else Counter()
-    has_overdue_position = bool(
-        detail["gap_category"].eq("OPEN_OVERDUE").any()
-    ) if len(detail) else False
-    has_other_p0 = bool(
-        (detail["is_data_gap"] & detail["severity"].eq("P0")).any()
-    ) if len(detail) else False
-    if has_overdue_position:
-        status = "P0_OVERDUE_POSITION"
-        reason = "存在计划退出日已过但仍未闭合的持仓，必须立即核对券商。"
-    elif has_other_p0:
-        status = "P0_EXECUTION_STATE"
-        reason = "存在P0级持仓或成交状态缺口，必须立即核对券商和退出计划。"
-    elif gap_count:
-        status = "DATA_GAP"
-        reason = f"存在{gap_count}笔真实成交数据缺口；正常未到期/今日到期持仓{normal_open_count}笔不算故障。"
-    elif normal_open_count:
-        status = "OPEN_POSITION_ONLY"
-        reason = f"仅有{normal_open_count}笔正常持仓尚未退出，没有已结算数据缺口。"
-    else:
-        status = "PASS"
-        reason = (
-            "全部当前策略成交记录均已完整闭合。" if len(detail)
-            else "当前策略成交记录0笔；暂无可检查的数据缺口，收益和容量仍需等待真实样本。"
-        )
-    summary = {
-        "status": status,
-        "reason": reason,
-        "as_of_date": as_of,
-        "as_of_time": clock,
-        "due_today_cutoff": cutoff,
-        "active_trade_rows": int(len(detail)),
-        "complete_trade_rows": complete_count,
-        "normal_open_trade_rows": normal_open_count,
-        "true_data_gap_rows": gap_count,
-        "settled_trade_rows": int(settled_count),
-        "settled_data_complete_rate": (
-            float(complete_count / settled_count) if settled_count else 1.0
-        ),
-        "auto_rebuild_candidate_rows": int(
-            detail["recoverability"].astype(str).str.startswith("AUTO_REBUILD_").sum()
-        ) if len(detail) else 0,
-        "category_counts": dict(sorted(category_counts.items())),
-        "recovery_counts": dict(sorted(recovery_counts.items())),
-        "automatic_writeback": False,
-        "note": "本报告只分类和给出行动建议，不会猜测卖出价或自动修改权威账本。",
-    }
-    return detail, summary
+    return _execution_quality_report(rows, as_of, clock, cutoff)

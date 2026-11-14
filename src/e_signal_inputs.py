@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from src.market_rules import market_segment
 from src.strategy_e import build_live_e_candidates
 
 PROJECT_ROOT = Path(__file__).absolute().parents[1]
@@ -57,19 +58,8 @@ def next_trade_day(date_str: str, n: int = 1) -> str:
 
 
 def classify_segment(ts_code: str) -> str:
-    code = str(ts_code).upper().strip()
-    prefix = code.split(".")[0]
-    if code.endswith(".BJ") or prefix[:1] in ("4", "8", "9"):
-        return "bj"
-    if prefix.startswith(("688", "689")):
-        return "star"
-    if prefix.startswith(("300", "301")):
-        return "chi_next"
-    if code.endswith(".SH") and prefix.startswith("6"):
-        return "sh_main"
-    if code.endswith(".SZ") and prefix.startswith(("000", "001", "002", "003")):
-        return "sz_main"
-    return "other"
+    """板块（规则在 src.market_rules.market_segment）。"""
+    return market_segment(ts_code)
 
 
 def count_limit_up_by_segment(date: str) -> dict[str, int]:

@@ -134,6 +134,12 @@ CHINA_TZ = ZoneInfo("Asia/Shanghai")
 MAX_SINGLE_QUOTE_SUBSCRIPTIONS = 50
 
 
+def selected_transport(broker_config: dict[str, Any]) -> str:
+    """配置选的连接方式：miniqmt 或 qmt_inner（环境变量 QMT_TRANSPORT 优先于 broker.transport）。"""
+
+    return os.getenv("QMT_TRANSPORT", str(broker_config.get("transport", "miniqmt"))).lower()
+
+
 def qmt_bar_hhmm(value: Any) -> int:
     """把QMT分钟线索引或time字段统一为HHMM。"""
 
@@ -183,13 +189,13 @@ class QMTBrokerAdapter(BrokerAdapter):
         # 导致日志显示尝试缓存会话，实际仍连接默认 1001，启动被无效失败拖慢。
         load_dotenv(project_root / ".env", override=False)
 
-        # 内置模式必须显式选择；连接失败绝不回退到停服的 miniQMT。
-        transport = os.getenv("QMT_TRANSPORT", str(broker_config.get("transport", "miniqmt"))).lower()
-        if transport == "qmt_inner":
-            from src.qmt_inner_adapter import QMTInnerBrokerAdapter
-            return QMTInnerBrokerAdapter.from_config(broker_config)
+        # 按配置选连接（miniQMT / QMT内置）的分派在 src.qmt_broker_factory.create_qmt_adapter
+        # （2026-11-15 原样搬出，本模块不再反过来导入子类）。这里只连 miniQMT：配置选了内置模式或
+        # 不认识的连接一律拒绝，绝不回退到停服的 miniQMT。
+        transport = selected_transport(broker_config)
         if transport != "miniqmt":
-            raise ValueError(f"未知QMT transport: {transport}")
+            raise ValueError(f"QMTBrokerAdapter.from_config 只连 miniQMT，当前 transport={transport}；"
+                             "按配置创建请用 src.qmt_broker_factory.create_qmt_adapter")
 
         account_id = os.getenv(str(broker_config.get("account_id_env", "QMT_ACCOUNT_ID")), "").strip()
         qmt_path = os.getenv(str(broker_config.get("qmt_path_env", "QMT_PATH")), "").strip()

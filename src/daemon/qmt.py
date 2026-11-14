@@ -485,9 +485,9 @@ def _qmt_connect_once(
     回收的连接线程，避免超时后旧线程仍在抢QMT session。
     """
     del timeout_sec  # 仅保留参数兼容旧调用，真正超时在唯一执行通道。
-    from src.qmt_adapter import QMTBrokerAdapter
+    from src.qmt_broker_factory import create_qmt_adapter
 
-    adapter = QMTBrokerAdapter.from_config(
+    adapter = create_qmt_adapter(
         _broker_config_with_qmt_override(
             broker_config,
             qmt_path=qmt_path,
@@ -1310,234 +1310,8 @@ def _account_status_pre_close_map(
         return {}
 
 
-def _print_account_status(log: Any) -> None:
-    """账户信息轮询（后台线程）：复用持久连接，查询无需重新握手。
-    只有 query_account/query_positions 成功返回，才算账户连接已验证可用。
-    关键交易窗口账户不可用时立刻重连和告警；非交易时段只做低频恢复尝试。"""
-    global _qmt_reconnect_count, _qmt_transport_busy_count
-    global _qmt_last_verified_at, _last_account_has_position
-    now_str = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
-    try:
-        config = load_json_config(PROJECT_ROOT / "config" / "config.json")
-        qmt_on = (config.get("broker_adapter_enabled") and config.get("qmt_enabled")
-                  and config.get("broker", {}).get("enabled"))
-        if not qmt_on:
-            write_broker_health("disabled")
-            log.info("✅ [账户] %s | 程序正常 | QMT未启用", now_str)
-            return
-        broker_cfg = config.get("broker", {})
-    except Exception as e:
-        write_broker_health("unavailable", error=f"读取配置失败：{e}")
-        log.error("❌ 读取配置失败：%s", e)
-        return
-
-    # 平仓窗口(14:54:30~14:58)心跳静默：不与主平仓、撤单和竞价兜底抢QMT锁。
-    _t = now_beijing().time()
-    if datetime.time(14, 54, 30) <= _t < datetime.time(14, 58):
-        return
-    account = positions = None
-    with _qmt_lock:
-        had_persistent_adapter = _qmt_adapter is not None
-        try:
-            adapter = _qmt_get(broker_cfg)
-            account, positions = _qmt_query_account_positions(adapter)
-            _qmt_last_verified_at = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
-            if _qmt_reconnect_count > 0:
-                log.info("✅ QMT连接已恢复（第%d次心跳失败后恢复）", _qmt_reconnect_count)
-                # 已推过内置桥接失联告警时，统一由锁外的成对恢复通知发送，避免重复推送。
-                if qmt_is_critical_window() and not _qmt_inner_outage.get("alerted"):
-                    _notify("connection", "✅ 账户重连成功", "QMT连接已恢复正常。")
-                _qmt_reconnect_count = 0
-            _qmt_transport_busy_count = 0
-        except BrokerSnapshotInconsistentError as snapshot_err:
-            # 账户/持仓/委托查询已经有返回，这是账务语义门失败，
-            # 不是连接断开。原会话必须保留，否则会把可用QMT主动打成掉线。
-            _qmt_reconnect_count = 0
-            _qmt_transport_busy_count = 0
-            _record_broker_snapshot_inconsistent(
-                snapshot_err,
-                log,
-                context="账户心跳",
-            )
-            return
-        except QMTReconnectBackoffError as backoff_err:
-            if _record_qmt_inner_heartbeat_stale(backoff_err, log):
-                return
-            write_broker_health(
-                "unavailable",
-                error=backoff_err,
-                failure_count=_qmt_reconnect_count,
-            )
-            log.info("QMT连接故障仍在统一退避窗口，本轮不新建会话：%s", backoff_err)
-            if qmt_is_critical_window():
-                _request_qmt_reconnect_stalled_recovery(backoff_err)
-            return
-        except Exception as first_err:
-            if _is_qmt_inner_heartbeat_stale(first_err):
-                _qmt_reconnect_count += 1
-                # 仅丢弃外部适配器引用，使模型恢复后能重新握手；不操作客户端。
-                _qmt_reset()
-                _record_qmt_inner_heartbeat_stale(first_err, log)
-                return
-            if _request_qmt_resource_recovery(first_err):
-                return
-            if _is_qmt_inner_file_transport_busy(first_err):
-                # 文件通道本轮确实不可用，所以保持 fail-closed；但内置模型、账户
-                # 和柜台会话并未断开，不能调用 _qmt_reset 主动拆掉持久适配器。
-                _qmt_transport_busy_count += 1
-                write_broker_health(
-                    "transport_busy",
-                    error=first_err,
-                    failure_count=_qmt_transport_busy_count,
-                )
-                log.warning(
-                    "QMT内置文件通道短暂被占用（连续%d次），本轮账户派生动作已阻断；"
-                    "保留现有QMT会话，下轮继续验证：%s",
-                    _qmt_transport_busy_count,
-                    first_err,
-                )
-                if _qmt_transport_busy_count >= 3 and qmt_is_critical_window():
-                    _notify_once_per(
-                        "qmt_inner_transport_busy",
-                        300,
-                        "⚠️ QMT本机通道持续被占用",
-                        "QMT账户仍保持登录，但本机文件通道连续无法读写。"
-                        "系统已阻断本轮开平仓派生动作并保留原会话，请检查Windows文件占用。",
-                        level="timeSensitive",
-                    )
-                return
-            _qmt_transport_busy_count = 0
-            _qmt_reset()
-            _qmt_reconnect_count += 1
-            write_broker_health(
-                "unavailable",
-                error=first_err,
-                failure_count=_qmt_reconnect_count,
-            )
-            critical_window = qmt_is_critical_window()
-            last_ok = _qmt_last_verified_at or "本轮启动后尚未验证成功"
-            if not critical_window and _qmt_reconnect_count < 3:
-                log.info(
-                    "QMT账户连接状态=未验证/不可用（非交易时段第%d/3次，最后验证成功=%s；暂不推送断连，稍后低频重试）：%s",
-                    _qmt_reconnect_count,
-                    last_ok,
-                    first_err,
-                )
-                return
-
-            if critical_window:
-                log.warning(
-                    "⚠️ QMT账户连接状态=不可用（第%d次，最后验证成功=%s），立刻重连：%s",
-                    _qmt_reconnect_count,
-                    last_ok,
-                    first_err,
-                )
-            else:
-                log.info(
-                    "QMT账户连接状态=未验证/不可用（非交易时段连续%d次，最后验证成功=%s），开始后台静默重连：%s",
-                    _qmt_reconnect_count,
-                    last_ok,
-                    first_err,
-                )
-
-            # 关键窗口刚断连时告警；非关键时段只写日志，避免周末/夜间刷通知。
-            if critical_window and _qmt_reconnect_count == 1:
-                _notify("connection", "🔌 账户断连", "QMT连接断开，正在自动重连，请关注。",
-                        level="critical", call=False)
-            if not had_persistent_adapter:
-                # 本轮第一次动作已经是真实connect并且失败，_qmt_connect已设置
-                # 统一退避。旧代码紧接着再调用一次_qmt_get，只会100%被自己刚
-                # 设置的退避门拒绝，也让“第3轮完整扫描”永远没有机会成为下一次
-                # 真实连接。等待下一轮；_qmt_get_raw会在第3次真实建连自动升级。
-                if critical_window:
-                    _request_qmt_reconnect_stalled_recovery(first_err)
-                return
-            try:
-                if critical_window:
-                    log.info("QMT自动重连开始（第%d次）", _qmt_reconnect_count)
-                    # 前两轮只复用最近成功session；第3轮才唯一一次
-                    # 扫备用path/session。之后回到首选session并服从进程级退避，
-                    # 避免一次故障每15秒新建十个XtQuantTrader。
-                    allow_full_scan = _qmt_reconnect_count == 3
-                else:
-                    allow_full_scan = _qmt_reconnect_count == 3
-                    scan_desc = "完整扫描备用session/path" if allow_full_scan else "首选session"
-                    log.info(
-                        "QMT非交易时段后台静默重连开始（第%d次，%s）",
-                        _qmt_reconnect_count,
-                        scan_desc,
-                    )
-                adapter = _qmt_get(broker_cfg, allow_full_scan=allow_full_scan)
-                account, positions = _qmt_query_account_positions(adapter)
-                _qmt_last_verified_at = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
-                log.info("✅ QMT重连成功（第%d次恢复）", _qmt_reconnect_count)
-                if critical_window and not _qmt_inner_outage.get("alerted"):
-                    _notify("connection", "✅ 账户重连成功", "QMT连接已恢复正常。")
-                _qmt_reconnect_count = 0
-            except BrokerSnapshotInconsistentError as snapshot_err:
-                # connect/query已经恢复，只是快照语义不自洽；结束连接重试计数。
-                _qmt_reconnect_count = 0
-                _record_broker_snapshot_inconsistent(
-                    snapshot_err,
-                    log,
-                    context="连接恢复后快照复核",
-                )
-                return
-            except QMTReconnectBackoffError as backoff_err:
-                write_broker_health(
-                    "unavailable",
-                    error=backoff_err,
-                    failure_count=_qmt_reconnect_count,
-                )
-                log.info("QMT统一退避门拒绝本轮重复建连：%s", backoff_err)
-                if critical_window:
-                    _request_qmt_reconnect_stalled_recovery(backoff_err)
-                return
-            except Exception as retry_err:
-                if _request_qmt_resource_recovery(retry_err):
-                    return
-                write_broker_health(
-                    "unavailable",
-                    error=retry_err,
-                    failure_count=_qmt_reconnect_count,
-                )
-                if critical_window:
-                    log.warning("⚠️ QMT重连失败（第%d次），等待下次重试：%s",
-                                _qmt_reconnect_count, retry_err)
-                else:
-                    log.info("QMT非交易时段静默重连未恢复（第%d次），下次低频重试：%s",
-                             _qmt_reconnect_count, retry_err)
-                # 仅关键窗口连续多次失败时告警；非交易时段不升级为持续响铃。
-                if critical_window and _qmt_reconnect_count >= 3:
-                    _notify("system_error", "❌ QMT持续掉线",
-                            "QMT连接已连续多次重连失败，实盘下单/平仓可能受影响，请立即检查。",
-                            level="critical", call=True)
-                    _request_qmt_reconnect_stalled_recovery(retry_err)
-                return
-
-    # 只有账户与持仓查询都通过语义/自洽校验后，才允许用券商真实股数恢复
-    # 近期被自动误清的策略身份。放在QMT锁外执行，避免持仓文件写入和通知
-    # 占用唯一券商通道；恢复仍早于旧仓门禁、展示及平仓线程下一轮读取。
-    try:
-        restore_ghost_cleared_strategy_positions(positions, "账户心跳/重连")
-    except Exception as exc:
-        # 本轮不能确认策略身份就停止本轮账户派生动作；只记录并等待下一轮，
-        # 不让后台线程异常退出，也不把该票降级成外部仓或放行开仓。
-        log.exception("策略仓身份恢复异常，本轮停止并等待下一轮重试：%s", exc)
-        return
-    now_str = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
-    acct_id = str(account.account_id or "")
-    write_broker_health("verified", account_id=acct_id)
-    _notify_qmt_inner_outage_recovered(log)
-    masked_acct = _mask_account(acct_id)
-    total_asset = float(getattr(account, "total_asset", 0.0) or 0.0)
-    _check_capacity_wall_milestone(total_asset, config, log)
-    live_positions = [p for p in (positions or []) if int(getattr(p, "volume", 0) or 0) > 0]
-    pre_close_map = _account_status_pre_close_map(
-        [str(getattr(position, "ts_code", "")) for position in live_positions]
-    )
-    # 只认策略持仓:打新中签转债/股票等外部持仓不算"有持仓"(2026-07-23 用户重申)
-    _last_account_has_position = _broker_has_strategy_position(positions)
+def _print_account_status_report(log, live_positions, masked_acct, positions, now_str, config, total_asset, pre_close_map):
+    """账户心跳的持仓部分：逐票同步券商持仓、按票合并分片成本、算收益并推送亏损告警，打印账户和持仓（从 _print_account_status 拆出，语句原样）。"""
     if live_positions:
         # 逐票同步(2026-07-23):账户非空(如有打新中签转债)时,原全账户清理不触发,
         # 手动卖出的策略持仓会成永久幽灵仓卡住开仓。此处逐票核对券商实际持仓,
@@ -1734,6 +1508,246 @@ def _print_account_status(log: Any) -> None:
         )
         log.info("✅ [账户] %s | 账户%s 总资产%.2f万 | 无持仓",
                  now_str, masked_acct, total_asset / 10000)
+
+
+def _print_account_status_query(log, broker_cfg, account, positions):
+    """在QMT锁内查询账户和持仓，失败时按交易窗口重连或告警（从 _print_account_status 拆出，语句原样）。"""
+    global _qmt_last_verified_at, _qmt_reconnect_count, _qmt_transport_busy_count
+    with _qmt_lock:
+        had_persistent_adapter = _qmt_adapter is not None
+        try:
+            adapter = _qmt_get(broker_cfg)
+            account, positions = _qmt_query_account_positions(adapter)
+            _qmt_last_verified_at = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
+            if _qmt_reconnect_count > 0:
+                log.info("✅ QMT连接已恢复（第%d次心跳失败后恢复）", _qmt_reconnect_count)
+                # 已推过内置桥接失联告警时，统一由锁外的成对恢复通知发送，避免重复推送。
+                if qmt_is_critical_window() and not _qmt_inner_outage.get("alerted"):
+                    _notify("connection", "✅ 账户重连成功", "QMT连接已恢复正常。")
+                _qmt_reconnect_count = 0
+            _qmt_transport_busy_count = 0
+        except BrokerSnapshotInconsistentError as snapshot_err:
+            # 账户/持仓/委托查询已经有返回，这是账务语义门失败，
+            # 不是连接断开。原会话必须保留，否则会把可用QMT主动打成掉线。
+            _qmt_reconnect_count = 0
+            _qmt_transport_busy_count = 0
+            _record_broker_snapshot_inconsistent(
+                snapshot_err,
+                log,
+                context="账户心跳",
+            )
+            return True, None, None, None
+        except QMTReconnectBackoffError as backoff_err:
+            if _record_qmt_inner_heartbeat_stale(backoff_err, log):
+                return True, None, None, None
+            write_broker_health(
+                "unavailable",
+                error=backoff_err,
+                failure_count=_qmt_reconnect_count,
+            )
+            log.info("QMT连接故障仍在统一退避窗口，本轮不新建会话：%s", backoff_err)
+            if qmt_is_critical_window():
+                _request_qmt_reconnect_stalled_recovery(backoff_err)
+            return True, None, None, None
+        except Exception as first_err:
+            if _is_qmt_inner_heartbeat_stale(first_err):
+                _qmt_reconnect_count += 1
+                # 仅丢弃外部适配器引用，使模型恢复后能重新握手；不操作客户端。
+                _qmt_reset()
+                _record_qmt_inner_heartbeat_stale(first_err, log)
+                return True, None, None, None
+            if _request_qmt_resource_recovery(first_err):
+                return True, None, None, None
+            if _is_qmt_inner_file_transport_busy(first_err):
+                # 文件通道本轮确实不可用，所以保持 fail-closed；但内置模型、账户
+                # 和柜台会话并未断开，不能调用 _qmt_reset 主动拆掉持久适配器。
+                _qmt_transport_busy_count += 1
+                write_broker_health(
+                    "transport_busy",
+                    error=first_err,
+                    failure_count=_qmt_transport_busy_count,
+                )
+                log.warning(
+                    "QMT内置文件通道短暂被占用（连续%d次），本轮账户派生动作已阻断；"
+                    "保留现有QMT会话，下轮继续验证：%s",
+                    _qmt_transport_busy_count,
+                    first_err,
+                )
+                if _qmt_transport_busy_count >= 3 and qmt_is_critical_window():
+                    _notify_once_per(
+                        "qmt_inner_transport_busy",
+                        300,
+                        "⚠️ QMT本机通道持续被占用",
+                        "QMT账户仍保持登录，但本机文件通道连续无法读写。"
+                        "系统已阻断本轮开平仓派生动作并保留原会话，请检查Windows文件占用。",
+                        level="timeSensitive",
+                    )
+                return True, None, None, None
+            _qmt_transport_busy_count = 0
+            _qmt_reset()
+            _qmt_reconnect_count += 1
+            write_broker_health(
+                "unavailable",
+                error=first_err,
+                failure_count=_qmt_reconnect_count,
+            )
+            critical_window = qmt_is_critical_window()
+            last_ok = _qmt_last_verified_at or "本轮启动后尚未验证成功"
+            if not critical_window and _qmt_reconnect_count < 3:
+                log.info(
+                    "QMT账户连接状态=未验证/不可用（非交易时段第%d/3次，最后验证成功=%s；暂不推送断连，稍后低频重试）：%s",
+                    _qmt_reconnect_count,
+                    last_ok,
+                    first_err,
+                )
+                return True, None, None, None
+
+            if critical_window:
+                log.warning(
+                    "⚠️ QMT账户连接状态=不可用（第%d次，最后验证成功=%s），立刻重连：%s",
+                    _qmt_reconnect_count,
+                    last_ok,
+                    first_err,
+                )
+            else:
+                log.info(
+                    "QMT账户连接状态=未验证/不可用（非交易时段连续%d次，最后验证成功=%s），开始后台静默重连：%s",
+                    _qmt_reconnect_count,
+                    last_ok,
+                    first_err,
+                )
+
+            # 关键窗口刚断连时告警；非关键时段只写日志，避免周末/夜间刷通知。
+            if critical_window and _qmt_reconnect_count == 1:
+                _notify("connection", "🔌 账户断连", "QMT连接断开，正在自动重连，请关注。",
+                        level="critical", call=False)
+            if not had_persistent_adapter:
+                # 本轮第一次动作已经是真实connect并且失败，_qmt_connect已设置
+                # 统一退避。旧代码紧接着再调用一次_qmt_get，只会100%被自己刚
+                # 设置的退避门拒绝，也让“第3轮完整扫描”永远没有机会成为下一次
+                # 真实连接。等待下一轮；_qmt_get_raw会在第3次真实建连自动升级。
+                if critical_window:
+                    _request_qmt_reconnect_stalled_recovery(first_err)
+                return True, None, None, None
+            try:
+                if critical_window:
+                    log.info("QMT自动重连开始（第%d次）", _qmt_reconnect_count)
+                    # 前两轮只复用最近成功session；第3轮才唯一一次
+                    # 扫备用path/session。之后回到首选session并服从进程级退避，
+                    # 避免一次故障每15秒新建十个XtQuantTrader。
+                    allow_full_scan = _qmt_reconnect_count == 3
+                else:
+                    allow_full_scan = _qmt_reconnect_count == 3
+                    scan_desc = "完整扫描备用session/path" if allow_full_scan else "首选session"
+                    log.info(
+                        "QMT非交易时段后台静默重连开始（第%d次，%s）",
+                        _qmt_reconnect_count,
+                        scan_desc,
+                    )
+                adapter = _qmt_get(broker_cfg, allow_full_scan=allow_full_scan)
+                account, positions = _qmt_query_account_positions(adapter)
+                _qmt_last_verified_at = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
+                log.info("✅ QMT重连成功（第%d次恢复）", _qmt_reconnect_count)
+                if critical_window and not _qmt_inner_outage.get("alerted"):
+                    _notify("connection", "✅ 账户重连成功", "QMT连接已恢复正常。")
+                _qmt_reconnect_count = 0
+            except BrokerSnapshotInconsistentError as snapshot_err:
+                # connect/query已经恢复，只是快照语义不自洽；结束连接重试计数。
+                _qmt_reconnect_count = 0
+                _record_broker_snapshot_inconsistent(
+                    snapshot_err,
+                    log,
+                    context="连接恢复后快照复核",
+                )
+                return True, None, None, None
+            except QMTReconnectBackoffError as backoff_err:
+                write_broker_health(
+                    "unavailable",
+                    error=backoff_err,
+                    failure_count=_qmt_reconnect_count,
+                )
+                log.info("QMT统一退避门拒绝本轮重复建连：%s", backoff_err)
+                if critical_window:
+                    _request_qmt_reconnect_stalled_recovery(backoff_err)
+                return True, None, None, None
+            except Exception as retry_err:
+                if _request_qmt_resource_recovery(retry_err):
+                    return True, None, None, None
+                write_broker_health(
+                    "unavailable",
+                    error=retry_err,
+                    failure_count=_qmt_reconnect_count,
+                )
+                if critical_window:
+                    log.warning("⚠️ QMT重连失败（第%d次），等待下次重试：%s",
+                                _qmt_reconnect_count, retry_err)
+                else:
+                    log.info("QMT非交易时段静默重连未恢复（第%d次），下次低频重试：%s",
+                             _qmt_reconnect_count, retry_err)
+                # 仅关键窗口连续多次失败时告警；非交易时段不升级为持续响铃。
+                if critical_window and _qmt_reconnect_count >= 3:
+                    _notify("system_error", "❌ QMT持续掉线",
+                            "QMT连接已连续多次重连失败，实盘下单/平仓可能受影响，请立即检查。",
+                            level="critical", call=True)
+                    _request_qmt_reconnect_stalled_recovery(retry_err)
+                return True, None, None, None
+    return False, None, account, positions
+
+
+def _print_account_status(log: Any) -> None:
+    """账户信息轮询（后台线程）：复用持久连接，查询无需重新握手。
+    只有 query_account/query_positions 成功返回，才算账户连接已验证可用。
+    关键交易窗口账户不可用时立刻重连和告警；非交易时段只做低频恢复尝试。"""
+    global _qmt_reconnect_count, _qmt_transport_busy_count
+    global _qmt_last_verified_at, _last_account_has_position
+    now_str = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+        qmt_on = (config.get("broker_adapter_enabled") and config.get("qmt_enabled")
+                  and config.get("broker", {}).get("enabled"))
+        if not qmt_on:
+            write_broker_health("disabled")
+            log.info("✅ [账户] %s | 程序正常 | QMT未启用", now_str)
+            return
+        broker_cfg = config.get("broker", {})
+    except Exception as e:
+        write_broker_health("unavailable", error=f"读取配置失败：{e}")
+        log.error("❌ 读取配置失败：%s", e)
+        return
+
+    # 平仓窗口(14:54:30~14:58)心跳静默：不与主平仓、撤单和竞价兜底抢QMT锁。
+    _t = now_beijing().time()
+    if datetime.time(14, 54, 30) <= _t < datetime.time(14, 58):
+        return
+    account = positions = None
+    _done, _value, account, positions = _print_account_status_query(log, broker_cfg, account, positions)
+    if _done:
+        return _value
+
+    # 只有账户与持仓查询都通过语义/自洽校验后，才允许用券商真实股数恢复
+    # 近期被自动误清的策略身份。放在QMT锁外执行，避免持仓文件写入和通知
+    # 占用唯一券商通道；恢复仍早于旧仓门禁、展示及平仓线程下一轮读取。
+    try:
+        restore_ghost_cleared_strategy_positions(positions, "账户心跳/重连")
+    except Exception as exc:
+        # 本轮不能确认策略身份就停止本轮账户派生动作；只记录并等待下一轮，
+        # 不让后台线程异常退出，也不把该票降级成外部仓或放行开仓。
+        log.exception("策略仓身份恢复异常，本轮停止并等待下一轮重试：%s", exc)
+        return
+    now_str = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
+    acct_id = str(account.account_id or "")
+    write_broker_health("verified", account_id=acct_id)
+    _notify_qmt_inner_outage_recovered(log)
+    masked_acct = _mask_account(acct_id)
+    total_asset = float(getattr(account, "total_asset", 0.0) or 0.0)
+    _check_capacity_wall_milestone(total_asset, config, log)
+    live_positions = [p for p in (positions or []) if int(getattr(p, "volume", 0) or 0) > 0]
+    pre_close_map = _account_status_pre_close_map(
+        [str(getattr(position, "ts_code", "")) for position in live_positions]
+    )
+    # 只认策略持仓:打新中签转债/股票等外部持仓不算"有持仓"(2026-07-23 用户重申)
+    _last_account_has_position = _broker_has_strategy_position(positions)
+    return _print_account_status_report(log, live_positions, masked_acct, positions, now_str, config, total_asset, pre_close_map)
 
 
 def check_qmt_connection(*, allow_full_scan: bool | None = None) -> bool:

@@ -65,6 +65,7 @@ from pandas.errors import EmptyDataError
 from src.equity_curve_stop import LiveGateCheck, live_gate
 from src.live_order_gateway import LiveOrderGateway
 from src.portfolio_ace_m import (
+    first_leg_to_open,
     ACE_FULL_TARGET_PCT,
     GATE_BLOCKED,
     GATE_FULL,
@@ -475,100 +476,154 @@ class CombinedLiveEngine:
             )
         return decisions
 
-    def build_mode1_plan(self, today: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-        positions = self.load_positions()
-        # 2026-11-12 ACE+M：M 是独立资金的并行策略，M 持仓不阻断 A/C/E 开仓、不参与本状态机的
-        # 互斥判断；M 的开仓与到期卖出由 daemon 的 M 执行路径负责。只有 D 仍要求账户（含 M）完全空仓。
-        all_open_positions = [p for p in positions if self.is_open_position(p)]
-        open_m_positions = [p for p in all_open_positions if is_m_position(p)]
-        open_positions = [p for p in all_open_positions if not is_m_position(p)]
-        open_d_positions = [p for p in open_positions if self.is_d_position(p)]
-        open_non_d_positions = [p for p in open_positions if not self.is_d_position(p)]
-        open_e_positions = [p for p in open_non_d_positions if self.is_e_position(p)]
-        due_e_positions = [
-            p for p in open_e_positions
-            if str(p.get("planned_exit_date", "99991231")) <= today
-            or str(p.get("status", "")).lower() == "sell_pending"
-        ]
-        # 今日到期集合只用于生成退出计划和T+0同票保护，绝不能再从开仓占用中排除。
-        # 新口径（2026-08-03）：旧仓实际清空前一律不买新仓，取消尾盘旧仓与早盘新仓并存。
-        # ABC 到期卖出仍由 daemon check_and_close_positions 执行，不需要额外计划单行。
-        due_non_d_positions = [
-            p for p in open_non_d_positions
-            if not self.is_manual_exit_only_position(p)
-            and (
-                str(p.get("planned_exit_date", "99991231")) <= today
-                or str(p.get("status", "")).lower() == "sell_pending"
-            )
-        ]
-        # 今日到期卖出的标的代码（T+0限制：当日不可再买入同一标的）
-        due_selling_codes: set[str] = {str(p.get("ts_code", "")) for p in due_non_d_positions}
-        abc_path, abc_orders = self.load_latest_abc_orders()
-        # ABC 计划单日期校验（E planned_buy_date==today 的同款保护）：
-        # load_latest_abc_orders 只按文件时间取最新，若某晚收盘流水线失败，
-        # 第二天会读到前一天的计划——只执行 planned_order_date==today 的行，陈旧计划一律丢弃。
-        if not abc_orders.empty and "planned_order_date" in abc_orders.columns:
-            date_ok = abc_orders["planned_order_date"].astype(str).str.strip() == str(today)
-            stale = abc_orders[~date_ok]
-            if not stale.empty:
+    @staticmethod
+    def _open_static_leg(
+        leg_decisions: list[CombinedLiveDecision],
+        leg_orders: pd.DataFrame,
+        decisions: list[CombinedLiveDecision],
+        planned_orders: list[dict[str, Any]],
+    ) -> bool:
+        """A/C：有正式计划就开仓，写入决策和计划单（从 build_mode1_plan 的 ①A ②C 搬来）。"""
+        if not leg_decisions:
+            return False
+        decisions.extend(leg_decisions)
+        planned_orders.extend(leg_orders.to_dict("records"))
+        return True
+
+    def _open_e_leg(
+        self,
+        today: str,
+        due_selling_codes: set[str],
+        decisions: list[CombinedLiveDecision],
+        planned_orders: list[dict[str, Any]],
+    ) -> bool:
+        """E：读昨日E信号，与今日竞价卖出同票（T+0）就跳过；凑得出整手就开仓（从 build_mode1_plan 的 ③E 搬来）。"""
+        e_order: dict[str, Any] | None = None
+        yesterday_signal = self.load_yesterday_e_signal(today)
+        if yesterday_signal:
+            buy_code = str(yesterday_signal.get("ts_code", ""))
+            if buy_code in due_selling_codes:
+                # 今日集合竞价已卖出同一标的，T+0限制不可当日回买
                 import logging as _logging
-                for _, srow in stale.iterrows():
-                    _logging.getLogger(__name__).warning(
-                        "ABC计划单 %s %s planned_order_date=%s ≠ today=%s，视为陈旧计划跳过。",
-                        srow.get("ts_code", ""), srow.get("name", ""),
-                        srow.get("planned_order_date", ""), today,
-                    )
-            abc_orders = abc_orders[date_ok].copy()
-
-        decisions: list[CombinedLiveDecision] = []
-        planned_orders: list[dict[str, Any]] = []
-        state_rows: list[dict[str, Any]] = [
-            {
-                "today": today,
-                "active_strategy_mode": self.active_strategy_mode(),
-                "active_strategy_name": self.active_strategy_name(),
-                "open_position_count": len(open_positions),
-                "open_m_position_count": len(open_m_positions),
-                "open_d_position_count": len(open_d_positions),
-                "open_non_d_position_count": len(open_non_d_positions),
-                "open_e_position_count": len(open_e_positions),
-                "due_e_count": len(due_e_positions),
-                "abc_planned_orders_path": str(abc_path or ""),
-                "abc_planned_order_count": int(len(abc_orders)) if not abc_orders.empty else 0,
-            }
-        ]
-
-        # ── E 到期卖出（R1可能T+2/T+3，以planned_exit_date为唯一依据） ───────
-        for pos in due_e_positions:
-            decisions.append(
-                CombinedLiveDecision(
-                    action="PLAN_SELL_E",
-                    strategy_leg="E",
-                    ts_code=str(pos.get("ts_code", "")),
-                    name=str(pos.get("name", "")),
-                    side="SELL",
-                    quantity=self.as_int(pos.get("shares", 0)),
-                    reason=(
-                        f"E持仓到期平仓，planned_exit_date={pos.get('planned_exit_date','')}，"
-                        f"今日={today}，按R1信号锁定的到期日收盘卖出。"
-                    ),
-                    source="positions.json",
+                _logging.getLogger(__name__).warning(
+                    "E新买入标的 %s 与今日集合竞价卖出标的相同，T+0限制，跳过买入。", buy_code
                 )
-            )
-            planned_orders.append(self.build_e_sell_order(pos, today))
+            else:
+                e_order = self.build_e_buy_order(yesterday_signal, today)
+        if not (e_order and e_order.get("round_lot_shares", 0) > 0):
+            return False
+        planned_orders.append(e_order)
+        decisions.append(CombinedLiveDecision(
+            action="ALLOW_E_BUY",
+            strategy_leg="E",
+            ts_code=str(yesterday_signal.get("ts_code", "")),  # type: ignore[union-attr]
+            name=str(yesterday_signal.get("name", "")),  # type: ignore[union-attr]
+            side="BUY",
+            quantity=e_order.get("round_lot_shares", 0),
+            reason=(
+                f"E昨日信号今日开仓：{yesterday_signal.get('ts_code')} "  # type: ignore[union-attr]
+                f"{yesterday_signal.get('name')}，"  # type: ignore[union-attr]
+                f"T+1开盘买入{e_order.get('round_lot_shares', 0)}股，"
+                f"计划金额约{float(e_order.get('planned_amount_by_equity', 0.0)):.0f}元，"
+                f"按R1信号在T+{int(yesterday_signal.get('exit_offset', 2) or 2)}收盘卖出。"  # type: ignore[union-attr]
+            ),
+            source=str(self.project_root / "reports" / "strategy_e"),
+        ))
+        return True
 
-        # ── D / ABC / 空仓 主流程 ──────────────────────────────────────────────
-        # opened_leg 记录本日最终由哪一腿占用资金（None=没有任何腿开仓）。
-        # 有旧持仓的两个分支一律阻断新开仓，所以只有空仓分支会写这个变量；
-        # 函数末尾的 E 状态播报要靠它区分"E被前面的腿挡住"和"E自己没信号"。
-        opened_leg: str | None = None
-        stop_gate = self.equity_curve_stop_check(today)
-        # FULL=正常 82.5%；REDUCED=方案甲停手期，ACE 仍按 A>C>E 开仓但目标仓位 20%；
-        # BLOCKED=判定缺失/过期等 fail-closed，不开新仓（与原规则相同）。
-        ace_mode = ace_gate_mode(stop_gate)
-        self._ace_target_pct = ace_base_target_pct(ace_mode)
-        state_rows[0]["ace_gate_mode"] = ace_mode
-        state_rows[0]["ace_mode_target_pct"] = self._ace_target_pct
+    def _mode1_e_status_and_tables(
+        self, today, state_rows, planned_orders, open_positions, decisions, ace_mode, stop_gate, opened_leg,
+    ):
+        """写E盘中状态播报，汇总成状态、决策、计划单三张表（从 build_mode1_plan 拆出，语句原样）。"""
+        # ── E 盘中状态显示（摘要用） ─────────────────────────────────────────
+        has_e_buy = any(d.action == "ALLOW_E_BUY" for d in decisions)
+        has_e_sell = any(d.action == "PLAN_SELL_E" for d in decisions)
+        has_abc_buy = any(d.action == "ALLOW_ABC_BUY_PREVIEW" for d in decisions)
+        # BLOCK_E_BUY_UNTIL_D_SOLD 及其 WAIT_D_SELL_THEN_ALLOW_E_BUY 播报随
+        # 2026-08-07 D接力全关一并删除：D持仓日现在直接走 BLOCK_E_BUY，
+        # 不存在"等D卖完再买E"的中间态。
+
+        if has_e_sell:
+            e_status_action = "PLAN_SELL_E_TODAY"
+            e_status_reason = f"E持仓今日到期，收盘前平仓（14:53 job_afternoon 执行）。"
+        elif has_e_buy:
+            e_status_action = "ALLOW_E_BUY_TODAY"
+            e_status_reason = "E今日T+1开仓，已加入组合计划单。"
+        elif open_positions:
+            e_status_action = "BLOCK_E"
+            e_status_reason = f"账户有 {len(open_positions)} 个未平仓头寸，E 不触发。"
+        elif ace_mode == GATE_BLOCKED:
+            e_status_action = "BLOCK_E"
+            e_status_reason = f"方案甲停手门禁：{stop_gate.reason}"
+        elif has_abc_buy:
+            e_status_action = "BLOCK_E"
+            e_status_reason = (
+                "今日 C 已按A>C>E腿序生成开仓计划，E不触发（资金冲突）。"
+                if opened_leg == "C"
+                else "今日 A 已生成买入计划，E 不触发（资金冲突）。"
+            )
+        else:
+            e_status_action = "ALLOW_E_SIGNAL"
+            today_signal = self.load_today_e_signal(today)
+            if today_signal:
+                ts = today_signal.get("ts_code", "")
+                nm = today_signal.get("name", "")
+                buy_dt = today_signal.get("planned_buy_date", "")
+                lc = float(today_signal.get("limit_close", 0) or 0)
+                fp = float(today_signal.get("fill_probability", 0) or 0)
+                circ = float(today_signal.get("circ_mv", 0) or 0)
+                e_status_reason = (
+                    f"今日已扫描到E候选：{ts} {nm}，"
+                    f"计划买入日={buy_dt}，"
+                    f"涨停参考价={lc:.2f}元，"
+                    f"流通市值={circ/10000:.1f}亿，"
+                    f"成交概率={fp:.1%}。"
+                    f"（明日09:20组合状态机将生成ALLOW_E_BUY开仓计划）"
+                )
+            else:
+                preview = self.compute_e_preview(today)
+                neutral_segs = preview.get("neutral_segs", [])
+                if preview.get("has_candidate"):
+                    ts = preview["ts_code"]
+                    nm = preview["name"]
+                    circ = preview["circ_mv"]
+                    fp = preview["fill_probability"]
+                    lc = preview["limit_close"]
+                    e_status_reason = (
+                        f"E预判可触发：候选 {ts} {nm}，"
+                        f"流通市值={circ/10000:.1f}亿，成交概率={fp:.1%}，参考价={lc:.2f}元，"
+                        f"neutral板块={neutral_segs}。"
+                        f"（15:10流水线⑦步生成正式信号文件和明日买入计划）"
+                    )
+                elif neutral_segs and not preview.get("has_scored_data", True):
+                    e_status_reason = (
+                        f"板块状态已判定：neutral板块={neutral_segs}，E前提满足。"
+                        f"候选股待15:10流水线⑦步采集scored数据后确定。"
+                    )
+                elif preview.get("has_candidate") is False:
+                    e_status_reason = preview.get("reason", "E今日不触发。")
+                else:
+                    e_status_reason = preview.get(
+                        "reason",
+                        "今日raw数据尚未采集，等待15:10收盘流水线⑦步自动扫描。"
+                    )
+        decisions.append(CombinedLiveDecision(
+            action=e_status_action,
+            strategy_leg="E_STATUS",
+            reason=e_status_reason,
+            source="combined_state_machine",
+        ))
+
+        decision_df = pd.DataFrame([decision.__dict__ for decision in decisions])
+        state_df = pd.DataFrame(state_rows)
+        planned_orders_df = pd.DataFrame(planned_orders)
+        return state_df, decision_df, planned_orders_df
+
+    def _mode1_open_decisions(
+        self, today, open_d_positions, open_non_d_positions, decisions, ace_mode, due_selling_codes,
+        opened_leg, planned_orders, abc_orders, open_m_positions, abc_path, stop_gate,
+    ):
+        """按持仓和方案甲判定决定今日开仓：有D仓或旧仓阻断，判定缺失fail-closed，空仓按A>C>E>D开一条腿并决定D是否启动（从 build_mode1_plan 拆出，语句原样）。"""
         if open_d_positions:
             due_d = [
                 p for p in open_d_positions
@@ -695,58 +750,14 @@ class CombinedLiveEngine:
                 c_orders_buy = abc_orders_buy.iloc[0:0]
                 a_orders_buy = abc_orders_buy
 
-            # 各腿判断串成一条链，任一腿开仓后（opened_leg 被写上），
-            # 后面的腿只写阻断决策、不再取信号。
-            yesterday_signal: dict[str, Any] | None = None
-            e_order: dict[str, Any] | None = None
-
-            # ① A
-            if a_decisions:
-                opened_leg = "A"
-                decisions.extend(a_decisions)
-                planned_orders.extend(a_orders_buy.to_dict("records"))
-
-            # ② C（A无正式计划时补位）
-            if opened_leg is None and c_decisions:
-                opened_leg = "C"
-                decisions.extend(c_decisions)
-                planned_orders.extend(c_orders_buy.to_dict("records"))
-
-            # ③ E（A/C均无正式计划时）
-            if opened_leg is None:
-                yesterday_signal = self.load_yesterday_e_signal(today)
-                if yesterday_signal:
-                    buy_code = str(yesterday_signal.get("ts_code", ""))
-                    if buy_code in due_selling_codes:
-                        # 今日集合竞价已卖出同一标的，T+0限制不可当日回买
-                        import logging as _logging
-                        _logging.getLogger(__name__).warning(
-                            "E新买入标的 %s 与今日集合竞价卖出标的相同，T+0限制，跳过买入。", buy_code
-                        )
-                    else:
-                        e_order = self.build_e_buy_order(yesterday_signal, today)
-                if e_order and e_order.get("round_lot_shares", 0) > 0:
-                    opened_leg = "E"
-                    planned_orders.append(e_order)
-                    decisions.append(CombinedLiveDecision(
-                        action="ALLOW_E_BUY",
-                        strategy_leg="E",
-                        ts_code=str(yesterday_signal.get("ts_code", "")),  # type: ignore[union-attr]
-                        name=str(yesterday_signal.get("name", "")),  # type: ignore[union-attr]
-                        side="BUY",
-                        quantity=e_order.get("round_lot_shares", 0),
-                        reason=(
-                            f"E昨日信号今日开仓：{yesterday_signal.get('ts_code')} "  # type: ignore[union-attr]
-                            f"{yesterday_signal.get('name')}，"  # type: ignore[union-attr]
-                            f"T+1开盘买入{e_order.get('round_lot_shares', 0)}股，"
-                            f"计划金额约{float(e_order.get('planned_amount_by_equity', 0.0)):.0f}元，"
-                            f"按R1信号在T+{int(yesterday_signal.get('exit_offset', 2) or 2)}收盘卖出。"  # type: ignore[union-attr]
-                        ),
-                        source=str(self.project_root / "reports" / "strategy_e"),
-                    ))
-                else:
-                    # 统一成 None，避免"有 order 但股数为0"的半成品流到摘要里
-                    e_order = None
+            # 各腿按固定腿序 A>C>E 依次尝试（腿序唯一出处 src.portfolio_ace_m.ACE_LEG_PRIORITY，影子账回放同用）：
+            # 第一条有正式计划的腿开仓，后面的腿不再取信号。A无正式计划时C补位，A/C都没有时才读E信号；
+            # D 不在收盘计划里，由下面“没有任何腿开仓才允许D盘中监控”决定。
+            opened_leg = first_leg_to_open({
+                "A": lambda: self._open_static_leg(a_decisions, a_orders_buy, decisions, planned_orders),
+                "C": lambda: self._open_static_leg(c_decisions, c_orders_buy, decisions, planned_orders),
+                "E": lambda: self._open_e_leg(today, due_selling_codes, decisions, planned_orders),
+            })
 
             # ── 统一写各腿的结论/阻断决策 ────────────────────────────────────
             if opened_leg == "E":
@@ -801,89 +812,109 @@ class CombinedLiveEngine:
                     reason=_d_block_reason,
                     source="combined_state_machine",
                 ))
-        # ── E 盘中状态显示（摘要用） ─────────────────────────────────────────
-        has_e_buy = any(d.action == "ALLOW_E_BUY" for d in decisions)
-        has_e_sell = any(d.action == "PLAN_SELL_E" for d in decisions)
-        has_abc_buy = any(d.action == "ALLOW_ABC_BUY_PREVIEW" for d in decisions)
-        # BLOCK_E_BUY_UNTIL_D_SOLD 及其 WAIT_D_SELL_THEN_ALLOW_E_BUY 播报随
-        # 2026-08-07 D接力全关一并删除：D持仓日现在直接走 BLOCK_E_BUY，
-        # 不存在"等D卖完再买E"的中间态。
+        return opened_leg
 
-        if has_e_sell:
-            e_status_action = "PLAN_SELL_E_TODAY"
-            e_status_reason = f"E持仓今日到期，收盘前平仓（14:53 job_afternoon 执行）。"
-        elif has_e_buy:
-            e_status_action = "ALLOW_E_BUY_TODAY"
-            e_status_reason = "E今日T+1开仓，已加入组合计划单。"
-        elif open_positions:
-            e_status_action = "BLOCK_E"
-            e_status_reason = f"账户有 {len(open_positions)} 个未平仓头寸，E 不触发。"
-        elif ace_mode == GATE_BLOCKED:
-            e_status_action = "BLOCK_E"
-            e_status_reason = f"方案甲停手门禁：{stop_gate.reason}"
-        elif has_abc_buy:
-            e_status_action = "BLOCK_E"
-            e_status_reason = (
-                "今日 C 已按A>C>E腿序生成开仓计划，E不触发（资金冲突）。"
-                if opened_leg == "C"
-                else "今日 A 已生成买入计划，E 不触发（资金冲突）。"
+    def build_mode1_plan(self, today: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+        positions = self.load_positions()
+        # 2026-11-12 ACE+M：M 是独立资金的并行策略，M 持仓不阻断 A/C/E 开仓、不参与本状态机的
+        # 互斥判断；M 的开仓与到期卖出由 daemon 的 M 执行路径负责。只有 D 仍要求账户（含 M）完全空仓。
+        all_open_positions = [p for p in positions if self.is_open_position(p)]
+        open_m_positions = [p for p in all_open_positions if is_m_position(p)]
+        open_positions = [p for p in all_open_positions if not is_m_position(p)]
+        open_d_positions = [p for p in open_positions if self.is_d_position(p)]
+        open_non_d_positions = [p for p in open_positions if not self.is_d_position(p)]
+        open_e_positions = [p for p in open_non_d_positions if self.is_e_position(p)]
+        due_e_positions = [
+            p for p in open_e_positions
+            if str(p.get("planned_exit_date", "99991231")) <= today
+            or str(p.get("status", "")).lower() == "sell_pending"
+        ]
+        # 今日到期集合只用于生成退出计划和T+0同票保护，绝不能再从开仓占用中排除。
+        # 新口径（2026-08-03）：旧仓实际清空前一律不买新仓，取消尾盘旧仓与早盘新仓并存。
+        # ABC 到期卖出仍由 daemon check_and_close_positions 执行，不需要额外计划单行。
+        due_non_d_positions = [
+            p for p in open_non_d_positions
+            if not self.is_manual_exit_only_position(p)
+            and (
+                str(p.get("planned_exit_date", "99991231")) <= today
+                or str(p.get("status", "")).lower() == "sell_pending"
             )
-        else:
-            e_status_action = "ALLOW_E_SIGNAL"
-            today_signal = self.load_today_e_signal(today)
-            if today_signal:
-                ts = today_signal.get("ts_code", "")
-                nm = today_signal.get("name", "")
-                buy_dt = today_signal.get("planned_buy_date", "")
-                lc = float(today_signal.get("limit_close", 0) or 0)
-                fp = float(today_signal.get("fill_probability", 0) or 0)
-                circ = float(today_signal.get("circ_mv", 0) or 0)
-                e_status_reason = (
-                    f"今日已扫描到E候选：{ts} {nm}，"
-                    f"计划买入日={buy_dt}，"
-                    f"涨停参考价={lc:.2f}元，"
-                    f"流通市值={circ/10000:.1f}亿，"
-                    f"成交概率={fp:.1%}。"
-                    f"（明日09:20组合状态机将生成ALLOW_E_BUY开仓计划）"
-                )
-            else:
-                preview = self.compute_e_preview(today)
-                neutral_segs = preview.get("neutral_segs", [])
-                if preview.get("has_candidate"):
-                    ts = preview["ts_code"]
-                    nm = preview["name"]
-                    circ = preview["circ_mv"]
-                    fp = preview["fill_probability"]
-                    lc = preview["limit_close"]
-                    e_status_reason = (
-                        f"E预判可触发：候选 {ts} {nm}，"
-                        f"流通市值={circ/10000:.1f}亿，成交概率={fp:.1%}，参考价={lc:.2f}元，"
-                        f"neutral板块={neutral_segs}。"
-                        f"（15:10流水线⑦步生成正式信号文件和明日买入计划）"
+        ]
+        # 今日到期卖出的标的代码（T+0限制：当日不可再买入同一标的）
+        due_selling_codes: set[str] = {str(p.get("ts_code", "")) for p in due_non_d_positions}
+        abc_path, abc_orders = self.load_latest_abc_orders()
+        # ABC 计划单日期校验（E planned_buy_date==today 的同款保护）：
+        # load_latest_abc_orders 只按文件时间取最新，若某晚收盘流水线失败，
+        # 第二天会读到前一天的计划——只执行 planned_order_date==today 的行，陈旧计划一律丢弃。
+        if not abc_orders.empty and "planned_order_date" in abc_orders.columns:
+            date_ok = abc_orders["planned_order_date"].astype(str).str.strip() == str(today)
+            stale = abc_orders[~date_ok]
+            if not stale.empty:
+                import logging as _logging
+                for _, srow in stale.iterrows():
+                    _logging.getLogger(__name__).warning(
+                        "ABC计划单 %s %s planned_order_date=%s ≠ today=%s，视为陈旧计划跳过。",
+                        srow.get("ts_code", ""), srow.get("name", ""),
+                        srow.get("planned_order_date", ""), today,
                     )
-                elif neutral_segs and not preview.get("has_scored_data", True):
-                    e_status_reason = (
-                        f"板块状态已判定：neutral板块={neutral_segs}，E前提满足。"
-                        f"候选股待15:10流水线⑦步采集scored数据后确定。"
-                    )
-                elif preview.get("has_candidate") is False:
-                    e_status_reason = preview.get("reason", "E今日不触发。")
-                else:
-                    e_status_reason = preview.get(
-                        "reason",
-                        "今日raw数据尚未采集，等待15:10收盘流水线⑦步自动扫描。"
-                    )
-        decisions.append(CombinedLiveDecision(
-            action=e_status_action,
-            strategy_leg="E_STATUS",
-            reason=e_status_reason,
-            source="combined_state_machine",
-        ))
+            abc_orders = abc_orders[date_ok].copy()
 
-        decision_df = pd.DataFrame([decision.__dict__ for decision in decisions])
-        state_df = pd.DataFrame(state_rows)
-        planned_orders_df = pd.DataFrame(planned_orders)
-        return state_df, decision_df, planned_orders_df
+        decisions: list[CombinedLiveDecision] = []
+        planned_orders: list[dict[str, Any]] = []
+        state_rows: list[dict[str, Any]] = [
+            {
+                "today": today,
+                "active_strategy_mode": self.active_strategy_mode(),
+                "active_strategy_name": self.active_strategy_name(),
+                "open_position_count": len(open_positions),
+                "open_m_position_count": len(open_m_positions),
+                "open_d_position_count": len(open_d_positions),
+                "open_non_d_position_count": len(open_non_d_positions),
+                "open_e_position_count": len(open_e_positions),
+                "due_e_count": len(due_e_positions),
+                "abc_planned_orders_path": str(abc_path or ""),
+                "abc_planned_order_count": int(len(abc_orders)) if not abc_orders.empty else 0,
+            }
+        ]
+
+        # ── E 到期卖出（R1可能T+2/T+3，以planned_exit_date为唯一依据） ───────
+        for pos in due_e_positions:
+            decisions.append(
+                CombinedLiveDecision(
+                    action="PLAN_SELL_E",
+                    strategy_leg="E",
+                    ts_code=str(pos.get("ts_code", "")),
+                    name=str(pos.get("name", "")),
+                    side="SELL",
+                    quantity=self.as_int(pos.get("shares", 0)),
+                    reason=(
+                        f"E持仓到期平仓，planned_exit_date={pos.get('planned_exit_date','')}，"
+                        f"今日={today}，按R1信号锁定的到期日收盘卖出。"
+                    ),
+                    source="positions.json",
+                )
+            )
+            planned_orders.append(self.build_e_sell_order(pos, today))
+
+        # ── D / ABC / 空仓 主流程 ──────────────────────────────────────────────
+        # opened_leg 记录本日最终由哪一腿占用资金（None=没有任何腿开仓）。
+        # 有旧持仓的两个分支一律阻断新开仓，所以只有空仓分支会写这个变量；
+        # 函数末尾的 E 状态播报要靠它区分"E被前面的腿挡住"和"E自己没信号"。
+        opened_leg: str | None = None
+        stop_gate = self.equity_curve_stop_check(today)
+        # FULL=正常 82.5%；REDUCED=方案甲停手期，ACE 仍按 A>C>E 开仓但目标仓位 20%；
+        # BLOCKED=判定缺失/过期等 fail-closed，不开新仓（与原规则相同）。
+        ace_mode = ace_gate_mode(stop_gate)
+        self._ace_target_pct = ace_base_target_pct(ace_mode)
+        state_rows[0]["ace_gate_mode"] = ace_mode
+        state_rows[0]["ace_mode_target_pct"] = self._ace_target_pct
+        opened_leg = self._mode1_open_decisions(
+            today, open_d_positions, open_non_d_positions, decisions, ace_mode, due_selling_codes, opened_leg,
+            planned_orders, abc_orders, open_m_positions, abc_path, stop_gate,
+        )
+        return self._mode1_e_status_and_tables(
+            today, state_rows, planned_orders, open_positions, decisions, ace_mode, stop_gate, opened_leg,
+        )
 
     def build_plan(self) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         today = today_beijing().strftime("%Y%m%d")

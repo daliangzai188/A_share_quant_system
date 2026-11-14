@@ -32,8 +32,15 @@ D_CHECKPOINT_STATUS_RECOVERY_BLOCKED = "RECOVERY_BLOCKED"
 _CHECKPOINT_IO_RETRY_ATTEMPTS = 20
 _CHECKPOINT_IO_RETRY_DELAY_SECONDS = 0.1
 
+# 2026-11-15：D盘中监控按职责拆到 src/strategy_d_monitor/，交易所规则统一在 src/market_rules.py，一并绑定。
 _D_RUNTIME_CODE_FILES = (
     "scripts/monitor_strategy_d_intraday.py",
+    "src/strategy_d_monitor/support.py",
+    "src/strategy_d_monitor/checkpoint.py",
+    "src/strategy_d_monitor/market.py",
+    "src/strategy_d_monitor/signals.py",
+    "src/strategy_d_monitor/orders.py",
+    "src/market_rules.py",
     "src/strategy_d_checkpoint.py",
     "src/strategy_d_factor_rules.py",
     "src/strategy_d_minute_alignment.py",

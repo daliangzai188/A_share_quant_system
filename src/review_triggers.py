@@ -18,7 +18,8 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 
 import pandas as pd
 
-from src.market_rules import is_st_name
+from src.portfolio_ace_m import ACE_STATIC_LEGS, REPORT_LEGS
+from src.market_rules import is_st_name, min_order_shares
 
 REVIEW_ACTION = "请在Claude发送：甲·临时复核"
 CHECK_REPAIR_ACTION = "请在Claude发送：甲·临时复核（先修好这项检查）"
@@ -29,7 +30,7 @@ FINAL_STANDARD = (
     "是否带着现行版本恢复由你决定"
 )
 M_LEG = "M"
-ACE_LEGS = ("A", "C", "E")
+ACE_LEGS = ACE_STATIC_LEGS
 
 
 @dataclass(frozen=True)
@@ -261,7 +262,7 @@ def _first_buyable_ahead(
             continue
         if open_price >= limit_up - 1e-6:
             continue
-        lot = 200 if code.startswith(("688", "689")) else 100
+        lot = min_order_shares(code)
         if lot * (limit_up - 0.01) <= budget + 1e-6:
             return code
     return ""
@@ -604,7 +605,7 @@ def signal_drought_triggers(signals: Mapping[str, Any] | None, *, line: int) -> 
     if not signals or signals.get("gap") is None or int(signals["gap"]) <= int(line):
         return []
     last = dict(signals.get("last") or {})
-    legs = "、".join("%s %s" % (leg, last[leg] or "无") for leg in ("A", "C", "E", "M") if leg in last)
+    legs = "、".join("%s %s" % (leg, last[leg] or "无") for leg in REPORT_LEGS if leg in last)
     return [ReviewTrigger(
         "signal_drought", "数据",
         "A/C/E和M已连续%d个行动日没有选出一只股票（最近一次%s，历史最长%d天）：先查数据和程序，"

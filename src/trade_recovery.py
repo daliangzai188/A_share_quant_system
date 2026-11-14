@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping
 
+from src.market_rules import normalize_ts_code
 from src.trade_intent_store import (
     STATUS_CANCELLED,
     STATUS_CANCEL_REQUESTED,
@@ -84,18 +85,7 @@ def _to_float(value: Any, default: float = 0.0) -> float:
 
 
 def _normalize_code(value: Any) -> str:
-    text = str(value or "").strip().upper()
-    if not text:
-        return ""
-    if "." in text:
-        return text
-    if text.startswith(("6", "9")):
-        return f"{text}.SH"
-    if text.startswith(("0", "2", "3")):
-        return f"{text}.SZ"
-    if text.startswith(("4", "8")):
-        return f"{text}.BJ"
-    return text
+    return normalize_ts_code(value)
 
 
 def _normalize_side(value: Any) -> str:

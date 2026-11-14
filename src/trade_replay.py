@@ -6,6 +6,7 @@ from pathlib import Path
 import pandas as pd
 
 from src.factors import NextDayPremiumAnalyzer
+from src.market_rules import price_limit_pct
 from src.strategy_optimizer import StrategyConditionOptimizer
 from src.strict_asof import (
     PointInTimeContract,
@@ -381,14 +382,12 @@ class ConservativeTradeReplay:
 
     @staticmethod
     def limit_up_pct(ts_code: str, name: object | None = None) -> float:
-        stock_name = "" if name is None or pd.isna(name) else str(name).upper()
-        if "ST" in stock_name or "退" in stock_name:
-            return 0.05
-        if ts_code.endswith(".BJ") or ts_code.startswith(("4", "8", "9")):
-            return 0.30
-        if ts_code.startswith(("300", "301", "688", "689")):
-            return 0.20
-        return 0.10
+        """涨跌停幅度（现行交易规则，规则在 src.market_rules.price_limit_pct）。
+
+        2026-11-15 前这里另写一份，ST/退一律按5%；只影响ST股票，C从不选ST股票。
+        """
+        stock_name = "" if name is None or pd.isna(name) else str(name)
+        return float(price_limit_pct(ts_code, name=stock_name) or 0.10)
 
     @property
     def fee_rate_without_slippage(self) -> float:

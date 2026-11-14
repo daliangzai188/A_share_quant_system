@@ -27,13 +27,15 @@ from typing import Any, Iterable, Mapping, Sequence
 import numpy as np
 import pandas as pd
 
+from src.portfolio_ace_m import ACE_LEG_PRIORITY, ACE_STATIC_LEGS
+
 
 SCHEMA_VERSION = 1
 METHOD_ID = "shadow_nav_lag6_below_ma60_blocks_new_entries_v1"
 DEFAULT_MA_WINDOW = 60
 DEFAULT_LAG_TRADING_DAYS = 6
-SHADOW_LEGS = ("A", "C", "E")
-BLOCKED_LEGS = ("A", "C", "E", "D")
+SHADOW_LEGS = ACE_STATIC_LEGS
+BLOCKED_LEGS = ACE_LEG_PRIORITY
 
 
 @dataclass(frozen=True)

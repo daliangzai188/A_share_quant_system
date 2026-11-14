@@ -22,6 +22,7 @@ from src.utils.logger import get_logger
 from src.utils.config import load_json_config, mkdir_p
 from src.utils.time_utils import BEIJING_TZ, now_beijing, today_beijing
 from src.execution_completion_tracker import ExecutionCompletionTracker
+from src.market_rules import normalize_ts_code
 
 
 # 项目根目录。本文件在 src/daemon/ 下，所以是 parents[2]（原 scripts/trading_daemon.py 里是 parents[1]，同一个目录）。
@@ -152,19 +153,8 @@ def _fmt_position_time(value: Any, *, default_time: str = "", trim_zero_seconds:
 
 
 def _normalize_ts_code(value: Any) -> str:
-    """统一股票代码格式，兼容 QMT 返回 002687 / 002687.SZ 两种口径。"""
-    text = str(value or "").strip().upper()
-    if not text:
-        return ""
-    if "." in text:
-        return text
-    if text.startswith(("6", "9")):
-        return f"{text}.SH"
-    if text.startswith(("0", "2", "3")):
-        return f"{text}.SZ"
-    if text.startswith(("4", "8")):
-        return f"{text}.BJ"
-    return text
+    """统一股票代码格式，兼容 QMT 返回 002687 / 002687.SZ 两种口径（规则在 src.market_rules）。"""
+    return normalize_ts_code(value)
 
 
 def _ts_code_aliases(value: Any) -> set[str]:

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import Any, Mapping, Sequence
 
+from src.portfolio_ace_m import REPORT_LEGS
+
 LEVELS = ("ok", "note", "review", "middle", "final")
 
 
@@ -181,7 +183,7 @@ def value_lines(values: Mapping[str, Any]) -> list[str]:
             value = (legs.get(leg) or {}).get("value")
             return "%s %s" % (leg, "不足10笔" if value is None else _pct(value))
 
-        lines.append("各腿近12个月（按规则）：" + "、".join(leg_text(leg) for leg in ("A", "C", "E", "M")))
+        lines.append("各腿近12个月（按规则）：" + "、".join(leg_text(leg) for leg in REPORT_LEGS))
         parts = []
         thresholds = values.get("thresholds") or {}
         combo = (warnings.get("combo_drawdown") or {}).get("value")

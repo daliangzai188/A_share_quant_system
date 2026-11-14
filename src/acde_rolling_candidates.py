@@ -388,6 +388,135 @@ def _append_profile_value(
     profiles.append(profile)
 
 
+def _c_variant_table(
+    baseline, explicit_style_values_variant, profile_variant, ranking_variant, risk_exclusion_variant,
+    guarded_profile_variant,
+):
+    """C的候选变体表（逐个列出改动轴和取值）（从 c_variants 拆出，语句原样）。"""
+    candidates = [
+        explicit_style_values_variant(
+            "C_STRONG_REGIME_ONLY",
+            "固定原双分支，只允许全市场warming/main_rise/climax强势状态",
+            column="market_emotion_state",
+            values=("warming", "main_rise", "climax"),
+            reason="显式限定全市场warming/main_rise/climax，保持C强势/主升龙头身份",
+        ),
+        explicit_style_values_variant(
+            "C_SEGMENT_STRONG_REGIME_ONLY",
+            "固定原双分支，只允许所属分段warming/main_rise/climax强势状态",
+            column="segment_emotion_state",
+            values=("warming", "main_rise", "climax"),
+            reason="显式限定所属分段warming/main_rise/climax，保持C强势/主升龙头身份",
+        ),
+        explicit_style_values_variant(
+            "C_SEGMENT_HEIGHT_GE4",
+            "固定原双分支，只允许所属分段最高板达到4板以上",
+            column="segment_limit_max_height_bucket",
+            values=("4_5", "gte_6"),
+            reason="用信号日所属分段最高板至少4板确认强势高度，保持C龙头进攻身份",
+        ),
+        profile_variant(
+            "C_CORE_CHAIN_ADJACENT",
+            "承接分支连板环境相邻加入8_15",
+            source_index=0,
+            column="market_chain_count_bucket",
+            value="8_15",
+        ),
+        profile_variant(
+            "C_CORE_SEGMENT_ADJACENT",
+            "承接分支分段热度相邻加入gte_80",
+            source_index=0,
+            column="segment_limit_up_count_bucket",
+            value="gte_80",
+        ),
+        profile_variant(
+            "C_LEADER_MARKET_ADJACENT",
+            "龙头分支全市场热度相邻加入80_120",
+            source_index=1,
+            column="limit_up_count_bucket",
+            value="80_120",
+        ),
+        profile_variant(
+            "C_LEADER_RANK_ADJACENT",
+            "龙头分支排名相邻加入2_3",
+            source_index=1,
+            column="market_leader_rank_bucket",
+            value="rank_2_3",
+        ),
+        profile_variant(
+            "C_LEADER_FD_ADJACENT",
+            "龙头分支封单比例相邻加入0.3%~0.5%",
+            source_index=1,
+            column="fd_ratio_bucket",
+            value="0_3pct_0_5pct",
+        ),
+        ranking_variant(
+            "C_RANK_LEADER_SCORE_TURNOVER",
+            "龙头排名优先，再按利润源得分和换手率",
+            ["market_leader_rank", "profit_source_score", "turnover_rate"],
+            [True, False, False],
+        ),
+        ranking_variant(
+            "C_RANK_HEIGHT_LEADER_SCORE",
+            "板高排名、龙头排名优先，再按利润源得分",
+            ["limit_height_rank", "market_leader_rank", "profit_source_score"],
+            [True, True, False],
+        ),
+        ranking_variant(
+            "C_RANK_FILL_LEADER_TURNOVER",
+            "成交概率优先，再按龙头排名和换手率",
+            ["fill_probability", "market_leader_rank", "turnover_rate"],
+            [False, True, False],
+        ),
+        explicit_style_values_variant(
+            "C_SEGMENT_NON_ICE_POINT",
+            "保留C双分支，但排除所属分段ice_point",
+            column="segment_emotion_state",
+            values=("mixed", "retreat", "warming", "main_rise", "climax"),
+            reason="显式排除所属分段冰点，保留C强势承接与龙头身份",
+        ),
+        explicit_style_values_variant(
+            "C_MARKET_LIMIT_DOWN_LT30",
+            "保留C双分支，只允许全市场跌停数少于30只",
+            column="market_limit_down_count_bucket",
+            values=("lt_5", "5_15", "15_30"),
+            reason="用信号日全市场跌停压力排除极弱环境，保留C进攻身份",
+        ),
+        explicit_style_values_variant(
+            "C_SEGMENT_LIMIT_DOWN_LT15",
+            "保留C双分支，只允许所属分段跌停数少于15只",
+            column="segment_limit_down_count_bucket",
+            values=("lt_1", "1_3", "3_8", "8_15"),
+            reason="用信号日所属分段跌停压力排除极弱环境，保留C进攻身份",
+        ),
+        risk_exclusion_variant(
+            "C_RISK_EXCLUDE_SINGLE_OPEN",
+            "排除炸板次数恰为1次的弱回封候选",
+            column="open_times_bucket",
+            values=("1",),
+        ),
+        guarded_profile_variant(
+            "C_LEADER_RANK_2_3_LIMIT_DOWN_LT30",
+            "仅在全市场跌停少于30只时，将C龙头分支扩展至市场第2~3名",
+            source_index=1,
+            changed_column="market_leader_rank_bucket",
+            changed_value="rank_2_3",
+            guard_column="market_limit_down_count_bucket",
+            guard_values=("lt_5", "5_15", "15_30"),
+        ),
+        guarded_profile_variant(
+            "C_LEADER_RANK_2_3_SEGMENT_NON_ICE",
+            "仅在所属分段非冰点时，将C龙头分支扩展至市场第2~3名",
+            source_index=1,
+            changed_column="market_leader_rank_bucket",
+            changed_value="rank_2_3",
+            guard_column="segment_emotion_state",
+            guard_values=("mixed", "retreat", "warming", "main_rise", "climax"),
+        ),
+    ]
+    return baseline, candidates
+
+
 def c_variants(base_config: dict[str, Any]) -> tuple[VariantDefinition, list[VariantDefinition]]:
     baseline = VariantDefinition(
         "C", "C_CURRENT", "当前正式C", copy.deepcopy(base_config), 0, False,
@@ -564,128 +693,10 @@ def c_variants(base_config: dict[str, Any]) -> tuple[VariantDefinition, list[Var
             "只在信号日跌停压力非极端或分段非冰点时扩展龙头第2~3名，保持C进攻身份",
         )
 
-    candidates = [
-        explicit_style_values_variant(
-            "C_STRONG_REGIME_ONLY",
-            "固定原双分支，只允许全市场warming/main_rise/climax强势状态",
-            column="market_emotion_state",
-            values=("warming", "main_rise", "climax"),
-            reason="显式限定全市场warming/main_rise/climax，保持C强势/主升龙头身份",
-        ),
-        explicit_style_values_variant(
-            "C_SEGMENT_STRONG_REGIME_ONLY",
-            "固定原双分支，只允许所属分段warming/main_rise/climax强势状态",
-            column="segment_emotion_state",
-            values=("warming", "main_rise", "climax"),
-            reason="显式限定所属分段warming/main_rise/climax，保持C强势/主升龙头身份",
-        ),
-        explicit_style_values_variant(
-            "C_SEGMENT_HEIGHT_GE4",
-            "固定原双分支，只允许所属分段最高板达到4板以上",
-            column="segment_limit_max_height_bucket",
-            values=("4_5", "gte_6"),
-            reason="用信号日所属分段最高板至少4板确认强势高度，保持C龙头进攻身份",
-        ),
-        profile_variant(
-            "C_CORE_CHAIN_ADJACENT",
-            "承接分支连板环境相邻加入8_15",
-            source_index=0,
-            column="market_chain_count_bucket",
-            value="8_15",
-        ),
-        profile_variant(
-            "C_CORE_SEGMENT_ADJACENT",
-            "承接分支分段热度相邻加入gte_80",
-            source_index=0,
-            column="segment_limit_up_count_bucket",
-            value="gte_80",
-        ),
-        profile_variant(
-            "C_LEADER_MARKET_ADJACENT",
-            "龙头分支全市场热度相邻加入80_120",
-            source_index=1,
-            column="limit_up_count_bucket",
-            value="80_120",
-        ),
-        profile_variant(
-            "C_LEADER_RANK_ADJACENT",
-            "龙头分支排名相邻加入2_3",
-            source_index=1,
-            column="market_leader_rank_bucket",
-            value="rank_2_3",
-        ),
-        profile_variant(
-            "C_LEADER_FD_ADJACENT",
-            "龙头分支封单比例相邻加入0.3%~0.5%",
-            source_index=1,
-            column="fd_ratio_bucket",
-            value="0_3pct_0_5pct",
-        ),
-        ranking_variant(
-            "C_RANK_LEADER_SCORE_TURNOVER",
-            "龙头排名优先，再按利润源得分和换手率",
-            ["market_leader_rank", "profit_source_score", "turnover_rate"],
-            [True, False, False],
-        ),
-        ranking_variant(
-            "C_RANK_HEIGHT_LEADER_SCORE",
-            "板高排名、龙头排名优先，再按利润源得分",
-            ["limit_height_rank", "market_leader_rank", "profit_source_score"],
-            [True, True, False],
-        ),
-        ranking_variant(
-            "C_RANK_FILL_LEADER_TURNOVER",
-            "成交概率优先，再按龙头排名和换手率",
-            ["fill_probability", "market_leader_rank", "turnover_rate"],
-            [False, True, False],
-        ),
-        explicit_style_values_variant(
-            "C_SEGMENT_NON_ICE_POINT",
-            "保留C双分支，但排除所属分段ice_point",
-            column="segment_emotion_state",
-            values=("mixed", "retreat", "warming", "main_rise", "climax"),
-            reason="显式排除所属分段冰点，保留C强势承接与龙头身份",
-        ),
-        explicit_style_values_variant(
-            "C_MARKET_LIMIT_DOWN_LT30",
-            "保留C双分支，只允许全市场跌停数少于30只",
-            column="market_limit_down_count_bucket",
-            values=("lt_5", "5_15", "15_30"),
-            reason="用信号日全市场跌停压力排除极弱环境，保留C进攻身份",
-        ),
-        explicit_style_values_variant(
-            "C_SEGMENT_LIMIT_DOWN_LT15",
-            "保留C双分支，只允许所属分段跌停数少于15只",
-            column="segment_limit_down_count_bucket",
-            values=("lt_1", "1_3", "3_8", "8_15"),
-            reason="用信号日所属分段跌停压力排除极弱环境，保留C进攻身份",
-        ),
-        risk_exclusion_variant(
-            "C_RISK_EXCLUDE_SINGLE_OPEN",
-            "排除炸板次数恰为1次的弱回封候选",
-            column="open_times_bucket",
-            values=("1",),
-        ),
-        guarded_profile_variant(
-            "C_LEADER_RANK_2_3_LIMIT_DOWN_LT30",
-            "仅在全市场跌停少于30只时，将C龙头分支扩展至市场第2~3名",
-            source_index=1,
-            changed_column="market_leader_rank_bucket",
-            changed_value="rank_2_3",
-            guard_column="market_limit_down_count_bucket",
-            guard_values=("lt_5", "5_15", "15_30"),
-        ),
-        guarded_profile_variant(
-            "C_LEADER_RANK_2_3_SEGMENT_NON_ICE",
-            "仅在所属分段非冰点时，将C龙头分支扩展至市场第2~3名",
-            source_index=1,
-            changed_column="market_leader_rank_bucket",
-            changed_value="rank_2_3",
-            guard_column="segment_emotion_state",
-            guard_values=("mixed", "retreat", "warming", "main_rise", "climax"),
-        ),
-    ]
-    return baseline, candidates
+    return _c_variant_table(
+        baseline, explicit_style_values_variant, profile_variant, ranking_variant, risk_exclusion_variant,
+        guarded_profile_variant,
+    )
 
 
 def build_c_picks(pool: pd.DataFrame, config: dict[str, Any]) -> pd.DataFrame:
@@ -720,90 +731,10 @@ def build_c_picks(pool: pd.DataFrame, config: dict[str, Any]) -> pd.DataFrame:
     return result
 
 
-def e_variants(base_spec: dict[str, Any]) -> tuple[VariantDefinition, list[VariantDefinition]]:
-    baseline = VariantDefinition(
-        "E", "E_CURRENT", "当前正式E", copy.deepcopy(base_spec), 0, False,
-        "冻结正式E基线仅用于比较；现有40条R1并集未被证明每笔都属于冰点/退潮修复",
-    )
-
-    def ranking_variant(
-        variant_id: str,
-        description: str,
-        columns: list[str],
-        ascending: list[bool],
-        weights: list[float],
-    ) -> VariantDefinition:
-        spec = copy.deepcopy(base_spec)
-        spec["final_ranking"] = {
-            **spec["final_ranking"],
-            "method": "daily_percentile_weighted_score",
-            "columns": columns,
-            "ascending": ascending,
-            "weights": weights,
-        }
-        return VariantDefinition(
-            "E", variant_id, description, spec, 1, False,
-            "排序仍覆盖未显式限定冰点/退潮修复的R1分支，只能作为数学诊断候选",
-        )
-
-    def style_filter_variant(
-        variant_id: str,
-        description: str,
-        column: str,
-        values: list[str],
-    ) -> VariantDefinition:
-        spec = copy.deepcopy(base_spec)
-        spec["rolling_research_style_filter"] = {
-            "column": column,
-            "values": values,
-        }
-        return VariantDefinition(
-            "E", variant_id, description, spec, 1, True,
-            "显式限定冰点、退潮或回暖修复状态，保持E的修复风格",
-        )
-
-    def style_filter_any_variant(
-        variant_id: str,
-        description: str,
-        filters: list[dict[str, Any]],
-    ) -> VariantDefinition:
-        spec = copy.deepcopy(base_spec)
-        spec["rolling_research_style_filter_any"] = copy.deepcopy(filters)
-        return VariantDefinition(
-            "E", variant_id, description, spec, 1, True,
-            "以信号日已知状态的并集限定冰点或修复阶段，保持E的修复风格",
-        )
-
-    def risk_gate_variant(
-        variant_id: str,
-        description: str,
-        *,
-        exclusions: Mapping[str, Sequence[str]],
-    ) -> VariantDefinition:
-        """在每日第一名确定后执行无回补风险门禁，避免偷偷换成第二名。"""
-
-        spec = copy.deepcopy(base_spec)
-        gate = spec.setdefault("entry_gate", {})
-        excluded_values = gate.setdefault("exclude_values", {})
-        for column, values in exclusions.items():
-            current_values = excluded_values.setdefault(str(column), [])
-            for value in values:
-                if str(value) not in current_values:
-                    current_values.append(str(value))
-        gate["apply_after_daily_first_pick"] = True
-        gate["fallback_to_second_candidate"] = False
-        return VariantDefinition(
-            "E", variant_id, description, spec, len(exclusions), True,
-            "冻结E的R1并集、排序与退出；第一名命中信号日尾部风险后直接空仓且不回补",
-        )
-
-    gate_spec = copy.deepcopy(base_spec)
-    excluded = gate_spec["entry_gate"]["exclude_values"].setdefault(
-        "first_time_detail_bucket", []
-    )
-    if "after_1430" not in excluded:
-        excluded.append("after_1430")
-
+def _e_variant_table(
+    baseline, style_filter_any_variant, style_filter_variant, ranking_variant, gate_spec, risk_gate_variant,
+):
+    """E的候选变体表（逐个列出改动轴和取值）（从 e_variants 拆出，语句原样）。"""
     candidates = [
         style_filter_any_variant(
             "E_ANY_REPAIR_STATE",
@@ -946,6 +877,96 @@ def e_variants(base_spec: dict[str, Any]) -> tuple[VariantDefinition, list[Varia
         ),
     ]
     return baseline, candidates
+
+
+def e_variants(base_spec: dict[str, Any]) -> tuple[VariantDefinition, list[VariantDefinition]]:
+    baseline = VariantDefinition(
+        "E", "E_CURRENT", "当前正式E", copy.deepcopy(base_spec), 0, False,
+        "冻结正式E基线仅用于比较；现有40条R1并集未被证明每笔都属于冰点/退潮修复",
+    )
+
+    def ranking_variant(
+        variant_id: str,
+        description: str,
+        columns: list[str],
+        ascending: list[bool],
+        weights: list[float],
+    ) -> VariantDefinition:
+        spec = copy.deepcopy(base_spec)
+        spec["final_ranking"] = {
+            **spec["final_ranking"],
+            "method": "daily_percentile_weighted_score",
+            "columns": columns,
+            "ascending": ascending,
+            "weights": weights,
+        }
+        return VariantDefinition(
+            "E", variant_id, description, spec, 1, False,
+            "排序仍覆盖未显式限定冰点/退潮修复的R1分支，只能作为数学诊断候选",
+        )
+
+    def style_filter_variant(
+        variant_id: str,
+        description: str,
+        column: str,
+        values: list[str],
+    ) -> VariantDefinition:
+        spec = copy.deepcopy(base_spec)
+        spec["rolling_research_style_filter"] = {
+            "column": column,
+            "values": values,
+        }
+        return VariantDefinition(
+            "E", variant_id, description, spec, 1, True,
+            "显式限定冰点、退潮或回暖修复状态，保持E的修复风格",
+        )
+
+    def style_filter_any_variant(
+        variant_id: str,
+        description: str,
+        filters: list[dict[str, Any]],
+    ) -> VariantDefinition:
+        spec = copy.deepcopy(base_spec)
+        spec["rolling_research_style_filter_any"] = copy.deepcopy(filters)
+        return VariantDefinition(
+            "E", variant_id, description, spec, 1, True,
+            "以信号日已知状态的并集限定冰点或修复阶段，保持E的修复风格",
+        )
+
+    def risk_gate_variant(
+        variant_id: str,
+        description: str,
+        *,
+        exclusions: Mapping[str, Sequence[str]],
+    ) -> VariantDefinition:
+        """在每日第一名确定后执行无回补风险门禁，避免偷偷换成第二名。"""
+
+        spec = copy.deepcopy(base_spec)
+        gate = spec.setdefault("entry_gate", {})
+        excluded_values = gate.setdefault("exclude_values", {})
+        for column, values in exclusions.items():
+            current_values = excluded_values.setdefault(str(column), [])
+            for value in values:
+                if str(value) not in current_values:
+                    current_values.append(str(value))
+        gate["apply_after_daily_first_pick"] = True
+        gate["fallback_to_second_candidate"] = False
+        return VariantDefinition(
+            "E", variant_id, description, spec, len(exclusions), True,
+            "冻结E的R1并集、排序与退出；第一名命中信号日尾部风险后直接空仓且不回补",
+        )
+
+    gate_spec = copy.deepcopy(base_spec)
+    excluded = gate_spec["entry_gate"]["exclude_values"].setdefault(
+        "first_time_detail_bucket", []
+    )
+    if "after_1430" not in excluded:
+        excluded.append("after_1430")
+
+    return _e_variant_table(
+        baseline, style_filter_any_variant, style_filter_variant, ranking_variant, gate_spec,
+        risk_gate_variant,
+    )
 
 
 def apply_e_research_style_filter(
