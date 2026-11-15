@@ -5,6 +5,9 @@ cd "$(dirname "$0")/.."
 PY="arch -x86_64 $(pwd)/tools/qmt36/bin/python"
 S=$1; L=$2; O=$3; mkdir -p "$O"
 echo "== core $(sed '2d' inqmt/qn_core_full.py | shasum | cut -c1-16)"   # deploy.sh 按这一行核对回归的是同一个核心包
+# 2026-11-15：策略文件第3行的完整代码摘要（运行时、核心包、模拟券商、宿主、包装）；deploy.sh 要求部署的文件与它相同
+echo "== artifact $(sed -n '3s/^# code \([0-9a-f]*\), seed \([0-9a-f]*\)\./code \1 seed \2/p' "$1")"
+[ "$(sed -n 3p "$1" | cut -d, -f1)" = "$(sed -n 3p "$2" | cut -d, -f1)" ] || echo "== artifact WARNING：影子版和实盘版的代码摘要不同"
 export QN_OLD_SQLITE=1
 echo "== restart";        $PY inqmt/test_restart.py qn_core_full.py 90 > "$O/restart.txt" 2>&1; grep -E "identity equal|rebuilt|persistent files" "$O/restart.txt"
 echo "== stop threads";   $PY inqmt/test_stop_threads.py "$S" "$S" 40 45 > "$O/stop.txt" 2>&1; grep RESULT "$O/stop.txt"

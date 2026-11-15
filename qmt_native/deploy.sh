@@ -73,6 +73,16 @@ grep -E "^RESULT" /tmp/qn_takeover.txt
 grep -q "^RESULT PASS" /tmp/qn_takeover.txt || { echo "接管测试不通过"; cleanup; exit 1; }
 RELEASE=$(sed -n '2s/.*release \([^,]*\),.*/\1/p' inqmt/A_SYSTEM_QMT_NATIVE_live.py)
 echo "新版本 ${RELEASE}，$(wc -c < inqmt/A_SYSTEM_QMT_NATIVE_live.py | tr -d ' ') 字节"
+# 回归必须跑的是同一份代码：策略文件第3行的完整代码摘要（运行时、核心包、模拟券商、宿主、包装）和回归日志第2行一致
+CODE=$(sed -n '3s/^# code \([0-9a-f]*\), seed .*/\1/p' inqmt/A_SYSTEM_QMT_NATIVE_live.py)
+SEED=$(sed -n '3s/^# code [0-9a-f]*, seed \([0-9a-f]*\)\./\1/p' inqmt/A_SYSTEM_QMT_NATIVE_live.py)
+grep -q "^== artifact WARNING" "$LOG" && { echo "回归时影子版和实盘版不是同一份代码"; rm -f inqmt/A_SYSTEM_QMT_NATIVE_live.py inqmt/A_SYSTEM_QMT_NATIVE_shadow.py; cleanup; exit 1; }
+grep -q "^== artifact code $CODE " "$LOG" || {
+  echo "回归日志不是这份代码跑的（日志：$(grep '^== artifact' "$LOG" | head -1)；要部署的：code $CODE）"
+  rm -f inqmt/A_SYSTEM_QMT_NATIVE_live.py inqmt/A_SYSTEM_QMT_NATIVE_shadow.py; cleanup; exit 1; }
+grep -q "^== artifact code $CODE seed $SEED" "$LOG" || \
+  echo "提示：种子数据和回归时不同（交易日历、最近涨停池、生产状态快照每天更新）；接管测试用的是新种子"
+echo "代码摘要 $CODE 与回归一致"
 
 if [ "$MODE" = "--check" ]; then
   rm -f inqmt/A_SYSTEM_QMT_NATIVE_live.py inqmt/A_SYSTEM_QMT_NATIVE_shadow.py
