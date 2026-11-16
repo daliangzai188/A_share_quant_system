@@ -79,13 +79,21 @@ def main():
         return real_save(k, v)
     ns['save_py_key'] = hanging_save
     mark_log, mark_msg = len(ns['QN_LOG_LINES']), len(host.messages)
+    # Health-only log changes are deliberately coalesced for 30 minutes in-session.
+    # Change an isolated virtual core-state probe so this test reaches a real save at any hour.
+    probe_path = 'data/state/freeze_test_probe.json'
+    assert any(pattern.search(probe_path) for pattern in ns['QN_PERSIST_INCLUDE'])
     with host.persist_lock:
-        ns['QN_VFS'].put_text('logs/broker_health.json', '{"freeze": %r}' % time.time())
+        before_probe = host._persist_core(host._persist_files(), host._persist_inventory())
+        ns['QN_VFS'].put_text(probe_path, '{"freeze": %r}' % time.time())
+        assert probe_path in host._persist_files()
+        assert host._persist_core(host._persist_files(), host._persist_inventory()) != before_probe
         host.persist_last, host.persist_retry_at = -1e10, 0.0
     t0 = time.time()
     while not kv_state['hung'] and time.time() - t0 < 200:
         drive(ns, C, 1)
     drive(ns, C, 75)
+    assert kv_state['hung'] > 0.0, 'virtual core-state probe did not reach hanging_save'
     after = list(ns['QN_LOG_LINES'])[mark_log:] + host.messages[mark_msg:]
     bad = [l for l in after if u'中毒' in l or 'process exit' in l or u'未验证/不可用' in l or u'账户断连' in l]
     accounts = [l for l in after if u'[账户]' in l]
