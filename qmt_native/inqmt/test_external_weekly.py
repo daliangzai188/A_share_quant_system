@@ -18,6 +18,8 @@ calls), so it needs no data and no network:
      warning, and both terminal files are written;
   7. the shadow 3/6-month lines, the normal-market stall and the live loss streak (pushed inside QMT as
      before) are computed here too and reach the report.
+  8. strategy-health context and replay metrics reach the shared checker unchanged; an injected data
+     issue becomes one tier-1 item in the same daily report, without a separate or repeated push.
 
 Usage: python3 test_external_weekly.py   (Mac Python 3)
 """
@@ -57,7 +59,11 @@ import json, os
 from pathlib import Path
 from types import SimpleNamespace
 FINAL_STANDARD = "FINAL"
+CHECK_REPAIR_ACTION = "CHECK_REPAIR"
 ROOT = Path(os.environ["A_SYSTEM_ROOT"])
+class ReviewTrigger(SimpleNamespace):
+    def __init__(self, key, category, detail, action="", tier=1):
+        super().__init__(key=key, category=category, detail=detail, action=action, tier=tier)
 def active_acknowledgements(entries, today):
     return {e["key"]: "ack" for e in entries or [] if e["recheck_by"].replace("-", "") > today}
 def check_failure_trigger(name, err): return SimpleNamespace(key="check_failed:" + name, detail=str(err), tier=1)
@@ -97,6 +103,10 @@ def live_loss_streak_triggers(monthly, need_months):
     'src/daily_report.py': '''
 import json, os
 from pathlib import Path
+def strategy_health_data_issues(values):
+    root = Path(os.environ["A_SYSTEM_ROOT"])
+    json.dump(values, open(root / "health_context_call.json", "w"), ensure_ascii=False, default=str)
+    return ["模拟体检数据缺口"] if (root / "health_data_bad").exists() else []
 def value_lines(values):
     json.dump(values, open(Path(os.environ["A_SYSTEM_ROOT"]) / "values_call.json", "w"), ensure_ascii=False, default=str)
     return ["VALUES"]
@@ -104,9 +114,19 @@ def build_daily_report(day, triggers, acknowledged, recheck, first_seen, lines, 
     pending = [t for t in triggers if t.key not in acknowledged]
     level = "ok" if not pending else ("final" if any(getattr(t, "tier", 1) >= 3 for t in pending) else "review")
     seen = dict(first_seen or {})
-    body = list(lines) + ["观察中:" + ",".join("%s@%s" % (k, recheck[k]) for k in sorted(recheck))]
+    json.dump([{"key": t.key, "detail": t.detail, "action": getattr(t, "action", ""),
+                "tier": getattr(t, "tier", 1)} for t in triggers],
+              open(Path(os.environ["A_SYSTEM_ROOT"]) / "triggers_call.json", "w"), ensure_ascii=False)
+    body = list(lines) + [t.detail for t in pending] + ["观察中:" + ",".join("%s@%s" % (k, recheck[k]) for k in sorted(recheck))]
     return {"signal_date": day, "level": level, "title": "日报 %s %s %d项" % (day, level, len(pending)),
             "lines": body, "body": "\\n".join(body), "first_seen": {t.key: seen.get(t.key, day) for t in pending}}
+''',
+    'src/strategy_warnings.py': '''
+from types import SimpleNamespace
+def load_warning_settings(config):
+    section = config.get("strategy_warnings", {})
+    return SimpleNamespace(enabled=bool(section.get("enabled", False)), min_trades=int(section.get("min_trades", 10)),
+                           window_days=int(section.get("window_days", 365)), escalate_open_days=60)
 ''',
     'scripts/__init__.py': '',
     'scripts/update_equity_curve_stop.py': '''
@@ -163,7 +183,9 @@ def run_strategy_warnings(shadow, health, config, **kwargs):
     return [SimpleNamespace(key="warn3:leg:A", detail="A腿单独按规则最近12个月-55.0%，低于历史最差-50.7%", tier=3, scope="A腿",
                             action="建议先暂停交易")], {"legs": {}, "combo_drawdown": {"value": -0.2}, "signals": {"gap": 0}}
 def load_warning_settings(config):
-    return SimpleNamespace(escalate_open_days=60)
+    section = config.get("strategy_warnings", {})
+    return SimpleNamespace(enabled=bool(section.get("enabled", False)), min_trades=int(section.get("min_trades", 10)),
+                           window_days=int(section.get("window_days", 365)), escalate_open_days=60)
 def escalate(triggers, state, **kwargs):
     open(Path(os.environ["A_SYSTEM_ROOT"]) / "escalate_called", "w").close()
     return list(triggers)
@@ -332,6 +354,41 @@ def main():
               and values['stall'] == {'streak': 1, 'need_months': 3, 'triggered': False})
         print('7. shadow lines, normal-market stall and live loss streak computed here too -> %s' % ('ok' if c7 else 'FAIL'))
         ok &= c7
+    with tempfile.TemporaryDirectory() as tmp:
+        root, local = os.path.join(tmp, 'A_System'), os.path.join(tmp, 'local')
+        ack = [{'key': key, 'recheck_by': '2027-01-02'} for key in (
+            'factor_health:A', 'alignment:m_extra:20261113:300001.SZ', 'm_slippage', 'warn3:leg:A')]
+        setup(root, align=True, alignment_start_date='20261001', ace_m_start_date='20261113', acknowledged=ack)
+        enable_warnings(root)
+        cfg_path = os.path.join(root, 'config', 'config.json')
+        cfg = load(cfg_path)
+        cfg['strategy_warnings'].update(min_trades=7, window_days=91)
+        json.dump(cfg, open(cfg_path, 'w'))
+        export_buys(local, ['k1,2026-11-13,300001.SZ,M,100'])
+        work = os.path.join(local, 'A_System', 'qmt_native', 'external_checks')
+        code, out = run(root, local, '20261111')
+        checked = load(os.path.join(root, 'health_context_call.json'))
+        values = load(os.path.join(root, 'values_call.json'))
+        context = {'signal_date': '20261111', 'enabled': True, 'min_trades': 7, 'window_days': 91}
+        c8 = (code == 0 and checked == {'strategy_health_context': context,
+                                      'warnings': values['warnings'], 'warnings_error': values['warnings_error']}
+              and values['strategy_health_context'] == context and checked['warnings'] is not None
+              and len(pushes(root)) == 1 and pushes(root)[0]['title'] == '日报 20261111 ok 0项')
+        open(os.path.join(root, 'health_data_bad'), 'w').close()
+        code, out = run(root, local, '20261112')
+        daily = load(os.path.join(work, 'daily_report_latest.json'))
+        checked = load(os.path.join(root, 'health_context_call.json'))
+        issues = [t for t in load(os.path.join(root, 'triggers_call.json')) if t['key'] == 'strategy_health_data']
+        code2, _ = run(root, local, '20261112')
+        c8 = (c8 and code == 0 and code2 == 0 and daily['level'] == 'review'
+              and checked['strategy_health_context'] == dict(context, signal_date='20261112')
+              and len(issues) == 1 and issues[0]['action'] == 'CHECK_REPAIR' and issues[0]['tier'] == 1
+              and '模拟体检数据缺口' in issues[0]['detail'] and '模拟体检数据缺口' in daily['body']
+              and len(pushes(root)) == 2 and pushes(root)[-1]['title'] == '日报 20261112 review 1项'
+              and pushes(root)[-1]['body'] == daily['body'])
+        print('8. strategy health: exact context/metrics handed through, data issue in one daily push, '
+              'rerun does not duplicate -> %s' % ('ok' if c8 else 'FAIL'))
+        ok &= c8
     print('RESULT', 'PASS' if ok else 'FAIL')
     return 0 if ok else 1
 
