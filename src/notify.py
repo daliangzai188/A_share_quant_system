@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+import json
 import os
 import threading
 import time
@@ -34,6 +35,9 @@ except Exception:
 _lock = threading.Lock()
 _last_sent: dict[str, float] = {}   # key -> 上次推送的单调时钟时间
 _inflight: set[str] = set()        # 正在网络发送的键，防止并发重复
+_MAX_GET_URL_BYTES = 4096
+# 原生QMT把这一路GET路径转成日志，由外部forwarder送达；它不是HTTP端点。
+_NATIVE_NOTIFY_BRIDGE_BASE = "http://a-system-notify.invalid"
 
 
 def _load_notify_config() -> dict[str, Any]:
@@ -143,7 +147,17 @@ def notify(event: str, title: str, body: str = "", *, level: str = "active",
 
     ok = False
     try:
-        req = urllib.request.Request(url, method="GET")
+        if len(url.encode("utf-8")) > _MAX_GET_URL_BYTES and base != _NATIVE_NOTIFY_BRIDGE_BASE:
+            # Bark官方支持向同一key端点POST JSON；长中文不再挤进请求行，正文和参数保持完整。
+            payload = {"title": title, "body": body or " ", **params}
+            req = urllib.request.Request(
+                base,
+                data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                headers={"Content-Type": "application/json; charset=utf-8"},
+                method="POST",
+            )
+        else:
+            req = urllib.request.Request(url, method="GET")
         with urllib.request.urlopen(req, timeout=8) as resp:
             ok = 200 <= resp.status < 300
         if ok:

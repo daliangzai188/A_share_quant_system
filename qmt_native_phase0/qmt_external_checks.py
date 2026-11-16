@@ -64,6 +64,15 @@ sys.path.insert(0, str(ROOT))
 os.chdir(ROOT)
 
 
+def _configure_utf8_output() -> None:
+    """Windows重定向日志也保留中文/表情；采集子进程继承相同输出编码。"""
+    os.environ['PYTHONIOENCODING'] = 'utf-8:backslashreplace'
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, 'reconfigure', None)
+        if callable(reconfigure):
+            reconfigure(encoding='utf-8', errors='backslashreplace')
+
+
 def collect(signal_date: str, dates: list[str]) -> None:
     """Production step 1, the same command the old daemon ran."""
     start = dates[max(0, dates.index(signal_date) - 2)]
@@ -385,6 +394,7 @@ def run(args) -> int:
 
 
 def main() -> int:
+    _configure_utf8_output()
     parser = argparse.ArgumentParser()
     parser.add_argument('--signal-date', required=True)
     parser.add_argument('--skip-collect', action='store_true')
