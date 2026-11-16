@@ -7,6 +7,8 @@
 """
 from __future__ import annotations
 
+import datetime as dt
+import math
 from typing import Any, Mapping, Sequence
 
 from src.portfolio_ace_m import REPORT_LEGS
@@ -116,6 +118,129 @@ def _slippage(name: str, stats: Mapping[str, Any] | None, error: str) -> str:
     return "%s滑点：最近%d笔平均双边%+.2f%%（线%.1f%%）" % (name, need, average, limit)
 
 
+def _health_day(value: Any) -> str:
+    text = str(value or "")
+    try:
+        return dt.datetime.strptime(text, "%Y%m%d").strftime("%Y-%m-%d") if len(text) == 8 else ""
+    except ValueError:
+        return ""
+
+
+def _health_leg_state(leg: str, item: Any, *, day: str, minimum: int) -> tuple[str, str]:
+    """只解释现有规则回放的结果；缺数据不得伪装成零笔或健康。"""
+    if not isinstance(item, Mapping) or not {"trades", "value", "as_of"}.issubset(item):
+        return "error", "%s：样本数据缺失，健康状态未知。" % leg
+    try:
+        raw_count = item["trades"]
+        count = float(raw_count)
+        if isinstance(raw_count, bool) or not math.isfinite(count) or count < 0 or not count.is_integer():
+            raise ValueError("invalid sample count")
+        n = int(count)
+    except (TypeError, ValueError, OverflowError):
+        return "error", "%s：样本数无法核对，健康状态未知。" % leg
+    if n == 0:
+        return "empty", "%s：有效收益0笔，暂无法评估；是否无信号、结果未到期或缺数据，原因待核对。" % leg
+    last = _health_day(item.get("as_of"))
+    suffix = "（最近样本行动日%s）" % last if last else ""
+    if not last or str(item["as_of"]) > day:
+        return "error", "%s：有效收益%d笔，样本日期缺失或超出核对日，健康状态未知。" % (leg, n)
+    if n < minimum:
+        return "insufficient", "%s：有效收益%d笔／最低%d笔，样本不足，暂不判级%s。" % (leg, n, minimum, suffix)
+    try:
+        raw_value = item.get("value")
+        value = float(raw_value)
+        if isinstance(raw_value, bool) or not math.isfinite(value):
+            raise ValueError("invalid return")
+    except (TypeError, ValueError, OverflowError):
+        return "error", "%s：有效收益%d笔，收益未算成，健康状态未知%s。" % (leg, n, suffix)
+    return "available", "%s：规则复利%s，有效收益%d笔%s。" % (leg, _pct(value), n, suffix)
+
+
+def _m_health_gap(warnings: Mapping[str, Any]) -> str:
+    replay = warnings.get("replay") or {}
+    if not isinstance(replay, Mapping):
+        return "M候选重算完整性资料无法核对"
+    errors = replay.get("m_reference_error_days", 0)
+    try:
+        count = float(errors)
+        if isinstance(errors, bool) or not math.isfinite(count) or count < 0 or not count.is_integer():
+            raise ValueError("invalid reference error count")
+    except (TypeError, ValueError, OverflowError):
+        return "M历史候选重算失败天数无法核对"
+    if not count:
+        return ""
+    text = "M历史候选重算有%d天失败，回放完整性未确认" % int(count)
+    recent = replay.get("m_reference_errors_recent") or []
+    if isinstance(recent, (list, tuple)) and recent:
+        text += "（最近失败日期%s）" % "、".join(str(d) for d in recent[-5:])
+    return text
+
+
+def strategy_health_data_issues(values: Mapping[str, Any]) -> list[str]:
+    """与正文共用同一校验，只把统计失败并入既有日报，不把正常少样本报成故障。"""
+    context = values.get("strategy_health_context") or {}
+    if not context.get("enabled") or values.get("warnings_error"):
+        return []
+    day = str(context.get("signal_date", ""))
+    if not _health_day(day):
+        return ["策略体检核对日期缺失或无效"]
+    warnings = values.get("warnings")
+    if not isinstance(warnings, Mapping) or not isinstance(warnings.get("legs"), Mapping):
+        return ["未取得当前规则回放结果，健康状态未知"]
+    try:
+        minimum, window = int(context["min_trades"]), int(context["window_days"])
+        if minimum <= 0 or window <= 0:
+            raise ValueError("invalid sample settings")
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return ["策略体检样本要求或统计窗口缺失"]
+    issues = []
+    for leg in REPORT_LEGS:
+        status, text = _health_leg_state(leg, warnings["legs"].get(leg), day=day, minimum=minimum)
+        if status == "error":
+            issues.append(text)
+    gap = _m_health_gap(warnings)
+    if gap:
+        issues.append(gap)
+    return issues
+
+
+def strategy_health_details(values: Mapping[str, Any]) -> list[str]:
+    """把旧周报迁入已有日报，复用现成数值，不重新回放、不新增判级门槛。"""
+    context = values.get("strategy_health_context") or {}
+    day = str(context.get("signal_date", ""))
+    date = _health_day(day)
+    if not date:
+        return ["策略体检：核对日期缺失或无效，健康状态未知。"]
+    if not context.get("enabled", False):
+        return ["策略体检（核对日%s）：规则回放检查未启用，未评估健康状态。" % date]
+    header = "策略体检（核对日%s）" % date
+    if values.get("warnings_error"):
+        return [header + "：统计失败，健康状态未知；不能解释为零笔或策略正常。"]
+    warnings = values.get("warnings")
+    if not isinstance(warnings, Mapping) or not isinstance(warnings.get("legs"), Mapping):
+        return [header + "：规则回放结果缺失，健康状态未知。"]
+    try:
+        minimum, window = int(context["min_trades"]), int(context["window_days"])
+        if minimum <= 0 or window <= 0:
+            raise ValueError("invalid sample settings")
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return [header + "：样本要求或统计窗口缺失，暂无法评估。"]
+    lines = [header + "：窗口%d天，最低%d笔；各腿窗口截至其最近样本行动日。" % (window, minimum)]
+    as_of = _health_day((warnings.get("signals") or {}).get("as_of"))
+    if as_of:
+        lines[0] += " 数据重算截至%s。" % as_of
+    for leg in REPORT_LEGS:
+        _status, line = _health_leg_state(leg, warnings["legs"].get(leg), day=day, minimum=minimum)
+        if leg == "M":
+            gap = _m_health_gap(warnings)
+            if gap:
+                line = line.rstrip("。") + "；" + gap + "，健康状态未知。"
+        lines.append(line)
+    lines.append("口径：A/C/E各腿独立规则回放，M为ACE+M组合内回放，均非实盘成交收益；D不在本项统计范围。"
+                 "本项供复核，不自动调整仓位。")
+    return lines
+
+
 def value_lines(values: Mapping[str, Any]) -> list[str]:
     """日报后半段的各项数值（只读QMT外检查已经算好的结果，不重新判断）。"""
 
@@ -174,16 +299,19 @@ def value_lines(values: Mapping[str, Any]) -> list[str]:
         lines.append("因子健康：" + "；".join(parts))
 
     warnings = values.get("warnings")
-    if values.get("warnings_error"):
+    if values.get("strategy_health_context") is not None:
+        lines.extend(strategy_health_details(values))
+    elif values.get("warnings_error"):
         lines.append("规则回放：没算成")
-    elif warnings:
+    if warnings and not values.get("warnings_error"):
         legs = warnings.get("legs") or {}
 
         def leg_text(leg: str) -> str:
             value = (legs.get(leg) or {}).get("value")
             return "%s %s" % (leg, "不足10笔" if value is None else _pct(value))
 
-        lines.append("各腿近12个月（按规则）：" + "、".join(leg_text(leg) for leg in REPORT_LEGS))
+        if values.get("strategy_health_context") is None:
+            lines.append("各腿近12个月（按规则）：" + "、".join(leg_text(leg) for leg in REPORT_LEGS))
         parts = []
         thresholds = values.get("thresholds") or {}
         combo = (warnings.get("combo_drawdown") or {}).get("value")

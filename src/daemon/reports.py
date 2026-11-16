@@ -654,6 +654,60 @@ def _m_close_summary(signal_date: str) -> str:
         return f"统计失败：{exc}"
 
 
+def _d_no_signal_context(signal_date: str) -> str:
+    """缺少D信号文件时只解释已有门禁证据，不把次日判定倒推给当天。"""
+    import pandas as pd
+
+    base = PROJECT_ROOT / "reports" / "live_trade" / "combined"
+    path = base / f"combined_decisions_{signal_date}.csv"
+    try:
+        frame = pd.read_csv(path, low_memory=False)
+        if "action" in frame.columns:
+            blocked = frame[frame["action"].astype(str).eq("BLOCK_D_INTRADAY_MONITOR")]
+            if not blocked.empty:
+                reasons = list(dict.fromkeys(
+                    str(value).strip() for value in blocked.get("reason", [])
+                    if pd.notna(value) and str(value).strip()
+                ))
+                return "按当日决策不启动｜" + ("；".join(reasons) or "D盘中监控被当日门禁阻断")
+    except (OSError, ValueError, pd.errors.EmptyDataError):
+        pass  # 可以忽略：没有可读的当日D决策证据时继续核对其它已有依据，不据此推断零候选
+    if str(signal_date) != today_beijing().strftime("%Y%m%d"):
+        return ""
+    try:
+        positions = [
+            p for p in load_positions()
+            if str(p.get("status", "")).lower() in {"open", "sell_pending"}
+        ]
+        if positions:
+            return "当前不启动｜仍有策略持仓（含M），D只在账户策略仓全部空仓时运行；未发现当日信号文件"
+        orders = pd.read_csv(base / f"combined_planned_orders_{signal_date}.csv", low_memory=False)
+        if {"side", "strategy_leg"}.issubset(orders.columns):
+            buys = orders[
+                orders["side"].astype(str).str.upper().eq("BUY")
+                & orders["strategy_leg"].astype(str).str.upper().isin(ACE_STATIC_LEGS)
+            ]
+            if not buys.empty:
+                return "当前不启动｜已有当日A/C/E正式静态计划，D按全日互斥规则不启动；未发现当日信号文件"
+    except RuntimeError as exc:
+        logger().warning("D运行状态说明无法核对本地持仓（仅展示）：%s", exc)
+        return ""
+    except (OSError, ValueError, pd.errors.EmptyDataError):
+        pass  # 可以忽略：本地计划证据缺失或不可读时保留未知，继续核对日期匹配的停手判定
+    try:
+        from src.equity_curve_stop import live_gate, load_decision, load_settings
+
+        config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+        decision = load_decision(load_settings(config, PROJECT_ROOT))
+        if str(decision.get("action_date", "")) == str(signal_date):
+            check = live_gate(config, PROJECT_ROOT, signal_date)
+            if not check.allowed:
+                return f"当前不启动｜当日方案甲停手或判定未通过：{check.reason}；未发现当日信号文件"
+    except (OSError, ValueError, TypeError):
+        pass  # 可以忽略：可选展示依据无法读取时返回未知，不生成计划、不改变D门禁
+    return ""
+
+
 def _log_close_pipeline_candidate_summary(signal_date: str) -> None:
     """汇总ACDE已有产物；本函数严格只读，不改变任何策略执行结果。"""
 
@@ -677,7 +731,11 @@ def _log_close_pipeline_candidate_summary(signal_date: str) -> None:
             item = summaries[leg]
             count = item["candidate_count"]
             if not item["calculated"]:
-                content = f"未完成统计｜{item['detail']}"
+                context = (
+                    _d_no_signal_context(signal_date)
+                    if leg == "D" and not item["artifact_exists"] else ""
+                )
+                content = context or f"未完成统计｜{item['detail']}"
             elif count == 0:
                 content = "已计算｜候选0只"
                 if item["detail"]:
@@ -1545,10 +1603,10 @@ def _describe_holdings(positions: list[dict[str, Any]], *, with_quote: bool = Tr
     """把持仓按(策略腿,股票)汇总成一行描述。
 
     同一只票可能有多条记录：09:20竞价种子单 + 09:30起的POV补单分片。逐条打印
-    会让同一笔持仓被列多次，看起来像重复建仓；成本也必须按加权算，不能取某一
+    会让同一笔持仓被列多次，看起来像重复建仓；成交均价必须按股数加权算，不能取某一
     片的买价（2026-08-05华之杰：200股@46.38 vs 4800股@45.47，差1.8个百分点）。
 
-    现价取不到时降级只显示成本，不阻塞播报。
+    现价取不到时降级只显示未含费用的成交均价，不阻塞播报。
     """
 
     grouped: dict[tuple[str, str], dict[str, Any]] = {}
@@ -1607,7 +1665,7 @@ def _describe_holdings(positions: list[dict[str, Any]], *, with_quote: bool = Tr
         text = (
             f"{leg}策略 {code} {item['name']} {item['shares']}股"
             + (f"（{item['slices']}片）" if item["slices"] > 1 else "")
-            + (f" 成本{avg_cost:.2f}" if avg_cost > 0 else "")
+            + (f" 成交均价（未含费用）{avg_cost:.2f}" if avg_cost > 0 else "")
         )
         price = last_prices.get(code, 0.0)
         if price > 0 and avg_cost > 0:
@@ -1627,7 +1685,7 @@ def _describe_holdings(positions: list[dict[str, Any]], *, with_quote: bool = Tr
     desc = "、".join(parts)
     if len(grouped) > 1 and total_cost > 0:
         desc += (
-            f"；合计成本{total_cost / 10000:.2f}万 市值{total_value / 10000:.2f}万 "
+            f"；合计成交金额（未含费用）{total_cost / 10000:.2f}万 市值{total_value / 10000:.2f}万 "
             f"收益{total_value / total_cost - 1:+.2%}"
         )
     return desc
@@ -1870,6 +1928,21 @@ def _log_decision_chain_lines(
     logger().info("\n".join(lines))
 
 
+def _plan_candidate_artifacts(signal_date: str) -> dict[str, dict[str, Any]]:
+    """保留候选产物状态供通知解释；读取失败也不能影响原正式计划。"""
+    artifacts = {}
+    for leg in ACE_STATIC_LEGS:
+        try:
+            artifacts[leg] = _read_close_candidate_artifact(leg, signal_date)
+        except Exception as exc:
+            artifacts[leg] = {
+                "calculated": False,
+                "candidate_count": None,
+                "detail": f"候选产物读取失败：{type(exc).__name__}: {exc}",
+            }
+    return artifacts
+
+
 def _log_decision_chain_summary(signal_date: str) -> None:
     """按当前正式腿序播报下一交易日开仓计划；只做展示，不参与下单。"""
 
@@ -2045,6 +2118,11 @@ def _log_decision_chain_summary(signal_date: str) -> None:
             "execution_block_reason": execution_block_reason,
             "equity_curve_stop_reason": equity_curve_stop_reason,
             "computed_at": now_beijing().strftime("%Y-%m-%d %H:%M:%S"),
+            # 以下仅供通知解释，不进入正式候选、定仓或交易门禁。
+            "ace_blocked_by_holdings": blocked,
+            "broadcast_candidates": broadcast_candidates,
+            "readonly_candidate_reasons": readonly_reasons,
+            "candidate_artifacts": _plan_candidate_artifacts(signal_date),
         }
     except Exception as exc:
         logger().warning("开仓决策链播报失败（不影响流水线）：%s", exc)
@@ -2177,6 +2255,35 @@ def _m_plan_line(action_date: str, *, ace_active: bool) -> tuple[str, str]:
         return "", ""
 
 
+def _ace_no_open_plan_reason(plan: dict[str, Any]) -> str:
+    """无正式计划时区分持仓阻断、只读候选、零候选与产物未知。"""
+    candidates = plan.get("broadcast_candidates") or {}
+    reasons = plan.get("readonly_candidate_reasons") or {}
+    candidate_lines = [
+        _format_strategy_candidate(leg, candidates[leg])
+        + (f"（{reasons[leg]}）" if reasons.get(leg) else "")
+        for leg in ACE_STATIC_LEGS if leg in candidates
+    ]
+    if plan.get("ace_blocked_by_holdings"):
+        body = "ACE不开新仓：当前ACE仍有未平仓旧仓，确认实际清仓前不新增ACE持仓。"
+        if candidate_lines:
+            body += "只读候选：" + "；".join(candidate_lines) + "；有候选不代表可开新仓。"
+        return body
+    if candidate_lines:
+        return "ACE不开新仓：有候选但未形成正式开仓计划。只读候选：" + "；".join(candidate_lines) + "。"
+    artifacts = plan.get("candidate_artifacts") or {}
+    if all(
+        artifacts.get(leg, {}).get("calculated")
+        and artifacts[leg].get("candidate_count") == 0
+        for leg in ACE_STATIC_LEGS
+    ):
+        return "ACE不开新仓：A/C/E当日候选产物均已计算，候选0只。"
+    unknown = [leg for leg in ACE_STATIC_LEGS if not artifacts.get(leg, {}).get("calculated")]
+    if unknown:
+        return "ACE不开新仓：尚无正式计划；" + "/".join(unknown) + "候选产物缺失或未能读取，候选状态未知。"
+    return "ACE不开新仓：尚无正式计划；已有候选产物，但候选详情或未转计划原因待核。"
+
+
 def push_open_plan_notification(occasion: str) -> None:
     """推送开仓计划(2026-07-23 用户要求:收盘流水线完成推明日计划、早盘推今日计划,
     详细到策略名+股票+金额;无候选则明确提示无新开仓计划)。
@@ -2210,10 +2317,10 @@ def push_open_plan_notification(occasion: str) -> None:
         rule_pct = _entry_pct_text(ace_base_target_pct(gate_mode), 1.0)
         if gate_mode == ACE_GATE_REDUCED:
             phase = "方案甲停手期"
-            phase_line = f"【{phase}·ACE缩仓执行】ACE规则目标{rule_pct}，本次执行比例见下；D不启动。"
+            phase_line = f"【{phase}·ACE缩仓执行】ACE规则目标{rule_pct}，实际预算以执行前定仓为准；D不启动。"
         elif gate_mode == ACE_GATE_FULL:
             phase = "方案甲正常期"
-            phase_line = f"【{phase}】ACE规则目标{rule_pct}，本次执行比例见下。"
+            phase_line = f"【{phase}】ACE规则目标{rule_pct}，实际预算以执行前定仓为准。"
         else:
             phase = "方案甲判定无效"
             phase_line = f"【{phase}】ACE禁止新开仓，D不启动；M按独立规则判断。"
@@ -2251,13 +2358,12 @@ def push_open_plan_notification(occasion: str) -> None:
             body = _format_live_plan_line(fb, plan.get("live_sizing")) + "。"
         else:
             title = f"📋 {label}无新开仓计划"
-            body = f"{label}所有收盘计划策略(A/C/E)均无符合条件标的,不开新仓。"
+            body = _ace_no_open_plan_reason(plan)
         # 2026-11-12 ACE+M：附上M的计划（M与ACE资金分开，独立执行）。
         m_line, m_first = _m_plan_line(action, ace_active=bool(fb) and not equity_curve_stop_reason)
         if m_line:
             if not fb and m_first:
                 title = f"📋 {label}开仓计划:M {m_first}"
-                body = f"{label}A/C/E无开仓计划。"
             body += f" {m_line}"
         if hold:
             body += f" ⚠{hold}"

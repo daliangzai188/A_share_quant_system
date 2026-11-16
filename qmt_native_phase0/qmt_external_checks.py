@@ -32,7 +32,9 @@ Windows VM, outside QMT, where files and the network may still be used:
   5. the report goes to external_checks\\daily_report_latest.json, which the terminal (start_windows.py's
      log window and status) prints; the old result files are still written.
 
-Morning notices, intraday alerts and everything QMT pushes by itself are not touched.
+Morning notices and intraday alerts are not touched. From 2026-11-16 the legacy E/ABC
+health weekly/level-change pushes are retired; this report reuses the existing rule-replay
+metrics with per-leg sample counts, sample dates and explicit unavailable states.
 It never talks to QMT and never changes the stop decision or any trading state.
 Started by qmt_notify_forwarder.py after 18:40 on trading days.
 
@@ -178,6 +180,24 @@ def _live_loss_streak_check(
     return live_loss, live_loss_error
 
 
+def _strategy_health_context(config, day, metrics, error, triggers):
+    """复用已算好的体检数据；数据缺口写进同一份日报，不另开监控或推送。"""
+    from src.review_triggers import CHECK_REPAIR_ACTION, ReviewTrigger
+    from src.strategy_warnings import load_warning_settings
+    from src.daily_report import strategy_health_data_issues
+
+    settings = load_warning_settings(config)
+    context = {'signal_date': day, 'enabled': settings.enabled,
+               'min_trades': settings.min_trades, 'window_days': settings.window_days}
+    issues = strategy_health_data_issues({'strategy_health_context': context,
+                                          'warnings': metrics, 'warnings_error': error})
+    if issues:
+        triggers.append(ReviewTrigger('strategy_health_data', '数据',
+                                      '策略体检数据完整性待核对：' + '；'.join(issues),
+                                      action=CHECK_REPAIR_ACTION))
+    return context
+
+
 def run(args) -> int:
     try:
         from dotenv import load_dotenv
@@ -297,6 +317,7 @@ def run(args) -> int:
                                                     'pool_coverage': coverage, 'pool_coverage_error': coverage_error},
                                                    ensure_ascii=False, default=str)), flush=True)
 
+    health_context = _strategy_health_context(config, day, warn_metrics, warn_error, triggers)
     state_path = WORK / 'review_trigger_state.json'
     try:
         state = json.loads(state_path.read_text(encoding='utf-8')) if state_path.exists() else {}
@@ -319,6 +340,7 @@ def run(args) -> int:
         'signals': (warn_metrics or {}).get('signals'),
         'health': health, 'health_error': error,
         'warnings': warn_metrics, 'warnings_error': warn_error,
+        'strategy_health_context': health_context,
         'thresholds': {'combo_middle': (warn_section.get('middle') or {}).get('combo_drawdown', -0.315),
                        'combo_final': (warn_section.get('final') or {}).get('combo_drawdown', -0.5)},
         'shadow': shadow_values, 'shadow_error': shadow_error, 'stall': stall, 'stall_error': stall_error,

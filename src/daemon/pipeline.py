@@ -465,7 +465,7 @@ def job_post_market(end_date: str | None = None, *, offline: bool = False) -> bo
         ("run_paper_ab_filtered_daily_ops.py", "⑥ A/C 信号生成（B已删除）",       TIMEOUT_SIGNAL_STEP,"约1分钟"),
         ("run_strategy_e_signal.py",          "⑦ E 信号生成（板块neutral+换手率降序）", TIMEOUT_SIGNAL_STEP,"约30秒"),
         ("run_strategy_m_signal.py",          "⑦M M 信号生成（20cm强势涨停接力）", TIMEOUT_SIGNAL_STEP,"约30秒"),
-        ("strategy_health_monitor.py",         "⑧ 策略健康度监控（滚动20笔期望分位）", TIMEOUT_DATA_STEP, "约10秒"),
+        ("strategy_health_monitor.py",         "⑧ 策略体检已并入方案甲日报（旧周报停用提示）", TIMEOUT_DATA_STEP, "仅迁移提示，约1秒"),
         ("live_execution_audit.py",            "⑨ 实盘执行对账（逐笔损耗vs回测基准）", TIMEOUT_DATA_STEP, "约5秒"),
         ("update_execution_completion.py",     "⑩ 真实成交完成率汇总（逐片+一笔一行）", TIMEOUT_DATA_STEP, "约5秒"),
         ("report_rolling_live_performance.py", "⑪ 真实收益/容量/TCA滚动报告（只监控）", TIMEOUT_DATA_STEP, "约5秒"),
