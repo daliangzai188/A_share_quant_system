@@ -21,9 +21,18 @@ from test_stop_threads import load, drive
 
 
 def gil_hold_loops(seconds):
-    t = time.time()
-    sum(range(10 ** 7))
-    return int(seconds / max(time.time() - t, 1e-3) * 10 ** 7)
+    # Rosetta/CPU冷启动单次采样会高估每轮耗时，使45秒注入实际只有20秒。
+    # 先暖机，再取最快的有效样本；目标45秒与原80%断言保持不变。
+    for _ in range(2):
+        sum(range(10 ** 7))
+    samples = []
+    for _ in range(5):
+        t = time.time()
+        sum(range(10 ** 7))
+        samples.append(max(time.time() - t, 1e-3))
+    loops = int(seconds / min(samples) * 10 ** 7)
+    print('freeze calibration: target %.1fs samples %r loops %d' % (seconds, samples, loops))
+    return loops
 
 
 def main():
