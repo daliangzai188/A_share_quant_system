@@ -8,6 +8,7 @@ from __future__ import annotations
 import datetime
 import csv
 import json
+import math
 import os
 import subprocess
 import threading
@@ -127,6 +128,24 @@ def _fmt_wan(amount: float) -> str:
         return f"{float(amount) / 10000:.2f}万"
     except Exception:
         return "0.00万"
+
+
+def _entry_pct_text(amount: Any, equity_snapshot: Any) -> str:
+    """通知比例只用这笔执行金额与同一资产快照；旧状态缺快照时不猜比例。"""
+    try:
+        value, equity = float(amount), float(equity_snapshot)
+        if math.isfinite(value) and math.isfinite(equity) and value >= 0 and equity > 0:
+            pct = value / equity * 100
+            if math.isfinite(pct):
+                return f"{pct:.2f}".rstrip("0").rstrip(".") + "%"
+    except (TypeError, ValueError, OverflowError):
+        return "比例待核"
+    return "比例待核"
+
+
+def _entry_amount_text(amount: Any, equity_snapshot: Any) -> str:
+    """按执行记录显示金额及占同一总资产快照的比例，不读取账户或重算仓位。"""
+    return f"{_fmt_wan(amount)}/{_entry_pct_text(amount, equity_snapshot)}"
 
 
 def _execution_time_only(value: Any) -> str:

@@ -2977,7 +2977,8 @@ class ExpiredPovStartupRecoveryTests(unittest.TestCase):
             self.assertTrue(item['finalized'])
             self.assertEqual(item['confirmed_actual_amount'], 21841)
             self.assertEqual(item['exit_n'], 1)
-            self.assertTrue(any('低于80%' in c.args[1] for c in notify.call_args_list))
+            self.assertTrue(any('低于本次验收下限' in c.args[1] and '5.55万/80%' in c.args[2]
+                                for c in notify.call_args_list))
             save.assert_called_once_with(state)
             self.assertEqual(trading_daemon._finalize_expired_pov_for_startup(), 0)
             save.assert_called_once()

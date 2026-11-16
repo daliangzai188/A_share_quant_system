@@ -1094,7 +1094,7 @@ def _print_e_status(signal_date: str, planned_orders: pd.DataFrame) -> None:
     print(f"  请收盘后运行（15:30+）：")
     print(f"    python scripts/run_strategy_e_signal.py --signal-date {signal_date}")
     print("  E 条件：segment_retreat_state_bucket=neutral + 非ST + 成交可靠 → 按信号日换手率降序选1只")
-    print("  E 执行：T+1开盘买入 82.5%目标仓位，按命中R1规则在T+2或T+3收盘卖出")
+    print("  E 执行：T+1开盘按当日ACE目标及硬顶买入，按命中R1规则在T+2或T+3收盘卖出")
     print("─" * 50)
 
 

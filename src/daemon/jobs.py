@@ -16,6 +16,7 @@ from src.strategy_d_factor_rules import release_uses_factor_union
 from src.strategy_d_spec import intraday_history_is_complete
 from src.daemon.common import (
     PROJECT_ROOT,
+    _entry_amount_text,
     _floor_buy_quantity_by_amount,
     _fmt_wan,
     _notify,
@@ -317,8 +318,8 @@ def _premarket_buy_one_order(
         signal_date_s = str(row.get("signal_date", ""))
 
         # 取价必须在 register_entry_plan 之前，台账登记的才是真正挂出去的股数。
-        # 82.5%是最终实际成交额目标，不是09:20参考价×股数；集合竞价种子单
-        # 必须按涨停委托价核85%最坏成交硬顶，实际开盘价确定后的金额缺口
+        # 本次目标是最终实际成交额，不是09:20参考价×股数；集合竞价种子单
+        # 必须按涨停委托价核本次最坏成交硬顶，实际开盘价确定后的金额缺口
         # 交给09:30~10:30原有POV按真实成交额动态补足。
         quote = quote_map.get(ts_code)
         price, price_label = _premarket_buy_price(quote, ts_code, name_s, signal_date_s)
@@ -333,21 +334,24 @@ def _premarket_buy_one_order(
         qty_by_hard_cap = _floor_buy_quantity_by_amount(hard_cap_amount, price, 100)
         if qty_by_hard_cap < qty:
             logger().warning(
-                "🔻 [盘前买入] %s %s 按涨停委托价%.2f元核85%%硬顶：%d股→%d股"
-                "（最坏委托金额不超过%.2f万；不再按09:20参考价倒推最终仓位）。",
-                ts_code, name_s, price, qty, qty_by_hard_cap, hard_cap_amount / 1e4,
+                "🔻 [盘前买入] %s %s 按涨停委托价%.2f元核本次硬顶：%d股→%d股"
+                "（最坏委托金额不超过%s；不再按09:20参考价倒推最终仓位）。",
+                ts_code, name_s, price, qty, qty_by_hard_cap,
+                _entry_amount_text(hard_cap_amount, equity_snapshot),
             )
             qty = qty_by_hard_cap
         if qty <= 0:
             logger().error(
-                "❌ [盘前买入] %s %s 82.5%%目标不可执行或按委托价%.2f元不足一手"
-                "（QMT可用现金%.2f万，85%%硬顶%.2f万），放弃本笔。",
-                ts_code, name_s, price, available_cash_snapshot / 1e4, hard_cap_amount / 1e4,
+                "❌ [盘前买入] %s %s 本次目标%s不可执行或按委托价%.2f元不足一手"
+                "（QMT可用现金%.2f万，本次硬顶%s），放弃本笔。",
+                ts_code, name_s, _entry_amount_text(target_actual_amount, equity_snapshot),
+                price, available_cash_snapshot / 1e4,
+                _entry_amount_text(hard_cap_amount, equity_snapshot),
             )
             _notify("buy_result", "⚠️ 资金不足放弃开仓",
                     f"{ts_code} {name_s} 按委托价{price:.2f}元折算不足一手"
-                    f"（可用现金{available_cash_snapshot / 1e4:.2f}万，85%硬顶"
-                    f"{hard_cap_amount / 1e4:.2f}万），今日放弃开仓。",
+                    f"（可用现金{available_cash_snapshot / 1e4:.2f}万，本次硬顶"
+                    f"{_entry_amount_text(hard_cap_amount, equity_snapshot)}），今日放弃开仓。",
                     level="timeSensitive")
             return
 
@@ -360,7 +364,7 @@ def _premarket_buy_one_order(
 
         # POV竞价段拆分仍保持原流动性规则：竞价单只买信号日成交额×0.1%
         # 左右（竞价池的10%），超出部分转09:30后平滑段。即使盘前估算
-        # 不需要拆分，也会在开盘后复核实际成交金额；达到82.5%时零下单结束。
+        # 不需要拆分，也会在开盘后复核实际成交金额；达到本次目标时零下单结束。
         if pov_enabled:
             ref_p = float(row.get("reference_price", 0.0) or 0.0)
             qty_auction, auction_cap, pov_auction_share = _pov_auction_seed_quantity(
@@ -376,9 +380,9 @@ def _premarket_buy_one_order(
                     logger().error(
                         "⛔ [POV] %s %s 无法可靠计算集合竞价容量"
                         "（参考价%.3f、信号日成交额%.0f），竞价挂0股；"
-                        "82.5%%完整目标%.1f万交给09:30后POV按实时成交量执行。",
+                        "本次完整目标%s交给09:30后POV按实时成交量执行。",
                         ts_code, name_s, ref_p, sig_amt_pov,
-                        total_target_amount / 1e4,
+                        _entry_amount_text(total_target_amount, equity_snapshot),
                     )
                 else:
                     logger().warning(
@@ -399,7 +403,7 @@ def _premarket_buy_one_order(
             return
 
         # 无论竞价段是否按流动性拆分，只要启用实际金额校准就建立一个POV状态。
-        # 09:30先读取竞价真实成交额；若已达82.5%立即结束，低于目标才使用
+        # 09:30先读取竞价真实成交额；若已达本次目标立即结束，低于目标才使用
         # 原09:30~10:30分片框架补足。这样不新增独立补单系统，也不改变选股。
         if pov_enabled and actual_amount_rebalance_enabled:
             raw_exit_pov = row.get("exit_n_days", None)
@@ -455,8 +459,8 @@ def _premarket_buy_one_order(
 
         if qty <= 0:
             logger().warning(
-                "[POV] %s %s 竞价段不足一手，82.5%%目标%.2f万全部交给09:30后POV。",
-                ts_code, name_s, total_target_amount / 1e4,
+                "[POV] %s %s 竞价段不足一手，本次目标%s全部交给09:30后POV。",
+                ts_code, name_s, _entry_amount_text(total_target_amount, equity_snapshot),
             )
             return
         _premarket_submit_auction_order(
@@ -567,15 +571,15 @@ def job_premarket_buy() -> None:
         account = adapter.query_account()
         positions_live = adapter.query_positions()
 
-    # 实盘执行层必须以券商真实持仓为准。旧策略仓（含今日到期/待卖）尚未清空时，
+    # 实盘执行层必须以券商真实持仓为准。ACE旧仓（含今日到期/待卖）尚未清空时，
     # 即使组合计划文件因缓存或旧版本仍带BUY，也要在任何委托提交前直接拦截。
     # 当日集合竞价/POV已成交的同一笔新仓不属于“旧仓”，不会误伤后续拆单。
     if _broker_has_preexisting_strategy_position(positions_live):
-        logger().warning("🚫 [盘前买入] 券商仍有本系统旧策略仓，取消衔接开仓；本轮全部买单跳过。")
+        logger().warning("🚫 [盘前买入] 券商仍有ACE旧仓，取消ACE衔接开仓；本轮全部买单跳过。")
         _notify(
             "buy_result",
-            "🚫 旧仓未清空，今日不开新仓",
-            "券商仍实际持有本系统旧策略仓（含今日到期或待卖仓）；按82.5%串行单仓新口径，本轮买单全部取消。",
+            "🚫 ACE旧仓未清空，跳过本轮ACE开仓",
+            "券商仍实际持有ACE旧仓（含今日到期或待卖仓）；ACE家族内部串行持仓，本轮ACE买单全部取消。",
             level="timeSensitive",
         )
         return
@@ -627,10 +631,13 @@ def job_premarket_buy() -> None:
             plan_parts.append(
                 f"策略{b.get('strategy_leg','')} {b.get('ts_code','')} {b.get('name','')} "
                 f"{qty_b}股（预挂{rp_b:.2f}元，预估约{qty_b * rp_b / 10000:.2f}万）"
+                f"；本次目标{_entry_amount_text(to_float(b.get('entry_target_amount', 0.0)), to_float(b.get('entry_equity_snapshot', 0.0)))}"
+                f"，验收下限{_entry_amount_text(to_float(b.get('entry_min_acceptable_amount', 0.0)), to_float(b.get('entry_equity_snapshot', 0.0)))}"
+                f"，硬顶{_entry_amount_text(to_float(b.get('entry_hard_cap_amount', 0.0)), to_float(b.get('entry_equity_snapshot', 0.0)))}"
             )
         _notify("buy_result", "📋 今日开仓计划已预挂",
                 "；".join(plan_parts) + "。09:20集合竞价预挂完成，实际按开盘价成交（通常低于预挂价），"
-                "09:30确认实际成交额后，低于82.5%目标的缺口由现有POV在85%绝对硬顶内校准。",
+                "09:30确认实际成交额后，低于本次目标的缺口由现有POV在本次硬顶内校准。",
                 level="timeSensitive")
     if e_rows:
         threading.Thread(
@@ -837,7 +844,7 @@ def job_opening_buy(*, recovery_only: bool = False) -> None:
             "buy_result",
             "⚠️ 开仓执行已降级并接管",
             "09:20盘前预挂未生效；09:30已成功落盘并启动持久化POV，继续遵守"
-            "82.5%目标、80%验收下限、+2%追价保护和85%硬顶。",
+            "本次目标金额、验收下限、+2%追价保护和本次硬顶。",
             level="timeSensitive",
         )
 

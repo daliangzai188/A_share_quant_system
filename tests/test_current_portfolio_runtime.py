@@ -828,7 +828,7 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
                 ), patch_daemon(
                     "_notify",
                     return_value=True,
-                ) as notify:
+                ) as notify, patch_daemon("_ace_gate_mode_for", return_value="FULL"):
                     trading_daemon.push_open_plan_notification("早盘")
             finally:
                 daemon_reports._last_final_plan = previous
@@ -861,7 +861,7 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
                 ), patch_daemon(
                     "_notify",
                     return_value=True,
-                ) as notify:
+                ) as notify, patch_daemon("_ace_gate_mode_for", return_value="FULL"):
                     trading_daemon.push_open_plan_notification("早盘")
             finally:
                 daemon_reports._last_final_plan = previous

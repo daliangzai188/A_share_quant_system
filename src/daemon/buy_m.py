@@ -17,6 +17,7 @@ from src.market_rules import BOARD_LOT_SHARES, STAR_MIN_ORDER_SHARES, market_seg
 from src.portfolio_ace_m import M_LEG, ace_limits, m_budget, position_in_family
 from src.daemon.common import (
     PROJECT_ROOT,
+    _entry_amount_text,
     _floor_buy_quantity_by_amount,
     _fmt_wan,
     _notify,
@@ -284,12 +285,14 @@ def job_m_premarket_buy() -> None:
         with _m_state_lock:
             state = {"date": today_str, "items": [item], "state_revision": int(state.get("state_revision", 0) or 0)}
             _m_save_state(state)
-        log.warning("⏳ [M竞价开仓] %s %s %d股 @涨停价-0.01=%.2f 预算%.0f元（%s，%.1f%%）",
-                    code, name, qty, price, budget["amount"], "ACE同时开仓/持仓→闲置资金" if ctx["active"] else "ACE空闲",
+        log.warning("⏳ [M竞价开仓] %s %s %d股 @涨停价-0.01=%.2f 预算%s（以本次开仓前总资产为基数；%s，规则比例上限%.2f%%）",
+                    code, name, qty, price, _entry_amount_text(budget["amount"], total_asset),
+                    "ACE同时开仓/持仓→闲置资金" if ctx["active"] else "ACE空闲",
                     budget["pct"] * 100)
         _notify("buy_result", "⏳ M集合竞价预挂",
                 f"策略=M {code} {name} {qty}股 限价{price:.2f}（涨停价-0.01，开盘涨停不成交）；"
-                f"预算{_fmt_wan(budget['amount'])}（{'ACE同时占用，M用闲置资金' if ctx['active'] else 'ACE空闲，M用82.5%'}）；"
+                f"预算{_entry_amount_text(budget['amount'], total_asset)}（以本次开仓前总资产为基数；"
+                f"{'ACE同时占用，M用闲置资金' if ctx['active'] else 'ACE空闲'}，规则比例上限{budget['pct']:.2%}）；"
                 f"计划{exit_date[4:6]}-{exit_date[6:]}收盘卖出。")
     except Exception as exc:
         log.error("[M] 集合竞价预挂异常（M今日不开仓，不影响ACE）：%s", exc)

@@ -397,7 +397,7 @@ class StrategyDMonitor(CheckpointMixin, MarketContextMixin, SignalMixin, OrderMi
         )
         fixed_cap_text = f"{max_order_amount:.0f}元" if max_order_amount > 0 else "不设固定金额上限"
         self.logger.info(
-            "D开仓参数: 目标仓位=%.1f%% 单票硬顶=85%% 固定单笔上限=%s 买入价=涨停价 14:55处理未成交/部分成交委托",
+            "D开仓参数: 配置目标仓位=%.1f%% 实际目标及单票硬顶按当日ACE资金规则核定 固定单笔上限=%s 买入价=涨停价 14:55处理未成交/部分成交委托",
             self.position_pct * 100,
             fixed_cap_text,
         )

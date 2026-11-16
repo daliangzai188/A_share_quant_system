@@ -22,8 +22,11 @@ from src.portfolio_ace_m import (
     ACE_LEG_PRIORITY,
     ACE_STATIC_LEGS,
     ACE_FULL_TARGET_PCT,
+    GATE_FULL as ACE_GATE_FULL,
     GATE_REDUCED as ACE_GATE_REDUCED,
     M_LEG,
+    ace_base_target_pct,
+    m_position_pct,
     position_in_family,
 )
 from src.rolling_signal_store import (
@@ -35,6 +38,8 @@ from src.rolling_signal_store import (
 )
 from src.daemon.common import (
     PROJECT_ROOT,
+    _entry_amount_text,
+    _entry_pct_text,
     _floor_buy_quantity_by_amount,
     _notify,
     _ts_code_aliases,
@@ -1178,6 +1183,7 @@ def _live_plan_sizing_uncached(
             positions_live, exclude_due_today=False, as_of_date=action_date, family="ACE"
         )
         m_market_value = _strategy_only_market_value(positions_live, family=M_LEG)
+        sizing_mode = _ace_gate_mode_for(action_date)
         sized = resize_buy_orders_for_live_account(
             planned_orders=pd.DataFrame([{
                 "ts_code": ts_code,
@@ -1226,6 +1232,7 @@ def _live_plan_sizing_uncached(
             "target_amount": target_amount,
             "min_acceptable_amount": min_acceptable_amount,
             "hard_cap_amount": hard_cap_amount,
+            "ace_gate_mode": sizing_mode,
             "cash_bound": cash_bound,
             "available_cash": float(getattr(account, "available_cash", 0.0) or 0.0),
             "total_asset": float(getattr(account, "total_asset", 0.0) or 0.0),
@@ -1243,7 +1250,7 @@ def _format_live_plan_line(
     *,
     fallback_reason: str = "QMT账户不可读",
 ) -> str:
-    """开仓计划正文：显示82.5%实际成交目标及85%最坏委托硬顶。
+    """开仓计划正文：按本次实际金额和同一账户快照显示目标、下限和硬顶。
 
     集合竞价实际成交价事前不可知，因此不把涨停预挂冻结额冒充最终成交额；
     明确展示固定资金目标，并说明开盘确认后由现有POV按真实金额缺口校准。
@@ -1254,14 +1261,15 @@ def _format_live_plan_line(
     命中词：可用资金 / 名义计划 / 计划开仓 / 开不出仓。
     """
     head = f"策略{final_buy['strategy']} {final_buy['ts_code']} {final_buy['name']}"
+    auction_time = "09:24按实时竞价容量定量后" if str(final_buy['strategy']).upper() == "E" else "09:20"
     if live is None:
         return (f"{head} 名义计划{final_buy['shares']}股"
                 f"【{fallback_reason}，此为按{_planned_equity_base() / 10000:.0f}万资金模型的"
-                f"名义值，不是实际下单量；09:20仍会按真实可用资金÷涨停价定仓】")
+                f"名义值，不是实际下单量；{auction_time}仍会按真实资金、当日仓位和容量约束定仓】")
     if live.get("blocked_by_existing_position"):
         return f"{head} 暂不开仓（券商仍有本系统旧策略仓，确认清仓前禁止新买入）"
     if live["shares"] <= 0:
-        return (f"{head} 明日资金不足，开不出仓（可用资金{live['available_cash'] / 10000:.2f}万，"
+        return (f"{head} 资金不足，开不出仓（可用资金{live['available_cash'] / 10000:.2f}万，"
                 f"按涨停价{live['order_price']:.2f}元不足一手）"
                 + (f"；风控标记：{live['risk_flags']}" if live["risk_flags"] else ""))
     froze = live["shares"] * live["order_price"]
@@ -1272,13 +1280,15 @@ def _format_live_plan_line(
     target_amount = float(live.get("target_amount", 0.0) or 0.0)
     min_amount = float(live.get("min_acceptable_amount", 0.0) or 0.0)
     hard_amount = float(live.get("hard_cap_amount", 0.0) or 0.0)
-    return (f"{head}｜计划实际开仓{target_amount / 10000:.2f}万（目标82.5%，"
-            f"允许下限{min_amount / 10000:.2f}万/80%，绝对硬顶{hard_amount / 10000:.2f}万/85%）"
+    equity = live.get("total_asset", 0.0)
+    return (f"{head}｜计划实际开仓{target_amount / 10000:.2f}万（目标{_entry_pct_text(target_amount, equity)}，"
+            f"允许下限{_entry_amount_text(min_amount, equity)}，绝对硬顶{_entry_amount_text(hard_amount, equity)}）"
             f"；可用资金{live['available_cash'] / 10000:.2f}万"
             f"（总资产{live['total_asset'] / 10000:.2f}万）"
-            f"→ 09:20按涨停价{live['order_price']:.2f}元集合竞价预挂"
-            f"→ 竞价种子单{live['shares']}股，最坏冻结{froze / 10000:.2f}万{binding}"
-            + "。09:30确认实际成交额，低于82.5%的缺口由现有POV在+2%追价和85%硬顶内校准")
+            f"→ {auction_time}按涨停价{live['order_price']:.2f}元集合竞价预挂"
+            f"→ 执行前预估竞价种子单{live['shares']}股，最坏冻结{froze / 10000:.2f}万{binding}"
+            + f"。09:30确认实际成交额，现有POV按目标{_entry_amount_text(target_amount, equity)}的缺口"
+            f"在开盘价+2%追价保护和{_entry_amount_text(hard_amount, equity)}硬顶内校准")
 
 
 def _exit_method_desc(strategy: str, exit_rule: str) -> str:
@@ -2154,10 +2164,13 @@ def _m_plan_line(action_date: str, *, ace_active: bool) -> tuple[str, str]:
             mood = diag.get("mood")
             mood_text = ("%.2f%%" % (float(mood) * 100)) if mood is not None and mood == mood else "无"
             return (f"M：无候选（昨日涨停今日平均{mood_text}，20cm涨停{int(diag.get('n20_limit_up') or 0)}只）。", "")
+        ace_active = ace_active or has_open_local_position("ACE")
         names = "、".join(f"{c.get('name') or c.get('ts_code')}({c.get('ts_code')})" for c in cands[:3])
-        pct = "闲置资金≤17.5%" if ace_active else "总资产82.5%"
+        rule_pct = _entry_pct_text(m_position_pct(ace_active), 1.0)
+        pct = f"闲置资金≤{rule_pct}" if ace_active else f"总资产≤{rule_pct}"
         first = f"{cands[0].get('name') or ''}"
-        return (f"M计划：{names}（按顺序，开盘涨停则换下一只，跳过ACE同票），仓位{pct}，"
+        return (f"M计划：{names}（按顺序，开盘涨停则换下一只，跳过ACE同票），规则仓位上限{pct}"
+                "（实际预算另受可用现金、ACE预留及账户总仓位上限约束），"
                 f"09:20按涨停价-0.01预挂、余量POV补足（≤开盘+2%），买入后下一个交易日收盘卖出。", first)
     except Exception as exc:
         logger().warning("M计划摘要生成失败（不影响交易）：%s", exc)
@@ -2193,12 +2206,27 @@ def push_open_plan_notification(occasion: str) -> None:
         execution_expired = bool(plan.get("execution_expired", False))
         execution_block_reason = str(plan.get("execution_block_reason", "") or "")
         equity_curve_stop_reason = str(plan.get("equity_curve_stop_reason", "") or "")
-        if fb and equity_curve_stop_reason:
-            title = f"⏸ {label}方案甲停手:不开新仓"
+        gate_mode = _ace_gate_mode_for(action)
+        rule_pct = _entry_pct_text(ace_base_target_pct(gate_mode), 1.0)
+        if gate_mode == ACE_GATE_REDUCED:
+            phase = "方案甲停手期"
+            phase_line = f"【{phase}·ACE缩仓执行】ACE规则目标{rule_pct}，本次执行比例见下；D不启动。"
+        elif gate_mode == ACE_GATE_FULL:
+            phase = "方案甲正常期"
+            phase_line = f"【{phase}】ACE规则目标{rule_pct}，本次执行比例见下。"
+        else:
+            phase = "方案甲判定无效"
+            phase_line = f"【{phase}】ACE禁止新开仓，D不启动；M按独立规则判断。"
+        sizing_mode = (plan.get("live_sizing") or {}).get("ace_gate_mode")
+        if fb and (gate_mode not in (ACE_GATE_FULL, ACE_GATE_REDUCED) or equity_curve_stop_reason):
+            title = f"⛔ {label}方案甲判定未通过:ACE不开新仓"
             body = (
                 f"{_format_strategy_candidate(str(fb.get('strategy', '?')), fb)}入选但不执行，"
-                f"D也不启动。{equity_curve_stop_reason}。"
+                f"D也不启动。{equity_curve_stop_reason or '当前无有效的方案甲开仓判定'}。"
             )
+        elif fb and sizing_mode and sizing_mode != gate_mode:
+            title = f"⚠️ {label}开仓计划待重新定仓:{fb.get('name','')}"
+            body = "方案甲状态已变化，原定仓预估已失效；本条不展示旧金额和股数，实际以执行前重新定仓为准。"
         elif fb and execution_expired:
             title = f"⚠️ {label}原候选已错过执行窗口:{fb.get('name','')}"
             body = (
@@ -2221,8 +2249,6 @@ def push_open_plan_notification(occasion: str) -> None:
                 title = f"📋 {label}开仓计划:{fb.get('strategy','')} {fb.get('name','')}"
             # 与决策链日志同源：直接用播报时算好的真实账户定仓结果，不重算
             body = _format_live_plan_line(fb, plan.get("live_sizing")) + "。"
-            if _ace_gate_mode_for(action) == ACE_GATE_REDUCED:
-                body += "（方案甲停手期：ACE按20%目标仓位执行，D不启动）"
         else:
             title = f"📋 {label}无新开仓计划"
             body = f"{label}所有收盘计划策略(A/C/E)均无符合条件标的,不开新仓。"
@@ -2235,6 +2261,8 @@ def push_open_plan_notification(occasion: str) -> None:
             body += f" {m_line}"
         if hold:
             body += f" ⚠{hold}"
+        title += f"｜{phase}"
+        body = phase_line + "\n" + body
         sent = _notify("buy_result", title, body, level="timeSensitive")
         if sent:
             mkdir_p(_PLAN_PUSH_STATE.parent)
@@ -2297,6 +2325,7 @@ def _open_plan_execution_detail(plan: dict[str, Any]) -> str:
             pov_item.get("target_actual_amount", pov_item.get("target_amt", 0.0)) or 0.0
         )
         hard_cap = float(pov_item.get("hard_cap_amount", 0.0) or 0.0)
+        equity = pov_item.get("equity_snapshot", 0.0)
         if auction_qty > 0:
             if pending_qty > 0:
                 price_text = f"@委托{pending_price:.2f}" if pending_price > 0 else ""
@@ -2306,18 +2335,19 @@ def _open_plan_execution_detail(plan: dict[str, Any]) -> str:
         else:
             seed_text = "竞价实际计划0股（竞价链未挂出，全部目标转POV）"
         return (
-            f"{head}｜{seed_text}；POV按实际成交额校准至目标{target / 1e4:.2f}万/82.5%，"
-            f"硬顶{hard_cap / 1e4:.2f}万/85%"
+            f"{head}｜{seed_text}；POV按实际成交额校准至目标{_entry_amount_text(target, equity)}，"
+            f"硬顶{_entry_amount_text(hard_cap, equity)}"
         )
     if pending_qty > 0:
         price_text = f"@{pending_price:.2f}" if pending_price > 0 else ""
         return f"{head}｜实际在途买单{pending_qty}股{price_text}"
     live = plan.get("live_sizing") or {}
     if live:
+        equity = live.get("total_asset", 0.0)
         return (
             f"{head}｜执行前预估竞价种子单{int(live.get('shares', 0) or 0)}股；"
-            f"实际开仓目标{float(live.get('target_amount', 0.0) or 0.0) / 1e4:.2f}万/82.5%，"
-            f"硬顶{float(live.get('hard_cap_amount', 0.0) or 0.0) / 1e4:.2f}万/85%"
+            f"实际开仓目标{_entry_amount_text(live.get('target_amount', 0.0), equity)}，"
+            f"硬顶{_entry_amount_text(live.get('hard_cap_amount', 0.0), equity)}"
         )
     return (
         f"{head}｜实际委托状态尚不可得（信号名义值{int(fb.get('shares', 0) or 0)}股"
