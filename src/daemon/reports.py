@@ -26,7 +26,6 @@ from src.portfolio_ace_m import (
     GATE_REDUCED as ACE_GATE_REDUCED,
     M_LEG,
     ace_base_target_pct,
-    m_position_pct,
     position_in_family,
 )
 from src.rolling_signal_store import (
@@ -83,8 +82,9 @@ from src.daemon.buy import (
     _new_buy_execution_gate,
     resize_buy_orders_for_live_account,
 )
-from src.daemon.buy_m import M_SIGNAL_RECENT_PATH
+from src.daemon.buy_m import M_POV_END_TIME, M_SIGNAL_RECENT_PATH
 from src.daemon.strategy_d import _strategy_d_monitor_running
+from src.open_plan_notification import ace_notice_has_plan, combined_plan_title, m_plan_notice
 
 
 # 普通开盘计划只允许在09:20竞价预挂、09:30确认以及09:30~09:35恢复宽限内
@@ -1234,6 +1234,8 @@ def _live_plan_sizing_uncached(
                 "blocked_by_existing_position": True,
                 "available_cash": float(getattr(account, "available_cash", 0.0) or 0.0),
                 "total_asset": float(getattr(account, "total_asset", 0.0) or 0.0),
+                "ace_market_value": _strategy_only_market_value(positions_live, family="ACE"),
+                "m_market_value": _strategy_only_market_value(positions_live, family=M_LEG),
                 "transition": False,
                 "risk_flags": "EXISTING_STRATEGY_POSITION_BLOCK",
             }
@@ -1294,6 +1296,8 @@ def _live_plan_sizing_uncached(
             "cash_bound": cash_bound,
             "available_cash": float(getattr(account, "available_cash", 0.0) or 0.0),
             "total_asset": float(getattr(account, "total_asset", 0.0) or 0.0),
+            "ace_market_value": market_value,
+            "m_market_value": m_market_value,
             "transition": False,
             "risk_flags": str(row.get("risk_flags", "") or ""),
         }
@@ -2226,7 +2230,7 @@ def _notify_missed_open_window_if_needed(source: str) -> None:
     logger().error("[开仓窗口审计] %s", body)
 
 
-def _m_plan_line(action_date: str, *, ace_active: bool) -> tuple[str, str]:
+def _m_plan_line(action_date: str, *, ace_active: bool, plan=None) -> tuple[str, str]:
     """M在action_date的开仓计划摘要（推送用）；返回(文字, 第一候选名称)。"""
     try:
         from src.rolling_signal_store import latest_signal_for_buy_date
@@ -2234,22 +2238,15 @@ def _m_plan_line(action_date: str, *, ace_active: bool) -> tuple[str, str]:
         signal = latest_signal_for_buy_date(M_SIGNAL_RECENT_PATH, str(action_date))
         if not signal:
             return "", ""
-        if has_open_local_position(M_LEG):
-            return "M：仍有M持仓（当天收盘卖出），M同一时间最多1只，不开新M。", ""
-        cands = sorted(signal.get("candidates") or [], key=lambda c: int(c.get("rank", 999)))
-        diag = signal.get("diagnostics") or {}
-        if not cands:
-            mood = diag.get("mood")
-            mood_text = ("%.2f%%" % (float(mood) * 100)) if mood is not None and mood == mood else "无"
-            return (f"M：无候选（昨日涨停今日平均{mood_text}，20cm涨停{int(diag.get('n20_limit_up') or 0)}只）。", "")
-        ace_active = ace_active or has_open_local_position("ACE")
-        names = "、".join(f"{c.get('name') or c.get('ts_code')}({c.get('ts_code')})" for c in cands[:3])
-        rule_pct = _entry_pct_text(m_position_pct(ace_active), 1.0)
-        pct = f"闲置资金≤{rule_pct}" if ace_active else f"总资产≤{rule_pct}"
-        first = f"{cands[0].get('name') or ''}"
-        return (f"M计划：{names}（按顺序，开盘涨停则换下一只，跳过ACE同票），规则仓位上限{pct}"
-                "（实际预算另受可用现金、ACE预留及账户总仓位上限约束），"
-                f"09:20按涨停价-0.01预挂、余量POV补足（≤开盘+2%），买入后下一个交易日收盘卖出。", first)
+        now = now_beijing()
+        return m_plan_notice(
+            signal, action_date=action_date, ace_active=ace_active or has_open_local_position("ACE"),
+            plan=plan or {}, positions=load_positions(),
+            config=load_json_config(PROJECT_ROOT / "config" / "config.json"),
+            gate_mode=_ace_gate_mode_for(action_date), has_m_position=has_open_local_position(M_LEG),
+            window_closed=(str(action_date) < now.strftime("%Y%m%d")
+                           or (str(action_date) == now.strftime("%Y%m%d") and now.time() >= M_POV_END_TIME)),
+        )
     except Exception as exc:
         logger().warning("M计划摘要生成失败（不影响交易）：%s", exc)
         return "", ""
@@ -2360,10 +2357,9 @@ def push_open_plan_notification(occasion: str) -> None:
             title = f"📋 {label}无新开仓计划"
             body = _ace_no_open_plan_reason(plan)
         # 2026-11-12 ACE+M：附上M的计划（M与ACE资金分开，独立执行）。
-        m_line, m_first = _m_plan_line(action, ace_active=bool(fb) and not equity_curve_stop_reason)
+        m_line, m_first = _m_plan_line(action, ace_active=ace_notice_has_plan(plan, gate_mode), plan=plan)
+        title = combined_plan_title(title, label, plan, gate_mode, m_first)
         if m_line:
-            if not fb and m_first:
-                title = f"📋 {label}开仓计划:M {m_first}"
             body += f" {m_line}"
         if hold:
             body += f" ⚠{hold}"

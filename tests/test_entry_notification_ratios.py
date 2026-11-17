@@ -8,6 +8,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from src.daemon import buy, reports
+from src.strategy_m import M_VERSION
 
 
 BUY = {"strategy": "E", "ts_code": "001393.SZ", "name": "维通利", "shares": 300}
@@ -119,11 +120,18 @@ def test_changed_gate_never_presents_cached_sizing_as_executable(mode, old_mode,
 
 
 def test_m_plan_reserves_ace_holdings_even_without_a_new_ace_candidate():
-    signal = {"candidates": [{"ts_code": "300001.SZ", "name": "测试M", "rank": 1}]}
+    from datetime import datetime
+
+    signal = {"m_version": M_VERSION, "status": "SIGNAL_READY",
+              "candidates": [{"ts_code": "300001.SZ", "name": "测试M", "rank": 1}]}
     with patch("src.rolling_signal_store.latest_signal_for_buy_date", return_value=signal), \
+         patch.object(reports, "load_positions", return_value=[]), \
+         patch.object(reports, "load_json_config", return_value={}), \
+         patch.object(reports, "_ace_gate_mode_for", return_value="REDUCED"), \
+         patch.object(reports, "now_beijing", return_value=datetime(2026, 11, 16, 8, 50)), \
          patch.object(reports, "has_open_local_position", side_effect=lambda family: family == "ACE"):
         message, _ = reports._m_plan_line("20261116", ace_active=False)
-    assert "规则仓位上限闲置资金≤17.5%" in message
+    assert "规则仓位上限为总资产17.5%" in message and "仅用闲置资金" in message
     assert "82.5%" not in message
 
 

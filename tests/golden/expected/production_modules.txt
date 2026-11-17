@@ -89,6 +89,7 @@ src.market_rules
 src.mechanical_compound
 src.notify
 src.offline_data_maintenance
+src.open_plan_notification
 src.paper_candidate_generator
 src.paper_daily_flow
 src.portfolio_ace_m
