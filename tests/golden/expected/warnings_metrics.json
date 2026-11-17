@@ -2,12 +2,12 @@
  "combo_drawdown": {
   "as_of": "20261110",
   "peak": "20260817",
-  "value": "-0.22741166991993667"
+  "value": "-0.2274116695702747"
  },
  "combo_relative": {
   "as_of": "20261110",
   "days_behind": 0,
-  "value": "0.20949752211599559"
+  "value": "0.25260333126094436"
  },
  "factor_health": {
   "A": {
@@ -44,23 +44,17 @@
   },
   "M": {
    "as_of": "20261028",
-   "trades": 27,
-   "value": "1.8152402681412805"
+   "trades": 28,
+   "value": "2.4362954190938444"
   }
  },
  "replay": {
-  "ace_m_multiple": "303603.7543035181",
+  "ace_m_multiple": "314424.02077731933",
   "ace_only_multiple": "30013.525117056019",
   "end": "20261110",
-  "m_reference_error_days": 5,
-  "m_reference_errors_recent": [
-   "20260429",
-   "20260430",
-   "20260512",
-   "20260513",
-   "20260514"
-  ],
-  "m_trades": 173,
+  "m_reference_error_days": 0,
+  "m_reference_errors_recent": [],
+  "m_trades": 174,
   "start": "20191202"
  },
  "shadow_drawdown": {

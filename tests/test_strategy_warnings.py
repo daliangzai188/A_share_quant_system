@@ -197,6 +197,67 @@ class CacheTests(unittest.TestCase):
             self.assertEqual(candidates, {days[0]: ["300001.SZ"]})
             self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["version"], 1)
 
+    def test_old_error_days_retry_and_recover_without_invalidating_successes_or_known_outcomes(self) -> None:
+        days = OPEN[:80]
+        old_errors, old_success = days[:5], days[5]
+        resolved = set(old_errors[:3])
+        empty_success = old_errors[0]
+        calls, outcome_calls = [], []
+
+        def reference(day):
+            calls.append(day)
+            if day in old_errors and day not in resolved:
+                return {"status": "ERROR", "error": "still missing required quote", "candidates": []}
+            return {"status": "OK", "candidates": [{"ts_code": "300002.SZ"}]
+                    if day in resolved and day != empty_success else []}
+
+        def outcome(code, day):
+            outcome_calls.append((code, day))
+            raise AssertionError("已知历史结果不应重算")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "cache.json"
+            cache = {"version": 1,
+                     "candidates": {d: (["300001.SZ"] if d == old_success else [])
+                                    for d in days[:-20] if d not in old_errors},
+                     "errors": {d: "stale missing suspended placeholder" for d in old_errors},
+                     "outcomes": {"300001.SZ|" + old_success: [days[7], 10.0, 0.05],
+                                  "300009.SZ|" + days[6]: None}}
+            path.write_text(json.dumps(cache), encoding="utf-8")
+            candidates, errors, cached, save = _cached_m_inputs(reference, outcome, days, days, path)
+            self.assertEqual(set(calls), set(old_errors) | set(days[-20:]))
+            self.assertEqual(len(calls), 25)
+            self.assertEqual(set(errors), set(old_errors[3:]))
+            self.assertEqual(candidates[old_success], ["300001.SZ"])
+            for day in resolved:
+                if day == empty_success:
+                    self.assertNotIn(day, candidates, "成功算成空候选不应冒充有候选")
+                else:
+                    self.assertEqual(candidates[day], ["300002.SZ"])
+            self.assertEqual(cached("300001.SZ", old_success), (days[7], 10.0, 0.05))
+            self.assertIsNone(cached("300009.SZ", days[6]), "历史NULL结果仍沿用既有缓存语义")
+            self.assertEqual(outcome_calls, [])
+            save()
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(saved["version"], 1, "不能用版本升级把所有历史成功缓存失效")
+            self.assertEqual(set(saved["errors"]), set(old_errors[3:]))
+            self.assertNotIn(empty_success, saved["errors"], "空候选也属于成功，应清除旧ERROR")
+            self.assertEqual(saved["candidates"][empty_success], [], "成功空结果必须进入候选缓存")
+            self.assertEqual(saved["outcomes"], cache["outcomes"])
+
+            calls.clear()
+            candidates, errors, cached, save = _cached_m_inputs(reference, outcome, days, days, path)
+            self.assertEqual(set(calls), set(old_errors[3:]) | set(days[-20:]))
+            self.assertEqual(len(calls), 22, "恢复成功的历史日不再重算，剩余ERROR继续重试")
+            self.assertNotIn(empty_success, calls, "历史成功空结果第二轮同样复用，不应永久重试")
+            self.assertEqual(set(errors), set(old_errors[3:]))
+            self.assertEqual(cached("300001.SZ", old_success), (days[7], 10.0, 0.05))
+            self.assertEqual(outcome_calls, [])
+            save()
+            saved_again = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(saved_again["errors"], saved["errors"])
+            self.assertEqual(saved_again["outcomes"], cache["outcomes"])
+
 
 if __name__ == "__main__":
     unittest.main()

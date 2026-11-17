@@ -20,6 +20,7 @@ from typing import Any
 
 import pandas as pd
 
+from src.limit_source_quality import suspended_placeholder_mask
 from src.market_rules import is_st_name, limit_up_price, market_segment, price_limit_pct
 from src.strategy_m import (
     AMT20_WINDOW,
@@ -189,7 +190,9 @@ class MReference:
                 if day != signal_date:
                     raise ValueError("昨日涨停池缺失：%s" % day)
                 continue
-            rows = pool
+            daily_codes = set(daily[day]["ts_code"].astype(str))
+            # 与清洗层共用严格占位识别；原始CSV保留，正常涨停股缺行情仍拒绝。
+            rows = pool.loc[~suspended_placeholder_mask(pool, daily_codes)]
             if "limit" in rows.columns:
                 rows = rows[rows["limit"].astype(str).str.upper().eq("U")]
             eligible = set()
@@ -199,7 +202,7 @@ class MReference:
                 age = listing_age(list_dates.get(code, ""), day, days)
                 if age is not None and age >= MIN_LISTING_DAYS:
                     eligible.add(code)
-            absent = sorted(eligible - set(daily[day]["ts_code"].astype(str)))
+            absent = sorted(eligible - daily_codes)
             if absent:
                 raise ValueError(
                     "%s 日线缺少涨停池股票%d只（%s），数据不完整" % (day, len(absent), "、".join(absent[:5]))

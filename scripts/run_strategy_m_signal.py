@@ -39,6 +39,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.rolling_signal_store import ERROR, NO_CANDIDATE, SIGNAL_READY, save_recent_signal, save_recent_signal_run
+from src.limit_source_quality import suspended_placeholder_mask
 from src.market_rules import is_st_name, market_segment
 from src.strategy_m import (
     AMT20_WINDOW,
@@ -149,7 +150,9 @@ def run(signal_date: str) -> int:
                 if day != signal_date:
                     raise ValueError("昨日涨停池缺失：%s" % day)
                 continue
-            rows = lim
+            daily_codes = set(daily[day]["ts_code"].astype(str))
+            # 只豁免全套占位字段且确无当日报价的记录；不按质量标签跳过缺行情。
+            rows = lim.loc[~suspended_placeholder_mask(lim, daily_codes)]
             if "limit" in rows.columns:
                 rows = rows[rows["limit"].astype(str).str.upper().eq("U")]
             eligible = set()
@@ -159,7 +162,7 @@ def run(signal_date: str) -> int:
                 age = listing_age(list_dates.get(code, ""), day, days)
                 if age is not None and age >= MIN_LISTING_DAYS:
                     eligible.add(code)
-            missing = sorted(eligible - set(daily[day]["ts_code"].astype(str)))
+            missing = sorted(eligible - daily_codes)
             if missing:
                 raise ValueError("%s 日线缺少涨停池股票%d只（%s），数据不完整" % (day, len(missing), "、".join(missing[:5])))
         candidates, diag = build_m_candidates(signal_date, days, daily, limit_today, basic_today, list_dates,

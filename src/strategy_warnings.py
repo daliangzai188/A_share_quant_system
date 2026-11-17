@@ -361,7 +361,7 @@ REFRESH_OPEN_DAYS = 20
 
 def _cached_m_inputs(reference: Callable[[str], Mapping[str, Any]], outcome: Callable[[str, str], Any],
                      open_days: Sequence[str], days: Sequence[str], cache_path: Path | str | None):
-    """M候选单和每笔买卖结果：已算过的从缓存取，只重算新日子和最近REFRESH_OPEN_DAYS个交易日。"""
+    """成功结果复用缓存；新日、近期日和历史失败日重算，避免补好数据后永久沿用旧错误。"""
 
     cache: dict[str, Any] = {}
     path = Path(cache_path) if cache_path else None
@@ -379,9 +379,6 @@ def _cached_m_inputs(reference: Callable[[str], Mapping[str, Any]], outcome: Cal
         day = str(day)
         if day not in recent and day in cache["candidates"]:
             codes = list(cache["candidates"][day])
-        elif day not in recent and day in cache["errors"]:
-            errors[day] = str(cache["errors"][day])
-            continue
         else:
             result = reference(day)
             if str(result.get("status", "")) != "OK":
