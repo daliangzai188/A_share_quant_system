@@ -945,7 +945,7 @@ def _e_auction_submit(
 
 def _e_auction_buy_one(
     broker_cfg, today_str, pov_enabled_e, actual_amount_rebalance_e, OrderRequest, row, fallback_amt,
-    capacity_records, log, positions_live, ratio, pov_items_e, new_pending,
+    capacity_records, log, positions_live, ratio, pov_items_e, new_pending, free_cash=None,
 ):
     """09:24按实时竞价撮合量给一只E候选定仓并挂涨停价竞价单，登记台账（从 _e_auction_buy_worker 拆出，语句原样）。"""
     try:
@@ -1019,6 +1019,13 @@ def _e_auction_buy_one(
             limit_price=price, hard_cap_amount=hard_cap_amount,
             total_target_qty=total_target_qty,
         )
+        if free_cash is not None:
+            # 2026-11-18：竞价单按涨停价冻结，不能超过此刻可用资金（ACE+M同日开仓时M先冻结了一部分），多出的交给开盘后POV
+            by_cash = _floor_buy_quantity_by_amount(free_cash, price, 100)
+            if by_cash < qty:
+                log.warning("E竞价买入：%s 可用资金%.2f元按涨停价%.2f只够%d股（原%d股），竞价单按可用资金挂，其余由POV补足。",
+                            ts_code, free_cash, price, by_cash, qty)
+                qty = by_cash
         expected_auction_amount = qty * capacity_price
         log.info("[E竞价定量] %s 目标%.2f元 容量%.2f元 参考价%.2f元 "
                  "委托价%.2f元 股数%d 参考成交额%.2f元 最坏冻结额%.2f元 硬顶%.2f元",
@@ -1148,9 +1155,13 @@ def _e_auction_buy_worker(e_rows: list[Any], broker_cfg: dict, today_str: str) -
         with _qmt_lock:
             adapter = _qmt_get(broker_cfg)
             positions_live = adapter.query_positions()
+            account = adapter.query_account()
         if _broker_has_preexisting_strategy_position(positions_live):
             log.warning("🚫 [E竞价买入] 券商仍有本系统旧策略仓，取消衔接开仓；E本轮不挂单。")
             return
+        # 09:24此刻真正可用的钱（M 09:20竞价单已冻结的部分已扣掉）；E竞价单按涨停价冻结不能超过它，否则券商整单拒绝
+        free_cash = max(float(getattr(account, "available_cash", 0.0) or 0.0)
+                        - float(lt.get("cash_buffer_amount", 1000)), 0.0)
         pov_enabled_e = bool(lt.get("pov_enabled", True))
         actual_amount_rebalance_e = bool(
             lt.get("entry_actual_amount_rebalance_enabled", True)
@@ -1161,6 +1172,7 @@ def _e_auction_buy_worker(e_rows: list[Any], broker_cfg: dict, today_str: str) -
             _e_auction_buy_one(
                 broker_cfg, today_str, pov_enabled_e, actual_amount_rebalance_e, OrderRequest, row,
                 fallback_amt, capacity_records, log, positions_live, ratio, pov_items_e, new_pending,
+                free_cash=free_cash,
             )
         if new_pending:
             _start_premarket_buy_monitor()

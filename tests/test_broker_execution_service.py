@@ -299,6 +299,32 @@ class IntentBrokerExecutionServiceTests(unittest.TestCase):
             self.assertEqual(adapter.calls, ["place:盘前买入-20260817"])
             service.shutdown()
 
+    def test_m_and_ace_buys_do_not_block_each_other(self) -> None:
+        """2026-11-18：M 09:20竞价单未成交时，E 09:24竞价单被 ACTIVE_BUY_INTENT_EXISTS:M 拒绝。
+        ACE和M资金分开、各自开仓；同一族内仍然只许一笔未终态买单。"""
+        from dataclasses import replace as dc_replace
+
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "execution_events.sqlite3"
+            service, adapter = self._service(path)
+            proxy = service.proxy(lambda: adapter)
+
+            def order(leg: str, code: str, key: str) -> OrderRequest:
+                return dc_replace(self._request(key), strategy_leg=leg, ts_code=code, broker_code=code,
+                                  strategy_name="A_SYSTEM_%s" % leg, remark=key)
+
+            m_first = proxy.place_order(order("M", "301288.SZ", "M_AUCTION|20260817|301288.SZ"))
+            e_auction = proxy.place_order(order("E", "002652.SZ", "E_AUCTION|20260817|002652.SZ"))
+            m_second = proxy.place_order(order("M", "300001.SZ", "M_AUCTION|20260817|300001.SZ"))
+            a_while_e = proxy.place_order(order("A", "000001.SZ", "A-open-1"))
+            self.assertTrue(m_first.accepted)
+            self.assertTrue(e_auction.accepted, e_auction.message)
+            self.assertFalse(m_second.accepted)
+            self.assertIn("ACTIVE_BUY_INTENT_EXISTS:M:301288.SZ", m_second.message)
+            self.assertFalse(a_while_e.accepted)
+            self.assertIn("ACTIVE_BUY_INTENT_EXISTS:E:002652.SZ", a_while_e.message)
+            service.shutdown()
+
     def test_full_status_without_qty_uses_authoritative_target_qty(self) -> None:
         class FilledWithoutQtyAdapter(FakeAdapter):
             def get_order_fill(self, order_id: str) -> OrderFill:

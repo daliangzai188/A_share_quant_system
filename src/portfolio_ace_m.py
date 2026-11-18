@@ -136,17 +136,22 @@ def m_budget(
     ace_value: float,
     ace_unfilled_target: float,
     cash_buffer: float,
+    ace_frozen_pending: float = 0.0,
 ) -> dict[str, float]:
     """M 本次可用金额（元）。
 
     total_asset：09:20 开仓前总资产快照（与 ACE 同一基数）；
-    ace_value：ACE 当前持仓市值；ace_unfilled_target：ACE 今日目标尚未成交的金额（给 ACE 预留）。
+    ace_value：ACE 当前持仓市值；ace_unfilled_target：ACE 今日目标尚未成交的金额（给 ACE 预留）；
+    ace_frozen_pending：ACE 今日已挂、还没成交的买单冻结的钱（2026-11-18）。这部分已经从可用资金里扣掉了，
+    按现金算 M 能用多少时不再给 ACE 重复预留；总仓位上限照旧按 ACE 整个目标预留。
     """
 
     ta = max(float(total_asset or 0.0), 0.0)
     pct = m_position_pct(ace_active_today)
     by_pct = ta * pct
-    by_total_cap = ta * TOTAL_POSITION_CAP_PCT - max(float(ace_value or 0.0), 0.0) - max(float(ace_unfilled_target or 0.0), 0.0)
-    by_cash = float(available_cash or 0.0) - max(float(cash_buffer or 0.0), 0.0) - max(float(ace_unfilled_target or 0.0), 0.0)
+    reserve = max(float(ace_unfilled_target or 0.0), 0.0)
+    by_total_cap = ta * TOTAL_POSITION_CAP_PCT - max(float(ace_value or 0.0), 0.0) - reserve
+    cash_reserve = max(reserve - max(float(ace_frozen_pending or 0.0), 0.0), 0.0)
+    by_cash = float(available_cash or 0.0) - max(float(cash_buffer or 0.0), 0.0) - cash_reserve
     amount = max(0.0, min(by_pct, by_total_cap, by_cash))
     return {"pct": pct, "by_pct": by_pct, "by_total_cap": by_total_cap, "by_cash": by_cash, "amount": amount}

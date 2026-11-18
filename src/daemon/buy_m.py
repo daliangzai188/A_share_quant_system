@@ -25,7 +25,7 @@ from src.daemon.common import (
     logger,
     next_n_trade_days,
 )
-from src.daemon.state import _m_load_state, _m_save_state, _record_live_buy, load_positions
+from src.daemon.state import _m_load_state, _m_save_state, _record_live_buy, load_pending_buys, load_positions
 from src.daemon.plans import (
     _ace_gate_mode_for,
     _combined_open_action_for_current_mode,
@@ -122,8 +122,18 @@ def _m_ace_context(today_str: str, broker_positions: Any, total_asset: float) ->
             for p in held_ace if str(p.get("buy_date", "")) == today_str
         )
         reserve = max(0.0, limits["target_amount"] - bought_today)
+    # ACE今日已挂、待确认的买单（09:20竞价种子单等）冻结的钱：已从可用资金扣掉，M按现金定仓时不再重复预留
+    frozen = 0.0
+    try:
+        frozen = sum(
+            float(order.get("qty", 0) or 0) * float(order.get("ref_price", 0) or 0)
+            for order in load_pending_buys()
+            if str(order.get("strategy_leg", "")).strip().upper() != M_LEG
+        )
+    except Exception as exc:
+        logger().warning("读取ACE待成交买单失败，M按现金定仓时照旧全额给ACE预留：%s", exc)
     return {"active": plan_active or bool(held_ace), "plan_active": plan_active, "codes": ace_codes,
-            "ace_value": ace_value, "m_value": m_value, "reserve": reserve}
+            "ace_value": ace_value, "m_value": m_value, "reserve": reserve, "frozen": frozen}
 
 
 def _m_buy_quantity(ts_code: str, amount: float, price: float) -> int:
@@ -249,7 +259,7 @@ def job_m_premarket_buy() -> None:
         available_cash = float(getattr(account, "available_cash", 0.0) or 0.0)
         ctx = _m_ace_context(today_str, positions_live, total_asset)
         budget = m_budget(total_asset=total_asset, available_cash=available_cash, ace_active_today=ctx["active"],
-                          ace_value=ctx["ace_value"], ace_unfilled_target=ctx["reserve"],
+                          ace_value=ctx["ace_value"], ace_unfilled_target=ctx["reserve"], ace_frozen_pending=ctx["frozen"],
                           cash_buffer=float(config.get("live_trade", {}).get("cash_buffer_amount", 1000)))
         exit_date = _m_exit_date(today_str)
         skip: set[str] = set()
@@ -392,7 +402,7 @@ def _m_pov_round(state: dict[str, Any], broker_cfg: dict, config: dict, today_st
         total_asset = float(getattr(account, "total_asset", 0.0) or 0.0)
         ctx = _m_ace_context(today_str, positions_live, total_asset)
         budget = m_budget(total_asset=total_asset, available_cash=float(getattr(account, "available_cash", 0.0) or 0.0),
-                          ace_active_today=ctx["active"], ace_value=ctx["ace_value"], ace_unfilled_target=ctx["reserve"],
+                          ace_active_today=ctx["active"], ace_value=ctx["ace_value"], ace_unfilled_target=ctx["reserve"], ace_frozen_pending=ctx["frozen"],
                           cash_buffer=float(lt.get("cash_buffer_amount", 1000)))
         cand = _m_pick_candidate(signal, quotes, set(item.get("tried", [])), ctx["codes"], require_open=True)
         if cand is None:

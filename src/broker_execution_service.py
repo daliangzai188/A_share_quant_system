@@ -14,7 +14,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Mapping
 
 from src.config_check import new_entry_block_reason
-from src.portfolio_ace_m import REMARK_LEG_MATCH_ORDER
+from src.portfolio_ace_m import REMARK_LEG_MATCH_ORDER, is_m_leg
 from src.broker_adapter import (
     AccountSnapshot,
     BrokerAdapter,
@@ -527,11 +527,18 @@ class IntentBrokerExecutionService(BrokerExecutionService):
 
         def execute() -> OrderResult:
             if request.side.upper() == "BUY":
-                conflicts = self.intent_store.list_active_intents(
-                    account_fingerprint=spec.account_fingerprint,
-                    side="BUY",
-                    exclude_intent_id=intent_id,
-                )
+                # 同一资金族（ACE=A/C/E/D，M）同一时间只许一笔未终态买入意图。ACE和M资金分开、按规则各自定仓，
+                # 回测里同一天各自在开盘买入（2026-11-12 ACE+M），所以M的买单不挡ACE，ACE的也不挡M
+                # （2026-11-18：M 09:20竞价单挡住了E 09:24竞价单和09:30第一片POV）。
+                conflicts = [
+                    conflict
+                    for conflict in self.intent_store.list_active_intents(
+                        account_fingerprint=spec.account_fingerprint,
+                        side="BUY",
+                        exclude_intent_id=intent_id,
+                    )
+                    if is_m_leg(conflict.get("strategy_leg", "")) == is_m_leg(spec.strategy_leg)
+                ]
                 if conflicts:
                     conflict = conflicts[0]
                     self.intent_store.transition_intent(
