@@ -105,6 +105,32 @@ def live_trades(config):
     return filled, complete
 
 
+def update_live_ledger(config, day: str) -> str:
+    """开仓平仓总账和按策略统计（2026-11-18，用户要求）：QMT导出的逐笔汇总并进只增不删的
+    C:\\A_System\\data\\live_trades\\live_trade_ledger.csv，再写按策略的实盘统计。返回错误说明，成功为空。"""
+    try:
+        from src.live_trade_ledger import (ACCOUNT_NAME, LEDGER_NAME, update_account_daily, update_ledger,
+                                           write_leg_performance)
+    except ImportError as exc:
+        # 只在测试搭的精简目录里会缺（生产代码和本程序一起发布）；缺了就不记，不把检查结果搅乱
+        print('LIVE_LEDGER_SKIPPED %s' % exc, flush=True)
+        return ''
+    try:
+        from src.strategy_equity_ledger import _report_config
+
+        out = ROOT / 'data' / 'live_trades'
+        source = EXPORTED_SUMMARY if EXPORTED_SUMMARY.is_file() else OLD_SUMMARY
+        counts = update_ledger(source, out / LEDGER_NAME)
+        account = update_account_daily(EXPORTED_SUMMARY.parent / ACCOUNT_NAME, out / ACCOUNT_NAME)
+        write_leg_performance(out / LEDGER_NAME, out, _report_config(config), day)
+        print('LIVE_LEDGER %s rows=%d added=%d account_days=%d source=%s' % (
+            day, counts['rows'], counts['added'], account['rows'], source), flush=True)
+        return ''
+    except Exception as exc:
+        traceback.print_exc()
+        return '%s: %s' % (type(exc).__name__, exc)
+
+
 def _write_json(path: Path, payload) -> None:
     tmp = path.with_suffix('.tmp')
     tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=1, default=str), encoding='utf-8')
@@ -225,6 +251,7 @@ def run(args) -> int:
     dates = open_dates_from_calendar(calendar)
     if day not in dates:
         raise RuntimeError('%s 不是交易日' % day)
+    ledger_error = update_live_ledger(config, day)   # 先记总账：后面的采集、回放失败也不影响开仓平仓记录
     if not args.skip_collect:
         collect(day, dates)
     settings = dataclasses.replace(prod.load_settings(config, ROOT), work_dir=WORK / 'work')
@@ -232,6 +259,8 @@ def run(args) -> int:
     dataset = prod.build_dataset(settings, day)
 
     triggers = []
+    if ledger_error:
+        triggers.append(check_failure_trigger('实盘交易总账', ledger_error))
     health, error = prod.compute_factor_health_checked(config, dataset, calendar)
     if error:
         triggers.append(check_failure_trigger('因子健康', error))

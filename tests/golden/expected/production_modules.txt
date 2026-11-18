@@ -84,6 +84,7 @@ src.limit_source_quality
 src.live_alignment
 src.live_order_gateway
 src.live_performance
+src.live_trade_ledger
 src.market_emotion
 src.market_rules
 src.mechanical_compound

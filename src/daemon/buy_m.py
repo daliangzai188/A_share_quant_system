@@ -21,6 +21,7 @@ from src.daemon.common import (
     _floor_buy_quantity_by_amount,
     _fmt_wan,
     _notify,
+    _track_execution,
     _ts_code_aliases,
     logger,
     next_n_trade_days,
@@ -183,6 +184,23 @@ def _m_submit_buy(broker_cfg: dict, *, ts_code: str, name: str, qty: int, price:
     return True, str(result.order_id or ""), ""
 
 
+def _m_register_plan(item: dict[str, Any], today_str: str, status: str) -> None:
+    """M本次开仓计划登记进成交完成率记录（2026-11-18）。以前M没有登记，逐笔汇总里M是“缺少原始计划”，
+    也没有开盘基准，M的买入滑点和完成率都算不出来。目标股数按信号日收盘价折算（和ACE同口径）。"""
+    code = str(item.get("ts_code", ""))
+    target = float(item.get("target_amount", 0.0) or 0.0)
+    reference = float(item.get("reference_price", 0.0) or 0.0)
+    target_qty = _m_buy_quantity(code, target, reference) if reference > 0 else int(item.get("auction_qty", 0) or 0)
+    auction_qty = int(item.get("auction_qty", 0) or 0)
+    _track_execution(
+        "register_entry_plan", entry_date=today_str, ts_code=code, name=str(item.get("name", "")),
+        strategy_leg=M_LEG, signal_date=str(item.get("signal_date", "")), target_qty=target_qty,
+        target_amount=target, reference_price=reference, auction_planned_qty=auction_qty,
+        pov_planned_qty=max(target_qty - auction_qty, 0), planned_exit_date=str(item.get("exit_date", "")),
+        status=status,
+    )
+
+
 def _m_exit_date(today_str: str) -> str:
     return next_n_trade_days(datetime.datetime.strptime(today_str, "%Y%m%d").date(), 1).strftime("%Y%m%d")
 
@@ -277,6 +295,7 @@ def job_m_premarket_buy() -> None:
                 continue
             break
         item = {"ts_code": code, "name": name, "signal_date": str(signal.get("signal_date", "")),
+                "reference_price": float(cand.get("close", 0.0) or 0.0),
                 "exit_date": exit_date, "target_amount": budget["amount"], "budget": budget,
                 "ace_active": ctx["active"], "stage": "auction", "order_ids": [], "auction_order_id": "",
                 "auction_qty": qty, "filled_qty": 0, "cost_amt": 0.0, "tried": [code], "slice_no": 0,
@@ -295,6 +314,7 @@ def job_m_premarket_buy() -> None:
         with _m_state_lock:
             state = {"date": today_str, "items": [item], "state_revision": int(state.get("state_revision", 0) or 0)}
             _m_save_state(state)
+        _m_register_plan(item, today_str, "M竞价预挂" if ok else "M竞价未受理，转开盘后POV")
         log.warning("⏳ [M竞价开仓] %s %s %d股 @涨停价-0.01=%.2f 预算%s（以本次开仓前总资产为基数；%s，规则比例上限%.2f%%）",
                     code, name, qty, price, _entry_amount_text(budget["amount"], total_asset),
                     "ACE同时开仓/持仓→闲置资金" if ctx["active"] else "ACE空闲",
@@ -361,6 +381,7 @@ def job_m_after_auction() -> None:
                     recovery_context="M竞价开仓", order_id=str(item["auction_order_id"]), ts_code=str(item["ts_code"]),
                     name=str(item.get("name", "")), signal_date=str(item.get("signal_date", "")), buy_date=today_str,
                     shares=filled, buy_price=price, strategy_leg=M_LEG, exit_n_days=1,
+                    benchmark_open=price,   # 竞价成交价就是开盘价，买入滑点从这里算
                     execution_channel="M竞价开仓", planned_order_qty=int(item.get("auction_qty", filled)),
                     planned_exit_date_override=str(item.get("exit_date", "")), exit_rule="FIXED_T2_CLOSE",
                 )
@@ -411,12 +432,14 @@ def _m_pov_round(state: dict[str, Any], broker_cfg: dict, config: dict, today_st
             return
         quote = quotes.get(str(cand["ts_code"]))
         item.update({"ts_code": str(cand["ts_code"]), "name": str(cand.get("name", "")),
+                     "reference_price": float(cand.get("close", 0.0) or 0.0), "auction_qty": 0,
                      "signal_date": str(signal.get("signal_date", "")), "exit_date": _m_exit_date(today_str),
                      "target_amount": budget["amount"], "budget": budget, "ace_active": ctx["active"],
                      "open_price": float(getattr(quote, "open_price", 0.0) or getattr(quote, "last_price", 0.0) or 0.0),
                      "stage": "pov"})
         item.setdefault("tried", []).append(item["ts_code"])
         item.pop("signal", None)
+        _m_register_plan(item, today_str, "M开盘后POV买入")
     code, name = str(item["ts_code"]), str(item.get("name", ""))
     with _qmt_lock:
         adapter = _qmt_get(broker_cfg)
@@ -492,6 +515,7 @@ def _m_pov_finalize(state: dict[str, Any], reason: str) -> None:
             recovery_context="M买入POV", order_id=f"mpov-{today_str}-{item['ts_code']}", ts_code=str(item["ts_code"]),
             name=str(item.get("name", "")), signal_date=str(item.get("signal_date", "")), buy_date=today_str,
             shares=fq, buy_price=avg, strategy_leg=M_LEG, exit_n_days=1, execution_channel="M买入POV",
+            benchmark_open=float(item.get("open_price", 0.0) or 0.0),
             planned_order_qty=fq, planned_exit_date_override=str(item.get("exit_date", "")),
             component_order_ids=[str(o) for o in item.get("pov_order_ids", []) if str(o)], exit_rule="FIXED_T2_CLOSE",
         )

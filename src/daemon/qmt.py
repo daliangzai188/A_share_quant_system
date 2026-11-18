@@ -19,6 +19,7 @@ from src.utils.config import load_json_config, mkdir_p
 from src.utils.time_utils import BEIJING_TZ, now_beijing, today_beijing
 from src.broker_execution_service import IntentBrokerExecutionService
 from src.trade_recovery import RecoveryOutcome, TradeRecoveryCoordinator, normalize_broker_positions
+from src.portfolio_ace_m import M_LEG
 from src.daemon.common import (
     PROJECT_ROOT,
     _ACCOUNT_STATUS_DAILY_CACHE,
@@ -1310,6 +1311,51 @@ def _account_status_pre_close_map(
         return {}
 
 
+# 每日账户记录（2026-11-18，实盘开仓平仓记录的一部分）：每个交易日收盘后记一行，QMT重启保留，并导出到虚拟机，
+# QMT外检查把它并进同步目录 data/live_trades/（src/live_trade_ledger.py），用来算实盘账户的收益曲线和回撤。
+ACCOUNT_DAILY_PATH = PROJECT_ROOT / "reports" / "execution_tracking" / "account_daily.csv"
+ACCOUNT_DAILY_FIELDS = ("date", "recorded_at", "total_asset", "available_cash", "ace_market_value", "m_market_value",
+                        "other_market_value", "position_count")
+ACCOUNT_DAILY_AFTER = datetime.time(15, 5)
+_account_daily_done = ""
+
+
+def _record_account_daily(account: Any, live_positions: list[Any]) -> None:
+    """收盘后第一次账户心跳记一行当天账户（一天只记一次）；失败只记警告，不影响心跳和交易。"""
+    global _account_daily_done
+    now = now_beijing()
+    day = now.strftime("%Y%m%d")
+    if _account_daily_done == day or now.time() < ACCOUNT_DAILY_AFTER or not is_trade_day(now.date()):
+        return
+    try:
+        rows = []
+        if ACCOUNT_DAILY_PATH.exists():
+            with ACCOUNT_DAILY_PATH.open("r", encoding="utf-8-sig", newline="") as handle:
+                rows = list(csv.DictReader(handle))
+        if not any(str(row.get("date", "")) == day for row in rows):
+            ace = _strategy_only_market_value(live_positions, family="ACE")
+            m_value = _strategy_only_market_value(live_positions, family=M_LEG)
+            total_mv = sum(float(getattr(p, "market_value", 0.0) or 0.0) for p in live_positions)
+            rows.append({
+                "date": day, "recorded_at": now.strftime("%Y-%m-%d %H:%M:%S"),
+                "total_asset": round(float(getattr(account, "total_asset", 0.0) or 0.0), 2),
+                "available_cash": round(float(getattr(account, "available_cash", 0.0) or 0.0), 2),
+                "ace_market_value": round(ace, 2), "m_market_value": round(m_value, 2),
+                "other_market_value": round(max(total_mv - ace - m_value, 0.0), 2),
+                "position_count": len(live_positions),
+            })
+            mkdir_p(ACCOUNT_DAILY_PATH.parent)
+            tmp = ACCOUNT_DAILY_PATH.with_name(ACCOUNT_DAILY_PATH.name + ".tmp")
+            with tmp.open("w", encoding="utf-8-sig", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=ACCOUNT_DAILY_FIELDS)
+                writer.writeheader()
+                writer.writerows(rows)
+            os.replace(tmp, ACCOUNT_DAILY_PATH)
+        _account_daily_done = day
+    except Exception as exc:  # noqa: BLE001
+        logger().warning("记录当日账户失败（不影响交易，下次心跳重试）：%s", exc)
+
+
 def _print_account_status_report(log, live_positions, masked_acct, positions, now_str, config, total_asset, pre_close_map):
     """账户心跳的持仓部分：逐票同步券商持仓、按票合并分片成本、算收益并推送亏损告警，打印账户和持仓（从 _print_account_status 拆出，语句原样）。"""
     if live_positions:
@@ -1747,6 +1793,7 @@ def _print_account_status(log: Any) -> None:
     )
     # 只认策略持仓:打新中签转债/股票等外部持仓不算"有持仓"(2026-07-23 用户重申)
     _last_account_has_position = _broker_has_strategy_position(positions)
+    _record_account_daily(account, live_positions)
     return _print_account_status_report(log, live_positions, masked_acct, positions, now_str, config, total_asset, pre_close_map)
 
 
