@@ -61,16 +61,15 @@ _ORDER_TERMINAL_STATUS: set[int] = {53, 54, 56, 57}
 # 非终态（还可能成交、仍占用资金或股份）
 ACTIVE_ORDER_STATUSES = frozenset({48, 49, 50, 51, 52, 55})
 
-# 持仓列表“一只都没有”时的复核（2026-11-18）：QMT 偶尔在10~100秒里返回没有任何持股的持仓列表，账户总资产
-# 里却仍算着持仓（11-16晚3次、11-17 09:56、11-18 13:57/14:06/14:16，每次两只策略持仓同时消失）。把这种
-# 列表当成“已空仓”，15:00:30收盘核对会把没卖掉的到期仓记成已平，14:55平仓会因“券商无持仓”放弃卖出。
-# 所以账户显示仍持有证券时，先隔0.5秒重查；还是空就报“结果未知”，调用方按查询失败处理（下一轮再查）。
+# 持仓列表“一只都没有”时的复核（2026-11-18）：QMT 偶尔返回没有任何持股的持仓列表，账户总资产里却仍算着
+# 持仓（11-16晚3次、11-17 09:56、11-18 13:57起5段，短的一轮、长的15:17~15:23约7分钟，每次两只策略持仓
+# 同时消失）。把这种列表当成“已空仓”，15:00:30收盘核对会把没卖掉的到期仓记成已平，14:55平仓会因
+# “券商无持仓”放弃卖出。所以账户显示仍持有证券时，先隔0.5秒重查；还是空就报“结果未知”，调用方按查询
+# 失败处理（下一轮再查）。不设期限：账户一直显示持有、列表一直为空，就一直不当成空仓（守护进程持续
+# 10分钟会推送提醒）。
 EMPTY_POSITIONS_RECHECKS = 2
 EMPTY_POSITIONS_RECHECK_SEC = 0.5
 EMPTY_POSITIONS_HELD_VALUE_MIN = 1_000.0
-# 账户口径一直对不上（比如账户里有不在持仓列表里的资产）时，持续5分钟后照常返回空列表，
-# 不让整个系统永远读不到持仓；QMT 的空列表最长一次约100秒。
-EMPTY_POSITIONS_ACCEPT_AFTER_SEC = 300.0
 
 
 class BrokerPositionsUnknownError(RuntimeError):
@@ -211,7 +210,6 @@ class QMTBrokerAdapter(BrokerAdapter):
         self._active_qmt_path: str = config.qmt_path
         self._minute_quote_subscriptions: dict[str, int] = {}
         self._empty_positions_since = None  # 持仓列表空、账户显示仍持有证券，第一次出现的 time.monotonic()
-        self._empty_positions_accepted = False
 
     @classmethod
     def from_config(cls, broker_config: dict[str, Any]) -> "QMTBrokerAdapter":
@@ -506,14 +504,6 @@ class QMTBrokerAdapter(BrokerAdapter):
         if self._empty_positions_since is None:
             self._empty_positions_since = now
         lasted = now - self._empty_positions_since
-        if lasted >= EMPTY_POSITIONS_ACCEPT_AFTER_SEC:
-            if not self._empty_positions_accepted:
-                self._empty_positions_accepted = True
-                self.logger.warning(
-                    "QMT持仓列表连续%.0f秒没有任何持股，账户%s仍为%.2f元；超过%.0f秒，按空持仓返回，请核对QMT账户。",
-                    lasted, basis, held_value, EMPTY_POSITIONS_ACCEPT_AFTER_SEC,
-                )
-            return positions
         raise BrokerPositionsUnknownError(
             f"QMT持仓查询返回空持仓，但{basis}{held_value:.2f}元（重查{EMPTY_POSITIONS_RECHECKS}次仍空，"
             f"已持续{lasted:.0f}秒；结果未知，不等于空仓）"
@@ -521,7 +511,6 @@ class QMTBrokerAdapter(BrokerAdapter):
 
     def _clear_empty_positions_state(self) -> None:
         self._empty_positions_since = None
-        self._empty_positions_accepted = False
 
     def _account_held_value(self) -> tuple[float, str]:
         """账户显示仍持有的证券金额：先看账户证券市值，没有再看“总资产-可用资金-冻结资金”（有在途买单时不认）。

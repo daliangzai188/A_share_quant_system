@@ -1023,11 +1023,12 @@ def _on_broker_result_unknown(reason: str, sequence: int) -> None:
     )
 
 
-# 快照不通过的推送（2026-11-18 用户要求优化）：QMT 偶尔10~100秒返回空持仓列表，以前每段都推一次。
-# 改为连续不通过满3分钟才推（写明持续多久和原因），之后每10分钟最多再推一次，推过的恢复时再推一条；
-# 每轮“不清仓、不买入、不重连”的保护和日志不变。
-SNAPSHOT_ALERT_AFTER_SEC = 180.0
-SNAPSHOT_REALERT_SEC = 600.0
+# 快照不通过的推送（2026-11-18 用户要求优化）：QMT 偶尔返回空持仓列表（当天5段，最长15:17~15:23约7分钟，
+# 都自己恢复），以前每段都推一次。改为连续不通过满10分钟才推（写明持续多久和原因），之后每30分钟最多
+# 再推一次，推过的恢复时再推一条；每轮“不清仓、不买入、不重连”的保护和日志不变。收盘前读不到持仓另由
+# 平仓看门狗14:59电话报警（src/daemon/close.py）。
+SNAPSHOT_ALERT_AFTER_SEC = 600.0
+SNAPSHOT_REALERT_SEC = 1800.0
 _snapshot_bad_since: float | None = None    # 这一段不通过开始的 time.monotonic()
 _snapshot_last_alert: float | None = None   # 这一段最近一次推送的 time.monotonic()
 

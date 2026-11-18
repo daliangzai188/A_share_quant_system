@@ -1,12 +1,12 @@
 """QMT 一时返回空持仓列表（2026-11-18 实盘问题）。
 
-11-16晚、11-17 09:56、11-18 13:57/14:06/14:16，QMT 的持仓列表在10~100秒里一只都没有，账户总资产里却还算着
+11-16晚、11-17 09:56、11-18 13:57/14:06/14:16，QMT 的持仓列表一只都没有（短的一轮，长的15:17~15:23约7分钟），账户总资产里却还算着
 两只策略持仓（日志：已返回持仓市值=0.00、未解释差额=23800）。以前：账户心跳每段都推“账户快照校验未通过”；
 更要紧的是别的流程把空列表当真——15:00:30收盘核对隔2秒两次读到0股会把没卖的到期仓记成已平，14:55平仓会因
 “券商无持仓”放弃卖出并打电话。修复后：
 - 适配器：持仓一只都没有、账户显示仍持有证券时隔0.5秒重查，还是空就报“结果未知”（不当成空仓）；
-- 账户心跳：结果未知按快照不自洽处理（本轮不清仓、不买入、不重连）；连续满3分钟才推送，推过的恢复时再推；
-- 14:55平仓碰上结果未知：不打电话，交给看门狗补卖。
+- 账户心跳：结果未知按快照不自洽处理（本轮不清仓、不买入、不重连）；连续满10分钟才推送，推过的恢复时再推；
+- 14:55平仓碰上结果未知：不打电话，交给看门狗补卖；14:59还读不到才电话报警。
 """
 from __future__ import annotations
 
@@ -105,13 +105,14 @@ class AdapterTests(unittest.TestCase):
             adapter_with(trader).query_positions()
         self.assertIn("总资产减可用资金和冻结资金23800.00元", str(caught.exception))
 
-    def test_gives_up_after_five_minutes_so_the_system_is_never_stuck(self) -> None:
+    def test_long_outage_never_turns_into_an_empty_account(self) -> None:
+        # 11-18 15:17~15:23 一段约7分钟：一直是“结果未知”，不会过几分钟就当成空仓
         adapter = adapter_with(FakeTrader([[]]))
-        with patch.object(QA.time, "monotonic", side_effect=[1000.0, 1200.0, 1300.0]):
-            for _ in range(2):
-                with self.assertRaises(QA.BrokerPositionsUnknownError):
+        with patch.object(QA.time, "monotonic", side_effect=[1000.0, 1200.0, 1420.0]):
+            for _ in range(3):
+                with self.assertRaises(QA.BrokerPositionsUnknownError) as caught:
                     adapter.query_positions()
-            self.assertEqual(adapter.query_positions(), [])        # 持续300秒：按空持仓返回
+        self.assertIn("已持续420秒", str(caught.exception))
         adapter.trader.position_results = [HELD]
         self.assertEqual(len(adapter.query_positions()), 2)          # 恢复后计时清零
         self.assertIsNone(adapter._empty_positions_since)
@@ -126,29 +127,29 @@ class HeartbeatTests(unittest.TestCase):
         self.assertFalse(qmt._is_transient_qmt_read_error(QA.BrokerPositionsUnknownError(
             "QMT持仓查询返回空持仓，但账户证券市值23800.00元（结果未知，不等于空仓）")))
 
-    def test_push_only_after_three_minutes_and_once_more_on_recovery(self) -> None:
+    def test_push_only_after_ten_minutes_and_once_more_on_recovery(self) -> None:
         log = Mock()
         error = qmt.BrokerSnapshotInconsistentError("QMT持仓快照与策略账本/资产不自洽：缺失策略代码=['002652']。本轮禁止")
         clock = [0.0]
         with patch_daemon("_notify", return_value=True) as notify, patch_daemon("write_broker_health"), \
                 patch.object(qmt.time, "monotonic", side_effect=lambda: clock[0]), \
                 patch.object(qmt, "_snapshot_bad_since", None), patch.object(qmt, "_snapshot_last_alert", None):
-            for second in (0, 10, 100, 170):                       # 100秒的一段：不推
+            for second in range(0, 430, 60):                       # 11-18 15:17~15:23 约7分钟一段：不推
                 clock[0] = second
                 qmt._record_broker_snapshot_inconsistent(error, log, context="账户心跳")
             self.assertEqual(notify.call_count, 0)
-            clock[0] = 180.0
+            clock[0] = 480.0
             qmt._note_broker_snapshot_ok(log)                       # 没推过：恢复也不推
             self.assertEqual(notify.call_count, 0)
 
-            for second in (1000, 1100, 1180, 1190, 1700, 1790):    # 持续3分钟：推；10分钟内不重复
+            for second in (1000, 1300, 1600, 1610, 3300, 3410):    # 持续10分钟：推；30分钟内不重复
                 clock[0] = second
                 qmt._record_broker_snapshot_inconsistent(error, log, context="账户心跳")
             self.assertEqual(notify.call_count, 2)
             title, body = notify.call_args_list[0].args[1:3]
             self.assertEqual(title, "⚠️ 账户快照校验持续未通过")
-            self.assertIn("已连续3分钟：QMT持仓快照与策略账本/资产不自洽：缺失策略代码=['002652']", body)
-            clock[0] = 1800.0
+            self.assertIn("已连续10分钟：QMT持仓快照与策略账本/资产不自洽：缺失策略代码=['002652']", body)
+            clock[0] = 3500.0
             qmt._note_broker_snapshot_ok(log)
             self.assertEqual(notify.call_args.args[1], "✅ 账户快照已恢复")
             self.assertIsNone(qmt._snapshot_bad_since)
@@ -166,6 +167,26 @@ class CloseTests(unittest.TestCase):
         self.assertEqual(notify.call_count, 1)
         self.assertEqual(notify.call_args.args[1], "⏳ 平仓暂缓，看门狗补卖")
         self.assertNotIn("call", notify.call_args.kwargs)
+
+    def test_watchdog_calls_once_when_holdings_are_still_unreadable_at_1459(self) -> None:
+        import datetime as dt
+        due = [{"ts_code": "002652.SZ", "name": "扬子新材", "status": "open", "planned_exit_date": "20261119",
+                "shares": 3000, "order_id": "A1"}]
+        adapter = SimpleNamespace(query_orders=Mock(return_value=[]),
+                                  query_positions=Mock(side_effect=QA.BrokerPositionsUnknownError("空持仓")))
+        checkpoints = (dt.time(14, 56), dt.time(14, 57, 5), dt.time(14, 57, 40), dt.time(14, 59))
+        fired = set()
+        with patch_daemon("_notify") as notify, patch_daemon("load_positions", return_value=due), \
+                patch_daemon("_qmt_get", return_value=adapter), patch_daemon("load_json_config", return_value={}), \
+                patch.object(close, "_close_unknown_alerted_day", ""):
+            close._watchdog_cover_positions(checkpoints, dt.time(14, 57, 10), "20261119", fired, Mock())
+            self.assertEqual(notify.call_count, 0)                  # 14:57还会再试，不报
+            for second in (0, 10):
+                close._watchdog_cover_positions(checkpoints, dt.time(14, 59, second), "20261119", fired, Mock())
+        self.assertEqual(notify.call_count, 1)                      # 14:59起一天只打一次
+        self.assertEqual(notify.call_args.args[1], "🛑 收盘前仍读不到QMT持仓")
+        self.assertIs(notify.call_args.kwargs["call"], True)
+        self.assertEqual(fired, set())                              # 没读到就不算核过，15:00前继续重试
 
 
 if __name__ == "__main__":

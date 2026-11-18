@@ -220,7 +220,7 @@ def _do_sell(pos: dict[str, Any], qmt_enabled: bool) -> None:
                        ts_code, name, e)
         _notify("sell_fail", "⏳ 平仓暂缓，看门狗补卖",
                 f"{ts_code} {name}：QMT持仓列表暂时为空（账户仍有持仓市值），14:55主单未下；"
-                "14:56起看门狗按真实持仓补卖，收盘后仍未卖掉会另行报警。",
+                "14:56起看门狗按真实持仓补卖，14:59仍读不到持仓会电话报警。",
                 level="timeSensitive")
     except Exception as e:
         logger().error("❌ [平仓] 执行异常（%s %s）：%s —— 请立即手动检查！", ts_code, name, e)
@@ -936,6 +936,24 @@ def _due_positions_for_close_handoff(
     ]
 
 
+_close_unknown_alerted_day = ""
+
+
+def _alert_close_positions_unknown(today_str: str, due: list[dict[str, Any]], error: Exception, log: Any) -> None:
+    """最后一岗（14:59）还读不到QMT持仓：今天到期的仓可能卖不掉，每天电话报警一次（2026-11-18）。"""
+
+    global _close_unknown_alerted_day
+    if _close_unknown_alerted_day == today_str:
+        return
+    _close_unknown_alerted_day = today_str
+    names = "、".join(f"{p.get('ts_code', '')} {p.get('name', '')}" for p in due[:5])
+    log.error("🛑 [平仓看门狗] 14:59仍读不到QMT持仓（%s），今天到期的%s可能卖不掉。", error, names)
+    _notify("sell_fail", "🛑 收盘前仍读不到QMT持仓",
+            f"14:59 QMT持仓列表仍为空（账户仍有持仓市值），今天到期的{names}可能卖不掉。"
+            "请立即看QMT持仓页，必要时在QMT手动卖出；系统15:00前会继续重试。",
+            level="critical", call=True)
+
+
 def _watchdog_cover_positions(checkpoints, t, today_str, fired, log):
     """逐只持仓核对活跃卖单覆盖量，撤余单或补挂未覆盖量（从 _close_position_watchdog 拆出，语句原样）。"""
     # 15:00后绝不能补发新单；只继续下方15:00:30成交确认/双快照对账。
@@ -970,6 +988,8 @@ def _watchdog_cover_positions(checkpoints, t, today_str, fired, log):
             broker_positions = adapter.query_positions()
         except Exception as e:
             log.error("[平仓看门狗] 查询委托失败：%s", e)
+            if isinstance(e, BrokerPositionsUnknownError) and chk == checkpoints[-1]:
+                _alert_close_positions_unknown(today_str, due, e, log)
             continue
         finally:
             _qmt_lock.release()
