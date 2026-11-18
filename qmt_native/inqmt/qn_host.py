@@ -53,7 +53,9 @@ QN_INVENTORY_INCLUDE = (
 )
 # Files a program outside QMT needs (from 2026-10-23 QMT cannot write files): written to QMT's
 # log as marked chunks whenever they change; qmt_native_phase0/qmt_notify_forwarder.py (main repo) rebuilds them.
-QN_EXPORT_FILES = ('reports/execution_tracking/trade_completion_summary.csv',)
+# 2026-11-18：每日账户（收盘后一行：总资产、可用资金、ACE/M持仓市值）也导出，QMT外检查并进实盘交易总账
+QN_EXPORT_FILES = ('reports/execution_tracking/trade_completion_summary.csv',
+                   'reports/execution_tracking/account_daily.csv')
 QN_EXPORT_CHUNK = 1500
 QN_PERSIST_SKIP_TABLES = {'runtime/qmt_inner/spool/journal.sqlite3': ('callbacks',)}
 QN_SEED_MTIME = 1.5e9
