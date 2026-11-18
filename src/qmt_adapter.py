@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -57,6 +58,38 @@ _ORDER_STATUS_TEXT: dict[int, str] = {
 }
 # 终态：不会再产生新成交
 _ORDER_TERMINAL_STATUS: set[int] = {53, 54, 56, 57}
+# 非终态（还可能成交、仍占用资金或股份）
+ACTIVE_ORDER_STATUSES = frozenset({48, 49, 50, 51, 52, 55})
+
+# 持仓列表“一只都没有”时的复核（2026-11-18）：QMT 偶尔在10~100秒里返回没有任何持股的持仓列表，账户总资产
+# 里却仍算着持仓（11-16晚3次、11-17 09:56、11-18 13:57/14:06/14:16，每次两只策略持仓同时消失）。把这种
+# 列表当成“已空仓”，15:00:30收盘核对会把没卖掉的到期仓记成已平，14:55平仓会因“券商无持仓”放弃卖出。
+# 所以账户显示仍持有证券时，先隔0.5秒重查；还是空就报“结果未知”，调用方按查询失败处理（下一轮再查）。
+EMPTY_POSITIONS_RECHECKS = 2
+EMPTY_POSITIONS_RECHECK_SEC = 0.5
+EMPTY_POSITIONS_HELD_VALUE_MIN = 1_000.0
+# 账户口径一直对不上（比如账户里有不在持仓列表里的资产）时，持续5分钟后照常返回空列表，
+# 不让整个系统永远读不到持仓；QMT 的空列表最长一次约100秒。
+EMPTY_POSITIONS_ACCEPT_AFTER_SEC = 300.0
+
+
+class BrokerPositionsUnknownError(RuntimeError):
+    """持仓列表一只都没有，账户却显示持有证券：结果未知，不等于空仓。"""
+
+
+def has_active_buy_order(orders: Any) -> bool:
+    """当日委托里是否有还没结束的买单（会冻结资金）。"""
+
+    for order in orders or []:
+        data = object_to_dict(order)
+        status = to_int(first_present(data, ["order_status", "m_nOrderStatus", "status"], -1), -1)
+        if status not in ACTIVE_ORDER_STATUSES:
+            continue
+        order_type = to_int(first_present(data, ["order_type", "m_nOrderType"], -1), -1)
+        side = str(first_present(data, ["side", "order_side", "direction"], "")).strip().upper()
+        if order_type == 23 or side in {"BUY", "B", "买入"}:
+            return True
+    return False
 
 
 def object_to_dict(value: Any) -> dict[str, Any]:
@@ -177,6 +210,8 @@ class QMTBrokerAdapter(BrokerAdapter):
         self._active_session_id: int = config.session_id
         self._active_qmt_path: str = config.qmt_path
         self._minute_quote_subscriptions: dict[str, int] = {}
+        self._empty_positions_since = None  # 持仓列表空、账户显示仍持有证券，第一次出现的 time.monotonic()
+        self._empty_positions_accepted = False
 
     @classmethod
     def from_config(cls, broker_config: dict[str, Any]) -> "QMTBrokerAdapter":
@@ -449,6 +484,68 @@ class QMTBrokerAdapter(BrokerAdapter):
         )
 
     def query_positions(self) -> list[PositionSnapshot]:
+        """持仓列表；一只都没持有而账户显示仍持有证券时，重查后仍空就报结果未知（见 EMPTY_POSITIONS_*）。"""
+        positions = self._query_positions_once()
+        if any(position.volume > 0 for position in positions):
+            self._clear_empty_positions_state()
+            return positions
+        held_value, basis = self._account_held_value()
+        if held_value < EMPTY_POSITIONS_HELD_VALUE_MIN:
+            self._clear_empty_positions_state()
+            return positions
+        for attempt in range(1, EMPTY_POSITIONS_RECHECKS + 1):
+            time.sleep(EMPTY_POSITIONS_RECHECK_SEC)
+            positions = self._query_positions_once()
+            if any(position.volume > 0 for position in positions):
+                self.logger.warning(
+                    "QMT持仓列表先返回空、第%d次重查才返回持仓（%s%.2f元）。", attempt, basis, held_value,
+                )
+                self._clear_empty_positions_state()
+                return positions
+        now = time.monotonic()
+        if self._empty_positions_since is None:
+            self._empty_positions_since = now
+        lasted = now - self._empty_positions_since
+        if lasted >= EMPTY_POSITIONS_ACCEPT_AFTER_SEC:
+            if not self._empty_positions_accepted:
+                self._empty_positions_accepted = True
+                self.logger.warning(
+                    "QMT持仓列表连续%.0f秒没有任何持股，账户%s仍为%.2f元；超过%.0f秒，按空持仓返回，请核对QMT账户。",
+                    lasted, basis, held_value, EMPTY_POSITIONS_ACCEPT_AFTER_SEC,
+                )
+            return positions
+        raise BrokerPositionsUnknownError(
+            f"QMT持仓查询返回空持仓，但{basis}{held_value:.2f}元（重查{EMPTY_POSITIONS_RECHECKS}次仍空，"
+            f"已持续{lasted:.0f}秒；结果未知，不等于空仓）"
+        )
+
+    def _clear_empty_positions_state(self) -> None:
+        self._empty_positions_since = None
+        self._empty_positions_accepted = False
+
+    def _account_held_value(self) -> tuple[float, str]:
+        """账户显示仍持有的证券金额：先看账户证券市值，没有再看“总资产-可用资金-冻结资金”（有在途买单时不认）。
+
+        账户或委托查不到时无从判断，返回0（照旧返回持仓列表），不为此增加新的查询失败。"""
+        try:
+            account = self.query_account()
+        except Exception as exc:  # noqa: BLE001
+            self.logger.warning("持仓列表为空，复核账户证券市值时账户查询失败，照旧返回空列表：%s", exc)
+            return 0.0, ""
+        market_value = max(to_float(account.market_value), 0.0)
+        if market_value >= EMPTY_POSITIONS_HELD_VALUE_MIN:
+            return market_value, "账户证券市值"
+        gap = to_float(account.total_asset) - to_float(account.available_cash) - max(to_float(account.frozen_cash), 0.0)
+        if gap < EMPTY_POSITIONS_HELD_VALUE_MIN:
+            return 0.0, ""
+        try:
+            pending_buy = has_active_buy_order(self.query_orders())
+        except Exception as exc:  # noqa: BLE001
+            self.logger.warning("持仓列表为空，复核在途买单时委托查询失败，照旧返回空列表：%s", exc)
+            return 0.0, ""
+        return (0.0, "") if pending_buy else (gap, "总资产减可用资金和冻结资金")
+
+    def _query_positions_once(self) -> list[PositionSnapshot]:
         if self.trader is None or self.account is None:
             raise RuntimeError("QMT 尚未连接。")
         raw_positions = self.trader.query_stock_positions(self.account)

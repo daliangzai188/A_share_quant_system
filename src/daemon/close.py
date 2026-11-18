@@ -11,6 +11,7 @@ from typing import Any
 
 from src.utils.config import load_json_config
 from src.utils.time_utils import BEIJING_TZ, now_beijing, today_beijing
+from src.qmt_adapter import BrokerPositionsUnknownError
 from src.daemon.common import (
     EXIT_CLOSE_SUBMIT_CLOCK_GUARD_DEFAULT_SEC,
     PROJECT_ROOT,
@@ -212,6 +213,15 @@ def _do_sell(pos: dict[str, Any], qmt_enabled: bool) -> None:
         else:
             logger().info("[平仓] 模拟盘：%s %s 标记已平仓", ts_code, name)
             mark_position_closed(order_id, today_str)
+    except BrokerPositionsUnknownError as e:
+        # 2026-11-18：QMT 一时返回空持仓列表（账户仍有证券市值），本次没下单也没改账。14:56起平仓看门狗
+        # 每轮按真实持仓补卖；收盘后还没卖掉，15:00:30核对会另推“收盘后策略仓仍有余量”（critical）。
+        logger().error("⏳ [平仓] %s %s：QMT持仓暂时读不到（%s），本次未下单，交给14:56起的平仓看门狗补卖。",
+                       ts_code, name, e)
+        _notify("sell_fail", "⏳ 平仓暂缓，看门狗补卖",
+                f"{ts_code} {name}：QMT持仓列表暂时为空（账户仍有持仓市值），14:55主单未下；"
+                "14:56起看门狗按真实持仓补卖，收盘后仍未卖掉会另行报警。",
+                level="timeSensitive")
     except Exception as e:
         logger().error("❌ [平仓] 执行异常（%s %s）：%s —— 请立即手动检查！", ts_code, name, e)
         _notify("sell_fail", "❌ 平仓执行异常",

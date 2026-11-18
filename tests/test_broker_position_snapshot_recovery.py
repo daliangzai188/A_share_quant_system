@@ -200,7 +200,9 @@ class BrokerPositionSnapshotRecoveryTests(unittest.TestCase):
                 ),
                 patch_daemon("_qmt_reset") as reset,
                 patch_daemon("write_broker_health") as health,
-                patch_daemon("_notify_once_per") as notify,
+                patch_daemon("_notify") as notify,
+                patch.object(daemon_qmt, "_snapshot_bad_since", None),
+                patch.object(daemon_qmt, "_snapshot_last_alert", None),
             ):
                 daemon._print_account_status(log)
 
@@ -210,7 +212,8 @@ class BrokerPositionSnapshotRecoveryTests(unittest.TestCase):
                 error=error,
                 failure_count=0,
             )
-            notify.assert_called_once()
+            # 2026-11-18起连续不通过满3分钟才推送（tests/test_empty_positions_guard.py），第一轮只记日志。
+            notify.assert_not_called()
             self.assertEqual(daemon_qmt._qmt_reconnect_count, 0)
         finally:
             daemon_qmt._qmt_reconnect_count = old_reconnect_count

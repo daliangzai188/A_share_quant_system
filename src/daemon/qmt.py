@@ -18,6 +18,7 @@ from typing import Any
 from src.utils.config import load_json_config, mkdir_p
 from src.utils.time_utils import BEIJING_TZ, now_beijing, today_beijing
 from src.broker_execution_service import IntentBrokerExecutionService
+from src.qmt_adapter import ACTIVE_ORDER_STATUSES, BrokerPositionsUnknownError
 from src.trade_recovery import RecoveryOutcome, TradeRecoveryCoordinator, normalize_broker_positions
 from src.portfolio_ace_m import M_LEG
 from src.daemon.common import (
@@ -768,6 +769,10 @@ def _qmt_query_account_positions(adapter: Any, *, timeout_sec: float = 25.0) -> 
         except BrokerSnapshotInconsistentError:
             # 账务语义矛盾不是瞬时传输空返回，必须立即fail-closed。
             raise
+        except BrokerPositionsUnknownError as exc:
+            # 持仓列表空、账户却显示仍持有证券（适配器已重查）：查询通道正常，按快照不自洽处理，
+            # 本轮不清仓、不买入，也不断开重连（2026-11-18）。
+            raise BrokerSnapshotInconsistentError(str(exc)) from exc
         except Exception as exc:
             if attempt_no == 1 and _is_transient_qmt_read_error(exc):
                 logger().warning(
@@ -787,7 +792,7 @@ class BrokerSnapshotInconsistentError(RuntimeError):
     """券商查询有返回，但同一组账户/持仓快照自相矛盾。"""
 
 
-_ACTIVE_QMT_ORDER_STATUSES = frozenset({48, 49, 50, 51, 52, 55})
+_ACTIVE_QMT_ORDER_STATUSES = ACTIVE_ORDER_STATUSES
 
 
 def _active_buy_order_reserved_cash(active_orders: Any) -> float:
@@ -1018,6 +1023,15 @@ def _on_broker_result_unknown(reason: str, sequence: int) -> None:
     )
 
 
+# 快照不通过的推送（2026-11-18 用户要求优化）：QMT 偶尔10~100秒返回空持仓列表，以前每段都推一次。
+# 改为连续不通过满3分钟才推（写明持续多久和原因），之后每10分钟最多再推一次，推过的恢复时再推一条；
+# 每轮“不清仓、不买入、不重连”的保护和日志不变。
+SNAPSHOT_ALERT_AFTER_SEC = 180.0
+SNAPSHOT_REALERT_SEC = 600.0
+_snapshot_bad_since: float | None = None    # 这一段不通过开始的 time.monotonic()
+_snapshot_last_alert: float | None = None   # 这一段最近一次推送的 time.monotonic()
+
+
 def _record_broker_snapshot_inconsistent(
     error: BrokerSnapshotInconsistentError,
     log: Any,
@@ -1031,6 +1045,7 @@ def _record_broker_snapshot_inconsistent(
     connect，会主动销毁仍正常的持久会话并耗尽xtquant资源。
     """
 
+    global _snapshot_bad_since, _snapshot_last_alert
     write_broker_health(
         "snapshot_inconsistent",
         error=error,
@@ -1042,15 +1057,43 @@ def _record_broker_snapshot_inconsistent(
         context,
         error,
     )
-    _notify_once_per(
-        "broker_snapshot_inconsistent",
-        300,
-        "⚠️ 账户快照校验未通过",
-        "QMT连接仍可查询，但账户/持仓/委托快照不自洽。"
-        "系统已拒绝本轮持仓清理和新买入，不会重建QMT会话；"
-        "请核对QMT账户、活动委托与持仓。",
+    now = time.monotonic()
+    if _snapshot_bad_since is None:
+        _snapshot_bad_since = now
+    lasted = now - _snapshot_bad_since
+    if lasted < SNAPSHOT_ALERT_AFTER_SEC:
+        return
+    if _snapshot_last_alert is not None and now - _snapshot_last_alert < SNAPSHOT_REALERT_SEC:
+        return
+    if _notify(
+        "system_error",
+        "⚠️ 账户快照校验持续未通过",
+        f"已连续{lasted / 60:.0f}分钟：{str(error).split('。')[0][:200]}。"
+        "系统一直拒绝持仓清理和新买入（QMT连接正常，不重连）；"
+        "请看QMT持仓页的持仓和活动委托是否正常，恢复后会再通知。",
         level="timeSensitive",
-    )
+    ):
+        _snapshot_last_alert = now
+
+
+def _note_broker_snapshot_ok(log: Any) -> None:
+    """账户心跳通过：结束一段快照不通过；推过提醒的，再推一条恢复。"""
+
+    global _snapshot_bad_since, _snapshot_last_alert
+    if _snapshot_bad_since is None:
+        return
+    lasted = time.monotonic() - _snapshot_bad_since
+    alerted = _snapshot_last_alert is not None
+    _snapshot_bad_since = None
+    _snapshot_last_alert = None
+    log.info("✅ 账户快照校验恢复通过：不通过持续%.0f秒%s。", lasted, "（已推送提醒）" if alerted else "（不到推送门槛）")
+    if alerted:
+        _notify(
+            "system_error",
+            "✅ 账户快照已恢复",
+            f"连续{lasted / 60:.0f}分钟不通过后恢复，持仓清理和新买入恢复正常。",
+            level="active",
+        )
 
 
 def _request_qmt_resource_recovery(error: BaseException) -> bool:
@@ -1784,6 +1827,7 @@ def _print_account_status(log: Any) -> None:
     acct_id = str(account.account_id or "")
     write_broker_health("verified", account_id=acct_id)
     _notify_qmt_inner_outage_recovered(log)
+    _note_broker_snapshot_ok(log)
     masked_acct = _mask_account(acct_id)
     total_asset = float(getattr(account, "total_asset", 0.0) or 0.0)
     _check_capacity_wall_milestone(total_asset, config, log)
