@@ -215,6 +215,37 @@ def main():
     real_pump = svc.pump
     svc.pump = lambda budget_seconds=0.08: None
     import threading
+    # Real time while a QMT bridge call waits for its reply, like pipeline scripts below: the production
+    # deadlines (submit/cancel 8 s, queries 20 s) are wall-clock budgets, but under the virtual clock they
+    # shrank to 0.13 s / 0.33 s at 60x, so a busy Mac (Spotlight indexing) timed out submits in the drill
+    # although nothing was wrong (11-17 21:50, twice on 11-19 evening). The call itself sets real time at
+    # once, so a stalled main loop cannot eat the budget before the loop below notices.
+    speed_lock = threading.Lock()
+    bridge_calls = [0]
+    patches = ns['QN_MODULE_PATCHES']
+    native_patch = patches.get('qmt_inner.protocol')
+
+    def real_time_bridge(mod):
+        if native_patch is not None:
+            native_patch(mod)
+        client = getattr(mod, 'FileClient', None)
+        if client is None or getattr(client, '_qn_drill_real_time', False):
+            return
+        inner_call = client.call
+
+        def call(self, method, params):
+            with speed_lock:
+                bridge_calls[0] += 1
+                clock.set_speed(1.0)
+            try:
+                return inner_call(self, method, params)
+            finally:
+                with speed_lock:
+                    bridge_calls[0] -= 1
+        client.call = call
+        client._qn_drill_real_time = True
+        print('drill: QMT bridge calls run in real time (%s)' % mod.__name__, flush=True)
+    patches['qmt_inner.protocol'] = real_time_bridge
 
     def data_jobs():
         while True:
@@ -229,7 +260,8 @@ def main():
     while clock.now() < end_epoch:
         # real time while any pipeline script runs (their production timeouts are wall-clock budgets)
         busy = any(p.poll() is None for p in list(ns['QN_PROCESSES'].values()))
-        clock.set_speed(1.0 if busy else fast)
+        with speed_lock:
+            clock.set_speed(1.0 if busy or bridge_calls[0] else fast)
         ns['a_system_pump'](C)
         time.sleep(0.02)
         if time.time() - last > 20:
