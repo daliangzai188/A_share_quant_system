@@ -71,7 +71,12 @@ from src.daemon.qmt import (
 from src.daemon.buy import _finalize_expired_pov_for_startup, _start_pov_worker
 from src.daemon.buy_m import _m_start_pov_worker, job_m_after_auction, job_m_premarket_buy
 from src.daemon.sell_pov import _exit_pov_monitor
-from src.daemon.close import _close_position_watchdog, check_and_close_positions, job_afternoon
+from src.daemon.close import (
+    _backfill_ghost_cleared_sell_prices,
+    _close_position_watchdog,
+    check_and_close_positions,
+    job_afternoon,
+)
 from src.daemon.takeprofit import _intraday_takeprofit_monitor
 from src.daemon.strategy_d import (
     _d_relay_finalize,
@@ -783,6 +788,13 @@ def main() -> None:
     # QMT连接成功不等于可以启动交易。必须先用券商真实仓位、委托、
     # 成交恢复事务意图；没有唯一证据时停在这里，不让任何定时函数抢跑。
     wait_for_trade_recovery_gate()
+    # 今天被逐票同步关掉、卖出价是0的仓：QMT只保留当天成交，启动时趁还在就补上（2026-11-19）。
+    try:
+        _backfill_ghost_cleared_sell_prices(
+            load_json_config(PROJECT_ROOT / "config" / "config.json").get("broker", {}), log
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[卖出价补全] 启动时补价失败（不影响交易）：%s", exc)
     offline_stop.set()
     if offline_worker is not None:
         offline_worker.join(timeout=2)

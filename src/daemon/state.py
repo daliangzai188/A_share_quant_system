@@ -747,6 +747,41 @@ def _save_exit_execution_state(state: dict[str, Any]) -> None:
         )
 
 
+def _exit_in_flight_local_order_ids(trade_date: str) -> set[str] | None:
+    """今天本系统已报出、还没回写完的卖单（止盈、平仓等）所属的本地持仓order_id。
+
+    逐票同步只用它决定要不要多等一会儿（2026-11-19）。只读；读不到返回None，
+    调用方按原规则处理——不能因为读这个状态失败就触发进程恢复、停交易。
+    """
+    date_key = str(trade_date or "").replace("-", "")[:8]
+    try:
+        with _exit_execution_state_lock:
+            state = _load_redundant_json_state(
+                EXIT_EXECUTION_STATE_FILE,
+                label="退出执行状态",
+                empty_state=_empty_exit_execution_state(),
+                validator=_validate_exit_execution_state,
+            )
+        fingerprint = _exit_account_fingerprint()
+    except Exception as exc:
+        logger().warning("读取退出执行状态失败（逐票同步按原规则处理）：%s", exc)
+        return None
+    local_ids: set[str] = set()
+    for intent in state.get("intents", []) or []:
+        if not isinstance(intent, dict):
+            continue
+        if str(intent.get("trade_date", "")).replace("-", "")[:8] != date_key:
+            continue
+        if str(intent.get("account_fingerprint", "")) != fingerprint:
+            continue
+        if str(intent.get("status", "")).upper() not in {"PREPARED", "SUBMITTED"}:
+            continue
+        local_id = str(intent.get("local_order_id", "") or "").strip()
+        if local_id:
+            local_ids.add(local_id)
+    return local_ids
+
+
 def _exit_account_fingerprint() -> str:
     """用不可逆短指纹绑定退出批次到账户，不把账号明文写入状态文件。"""
     config = load_json_config(PROJECT_ROOT / "config" / "config.json")

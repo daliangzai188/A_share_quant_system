@@ -48,6 +48,7 @@ from src.daemon.common import (
 from src.daemon.state import (
     _d_relay_pair_load_state,
     _exit_account_fingerprint,
+    _exit_in_flight_local_order_ids,
     _load_exit_execution_state,
     _pov_load_state,
     _qmt_execution_init_lock,
@@ -83,6 +84,40 @@ def qmt_is_critical_window() -> bool:
 
 _broker_missing_streak: dict[str, int] = {}   # {ts_code: 连续查无此票的次数}
 
+# 本系统卖单在途时，券商持仓没了多半是自家卖单已经成交（2026-11-19扬子新材：13:08止盈单
+# 在涨停价成交，心跳30秒内先按“手动卖出”关了仓、卖出价记成0；止盈线程5分钟查一轮，再来时
+# 仓已关，成交价就丢了）。这种情况先等卖单自己按券商成交价回写，最多等这么久，超时才按原规则。
+OWN_EXIT_GRACE_SEC = 600.0
+_own_exit_missing_since: dict[str, list[Any]] = {}   # {ts_code: [开始等的时刻, 是否已提示超时]}
+
+
+def _waiting_for_own_exit_fill(code: str, name: str, rows: list[dict[str, Any]], in_flight: set[str] | None) -> bool:
+    """这只票今天有本系统卖单在途：在宽限期内先不按手动卖出关仓。"""
+
+    if not in_flight or not any(str(pos.get("order_id", "")) in in_flight for pos in rows):
+        _own_exit_missing_since.pop(code, None)
+        return False
+    now = time.monotonic()
+    state = _own_exit_missing_since.get(code)
+    if state is None:
+        _own_exit_missing_since[code] = [now, False]
+        logger().warning(
+            "⏳ [逐票同步] %s %s 券商已无此持仓，本系统今天有卖单在途（多半已成交）；"
+            "先等卖单按券商成交价回写，最多等%d分钟，暂不按手动卖出关仓。",
+            code, name, int(OWN_EXIT_GRACE_SEC // 60),
+        )
+        return True
+    if now - state[0] < OWN_EXIT_GRACE_SEC:
+        return True
+    if not state[1]:
+        state[1] = True
+        logger().warning(
+            "⚠️ [逐票同步] %s %s 等了%d分钟卖单仍未回写成交，按原规则继续核对；"
+            "关仓后收盘核对会用QMT当天成交补卖出价。",
+            code, name, int(OWN_EXIT_GRACE_SEC // 60),
+        )
+    return False
+
 
 def reconcile_missing_local_positions(
     broker_positions: Any,
@@ -111,6 +146,7 @@ def reconcile_missing_local_positions(
                      if str(p.get("status", "")).lower() in {"open", "sell_pending"}]
         if not open_like:
             _broker_missing_streak.clear()
+            _own_exit_missing_since.clear()
             return 0
         if not snapshot_complete:
             logger().error(
@@ -141,18 +177,27 @@ def reconcile_missing_local_positions(
             if code:
                 rows_by_code.setdefault(code, []).append(pos)
         seen_codes = set(rows_by_code)
+        in_flight: set[str] | None = None
+        in_flight_loaded = False
         for code, rows in rows_by_code.items():
             in_broker = any(al in broker_aliases for al in _ts_code_aliases(code))
             if in_broker:
                 _broker_missing_streak.pop(code, None)   # 券商重新出现→立即归零
+                _own_exit_missing_since.pop(code, None)
                 continue
             if any(str(pos.get("buy_date", "")) == today for pos in rows):
                 continue   # 当日买入豁免:QMT 可能延迟,不误标
+            name = str(rows[0].get("name", "") or "")
+            if not in_flight_loaded:   # 只在真有票缺失时才读退出状态
+                in_flight = _exit_in_flight_local_order_ids(today)
+                in_flight_loaded = True
+            if _waiting_for_own_exit_fill(code, name, rows, in_flight):
+                _broker_missing_streak.pop(code, None)
+                continue
             # 同一股票可能有竞价+POV多条分片。本轮完整快照只能累计一次，
             # 不能按本地分片条数累计而在一次查询内提前达到3次。
             _broker_missing_streak[code] = _broker_missing_streak.get(code, 0) + 1
             n = _broker_missing_streak[code]
-            name = str(rows[0].get("name", "") or "")
             if n < need:
                 logger().warning(
                     "⚠️ [逐票同步] %s %s 券商完整快照查无此持仓"
@@ -184,6 +229,9 @@ def reconcile_missing_local_positions(
         for code in list(_broker_missing_streak):
             if code not in seen_codes:
                 _broker_missing_streak.pop(code, None)
+        for code in list(_own_exit_missing_since):
+            if code not in seen_codes:
+                _own_exit_missing_since.pop(code, None)
         if changed:
             try:
                 save_positions(positions)

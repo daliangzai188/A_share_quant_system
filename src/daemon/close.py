@@ -25,17 +25,21 @@ from src.daemon.common import (
     _pause_pipeline_for_trade,
     _positions_file_lock,
     _resume_pipeline_after_trade,
+    _track_execution,
     is_trade_day,
     logger,
     market_is_open,
     run_script,
 )
 from src.daemon.state import (
+    _append_exit_fill_ledger,
     _exit_account_fingerprint,
+    _is_recent_auto_ghost_clear,
     _load_exit_execution_state,
     _mark_live_position_closed,
     _position_exit_filled_qty_on,
     _position_manual_exit_only,
+    _recover_sell_price_from_fills,
     _reduce_live_position_shares,
     load_positions,
     mark_position_closed,
@@ -764,6 +768,79 @@ def _watchdog_reconcile_one_fill(
     return remaining_local, remaining_rows
 
 
+def _ghost_closed_today_without_price(position: dict[str, Any], today_str: str) -> bool:
+    """今天被逐票同步按“手动卖出”关掉、还没有卖出价和成交明细的自动策略仓。"""
+
+    return (
+        str(position.get("sell_date", "") or "").replace("-", "")[:8] == today_str
+        and _is_recent_auto_ghost_clear(position, as_of_date=today_str)
+    )
+
+
+def _backfill_ghost_cleared_sell_prices(broker_cfg: dict, log: Any) -> int:
+    """给今天被逐票同步关掉、卖出价是0的策略仓补上QMT真实成交价（2026-11-19扬子新材）。
+
+    只用本系统卖单（盘中止盈、平仓、POV、看门狗补挂）当天在QMT的真实成交：同一股票系统成交里
+    还没记到本地账的股数，必须正好等于这些仓的股数才补；对不上就不动、记警告，绝不用收盘价或
+    委托价代替。只补成交明细和卖出价（供执行对账、实盘统计和净值账本用），不改股数和状态。
+    QMT只保留当天成交，所以收盘核对和程序启动时各做一次。
+    """
+    today_str = today_beijing().strftime("%Y%m%d")
+    if not any(_ghost_closed_today_without_price(pos, today_str) for pos in load_positions()):
+        return 0
+    with _qmt_lock:
+        adapter = _qmt_get(broker_cfg)
+        orders = adapter.query_orders()
+        trades = adapter.query_trades()
+    vwap_by_code = _strategy_exit_trade_vwap_by_code(orders, trades)
+    filled: list[str] = []
+    with _positions_file_lock:
+        positions = load_positions()
+        rows_by_code: dict[str, list[dict[str, Any]]] = {}
+        for pos in positions:
+            if _ghost_closed_today_without_price(pos, today_str):
+                short = str(pos.get("ts_code", "")).upper().split(".")[0]
+                rows_by_code.setdefault(short, []).append(pos)
+        for short, rows in rows_by_code.items():
+            trade_qty, vwap = vwap_by_code.get(short, (0, 0.0))
+            applied_today = sum(
+                _position_exit_filled_qty_on(pos, today_str)
+                for pos in positions
+                if str(pos.get("ts_code", "")).upper().split(".")[0] == short
+            )
+            need = sum(max(int(pos.get("shares", 0) or 0), 0) for pos in rows)
+            unapplied = int(trade_qty) - applied_today
+            if need <= 0 or vwap <= 0 or unapplied != need:
+                log.warning(
+                    "[卖出价补全] %s 今天系统卖单成交%d股、已记账%d股，与待补仓%d股对不上，"
+                    "不自动补价（请人工核对券商成交）。",
+                    short, trade_qty, applied_today, need,
+                )
+                continue
+            now_text = now_beijing().strftime("%Y-%m-%d %H:%M:%S")
+            for pos in rows:
+                qty = max(int(pos.get("shares", 0) or 0), 0)
+                _append_exit_fill_ledger(pos, fill_date=today_str, filled_qty=qty, fill_price=vwap)
+                pos["sell_price"] = _recover_sell_price_from_fills(pos)
+                pos["sell_price_source"] = "QMT当天系统卖单成交（逐票同步关仓后补价）"
+                pos["sell_price_backfilled_at"] = now_text
+            filled.append(
+                f"{rows[0].get('ts_code', short)} {rows[0].get('name', '')} {need}股@{vwap:.2f}"
+            )
+        if filled:
+            save_positions(positions)
+    if filled:
+        _track_execution("rebuild_summary")
+        log.warning("✅ [卖出价补全] %s", "；".join(filled))
+        _notify(
+            "sell_result", "🧾 卖出价已补全",
+            "；".join(filled) + "。这几笔已经卖出，但系统先按手动卖出关了仓、没记卖出价，"
+            "现按QMT当天成交补记，执行对账和实盘统计会用这个价。",
+            level="timeSensitive",
+        )
+    return len(filled)
+
+
 def _watchdog_reconcile_after_close(broker_cfg: dict, log: Any) -> None:
     """15:00:30 两次核对券商余仓，并回写竞价后才成交的主单/补挂单。
 
@@ -771,6 +848,10 @@ def _watchdog_reconcile_after_close(broker_cfg: dict, log: Any) -> None:
     本地到期仓标记为已平。其余情况只用本系统委托的真实成交量补记策略账，
     绝不把QMT同代码总持仓（可能含人工/其他策略仓）直接灌入本地策略余量。
     """
+    try:
+        _backfill_ghost_cleared_sell_prices(broker_cfg, log)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[卖出价补全] 收盘核对时补价失败（不影响平仓核对）：%s", exc)
     all_positions = load_positions()
     due = [
         pos for pos in all_positions
