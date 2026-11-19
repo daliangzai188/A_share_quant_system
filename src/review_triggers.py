@@ -495,7 +495,8 @@ def alignment_triggers(
 
 def m_slippage_stats(live: pd.DataFrame, *, start: str, trades: int, limit_pct: float) -> dict[str, Any]:
     """M最近trades笔已平仓交易的实盘平均双边滑点（%），即成交汇总的total_slippage_bps/100：
-    买入均价比开盘价高多少加上卖出均价比收盘价低多少，正数表示比回测基准差。
+    买入均价比开盘价高多少加上卖出均价比规则卖出价低多少（规则卖出价：计划卖出日摸到涨停价−0.01时
+    为止盈价，否则为收盘价，见scripts/live_execution_audit.py），正数表示比规则差。
 
     只算start（ACE+M生效日）起、已平仓、买卖均价和开盘/收盘基准都齐全的M（缺基准时汇总里
     滑点记为0，不能算进去）；满trades笔才判断是否超过limit_pct。

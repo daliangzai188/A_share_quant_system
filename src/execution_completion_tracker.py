@@ -9,6 +9,10 @@
 最终成交数量以 ``positions.json`` 及其中的 ``exit_fills_by_date`` 为权威口径，
 逐片事件只负责拆分竞价/POV/尾盘渠道和保存流量、盘口、滑点等执行上下文，
 因此重复写入同一委托不会把完成率重复累计。
+
+汇总里的 ``benchmark_open`` 是买入日开盘价；``benchmark_close`` 是按规则的卖出价（2026-11-19起含止盈：
+计划卖出日最高价摸到涨停价−0.01时为止盈价，否则为卖出日收盘价），优先取执行对账
+``reports/live_execution_audit.csv`` 的 ``bench_close``；滑点据此只算执行成本，不把止盈本身的收益算进去。
 """
 from __future__ import annotations
 

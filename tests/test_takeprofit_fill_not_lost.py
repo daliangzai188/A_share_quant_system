@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import csv
 import datetime
 import json
 import tempfile
@@ -189,52 +190,125 @@ class BackfillTests(unittest.TestCase):
         adapter.query_orders.assert_not_called()
 
 
+DAILY_HEADER = "ts_code,trade_date,open,high,low,close,pre_close\n"
+# 11-18：两只的买入日；11-19：扬子新材昨收4.28、涨停价4.71，最高4.70（=涨停价-0.01）收4.40；清研环境没冲板
+DAY_1118 = {"301288.SZ": (20.92, 23.5, 20.5, 22.83, 21.0), "002652.SZ": (4.40, 4.55, 4.24, 4.28, 4.40)}
+DAY_1119 = {"301288.SZ": (22.0, 23.0, 19.0, 19.34, 22.83), "002652.SZ": (4.28, 4.70, 4.08, 4.40, 4.28)}
+
+
+def daily_csv(day, bars):
+    return DAILY_HEADER + "".join("%s,%s,%s,%s,%s,%s,%s\n" % ((code, day) + bar) for code, bar in bars.items())
+
+
 class AuditPushTests(unittest.TestCase):
-    def run_audit(self, positions):
-        today = datetime.date.today().strftime("%Y%m%d")
+    """执行对账（2026-11-19起卖出基准含止盈：计划卖出日最高价摸到涨停价-0.01时按止盈价比）。"""
+
+    def run_audit(self, positions, days=None, previous=None, config=None):
+        days = days or {"20261118": DAY_1118, "20261119": DAY_1119}
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             daily = root / "data" / "raw" / "daily"
             daily.mkdir(parents=True)
-            (daily / "20261118.csv").write_text(
-                "ts_code,trade_date,open,close\n301288.SZ,20261118,20.92,22.83\n002652.SZ,20261118,4.40,4.28\n",
-                encoding="utf-8")
-            (daily / f"{today}.csv").write_text(
-                f"ts_code,trade_date,open,close\n301288.SZ,{today},22.0,19.34\n002652.SZ,{today},4.20,4.71\n",
-                encoding="utf-8")
+            for day, bars in days.items():
+                (daily / f"{day}.csv").write_text(daily_csv(day, bars), encoding="utf-8")
+            if config is not None:
+                (root / "config").mkdir()
+                (root / "config" / "config.json").write_text(json.dumps(config), encoding="utf-8")
             pos_path = root / "positions.json"
-            for row in positions:
-                row["sell_date"] = today
             pos_path.write_text(json.dumps(positions, ensure_ascii=False), encoding="utf-8")
             out = root / "reports" / "live_execution_audit.csv"
+            if previous is not None:
+                out.parent.mkdir(parents=True)
+                out.write_text(previous, encoding="utf-8-sig")
             pushes = []
             with patch.object(audit, "PROJECT_ROOT", root), patch.object(audit, "POSITIONS", pos_path), \
                     patch.object(audit, "OUT", out), patch.object(audit, "_daily_cache", {}), \
                     patch.object(audit, "bark", side_effect=lambda title, body: pushes.append((title, body))):
                 audit.main()
+            rows = []
+            if out.exists():
+                with open(out, newline="", encoding="utf-8-sig") as fh:
+                    rows = list(csv.DictReader(fh))
             header = out.read_text(encoding="utf-8-sig").splitlines()[0] if out.exists() else ""
-        return pushes, header
+        trade_pushes = [p for p in pushes if p[0].startswith("🧾 执行对账：")]   # 周五另有周报
+        return trade_pushes, rows, header
 
     def test_two_lots_of_one_trade_become_one_clear_line(self):
-        pushes, header = self.run_audit([m_lot("M1", 400, 20.92, 19.59), m_lot("M2", 100, 20.94, 19.58),
-                                         ghost_closed_e()])
+        today = datetime.date.today().strftime("%Y%m%d")
+        lots = [m_lot("M1", 400, 20.92, 19.59), m_lot("M2", 100, 20.94, 19.58)]
+        missing = ghost_closed_e()
+        for row in lots + [missing]:
+            row.update(sell_date=today, planned_exit_date=today)
+        pushes, rows, header = self.run_audit(lots + [missing], days={"20261118": DAY_1118, today: DAY_1119})
         title, body = pushes[0]
-        self.assertEqual(title, "🧾 执行对账：清研环境（M）比回测好1.26%，另有1笔缺卖出价")
-        self.assertIn("清研环境（M）500股：比回测好1.26%｜买入均价20.924（开盘价20.92，多花0.02%）｜"
+        self.assertEqual(title, "🧾 执行对账：清研环境（M）比规则好1.26%，另有1笔缺卖出价")
+        self.assertIn("清研环境（M）500股：比规则好1.26%｜买入均价20.924（开盘价20.92，多花0.02%）｜"
                       "卖出均价19.588（收盘价19.34，多卖1.28%）", body)
         self.assertIn("扬子新材（E）3000股：缺卖出成交价", body)
-        self.assertNotIn("正=比回测口径差", body)
         self.assertEqual(body.count("清研环境"), 1)                         # 两片合并成一行
-        self.assertEqual(header, ",".join(audit.FIELDS))                     # CSV格式不变
+        self.assertEqual(header, ",".join(audit.FIELDS))
+        self.assertEqual({r["sell_bench_rule"] for r in rows}, {"收盘价"})
 
-    def test_backfilled_takeprofit_reads_naturally(self):
+    def test_takeprofit_fill_is_compared_with_takeprofit_price(self):
+        # 11-19实例：止盈单4.70成交，收盘4.40。按规则（含止盈）只差买入多花的0.68%，止盈多卖的6.82%单独写
         e_row = ghost_closed_e()
         e_row.update(sell_price=4.70, exit_fills_by_date={"20261119": {"qty": 3000, "amount": 14100.0}})
-        title, body = self.run_audit([e_row])[0][0]
-        # 回测（src/ace_m_replay.py）按收盘价卖、不模拟止盈，所以止盈成交也和收盘价比
-        self.assertEqual(title, "🧾 执行对账：扬子新材（E）比回测差0.89%")
-        self.assertIn("卖出均价4.70（收盘价4.71，少卖0.21%）", body)
-        self.assertIn("买入均价4.43（开盘价4.40，多花0.68%）", body)
+        pushes, rows, _header = self.run_audit([e_row])
+        title, body = pushes[0]
+        self.assertEqual(title, "🧾 执行对账：扬子新材（E）比规则差0.68%（止盈成交，比收盘多卖6.82%）")
+        self.assertIn("买入均价4.43（开盘价4.40，多花0.68%）｜卖出均价4.70（止盈价4.70，持平；收盘价4.40，止盈比收盘多卖6.82%）",
+                      body)
+        self.assertIn("计划卖出日最高价摸到涨停价−0.01时按止盈价卖", body)
+        self.assertEqual((rows[0]["bench_close"], rows[0]["sell_bench_rule"], rows[0]["exit_close"]), ("4.7", "止盈价", "4.4"))
+        self.assertAlmostEqual(float(rows[0]["sell_slip_pct"]), 0.0, places=6)    # 滑点报警只看执行成本
+
+    def test_old_row_is_recomputed_quietly(self):
+        # 换版前已按收盘价入账（比回测好6.14%）的那一笔：重算成止盈口径，不再重复推送，入账时间不变
+        e_row = ghost_closed_e()
+        e_row.update(sell_price=4.70)
+        old_fields = audit.FIELDS[:14]
+        previous = ",".join(old_fields) + "\n" + ",".join([
+            "E1", "002652.SZ", "扬子新材", "E", "20261118", "20261119", "4.43", "4.4", "0.6818", "4.7", "4.4",
+            "-6.8182", "-6.1364", "2026-11-19 19:01:40"]) + "\n"
+        pushes, rows, header = self.run_audit([e_row], previous=previous)
+        self.assertEqual(pushes, [])
+        self.assertEqual(header, ",".join(audit.FIELDS))
+        self.assertEqual((rows[0]["bench_close"], rows[0]["sell_bench_rule"], rows[0]["recorded_at"]),
+                         ("4.7", "止盈价", "2026-11-19 19:01:40"))
+        self.assertAlmostEqual(float(rows[0]["total_slip_pct"]), 0.6818, places=4)
+
+    def test_row_kept_when_market_data_is_gone(self):
+        previous = ",".join(audit.FIELDS[:14]) + "\nX1,600000.SH,浦发银行,A,20260701,20260703,10,10,0,10,10,0,0,2026-07-03 19:00:00\n"
+        old = {"order_id": "X1", "ts_code": "600000.SH", "name": "浦发银行", "strategy_leg": "A", "buy_date": "20260701",
+               "planned_exit_date": "20260703", "sell_date": "20260703", "buy_price": 10, "sell_price": 10,
+               "status": "closed", "entry_shares": 100}
+        _pushes, rows, _header = self.run_audit([old], previous=previous)
+        self.assertEqual([(r["order_id"], r["bench_close"], r["sell_bench_rule"]) for r in rows], [("X1", "10", "")])
+
+    def test_no_takeprofit_when_not_on_planned_day_or_disabled(self):
+        e_row = ghost_closed_e()
+        e_row.update(sell_price=4.70)
+        early = dict(e_row, planned_exit_date="20991231")                 # 计划卖出日之前就卖了：那天不会挂止盈
+        manual = dict(e_row, manual_exit_only=True)                        # 人工退出仓不挂止盈
+        for row, config in ((early, None), (manual, None), (e_row, {"live_trade": {"intraday_takeprofit_enabled": False}})):
+            _pushes, rows, _header = self.run_audit([row], config=config)
+            self.assertEqual((rows[0]["bench_close"], rows[0]["sell_bench_rule"]), ("4.4", "收盘价"))
+
+    def test_delayed_exit_still_uses_planned_day_takeprofit(self):
+        # 计划卖出日摸到止盈价、实盘却拖到下一天才卖：按规则那天就该止盈成交，基准仍是止盈价
+        e_row = ghost_closed_e()
+        e_row.update(sell_date="20261120", sell_price=4.30)
+        days = {"20261118": DAY_1118, "20261119": DAY_1119, "20261120": {"002652.SZ": (4.35, 4.40, 4.20, 4.30, 4.40)}}
+        pushes, rows, _header = self.run_audit([e_row], days=days)
+        self.assertEqual((rows[0]["bench_close"], rows[0]["sell_bench_rule"], rows[0]["exit_close"]), ("4.7", "止盈价", "4.3"))
+        self.assertIn("11/20平仓，比规则差9.19%", pushes[0][1])
+
+    def test_waits_for_planned_day_data(self):
+        e_row = ghost_closed_e()
+        e_row.update(sell_date="20261120", sell_price=4.30)
+        days = {"20261118": DAY_1118, "20261120": {"002652.SZ": (4.35, 4.40, 4.20, 4.30, 4.40)}}
+        pushes, rows, _header = self.run_audit([e_row], days=days)
+        self.assertEqual((pushes, rows), ([], []))                         # 计划卖出日行情没有就先不算，下次再算
 
 
 if __name__ == "__main__":

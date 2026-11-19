@@ -51,7 +51,7 @@ class CertificationScopeTests(unittest.TestCase):
         self.assertFalse(self.certificate["independent_oos_certified"])
         self.assertFalse(self.certificate["capacity_certified"])
         text = "".join(NOT_COVERED)
-        for word in ("策略M", "20%", "99.5%", "独立样本外", "容量"):
+        for word in ("策略M", "20%", "99.5%", "独立样本外", "容量", "止盈"):
             self.assertIn(word, text)
 
 

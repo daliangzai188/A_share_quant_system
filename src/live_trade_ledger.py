@@ -8,7 +8,8 @@ QMT 外检查（qmt_native_phase0/qmt_external_checks.py）每个交易日调用
   卖出逐步补全）；导出里没有了的旧交易照样保留；
 - live_performance_by_leg.csv / .md：已平仓交易按策略（A/C/E/D/M）和全部的实盘统计：笔数、胜率、平均/中位
   净收益、总净盈亏、最大回撤、盈亏比、最大单笔盈亏、最长连亏、平均双边滑点（口径同 src/live_performance.py），
-  另列“按规则（开盘买、收盘卖）”和“实盘”的平均毛收益，两者之差就是执行成本，策略本身好坏和执行好坏分开看；
+  另列“按规则（开盘买、收盘卖，计划卖出日摸到涨停价−0.01按止盈价卖）”和“实盘”的平均毛收益，两者之差就是
+  执行成本，策略本身好坏和执行好坏分开看；
 - account_daily.csv：每个交易日收盘后的账户（总资产、可用资金、ACE/M/其它持仓市值），由守护进程记、随 QMT
   导出，这里只增不删地并进来，用来算实盘账户的收益曲线和回撤（出入金要另外扣）；
 
@@ -95,7 +96,8 @@ def leg_performance(ledger: pd.DataFrame, report_config: Mapping[str, Any]) -> p
 
 
 def _rule_versus_live(trades: pd.DataFrame) -> dict[str, Any]:
-    """按规则（买入日开盘价买、卖出日收盘价卖）和实盘（真实成交均价）的平均毛收益；两边都有基准价的才算。
+    """按规则和实盘（真实成交均价）的平均毛收益；两边都有基准价的才算。规则=买入日开盘价买、卖出日按成交汇总的
+    benchmark_close卖（计划卖出日摸到涨停价−0.01时为止盈价，否则为收盘价，见scripts/live_execution_audit.py）。
     不复权：持有一两天，除权除息日会有偏差。"""
     if trades.empty:
         return {"rule_compared": 0, "avg_rule_gross_return": 0.0, "avg_live_gross_return": 0.0}
@@ -128,7 +130,7 @@ def _markdown(table: pd.DataFrame, rows: int, as_of: str) -> str:
             row["profit_loss_ratio"], row["max_profit"] * 100, row["max_loss"] * 100,
             int(row["max_consecutive_losses"]), row["avg_total_slippage_bps"], rule, live))
     lines += ["", "口径：真实买卖金额扣佣金、过户费、印花税；最大回撤按逐笔净收益连乘；“规则”= 买入日开盘价买、卖出日"
-              "收盘价卖（不扣费），和“实盘”毛收益之差就是执行成本；样本少时只作参考，不能据此改规则。"]
+              "收盘价卖，计划卖出日最高价摸到涨停价−0.01时按止盈价卖（不扣费），和“实盘”毛收益之差就是执行成本；样本少时只作参考，不能据此改规则。"]
     return "\n".join(lines) + "\n"
 
 
