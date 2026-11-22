@@ -13,7 +13,12 @@
 
 移入时核对：用本仓库 `src/` 跑出的 6 个结果文件与原来 `out/m7/` 里的逐字节相同。
 
-运行（约3秒）：
+这份数据的备份（2026-11-22起）：只备份清单 `inputs.txt` 里的 6 个文件（约936MB），用
+`python tools/data_snapshot.py --set ace_m_benchmark snapshot | verify | restore-check | restore 快照名 新目录`，快照在
+`~/A_System_data_snapshots/ace_m_benchmark/`。2026-11-22拍了第一份，从快照恢复到新目录、用 `M_RESEARCH_DATA` 指过去重跑，
+6 个结果文件与原来逐字节相同。`tests/test_data_snapshot.py` 核对清单和本脚本用到的文件相同，改了脚本的输入要同时改清单。
+
+运行（约3秒，输出目录要先建好）：
 
 ```bash
 PYTHONDONTWRITEBYTECODE=1 ~/A_System_Rebuild/main_venv/bin/python research/ace_m_benchmark/m14_verify.py 输出目录

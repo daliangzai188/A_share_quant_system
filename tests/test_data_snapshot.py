@@ -4,6 +4,7 @@ from __future__ import annotations
 import datetime as dt
 import io
 import os
+import re
 import stat
 import tempfile
 import unittest
@@ -109,6 +110,37 @@ class DataSnapshotTests(unittest.TestCase):
     def test_snapshot_root_cannot_be_inside_the_data_folder(self) -> None:
         with self.assertRaises(SystemExit):
             ds.take_snapshot(self.source, self.source / "snapshots")
+
+    def test_listed_snapshot_keeps_only_listed_files_and_refuses_when_one_is_gone(self) -> None:
+        listed = ["processed/pool.csv", "raw/中文 名.csv"]
+        path = ds.take_snapshot(self.source, self.root, now=dt.datetime(2026, 11, 22, 9, 0), include=listed)
+        self.assertEqual(sorted(ds.read_manifest(path)), listed)
+        self.assertEqual(ds.verify_snapshot(path), [])
+        (self.source / "processed/pool.csv").unlink()
+        diff = ds.compare_with_live(path, self.source, listed)
+        self.assertEqual(diff, {"changed": [], "added": [], "missing": ["processed/pool.csv"]})
+        with self.assertRaises(SystemExit):
+            ds.take_snapshot(self.source, self.root, now=dt.datetime(2026, 11, 22, 9, 1), include=listed)
+
+    def test_benchmark_set_backs_up_exactly_the_files_the_benchmark_replay_reads(self) -> None:
+        script = (ds.REPO / "research/ace_m_benchmark/m14_verify.py").read_text(encoding="utf-8")
+        self.assertEqual(ds.benchmark_inputs(), sorted(set(re.findall(r"HERE / '([^']+)'", script))))
+        source = Path(self._tmp.name) / "m_research"
+        for rel in ds.benchmark_inputs() + ["out/other_round.csv"]:
+            (source / rel).parent.mkdir(parents=True, exist_ok=True)
+            (source / rel).write_text(rel, encoding="utf-8")
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = ds.main(["--set", "ace_m_benchmark", "--root", str(self.root / "bench"), "--source", str(source),
+                            "snapshot"])
+        self.assertEqual(code, 0, out.getvalue())
+        (only,) = ds.snapshots(self.root / "bench")
+        self.assertEqual(sorted(ds.read_manifest(only)), ds.benchmark_inputs())
+
+    def test_data_snapshot_reminds_when_the_benchmark_data_has_no_snapshot(self) -> None:
+        code, out = self.run_cli("snapshot")
+        self.assertEqual(code, 0, out)
+        self.assertIn("ACE+M基准数据还没有快照", out)
 
 
 if __name__ == "__main__":

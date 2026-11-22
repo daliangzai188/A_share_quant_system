@@ -150,6 +150,12 @@
 
 工具在仓库 `tools/vmtools/`（locked.sh、vmfront.sh、vmctl、shot.sh、idle.sh，说明见其中 README；首次用先 `sh tools/vmtools/build_vmctl.sh` 编译 vmctl）。截图存 `~/A_System_vm_shots/`，不进仓库。用户在用电脑时不操作虚拟机（先查 idle.sh / locked.sh）。
 
+- 每串 `vmctl click/type/key` 之前先跑 `tools/vmtools/vmfront.sh`（把 VMware 切到最前并核对，不在最前就退出），用 `&&` 串起来；
+  只看空闲时间不够（2026-11-11 一串按键在 VMware 不在最前时打进了用户的 Claude 对话框并被发送）。
+- 打字前截图确认终端在最前、输入法是“英”、大写锁定没开（2.1.33 安装后发现过大写锁定被打开）；任务栏终端图标在终端已经在最前时
+  点一下会把它最小化，后面的按键会打进 QMT。命令尽量短，调用 `qmt_native_phase0/` 里的脚本。
+- 终端里不要输入 `exit`（会关掉自己的标签页，后面的按键打进用户看日志的标签）；要新标签点标签栏的“+”。
+- Claude 不点 UAC、不输入密码、不开 QMT 自动登录、不下测试单。
 - `vmctl click X Y` 用 Mac 全局屏幕坐标（点）；`shot.sh` 固定截 `-R225,38,1256,839`，所以 **屏幕坐标 = 截图坐标 + (225, 38)**。
   VMware 窗口在 (253,38) 时，截图左边 28 像素是别的 Mac 窗口，截图 x<28 的位置点下去会点到 Mac 上别的应用。
   每次操作前用 `osascript -e 'tell application "System Events" to tell process "VMware Fusion" to get {position, size} of window 1'` 核对窗口位置。

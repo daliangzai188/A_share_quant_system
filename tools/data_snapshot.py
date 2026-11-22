@@ -14,6 +14,12 @@
   python tools/data_snapshot.py list                     列出快照
   python tools/data_snapshot.py prune --keep N           只保留最近 N 份（硬链接共享的文件不受影响）
 
+加 --set ace_m_benchmark（放在子命令前面）对 ACE+M 上线基准的冻结数据做同样的事（2026-11-22）：
+docs/equity_curve_stop.md 第九节的 ACE+M 基准由 research/ace_m_benchmark/m14_verify.py 算出，它用的数据在 git 外
+（默认 ~/A_System_复核/2026-11-11_M大法研究，环境变量 M_RESEARCH_DATA 可改），只备份清单
+research/ace_m_benchmark/inputs.txt 里的文件，快照放在 ~/A_System_data_snapshots/ace_m_benchmark/。
+这份数据不会再变，拍一次即可；以后用 verify / restore-check 核对。
+
 快照放在 ~/A_System_data_snapshots/（环境变量 A_SYSTEM_SNAPSHOT_ROOT 可改），每份一个目录 YYYYMMDD-HHMMSS/：
   files/            data/ 下全部文件，只读；和上一份内容相同的文件用硬链接，不重复占空间
   MANIFEST.sha256   每行“sha256  字节数  相对路径”，按路径排序
@@ -37,6 +43,9 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 DEFAULT_ROOT = Path(os.environ.get("A_SYSTEM_SNAPSHOT_ROOT", Path.home() / "A_System_data_snapshots"))
+BENCHMARK_SET = "ace_m_benchmark"
+BENCHMARK_INPUTS = REPO / "research" / "ace_m_benchmark" / "inputs.txt"
+BENCHMARK_SOURCE = Path(os.path.expanduser(os.environ.get("M_RESEARCH_DATA", "~/A_System_复核/2026-11-11_M大法研究")))
 MANIFEST = "MANIFEST.sha256"
 SUMMARY = "SNAPSHOT.json"
 CHUNK = 1024 * 1024
@@ -60,6 +69,19 @@ def data_files(source: Path) -> list[str]:
                 raise ValueError("文件名里有换行，清单写不下：%r" % rel)
             found.append(rel)
     return sorted(found)
+
+
+def benchmark_inputs(path: Path = BENCHMARK_INPUTS) -> list[str]:
+    """ACE+M 基准回放用到的数据文件（相对数据目录），清单只写在 research/ace_m_benchmark/inputs.txt。"""
+    lines = (line.strip() for line in path.read_text(encoding="utf-8").splitlines())
+    return sorted(line for line in lines if line and not line.startswith("#"))
+
+
+def listed_files(source: Path, include: list[str] | None) -> list[str]:
+    """不给清单时是数据目录下全部文件；给了清单只算清单里现在还在的文件。"""
+    if include is None:
+        return data_files(source)
+    return sorted(rel for rel in include if (source / rel).is_file() and not (source / rel).is_symlink())
 
 
 def sha256_file(path: Path) -> str:
@@ -114,10 +136,15 @@ def _git_head(source: Path) -> str:
         return ""   # 来源不在 git 仓库里也能拍快照，只是不记提交号
 
 
-def take_snapshot(source: Path, root: Path, *, now: dt.datetime | None = None) -> Path:
+def take_snapshot(source: Path, root: Path, *, now: dt.datetime | None = None,
+                  include: list[str] | None = None) -> Path:
     source = source.resolve()
     if not source.is_dir():
         raise SystemExit("数据目录不存在：%s" % source)
+    wanted = listed_files(source, include)
+    if include is not None and len(wanted) != len(set(include)):
+        missing = sorted(set(include) - set(wanted))
+        raise SystemExit("清单里的文件不在了，不拍快照：%s（%s）" % ("、".join(missing), source))
     root.mkdir(parents=True, exist_ok=True)
     if root.resolve() == source or source in root.resolve().parents:
         raise SystemExit("快照目录不能放在数据目录里面：%s" % root)
@@ -129,7 +156,7 @@ def take_snapshot(source: Path, root: Path, *, now: dt.datetime | None = None) -
     work = root / (".incomplete-" + name)
     shutil.rmtree(work, ignore_errors=True)
     lines, linked, copied, unstable, total = [], 0, 0, [], 0
-    for rel in data_files(source):
+    for rel in wanted:
         src, dst = source / rel, work / "files" / rel
         dst.parent.mkdir(parents=True, exist_ok=True)
         before = sha256_file(src)
@@ -161,6 +188,7 @@ def take_snapshot(source: Path, root: Path, *, now: dt.datetime | None = None) -
         "file_count": len(lines),
         "total_bytes": total,
         "manifest_sha256": hashlib.sha256(manifest.encode("utf-8")).hexdigest(),
+        "only_listed_files": include is not None,
         "previous": previous[-1].name if previous else "",
         "linked_from_previous": linked,
         "copied": copied,
@@ -213,9 +241,9 @@ def restore(snapshot: Path, target: Path, *, source: Path | None = None) -> list
     return problems
 
 
-def compare_with_live(snapshot: Path, source: Path) -> dict[str, list[str]]:
+def compare_with_live(snapshot: Path, source: Path, include: list[str] | None = None) -> dict[str, list[str]]:
     entries = read_manifest(snapshot)
-    live = data_files(source)
+    live = listed_files(source, include)
     changed = [rel for rel in live if rel in entries and sha256_file(source / rel) != entries[rel][0]]
     return {
         "changed": changed,
@@ -239,10 +267,19 @@ def _size(n: int) -> str:
     return "%.1f MB" % (n / 1e6) if n < 1e9 else "%.2f GB" % (n / 1e9)
 
 
+def _benchmark_note(root: Path) -> str:
+    found = snapshots(root / BENCHMARK_SET)
+    if not found:
+        return ("ACE+M基准数据还没有快照：python tools/data_snapshot.py --set %s snapshot" % BENCHMARK_SET)
+    return "ACE+M基准数据快照 %d 份，最新 %s（--set %s 查看、核对）" % (len(found), found[-1].name, BENCHMARK_SET)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="行情数据的独立快照（清单、核对、恢复演练）")
-    parser.add_argument("--root", type=Path, default=DEFAULT_ROOT, help="快照目录（默认 %(default)s）")
-    parser.add_argument("--source", type=Path, default=REPO / "data", help="数据目录（默认本仓库的 data/）")
+    parser.add_argument("--set", dest="dataset", choices=("data", BENCHMARK_SET), default="data",
+                        help="data=本仓库 data/（默认）；%s=ACE+M上线基准的冻结数据（只备份清单里的文件）" % BENCHMARK_SET)
+    parser.add_argument("--root", type=Path, help="快照目录（默认 %s，基准数据在其下 %s/）" % (DEFAULT_ROOT, BENCHMARK_SET))
+    parser.add_argument("--source", type=Path, help="数据目录（默认本仓库的 data/；基准数据默认 %s）" % BENCHMARK_SOURCE)
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("snapshot")
     for name in ("verify", "restore-check"):
@@ -253,9 +290,15 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("list")
     sub.add_parser("prune").add_argument("--keep", type=int, required=True)
     args = parser.parse_args(argv)
+    benchmark = args.dataset == BENCHMARK_SET
+    include = benchmark_inputs() if benchmark else None
+    if args.source is None:
+        args.source = BENCHMARK_SOURCE if benchmark else REPO / "data"
+    if args.root is None:
+        args.root = DEFAULT_ROOT / BENCHMARK_SET if benchmark else DEFAULT_ROOT
 
     if args.command == "snapshot":
-        path = take_snapshot(args.source, args.root)
+        path = take_snapshot(args.source, args.root, include=include)
         summary = json.loads((path / SUMMARY).read_text(encoding="utf-8"))
         print("快照 %s：%d 个文件，%s（新复制 %d 个，和上一份相同用硬链接 %d 个）"
               % (path, summary["file_count"], _size(summary["total_bytes"]), summary["copied"],
@@ -264,6 +307,8 @@ def main(argv: list[str] | None = None) -> int:
             print("  复制时一直在变（按快照里存下的内容记清单）：" + rel)
         problems = verify_snapshot(path)
         print("核对：" + ("全部一致" if not problems else "；".join(problems[:20])))
+        if not benchmark:
+            print(_benchmark_note(args.root))
         return 1 if problems else 0
     if args.command == "verify":
         path = pick(args.root, args.name)
@@ -281,7 +326,7 @@ def main(argv: list[str] | None = None) -> int:
         finally:
             shutil.rmtree(work, ignore_errors=True)
         if args.source.is_dir():
-            diff = compare_with_live(path, args.source)
+            diff = compare_with_live(path, args.source, include)
             print("和现在的 %s 比：快照之后改过 %d 个、新增 %d 个、不见了 %d 个"
                   % (args.source, len(diff["changed"]), len(diff["added"]), len(diff["missing"])))
             for kind, label in (("missing", "不见了"), ("changed", "改过")):
@@ -297,6 +342,8 @@ def main(argv: list[str] | None = None) -> int:
             summary = json.loads((path / SUMMARY).read_text(encoding="utf-8"))
             print("%s  %6d 个文件  %10s  git %s" % (path.name, summary["file_count"], _size(summary["total_bytes"]),
                                                 summary["git_head"][:7]))
+        if not benchmark:
+            print(_benchmark_note(args.root))
         return 0
     removed = prune(args.root, args.keep)
     print("删掉 %d 份旧快照：%s" % (len(removed), " ".join(removed) or "无"))
