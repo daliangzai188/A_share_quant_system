@@ -14,6 +14,8 @@
 # - 推送失败就报错退出（同步工作区已是新版本、GitHub 还旧）；再运行一次即使“没有新提交”也会发现 GitHub 落后并补推；
 # - 2026-11-15 起每次发布前自动在导出副本跑全量测试和生产链对照标准（tools/verify_dev_copy.sh，逐字节比对），
 #   没通过就不发布；同一个提交已经检查通过的不重跑。
+# - 2026-11-23 起推送后比对 Mac 上 launchd 跑的安装副本（防休眠、每月维护提醒、虚拟机看门狗），没装或和 git 不一样
+#   只提示怎么装，不影响发布（MAC_INSTALL_DIR 可改安装目录，测试用）。
 set -e
 DEV=${1:?"用法: sh tools/publish_dev_copy.sh 导出副本路径"}
 cd "$(dirname "$0")/.."
@@ -106,3 +108,19 @@ left=$(git status --porcelain --untracked-files=no | grep -v ' data/' || true)
 git log --oneline "$OLD..$NEW"
 git fetch -q origin main 2>/dev/null || true
 push_main "$(git rev-parse --verify -q FETCH_HEAD || echo "$OLD")"
+
+# 2026-11-23：Mac 的 launchd 跑的是安装时复制出去的副本，git 里改了不会自动生效（每月维护提醒 7 月起推送失败、
+# 虚拟机看门狗没装，都是查 git 外的副本才发现的）。落地后比一下，没装或不一样只提示，不影响发布。
+INSTALL_DIR=${MAC_INSTALL_DIR:-$HOME/Library/Application Support/A_System}
+while IFS='|' read -r src dst installer; do
+  [ -f "$src" ] || continue
+  if [ ! -f "$INSTALL_DIR/$dst" ]; then
+    echo "提示：Mac 上没装 ${src}（要装：${installer}）"
+  elif ! cmp -s "$src" "$INSTALL_DIR/$dst"; then
+    echo "提示：Mac 上安装的和 git 不一样：${src}（重新安装：${installer}）"
+  fi
+done <<EOF
+tools/guard_fusion_awake.sh|fusion_awake/guard_fusion_awake.sh|/usr/bin/python3 tools/install_mac_fusion_awake.py
+scripts/mac_monthly_maintenance_reminder.py|mac_monthly_maintenance_reminder.py|/usr/bin/python3 tools/install_mac_maintenance_reminder.py
+scripts/mac_vm_watchdog.py|mac_vm_watchdog.py|/usr/bin/python3 scripts/install_mac_vm_watchdog.py
+EOF

@@ -60,9 +60,11 @@ class PublishDevCopyTests(unittest.TestCase):
         (self.sync / "data" / "raw" / "daily" / "20261009.csv").write_text("vm new\n", encoding="utf-8")
         (self.sync / "data" / "raw" / "daily" / "20261008.csv").write_text("vm changed\n", encoding="utf-8")
 
-    def run_script(self, verify: str = "true") -> subprocess.CompletedProcess:
-        # 发布前检查（全量测试+对照标准）在临时仓库里跑不了，用 PUBLISH_VERIFY_CMD 换成固定结果
-        env = dict(os.environ, QN_LOCAL_ENV=str(self.env_file), PUBLISH_VERIFY_CMD=verify)
+    def run_script(self, verify: str = "true", install_dir: Path | None = None) -> subprocess.CompletedProcess:
+        # 发布前检查（全量测试+对照标准）在临时仓库里跑不了，用 PUBLISH_VERIFY_CMD 换成固定结果；
+        # Mac 安装副本的比对指到临时目录，不读真实的 ~/Library
+        env = dict(os.environ, QN_LOCAL_ENV=str(self.env_file), PUBLISH_VERIFY_CMD=verify,
+                   MAC_INSTALL_DIR=str(install_dir or Path(self.tmp.name) / "no_install"))
         return subprocess.run(["sh", "tools/publish_dev_copy.sh", str(self.dev)], cwd=self.sync, env=env,
                               capture_output=True, text=True)
 
@@ -78,6 +80,25 @@ class PublishDevCopyTests(unittest.TestCase):
         self.assertFalse((sync / "scripts").exists(), "删空的目录也要删")
         self.assertEqual((sync / "src/a.py").read_text(encoding="utf-8"), "A = 2\n")
         self.assertEqual(git(sync, "status", "--porcelain", "--untracked-files=no").strip(), "")
+        self.assertEqual(git(self.origin, "rev-parse", "main"), git(self.dev, "rev-parse", "HEAD"))
+
+    def test_reports_mac_installed_copies_missing_or_different(self) -> None:
+        # 2026-11-23：Mac 上 launchd 跑的副本和 git 不一样、或者没装，发布时提示（不拦发布）
+        for rel, text in {"tools/guard_fusion_awake.sh": "guard\n", "scripts/mac_monthly_maintenance_reminder.py": "new\n",
+                          "scripts/mac_vm_watchdog.py": "watchdog\n"}.items():
+            (self.dev / rel).parent.mkdir(parents=True, exist_ok=True)
+            (self.dev / rel).write_text(text, encoding="utf-8")
+        git(self.dev, "add", "-A")
+        git(self.dev, "commit", "-q", "-m", "mac tools")
+        installed = Path(self.tmp.name) / "installed"
+        (installed / "fusion_awake").mkdir(parents=True)
+        (installed / "fusion_awake" / "guard_fusion_awake.sh").write_text("guard\n", encoding="utf-8")
+        (installed / "mac_monthly_maintenance_reminder.py").write_text("old\n", encoding="utf-8")
+        result = self.run_script(install_dir=installed)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Mac 上安装的和 git 不一样：scripts/mac_monthly_maintenance_reminder.py", result.stdout)
+        self.assertIn("Mac 上没装 scripts/mac_vm_watchdog.py", result.stdout)
+        self.assertNotIn("guard_fusion_awake", result.stdout, "一样的不提示")
         self.assertEqual(git(self.origin, "rev-parse", "main"), git(self.dev, "rev-parse", "HEAD"))
 
     def test_reference_table_changed_on_both_sides_is_not_overwritten(self) -> None:

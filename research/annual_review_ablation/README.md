@@ -53,5 +53,5 @@ PYTHONDONTWRITEBYTECODE=1 ~/A_System_Rebuild/main_venv/bin/python research/annua
 ## 下次用之前要注意
 
 - 逐个去掉的条件清单（`ablate_ace.py`、`ablate_m.py`、`audit_*.py` 里）是按 2026-11-13 的现行规则写的；规则改过，先改清单。
-- M 的两项检验和 `research_inputs.pkl` 用的是 M 研究面板（行情截至 2026-11-10）。要用新数据，得先重建面板；
-  建面板的脚本（`build_panel.py`、`build_st_mask.py` 等）还在 `~/A_System_复核/2026-11-11_M大法研究/scripts/`，没有搬进 git。
+- M 的两项检验和 `research_inputs.pkl` 用的是 M 研究面板（行情截至 2026-11-10）。要用新数据，得先重建面板和 ACE 输入，
+  脚本和步骤见 `research/ace_m_benchmark/README.md`“用新数据重跑”（2026-11-23 移入 git，用 11-10 数据重建与原输入核对一致）。
