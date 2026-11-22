@@ -116,7 +116,8 @@ class MacAwakeTest(unittest.TestCase):
             vmx = home / "VM test.vmx"
             vmx.write_text("test")
             with patch.object(mac.sys, "platform", "darwin"), \
-                 patch.object(mac.subprocess, "run") as run:
+                 patch.object(mac.subprocess, "run",
+                              return_value=subprocess.CompletedProcess([], 0, "", "")) as run:
                 result = mac.install(vmx, home=home)
             plist = plistlib.loads(Path(result["plist"]).read_bytes())
             helper = Path(plist["ProgramArguments"][1])
@@ -127,6 +128,26 @@ class MacAwakeTest(unittest.TestCase):
             self.assertFalse(result["closed_lid_supported"])
         commands = [call.args[0] for call in run.call_args_list]
         self.assertEqual([command[1] for command in commands], ["bootout", "bootstrap"])
+
+    def test_bootstrap_retries_when_launchd_has_not_finished_unloading(self):
+        results = [subprocess.CompletedProcess([], 5, "", "Bootstrap failed: 5: Input/output error"),
+                   subprocess.CompletedProcess([], 0, "", "")]
+        sleep = Mock()
+        with patch.object(mac.subprocess, "run", side_effect=results) as run:
+            self.assertEqual(mac.bootstrap("gui/501", Path("/tmp/x.plist"), sleep=sleep), 2)
+        self.assertEqual(run.call_count, 2)
+        sleep.assert_called_once_with(mac.BOOTSTRAP_RETRY_SECONDS)
+
+    def test_bootstrap_failure_says_guard_is_not_running(self):
+        failed = subprocess.CompletedProcess([], 5, "", "Bootstrap failed: 5: Input/output error")
+        sleep = Mock()
+        with patch.object(mac.subprocess, "run", return_value=failed) as run:
+            with self.assertRaises(RuntimeError) as caught:
+                mac.bootstrap("gui/501", Path("/tmp/x.plist"), sleep=sleep)
+        self.assertEqual(run.call_count, mac.BOOTSTRAP_ATTEMPTS)
+        self.assertEqual(sleep.call_count, mac.BOOTSTRAP_ATTEMPTS - 1)
+        self.assertIn("没有运行", str(caught.exception))
+        self.assertIn("launchctl bootstrap gui/501", str(caught.exception))
 
     def test_detection_refuses_to_guess_when_multiple_vms_are_running(self):
         with tempfile.TemporaryDirectory() as temporary:

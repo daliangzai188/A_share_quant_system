@@ -9,12 +9,17 @@ import re
 import subprocess
 import sys
 import os
+import time
 
 
 LABEL = "com.eass.a-system.fusion-awake"
 DEFAULT_VMRUN = Path("/Applications/VMware Fusion.app/Contents/Library/vmrun")
 VMX_EXECUTABLE = "/Applications/VMware Fusion.app/Contents/Library/vmware-vmx"
 SOURCE = Path(__file__).with_name("guard_fusion_awake.sh")
+# 刚 bootout 后 launchd 可能还没卸载完，紧接着 bootstrap 会失败（exit 5，2026-11-22 实际遇到，守护停了约10秒），
+# 所以失败后等一会儿重试。
+BOOTSTRAP_ATTEMPTS = 5
+BOOTSTRAP_RETRY_SECONDS = 2.0
 
 
 def detect_vmx() -> Path:
@@ -34,6 +39,20 @@ def process_pattern(vmx: Path) -> str:
     def escape(value: str) -> str:
         return re.sub(r"([\\.\[\]()*+?^$|{}])", r"\\\1", value)
     return "^" + escape(VMX_EXECUTABLE) + " .*" + escape(str(vmx)) + "$"
+
+
+def bootstrap(domain: str, plist: Path, *, sleep=time.sleep) -> int:
+    """加载守护，失败时重试；返回第几次成功。全部失败时报错并写明守护没有运行、怎么手动恢复。"""
+    command = ["launchctl", "bootstrap", domain, str(plist)]
+    for attempt in range(1, BOOTSTRAP_ATTEMPTS + 1):
+        result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=20)
+        if result.returncode == 0:
+            return attempt
+        if attempt < BOOTSTRAP_ATTEMPTS:
+            sleep(BOOTSTRAP_RETRY_SECONDS)
+    reason = (result.stderr or "").strip() or ("exit %s" % result.returncode)
+    raise RuntimeError("加载防休眠守护失败%d次（%s）：守护现在没有运行，Mac可能自动休眠导致虚拟机暂停。"
+                       "请手动运行：launchctl bootstrap %s '%s'" % (BOOTSTRAP_ATTEMPTS, reason, domain, plist))
 
 
 def install(vmx: Path, *, home: Path | None = None) -> dict:
@@ -63,9 +82,8 @@ def install(vmx: Path, *, home: Path | None = None) -> dict:
     # Reuse the installed label, replacing the former machine-specific helper.
     subprocess.run(["launchctl", "bootout", f"{domain}/{LABEL}"],
                    capture_output=True, check=False, timeout=20)
-    subprocess.run(["launchctl", "bootstrap", domain, str(plist)],
-                   capture_output=True, check=True, timeout=20)
-    return {"status": "INSTALLED", "plist": str(plist), "vmx": str(vmx),
+    attempts = bootstrap(domain, plist)
+    return {"status": "INSTALLED", "plist": str(plist), "vmx": str(vmx), "bootstrap_attempts": attempts,
             "screen_lock_allowed": True, "display_sleep_allowed": True,
             "starts_vm": False, "closed_lid_supported": False}
 
