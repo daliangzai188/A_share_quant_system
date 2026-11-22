@@ -69,6 +69,49 @@ class ReminderRunTests(unittest.TestCase):
         self.assertEqual(len(self.sent), 2)
 
 
+class RealPushTests(unittest.TestCase):
+    """2026-11-23：上面的测试把推送函数换掉了，真正发请求那一步从没测过；分组名没转码，
+    7月起每次推送都在发请求前报 'ascii' codec 错误。这里用本机临时服务真发一次。"""
+
+    def test_every_real_message_link_is_plain_ascii(self) -> None:
+        for day in (datetime.date(2026, 11, 7), FIRST_SATURDAY_OCT, datetime.date(2027, 1, 2)):
+            for title, body in reminder.maintenance_messages(day):
+                link = reminder.push_url("https://bark.example/key", title, body)
+                self.assertTrue(link.isascii(), link)
+
+    def test_push_reaches_server_with_title_body_and_group(self) -> None:
+        import http.server
+        import threading
+        import urllib.parse
+
+        received: list[str] = []
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802 - http.server 规定的名字
+                received.append(self.path)
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"{}")
+
+            def log_message(self, *_args) -> None:
+                return None
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join, 5)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+
+        title, body = reminder.maintenance_messages(datetime.date(2026, 11, 7))[0]
+        base = f"http://127.0.0.1:{server.server_address[1]}/key"
+        self.assertTrue(reminder._push(base, title, body))
+        self.assertEqual(len(received), 1)
+        path, _, query = received[0].partition("?")
+        self.assertEqual([urllib.parse.unquote(part) for part in path.split("/")[2:]], [title, body])
+        self.assertEqual(urllib.parse.parse_qs(query), {"group": ["A股实盘"]})
+
+
 class InstallerTests(unittest.TestCase):
     def test_launchd_job_never_points_into_desktop(self) -> None:
         payload = installer.plist_payload()

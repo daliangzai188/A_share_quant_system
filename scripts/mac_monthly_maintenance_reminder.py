@@ -77,12 +77,17 @@ def load_bark_url(config_path: Path = CONFIG_PATH) -> str:
     return str(value.get("bark_url", "") if isinstance(value, dict) else "").strip().rstrip("/")
 
 
+def push_url(url: str, title: str, body: str) -> str:
+    """Bark推送链接。链接里每个字都要转码（同 src/notify.py）：2026-07 第一版把分组名“A股实盘”
+    直接拼进链接，Python 发请求前就报 'ascii' codec 错误，提醒一次都没推出去（2026-11-23 查出）。"""
+
+    query = urllib.parse.urlencode({"group": "A股实盘"})
+    return f"{url}/{urllib.parse.quote(title, safe='')}/{urllib.parse.quote(body, safe='')}?{query}"
+
+
 def _push(url: str, title: str, body: str) -> bool:
     try:
-        with urllib.request.urlopen(
-            f"{url}/{urllib.parse.quote(title)}/{urllib.parse.quote(body)}?group=A股实盘",
-            timeout=20,
-        ) as response:
+        with urllib.request.urlopen(push_url(url, title, body), timeout=20) as response:
             return 200 <= response.status < 300
     except Exception as exc:  # noqa: BLE001 - 失败写日志并以非零退出
         print(f"推送失败：{title}：{exc}", file=sys.stderr)
