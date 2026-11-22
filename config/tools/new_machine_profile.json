@@ -67,5 +67,11 @@
     "manual_sleep_supported": false,
     "reference_lock_test_seconds": 70.8,
     "reference_lock_vm_qmt_sync_result": "PASS"
+  },
+  "mac_watchdog": {
+    "launch_agent": "com.asystem.vm-watchdog",
+    "install": "/usr/bin/python3 scripts/install_mac_vm_watchdog.py --no-auto-start",
+    "auto_start_vm": false,
+    "note": "虚拟机关机、Windows停在登录界面、QMT外通知转发程序或同步停了时报警；心跳文件和过期线见scripts/mac_vm_watchdog.py。2026-10换机时漏装，2026-11-23补，见docs/new_mac_rebuild_migration.md 8.6.1"
   }
 }

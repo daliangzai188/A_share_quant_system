@@ -5,6 +5,11 @@
 该目录中的配置并调用 VMware ``vmrun list``，不访问 macOS 受保护的 Desktop；
 从而避免旧版 launchd 哨兵因 TCC ``Operation not permitted`` 永久退出。
 通过本机 Syncthing 索引核对交易心跳，避免把“VM开着但Windows未登录”判为恢复。
+
+2026-11-23：心跳改看 QMT 外通知转发程序的日志 logs/qmt_notify_forwarder.log（每10分钟写一行 alive，
+10-22~11-23 最长间隔14分钟，周末夜里也写），过期线改为30分钟。原来看的 logs/daemon_heartbeat.txt 是外部守护进程写的，
+10-22 实盘换成 QMT 原生版后不再更新；这台 Mac 10 月换机后也一直没装本哨兵。QMT 里策略卡住由转发程序自己报警，
+本哨兵管的是它管不到的：虚拟机关了、Windows 停在登录界面、转发程序或同步停了。
 """
 from __future__ import annotations
 
@@ -24,6 +29,8 @@ SUPPORT_DIR = Path.home() / "Library" / "Application Support" / "A_System"
 CONFIG_PATH = SUPPORT_DIR / "vm_watchdog.json"
 STATE_PATH = SUPPORT_DIR / "vm_watchdog_state.json"
 BEIJING = ZoneInfo("Asia/Shanghai")
+HEARTBEAT_FILE = "logs/qmt_notify_forwarder.log"   # 相对项目同步目录
+HEARTBEAT_STALE_SEC = 1800
 
 
 def _load_json(path: Path) -> dict:
@@ -96,7 +103,8 @@ def _heartbeat_status(config: dict, now_ts: float) -> dict:
     folder = str(config.get("syncthing_folder", "") or "")
     if not key or not folder:
         raise ValueError("Syncthing心跳检查配置不完整")
-    query = urllib.parse.urlencode({"folder": folder, "file": "logs/daemon_heartbeat.txt"})
+    heartbeat_file = str(config.get("heartbeat_file", "") or HEARTBEAT_FILE)
+    query = urllib.parse.urlencode({"folder": folder, "file": heartbeat_file})
     request = urllib.request.Request(base + "/rest/db/file?" + query, headers={"X-API-Key": key})
     with urllib.request.urlopen(request, timeout=10) as response:
         payload = json.load(response)
@@ -112,9 +120,9 @@ def _heartbeat_status(config: dict, now_ts: float) -> dict:
     age = now_ts - modified.timestamp()
     if age < -120:
         raise ValueError("交易心跳时间超前，请检查Windows和Mac时钟")
-    stale_sec = max(int(config.get("heartbeat_stale_sec", 900)), 120)
+    stale_sec = max(int(config.get("heartbeat_stale_sec", HEARTBEAT_STALE_SEC)), 120)
     return {"status": "HEALTHY" if age <= stale_sec else "STALE",
-            "age_sec": max(0, int(age)), "last_modified": modified.isoformat()}
+            "age_sec": max(0, int(age)), "last_modified": modified.isoformat(), "file": heartbeat_file}
 
 
 def _check_runtime(config: dict, state: dict, now: datetime, now_ts: float, alert_gap: int) -> int:
@@ -136,10 +144,10 @@ def _check_runtime(config: dict, state: dict, now: datetime, now_ts: float, aler
         return 0
     last_alert = float(state.get("last_runtime_alert", 0.0) or 0.0)
     if now_ts - last_alert >= alert_gap:
-        detail = (f"交易心跳已有{runtime['age_sec'] // 60}分钟未更新。"
+        detail = (f"QMT外通知转发程序的日志已有{runtime['age_sec'] // 60}分钟没有同步到Mac。"
                   if runtime["status"] == "STALE" else "无法读取本机同步心跳索引，交易程序状态未知。")
         if _notify(config, "🛑 虚拟机开着，但交易程序未确认运行",
-                   detail + "请检查Windows是否停在登录界面，以及daemon/keeper和同步是否运行。"):
+                   detail + "请检查Windows是否停在登录界面，以及QMT、通知转发程序和同步是否运行。"):
             state["last_runtime_alert"] = now_ts
     _save_state(state)
     return 1

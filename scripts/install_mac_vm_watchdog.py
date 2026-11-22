@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""安装不访问 Desktop 的 VMware 虚拟机独立哨兵。"""
+"""安装不访问 Desktop 的 VMware 虚拟机独立哨兵。
+
+运行（Mac 终端，项目目录）：/usr/bin/python3 scripts/install_mac_vm_watchdog.py --no-auto-start
+--no-auto-start：只报警，不在工作日早上自动开虚拟机（开机后 Windows 仍要人登录，自己恢复不了交易）。
+
+2026-11-23：心跳文件和过期线只由 scripts/mac_vm_watchdog.py 决定，这里不再写进配置；装完等哨兵第一次检查，
+把结果一起打印出来（first_check），不再出现“装上了但从没检查成功”。
+"""
 from __future__ import annotations
 
 import argparse
@@ -9,6 +16,7 @@ import plistlib
 import shutil
 import subprocess
 import sys
+import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -18,6 +26,7 @@ SOURCE = PROJECT_ROOT / "scripts" / "mac_vm_watchdog.py"
 SUPPORT_DIR = Path.home() / "Library" / "Application Support" / "A_System"
 INSTALLED_SCRIPT = SUPPORT_DIR / "mac_vm_watchdog.py"
 CONFIG_PATH = SUPPORT_DIR / "vm_watchdog.json"
+STATE_PATH = SUPPORT_DIR / "vm_watchdog_state.json"   # 和 mac_vm_watchdog.STATE_PATH 相同（测试核对）
 PLIST_PATH = Path.home() / "Library" / "LaunchAgents" / "com.asystem.vm-watchdog.plist"
 LABEL = "com.asystem.vm-watchdog"
 LEGACY_LABEL = "com.asystem.watchdog"
@@ -77,8 +86,28 @@ def _syncthing_heartbeat_config() -> dict:
     key = gui.findtext("apikey", "")
     if len(matches) != 1 or not key:
         raise RuntimeError("未能唯一识别项目同步目录或本机API密钥")
+    # 心跳文件和过期线不写进配置，由 mac_vm_watchdog.py 的 HEARTBEAT_FILE、HEARTBEAT_STALE_SEC 决定（2026-11-23）
     return {"syncthing_url": "http://" + address, "syncthing_api_key": key,
-            "syncthing_folder": matches[0].get("id"), "heartbeat_stale_sec": 900}
+            "syncthing_folder": matches[0].get("id")}
+
+
+def first_check(started_at: float, *, timeout: float = 30.0, state_path: Path = STATE_PATH) -> dict:
+    """等哨兵装完后的第一次检查（launchd 加载时立即跑一次），返回它记下的结果。"""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            if state_path.stat().st_mtime >= started_at:
+                state = json.loads(state_path.read_text(encoding="utf-8"))
+                beat = state.get("heartbeat") or {}
+                status = state.get("runtime_status", "")
+                if state.get("was_down"):
+                    status = "VM_NOT_RUNNING"
+                return {"runtime_status": status or "UNKNOWN", "heartbeat_file": beat.get("file"),
+                        "heartbeat_age_sec": beat.get("age_sec")}
+        except (OSError, ValueError):
+            pass  # 可以忽略：哨兵还没写完状态文件，下一秒再读
+        time.sleep(1)
+    return {"runtime_status": "NO_CHECK_YET", "hint": "30秒内没等到第一次检查，看 /tmp/com.asystem.vm-watchdog.err"}
 
 
 def install(*, vmx: Path | None, auto_start: bool) -> dict:
@@ -136,6 +165,7 @@ def install(*, vmx: Path | None, auto_start: bool) -> dict:
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
+    started_at = time.time()
     loaded = subprocess.run(
         ["launchctl", "bootstrap", f"gui/{uid}", str(PLIST_PATH)],
         check=False,
@@ -158,7 +188,7 @@ def install(*, vmx: Path | None, auto_start: bool) -> dict:
         "auto_start_weekday_morning": bool(auto_start),
         "runtime_location": str(INSTALLED_SCRIPT),
         "desktop_tcc_dependency": False,
-        "runtime_heartbeat_checked": True,
+        "first_check": first_check(started_at),
     }
 
 
