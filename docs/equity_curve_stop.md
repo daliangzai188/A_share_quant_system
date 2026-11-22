@@ -265,7 +265,7 @@ python scripts/update_equity_curve_stop.py --signal-date YYYYMMDD   # 手动重�
 | 临时复核触发检查的推送状态 | `data/state/review_trigger_state.json`；配置与“已复核”登记在`config/config.json`的`review_triggers` |
 | 实盘逐笔成交汇总 | `reports/execution_tracking/trade_completion_summary.csv` |
 | M候选单 | 收盘信号脚本`scripts/run_strategy_m_signal.py`写`reports/strategy_m/`（QMT原生版在QMT内）；QMT外逐笔对账按当晚Tushare数据重算（`src/strategy_m_reference.py`） |
-| ACE+M研究基准（回放脚本与结果） | 同步目录外`~/A_System_复核/2026-11-11_M大法研究/`：`scripts/m14_verify.py`、`out/m7/m14_verify.csv` |
+| ACE+M研究基准（回放脚本与结果） | 回放脚本在仓库`research/ace_m_benchmark/m14_verify.py`（2026-11-22从研究目录移入，输出与原脚本逐字节相同，约3秒）；冻结数据和原结果在同步目录外`~/A_System_复核/2026-11-11_M大法研究/`（`out/m7/m14_verify.csv`） |
 | 实盘买入/卖出分片 | `reports/execution_tracking/buy_execution_slices.csv`、`sell_execution_slices.csv` |
 | 次日停手判定（只保留最新一天） | `data/state/equity_curve_stop_decision.json` |
 | 影子净值全序列（逐日判定用它重算） | `reports/equity_curve_stop/shadow_nav_latest.csv` |
@@ -327,7 +327,7 @@ python scripts/update_equity_curve_stop.py --signal-date YYYYMMDD   # 手动重�
 | 正式认证场景 | ACE部分沿用`acde_plan_jia_stop_gate_20260919`；M没有单独的正式认证场景，研究与独立复核见`docs/strategy_m.md` |
 | 停手参数（永久固定） | 影子净值滞后6个交易日，低于其60日均线即停手（影子账只含A/C/E，不含D和M） |
 | 仓位 | ACE：不停手82.5%，停手20%；M：ACE当天没有交易也没有持仓时82.5%，否则只用闲置资金、最多17.5%；ACE+M合计最高99.5% |
-| 评估口径 | ACE+M研究口径：2019-12-02起单账户连续回放，仓位如上；固定A>C>E（D历史回放按0笔），M同时最多1只、M买卖滑点各0.1%；费用、T+1、涨跌停、资金占用不变；最大回撤按每日收盘市值；月均=复利^(21/交易日数)-1。回放脚本在同步目录外：`~/A_System_复核/2026-11-11_M大法研究/scripts/m14_verify.py` |
+| 评估口径 | ACE+M研究口径：2019-12-02起单账户连续回放，仓位如上；固定A>C>E（D历史回放按0笔），M同时最多1只、M买卖滑点各0.1%；费用、T+1、涨跌停、资金占用不变；最大回撤按每日收盘市值；月均=复利^(21/交易日数)-1。回放脚本：`research/ace_m_benchmark/m14_verify.py`（冻结数据在同步目录外`~/A_System_复核/2026-11-11_M大法研究/`） |
 | 样本内区间 | 2023-08~2026-07（甲v1规则与M规则挑选所用窗口） |
 | 样本外分段 | 2019-12~2023-07（可按自然年再分：2019-12、2020、2021、2022、2023-01~07）、2026-08~2026-12，之后每个自然年一段 |
 | 研究期最大回撤 | -31.7%（按收盘市值，2022-08-29→2022-12-07；按已实现记账-31.5%，2024-07-25→2024-08-12）；同口径只用ACE -29.3% |
@@ -502,7 +502,7 @@ D没有回测记录（历史回放0笔），不单独判断。“最近12个月�
 **上线前的数值（数据截至2026-11-10）**：A腿选股条件已连续4个月（8~11月）低于冻结线，会推中级警告；其余正常——ACE+M回放
 回撤-22.7%（8-13起），M最近12个月+181.5%，A/C/E单独+138.5%/+351.9%/+397.1%，ACE+M最近12个月领先只用ACE +20.9%。
 
-**回放怎么算**：`src/ace_m_replay.py`把上线依据的研究回放（`~/A_System_复核/2026-11-11_M大法研究/scripts/m14_verify.py`
+**回放怎么算**：`src/ace_m_replay.py`把上线依据的研究回放（`research/ace_m_benchmark/m14_verify.py`，原在`~/A_System_复核/2026-11-11_M大法研究/scripts/`
 的`simulate`）原样搬进生产，用研究的输入逐位复现（295,345.586176倍、547笔逐笔相同）。生产数据与研究的差别：
 M候选单218个买入日里8天不同（6天是历史ST名称——生产对过去的日子只能用现在的股票名称；2天是数据缺口），
 整个回放303,604倍对295,346倍、548笔对547笔，按成本记账的最大回撤都是-31.46%；只用ACE完全相同。

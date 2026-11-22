@@ -142,3 +142,11 @@ data/research/strategy_d_intraday/*
 !data/research/strategy_d_intraday/mother_pool_full_window.csv
 !data/research/strategy_d_intraday/minute_target_manifest_full_window.csv
 !data/research/history_supplement_20261010/
+
+# vmtools：编译产物和截图不进 git（2026-11-22）
+tools/vmtools/vmctl
+tools/vmtools/*.jpg
+tools/vmtools/*.png
+tools/vmtools/*.bmp
+tools/vmtools/*.npy
+tools/vmtools/*.log

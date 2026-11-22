@@ -145,3 +145,21 @@
 - 影子模式（模拟账户）和实盘模式的状态分开存放（`AS_QNS` / `AS_QNL`），影子数据不会进入实盘。
 - 下单前先把执行引擎的提交记录写入 QMT 状态存储，但不让慢服务器拖住委托（2026-11-07 用户确认）：15 分钟内有过超过 5 秒的存储读写就跳过这次保存，否则一次读写超过 5 秒即放弃保存，委托照常发出，提交记录进下一次保存。万一此后 QMT 崩溃、恢复出的记录缺了这笔委托，开机核对（与券商当日委托对账）会停止交易并推送，人工确认后才继续，不会重复下单。交易时段只有 logs/ 健康文件变化时最多 30 分钟保存一次。
 - 数据不完整（日线不足、涨停候选缺逐笔、⑬缺判定）一律按生产规则 fail-closed，不生成计划或不开新仓。
+
+## 附：Claude 用 vmtools 操作虚拟机 GUI 的注意事项（2026-11-22 从本机记忆移入 git）
+
+工具在仓库 `tools/vmtools/`（locked.sh、vmfront.sh、vmctl、shot.sh、idle.sh，说明见其中 README；首次用先 `sh tools/vmtools/build_vmctl.sh` 编译 vmctl）。截图存 `~/A_System_vm_shots/`，不进仓库。用户在用电脑时不操作虚拟机（先查 idle.sh / locked.sh）。
+
+- `vmctl click X Y` 用 Mac 全局屏幕坐标（点）；`shot.sh` 固定截 `-R225,38,1256,839`，所以 **屏幕坐标 = 截图坐标 + (225, 38)**。
+  VMware 窗口在 (253,38) 时，截图左边 28 像素是别的 Mac 窗口，截图 x<28 的位置点下去会点到 Mac 上别的应用。
+  每次操作前用 `osascript -e 'tell application "System Events" to tell process "VMware Fusion" to get {position, size} of window 1'` 核对窗口位置。
+  2026-11-18 换版时按截图坐标直接点，误点了两下 Claude 桌面应用侧边栏（没造成操作）。
+- `vmctl type` 只能打 ASCII，含中文会以 exit 4 中途失败，PowerShell 里留下半截命令（续行 `>>`），先 `vmctl key c ctrl` 再重打。
+  查 QMT 日志用 ASCII 关键字（如 `NOTIFY|Traceback|started: mode=|EQUITY_CURVE_STOP`）。长命令偶尔丢字符，看回显再判断结果。
+- 组合键写法是 `vmctl key a ctrl`、`vmctl key v ctrl`、`vmctl key home ctrl`（键名在前、修饰键在后）；写成 `key ctrl+a`
+  会被当成字母 c 打出去（11-19 在 QMT 编辑器里多打了两个 c，后来全选粘贴覆盖掉了）。
+- 粘贴 4.8MB 策略文件约 20 秒，粘完看编辑器第 3 行 `# code xxx` 是否等于新版本代码摘要再编译。
+- 截图里 QMT 关键位置（VMware 在 253,38 时，截图坐标）：模型研究 (54,350)、模型交易 (54,425)、策略行 ■/▶ 在“操作”列
+  （表格可能横向滚动，需拖底部滚动条 y≈437）、编辑器“编译”(705,153)、编辑器关闭 X (1122,70)、“编译输出”页签 (199,736)、
+  任务栏终端图标 (768,815)。
+- QMT 日志：`C:\QMT\GJQMT\userdata\log\XtClient_FormulaOutput_YYYYMMDD.log`（UTF8）。

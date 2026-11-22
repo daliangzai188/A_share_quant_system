@@ -3,7 +3,8 @@
 # 在现环境下只会报"找不到 UTM 命令行工具"而不生效。
 # 现行的防休眠/保活守护是 launchd 的 com.eass.a-system.fusion-awake
 #   → ~/Library/LaunchAgents/com.eass.a-system.fusion-awake.plist
-#   → ~/A_System_Rebuild/2026-10-07/lock_screen_runtime/guard_fusion_awake.sh
+#   → 本仓库 tools/guard_fusion_awake.sh，用 tools/install_mac_fusion_awake.py 安装
+#     （2026-11-22前运行的是 git 外的 ~/A_System_Rebuild/2026-10-07/lock_screen_runtime/guard_fusion_awake.sh，逻辑相同）
 # 保留本文件仅作 UTM 分支的历史参考，勿在生产用它守护交易虚拟机。
 set -euo pipefail
 
