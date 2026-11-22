@@ -284,6 +284,22 @@ py -3.11 scripts\install_windows_runtime_guard.py --status
 测试只读取本地认证心跳，没有发送券商请求或委托。它验证本次运行环境，不能替代将来新机的验收。
 新机应插电、保持盖子打开，实际锁屏至少一分钟后再解锁，核对上述心跳和同步文件。
 
+### 8.6.1 Mac 独立哨兵（掉线报警）
+
+虚拟机里的程序能自己发报警，但虚拟机关机、Windows 停在登录界面、VMware 出错时就发不出来。Mac 端独立哨兵每 5 分钟看一次：
+交易虚拟机是否在运行；QMT 外通知转发程序的日志 `logs/qmt_notify_forwarder.log`（每 10 分钟写一行）是否在 30 分钟内同步到 Mac。
+不对就给手机发响铃警报（一小时最多一次），恢复时再推一条。它只读本机 Syncthing 的记录，不读桌面目录；QMT 里策略卡住由转发程序自己报警。
+
+Mac 在项目目录运行（先装好 VMware Fusion、配好 Syncthing 项目目录、`.env` 里有 `BARK_URL`）：
+
+```sh
+/usr/bin/python3 scripts/install_mac_vm_watchdog.py --no-auto-start
+```
+
+`--no-auto-start`：只报警，不在工作日早上自动开虚拟机（开机后 Windows 还要人登录，自己恢复不了交易）。
+验收：输出里 `first_check.runtime_status` 为 `HEALTHY`，`launchctl print gui/$(id -u)/com.asystem.vm-watchdog` 显示任务已加载。
+2026-10 换到这台 Mac 时漏装了它，2026-11-23 才发现，所以列进换机清单；发布脚本每次发布后也会提示 Mac 上没装或和 git 不一样。
+
 ### 8.7 必须私下备份的东西
 
 Git 已保存可复用代码、无密钥配置和操作流程；私下另备份真实 `.env`、虚拟机加密密码、已验证安装包，以及最终停机交易账本。
