@@ -57,7 +57,7 @@ sections=$(grep -c "^== " "$LOG" | tr -d ' ')
 passed=$(grep -c "^RESULT PASS" "$LOG" | tr -d ' ')
 others=$(grep "^RESULT" "$LOG" | grep -vc "^RESULT PASS" | tr -d ' ')
 echo "回归：RESULT PASS $passed 节，其它结果 $others 节"
-[ "$others" = "0" ] && [ "$passed" -ge 33 ] || { echo "回归没有全部通过"; cleanup; exit 1; }
+[ "$others" = "0" ] && [ "$passed" -ge 34 ] || { echo "回归没有全部通过"; cleanup; exit 1; }
 grep -q "^drill exit 0" "$LOG" || { echo "整日演练没有正常结束"; cleanup; exit 1; }
 grep -q "^drill tracebacks 0" "$LOG" || { echo "整日演练里有异常（$(grep '^drill tracebacks' "$LOG")）"; cleanup; exit 1; }
 $PY36 inqmt/compile36_check.py inqmt/qn_core_full.py

@@ -29,6 +29,8 @@ echo "== no disk reads";  PYTHONIOENCODING=utf-8 $PY inqmt/test_no_disk_reads.py
 echo "== store link";     PYTHONIOENCODING=utf-8 $PY inqmt/test_store_link.py "$S" > "$O/store_link.txt" 2>&1; grep -E "^[0-9]\. |^RESULT" "$O/store_link.txt"
 echo "== trading switch"; PYTHONIOENCODING=utf-8 $PY inqmt/test_trading_switch.py "$S" > "$O/trading_switch.txt" 2>&1; grep -E "^[0-9]\. |^RESULT" "$O/trading_switch.txt"
 echo "== partial day";    (cd inqmt && PYTHONIOENCODING=utf-8 $PY test_partial_day.py > "../$O/partial_day.txt" 2>&1); grep -E "^partial|^bars|^RESULT" "$O/partial_day.txt"
+# 2026-11-23：第①步取不全逐笔就拒绝、被终止后不写涨停池、取全才写全部候选（提速不能造成缺数据）
+echo "== missing ticks";  (cd inqmt && PYTHONIOENCODING=utf-8 $PY test_missing_ticks.py qn_core_full.py > "../$O/missing_ticks.txt" 2>&1); grep -E "^[0-9]\. |^RESULT" "$O/missing_ticks.txt"
 echo "== freeze";         PYTHONIOENCODING=utf-8 $PY inqmt/test_freeze.py "$S" > "$O/freeze.txt" 2>&1; grep -E "^[0-9]\. |^RESULT" "$O/freeze.txt"
 echo "== stop slow save";  PYTHONIOENCODING=utf-8 $PY inqmt/test_stop_slow_save.py "$S" > "$O/stop_slow_save.txt" 2>&1; grep -E "^[0-9]\. |^RESULT" "$O/stop_slow_save.txt"
 echo "== store switch";   PYTHONIOENCODING=utf-8 $PY inqmt/test_store_switch.py "$S" > "$O/store_switch.txt" 2>&1; grep -E "^[0-9]\. |^RESULT" "$O/store_switch.txt"

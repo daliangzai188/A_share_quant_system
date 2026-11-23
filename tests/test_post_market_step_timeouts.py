@@ -11,6 +11,7 @@ import os
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 os.environ['A_SYSTEM_DISABLE_NOTIFICATIONS'] = '1'
 
@@ -58,6 +59,25 @@ class StepTimeoutTests(unittest.TestCase):
             self.assertTrue(daemon.job_post_market('20261123', offline=True))
         calls = [(c.args[0], c.kwargs['timeout']) for c in run.call_args_list]
         self.assertEqual(calls, EXPECTED)
+
+    def test_step_one_over_its_limit_is_a_failure_not_partial_data(self):
+        """用户要求：不能“只拉了一部分涨停股、时间到了就当拉完了”。第①步超时（run_script 终止脚本并返回失败）
+        时就地重试一次，仍失败就整条流水线停止：后面的步骤一个都不跑，不推开仓计划，不标记收盘完成。"""
+        with patch_daemon('snapshot_realized_strategy_equity'), \
+             patch_daemon('load_json_config', return_value={}), \
+             patch_daemon('prev_n_trade_days', return_value=datetime.date(2026, 11, 19)), \
+             patch_daemon('run_script', return_value=False) as run, \
+             patch_daemon('_log_post_market_step_brief'), \
+             patch_daemon('push_open_plan_notification') as push, \
+             patch_daemon('_log_decision_chain_summary') as summary, \
+             patch_daemon('mark_post_market_done') as done, \
+             patch('time.sleep'):
+            self.assertFalse(daemon.job_post_market('20261123', offline=True))
+        self.assertEqual([(c.args[0], c.kwargs['timeout']) for c in run.call_args_list],
+                         [('collect_all_data.py', 1800), ('collect_all_data.py', 1800)])
+        push.assert_not_called()
+        summary.assert_not_called()
+        done.assert_not_called()
 
     def test_collect_limit_constant(self):
         self.assertEqual(daemon.TIMEOUT_COLLECT_STEP, 1800)
