@@ -1084,7 +1084,7 @@ class CurrentPortfolioRuntimeTests(unittest.TestCase):
         ):
             self.assertIn(expected, message)
         self.assertIn(
-            "④ D盘中兜底：不触发｜无候选",
+            "④ D盘中兜底：不启动｜券商仍有本系统策略仓",
             message,
         )
         log.warning.assert_not_called()

@@ -1858,15 +1858,53 @@ def _build_candidate_choice_lines(
     return lines
 
 
+def _d_rule_block_reason(action_date: str, day_label: str, positions: list[dict[str, Any]]) -> str:
+    """操作日D因方案甲状态或M占用而不启动的原因（只读、只做展示）；空串=规则允许D从09:30启动。
+
+    与组合状态机 BLOCK_D_INTRADAY_MONITOR 同口径（M计划=SIGNAL_READY且有候选，同 has_m_plan_today）；
+    持仓和A/C/E计划另由流程图【0】【1】表示。positions 是调用方已读的未平仓持仓。"""
+    try:
+        gate_mode = _ace_gate_mode_for(action_date)
+        if gate_mode == ACE_GATE_REDUCED:
+            return (f"方案甲停手期（影子净值低于60日均线），ACE按"
+                    f"{_entry_pct_text(ace_base_target_pct(gate_mode), 1.0)}小仓执行，D{day_label}不启动")
+        if gate_mode != ACE_GATE_FULL:
+            return f"方案甲判定无效（缺失、过期或版本不符），A/C/E/D都不开新仓，D{day_label}不启动"
+        from src.rolling_signal_store import latest_signal_for_buy_date
+
+        signal = latest_signal_for_buy_date(M_SIGNAL_RECENT_PATH, str(action_date)) or {}
+        if (str(signal.get("status", "")) == SIGNAL_READY and signal.get("candidates")) or any(
+                position_in_family(position, M_LEG) for position in positions):
+            return f"M持仓或M开仓计划占用资金，D{day_label}不启动（D只在账户含M完全空仓时运行）"
+        return ""
+    except Exception as exc:
+        return f"D能否启动读取失败（只影响本条显示，不影响交易）：{exc}"
+
+
+def _d_chain_text(blocked, d_holding, selected_leg, d_block_reason, day_label) -> str:
+    """开仓决策链里D这一行：写明D为什么不启动；只做展示。"""
+    if d_holding:
+        return "已有D策略仓，串行资金门禁生效"
+    if blocked:
+        return "不启动｜券商仍有本系统策略仓"
+    if selected_leg:
+        return f"不启动｜{day_label}已有{selected_leg}正式开仓计划，按全日互斥D不扫描、不记录、不下单"
+    if d_block_reason:
+        return f"不启动｜{d_block_reason}"
+    return "规则允许启动｜09:30起盘中扫描，满足正式条件才开仓"
+
+
 def _log_decision_chain_lines(
     signal_date, blocked, execution_expired, original_final_buy, broadcast_selected, execution_block_reason,
     action_date, path_tag, d_holding, candidate_text, hold_line, equity_curve_stop_reason, final_buy,
-    selected_leg, day_label, live_sizing,
+    selected_leg, day_label, live_sizing, d_block_reason="",
 ):
-    """拼出决策优先级流程图、逐腿决策链和最终开仓计划，作为一条多行日志输出（从 _log_decision_chain_summary 拆出，语句原样）。"""
+    """拼出决策优先级流程图、逐腿决策链和最终开仓计划，作为一条多行日志输出（从 _log_decision_chain_summary 拆出）。
+    2026-11-24：D被方案甲停手、M占用等挡住时，【2】和D那一行写明原因（以前只写“不触发｜无候选”，像是扫描过没找到）。"""
     # 流程图、逐腿决策链、最终计划必须作为同一条多行日志原子输出；
     # 周期播报时三块一起出现，不能只剩最终摘要。
     bottom = "┃━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    d_allowed = not blocked and not selected_leg and not d_block_reason
     lines = [
         "┃━━━━━━━━━━━━ 决策优先级流程图 ━━━━━━━━━━━━",
         f"┃ 信号日：{signal_date}；操作日：{action_date or '未知'}",
@@ -1877,19 +1915,23 @@ def _log_decision_chain_lines(
         "┃   └─ 否",
         "┃        ↓",
         "┃ 【1】今日存在A/C/E正式候选或开仓计划？",
-        "┃   ├─ 是 → 按A>C>E取首个计划执行；D全日不扫描、不记录、不下单",
+        "┃   ├─ 是 → 按A>C>E取首个计划执行；D全日不扫描、不记录、不下单"
+        + (path_tag if selected_leg and not blocked else ""),
         "┃   └─ 否",
         "┃        ↓",
-        "┃ 【2】D从09:30开始盘中扫描/记录，满足正式条件才允许开仓",
-        f"┃   ├─ D已成交 → 写入持仓并回到【0】{path_tag if d_holding else ''}",
-        f"┃   └─ D未成交/未触发 → 空仓{path_tag if not blocked and not selected_leg else ''}",
+        "┃ 【2】D今日能启动吗？（方案甲停手期、M有持仓或开仓计划时不启动）",
+        "┃   ├─ 否 → D全日不扫描、不记录、不下单"
+        + (f"｜{d_block_reason}{path_tag}" if d_block_reason else ""),
+        "┃   └─ 能 → 09:30起盘中扫描/记录，满足正式条件才允许开仓",
+        f"┃        ├─ D已成交 → 写入持仓并回到【0】{path_tag if d_holding else ''}",
+        f"┃        └─ D未成交/未触发 → 空仓{path_tag if d_allowed else ''}",
         bottom,
         "┃",
         "┃━━━━━━━━━━━━━━ 开仓决策链 ━━━━━━━━━━━━━━",
         f"┃ ① A主策略：{candidate_text['A']}",
         f"┃ ② C强势龙头：{candidate_text['C']}",
         f"┃ ③ E策略：{candidate_text['E']}",
-        f"┃ ④ D盘中兜底：{'已有D策略仓，串行资金门禁生效' if d_holding else '不触发｜无候选'}",
+        f"┃ ④ D盘中兜底：{_d_chain_text(blocked, d_holding, selected_leg, d_block_reason, day_label)}",
         "┃ 账户空仓时首选："
         + (
             _format_strategy_candidate(
@@ -1927,7 +1969,8 @@ def _log_decision_chain_lines(
     elif final_buy:
         lines.append(f"┃ ★ 开仓计划：{_format_live_plan_line(final_buy, live_sizing)}")
     else:
-        lines.append(f"┃ ★ {day_label}A/C/E均无开仓计划")
+        d_tail = d_block_reason or ("" if d_holding else "D按规则09:30起盘中扫描，满足正式条件才开仓")
+        lines.append(f"┃ ★ {day_label}A/C/E均无开仓计划" + (f"；{d_tail}" if d_tail else ""))
     lines.append(bottom)
     logger().info("\n".join(lines))
 
@@ -2078,6 +2121,10 @@ def _log_decision_chain_summary(signal_date: str) -> None:
             str(position.get("strategy_leg", "")).strip().upper() == "D"
             for position in positions
         )
+        d_block_reason = (
+            "" if blocked or selected_leg or d_holding
+            else _d_rule_block_reason(str(action_date), day_label, positions)
+        )
         candidate_text: dict[str, str] = {}
         for leg in ACE_STATIC_LEGS:
             candidate = broadcast_candidates.get(leg)
@@ -2107,7 +2154,7 @@ def _log_decision_chain_summary(signal_date: str) -> None:
         _log_decision_chain_lines(
             signal_date, blocked, execution_expired, original_final_buy, broadcast_selected,
             execution_block_reason, action_date, path_tag, d_holding, candidate_text, hold_line,
-            equity_curve_stop_reason, final_buy, selected_leg, day_label, live_sizing,
+            equity_curve_stop_reason, final_buy, selected_leg, day_label, live_sizing, d_block_reason,
         )
 
         global _last_final_plan
