@@ -1709,10 +1709,33 @@ class QnHost(object):
     # previous day before the close pipeline (10-28: 2131 bars of 10-27 were missing at 09:49)
     CACHE_WINDOWS = (('0500', '0905'), ('1135', '1255'), ('1535', '2300'))
     CACHE_HISTORY_DAYS = 80  # the collector reads ENSURE_DAYS + HISTORY_DAYS open days back
+    COLLECTOR_THREAD = 'qn-script-collect_all_data'  # the close pipeline's step 1 (QnProcess thread name)
 
     def _cache_allowed(self):
         hm = _bj_now().strftime('%H%M')
         return any(a <= hm < b for a, b in self.CACHE_WINDOWS)
+
+    def _collector_running(self):
+        return any(t.name == self.COLLECTOR_THREAD and t.is_alive() for t in _hthr.enumerate())
+
+    def _yield_to_collector(self):
+        """Caching TODAY's bars waits while the close pipeline's step 1 collects, then goes on.
+        11-23: 147 limit-up candidates (32-38 on other days) kept step 1 over its 600 s limit; it had
+        already written today's daily table before failing, so the keeper started on today's bars at
+        15:39 and its 5577 one-by-one downloads shared QMT's single data channel with every retry until
+        18:24 (the plans came at 18:26 instead of ~15:15). Today's collection does not need the keeper
+        (it builds today from the 15:00 snapshot); caching a PAST day is not paused, the collector may
+        need those bars. Returns False when the keeper has to stop or the hours end while waiting."""
+        if not self._collector_running():
+            return True
+        self.log('daily cache keeper: waiting while the close pipeline collects data')
+        t0 = _htime.time()
+        while self._collector_running():
+            if self.stopped or QN_SHUTDOWN[0] or not self._cache_allowed():
+                return False
+            _htime.sleep(5)
+        self.log('daily cache keeper: collection ended, continuing (waited %.0fs)' % (_htime.time() - t0))
+        return True
 
     def _cache_target(self, days, today):
         """The open day whose daily bars the keeper keeps in QMT's cache. 10-28: the keeper only
@@ -1748,11 +1771,16 @@ class QnHost(object):
         target = self._cache_target(days, today)
         if target is None or self.cache_done == target:
             return
+        yielding = target == today  # only today's bars wait for the close pipeline's collection
+        if yielding and not self._yield_to_collector():
+            return
         start = days[max(0, days.index(target) - self.CACHE_HISTORY_DAYS)]
         native = QnLoader(self.codebase).load('qn.native')
         universe = QN_NATIVE_SERVICE.call(native.qmt_universe)
         stale = []
         for i in range(0, len(universe), 200):
+            if yielding and not self._yield_to_collector():
+                return
             part = universe[i:i + 200]
             bars = QN_NATIVE_SERVICE.call(native.qmt_daily_bars, part, start, target)
             stale.extend(c for c in part if not bars.get(c) or bars[c][-1]['date'] < target)
@@ -1768,7 +1796,8 @@ class QnHost(object):
                 return
         t0 = _htime.time()
         for n, code in enumerate(stale, 1):
-            if self.stopped or QN_SHUTDOWN[0] or not self._cache_allowed():
+            if (self.stopped or QN_SHUTDOWN[0] or not self._cache_allowed()
+                    or (yielding and not self._yield_to_collector())):
                 self.log('daily cache keeper: paused after %d of %d downloads' % (n - 1, len(stale)))
                 return
             QN_NATIVE_SERVICE.call(native.qmt_download_daily, code, start, target)

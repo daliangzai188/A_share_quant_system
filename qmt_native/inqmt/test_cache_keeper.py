@@ -5,11 +5,115 @@ happens outside the allowed hours, and the thread ends with the strategy.
 
 Usage: python test_cache_keeper.py STRATEGY_FILE   (QMT's Python 3.6)
 """
-import os, sys, threading, time
+import csv, io, os, sys, threading, time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import run_system_local as rs
 from test_stop_threads import load, drive
+
+
+def yields_to_collector(ns, host, host_cls, service, vfs):
+    """2026-11-23: caching TODAY's bars waits while the close pipeline's step 1 (thread
+    qn-script-collect_all_data) runs and goes on after it ends; caching a past day never waits; the
+    wait ends without any QMT call when the allowed hours end."""
+    rows = csv.DictReader(io.StringIO(vfs.get_text('data/raw/trade_calendar.csv')))
+    days = sorted(r['cal_date'] for r in rows if str(r.get('is_open', '')).strip() in ('1', '1.0'))
+    today, past = days[-1], days[-2]
+    seen = []
+
+    def fake_call(fn, *args, **kwargs):
+        name = getattr(fn, '__name__', '')
+        seen.append(name)
+        if name == 'qmt_universe':
+            return ['000001.SZ', '000002.SZ']
+        if name == 'qmt_daily_bars':
+            codes, start, end = args
+            fresh = 'qmt_download_daily' in seen
+            return dict((c, [{'date': end if fresh else start}]) for c in codes)
+        if name == 'qmt_download_daily':
+            return None
+        raise AssertionError(name)
+
+    class FakeNow(object):
+        def strftime(self, f):
+            return {'%Y%m%d': today, '%H%M': '1600'}.get(f) or real_now().strftime(f)
+
+    real_now = ns['_bj_now']
+    choice = {}
+    host._cache_target = lambda d, t: choice['target']
+    ns['_bj_now'] = lambda: FakeNow()
+    service.call = fake_call
+    host_cls.CACHE_WINDOWS = (('0000', '2400'),)
+    errors = []
+
+    def run_pass():
+        try:
+            host._cache_keeper_pass()
+        except Exception as exc:  # pragma: no cover - reported below
+            errors.append(repr(exc))
+
+    def collector():
+        gate = threading.Event()
+        t = threading.Thread(target=gate.wait, name=host.COLLECTOR_THREAD)
+        t.daemon = True
+        t.start()
+        return gate, t
+
+    ok = True
+    try:
+        # 1. today's bars, step 1 running: no QMT call at all until it ends, then the pass completes
+        choice['target'] = today
+        host.cache_done = ''
+        del seen[:]
+        gate, col = collector()
+        th = threading.Thread(target=run_pass, name='keeper-test')
+        th.start()
+        time.sleep(2)
+        during = list(seen)
+        gate.set()
+        col.join()
+        th.join(20)
+        one = (during == [] and not th.is_alive() and host.cache_done == today
+               and seen.count('qmt_download_daily') == 4)
+        print('1. today, step 1 running: calls while it ran %d; after it ended done=%s downloads=%d -> %s' % (
+            len(during), host.cache_done, seen.count('qmt_download_daily'), 'ok' if one else 'FAIL'))
+        # 2. a past day: no waiting even while step 1 runs (the collector may need those bars)
+        choice['target'] = past
+        host.cache_done = ''
+        del seen[:]
+        gate, col = collector()
+        th = threading.Thread(target=run_pass, name='keeper-test')
+        th.start()
+        th.join(20)
+        two = not th.is_alive() and col.is_alive() and host.cache_done == past and seen.count('qmt_download_daily') == 2
+        gate.set()
+        col.join()
+        print('2. past day while step 1 runs: done=%s downloads=%d -> %s' % (
+            host.cache_done, seen.count('qmt_download_daily'), 'ok' if two else 'FAIL'))
+        # 3. hours end while waiting: the pass returns without calling QMT
+        choice['target'] = today
+        host.cache_done = ''
+        del seen[:]
+        gate, col = collector()
+        th = threading.Thread(target=run_pass, name='keeper-test')
+        th.start()
+        time.sleep(1)
+        host_cls.CACHE_WINDOWS = ()
+        th.join(20)
+        three = not th.is_alive() and seen == [] and host.cache_done == ''
+        gate.set()
+        col.join()
+        print('3. hours end while waiting: calls %d, done=%r -> %s' % (len(seen), host.cache_done, 'ok' if three else 'FAIL'))
+        ok = one and two and three and not errors
+        msgs = [m for m in host.messages if 'collect' in m and 'cache keeper' in m]
+        print('   keeper lines:', [m.encode('ascii', 'backslashreplace').decode()[-70:] for m in msgs[-4:]])
+        if errors:
+            print('   errors:', errors)
+    finally:
+        ns['_bj_now'] = real_now
+        del host._cache_target
+        host_cls.CACHE_WINDOWS = ()
+    return ok
 
 
 def main():
@@ -79,6 +183,8 @@ def main():
     print('target: before the close table %s, after it %s, at 15:20 %s, next morning %s' % (
         before_file, after_file, before_1535, morning))
     ok &= (before_file, after_file, before_1535, morning) == ('20301027', '20301028', '20301027', '20301028')
+    ok &= yields_to_collector(ns, host, host_cls, service, vfs)
+    service.call = call
     thread = host.cache_thread
     ns['stop'](C)
     time.sleep(6)

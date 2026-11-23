@@ -17,6 +17,7 @@ from src.utils.time_utils import now_beijing, today_beijing
 from src.strategy_equity_ledger import equity_ledger_requires_bootstrap, update_strategy_equity_ledger
 from src.daemon.common import (
     PROJECT_ROOT,
+    TIMEOUT_COLLECT_STEP,
     TIMEOUT_DATA_STEP,
     TIMEOUT_EQUITY_CURVE_STOP_STEP,
     TIMEOUT_SIGNAL_STEP,
@@ -457,7 +458,7 @@ def job_post_market(end_date: str | None = None, *, offline: bool = False) -> bo
     live_fill_scored_path = "data/processed/live_limit_up_fill_scored.csv"
 
     steps = [
-        ("collect_all_data.py",               "① 采集日线 + 涨停池",             TIMEOUT_DATA_STEP,  "约1分钟"),
+        ("collect_all_data.py",               "① 采集日线 + 涨停池",             TIMEOUT_COLLECT_STEP, "约1分钟"),
         ("clean_collected_data.py",            "② 清洗合并数据",                   TIMEOUT_DATA_STEP,  "约1分钟"),
         ("build_dynamic_features.py",          "③ 市场情绪 / 题材热度",            TIMEOUT_DATA_STEP,  "约1分钟"),
         ("score_limit_up_fill_probability.py", "④ 涨停成交概率打分",               TIMEOUT_DATA_STEP,  "约1分钟"),

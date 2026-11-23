@@ -36,6 +36,7 @@ MAX_DAILY_DOWNLOADS = 400  # stale local-cache names re-downloaded one by one (Q
 HISTORY_DAYS = 60
 TICK_RETRY_ROUNDS = 6
 TICK_RETRY_WAIT = 30
+TICK_PROGRESS_EVERY = 20  # progress line while fetching limit-up candidates' ticks (output only)
 ENSURE_DAYS = 15  # recent open days whose raw tables step 13 and strategy E read back
 M_LOOKBACK_DAYS = 20  # strategy M: daily tables of the 19 open days before the signal date (plus E's 5)
 
@@ -197,11 +198,15 @@ def main():
         candidates = limit_candidates(bars, details, day, calendar, rules)
         ticks = {}
         pending = sorted(candidates)
+        t_ticks = time.time()
         for round_no in range(TICK_RETRY_ROUNDS):
-            for code in pending:
+            for i, code in enumerate(pending, 1):
                 rows = native_service.call(qmt_ticks, code, day)
                 if rows:
                     ticks[code] = rows
+                if i % TICK_PROGRESS_EVERY == 0 and i < len(pending):
+                    # 11-23: 147 candidates, step 1 silent for minutes before its time limit; this shows how far it got
+                    print('QMT原生采集：%s 逐笔 %d/%d，已用 %.0fs' % (day, i, len(pending), time.time() - t_ticks))
             pending = [c for c in pending if c not in ticks]
             if not pending or day != end or os.environ.get('QN_TEST_MISSING_TICKS_ARE_UNSEALED') == '1':
                 break

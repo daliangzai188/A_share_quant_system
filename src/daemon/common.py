@@ -276,6 +276,9 @@ SCHED_EXIT_POV_HANDOFF = datetime.time(14, 53)
 
 # subprocess 超时（秒）：防止某步骤挂死
 TIMEOUT_DATA_STEP = 600      # 数据采集/清洗步骤：10 分钟
+# 第①步采集：30 分钟。2026-11-23 涨停候选147只（平时32~38只），逐只取逐笔超过10分钟，每次被终止后从头再来，
+# 重跑15次到18:22才完成；放宽只让慢的一次能跑完，失败重试、23:00截止、数据不全不出计划都不变
+TIMEOUT_COLLECT_STEP = 1800
 TIMEOUT_SIGNAL_STEP = 900    # 信号生成步骤：15 分钟；A/C 首次加载特征较慢，不能误杀导致旧信号
 TIMEOUT_ORDER_STEP = 60      # 下单预览步骤：1 分钟
 TIMEOUT_COMBINED_PLAN_STEP = 180  # 组合状态机生成：Windows/QMT环境下首次加载特征较慢
