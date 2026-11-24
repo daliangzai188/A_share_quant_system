@@ -332,6 +332,59 @@ def _maybe_alert_strategy_drawdown(snapshot: Any, drawdown: float, cfg: dict[str
         )
 
 
+def _closing_holdings_text(open_positions: list[dict[str, Any]], broker_positions: Any = None) -> str:
+    """收盘汇总的持仓描述：按股票计只数（同一只股票竞价、平滑段各记一条持仓记录，这里合成一只）。
+
+    逐只列出策略、股票、股数，有券商持仓时写市值和收益（按买入均价，不含费用），
+    查不到券商持仓时写买入成本；最后写计划卖出时间。只用于通知文字，不影响交易。
+    """
+
+    grouped: dict[str, dict[str, Any]] = {}
+    for row in open_positions:
+        code = str(row.get("ts_code", "") or "").upper()
+        if not code:
+            continue
+        item = grouped.setdefault(code, {"legs": [], "name": "", "shares": 0, "cost": 0.0, "exits": []})
+        leg = str(row.get("strategy_leg", "") or "").strip()
+        if leg and leg not in item["legs"]:
+            item["legs"].append(leg)
+        item["name"] = item["name"] or str(row.get("name", "") or "")
+        shares = int(float(row.get("shares", 0) or 0))
+        item["shares"] += shares
+        item["cost"] += shares * float(row.get("buy_price", 0.0) or 0.0)
+        exit_time = str(row.get("planned_exit_time", "") or "")
+        exit_date = str(row.get("planned_exit_date", "") or "")
+        if len(exit_time) >= 16 and exit_time[4] == "-":
+            exit_text = f"{exit_time[5:10]} {exit_time[11:16]}"
+        elif len(exit_date) == 8 and exit_date.isdigit():
+            exit_text = f"{exit_date[4:6]}-{exit_date[6:8]}"
+        else:
+            exit_text = ""
+        if exit_text and exit_text not in item["exits"]:
+            item["exits"].append(exit_text)
+    if not grouped:
+        return "无持仓"
+    market_values: dict[str, float] = {}
+    for bp in broker_positions or []:
+        code = str(getattr(bp, "ts_code", "") or "").upper()
+        if code and int(getattr(bp, "volume", 0) or 0) > 0:
+            market_values[code] = market_values.get(code, 0.0) + float(getattr(bp, "market_value", 0.0) or 0.0)
+    parts = []
+    for code, item in grouped.items():
+        text = f"{'/'.join(item['legs']) or '未标注'} {code} {item['name']} {item['shares']}股"
+        value = market_values.get(code, 0.0)
+        if value > 0:
+            text += f" 市值{_fmt_wan(value)}"
+            if item["cost"] > 0:
+                text += f" 收益{(value / item['cost'] - 1) * 100:+.2f}%"
+        elif item["cost"] > 0:
+            text += f" 买入成本{_fmt_wan(item['cost'])}"
+        if item["exits"]:
+            text += f" 计划{'/'.join(sorted(item['exits']))}卖出"
+        parts.append(text)
+    return f"持仓{len(grouped)}只：" + "；".join(parts)
+
+
 def _post_market_finish(offline, target_str, failed_steps, target_date, live_fill_scored_path):
     """流水线步骤跑完后：检查停手判定新鲜度、统计候选产物、核对数据入库与兜底观察计划、播报并通知（从 job_post_market 拆出，语句原样）。"""
     _alert_if_stop_decision_stale(target_str, failed_steps)
@@ -412,8 +465,9 @@ def _post_market_finish(offline, target_str, failed_steps, target_date, live_fil
     # 决策链已在推送前播报并设好 _last_final_plan；
     # 之后由 _decision_chain_broadcast_loop 每30分钟重播一次。
     try:
-        open_cnt = sum(1 for p in load_positions() if p.get("status") == "open")
+        open_positions = [p for p in load_positions() if p.get("status") == "open"]
         acct_part = ""
+        broker_positions = None
         try:
             cfg = load_json_config(PROJECT_ROOT / "config" / "config.json")
             if cfg.get("broker_adapter_enabled") and cfg.get("qmt_enabled"):
@@ -422,16 +476,23 @@ def _post_market_finish(offline, target_str, failed_steps, target_date, live_fil
                     account = adapter.query_account()
                 acct_part = (f"账户{_mask_account(account.account_id)} "
                              f"总资产{_fmt_wan(getattr(account, 'total_asset', 0.0))} ")
+                if open_positions:
+                    try:
+                        with _qmt_lock:
+                            broker_positions = adapter.query_positions()
+                    except Exception as pos_exc:
+                        logger().warning("收盘汇总查询持仓市值失败，改写买入成本：%s", pos_exc)
         except Exception as acct_exc:
             logger().warning("收盘汇总查询账户失败：%s", acct_exc)
+        holdings = _closing_holdings_text(open_positions, broker_positions)
         if failed_steps:
             _notify("daily_summary", "⚠️ 今日收盘汇总：有步骤失败",
-                    f"{acct_part}持仓{open_cnt}笔，收盘流水线跑完但有{len(failed_steps)}步失败："
+                    f"{acct_part}{holdings}。收盘流水线跑完但有{len(failed_steps)}步失败："
                     f"{'、'.join(failed_steps)}。明日计划已生成；失败步骤的产物可能是旧的，请让Claude排查。",
                     level="timeSensitive")
         else:
             _notify("daily_summary", "📊 今日收盘汇总",
-                    f"{acct_part}持仓{open_cnt}笔，收盘流水线已完成，明日计划已生成。")
+                    f"{acct_part}{holdings}。收盘流水线已完成，明日计划已生成。")
     except Exception as exc:
         logger().warning("收盘汇总推送异常：%s", exc)
     return True
