@@ -1677,6 +1677,7 @@ def _pov_submit_buy_slice(
     elif target_amount - confirmed_after < price * lot_size:
         it["done"] = True
         it["done_reason"] = f"距本次目标{_entry_amount_text(target_amount, it.get('equity_snapshot'))}不足一手"
+        it["target_gap_one_lot_amount"] = round(price * lot_size, 2)
     return False, None
 
 
@@ -1815,6 +1816,7 @@ def _pov_execute_slice(
             if target_gap + 0.01 < one_lot_amount:
                 it["done"] = True
                 it["done_reason"] = f"距本次目标{_entry_amount_text(target_amount, it.get('equity_snapshot'))}不足一手"
+                it["target_gap_one_lot_amount"] = round(one_lot_amount, 2)
                 note = "目标缺口不足一手,在允许误差内结束"
             elif hard_room + 0.01 < one_lot_amount:
                 it["done"] = True
@@ -1939,14 +1941,32 @@ def _pov_finalize_item(it: dict[str, Any], log: Any, reason: str) -> None:
             level="critical", call=True,
         )
     elif min_acceptable_amount > 0 and actual_total + 1.0 < min_acceptable_amount:
-        _notify(
-            "buy_result", "⚠️ 实际开仓低于本次验收下限",
-            f"{ts_code} {name_s} 10:30收口累计实际开仓{actual_total / 1e4:.2f}万"
-            f"（占开仓快照总资产{_entry_pct_text(actual_total, equity_snapshot)}），低于验收下限"
-            f"{_entry_amount_text(min_acceptable_amount, equity_snapshot)}。"
-            f"原因：{reason}；系统不会突破+2%追价保护强补。",
-            level="timeSensitive",
-        )
+        # 2026-11-24（用户要求）：POV按委托价判断距本次目标不足一手而停下、累计实际确实只差不到一手时，
+        # 少于验收下限只是整手取整（停手期目标20%与下限19.39%只差约0.6%，小账户常不到一手），
+        # 是按规则正常完成：推✅成功提示、普通级别；其余少仓仍按⚠️紧急推送。时间写本次实际收口和
+        # 最终收口10:30。只改推送。
+        one_lot_amount = float(it.get("target_gap_one_lot_amount", 0.0) or 0.0)
+        within_one_lot = one_lot_amount > 0 and target_amount - actual_total + 0.01 < one_lot_amount
+        close_text = f"本次实际收口{now_beijing().strftime('%H:%M')}（最终收口10:30）"
+        actual_text = (f"累计实际开仓{actual_total / 1e4:.2f}万"
+                       f"（占开仓快照总资产{_entry_pct_text(actual_total, equity_snapshot)}）")
+        if within_one_lot:
+            _notify(
+                "buy_result", "✅ 实际开仓正常（距目标不足一手）",
+                f"{ts_code} {name_s} {close_text}，{actual_text}；距本次目标"
+                f"{_entry_amount_text(target_amount, equity_snapshot)}不足一手，按规则补到目标为止、"
+                f"不超过目标，开仓正常完成。整手取整后略低于验收下限"
+                f"{_entry_amount_text(min_acceptable_amount, equity_snapshot)}，不需要处理。",
+                level="active",
+            )
+        else:
+            _notify(
+                "buy_result", "⚠️ 实际开仓低于本次验收下限",
+                f"{ts_code} {name_s} {close_text}，{actual_text}，低于验收下限"
+                f"{_entry_amount_text(min_acceptable_amount, equity_snapshot)}。"
+                f"原因：{reason}；系统不会突破+2%追价保护强补。",
+                level="timeSensitive",
+            )
 
 
 def _finalize_expired_pov_for_startup() -> int:

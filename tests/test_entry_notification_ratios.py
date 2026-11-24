@@ -149,3 +149,79 @@ def test_reduced_pov_shortfall_alert_uses_its_own_acceptance_line():
     assert "1.94万/19.39%" in alerts[0][2]
     assert "18%" in alerts[0][2] and "80%" not in alerts[0][2]
     assert item["confirmed_actual_amount"] == 18000 and item["finalized"]
+
+
+# 2026-11-24（用户要求）：创新医疗停手期C开仓，竞价1200股@14.66、POV补100股@14.68，累计19.31%，
+# 距目标20%只差681元、不到一手（委托价上限14.95×100），按规则正常完成。原来按⚠️紧急推“实际开仓低于
+# 本次验收下限”，像出了问题；改为✅成功提示、不带警报。时间写本次实际收口和最终收口10:30
+# （原来固定写“10:30收口”，实际09:31就结束了）。真正少仓仍是⚠️警报。
+TODAY = dict(ts_code="002173.SZ", name="创新医疗", strategy_leg="C", signal_date="20261123",
+             target_actual_amount=19741.0, min_acceptable_amount=19143.0, hard_cap_amount=22209.0,
+             equity_snapshot=98705.0, exit_n=3)
+
+
+def _finalize(item, auction_cost, hhmm="09:31"):
+    from datetime import datetime
+    hour, minute = map(int, hhmm.split(":"))
+    with patch.object(buy, "_today_local_entry_cost", return_value=auction_cost), \
+         patch.object(buy, "_track_execution"), patch.object(buy, "_record_live_buy"), \
+         patch.object(buy, "now_beijing", return_value=datetime(2026, 11, 24, hour, minute)), \
+         patch.object(buy, "_notify", return_value=False) as notify:
+        buy._pov_finalize_item(item, Mock(), str(item.get("done_reason", "完成")))
+    return [(call.args[1], call.args[2], call.kwargs.get("level", "active"))
+            for call in notify.call_args_list if "实际开仓" in call.args[1]]
+
+
+def test_pov_stopped_one_lot_short_of_target_is_a_success_notice():
+    from src.broker_adapter import OrderRequest
+    item = {**TODAY, "filled_qty": 0, "cost_amt": 0.0}
+    adapter = Mock()
+    adapter.place_order.return_value = SimpleNamespace(accepted=True, order_id="9001", message="")
+    with patch.object(buy, "_qmt_get", return_value=adapter), \
+         patch.object(buy, "_confirm_fill",
+                      return_value=SimpleNamespace(filled_qty=100, avg_price=14.68, is_terminal=True)), \
+         patch.object(buy, "_pov_log_slice"):
+        buy._pov_submit_buy_slice(item, {}, "20261124", Mock(), 100, 17592.0, OrderRequest, 100, 14.70,
+                                  "002173.SZ", "创新医疗", 14.95, 19741.0, 1, 5000.0, 14.66, 2149.0)
+    assert item["done"] and "不足一手" in item["done_reason"]
+    assert item["target_gap_one_lot_amount"] == 1495.0
+    assert item["confirmed_actual_amount"] == pytest.approx(19060.0)
+    alerts = _finalize(item, auction_cost=17592.0)
+    assert len(alerts) == 1
+    title, body, level = alerts[0]
+    assert title == "✅ 实际开仓正常（距目标不足一手）" and level == "active"
+    assert body == ("002173.SZ 创新医疗 本次实际收口09:31（最终收口10:30），累计实际开仓1.91万"
+                    "（占开仓快照总资产19.31%）；距本次目标1.97万/20%不足一手，按规则补到目标为止、"
+                    "不超过目标，开仓正常完成。整手取整后略低于验收下限1.91万/19.39%，不需要处理。")
+
+
+def test_auction_already_within_one_lot_first_slice_stops_with_a_success_notice():
+    item = {**TODAY, "filled_qty": 0, "cost_amt": 0.0, "slice_no": 1, "prev_cum_amount": 0.0}
+    adapter = Mock()
+    adapter.query_account.return_value = SimpleNamespace(total_asset=98705.0, available_cash=79000.0)
+    adapter.query_positions.return_value = []
+    adapter.get_full_tick.return_value = {"002173.SZ": SimpleNamespace(
+        last_price=14.70, open_price=14.66, upper_limit=15.84, amount=5.0e7)}
+    with patch.object(buy, "_has_pending_buy_for_code", return_value=False), \
+         patch.object(buy, "_qmt_get", return_value=adapter), \
+         patch.object(buy, "_confirmed_entry_actual_amount", return_value=19060.0), \
+         patch.object(buy, "_pov_log_slice"):
+        buy._pov_execute_slice(item, {}, 0.10, 0.18, 0.02, "20261124", Mock(),
+                               cash_buffer=1000.0, max_position_pct=0.85, lot_size=100)
+    adapter.place_order.assert_not_called()
+    assert item["done"] and item["target_gap_one_lot_amount"] == 1495.0
+    [(title, body, level)] = _finalize(item, auction_cost=19060.0, hhmm="09:30")
+    assert title == "✅ 实际开仓正常（距目标不足一手）" and level == "active"
+    assert "本次实际收口09:30（最终收口10:30）" in body
+
+
+@pytest.mark.parametrize("extra, auction_cost, reason", [
+    ({}, 18000.0, "开盘价+2%保护，不追买"),
+    # 记过“不足一手”，但收口时核对出的累计实际比目标少了一手以上：仍是真少仓，照常警报
+    ({"target_gap_one_lot_amount": 1495.0}, 17592.0, "距本次目标不足一手"),
+])
+def test_real_shortfall_still_alarms_with_actual_and_final_close_time(extra, auction_cost, reason):
+    item = {**TODAY, "filled_qty": 0, "cost_amt": 0.0, "done_reason": reason, **extra}
+    [(title, body, level)] = _finalize(item, auction_cost=auction_cost, hhmm="10:30")
+    assert title == "⚠️ 实际开仓低于本次验收下限" and level == "timeSensitive"
+    assert "本次实际收口10:30（最终收口10:30）" in body and reason in body
