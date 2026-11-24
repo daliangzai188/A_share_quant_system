@@ -615,6 +615,37 @@ def signal_drought_triggers(signals: Mapping[str, Any] | None, *, line: int) -> 
     )]
 
 
+def m_early_triggers(recent: Mapping[str, Any] | None) -> list[ReviewTrigger]:
+    """M早期提醒（2026-11-24用户要求，初级，只推送）：M按规则（ACE+M回放）走出上线前的历史范围。
+
+    两条线都取2019-12-02~2026-11-10回放里M的历史极值（连亏最长5笔、最近10笔连乘最差-36.16%），
+    上线前一次都没触发过；比“M最近12个月转负”（中级）早得多。只提醒去查执行、数据、行情和策略本身，
+    不改M规则、不影响交易，M的去留仍在年度复核决定。
+    """
+
+    if not recent:
+        return []
+    found: list[ReviewTrigger] = []
+    tail = "先查执行、数据和行情，再看M本身；M规则年中不调，留还是撤在年度复核决定"
+    streak, line = int(recent.get("streak", 0) or 0), int(recent.get("max_loss_streak", 0) or 0)
+    if line > 0 and streak > line:
+        found.append(ReviewTrigger(
+            "m_early:streak", "M",
+            "M按规则（ACE+M回放）已连续亏损%d笔（%s起，最近一笔%s），超过上线前历史最长%d笔：%s" % (
+                streak, recent.get("streak_from") or "无", recent.get("as_of") or "无", line, tail),
+        ))
+    value = recent.get("window_return")
+    worst = recent.get("worst_window_return")
+    if value is not None and worst is not None and float(value) < float(worst):
+        found.append(ReviewTrigger(
+            "m_early:window", "M",
+            "M按规则（ACE+M回放）最近%d笔连乘%+.1f%%（%s~%s买入），低于上线前历史最差%+.1f%%：%s" % (
+                int(recent.get("window_trades", 10)), float(value) * 100, recent.get("window_from") or "无",
+                recent.get("as_of") or "无", float(worst) * 100, tail),
+        ))
+    return found
+
+
 def check_failure_trigger(name: str, error: BaseException | str) -> ReviewTrigger:
     """某项检查自己算失败：等于这一项今天没有被检查，必须让用户知道。"""
 

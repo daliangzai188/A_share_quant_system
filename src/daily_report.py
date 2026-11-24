@@ -324,6 +324,13 @@ def value_lines(values: Mapping[str, Any]) -> list[str]:
             parts.append("近12个月比只用ACE%s" % _pct(relative))
         if parts:
             lines.append("组合（按规则）：" + "；".join(parts))
+        recent = warnings.get("m_recent")
+        if recent:
+            window = int(recent.get("window_trades", 10))
+            value = recent.get("window_return")
+            lines.append("M近况（按规则）：连亏%d笔（上线前最长%d笔，超过就提醒）；最近%d笔%s（上线前最差%s，低于就提醒）" % (
+                int(recent.get("streak", 0) or 0), int(recent.get("max_loss_streak", 0) or 0), window,
+                "不足%d笔" % window if value is None else _pct(value), _pct(float(recent.get("worst_window_return", -1.0)))))
 
     parts = []
     shadow = values.get("shadow")

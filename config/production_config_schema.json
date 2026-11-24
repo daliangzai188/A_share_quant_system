@@ -106,6 +106,12 @@
       "middle_E": "string",
       "middle_M": "string",
       "relative_history": "string"
+    },
+    "m_early": {
+      "note": "string",
+      "window_trades": "number",
+      "max_loss_streak": "number",
+      "worst_window_return": "number"
     }
   },
   "review_triggers": {

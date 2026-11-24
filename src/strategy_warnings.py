@@ -12,6 +12,8 @@ config/config.json 的 strategy_warnings，由2019-12-02~2026-11-10的回放算�
 
 另外只有这里同时拿得到A/C/E计划和M候选，所以“信号断流”（初级，src.review_triggers.signal_drought_triggers）
 也在这里算：不管停不停手，规则连续多少个行动日没有选出一只股票。
+M早期提醒（初级，2026-11-24用户要求，src.review_triggers.m_early_triggers）也在这里算：ACE+M回放里M
+按规则连亏超过上线前最长、或最近10笔连乘低于上线前最差（strategy_warnings.m_early），只推送，不影响交易。
 """
 from __future__ import annotations
 
@@ -24,7 +26,7 @@ from typing import Any, Callable, Mapping, Sequence
 import pandas as pd
 
 from src.portfolio_ace_m import AC_LEGS, ACE_STATIC_LEGS, REPORT_LEGS
-from src.review_triggers import FINAL_STANDARD, ReviewTrigger, signal_drought_triggers
+from src.review_triggers import FINAL_STANDARD, ReviewTrigger, m_early_triggers, signal_drought_triggers
 
 TIER_MIDDLE = 2
 TIER_FINAL = 3
@@ -52,6 +54,7 @@ class WarningSettings:
     middle: Mapping[str, float] = field(default_factory=dict)
     final: Mapping[str, float] = field(default_factory=dict)
     reference: Mapping[str, Any] = field(default_factory=dict)
+    m_early: Mapping[str, Any] = field(default_factory=dict)
 
 
 def load_warning_settings(config: Mapping[str, Any]) -> WarningSettings:
@@ -70,6 +73,7 @@ def load_warning_settings(config: Mapping[str, Any]) -> WarningSettings:
         middle={str(k): float(v) for k, v in dict(section.get("middle", {}) or {}).items()},
         final={str(k): float(v) for k, v in dict(section.get("final", {}) or {}).items()},
         reference=dict(section.get("reference", {}) or {}),
+        m_early=dict(section.get("m_early", {}) or {}),
     )
 
 
@@ -112,6 +116,42 @@ def trailing_return(trades: Sequence[tuple[str, float]], *, window_days: int, mi
             value *= 1.0 + ret
         value -= 1.0
     return {"value": value, "trades": len(window), "as_of": last}
+
+
+def m_recent_stats(trades: Sequence[tuple[str, float]], early: Mapping[str, Any]) -> dict[str, Any] | None:
+    """M早期提醒用的近况：当前连亏笔数（收益<0）和最近window_trades笔逐笔连乘，连同冻结线一起返回。
+
+    没配置m_early时返回None（不算、不提醒）。“最近N笔”不足N笔时window_return为None。
+    """
+
+    if not early:
+        return None
+    window = int(early.get("window_trades", 10))
+    ordered = sorted(trades)
+    streak = 0
+    for _day, ret in reversed(ordered):
+        if ret < 0:
+            streak += 1
+        else:
+            break
+    recent = ordered[-window:] if window > 0 else []
+    window_return = None
+    if window > 0 and len(recent) >= window:
+        window_return = 1.0
+        for _day, ret in recent:
+            window_return *= 1.0 + ret
+        window_return -= 1.0
+    return {
+        "streak": streak,
+        "streak_from": ordered[-streak][0] if streak else "",
+        "window_trades": window,
+        "window_return": window_return,
+        "window_from": recent[0][0] if window_return is not None else "",
+        "as_of": ordered[-1][0] if ordered else "",
+        "trades": len(ordered),
+        "max_loss_streak": int(early.get("max_loss_streak", 0)),
+        "worst_window_return": float(early.get("worst_window_return", -1.0)),
+    }
 
 
 def drawdown(series: pd.Series) -> dict[str, Any]:
@@ -162,6 +202,9 @@ def compute_metrics(
         m = live_trades[live_trades["family"] == "M"]
         m_rows = sorted(zip(m["action_date"].astype(str), m["ret"].astype(float)))
     metrics["legs"]["M"] = trailing_return(m_rows, window_days=settings.window_days, min_trades=settings.min_trades)
+    m_recent = m_recent_stats(m_rows, settings.m_early)
+    if m_recent is not None:
+        metrics["m_recent"] = m_recent
     health = dict(health or {})
     metrics["factor_health"] = {
         leg: {"months_below": int((health.get(leg) or {}).get("months_below", 0) or 0),
@@ -462,5 +505,5 @@ def run_strategy_warnings(
         "m_reference_error_days": len(errors), "m_reference_errors_recent": sorted(errors)[-5:],
     }
     triggers = warning_triggers(metrics, settings) + signal_drought_triggers(
-        metrics["signals"], line=settings.signal_gap_days)
+        metrics["signals"], line=settings.signal_gap_days) + m_early_triggers(metrics.get("m_recent"))
     return triggers, metrics
