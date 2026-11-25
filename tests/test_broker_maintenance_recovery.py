@@ -616,12 +616,98 @@ class BrokerHealthStateTests(unittest.TestCase):
         self.assertEqual(notify_async.call_args.args[0], "health_beacon")
         self.assertEqual(notify_async.call_args.args[1], "✅ A_System运行正常")
 
+    def test_health_followup_rechecks_until_recovered(self) -> None:
+        # 2026-11-26用户要求：播报异常后接着复查，恢复立即推“已恢复”，不让用户干等2小时。
+        from src.daemon import scheduler
+
+        tz = trading_daemon.BEIJING_TZ
+        t0 = datetime.datetime(2026, 11, 26, 0, 2, tzinfo=tz)
+        bad = {"ok": False, "errors": ["QMT接口状态=snapshot_inconsistent"]}
+        good = {
+            "ok": True, "errors": [], "pid": 2496, "heartbeat_age_sec": 5.0,
+            "broker_age_sec": 20.0, "account": "***03",
+        }
+        incident, msg = scheduler._health_followup_step(None, bad, now=t0)
+        self.assertIsNone(msg)  # 第一次异常由定时播报自己推
+        self.assertEqual(incident["since"], t0)
+        incident, msg = scheduler._health_followup_step(incident, bad, now=t0 + datetime.timedelta(minutes=5))
+        self.assertIsNone(msg)  # 不到10分钟不重复提醒
+        incident, msg = scheduler._health_followup_step(incident, bad, now=t0 + datetime.timedelta(minutes=10))
+        self.assertEqual(msg[0], "⚠️ A_System仍异常")
+        self.assertIn("自11-26 00:02:00起已持续约10分钟仍未恢复", msg[1])
+        incident, msg = scheduler._health_followup_step(incident, bad, now=t0 + datetime.timedelta(minutes=20))
+        self.assertIsNone(msg)  # 之后每30分钟一次
+        incident, msg = scheduler._health_followup_step(incident, bad, now=t0 + datetime.timedelta(minutes=40))
+        self.assertEqual(msg[0], "⚠️ A_System仍异常")
+        incident, msg = scheduler._health_followup_step(incident, good, now=t0 + datetime.timedelta(minutes=43))
+        self.assertIsNone(incident)
+        self.assertEqual(msg[0], "✅ A_System已恢复正常")
+        self.assertIn("11-26 00:02:00起的健康检查异常已恢复，持续约43分钟", msg[1])
+        self.assertIn("QMT接口状态=snapshot_inconsistent", msg[1])
+        self.assertIn("QMT账户***03接口验证20秒前，状态正常", msg[1])
+        self.assertEqual(scheduler._health_followup_step(None, good, now=t0), (None, None))
+        _, quick = scheduler._health_followup_step({"since": t0, "first_errors": "x", "next_notice": t0}, good,
+                                                   now=t0 + datetime.timedelta(seconds=40))
+        self.assertIn("持续不到1分钟", quick[1])
+
+    def test_health_beacon_tick_sends_recovery_without_waiting_for_next_slot(self) -> None:
+        from src.daemon import scheduler
+
+        tz = trading_daemon.BEIJING_TZ
+        t0 = datetime.datetime(2026, 11, 26, 0, 2, tzinfo=tz)
+        config = {"notify": {"health_beacon": {"enabled": True}}}
+        bad = {"ok": False, "errors": ["QMT接口状态=snapshot_inconsistent"]}
+        good = {
+            "ok": True, "errors": [], "pid": 1, "heartbeat_age_sec": 1.0,
+            "broker_age_sec": 1.0, "account": "***03",
+        }
+        sent = []
+        with patch_daemon("_health_check_snapshot", side_effect=[bad, bad, good, good]), \
+             patch_daemon("_notify_with_retry_async", side_effect=lambda *a, **k: sent.append(a[1])):
+            incident = scheduler._health_beacon_tick(config, None, now=t0, scheduled=True)
+            self.assertEqual(sent, ["⚠️ A_System健康检查异常"])
+            incident = scheduler._health_beacon_tick(config, incident, now=t0 + datetime.timedelta(minutes=1),
+                                                     scheduled=False)
+            self.assertEqual(sent, ["⚠️ A_System健康检查异常"])  # 复查仍异常、不到10分钟：不推
+            incident = scheduler._health_beacon_tick(config, incident, now=t0 + datetime.timedelta(minutes=2),
+                                                     scheduled=False)
+            self.assertIsNone(incident)
+            self.assertEqual(sent, ["⚠️ A_System健康检查异常", "✅ A_System已恢复正常"])
+            scheduler._health_beacon_tick(config, None, now=t0 + datetime.timedelta(hours=2), scheduled=True)
+            self.assertEqual(sent[-1], "✅ A_System运行正常")
+
+    def test_health_beacon_tick_scheduled_slot_during_incident_sends_one_message(self) -> None:
+        from src.daemon import scheduler
+
+        tz = trading_daemon.BEIJING_TZ
+        t0 = datetime.datetime(2026, 11, 26, 0, 2, tzinfo=tz)
+        config = {"notify": {"health_beacon": {"enabled": True}}}
+        good = {
+            "ok": True, "errors": [], "pid": 1, "heartbeat_age_sec": 1.0,
+            "broker_age_sec": 1.0, "account": "***03",
+        }
+        incident = {"since": t0, "first_errors": "QMT接口状态=unavailable",
+                    "next_notice": t0 + datetime.timedelta(hours=9)}
+        sent = []
+        with patch_daemon("_health_check_snapshot", return_value=good), \
+             patch_daemon("_notify_with_retry_async", side_effect=lambda *a, **k: sent.append(a[1])):
+            self.assertIsNone(scheduler._health_beacon_tick(config, incident, now=t0 + datetime.timedelta(hours=2),
+                                                            scheduled=True))
+        self.assertEqual(sent, ["✅ A_System已恢复正常"])  # 定时点恢复：只推一条“已恢复”，不再另推“运行正常”
+
     def test_periodic_health_code_has_no_trading_or_broker_call_path(self) -> None:
+        from src.daemon import scheduler
+
         source = "\n".join(
             (
                 inspect.getsource(trading_daemon._periodic_health_snapshot),
                 inspect.getsource(trading_daemon._publish_periodic_health_beacon),
                 inspect.getsource(trading_daemon._periodic_health_beacon_loop),
+                inspect.getsource(scheduler._health_followup_step),
+                inspect.getsource(scheduler._health_beacon_tick),
+                inspect.getsource(scheduler._publish_health_snapshot),
+                inspect.getsource(scheduler._health_check_snapshot),
+                inspect.getsource(scheduler._send_health_beacon),
             )
         )
         for forbidden in (

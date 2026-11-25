@@ -309,7 +309,10 @@
       "broker_health_fresh_sec": 180,
       "retry_attempts": 3,
       "retry_sec": 30,
-      "note": "每天00:02、02:02……22:02异步播报；只读daemon心跳与现有QMT健康快照，不调用QMT、不获取交易锁，不参与开仓、平仓、挂撤单、POV、补仓或D巡查。"
+      "recheck_sec": 60,
+      "still_bad_first_min": 10,
+      "still_bad_every_min": 30,
+      "note": "每天00:02、02:02……22:02异步播报；只读daemon心跳与现有QMT健康快照，不调用QMT、不获取交易锁，不参与开仓、平仓、挂撤单、POV、补仓或D巡查。播报异常后每recheck_sec秒只读复查，恢复立即推“已恢复”（写明开始时间和持续多久），still_bad_first_min分钟仍未恢复推“仍异常”，之后每still_bad_every_min分钟再推（2026-11-26用户要求）。"
     },
     "position_loss_alert_thresholds_pct": [
       -5,

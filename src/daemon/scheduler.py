@@ -264,6 +264,61 @@ def _next_periodic_health_beacon_at(
     )
 
 
+def _health_status_text(snapshot: dict[str, Any]) -> str:
+    """播报正文里的“现在状态正常”一段。"""
+    return (
+        f"daemon PID {snapshot['pid']}，调度心跳{snapshot['heartbeat_age_sec']:.0f}秒前；"
+        f"QMT账户{snapshot['account'] or '已脱敏'}接口验证"
+        f"{snapshot['broker_age_sec']:.0f}秒前，状态正常"
+    )
+
+
+def _send_health_beacon(beacon_cfg: dict[str, Any], title: str, body: str, *, level: str) -> None:
+    _notify_with_retry_async(
+        "health_beacon",
+        title,
+        body,
+        level=level,
+        attempts=max(int(beacon_cfg.get("retry_attempts", 3) or 3), 1),
+        retry_sec=max(float(beacon_cfg.get("retry_sec", 30) or 30), 0.0),
+    )
+
+
+def _health_check_snapshot(beacon_cfg: dict[str, Any], checked_at: datetime.datetime) -> dict[str, Any]:
+    return _periodic_health_snapshot(
+        now=checked_at,
+        heartbeat_fresh_sec=float(beacon_cfg.get("heartbeat_fresh_sec", 45) or 45),
+        broker_health_fresh_sec=float(beacon_cfg.get("broker_health_fresh_sec", 180) or 180),
+    )
+
+
+def _publish_health_snapshot(
+    beacon_cfg: dict[str, Any],
+    snapshot: dict[str, Any],
+    checked_at: datetime.datetime,
+) -> None:
+    """按定时播报的格式推送一次检查结果（正常/异常）。"""
+    stamp = checked_at.strftime("%Y-%m-%d %H:%M:%S")
+    if snapshot["ok"]:
+        title = "✅ A_System运行正常"
+        body = f"北京时间{stamp}；{_health_status_text(snapshot)}。"
+        level = "active"
+        logger().info("[定时健康播报] %s", body)
+    else:
+        recheck = _health_recheck_settings(beacon_cfg)
+        title = "⚠️ A_System健康检查异常"
+        body = (
+            f"北京时间{stamp}；"
+            + "；".join(snapshot["errors"])
+            + "。健康播报只读检查未通过，请尽快检查Windows守护进程与QMT。"
+            + f"系统每{recheck['recheck_sec']:.0f}秒只读复查一次，恢复后立即推送“已恢复”；"
+            + f"{recheck['still_bad_first_min']:.0f}分钟仍未恢复会再提醒。"
+        )
+        level = "timeSensitive"
+        logger().warning("[定时健康播报] %s", body)
+    _send_health_beacon(beacon_cfg, title, body, level=level)
+
+
 def _publish_periodic_health_beacon(
     config: dict[str, Any] | None = None,
     *,
@@ -273,51 +328,111 @@ def _publish_periodic_health_beacon(
     runtime_config = config or load_json_config(PROJECT_ROOT / "config" / "config.json")
     beacon_cfg = runtime_config.get("notify", {}).get("health_beacon", {}) or {}
     checked_at = now or now_beijing()
-    snapshot = _periodic_health_snapshot(
-        now=checked_at,
-        heartbeat_fresh_sec=float(beacon_cfg.get("heartbeat_fresh_sec", 45) or 45),
-        broker_health_fresh_sec=float(beacon_cfg.get("broker_health_fresh_sec", 180) or 180),
-    )
-    if snapshot["ok"]:
-        title = "✅ A_System运行正常"
-        body = (
-            f"北京时间{checked_at.strftime('%Y-%m-%d %H:%M:%S')}；"
-            f"daemon PID {snapshot['pid']}，调度心跳{snapshot['heartbeat_age_sec']:.0f}秒前；"
-            f"QMT账户{snapshot['account'] or '已脱敏'}接口验证"
-            f"{snapshot['broker_age_sec']:.0f}秒前，状态正常。"
-        )
-        level = "active"
-        logger().info("[定时健康播报] %s", body)
-    else:
-        title = "⚠️ A_System健康检查异常"
-        body = (
-            f"北京时间{checked_at.strftime('%Y-%m-%d %H:%M:%S')}；"
-            + "；".join(snapshot["errors"])
-            + "。健康播报只读检查未通过，请尽快检查Windows守护进程与QMT。"
-        )
-        level = "timeSensitive"
-        logger().warning("[定时健康播报] %s", body)
-    _notify_with_retry_async(
-        "health_beacon",
-        title,
-        body,
-        level=level,
-        attempts=max(int(beacon_cfg.get("retry_attempts", 3) or 3), 1),
-        retry_sec=max(float(beacon_cfg.get("retry_sec", 30) or 30), 0.0),
-    )
+    snapshot = _health_check_snapshot(beacon_cfg, checked_at)
+    _publish_health_snapshot(beacon_cfg, snapshot, checked_at)
     return snapshot
 
 
+# 2026-11-26（用户要求）：播报报了异常就接着复查，不让用户干等到下一个2小时。
+# 异常后每recheck_sec秒只读复查一次；恢复立即推“已恢复”（写明从几点开始、持续多久）；
+# still_bad_first_min分钟仍未恢复推“仍异常”，之后每still_bad_every_min分钟再推一次。
+def _health_recheck_settings(beacon_cfg: dict[str, Any]) -> dict[str, float]:
+    return {
+        "recheck_sec": max(float(beacon_cfg.get("recheck_sec", 60) or 60), 10.0),
+        "still_bad_first_min": max(float(beacon_cfg.get("still_bad_first_min", 10) or 10), 1.0),
+        "still_bad_every_min": max(float(beacon_cfg.get("still_bad_every_min", 30) or 30), 1.0),
+    }
+
+
+def _lasted_text(seconds: float) -> str:
+    if seconds < 60:
+        return "不到1分钟"
+    return f"约{max(1, int(round(seconds / 60.0)))}分钟"
+
+
+def _health_followup_step(
+    incident: dict[str, Any] | None,
+    snapshot: dict[str, Any],
+    *,
+    now: datetime.datetime,
+    still_bad_first_min: float = 10.0,
+    still_bad_every_min: float = 30.0,
+) -> tuple[dict[str, Any] | None, tuple[str, str, str] | None]:
+    """异常后的复查状态（纯函数）：返回（新的异常状态，要推送的（标题，正文，级别）或None）。"""
+    stamp = now.strftime("%Y-%m-%d %H:%M:%S")
+    if snapshot["ok"]:
+        if incident is None:
+            return None, None
+        since = incident["since"]
+        body = (
+            f"北京时间{stamp}；{since.strftime('%m-%d %H:%M:%S')}起的健康检查异常已恢复，"
+            f"持续{_lasted_text((now - since).total_seconds())}（异常内容：{incident['first_errors']}）。"
+            f"现在{_health_status_text(snapshot)}。"
+        )
+        return None, ("✅ A_System已恢复正常", body, "active")
+    errors = "；".join(snapshot["errors"])
+    if incident is None:
+        incident = {
+            "since": now,
+            "first_errors": errors,
+            "next_notice": now + datetime.timedelta(minutes=still_bad_first_min),
+        }
+        return incident, None
+    incident = dict(incident)
+    if now < incident["next_notice"]:
+        return incident, None
+    incident["next_notice"] = now + datetime.timedelta(minutes=still_bad_every_min)
+    body = (
+        f"北京时间{stamp}；自{incident['since'].strftime('%m-%d %H:%M:%S')}起已持续"
+        f"{_lasted_text((now - incident['since']).total_seconds())}仍未恢复，最新：{errors}。"
+        "请检查Windows守护进程与QMT；恢复后会立即推送“已恢复”。"
+    )
+    return incident, ("⚠️ A_System仍异常", body, "timeSensitive")
+
+
+def _health_beacon_tick(
+    config: dict[str, Any],
+    incident: dict[str, Any] | None,
+    *,
+    now: datetime.datetime,
+    scheduled: bool,
+) -> dict[str, Any] | None:
+    """一次只读检查：定时点照常播报，异常期间的复查只推“已恢复/仍异常”。返回新的异常状态。"""
+    beacon_cfg = config.get("notify", {}).get("health_beacon", {}) or {}
+    recheck = _health_recheck_settings(beacon_cfg)
+    snapshot = _health_check_snapshot(beacon_cfg, now)
+    new_incident, followup = _health_followup_step(
+        incident,
+        snapshot,
+        now=now,
+        still_bad_first_min=recheck["still_bad_first_min"],
+        still_bad_every_min=recheck["still_bad_every_min"],
+    )
+    if followup is not None:
+        title, body, level = followup
+        (logger().info if snapshot["ok"] else logger().warning)("[健康复查] %s %s", title, body)
+        _send_health_beacon(beacon_cfg, title, body, level=level)
+    elif scheduled:
+        _publish_health_snapshot(beacon_cfg, snapshot, now)
+        if incident is not None and new_incident is not None:
+            # 定时点已经推过一次异常，下一次“仍异常”从现在起重新计时。
+            new_incident["next_notice"] = now + datetime.timedelta(minutes=recheck["still_bad_every_min"])
+    return new_incident
+
+
 def _periodic_health_beacon_loop() -> None:
-    """独立低优先级墙钟线程：每2小时第02分只读检查并异步推送。"""
+    """独立低优先级墙钟线程：每2小时第02分只读检查并异步推送；异常后按分钟只读复查直到恢复。"""
     log = logger()
+    incident: dict[str, Any] | None = None
     while True:
         try:
             config = load_json_config(PROJECT_ROOT / "config" / "config.json")
             beacon_cfg = config.get("notify", {}).get("health_beacon", {}) or {}
             if not bool(beacon_cfg.get("enabled", True)):
+                incident = None
                 time.sleep(300)
                 continue
+            recheck_sec = _health_recheck_settings(beacon_cfg)["recheck_sec"]
             target = _next_periodic_health_beacon_at(
                 now_beijing(),
                 every_hours=int(beacon_cfg.get("every_hours", 2) or 2),
@@ -328,8 +443,13 @@ def _periodic_health_beacon_loop() -> None:
                 remaining = (target - now_beijing()).total_seconds()
                 if remaining <= 0:
                     break
-                time.sleep(min(max(remaining, 1.0), 60.0))
-            _publish_periodic_health_beacon(config, now=now_beijing())
+                if incident is None:
+                    time.sleep(min(max(remaining, 1.0), 60.0))
+                    continue
+                time.sleep(min(max(remaining, 1.0), recheck_sec))
+                if (target - now_beijing()).total_seconds() > 0:
+                    incident = _health_beacon_tick(config, incident, now=now_beijing(), scheduled=False)
+            incident = _health_beacon_tick(config, incident, now=now_beijing(), scheduled=True)
         except Exception as exc:  # noqa: BLE001
             log.warning("定时健康播报线程异常（不影响交易主流程）：%s", exc)
             time.sleep(60)

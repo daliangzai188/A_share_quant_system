@@ -244,6 +244,9 @@
       "broker_health_fresh_sec": "number",
       "retry_attempts": "number",
       "retry_sec": "number",
+      "recheck_sec": "number",
+      "still_bad_first_min": "number",
+      "still_bad_every_min": "number",
       "note": "string"
     },
     "position_loss_alert_thresholds_pct": "list"
