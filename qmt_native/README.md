@@ -38,7 +38,7 @@ QN_EQ_SEED=$PWD/eqseed_prod_full venv/bin/python build_qmt_strategy.py live "$QM
 sh inqmt/run_regression.sh inqmt/A_SYSTEM_QMT_NATIVE_shadow.py inqmt/test_live_tmp.py inqmt/regress_out
 sh prepare_live.sh 20261022
 sh publish_to_a_system.sh "提交说明"
-sh deploy.sh auto --check   # 一条命令：打核心包、生成策略文件、完整回归（约1.5小时）、核对，只检查
+sh deploy.sh auto --check   # 一条命令：打核心包、生成策略文件、完整回归（约55分钟）、核对，只检查
 sh deploy.sh auto           # 同上并部署：放进虚拟机目录并发布，最后打印 QMT 里要点的步骤（主仓库 tools/release.sh --qmt 调的就是它）
 ```
 

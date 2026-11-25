@@ -1,6 +1,9 @@
 #!/bin/sh
 # Full regression of the packaged QMT-native strategy (QMT's Python 3.6 / pandas 0.22).
 # Usage: sh inqmt/run_regression.sh SHADOW_FILE LIVE_FILE OUT_DIR
+# 2026-11-26（用户要求加快换版，覆盖不减）：分两路同时跑——一路是下面全部单项测试，仍按原顺序一节一节跑（时间敏感的
+# 测试不会彼此抢CPU）；另一路是多日演练。两路输出按原顺序拼回，日志格式与以前逐行同构，deploy.sh 照常核对。
+# QN_REGRESS_SERIAL=1 时按以前的顺序一路跑完（对照用）。
 cd "$(dirname "$0")/.."
 PY="arch -x86_64 $(pwd)/tools/qmt36/bin/python"
 S=$1; L=$2; O=$3; mkdir -p "$O"
@@ -9,6 +12,7 @@ echo "== core $(sed '2d' inqmt/qn_core_full.py | shasum | cut -c1-16)"   # deplo
 echo "== artifact $(sed -n '3s/^# code \([0-9a-f]*\), seed \([0-9a-f]*\)\./code \1 seed \2/p' "$1")"
 [ "$(sed -n 3p "$1" | cut -d, -f1)" = "$(sed -n 3p "$2" | cut -d, -f1)" ] || echo "== artifact WARNING：影子版和实盘版的代码摘要不同"
 export QN_OLD_SQLITE=1
+lane_tests() {
 echo "== restart";        $PY inqmt/test_restart.py qn_core_full.py 90 > "$O/restart.txt" 2>&1; grep -E "identity equal|rebuilt|persistent files" "$O/restart.txt"
 echo "== stop threads";   $PY inqmt/test_stop_threads.py "$S" "$S" 40 45 > "$O/stop.txt" 2>&1; grep RESULT "$O/stop.txt"
 echo "== takeover";       $PY inqmt/test_takeover.py "$S" "$L" > "$O/takeover.txt" 2>&1; grep RESULT "$O/takeover.txt"
@@ -46,9 +50,19 @@ echo "== state check";    PYTHONIOENCODING=utf-8 $PY inqmt/test_state_check.py "
 echo "== calendar feed";  PYTHONIOENCODING=utf-8 $PY inqmt/test_calendar_feed.py "$S" > "$O/calendar_feed.txt" 2>&1; grep -E "^[0-9]\. |^RESULT" "$O/calendar_feed.txt"
 echo "== read_csv guard";  PYTHONIOENCODING=utf-8 $PY inqmt/test_read_csv_guard.py "$S" > "$O/read_csv_guard.txt" 2>&1; grep -E "^[0-9]\. |^RESULT" "$O/read_csv_guard.txt"
 echo "== tracebacks";     grep -c Traceback "$O"/*.txt
-[ -n "$SKIP_DRILL" ] && exit 0
+}
+lane_drill() {
 echo "== drill 10-13 15:25 -> 10-15 15:15"
 rm -rf "$O/vday"; mkdir -p "$O/vday"
 QN_TEST_GUARD_READ_CSV=1 QN_TEST_GUARD_FILES=1 $PY inqmt/run_vday.py "$S" 202610131525 202610151515 60 "$O/vday" > "$O/vday.log" 2>&1  # QMT 2.1.33 read_csv + file guards on
 echo "drill exit $?"; tail -2 "$O/vday.log"
 echo "drill tracebacks $(grep -c Traceback "$O/vday.log")"
+}
+if [ -n "$SKIP_DRILL" ]; then lane_tests; exit 0; fi
+if [ "${QN_REGRESS_SERIAL:-}" = "1" ]; then lane_tests; lane_drill; exit 0; fi
+lane_tests > "$O/_lane_tests.out" 2>&1 &
+TESTS_PID=$!
+lane_drill > "$O/_lane_drill.out" 2>&1 &
+DRILL_PID=$!
+wait "$TESTS_PID"; wait "$DRILL_PID"
+cat "$O/_lane_tests.out" "$O/_lane_drill.out"
