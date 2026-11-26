@@ -215,6 +215,38 @@ def _live_loss_streak_check(
     return live_loss, live_loss_error
 
 
+def _ace_m_l_checks(config, section, filled, complete, triggers, check_failure_trigger):
+    """ACE+M+L新框架（2026-11-26）：L实盘滑点（初级，最近10笔平均双边超过1.5%）和连亏降仓状态（只在日报显示）。
+
+    现行框架返回空字典，日报和结果文件一个字都不变。
+    """
+    from src.portfolio_ace_m import FRAMEWORK_ACE_M_L, portfolio_framework
+    if portfolio_framework(config) != FRAMEWORK_ACE_M_L:
+        return {}
+    out = {'l_slippage': None, 'l_slippage_error': '', 'loss_streak': None, 'loss_streak_error': ''}
+    try:
+        from src.review_triggers import l_slippage_stats, l_slippage_triggers
+        if filled is None:
+            raise RuntimeError('实盘成交汇总没读到')
+        out['l_slippage'] = l_slippage_stats(filled, start=str(section.get('ace_m_l_start_date', '') or ''),
+                                             trades=int(section.get('l_slippage_trades', 10)),
+                                             limit_pct=float(section.get('l_slippage_limit_pct', 1.5)))
+        triggers.extend(l_slippage_triggers(out['l_slippage']))
+    except Exception as exc:
+        traceback.print_exc()
+        out['l_slippage_error'] = '%s: %s' % (type(exc).__name__, exc)
+        triggers.append(check_failure_trigger('L实盘滑点', out['l_slippage_error']))
+    try:
+        from src.review_triggers import loss_streak_state
+        if complete is None:
+            raise RuntimeError('实盘已平仓交易没读到')
+        out['loss_streak'] = loss_streak_state(complete)
+    except Exception as exc:
+        traceback.print_exc()
+        out['loss_streak_error'] = '%s: %s' % (type(exc).__name__, exc)
+    return out
+
+
 def _strategy_health_context(config, day, metrics, error, triggers):
     """复用已算好的体检数据；数据缺口写进同一份日报，不另开监控或推送。"""
     from src.review_triggers import CHECK_REPAIR_ACTION, ReviewTrigger
@@ -274,6 +306,7 @@ def run(args) -> int:
     shadow_values, shadow_error = None, ''
     stall, stall_error = None, ''
     live_loss, live_loss_error = None, ''
+    l_extra = {}
     start = str(section.get('alignment_start_date', '') or '')
     if start:
         filled = complete = None
@@ -289,7 +322,8 @@ def run(args) -> int:
             align = run_alignment(
                 shadow, filled, ma_window=settings.ma_window, lag=settings.lag_trading_days, start=start, end=day,
                 ace_m_start=str(section.get('ace_m_start_date', '') or ''), raw_dir=ROOT / 'data' / 'raw',
-                m_sort_by=m_sort_for_config(config))
+                m_sort_by=m_sort_for_config(config),
+                ace_m_l_start=str(section.get('ace_m_l_start_date', '') or ''), project_root=ROOT)
             triggers.extend(align)
         except Exception as exc:
             traceback.print_exc()
@@ -318,6 +352,7 @@ def run(args) -> int:
             traceback.print_exc()
             ace_slip_error = '%s: %s' % (type(exc).__name__, exc)
             triggers.append(check_failure_trigger('A/C/E实盘滑点', ace_slip_error))
+        l_extra = _ace_m_l_checks(config, section, filled, complete, triggers, check_failure_trigger)
         try:
             from src.review_triggers import pool_coverage_triggers
             rows, limit_up = prod.pool_coverage_inputs(dataset, day)
@@ -337,7 +372,7 @@ def run(args) -> int:
                 found, warn_metrics = run_strategy_warnings(
                     shadow, health, config, raw_dir=ROOT / 'data' / 'raw',
                     cache_path=WORK / 'strategy_warning_cache.json', today=day, ma_window=settings.ma_window,
-                    lag=settings.lag_trading_days)
+                    lag=settings.lag_trading_days, project_root=ROOT)
                 triggers.extend(found)
             except Exception as exc:
                 traceback.print_exc()
@@ -384,6 +419,7 @@ def run(args) -> int:
         'thresholds': {'combo_middle': (warn_section.get('middle') or {}).get('combo_drawdown', -0.315),
                        'combo_final': (warn_section.get('final') or {}).get('combo_drawdown', -0.5)},
         'shadow': shadow_values, 'shadow_error': shadow_error, 'stall': stall, 'stall_error': stall_error,
+        **l_extra,
     }
     report = build_daily_report(day, triggers, acknowledged, recheck, state.get('first_seen', {}), value_lines(values),
                                 final_standard=FINAL_STANDARD)
@@ -416,6 +452,7 @@ def run(args) -> int:
         'ace_slippage': ace_slip, 'ace_slippage_error': ace_slip_error,
         'pool_coverage': coverage, 'pool_coverage_error': coverage_error,
         'strategy_warnings_error': warn_error,
+        **{k: v for k, v in l_extra.items() if k.startswith('l_slippage')},
         'finished_at': dt.datetime.now(BJ).isoformat()})
     _mirror(['daily_report_latest.json', 'factor_health_latest.json', 'strategy_warnings_latest.json'])
     (WORK / ('done_%s.json' % day)).write_text(json.dumps({

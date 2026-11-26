@@ -1422,6 +1422,13 @@ ACCOUNT_DAILY_AFTER = datetime.time(15, 5)
 _account_daily_done = ""
 
 
+def _framework_is_ace_m_l() -> bool:
+    from src.daemon.plans import framework_from_config
+    from src.portfolio_ace_m import FRAMEWORK_ACE_M_L
+
+    return framework_from_config() == FRAMEWORK_ACE_M_L
+
+
 def _record_account_daily(account: Any, live_positions: list[Any]) -> None:
     """收盘后第一次账户心跳记一行当天账户（一天只记一次）；失败只记警告，不影响心跳和交易。"""
     global _account_daily_done
@@ -1437,19 +1444,27 @@ def _record_account_daily(account: Any, live_positions: list[Any]) -> None:
         if not any(str(row.get("date", "")) == day for row in rows):
             ace = _strategy_only_market_value(live_positions, family="ACE")
             m_value = _strategy_only_market_value(live_positions, family=M_LEG)
+            l_value = _strategy_only_market_value(live_positions, family=L_LEG)
             total_mv = sum(float(getattr(p, "market_value", 0.0) or 0.0) for p in live_positions)
-            rows.append({
+            # ACE+M+L（2026-11-26）：新框架另记一列L市值（不再算进“其它”）；现行框架没有L仓，文件格式与原来相同
+            fields = ACCOUNT_DAILY_FIELDS
+            if l_value or any("l_market_value" in row for row in rows) or _framework_is_ace_m_l():
+                fields = ACCOUNT_DAILY_FIELDS + ("l_market_value",)
+            record = {
                 "date": day, "recorded_at": now.strftime("%Y-%m-%d %H:%M:%S"),
                 "total_asset": round(float(getattr(account, "total_asset", 0.0) or 0.0), 2),
                 "available_cash": round(float(getattr(account, "available_cash", 0.0) or 0.0), 2),
                 "ace_market_value": round(ace, 2), "m_market_value": round(m_value, 2),
-                "other_market_value": round(max(total_mv - ace - m_value, 0.0), 2),
+                "other_market_value": round(max(total_mv - ace - m_value - l_value, 0.0), 2),
                 "position_count": len(live_positions),
-            })
+            }
+            if "l_market_value" in fields:
+                record["l_market_value"] = round(l_value, 2)
+            rows.append(record)
             mkdir_p(ACCOUNT_DAILY_PATH.parent)
             tmp = ACCOUNT_DAILY_PATH.with_name(ACCOUNT_DAILY_PATH.name + ".tmp")
             with tmp.open("w", encoding="utf-8-sig", newline="") as handle:
-                writer = csv.DictWriter(handle, fieldnames=ACCOUNT_DAILY_FIELDS)
+                writer = csv.DictWriter(handle, fieldnames=fields)
                 writer.writeheader()
                 writer.writerows(rows)
             os.replace(tmp, ACCOUNT_DAILY_PATH)

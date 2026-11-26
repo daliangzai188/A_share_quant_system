@@ -278,6 +278,9 @@ def select_l_candidates(inp: LInputs) -> tuple[pd.DataFrame, dict[str, Any]]:
 L_SHADOW_POSITION = 0.9      # 影子账每笔用现金的 90%
 L_SHADOW_FEE = 0.0007        # 每笔按成交额扣 0.07%（佣金、过户费、印花税的近似；滑点已含在买卖价里）
 L_SHADOW_START = "20190402"  # 影子账起点（净值按比例滚动，起点只影响整体缩放，不影响和均线的比较）
+L_STOP_MA_WINDOW = 60        # L 自身停手：影子净值滞后 6 个交易日低于其 60 日均线（同方案甲的参数）
+L_STOP_LAG = 6
+L_STOP_MIN_DAYS = 120        # 影子净值不足这么多交易日不给停手判定（按停手处理：仓位 ×20/82.5）
 
 
 def l_shadow_nav(days: Sequence[str], picks_by_buy_day: Mapping[str, Sequence[str]],
@@ -302,3 +305,16 @@ def l_shadow_nav(days: Sequence[str], picks_by_buy_day: Mapping[str, Sequence[st
         nav.append(cash)
         index.append(d)
     return pd.Series(nav, index=index, dtype=float)
+
+
+def l_allowed_by_day(nav: pd.Series) -> dict[str, bool]:
+    """历史回放用：每个交易日 L 自身是否允许满仓（True）还是停手（False，仓位 ×20/82.5）。
+
+    nav 是 ``l_shadow_nav`` 的全期结果；第 i 天的判定只看第 i−6 天及以前的净值（滞后 6 日），和实盘每晚
+    “用买入日之前的净值算”相同。前 L_STOP_MIN_DAYS 天历史不够，按停手处理（与晚间信号脚本相同）。
+    """
+
+    from src.equity_curve_stop import allowed_flags
+
+    flags = allowed_flags(nav.to_numpy(), ma_window=L_STOP_MA_WINDOW, lag=L_STOP_LAG)
+    return {str(day): bool(flags[i]) and i >= L_STOP_MIN_DAYS for i, day in enumerate(nav.index)}

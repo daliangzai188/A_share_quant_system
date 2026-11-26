@@ -84,6 +84,7 @@ from src.daemon.buy import (
     resize_buy_orders_for_live_account,
 )
 from src.daemon.buy_m import M_POV_END_TIME, M_SIGNAL_RECENT_PATH
+from src.daemon.plan_notice import l_blocks_d_reason, l_plan_line
 from src.daemon.strategy_d import _strategy_d_monitor_running
 from src.open_plan_notification import ace_notice_has_plan, combined_plan_title, m_plan_notice
 
@@ -1877,7 +1878,7 @@ def _d_rule_block_reason(action_date: str, day_label: str, positions: list[dict[
         if (str(signal.get("status", "")) == SIGNAL_READY and signal.get("candidates")) or any(
                 position_in_family(position, M_LEG) for position in positions):
             return f"M持仓或M开仓计划占用资金，D{day_label}不启动（D只在账户含M完全空仓时运行）"
-        return ""
+        return l_blocks_d_reason(action_date, positions, day_label)   # ACE+M+L：L持仓或L计划同样不让D启动
     except Exception as exc:
         return f"D能否启动读取失败（只影响本条显示，不影响交易）：{exc}"
 
@@ -2278,8 +2279,9 @@ def _notify_missed_open_window_if_needed(source: str) -> None:
     logger().error("[开仓窗口审计] %s", body)
 
 
-def _m_plan_line(action_date: str, *, ace_active: bool, plan=None) -> tuple[str, str]:
-    """M在action_date的开仓计划摘要（推送用）；返回(文字, 第一候选名称)。"""
+def _m_plan_line(action_date: str, *, ace_active: bool, plan=None, framework_kwargs=None) -> tuple[str, str]:
+    """M在action_date的开仓计划摘要（推送用）；返回(文字, 第一候选名称)。
+    framework_kwargs：ACE+M+L新框架下的framework、l_reserve_pct、streak_mult、l_codes（见_l_plan_line）。"""
     try:
         from src.rolling_signal_store import latest_signal_for_buy_date
 
@@ -2294,6 +2296,7 @@ def _m_plan_line(action_date: str, *, ace_active: bool, plan=None) -> tuple[str,
             gate_mode=_ace_gate_mode_for(action_date), has_m_position=has_open_local_position(M_LEG),
             window_closed=(str(action_date) < now.strftime("%Y%m%d")
                            or (str(action_date) == now.strftime("%Y%m%d") and now.time() >= M_POV_END_TIME)),
+            **(framework_kwargs or {}),
         )
     except Exception as exc:
         logger().warning("M计划摘要生成失败（不影响交易）：%s", exc)
@@ -2405,8 +2408,13 @@ def push_open_plan_notification(occasion: str) -> None:
             title = f"📋 {label}无新开仓计划"
             body = _ace_no_open_plan_reason(plan)
         # 2026-11-12 ACE+M：附上M的计划（M与ACE资金分开，独立执行）。
-        m_line, m_first = _m_plan_line(action, ace_active=ace_notice_has_plan(plan, gate_mode), plan=plan)
-        title = combined_plan_title(title, label, plan, gate_mode, m_first)
+        # 2026-11-26 ACE+M+L：新框架再附上L的计划（同日顺序ACE→L→M），现行框架下这两行与原来相同。
+        l_line, l_first, l_kwargs = l_plan_line(action, plan=plan, gate_mode=gate_mode, occasion=occasion)
+        m_line, m_first = _m_plan_line(action, ace_active=ace_notice_has_plan(plan, gate_mode), plan=plan,
+                                       framework_kwargs=l_kwargs)
+        title = combined_plan_title(title, label, plan, gate_mode, m_first, l_first)
+        if l_line:
+            body += f" {l_line}"
         if m_line:
             body += f" {m_line}"
         if hold:

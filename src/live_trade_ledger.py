@@ -6,11 +6,12 @@ QMT 外检查（qmt_native_phase0/qmt_external_checks.py）每个交易日调用
 
 - live_trade_ledger.csv：只增不删的逐笔总账。按 trade_key 合并，同一笔交易保留更新时间最新的一行（买入、补仓、
   卖出逐步补全）；导出里没有了的旧交易照样保留；
-- live_performance_by_leg.csv / .md：已平仓交易按策略（A/C/E/D/M）和全部的实盘统计：笔数、胜率、平均/中位
+- live_performance_by_leg.csv / .md：已平仓交易按策略（A/C/E/D/M，ACE+M+L新框架再加L，腿清单在配置
+  live_performance_report.active_legs）和全部的实盘统计：笔数、胜率、平均/中位
   净收益、总净盈亏、最大回撤、盈亏比、最大单笔盈亏、最长连亏、平均双边滑点（口径同 src/live_performance.py），
   另列“按规则（开盘买、收盘卖，计划卖出日摸到涨停价−0.01按止盈价卖）”和“实盘”的平均毛收益，两者之差就是
   执行成本，策略本身好坏和执行好坏分开看；
-- account_daily.csv：每个交易日收盘后的账户（总资产、可用资金、ACE/M/其它持仓市值），由守护进程记、随 QMT
+- account_daily.csv：每个交易日收盘后的账户（总资产、可用资金、ACE/M/其它持仓市值，新框架另有L市值一列），由守护进程记、随 QMT
   导出，这里只增不删地并进来，用来算实盘账户的收益曲线和回撤（出入金要另外扣）；
 
 只读 QMT 导出、只写 data/live_trades/，不连券商、不改任何交易状态。

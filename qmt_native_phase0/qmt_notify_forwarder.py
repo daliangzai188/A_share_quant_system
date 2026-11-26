@@ -329,6 +329,87 @@ def maybe_run_checks(mode: str, runner: dict) -> None:
 
 L_SIGNAL = ROOT / 'scripts' / 'run_strategy_l_signal.py'
 L_RETRY_SECONDS = 1200     # 数据没出全/出错：20 分钟后再试
+L_PLAN_PATH = ROOT / 'reports' / 'strategy_l' / 'l_signals_recent.json'
+L_PLAN_QUERY = '?' + urllib.parse.urlencode({'group': 'A股实盘', 'level': 'active'})
+L_ALERT_QUERY = '?' + urllib.parse.urlencode({'group': 'A股实盘', 'level': 'timeSensitive'})
+L_PUSH_RETRY_SECONDS = 600
+
+
+def l_framework_on() -> bool:
+    """只有组合框架开关是 ACE+M+L（config.json 的 portfolio_framework=ace_m_l）才跑 L；读不了配置按现行（不跑）。"""
+    try:
+        config = json.loads((ROOT / 'config' / 'config.json').read_text(encoding='utf-8-sig'))
+    except (OSError, ValueError):
+        return False
+    return str(config.get('portfolio_framework') or '').strip().lower() == 'ace_m_l'
+
+
+def l_plan_message(signal_date: str, morning: bool) -> tuple:
+    """L 计划算好后的推送（标题，正文）：读 L 晚间信号写的滚动文件里这个信号日的那条。"""
+    label = '今日' if morning else '明日'
+    try:
+        payload = json.loads(L_PLAN_PATH.read_text(encoding='utf-8'))
+        signals = payload.get('signals', []) if isinstance(payload, dict) else payload
+        plan = [x for x in signals if isinstance(x, dict) and str(x.get('signal_date', '')) == signal_date][-1]
+    except (OSError, ValueError, IndexError) as exc:
+        return ('⚠️ %sL计划读不到' % label, 'L晚间信号说已完成，但计划文件里没有信号日%s的计划（%s），请查日志。' % (
+            signal_date, exc))
+    buy = str(plan.get('planned_buy_date', ''))
+    when = '%s-%s' % (buy[4:6], buy[6:8]) if len(buy) == 8 else buy
+    if str(plan.get('status', '')) != 'SIGNAL_READY' or not plan.get('ts_code'):
+        return ('📋 %sL无计划' % label, '龙虎榜信号日%s没有符合L规则的股票（分支%s），%s不开L；ACE和M照常。' % (
+            signal_date, plan.get('branch', ''), when))
+    own = '正常' if plan.get('l_allowed') else '自身停手（仓位×20/82.5）'
+    return ('📋 %sL计划：%s' % (label, plan.get('name', '')),
+            'L首选%s(%s)，分支%s，%s买入。L自身状态：%s。仓位在执行时定：方案甲正常期25%%、停手期60%%，'
+            '连亏2笔再×0.3，不超过账户总仓位99.5%%；09:20按涨停价-0.01预挂，开盘涨停不买、不递补，'
+            '买入后下一个交易日收盘卖出。' % (plan.get('name', ''), plan.get('ts_code', ''), plan.get('branch', ''),
+                                          when, own))
+
+
+def l_push(title: str, body: str, alert: bool = False) -> bool:
+    base = bark_base()
+    if not base:
+        log('L push skipped: no Bark URL')
+        return False
+    return send(base, '/%s/%s%s' % (urllib.parse.quote(title), urllib.parse.quote(body),
+                                    L_ALERT_QUERY if alert else L_PLAN_QUERY))
+
+
+def maybe_alert_l_missing(runner: dict, now: dt.datetime, days: list, push=None) -> None:
+    """L 计划到点还没生成就提醒（初级）：当晚 23:00 后提醒“明早 08:20 再试”；次日 09:10 后兜底也没成，提醒今日 L 不开仓。
+
+    每个信号日每种提醒只推一次（推成功才写标记）；推送失败 10 分钟后再试。"""
+    push = push or l_push
+    day, hhmm = now.strftime('%Y%m%d'), now.strftime('%H%M')
+    if day not in days:
+        return
+    if '2300' <= hhmm:
+        sig, kind = day, 'late'
+    elif '0910' <= hhmm < '1200':
+        past = [d for d in days if d < day]
+        sig, kind = (past[-1] if past else ''), 'missing'
+    else:
+        return
+    if not sig or (CHECKS_DIR / ('l_done_%s.json' % sig)).is_file() or (CHECKS_DIR / ('l_%s_%s.json' % (kind, sig))).is_file():
+        return
+    if time.time() - runner.get('l_alert_tried', 0) < L_PUSH_RETRY_SECONDS:
+        return
+    runner['l_alert_tried'] = time.time()
+    log_name = 'external_checks/l_signal_%s.log' % sig
+    if kind == 'late':
+        title = '⚠️ 明日L计划还没生成'
+        body = ('龙虎榜数据到23:00还没取全，或L晚间信号出错（日志%s）；明早08:20会再试一次，再失败明日L不开仓。'
+                'ACE和M不受影响。' % log_name)
+    else:
+        title = '⛔ 今日L不开仓：L计划没生成'
+        body = ('信号日%s的L计划晚上和今早08:20兜底都没生成（日志%s），今日L不开仓，ACE和M照常。'
+                '请在Claude发送：甲·临时复核' % (sig, log_name))
+    if push(title, body, True):
+        CHECKS_DIR.mkdir(parents=True, exist_ok=True)
+        (CHECKS_DIR / ('l_%s_%s.json' % (kind, sig))).write_text(json.dumps({'signal_date': sig, 'at': time.time()}),
+                                                                 encoding='utf-8')
+        log('L %s alert pushed for %s' % (kind, sig))
 
 
 def l_signal_window(now: dt.datetime, days: list) -> str:
@@ -347,9 +428,11 @@ def l_signal_window(now: dt.datetime, days: list) -> str:
 
 
 def maybe_run_l_signal(mode: str, runner: dict, now: dt.datetime | None = None, days: list | None = None,
-                       popen=subprocess.Popen) -> None:
-    """在时间窗内每 20 分钟启动一次 run_strategy_l_signal.py（写注册表 LPlan），直到它返回 0（完成）。"""
+                       popen=subprocess.Popen, push=None) -> None:
+    """在时间窗内每 20 分钟启动一次 run_strategy_l_signal.py（写注册表 LPlan），直到它返回 0（完成）；
+    完成后推送 L 计划，到点没完成推送提醒（ACE+M+L 新框架才跑，现行框架什么都不做）。"""
     proc = runner.get('l_proc')
+    now = now or dt.datetime.now(BJ)
     if proc is not None:
         if proc.poll() is None:
             return
@@ -359,11 +442,15 @@ def maybe_run_l_signal(mode: str, runner: dict, now: dt.datetime | None = None, 
             CHECKS_DIR.mkdir(parents=True, exist_ok=True)
             (CHECKS_DIR / ('l_done_%s.json' % sig)).write_text(json.dumps({'signal_date': sig, 'at': time.time()}),
                                                                  encoding='utf-8')
+            title, body = l_plan_message(sig, morning=now.hour < 12)
+            if not (push or l_push)(title, body, False):
+                log('L plan push failed for %s (the 08:50 morning plan push repeats it)' % sig)
         runner['l_proc'] = None
-    if mode != 'live' or not L_SIGNAL.is_file():
+    if mode != 'live' or not L_SIGNAL.is_file() or not l_framework_on():
         return
-    now = now or dt.datetime.now(BJ)
-    sig = l_signal_window(now, days if days is not None else open_dates())
+    days = days if days is not None else open_dates()
+    maybe_alert_l_missing(runner, now, days, push)
+    sig = l_signal_window(now, days)
     if not sig or (CHECKS_DIR / ('l_done_%s.json' % sig)).is_file():
         return
     if runner.get('l_signal_date') == sig and time.time() - runner.get('l_started', 0) < L_RETRY_SECONDS:

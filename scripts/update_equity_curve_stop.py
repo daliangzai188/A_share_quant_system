@@ -72,6 +72,8 @@ from src.review_triggers import (  # noqa: E402
     check_failure_trigger,
     factor_health_triggers,
     live_loss_streak_triggers,
+    l_slippage_stats,
+    l_slippage_triggers,
     m_slippage_stats,
     m_slippage_triggers,
     monthly_realized_pnl,
@@ -437,6 +439,8 @@ def run_review_trigger_check(
                     ace_m_start=str(section.get("ace_m_start_date", "") or ""),
                     raw_dir=PROJECT_ROOT / "data" / "raw",
                     m_sort_by=m_sort_for_config(config),
+                    ace_m_l_start=str(section.get("ace_m_l_start_date", "") or ""),
+                    project_root=PROJECT_ROOT,
                 )
             guarded("实盘与正式规则逐笔对账", _alignment)
             # M实盘滑点与逐笔对账一样只在QMT外检查（QMT内起始日留空），两边不会重复推送
@@ -446,6 +450,16 @@ def run_review_trigger_check(
                 trades=int(section.get("m_slippage_trades", 10)),
                 limit_pct=float(section.get("m_slippage_limit_pct", 1.5)),
             )))
+            from src.portfolio_ace_m import FRAMEWORK_ACE_M_L, portfolio_framework
+
+            if portfolio_framework(config) == FRAMEWORK_ACE_M_L:
+                # ACE+M+L（2026-11-26）：L实盘滑点，口径同M
+                guarded("L实盘滑点", lambda: l_slippage_triggers(l_slippage_stats(
+                    filled,
+                    start=str(section.get("ace_m_l_start_date", "") or ""),
+                    trades=int(section.get("l_slippage_trades", 10)),
+                    limit_pct=float(section.get("l_slippage_limit_pct", 1.5)),
+                )))
             guarded("A/C/E实盘滑点", lambda: ace_slippage_triggers(ace_slippage_stats(
                 filled,
                 start=start,
@@ -466,6 +480,7 @@ def run_review_trigger_check(
                         today=str(signal_date),
                         ma_window=settings.ma_window,
                         lag=settings.lag_trading_days,
+                        project_root=PROJECT_ROOT,
                     )
                     warnings_checked.append(True)
                     return found

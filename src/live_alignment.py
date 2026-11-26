@@ -41,12 +41,16 @@ def run_alignment(
     ace_m_start: str = "",
     raw_dir: Path | str | None = None,
     m_sort_by: str = "amount",
+    ace_m_l_start: str = "",
+    project_root: Path | str | None = None,
 ) -> list[ReviewTrigger]:
     """把实盘真实买入与正式规则逐笔对照，返回对不上的每一条。
 
     shadow：``build_shadow_replay`` 的结果；live：实盘成交汇总里真实买入的行。
     ace_m_start：ACE+M生效的第一个行动日（配置 review_triggers.ace_m_start_date），
     留空则全程按ACE+M之前的口径；raw_dir：原始数据目录，用来重算M候选单。
+    ace_m_l_start：ACE+M+L生效的第一个行动日（配置 review_triggers.ace_m_l_start_date，2026-11-26），
+    留空不做L的检查；project_root：读L历史首选缓存（reports/strategy_l/l_picks_cache.json）用。
     """
 
     nav = shadow["nav"]
@@ -61,4 +65,14 @@ def run_alignment(
         ace_m_start=rule_start,
         m_reference=MReference(raw_dir, sort_by=m_sort_by) if rule_start and raw_dir is not None else None,
         ace_plan_codes=plan_codes_by_date(shadow["legs"], rule_start, str(end)) if rule_start else None,
+        ace_m_l_start=str(ace_m_l_start or ""),
+        l_reference=_l_reference(ace_m_l_start, project_root, raw_dir),
     )
+
+
+def _l_reference(ace_m_l_start: str, project_root: Path | str | None, raw_dir: Path | str | None):
+    if not ace_m_l_start or project_root is None:
+        return None
+    from src.strategy_l_reference import LReference
+
+    return LReference(project_root, raw_dir)

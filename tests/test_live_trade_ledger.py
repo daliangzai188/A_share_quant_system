@@ -114,7 +114,7 @@ class AccountDailyRecordTests(unittest.TestCase):
             account = SimpleNamespace(total_asset=69_400.0, available_cash=55_000.0)
             positions = [SimpleNamespace(ts_code="002652.SZ", volume=3000, market_value=13_290.0),
                          SimpleNamespace(ts_code="110001.SH", volume=10, market_value=1_000.0)]
-            values = {"ACE": 13_290.0, "M": 0.0}
+            values = {"ACE": 13_290.0, "M": 0.0, "L": 0.0}
             beijing = dt.timezone(dt.timedelta(hours=8))
             with patch.object(qmt, "ACCOUNT_DAILY_PATH", path), patch.object(qmt, "_account_daily_done", ""), \
                     patch.object(qmt, "is_trade_day", return_value=True), \
@@ -130,6 +130,28 @@ class AccountDailyRecordTests(unittest.TestCase):
         self.assertEqual(saved.loc[0, "date"], "20261118")
         self.assertEqual((saved.loc[0, "total_asset"], saved.loc[0, "ace_market_value"],
                           saved.loc[0, "other_market_value"], saved.loc[0, "position_count"]), (69400.0, 13290.0, 1000.0, 2))
+        self.assertNotIn("l_market_value", saved.columns)            # 现行框架：文件格式与原来相同
+
+    def test_new_framework_records_l_market_value(self) -> None:
+        import datetime as dt
+        from types import SimpleNamespace
+        from src.daemon import qmt
+
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "account_daily.csv"
+            account = SimpleNamespace(total_asset=100_000.0, available_cash=60_000.0)
+            positions = [SimpleNamespace(ts_code="300100.SZ", volume=2000, market_value=25_000.0),
+                         SimpleNamespace(ts_code="002652.SZ", volume=1000, market_value=15_000.0)]
+            values = {"ACE": 15_000.0, "M": 0.0, "L": 25_000.0}
+            beijing = dt.timezone(dt.timedelta(hours=8))
+            with patch.object(qmt, "ACCOUNT_DAILY_PATH", path), patch.object(qmt, "_account_daily_done", ""), \
+                    patch.object(qmt, "is_trade_day", return_value=True), \
+                    patch.object(qmt, "_framework_is_ace_m_l", return_value=True), \
+                    patch.object(qmt, "_strategy_only_market_value", side_effect=lambda p, family: values[family]), \
+                    patch.object(qmt, "now_beijing", return_value=dt.datetime(2026, 12, 1, 15, 6, tzinfo=beijing)):
+                qmt._record_account_daily(account, positions)
+            saved = pd.read_csv(path, encoding="utf-8-sig", dtype={"date": str})
+        self.assertEqual((saved.loc[0, "l_market_value"], saved.loc[0, "other_market_value"]), (25000.0, 0.0))
 
 
 class MPlanTests(unittest.TestCase):

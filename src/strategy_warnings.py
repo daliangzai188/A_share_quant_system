@@ -25,14 +25,33 @@ from typing import Any, Callable, Mapping, Sequence
 
 import pandas as pd
 
-from src.portfolio_ace_m import AC_LEGS, ACE_STATIC_LEGS, REPORT_LEGS
-from src.review_triggers import FINAL_STANDARD, ReviewTrigger, m_early_triggers, signal_drought_triggers
+from src.portfolio_ace_m import (
+    AC_LEGS,
+    ACE_STATIC_LEGS,
+    FRAMEWORK_ACE_M,
+    FRAMEWORK_ACE_M_L,
+    L_LEG,
+    REPORT_LEGS,
+    portfolio_framework,
+    report_legs,
+)
+from src.review_triggers import (
+    FINAL_STANDARD,
+    ReviewTrigger,
+    l_early_triggers,
+    m_early_triggers,
+    signal_drought_triggers,
+)
 
 TIER_MIDDLE = 2
 TIER_FINAL = 3
 LEGS = ACE_STATIC_LEGS
 FACTOR_HEALTH_LEGS = ACE_STATIC_LEGS  # M的候选一年只有几十只，按因子健康的样本要求一个月都判不了，不算
-SCOPE_NAMES = {"A": "A腿", "C": "C腿", "E": "E腿", "M": "M", "ALL": "全部策略", "COMBO": "整体组合"}
+SCOPE_NAMES = {"A": "A腿", "C": "C腿", "E": "E腿", "M": "M", "L": "L", "ALL": "全部策略", "COMBO": "整体组合"}
+COMBO_NAMES = {FRAMEWORK_ACE_M: "ACE+M", FRAMEWORK_ACE_M_L: "ACE+M+L"}
+# ACE+M+L 新框架（2026-11-26）的阈值放在 strategy_warnings.ace_m_l，按新框架的生产回放算出后冻结（换版时重算）；
+# 这几项覆盖上一层的同名项。新框架打开而这一段没配置时三级警告报“没算成”，不拿现行框架的阈值凑合。
+FRAMEWORK_OVERRIDE_KEYS = ("middle", "final", "reference", "m_early", "l_early", "signal_gap_days", "replay_start")
 MIDDLE_CATEGORY = "中级·策略复核"
 FINAL_CATEGORY = "终极·建议停止交易"
 MIDDLE_ACTION = "请在Claude发送：甲·策略复核（%s）"
@@ -55,10 +74,18 @@ class WarningSettings:
     final: Mapping[str, float] = field(default_factory=dict)
     reference: Mapping[str, Any] = field(default_factory=dict)
     m_early: Mapping[str, Any] = field(default_factory=dict)
+    l_early: Mapping[str, Any] = field(default_factory=dict)
+    framework: str = FRAMEWORK_ACE_M
 
 
 def load_warning_settings(config: Mapping[str, Any]) -> WarningSettings:
     section = dict(config.get("strategy_warnings", {}) or {})
+    framework = portfolio_framework(config)
+    if framework == FRAMEWORK_ACE_M_L and section.get("enabled", False):
+        override = dict(section.get("ace_m_l", {}) or {})
+        if not override:
+            raise ValueError("组合框架是ACE+M+L，但strategy_warnings.ace_m_l（新框架的冻结阈值）没有配置")
+        section.update({k: override[k] for k in FRAMEWORK_OVERRIDE_KEYS if k in override})
     return WarningSettings(
         enabled=bool(section.get("enabled", False)),
         replay_start=str(section.get("replay_start", "20191202")),
@@ -74,6 +101,8 @@ def load_warning_settings(config: Mapping[str, Any]) -> WarningSettings:
         final={str(k): float(v) for k, v in dict(section.get("final", {}) or {}).items()},
         reference=dict(section.get("reference", {}) or {}),
         m_early=dict(section.get("m_early", {}) or {}),
+        l_early=dict(section.get("l_early", {}) or {}),
+        framework=framework,
     )
 
 
@@ -118,7 +147,8 @@ def trailing_return(trades: Sequence[tuple[str, float]], *, window_days: int, mi
     return {"value": value, "trades": len(window), "as_of": last}
 
 
-def m_recent_stats(trades: Sequence[tuple[str, float]], early: Mapping[str, Any]) -> dict[str, Any] | None:
+def m_recent_stats(trades: Sequence[tuple[str, float]], early: Mapping[str, Any],
+                   replay: str = "") -> dict[str, Any] | None:
     """M早期提醒用的近况：当前连亏笔数（收益<0）和最近window_trades笔逐笔连乘，连同冻结线一起返回。
 
     没配置m_early时返回None（不算、不提醒）。“最近N笔”不足N笔时window_return为None。
@@ -141,7 +171,7 @@ def m_recent_stats(trades: Sequence[tuple[str, float]], early: Mapping[str, Any]
         for _day, ret in recent:
             window_return *= 1.0 + ret
         window_return -= 1.0
-    return {
+    result = {
         "streak": streak,
         "streak_from": ordered[-streak][0] if streak else "",
         "window_trades": window,
@@ -152,6 +182,9 @@ def m_recent_stats(trades: Sequence[tuple[str, float]], early: Mapping[str, Any]
         "max_loss_streak": int(early.get("max_loss_streak", 0)),
         "worst_window_return": float(early.get("worst_window_return", -1.0)),
     }
+    if replay:
+        result["replay"] = replay
+    return result
 
 
 def drawdown(series: pd.Series) -> dict[str, Any]:
@@ -197,14 +230,28 @@ def compute_metrics(
     for leg in LEGS:
         metrics["legs"][leg] = trailing_return(legs[leg], window_days=settings.window_days,
                                                min_trades=settings.min_trades)
-    m_rows = []
-    if live_trades is not None and not live_trades.empty:
-        m = live_trades[live_trades["family"] == "M"]
-        m_rows = sorted(zip(m["action_date"].astype(str), m["ret"].astype(float)))
+    new = settings.framework == FRAMEWORK_ACE_M_L
+    replay_name = COMBO_NAMES[FRAMEWORK_ACE_M_L] if new else ""
+
+    def family_rows(family: str) -> list[tuple[str, float]]:
+        if live_trades is None or live_trades.empty:
+            return []
+        part = live_trades[live_trades["family"] == family]
+        return sorted(zip(part["action_date"].astype(str), part["ret"].astype(float)))
+
+    m_rows = family_rows("M")
     metrics["legs"]["M"] = trailing_return(m_rows, window_days=settings.window_days, min_trades=settings.min_trades)
-    m_recent = m_recent_stats(m_rows, settings.m_early)
+    m_recent = m_recent_stats(m_rows, settings.m_early, replay_name)
     if m_recent is not None:
         metrics["m_recent"] = m_recent
+    if new:
+        l_rows = family_rows(L_LEG)
+        metrics["legs"][L_LEG] = trailing_return(l_rows, window_days=settings.window_days,
+                                                 min_trades=settings.min_trades)
+        l_recent = m_recent_stats(l_rows, settings.l_early, replay_name)
+        if l_recent is not None:
+            metrics["l_recent"] = l_recent
+        metrics["framework"] = FRAMEWORK_ACE_M_L
     health = dict(health or {})
     metrics["factor_health"] = {
         leg: {"months_below": int((health.get(leg) or {}).get("months_below", 0) or 0),
@@ -218,8 +265,8 @@ def compute_metrics(
 
 
 def signal_activity(legs: Mapping[str, pd.DataFrame], m_candidates: Mapping[str, Sequence[str]],
-                    days: Sequence[str]) -> dict[str, Any]:
-    """A/C/E计划与M候选最近一次出现的行动日，和最近一次之后又过了几个行动日（不管停不停手）。"""
+                    days: Sequence[str], l_picks: Mapping[str, Sequence[str]] | None = None) -> dict[str, Any]:
+    """A/C/E计划与M候选（新框架再加L首选）最近一次出现的行动日，和最近一次之后又过了几个行动日（不管停不停手）。"""
 
     days = [str(d) for d in days]
     last: dict[str, str] = {}
@@ -232,6 +279,9 @@ def signal_activity(legs: Mapping[str, pd.DataFrame], m_candidates: Mapping[str,
         last[leg] = hits[-1] if hits else ""
     hits = [d for d in days if m_candidates.get(d)]
     last["M"] = hits[-1] if hits else ""
+    if l_picks is not None:
+        hits = [d for d in days if l_picks.get(d)]
+        last[L_LEG] = hits[-1] if hits else ""
     last_any = max(last.values())
     return {"last": last, "last_any": last_any, "gap": sum(1 for d in days if d > last_any) if days else None,
             "as_of": days[-1] if days else ""}
@@ -264,12 +314,16 @@ def warning_triggers(metrics: Mapping[str, Any], settings: WarningSettings) -> l
             triggers.append(_trigger(TIER_MIDDLE, leg, key,
                 "%s腿选股条件的优势已连续%d个月低于冻结线（中级线：连续%d个月；临时复核是2个月）" % (
                     leg, item["months_below"], settings.factor_health_months)))
-    for leg in REPORT_LEGS:
-        item = metrics["legs"][leg]
+    legs_to_check = report_legs(settings.framework)
+    combo_name = COMBO_NAMES.get(settings.framework, "ACE+M")
+    for leg in legs_to_check:
+        item = metrics["legs"].get(leg)
+        if item is None:
+            continue
         value = item["value"]
         if value is None:
             continue
-        label = "%s腿单独按规则" % leg if leg != "M" else "M按规则"
+        label = "%s腿单独按规则" % leg if leg not in ("M", L_LEG) else "%s按规则" % leg
         if leg in final and value < final[leg]:
             final_scopes.append(leg)
             triggers.append(_trigger(TIER_FINAL, leg, "warn3:leg:%s" % leg,
@@ -282,7 +336,7 @@ def warning_triggers(metrics: Mapping[str, Any], settings: WarningSettings) -> l
                 "%s最近12个月收益%s（%d笔，截至%s），低于中级线%s%s" % (
                     label, _pct(value), item["trades"], item["as_of"], _pct(middle[leg]),
                     "（%s）" % note if note else "")))
-    middle_scopes = sorted(set(middle_scopes), key=REPORT_LEGS.index)
+    middle_scopes = sorted(set(middle_scopes), key=legs_to_check.index)
     if len(middle_scopes) >= 2:
         names = "、".join(SCOPE_NAMES[s] for s in middle_scopes)
         triggers.append(_trigger(TIER_MIDDLE, "ALL", "warn2:all", "%s同时到中级警告" % names))
@@ -298,17 +352,17 @@ def warning_triggers(metrics: Mapping[str, Any], settings: WarningSettings) -> l
     if combo["value"] is not None:
         if "combo_drawdown" in final and combo["value"] < final["combo_drawdown"]:
             triggers.append(_trigger(TIER_FINAL, "COMBO", "warn3:combo",
-                "ACE+M按现行规则和仓位回放，自%s回撤%s，超过现行版本的上线硬门槛%s" % (
-                    combo["peak"], _pct(combo["value"]), _pct(final["combo_drawdown"]))))
+                "%s按现行规则和仓位回放，自%s回撤%s，超过现行版本的上线硬门槛%s" % (
+                    combo_name, combo["peak"], _pct(combo["value"]), _pct(final["combo_drawdown"]))))
         elif "combo_drawdown" in middle and combo["value"] < middle["combo_drawdown"]:
             triggers.append(_trigger(TIER_MIDDLE, "COMBO", "warn2:combo:drawdown",
-                "ACE+M按现行规则和仓位回放，自%s回撤%s，超过历史最深%s" % (
-                    combo["peak"], _pct(combo["value"]), _pct(middle["combo_drawdown"]))))
+                "%s按现行规则和仓位回放，自%s回撤%s，超过历史最深%s" % (
+                    combo_name, combo["peak"], _pct(combo["value"]), _pct(middle["combo_drawdown"]))))
     relative = metrics["combo_relative"]
     if relative["value"] is not None and relative["days_behind"] >= settings.relative_days:
         triggers.append(_trigger(TIER_MIDDLE, "COMBO", "warn2:combo:relative",
-            "ACE+M最近12个月收益比只用ACE（甲v1）低%.1f%%，已连续%d个交易日落后（中级线：连续%d个交易日%s）" % (
-                abs(relative["value"]) * 100, relative["days_behind"], settings.relative_days,
+            "%s最近12个月收益比只用ACE（甲v1）低%.1f%%，已连续%d个交易日落后（中级线：连续%d个交易日%s）" % (
+                combo_name, abs(relative["value"]) * 100, relative["days_behind"], settings.relative_days,
                 "；%s" % reference["relative_history"] if reference.get("relative_history") else "")))
     return triggers
 
@@ -465,8 +519,12 @@ def run_strategy_warnings(
     today: str,
     ma_window: int,
     lag: int,
+    project_root: Path | str | None = None,
 ) -> tuple[list[ReviewTrigger], dict[str, Any]]:
-    """ACE+M按现行规则和仓位回放、只用ACE回放、各腿单独，算出指标并判出中级/终极警告。"""
+    """ACE+M（新框架ACE+M+L）按现行规则和仓位回放、只用ACE回放、各腿单独，算出指标并判出中级/终极警告。
+
+    project_root：新框架读L历史首选缓存和名称变更记录用，缺省按raw_dir的上两级目录。
+    """
 
     settings = load_warning_settings(config)
     if not settings.enabled:
@@ -496,12 +554,21 @@ def run_strategy_warnings(
         "stamp_schedule": analysis.get("stamp_tax_schedule"),
     }
     plans = ace_plans_by_day(shadow["legs"])
-    live_equity, live_trades = replay_ace_m(days, plans, ace_allowed, candidates, outcome, **fees)
+    l_picks = None
+    if settings.framework == FRAMEWORK_ACE_M_L:
+        from src.ace_m_replay import replay_ace_m_l
+
+        root = Path(project_root) if project_root is not None else Path(raw_dir).resolve().parent.parent
+        l_picks, l_outcome, l_allowed = _l_replay_inputs(root, Path(raw_dir), open_days, str(today))
+        live_equity, live_trades = replay_ace_m_l(days, plans, ace_allowed, candidates, outcome,
+                                                  l_picks, l_outcome, l_allowed, **fees)
+    else:
+        live_equity, live_trades = replay_ace_m(days, plans, ace_allowed, candidates, outcome, **fees)
     ace_equity, _ace_trades = replay_ace_m(days, plans, ace_allowed, {}, outcome, use_m=False,
                                            ace_halted_weight=0.0, **fees)
     save()
     metrics = compute_metrics(shadow, health, live_equity, ace_equity, live_trades, settings)
-    metrics["signals"] = dict(signal_activity(shadow["legs"], candidates, days), line=settings.signal_gap_days)
+    metrics["signals"] = dict(signal_activity(shadow["legs"], candidates, days, l_picks), line=settings.signal_gap_days)
     metrics["replay"] = {
         "start": days[0] if days else "", "end": days[-1] if days else "",
         "ace_m_multiple": float(live_equity.iloc[-1] / live_equity.iloc[0]) if len(live_equity) else None,
@@ -509,6 +576,25 @@ def run_strategy_warnings(
         "m_trades": int((live_trades["family"] == "M").sum()) if len(live_trades) else 0,
         "m_reference_error_days": len(errors), "m_reference_errors_recent": sorted(errors)[-5:],
     }
+    if l_picks is not None:
+        metrics["replay"]["l_trades"] = int((live_trades["family"] == L_LEG).sum()) if len(live_trades) else 0
     triggers = warning_triggers(metrics, settings) + signal_drought_triggers(
         metrics["signals"], line=settings.signal_gap_days) + m_early_triggers(metrics.get("m_recent"))
+    if l_picks is not None:
+        triggers += l_early_triggers(metrics.get("l_recent"))
     return triggers, metrics
+
+
+def _l_replay_inputs(project_root: Path, raw_dir: Path, open_days: Sequence[str], today: str):
+    """新框架回放要的L输入：历史首选（晚间信号脚本维护的缓存）、买卖结果、L自身逐日停手判定（与研究同口径）。"""
+
+    from src.ace_m_replay import RawPrices, make_l_outcome
+    from src.strategy_l import l_allowed_by_day, l_shadow_nav
+    from src.strategy_l_reference import LReference, load_name_history
+
+    picks = LReference(project_root, raw_dir).all_picks()
+    names, list_dates = load_name_history(raw_dir / "stock_basic" / "stock_basic_all.csv",
+                                          raw_dir / "namechange" / "namechange_all.csv")
+    outcome = make_l_outcome(RawPrices(raw_dir), list(open_days), name_on=names.name_on, list_dates=list_dates)
+    nav = l_shadow_nav([d for d in open_days if str(d) <= today], picks, outcome)
+    return picks, outcome, l_allowed_by_day(nav)

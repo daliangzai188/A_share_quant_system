@@ -57,6 +57,7 @@ src.daemon.common
 src.daemon.jobs
 src.daemon.orders
 src.daemon.pipeline
+src.daemon.plan_notice
 src.daemon.plans
 src.daemon.qmt
 src.daemon.reports
@@ -127,6 +128,7 @@ src.strategy_e
 src.strategy_equity_ledger
 src.strategy_identity
 src.strategy_l
+src.strategy_l_reference
 src.strategy_m
 src.strategy_m_reference
 src.strategy_optimizer

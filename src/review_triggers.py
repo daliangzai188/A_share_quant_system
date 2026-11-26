@@ -18,7 +18,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 
 import pandas as pd
 
-from src.portfolio_ace_m import ACE_STATIC_LEGS, REPORT_LEGS
+from src.portfolio_ace_m import ACE_STATIC_LEGS, L_LEG, REPORT_LEGS
 from src.market_rules import is_st_name, min_order_shares
 
 REVIEW_ACTION = "请在Claude发送：甲·临时复核"
@@ -240,6 +240,17 @@ def _m_reference_for(m_reference: Callable[[str], Mapping[str, Any] | None] | No
     return list(reference.get("candidates") or []), ""
 
 
+def _l_reference_for(l_reference: Callable[[str], Mapping[str, Any] | None] | None, day: str) -> tuple[Any, str]:
+    """取day的L首选参照；返回（首选字典或None，错误说明）。错误说明非空表示这天无法检查。"""
+
+    if l_reference is None:
+        return None, "没有提供L首选参照"
+    reference = l_reference(day)
+    if not reference or str(reference.get("status", "")) != "OK":
+        return None, _text((reference or {}).get("error")) or "L首选参照不可用"
+    return reference.get("first"), ""
+
+
 def _first_buyable_ahead(
     candidates: Sequence[Mapping[str, Any]], bought: str, *, excused: set[str], budget: float | None
 ) -> str:
@@ -280,8 +291,13 @@ def _d_leg_trigger(
     m_held: Sequence[str],
     m_bought: Sequence[str],
     m_reference: Callable[[str], Mapping[str, Any] | None] | None,
+    l_rules: bool = False,
+    l_held: Sequence[str] = (),
+    l_bought: Sequence[str] = (),
+    l_reference: Callable[[str], Mapping[str, Any] | None] | None = None,
 ) -> ReviewTrigger | None:
-    """ACE+M起D腿只在这样的日子启动：不停手、A/C/E没有计划、账户里没有M、M当天也没有计划。"""
+    """ACE+M起D腿只在这样的日子启动：不停手、A/C/E没有计划、账户里没有M、M当天也没有计划。
+    ACE+M+L起（l_rules）另加：账户里没有L、L当天也没有计划（L首选没取到时报“没有被检查”）。"""
 
     if day in stops:
         return ReviewTrigger(
@@ -300,6 +316,25 @@ def _d_leg_trigger(
             f"alignment:d_m_position:{day}:{code}", "实盘执行",
             f"{day}账户里有M的持仓或当天买入（{listed}），D腿不启动，实盘却买入了D腿{code}",
         )
+    l_codes = sorted(set(l_held) | set(l_bought)) if l_rules else []
+    if l_codes:
+        return ReviewTrigger(
+            f"alignment:d_l_position:{day}:{code}", "实盘执行",
+            f"{day}账户里有L的持仓或当天买入（{_codes_text(l_codes)}），D腿不启动，实盘却买入了D腿{code}",
+        )
+    if l_rules:
+        first, l_error = _l_reference_for(l_reference, day)
+        if l_error:
+            return ReviewTrigger(
+                f"alignment:d_l_unchecked:{day}:{code}", "检查失效",
+                f"{day}实盘买入了D腿{code}，但L首选没取到（{l_error}），“L当天有计划时D腿不启动”这一条没有被检查",
+                action=CHECK_REPAIR_ACTION,
+            )
+        if first:
+            return ReviewTrigger(
+                f"alignment:d_l_plan:{day}:{code}", "实盘执行",
+                f"{day}L当天有开仓计划（{_text(first.get('ts_code'))}），D腿不启动，实盘却买入了D腿{code}",
+            )
     candidates, error = _m_reference_for(m_reference, day)
     if error:
         return ReviewTrigger(
@@ -372,6 +407,92 @@ def _m_buy_triggers(
     return triggers
 
 
+def _l_buy_triggers(
+    buy: Mapping[str, Any],
+    *,
+    ace_codes: set[str],
+    l_held: Sequence[str],
+    l_reference: Callable[[str], Mapping[str, Any] | None] | None,
+) -> list[ReviewTrigger]:
+    """一笔L买入对照L的规则（ACE+M+L）：不买ST、只买当天L首选（买不到不递补）、不买ACE的股票、同时最多一只。"""
+
+    day, code, name = buy["date"], buy["code"], buy["name"]
+    triggers: list[ReviewTrigger] = []
+    if is_st_name(name):
+        triggers.append(ReviewTrigger(
+            f"alignment:l_st:{day}:{code}", "实盘执行",
+            f"{day}L买入了{code}{name}，名称带ST或退市标记；L不允许买这类股票",
+        ))
+    first, error = _l_reference_for(l_reference, day)
+    if error:
+        triggers.append(ReviewTrigger(
+            f"alignment:l_unchecked:{day}:{code}", "检查失效",
+            f"{day}L买入了{code}，但L首选没取到（{error}），这一笔买得对不对没有被检查",
+            action=CHECK_REPAIR_ACTION,
+        ))
+    elif not first or _text(first.get("ts_code")) != code:
+        expected = _text((first or {}).get("ts_code")) or "当天没有L计划"
+        triggers.append(ReviewTrigger(
+            f"alignment:l_extra:{day}:{code}", "实盘执行",
+            f"{day}L买入了{code}，不是当天的L首选（{expected}）；L只买首选，买不到不递补",
+        ))
+    if code in ace_codes:
+        triggers.append(ReviewTrigger(
+            f"alignment:l_ace_same:{day}:{code}", "实盘执行",
+            f"{day}L买入了{code}，但方案甲当天也买了或还持有这只；L应当跳过方案甲的股票",
+        ))
+    if l_held:
+        triggers.append(ReviewTrigger(
+            f"alignment:l_overlap:{day}:{code}", "实盘执行",
+            f"{day}L买入了{code}，但之前买的L（{_codes_text(sorted(set(l_held)))}）当天还没卖完；L同一时间最多持有一只",
+        ))
+    return triggers
+
+
+def _l_missing_triggers(
+    l_reference: Any,
+    l_buys: Mapping[str, Sequence[Mapping[str, Any]]],
+    history: Sequence[Mapping[str, Any]],
+    actual: Mapping[tuple[str, str], str],
+    ace_plan_codes: Mapping[str, Iterable[str]] | None,
+    *,
+    start: str,
+    end: str,
+) -> list[ReviewTrigger]:
+    """L“该买没买”：首选开盘没封涨停、不是ACE当天计划或持有的股票、账户里没有L，实盘却没买（L只有一只首选，可以逐日查）。
+
+    需要参照能列出买入日（buy_days）和首选的开盘价、涨停价；任何一项缺失这天不报（不能确定就不算漏单）。
+    """
+
+    days = getattr(l_reference, "buy_days", None)
+    if l_reference is None or days is None:
+        return []
+    triggers: list[ReviewTrigger] = []
+    for day in days(start, end):
+        if l_buys.get(day):
+            continue
+        first, error = _l_reference_for(l_reference, day)
+        if error or not first:
+            continue
+        code = _text(first.get("ts_code"))
+        open_price, limit_up = _positive(first.get("buy_open")), _positive(first.get("buy_limit_up"))
+        if not code or open_price is None or limit_up is None or open_price >= limit_up - 1e-6:
+            continue
+        held = _held_from_before(history, day)
+        if any(b["leg"] == L_LEG for b in held):
+            continue
+        ace = {b["code"] for b in held if b["leg"] not in (M_LEG, L_LEG)}
+        ace |= {c for (d, c), leg in actual.items() if d == day and leg != "D"}
+        ace |= {str(c) for c in (ace_plan_codes or {}).get(day, [])}
+        if code in ace:
+            continue
+        triggers.append(ReviewTrigger(
+            f"alignment:l_missing:{day}:{code}", "实盘执行",
+            f"{day}L首选{code}开盘没封涨停，实盘没有买入（漏单、没成交，或当天可用额度不够买一手）",
+        ))
+    return triggers
+
+
 def alignment_triggers(
     replay: pd.DataFrame,
     live: pd.DataFrame,
@@ -382,8 +503,19 @@ def alignment_triggers(
     ace_m_start: str = "",
     m_reference: Callable[[str], Mapping[str, Any] | None] | None = None,
     ace_plan_codes: Mapping[str, Iterable[str]] | None = None,
+    ace_m_l_start: str = "",
+    l_reference: Any = None,
 ) -> list[ReviewTrigger]:
     """实盘逐笔与正式规则（单账户回放）对照。
+
+    ace_m_l_start有值：从这个行动日起按ACE+M+L口径（2026-11-26），在ACE+M的检查上另加：
+    - L：不买ST；只买l_reference(买入日)给出的首选、买不到不递补；不买ACE当天买入或持有的股票；
+      前一笔L没卖完不买；一天最多一只；首选开盘没封涨停却没买报漏单（参照能列出买入日时）。
+    - M：ACE当天有计划或持有ACE时M不开仓；不买L当天买入或持有的股票。
+    - D：账户里有L、L当天有计划，这两种日子也不该开仓。
+    l_reference(买入日)返回 {"status": "OK"或"ERROR", "error": 原因, "first": {"ts_code", "buy_open",
+    "buy_limit_up"}或None}（src.strategy_l_reference.LReference）；拿不到首选时相关的那一笔报“没有被检查”。
+    逐笔对账只在QMT外的每日检查里做（QMT里收盘流水线⑬的对账起始日留空），L的历史首选也只在QMT外读得到。
 
     replay：回放明细，需要action_date、ts_code、strategy_leg、position_opened；
     live：实盘真实买入，需要entry_date、ts_code、strategy_leg；ACE+M的检查还会用到
@@ -418,14 +550,22 @@ def alignment_triggers(
     def ace_m_rules(date: str) -> bool:
         return bool(rule_start) and date >= rule_start
 
+    l_start = str(ace_m_l_start or "")
+
+    def l_rules(date: str) -> bool:
+        return bool(l_start) and date >= l_start
+
     actual: dict[tuple[str, str], str] = {}
     m_buys: dict[str, list[dict[str, Any]]] = {}
+    l_buys: dict[str, list[dict[str, Any]]] = {}
     for buy in _live_buys(window):
         if buy["leg"] == M_LEG and ace_m_rules(buy["date"]):
             m_buys.setdefault(buy["date"], []).append(buy)
+        elif buy["leg"] == L_LEG and l_rules(buy["date"]):
+            l_buys.setdefault(buy["date"], []).append(buy)
         else:
             actual[(buy["date"], buy["code"])] = buy["leg"]
-    history = _live_buys(live) if rule_start and "execution_status" in live.columns else []
+    history = _live_buys(live) if (rule_start or l_start) and "execution_status" in live.columns else []
 
     triggers: list[ReviewTrigger] = []
     for (date, code), leg in sorted(planned.items()):
@@ -438,11 +578,16 @@ def alignment_triggers(
     for (date, code), leg in sorted(actual.items()):
         if ace_m_rules(date):
             if leg == "D":
+                held_before = _held_from_before(history, date)
                 trigger = _d_leg_trigger(
                     date, code, stops=stops, planned_days=planned_days,
-                    m_held=[b["code"] for b in _held_from_before(history, date) if b["leg"] == M_LEG],
+                    m_held=[b["code"] for b in held_before if b["leg"] == M_LEG],
                     m_bought=[b["code"] for b in m_buys.get(date, [])],
                     m_reference=m_reference,
+                    l_rules=l_rules(date),
+                    l_held=[b["code"] for b in held_before if b["leg"] == L_LEG],
+                    l_bought=[b["code"] for b in l_buys.get(date, [])],
+                    l_reference=l_reference,
                 )
                 if trigger is not None:
                     triggers.append(trigger)
@@ -470,19 +615,31 @@ def alignment_triggers(
 
     for date in sorted(m_buys):
         held = _held_from_before(history, date)
-        held_ace = {b["code"] for b in held if b["leg"] != M_LEG}
+        held_ace = {b["code"] for b in held if b["leg"] not in (M_LEG, L_LEG)}
         bought_ace = {code for (day, code), leg in actual.items() if day == date and leg != "D"}
         planned_ace = {str(code) for code in (ace_plan_codes or {}).get(date, [])}
+        l_codes = ({b["code"] for b in held if b["leg"] == L_LEG} | {b["code"] for b in l_buys.get(date, [])}
+                   if l_rules(date) else set())
         rows = sorted(m_buys[date], key=lambda b: b["code"])
         bought_m = {b["code"] for b in rows}  # 一天买了多只另报m_multi，不再互相算作“该先买”
         for buy in rows:
             triggers.extend(_m_buy_triggers(
                 buy,
                 ace_codes=held_ace | bought_ace,
-                excused=held_ace | bought_ace | planned_ace | bought_m,
+                excused=held_ace | bought_ace | planned_ace | bought_m | l_codes,
                 m_held=[b["code"] for b in held if b["leg"] == M_LEG],
                 m_reference=m_reference,
             ))
+            if l_rules(date) and (planned_ace or held_ace or bought_ace):
+                triggers.append(ReviewTrigger(
+                    f"alignment:m_beside_ace:{date}:{buy['code']}", "实盘执行",
+                    f"{date}方案甲当天有开仓计划或持仓，ACE+M+L下M不开仓，实盘却买入了M{buy['code']}",
+                ))
+            if buy["code"] in l_codes:
+                triggers.append(ReviewTrigger(
+                    f"alignment:m_l_same:{date}:{buy['code']}", "实盘执行",
+                    f"{date}M买入了{buy['code']}，但L当天也买了或还持有这只；M应当跳过L的股票",
+                ))
         codes = sorted({b["code"] for b in rows})
         if len(codes) > 1:
             listed = _codes_text(codes)
@@ -490,6 +647,27 @@ def alignment_triggers(
                 f"alignment:m_multi:{date}", "实盘执行",
                 f"{date}M一天买了{len(codes)}只（{listed}）；M一天最多买一只",
             ))
+
+    for date in sorted(l_buys):
+        held = _held_from_before(history, date)
+        held_ace = {b["code"] for b in held if b["leg"] not in (M_LEG, L_LEG)}
+        bought_ace = {code for (day, code), leg in actual.items() if day == date and leg != "D"}
+        rows = sorted(l_buys[date], key=lambda b: b["code"])
+        for buy in rows:
+            triggers.extend(_l_buy_triggers(
+                buy, ace_codes=held_ace | bought_ace, l_held=[b["code"] for b in held if b["leg"] == L_LEG],
+                l_reference=l_reference,
+            ))
+        codes = sorted({b["code"] for b in rows})
+        if len(codes) > 1:
+            triggers.append(ReviewTrigger(
+                f"alignment:l_multi:{date}", "实盘执行",
+                f"{date}L一天买了{len(codes)}只（{_codes_text(codes)}）；L一天最多买一只",
+            ))
+    if l_start:
+        triggers.extend(_l_missing_triggers(
+            l_reference, l_buys, history, actual, ace_plan_codes,
+            start=max(str(start), l_start), end=str(end)))
     return triggers
 
 
@@ -503,6 +681,36 @@ def m_slippage_stats(live: pd.DataFrame, *, start: str, trades: int, limit_pct: 
     """
 
     return slippage_stats(live, legs=(M_LEG,), start=start, trades=trades, limit_pct=limit_pct)
+
+
+def l_slippage_stats(live: pd.DataFrame, *, start: str, trades: int, limit_pct: float) -> dict[str, Any]:
+    """L最近trades笔已平仓交易的实盘平均双边滑点（%），口径同M（ACE+M+L，start=新框架生效日）。"""
+
+    return slippage_stats(live, legs=(L_LEG,), start=start, trades=trades, limit_pct=limit_pct)
+
+
+def loss_streak_state(complete: pd.DataFrame) -> dict[str, Any]:
+    """ACE+M+L连亏降仓状态（日报显示用，不报警）：按实盘已平仓交易的净收益，排序同回放（卖出日、买入日、ACE→L→M）。
+
+    守护进程下单时按本地持仓记录自己算同一条规则（src.daemon.state.closed_trade_net_returns），这里只给人看。
+    """
+
+    from src.portfolio_ace_m import fund_family, loss_streak_multiplier
+
+    rows = []
+    if complete is not None and len(complete):
+        for record in complete.to_dict("records"):
+            value = _number(record.get("net_return"))
+            exit_date = _date_text(record.get("exit_date"))
+            if value is None or not exit_date:
+                continue
+            leg = _text(record.get("strategy_leg")).upper()
+            rank = {"ACE": 0, L_LEG: 1, M_LEG: 2}[fund_family(leg)]
+            rows.append((exit_date, _date_text(record.get("entry_date")), rank, _text(record.get("ts_code")), leg, value))
+    rows.sort()
+    multiplier = loss_streak_multiplier([r[5] for r in rows])
+    recent = [{"exit_date": r[0], "ts_code": r[3], "leg": r[4], "net_return": round(r[5], 6)} for r in rows[-2:]]
+    return {"multiplier": multiplier, "recent": recent, "closed_trades": len(rows)}
 
 
 def ace_slippage_stats(live: pd.DataFrame, *, start: str, trades: int, limit_pct: float) -> dict[str, Any]:
@@ -553,6 +761,21 @@ def m_slippage_triggers(stats: Mapping[str, Any] | None) -> list[ReviewTrigger]:
         "m_slippage", "实盘执行",
         "M最近%d笔（%s~%s买入）实盘平均双边滑点%+.2f%%，超过报警线%.1f%%；回测按双边0.2%%，"
         "双边约3%%~4%%时加M就不如只用ACE，请查竞价和补单的成交价" % (
+            len(window), window[0]["entry_date"], window[-1]["entry_date"],
+            float(stats["average_pct"]), float(stats["limit_pct"])),
+    )]
+
+
+def l_slippage_triggers(stats: Mapping[str, Any] | None) -> list[ReviewTrigger]:
+    """L实盘滑点超过报警线（ACE+M+L）：L买卖都在开盘和收盘，回测按双边0.2%。"""
+
+    if not stats or not stats.get("triggered"):
+        return []
+    window = list(stats.get("window") or [])
+    return [ReviewTrigger(
+        "l_slippage", "实盘执行",
+        "L最近%d笔（%s~%s买入）实盘平均双边滑点%+.2f%%，超过报警线%.1f%%；回测按双边0.2%%，"
+        "请查竞价和补单的成交价" % (
             len(window), window[0]["entry_date"], window[-1]["entry_date"],
             float(stats["average_pct"]), float(stats["limit_pct"])),
     )]
@@ -616,32 +839,44 @@ def signal_drought_triggers(signals: Mapping[str, Any] | None, *, line: int) -> 
 
 
 def m_early_triggers(recent: Mapping[str, Any] | None) -> list[ReviewTrigger]:
-    """M早期提醒（2026-11-24用户要求，初级，只推送）：M按规则（ACE+M回放）走出上线前的历史范围。
+    return leg_early_triggers(recent, M_LEG)
 
-    两条线都取2019-12-02~2026-11-10回放里M的历史极值（连亏最长5笔、最近10笔连乘最差-36.16%），
-    上线前一次都没触发过；比“M最近12个月转负”（中级）早得多。只提醒去查执行、数据、行情和策略本身，
-    不改M规则、不影响交易，M的去留仍在年度复核决定。
+
+def l_early_triggers(recent: Mapping[str, Any] | None) -> list[ReviewTrigger]:
+    """L早期提醒（ACE+M+L，初级，只推送）：ACE+M+L回放里L按规则连亏超过上线前最长、或最近N笔连乘低于上线前最差。"""
+
+    return leg_early_triggers(recent, L_LEG)
+
+
+def leg_early_triggers(recent: Mapping[str, Any] | None, leg: str) -> list[ReviewTrigger]:
+    """M、L早期提醒（M 2026-11-24用户要求；L 2026-11-26随ACE+M+L），初级，只推送：按规则回放走出上线前的历史范围。
+
+    M的两条线取2019-12-02~2026-11-10回放里M的历史极值（连亏最长5笔、最近10笔连乘最差-36.16%），
+    上线前一次都没触发过；比“最近12个月转负”（中级）早得多。只提醒去查执行、数据、行情和策略本身，
+    不改规则、不影响交易，去留仍在年度复核决定。recent["replay"]是回放名称（缺省ACE+M）。
     """
 
     if not recent:
         return []
     found: list[ReviewTrigger] = []
-    tail = "先查执行、数据和行情，再看M本身；M规则年中不调，留还是撤在年度复核决定"
+    replay = str(recent.get("replay") or "ACE+M")
+    prefix = "%s_early" % leg.lower()
+    tail = "先查执行、数据和行情，再看%s本身；%s规则年中不调，留还是撤在年度复核决定" % (leg, leg)
     streak, line = int(recent.get("streak", 0) or 0), int(recent.get("max_loss_streak", 0) or 0)
     if line > 0 and streak > line:
         found.append(ReviewTrigger(
-            "m_early:streak", "M",
-            "M按规则（ACE+M回放）已连续亏损%d笔（%s起，最近一笔%s），超过上线前历史最长%d笔：%s" % (
-                streak, recent.get("streak_from") or "无", recent.get("as_of") or "无", line, tail),
+            "%s:streak" % prefix, leg,
+            "%s按规则（%s回放）已连续亏损%d笔（%s起，最近一笔%s），超过上线前历史最长%d笔：%s" % (
+                leg, replay, streak, recent.get("streak_from") or "无", recent.get("as_of") or "无", line, tail),
         ))
     value = recent.get("window_return")
     worst = recent.get("worst_window_return")
     if value is not None and worst is not None and float(value) < float(worst):
         found.append(ReviewTrigger(
-            "m_early:window", "M",
-            "M按规则（ACE+M回放）最近%d笔连乘%+.1f%%（%s~%s买入），低于上线前历史最差%+.1f%%：%s" % (
-                int(recent.get("window_trades", 10)), float(value) * 100, recent.get("window_from") or "无",
-                recent.get("as_of") or "无", float(worst) * 100, tail),
+            "%s:window" % prefix, leg,
+            "%s按规则（%s回放）最近%d笔连乘%+.1f%%（%s~%s买入），低于上线前历史最差%+.1f%%：%s" % (
+                leg, replay, int(recent.get("window_trades", 10)), float(value) * 100,
+                recent.get("window_from") or "无", recent.get("as_of") or "无", float(worst) * 100, tail),
         ))
     return found
 

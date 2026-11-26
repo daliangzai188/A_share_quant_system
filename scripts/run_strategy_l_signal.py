@@ -35,6 +35,9 @@ from src.rolling_signal_store import ERROR, NO_CANDIDATE, SIGNAL_READY, save_rec
 from src.strategy_l import (
     A_SHARE_CODE,
     L_SHADOW_START,
+    L_STOP_LAG,
+    L_STOP_MA_WINDOW,
+    L_STOP_MIN_DAYS,
     L_VERSION,
     STRATEGY_L_LEG,
     LInputs,
@@ -59,7 +62,7 @@ DAILY_COLUMNS = ["ts_code", "open", "high", "low", "close", "pre_close", "pct_ch
 REGISTRY_KEY = r"Software\A_System\QmtNative"
 REGISTRY_VALUE = "LPlan"
 EXIT_DONE, EXIT_ERROR, EXIT_NOT_READY = 0, 1, 3
-MIN_SHADOW_DAYS = 120          # L 影子净值至少要这么多交易日才给出停手判定（60日均线+滞后6日+余量）
+MIN_SHADOW_DAYS = L_STOP_MIN_DAYS   # L 影子净值至少要这么多交易日才给出停手判定（60日均线+滞后6日+余量）
 NAMECHANGE_MAX_AGE_HOURS = 20
 SIGNAL_READY_HOUR = 16         # 16:00 以前跑，信号日取上一个交易日（08:20 兜底即属此类）
 
@@ -201,11 +204,9 @@ def refresh_namechange(source) -> None:
 
 
 def load_names() -> tuple[NameHistory, dict[str, str]]:
-    basic = read_csv(STOCK_BASIC_PATH, dtype=str)
-    current = dict(zip(basic["ts_code"], basic["name"])) if not basic.empty else {}
-    list_dates = dict(zip(basic["ts_code"], basic["list_date"])) if not basic.empty else {}
-    nc = read_csv(NAMECHANGE_PATH, dtype=str)
-    return NameHistory(nc if not nc.empty else None, current=current), list_dates
+    from src.strategy_l_reference import load_name_history
+
+    return load_name_history(STOCK_BASIC_PATH, NAMECHANGE_PATH)
 
 
 def board_history(days: list[str]) -> dict[str, set]:
@@ -268,7 +269,7 @@ def l_allowed_for(buy_date: str, days: list[str], picks: dict, names: NameHistor
         return None, len(nav)
     nav.to_frame("l_shadow_nav").to_csv(SHADOW_NAV_PATH, encoding="utf-8-sig")
     extended = list(nav.to_numpy()) + [float(nav.iloc[-1])]     # 买入日本身的净值不影响它自己的判定（滞后 6 日）
-    flags = allowed_flags(extended, ma_window=60, lag=6)
+    flags = allowed_flags(extended, ma_window=L_STOP_MA_WINDOW, lag=L_STOP_LAG)
     return bool(flags[-1]), len(nav)
 
 

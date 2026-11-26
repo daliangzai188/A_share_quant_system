@@ -11,9 +11,18 @@ import datetime as dt
 import math
 from typing import Any, Mapping, Sequence
 
-from src.portfolio_ace_m import REPORT_LEGS
+from src.portfolio_ace_m import FRAMEWORK_ACE_M_L, L_LEG, REPORT_LEGS
 
 LEVELS = ("ok", "note", "review", "middle", "final")
+
+
+def _new_framework(warnings: Any) -> bool:
+    """规则回放是不是按ACE+M+L新框架算的（2026-11-26）；现行框架的日报一个字都不变。"""
+    return isinstance(warnings, Mapping) and warnings.get("framework") == FRAMEWORK_ACE_M_L
+
+
+def _report_legs(warnings: Any) -> tuple[str, ...]:
+    return REPORT_LEGS + (L_LEG,) if _new_framework(warnings) else REPORT_LEGS
 
 
 def _mmdd(day: Any) -> str:
@@ -194,7 +203,7 @@ def strategy_health_data_issues(values: Mapping[str, Any]) -> list[str]:
     except (KeyError, TypeError, ValueError, OverflowError):
         return ["策略体检样本要求或统计窗口缺失"]
     issues = []
-    for leg in REPORT_LEGS:
+    for leg in _report_legs(warnings):
         status, text = _health_leg_state(leg, warnings["legs"].get(leg), day=day, minimum=minimum)
         if status == "error":
             issues.append(text)
@@ -229,15 +238,16 @@ def strategy_health_details(values: Mapping[str, Any]) -> list[str]:
     as_of = _health_day((warnings.get("signals") or {}).get("as_of"))
     if as_of:
         lines[0] += " 数据重算截至%s。" % as_of
-    for leg in REPORT_LEGS:
+    for leg in _report_legs(warnings):
         _status, line = _health_leg_state(leg, warnings["legs"].get(leg), day=day, minimum=minimum)
         if leg == "M":
             gap = _m_health_gap(warnings)
             if gap:
                 line = line.rstrip("。") + "；" + gap + "，健康状态未知。"
         lines.append(line)
-    lines.append("口径：A/C/E各腿独立规则回放，M为ACE+M组合内回放，均非实盘成交收益；D不在本项统计范围。"
-                 "本项供复核，不自动调整仓位。")
+    lines.append("口径：A/C/E各腿独立规则回放，%s，均非实盘成交收益；D不在本项统计范围。"
+                 "本项供复核，不自动调整仓位。" % (
+                     "M、L为ACE+M+L组合内回放" if _new_framework(warnings) else "M为ACE+M组合内回放"))
     return lines
 
 
@@ -254,7 +264,10 @@ def value_lines(values: Mapping[str, Any]) -> list[str]:
         parts.append("逐笔对账%d处不一致" % len(values["alignment"]))
     else:
         parts.append("逐笔对账一致")
-    for name, key in (("M", "m_slippage"), ("A/C/E", "ace_slippage")):
+    slippage_keys = (("M", "m_slippage"), ("A/C/E", "ace_slippage"))
+    if "l_slippage" in values or "l_slippage_error" in values:   # 只有ACE+M+L新框架才有这一项
+        slippage_keys += (("L", "l_slippage"),)
+    for name, key in slippage_keys:
         text = _slippage(name, values.get(key), str(values.get(key + "_error") or ""))
         if text:
             parts.append(text)
@@ -264,6 +277,9 @@ def value_lines(values: Mapping[str, Any]) -> list[str]:
     elif loss is not None:
         parts.append("账户连续亏损%d个月（%d个月报警）" % (int(loss["months"]), int(loss["need"])))
     lines.append("实盘：" + "；".join(parts))
+    streak_line = _loss_streak_line(values)
+    if streak_line:
+        lines.append(streak_line)
 
     parts = []
     coverage = values.get("coverage")
@@ -279,9 +295,13 @@ def value_lines(values: Mapping[str, Any]) -> list[str]:
     signals = values.get("signals") or {}
     if signals.get("gap") is not None:
         last = signals.get("last") or {}
-        parts.append("最近一次选出股票%s（A %s、C %s、E %s、M %s），之后%d个行动日没有新的（超过%d天报警）" % (
-            _mmdd(signals.get("last_any")) or "无", _mmdd(last.get("A")) or "无", _mmdd(last.get("C")) or "无",
-            _mmdd(last.get("E")) or "无", _mmdd(last.get("M")) or "无", int(signals["gap"]), int(signals.get("line", 22))))
+        legs_text = "A %s、C %s、E %s、M %s" % (
+            _mmdd(last.get("A")) or "无", _mmdd(last.get("C")) or "无", _mmdd(last.get("E")) or "无",
+            _mmdd(last.get("M")) or "无")
+        if L_LEG in last:
+            legs_text += "、L %s" % (_mmdd(last.get(L_LEG)) or "无")
+        parts.append("最近一次选出股票%s（%s），之后%d个行动日没有新的（超过%d天报警）" % (
+            _mmdd(signals.get("last_any")) or "无", legs_text, int(signals["gap"]), int(signals.get("line", 22))))
     if parts:
         lines.append("数据：" + "；".join(parts))
 
@@ -311,12 +331,13 @@ def value_lines(values: Mapping[str, Any]) -> list[str]:
             return "%s %s" % (leg, "不足10笔" if value is None else _pct(value))
 
         if values.get("strategy_health_context") is None:
-            lines.append("各腿近12个月（按规则）：" + "、".join(leg_text(leg) for leg in REPORT_LEGS))
+            lines.append("各腿近12个月（按规则）：" + "、".join(leg_text(leg) for leg in _report_legs(warnings)))
         parts = []
         thresholds = values.get("thresholds") or {}
         combo = (warnings.get("combo_drawdown") or {}).get("value")
         if combo is not None:
-            parts.append("ACE+M回撤%.1f%%（中级%.1f%%、终极%.1f%%）" % (
+            parts.append("%s回撤%.1f%%（中级%.1f%%、终极%.1f%%）" % (
+                "ACE+M+L" if _new_framework(warnings) else "ACE+M",
                 combo * 100, float(thresholds.get("combo_middle", -0.315)) * 100,
                 float(thresholds.get("combo_final", -0.5)) * 100))
         relative = (warnings.get("combo_relative") or {}).get("value")
@@ -324,13 +345,15 @@ def value_lines(values: Mapping[str, Any]) -> list[str]:
             parts.append("近12个月比只用ACE%s" % _pct(relative))
         if parts:
             lines.append("组合（按规则）：" + "；".join(parts))
-        recent = warnings.get("m_recent")
-        if recent:
-            window = int(recent.get("window_trades", 10))
-            value = recent.get("window_return")
-            lines.append("M近况（按规则）：连亏%d笔（上线前最长%d笔，超过就提醒）；最近%d笔%s（上线前最差%s，低于就提醒）" % (
-                int(recent.get("streak", 0) or 0), int(recent.get("max_loss_streak", 0) or 0), window,
-                "不足%d笔" % window if value is None else _pct(value), _pct(float(recent.get("worst_window_return", -1.0)))))
+        for leg, key in (("M", "m_recent"), (L_LEG, "l_recent")):
+            recent = warnings.get(key)
+            if recent:
+                window = int(recent.get("window_trades", 10))
+                value = recent.get("window_return")
+                lines.append("%s近况（按规则）：连亏%d笔（上线前最长%d笔，超过就提醒）；最近%d笔%s（上线前最差%s，低于就提醒）" % (
+                    leg, int(recent.get("streak", 0) or 0), int(recent.get("max_loss_streak", 0) or 0), window,
+                    "不足%d笔" % window if value is None else _pct(value),
+                    _pct(float(recent.get("worst_window_return", -1.0)))))
 
     parts = []
     shadow = values.get("shadow")
@@ -350,6 +373,23 @@ def value_lines(values: Mapping[str, Any]) -> list[str]:
     if parts:
         lines.append("ACE影子账：" + "；".join(parts))
     return lines
+
+
+def _loss_streak_line(values: Mapping[str, Any]) -> str:
+    """ACE+M+L新框架的连亏降仓状态（只显示、不报警）：最近2笔已平仓都亏，当天所有新开仓×0.3，直到出现1笔盈利。"""
+
+    if values.get("loss_streak_error"):
+        return "连亏降仓：状态没算成（守护进程按本地持仓记录自己判断，不受影响）"
+    streak = values.get("loss_streak")
+    if not streak:
+        return ""
+    recent = list(streak.get("recent") or [])
+    shown = "、".join("%s %s %s" % (r.get("leg", ""), _mmdd(r.get("exit_date")), _pct(float(r.get("net_return", 0.0))))
+                     for r in recent) or "还没有已平仓交易"
+    if float(streak.get("multiplier", 1.0)) < 1.0:
+        return "连亏降仓：已触发，新开仓仓位×%.1f，直到出现1笔盈利（最近已平仓：%s）" % (
+            float(streak["multiplier"]), shown)
+    return "连亏降仓：未触发（最近已平仓：%s；连续2笔都亏才降仓）" % shown
 
 
 def terminal_lines(report: Mapping[str, Any] | None) -> list[str]:
