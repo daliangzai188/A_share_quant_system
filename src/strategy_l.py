@@ -272,3 +272,33 @@ def select_l_candidates(inp: LInputs) -> tuple[pd.DataFrame, dict[str, Any]]:
         out["l_version"] = L_VERSION
     diag["candidates"] = int(len(out))
     return out, diag
+
+
+# ── L 自身停手：L 原样单仓 90% 的影子净值（与研究最终推荐用的算法逐位一致）──────────────────
+L_SHADOW_POSITION = 0.9      # 影子账每笔用现金的 90%
+L_SHADOW_FEE = 0.0007        # 每笔按成交额扣 0.07%（佣金、过户费、印花税的近似；滑点已含在买卖价里）
+L_SHADOW_START = "20190402"  # 影子账起点（净值按比例滚动，起点只影响整体缩放，不影响和均线的比较）
+
+
+def l_shadow_nav(days: Sequence[str], picks_by_buy_day: Mapping[str, Sequence[str]],
+                 outcome: Callable[[str, str], Any], *, start: str = L_SHADOW_START) -> pd.Series:
+    """逐日 L 影子净值（按已实现记账）：空仓且当日有首选、首选买得进就按现金 90% 开仓，卖出日收盘入账；卖出当天不开新仓。"""
+
+    day_list = [str(d) for d in days]
+    position = {d: i for i, d in enumerate(day_list)}
+    cash, pos, nav, index = 1.0, None, [], []
+    for d in day_list:
+        if d < start:
+            continue
+        i = position[d]
+        picks = list(picks_by_buy_day.get(d, []) or [])
+        if pos is None and picks:
+            res = outcome(str(picks[0]), d)
+            if res is not None and str(res[0]) in position:
+                pos = (position[str(res[0])], float(res[2]), L_SHADOW_POSITION * cash)
+        if pos is not None and i >= pos[0]:
+            cash += pos[2] * pos[1] - pos[2] * L_SHADOW_FEE
+            pos = None
+        nav.append(cash)
+        index.append(d)
+    return pd.Series(nav, index=index, dtype=float)

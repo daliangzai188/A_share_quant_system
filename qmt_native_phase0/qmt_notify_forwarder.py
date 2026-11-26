@@ -327,6 +327,55 @@ def maybe_run_checks(mode: str, runner: dict) -> None:
     log('external checks started for %s' % day)
 
 
+L_SIGNAL = ROOT / 'scripts' / 'run_strategy_l_signal.py'
+L_RETRY_SECONDS = 1200     # 数据没出全/出错：20 分钟后再试
+
+
+def l_signal_window(now: dt.datetime, days: list) -> str:
+    """策略 L 晚间信号（ACE+M+L，2026-11-26）：返回该跑的信号日，不在时间窗内返回空。
+
+    16:30~23:00 跑当天（龙虎榜收盘后发布，2026-11-26 实测 18:02 已能取全）；08:20~09:10 兜底跑上一个交易日。"""
+    day, hhmm = now.strftime('%Y%m%d'), now.strftime('%H%M')
+    if day not in days:
+        return ''
+    if '1630' <= hhmm < '2300':
+        return day
+    if '0820' <= hhmm < '0910':
+        past = [d for d in days if d < day]
+        return past[-1] if past else ''
+    return ''
+
+
+def maybe_run_l_signal(mode: str, runner: dict, now: dt.datetime | None = None, days: list | None = None,
+                       popen=subprocess.Popen) -> None:
+    """在时间窗内每 20 分钟启动一次 run_strategy_l_signal.py（写注册表 LPlan），直到它返回 0（完成）。"""
+    proc = runner.get('l_proc')
+    if proc is not None:
+        if proc.poll() is None:
+            return
+        code, sig = proc.returncode, runner.get('l_signal_date', '')
+        log('L signal for %s finished with exit code %s' % (sig, code))
+        if code == 0 and sig:
+            CHECKS_DIR.mkdir(parents=True, exist_ok=True)
+            (CHECKS_DIR / ('l_done_%s.json' % sig)).write_text(json.dumps({'signal_date': sig, 'at': time.time()}),
+                                                                 encoding='utf-8')
+        runner['l_proc'] = None
+    if mode != 'live' or not L_SIGNAL.is_file():
+        return
+    now = now or dt.datetime.now(BJ)
+    sig = l_signal_window(now, days if days is not None else open_dates())
+    if not sig or (CHECKS_DIR / ('l_done_%s.json' % sig)).is_file():
+        return
+    if runner.get('l_signal_date') == sig and time.time() - runner.get('l_started', 0) < L_RETRY_SECONDS:
+        return
+    CHECKS_DIR.mkdir(parents=True, exist_ok=True)
+    out = open(CHECKS_DIR / ('l_signal_%s.log' % sig), 'ab')
+    runner['l_proc'] = popen([sys.executable, str(L_SIGNAL), '--signal-date', sig, '--write-registry'], cwd=str(ROOT),
+                             stdout=out, stderr=subprocess.STDOUT)
+    runner['l_signal_date'], runner['l_started'] = sig, time.time()
+    log('L signal started for %s' % sig)
+
+
 def alive_pattern(strategy: str) -> re.Pattern:
     """A status line of the live copy: printed by QMT's strategy thread every 20 s."""
     return re.compile(re.escape(strategy.encode('ascii')) + rb'[^\n]*\[A_SYSTEM\] \d\d:\d\d:\d\d status: ')
@@ -547,6 +596,7 @@ def main() -> None:
         save_state(state)
         if not args.once:
             maybe_run_checks(args.mode, runner)
+            maybe_run_l_signal(args.mode, runner)
         if time.time() - beat > 600:
             beat = time.time()
             log('alive: %d log files watched%s' % (len(state.get('offsets', {})), (

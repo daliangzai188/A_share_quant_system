@@ -55,6 +55,17 @@ L 原样单仓 90% 的影子净值（逐日）低于自身 60 日均线（滞后
   取全后生成 T+1 计划与 L 影子净值/停手判定；
 - 次日 08:20 再检查一次（没取全就再取）；仍无有效计划 → L 当日不开仓（fail-closed），日报列为“需处理”。
 
+### 5. 架构：L 计划怎么进 QMT（2026-10-23 起国金禁止 QMT 内置 Python 读写文件和联网）
+- 龙虎榜与席位只能从 Tushare 取，QMT 里没有，所以 L 的选股在 **QMT 外**算：虚拟机上的推送转发程序
+  （`qmt_native_phase0/qmt_notify_forwarder.py`，计划任务 A_System_QmtNotifyForwarder）16:30 起每 20 分钟调
+  `scripts/run_strategy_l_signal.py`：先用 Tushare 补齐 T 日日线/每日指标（同生产第①步），取龙虎榜/席位/名称变更，
+  取全后算 L 计划与 L 影子净值/停手判定，写 `reports/strategy_l/` 留档，并把计划写进注册表
+  `HKCU\Software\A_System\QmtNative` 的 `LPlan`（格式 `v1|<信号日>|<买入日>|<计划JSON>|<sha256前8位>`，同 TradeCalendar 的做法）和 `LPlanAt`。
+- **QMT 里**：宿主（`qmt_native/inqmt/qn_host.py`）开盘前读 `LPlan`，校验版本、校验码、信号日=上一交易日、买入日=今天，
+  写进内存文件系统里守护进程读的同一路径（`reports/strategy_l/l_signals_recent.json`）；读不到或不合格 → L 当天不开仓。
+  守护进程的 L 执行代码在 Mac 与 QMT 里完全相同（都读这个文件）。
+- 连亏降仓用 QMT 内的实盘平仓记录；三级警告、日报、逐笔对账在 QMT 外的检查里按 ACE+M+L 回放。
+
 ## 三、三级警告与复核（新框架下）
 - 初级（临时复核）新增：L 实盘滑点（最近 10 笔已平仓 L 平均双边 > 1.5%）；L 早期提醒（ACE+M+L 回放里 L 按规则连亏超过上线前最长、或最近 10 笔连乘低于上线前最差）；
   L 计划缺失/晚间数据采集失败；连亏降仓状态在日报显示（不报警）。

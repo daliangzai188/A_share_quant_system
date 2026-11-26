@@ -240,6 +240,24 @@ class TushareDataSource:
 
         return self._call("top_list", trade_date=trade_date, fields=fields)
 
+    def get_top_inst(self, trade_date: str) -> pd.DataFrame:
+        """龙虎榜机构/营业部席位明细（策略 L 用，2026-11-26）。"""
+
+        return self._call("top_inst", trade_date=trade_date)
+
+    def get_namechange_all(self, page_size: int = 5000, max_pages: int = 20) -> pd.DataFrame:
+        """全部股票的名称变更历史（判断历史时点是否 ST；策略 L 用，2026-11-26）。按 offset 分页取全。"""
+
+        frames = []
+        for page in range(max_pages):
+            part = self._call("namechange", limit=page_size, offset=page * page_size)
+            if part is None or part.empty:
+                break
+            frames.append(part)
+            if len(part) < page_size:
+                break
+        return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
     def get_minute_bars(
         self,
         ts_code: str,

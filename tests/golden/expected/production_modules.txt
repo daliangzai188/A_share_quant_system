@@ -22,6 +22,7 @@ scripts.report_rolling_live_performance
 scripts.run_combined_live_plan
 scripts.run_paper_ab_filtered_daily_ops
 scripts.run_strategy_e_signal
+scripts.run_strategy_l_signal
 scripts.run_strategy_m_signal
 scripts.score_limit_up_fill_probability
 scripts.send_notify
