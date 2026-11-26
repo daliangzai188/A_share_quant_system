@@ -3,10 +3,12 @@
 Input: a production-like workspace whose step 13 ran for D0 (research dataset under
 work_dir/dataset and reports/equity_curve_stop/shadow_nav_latest.csv).
 Output: OUT/qn_state/equity_stop/{asof_base.csv, seed_*.csv, state.json} and the NAV file.
+For ACE+M+L, also freezes the raw daily bars used by the native replay test.
 
 Usage: venv/bin/python build_eq_seed.py WORKSPACE DATASET_DIR NAV_CSV D0 OUT_DIR
 """
 import json
+from shutil import copyfile
 import sys
 from pathlib import Path
 
@@ -16,6 +18,8 @@ ws, dataset, nav_csv, d0, out = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.a
 sys.path.insert(0, str(ws))
 from src.fill_model import FillRateTableBuilder  # noqa: E402
 from src.equity_curve_stop import build_shadow_replay  # noqa: E402
+from src.portfolio_ace_m import FRAMEWORK_ACE_M_L, portfolio_framework  # noqa: E402
+from src.utils.config import load_json_config  # noqa: E402
 
 eq = out / 'qn_state' / 'equity_stop'
 eq.mkdir(parents=True, exist_ok=True)
@@ -74,9 +78,17 @@ state = dict(seed_until=d0, replay_start=str(row['action_date']), replay_cash=fl
 nav = full['nav']
 prod = pd.read_csv(nav_csv, dtype={'action_date': str})
 prod = pd.Series(prod['shadow_nav'].values, index=prod['action_date'].values)
-common = [d for d in nav.index if d in prod.index and d < d0]
+new_framework = portfolio_framework(load_json_config(ws / 'config/config.json')) == FRAMEWORK_ACE_M_L
+common = [d for d in nav.index if d in prod.index and (d < d0 or new_framework)]
 mism = [d for d in common if abs(nav[d] - prod[d]) > 1e-12 * max(1.0, abs(prod[d]))]
 print('seed state', state, 'replay NAV vs provided NAV mismatches', len(mism), mism[:3])
+if new_framework:
+    if mism or list(nav.index) != list(prod.index):
+        raise RuntimeError('ACE+M+L方案甲种子与全量复算净值不一致')
+    fixture = out / 'fixtures' / 'daily'
+    fixture.mkdir(parents=True, exist_ok=True)
+    for day in days[days.index(state['replay_start']):]:
+        copyfile(ws / 'data' / 'raw' / 'daily' / (day + '.csv'), fixture / (day + '.csv'))
 (out / 'reports' / 'equity_curve_stop').mkdir(parents=True, exist_ok=True)
 pd.DataFrame({'action_date': list(nav.index), 'shadow_nav': nav.values}).to_csv(
     out / 'reports' / 'equity_curve_stop' / 'shadow_nav_latest.csv', index=False, encoding='utf-8-sig')

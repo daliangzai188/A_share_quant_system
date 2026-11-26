@@ -225,3 +225,9 @@
   循环期间过了午夜，QMT 改写新一天的文件：按 Ctrl+C 停掉，把日期换成新的一天再起一次。
   前一天的日志 QMT 已经不再写，直接复制一次（YYYYMMDD 换成前一天日期）：`Copy-Item C:\QMT\GJQMT\userdata\log\XtClient_FormulaOutput_YYYYMMDD.log C:\A_System\reports\qmt_native\ -Force`。
 - 截图和策略文件里有资金账号，用完删除。
+
+### ACE+M+L 的方案甲影子账
+
+新框架自配置的 `review_triggers.ace_m_l_start_date` 行动日生效。QMT 第⑬步沿用短窗口增量计算，并调用同一份 E 修复环境过滤。新框架的净值、空仓续算点和成交概率增量写入 `qn_state/equity_stop_ace_m_l/`。这让换版时恢复的旧框架状态可以保留，同时新框架从独立校验后的全量净值接续。
+
+首次打包前，用同步目录外已核实的新框架全量研究底座运行 `build_eq_seed.py`，核对种子的完整影子净值及起始日和续算现金。通过后将种子目录作为 `QN_EQ_SEED_ACE_M_L` 传入回归和部署，或者放在 QMT 工作仓库的 `eqseed_prod_ace_m_l/`。种子是行情衍生数据，保存在 Git 外。回归会把第⑬步输出与全量净值逐日比对，并确认旧框架的状态可继续用于回滚。

@@ -8,6 +8,13 @@ echo "== core $(sed '2d' inqmt/qn_core_full.py | shasum | cut -c1-16)"   # deplo
 # 2026-11-15：策略文件第3行的完整代码摘要（运行时、核心包、模拟券商、宿主、包装）；deploy.sh 要求部署的文件与它相同
 echo "== artifact $(sed -n '3s/^# code \([0-9a-f]*\), seed \([0-9a-f]*\)\./code \1 seed \2/p' "$1")"
 [ "$(sed -n 3p "$1" | cut -d, -f1)" = "$(sed -n 3p "$2" | cut -d, -f1)" ] || echo "== artifact WARNING：影子版和实盘版的代码摘要不同"
+EQ_S=$(sed -n '4s/^# eq_ace_m_l_seed \([0-9a-f]*\)\./\1/p' "$S")
+EQ_L=$(sed -n '4s/^# eq_ace_m_l_seed \([0-9a-f]*\)\./\1/p' "$L")
+if [ -n "$EQ_S" ] || [ -n "$EQ_L" ]; then
+  [ ${#EQ_S} -eq 64 ] && [ "$EQ_S" = "$EQ_L" ] || {
+    echo "== artifact WARNING：影子版和实盘版的ACE+M+L方案甲种子不同或缺失"; exit 2; }
+  echo "== eq_ace_m_l_seed $EQ_S"
+fi
 export QN_OLD_SQLITE=1
 echo "== restart";        $PY inqmt/test_restart.py qn_core_full.py 90 > "$O/restart.txt" 2>&1; grep -E "identity equal|rebuilt|persistent files" "$O/restart.txt"
 echo "== stop threads";   $PY inqmt/test_stop_threads.py "$S" "$S" 40 45 > "$O/stop.txt" 2>&1; grep RESULT "$O/stop.txt"
@@ -44,6 +51,13 @@ for t in stop_threads:"$S $S 40 45" takeover:"$S $L" trading_switch:"$S" state_c
 done
 echo "== state check";    PYTHONIOENCODING=utf-8 $PY inqmt/test_state_check.py "$S" > "$O/state_check.txt" 2>&1; grep -E "^[0-9]\. |^RESULT" "$O/state_check.txt"
 echo "== calendar feed";  PYTHONIOENCODING=utf-8 $PY inqmt/test_calendar_feed.py "$S" > "$O/calendar_feed.txt" 2>&1; grep -E "^[0-9]\. |^RESULT" "$O/calendar_feed.txt"
+echo "== L plan feed"
+PYTHONIOENCODING=utf-8 $PY inqmt/test_l_plan_feed.py "$S" > "$O/l_plan_feed.txt" 2>&1
+l_plan_status=$?
+grep -E "^[0-9]\. |^RESULT" "$O/l_plan_feed.txt"
+if [ "$l_plan_status" -ne 0 ] || ! grep -qx 'RESULT PASS' "$O/l_plan_feed.txt"; then
+  echo "RESULT FAIL: L计划接收测试未完成或未通过（exit $l_plan_status）"
+fi
 echo "== read_csv guard";  PYTHONIOENCODING=utf-8 $PY inqmt/test_read_csv_guard.py "$S" > "$O/read_csv_guard.txt" 2>&1; grep -E "^[0-9]\. |^RESULT" "$O/read_csv_guard.txt"
 echo "== tracebacks";     grep -c Traceback "$O"/*.txt
 [ -n "$SKIP_DRILL" ] && exit 0

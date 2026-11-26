@@ -38,6 +38,7 @@ QN_PERSIST_INCLUDE = (
     _hre.compile(r'^logs/post_market_done_[0-9]{8}\.marker$'),
     _hre.compile(r'^runtime/qmt_inner/spool/journal\.sqlite3$'),
     _hre.compile(r'^qn_state/equity_stop/(state\.json|asof_delta_[0-9]{8}\.csv|sentiment_history\.csv)$'),
+    _hre.compile(r'^qn_state/equity_stop_ace_m_l/(state\.json|asof_delta_[0-9]{8}\.csv|sentiment_history\.csv|shadow_nav\.csv)$'),
     _hre.compile(r'^data/raw/limit_list/[0-9]{8}\.csv$'),
     # accumulated trade records and the day's cached combined plan (09:00 plan, 09:20 orders)
     _hre.compile(r'^reports/execution_tracking/[^/]+\.(csv|json)$'),
@@ -112,6 +113,52 @@ def _qn_read_calendar_feed():
             return str(winreg.QueryValueEx(key, QN_CALENDAR_VALUE)[0])
     except OSError:
         return ''
+
+
+# ACE+M+L（2026-11-26）：策略 L 的次日计划由 QMT 外的推送转发程序（Tushare 龙虎榜）写进同一注册表键的 LPlan：
+# "v1|<信号日>|<买入日>|<计划JSON>|<sha256(JSON)[:8]>"。宿主读出、校验后写进内存文件
+# reports/strategy_l/l_signals_recent.json（守护进程读的同一路径）；格式或校验不对就不写，L 当天不开仓。
+QN_L_PLAN_VALUE = 'LPlan'
+QN_L_PLAN_READER = [None]
+QN_L_PLAN_PATH = 'reports/strategy_l/l_signals_recent.json'
+
+
+def _qn_read_l_plan_feed():
+    if QN_L_PLAN_READER[0] is not None:
+        return QN_L_PLAN_READER[0]()
+    try:
+        import winreg
+    except ImportError:
+        return ''
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, QN_SWITCH_KEY) as key:
+            return str(winreg.QueryValueEx(key, QN_L_PLAN_VALUE)[0])
+    except OSError:
+        return ''
+
+
+def _qn_parse_l_plan_feed(text):
+    """(计划dict, None) 或 (None, 原因)。"""
+    parts = str(text).strip().split('|', 3)
+    if len(parts) != 4 or parts[0] != 'v1':
+        return None, 'unknown format'
+    sig, buy, rest = parts[1], parts[2], parts[3]
+    if '|' not in rest:
+        return None, 'no checksum'
+    body, digest = rest.rsplit('|', 1)
+    if _hsha.sha256(body.encode('utf-8')).hexdigest()[:8] != digest:
+        return None, 'checksum mismatch'
+    try:
+        plan = _hjson.loads(body)
+    except ValueError:
+        return None, 'bad json'
+    if not isinstance(plan, dict) or plan.get('strategy_leg') != 'L':
+        return None, 'not an L plan'
+    if str(plan.get('signal_date')) != sig or str(plan.get('planned_buy_date')) != buy:
+        return None, 'dates do not match'
+    if not (len(sig) == 8 and len(buy) == 8 and sig.isdigit() and buy.isdigit() and sig < buy):
+        return None, 'bad dates'
+    return plan, None
 
 
 def _qn_parse_calendar_feed(text):
@@ -1246,6 +1293,7 @@ class QnHost(object):
             self.log(message)
 
     def _poll_calendar(self):
+        self._poll_l_plan()
         now = _htime.time()
         if now - self.calendar_checked < self.CALENDAR_POLL_SECONDS:
             return
@@ -1254,6 +1302,50 @@ class QnHost(object):
             self._merge_calendar_feed()
         except Exception as exc:
             self._calendar_note('trade calendar merge failed: %s: %s' % (type(exc).__name__, exc))
+
+    L_PLAN_POLL_SECONDS = 1800.0
+    L_PLAN_POLL_SECONDS_PREOPEN = 120.0      # 08:00~09:25 每 2 分钟，保证 08:20 兜底写进来的计划赶得上 09:20 预挂
+
+    def _poll_l_plan(self):
+        now = _htime.time()
+        hhmm = _bj_now().strftime('%H%M')
+        interval = self.L_PLAN_POLL_SECONDS_PREOPEN if '0800' <= hhmm < '0925' else self.L_PLAN_POLL_SECONDS
+        if now - getattr(self, 'l_plan_checked', 0.0) < interval:
+            return
+        self.l_plan_checked = now
+        try:
+            self._load_l_plan_feed()
+        except Exception as exc:
+            self._l_plan_note('L plan load failed: %s: %s' % (type(exc).__name__, exc))
+
+    def _l_plan_note(self, message):
+        if getattr(self, 'l_plan_problem', None) != message:
+            self.l_plan_problem = message
+            self.log(message)
+
+    def _load_l_plan_feed(self):
+        """把注册表里的 L 计划并进内存文件（只保留最近 10 个信号日）；内容没变就不写。"""
+        raw = _qn_read_l_plan_feed()
+        if not raw:
+            return
+        plan, problem = _qn_parse_l_plan_feed(raw)
+        if problem:
+            return self._l_plan_note('L plan feed rejected: %s' % problem)
+        try:
+            existing = _hjson.loads(QN_VFS.get_text(QN_L_PLAN_PATH))
+        except Exception:
+            existing = {}
+        signals = [x for x in existing.get('signals', []) if isinstance(x, dict)
+                   and str(x.get('signal_date')) != str(plan['signal_date'])]
+        signals.append(plan)
+        signals = sorted(signals, key=lambda x: str(x.get('signal_date')))[-10:]
+        if existing.get('signals') == signals:
+            return
+        payload = {'strategy_leg': 'L', 'max_trade_days': 10, 'updated_at': _bj_now().strftime('%Y-%m-%d %H:%M:%S'),
+                   'signals': signals}
+        QN_VFS.put_text(QN_L_PLAN_PATH, _hjson.dumps(payload, ensure_ascii=False, indent=2))
+        self._l_plan_note('L plan for %s loaded from the forwarder: %s' % (
+            plan['planned_buy_date'], plan.get('ts_code') or 'no candidate'))
 
     STATE_CHECK_RETRY_SECONDS = 60.0
 

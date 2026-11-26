@@ -33,6 +33,13 @@ git -C "$REPO" fetch -q origin main
 [ "$(git -C "$REPO" rev-parse HEAD)" = "$(git -C "$REPO" rev-parse origin/main)" ] || { echo "主仓库和 GitHub 不一致：先推送"; exit 1; }
 [ -z "$(git status --porcelain --untracked-files=no)" ] || { echo "QMT工作仓库有未提交的改动："; git status --short; exit 1; }
 echo "主仓库 $(git -C "$REPO" rev-parse --short HEAD)，工作仓库 $(git rev-parse --short HEAD)"
+# Keep candidate and formal builds on the same independently verified shadow seed.
+# Other seed inputs retain their existing takeover/daily-update policy.
+NEW_FRAMEWORK=$(venv/bin/python -c 'import json; print(int(str(json.load(open("/Users/eass/Desktop/A_System/config/config.json")).get("portfolio_framework") or "ace_m").strip().lower() == "ace_m_l"))')
+if [ "$NEW_FRAMEWORK" = "1" ] || [ -n "$QN_EQ_SEED_ACE_M_L" ]; then
+  QN_EQ_SEED_ACE_M_L=${QN_EQ_SEED_ACE_M_L:-$PWD/eqseed_prod_ace_m_l}
+  export QN_EQ_SEED_ACE_M_L
+fi
 
 if [ "$LOG" = "auto" ]; then
   echo "== 1b. 打核心包、生成影子版和实盘版、完整回归（约1.5小时）"
@@ -40,8 +47,8 @@ if [ "$LOG" = "auto" ]; then
   CORE=$(sed '2d' inqmt/qn_core_full.py | shasum | cut -c1-16)
   RDIR=regress_$CORE
   S=inqmt/A_SYSTEM_QMT_NATIVE_shadow_regress.py; L=inqmt/A_SYSTEM_QMT_NATIVE_live_regress.py
-  QN_EQ_SEED=$PWD/eqseed_prod_full venv/bin/python build_qmt_strategy.py shadow "$QMT_ACCOUNT_ID" "$QN_PAPER_CASH" "$S" | tail -1
-  QN_EQ_SEED=$PWD/eqseed_prod_full venv/bin/python build_qmt_strategy.py live "$QMT_ACCOUNT_ID" 0 "$L" | tail -1
+  QN_EQ_SEED=$PWD/eqseed_prod_full venv/bin/python build_qmt_strategy.py shadow "$QMT_ACCOUNT_ID" "$QN_PAPER_CASH" "$S"
+  QN_EQ_SEED=$PWD/eqseed_prod_full venv/bin/python build_qmt_strategy.py live "$QMT_ACCOUNT_ID" 0 "$L"
   A_SYSTEM_REPO=$REPO sh inqmt/run_regression.sh "$S" "$L" "$RDIR" > "$RDIR.log" 2>&1 || true
   rm -f "$S" "$L"   # 实盘版含资金账号，用完就删
   LOG=$RDIR.log
@@ -58,6 +65,10 @@ passed=$(grep -c "^RESULT PASS" "$LOG" | tr -d ' ')
 others=$(grep "^RESULT" "$LOG" | grep -vc "^RESULT PASS" | tr -d ' ')
 echo "回归：RESULT PASS $passed 节，其它结果 $others 节"
 [ "$others" = "0" ] && [ "$passed" -ge 34 ] || { echo "回归没有全部通过"; cleanup; exit 1; }
+if [ "$NEW_FRAMEWORK" = "1" ]; then
+  awk '/^== / { l = ($0 == "== L plan feed") } l && /^RESULT PASS$/ { ok = 1 } END { exit !ok }' "$LOG" ||
+    { echo "回归缺少L计划接收测试通过记录"; cleanup; exit 1; }
+fi
 grep -q "^drill exit 0" "$LOG" || { echo "整日演练没有正常结束"; cleanup; exit 1; }
 grep -q "^drill tracebacks 0" "$LOG" || { echo "整日演练里有异常（$(grep '^drill tracebacks' "$LOG")）"; cleanup; exit 1; }
 $PY36 inqmt/compile36_check.py inqmt/qn_core_full.py
@@ -66,8 +77,14 @@ $PY36 inqmt/import_check.py "$PWD/inqmt/qn_core_full.py" 2>&1 | tail -1 | tee /t
 grep -q "import failures 0" /tmp/qn_import_check.txt || { echo "Python 3.6 导入检查不通过"; cleanup; exit 1; }
 
 echo "== 3. 生成策略文件，接管测试"
-QN_EQ_SEED=$PWD/eqseed_prod_full venv/bin/python build_qmt_strategy.py live "$QMT_ACCOUNT_ID" 0 inqmt/A_SYSTEM_QMT_NATIVE_live.py | tail -1
-QN_EQ_SEED=$PWD/eqseed_prod_full venv/bin/python build_qmt_strategy.py shadow "$QMT_ACCOUNT_ID" "$QN_PAPER_CASH" inqmt/A_SYSTEM_QMT_NATIVE_shadow.py | tail -1
+QN_EQ_SEED=$PWD/eqseed_prod_full venv/bin/python build_qmt_strategy.py live "$QMT_ACCOUNT_ID" 0 inqmt/A_SYSTEM_QMT_NATIVE_live.py
+QN_EQ_SEED=$PWD/eqseed_prod_full venv/bin/python build_qmt_strategy.py shadow "$QMT_ACCOUNT_ID" "$QN_PAPER_CASH" inqmt/A_SYSTEM_QMT_NATIVE_shadow.py
+if [ "$NEW_FRAMEWORK" = "1" ] || [ -n "$QN_EQ_SEED_ACE_M_L" ]; then
+  EQ_SEED_SHA=$(sed -n '4s/^# eq_ace_m_l_seed \([0-9a-f]*\)\./\1/p' inqmt/A_SYSTEM_QMT_NATIVE_live.py)
+  [ ${#EQ_SEED_SHA} -eq 64 ] && grep -qx "== eq_ace_m_l_seed $EQ_SEED_SHA" "$LOG" || {
+    echo "ACE+M+L方案甲种子与回归记录不一致或缺少记录，拒绝部署"
+    rm -f inqmt/A_SYSTEM_QMT_NATIVE_live.py inqmt/A_SYSTEM_QMT_NATIVE_shadow.py; cleanup; exit 1; }
+fi
 QN_OLD_SQLITE=1 $PY36 inqmt/test_takeover.py inqmt/A_SYSTEM_QMT_NATIVE_shadow.py inqmt/A_SYSTEM_QMT_NATIVE_live.py > /tmp/qn_takeover.txt 2>&1 || true
 grep -E "^RESULT" /tmp/qn_takeover.txt
 grep -q "^RESULT PASS" /tmp/qn_takeover.txt || { echo "接管测试不通过"; cleanup; exit 1; }

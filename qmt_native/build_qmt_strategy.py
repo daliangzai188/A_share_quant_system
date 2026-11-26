@@ -10,9 +10,12 @@ The file is ASCII, `# coding: gbk`, and contains:
 Usage: venv/bin/python build_qmt_strategy.py MODE ACCOUNT CASH OUT_FILE
 """
 import base64
+import csv
 import datetime
 import hashlib
+import io
 import json
+import math
 import os
 import sys
 import zlib
@@ -28,6 +31,67 @@ def pack(data):
 
 
 EQ_SEED = Path(os.environ['QN_EQ_SEED']) if os.environ.get('QN_EQ_SEED') else None
+ACE_M_L_EQ_REL = 'qn_state/equity_stop_ace_m_l'
+ACE_M_L_EQ_FILES = ('asof_base.csv', 'asof_dtypes.json', 'seed_limit_up_merged.csv',
+                     'seed_compact_daily.csv', 'seed_market_sentiment.csv',
+                     'seed_market_emotion.csv', 'sentiment_history.csv', 'state.json')
+
+
+def ace_m_l_seed_files():
+    """Package an explicitly frozen new-framework seed, never the legacy NAV.
+
+    build_eq_seed.py writes the legacy directory layout; the output is mapped to
+    a separate runtime namespace so restored legacy state cannot overwrite it.
+    An already versioned layout is accepted as well.  Explicit selection also
+    embeds the new seed in pre-activation regression artifacts.
+    """
+    config_path = REPO / 'config/config.json'
+    config = json.loads(config_path.read_text(encoding='utf-8-sig')) if config_path.exists() else {}
+    selected = os.environ.get('QN_EQ_SEED_ACE_M_L')
+    if not selected and str(config.get('portfolio_framework') or 'ace_m').strip().lower() != 'ace_m_l':
+        return {}
+    root = Path(selected) if selected else HERE / 'eqseed_prod_ace_m_l'
+    versioned = root / ACE_M_L_EQ_REL
+    source = versioned if versioned.exists() else root / 'qn_state/equity_stop'
+    nav = source / 'shadow_nav.csv' if source == versioned else root / 'reports/equity_curve_stop/shadow_nav_latest.csv'
+    paths = {name: source / name for name in ACE_M_L_EQ_FILES}
+    paths['shadow_nav.csv'] = nav
+    missing = [name for name, path in paths.items() if not path.is_file() or not path.stat().st_size]
+    if missing:
+        raise RuntimeError('ACE+M+L equity seed is incomplete at %s: %s; legacy fallback is forbidden' %
+                           (root, ', '.join(sorted(missing))))
+    data = {name: path.read_bytes() for name, path in paths.items()}
+    state = json.loads(data['state.json'].decode('utf-8-sig'))
+    for name in ('seed_until', 'replay_start'):
+        value = state.get(name)
+        if not isinstance(value, str) or len(value) != 8 or not value.isdigit():
+            raise RuntimeError('ACE+M+L equity seed has an invalid %s' % name)
+    if state['replay_start'] > state['seed_until']:
+        raise RuntimeError('ACE+M+L equity seed replay_start is after seed_until')
+    for name in ('replay_cash', 'initial_cash'):
+        value = float(state[name])
+        if not math.isfinite(value) or value <= 0:
+            raise RuntimeError('ACE+M+L equity seed has an invalid %s' % name)
+    rows = list(csv.DictReader(io.StringIO(data['shadow_nav.csv'].decode('utf-8-sig'))))
+    dates = [row.get('action_date', '') for row in rows]
+    if (not dates or dates != sorted(set(dates)) or dates[-1] != state['seed_until']
+            or state['replay_start'] not in dates
+            or any(len(day) != 8 or not day.isdigit() for day in dates)):
+        raise RuntimeError('ACE+M+L equity seed NAV dates do not match state.json')
+    for row in rows:
+        value = float(row['shadow_nav'])
+        if not math.isfinite(value) or value <= 0:
+            raise RuntimeError('ACE+M+L equity seed NAV contains an invalid value')
+    return {ACE_M_L_EQ_REL + '/' + name: body for name, body in data.items()}
+
+
+def ace_m_l_seed_digest(seed):
+    """Bind regression/deployment to these exact derived inputs only."""
+    names = set(ACE_M_L_EQ_FILES + ('shadow_nav.csv',))
+    hashes = {rel: hashlib.sha256(zlib.decompress(base64.b64decode(body))).hexdigest()
+              for rel, body in seed.items()
+              if rel.startswith(ACE_M_L_EQ_REL + '/') and rel.rsplit('/', 1)[-1] in names}
+    return hashlib.sha256(json.dumps(hashes, sort_keys=True, separators=(',', ':')).encode('ascii')).hexdigest() if hashes else ''
 
 
 def persist_patterns():
@@ -70,7 +134,8 @@ def seed_files():
     include = persist_patterns()
     for p in sorted(state.rglob('*')):
         rel = p.relative_to(state).as_posix()
-        if not p.is_file() or 'sync-conflict' in rel or rel.startswith('logs/'):
+        if (not p.is_file() or 'sync-conflict' in rel or rel.startswith('logs/')
+                or rel.startswith(ACE_M_L_EQ_REL + '/')):
             continue
         if any(rx.search(rel) for rx in include):
             data = p.read_bytes()
@@ -89,6 +154,10 @@ def seed_files():
             add('data/state/equity_curve_stop_decision.json', decision)
     else:
         add('reports/equity_curve_stop/shadow_nav_latest.csv', REPO / 'reports/equity_curve_stop/shadow_nav_latest.csv')
+    # This is intentionally last: the independently recomputed seed takes
+    # precedence over historical vm_state files in the new namespace only.
+    for rel, data in ace_m_l_seed_files().items():
+        seed[rel] = pack(data)
     return seed
 
 
@@ -220,6 +289,7 @@ def main():
               'debug_export_dir': r'C:\qn_shadow_out' if mode == 'shadow' else ''}
     blob = pack(source.encode('utf-8'))
     seed_digest = hashlib.sha256(json.dumps(deploy['seed'], sort_keys=True).encode('ascii')).hexdigest()[:16]
+    eq_seed_digest = ace_m_l_seed_digest(deploy['seed'])
     lines = ['# coding: gbk',
              '# A_System QMT-native strategy, release %s, mode %s.' % (release, mode),
              '# code %s, seed %s.' % (code_digest, seed_digest),
@@ -227,6 +297,9 @@ def main():
              '# No file access, no network: everything runs in memory inside QMT.',
              'import base64 as _qn_b64', 'import zlib as _qn_zlib',
              '_QN_BLOB = (']
+    if eq_seed_digest:
+        # Keep line 3 unchanged: existing artifact readers bind code/whole seed there.
+        lines.insert(3, '# eq_ace_m_l_seed %s.' % eq_seed_digest)
     for i in range(0, len(blob), 4000):
         lines.append("    '%s'" % blob[i:i + 4000])
     lines.append(')')

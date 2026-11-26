@@ -35,17 +35,20 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.data_cleaner import DataCleaner
-from src.equity_curve_stop import (SHADOW_LEGS, decision_for_next_action_date, load_decision, load_settings,
+from src.equity_curve_stop import (SHADOW_LEGS, _apply_framework_to_baselines, decision_for_next_action_date,
+                                   load_decision, load_settings,
                                    next_open_date, shadow_nav_from_detail, utc_now_iso, write_decision,
                                    write_shadow_nav)
 from src.fill_model import FillProbabilityEstimator, FillRateTableBuilder
 from src.market_emotion import MarketEmotionBuilder
+from src.portfolio_ace_m import FRAMEWORK_ACE_M_L, portfolio_framework
 from src.post_market_freshness import producer_identity
 from src.strategy_optimizer import StrategyConditionOptimizer
 from src.theme_heat import ThemeHeatBuilder
 from src.utils.config import load_json_config
 
 EQ = PROJECT_ROOT / 'qn_state' / 'equity_stop'
+EQ_ACE_M_L = EQ.with_name('equity_stop_ace_m_l')
 LOOKBACK_DAYS = 5
 CONTEXT_DAYS = 2  # segment state features use the previous two trading days
 
@@ -76,14 +79,14 @@ def compact_asof_rows(keyed):
                          'segment_market_sentiment_level': level, 'turnover_rate': keyed['turnover_rate']})
 
 
-def build_window_tables(days, seed_until):
+def build_window_tables(days, seed_until, eq):
     """compact daily / limit-up / sentiment / emotion rows for `days`: seed rows up to seed_until,
     production cleaning code on the in-memory raw tables after it (as build_base_tables does)."""
     cleaner = DataCleaner()
     emotion_builder = MarketEmotionBuilder()
     segments = list(emotion_builder.SEGMENTS)
-    seed = dict(compact=read(EQ / 'seed_compact_daily.csv'), limit=read(EQ / 'seed_limit_up_merged.csv'),
-                sentiment=read(EQ / 'seed_market_sentiment.csv'), emotion=read(EQ / 'seed_market_emotion.csv'))
+    seed = dict(compact=read(eq / 'seed_compact_daily.csv'), limit=read(eq / 'seed_limit_up_merged.csv'),
+                sentiment=read(eq / 'seed_market_sentiment.csv'), emotion=read(eq / 'seed_market_emotion.csv'))
     compact, limit, sentiment, emotion = [], [], [], []
     for day in days:
         if day <= seed_until:
@@ -121,6 +124,15 @@ def _compact_columns():
     return FiveYearResearchDatasetBuilder.COMPACT_DAILY_COLUMNS
 
 
+def use_ace_m_l_shadow(config, next_date):
+    if portfolio_framework(config) != FRAMEWORK_ACE_M_L:
+        return False
+    start = str((config.get('review_triggers') or {}).get('ace_m_l_start_date', ''))
+    if len(start) != 8 or not start.isdigit():
+        raise RuntimeError('ACE+M+L缺少有效的启用日期，无法选择方案甲影子账')
+    return next_date >= start
+
+
 def main():
     args = parse_args()
     signal_date = str(args.signal_date)
@@ -134,14 +146,17 @@ def main():
     calendar_path = PROJECT_ROOT / 'data' / 'raw' / 'trade_calendar.csv'
     days = open_days(calendar_path)
     next_date = next_open_date(calendar_path, signal_date)
-    state = json.loads((EQ / 'state.json').read_text(encoding='utf-8'))
+    new_shadow = use_ace_m_l_shadow(config, next_date)
+    eq = EQ_ACE_M_L if new_shadow else EQ
+    history_nav_path = eq / 'shadow_nav.csv' if new_shadow else settings.shadow_nav_path
+    state = json.loads((eq / 'state.json').read_text(encoding='utf-8'))
     replay_start = state['replay_start']
     if replay_start > signal_date:
         raise RuntimeError('影子账起点 %s 晚于收盘日 %s' % (replay_start, signal_date))
     window_start = days[days.index(replay_start) - LOOKBACK_DAYS]
     first_table_day = days[days.index(window_start) - CONTEXT_DAYS]
     window_days = [d for d in days if first_table_day <= d <= signal_date]
-    tables = build_window_tables(window_days, state['seed_until'])
+    tables = build_window_tables(window_days, state['seed_until'], eq)
     work = PROJECT_ROOT / 'qn_state' / 'equity_stop_work'
     work.mkdir(parents=True, exist_ok=True)
     tables['sentiment'].to_csv(work / 'market_sentiment.csv', index=False, encoding='utf-8-sig')
@@ -155,11 +170,11 @@ def main():
     merged = limit.merge(market[['trade_date'] + cols], on='trade_date', how='left', validate='many_to_one')
     keyed = FillRateTableBuilder.add_segment_market_fields(merged)
     for day in sorted(set(keyed['trade_date'])):
-        delta = EQ / ('asof_delta_%s.csv' % day)
+        delta = eq / ('asof_delta_%s.csv' % day)
         if day > state['seed_until'] and not delta.exists():
             compact_asof_rows(keyed[keyed['trade_date'] == day]).to_csv(delta, index=False)
-    history = [read(EQ / 'asof_base.csv')]
-    for path in sorted(EQ.glob('asof_delta_*.csv')):
+    history = [read(eq / 'asof_base.csv')]
+    for path in sorted(eq.glob('asof_delta_*.csv')):
         history.append(read(path))
     history = pd.concat(history, ignore_index=True, sort=False)
     history = history[history['trade_date'] < window_start].copy()
@@ -167,7 +182,7 @@ def main():
     # The scorer re-infers column types over the whole table. History rows only contribute
     # keys + turnover, but their other cells must not turn integer columns into floats
     # (e.g. first_time 93000 -> 93000.0), so they are filled per the production column types.
-    dtypes = json.loads((EQ / 'asof_dtypes.json').read_text(encoding='utf-8'))
+    dtypes = json.loads((eq / 'asof_dtypes.json').read_text(encoding='utf-8'))
     for col in window_rows.columns:
         if col in history.columns:
             continue
@@ -219,6 +234,8 @@ def main():
                            calendar_path=calendar_path,
                            minimum_limit_up_count=int(monthly['market_controller']['minimum_limit_up_count']))
     baselines, _candidates = variant_sets()
+    if new_shadow:
+        baselines = _apply_framework_to_baselines(baselines, PROJECT_ROOT)
     cache = StaticOutcomeCache()
     legs = {}
     for leg in FIXED_PRIORITY:
@@ -233,8 +250,7 @@ def main():
                                                **replay_execution)
     tail = shadow_nav_from_detail(detail, context['action_dates'], initial_cash=float(execution['initial_cash']))
 
-    history_nav = pd.read_csv(PROJECT_ROOT / 'reports' / 'equity_curve_stop' / 'shadow_nav_latest.csv',
-                              dtype={'action_date': str})
+    history_nav = pd.read_csv(history_nav_path, dtype={'action_date': str})
     history_nav = pd.Series(history_nav.iloc[:, 1].astype(float).values, index=history_nav.iloc[:, 0].astype(str).values)
     nav = pd.concat([history_nav[history_nav.index < replay_start], tail])
     nav.index.name = history_nav.index.name
@@ -254,8 +270,13 @@ def main():
     decision['qmt_native_incremental'] = {'replay_start': replay_start, 'window_start': window_start,
                                           'seed_until': state['seed_until']}
     write_shadow_nav(settings, nav)
+    if new_shadow:
+        temp_history = history_nav_path.with_suffix('.tmp')
+        temp_history.write_bytes(settings.shadow_nav_path.read_bytes())
+        temp_history.replace(history_nav_path)
+        decision['qmt_native_incremental']['framework'] = FRAMEWORK_ACE_M_L
     write_decision(settings, decision)
-    sentiment_history = update_sentiment_history(market)
+    sentiment_history = update_sentiment_history(market, eq)
 
     # advance the restart point to a newer flat date (keeps the window short)
     flat = detail[(detail['status'].astype(str) == 'NO_PLAN') & (detail['action_date'].astype(str) > replay_start)
@@ -263,7 +284,7 @@ def main():
     if len(flat):
         row = flat.iloc[-1]
         state.update(replay_start=str(row['action_date']), replay_cash=float(row['cash_before']))
-        (EQ / 'state.json').write_text(json.dumps(state, sort_keys=True, indent=1), encoding='utf-8')
+        (eq / 'state.json').write_text(json.dumps(state, sort_keys=True, indent=1), encoding='utf-8')
     state_text = '允许开仓' if decision['allowed'] else '停手'
     print('EQUITY_CURVE_STOP %s %s：%s' % (next_date, state_text, decision['reason']), flush=True)
     was_allowed = previous.get('allowed') if previous else None
@@ -285,10 +306,10 @@ def main():
     return 0
 
 
-def update_sentiment_history(window_sentiment):
+def update_sentiment_history(window_sentiment, eq):
     """Market sentiment history (seeded from production) with the window's rows, which the
     production builder computed above; used only by the weekly report and review checks."""
-    path = EQ / 'sentiment_history.csv'
+    path = eq / 'sentiment_history.csv'
     if not path.exists():
         return None
     history = read(path)

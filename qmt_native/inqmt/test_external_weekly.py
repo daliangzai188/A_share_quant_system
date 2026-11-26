@@ -20,6 +20,8 @@ calls), so it needs no data and no network:
      before) are computed here too and reach the report.
   8. strategy-health context and replay metrics reach the shared checker unchanged; an injected data
      issue becomes one tier-1 item in the same daily report, without a separate or repeated push.
+  9. ACE+M+L: legacy alignment, ret5 sorting, project roots, L checks and new thresholds reach the report.
+ 10. a failed new-framework warning replay still produces one daily report with the failure recorded.
 
 Usage: python3 test_external_weekly.py   (Mac Python 3)
 """
@@ -41,6 +43,14 @@ STUBS = {
     'src/__init__.py': '',
     'src/utils/__init__.py': '',
     'src/utils/config.py': 'import json\ndef load_json_config(p):\n    return json.load(open(p, encoding="utf-8"))\n',
+    'src/portfolio_ace_m.py': '''
+FRAMEWORK_ACE_M_L = "ace_m_l"
+def portfolio_framework(config): return config.get("portfolio_framework", "ace_m")
+''',
+    'src/strategy_m.py': '''
+def m_sort_for_config(config):
+    return "ret5" if config.get("portfolio_framework") == "ace_m_l" else "amount"
+''',
     'src/equity_curve_stop.py': '''
 import json, os
 from pathlib import Path
@@ -84,6 +94,16 @@ def ace_slippage_stats(live, **kwargs):
             "average_pct": 1.6 if bad else None, "window": [], "triggered": bad}
 def ace_slippage_triggers(stats):
     return [SimpleNamespace(key="ace_slippage", detail="A/C/E最近10笔实盘平均双边滑点+1.60%", tier=1)] if stats["triggered"] else []
+def l_slippage_stats(live, **kwargs):
+    kwargs["live_codes"] = sorted(live["ts_code"])
+    json.dump(kwargs, open(ROOT / "l_slippage_call.json", "w"))
+    return {"completed": 10, "trades": kwargs["trades"], "limit_pct": kwargs["limit_pct"],
+            "average_pct": 2.0, "window": [], "triggered": True}
+def l_slippage_triggers(stats):
+    return [SimpleNamespace(key="l_slippage", detail="L实盘滑点超过配置线", tier=1)]
+def loss_streak_state(complete):
+    json.dump({"live_codes": sorted(complete["ts_code"])}, open(ROOT / "streak_call.json", "w"))
+    return {"multiplier": 0.3, "recent": [-0.01, -0.02]}
 def pool_coverage_triggers(day, rows, limit_up, min_ratio, min_limit_up):
     if limit_up and limit_up >= min_limit_up and rows / limit_up < min_ratio:
         return [SimpleNamespace(key="pool_coverage", detail="%s研究池只有%d只涨停股，全市场%d只" % (day, rows, limit_up), tier=1)]
@@ -111,6 +131,7 @@ def value_lines(values):
     json.dump(values, open(Path(os.environ["A_SYSTEM_ROOT"]) / "values_call.json", "w"), ensure_ascii=False, default=str)
     return ["VALUES"]
 def build_daily_report(day, triggers, acknowledged, recheck, first_seen, lines, final_standard=""):
+    json.dump(final_standard, open(Path(os.environ["A_SYSTEM_ROOT"]) / "final_standard_call.json", "w"), ensure_ascii=False)
     pending = [t for t in triggers if t.key not in acknowledged]
     level = "ok" if not pending else ("final" if any(getattr(t, "tier", 1) >= 3 for t in pending) else "review")
     seen = dict(first_seen or {})
@@ -141,7 +162,9 @@ class Nav:
     def to_numpy(self): return [1.0, 1.1, 1.2]
 def load_settings(config, root): return S(work_dir=root / "w")
 def build_dataset(settings, day): return settings.work_dir
-def build_shadow_replay(**kwargs): return {"nav": Nav(), "tag": "SHADOW"}
+def build_shadow_replay(**kwargs):
+    json.dump(kwargs, open(ROOT / "shadow_build_call.json", "w"), default=str)
+    return {"nav": Nav(), "tag": "SHADOW"}
 def compute_factor_health_checked(config, dataset, calendar):
     return json.load(open(ROOT / "health.json")), ""
 def pool_coverage_inputs(dataset, day):
@@ -167,7 +190,7 @@ from pathlib import Path
 from types import SimpleNamespace
 def run_alignment(shadow, live, **kwargs):
     kwargs.update(raw_dir=str(kwargs["raw_dir"]), shadow=shadow["tag"], live_codes=sorted(live["ts_code"]))
-    json.dump(kwargs, open(Path(os.environ["A_SYSTEM_ROOT"]) / "alignment_call.json", "w"))
+    json.dump(kwargs, open(Path(os.environ["A_SYSTEM_ROOT"]) / "alignment_call.json", "w"), default=str)
     return [SimpleNamespace(key="alignment:m_extra:20261113:300001.SZ", detail="20261113M买入了300001.SZ，不在当天的M候选单里",
                             tier=1)]
 ''',
@@ -179,9 +202,15 @@ from types import SimpleNamespace
 def run_strategy_warnings(shadow, health, config, **kwargs):
     kwargs.update(raw_dir=str(kwargs["raw_dir"]), cache_path=str(kwargs["cache_path"]), shadow=shadow["tag"],
                   health_legs=sorted(health))
-    json.dump(kwargs, open(Path(os.environ["A_SYSTEM_ROOT"]) / "warnings_call.json", "w"))
+    root = Path(os.environ["A_SYSTEM_ROOT"])
+    json.dump(kwargs, open(root / "warnings_call.json", "w"), default=str)
+    if (root / "warnings_fail").exists():
+        raise RuntimeError("模拟新框架回放失败")
+    metrics = {"legs": {}, "combo_drawdown": {"value": -0.2}, "signals": {"gap": 0}}
+    if config.get("portfolio_framework") == "ace_m_l":
+        metrics.update(framework="ace_m_l", replay={"l_trades": 7, "m_reference_error_days": 0})
     return [SimpleNamespace(key="warn3:leg:A", detail="A腿单独按规则最近12个月-55.0%，低于历史最差-50.7%", tier=3, scope="A腿",
-                            action="建议先暂停交易")], {"legs": {}, "combo_drawdown": {"value": -0.2}, "signals": {"gap": 0}}
+                            action="建议先暂停交易")], metrics
 def load_warning_settings(config):
     section = config.get("strategy_warnings", {})
     return SimpleNamespace(enabled=bool(section.get("enabled", False)), min_trades=int(section.get("min_trades", 10)),
@@ -310,6 +339,7 @@ def main():
         second_day = load(os.path.join(work, 'review_trigger_state.json'))['first_seen']
         c5 = (code == 0 and call['start'] == '20260921' and call['end'] == '20261111' and call['ace_m_start'] == '20261113'
               and call['raw_dir'] == os.path.join(root, 'data', 'raw') and call['shadow'] == 'SHADOW'
+              and call['m_sort_by'] == 'amount' and call['ace_m_l_start'] == '' and call['project_root'] == root
               and call['live_codes'] == ['300001.SZ'] and (call['ma_window'], call['lag']) == (60, 6)
               and (slip['start'], slip['trades'], slip['limit_pct'], slip['live_codes']) == ('20261113', 10, 1.5, ['300001.SZ'])
               and (ace['start'], ace['trades'], ace['limit_pct']) == ('20260921', 10, 1.2)
@@ -334,6 +364,7 @@ def main():
         values = load(os.path.join(root, 'values_call.json'))
         c6 = (code == 0 and call['shadow'] == 'SHADOW' and call['health_legs'] == ['A', 'C'] and call['today'] == '20261111'
               and call['raw_dir'] == os.path.join(root, 'data', 'raw')
+              and call['project_root'] == root
               and call['cache_path'] == os.path.join(work, 'strategy_warning_cache.json')
               and (call['ma_window'], call['lag']) == (60, 6) and os.path.exists(os.path.join(root, 'escalate_called'))
               and report['warnings'] == ['warn3:leg:A'] and daily['level'] == 'final' and values['signals'] == {'gap': 0}
@@ -389,6 +420,58 @@ def main():
         print('8. strategy health: exact context/metrics handed through, data issue in one daily push, '
               'rerun does not duplicate -> %s' % ('ok' if c8 else 'FAIL'))
         ok &= c8
+    with tempfile.TemporaryDirectory() as tmp:
+        root, local = os.path.join(tmp, 'A_System'), os.path.join(tmp, 'local')
+        setup(root, align=True, alignment_start_date='20261001', ace_m_start_date='20261113',
+              ace_m_l_start_date='20261111', l_slippage_trades=8, l_slippage_limit_pct=1.25)
+        enable_warnings(root)
+        cfg_path = os.path.join(root, 'config', 'config.json')
+        cfg = load(cfg_path)
+        cfg['portfolio_framework'] = 'ace_m_l'
+        cfg['strategy_warnings'].update(
+            middle={'combo_drawdown': -0.111}, final={'combo_drawdown': -0.222},
+            ace_m_l={'middle': {'combo_drawdown': -0.296}, 'final': {'combo_drawdown': -0.5}})
+        json.dump(cfg, open(cfg_path, 'w'))
+        export_buys(local, ['k1,20261112,300001.SZ,M,100', 'k2,20261112,300002.SZ,L,100'])
+        work = os.path.join(local, 'A_System', 'qmt_native', 'external_checks')
+        code, out = run(root, local, '20261112')
+        shadow_call = load(os.path.join(root, 'shadow_build_call.json'))
+        alignment = load(os.path.join(root, 'alignment_call.json'))
+        warning = load(os.path.join(root, 'warnings_call.json'))
+        slip = load(os.path.join(root, 'l_slippage_call.json'))
+        values = load(os.path.join(root, 'values_call.json'))
+        c9 = (code == 0 and shadow_call['include_legacy_alignment'] is True
+              and shadow_call['project_root'] == root and shadow_call['end'] == '20261112'
+              and alignment['m_sort_by'] == 'ret5' and alignment['ace_m_l_start'] == '20261111'
+              and alignment['project_root'] == root and warning['project_root'] == root
+              and alignment['live_codes'] == ['300001.SZ', '300002.SZ']
+              and slip == {'start': '20261111', 'trades': 8, 'limit_pct': 1.25,
+                           'live_codes': ['300001.SZ', '300002.SZ']}
+              and values['warnings']['framework'] == 'ace_m_l'
+              and values['thresholds'] == {'combo_middle': -0.296, 'combo_final': -0.5}
+              and values['loss_streak'] == {'multiplier': 0.3, 'recent': [-0.01, -0.02]}
+              and values['l_slippage']['trades'] == 8 and values['l_slippage_error'] == ''
+              and 'ACE+M+L样本外月均不低于去掉L' in load(os.path.join(root, 'final_standard_call.json'))
+              and len(pushes(root)) == 1 and pushes(root)[0]['title'].startswith('日报 20261112 final'))
+        print('9. ACE+M+L: legacy alignment, ret5/root args, L checks, new thresholds -> %s' % (
+            'ok' if c9 else 'FAIL'))
+        ok &= c9
+        open(os.path.join(root, 'warnings_fail'), 'w').close()
+        code, out = run(root, local, '20261113')
+        daily = load(os.path.join(work, 'daily_report_latest.json'))
+        warning = load(os.path.join(work, 'strategy_warnings_latest.json'))
+        failures = [t for t in load(os.path.join(root, 'triggers_call.json'))
+                    if t['key'] == 'check_failed:三级警告（策略复核/停止交易建议）']
+        code2, _ = run(root, local, '20261113')
+        c10 = (code == 0 and code2 == 0 and daily['signal_date'] == '20261113'
+               and daily['level'] == 'review' and '模拟新框架回放失败' in daily['body']
+               and len(failures) == 1 and failures[0]['tier'] == 1
+               and '模拟新框架回放失败' in warning['error']
+               and os.path.exists(os.path.join(work, 'done_20261113.json'))
+               and len(pushes(root)) == 2 and pushes(root)[-1]['body'] == daily['body'])
+        print('10. new-framework warning failure: one daily report survives, error persisted, no duplicate -> %s' % (
+            'ok' if c10 else 'FAIL'))
+        ok &= c10
     print('RESULT', 'PASS' if ok else 'FAIL')
     return 0 if ok else 1
 
