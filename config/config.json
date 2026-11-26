@@ -143,6 +143,40 @@
       "window_trades": 10,
       "max_loss_streak": 5,
       "worst_window_return": -0.362
+    },
+    "ace_m_l": {
+      "note": "ACE+M+L新框架（portfolio_framework=ace_m_l）的冻结阈值，覆盖上一层同名项；现行框架不读这一段。由 research/ace_m_l_benchmark/build_warning_thresholds.py 用 ~/A_System_golden_data/20261110 算出（2019-12-02~2026-11-10，ACE 356笔、L 717笔、M 83笔；同一脚本复算现行框架10项阈值全部一致）。E、A、C、影子账、组合回撤、早期提醒、信号断流按现行方法；M、L中级线和落后天数是新框架重新定的线（现行的线在新框架历史回放里会反复触发），2026-11-26按建议值写入，待用户确认。换版时重算。",
+      "signal_gap_days": 8,
+      "relative_days": 43,
+      "middle": {
+        "E": -0.348,
+        "M": 0.0,
+        "L": -0.146,
+        "combo_drawdown": -0.296
+      },
+      "final": {
+        "A": -0.507,
+        "C": -0.709,
+        "E": -0.446,
+        "shadow_drawdown": -0.538,
+        "combo_drawdown": -0.5
+      },
+      "reference": {
+        "middle_E": "新框架E单独最近12个月的历史5%分位-34.82%（E加修复环境过滤后2019-12以来88笔）",
+        "middle_M": "新框架M最近12个月历史上3%的时间低于0（最低-18.3%，2026-08）",
+        "middle_L": "L最近12个月的历史5%分位-14.57%（历史上7.1%的时间低于0，最低-51.3%，2022-11）",
+        "relative_history": "2019-12以来最长连续落后114天（到2026-09-14），其次42天（到2025-12-31）"
+      },
+      "m_early": {
+        "window_trades": 10,
+        "max_loss_streak": 5,
+        "worst_window_return": -0.212
+      },
+      "l_early": {
+        "window_trades": 10,
+        "max_loss_streak": 8,
+        "worst_window_return": -0.585
+      }
     }
   },
   "review_triggers": {

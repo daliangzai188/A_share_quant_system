@@ -112,6 +112,40 @@
       "window_trades": "number",
       "max_loss_streak": "number",
       "worst_window_return": "number"
+    },
+    "ace_m_l": {
+      "note": "string",
+      "signal_gap_days": "number",
+      "relative_days": "number",
+      "middle": {
+        "E": "number",
+        "M": "number",
+        "L": "number",
+        "combo_drawdown": "number"
+      },
+      "final": {
+        "A": "number",
+        "C": "number",
+        "E": "number",
+        "shadow_drawdown": "number",
+        "combo_drawdown": "number"
+      },
+      "reference": {
+        "middle_E": "string",
+        "middle_M": "string",
+        "middle_L": "string",
+        "relative_history": "string"
+      },
+      "m_early": {
+        "window_trades": "number",
+        "max_loss_streak": "number",
+        "worst_window_return": "number"
+      },
+      "l_early": {
+        "window_trades": "number",
+        "max_loss_streak": "number",
+        "worst_window_return": "number"
+      }
     }
   },
   "review_triggers": {

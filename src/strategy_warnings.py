@@ -51,7 +51,8 @@ SCOPE_NAMES = {"A": "A腿", "C": "C腿", "E": "E腿", "M": "M", "L": "L", "ALL":
 COMBO_NAMES = {FRAMEWORK_ACE_M: "ACE+M", FRAMEWORK_ACE_M_L: "ACE+M+L"}
 # ACE+M+L 新框架（2026-11-26）的阈值放在 strategy_warnings.ace_m_l，按新框架的生产回放算出后冻结（换版时重算）；
 # 这几项覆盖上一层的同名项。新框架打开而这一段没配置时三级警告报“没算成”，不拿现行框架的阈值凑合。
-FRAMEWORK_OVERRIDE_KEYS = ("middle", "final", "reference", "m_early", "l_early", "signal_gap_days", "replay_start")
+FRAMEWORK_OVERRIDE_KEYS = ("middle", "final", "reference", "m_early", "l_early", "signal_gap_days", "relative_days",
+                           "replay_start")
 MIDDLE_CATEGORY = "中级·策略复核"
 FINAL_CATEGORY = "终极·建议停止交易"
 MIDDLE_ACTION = "请在Claude发送：甲·策略复核（%s）"
