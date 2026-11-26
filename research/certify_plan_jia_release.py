@@ -49,7 +49,7 @@ from src.acde_rolling_framework import (  # noqa: E402
 from src.equity_curve_stop import (  # noqa: E402
     METHOD_ID,
     allowed_action_dates,
-    build_shadow_nav,
+    build_shadow_replay,
     decision_for_next_action_date,
     filter_plans_to_allowed_dates,
     load_settings,
@@ -60,6 +60,7 @@ from research.live_certification import (  # noqa: E402
     certification_files_sha256,
 )
 from src.utils.config import load_json_config  # noqa: E402
+from src.portfolio_ace_m import FRAMEWORK_ACE_M_L, portfolio_framework  # noqa: E402
 
 
 CUTOFF = "20260831"
@@ -108,6 +109,7 @@ CODE_ROOTS = ("research.certify_plan_jia_release", "scripts.trading_daemon", "qm
 # 证书不覆盖的内容（如实写进证书，不能把这张PASS当成ACE+M的完整上线认证）
 NOT_COVERED = [
     "策略M（规则、候选、预挂与补单执行）",
+    "ACE+M+L新框架（E修复环境过滤、M新排序、L选股和执行、组合资金、连亏降仓及三级警报）",
     "停手期ACE按20%目标仓位照常开仓（2026-11-12起的现行口径；本认证按方案甲v1停手日不开新仓回放）",
     "ACE+M资金分配（M只用闲置资金、合计不超过99.5%、单票硬顶）",
     "独立样本外（2023-09~2026-08是同窗研究）",
@@ -234,9 +236,10 @@ def run(measure_only: bool) -> dict[str, Any]:
     context = formal_context(monthly, paths, window)
     execution = _execution_kwargs(monthly)
 
-    # ① 影子净值：同一份定义，从history_start回放到截止日。
+    # ① 本证书锁定方案甲v1。新框架的E修复过滤不得混进旧v1停手净值；
+    # 使用生产对账已有的旧规则参照实际重建旧E和净值，绝不沿用旧结果文件。
     with tempfile.TemporaryDirectory(prefix="jia_shadow_") as work:
-        nav = build_shadow_nav(
+        shadow = build_shadow_replay(
             project_root=ROOT,
             feature_path=paths["strict_feature_pool"],
             sentiment_path=paths["market_sentiment"],
@@ -244,7 +247,12 @@ def run(measure_only: bool) -> dict[str, Any]:
             start=settings.history_start,
             end=CUTOFF,
             work_dir=Path(work),
+            include_legacy_alignment=True,
         )
+        legacy_shadow = shadow.get("legacy_alignment_shadow")
+        if portfolio_framework(runtime) == FRAMEWORK_ACE_M_L and legacy_shadow is None:
+            raise RuntimeError("新框架未提供独立旧E参照，不能认证方案甲v1")
+        nav = (legacy_shadow if legacy_shadow is not None else shadow)["nav"]
     nav_dates = [str(d) for d in nav.index]
     allowed_all = allowed_action_dates(
         nav_dates, nav.to_numpy(), ma_window=settings.ma_window, lag=settings.lag_trading_days

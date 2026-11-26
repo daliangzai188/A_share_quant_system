@@ -3,13 +3,15 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
 
-from src.daemon import reports
+from src.daemon import plan_notice, reports
 from src.open_plan_notification import _m_budget_preview
+from src.strategy_l import L_VERSION
 from src.strategy_m import M_VERSION
 
 
@@ -17,8 +19,9 @@ from src.strategy_m import M_VERSION
 def notice(tmp_path, monkeypatch):
     equity = 68126.44
     env = SimpleNamespace(
-        mode="REDUCED", positions=[], now=datetime(2026, 11, 17, 16, 0),
-        config={"strategy_m": {"enabled": True}, "live_trade": {"cash_buffer_amount": 1000}},
+        mode="REDUCED", positions=[], now=datetime(2026, 11, 17, 16, 0), streak=1.0, l_signal=None,
+        config={"portfolio_framework": "ace_m", "strategy_m": {"enabled": True},
+                "live_trade": {"cash_buffer_amount": 1000}},
         signal={"m_version": M_VERSION, "status": "SIGNAL_READY", "signal_date": "20261117",
                 "planned_buy_date": "20261118", "candidates": [
                     {"ts_code": "301288.SZ", "name": "清研环境", "rank": 1}]},
@@ -42,19 +45,39 @@ def notice(tmp_path, monkeypatch):
     monkeypatch.setattr(reports, "now_beijing", lambda: env.now)
     monkeypatch.setattr(reports, "load_positions", lambda: deepcopy(env.positions))
     monkeypatch.setattr(reports, "load_json_config", lambda *_args, **_kwargs: deepcopy(env.config))
-    monkeypatch.setattr(reports, "has_open_local_position", lambda family: any(
-        p.get("status") in {"open", "sell_pending"}
-        and ((p.get("strategy_leg") == "M") == (family == "M")) for p in env.positions
-    ))
-    monkeypatch.setattr("src.rolling_signal_store.latest_signal_for_buy_date", lambda *_args: deepcopy(env.signal))
+    def has_open(family):
+        return any(p.get("status") in {"open", "sell_pending"}
+                   and (p.get("strategy_leg") in {"A", "C", "E", "D"} if family == "ACE"
+                        else p.get("strategy_leg") == family) for p in env.positions)
+
+    monkeypatch.setattr(reports, "has_open_local_position", has_open)
+    monkeypatch.setattr(reports, "M_SIGNAL_RECENT_PATH", tmp_path / "reports/strategy_m/m_signals_recent.json")
+    monkeypatch.setattr(plan_notice, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(plan_notice, "L_SIGNAL_RECENT_PATH", tmp_path / "reports/strategy_l/l_signals_recent.json")
+    monkeypatch.setattr(plan_notice, "load_json_config", lambda *_args, **_kwargs: deepcopy(env.config))
+    monkeypatch.setattr(plan_notice, "now_beijing", lambda: env.now)
+    monkeypatch.setattr(plan_notice, "load_positions", lambda: deepcopy(env.positions))
+    monkeypatch.setattr(plan_notice, "has_open_local_position", has_open)
+    monkeypatch.setattr(plan_notice, "loss_streak_multiplier_for", lambda *_args: env.streak)
+    monkeypatch.setattr(plan_notice, "logger", Mock(return_value=Mock()))
+
+    def signal_for_path(path, _action):
+        name = Path(path).name
+        if name == "m_signals_recent.json":
+            return deepcopy(env.signal)
+        if name == "l_signals_recent.json":
+            return deepcopy(env.l_signal)
+        raise AssertionError("测试未隔离的信号路径：%s" % path)
+
+    monkeypatch.setattr("src.rolling_signal_store.latest_signal_for_buy_date", signal_for_path)
 
     def push(occasion="收盘"):
-        before = deepcopy((env.plan, env.signal, env.positions, env.config))
+        before = deepcopy((env.plan, env.signal, env.l_signal, env.positions, env.config))
         monkeypatch.setattr(reports, "_last_final_plan", env.plan)
         env.notify.reset_mock()
         reports.push_open_plan_notification(occasion)
         assert env.notify.call_count == 1
-        assert (env.plan, env.signal, env.positions, env.config) == before
+        assert (env.plan, env.signal, env.l_signal, env.positions, env.config) == before
         env.broker.assert_not_called()
         assert not env.state.exists()
         return env.notify.call_args.args[1:3]
@@ -256,3 +279,43 @@ def test_budget_subtracts_already_bought_ace_cost_once(notice):
     preview = _m_budget_preview(notice.plan, notice.mode, True, positions, notice.config)
     assert preview["amount"] == 6500  # 17500-1000缓冲-(20000-10000已成交)
     assert (notice.plan, positions) == before
+
+
+@pytest.mark.parametrize("occasion", ["收盘", "早盘"])
+@pytest.mark.parametrize("m_has_candidate", [False, True])
+def test_new_framework_nov27_a_and_l_plan_includes_reduced_targets_and_excludes_m(
+    notice, occasion, m_has_candidate,
+):
+    """真实通知拼装覆盖11/27：A首选和L并行，连亏0.3后目标6%/18%；C候选不计开仓。"""
+    equity = 149542.17
+    notice.config["portfolio_framework"] = "ace_m_l"
+    notice.config["strategy_l"] = {"enabled": True}
+    notice.streak = 0.3
+    notice.now = datetime(2026, 11, 26, 22, 0) if occasion == "收盘" else datetime(2026, 11, 27, 8, 50)
+    notice.plan.update(
+        action_date="20261127", signal_date="20261126",
+        final_buy={"strategy": "A", "ts_code": "300324.SZ", "name": "旋极信息", "shares": 1700},
+    )
+    notice.plan["live_sizing"].update(
+        shares=1700, order_price=6.05, target_amount=equity * .06,
+        min_acceptable_amount=equity * .06 * .80 / .825, hard_cap_amount=equity * .085,
+        available_cash=equity, total_asset=equity,
+    )
+    notice.l_signal = {
+        "strategy_leg": "L", "l_version": L_VERSION, "status": "SIGNAL_READY",
+        "signal_date": "20261126", "planned_buy_date": "20261127",
+        "ts_code": "300469.SZ", "name": "信息发展", "l_allowed": True, "l_scale": 1.0,
+    }
+    notice.signal.update(signal_date="20261126", planned_buy_date="20261127")
+    if not m_has_candidate:
+        notice.signal.update(candidates=[], diagnostics={"mood": .0322, "n20_limit_up": 3})
+    title, body = notice.push(occasion)
+    assert "开仓计划（预计2只）:A 旋极信息＋L 信息发展" in title
+    assert "＋M" not in title and "预计3只" not in title and "杭州解百" not in title
+    assert "计划实际开仓0.90万（目标6%" in body
+    assert "L计划：信息发展(300469.SZ)" in body
+    assert "规则仓位上限为总资产18%" in body and "连亏降仓×0.3" in body
+    if m_has_candidate:
+        assert "ACE今天有开仓计划或持仓，M不开仓" in body
+    else:
+        assert "M：无候选" in body

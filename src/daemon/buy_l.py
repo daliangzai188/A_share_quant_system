@@ -32,6 +32,7 @@ from src.portfolio_ace_m import (
 )
 from src.daemon.common import (
     PROJECT_ROOT,
+    _load_calendar,
     _entry_amount_text,
     _floor_buy_quantity_by_amount,
     _fmt_wan,
@@ -77,6 +78,11 @@ def _l_signal_for_today(today_str: str) -> dict[str, Any] | None:
         return None
     if str(signal.get("l_version", "")) != L_VERSION:
         logger().error("L信号版本%s与正式版本%s不一致，按fail-closed今日L不开仓。", signal.get("l_version", ""), L_VERSION)
+        return None
+    open_days, _ = _load_calendar()
+    previous = max((day for day in open_days if day < today_str), default="")
+    if today_str not in open_days or not previous or str(signal.get("signal_date", "")) != previous:
+        logger().error("L信号日与交易日历不符，今日L不开仓。")
         return None
     if str(signal.get("status", "")) != "SIGNAL_READY" or not str(signal.get("ts_code", "")):
         return None

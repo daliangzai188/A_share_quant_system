@@ -10,6 +10,7 @@
       "1": "A_C_E_D"
     }
   },
+  "portfolio_framework": "ace_m_l",
   "strategy_e": {
     "file_role": "策略E唯一身份配置。正式策略腿只写E；E2仅允许作为旧账本只读别名，读取后立即归一为E。",
     "strategy_leg": "E",
@@ -145,7 +146,7 @@
       "worst_window_return": -0.362
     },
     "ace_m_l": {
-      "note": "ACE+M+L新框架（portfolio_framework=ace_m_l）的冻结阈值，覆盖上一层同名项；现行框架不读这一段。由 research/ace_m_l_benchmark/build_warning_thresholds.py 用 ~/A_System_golden_data/20261110 算出（2019-12-02~2026-11-10，ACE 356笔、L 717笔、M 83笔；同一脚本复算现行框架10项阈值全部一致）。E、A、C、影子账、组合回撤、早期提醒、信号断流按现行方法；M、L中级线和落后天数是新框架重新定的线（现行的线在新框架历史回放里会反复触发），2026-11-26按建议值写入，待用户确认。换版时重算。",
+      "note": "ACE+M+L新框架（portfolio_framework=ace_m_l）的冻结阈值，覆盖上一层同名项；现行框架不读这一段。由 research/ace_m_l_benchmark/build_warning_thresholds.py 用 ~/A_System_golden_data/20261110 算出（2019-12-02~2026-11-10，ACE 356笔、L 717笔、M 83笔；同一脚本复算现行框架10项阈值全部一致）。E、A、C、影子账、组合回撤、早期提醒、信号断流按现行方法；M、L中级线和落后天数是新框架重新定的线（现行的线在新框架历史回放里会反复触发），2026-11-26用户让Claude按最合理的定：按建议值。换版时重算。",
       "signal_gap_days": 8,
       "relative_days": 43,
       "middle": {
@@ -213,7 +214,10 @@
         "conclusion": "中级警告A腿（选股条件优势连续4个月低于冻结线）策略复核：维持现行A。20个候选（19个参数微调+按规律去掉连板条件）都没过三条标准；规律性检验显示封单规律2026年仍成立，下滑集中在冷门分段与连板环境两项、只有4个月；年度复核按规律性标准重建A",
         "recheck_by": "2027-01-02"
       }
-    ]
+    ],
+    "ace_m_l_start_date": "20261127",
+    "l_slippage_trades": 10,
+    "l_slippage_limit_pct": 1.5
   },
   "strategy_equity_ledger": {
     "file_role": "全策略净值账本口径：券商总资产一次基线（建基线时必须空仓）+基线日及以后买入、已完整平仓交易的真实盈亏（扣估算费用），不分腿，每次从成交汇总整体重算；任何一笔缺成交即未就绪并推送缺哪几笔。",
@@ -295,7 +299,8 @@
       "C",
       "D",
       "E",
-      "M"
+      "M",
+      "L"
     ],
     "windows": [
       20,
@@ -545,6 +550,11 @@
     "total_position_cap_pct": 0.995,
     "ace_reduced_target_pct_when_stopped": 0.2,
     "user_risk_acceptance": "用户于2026-11-12审核回测后明确决定上线ACE+M，并要求实盘与回测逻辑（选股、仓位、资金分配）完全一致；已知：全期最大回撤约-31.7%（按日收盘市值），最近3个月弱于只用ACE，M来自约8万条规则挖掘有过拟合风险，账户总仓位最高99.5%。"
+  },
+  "strategy_l": {
+    "file_role": "策略L（龙虎榜，ACE+M+L新框架，2026-11-26用户确认落地）。规则唯一来源src/strategy_l.py，资金规则src/portfolio_ace_m.py，说明docs/strategy_l.md。enabled=false时L不下单（选股、推送照常）；组合框架开关portfolio_framework不是ace_m_l时L也不下单。",
+    "enabled": true,
+    "l_version": "L_LHB_SEAT_AMPLITUDE_REGIME_OPT_V1_20261126"
   },
   "data_source": {
     "primary": "tushare",

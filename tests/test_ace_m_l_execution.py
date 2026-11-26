@@ -22,6 +22,7 @@ if "dotenv" not in sys.modules:
     sys.modules["dotenv"] = stub
 
 from scripts import trading_daemon as td
+from src.daemon import buy_l
 from tests.daemon_testing import patch_daemon
 from src import portfolio_ace_m as PM
 from src import strategy_l as SL
@@ -31,6 +32,21 @@ from tests.test_ace_m_portfolio import FakeAdapter
 from tests.test_equity_curve_stop import make_engine
 
 NEW = {"portfolio_framework": "ace_m_l"}
+
+
+def test_l_plan_must_come_from_previous_open_day(tmp_path, monkeypatch):
+    path = tmp_path / "l_signals_recent.json"
+    monkeypatch.setattr(buy_l, "L_SIGNAL_RECENT_PATH", path)
+    open_days = {"20260917", "20260918", "20260921"}
+    monkeypatch.setattr(buy_l, "_load_calendar", lambda: (open_days, "20260921"))
+    plan = {"planned_buy_date": "20260921", "status": "SIGNAL_READY", "ts_code": "300100.SZ",
+            "l_version": SL.L_VERSION}
+    save_recent_signal(path, dict(plan, signal_date="20260917"), strategy_leg="L")
+    assert buy_l._l_signal_for_today("20260921") is None
+    save_recent_signal(path, dict(plan, signal_date="20260918"), strategy_leg="L")
+    assert buy_l._l_signal_for_today("20260921")["signal_date"] == "20260918"
+    open_days.clear()
+    assert buy_l._l_signal_for_today("20260921") is None
 
 
 class FrameworkRuleTests(unittest.TestCase):

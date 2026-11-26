@@ -58,8 +58,10 @@ def test_not_configured_means_not_computed():
 
 def test_production_config_has_frozen_lines():
     config = json.loads(Path("config/config.json").read_text(encoding="utf-8"))
-    early = load_warning_settings(config).m_early
-    assert (early["window_trades"], early["max_loss_streak"], early["worst_window_return"]) == (10, 5, -0.362)
+    old = load_warning_settings(dict(config, portfolio_framework="ace_m")).m_early
+    new = load_warning_settings(dict(config, portfolio_framework="ace_m_l")).m_early
+    assert (old["window_trades"], old["max_loss_streak"], old["worst_window_return"]) == (10, 5, -0.362)
+    assert (new["window_trades"], new["max_loss_streak"], new["worst_window_return"]) == (10, 5, -0.212)
 
 
 def test_compute_metrics_adds_m_recent_only_when_configured():

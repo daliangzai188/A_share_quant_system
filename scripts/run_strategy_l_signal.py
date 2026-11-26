@@ -137,7 +137,7 @@ def market_mean_pct(bars_today: dict) -> float | None:
 
 
 def lhb_complete(top_list: pd.DataFrame, top_inst: pd.DataFrame) -> tuple[bool, str]:
-    """取全：龙虎榜非空，且每条按规则入选的公告（股票+原因）都能对上席位明细。"""
+    """每条按规则入选的公告均须有可用的买榜和卖榜席位。"""
 
     if top_list is None or top_list.empty:
         return False, "龙虎榜为空"
@@ -146,10 +146,17 @@ def lhb_complete(top_list: pd.DataFrame, top_inst: pd.DataFrame) -> tuple[bool, 
         return False, "龙虎榜没有可用的单日/三日公告"
     if top_inst is None or top_inst.empty:
         return False, "席位明细为空"
-    seats = set(zip(top_inst["ts_code"].astype(str), top_inst["reason"].astype(str)))
+    if not {"ts_code", "reason", "side", "buy", "sell"}.issubset(top_inst.columns):
+        return False, "席位明细缺少买卖方向或金额字段"
+    sides = {}
+    for side, field in (("0", "buy"), ("1", "sell")):
+        amount = pd.to_numeric(top_inst[field], errors="coerce")
+        usable = top_inst.loc[top_inst["side"].astype(str).eq(side) & amount.ge(0) & amount.lt(math.inf)]
+        sides[side] = set(zip(usable["ts_code"].astype(str), usable["reason"].astype(str)))
+    seats = sides["0"] & sides["1"]
     missing = [(c, r) for c, r in zip(board["ts_code"].astype(str), board["reason"].astype(str)) if (c, r) not in seats]
     if missing:
-        return False, "%d 条公告还没有席位明细（如 %s）" % (len(missing), missing[0][0])
+        return False, "%d 条公告缺少有效的买榜或卖榜明细（如 %s）" % (len(missing), missing[0][0])
     return True, ""
 
 

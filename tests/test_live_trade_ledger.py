@@ -118,6 +118,7 @@ class AccountDailyRecordTests(unittest.TestCase):
             beijing = dt.timezone(dt.timedelta(hours=8))
             with patch.object(qmt, "ACCOUNT_DAILY_PATH", path), patch.object(qmt, "_account_daily_done", ""), \
                     patch.object(qmt, "is_trade_day", return_value=True), \
+                    patch.object(qmt, "_framework_is_ace_m_l", return_value=False), \
                     patch.object(qmt, "_strategy_only_market_value", side_effect=lambda p, family: values[family]):
                 with patch.object(qmt, "now_beijing", return_value=dt.datetime(2026, 11, 18, 14, 50, tzinfo=beijing)):
                     qmt._record_account_daily(account, positions)

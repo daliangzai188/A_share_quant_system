@@ -415,15 +415,12 @@ def maybe_alert_l_missing(runner: dict, now: dt.datetime, days: list, push=None)
 def l_signal_window(now: dt.datetime, days: list) -> str:
     """策略 L 晚间信号（ACE+M+L，2026-11-26）：返回该跑的信号日，不在时间窗内返回空。
 
-    16:30~23:00 跑当天（龙虎榜收盘后发布，2026-11-26 实测 18:02 已能取全）；08:20~09:10 兜底跑上一个交易日。"""
+    交易日16:30后算当天，凌晨及休市日16:30后可补最近交易日。交易日09:10以后到16:30以前不启动。"""
     day, hhmm = now.strftime('%Y%m%d'), now.strftime('%H%M')
-    if day not in days:
-        return ''
-    if '1630' <= hhmm < '2300':
+    if day in days and hhmm >= '1630':
         return day
-    if '0820' <= hhmm < '0910':
-        past = [d for d in days if d < day]
-        return past[-1] if past else ''
+    if hhmm < '0910' or (day not in days and hhmm >= '1630'):
+        return max((d for d in days if d < day), default='')
     return ''
 
 

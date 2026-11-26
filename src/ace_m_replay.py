@@ -413,6 +413,9 @@ def replay_ace_m_l(
 
         ace_today = False
         plans = list(ace_plans.get(day, []) or [])
+        # 只有ACE家族空闲时首选才成为当天可执行计划；未成交也不能由L同票接替。
+        # 旧ACE仓尚未退出时，新信号已被组合状态机阻断，不把它误当成L的回避计划。
+        ace_planned_codes = {str(plans[0].get("ts_code", ""))} if plans and not holds("ACE") else set()
         if plans:
             weight = (ACE_FULL_WEIGHT if ace_allowed.get(day, True) else ACE_HALTED_WEIGHT) * mult
             ace_today = True
@@ -428,7 +431,7 @@ def replay_ace_m_l(
         picks = list(l_picks.get(day, []) or [])
         if not holds("L") and picks:
             code = str(picks[0])
-            if code not in {p["code"] for p in positions}:
+            if code not in ({p["code"] for p in positions} | ace_planned_codes):
                 result = l_outcome(code, day)
                 if result is not None:
                     scale = 1.0 if l_allowed.get(day, True) else L_SELF_STOP_SCALE

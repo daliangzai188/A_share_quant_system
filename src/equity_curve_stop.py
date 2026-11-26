@@ -221,19 +221,22 @@ def build_shadow_nav(
 
 
 def gated_replay(
-    shadow: Mapping[str, Any], *, ma_window: int, lag: int, ungated_from: str = ""
+    shadow: Mapping[str, Any], *, ma_window: int, lag: int, ungated_from: str = "",
+    allowed_dates_override: Iterable[str] | None = None,
 ) -> pd.DataFrame:
     """按停手判定剔除停手日计划后重放，即实盘账户按正式规则应有的逐笔开平仓。
 
     ungated_from：ACE+M生效的第一个行动日。从这天起停手日A/C/E仍按小仓照常开仓
     （只是仓位变小，哪天开哪一笔不变），所以这天及之后的计划不再剔除；
     留空则全程剔除停手日计划（ACE+M之前的口径）。
+    allowed_dates_override：仅供实盘历史分段对账传入各版本独立计算的允许日；默认仍使用本影子净值。
     """
 
     from src.acde_rolling_framework import FIXED_PRIORITY, replay_action_date_cash_portfolio
 
     nav = shadow["nav"]
-    allowed = allowed_action_dates(list(nav.index), nav.to_numpy(), ma_window=ma_window, lag=lag)
+    allowed = (allowed_action_dates(list(nav.index), nav.to_numpy(), ma_window=ma_window, lag=lag)
+               if allowed_dates_override is None else {str(date) for date in allowed_dates_override})
     if ungated_from:
         allowed |= {str(date) for date in shadow["action_dates"] if str(date) >= str(ungated_from)}
     return replay_action_date_cash_portfolio(
@@ -268,8 +271,9 @@ def build_shadow_replay(
     start: str,
     end: str,
     work_dir: Path,
+    include_legacy_alignment: bool = False,
 ) -> dict[str, Any]:
-    """影子账完整回放：净值、各腿计划、行动日和执行参数（供停手判定与逐笔对账共用）。"""
+    """影子账完整回放；可选复用数据另建旧E影子账，仅供上线前实盘对账，不改主回放。"""
 
     from src.acde_plan import (
         build_variant_plan,
@@ -307,6 +311,7 @@ def build_shadow_replay(
         minimum_limit_up_count=int(monthly["market_controller"]["minimum_limit_up_count"]),
     )
     baselines, _candidates = variant_sets()
+    legacy_baselines = baselines
     baselines = _apply_framework_to_baselines(baselines, project_root)
     cache = StaticOutcomeCache()
     legs: dict[str, pd.DataFrame] = {}
@@ -334,13 +339,30 @@ def build_shadow_replay(
         context["action_dates"],
         initial_cash=float(execution["initial_cash"]),
     )
-    return {
+    result = {
         "nav": nav,
         "legs": legs,
         "action_dates": list(context["action_dates"]),
         "execution": execution,
         "detail": detail,
     }
+    if include_legacy_alignment and baselines is not legacy_baselines:
+        # 同一严格研究池、A/C计划和结果缓存只读复用，仅重建未加新过滤的旧E计划。
+        legacy_legs = dict(legs)
+        legacy_legs["E"] = build_variant_plan(
+            legacy_baselines["E"], signal_pool=context["signal_pool"], d_events=context["d_events"],
+            allowed_action_dates=context["allowed_actions"], cutoff=str(end), outcome_cache=cache,
+        )
+        legacy_detail = replay_action_date_cash_portfolio(
+            legacy_legs, action_dates=context["action_dates"], priority=FIXED_PRIORITY, **execution,
+        )
+        result["legacy_alignment_shadow"] = {
+            "nav": shadow_nav_from_detail(legacy_detail, context["action_dates"],
+                                          initial_cash=float(execution["initial_cash"])),
+            "legs": legacy_legs, "action_dates": list(context["action_dates"]),
+            "execution": execution, "detail": legacy_detail,
+        }
+    return result
 
 
 def _atomic_write_text(path: Path, text: str) -> None:

@@ -19,6 +19,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from src import daily_report
+from src.portfolio_ace_m import FRAMEWORK_ACE_M, FRAMEWORK_ACE_M_L
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,7 +29,8 @@ DAY = "20261116"
 LEGS = ("A", "C", "E", "M")
 
 
-def _values(*, minimum=7, window=180, enabled=True):
+def _values(*, minimum=7, window=180, enabled=True, framework=FRAMEWORK_ACE_M):
+    legs = LEGS + ("L",) if framework == FRAMEWORK_ACE_M_L else LEGS
     return {
         "alignment": None,
         "strategy_health_context": {
@@ -36,11 +38,18 @@ def _values(*, minimum=7, window=180, enabled=True):
             "min_trades": minimum, "window_days": window,
         },
         "warnings": {
-            "legs": {leg: {"value": 0.125, "trades": 17, "as_of": "20261113"} for leg in LEGS},
+            "framework": framework,
+            "legs": {leg: {"value": 0.125, "trades": 17, "as_of": "20261113"} for leg in legs},
             "signals": {"as_of": "20261116"},
             "replay": {"m_reference_error_days": 0, "m_reference_errors_recent": []},
         },
     }
+
+
+def _context_config(*, enabled=True, framework=FRAMEWORK_ACE_M):
+    """外检是否启用取自真实输入配置，不能靠模拟settings.enabled隐式启用。"""
+    return {"portfolio_framework": framework,
+            "strategy_warnings": {"enabled": enabled, "min_trades": 7, "window_days": 180}}
 
 
 def _details(values):
@@ -250,13 +259,18 @@ def _load_external_context(monkeypatch, *, enabled=True):
 
 def test_external_adapter_uses_existing_settings_and_does_not_change_metrics(monkeypatch):
     helper, loader, factory = _load_external_context(monkeypatch)
-    config = {"strategy_warnings": {"enabled": True, "min_trades": 7, "window_days": 180}}
+    config = _context_config()
     metrics, triggers = _values()["warnings"], []
-    before = deepcopy(metrics)
+    before, original_config = deepcopy(metrics), deepcopy(config)
     result = helper(config, DAY, metrics, "", triggers)
     assert result == {"signal_date": DAY, "enabled": True, "min_trades": 7, "window_days": 180}
     assert metrics == before and triggers == []
-    loader.assert_called_once_with(config)
+    # 外检加载显示用窗口时暂不校验冻结块，避免某项回放失败使整份日报再次崩溃；
+    # 是否实际启用仍取原配置，上面的enabled=True和检查触发断言保持有效。
+    display_config = deepcopy(config)
+    display_config["strategy_warnings"]["enabled"] = False
+    loader.assert_called_once_with(display_config)
+    assert config == original_config
     factory.assert_not_called()
 
 
@@ -265,7 +279,7 @@ def test_external_disabled_or_already_failed_statistics_do_not_duplicate_failure
     helper, _loader, factory = _load_external_context(monkeypatch, enabled=enabled)
     existing = SimpleNamespace(key="existing-failure")
     triggers = [existing]
-    result = helper({}, DAY, None, error, triggers)
+    result = helper(_context_config(enabled=enabled), DAY, None, error, triggers)
     assert result["enabled"] is enabled and triggers == [existing]
     factory.assert_not_called()
 
@@ -283,7 +297,7 @@ def test_external_data_gaps_join_existing_failure_triggers_without_new_pushes(mo
     else:
         metrics["replay"]["m_reference_error_days"] = 2
     triggers = []
-    helper({}, DAY, metrics, "", triggers)
+    helper(_context_config(), DAY, metrics, "", triggers)
     factory.assert_called_once()
     assert len(triggers) == 1 and triggers[0].key == "strategy_health_data"
     assert triggers[0].category == "数据"
@@ -297,7 +311,7 @@ def test_zero_and_ordinary_small_samples_do_not_create_data_failure_triggers(mon
     metrics = _values()["warnings"]
     metrics["legs"]["E"] = {"trades": count, "value": None, "as_of": "20261113" if count else ""}
     triggers = []
-    context = helper({}, DAY, metrics, "", triggers)
+    context = helper(_context_config(), DAY, metrics, "", triggers)
     assert triggers == []
     assert daily_report.strategy_health_data_issues({
         "strategy_health_context": context, "warnings": metrics,
@@ -316,10 +330,35 @@ def test_unknown_structural_data_cannot_leave_the_daily_title_saying_all_normal(
     values = _values()
     values["warnings"]["legs"]["E"] = metric
     triggers = []
-    values["strategy_health_context"] = helper({}, DAY, values["warnings"], "", triggers)
+    values["strategy_health_context"] = helper(_context_config(), DAY, values["warnings"], "", triggers)
     report = daily_report.build_daily_report(DAY, triggers, {}, {}, {}, daily_report.value_lines(values))
     assert report["level"] == "review" and "一切正常" not in report["title"]
     assert "未知" in report["body"] and "TEST_EXISTING_CHECK_REPAIR_ACTION" in report["body"]
+
+
+def test_new_framework_l_missing_is_unknown_and_joins_the_existing_review_report(monkeypatch):
+    helper, _loader, factory = _load_external_context(monkeypatch)
+    values = _values(framework=FRAMEWORK_ACE_M_L)
+    values["warnings"]["legs"].pop("L")
+    triggers = []
+    values["strategy_health_context"] = helper(_context_config(framework=FRAMEWORK_ACE_M_L), DAY,
+                                               values["warnings"], "", triggers)
+    factory.assert_called_once()
+    assert "L：样本数据缺失，健康状态未知" in triggers[0].detail
+    report = daily_report.build_daily_report(DAY, triggers, {}, {}, {}, daily_report.value_lines(values))
+    assert report["level"] == "review" and "一切正常" not in report["title"]
+    assert "M、L为ACE+M+L组合内回放" in report["body"]
+
+
+def test_new_framework_valid_l_is_reported_without_creating_a_failure(monkeypatch):
+    helper, _loader, factory = _load_external_context(monkeypatch)
+    values = _values(framework=FRAMEWORK_ACE_M_L)
+    triggers = []
+    values["strategy_health_context"] = helper(_context_config(framework=FRAMEWORK_ACE_M_L), DAY,
+                                               values["warnings"], "", triggers)
+    assert triggers == [] and "规则复利+12.5%" in _leg_line(values, "L")
+    assert "M、L为ACE+M+L组合内回放" in "\n".join(_details(values))
+    factory.assert_not_called()
 
 
 def test_external_run_really_passes_context_to_the_daily_report_without_importing_the_program():

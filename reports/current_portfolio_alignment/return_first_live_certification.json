@@ -3,11 +3,12 @@
   "status": "PASS",
   "scenario": "acde_plan_jia_stop_gate_20260919",
   "release_id": "ACDE_PLAN_JIA_STOP_GATE_20260919",
-  "generated_at": "2026-11-26T13:38:53.508176+00:00",
+  "generated_at": "2026-11-26T14:32:09.518220+00:00",
   "certification_scope": "FORMAL_RULE_STOP_GATE_AND_BACKTEST_ALIGNMENT",
   "covers": "方案甲A/C/E正式规则、60日影子净值停手判定（停手日不开新仓）、D历史0笔，回测逐笔对齐与两次独立构建一致",
   "not_covered": [
     "策略M（规则、候选、预挂与补单执行）",
+    "ACE+M+L新框架（E修复环境过滤、M新排序、L选股和执行、组合资金、连亏降仓及三级警报）",
     "停手期ACE按20%目标仓位照常开仓（2026-11-12起的现行口径；本认证按方案甲v1停手日不开新仓回放）",
     "ACE+M资金分配（M只用闲置资金、合计不超过99.5%、单票硬顶）",
     "独立样本外（2023-09~2026-08是同窗研究）",
@@ -214,7 +215,7 @@
     "src/utils/logger.py",
     "src/utils/time_utils.py"
   ],
-  "code_sha256": "f5e5992fd5fa152b605c58557893033499b2756cc0d5682309504b1c8a78131b",
+  "code_sha256": "64b7f7d9cc78cb8f35cc5d884e514891a5f2102da5ff4daaf505b74535c98812",
   "input_files": [
     "data/research/monthly_acde/20260831/strict_feature_pool.csv",
     "data/research/monthly_acde/20260831/market_sentiment.csv",

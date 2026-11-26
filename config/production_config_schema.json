@@ -10,6 +10,7 @@
       "1": "string"
     }
   },
+  "portfolio_framework": "string",
   "strategy_e": {
     "file_role": "string",
     "strategy_leg": "string",
@@ -163,7 +164,10 @@
     "remind_every_open_days": "number",
     "state_path": "string",
     "acknowledged_note": "string",
-    "acknowledged": "list"
+    "acknowledged": "list",
+    "ace_m_l_start_date": "string",
+    "l_slippage_trades": "number",
+    "l_slippage_limit_pct": "number"
   },
   "strategy_equity_ledger": {
     "file_role": "string",
@@ -441,6 +445,11 @@
     "total_position_cap_pct": "number",
     "ace_reduced_target_pct_when_stopped": "number",
     "user_risk_acceptance": "string"
+  },
+  "strategy_l": {
+    "file_role": "string",
+    "enabled": "bool",
+    "l_version": "string"
   },
   "data_source": {
     "primary": "string",

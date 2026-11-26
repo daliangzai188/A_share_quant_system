@@ -1,0 +1,23 @@
+{
+ "market_sentiment.csv": {
+  "columns": 45,
+  "first": "20190102",
+  "last": "20261110",
+  "rows": 1904,
+  "same_as_frozen_20261111": true,
+  "sha256": "d453b97d843b63c72b5502bddaefbdc2524fc91f1c069315265dc1b46eb6ea18"
+ },
+ "model_tables_sha256": {
+  "data/processed/fill_rate_fallback.csv": "c05f7f997fb33180830502f0fb9f9a1359761a5efaad3fdb601e2d1b8f934d75",
+  "data/processed/fill_rate_table.csv": "0b8ab808f2c5c37bb0303a0d176f8800b18089d84aefc10b3b4d777f966af597"
+ },
+ "strict_feature_pool.csv": {
+  "columns": 184,
+  "first": "20200103",
+  "last": "20261110",
+  "rows": 78356,
+  "same_as_frozen_20261111": true,
+  "sha256": "ba1d4d0dc41185bdc5d47fe1dbb17a196e146b2b12057d71d0c3546273aca0df"
+ },
+ "volume_ratio_pending": []
+}

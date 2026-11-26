@@ -412,9 +412,10 @@ def _l_buy_triggers(
     *,
     ace_codes: set[str],
     l_held: Sequence[str],
+    m_held: Sequence[str],
     l_reference: Callable[[str], Mapping[str, Any] | None] | None,
 ) -> list[ReviewTrigger]:
-    """一笔L买入对照L的规则（ACE+M+L）：不买ST、只买当天L首选（买不到不递补）、不买ACE的股票、同时最多一只。"""
+    """一笔L买入对照首选及同票规则：回避ACE计划/持仓、仍持有的M；L同时最多一只。"""
 
     day, code, name = buy["date"], buy["code"], buy["name"]
     triggers: list[ReviewTrigger] = []
@@ -439,7 +440,12 @@ def _l_buy_triggers(
     if code in ace_codes:
         triggers.append(ReviewTrigger(
             f"alignment:l_ace_same:{day}:{code}", "实盘执行",
-            f"{day}L买入了{code}，但方案甲当天也买了或还持有这只；L应当跳过方案甲的股票",
+            f"{day}L买入了{code}，但方案甲当天计划买入、已经买入或还持有这只；L应当跳过方案甲的股票",
+        ))
+    if code in m_held:
+        triggers.append(ReviewTrigger(
+            f"alignment:l_m_same:{day}:{code}", "实盘执行",
+            f"{day}L买入了{code}，但账户里仍持有M的这只股票；L应当跳过M的持仓",
         ))
     if l_held:
         triggers.append(ReviewTrigger(
@@ -459,7 +465,7 @@ def _l_missing_triggers(
     start: str,
     end: str,
 ) -> list[ReviewTrigger]:
-    """L“该买没买”：首选开盘没封涨停、不是ACE当天计划或持有的股票、账户里没有L，实盘却没买（L只有一只首选，可以逐日查）。
+    """L漏单：首选可买且不与ACE计划/持仓、M持仓冲突，账户里没有L，实盘却没买。
 
     需要参照能列出买入日（buy_days）和首选的开盘价、涨停价；任何一项缺失这天不报（不能确定就不算漏单）。
     """
@@ -481,10 +487,12 @@ def _l_missing_triggers(
         held = _held_from_before(history, day)
         if any(b["leg"] == L_LEG for b in held):
             continue
-        ace = {b["code"] for b in held if b["leg"] not in (M_LEG, L_LEG)}
-        ace |= {c for (d, c), leg in actual.items() if d == day and leg != "D"}
-        ace |= {str(c) for c in (ace_plan_codes or {}).get(day, [])}
-        if code in ace:
+        avoid = {b["code"] for b in held if b["leg"] != L_LEG}
+        avoid |= {c for (d, c), leg in actual.items() if d == day and leg != "D"}
+        # 各腿原始计划不等于可执行的新开仓计划：旧ACE仓仍占用时，新信号已经被阻断。
+        if not any(b["leg"] not in (M_LEG, L_LEG) for b in held):
+            avoid |= {str(c) for c in (ace_plan_codes or {}).get(day, [])}
+        if code in avoid:
             continue
         triggers.append(ReviewTrigger(
             f"alignment:l_missing:{day}:{code}", "实盘执行",
@@ -509,7 +517,7 @@ def alignment_triggers(
     """实盘逐笔与正式规则（单账户回放）对照。
 
     ace_m_l_start有值：从这个行动日起按ACE+M+L口径（2026-11-26），在ACE+M的检查上另加：
-    - L：不买ST；只买l_reference(买入日)给出的首选、买不到不递补；不买ACE当天买入或持有的股票；
+    - L：不买ST；只买l_reference(买入日)给出的首选、买不到不递补；不买ACE当天计划/买入/持有或M仍持有的股票；
       前一笔L没卖完不买；一天最多一只；首选开盘没封涨停却没买报漏单（参照能列出买入日时）。
     - M：ACE当天有计划或持有ACE时M不开仓；不买L当天买入或持有的股票。
     - D：账户里有L、L当天有计划，这两种日子也不该开仓。
@@ -652,10 +660,16 @@ def alignment_triggers(
         held = _held_from_before(history, date)
         held_ace = {b["code"] for b in held if b["leg"] not in (M_LEG, L_LEG)}
         bought_ace = {code for (day, code), leg in actual.items() if day == date and leg != "D"}
+        planned_ace = set()
+        if not held_ace:
+            planned_ace = {str(code) for code in (ace_plan_codes or {}).get(date, [])}
+            planned_ace |= {code for (day, code) in planned if day == date}
         rows = sorted(l_buys[date], key=lambda b: b["code"])
         for buy in rows:
             triggers.extend(_l_buy_triggers(
-                buy, ace_codes=held_ace | bought_ace, l_held=[b["code"] for b in held if b["leg"] == L_LEG],
+                buy, ace_codes=held_ace | bought_ace | planned_ace,
+                l_held=[b["code"] for b in held if b["leg"] == L_LEG],
+                m_held=[b["code"] for b in held if b["leg"] == M_LEG],
                 l_reference=l_reference,
             ))
         codes = sorted({b["code"] for b in rows})
@@ -820,7 +834,7 @@ def pool_coverage_triggers(
 
 
 def signal_drought_triggers(signals: Mapping[str, Any] | None, *, line: int) -> list[ReviewTrigger]:
-    """A/C/E计划和M候选全部断流超过line个行动日（不管停不停手，只看规则有没有选出股票）。
+    """A/C/E计划、M候选（新框架含L首选）全部断流超过line个行动日，不管停不停手。
 
     2020-04-21以后研究回放里最长只有22个行动日完全没有信号（生产数据回放21天，到2024-02-21）；更早那94天是数据错误造成的。
     断流时实盘和规则回放一样“没有交易”，逐笔对账显示一致，所以要单独看。
@@ -829,12 +843,14 @@ def signal_drought_triggers(signals: Mapping[str, Any] | None, *, line: int) -> 
     if not signals or signals.get("gap") is None or int(signals["gap"]) <= int(line):
         return []
     last = dict(signals.get("last") or {})
-    legs = "、".join("%s %s" % (leg, last[leg] or "无") for leg in REPORT_LEGS if leg in last)
+    report_legs = REPORT_LEGS + (L_LEG,) if L_LEG in last else REPORT_LEGS
+    names = "A/C/E和M、L" if L_LEG in last else "A/C/E和M"
+    legs = "、".join("%s %s" % (leg, last[leg] or "无") for leg in report_legs if leg in last)
     return [ReviewTrigger(
         "signal_drought", "数据",
-        "A/C/E和M已连续%d个行动日没有选出一只股票（最近一次%s，历史最长%d天）：先查数据和程序，"
+        "%s已连续%d个行动日没有选出一只股票（最近一次%s，历史最长%d天）：先查数据和程序，"
         "都正常才是行情让条件长期不满足。各腿最近一次：%s" % (
-            int(signals["gap"]), signals.get("last_any") or "无", int(line), legs),
+            names, int(signals["gap"]), signals.get("last_any") or "无", int(line), legs),
     )]
 
 

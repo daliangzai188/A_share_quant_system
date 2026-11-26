@@ -53,6 +53,13 @@ COMBO_NAMES = {FRAMEWORK_ACE_M: "ACE+M", FRAMEWORK_ACE_M_L: "ACE+M+L"}
 # 这几项覆盖上一层的同名项。新框架打开而这一段没配置时三级警告报“没算成”，不拿现行框架的阈值凑合。
 FRAMEWORK_OVERRIDE_KEYS = ("middle", "final", "reference", "m_early", "l_early", "signal_gap_days", "relative_days",
                            "replay_start")
+FRAMEWORK_REQUIRED_FIELDS = {
+    "middle": ("E", "M", "L", "combo_drawdown"),
+    "final": ("A", "C", "E", "shadow_drawdown", "combo_drawdown"),
+    "reference": ("middle_E", "middle_M", "middle_L", "relative_history"),
+    "m_early": ("window_trades", "max_loss_streak", "worst_window_return"),
+    "l_early": ("window_trades", "max_loss_streak", "worst_window_return"),
+}
 MIDDLE_CATEGORY = "中级·策略复核"
 FINAL_CATEGORY = "终极·建议停止交易"
 MIDDLE_ACTION = "请在Claude发送：甲·策略复核（%s）"
@@ -79,13 +86,30 @@ class WarningSettings:
     framework: str = FRAMEWORK_ACE_M
 
 
+def _validate_framework_warning_override(override: Mapping[str, Any]) -> None:
+    """新框架冻结块必须完整，缺线或缺说明都报检查失败，不能继承旧框架的值。"""
+
+    missing = [key for key in ("signal_gap_days", "relative_days") if override.get(key) is None]
+    for block, keys in FRAMEWORK_REQUIRED_FIELDS.items():
+        item = override.get(block)
+        if not isinstance(item, Mapping):
+            missing.append(block)
+            continue
+        for key in keys:
+            if item.get(key) is None or (block == "reference" and not str(item[key]).strip()):
+                missing.append("%s.%s" % (block, key))
+    if missing:
+        raise ValueError("strategy_warnings.ace_m_l冻结配置不完整：%s" % "、".join(missing))
+
+
 def load_warning_settings(config: Mapping[str, Any]) -> WarningSettings:
     section = dict(config.get("strategy_warnings", {}) or {})
     framework = portfolio_framework(config)
     if framework == FRAMEWORK_ACE_M_L and section.get("enabled", False):
-        override = dict(section.get("ace_m_l", {}) or {})
-        if not override:
+        override = section.get("ace_m_l")
+        if not isinstance(override, Mapping) or not override:
             raise ValueError("组合框架是ACE+M+L，但strategy_warnings.ace_m_l（新框架的冻结阈值）没有配置")
+        _validate_framework_warning_override(override)
         section.update({k: override[k] for k in FRAMEWORK_OVERRIDE_KEYS if k in override})
     return WarningSettings(
         enabled=bool(section.get("enabled", False)),

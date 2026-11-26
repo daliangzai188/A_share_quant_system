@@ -14,13 +14,16 @@ def _tl(rows):
 
 
 def test_lhb_complete_requires_seats_for_every_board_row():
-    tl = _tl([("300001.SZ", "日振幅值达到15%的前5只证券"), ("300002.SZ", "日换手率达到20%的前5只证券")])
-    ti = pd.DataFrame([{"ts_code": "300001.SZ", "reason": "日振幅值达到15%的前5只证券", "side": "0", "buy": 1.0}])
-    ok, why = S.lhb_complete(tl, ti)
+    keys = [("300001.SZ", "日振幅值达到15%的前5只证券"), ("300002.SZ", "日换手率达到20%的前5只证券")]
+    tl = _tl(keys)
+    ti = pd.DataFrame([{"ts_code": code, "reason": reason, "side": side, "buy": 1.0, "sell": 1.0}
+                       for code, reason in keys for side in ("0", "1")])
+    ok, why = S.lhb_complete(tl, ti.iloc[:3])
     assert not ok and "1 条公告" in why
-    ti2 = pd.concat([ti, pd.DataFrame([{"ts_code": "300002.SZ", "reason": "日换手率达到20%的前5只证券", "side": "0", "buy": 1.0}])])
-    assert S.lhb_complete(tl, ti2) == (True, "")
-    assert S.lhb_complete(pd.DataFrame(), ti2)[0] is False
+    assert S.lhb_complete(tl, ti) == (True, "")
+    ti.loc[3, "sell"] = float("nan")
+    assert S.lhb_complete(tl, ti)[0] is False
+    assert S.lhb_complete(pd.DataFrame(), ti)[0] is False
 
 
 def test_registry_value_carries_dates_payload_and_checksum():

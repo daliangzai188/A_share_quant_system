@@ -1,0 +1,109 @@
+{
+ "combo_drawdown": {
+  "as_of": "20261110",
+  "peak": "20261016",
+  "value": "-0.068965633015933059"
+ },
+ "combo_relative": {
+  "as_of": "20261110",
+  "days_behind": 0,
+  "value": "0.21004754823477034"
+ },
+ "factor_health": {
+  "A": {
+   "line": "0.0053908558571433597",
+   "months_below": 4,
+   "value": "0.00052106005674763117"
+  },
+  "C": {
+   "line": "-0.0047430018820886584",
+   "months_below": 0,
+   "value": "0.016656858570970708"
+  },
+  "E": {
+   "line": "-0.0071186617149196912",
+   "months_below": 0,
+   "value": "0.012854973338673277"
+  }
+ },
+ "framework": "ace_m_l",
+ "l_recent": {
+  "as_of": "20261106",
+  "max_loss_streak": 8,
+  "replay": "ACE+M+L",
+  "streak": 3,
+  "streak_from": "20261102",
+  "trades": 717,
+  "window_from": "20261013",
+  "window_return": "-0.11323366431787785",
+  "window_trades": 10,
+  "worst_window_return": "-0.58499999999999996"
+ },
+ "legs": {
+  "A": {
+   "as_of": "20261109",
+   "trades": 68,
+   "value": "1.3846504475855506"
+  },
+  "C": {
+   "as_of": "20261009",
+   "trades": 46,
+   "value": "3.519480633581086"
+  },
+  "E": {
+   "as_of": "20261102",
+   "trades": 30,
+   "value": "0.6975105405931401"
+  },
+  "L": {
+   "as_of": "20261106",
+   "trades": 115,
+   "value": "7.79545180372636"
+  },
+  "M": {
+   "as_of": "20260819",
+   "trades": 10,
+   "value": "-0.18335226415915162"
+  }
+ },
+ "m_recent": {
+  "as_of": "20260819",
+  "max_loss_streak": 5,
+  "replay": "ACE+M+L",
+  "streak": 0,
+  "streak_from": "",
+  "trades": 83,
+  "window_from": "20250923",
+  "window_return": "-0.18335226415915162",
+  "window_trades": 10,
+  "worst_window_return": "-0.21199999999999999"
+ },
+ "replay": {
+  "ace_m_multiple": "2221357.5351018049",
+  "ace_only_multiple": "17313.435546904602",
+  "end": "20261110",
+  "l_trades": 717,
+  "m_reference_error_days": 0,
+  "m_reference_errors_recent": [],
+  "m_trades": 83,
+  "start": "20191202"
+ },
+ "shadow_drawdown": {
+  "as_of": "20261110",
+  "peak": "20260810",
+  "value": "-0.33664140485656935"
+ },
+ "signals": {
+  "as_of": "20261110",
+  "gap": 0,
+  "last": {
+   "A": "20261110",
+   "C": "20261009",
+   "E": "20261102",
+   "L": "20261110",
+   "M": "20261028"
+  },
+  "last_any": "20261110",
+  "line": 8
+ }
+}

@@ -253,8 +253,10 @@ def _strategy_health_context(config, day, metrics, error, triggers):
     from src.strategy_warnings import load_warning_settings
     from src.daily_report import strategy_health_data_issues
 
-    settings = load_warning_settings(config)
-    context = {'signal_date': day, 'enabled': settings.enabled,
+    warning_config = dict(config.get('strategy_warnings') or {})
+    # 报警失败也继续生成日报，保留已登记的检查失败及其余检查结果。
+    settings = load_warning_settings(dict(config, strategy_warnings=dict(warning_config, enabled=False)))
+    context = {'signal_date': day, 'enabled': bool(warning_config.get('enabled', False)),
                'min_trades': settings.min_trades, 'window_days': settings.window_days}
     issues = strategy_health_data_issues({'strategy_health_context': context,
                                           'warnings': metrics, 'warnings_error': error})
@@ -263,6 +265,23 @@ def _strategy_health_context(config, day, metrics, error, triggers):
                                       '策略体检数据完整性待核对：' + '；'.join(issues),
                                       action=CHECK_REPAIR_ACTION))
     return context
+
+
+def _alignment_framework(config, section, history_start):
+    if str(config.get('portfolio_framework', '')) != 'ace_m_l':
+        return '', {}
+    start = str(section.get('ace_m_l_start_date', '') or '')
+    options = {'include_legacy_alignment': True} if start and history_start < start else {}
+    return start, options
+
+
+def _warning_display(config, metrics, final_standard):
+    section = dict(config.get('strategy_warnings') or {})
+    if (metrics or {}).get('framework') == 'ace_m_l':
+        section = section['ace_m_l']
+    if str(config.get('portfolio_framework', '')) == 'ace_m_l':
+        final_standard += '。新框架还须满足ACE+M+L样本外月均不低于去掉L（ACE+M）'
+    return section, final_standard
 
 
 def run(args) -> int:
@@ -312,10 +331,11 @@ def run(args) -> int:
         filled = complete = None
         shadow = None
         try:
+            framework_start, shadow_options = _alignment_framework(config, section, settings.history_start)
             shadow = prod.build_shadow_replay(
                 project_root=ROOT, feature_path=dataset / 'strict_feature_pool.csv',
                 sentiment_path=dataset / 'market_sentiment.csv', calendar_path=calendar,
-                start=settings.history_start, end=day, work_dir=settings.work_dir)
+                start=settings.history_start, end=day, work_dir=settings.work_dir, **shadow_options)
             filled, complete = live_trades(config)
             from src.live_alignment import run_alignment
             from src.strategy_m import m_sort_for_config
@@ -323,7 +343,7 @@ def run(args) -> int:
                 shadow, filled, ma_window=settings.ma_window, lag=settings.lag_trading_days, start=start, end=day,
                 ace_m_start=str(section.get('ace_m_start_date', '') or ''), raw_dir=ROOT / 'data' / 'raw',
                 m_sort_by=m_sort_for_config(config),
-                ace_m_l_start=str(section.get('ace_m_l_start_date', '') or ''), project_root=ROOT)
+                ace_m_l_start=framework_start, project_root=ROOT)
             triggers.extend(align)
         except Exception as exc:
             traceback.print_exc()
@@ -406,7 +426,7 @@ def run(args) -> int:
         triggers = escalate(triggers, state, acknowledged=acknowledged, today=day, open_dates=dates,
                             open_days=load_warning_settings(config).escalate_open_days)
     from src.daily_report import build_daily_report, value_lines
-    warn_section = dict(config.get('strategy_warnings', {}) or {})
+    warn_section, final_standard = _warning_display(config, warn_metrics, FINAL_STANDARD)
     values = {
         'alignment': None if align is None else [t.detail for t in align], 'alignment_error': align_error,
         'm_slippage': slip, 'm_slippage_error': slip_error, 'ace_slippage': ace_slip, 'ace_slippage_error': ace_slip_error,
@@ -422,7 +442,7 @@ def run(args) -> int:
         **l_extra,
     }
     report = build_daily_report(day, triggers, acknowledged, recheck, state.get('first_seen', {}), value_lines(values),
-                                final_standard=FINAL_STANDARD)
+                                final_standard=final_standard)
     print('STRATEGY_DAILY %s level=%s active=%d acknowledged=%d：%s' % (
         day, report['level'], len(triggers), sum(1 for t in triggers if t.key in acknowledged),
         '；'.join(t.detail for t in triggers) or '无'), flush=True)

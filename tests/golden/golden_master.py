@@ -22,8 +22,10 @@
 有些模块按自己文件的位置找 data/raw（例如 research/build_ac_daily_candidates.py 导入时就读交易日历），
 不复制的话会读到仓库里的行情，对照就不可靠。
 
-用法：python tests/golden/golden_master.py check [--full] [--data DIR]
-      python tests/golden/golden_master.py record [--data DIR]   （只在确认输出应当改变时用）
+用法：python tests/golden/golden_master.py check [--framework ace_m|ace_m_l] [--full] [--data DIR]
+      python tests/golden/golden_master.py record [--framework ace_m|ace_m_l] [--data DIR]
+未指定框架时按当前配置选择；旧标准在 expected/，新标准在 expected_ace_m_l/，互不覆盖。
+新框架使用独立补充冻结集 20261110_ace_m_l，旧行情和旧清单不变。
 """
 from __future__ import annotations
 
@@ -43,6 +45,10 @@ CODE_DIRS = ("src", "scripts", "config")
 MODEL_TABLES = ("data/processed/fill_rate_table.csv", "data/processed/fill_rate_fallback.csv")
 EXPECTED = Path(__file__).resolve().parent / "expected"
 DEFAULT_DATA = Path.home() / "A_System_golden_data" / "20261110"
+NEW_DATA = Path.home() / "A_System_golden_data" / "20261110_ace_m_l"
+FRAMEWORKS = ("ace_m", "ace_m_l")
+# 补充清单锁定L首选缓存、历史名称和来源说明；旧行情仍用原MANIFEST_SHA256逐文件核验。
+L_MANIFEST_SHA256 = "c3d94d69287ae607df2e2285f28410f9d6250c5946692754ac1bba6072a9cda2"
 END = "20261110"
 DAILY_REPORT_DAYS = 20   # 截止日之前、每天都锁定日报的行动日数（每天约7秒；日报2026-11-14起才有）
 MANIFEST_SHA256 = "5a94234bd85a2930db86b2570e1992d6c4fdae6a1390abf963b368dce5043f1a"
@@ -104,14 +110,13 @@ def json_text(obj) -> str:
     return json.dumps(norm(obj), ensure_ascii=False, indent=1) + "\n"
 
 
-def verify_data(data: Path) -> None:
-    manifest = data / "manifest.sha256"
-    if hashlib.sha256(manifest.read_bytes()).hexdigest() != MANIFEST_SHA256:
+def verify_manifest(root: Path, manifest: Path, digest: str) -> None:
+    if hashlib.sha256(manifest.read_bytes()).hexdigest() != digest:
         raise SystemExit("对照数据的校验清单被改过：%s" % manifest)
     bad = []
     for line in manifest.read_text(encoding="utf-8").splitlines():
         digest, rel = line.split("  ", 1)
-        path = data / rel
+        path = root / rel
         if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != digest:
             bad.append(rel)
             if len(bad) >= 5:
@@ -120,7 +125,18 @@ def verify_data(data: Path) -> None:
         raise SystemExit("对照数据被改动或缺失：%s" % bad)
 
 
-def runtime_root(data: Path, tmp: Path) -> Path:
+def verify_data(data: Path, framework: str = "ace_m") -> None:
+    verify_manifest(data, data / "manifest.sha256", MANIFEST_SHA256)
+    if framework == "ace_m_l":
+        extra = data / "supplement"
+        verify_manifest(extra, extra / "manifest.sha256", L_MANIFEST_SHA256)
+        payload = json.loads((extra / "strategy_l/l_picks_cache.json").read_text(encoding="utf-8"))
+        picks = payload.get("picks")
+        if not isinstance(picks, dict) or not picks or not any(picks.values()):
+            raise SystemExit("冻结L首选缓存为空或无有效首选")
+
+
+def runtime_root(data: Path, tmp: Path, framework: str = "ace_m") -> Path:
     """临时运行根：当前代码的副本 + 指向冻结行情的 data/raw（不碰仓库自己的 data/）。必须在导入任何 src/scripts 之前调用。"""
     import shutil
     root = tmp / "root"
@@ -129,10 +145,37 @@ def runtime_root(data: Path, tmp: Path) -> Path:
     (root / "data" / "processed").mkdir(parents=True)
     for rel in MODEL_TABLES:
         shutil.copy2(REPO / rel, root / rel)
-    (root / "data" / "raw").symlink_to(data / "raw")
+    raw = root / "data" / "raw"
+    if framework == "ace_m_l":
+        raw.mkdir()
+        for child in (data / "raw").iterdir():
+            if child.name != "namechange":
+                (raw / child.name).symlink_to(child)
+        extra = data / "supplement"
+        (raw / "namechange").symlink_to(extra / "namechange")
+        plans = root / "reports" / "strategy_l"
+        plans.mkdir(parents=True)
+        shutil.copy2(extra / "strategy_l/l_picks_cache.json", plans / "l_picks_cache.json")
+    else:
+        raw.symlink_to(data / "raw")
+    config_path = root / "config/config.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["portfolio_framework"] = framework
+    config_path.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
     sys.path.insert(0, str(root))
     os.chdir(root)
     return root
+
+
+def require_new_replay(triggers, metrics: dict, *, day: str) -> None:
+    """不把缺输入/退回旧框架/空L回放固化成新基准；真实策略警报仍完整保留。"""
+    replay = metrics.get("replay") or {}
+    failures = [str(t.key) for t in triggers if str(t.key).startswith("check_failed:")]
+    if metrics.get("framework") != "ace_m_l" or int(replay.get("l_trades", 0)) <= 0:
+        raise RuntimeError("%s 新框架警告未实际回放L：%s" % (day, replay))
+    if replay.get("m_reference_error_days") != 0 or failures:
+        raise RuntimeError("%s 新框架数据检查未通过：M=%s，检查失败=%s" % (
+            day, replay.get("m_reference_error_days"), failures))
 
 
 # ---- 实盘组合状态机的喂数辅助：与 research/verify_live_engine_matches_certify.py、
@@ -161,7 +204,7 @@ def action_candidate_map(frame, leg: str) -> dict:
     return {str(row["action_date"]): row.to_dict() for _, row in valid.drop_duplicates("action_date", keep="last").iterrows()}
 
 
-def make_engine(project_root: Path):
+def make_engine(project_root: Path, framework: str = "ace_m"):
     """只读计划引擎；所有外部状态都由逐日数据显式注入。"""
     from src.combined_live_engine import CombinedLiveEngine
     engine = object.__new__(CombinedLiveEngine)
@@ -172,6 +215,8 @@ def make_engine(project_root: Path):
         "live_trade": {"max_single_order_amount": 0},
         "active_strategy_profile": {"mode": 1, "mode_name": "A_C_E_D"},
     }
+    if framework == "ace_m_l":
+        engine.config["portfolio_framework"] = framework
     engine.load_positions = lambda: []
     engine.active_strategy_mode = lambda: 1
     engine.active_strategy_name = lambda: "A_C_E_D"
@@ -207,14 +252,17 @@ def e_signal(row: dict) -> dict:
     }
 
 
-def live_engine_rows(legs, action_dates) -> list[dict]:
+def live_engine_rows(legs, action_dates, *, framework: str = "ace_m", l_picks: dict | None = None) -> list[dict]:
     """同一批候选交给实盘组合状态机（与 research/verify_live_engine_matches_certify.py 同一做法），记录每日决定。"""
     import pandas as pd
 
     maps = {leg: (action_candidate_map(legs[leg], leg) if legs.get(leg) is not None and len(legs[leg]) else {})
             for leg in ("A", "C", "E")}
     dates = sorted(set(str(d) for d in action_dates) | {d for m in maps.values() for d in m})
-    engine = make_engine(Path(os.getcwd()))
+    engine = make_engine(Path(os.getcwd()), framework)
+    if framework == "ace_m_l":
+        # 历史L首选是冻结信号，不读取真实滚动计划；有计划时D不可启动。
+        engine.has_l_plan_today = lambda day: bool((l_picks or {}).get(str(day)))
     rows = []
     for action_date in dates:
         ac = pd.DataFrame([ac_order(maps[leg][action_date], action_date) for leg in ("A", "C") if action_date in maps[leg]])
@@ -276,7 +324,7 @@ def live_selection_text(root: Path, ds: Path, calendar: Path, start: str, shadow
     return "\n".join(lines) + "\n"
 
 
-def sizing_rows() -> tuple[list[dict], list[dict]]:
+def sizing_rows(framework: str = "ace_m") -> tuple[list[dict], list[dict]]:
     from src import portfolio_ace_m as p
     total = 1_000_000.0
     ace = []
@@ -290,20 +338,41 @@ def sizing_rows() -> tuple[list[dict], list[dict]]:
             for cash_pct in (1.0, 0.5, 0.1):
                 for unfilled_pct in (0.0, 0.1):
                     r = p.m_budget(total_asset=total, available_cash=total * cash_pct, ace_active_today=active,
-                                   ace_value=total * ace_pct, ace_unfilled_target=total * unfilled_pct, cash_buffer=1000.0)
+                                   ace_value=total * ace_pct, ace_unfilled_target=total * unfilled_pct,
+                                   cash_buffer=1000.0, framework=framework)
                     m.append(dict(ace_active_today=active, ace_pct=ace_pct, cash_pct=cash_pct, unfilled_pct=unfilled_pct, **r))
     return ace, m
 
 
-def build(data: Path, tmp: Path, *, record: bool, full: bool, log, notes: dict) -> dict[str, str]:
-    root = runtime_root(data, tmp)
+def l_sizing_rows() -> list[dict]:
+    from src import portfolio_ace_m as p
+    total, rows = 1_000_000.0, []
+    for mode in (p.GATE_FULL, p.GATE_REDUCED, p.GATE_BLOCKED):
+        for allowed in (False, True):
+            for returns in ([], [-0.01, -0.02]):
+                mult = p.loss_streak_multiplier(returns)
+                target = p.l_target_pct(ace_mode=mode, l_self_allowed=allowed, streak_mult=mult)
+                for occupied in (0.0, 0.2, 0.825):
+                    for reserve in (0.0, 0.2):
+                        result = p.l_budget(total_asset=total, available_cash=total,
+                                            target_pct=target, ace_value=total * occupied, m_value=0.0,
+                                            ace_unfilled_target=total * reserve, cash_buffer=1000.0)
+                        rows.append(dict(mode=mode, l_self_allowed=allowed, streak_mult=mult,
+                                         ace_pct=occupied, ace_unfilled_pct=reserve, **result))
+    return rows
+
+
+def build(data: Path, tmp: Path, *, record: bool, full: bool, log, notes: dict,
+          framework: str = "ace_m", expected_dir: Path = EXPECTED) -> dict[str, str]:
+    root = runtime_root(data, tmp, framework)
     import pandas as pd
     import scripts.update_equity_curve_stop as prod
     from src.daily_report import build_daily_report, value_lines
     from src.equity_curve_stop import allowed_flags, load_settings, load_weekly_report_settings
     from src.review_triggers import FINAL_STANDARD, active_acknowledgements
     from src.strategy_m_reference import MReference
-    from src.strategy_warnings import run_strategy_warnings
+    from src.strategy_m import M_SORT_RET5, m_sort_for_config
+    from src.strategy_warnings import load_warning_settings, run_strategy_warnings
     from src.utils.config import load_json_config
 
     if Path(prod.__file__).resolve().parents[1] != root.resolve():
@@ -311,6 +380,11 @@ def build(data: Path, tmp: Path, *, record: bool, full: bool, log, notes: dict) 
     raw = root / "data" / "raw"
     calendar = raw / "trade_calendar.csv"
     config = load_json_config(root / "config" / "config.json")
+    if framework == "ace_m_l":
+        from src.strategy_l import L_VERSION
+        frozen_l = json.loads((root / "reports/strategy_l/l_picks_cache.json").read_text(encoding="utf-8"))
+        if frozen_l.get("l_version") != L_VERSION:
+            raise RuntimeError("冻结L首选缓存版本与本轮生产代码不一致")
     settings = load_settings(config, root)
     out: dict[str, str] = {}
 
@@ -349,7 +423,10 @@ def build(data: Path, tmp: Path, *, record: bool, full: bool, log, notes: dict) 
     log("影子账与停手判定 %.0fs" % (time.time() - t0))
 
     t0 = time.time()
-    out["live_engine.csv"] = table(live_engine_rows(shadow["legs"], shadow["action_dates"]), ["action_date", "actions", "buy"])
+    out["live_engine.csv"] = table(live_engine_rows(
+        shadow["legs"], shadow["action_dates"], framework=framework,
+        l_picks=frozen_l["picks"] if framework == "ace_m_l" else None,
+    ), ["action_date", "actions", "buy"])
     log("实盘组合状态机 %.0fs" % (time.time() - t0))
 
     t0 = time.time()
@@ -364,10 +441,17 @@ def build(data: Path, tmp: Path, *, record: bool, full: bool, log, notes: dict) 
     log("因子健康 %.0fs" % (time.time() - t0))
 
     t0 = time.time()
-    reference = MReference(raw)
+    sort_by = m_sort_for_config(config)
+    reference = MReference(raw, sort_by=sort_by)
     days = [str(d) for d in shadow["action_dates"] if "20191202" <= str(d) <= END]
-    cache = tmp / "m_cache.json"
-    expected_m = EXPECTED / "m_candidates.csv"
+    if framework == "ace_m_l":
+        missing = [day for day in days if day not in frozen_l["picks"]]
+        if missing:
+            raise RuntimeError("冻结L首选缓存缺少回放行动日：%s" % missing[:5])
+    cache_base = tmp / "m_cache.json"
+    # 与生产run_strategy_warnings的ret5缓存隔离规则一致；预填和record都用真实生效文件。
+    cache = cache_base.with_name("m_cache_ret5.json") if sort_by == M_SORT_RET5 else cache_base
+    expected_m = expected_dir / "m_candidates.csv"
     if not record:
         # 用记下的M候选单预置缓存：记下的日子用记下的结果，出错的日子记为出错，其余日子当时就没有候选。
         # 预置后三级警告只重算最近20个交易日；另行抽查约十分之一的日子加最近30天（--full 全部）重算比对。
@@ -386,8 +470,11 @@ def build(data: Path, tmp: Path, *, record: bool, full: bool, log, notes: dict) 
                 notes["m_mismatch"].append((day, recorded.get(day, []), codes))
         notes["m_sample_days"] = len(sample)
         log("M候选单抽查%d天 %.0fs" % (len(sample), time.time() - t0))
-    triggers, metrics = run_strategy_warnings(shadow, health, config, raw_dir=raw, cache_path=cache, today=END,
-                                              ma_window=settings.ma_window, lag=settings.lag_trading_days)
+    triggers, metrics = run_strategy_warnings(shadow, health, config, raw_dir=raw, cache_path=cache_base, today=END,
+                                              ma_window=settings.ma_window, lag=settings.lag_trading_days,
+                                              project_root=root)
+    if framework == "ace_m_l":
+        require_new_replay(triggers, metrics, day=END)
     if record:  # M候选单单独记一份，供 check 预置缓存（不参与比较）
         saved = json.loads(cache.read_text(encoding="utf-8"))
         lines = ["day,codes"] + ["%s,%s" % (d, ";".join(saved["candidates"][d])) for d in sorted(saved["candidates"])
@@ -407,6 +494,10 @@ def build(data: Path, tmp: Path, *, record: bool, full: bool, log, notes: dict) 
     change = lambda n: float(navs[-1] / navs[-1 - n] - 1.0) if len(navs) > n else None
     rows, limit_up = prod.pool_coverage_inputs(ds, END)
     warn_section = dict(config.get("strategy_warnings", {}) or {})
+    if framework == "ace_m_l":
+        effective_warning_settings = load_warning_settings(config)
+        warn_section = dict(warn_section, middle=effective_warning_settings.middle,
+                            final=effective_warning_settings.final)
     values = {
         "alignment": None, "m_slippage": None, "ace_slippage": None, "live_loss": None,
         "coverage": {"pool_rows": rows, "limit_up_count": limit_up, "min_ratio": float(section.get("pool_coverage_min_ratio", 0.3))},
@@ -425,8 +516,10 @@ def build(data: Path, tmp: Path, *, record: bool, full: bool, log, notes: dict) 
     history = []
     for day in [d for d in days if d < END][-DAILY_REPORT_DAYS:]:
         day_triggers, day_metrics = run_strategy_warnings(
-            shadow, health, config, raw_dir=raw, cache_path=cache, today=day, ma_window=settings.ma_window,
-            lag=settings.lag_trading_days)
+            shadow, health, config, raw_dir=raw, cache_path=cache_base, today=day, ma_window=settings.ma_window,
+            lag=settings.lag_trading_days, project_root=root)
+        if framework == "ace_m_l":
+            require_new_replay(day_triggers, day_metrics, day=day)
         day_ack = active_acknowledgements(entries, day)
         day_recheck = {str(e.get("key", "")): str(e.get("recheck_by", "")) for e in entries
                        if str(e.get("key", "")) in day_ack}
@@ -452,38 +545,50 @@ def build(data: Path, tmp: Path, *, record: bool, full: bool, log, notes: dict) 
     out["daily_reports_history.txt"] = "".join(history)
     log("截止日前%d个行动日的日报 %.0fs" % (len(history), time.time() - t0))
 
-    ace, m = sizing_rows()
+    ace, m = sizing_rows(framework)
     out["sizing_ace.csv"] = table(ace, list(ace[0].keys()))
     out["sizing_m.csv"] = table(m, list(m[0].keys()))
+    if framework == "ace_m_l":
+        l_rows = l_sizing_rows()
+        out["sizing_l.csv"] = table(l_rows, list(l_rows[0].keys()))
     return out
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("mode", choices=("check", "record"))
-    parser.add_argument("--data", default=str(DEFAULT_DATA))
+    parser.add_argument("--framework", choices=FRAMEWORKS,
+                        help="缺省按当前配置；ace_m保留旧框架15项，ace_m_l使用独立新基准")
+    parser.add_argument("--data", help="缺省按框架选冻结目录")
     parser.add_argument("--full", action="store_true", help="check 时M候选单全部重算（约8分钟）")
     args = parser.parse_args()
-    data = Path(args.data).expanduser()
+    configured = json.loads((REPO / "config/config.json").read_text(encoding="utf-8"))
+    framework = args.framework or str(configured.get("portfolio_framework") or "ace_m").strip().lower()
+    if framework not in FRAMEWORKS:
+        parser.error("当前portfolio_framework无效，不能静默选择黄金基准：%s" % framework)
+    expected_dir = EXPECTED if framework == "ace_m" else EXPECTED.with_name("expected_ace_m_l")
+    data = Path(args.data).expanduser().resolve() if args.data else (DEFAULT_DATA if framework == "ace_m" else NEW_DATA)
     started = time.time()
     log = lambda text: print("  " + text, flush=True)
-    verify_data(data)
+    verify_data(data, framework)
+    log("框架%s，对照目录%s" % (framework, expected_dir))
     log("对照数据校验通过（%s）" % data)
     notes = {"m_mismatch": [], "m_sample_days": 0}
     with tempfile.TemporaryDirectory(prefix="golden_") as tmp:
         try:
-            out = build(data, Path(tmp), record=args.mode == "record", full=args.full, log=log, notes=notes)
+            out = build(data, Path(tmp), record=args.mode == "record", full=args.full, log=log, notes=notes,
+                        framework=framework, expected_dir=expected_dir)
         finally:
             os.chdir(REPO)
     if args.mode == "record":
-        EXPECTED.mkdir(parents=True, exist_ok=True)
+        expected_dir.mkdir(parents=True, exist_ok=True)
         for name, text in dict(out, **{"m_candidates.csv": notes["m_candidates.csv"]}).items():
-            (EXPECTED / name).write_text(text, encoding="utf-8")
-        print("RECORDED %d 项 -> %s（%.0f秒）" % (len(out), EXPECTED, time.time() - started))
+            (expected_dir / name).write_text(text, encoding="utf-8")
+        print("RECORDED %d 项 -> %s（%.0f秒）" % (len(out), expected_dir, time.time() - started))
         return 0
     failed = []
     for name in sorted(out):
-        expected_path = EXPECTED / name
+        expected_path = expected_dir / name
         expected = expected_path.read_text(encoding="utf-8") if expected_path.exists() else None
         if expected == out[name]:
             print("  一致  %s" % name)

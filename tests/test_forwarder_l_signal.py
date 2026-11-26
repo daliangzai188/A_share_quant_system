@@ -18,10 +18,12 @@ def test_window_evening_today_and_morning_previous_day():
     assert F.l_signal_window(at(16, 29), DAYS) == ""
     assert F.l_signal_window(at(16, 30), DAYS) == "20261126"
     assert F.l_signal_window(at(22, 59), DAYS) == "20261126"
-    assert F.l_signal_window(at(23, 0), DAYS) == ""
+    assert F.l_signal_window(at(23, 0), DAYS) == "20261126"                    # 过了 23:00 没生成照样补
+    assert F.l_signal_window(at(1, 30, 27), DAYS) == "20261126"                 # 半夜补上一个交易日
     assert F.l_signal_window(at(8, 20, 27), DAYS) == "20261126"
-    assert F.l_signal_window(at(9, 10, 27), DAYS) == ""
-    assert F.l_signal_window(dt.datetime(2026, 11, 28, 17, 0, tzinfo=BJ), DAYS) == ""   # 非交易日
+    assert F.l_signal_window(at(9, 10, 27), DAYS) == ""                         # 开盘前 09:10 以后来不及用，不补
+    assert F.l_signal_window(at(15, 0, 27), DAYS) == ""                         # 盘中不跑
+    assert F.l_signal_window(dt.datetime(2026, 11, 28, 17, 0, tzinfo=BJ), DAYS) == "20261127"   # 周末补最近交易日
 
 
 class _Proc:
