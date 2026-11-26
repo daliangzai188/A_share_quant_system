@@ -148,6 +148,8 @@ def main() -> int:
     parser.add_argument("--namechange", type=Path)
     parser.add_argument("--research-inputs", type=Path, help="研究回放输入（含 allowed、l_allowed），新框架逐日对照用")
     parser.add_argument("--out", type=Path)
+    parser.add_argument("--smoke", action="store_true",
+                        help="新框架另走一遍生产入口：三级警告、日报数值行、空实盘的逐笔对账（端到端核对，不算阈值）")
     args = parser.parse_args()
     if args.framework == "ace_m_l" and not (args.l_cache and args.namechange):
         parser.error("新框架需要 --l-cache 和 --namechange")
@@ -240,7 +242,41 @@ def compute(args, root: Path, tmp: Path) -> dict:
                                  "ace_allowed_diff": diff[:20], "ace_allowed_diff_count": len(diff),
                                  "l_allowed_days_compared": sum(1 for d in days if d in research["l_allowed"]),
                                  "l_allowed_diff": diff_l[:20], "l_allowed_diff_count": len(diff_l)}
+    if args.smoke and args.framework == "ace_m_l":
+        out["smoke"] = smoke(args, root, shadow, config, settings, tmp)
     return out
+
+
+def smoke(args, root: Path, shadow, config, settings, tmp: Path) -> dict:
+    """新框架的生产入口端到端走一遍：配置里的 strategy_warnings.ace_m_l、L 回放输入、三级警告、日报数值行、
+    逐笔对账（实盘为空：从 L 生效日起，首选开盘没封涨停的日子都应报漏单，其余不报）。"""
+    import pandas as pd
+
+    from src.daily_report import value_lines
+    from src.live_alignment import run_alignment
+    from src.strategy_m import m_sort_for_config
+    from src.strategy_warnings import run_strategy_warnings
+
+    raw = root / "data" / "raw"
+    triggers, metrics = run_strategy_warnings(shadow, None, config, raw_dir=raw, cache_path=tmp / "warn_cache.json",
+                                              today=args.end, ma_window=settings.ma_window,
+                                              lag=settings.lag_trading_days, project_root=root)
+    section = dict(config["strategy_warnings"]["ace_m_l"])
+    lines = value_lines({
+        "alignment": [], "warnings": metrics, "signals": metrics.get("signals"),
+        "l_slippage": {"completed": 0, "trades": 10, "limit_pct": 1.5},
+        "loss_streak": {"multiplier": 1.0, "recent": []},
+        "thresholds": {"combo_middle": section["middle"]["combo_drawdown"], "combo_final": section["final"]["combo_drawdown"]},
+    })
+    start = "20261101"
+    live = pd.DataFrame(columns=["entry_date", "ts_code", "strategy_leg", "name", "execution_status", "exit_date",
+                                 "entry_fill_amount"])
+    align = run_alignment(shadow, live, ma_window=settings.ma_window, lag=settings.lag_trading_days, start=start,
+                          end=args.end, ace_m_start=start, raw_dir=raw, m_sort_by=m_sort_for_config(config),
+                          ace_m_l_start=start, project_root=root)
+    return {"framework_in_metrics": metrics.get("framework"), "l_trades": (metrics.get("replay") or {}).get("l_trades"),
+            "triggers": [[t.key, t.detail] for t in triggers], "daily_lines": lines,
+            "alignment": [[t.key, t.detail] for t in align]}
 
 
 if __name__ == "__main__":
