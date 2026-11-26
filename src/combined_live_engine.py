@@ -70,9 +70,12 @@ from src.portfolio_ace_m import (
     GATE_BLOCKED,
     GATE_FULL,
     GATE_REDUCED,
+    FRAMEWORK_ACE_M_L,
     ace_base_target_pct,
     ace_gate_mode,
+    is_l_position,
     is_m_position,
+    portfolio_framework,
 )
 from src.rolling_signal_store import latest_signal_for_buy_date, signal_by_signal_date
 from src.strategy_identity import (
@@ -226,6 +229,21 @@ class CombinedLiveEngine:
         except Exception:
             return False
         return bool(signal and str(signal.get("status", "")) == "SIGNAL_READY" and signal.get("candidates"))
+
+    def has_l_plan_today(self, today: str) -> bool:
+        """ACE+M+L 新框架：L 今日是否有开仓计划；有则 D 今日不启动（同 M）。现行框架恒为 False。"""
+        if portfolio_framework(self.config) != FRAMEWORK_ACE_M_L:
+            return False
+        try:
+            signal = latest_signal_for_buy_date(
+                self.project_root / "reports" / "strategy_l" / "l_signals_recent.json", today
+            )
+        except Exception as exc:
+            # 读不了就按“L今日有计划”处理：宁可D今日不启动，也不和L抢资金（fail-safe）
+            import logging as _logging
+            _logging.getLogger(__name__).warning("读取L今日计划失败，D今日不启动：%s", exc)
+            return True
+        return bool(signal and str(signal.get("status", "")) == "SIGNAL_READY" and signal.get("ts_code"))
 
     def load_yesterday_e_signal(self, today: str) -> dict[str, Any] | None:
         """找 today 之前最近的 E 信号，且其 planned_buy_date == today。"""
@@ -781,12 +799,13 @@ class CombinedLiveEngine:
                     ),
                     source=stop_gate.source,
                 ))
-            m_plan_today = self.has_m_plan_today(today)
+            m_plan_today = self.has_m_plan_today(today) or self.has_l_plan_today(today)
+            ml_text = "M/L" if portfolio_framework(self.config) == FRAMEWORK_ACE_M_L else "M"
             if opened_leg is None and (ace_mode != GATE_FULL or open_m_positions or m_plan_today):
                 decisions.append(CombinedLiveDecision(
                     action="BLOCK_D_INTRADAY_MONITOR", strategy_leg="D",
                     reason=(
-                        "M持仓或M今日开仓计划占用资金，D今日不启动（D只在账户含M完全空仓时运行）。"
+                        f"{ml_text}持仓或{ml_text}今日开仓计划占用资金，D今日不启动（D只在账户含{ml_text}完全空仓时运行）。"
                         if ace_mode == GATE_FULL
                         else "方案甲停手期（影子净值低于60日均线），ACE按20%小仓执行，D今日不启动。"
                     ),
@@ -820,7 +839,9 @@ class CombinedLiveEngine:
         # 互斥判断；M 的开仓与到期卖出由 daemon 的 M 执行路径负责。只有 D 仍要求账户（含 M）完全空仓。
         all_open_positions = [p for p in positions if self.is_open_position(p)]
         open_m_positions = [p for p in all_open_positions if is_m_position(p)]
-        open_positions = [p for p in all_open_positions if not is_m_position(p)]
+        # 2026-11-26 ACE+M+L：L 与 M 一样是和 ACE 资金分开的并行仓，不阻断 A/C/E 开仓，只阻断 D（现行框架没有 L 仓）
+        open_l_positions = [p for p in all_open_positions if is_l_position(p)]
+        open_positions = [p for p in all_open_positions if not is_m_position(p) and not is_l_position(p)]
         open_d_positions = [p for p in open_positions if self.is_d_position(p)]
         open_non_d_positions = [p for p in open_positions if not self.is_d_position(p)]
         open_e_positions = [p for p in open_non_d_positions if self.is_e_position(p)]
@@ -910,7 +931,7 @@ class CombinedLiveEngine:
         state_rows[0]["ace_mode_target_pct"] = self._ace_target_pct
         opened_leg = self._mode1_open_decisions(
             today, open_d_positions, open_non_d_positions, decisions, ace_mode, due_selling_codes, opened_leg,
-            planned_orders, abc_orders, open_m_positions, abc_path, stop_gate,
+            planned_orders, abc_orders, open_m_positions + open_l_positions, abc_path, stop_gate,
         )
         return self._mode1_e_status_and_tables(
             today, state_rows, planned_orders, open_positions, decisions, ace_mode, stop_gate, opened_leg,

@@ -10,6 +10,7 @@
   orders      委托确认与撤单：轮询确认真实成交、撤单。
   sell        卖出状态机：限价与价格笼子、退出批次与保护底线、委托意图（PREPARED→SUBMITTED）、在途覆盖计算、A/C/D/E 直接卖出（含尾盘待确认登记）。
   buy         ACE开仓执行：实盘定仓、普通开仓执行器、09:20预挂与补挂、09:30开盘POV、E竞价与E延迟补仓、盘前买单成交确认。
+  buy_l       策略L执行（只在ACE+M+L新框架下运行）：09:20竞价预挂、09:26竞价结果、09:30~10:30买入POV；给M算L当天的占用。
   buy_m       策略M执行：09:20竞价预挂、09:26竞价结果、09:30~10:30买入POV。
   sell_pov    卖出POV：容量型分批平仓（14:15大额跑道、14:53交接给14:55主平仓）。
   close       14:55收盘平仓与看门狗：主平仓、14:56:20撤单交接、集合竞价兜底、15:00后核对回写。
@@ -22,4 +23,4 @@
 """
 
 # 由低到高；tests/test_production_modules.py 按这个顺序检查只许高层导入低层
-LAYERS = ("common", "state", "plans", "qmt", "orders", "sell", "buy", "buy_m", "sell_pov", "close", "takeprofit", "strategy_d", "reports", "pipeline", "jobs", "scheduler")
+LAYERS = ("common", "state", "plans", "qmt", "orders", "sell", "buy", "buy_l", "buy_m", "sell_pov", "close", "takeprofit", "strategy_d", "reports", "pipeline", "jobs", "scheduler")

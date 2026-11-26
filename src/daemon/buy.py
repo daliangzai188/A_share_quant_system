@@ -15,7 +15,7 @@ from typing import Any
 from src.config_check import new_entry_block_reason
 from src.utils.config import load_json_config, mkdir_p
 from src.utils.time_utils import now_beijing, today_beijing
-from src.portfolio_ace_m import ACE_FULL_HARD_CAP_PCT, ACE_FULL_TARGET_PCT, M_LEG, ace_limits
+from src.portfolio_ace_m import ACE_FULL_HARD_CAP_PCT, ACE_FULL_TARGET_PCT, ace_limits
 from src.daemon.common import (
     E_CAPACITY_FILE,
     LEGACY_E_CAPACITY_FILE,
@@ -58,6 +58,7 @@ from src.daemon.plans import (
     _select_unique_buy_order_for_action,
     _signal_day_amount,
     has_position_bought_today,
+    loss_streak_multiplier_for,
     st_open_forbidden,
 )
 from src.daemon.qmt import (
@@ -65,6 +66,7 @@ from src.daemon.qmt import (
     _qmt_get,
     _qmt_lock,
     _qmt_reset,
+    _non_ace_market_value,
     _strategy_only_market_value,
 )
 from src.daemon.orders import _confirm_fill, _format_order_fill_detail, _try_cancel_order
@@ -431,7 +433,7 @@ def _execute_orders_inprocess(
             quote_map=quote_map,
             current_market_value=entry_market_value,
             transition_full_cash=False,
-            m_market_value=_strategy_only_market_value(positions, family=M_LEG),
+            m_market_value=_non_ace_market_value(positions),
         )
 
         preview = gateway.validate_planned_orders(
@@ -685,7 +687,10 @@ def resize_buy_orders_for_live_account(
     # 单票硬顶=目标+2.5个百分点（同受99.5%约束）；80%验收线按目标等比例缩放。
     # current_market_value 由调用方传入ACE族（不含M）策略市值。
     ace_mode = _ace_gate_mode_for(action_date)
-    ace_cap = ace_limits(ace_mode, total_asset, float(m_market_value or 0.0))
+    # 2026-11-26 ACE+M+L：m_market_value 是 ACE 之外的并行仓（M，新框架加 L）；新框架连亏降仓 ×0.3（现行框架恒为1）。
+    ace_cap = ace_limits(ace_mode, total_asset, float(m_market_value or 0.0),
+                         streak_mult=loss_streak_multiplier_for(
+                             str(action_date or today_beijing().strftime("%Y%m%d")), config))
     max_position_pct = min(max_position_pct, ace_cap["hard_pct"])
     effective_total_position_pct = min(max_total_position_pct, ace_cap["target_pct"])
     min_accept_scale = (effective_total_position_pct / max_total_position_pct) if max_total_position_pct > 0 else 0.0
@@ -1374,7 +1379,7 @@ def _enqueue_opening_pov_from_plan(
                 positions_live, exclude_due_today=False, family="ACE"
             ),
             transition_full_cash=False,
-            m_market_value=_strategy_only_market_value(positions_live, family=M_LEG),
+            m_market_value=_non_ace_market_value(positions_live),
         )
         today_str = today_beijing().strftime("%Y%m%d")
         pov_items: list[dict[str, Any]] = []
@@ -2707,7 +2712,8 @@ def _e_place_order_direct(ts_code: str, name: str, planned_qty: int, signal_date
     # 2026-11-12 ACE+M：E延迟开仓同样受方案甲停手期20%目标与M已占资金约束。
     ace_cap = ace_limits(
         _ace_gate_mode_for(today_str), total_asset,
-        _strategy_only_market_value(positions_live, family=M_LEG),
+        _non_ace_market_value(positions_live),
+        streak_mult=loss_streak_multiplier_for(today_str, config),
     )
     ace_value = _strategy_only_market_value(positions_live, family="ACE")
     usable = min(

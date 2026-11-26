@@ -14,7 +14,7 @@ from typing import Any
 from src.utils.config import load_json_config
 from src.utils.time_utils import now_beijing, today_beijing
 from src.market_rules import BOARD_LOT_SHARES, STAR_MIN_ORDER_SHARES, market_segment
-from src.portfolio_ace_m import M_LEG, ace_limits, m_budget, position_in_family
+from src.portfolio_ace_m import FRAMEWORK_ACE_M_L, M_LEG, ace_limits, m_budget, position_in_family
 from src.daemon.common import (
     PROJECT_ROOT,
     _entry_amount_text,
@@ -32,7 +32,9 @@ from src.daemon.plans import (
     _combined_open_action_for_current_mode,
     _limit_up_pct_for_stock,
     _round_stock_price,
+    framework_from_config,
     has_open_local_position,
+    loss_streak_multiplier_for,
     read_cached_combined_decisions,
     st_open_forbidden,
 )
@@ -43,6 +45,7 @@ from src.daemon.qmt import (
     _strategy_only_market_value,
 )
 from src.daemon.orders import _confirm_fill, _try_cancel_order
+from src.daemon.buy_l import l_commitment_for_m
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -135,6 +138,43 @@ def _m_ace_context(today_str: str, broker_positions: Any, total_asset: float) ->
         logger().warning("读取ACE待成交买单失败，M按现金定仓时照旧全额给ACE预留：%s", exc)
     return {"active": plan_active or bool(held_ace), "plan_active": plan_active, "codes": ace_codes,
             "ace_value": ace_value, "m_value": m_value, "reserve": reserve, "frozen": frozen}
+
+
+def _m_framework_extras(config: dict[str, Any], today_str: str, broker_positions: Any) -> dict[str, Any]:
+    """ACE+M+L 新框架下 M 定仓的额外参数（L 占用、连亏降仓）与要回避的 L 股票；现行框架返回空（M 与原来完全相同）。"""
+    if framework_from_config(config) != FRAMEWORK_ACE_M_L:
+        return {"on": False, "kwargs": {}, "codes": set(), "l_unfilled": 0.0}
+    l_cm = l_commitment_for_m(today_str, broker_positions)
+    streak = loss_streak_multiplier_for(today_str, config)
+    return {"on": True, "codes": set(l_cm["codes"]), "l_unfilled": float(l_cm["unfilled"]), "streak": streak,
+            "kwargs": {"framework": FRAMEWORK_ACE_M_L, "l_value": l_cm["value"], "l_unfilled_target": l_cm["unfilled"],
+                       "l_frozen_pending": l_cm["frozen"], "streak_mult": streak}}
+
+
+def _m_refresh_target_after_l(item: dict[str, Any], broker_cfg: dict, config: dict, today_str: str) -> None:
+    """新框架：M 定仓时给 L 留了今日目标；L 收口后（买不进或只买到一部分）把没用到的预留还给 M，M 的目标按回放口径重算一次。"""
+    if float(item.get("l_reserved", 0.0) or 0.0) <= 0:
+        return
+    with _qmt_lock:
+        adapter = _qmt_get(broker_cfg)
+        account = adapter.query_account()
+        positions_live = adapter.query_positions()
+    extras = _m_framework_extras(config, today_str, positions_live)
+    if not extras["on"] or extras["l_unfilled"] > 0:
+        return
+    total_asset = float(getattr(account, "total_asset", 0.0) or 0.0)
+    ctx = _m_ace_context(today_str, positions_live, total_asset)
+    budget = m_budget(total_asset=total_asset, available_cash=float(getattr(account, "available_cash", 0.0) or 0.0),
+                      ace_active_today=ctx["active"], ace_value=ctx["ace_value"], ace_unfilled_target=ctx["reserve"],
+                      ace_frozen_pending=ctx["frozen"],
+                      cash_buffer=float(config.get("live_trade", {}).get("cash_buffer_amount", 1000)), **extras["kwargs"])
+    filled_amount = float(item.get("auction_cost", 0.0) or 0.0) + float(item.get("cost_amt", 0.0) or 0.0)
+    new_target = max(0.0, min(budget["by_pct"], budget["by_total_cap"], filled_amount + budget["by_cash"]))
+    item["l_reserved"] = 0.0
+    if new_target > float(item.get("target_amount", 0.0) or 0.0):
+        logger().warning("[M] L今日已收口，没用到的预留还给M：M目标%.0f→%.0f元。", float(item.get("target_amount", 0.0) or 0.0),
+                         new_target)
+        item["target_amount"] = new_target
 
 
 def _m_buy_quantity(ts_code: str, amount: float, price: float) -> int:
@@ -276,9 +316,15 @@ def job_m_premarket_buy() -> None:
         total_asset = float(getattr(account, "total_asset", 0.0) or 0.0)
         available_cash = float(getattr(account, "available_cash", 0.0) or 0.0)
         ctx = _m_ace_context(today_str, positions_live, total_asset)
+        extras = _m_framework_extras(config, today_str, positions_live)
+        if extras["on"] and ctx["active"]:
+            log.info("[M] ACE+M+L：ACE今日有开仓计划或持仓，M今日不开仓。")
+            return
+        ctx["codes"] |= extras["codes"]
         budget = m_budget(total_asset=total_asset, available_cash=available_cash, ace_active_today=ctx["active"],
                           ace_value=ctx["ace_value"], ace_unfilled_target=ctx["reserve"], ace_frozen_pending=ctx["frozen"],
-                          cash_buffer=float(config.get("live_trade", {}).get("cash_buffer_amount", 1000)))
+                          cash_buffer=float(config.get("live_trade", {}).get("cash_buffer_amount", 1000)),
+                          **extras["kwargs"])
         exit_date = _m_exit_date(today_str)
         skip: set[str] = set()
         while True:
@@ -300,6 +346,9 @@ def job_m_premarket_buy() -> None:
                 "ace_active": ctx["active"], "stage": "auction", "order_ids": [], "auction_order_id": "",
                 "auction_qty": qty, "filled_qty": 0, "cost_amt": 0.0, "tried": [code], "slice_no": 0,
                 "open_price": 0.0, "done": False}
+        if extras["on"]:
+            item["l_reserved"] = extras["l_unfilled"]
+            item["streak_mult"] = extras["streak"]
         ok, order_id, message = _m_submit_buy(broker_cfg, ts_code=code, name=name, qty=qty, price=price,
                                               signal_date=item["signal_date"], today_str=today_str,
                                               exit_date=exit_date, source_key=f"M_AUCTION|{today_str}|{code}",
@@ -422,9 +471,16 @@ def _m_pov_round(state: dict[str, Any], broker_cfg: dict, config: dict, today_st
             quotes = adapter.get_full_tick(codes)
         total_asset = float(getattr(account, "total_asset", 0.0) or 0.0)
         ctx = _m_ace_context(today_str, positions_live, total_asset)
+        extras = _m_framework_extras(config, today_str, positions_live)
+        if extras["on"] and ctx["active"]:
+            item["done"], item["done_reason"] = True, "ACE今日有开仓计划或持仓，M今日不开仓（ACE+M+L）"
+            return
+        ctx["codes"] |= extras["codes"]
         budget = m_budget(total_asset=total_asset, available_cash=float(getattr(account, "available_cash", 0.0) or 0.0),
                           ace_active_today=ctx["active"], ace_value=ctx["ace_value"], ace_unfilled_target=ctx["reserve"], ace_frozen_pending=ctx["frozen"],
-                          cash_buffer=float(lt.get("cash_buffer_amount", 1000)))
+                          cash_buffer=float(lt.get("cash_buffer_amount", 1000)), **extras["kwargs"])
+        if extras["on"]:
+            item["l_reserved"] = extras["l_unfilled"]
         cand = _m_pick_candidate(signal, quotes, set(item.get("tried", [])), ctx["codes"], require_open=True)
         if cand is None:
             item["done"], item["done_reason"] = True, "M候选均开盘涨停/停牌/与ACE同票，今日不买"
@@ -441,6 +497,11 @@ def _m_pov_round(state: dict[str, Any], broker_cfg: dict, config: dict, today_st
         item.pop("signal", None)
         _m_register_plan(item, today_str, "M开盘后POV买入")
     code, name = str(item["ts_code"]), str(item.get("name", ""))
+    if float(item.get("l_reserved", 0.0) or 0.0) > 0:
+        try:
+            _m_refresh_target_after_l(item, broker_cfg, config, today_str)
+        except Exception as exc:
+            log.warning("[M] L收口后重算M目标失败，M按原目标继续：%s", exc)
     with _qmt_lock:
         adapter = _qmt_get(broker_cfg)
         quote = adapter.get_full_tick([code]).get(code)

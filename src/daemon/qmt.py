@@ -20,7 +20,7 @@ from src.utils.time_utils import BEIJING_TZ, now_beijing, today_beijing
 from src.broker_execution_service import IntentBrokerExecutionService
 from src.qmt_adapter import ACTIVE_ORDER_STATUSES, BrokerPositionsUnknownError
 from src.trade_recovery import RecoveryOutcome, TradeRecoveryCoordinator, normalize_broker_positions
-from src.portfolio_ace_m import M_LEG
+from src.portfolio_ace_m import L_LEG, M_LEG
 from src.daemon.common import (
     PROJECT_ROOT,
     _ACCOUNT_STATUS_DAILY_CACHE,
@@ -1286,6 +1286,16 @@ def _strategy_only_market_value(
         if any(al in local_aliases for al in _ts_code_aliases(getattr(p, "ts_code", ""))):
             total += float(getattr(p, "market_value", 0.0) or 0.0)
     return total
+
+
+def _non_ace_market_value(broker_positions: Any) -> float:
+    """与 ACE 资金分开的并行策略仓市值：M，ACE+M+L 新框架再加 L（2026-11-26）。ACE 开仓上限按 99.5% 减去它。
+
+    现行框架没有 L 仓，返回值就是 M 市值本身（与原来逐位相同）。
+    """
+    m_value = _strategy_only_market_value(broker_positions, family=M_LEG)
+    l_value = _strategy_only_market_value(broker_positions, family=L_LEG)
+    return m_value + l_value if l_value else m_value
 
 
 def _broker_has_strategy_position(broker_positions: Any) -> bool:

@@ -51,6 +51,7 @@ from src.daemon.common import (
 from src.daemon.state import (
     _d_relay_pair_active_today,
     _d_relay_pair_load_state,
+    _l_load_state,
     _m_load_state,
     _pov_active_today,
 )
@@ -69,6 +70,7 @@ from src.daemon.qmt import (
     wait_for_trade_recovery_gate,
 )
 from src.daemon.buy import _finalize_expired_pov_for_startup, _start_pov_worker
+from src.daemon.buy_l import _l_start_pov_worker, job_l_after_auction, job_l_premarket_buy
 from src.daemon.buy_m import _m_start_pov_worker, job_m_after_auction, job_m_premarket_buy
 from src.daemon.sell_pov import _exit_pov_monitor
 from src.daemon.close import (
@@ -619,6 +621,7 @@ def run_job(scheduled_time: datetime.time) -> None:
         if trade_day:
             job_morning()
             job_premarket_buy()
+            job_l_premarket_buy()   # 2026-11-26 ACE+M+L：同日顺序 ACE→L→M（只在新框架下执行，现行框架直接返回）
             job_m_premarket_buy()   # 2026-11-12 ACE+M：M在ACE预挂之后预挂
         else:
             logger().info("非交易日，跳过盘前复核与买入")
@@ -645,12 +648,14 @@ def run_job(scheduled_time: datetime.time) -> None:
     elif scheduled_time == SCHED_PREMARKET_SYNC:   # 09:26
         if trade_day:
             job_premarket_position_sync()
+            job_l_after_auction()   # 2026-11-26 ACE+M+L：L竞价结果处理/启动L买入POV（只在新框架下执行）
             job_m_after_auction()   # 2026-11-12 ACE+M：M竞价结果处理/换候选/启动M买入POV
         else:
             logger().info("非交易日，跳过盘前持仓同步")
     elif scheduled_time == SCHED_OPENING_BUY:   # 09:30
         if trade_day:
             job_opening_buy()
+            _l_start_pov_worker()   # 2026-11-26 ACE+M+L：确保L买入POV在运行（重启恢复；只在新框架下执行）
             _m_start_pov_worker()   # 2026-11-12 ACE+M：确保M买入POV在运行（重启恢复）
         else:
             logger().info("非交易日，跳过开盘买入任务")
@@ -836,6 +841,17 @@ def _start_trading_threads(resume_d_relay_worker, resume_pov_worker, startup_has
                 _m_start_pov_worker()
     except Exception as e:
         log.error("恢复M买入POV失败（不影响ACE）：%s", e)
+    # 2026-11-26 ACE+M+L：交易日09:26后重启时恢复L买入POV（只在新框架下；10:30后只按已成交收口）。
+    try:
+        _now_l = now_beijing()
+        if is_trade_day(_now_l.date()) and _now_l.time() >= datetime.time(9, 26):
+            _l_state = _l_load_state()
+            if (str(_l_state.get("date", "")) == _now_l.strftime("%Y%m%d") and _l_state.get("items")
+                    and not _l_state["items"][0].get("finalized")):
+                log.warning("全部启动恢复已完成，现恢复L买入POV执行线程。")
+                _l_start_pov_worker()
+    except Exception as e:
+        log.error("恢复L买入POV失败（不影响ACE和M）：%s", e)
     threading.Thread(
         target=_daily_calendar_sentinel,
         daemon=True,

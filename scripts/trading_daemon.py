@@ -261,6 +261,10 @@ from src.daemon.state import (  # noqa: F401
     _m_validate_state,
     _m_load_state,
     _m_save_state,
+    L_EXEC_STATE_PATH,
+    _l_load_state,
+    _l_save_state,
+    closed_trade_net_returns,
     save_pending_buys,
     load_pending_buys,
     clear_pending_buys,
@@ -274,6 +278,8 @@ from src.daemon.state import (  # noqa: F401
 )
 from src.daemon.plans import (  # noqa: F401
     st_open_forbidden,
+    framework_from_config,
+    loss_streak_multiplier_for,
     active_strategy_mode,
     _expected_signal_date,
     _has_signal_for_date,
@@ -455,6 +461,20 @@ from src.daemon.buy import (  # noqa: F401
     _e_delayed_buy_loop,
     _start_e_retry_thread,
 )
+from src.daemon.buy_l import (  # noqa: F401
+    L_SIGNAL_RECENT_PATH,
+    _l_signal_for_today,
+    _l_live_enabled,
+    _l_context,
+    _l_check,
+    l_commitment_for_m,
+    job_l_premarket_buy,
+    job_l_after_auction,
+    _l_pov_round,
+    _l_pov_finalize,
+    _l_pov_worker,
+    _l_start_pov_worker,
+)
 from src.daemon.buy_m import (  # noqa: F401
     M_SIGNAL_RECENT_PATH,
     M_POV_END_TIME,
@@ -463,6 +483,8 @@ from src.daemon.buy_m import (  # noqa: F401
     _m_signal_for_today,
     _m_live_enabled,
     _m_ace_context,
+    _m_framework_extras,
+    _m_refresh_target_after_l,
     _m_buy_quantity,
     _m_upper_limit,
     _m_submit_buy,

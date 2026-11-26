@@ -922,6 +922,86 @@ def _m_save_state(state: dict[str, Any]) -> None:
     _save_redundant_json_state(M_EXEC_STATE_PATH, state, label="M执行状态", validator=_m_validate_state)
 
 
+# ── 策略L执行状态（ACE+M+L 新框架，2026-11-26）────────────────────────────────
+L_EXEC_STATE_PATH = PROJECT_ROOT / "data" / "processed" / "l_execution_state.json"
+
+
+def _l_validate_state(state: dict[str, Any]) -> None:
+    if not isinstance(state.get("items", []), list):
+        raise ValueError("items不是list")
+
+
+def _l_load_state() -> dict[str, Any]:
+    return _load_redundant_json_state(
+        L_EXEC_STATE_PATH, label="L执行状态", empty_state={"date": "", "items": []},
+        validator=_l_validate_state,
+    )
+
+
+def _l_save_state(state: dict[str, Any]) -> None:
+    _save_redundant_json_state(L_EXEC_STATE_PATH, state, label="L执行状态", validator=_l_validate_state)
+
+
+def closed_trade_net_returns(
+    as_of_date: str,
+    *,
+    commission_rate: float,
+    transfer_rate: float,
+    stamp_schedule: Any = None,
+    minimum_commission: float = 5.0,
+) -> list[float]:
+    """连亏降仓用：本系统各腿已平仓交易（卖出日早于 as_of_date）的净收益，按平仓先后排列。
+
+    一笔交易 = 同一腿、同一股票、同一买入日的全部持仓分片（竞价、POV 分开记账的合成一笔，与回放一致）；
+    分片没有全部平仓或卖出价未知的不算。顺序与 ACE+M+L 回放相同：卖出日、买入日、ACE→L→M。
+    净收益口径与回测相同：成本=买入额+佣金+过户费；所得=卖出额−佣金−过户费−印花税（按卖出日）。
+    """
+
+    from src.trading_fees import stamp_tax_rate_for_date
+
+    def commission(gross: float) -> float:
+        return max(float(minimum_commission), gross * float(commission_rate))
+
+    groups: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    for p in load_positions():
+        leg = str(p.get("strategy_leg", "")).strip().upper()
+        if leg not in _ACTIVE_AUTO_STRATEGY_LEGS:
+            continue
+        buy_date = "".join(ch for ch in str(p.get("buy_date", "") or "") if ch.isdigit())[:8]
+        groups.setdefault((leg, str(p.get("ts_code", "")), buy_date), []).append(p)
+    rows = []
+    for (leg, code, buy_date), parts in groups.items():
+        if any(str(p.get("status", "")).lower() != "closed" for p in parts):
+            continue
+        g_buy = g_sell = 0.0
+        sell_date = ""
+        ok = True
+        for p in parts:
+            try:
+                qty = float(p.get("entry_shares", 0) or 0) or float(_position_exit_ledger_quantity(p)) \
+                    or float(p.get("shares", 0) or 0)
+                buy, sell = float(p.get("buy_price", 0) or 0), float(p.get("sell_price", 0) or 0)
+            except (TypeError, ValueError):
+                ok = False
+                break
+            day = "".join(ch for ch in str(p.get("sell_date", "") or "") if ch.isdigit())[:8]
+            if qty <= 0 or buy <= 0 or sell <= 0 or not day:
+                ok = False
+                break
+            g_buy += qty * buy
+            g_sell += qty * sell
+            sell_date = max(sell_date, day)
+        if not ok or sell_date >= str(as_of_date).replace("-", "")[:8]:
+            continue
+        cost = g_buy + commission(g_buy) + g_buy * float(transfer_rate)
+        proceeds = (g_sell - commission(g_sell) - g_sell * float(transfer_rate)
+                    - g_sell * stamp_tax_rate_for_date(sell_date, stamp_schedule))
+        family_rank = 2 if leg == "M" else (1 if leg == "L" else 0)
+        rows.append((sell_date, buy_date, family_rank, code, proceeds / cost - 1))
+    rows.sort(key=lambda r: r[:4])
+    return [r[4] for r in rows]
+
+
 # ── 盘前买单待确认（09:20挂单→09:30开盘成交确认）────────────────────────────
 
 def save_pending_buys(orders: list[dict[str, Any]]) -> None:

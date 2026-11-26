@@ -183,6 +183,47 @@ def _signal_day_amount(ts_code: str, signal_date: str) -> float:
     return 0.0
 
 
+def framework_from_config(config: dict[str, Any] | None = None) -> str:
+    """组合框架开关（现行 ace_m / 新框架 ace_m_l）；配置读不了按现行（不会意外打开新框架）。"""
+    from src.portfolio_ace_m import portfolio_framework
+
+    if config is None:
+        try:
+            config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+        except Exception as exc:
+            logger().error("读取组合框架开关失败，按现行ACE+M：%s", exc)
+            config = {}
+    return portfolio_framework(config)
+
+
+def loss_streak_multiplier_for(today_str: str, config: dict[str, Any] | None = None) -> float:
+    """新框架连亏降仓：本系统最近连续2笔已平仓交易都亏损时，今天所有新开仓仓位×0.3；现行框架恒为1.0。
+
+    读平仓记录失败时按降仓处理（fail-safe：宁可少买）。"""
+    from src.portfolio_ace_m import FRAMEWORK_ACE_M_L, LOSS_STREAK_MULTIPLIER, loss_streak_multiplier
+    from src.daemon.state import closed_trade_net_returns
+
+    if config is None:
+        try:
+            config = load_json_config(PROJECT_ROOT / "config" / "config.json")
+        except Exception as exc:
+            logger().error("读取配置失败，连亏降仓按降仓处理：%s", exc)
+            return LOSS_STREAK_MULTIPLIER
+    if framework_from_config(config) != FRAMEWORK_ACE_M_L:
+        return 1.0
+    analysis = dict(config.get("analysis", {}) or {})
+    try:
+        returns = closed_trade_net_returns(
+            today_str, commission_rate=float(analysis.get("commission_rate", 0.0003)),
+            transfer_rate=float(analysis.get("transfer_fee_rate", 0.00001)),
+            stamp_schedule=analysis.get("stamp_tax_schedule"),
+            minimum_commission=float(analysis.get("minimum_commission", 5.0)))
+    except Exception as exc:
+        logger().error("读取已平仓记录失败，连亏降仓按降仓处理：%s", exc)
+        return LOSS_STREAK_MULTIPLIER
+    return loss_streak_multiplier(returns)
+
+
 def _ace_gate_mode_for(action_date: str = "") -> str:
     """ACE今日执行模式：FULL(82.5%)/REDUCED(方案甲停手期20%)/BLOCKED(判定缺失等fail-closed)。"""
     day = str(action_date or today_beijing().strftime("%Y%m%d")).replace("-", "")[:8]

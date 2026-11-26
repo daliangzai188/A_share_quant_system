@@ -50,6 +50,7 @@ src.combined_live_engine
 src.config_check
 src.daemon
 src.daemon.buy
+src.daemon.buy_l
 src.daemon.buy_m
 src.daemon.close
 src.daemon.common

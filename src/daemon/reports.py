@@ -74,6 +74,7 @@ from src.daemon.qmt import (
     _qmt_get,
     _qmt_lock,
     _qmt_query_account_positions,
+    _non_ace_market_value,
     _strategy_only_market_value,
 )
 from src.daemon.buy import (
@@ -1242,7 +1243,7 @@ def _live_plan_sizing_uncached(
         market_value = _strategy_only_market_value(
             positions_live, exclude_due_today=False, as_of_date=action_date, family="ACE"
         )
-        m_market_value = _strategy_only_market_value(positions_live, family=M_LEG)
+        m_market_value = _non_ace_market_value(positions_live)
         sizing_mode = _ace_gate_mode_for(action_date)
         sized = resize_buy_orders_for_live_account(
             planned_orders=pd.DataFrame([{

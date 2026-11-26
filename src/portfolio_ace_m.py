@@ -97,6 +97,16 @@ def is_l_position(position: Mapping[str, Any]) -> bool:
     return is_l_leg(position.get("strategy_leg", ""))
 
 
+def fund_family(leg: Any) -> str:
+    """策略腿所属资金族：M、L 各自一族，其余（A/C/E/D 及历史腿）都是 ACE。三族资金分开定仓（L 只在新框架下开仓）。"""
+
+    if is_m_leg(leg):
+        return M_LEG
+    if is_l_leg(leg):
+        return L_LEG
+    return "ACE"
+
+
 def position_in_family(position: Mapping[str, Any], family: str | None) -> bool:
     """family=None 全部；"ACE" 只看 A/C/E/D 及历史腿；"M" 只看 M；"L" 只看 L。"""
 
@@ -230,6 +240,8 @@ def m_budget(
     ace_frozen_pending: float = 0.0,
     framework: str = FRAMEWORK_ACE_M,
     l_value: float = 0.0,
+    l_unfilled_target: float = 0.0,
+    l_frozen_pending: float = 0.0,
     streak_mult: float = 1.0,
 ) -> dict[str, float]:
     """M 本次可用金额（元）。
@@ -238,14 +250,24 @@ def m_budget(
     ace_value：ACE 当前持仓市值；ace_unfilled_target：ACE 今日目标尚未成交的金额（给 ACE 预留）；
     ace_frozen_pending：ACE 今日已挂、还没成交的买单冻结的钱（2026-11-18）。这部分已经从可用资金里扣掉了，
     按现金算 M 能用多少时不再给 ACE 重复预留；总仓位上限照旧按 ACE 整个目标预留。
+    新框架（同日顺序 ACE→L→M）：l_value=L 持仓市值，l_unfilled_target=L 今日目标尚未成交的金额，
+    l_frozen_pending=L 今日已挂未成交买单冻结的钱；比例 = min(82.5%, 99.5% − L 已用) × 连亏降仓倍数（与回放一致）。
+    现行框架这些参数恒为 0 / 1.0，结果与原来逐位相同。
     """
 
     ta = max(float(total_asset or 0.0), 0.0)
-    pct = m_position_pct(ace_active_today, framework) * float(streak_mult)
+    l_reserve = max(float(l_unfilled_target or 0.0), 0.0)
+    l_used = max(float(l_value or 0.0), 0.0) + l_reserve
+    if framework == FRAMEWORK_ACE_M_L:
+        room = max(0.0, TOTAL_POSITION_CAP_PCT - (l_used / ta if ta > 0 else 0.0))
+        pct = min(m_position_pct(ace_active_today, framework), room) * float(streak_mult)
+    else:
+        pct = m_position_pct(ace_active_today, framework) * float(streak_mult)
     by_pct = ta * pct
     reserve = max(float(ace_unfilled_target or 0.0), 0.0)
-    by_total_cap = ta * TOTAL_POSITION_CAP_PCT - max(float(ace_value or 0.0), 0.0) - max(float(l_value or 0.0), 0.0) - reserve
-    cash_reserve = max(reserve - max(float(ace_frozen_pending or 0.0), 0.0), 0.0)
+    by_total_cap = ta * TOTAL_POSITION_CAP_PCT - max(float(ace_value or 0.0), 0.0) - l_used - reserve
+    cash_reserve = (max(reserve - max(float(ace_frozen_pending or 0.0), 0.0), 0.0)
+                    + max(l_reserve - max(float(l_frozen_pending or 0.0), 0.0), 0.0))
     by_cash = float(available_cash or 0.0) - max(float(cash_buffer or 0.0), 0.0) - cash_reserve
     amount = max(0.0, min(by_pct, by_total_cap, by_cash))
     return {"pct": pct, "by_pct": by_pct, "by_total_cap": by_total_cap, "by_cash": by_cash, "amount": amount}

@@ -11,7 +11,6 @@ from typing import Any
 
 from src.utils.config import load_json_config
 from src.utils.time_utils import now_beijing, today_beijing
-from src.portfolio_ace_m import M_LEG
 from src.strategy_d_factor_rules import release_uses_factor_union
 from src.strategy_d_spec import intraday_history_is_complete
 from src.daemon.common import (
@@ -51,6 +50,7 @@ from src.daemon.qmt import (
     _qmt_get,
     _qmt_lock,
     _qmt_query_account_positions,
+    _non_ace_market_value,
     _strategy_only_market_value,
     reconcile_missing_local_positions,
 )
@@ -601,7 +601,7 @@ def job_premarket_buy() -> None:
             family="ACE",
         ),
         transition_full_cash=False,
-        m_market_value=_strategy_only_market_value(positions_live, family=M_LEG),
+        m_market_value=_non_ace_market_value(positions_live),
     )
 
     lt_cfg = config.get("live_trade", {})
