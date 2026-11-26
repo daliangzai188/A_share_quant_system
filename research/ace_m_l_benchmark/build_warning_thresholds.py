@@ -103,15 +103,22 @@ def deepest_drawdown(series):
 
 
 def longest_behind(live, base, window=252):
+    """最近 window 个交易日收益比只用 ACE 低的连续段：返回最长天数和最长的 5 段（天数、结束日）。"""
     import pandas as pd
 
     joined = pd.concat([live.astype(float), base.astype(float)], axis=1, keys=["live", "base"]).dropna()
     rel = ((joined["live"] / joined["live"].shift(window)) / (joined["base"] / joined["base"].shift(window)) - 1).dropna()
-    longest = run = 0
-    for value in rel.tolist():
-        run = run + 1 if value < 0 else 0
-        longest = max(longest, run)
-    return longest
+    runs, run, last = [], 0, ""
+    for day, value in rel.items():
+        if value < 0:
+            run, last = run + 1, str(day)
+        elif run:
+            runs.append((run, last))
+            run = 0
+    if run:
+        runs.append((run, last))
+    runs.sort(reverse=True)
+    return {"longest": runs[0][0] if runs else 0, "top5": runs[:5]}
 
 
 def longest_gap(days, has_signal):
@@ -214,6 +221,8 @@ def compute(args, root: Path, tmp: Path) -> dict:
         rows = list(zip(part["action_date"].astype(str), part["ret"].astype(float)))
         series = trailing_series(rows)
         out["family_%s" % fam] = {"min_12m": min(series, key=lambda x: x[1]) if series else None,
+                                  "p05_12m": pct(series, 0.05),
+                                  "negative_share": (sum(1 for _d, v in series if v < 0) / len(series)) if series else None,
                                   "early": early_stats(rows)}
     out["combo_drawdown"] = deepest_drawdown(live)
     out["shadow_drawdown"] = deepest_drawdown(nav[[str(d) >= START for d in nav.index]])
