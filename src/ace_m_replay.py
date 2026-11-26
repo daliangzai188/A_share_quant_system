@@ -32,9 +32,14 @@ from src.portfolio_ace_m import (  # 仓位只在这一处定义
     ACE_STATIC_LEGS,
     ACE_FULL_TARGET_PCT,
     ACE_REDUCED_TARGET_PCT,
+    L_PCT_WHEN_ACE_HALTED,
+    L_PCT_WHEN_ACE_NORMAL,
+    L_SELF_STOP_SCALE,
     M_PCT_BESIDE_ACE,
+    M_PCT_BESIDE_ACE_L_FRAMEWORK,
     M_PCT_WHEN_ACE_IDLE,
     TOTAL_POSITION_CAP_PCT,
+    loss_streak_multiplier,
 )
 
 ACE_FULL_WEIGHT = ACE_FULL_TARGET_PCT
@@ -268,3 +273,190 @@ def m_candidate_codes(reference: Callable[[str], Mapping[str, Any]], days: Itera
         if codes:
             candidates[str(day)] = codes
     return candidates, errors
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ACE + M + L 新框架回放（2026-11-26；给新框架下的三级警告、日报、复核用；现行 replay_ace_m 不变）
+# 与研究（~/A_System_复核/2026-11-26_策略L评估/step11_core.py 的 run，最终推荐参数）逐项一致：
+#   每日先把卖出日已过的持仓入账（并按入账先后记已平仓收益，供连亏降仓判断）；
+#   连亏降仓：最近连续 2 笔已平仓都亏损时，当天 ACE/L/M 新开仓仓位都 ×0.3；
+#   ACE：同 replay_ace_m（82.5%/停手 20%），不超过 99.5% − M − L；
+#   L（在 M 之前）：取当日第一名，买不到或与持仓同票则当天不买；ACE 停手期 60%，否则 min(25%, 60%×L 自身停手比例)；
+#       L 自身停手时 ×20/82.5；不超过 99.5% − ACE − M；
+#   M：只在 ACE 当天无计划且无持仓时买，min(82.5%, 99.5% − L)；跳过 ACE、L 持有的股票。
+# ══════════════════════════════════════════════════════════════════════════════
+L_SLIPPAGE = 0.001
+
+
+def make_l_outcome(prices: "RawPrices", days: Sequence[str], *, name_on: Callable[[str, str], str],
+                   list_dates: Mapping[str, str], slippage: float = L_SLIPPAGE) -> Callable[[str, str], Any]:
+    """L 买入日开盘买（停牌、ST、上市前 5 个交易日、开盘涨停都买不进），之后第一个有成交且收盘高于跌停价的交易日收盘卖。"""
+
+    from src.market_rules import is_st_name, limit_down_price, limit_up_price
+    from src.strategy_l import listing_day_number
+
+    day_list = [str(d) for d in days]
+    position = {d: i for i, d in enumerate(day_list)}
+
+    def valid(bar: Mapping[str, Any] | None) -> bool:
+        if not bar:
+            return False
+        try:
+            return float(bar.get("vol") or 0) > 0 and float(bar.get("open") or 0) > 0 and float(bar.get("close") or 0) > 0
+        except (TypeError, ValueError):
+            return False
+
+    def pct(code: str, day: str) -> float | None:
+        return price_limit_pct(code, name=name_on(code, day), trade_date=day,
+                               listing_day_number=listing_day_number(list_dates.get(code, ""), day, day_list))
+
+    def outcome(code: str, buy_date: str):
+        buy_date = str(buy_date)
+        bar = prices.bar(buy_date, code)
+        if not valid(bar) or buy_date not in position:
+            return None
+        name = name_on(code, buy_date)
+        ld = listing_day_number(list_dates.get(code, ""), buy_date, day_list)
+        if is_st_name(name) or ld is None or ld <= 5:
+            return None
+        op = round(float(bar["open"]), 2)
+        up = limit_up_price(round(float(bar["pre_close"]), 2), pct(code, buy_date))
+        if up is not None and op >= up - 1e-6:
+            return None
+        adj_buy = prices.adj(buy_date, code)
+        if adj_buy is None:
+            return None
+        for day in day_list[position[buy_date] + 1:position[buy_date] + 1 + M_EXIT_SCAN_DAYS]:
+            later = prices.bar(day, code)
+            if not valid(later):
+                continue
+            dn = limit_down_price(round(float(later["pre_close"]), 2), pct(code, day))
+            close = round(float(later["close"]), 2)
+            if dn is None or close > dn + 1e-6:
+                adj_exit = prices.adj(day, code)
+                ratio = (adj_exit / adj_buy) if adj_exit is not None else 1.0
+                entry = op * (1 + slippage)
+                return day, entry, close * (1 - slippage) * ratio / entry - 1
+        return None
+
+    return outcome
+
+
+def replay_ace_m_l(
+    days: Sequence[str],
+    ace_plans: Mapping[str, Sequence[Mapping[str, Any]]],
+    ace_allowed: Mapping[str, bool],
+    m_candidates: Mapping[str, Sequence[str]],
+    m_outcome: Callable[[str, str], Any],
+    l_picks: Mapping[str, Sequence[str]],
+    l_outcome: Callable[[str, str], Any],
+    l_allowed: Mapping[str, bool],
+    *,
+    cash0: float = 500000.0,
+    commission_rate: float = 0.0003,
+    minimum_commission: float = 5.0,
+    transfer_rate: float = 0.00001,
+    stamp_schedule: Sequence[Mapping[str, Any]] | None = None,
+) -> tuple[pd.Series, pd.DataFrame]:
+    """ACE + M + L 新框架逐日回放（按成本记账），返回（权益序列，逐笔交易）。l_picks：{买入日: 当日L按规则排好序的代码}。"""
+
+    def commission(gross: float) -> float:
+        return max(minimum_commission, gross * commission_rate)
+
+    cash = float(cash0)
+    positions: list[dict[str, Any]] = []
+    trades: list[dict[str, Any]] = []
+    equity: list[float] = []
+    closed: list[float] = []
+    last_day = str(days[-1]) if len(days) else ""
+    for day in days:
+        day = str(day)
+        still = []
+        for position in positions:
+            if day > position["until"]:
+                cash += position["proceeds"]
+                if position["cost"] > 0:
+                    closed.append(position["proceeds"] / position["cost"] - 1)
+            else:
+                still.append(position)
+        positions = still
+        base = cash + sum(p["cost"] for p in positions)
+        mult = loss_streak_multiplier(closed)
+
+        def used(*families: str) -> float:
+            return sum(p["cost"] for p in positions if p["family"] in families) / base if base > 0 else 0.0
+
+        def holds(family: str) -> bool:
+            return any(p["family"] == family for p in positions)
+
+        def buy(family: str, leg: str, code: str, entry: float, stock_return: float, exit_date: str,
+                weight: float) -> bool:
+            nonlocal cash
+            quantity = orderable_buy_quantity(ts_code=code, available_amount=min(base * weight, cash),
+                                              execution_price=entry)
+            step = 1 if market_segment(code) in ("star", "bj") else 100
+            while quantity > 0 and (quantity * entry + commission(quantity * entry)
+                                    + quantity * entry * transfer_rate > cash + 1e-9):
+                quantity -= step
+            if quantity <= 0:
+                return False
+            gross = quantity * entry
+            cost = gross + commission(gross) + gross * transfer_rate
+            sell = gross * (1 + stock_return)
+            proceeds = (sell - commission(sell) - sell * transfer_rate
+                        - sell * stamp_tax_rate_for_date(exit_date, stamp_schedule))
+            cash -= cost
+            positions.append({"family": family, "code": code, "until": exit_date, "cost": cost, "proceeds": proceeds})
+            trades.append({"action_date": day, "exit_date": exit_date, "family": family, "leg": leg,
+                           "ts_code": code, "ret": proceeds / cost - 1, "weight": cost / base})
+            return True
+
+        ace_today = False
+        plans = list(ace_plans.get(day, []) or [])
+        if plans:
+            weight = (ACE_FULL_WEIGHT if ace_allowed.get(day, True) else ACE_HALTED_WEIGHT) * mult
+            ace_today = True
+            first = plans[0]
+            if not holds("ACE") and _truthy(first.get("position_opened")):
+                if _truthy(first.get("outcome_observable")) and str(first.get("status")) == "OK":
+                    buy("ACE", str(first.get("strategy_leg", "")), str(first["ts_code"]), float(first["entry_price"]),
+                        float(first["stock_return_before_fees"]), str(first["exit_date"]),
+                        min(weight, TOTAL_WEIGHT_CAP - used("M", "L")))
+                else:
+                    until = str(first.get("position_open_until") or "") or last_day
+                    positions.append({"family": "ACE", "code": "", "until": until, "cost": 0.0, "proceeds": 0.0})
+        picks = list(l_picks.get(day, []) or [])
+        if not holds("L") and picks:
+            code = str(picks[0])
+            if code not in {p["code"] for p in positions}:
+                result = l_outcome(code, day)
+                if result is not None:
+                    scale = 1.0 if l_allowed.get(day, True) else L_SELF_STOP_SCALE
+                    if ace_allowed.get(day, True):
+                        target = min(L_PCT_WHEN_ACE_NORMAL, L_PCT_WHEN_ACE_HALTED * scale)
+                    else:
+                        target = L_PCT_WHEN_ACE_HALTED * scale
+                    weight = min(target * mult, TOTAL_WEIGHT_CAP - used("ACE", "M"))
+                    if weight > 0.001:
+                        exit_date, entry, stock_return = result
+                        buy("L", "L", code, float(entry), float(stock_return), str(exit_date), weight)
+        if not holds("M") and m_candidates.get(day):
+            held = {p["code"] for p in positions if p["family"] in ("ACE", "L")}
+            if not ace_today and not holds("ACE"):
+                weight = min(M_IDLE_WEIGHT, TOTAL_WEIGHT_CAP - used("L"))
+            else:
+                weight = min(M_PCT_BESIDE_ACE_L_FRAMEWORK, TOTAL_WEIGHT_CAP - used("ACE", "L"))
+            weight *= mult
+            if weight > 0.001:
+                for code in m_candidates[day]:
+                    if code in held:
+                        continue
+                    result = m_outcome(code, day)
+                    if result is None:
+                        continue
+                    exit_date, entry, stock_return = result
+                    if buy("M", "M", code, float(entry), float(stock_return), str(exit_date), weight):
+                        break
+        equity.append(cash + sum(p["cost"] for p in positions))
+    return pd.Series(equity, index=[str(d) for d in days], dtype=float), pd.DataFrame(
+        trades, columns=["action_date", "exit_date", "family", "leg", "ts_code", "ret", "weight"])

@@ -46,13 +46,15 @@ from src.strategy_m import (
     EXIT_RULE,
     HOLD_OFFSET,
     MIN_LISTING_DAYS,
-    M_VERSION,
     STRATEGY_M_LEG,
     UNIVERSE_SEGMENTS,
     build_m_candidates,
     listing_age,
+    m_sort_for_config,
+    m_version_for,
     name_based_st,
 )
+from src.utils.config import load_json_config
 
 RAW = PROJECT_ROOT / "data" / "raw"
 CALENDAR_PATH = RAW / "trade_calendar.csv"
@@ -115,6 +117,9 @@ def next_open_day(days: list[str], signal_date: str) -> str:
 def run(signal_date: str) -> int:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     started = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # 排序随组合框架开关：现行按T日成交额，ACE+M+L 新框架按前5日涨幅（src/strategy_m.py 唯一出处）
+    sort_by = m_sort_for_config(load_json_config(PROJECT_ROOT / "config" / "config.json"))
+    M_VERSION = m_version_for(sort_by)
     try:
         days = load_open_days()
         if signal_date not in days:
@@ -166,7 +171,7 @@ def run(signal_date: str) -> int:
             if missing:
                 raise ValueError("%s 日线缺少涨停池股票%d只（%s），数据不完整" % (day, len(missing), "、".join(missing[:5])))
         candidates, diag = build_m_candidates(signal_date, days, daily, limit_today, basic_today, list_dates,
-                                              name_based_st(names))
+                                              name_based_st(names), sort_by=sort_by)
     except Exception as exc:  # fail-closed：记录ERROR，M次日不开仓
         save_recent_signal_run(RUN_STATUS_PATH, {"signal_date": signal_date, "status": ERROR, "error": str(exc),
                                                  "m_version": M_VERSION, "started_at": started},

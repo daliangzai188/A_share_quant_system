@@ -61,8 +61,9 @@ class MReference:
     和原因，调用方应当把它当作“这一笔没有被检查”。
     """
 
-    def __init__(self, raw_dir: Path | str, *, cached_days: int = 64) -> None:
+    def __init__(self, raw_dir: Path | str, *, cached_days: int = 64, sort_by: str = "amount") -> None:
         self.raw = Path(raw_dir)
+        self.sort_by = str(sort_by)
         self._cached_days = int(cached_days)
         self._days = None
         self._basic = None
@@ -209,7 +210,7 @@ class MReference:
                 )
 
         candidates, _diag = build_m_candidates(
-            signal_date, days, daily, limit_today, basic_today, list_dates, name_based_st(names)
+            signal_date, days, daily, limit_today, basic_today, list_dates, name_based_st(names), sort_by=self.sort_by
         )
         return candidates, names, list_dates
 

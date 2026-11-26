@@ -285,9 +285,11 @@ def run(args) -> int:
                 start=settings.history_start, end=day, work_dir=settings.work_dir)
             filled, complete = live_trades(config)
             from src.live_alignment import run_alignment
+            from src.strategy_m import m_sort_for_config
             align = run_alignment(
                 shadow, filled, ma_window=settings.ma_window, lag=settings.lag_trading_days, start=start, end=day,
-                ace_m_start=str(section.get('ace_m_start_date', '') or ''), raw_dir=ROOT / 'data' / 'raw')
+                ace_m_start=str(section.get('ace_m_start_date', '') or ''), raw_dir=ROOT / 'data' / 'raw',
+                m_sort_by=m_sort_for_config(config))
             triggers.extend(align)
         except Exception as exc:
             traceback.print_exc()

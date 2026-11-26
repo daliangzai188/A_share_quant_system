@@ -244,6 +244,21 @@ def gated_replay(
     )
 
 
+def _apply_framework_to_baselines(baselines: dict[str, Any], project_root: Path) -> dict[str, Any]:
+    """新框架（portfolio_framework=ace_m_l）下影子账的 E 加修复环境过滤，与实盘 E 同一份定义；现行框架原样返回。"""
+
+    import dataclasses
+
+    from src.strategy_e import e_repair_filter_enabled, e_repair_filter_spec
+
+    if not e_repair_filter_enabled(project_root) or "E" not in baselines:
+        return baselines
+    e = baselines["E"]
+    payload = dict(e.payload)
+    payload["rolling_research_style_filter_any"] = e_repair_filter_spec()
+    return {**baselines, "E": dataclasses.replace(e, payload=payload)}
+
+
 def build_shadow_replay(
     *,
     project_root: Path,
@@ -292,6 +307,7 @@ def build_shadow_replay(
         minimum_limit_up_count=int(monthly["market_controller"]["minimum_limit_up_count"]),
     )
     baselines, _candidates = variant_sets()
+    baselines = _apply_framework_to_baselines(baselines, project_root)
     cache = StaticOutcomeCache()
     legs: dict[str, pd.DataFrame] = {}
     for leg in FIXED_PRIORITY:

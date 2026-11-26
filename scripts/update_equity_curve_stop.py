@@ -425,6 +425,7 @@ def run_review_trigger_check(
             def _alignment():
                 # 到用时才导入：QMT内不做逐笔对账（起始日留空），不必加载M候选单重算
                 from src.live_alignment import run_alignment
+                from src.strategy_m import m_sort_for_config
 
                 return run_alignment(
                     shadow,
@@ -435,6 +436,7 @@ def run_review_trigger_check(
                     end=str(signal_date),
                     ace_m_start=str(section.get("ace_m_start_date", "") or ""),
                     raw_dir=PROJECT_ROOT / "data" / "raw",
+                    m_sort_by=m_sort_for_config(config),
                 )
             guarded("实盘与正式规则逐笔对账", _alignment)
             # M实盘滑点与逐笔对账一样只在QMT外检查（QMT内起始日留空），两边不会重复推送

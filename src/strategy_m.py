@@ -29,7 +29,13 @@ from typing import Any, Callable, Iterable
 
 import pandas as pd
 
-from src.portfolio_ace_m import M_PCT_BESIDE_ACE, M_PCT_WHEN_ACE_IDLE, TOTAL_POSITION_CAP_PCT  # 仓位只在这一处定义
+from src.portfolio_ace_m import (  # 仓位只在这一处定义
+    FRAMEWORK_ACE_M_L,
+    M_PCT_BESIDE_ACE,
+    M_PCT_WHEN_ACE_IDLE,
+    TOTAL_POSITION_CAP_PCT,
+    portfolio_framework,
+)
 from src.market_rules import (
     is_st_name,
     limit_up_price,
@@ -39,6 +45,20 @@ from src.market_rules import (
 )
 
 M_VERSION = "M_20CM_STRONG_RELAY_NO_CONSENSUS_V1_20261112"
+# ACE+M+L 新框架（2026-11-26）：候选改按前5日涨幅降序（其余条件不变），版本号随之区分
+M_VERSION_RET5 = "M_20CM_STRONG_RELAY_NO_CONSENSUS_RET5SORT_V2_20261126"
+M_SORT_AMOUNT = "amount"
+M_SORT_RET5 = "ret5"
+
+
+def m_sort_for_config(config: Any) -> str:
+    """现行框架按T日成交额降序；新框架（portfolio_framework=ace_m_l）按前5日涨幅降序。"""
+
+    return M_SORT_RET5 if portfolio_framework(config) == FRAMEWORK_ACE_M_L else M_SORT_AMOUNT
+
+
+def m_version_for(sort_by: str) -> str:
+    return M_VERSION_RET5 if sort_by == M_SORT_RET5 else M_VERSION
 STRATEGY_M_LEG = "M"
 
 # 研究冻结参数（第七轮 F9 规则 + 第十三轮 M-b 过滤，数值取自研究代码的精确值）
@@ -116,6 +136,7 @@ def build_m_candidates(
     basic_today: pd.DataFrame | None,
     list_dates: dict[str, str],
     is_st: Callable[[str, str], bool],
+    sort_by: str = M_SORT_AMOUNT,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     """返回 (按成交额降序的候选表, 诊断信息)。
 
@@ -176,7 +197,7 @@ def build_m_candidates(
     n20 = len(lu20)
 
     diag: dict[str, Any] = {
-        "signal_date": signal_date, "version": M_VERSION, "mood": mood, "mood_samples": len(mood_values),
+        "signal_date": signal_date, "version": m_version_for(sort_by), "mood": mood, "mood_samples": len(mood_values),
         "n20_limit_up": n20, "limit_up_universe": len(today_lu),
         "mood_ok": bool(mood == mood and MOOD_MIN <= mood < MOOD_MAX), "n20_ok": n20 < N20_MAX_EXCLUSIVE,
         "rejects": {},
@@ -231,11 +252,12 @@ def build_m_candidates(
         rows.append({"signal_date": signal_date, "ts_code": code, "amount": bar["amount"], "close": bar["close"],
                      "limit_up_price": up, "ret5": ret5, "amt20": amt20, "fd_amount": fd_amount, "circ_mv": cm,
                      "fd_ratio": ratio, "low": bar["low"], "mood": mood, "n20_limit_up": n20,
-                     "strategy_leg": STRATEGY_M_LEG, "m_version": M_VERSION})
+                     "strategy_leg": STRATEGY_M_LEG, "m_version": m_version_for(sort_by)})
     diag["rejects"] = rejects
     out = pd.DataFrame(rows, columns=[c for c in cols if c != "rank"])
     if not out.empty:
-        out = out.sort_values(["amount", "ts_code"], ascending=[False, True]).reset_index(drop=True)
+        key = "ret5" if sort_by == M_SORT_RET5 else "amount"
+        out = out.sort_values([key, "ts_code"], ascending=[False, True]).reset_index(drop=True)
     out["rank"] = range(1, len(out) + 1)
     return out[cols], diag
 

@@ -40,6 +40,7 @@ def run_alignment(
     end: str,
     ace_m_start: str = "",
     raw_dir: Path | str | None = None,
+    m_sort_by: str = "amount",
 ) -> list[ReviewTrigger]:
     """把实盘真实买入与正式规则逐笔对照，返回对不上的每一条。
 
@@ -58,6 +59,6 @@ def run_alignment(
         start=str(start),
         end=str(end),
         ace_m_start=rule_start,
-        m_reference=MReference(raw_dir) if rule_start and raw_dir is not None else None,
+        m_reference=MReference(raw_dir, sort_by=m_sort_by) if rule_start and raw_dir is not None else None,
         ace_plan_codes=plan_codes_by_date(shadow["legs"], rule_start, str(end)) if rule_start else None,
     )

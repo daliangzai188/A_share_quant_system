@@ -124,6 +124,7 @@ src.strategy_d_spec
 src.strategy_e
 src.strategy_equity_ledger
 src.strategy_identity
+src.strategy_l
 src.strategy_m
 src.strategy_m_reference
 src.strategy_optimizer

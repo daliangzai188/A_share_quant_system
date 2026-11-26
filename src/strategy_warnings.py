@@ -479,7 +479,12 @@ def run_strategy_warnings(
     flags = allowed_flags(nav.to_numpy(), ma_window=ma_window, lag=lag)
     ace_allowed = {str(day): bool(ok) for day, ok in zip(nav.index, flags)}
     days = [str(d) for d in shadow["action_dates"] if settings.replay_start <= str(d) <= str(today)]
-    reference = MReference(raw_dir)
+    from src.strategy_m import M_SORT_RET5, m_sort_for_config
+
+    sort_by = m_sort_for_config(config)
+    reference = MReference(raw_dir, sort_by=sort_by)
+    if cache_path and sort_by == M_SORT_RET5:   # 新框架M排序不同，候选缓存分开存，不和现行混用
+        cache_path = Path(cache_path).with_name(Path(cache_path).stem + "_ret5" + Path(cache_path).suffix)
     open_days = reference.open_days()
     candidates, errors, outcome, save = _cached_m_inputs(
         reference, make_m_outcome(RawPrices(raw_dir), open_days), open_days, days, cache_path)

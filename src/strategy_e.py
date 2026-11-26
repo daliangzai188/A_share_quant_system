@@ -588,11 +588,53 @@ def load_bucketed_signal_pool(project_root: Path, signal_date: str, lookback_day
         return optimizer.load_trades(require_complete_exit=False)
 
 
+# ── E 修复环境过滤（ACE+M+L 新框架，2026-11-26；唯一出处，实盘 E 与影子账共用）────────────────
+# 信号日个股所属分段情绪为冰点，或全市场情绪为冰点/退潮/回暖，才入选（研究框架候选 E_ANY_REPAIR_STATE）。
+E_REPAIR_STATE_FILTER_ANY = (
+    ("segment_emotion_state", ("ice_point",)),
+    ("market_emotion_state", ("ice_point", "retreat", "warming")),
+)
+
+
+def e_repair_filter_spec() -> list[dict[str, Any]]:
+    """影子账/研究框架用的同一份过滤定义（rolling_research_style_filter_any 格式）。"""
+
+    return [{"column": column, "values": list(values)} for column, values in E_REPAIR_STATE_FILTER_ANY]
+
+
+def apply_e_repair_filter(pool: pd.DataFrame) -> pd.DataFrame:
+    """保留处于修复环境的行；缺字段时拒绝运行（fail-closed：E 当日不出信号，不会悄悄退化成不过滤）。"""
+
+    missing = [column for column, _ in E_REPAIR_STATE_FILTER_ANY if column not in pool.columns]
+    if missing:
+        raise RuntimeError("E修复环境过滤缺少字段：" + "、".join(missing))
+    keep = pd.Series(False, index=pool.index, dtype="bool")
+    for column, values in E_REPAIR_STATE_FILTER_ANY:
+        keep |= pool[column].astype(str).isin(set(values))
+    return pool.loc[keep].copy()
+
+
+def e_repair_filter_enabled(project_root: Path) -> bool:
+    """按生产配置的组合框架开关决定是否启用 E 修复环境过滤（只有 ace_m_l 才启用）。"""
+
+    from src.portfolio_ace_m import FRAMEWORK_ACE_M_L, portfolio_framework
+    from src.utils.config import load_json_config
+
+    path = Path(project_root) / "config" / "config.json"
+    config = load_json_config(path) if path.exists() else {}
+    return portfolio_framework(config) == FRAMEWORK_ACE_M_L
+
+
 def build_live_e_candidates(project_root: Path, signal_date: str) -> pd.DataFrame:
-    """实盘入口：数据准备、R1并集、neutral过滤全部走同一条规则链。"""
+    """实盘入口：数据准备、R1并集、neutral过滤全部走同一条规则链。
+
+    新框架（portfolio_framework=ace_m_l）下先做修复环境过滤，与影子账、研究的顺序相同（先过滤，再按 R1 规则选）。
+    """
 
     spec = load_e_spec(project_root)
     pool = load_bucketed_signal_pool(project_root, signal_date)
+    if e_repair_filter_enabled(project_root):
+        pool = apply_e_repair_filter(pool)
     universe = build_r1_universe_from_pool(pool, spec, signal_date=signal_date, audit_readiness=True)
     ranked = select_e_candidates(universe, spec)
     if ranked.empty:
