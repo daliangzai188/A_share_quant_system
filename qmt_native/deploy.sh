@@ -1,7 +1,7 @@
 #!/bin/sh
 # QMT原生版部署：Mac 这边一条命令（2026-11-14 项目优化第5步）。
 #
-#   sh deploy.sh auto                一条命令（2026-11-15）：按主仓库打核心包、生成影子版和实盘版、跑完整回归（约55分钟），
+#   sh deploy.sh auto                一条命令（2026-11-15）：按主仓库打核心包、生成影子版和实盘版、跑完整回归（约1.5小时），
 #                                    再用这份回归日志走下面的正式流程（主仓库的 tools/release.sh --qmt 调的就是它）
 #   sh deploy.sh auto --check        同上，但只检查
 #   sh deploy.sh 回归日志            正式：检查 → 打核心包 → 生成策略文件 → 旧文件进回滚目录、新文件放进虚拟机目录
@@ -10,7 +10,7 @@
 #
 # 回归日志：这次要上线的核心包跑完整回归的输出（sh inqmt/run_regression.sh 影子版 实盘版 目录 > 日志）。
 # 必须是同一个核心包（日志第一行 "== core <校验码>"）、各节全部 RESULT PASS、整日演练正常结束且没有异常，
-# 否则拒绝部署。完整回归约 55 分钟（2026-11-26 起单项测试和整日演练两路同时跑，以前约 1 小时 40 分），要先跑完再部署。
+# 否则拒绝部署。完整回归约 1.5 小时，要先跑完再部署。
 # QMT 里的粘贴、编译和重启仍要在虚拟机上做（券商平台只能这样换策略），脚本最后打印步骤。
 # 不在 ⑬（约15:15）到次日 09:00 之间部署，除非确认重启后会补跑当天流水线。
 set -e
@@ -35,7 +35,7 @@ git -C "$REPO" fetch -q origin main
 echo "主仓库 $(git -C "$REPO" rev-parse --short HEAD)，工作仓库 $(git rev-parse --short HEAD)"
 
 if [ "$LOG" = "auto" ]; then
-  echo "== 1b. 打核心包、生成影子版和实盘版、完整回归（约55分钟）"
+  echo "== 1b. 打核心包、生成影子版和实盘版、完整回归（约1.5小时）"
   venv/bin/python build_inqmt.py "$REPO" inqmt/qn_core_full.py full | tail -1
   CORE=$(sed '2d' inqmt/qn_core_full.py | shasum | cut -c1-16)
   RDIR=regress_$CORE
