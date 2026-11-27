@@ -178,7 +178,8 @@
 
 1. 虚拟机 PowerShell：
    - 打开：任务栏终端图标 (993,853) → 缩略图 (885,738) → 点窗口内 (660,450) 取得焦点。
-   - 先起复制日志的循环（命令见下面“看日志”），让换版前的流水线和计划框也留在副本里，第 6 步核对要用。
+   - 先确认 Mac 上 `reports/qmt_native/` 里当天的日志副本在更新（2026-11-27 起推送转发程序每 2 分钟自动复制，见下面“看日志”），
+     换版前的流水线和计划框都在副本里，第 6 步核对要用。转发程序没在跑时，才手动起复制日志的循环。
      午夜以后换的，换版前那次流水线在前一天的日志里，前一天的日志也复制一次。复制循环要单独占一个 PowerShell 标签，
      下面的命令在另一个标签里打。
    - 对新实盘策略文件（`deploy.sh` 最后打印的路径）用 `Get-FileHash` 核对校验码，看文件头的版本号，再用 `Get-Content -Raw $f | Set-Clipboard` 复制进剪贴板。
@@ -215,7 +216,10 @@
 
 - QMT 日志在 `C:\QMT\GJQMT\userdata\log\XtClient_FormulaOutput_YYYYMMDD.log`（UTF8）。
 - PowerShell 的输出被 Mac 上的弹框挡住、看不清时，把查询结果写进同步目录 `C:\A_System\reports\qmt_native\` 下的文件。文件由 Syncthing 同步到 Mac，在 Mac 上读，读完删掉。
-- 换版和需要连续看日志时，在 PowerShell 里起下面的循环：每 60 秒把当天的 QMT 日志复制到同步目录，共 90 次（90 分钟）后自己结束。
+- 2026-11-27 起不用手动复制：推送转发程序（虚拟机计划任务 `A_System_QmtNotifyForwarder`）每 2 分钟把最新两天的
+  `XtClient_FormulaOutput_YYYYMMDD.log` 复制到同步目录 `C:\A_System\reports\qmt_native\`（先写 `.tmp` 再改名，`.tmp` 不同步），
+  Mac 上直接读 `~/Desktop/A_System/reports/qmt_native/`。转发程序日志 `C:\A_System\logs\qmt_notify_forwarder.log` 里复制失败会记一条。
+- 转发程序没在跑、或要每分钟更新的副本时，在 PowerShell 里起下面的循环：每 60 秒把当天的 QMT 日志复制到同步目录，共 90 次（90 分钟）后自己结束。
   先写成 `.tmp` 再改名，`*.tmp` 不同步，所以 Mac 上不会收到复制到一半的文件。`YYYYMMDD` 换成当天日期，命令全是 ASCII，可以用 `vmctl type` 打：
 
   ```powershell
