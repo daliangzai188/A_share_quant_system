@@ -16,6 +16,7 @@ from src.portfolio_ace_m import (
     l_target_pct,
     m_budget,
     m_position_pct,
+    position_in_family,
 )
 from src.strategy_m import m_sort_for_config, m_version_for
 
@@ -188,12 +189,42 @@ def _l_budget_preview(plan, gate_mode, positions, config, *, target_pct, streak_
     return {**budget, "total_asset": equity}
 
 
+def _mmdd(day: str) -> str:
+    day = str(day or "")
+    return f"{day[4:6]}-{day[6:8]}" if len(day) == 8 else day
+
+
+def _l_holding_line(positions, action_date: str, signal) -> str:
+    """L 仍有持仓时的一行（和晚上虚拟机推送的 L 计划同一说法）：持有哪只、哪天卖、执行日不开新L。
+
+    回测里持仓到卖出日收盘才释放，卖出日当天仍算占用；L 同一时间最多1只；首选不买、不递补。
+    """
+    held = [p for p in positions or () if str(p.get("status", "")).lower() in {"open", "sell_pending"}
+            and position_in_family(p, "L")]
+    what, when = "", "还没卖出"
+    if held:
+        p = held[0]
+        code = str(p.get("ts_code", ""))
+        what = f"{p.get('name') or code}({code})"
+        exit_day = str(p.get("planned_exit_date", "") or "")
+        if exit_day:
+            when = (f"计划{_mmdd(exit_day)}收盘卖出" if exit_day >= str(action_date)
+                    else f"原计划{_mmdd(exit_day)}卖出、还没卖掉（顺延）")
+    pick = ""
+    if signal and str(signal.get("status", "")) == "SIGNAL_READY" and signal.get("ts_code"):
+        pick = f"，首选{signal.get('name') or signal['ts_code']}({signal['ts_code']})不买，也不递补"
+    return f"L：仍有L持仓{what}，{when}；L同一时间最多1只，{_mmdd(action_date)}不开新L{pick}。"
+
+
 def l_plan_notice(signal, *, occasion, action_date, gate_mode, has_l_position, streak_mult, ace_codes,
                   l_version, window_closed=False, plan=None, positions=(), config=None):
     """ACE+M+L新框架的L计划摘要（推送用），返回(正文, 首选名称)；只读，不调用交易接口。
 
     收盘推送时L计划通常还没算出（龙虎榜约17~18点才出全），晚上L计划算好后由虚拟机另推一条。
+    2026-11-27：先看执行日 L 是否仍有持仓（和回测同一逻辑），有就直接写不开新L，不再写“等晚上推送”。
     """
+    if has_l_position:
+        return _l_holding_line(positions, action_date, signal), ""
     if not signal:
         if occasion == "收盘":
             return "L：明日L计划等晚上龙虎榜数据出全后算好单独推送。", ""
@@ -204,8 +235,6 @@ def l_plan_notice(signal, *, occasion, action_date, gate_mode, has_l_position, s
         return "L：计划版本不符，不开L。", ""
     if str(signal.get("status", "")) != "SIGNAL_READY" or not signal.get("ts_code"):
         return "L：龙虎榜没有符合L规则的股票，不开L。", ""
-    if has_l_position:
-        return "L：仍有L持仓（今天收盘卖出），L同一时间最多1只，不开新L。", ""
     if window_closed:
         return "L：原计划开仓窗口已结束，不新增L持仓。", ""
     code, name = str(signal["ts_code"]), str(signal.get("name") or signal["ts_code"])

@@ -52,9 +52,11 @@ from __future__ import annotations
 
 import argparse
 import base64
+import csv
 import datetime as dt
 import glob
 import hashlib
+import io
 import json
 import os
 import re
@@ -351,6 +353,50 @@ def l_framework_on() -> bool:
     return str(config.get('portfolio_framework') or '').strip().lower() == 'ace_m_l'
 
 
+def open_positions_at_close(signal_date: str) -> list | None:
+    """信号日收盘后仍持有的策略仓位（QMT 导出的逐笔成交汇总：买入股数>0、卖出股数<买入股数）。
+
+    导出时间早于信号日 15:05（收盘卖出还没反映进来）或读不到，返回 None：推送里不下结论。
+    QMT 内容不变也每 30 分钟重新导出一次，received_at 能说明数据是不是收盘后的。
+    """
+    close = dt.datetime.strptime(signal_date + '1505', '%Y%m%d%H%M').replace(tzinfo=BJ)
+    for folder in (EXPORT_DIR, MIRROR_DIR):
+        try:
+            meta = json.loads((folder / 'trade_completion_summary.csv.json').read_text(encoding='utf-8'))
+            received = dt.datetime.fromisoformat(str(meta['received_at']))
+            text = (folder / 'trade_completion_summary.csv').read_text(encoding='utf-8-sig')
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+        if received < close:
+            return None
+        held = []
+        for row in csv.DictReader(io.StringIO(text)):
+            try:
+                bought = int(float(row.get('entry_filled_qty') or 0))
+                sold = int(float(row.get('exit_filled_qty') or 0))
+            except ValueError:
+                continue
+            if bought > 0 and sold < bought:
+                held.append({'leg': str(row.get('strategy_leg', '')).strip().upper(),
+                             'code': str(row.get('ts_code', '')).strip(), 'name': str(row.get('name', '')).strip(),
+                             'exit': str(row.get('planned_exit_date', '')).strip()})
+        return held
+    return None
+
+
+def _mmdd(day: str) -> str:
+    return '%s-%s' % (day[4:6], day[6:8]) if len(day) == 8 else day
+
+
+def l_exit_words(exit_day: str, buy_day: str) -> str:
+    """持仓的卖出说法：计划卖出日不早于买入日写“计划MM-DD收盘卖出”，早于（跌停/停牌顺延）写还没卖掉。"""
+    if not exit_day:
+        return '还没卖出'
+    if exit_day >= buy_day:
+        return '计划%s收盘卖出' % _mmdd(exit_day)
+    return '原计划%s卖出、还没卖掉（顺延）' % _mmdd(exit_day)
+
+
 def l_plan_message(signal_date: str, morning: bool) -> tuple:
     """L 计划算好后的推送（标题，正文）：读 L 晚间信号写的滚动文件里这个信号日的那条。"""
     label = '今日' if morning else '明日'
@@ -366,12 +412,32 @@ def l_plan_message(signal_date: str, morning: bool) -> tuple:
     if str(plan.get('status', '')) != 'SIGNAL_READY' or not plan.get('ts_code'):
         return ('📋 %sL无计划' % label, '龙虎榜信号日%s没有符合L规则的股票（分支%s），%s不开L；ACE和M照常。' % (
             signal_date, plan.get('branch', ''), when))
+    code, name = str(plan.get('ts_code', '')), str(plan.get('name', ''))
+    head = 'L首选%s(%s)，分支%s' % (name, code, plan.get('branch', ''))
+    # 2026-11-27（用户要求通知和回测同一逻辑）：回测里持仓到卖出日收盘才释放；L 同一时间最多1只；
+    # 首选是 ACE/M 当天持有的股票不买；都不递补。收盘后的持仓能确定买不了，就直接写不买。
+    held = open_positions_at_close(signal_date)
+    if held is not None:
+        own_l = [x for x in held if x['leg'] == 'L']
+        if own_l:
+            x = own_l[0]
+            return ('📋 %sL计划：不开新L（仍有L持仓）' % label,
+                    '%s。但L仍持有%s(%s)，%s；L同一时间最多1只，%s不买%s，也不递补（和回测一致）。' % (
+                        head, x['name'], x['code'], l_exit_words(x['exit'], buy), when, name))
+        same = [x for x in held if x['code'] == code]
+        if same:
+            x = same[0]
+            owner = 'M' if x['leg'] == 'M' else 'ACE（%s）' % x['leg']
+            return ('📋 %sL计划：不开新L（首选是%s的持仓）' % (label, owner),
+                    '%s。但这只股票是%s的持仓，%s；L不买其他策略持有的股票，%s不买，也不递补（和回测一致）。' % (
+                        head, owner, l_exit_words(x['exit'], buy), when))
     own = '正常' if plan.get('l_allowed') else '自身停手（仓位×20/82.5）'
-    return ('📋 %sL计划：%s' % (label, plan.get('name', '')),
-            'L首选%s(%s)，分支%s，%s买入。L自身状态：%s。仓位在执行时定：方案甲正常期25%%、停手期60%%，'
+    tail = ('如果ACE当天计划买同一只，L不买、不递补（08:50开仓计划推送会写明）。' if held is not None else
+            '持仓数据还没更新到信号日收盘，%s买不买以开盘前持仓为准（08:50开仓计划推送会写明）。' % when)
+    return ('📋 %sL计划：%s' % (label, name),
+            '%s，%s买入。L自身状态：%s。仓位在执行时定：方案甲正常期25%%、停手期60%%，'
             '连亏2笔再×0.3，不超过账户总仓位99.5%%；09:20按涨停价-0.01预挂，开盘涨停不买、不递补，'
-            '买入后下一个交易日收盘卖出。' % (plan.get('name', ''), plan.get('ts_code', ''), plan.get('branch', ''),
-                                          when, own))
+            '买入后下一个交易日收盘卖出。%s' % (head, when, own, tail))
 
 
 def l_push(title: str, body: str, alert: bool = False) -> bool:
