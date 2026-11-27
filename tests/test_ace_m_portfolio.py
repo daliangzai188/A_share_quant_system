@@ -472,12 +472,16 @@ class MExecutionTests(unittest.TestCase):
                               {"oid1": [SimpleNamespace(filled_qty=1200, avg_price=8.68, is_terminal=True)]})
         self._run(td.job_m_premarket_buy, adapter, now=datetime.datetime(2026, 9, 21, 9, 20, 30))
         self._run(td.job_m_after_auction, adapter, now=datetime.datetime(2026, 9, 21, 9, 26, 5))
+        # 2026-11-27 起 09:26 会开盘前预挂剩余股数（这里预挂单没成交、09:30 撤掉），09:30 那片只按开盘后新增成交额参与：
+        # 假行情的累计成交额要涨上去，才像真实开盘后有成交
+        adapter.quotes["300100.SZ"].amount = 1e8
         ps = self._patches(adapter, now=datetime.datetime(2026, 9, 21, 9, 30, 30))
         for p in ps:
             p.start()
         try:
             with patch_daemon("_confirm_fill",
-                              lambda *a, **k: SimpleNamespace(filled_qty=a[2], avg_price=8.68, is_terminal=True)):
+                              lambda *a, **k: SimpleNamespace(filled_qty=a[2], avg_price=8.68, is_terminal=True)), \
+                    patch("time.sleep", lambda _s: None):
                 st = td._m_load_state()
                 td._m_pov_round(st, {}, self.config, "20260921")
                 td._m_pov_finalize(st, "目标金额已买足")
@@ -488,7 +492,7 @@ class MExecutionTests(unittest.TestCase):
         auction_rec, pov_rec = self.recorded
         self.assertEqual(auction_rec["order_id"], "oid1")
         self.assertNotIn("oid1", pov_rec["component_order_ids"])
-        self.assertEqual(pov_rec["component_order_ids"], ["oid2"])
+        self.assertEqual(pov_rec["component_order_ids"], ["oid2", "oid3"])   # 开盘前预挂单 + 09:30 那片
         self.assertEqual(pov_rec["shares"], adapter.orders[-1].quantity)
 
     def test_st_name_never_ordered(self) -> None:

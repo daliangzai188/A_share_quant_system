@@ -451,11 +451,99 @@ def job_m_after_auction() -> None:
             item["stage"] = "pov" if filled > 0 else "select"
             if filled <= 0:
                 item["tried"] = []
+            else:
+                try:
+                    _m_prefill_remaining(item, broker_cfg, config, today_str)
+                except Exception as exc:
+                    log.warning("[M] 开盘前预挂剩余股数异常，改为09:30:10起补（不影响已成交部分）：%s", exc)
         with _m_state_lock:
             _m_save_state(state)
         _m_start_pov_worker()
     except Exception as exc:
         log.error("[M] 竞价后处理异常（不影响ACE）：%s", exc)
+
+
+def _m_prefill_remaining(item: dict[str, Any], broker_cfg: dict, config: dict, today_str: str) -> None:
+    """09:26 竞价成交后、09:30 前：按开盘价算出回测还差的股数先挂，09:30 一开盘就撮合（2026-11-27 用户要求，同 L）。
+
+    限价=开盘价×(1+追价上限)取整、不超过涨停价−0.01；股数不超过竞价成交额×参与率（同原来第一片的参与上限）。
+    没挂上（券商不收单、竞价残单还没撤完等）只记一条，09:30:10 照原来补仓。
+    """
+    log = logger()
+    if item.get("prefill_order_id") or item.get("prefill_tried") or now_beijing().time() >= datetime.time(9, 30):
+        return
+    item["prefill_tried"] = True
+    code, name = str(item.get("ts_code", "")), str(item.get("name", ""))
+    lt = config.get("live_trade", {})
+    chase = float(lt.get("pov_chase_cap", 0.02))
+    part = float(lt.get("pov_participation", 0.10))
+    with _qmt_lock:
+        adapter = _qmt_get(broker_cfg)
+        quote = adapter.get_full_tick([code]).get(code)
+    a_qty, a_amt = int(item.get("auction_filled_qty", 0) or 0), float(item.get("auction_cost", 0.0) or 0.0)
+    open_px = float(getattr(quote, "open_price", 0.0) or 0.0) if quote is not None else 0.0
+    open_px = open_px or (a_amt / a_qty if a_qty > 0 else 0.0)
+    upper = _m_upper_limit(quote, code, name) if quote is not None else 0.0
+    if open_px <= 0 or upper <= 0:
+        log.info("[M] %s 取不到开盘价或涨停价，开盘前不预挂，09:30:10起补。", code)
+        return
+    item["open_price"] = open_px
+    price = _round_stock_price(min(_round_stock_price(open_px * (1 + chase)), upper - 0.01))
+    target = float(item.get("target_amount", 0.0) or 0.0)
+    remaining = target - a_amt - float(item.get("cost_amt", 0.0) or 0.0)
+    gap = max(_m_buy_quantity(code, target, open_px) - a_qty - int(item.get("filled_qty", 0) or 0), 0)
+    auction_amount = float(getattr(quote, "amount", 0.0) or 0.0)
+    qty = min(gap, _m_buy_quantity(code, min(remaining, part * auction_amount), price))
+    if qty <= 0:
+        log.info("[M] %s 开盘前不预挂：%s。", code,
+                 "竞价已买足" if gap <= 0 else "竞价成交额太少，按%.0f%%参与不到一手" % (part * 100))
+        return
+    item["slice_no"] = int(item.get("slice_no", 0)) + 1
+    ok, order_id, message = _m_submit_buy(
+        broker_cfg, ts_code=code, name=name, qty=qty, price=price, signal_date=str(item.get("signal_date", "")),
+        today_str=today_str, exit_date=str(item.get("exit_date", "")),
+        source_key=f"M_PREFILL|{today_str}|{code}", channel="开盘前预挂")
+    if not ok:
+        log.warning("[M] %s 开盘前预挂%d股@%.2f未受理（%s），改为09:30:10起补。", code, qty, price, message)
+        return
+    item.setdefault("order_ids", []).append(order_id)
+    item.setdefault("pov_order_ids", []).append(order_id)
+    item.update({"prefill_order_id": order_id, "prefill_qty": qty, "prefill_price": price,
+                 "last_market_amount": auction_amount})   # 09:30:10 那片只按开盘后新增成交额参与
+    log.warning("⏳ [M] %s %s 开盘前预挂剩余%d股@%.2f（回测还差%d股，开盘价%.2f），09:30开盘撮合。",
+                code, name, qty, price, gap, open_px)
+
+
+def _m_settle_prefill(item: dict[str, Any], broker_cfg: dict) -> None:
+    """09:30:10 第一片前：查开盘前预挂单成交多少，没成交的撤掉，成交计入补仓。"""
+    log = logger()
+    order_id, code = str(item.get("prefill_order_id", "")), str(item.get("ts_code", ""))
+    qty, price = int(item.get("prefill_qty", 0) or 0), float(item.get("prefill_price", 0.0) or 0.0)
+    fill = None
+    try:
+        with _qmt_lock:
+            adapter = _qmt_get(broker_cfg)
+            fill = adapter.get_order_fill(order_id)
+    except Exception as exc:
+        log.warning("[M] 查询开盘前预挂单成交异常：%s", exc)
+    if fill is None or (int(getattr(fill, "filled_qty", 0) or 0) < qty and not bool(getattr(fill, "is_terminal", False))):
+        _try_cancel_order(broker_cfg, order_id, code)
+        time.sleep(2)
+        try:
+            with _qmt_lock:
+                adapter = _qmt_get(broker_cfg)
+                fill = adapter.get_order_fill(order_id)
+        except Exception as exc:
+            log.warning("[M] 预挂单撤单后复查异常：%s", exc)
+    fq = int(getattr(fill, "filled_qty", 0) or 0) if fill is not None else 0
+    if fq > 0:
+        avg = float(getattr(fill, "avg_price", 0.0) or 0.0) or price
+        item["filled_qty"] = int(item.get("filled_qty", 0) or 0) + fq
+        item["cost_amt"] = float(item.get("cost_amt", 0.0) or 0.0) + fq * avg
+        log.warning("✅ [M] %s %s 开盘前预挂成交%d股@%.2f", code, item.get("name", ""), fq, avg)
+    else:
+        log.info("[M] %s 开盘前预挂%d股@%.2f开盘没成交，已撤单，接着按5分钟一片补。", code, qty, price)
+    item["prefill_settled"] = True
 
 
 def _m_pov_round(state: dict[str, Any], broker_cfg: dict, config: dict, today_str: str) -> None:
@@ -504,6 +592,8 @@ def _m_pov_round(state: dict[str, Any], broker_cfg: dict, config: dict, today_st
         item.pop("signal", None)
         _m_register_plan(item, today_str, "M开盘后POV买入")
     code, name = str(item["ts_code"]), str(item.get("name", ""))
+    if item.get("prefill_order_id") and not item.get("prefill_settled"):
+        _m_settle_prefill(item, broker_cfg)
     if float(item.get("l_reserved", 0.0) or 0.0) > 0:
         try:
             _m_refresh_target_after_l(item, broker_cfg, config, today_str)
@@ -524,11 +614,14 @@ def _m_pov_round(state: dict[str, Any], broker_cfg: dict, config: dict, today_st
     asks = getattr(quote, "ask_prices", None)
     if asks and len(asks) >= 1 and float(asks[0] or 0) > 0:
         ask1 = float(asks[0])
-    price = _round_stock_price(min(x for x in (ask1 or last, open_px * (1 + chase), upper - 0.01) if x > 0))
     if open_px <= 0 or last <= 0 or upper <= 0:
         return
-    if last >= upper - 1e-6 or price > open_px * (1 + chase) + 1e-6 or last > open_px * (1 + chase) + 1e-6:
-        log.info("[M POV] %s 现价%.2f超过开盘价+%.0f%%或涨停，本片不追。", code, last, chase * 100)
+    # 追价上限取整到分后当委托价上限，现价超过取整后的上限才跳过（同 A 的 POV；2026-11-27 修复：原来拿取整后的
+    # 委托价和没取整的上限比，开盘价×1.02 向上取整时卖一价一到上限就整片跳过，现价在上限内也补不上）
+    cap_price = _round_stock_price(open_px * (1 + chase))
+    price = _round_stock_price(min(x for x in (ask1 or last, cap_price, upper - 0.01) if x > 0))
+    if last >= upper - 1e-6 or last > cap_price + 1e-6:
+        log.info("[M POV] %s 现价%.2f超过开盘价+%.0f%%（上限%.2f）或涨停，本片不追。", code, last, chase * 100, cap_price)
         return
     prev_amt = float(item.get("last_market_amount", 0.0) or 0.0)
     cum_amt = float(getattr(quote, "amount", 0.0) or 0.0)
