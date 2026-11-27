@@ -37,7 +37,7 @@ def l_plan_line(action_date: str, *, plan: dict, gate_mode: str, occasion: str) 
         text, first = l_plan_notice(
             signal, occasion=occasion, action_date=action_date, gate_mode=gate_mode,
             has_l_position=has_open_local_position(L_LEG), streak_mult=streak, ace_codes=ace_codes,
-            l_version=L_VERSION,
+            l_version=L_VERSION, plan=plan, positions=positions, config=config,
             window_closed=(str(action_date) < now.strftime("%Y%m%d")
                            or (str(action_date) == now.strftime("%Y%m%d") and now.time() >= L_POV_END_TIME)))
         reserve = (l_target_pct(ace_mode=gate_mode, l_self_allowed=bool((signal or {}).get("l_allowed", False)),

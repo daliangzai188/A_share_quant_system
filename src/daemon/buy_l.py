@@ -322,7 +322,7 @@ def job_l_premarket_buy() -> None:
         exit_date = _l_exit_date(today_str)
         item = {"ts_code": code, "name": name, "signal_date": str(signal.get("signal_date", "")),
                 "reference_price": float(cand.get("close", 0.0) or 0.0), "exit_date": exit_date,
-                "target_amount": budget["amount"], "budget": budget, "streak_mult": streak,
+                "target_amount": budget["amount"], "budget": budget, "streak_mult": streak, "total_asset": total_asset,
                 "l_allowed": bool(signal.get("l_allowed", False)), "stage": "auction", "order_ids": [],
                 "auction_order_id": "", "auction_qty": qty, "auction_price": price, "filled_qty": 0, "cost_amt": 0.0,
                 "slice_no": 0, "open_price": 0.0, "done": False}
@@ -449,6 +449,7 @@ def _l_pov_round(state: dict[str, Any], broker_cfg: dict, config: dict, today_st
                      "reference_price": float(cand.get("close", 0.0) or 0.0), "auction_qty": 0,
                      "signal_date": str(signal.get("signal_date", "")), "exit_date": _l_exit_date(today_str),
                      "target_amount": budget["amount"], "budget": budget, "streak_mult": streak,
+                     "total_asset": float(getattr(account, "total_asset", 0.0) or 0.0),
                      "open_price": float(getattr(quote, "open_price", 0.0) or getattr(quote, "last_price", 0.0) or 0.0),
                      "stage": "pov"})
         item.pop("signal", None)
@@ -458,6 +459,7 @@ def _l_pov_round(state: dict[str, Any], broker_cfg: dict, config: dict, today_st
         adapter = _qmt_get(broker_cfg)
         quote = adapter.get_full_tick([code]).get(code)
     if quote is None:
+        _l_note_slice(item, "no_quote")
         return
     open_px = float(item.get("open_price", 0.0) or 0.0) or float(getattr(quote, "open_price", 0.0) or 0.0)
     item["open_price"] = open_px
@@ -470,10 +472,13 @@ def _l_pov_round(state: dict[str, Any], broker_cfg: dict, config: dict, today_st
     if asks and len(asks) >= 1 and float(asks[0] or 0) > 0:
         ask1 = float(asks[0])
     if open_px <= 0 or last <= 0 or upper <= 0:
+        _l_note_slice(item, "no_quote")
         return
     price = _round_stock_price(min(x for x in (ask1 or last, open_px * (1 + chase), upper - 0.01) if x > 0))
     if last >= upper - 1e-6 or price > open_px * (1 + chase) + 1e-6 or last > open_px * (1 + chase) + 1e-6:
         log.info("[L POV] %s 现价%.2f超过开盘价+%.0f%%或涨停，本片不追。", code, last, chase * 100)
+        _l_note_slice(item, "over_chase", last=last, cap=_round_stock_price(open_px * (1 + chase)), pct=chase,
+                      limit_up=last >= upper - 1e-6)
         return
     prev_amt = float(item.get("last_market_amount", 0.0) or 0.0)
     cum_amt = float(getattr(quote, "amount", 0.0) or 0.0)
@@ -484,6 +489,8 @@ def _l_pov_round(state: dict[str, Any], broker_cfg: dict, config: dict, today_st
     if qty <= 0:
         if _l_buy_quantity(code, remaining, price) <= 0:
             item["done"], item["done_reason"] = True, "剩余目标不足最小申报量"
+        else:
+            _l_note_slice(item, "small_flow", flow=flow, pct=part)
         return
     item["slice_no"] = int(item.get("slice_no", 0)) + 1
     ok, order_id, message = _l_submit_buy(
@@ -492,6 +499,7 @@ def _l_pov_round(state: dict[str, Any], broker_cfg: dict, config: dict, today_st
         source_key=f"L_POV|{today_str}|{code}|{item['slice_no']}", channel="买入POV")
     if not ok:
         log.error("[L POV] %s 第%d片未受理：%s", code, item["slice_no"], message)
+        _l_note_slice(item, "rejected", message=str(message)[:40])
         return
     item.setdefault("order_ids", []).append(order_id)
     item.setdefault("pov_order_ids", []).append(order_id)
@@ -511,6 +519,72 @@ def _l_pov_round(state: dict[str, Any], broker_cfg: dict, config: dict, today_st
         item["filled_qty"] = int(item.get("filled_qty", 0)) + fq
         item["cost_amt"] = float(item.get("cost_amt", 0.0)) + fq * avg
         log.warning("✅ [L POV] %s %s 第%d片成交%d股@%.2f", code, name, item["slice_no"], fq, avg)
+        _l_note_slice(item, "filled", qty=fq, price=avg)
+    else:
+        _l_note_slice(item, "unfilled", price=price)
+
+
+def _l_note_slice(item: dict[str, Any], result: str, **detail: Any) -> None:
+    """记下这一片补仓的结果（收口时汇总告诉用户每片为什么没补）。"""
+    item.setdefault("slices", []).append(dict(detail, t=now_beijing().strftime("%H:%M"), result=result))
+
+
+_L_SLICE_WHY = {
+    "no_quote": "取不到行情",
+    "small_flow": "这5分钟成交太少，按成交额%.0f%%参与买不到一手",
+    "rejected": "委托未受理",
+    "unfilled": "委托后没成交，已撤单",
+}
+
+
+def _l_fill_summary(item: dict[str, Any], reason: str) -> str:
+    """L 收口说明：目标、竞价和补仓各买了多少、按回测还差多少、每片为什么没补、怎么收口的。"""
+    code, name = str(item.get("ts_code", "")), str(item.get("name", ""))
+    target = float(item.get("target_amount", 0.0) or 0.0)
+    budget = item.get("budget") or {}
+    total = float(item.get("total_asset", 0.0) or 0.0) or (
+        float(budget.get("by_pct", 0.0) or 0.0) / float(budget["pct"]) if float(budget.get("pct", 0.0) or 0.0) > 0 else 0.0)
+    share = (lambda amount: "/%.1f%%" % (100 * amount / total) if total > 0 else "")
+    a_qty, a_amt = int(item.get("auction_filled_qty", 0) or 0), float(item.get("auction_cost", 0.0) or 0.0)
+    p_qty, p_amt = int(item.get("filled_qty", 0) or 0), float(item.get("cost_amt", 0.0) or 0.0)
+    have_qty, have_amt = a_qty + p_qty, a_amt + p_amt
+    if have_qty <= 0 and (target <= 0 or not code):
+        return "L今日未开仓：%s。" % reason
+    parts = ["策略=L %s %s：目标%s%s" % (code, name, _fmt_wan(target), share(target)),
+             "竞价成交%d股%s" % (a_qty, _fmt_wan(a_amt)) if a_qty else "竞价没成交",
+             "开盘后补仓成交%d股%s" % (p_qty, _fmt_wan(p_amt)) if p_qty else "开盘后补仓0股",
+             "累计%d股%s%s" % (have_qty, _fmt_wan(have_amt), share(have_amt))]
+    # 开盘价在第一片补仓时才记下；补仓一片都没执行到时用竞价成交均价（集合竞价统一价成交，即开盘价）
+    open_px = float(item.get("open_price", 0.0) or 0.0) or (a_amt / a_qty if a_qty > 0 else 0.0)
+    gap = 0
+    if open_px > 0 and target > 0 and code:
+        should = _l_buy_quantity(code, target, open_px)
+        gap = max(should - have_qty, 0)
+        parts.append("按回测（目标÷开盘价%.2f，取整到一手）应买%d股，%s" % (
+            open_px, should, "还差%d股约%s" % (gap, _fmt_wan(gap * open_px)) if gap else "已买足"))
+    text = "；".join(parts) + "。"
+    slices = list(item.get("slices") or [])
+    if gap and slices:
+        why = []
+        chase = [x for x in slices if x.get("result") == "over_chase"]
+        if chase:
+            top = max(float(x.get("last", 0.0) or 0.0) for x in chase)
+            why.append("%s现价超过开盘价+%.0f%%的上限%.2f元（最高%.2f元）%s，不追" % (
+                "、".join(x["t"] for x in chase), 100 * float(chase[0].get("pct", 0.0) or 0.0),
+                float(chase[0].get("cap", 0.0) or 0.0), top, "或涨停" if any(x.get("limit_up") for x in chase) else ""))
+        for key, words in _L_SLICE_WHY.items():
+            hit = [x for x in slices if x.get("result") == key]
+            if hit:
+                why.append("%s%s" % ("、".join(x["t"] for x in hit),
+                                     words % (100 * float(hit[0].get("pct", 0.0) or 0.0)) if "%" in words else words))
+        got = [x for x in slices if x.get("result") == "filled"]
+        if got:
+            why.append("成交的片：" + "、".join("%s %d股@%.2f" % (x["t"], int(x.get("qty", 0)), float(x.get("price", 0)))
+                                             for x in got))
+        text += "没补上的原因（09:30~10:30每5分钟一片，共%d片）：%s。" % (len(slices), "；".join(why))
+    elif gap and item.get("stage") == "pov":
+        text += "开盘后补仓一片都没执行到（可能是程序重启或行情异常），请看日志。"
+    return text + "收口：%s。" % reason
 
 
 def _l_pov_finalize(state: dict[str, Any], reason: str) -> None:
@@ -530,11 +604,10 @@ def _l_pov_finalize(state: dict[str, Any], reason: str) -> None:
             planned_exit_date_override=str(item.get("exit_date", "")),
             component_order_ids=[str(o) for o in item.get("pov_order_ids", []) if str(o)], exit_rule="FIXED_T2_CLOSE",
         )
-        _notify("buy_result", "✅ L开仓完成",
-                f"策略=L {item['ts_code']} {item.get('name', '')} POV成交{fq}股 均价{avg:.2f}；"
-                f"累计开仓{_fmt_wan(float(item.get('auction_cost', 0.0) or 0.0) + fq * avg)}（{reason}）。")
-    elif not float(item.get("auction_cost", 0.0) or 0.0):
-        _notify("buy_result", "ℹ️ L今日未开仓", f"L今日未成交：{reason}。")
+    # 2026-11-27（用户要求）：收口一定推一条，像A一样写清楚目标、竞价、补仓、还差多少、每片为什么没补
+    title = ("✅ L开仓完成" if fq > 0 else
+             "ℹ️ L开仓金额校准结束" if float(item.get("auction_cost", 0.0) or 0.0) else "ℹ️ L今日未开仓")
+    _notify("buy_result", title, _l_fill_summary(item, reason))
 
 
 def _l_pov_worker() -> None:

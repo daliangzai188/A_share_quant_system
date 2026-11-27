@@ -3,7 +3,7 @@
   "status": "PASS",
   "scenario": "acde_plan_jia_stop_gate_20260919",
   "release_id": "ACDE_PLAN_JIA_STOP_GATE_20260919",
-  "generated_at": "2026-11-26T14:32:09.518220+00:00",
+  "generated_at": "2026-11-27T01:42:01.158348+00:00",
   "certification_scope": "FORMAL_RULE_STOP_GATE_AND_BACKTEST_ALIGNMENT",
   "covers": "方案甲A/C/E正式规则、60日影子净值停手判定（停手日不开新仓）、D历史0笔，回测逐笔对齐与两次独立构建一致",
   "not_covered": [
@@ -215,7 +215,7 @@
     "src/utils/logger.py",
     "src/utils/time_utils.py"
   ],
-  "code_sha256": "64b7f7d9cc78cb8f35cc5d884e514891a5f2102da5ff4daaf505b74535c98812",
+  "code_sha256": "235189c31dccd28ec466a140c3d72f18d4f4dae4d0131d6cff50bca1667b9c79",
   "input_files": [
     "data/research/monthly_acde/20260831/strict_feature_pool.csv",
     "data/research/monthly_acde/20260831/market_sentiment.csv",

@@ -12,11 +12,12 @@ from src.portfolio_ace_m import (
     GATE_REDUCED,
     ace_limits,
     fund_family,
+    l_budget,
     l_target_pct,
     m_budget,
     m_position_pct,
 )
-from src.strategy_m import M_VERSION
+from src.strategy_m import m_sort_for_config, m_version_for
 
 
 def ace_notice_has_plan(plan: dict[str, Any], gate_mode: str) -> bool:
@@ -117,7 +118,7 @@ def m_plan_notice(signal, *, action_date, ace_active, plan, positions, config, g
         return "M：策略已停用，不开新M。", ""
     if plan.get("execution_block_reason"):
         return f"M不开新仓：新增BUY安全门禁阻断（{plan['execution_block_reason']}）。", ""
-    if str(signal.get("m_version", "")) != M_VERSION:
+    if str(signal.get("m_version", "")) != m_version_for(m_sort_for_config(config)):   # 跟着配置的M排序方式（2026-11-27）
         return "M：信号版本不符，不开新M。", ""
     cands = sorted(signal.get("candidates") or [], key=lambda c: int(c.get("rank", 999)))
     if not cands:
@@ -159,8 +160,36 @@ def m_plan_notice(signal, *, action_date, ace_active, plan, positions, config, g
             "（≤开盘+2%），买入后下一个交易日收盘卖出。", str(cands[0].get("name") or cands[0]["ts_code"]))
 
 
+def _l_budget_preview(plan, gate_mode, positions, config, *, target_pct, streak_mult):
+    """L 预估金额（2026-11-27，用户要求像 A 一样显示金额）：只用已有的账户定仓快照，先给 ACE 规则目标留够，
+    没有可靠快照就返回 None（显示“待执行前定仓”），绝不查券商。"""
+    live = (plan or {}).get("live_sizing") or {}
+    if live.get("ace_gate_mode") and live["ace_gate_mode"] != gate_mode:
+        return None
+    equity = float(live.get("total_asset", 0.0) or 0.0)
+    cash = float(live.get("available_cash", 0.0) or 0.0)
+    if not math.isfinite(equity) or equity <= 0 or not math.isfinite(cash) or cash < 0:
+        return None
+    held_ace = [p for p in positions if p.get("status") in {"open", "sell_pending"}
+                and fund_family(p.get("strategy_leg", "")) == "ACE"]
+    if held_ace and "ace_market_value" not in live:
+        return None
+    ace_value = float(live.get("ace_market_value", 0.0) or 0.0)
+    other_value = float(live.get("m_market_value", 0.0) or 0.0)
+    target = (ace_limits(gate_mode, equity, other_value, streak_mult=streak_mult)["target_amount"]
+              if ace_notice_has_plan(plan, gate_mode) else 0.0)
+    bought = sum(float(p.get("shares", 0) or 0) * float(p.get("buy_price", 0) or 0)
+                 for p in held_ace if str(p.get("buy_date", "")) == str((plan or {}).get("action_date", "")))
+    buffer = float(config.get("live_trade", {}).get("cash_buffer_amount", 1000))
+    if any(not math.isfinite(x) or x < 0 for x in (ace_value, other_value, target, bought, buffer)):
+        return None
+    budget = l_budget(total_asset=equity, available_cash=cash, target_pct=target_pct, ace_value=ace_value,
+                      m_value=other_value, ace_unfilled_target=max(target - bought, 0.0), cash_buffer=buffer)
+    return {**budget, "total_asset": equity}
+
+
 def l_plan_notice(signal, *, occasion, action_date, gate_mode, has_l_position, streak_mult, ace_codes,
-                  l_version, window_closed=False):
+                  l_version, window_closed=False, plan=None, positions=(), config=None):
     """ACE+M+L新框架的L计划摘要（推送用），返回(正文, 首选名称)；只读，不调用交易接口。
 
     收盘推送时L计划通常还没算出（龙虎榜约17~18点才出全），晚上L计划算好后由虚拟机另推一条。
@@ -192,6 +221,14 @@ def l_plan_notice(signal, *, occasion, action_date, gate_mode, has_l_position, s
     if float(streak_mult) < 1.0:
         reasons.append("连亏降仓×%.1f" % float(streak_mult))
     pct_text = f"{pct * 100:.2f}".rstrip("0").rstrip(".")
-    return (f"L计划：{name}({code})｜规则仓位上限为总资产{pct_text}%（{'，'.join(reasons)}；预算受可用现金、"
+    amount = "预估金额待执行前定仓（尚无可用的账户定仓快照）"
+    budget = (_l_budget_preview(plan, gate_mode, list(positions or []), config, target_pct=pct, streak_mult=streak_mult)
+              if config is not None and plan is not None else None)
+    if budget is not None:
+        if budget["amount"] <= 0:
+            return "L：按现有账户快照扣除ACE预留及现金缓冲后，预估可用预算0元，不开新L。", ""
+        share = f"{budget['amount'] / budget['total_asset'] * 100:.2f}".rstrip("0").rstrip(".")
+        amount = f"预估开仓约{budget['amount'] / 10000:.2f}万（占总资产{share}%，执行前重算）"
+    return (f"L计划：{name}({code})｜{amount}；规则仓位上限为总资产{pct_text}%（{'，'.join(reasons)}；预算受可用现金、"
             "ACE预留及账户总仓位99.5%约束）。09:20按涨停价-0.01预挂，开盘涨停不买、不递补，余量POV补足"
             "（≤开盘+2%），买入后下一个交易日收盘卖出。", name)

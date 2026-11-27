@@ -12,7 +12,7 @@ import pytest
 from src.daemon import plan_notice, reports
 from src.open_plan_notification import _m_budget_preview
 from src.strategy_l import L_VERSION
-from src.strategy_m import M_VERSION
+from src.strategy_m import M_VERSION, M_VERSION_RET5
 
 
 @pytest.fixture
@@ -306,7 +306,8 @@ def test_new_framework_nov27_a_and_l_plan_includes_reduced_targets_and_excludes_
         "signal_date": "20261126", "planned_buy_date": "20261127",
         "ts_code": "300469.SZ", "name": "信息发展", "l_allowed": True, "l_scale": 1.0,
     }
-    notice.signal.update(signal_date="20261126", planned_buy_date="20261127")
+    # 新框架的M信号版本是M_VERSION_RET5（按涨停前5日涨幅排序；2026-11-27修复前测试数据误用了旧版本号）
+    notice.signal.update(signal_date="20261126", planned_buy_date="20261127", m_version=M_VERSION_RET5)
     if not m_has_candidate:
         notice.signal.update(candidates=[], diagnostics={"mood": .0322, "n20_limit_up": 3})
     title, body = notice.push(occasion)
@@ -315,6 +316,8 @@ def test_new_framework_nov27_a_and_l_plan_includes_reduced_targets_and_excludes_
     assert "计划实际开仓0.90万（目标6%" in body
     assert "L计划：信息发展(300469.SZ)" in body
     assert "规则仓位上限为总资产18%" in body and "连亏降仓×0.3" in body
+    assert "预估开仓约2.69万（占总资产18%，执行前重算）" in body   # 2026-11-27起L也显示预估金额
+    assert "版本不符" not in body
     if m_has_candidate:
         assert "ACE今天有开仓计划或持仓，M不开仓" in body
     else:

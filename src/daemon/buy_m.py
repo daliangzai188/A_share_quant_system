@@ -67,14 +67,21 @@ _m_pov_thread: threading.Thread | None = None
 
 def _m_signal_for_today(today_str: str) -> dict[str, Any] | None:
     from src.rolling_signal_store import latest_signal_for_buy_date
-    from src.strategy_m import M_VERSION
+    from src.strategy_m import m_sort_for_config, m_version_for
 
     signal = latest_signal_for_buy_date(M_SIGNAL_RECENT_PATH, today_str)
     if not signal:
         return None
-    if str(signal.get("m_version", "")) != M_VERSION:
+    # 正式版本跟着配置里的M排序方式走（2026-11-27修复：ACE+M+L按涨停前5日涨幅排序，信号版本是M_VERSION_RET5，
+    # 原来固定拿旧版本号比，新框架的M信号全被当成“版本不符”拒掉）；现行框架仍是原来的M_VERSION。
+    try:
+        expected = m_version_for(m_sort_for_config(load_json_config(PROJECT_ROOT / "config" / "config.json")))
+    except Exception as exc:
+        logger().error("读取配置失败，定不了M信号的正式版本，按fail-closed今日M不开仓：%s", exc)
+        return None
+    if str(signal.get("m_version", "")) != expected:
         logger().error("M信号版本%s与正式版本%s不一致，按fail-closed今日M不开仓。",
-                       signal.get("m_version", ""), M_VERSION)
+                       signal.get("m_version", ""), expected)
         return None
     if str(signal.get("status", "")) != "SIGNAL_READY" or not signal.get("candidates"):
         return None
