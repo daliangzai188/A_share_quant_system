@@ -349,11 +349,11 @@ class DailyCheckTests(unittest.TestCase):
         self.assertEqual(warnings["signal_gap_days"], 22, "2020-04-21以后回放里全部腿最长22个行动日没有信号")
         self.assertEqual(section["live_loss_months"], 3)
         ack = active_acknowledgements(section["acknowledged"], "20261012")
-        self.assertEqual(list(ack), ["factor_health:A", "shadow_3m", "warn2:leg:A"])
-        # 2026-11-11临时复核登记的3个月线到2026-12-11复查日恢复提醒，A腿两项登记仍在
+        self.assertEqual(list(ack), ["factor_health:A", "shadow_3m", "warn2:leg:A", "warn2:leg:M", "warn2:all"])
+        # 2026-11-11临时复核登记的3个月线到2026-12-11复查日恢复提醒，A腿两项、M和全部策略的登记仍在
         self.assertEqual(list(active_acknowledgements(section["acknowledged"], "20261211")),
-                         ["factor_health:A", "warn2:leg:A"])
-        # 2026-11-13策略复核（中级警告A腿）维持现行，到年度复核2027-01-02恢复提醒
+                         ["factor_health:A", "warn2:leg:A", "warn2:leg:M", "warn2:all"])
+        # 2026-11-13策略复核（中级警告A腿）、2026-11-27策略复核（M、全部策略）维持现行，到年度复核2027-01-02恢复提醒
         self.assertEqual(list(active_acknowledgements(section["acknowledged"], "20270104")), [])
 
 
