@@ -35,6 +35,10 @@ under %LOCALAPPDATA%\\A_System\\qmt_native\\state\\, where the strategy reads it
 QMT's process is checked every 10 s: when it is gone, "⛔ QMT已关闭" is pushed at once, and
 "🔑 QMT已重新打开，请登录" when it is back.
 
+Every 2 minutes the newest two dated strategy logs (XtClient_FormulaOutput_YYYYMMDD.log) are copied into
+C:\\A_System\\reports\\qmt_native\\ when they grew (written as *.tmp, which is not synced, then renamed), so the
+Mac always has today's log for the daily checks and version-switch verification (2026-11-27).
+
 The live copy prints a status line every 20 s. When none arrives for 10 minutes (QMT's Python
 frozen, the strategy stopped, or QMT closed) this program pushes an alarm itself, repeats it
 hourly (not 23:00-07:00) and reports the recovery: every other push comes out of QMT, so a frozen
@@ -42,7 +46,7 @@ QMT is otherwise silent (10-24 18:04 to 10-27 00:05 passed without a single push
 user (stop_windows.py leaves C:\\A_System\\.manual_stop.json until start_windows.py) raises no alarm.
 
 Usage: py -3.11 qmt_notify_forwarder.py [--logs GLOB] [--mode live] [--from-start] [--once]
-                                        [--strategy A_SYSTEM_QMT_INNER] [--stall-minutes 10]
+                                        [--strategy A_SYSTEM_QMT_INNER] [--stall-minutes 10] [--mirror-minutes 2]
 """
 from __future__ import annotations
 
@@ -76,6 +80,9 @@ CHECKS = Path(__file__).resolve().with_name('qmt_external_checks.py')
 CHECKS_DIR = BASE / 'external_checks'
 # 2026-11-14：实盘成交汇总在 C:\A_System 里再放一份，随两端双向同步实时到 Mac（AppData 不在同步文件夹里）
 MIRROR_DIR = ROOT / 'reports' / 'qmt_native' / 'qmt_export'
+# 2026-11-27（用户同意）：QMT 策略日志每2分钟复制一份到同步目录，Mac 上随时能读当天日志（值守检查、换版核对），
+# 不再靠在虚拟机界面里手动起复制循环。两端 Syncthing 是“回收站”式版本保留，同名文件只留一份旧版本。
+LOG_MIRROR_DIR = ROOT / 'reports' / 'qmt_native'
 KEEP_IDS = 5000
 BJ = dt.timezone(dt.timedelta(hours=8))
 REMIND_SECONDS = 3600
@@ -639,6 +646,55 @@ def scan(patterns: list[str], mode: str, state: dict, base: str, start_at_end: b
     return forwarded
 
 
+def mirror_strategy_logs(patterns: list[str], state: dict, now: float, every: float,
+                         dest: Path | None = None) -> int:
+    """Copy the newest two dated strategy logs into the synced folder when they grew; returns files copied.
+
+    Only the bytes present when the file was opened are copied (QMT keeps appending); the copy is written as
+    *.tmp (not synced) and renamed, so the Mac never receives half a file. Errors only skip this round.
+    """
+    if every <= 0 or now - float(state.get('mirror_at', 0) or 0) < every:
+        return 0
+    state['mirror_at'] = now
+    dest = LOG_MIRROR_DIR if dest is None else dest
+    sizes, errors = state.setdefault('mirror_sizes', {}), state.setdefault('mirror_errors', {})
+    files = sorted(set(f for p in patterns for f in glob.glob(p)))[-2:]  # dated names sort by day
+    names = {os.path.basename(f) for f in files}
+    copied = 0
+    for name in files:
+        base = os.path.basename(name)
+        target, tmp = dest / base, dest / (base + '.tmp')
+        try:
+            with open(name, 'rb') as src:
+                size = src.seek(0, os.SEEK_END)  # directory metadata of an open file lags
+                if sizes.get(base) == size and target.is_file():
+                    continue
+                src.seek(0)
+                dest.mkdir(parents=True, exist_ok=True)
+                with open(tmp, 'wb') as out:
+                    left = size
+                    while left > 0:
+                        block = src.read(min(1 << 20, left))
+                        if not block:
+                            break
+                        out.write(block)
+                        left -= len(block)
+            os.replace(tmp, target)
+        except OSError as exc:
+            text = '%s: %s' % (type(exc).__name__, exc)
+            if errors.get(base) != text:  # 同一个错误只记一次，下一轮照常重试
+                log('strategy log %s not copied to the synced folder: %s' % (base, text))
+            errors[base] = text
+            continue
+        sizes[base] = size
+        errors.pop(base, None)
+        copied += 1
+    for key in [k for k in list(sizes) + list(errors) if k not in names]:
+        sizes.pop(key, None)
+        errors.pop(key, None)
+    return copied
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument('--logs', action='append', help='glob of QMT log files (repeatable)')
@@ -649,6 +705,8 @@ def main() -> None:
     parser.add_argument('--strategy', default='A_SYSTEM_QMT_INNER', help='QMT file name of the live copy')
     parser.add_argument('--stall-minutes', type=float, default=10.0, help='alarm after this long without output; 0 = off')
     parser.add_argument('--client-logs', action='append', help="glob of QMT's own logs (strategy stops by its network monitor)")
+    parser.add_argument('--mirror-minutes', type=float, default=2.0,
+                        help='copy the strategy logs into the synced folder this often; 0 = off')
     args = parser.parse_args()
     watch = args.mode == 'live' and args.stall_minutes > 0
     alive = alive_pattern(args.strategy) if watch else None
@@ -673,6 +731,8 @@ def main() -> None:
             watch_client_stops(args.client_logs, args.strategy, state, base,
                                start_at_end='client_offsets' not in state and not args.from_start)
         first = False
+        if args.mode == 'live' and not args.once:
+            mirror_strategy_logs(args.logs, state, time.time(), args.mirror_minutes * 60)
         if watch:
             marker = ROOT / '.manual_stop.json'
             check_stall(state, base, time.time(), args.stall_minutes * 60,
